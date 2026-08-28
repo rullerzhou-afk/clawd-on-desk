@@ -134,6 +134,17 @@ describe("bucketAgentsForTutorial", () => {
     }
   });
 
+  it("keeps an explicit null verdict out of active, install, and cleanup", () => {
+    for (const integrationInstalled of [false, true]) {
+      const result = bucketAgentsForTutorial({
+        installableIds: ["qoder"],
+        detectionAgents: [detect("qoder", "Qoder", null, "low")],
+        agentsPref: { qoder: { integrationInstalled } },
+      });
+      assert.deepStrictEqual(result, { install: [], cleanup: [], active: [] });
+    }
+  });
+
   // #895 T7: the reporter's exact machine shape, fed by the REAL detector
   // rather than a hand-written fixture, so the two can't drift apart. Codex
   // installed via npm but never launched leaves no ~/.codex, and Clawd's own

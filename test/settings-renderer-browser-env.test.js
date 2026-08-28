@@ -12207,6 +12207,60 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(calls, 1);
   });
 
+  it("preserves fetched null verdicts and keeps them out of every Settings action surface", async () => {
+    const commandCalls = [];
+    const detectionResult = {
+      checkedAt: 895,
+      agents: [
+        { agentId: "qoder", detectedInstalled: null, confidence: "low", reason: "insufficient-evidence" },
+        { agentId: "zcode", detectedInstalled: null, confidence: "low", reason: "insufficient-evidence" },
+      ],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          qoder: { integrationInstalled: false, enabled: false },
+          zcode: { integrationInstalled: true, enabled: true },
+        },
+        dismissedAgentInstallHints: { qoder: true },
+        dismissedAgentCleanupHints: { zcode: true },
+      },
+      agentMetadata: [
+        { id: "qoder", name: "Qoder", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+        { id: "zcode", name: "ZCode", eventSource: "hook", capabilities: {}, cleanupSuggestionExempt: false },
+      ],
+      settingsAPI: {
+        detectAgentInstallations: () => Promise.resolve(detectionResult),
+        command: (action, payload) => {
+          commandCalls.push([action, payload]);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+
+    await harness.core.ops.fetchAgentInstallationHints();
+    harness.raf.flush();
+
+    assert.deepStrictEqual(
+      harness.core.runtime.agentInstallationHints.agents.map((entry) => entry.detectedInstalled),
+      [null, null],
+      "normalization must preserve tri-state null"
+    );
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    const connectedPills = harness.content.querySelectorAll(".agents-subtabs .segmented button");
+    assert.strictEqual(connectedPills[1].querySelector(".agents-subtab-count"), null);
+
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+    assert.strictEqual(harness.content.querySelector(".agent-section-recommended"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
+    assert.strictEqual(harness.content.querySelector(".agent-cleanup-hint-banner"), null);
+    assert.deepStrictEqual(commandCalls, [], "null must not clear either dismissal bucket");
+  });
+
   it("splits connected agents from detected and undetected ones across the subtabs", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {

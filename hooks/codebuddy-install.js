@@ -330,6 +330,7 @@ module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
   CLAWD_PERMISSION_HOOK_NAME,
+  isManagedPermissionHook,
   registerCodeBuddyHooks,
   unregisterCodeBuddyHooks,
   CODEBUDDY_HOOK_EVENTS,

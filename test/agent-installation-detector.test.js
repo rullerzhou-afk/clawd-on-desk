@@ -12,6 +12,11 @@ const {
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
 const { registerReasonixHooks } = require("../hooks/reasonix-install");
+const { registerZcodeHooks, unregisterZcodeHooks } = require("../hooks/zcode-install");
+const { registerQoderHooks, unregisterQoderHooks } = require("../hooks/qoder-install");
+const { registerCodeBuddyHooks, unregisterCodeBuddyHooks } = require("../hooks/codebuddy-install");
+const { registerOpenClawPlugin, unregisterOpenClawPlugin } = require("../hooks/openclaw-install");
+const { registerGeminiHooks, unregisterGeminiHooks } = require("../hooks/gemini-install");
 const {
   BRIDGE_PACKAGE_NAME,
   BRIDGE_PROTOCOL_VERSION,
@@ -280,48 +285,41 @@ describe("agent installation detector", () => {
     assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
   });
 
-  it("does not confuse Antigravity's ~/.gemini/config with Gemini CLI", () => {
+  it("returns strict false for Gemini only when ~/.gemini is absent", () => {
     const homeDir = makeHome();
-    writeJson(path.join(homeDir, ".gemini", "config", "hooks.json"), {
-      clawd: {
-        PreInvocation: [{ type: "command", command: "node /app/hooks/antigravity-hook.js PreInvocation" }],
-      },
-    });
-    writeText(path.join(homeDir, ".gemini", ".DS_Store"), "Finder metadata");
-    writeText(path.join(homeDir, ".gemini", "session.tmp"), "temporary file");
-    writeText(path.join(homeDir, ".gemini", "settings.json.backup"), "backup file");
-    writeText(path.join(homeDir, ".gemini", ".config.swp"), "swap file");
-
-    const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
-    const gemini = byId(report, "gemini-cli");
-    const antigravity = byId(report, "antigravity-cli");
+    const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
 
     assert.strictEqual(gemini.detectedInstalled, false);
+    assert.strictEqual(gemini.confidence, "low");
     assert.strictEqual(gemini.reason, "not-found");
-    assert.strictEqual(antigravity.detectedInstalled, true);
-    assert.strictEqual(antigravity.confidence, "medium");
-    assert.strictEqual(antigravity.reason, "parent-dir");
   });
 
-  // #895 T1/T2/T3: `config` used to be the only Antigravity directory excluded,
-  // which read like a solved problem but covered one of three. Google assigns
-  // ~/.gemini/antigravity to the Antigravity app and ~/.gemini/antigravity-cli
-  // to agy, and installing the app alone creates the former — so a machine with
-  // no Gemini CLI at all was told to connect one. One case per directory: a
-  // single combined test would pass even if a name were dropped from the set.
-  for (const dirName of ["antigravity", "antigravity-cli"]) {
-    it(`does not treat Antigravity's ~/.gemini/${dirName} as a Gemini CLI install`, () => {
+  for (const [label, populate] of [
+    ["an empty shared parent", (g) => mkdirp(g)],
+    ["Antigravity's config directory", (g) => writeJson(path.join(g, "config", "hooks.json"), { clawd: {} })],
+    ["Antigravity's app directory", (g) => writeText(path.join(g, "antigravity", "state.pbtxt"), "")],
+    ["Antigravity CLI's directory", (g) => writeJson(path.join(g, "antigravity-cli", "settings.json"), {})],
+    ["an unknown file", (g) => writeText(path.join(g, "mystery"), "data")],
+    ["a credential file", (g) => writeJson(path.join(g, "oauth_creds.json"), { token: "not-read" })],
+    ["an extension directory", (g) => mkdirp(path.join(g, "extensions"))],
+    ["settings-only content", (g) => writeJson(path.join(g, "settings.json"), { selectedAuthType: "oauth-personal" })],
+    ["foreign hook-only settings", (g) => writeJson(path.join(g, "settings.json"), {
+      hooks: { SessionStart: [{ hooks: [{ type: "command", command: "node third-party.js" }] }] },
+    })],
+  ]) {
+    it(`treats Gemini ${label} as insufficient evidence`, () => {
       const homeDir = makeHome();
-      mkdirp(path.join(homeDir, ".gemini", dirName));
+      populate(path.join(homeDir, ".gemini"));
 
       const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
 
-      assert.strictEqual(gemini.detectedInstalled, false);
-      assert.strictEqual(gemini.reason, "not-found");
+      assert.strictEqual(gemini.detectedInstalled, null);
+      assert.strictEqual(gemini.confidence, "low");
+      assert.strictEqual(gemini.reason, "insufficient-evidence");
     });
   }
 
-  it("does not report Gemini CLI from a full Antigravity-only layout", () => {
+  it("keeps Antigravity positive while Gemini is insufficient in the shared home", () => {
     const homeDir = makeHome();
     writeJson(path.join(homeDir, ".gemini", "config", "hooks.json"), { clawd: {} });
     writeText(path.join(homeDir, ".gemini", "antigravity", "antigravity_state.pbtxt"), "");
@@ -329,63 +327,76 @@ describe("agent installation detector", () => {
 
     const report = detectAgentInstallations({ homeDir, now: 1, env: {} });
 
-    assert.strictEqual(byId(report, "gemini-cli").detectedInstalled, false);
-    assert.strictEqual(byId(report, "gemini-cli").reason, "not-found");
-    // Antigravity itself must still be found — the point is telling them apart.
+    assert.strictEqual(byId(report, "gemini-cli").detectedInstalled, null);
+    assert.strictEqual(byId(report, "gemini-cli").reason, "insufficient-evidence");
     assert.strictEqual(byId(report, "antigravity-cli").detectedInstalled, true);
   });
 
-  // #895 T4/T4b: the guard above must not become "Gemini CLI is never detected
-  // from its directory". Each artifact gets its own home, so one still-working
-  // signal cannot mask another that broke. A file and a directory are both
-  // covered because the exclusion is directory-only.
-  for (const [label, make] of [
-    ["installation_id file", (g) => writeText(path.join(g, "installation_id"), "id")],
-    ["oauth_creds.json file", (g) => writeJson(path.join(g, "oauth_creds.json"), {})],
-    ["extensions/ directory", (g) => mkdirp(path.join(g, "extensions"))],
-  ]) {
-    it(`still detects Gemini CLI beside Antigravity from its ${label}`, () => {
+  for (const artifact of ["installation_id", "projects.json"]) {
+    it(`detects Gemini from the pinned non-empty ${artifact} artifact`, () => {
       const homeDir = makeHome();
-      const geminiDir = path.join(homeDir, ".gemini");
-      for (const dirName of ["config", "antigravity", "antigravity-cli"]) {
-        mkdirp(path.join(geminiDir, dirName));
-      }
-      make(geminiDir);
+      writeText(path.join(homeDir, ".gemini", artifact), "product-owned");
 
       const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
 
       assert.strictEqual(gemini.detectedInstalled, true);
-      assert.strictEqual(gemini.confidence, "medium");
-      assert.strictEqual(gemini.reason, "parent-dir");
+      assert.strictEqual(gemini.confidence, "high");
+      assert.strictEqual(gemini.reason, "product-artifact");
     });
+
+    for (const shape of ["zero-byte", "directory", "symlink"]) {
+      it(`rejects Gemini ${artifact} when it is a ${shape}`, () => {
+        const homeDir = makeHome();
+        const geminiDir = path.join(homeDir, ".gemini");
+        const artifactPath = path.join(geminiDir, artifact);
+        if (shape === "zero-byte") writeText(artifactPath, "");
+        if (shape === "directory") mkdirp(artifactPath);
+        if (shape === "symlink") {
+          const targetPath = path.join(homeDir, "outside-artifact");
+          writeText(targetPath, "product-owned");
+          mkdirp(geminiDir);
+          fs.symlinkSync(targetPath, artifactPath);
+        }
+
+        const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+
+        assert.strictEqual(gemini.detectedInstalled, null);
+        assert.strictEqual(gemini.reason, "insufficient-evidence");
+      });
+    }
   }
 
-  // #895 T4c: the exclusion matches Antigravity's directories, not its names. A
-  // plain file that happens to be called `antigravity` is not Antigravity's.
-  it("only excludes the Antigravity names when they are directories", () => {
+  it("detects Gemini artifacts from lstat metadata without listing the shared parent or reading artifact contents", () => {
     const homeDir = makeHome();
-    writeText(path.join(homeDir, ".gemini", "antigravity"), "a file, not Antigravity's dir");
+    const artifactPath = path.join(homeDir, ".gemini", "projects.json");
+    writeText(artifactPath, "opaque-product-data");
+    const readPaths = [];
+    const fsImpl = {
+      lstatSync: fs.lstatSync,
+      statSync: fs.statSync,
+      readFileSync(filePath, ...args) {
+        readPaths.push(filePath);
+        if (filePath === artifactPath) throw new Error("artifact contents must not be read");
+        return fs.readFileSync(filePath, ...args);
+      },
+      readdirSync() {
+        throw new Error("Gemini product detection must not list ~/.gemini");
+      },
+    };
 
-    const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+    const entry = detectAgentInstallation(getAgentDescriptor("gemini-cli"), {
+      homeDir,
+      now: 1,
+      env: {},
+      fs: fsImpl,
+    });
 
-    assert.strictEqual(gemini.detectedInstalled, true);
-    assert.strictEqual(gemini.reason, "parent-dir");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.strictEqual(entry.reason, "product-artifact");
+    assert.strictEqual(readPaths.includes(artifactPath), false);
   });
 
-  // #895 T4d: the higher-confidence settings.json path is untouched by all this.
-  it("still detects Gemini CLI from real settings beside Antigravity", () => {
-    const homeDir = makeHome();
-    mkdirp(path.join(homeDir, ".gemini", "antigravity"));
-    writeJson(path.join(homeDir, ".gemini", "settings.json"), { selectedAuthType: "oauth-personal" });
-
-    const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
-
-    assert.strictEqual(gemini.detectedInstalled, true);
-    assert.strictEqual(gemini.confidence, "high");
-    assert.strictEqual(gemini.reason, "config-file");
-  });
-
-  it("treats Gemini Clawd-only settings as integration marker, not install proof", () => {
+  it("treats Gemini Clawd-only settings as integration evidence, not product proof", () => {
     const homeDir = makeHome();
     const settingsPath = path.join(homeDir, ".gemini", "settings.json");
     writeJson(settingsPath, {
@@ -394,24 +405,312 @@ describe("agent installation detector", () => {
       },
     });
 
-    let report = detectAgentInstallations({ homeDir, now: 1 });
-    let gemini = byId(report, "gemini-cli");
-    assert.strictEqual(gemini.detectedInstalled, false);
-    assert.match(gemini.detail, /only Clawd-managed/);
-    assert.strictEqual(gemini.clawdIntegration.detected, true);
+    const gemini = byId(detectAgentInstallations({ homeDir, now: 1 }), "gemini-cli");
 
-    writeJson(settingsPath, {
-      selectedAuthType: "oauth-personal",
+    assert.strictEqual(gemini.detectedInstalled, null);
+    assert.strictEqual(gemini.reason, "insufficient-evidence");
+    assert.strictEqual(gemini.clawdIntegration.detected, true);
+  });
+
+  it("keeps exact Clawd register/unregister residue non-actionable for all five repaired agents", () => {
+    const homeDir = makeHome();
+    const pluginDir = path.join(homeDir, "managed", "openclaw-plugin");
+    const openclawStateDir = path.join(homeDir, ".openclaw");
+    const openclawConfigPath = path.join(openclawStateDir, "openclaw.json");
+    for (const dirName of [".zcode", ".qoder", ".codebuddy", ".gemini", ".openclaw"]) {
+      mkdirp(path.join(homeDir, dirName));
+    }
+    writeJson(openclawConfigPath, {});
+
+    registerZcodeHooks({ homeDir, silent: true, nodeBin: process.execPath });
+    registerQoderHooks({ homeDir, silent: true, nodeBin: process.execPath });
+    registerCodeBuddyHooks({
+      settingsPath: path.join(homeDir, ".codebuddy", "settings.json"),
+      silent: true,
+      nodeBin: process.execPath,
+      permissionTarget: { mode: "local" },
+    });
+    registerGeminiHooks({ homeDir, silent: true, nodeBin: process.execPath });
+    registerOpenClawPlugin({
+      stateDir: openclawStateDir,
+      configPath: openclawConfigPath,
+      pluginDir,
+      silent: true,
+      openclawCommandAvailable: false,
+    });
+
+    const detect = (now) => detectAgentInstallations({ homeDir, now, env: {} });
+    let report = detect(1);
+    for (const agentId of ["zcode", "qoder", "codebuddy", "gemini-cli", "openclaw"]) {
+      const entry = byId(report, agentId);
+      assert.strictEqual(entry.detectedInstalled, null, `${agentId} installed Clawd-only config`);
+      assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} installed reason`);
+      assert.strictEqual(entry.clawdIntegration.detected, true, `${agentId} integration marker`);
+    }
+
+    unregisterZcodeHooks({ homeDir, silent: true });
+    unregisterQoderHooks({ homeDir, silent: true });
+    unregisterCodeBuddyHooks({ settingsPath: path.join(homeDir, ".codebuddy", "settings.json"), silent: true });
+    unregisterGeminiHooks({ homeDir, silent: true });
+    unregisterOpenClawPlugin({
+      stateDir: openclawStateDir,
+      configPath: openclawConfigPath,
+      pluginDir,
+      silent: true,
+      openclawCommandAvailable: false,
+    });
+
+    report = detect(2);
+    for (const agentId of ["zcode", "qoder", "codebuddy", "gemini-cli", "openclaw"]) {
+      const entry = byId(report, agentId);
+      assert.strictEqual(entry.detectedInstalled, null, `${agentId} unregister residue`);
+      assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} residue reason`);
+      assert.strictEqual(entry.clawdIntegration.detected, false, `${agentId} removed marker`);
+    }
+  });
+
+  for (const fixture of [
+    ["zcode", ".zcode/cli/config.json", { permissions: { defaultMode: "ask" } }],
+    ["qoder", ".qoder/settings.json", { language: "en" }],
+    ["codebuddy", ".codebuddy/settings.json", { model: "default" }],
+    ["openclaw", ".openclaw/openclaw.json", { gateway: { port: 18789 } }],
+  ]) {
+    const [agentId, relativeConfigPath, config] = fixture;
+    it(`detects source-pinned ${agentId} product config`, () => {
+      const homeDir = makeHome();
+      writeJson(path.join(homeDir, relativeConfigPath), config);
+
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+
+      assert.strictEqual(entry.detectedInstalled, true);
+      assert.strictEqual(entry.confidence, "high");
+      assert.strictEqual(entry.reason, "config-file");
+    });
+  }
+
+  for (const fixture of [
+    ["zcode", ".zcode/cli/config.json", { hooks: { enabled: true, events: { Stop: [{ type: "process", command: "node", args: ["third-party.js"] }] } } }],
+    ["qoder", ".qoder/settings.json", { hooks: { Stop: [{ matcher: "*", hooks: [{ name: "clawd", type: "command", command: "node third-party.js" }] }] } }],
+    ["codebuddy", ".codebuddy/settings.json", { hooks: { Stop: [{ matcher: "*", hooks: [{ type: "command", command: "node third-party.js" }] }] } }],
+    ["openclaw", ".openclaw/openclaw.json", { plugins: { load: { paths: ["/third-party/plugin"] }, entries: { third: {} } } }],
+  ]) {
+    const [agentId, relativeConfigPath, config] = fixture;
+    it(`preserves a foreign ${agentId} hook/plugin as positive product evidence`, () => {
+      const homeDir = makeHome();
+      writeJson(path.join(homeDir, relativeConfigPath), config);
+
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+
+      assert.strictEqual(entry.detectedInstalled, true);
+      assert.strictEqual(entry.confidence, "high");
+      assert.strictEqual(entry.reason, "config-file");
+    });
+  }
+
+  it("returns null for empty, malformed, and symlinked reporter config evidence", () => {
+    const fixtures = [
+      ["zcode", ".zcode/cli/config.json"],
+      ["qoder", ".qoder/settings.json"],
+      ["codebuddy", ".codebuddy/settings.json"],
+    ];
+    for (const [agentId, relativeConfigPath] of fixtures) {
+      for (const shape of ["missing", "empty", "malformed", "symlink"]) {
+        const homeDir = makeHome();
+        const configPath = path.join(homeDir, relativeConfigPath);
+        mkdirp(path.dirname(configPath));
+        if (shape === "empty") writeText(configPath, "");
+        if (shape === "malformed") writeText(configPath, "{");
+        if (shape === "symlink") {
+          const targetPath = path.join(homeDir, "outside.json");
+          writeJson(targetPath, { language: "en" });
+          fs.symlinkSync(targetPath, configPath);
+        }
+
+        const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+        assert.strictEqual(entry.detectedInstalled, null, `${agentId} ${shape}`);
+        assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} ${shape} reason`);
+      }
+    }
+  });
+
+  it("fails an unreadable reporter config closed to insufficient evidence", () => {
+    const homeDir = makeHome();
+    const configPath = path.join(homeDir, ".qoder", "settings.json");
+    writeJson(configPath, { language: "en" });
+    const fsImpl = {
+      lstatSync: fs.lstatSync,
+      statSync: fs.statSync,
+      readdirSync: fs.readdirSync,
+      readFileSync(filePath, ...args) {
+        if (filePath === configPath) {
+          const err = new Error("permission denied");
+          err.code = "EACCES";
+          throw err;
+        }
+        return fs.readFileSync(filePath, ...args);
+      },
+    };
+
+    const entry = detectAgentInstallation(getAgentDescriptor("qoder"), {
+      homeDir,
+      now: 1,
+      env: {},
+      fs: fsImpl,
+    });
+
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.reason, "insufficient-evidence");
+  });
+
+  it("subtracts migrated ZCode and both exact CodeBuddy permission ownership shapes", () => {
+    const zcodeHome = makeHome();
+    writeJson(path.join(zcodeHome, ".zcode", "cli", "config.json"), {
       hooks: {
-        SessionStart: [{ hooks: [{ name: "clawd", type: "command", command: "node /app/hooks/gemini-hook.js SessionStart" }] }],
+        enabled: true,
+        events: {
+          Stop: [{ type: "process", command: process.execPath, args: ["/app/hooks/clawd-hook.js", "Stop"] }],
+        },
+      },
+    });
+    const zcodeEntry = byId(detectAgentInstallations({ homeDir: zcodeHome, now: 1, env: {} }), "zcode");
+    assert.strictEqual(zcodeEntry.detectedInstalled, null);
+
+    for (const permissionHook of [
+      { name: "clawd-on-desk.permission.v1", type: "http", url: "https://preserved.example/permission" },
+      { name: "custom-name", type: "http", url: "http://127.0.0.1:23333/permission" },
+    ]) {
+      const codebuddyHome = makeHome();
+      writeJson(path.join(codebuddyHome, ".codebuddy", "settings.json"), {
+        hooks: { PermissionRequest: [{ hooks: [permissionHook] }] },
+      });
+      const entry = byId(detectAgentInstallations({ homeDir: codebuddyHome, now: 1, env: {} }), "codebuddy");
+      assert.strictEqual(entry.detectedInstalled, null, JSON.stringify(permissionHook));
+      assert.strictEqual(entry.reason, "insufficient-evidence");
+    }
+  });
+
+  it("keeps mixed Clawd and foreign content positive for each ownership adapter", () => {
+    const fixtures = [
+      ["zcode", ".zcode/cli/config.json", {
+        hooks: { enabled: true, events: { Stop: [
+          { type: "process", command: process.execPath, args: ["/app/hooks/zcode-hook.js", "Stop"] },
+          { type: "process", command: "node", args: ["third-party.js"] },
+        ] } },
+      }],
+      ["qoder", ".qoder/settings.json", {
+        hooks: { Stop: [{ hooks: [
+          { type: "command", command: "node /app/hooks/qoder-hook.js Stop" },
+          { type: "command", command: "node third-party.js" },
+        ] }] },
+      }],
+      ["codebuddy", ".codebuddy/settings.json", {
+        hooks: { PermissionRequest: [{ hooks: [
+          { name: "clawd-on-desk.permission.v1", type: "http", url: "http://127.0.0.1:23333/permission" },
+          { name: "third", type: "http", url: "https://third.example/permission" },
+        ] }] },
+      }],
+      ["openclaw", ".openclaw/openclaw.json", {
+        plugins: {
+          load: { paths: ["/app/hooks/openclaw-plugin", "/third-party/plugin"] },
+          entries: { "clawd-on-desk": { enabled: true }, third: { enabled: true } },
+        },
+      }],
+    ];
+    for (const [agentId, relativeConfigPath, config] of fixtures) {
+      const homeDir = makeHome();
+      writeJson(path.join(homeDir, relativeConfigPath), config);
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+      assert.strictEqual(entry.detectedInstalled, true, agentId);
+      assert.strictEqual(entry.reason, "config-file", agentId);
+    }
+  });
+
+  it("subtracts an owned hook leaf without hiding a foreign nested sibling", () => {
+    const homeDir = makeHome();
+    writeJson(path.join(homeDir, ".qoder", "settings.json"), {
+      hooks: {
+        Stop: [{
+          type: "command",
+          command: "node /app/hooks/qoder-hook.js Stop",
+          hooks: [{ type: "command", command: "node third-party.js" }],
+        }],
       },
     });
 
-    report = detectAgentInstallations({ homeDir, now: 2 });
-    gemini = byId(report, "gemini-cli");
-    assert.strictEqual(gemini.detectedInstalled, true);
-    assert.strictEqual(gemini.confidence, "high");
-    assert.strictEqual(gemini.reason, "config-file");
+    const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.strictEqual(entry.reason, "config-file");
+  });
+
+  it("keeps mixed Clawd and foreign Gemini hooks insufficient", () => {
+    const homeDir = makeHome();
+    writeJson(path.join(homeDir, ".gemini", "settings.json"), {
+      hooks: {
+        Stop: [{ hooks: [
+          { type: "command", command: "node /app/hooks/gemini-hook.js Stop" },
+          { type: "command", command: "node third-party.js" },
+        ] }],
+      },
+    });
+
+    const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.reason, "insufficient-evidence");
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+  });
+
+  it("fails legal JSON5, malformed text, and config symlinks closed to insufficient OpenClaw evidence", () => {
+    const json5Home = makeHome();
+    writeText(path.join(json5Home, ".openclaw", "openclaw.json"), "{ gateway: { port: 18789 } }");
+    const json5 = byId(detectAgentInstallations({ homeDir: json5Home, now: 1, env: {} }), "openclaw");
+    assert.strictEqual(json5.detectedInstalled, null);
+    assert.strictEqual(json5.confidence, "low");
+    assert.strictEqual(json5.reason, "insufficient-evidence");
+
+    const clawdJson5Home = makeHome();
+    writeText(
+      path.join(clawdJson5Home, ".openclaw", "openclaw.json"),
+      '{ plugins: { load: { paths: ["/app/hooks/openclaw-plugin"] }, entries: { "clawd-on-desk": { enabled: true } } } }'
+    );
+    const clawdJson5 = byId(
+      detectAgentInstallations({ homeDir: clawdJson5Home, now: 1, env: {} }),
+      "openclaw"
+    );
+    assert.strictEqual(clawdJson5.detectedInstalled, null);
+    assert.strictEqual(clawdJson5.reason, "insufficient-evidence");
+
+    const malformedHome = makeHome();
+    writeText(path.join(malformedHome, ".openclaw", "openclaw.json"), "{ definitely broken");
+    const malformed = byId(detectAgentInstallations({ homeDir: malformedHome, now: 1, env: {} }), "openclaw");
+    assert.strictEqual(malformed.detectedInstalled, null);
+    assert.strictEqual(malformed.reason, "insufficient-evidence");
+
+    const symlinkHome = makeHome();
+    const configPath = path.join(symlinkHome, ".openclaw", "openclaw.json");
+    const targetPath = path.join(symlinkHome, "outside.json5");
+    writeText(targetPath, "{ gateway: { port: 18789 } }");
+    mkdirp(path.dirname(configPath));
+    fs.symlinkSync(targetPath, configPath);
+    const symlink = byId(detectAgentInstallations({ homeDir: symlinkHome, now: 1, env: {} }), "openclaw");
+    assert.strictEqual(symlink.detectedInstalled, null);
+    assert.strictEqual(symlink.reason, "insufficient-evidence");
+  });
+
+  it("does not fall back to the default OpenClaw config when OPENCLAW_CONFIG_PATH is set", () => {
+    const homeDir = makeHome();
+    const stateDir = path.join(homeDir, ".openclaw");
+    const explicitConfigPath = path.join(homeDir, "external", "openclaw.json");
+    writeJson(path.join(stateDir, "openclaw.json"), { gateway: { port: 18789 } });
+
+    const entry = byId(detectAgentInstallations({
+      homeDir,
+      now: 1,
+      env: { OPENCLAW_CONFIG_PATH: explicitConfigPath },
+    }), "openclaw");
+
+    assert.strictEqual(entry.paths.configPath, explicitConfigPath);
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.reason, "insufficient-evidence");
   });
 
   it("re-resolves env-dependent paths at detection time", () => {
@@ -420,7 +719,7 @@ describe("agent installation detector", () => {
     const openclawConfigPath = path.join(homeDir, "custom-openclaw", "openclaw.json");
     const hermesHome = path.join(homeDir, "custom-hermes");
     mkdirp(copilotHome);
-    writeJson(openclawConfigPath, { plugins: {} });
+    writeJson(openclawConfigPath, { gateway: { port: 18789 } });
     writeText(path.join(hermesHome, "config.yaml"), "plugins: []\n");
 
     const report = detectAgentInstallations({
@@ -464,6 +763,7 @@ describe("agent installation detector", () => {
     mkdirp(path.join(homeDir, ".config", "opencode"));
     const fsReadOnly = new Proxy({
       statSync: fs.statSync,
+      lstatSync: fs.lstatSync,
       readFileSync: fs.readFileSync,
       readdirSync: fs.readdirSync,
     }, {

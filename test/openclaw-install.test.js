@@ -9,6 +9,7 @@ const path = require("path");
 const {
   ensureOpenClawConfigLinked,
   hasIncludeDirective,
+  isManagedPluginPath,
   registerOpenClawPlugin,
   resolvePluginDir,
   unregisterOpenClawPlugin,
@@ -230,6 +231,14 @@ describe("openclaw plugin installer", () => {
 });
 
 describe("openclaw installer helpers", () => {
+  it("shares the installer's exact managed-path ownership rule", () => {
+    const current = "C:/current/hooks/openclaw-plugin";
+    assert.strictEqual(isManagedPluginPath(current, current), true);
+    assert.strictEqual(isManagedPluginPath("D:/stale/hooks/openclaw-plugin", current), true);
+    assert.strictEqual(isManagedPluginPath("relative/openclaw-plugin", current), false);
+    assert.strictEqual(isManagedPluginPath("C:/other/plugin", current), false);
+  });
+
   it("detects include directives recursively", () => {
     assert.strictEqual(hasIncludeDirective({ plugins: { entries: { x: { $include: "./x.json" } } } }), true);
     assert.strictEqual(hasIncludeDirective({ plugins: { entries: { x: { include: ["./x.json"] } } } }), true);
