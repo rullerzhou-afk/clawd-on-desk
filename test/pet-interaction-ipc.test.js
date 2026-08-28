@@ -105,6 +105,17 @@ function createHarness(overrides = {}) {
       return state.openTerminalResult;
     },
     dropLog: (message) => calls.push(["dropLog", message]),
+    // Same explicit-override shape cancelRoam uses, so a test can pass
+    // `undefined` to model a host that never wired peteleco at all.
+    ...Object.fromEntries(
+      ["petelecoBeginAim", "petelecoUpdateAim", "petelecoReleaseAim", "petelecoCancelAim"]
+        .map((key) => [
+          key,
+          Object.prototype.hasOwnProperty.call(overrides, key)
+            ? overrides[key]
+            : () => calls.push([key]),
+        ])
+    ),
     // Default to the enabled platforms so the suite behaves the same on a
     // macOS dev machine; the macOS-disabled path has its own explicit test.
     isMacPlatform: overrides.isMacPlatform != null ? overrides.isMacPlatform : false,
@@ -151,6 +162,10 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
     "pet-drop-paths",
     "pet-interaction:reveal-session-hud",
     "pet-visual-ready",
+    "peteleco:aim-cancel",
+    "peteleco:aim-end",
+    "peteleco:aim-move",
+    "peteleco:aim-start",
     "play-click-reaction",
     "resume-from-reaction",
     "show-context-menu",
@@ -491,4 +506,58 @@ test("pet drop does not ping the hit window when the terminal launch fails", asy
   assert.deepStrictEqual(sender.sent, []);
   const logs = calls.filter((c) => c[0] === "dropLog").map((c) => c[1]);
   assert.ok(logs.some((m) => m.includes("launch failed") && m.includes("no terminal")), logs.join("; "));
+});
+
+test("peteleco aim-end hands the drag lock back BEFORE firing the shot", () => {
+  // The launch animation aborts on any drag lock it sees. If the gesture's own
+  // lock were still held when the shot starts, the flick would either abort at
+  // frame one or have to guess whose lock it is — which is what this ordering
+  // removes. The hit window's own drag-lock(false) still follows and is a
+  // harmless no-op.
+  const { ipcMain, calls } = createHarness();
+
+  ipcMain.send("peteleco:aim-end");
+
+  const names = calls.map((c) => c[0]);
+  const unlock = names.indexOf("setDragLocked");
+  const fire = names.indexOf("petelecoReleaseAim");
+  assert.notStrictEqual(unlock, -1, "aim-end must release the gesture's drag lock");
+  assert.notStrictEqual(fire, -1);
+  assert.strictEqual(calls[unlock][1], false);
+  assert.ok(unlock < fire, "the lock must be handed back before the shot is fired");
+});
+
+test("peteleco aim-start is gated on mini state and the rest of the aim channels delegate", () => {
+  const normal = createHarness();
+  normal.ipcMain.send("peteleco:aim-start");
+  normal.ipcMain.send("peteleco:aim-move");
+  normal.ipcMain.send("peteleco:aim-cancel");
+  const names = normal.calls.map((c) => c[0]);
+  assert.ok(names.includes("petelecoBeginAim"));
+  assert.ok(names.includes("petelecoUpdateAim"));
+  assert.ok(names.includes("petelecoCancelAim"));
+
+  const mini = createHarness({ state: { miniMode: true } });
+  mini.ipcMain.send("peteleco:aim-start");
+  assert.ok(!mini.calls.some((c) => c[0] === "petelecoBeginAim"));
+
+  const transitioning = createHarness({ state: { miniTransitioning: true } });
+  transitioning.ipcMain.send("peteleco:aim-start");
+  assert.ok(!transitioning.calls.some((c) => c[0] === "petelecoBeginAim"));
+});
+
+test("a host that never wires peteleco still gets a working interaction layer", () => {
+  // The optional-dependency contract: the aim channels are registered whether
+  // or not the host wired the runtime, and firing them unwired must not throw.
+  const { ipcMain } = createHarness({
+    petelecoBeginAim: undefined,
+    petelecoUpdateAim: undefined,
+    petelecoReleaseAim: undefined,
+    petelecoCancelAim: undefined,
+  });
+  for (const channel of [
+    "peteleco:aim-start", "peteleco:aim-move", "peteleco:aim-end", "peteleco:aim-cancel",
+  ]) {
+    assert.doesNotThrow(() => ipcMain.send(channel), channel);
+  }
 });

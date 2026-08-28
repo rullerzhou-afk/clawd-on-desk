@@ -184,6 +184,7 @@ function createRuntime(overrides = {}) {
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
     ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
     ...(overrides.isRoamAnimating ? { isRoamAnimating: overrides.isRoamAnimating } : {}),
+    ...(overrides.isPetelecoAnimating ? { isPetelecoAnimating: overrides.isPetelecoAnimating } : {}),
     ...(overrides.isEdgeVirtualizationDisabled
       ? { isEdgeVirtualizationDisabled: overrides.isEdgeVirtualizationDisabled }
       : {}),
@@ -1497,6 +1498,40 @@ describe("pet-window-runtime edge virtualization (#690 Phase 2 batch 2 reconcile
       harness.runtime.getPetWindowBounds().x,
       851, // rebase: actualPhysicalX(800) + oldViewportOffsetX(51)
       "release must trigger exactly one terminal reconcile that correctly classifies the deferred external move as a rebase"
+    );
+  });
+
+  it("marks reconcile dirty during a peteleco flick and compensates once released", () => {
+    // Same protection-period contract roam gets below: peteleco's launch
+    // animation writes bounds every frame, so a reconcile must not fight it,
+    // and its release must pay back the deferred pass.
+    let flicking = false;
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock, isPetelecoAnimating: () => flicking });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    clock.advance(500);
+
+    flicking = true;
+    harness.renderWin.bounds = {
+      x: 800, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.renderWin.emit("move");
+    clock.advance(200);
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 1768,
+      "reconcile must not run while a peteleco is in flight"
+    );
+
+    flicking = false;
+    harness.runtime.releaseReconcileProtection(); // peteleco.js's own release point
+    clock.advance(200);
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 851,
+      "release must trigger the deferred reconcile once the flick ends"
     );
   });
 

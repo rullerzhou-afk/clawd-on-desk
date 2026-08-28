@@ -73,6 +73,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **Sleep sequence** — yawning, dozing, collapsing, sleeping after 60s idle; mouse movement triggers a startled wake-up animation
 - **Click reactions** — double-click for a poke, 4 clicks for a flail
 - **Drag from any state** — grab Clawd anytime (Pointer Capture prevents fast-flick drops), release to resume
+- **Flick** — opt-in in `Settings…` → `General`: hold Ctrl (Option on macOS) and drag AWAY from the target; Clawd holds still while a projection shows the exact landing spot, and releasing launches Clawd there — across displays on a hard shot. Configurable intensity
 - **Mini mode** — drag to right edge or right-click "Mini Mode"; Clawd hides at screen edge with peek-on-hover, mini alerts/celebrations, and parabolic jump transitions
 
 ### Permission Bubble
@@ -149,7 +150,7 @@ Full event-to-state mapping, mini mode, and click reactions: **[docs/guides/stat
 
 ## Multi-display
 
-Clawd adapts to multi-monitor setups: proportional sizing uses the display Clawd launches on, portrait monitors get a bounded boost so the pet stays readable on tall narrow screens, and you can drag Clawd across displays.
+Clawd adapts to multi-monitor setups: proportional sizing uses the display Clawd launches on, portrait monitors get a bounded boost so the pet stays readable on tall narrow screens, and you can drag Clawd across displays — or flick Clawd there, since a hard shot crosses a seam too.
 
 <p align="center"><sub>Want to see the real multi-monitor behavior? <a href="assets/videos/clawd-multi-monitor-demo.mp4">Watch the demo video in this repository</a>.</sub></p>
 

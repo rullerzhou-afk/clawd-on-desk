@@ -59,6 +59,8 @@ describe("prefs.getDefaults", () => {
     // is preserved until the user opts in via the General tab switch.
     assert.strictEqual(d.freeRoam, false);
     assert.strictEqual(d.roamConstrainAxis, false);
+    assert.strictEqual(d.petelecoEnabled, false);
+    assert.strictEqual(d.petelecoIntensity, 50);
     assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, false);
@@ -295,6 +297,8 @@ describe("prefs.validate", () => {
       disableMiniMode: "yes",
       freeRoam: "yes",        // wrong type → default false
       roamConstrainAxis: 1,   // wrong type → default false
+      petelecoEnabled: "on",  // wrong type → default false
+      petelecoIntensity: 500, // out of range → default 50
       savedPixelWidth: -1,
       savedPixelHeight: "286",
       savedPixelWorkArea: "bogus",
@@ -322,6 +326,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.disableMiniMode, false);
     assert.strictEqual(v.freeRoam, false);
     assert.strictEqual(v.roamConstrainAxis, false);
+    assert.strictEqual(v.petelecoEnabled, false);
+    assert.strictEqual(v.petelecoIntensity, 50);
     assert.strictEqual(v.savedPixelWidth, 0);
     assert.strictEqual(v.savedPixelHeight, 0);
     assert.strictEqual(v.savedPixelWorkArea, null);
@@ -463,6 +469,8 @@ describe("prefs.validate", () => {
       keepSizeAcrossDisplays: true,
       freeRoam: true,
       roamConstrainAxis: true,
+      petelecoEnabled: true,
+      petelecoIntensity: 80,
       savedPixelWidth: 286,
       savedPixelHeight: 286,
       savedPixelWorkArea: { width: 1920, height: 1080 },
@@ -489,6 +497,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.freeRoam, true);
     assert.strictEqual(v.roamConstrainAxis, true);
+    assert.strictEqual(v.petelecoEnabled, true);
+    assert.strictEqual(v.petelecoIntensity, 80);
     assert.strictEqual(v.savedPixelWidth, 286);
     assert.strictEqual(v.savedPixelHeight, 286);
     assert.deepStrictEqual(v.savedPixelWorkArea, { width: 1920, height: 1080 });

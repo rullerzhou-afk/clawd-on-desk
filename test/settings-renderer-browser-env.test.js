@@ -8915,6 +8915,82 @@ describe("settings renderer browser environment", () => {
     }
   });
 
+  it("mounts the Peteleco intensity slider only while the feature is on", async () => {
+    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
+    const geometry = require("../src/peteleco-geometry");
+    // The settings renderer cannot require the geometry module, so the range it
+    // draws is a hand-copy. Pin it: a slider that can select an intensity the
+    // validator rejects would fail every save at the far end of its own track.
+    assert.ok(generalSource.includes(`const PETELECO_INTENSITY_MIN = ${geometry.PETELECO_INTENSITY_MIN};`));
+    assert.ok(generalSource.includes(`const PETELECO_INTENSITY_MAX = ${geometry.PETELECO_INTENSITY_MAX};`));
+    assert.ok(generalSource.includes(`const PETELECO_INTENSITY_DEFAULT = ${geometry.PETELECO_INTENSITY_DEFAULT};`));
+    // petelecoEnabled must stay OUT of the in-place set: the toggle adds and
+    // removes a row, which only a full re-render can do.
+    assert.ok(!/^\s*"petelecoEnabled",$/m.test(generalSource));
+    assert.ok(/^\s*"petelecoIntensity",$/m.test(generalSource));
+
+    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
+    for (const key of [
+      "rowPeteleco",
+      "rowPetelecoDesc",
+      "rowPetelecoIntensity",
+      "rowPetelecoIntensityDesc",
+    ]) {
+      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
+      assert.strictEqual(matches ? matches.length : 0, SUPPORTED_LANGS.length,
+        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
+    }
+
+    const off = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ petelecoEnabled: false, petelecoIntensity: 50 }),
+    });
+    off.renderContent();
+    assert.ok(off.getSwitchMeta("petelecoEnabled"), "the toggle is always visible");
+    assert.strictEqual(off.getSwitch("petelecoEnabled").classList.contains("on"), false);
+    assert.strictEqual(off.core.state.mountedControls.petelecoIntensity, null,
+      "the intensity row must not exist while Peteleco is off");
+    // Toggling it has to fall through to a full re-render so the row appears.
+    assert.strictEqual(off.core.tabs.general.patchInPlace({ petelecoEnabled: true }), false);
+
+    const updateCalls = [];
+    const on = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ petelecoEnabled: true, petelecoIntensity: 30 }),
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    on.renderContent();
+
+    const control = on.core.state.mountedControls.petelecoIntensity;
+    assert.ok(control, "the intensity row mounts once Peteleco is on");
+    const slider = control.row.querySelector(".volume-slider");
+    assert.strictEqual(slider.getAttribute("min"), String(geometry.PETELECO_INTENSITY_MIN));
+    assert.strictEqual(slider.getAttribute("max"), String(geometry.PETELECO_INTENSITY_MAX));
+    assert.strictEqual(slider.value, "30");
+    assert.strictEqual(control.row.querySelector(".volume-readout").textContent, "30%");
+    // English UI label, not the Portuguese feature name: "Peteleco" survives as
+    // the internal name (module files, pref keys) and the pt-BR label only.
+    assert.strictEqual(control.row.querySelector(".row-label").textContent, "Flick intensity");
+
+    // Dragging repaints locally; only the release writes the pref.
+    slider.value = "77";
+    slider.dispatchEvent({ type: "input" });
+    assert.deepStrictEqual(updateCalls, []);
+    assert.strictEqual(control.row.querySelector(".volume-readout").textContent, "77%");
+    slider.dispatchEvent({ type: "change" });
+    await Promise.resolve();
+    assert.deepStrictEqual(updateCalls, [{ key: "petelecoIntensity", value: 77 }]);
+
+    // An intensity broadcast patches in place instead of rebuilding the tab.
+    on.core.state.snapshot = makeGeneralSnapshot({ petelecoEnabled: true, petelecoIntensity: 12 });
+    assert.strictEqual(on.core.tabs.general.patchInPlace({ petelecoIntensity: 12 }), true);
+    assert.strictEqual(slider.value, "12");
+    assert.strictEqual(control.row.querySelector(".volume-readout").textContent, "12%");
+  });
+
   it("renders Free roam movement style as a dependent segmented choice", async () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");

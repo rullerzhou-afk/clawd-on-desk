@@ -69,6 +69,10 @@ const {
   isPetTintId,
   isPetAccessoryId,
 } = require("./pet-customization-catalog");
+const {
+  PETELECO_INTENSITY_MIN,
+  PETELECO_INTENSITY_MAX,
+} = require("./peteleco-geometry");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -517,6 +521,12 @@ const updateRegistry = {
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
+  petelecoEnabled: requireBoolean("petelecoEnabled"),
+  petelecoIntensity: requireIntegerInRange(
+    "petelecoIntensity",
+    PETELECO_INTENSITY_MIN,
+    PETELECO_INTENSITY_MAX
+  ),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),

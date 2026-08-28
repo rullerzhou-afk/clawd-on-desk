@@ -196,6 +196,21 @@ function getContentRectScreen(theme, bounds, state, file, options = {}) {
   };
 }
 
+// Screen position of a point given in viewBox units — the exact inverse of
+// getAssetPointerPayload() below, which maps a screen point back into the
+// viewBox. Lets main-process callers ask "where on screen is the spot the theme
+// declared at (cx, cy)?" without duplicating the asset-rect math.
+function getViewBoxPointScreen(theme, bounds, state, file, point) {
+  if (!theme || !bounds || !point) return null;
+  const artRect = getAssetRectScreen(theme, bounds, state, file);
+  const vb = resolveViewBox(theme, state, file);
+  if (!artRect || !vb || !(vb.width > 0) || !(vb.height > 0)) return null;
+  const x = artRect.x + (point.x - vb.x) * (artRect.w / vb.width);
+  const y = artRect.y + (point.y - vb.y) * (artRect.h / vb.height);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return null;
+  return { x, y };
+}
+
 function getAssetPointerPayload(theme, bounds, state, file, point) {
   if (!theme || !bounds || !point) return null;
 
@@ -216,6 +231,7 @@ function getAssetPointerPayload(theme, bounds, state, file, point) {
 module.exports = {
   getAssetRectScreen,
   getAssetPointerPayload,
+  getViewBoxPointScreen,
   getContentRectScreen,
   getHitRectScreen,
   resolveViewBox,

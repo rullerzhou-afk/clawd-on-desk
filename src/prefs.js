@@ -61,6 +61,11 @@ const {
   PET_TINT_IDS,
   PET_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
+const {
+  PETELECO_INTENSITY_MIN,
+  PETELECO_INTENSITY_MAX,
+  PETELECO_INTENSITY_DEFAULT,
+} = require("./peteleco-geometry");
 
 const CURRENT_VERSION = 16;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
@@ -298,6 +303,19 @@ const SCHEMA = {
   // #686: constrain roam movement to horizontal or vertical only (axis-aligned).
   // When enabled, each roam picks a random target that varies in only one axis.
   roamConstrainAxis: { type: "boolean", default: false },
+  // Peteleco (flick): hold the modifier (Ctrl; Option on macOS, where Ctrl-click
+  // is the OS right-click gesture) and drag AWAY from where the pet should go.
+  // The pet holds still, an aim projection is drawn on the opposite side, and
+  // releasing launches it. Off by default — it re-purposes a modifier drag.
+  petelecoEnabled: { type: "boolean", default: false },
+  // Shot strength, 1-100. Caps how far a flick can travel (see
+  // src/peteleco-geometry.js), which is also what keeps the projection short.
+  petelecoIntensity: {
+    type: "number",
+    default: PETELECO_INTENSITY_DEFAULT,
+    validate: (v) =>
+      Number.isInteger(v) && v >= PETELECO_INTENSITY_MIN && v <= PETELECO_INTENSITY_MAX,
+  },
   // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
   // fullscreen app (e.g. a borderless game) and stays draggable, instead of
   // standing down below it (#538). Default ON — most users want to glance at

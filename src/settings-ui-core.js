@@ -87,6 +87,7 @@
       roamMovementStyle: null,
       bubblePlacement: null,
       roamArea: null,
+      petelecoIntensity: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
       quotaRingDisplayMode: null,

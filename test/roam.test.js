@@ -218,6 +218,33 @@ describe("roam module", () => {
     );
   });
 
+  it("stands down for the whole peteleco gesture, including the flight after the drag lock drops", () => {
+    // The aim phase holds the drag lock, but the flick that follows does not —
+    // roam scheduled mid-flight would fight peteleco for the window position.
+    let petelecoActive = true;
+    const ctx = makeCtx();
+    ctx.isPetelecoActive = () => petelecoActive;
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    for (let elapsed = 0; elapsed < 20000; elapsed += 1000) {
+      roam.tick();
+      mock.timers.tick(1000);
+    }
+    assert.equal(ctx._appliedBounds.length, 0, "no roam frame may land during a peteleco");
+    assert.equal(ctx._stateLog.length, 0);
+
+    petelecoActive = false;
+    roam.tick();
+    mock.timers.tick(9000);
+    assert.ok(
+      ctx._stateLog.some(
+        (event) => event.type === "applyState" && event.state === "roam",
+      ),
+      "roam resumes once the shot is over",
+    );
+  });
+
   it("does not re-arm a consumed roam timer during a static drag and resumes on the 4s phase", () => {
     const ctx = makeCtx();
     const roam = roamModule(ctx);

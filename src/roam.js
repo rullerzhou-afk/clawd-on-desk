@@ -70,6 +70,11 @@ module.exports = function initRoam(ctx) {
   function isRoamAllowed() {
     if (!enabled) return false;
     if (ctx.dragLocked) return false;
+    // Peteleco owns the pet's position while a shot is aimed or in flight. The
+    // aim phase holds the drag lock, but the flight does not — without this
+    // gate a roam scheduled mid-flick would fight it for the window position.
+    if (typeof ctx.isPetelecoActive === "function" && ctx.isPetelecoActive())
+      return false;
     if (ctx.getMiniMode && ctx.getMiniMode()) return false;
     const state = ctx.getCurrentState ? ctx.getCurrentState() : "idle";
     // Allow roaming when idle (about to start) or already roaming (mid-animation)

@@ -63,6 +63,10 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
         exitMiniMode: () => apiCalls.push(["exitMiniMode"]),
         showDashboard: () => apiCalls.push(["showDashboard"]),
         revealSessionHud: () => apiCalls.push(["revealSessionHud"]),
+        petelecoAimStart: () => apiCalls.push(["petelecoAimStart"]),
+        petelecoAimMove: () => apiCalls.push(["petelecoAimMove"]),
+        petelecoAimEnd: () => apiCalls.push(["petelecoAimEnd"]),
+        petelecoAimCancel: () => apiCalls.push(["petelecoAimCancel"]),
         startDragReaction: (direction) => apiCalls.push(["startDragReaction", direction]),
         endDragReaction: () => apiCalls.push(["endDragReaction"]),
         playClickReaction: (svg, d) => apiCalls.push(["playClickReaction", svg, d]),
@@ -102,9 +106,17 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
     fakeDocument._dispatch("pointerup", { button, ctrlKey, metaKey, clientX });
   }
 
-  function pointerdown({ button = 0, pointerId = 1, clientX = 100, clientY = 100 } = {}) {
+  function pointerdown({
+    button = 0, pointerId = 1, clientX = 100, clientY = 100,
+    ctrlKey = false, altKey = false, metaKey = false,
+  } = {}) {
     const cb = area.listeners.get("pointerdown");
-    if (cb) cb({ button, pointerId, clientX, clientY });
+    if (cb) cb({ button, pointerId, clientX, clientY, ctrlKey, altKey, metaKey });
+  }
+
+  function areaEvent(name, payload) {
+    const cb = area.listeners.get(name);
+    if (cb) cb(payload);
   }
 
   function pointermove({ clientX = 100, clientY = 100 } = {}) {
@@ -119,7 +131,10 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
     return true;
   }
 
-  return { apiCalls, apiHandlers, pointerdown, pointermove, pointerup, fireTimer, timers, area, context };
+  return {
+    apiCalls, apiHandlers, pointerdown, pointermove, pointerup, areaEvent,
+    fireTimer, timers, area, context,
+  };
 }
 
 describe("hit-renderer input layer", () => {
@@ -366,5 +381,159 @@ describe("hit-renderer OS file drop (#459)", () => {
     const busy = createHarness({ sendState: { currentState: "working", miniMode: false, dndEnabled: false } });
     busy.apiHandlers.dropAccepted();
     assert.deepStrictEqual(busy.apiCalls.filter((c) => c[0] === "playClickReaction"), []);
+  });
+});
+
+describe("hit-renderer peteleco gesture", () => {
+  function armPeteleco(harness) {
+    harness.apiHandlers.stateSync({ petelecoEnabled: true });
+  }
+
+  function names(harness) {
+    return harness.apiCalls.map((c) => c[0]);
+  }
+
+  it("stays out of the way while the feature is off: Ctrl+drag is a plain drag", () => {
+    const h = createHarness({ isMac: false });
+    h.pointerdown({ ctrlKey: true });
+    h.pointermove({ clientX: 160 });
+    h.fireTimer((t) => t.ms === 16);
+
+    assert.ok(names(h).includes("dragMove"), "the pet must still follow the cursor");
+    assert.ok(!names(h).includes("petelecoAimStart"));
+  });
+
+  it("Ctrl+drag aims instead of dragging: the pet must not move", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ ctrlKey: true });
+
+    assert.deepStrictEqual(h.apiCalls, [["dragLock", true], ["petelecoAimStart"]]);
+    assert.ok(h.area.classList._set.has("aiming"));
+    assert.ok(!h.area.classList._set.has("dragging"));
+
+    h.pointermove({ clientX: 160 });
+    h.fireTimer((t) => t.ms === 16);
+
+    assert.ok(names(h).includes("petelecoAimMove"));
+    assert.ok(!names(h).includes("dragMove"), "aiming must never move the pet");
+    // The drag reaction depicts being dragged; nothing is being dragged here.
+    assert.ok(!names(h).includes("startDragReaction"));
+  });
+
+  it("release fires the shot before the drag lock is handed back, and never runs drag-end", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ ctrlKey: true });
+    h.pointermove({ clientX: 200 });
+    h.fireTimer((t) => t.ms === 16);
+    h.pointerup({ ctrlKey: true, clientX: 200 });
+
+    const order = names(h);
+    const end = order.indexOf("petelecoAimEnd");
+    const unlock = order.lastIndexOf("dragLock");
+    assert.ok(end !== -1, "the shot must be fired");
+    // The runtime must see the gesture end while it still owns the pet's
+    // position — peteleco.js's launch hands that inherited lock off itself.
+    assert.ok(end < unlock, "aim-end must reach main before the drag lock is released");
+    assert.strictEqual(h.apiCalls[unlock][1], false);
+    assert.ok(!order.includes("dragEnd"), "drag-end would re-clamp and fight the flick");
+    assert.ok(!order.includes("showDashboard"));
+    assert.ok(!h.area.classList._set.has("aiming"));
+  });
+
+  it("a modifier click that never moved is still a Ctrl+click: Dashboard opens", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ ctrlKey: true });
+    h.pointerup({ ctrlKey: true });
+
+    const order = names(h);
+    assert.ok(order.includes("petelecoAimCancel"), "no pull means no shot");
+    assert.ok(!order.includes("petelecoAimEnd"));
+    assert.ok(order.includes("showDashboard"));
+  });
+
+  it("a pull under the threshold does not fire a shot", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ ctrlKey: true, clientX: 100 });
+    h.pointermove({ clientX: 102 });
+    h.pointerup({ ctrlKey: true, clientX: 102 });
+
+    assert.ok(names(h).includes("petelecoAimCancel"));
+    assert.ok(!names(h).includes("petelecoAimEnd"));
+  });
+
+  it("on macOS the modifier is Option, because Ctrl+click is the OS right-click", () => {
+    const h = createHarness({ isMac: true });
+    armPeteleco(h);
+
+    h.pointerdown({ ctrlKey: true });
+    assert.ok(!names(h).includes("petelecoAimStart"), "Ctrl must not aim on mac");
+    h.areaEvent("pointercancel");
+
+    const alt = createHarness({ isMac: true });
+    armPeteleco(alt);
+    alt.pointerdown({ altKey: true });
+    assert.ok(names(alt).includes("petelecoAimStart"));
+  });
+
+  it("Alt+drag does NOT aim off macOS, so the Ctrl gesture stays the only one", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ altKey: true });
+    assert.ok(!names(h).includes("petelecoAimStart"));
+  });
+
+  it("losing the pointer or the window mid-aim cancels instead of firing", () => {
+    const cancelled = createHarness({ isMac: false });
+    armPeteleco(cancelled);
+    cancelled.pointerdown({ ctrlKey: true });
+    cancelled.pointermove({ clientX: 200 });
+    cancelled.areaEvent("pointercancel");
+
+    assert.ok(names(cancelled).includes("petelecoAimCancel"));
+    assert.ok(!names(cancelled).includes("petelecoAimEnd"));
+    assert.ok(!cancelled.area.classList._set.has("aiming"));
+
+    const lost = createHarness({ isMac: false });
+    armPeteleco(lost);
+    lost.pointerdown({ ctrlKey: true });
+    lost.pointermove({ clientX: 200 });
+    lost.areaEvent("lostpointercapture");
+    assert.ok(names(lost).includes("petelecoAimCancel"));
+  });
+
+  it("switching the feature off mid-aim tears the gesture down", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ ctrlKey: true });
+    h.pointermove({ clientX: 200 });
+    h.apiHandlers.stateSync({ petelecoEnabled: false });
+
+    assert.ok(names(h).includes("petelecoAimCancel"));
+    assert.ok(!h.area.classList._set.has("aiming"));
+  });
+
+  it("mini mode ignores the gesture entirely", () => {
+    const h = createHarness({ isMac: false });
+    h.apiHandlers.stateSync({ petelecoEnabled: true, miniMode: true });
+    h.pointerdown({ ctrlKey: true });
+    assert.ok(!names(h).includes("petelecoAimStart"));
+    assert.ok(!names(h).includes("dragLock"));
+  });
+
+  it("no context menu pops over an open projection", () => {
+    const h = createHarness({ isMac: false });
+    armPeteleco(h);
+    h.pointerdown({ ctrlKey: true });
+    h.pointermove({ clientX: 200 });
+    h.context.document._dispatch("contextmenu", { preventDefault() {} });
+    assert.ok(!names(h).includes("showContextMenu"));
+
+    h.areaEvent("pointercancel");
+    h.context.document._dispatch("contextmenu", { preventDefault() {} });
+    assert.ok(names(h).includes("showContextMenu"), "the menu still works outside a gesture");
   });
 });

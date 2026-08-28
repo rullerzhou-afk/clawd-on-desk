@@ -72,6 +72,7 @@ Piensa cuando envías un prompt, escribe cuando se ejecutan herramientas, se mue
 - **Secuencia de sueño** — bosteza, cabecea, se desploma y se duerme tras 60 segundos de inactividad; mover el mouse activa una animación de despertar sobresaltado
 - **Reacciones a clics** — doble clic para darle un toque y 4 clics para que se agite
 - **Arrastre desde cualquier estado** — agarra a Clawd cuando quieras (Pointer Capture evita que se suelte al moverlo rápido) y suéltalo para continuar
+- **Papirotazo** — actívalo en `Settings…` → `General`: mantén Ctrl (Option en macOS) y arrastra en sentido **contrario** al destino; Clawd se queda quieto mientras una proyección marca el punto exacto de aterrizaje, y al soltar sale disparado hacia allí, incluso a otra pantalla si tiras fuerte. Intensidad configurable
 - **Modo mini** — arrástralo al borde derecho o haz clic derecho en «Modo mini»; Clawd se esconde en el borde, asoma al pasar el cursor, muestra alertas y celebraciones mini y usa transiciones de salto parabólicas
 
 ### Globo de permisos
@@ -148,7 +149,7 @@ Asignación completa de eventos a estados, modo mini y reacciones a clics: **[do
 
 ## Varias pantallas
 
-Clawd se adapta a configuraciones con varios monitores: el tamaño proporcional usa la pantalla donde se inicia Clawd, los monitores verticales reciben un aumento limitado para que la mascota siga viéndose bien en pantallas altas y estrechas, y puedes arrastrar a Clawd entre pantallas.
+Clawd se adapta a configuraciones con varios monitores: el tamaño proporcional usa la pantalla donde se inicia Clawd, los monitores verticales reciben un aumento limitado para que la mascota siga viéndose bien en pantallas altas y estrechas, y puedes arrastrar a Clawd entre pantallas: un papirotazo fuerte también lo lleva a la de al lado.
 
 <p align="center"><sub>¿Quieres ver el comportamiento real con varios monitores? <a href="assets/videos/clawd-multi-monitor-demo.mp4">Mira el video de demostración de este repositorio</a>.</sub></p>
 
