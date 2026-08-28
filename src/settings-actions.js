@@ -128,6 +128,7 @@ const {
 } = require("./settings-actions-theme-overrides");
 const {
   autoStartWithClaude,
+  autoStartWithCodex,
   createRepairDoctorIssue,
   installHooks,
   manageClaudeHooksAutomatically,
@@ -542,6 +543,7 @@ const updateRegistry = {
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
+  autoStartWithCodex,
   manageClaudeHooksAutomatically,
   openAtLogin,
 

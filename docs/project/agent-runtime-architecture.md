@@ -28,6 +28,8 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → hooks/codex-hook.js（stdin JSON，session_id 优先与 transcript_path 的 rollout UUID 对齐）
     → HTTP POST 127.0.0.1:23333/state { state, session_id, event, turn_id, hook_source }
     → 同上状态机（agent_id: codex）
+
+本机 Codex `SessionStart` 首次 POST 发现 Clawd 离线时，只有 durable gate 同时满足 `integrationInstalled=true`、`enabled=true`、`autoStartWithCodex=true` 才调用 `auto-start.js` 冷启动桌面应用并重试事件。全新安装的独立开关默认关闭；prefs v17→v18 为已有用户回填 true 以保持升级前行为。remote、WSL 与 WSL interop 路径一律不冷启动。
   Codex 写入 ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server

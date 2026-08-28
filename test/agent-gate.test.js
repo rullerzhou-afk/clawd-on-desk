@@ -14,6 +14,7 @@ const {
   isAgentPermissionsEnabled,
   isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled,
+  isCodexAutoStartEnabled,
   isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled,
   shouldSyncAgentIntegration,
@@ -91,6 +92,32 @@ describe("isAgentIntegrationInstalled", () => {
       shouldSyncAgentIntegration({ agents: { codex: { integrationInstalled: true, enabled: false } } }, "codex"),
       false
     );
+  });
+});
+
+describe("isCodexAutoStartEnabled", () => {
+  it("requires an explicit opt-in plus an installed and enabled Codex integration", () => {
+    const snapshot = prefs.getDefaults();
+    assert.strictEqual(snapshot.autoStartWithCodex, false);
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+
+    snapshot.autoStartWithCodex = true;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), true);
+
+    snapshot.agents.codex.enabled = false;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+    snapshot.agents.codex.enabled = true;
+    snapshot.agents.codex.integrationInstalled = false;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+  });
+
+  it("fails closed for missing or malformed opt-in state", () => {
+    assert.strictEqual(isCodexAutoStartEnabled(null), false);
+    assert.strictEqual(isCodexAutoStartEnabled({ agents: { codex: { enabled: true } } }), false);
+    assert.strictEqual(isCodexAutoStartEnabled({
+      autoStartWithCodex: "true",
+      agents: { codex: { integrationInstalled: true, enabled: true } },
+    }), false);
   });
 });
 

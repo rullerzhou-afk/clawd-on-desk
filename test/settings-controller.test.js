@@ -7,6 +7,7 @@ const path = require("path");
 const os = require("os");
 
 const prefs = require("../src/prefs");
+const { isCodexAutoStartEnabled } = require("../src/agent-gate");
 const { createSettingsController } = require("../src/settings-controller");
 const { commandRegistry } = require("../src/settings-actions");
 
@@ -232,7 +233,7 @@ describe("Codex auto-start gate commit ordering", () => {
     // Mirrors main.js: an enabled gate is published only from the agents
     // subscriber, after the controller has persisted and committed the store.
     ctrl.subscribeKey("agents", (_agents, nextSnapshot) => {
-      writeCodexAutoStartGate(nextSnapshot.agents.codex.enabled === true);
+      writeCodexAutoStartGate(isCodexAutoStartEnabled(nextSnapshot));
     });
     return ctrl;
   }
@@ -307,7 +308,7 @@ describe("Codex auto-start gate commit ordering", () => {
     });
     ctrl.subscribeKey("agents", (_agents, nextSnapshot) => {
       if (ctrl.isLocked()) return;
-      gateWrites.push(nextSnapshot.agents.codex.enabled === true);
+      gateWrites.push(isCodexAutoStartEnabled(nextSnapshot));
     });
 
     const result = await ctrl.applyCommand("setAgentFlag", {
@@ -348,7 +349,7 @@ describe("Codex auto-start gate commit ordering", () => {
     });
     ctrl.subscribeKey("agents", (_agents, nextSnapshot) => {
       if (ctrl.isLocked()) return;
-      gateWrites.push(nextSnapshot.agents.codex.enabled === true);
+      gateWrites.push(isCodexAutoStartEnabled(nextSnapshot));
     });
 
     const result = await ctrl.applyCommand("installAgentIntegration", {
@@ -359,6 +360,46 @@ describe("Codex auto-start gate commit ordering", () => {
     assert.strictEqual(ctrl.get("agents").codex.integrationInstalled, true);
     assert.strictEqual(ctrl.get("agents").codex.enabled, true);
     assert.deepStrictEqual(gateWrites, []);
+  });
+
+  it("publishes true only after the dedicated preference commits", async () => {
+    const gateWrites = [];
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      injectedDeps: {
+        writeCodexAutoStartGate(enabled) {
+          gateWrites.push(enabled);
+          return true;
+        },
+      },
+    });
+    ctrl.subscribeKey("autoStartWithCodex", (_enabled, nextSnapshot) => {
+      gateWrites.push(isCodexAutoStartEnabled(nextSnapshot));
+    });
+
+    const enabled = await ctrl.applyUpdate("autoStartWithCodex", true);
+    assert.strictEqual(enabled.status, "ok");
+    assert.strictEqual(ctrl.get("autoStartWithCodex"), true);
+    assert.deepStrictEqual(gateWrites, [false, true]);
+
+    gateWrites.length = 0;
+    const disabled = await ctrl.applyUpdate("autoStartWithCodex", false);
+    assert.strictEqual(disabled.status, "ok");
+    assert.strictEqual(ctrl.get("autoStartWithCodex"), false);
+    assert.deepStrictEqual(gateWrites, [false, false]);
+  });
+
+  it("keeps the preference unchanged when the fail-closed pre-commit write fails", async () => {
+    const ctrl = createSettingsController({
+      prefsPath: makeTempPath(),
+      injectedDeps: {
+        writeCodexAutoStartGate: () => false,
+      },
+    });
+
+    const result = await ctrl.applyUpdate("autoStartWithCodex", true);
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(ctrl.get("autoStartWithCodex"), false);
   });
 });
 

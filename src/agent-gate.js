@@ -24,6 +24,13 @@ const isAgentIntegrationInstalled = (snapshot, agentId) => (
 const shouldSyncAgentIntegration = (snapshot, agentId) => (
   isAgentEnabled(snapshot, agentId) && isAgentIntegrationInstalled(snapshot, agentId)
 );
+// Unlike legacy per-agent flags, Codex cold-launch is an explicit opt-in for
+// fresh installs. It also requires the local integration to be both installed
+// and enabled; WSL/remote exclusion is enforced inside codex-hook.js.
+const isCodexAutoStartEnabled = (snapshot) => (
+  !!(snapshot && snapshot.autoStartWithCodex === true)
+  && shouldSyncAgentIntegration(snapshot, "codex")
+);
 const isAgentPermissionsEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "permissionsEnabled");
 // #451 sub-gate under permissionsEnabled: bubbles for PermissionRequests that
 // fire from inside a Claude Code subagent (Task tool). Only claude-code's
@@ -114,6 +121,7 @@ module.exports = {
   isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled,
   isCodexNativeNotificationSoundEnabled,
+  isCodexAutoStartEnabled,
   isCodexPermissionInterceptEnabled,
   shouldSyncAgentIntegration,
 };

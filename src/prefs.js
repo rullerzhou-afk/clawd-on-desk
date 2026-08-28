@@ -63,7 +63,7 @@ const {
   PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 17;
+const CURRENT_VERSION = 18;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -151,6 +151,10 @@ const SCHEMA = {
   showDock: { type: "boolean", default: false },
   manageClaudeHooksAutomatically: { type: "boolean", default: true },
   autoStartWithClaude: { type: "boolean", default: false },
+  // Fresh installs require an explicit opt-in before a local Codex
+  // SessionStart hook may cold-launch Clawd. The v17 -> v18 migration pins
+  // this on for existing users so an upgrade does not change prior behavior.
+  autoStartWithCodex: { type: "boolean", default: false },
   // Codex approval awareness depends entirely on the official PermissionRequest
   // hook (JSONL no longer infers approvals). These surface its health: the
   // toggle gates the startup nudge, and LastNotified is the edge-trigger dedup
@@ -874,6 +878,16 @@ function migrate(raw) {
     }
     out.version = 17;
   }
+  // v17 -> v18: split Codex event intake from permission to cold-launch the
+  // desktop app. Existing installs previously got auto-start whenever Codex
+  // itself was enabled, so preserve that behavior on upgrade. Fresh installs
+  // never run migrate() and therefore keep the schema's opt-in default false.
+  if (out.version < 18) {
+    if (typeof out.autoStartWithCodex !== "boolean") {
+      out.autoStartWithCodex = true;
+    }
+    out.version = 18;
+  }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;
   }
@@ -1457,6 +1471,9 @@ function load(prefsPath) {
   const hasOwn = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
   const isObjectRecord = (value) => !!value && typeof value === "object" && !Array.isArray(value);
   let codexAutoStartAuthoritative = true;
+  if (hasOwn(raw, "autoStartWithCodex") && typeof raw.autoStartWithCodex !== "boolean") {
+    codexAutoStartAuthoritative = false;
+  }
   if (hasOwn(raw, "agents")) {
     if (!isObjectRecord(raw.agents)) {
       codexAutoStartAuthoritative = false;
@@ -1464,8 +1481,11 @@ function load(prefsPath) {
       if (!isObjectRecord(raw.agents.codex)) {
         codexAutoStartAuthoritative = false;
       } else if (
-        hasOwn(raw.agents.codex, "enabled")
-        && typeof raw.agents.codex.enabled !== "boolean"
+        (hasOwn(raw.agents.codex, "enabled") && typeof raw.agents.codex.enabled !== "boolean")
+        || (
+          hasOwn(raw.agents.codex, "integrationInstalled")
+          && typeof raw.agents.codex.integrationInstalled !== "boolean"
+        )
       ) {
         codexAutoStartAuthoritative = false;
       }

@@ -84,6 +84,18 @@ test("future-version locked settings cannot publish an ephemeral Codex gate", ()
   );
 });
 
+test("Codex auto-start gate follows the dedicated preference as well as agent state", () => {
+  const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
+  assert.ok(
+    source.includes("_persistCodexAutoStartGate(isCodexAutoStartEnabled(snapshot))"),
+    "the published gate should use the combined preference/install/enabled predicate"
+  );
+  assert.ok(
+    source.includes('_settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {'),
+    "preference commits should republish the durable Codex gate"
+  );
+});
+
 test("unreadable or recovered prefs fail every prefs-backed agent runtime gate closed", () => {
   const source = fs.readFileSync(MAIN_PATH, "utf8").replace(/\r\n/g, "\n");
   const gateIndex = source.indexOf("const _runtimeAgentGate = createRuntimeAgentGate({");

@@ -312,6 +312,7 @@ const {
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
+const { isCodexAutoStartEnabled } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // Recovery from readable invalid contents is writable only after the original
@@ -326,8 +327,7 @@ function _persistCodexAutoStartGate(enabled) {
 }
 
 function _syncCodexAutoStartGate(snapshot, source) {
-  const codex = snapshot && snapshot.agents && snapshot.agents.codex;
-  if (_persistCodexAutoStartGate(!!(codex && codex.enabled === true))) return true;
+  if (_persistCodexAutoStartGate(isCodexAutoStartEnabled(snapshot))) return true;
   console.warn(`Clawd: failed to sync Codex auto-start gate (${source})`);
   return false;
 }
@@ -575,6 +575,10 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
   // current process. An unreadable prefs file rejects mutations earlier in the
   // controller. In both locked cases, publishing ephemeral values would let a
   // retained hook cold-launch Clawd against a different durable prefs truth.
+  if (_settingsController.isLocked()) return;
+  _syncCodexAutoStartGate(snapshot, "settings");
+});
+_settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });

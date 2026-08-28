@@ -1239,6 +1239,8 @@ function loadAgentsTabForTest({
           rowAgentIdleAlertsDesc: "Idle alert desc",
           rowAgentPermissions: "Permissions",
           rowAgentPermissionsDesc: "Permissions desc",
+          rowStartWithCodex: "Start with Codex",
+          rowStartWithCodexDesc: "Start with Codex desc",
           rowCodexPermissionMode: "Permission mode",
           rowCodexPermissionModeDesc: "Permission mode desc",
           codexPermissionModeNative: "Native",
@@ -10410,6 +10412,25 @@ describe("settings renderer browser environment", () => {
     harness.core.ops.requestRender({ content: true });
 
     assert.strictEqual(harness.content.querySelector(".agent-traecode-hint"), null);
+  });
+
+  it("renders the independent Start with Codex preference on the Codex agent card", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        autoStartWithCodex: false,
+        agents: { codex: { integrationInstalled: true, enabled: true, permissionMode: "intercept" } },
+      },
+      agentMetadata: [
+        { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithCodex");
+    assert.ok(autoStart, "Start with Codex should mount inside the Codex group");
+    assert.strictEqual(autoStart.element.classList.contains("on"), false);
+    assert.strictEqual(autoStart.row.querySelector(".row-label").textContent, "Start with Codex");
   });
 
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {

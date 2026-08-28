@@ -4,6 +4,7 @@ const { isAgentEnabled } = require("./agent-gate");
 const { requireBoolean } = require("./settings-validators");
 
 const CLAUDE_HOOKS_LOCK_KEY = "claude-hooks";
+const CODEX_AUTO_START_LOCK_KEY = "codex-auto-start-gate";
 
 // autoStartWithClaude: writes/removes a SessionStart hook in
 // ~/.claude/settings.json via hooks/install.js. Failure to write the file must
@@ -43,6 +44,35 @@ const autoStartWithClaude = {
       return {
         status: "error",
         message: `autoStartWithClaude: ${err && err.message}`,
+      };
+    }
+  },
+};
+
+// autoStartWithCodex controls a durable gate read by the retained official
+// Codex hook while Clawd is offline. Every toggle first publishes false. The
+// main-process post-commit subscriber publishes the effective true value only
+// after prefs persistence succeeds, so a failed commit can never leave a newly
+// enabled cold-launch permission behind.
+const autoStartWithCodex = {
+  lockKey: CODEX_AUTO_START_LOCK_KEY,
+  validate: requireBoolean("autoStartWithCodex"),
+  effect(_value, deps) {
+    if (!deps || typeof deps.writeCodexAutoStartGate !== "function") {
+      return {
+        status: "error",
+        message: "autoStartWithCodex effect requires writeCodexAutoStartGate dep",
+      };
+    }
+    try {
+      if (deps.writeCodexAutoStartGate(false) !== true) {
+        return { status: "error", message: "autoStartWithCodex: failed to persist fail-closed gate" };
+      }
+      return { status: "ok" };
+    } catch (err) {
+      return {
+        status: "error",
+        message: `autoStartWithCodex: ${err && err.message}`,
       };
     }
   },
@@ -246,6 +276,7 @@ uninstallHooks.lockKey = CLAUDE_HOOKS_LOCK_KEY;
 
 module.exports = {
   autoStartWithClaude,
+  autoStartWithCodex,
   createRepairDoctorIssue,
   installHooks,
   manageClaudeHooksAutomatically,

@@ -45,10 +45,11 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(d.version, prefs.CURRENT_VERSION);
   });
 
-  it("defaults Claude hook management on and Start with Claude off", () => {
+  it("defaults Claude hook management on and agent-triggered cold launch off", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);
     assert.strictEqual(d.autoStartWithClaude, false);
+    assert.strictEqual(d.autoStartWithCodex, false);
     assert.deepStrictEqual(d.petTint, {});
     assert.deepStrictEqual(d.petAccessory, {});
     assert.deepStrictEqual(d.petMouthAccessory, {});
@@ -1515,6 +1516,22 @@ describe("prefs.migrate v16 → v17 (mouth accessory slot)", () => {
   });
 });
 
+describe("prefs.migrate v17 → v18 (Codex cold-launch opt-in)", () => {
+  it("preserves the previous auto-start behavior for existing users", () => {
+    const upgraded = prefs.validate(prefs.migrate({ version: 17, lang: "zh" }));
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(upgraded.autoStartWithCodex, true);
+  });
+
+  it("preserves an explicit boolean from an early or hand-edited v17 file", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 17,
+      autoStartWithCodex: false,
+    }));
+    assert.strictEqual(upgraded.autoStartWithCodex, false);
+  });
+});
+
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
   it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
@@ -1747,6 +1764,8 @@ describe("prefs.load", () => {
       { version: prefs.CURRENT_VERSION, agents: { codex: null } },
       { version: prefs.CURRENT_VERSION, agents: { codex: [] } },
       { version: prefs.CURRENT_VERSION, agents: { codex: { enabled: "yes" } } },
+      { version: prefs.CURRENT_VERSION, autoStartWithCodex: "yes" },
+      { version: prefs.CURRENT_VERSION, agents: { codex: { integrationInstalled: "yes" } } },
     ]) {
       const p = makeTempPath();
       fs.writeFileSync(p, JSON.stringify(raw), "utf8");
@@ -1833,22 +1852,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the current v17 schema and locks an explicit v18 file", () => {
-    const currentPath = makeTempPath("v17.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 17, lang: "zh" }), "utf8");
+  it("accepts the current v18 schema and locks an explicit v19 file", () => {
+    const currentPath = makeTempPath("v18.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 18, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 17);
+    assert.strictEqual(current.snapshot.version, 18);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v18.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 18, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v19.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 19, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 18);
+      assert.strictEqual(future.snapshot.version, 19);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;

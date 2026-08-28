@@ -329,7 +329,7 @@ describe("updateRegistry pure-data validators", () => {
 
   it("object-form boolean fields validate via entry.validate", () => {
     const deps = { snapshot: baseSnapshot };
-    for (const key of ["autoStartWithClaude", "manageClaudeHooksAutomatically", "openAtLogin"]) {
+    for (const key of ["autoStartWithClaude", "autoStartWithCodex", "manageClaudeHooksAutomatically", "openAtLogin"]) {
       const entry = updateRegistry[key];
       assert.strictEqual(typeof entry, "object", `${key} should be object-form`);
       assert.strictEqual(typeof entry.validate, "function", `${key} should expose validate`);
@@ -514,7 +514,7 @@ describe("updateRegistry pure-data validators", () => {
   });
 });
 
-describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatically / openAtLogin)", () => {
+describe("object-form effects (agent auto-start / manageClaudeHooksAutomatically / openAtLogin)", () => {
   it("autoStartWithClaude effect calls installAutoStart on true", async () => {
     // installAutoStart/uninstallAutoStart go through the server-owned Claude
     // hook operation queue (#657) and now return a Promise.
@@ -571,6 +571,18 @@ describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatica
     assert.deepStrictEqual(r, { status: "ok", noop: true });
     assert.strictEqual(installCalls, 0);
     assert.strictEqual(uninstallCalls, 0);
+  });
+
+  it("autoStartWithCodex effect writes only a fail-closed gate before commit", () => {
+    const writes = [];
+    const r = updateRegistry.autoStartWithCodex.effect(true, {
+      writeCodexAutoStartGate: (enabled) => {
+        writes.push(enabled);
+        return true;
+      },
+    });
+    assert.deepStrictEqual(r, { status: "ok" });
+    assert.deepStrictEqual(writes, [false]);
   });
 
   it("manageClaudeHooksAutomatically effect waits for async sync before starting watcher on true", async () => {

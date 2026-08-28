@@ -1177,6 +1177,13 @@
       rows.push(claudeQuotaRow);
     }
     if (agent.id === "codex") {
+      const codexAutoStartRow = helpers.buildSwitchRow({
+        key: "autoStartWithCodex",
+        labelKey: "rowStartWithCodex",
+        descKey: "rowStartWithCodexDesc",
+      });
+      codexAutoStartRow.classList.add("row-sub");
+      rows.push(codexAutoStartRow);
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
       rows.push(buildAgentSwitchRow({
         agent,
