@@ -10414,15 +10414,22 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".agent-traecode-hint"), null);
   });
 
-  it("renders the independent Start with Codex preference on the Codex agent card", () => {
+  it("keeps Start with Codex independent and commits through the preference API", async () => {
+    const updates = [];
     const harness = loadAgentsTabForTest({
       snapshot: {
         autoStartWithCodex: false,
-        agents: { codex: { integrationInstalled: true, enabled: true, permissionMode: "intercept" } },
+        agents: { codex: { integrationInstalled: true, enabled: false, permissionMode: "intercept" } },
       },
       agentMetadata: [
         { id: "codex", name: "Codex", eventSource: "hook", capabilities: {} },
       ],
+      settingsAPI: {
+        update(key, value) {
+          updates.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
     });
 
     harness.core.ops.requestRender({ content: true });
@@ -10430,7 +10437,12 @@ describe("settings renderer browser environment", () => {
     const autoStart = harness.core.state.mountedControls.generalSwitches.get("autoStartWithCodex");
     assert.ok(autoStart, "Start with Codex should mount inside the Codex group");
     assert.strictEqual(autoStart.element.classList.contains("on"), false);
+    assert.strictEqual(autoStart.element.classList.contains("disabled"), false);
     assert.strictEqual(autoStart.row.querySelector(".row-label").textContent, "Start with Codex");
+
+    autoStart.element.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(updates, [{ key: "autoStartWithCodex", value: true }]);
   });
 
   it("patches hide-bubbles aggregate changes without rebuilding General content", () => {

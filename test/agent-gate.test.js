@@ -7,6 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 
 const {
+  createCodexAutoStartGateEvaluator,
   createRuntimeAgentGate,
   getCodexPermissionMode,
   isAgentEnabled,
@@ -118,6 +119,43 @@ describe("isCodexAutoStartEnabled", () => {
       autoStartWithCodex: "true",
       agents: { codex: { integrationInstalled: true, enabled: true } },
     }), false);
+  });
+
+  it("fails closed when any required Codex integration shape or flag is malformed", () => {
+    const malformed = [
+      { autoStartWithCodex: true },
+      { autoStartWithCodex: true, agents: null },
+      { autoStartWithCodex: true, agents: "oops" },
+      { autoStartWithCodex: true, agents: [] },
+      { autoStartWithCodex: true, agents: {} },
+      { autoStartWithCodex: true, agents: { codex: null } },
+      { autoStartWithCodex: true, agents: { codex: [] } },
+      { autoStartWithCodex: true, agents: { codex: {} } },
+      {
+        autoStartWithCodex: true,
+        agents: { codex: { integrationInstalled: true, enabled: "yes" } },
+      },
+      {
+        autoStartWithCodex: true,
+        agents: { codex: { integrationInstalled: 1, enabled: true } },
+      },
+    ];
+
+    for (const snapshot of malformed) {
+      assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+    }
+  });
+
+  it("keeps a lost startup authority latched until a new evaluator is created", () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.autoStartWithCodex = true;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), true);
+
+    const currentProcess = createCodexAutoStartGateEvaluator({ authorityLost: true });
+    assert.strictEqual(currentProcess(snapshot), false);
+
+    const cleanRestart = createCodexAutoStartGateEvaluator({ authorityLost: false });
+    assert.strictEqual(cleanRestart(snapshot), true);
   });
 });
 

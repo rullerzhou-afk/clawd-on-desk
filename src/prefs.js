@@ -883,8 +883,11 @@ function migrate(raw) {
   // itself was enabled, so preserve that behavior on upgrade. Fresh installs
   // never run migrate() and therefore keep the schema's opt-in default false.
   if (out.version < 18) {
-    if (typeof out.autoStartWithCodex !== "boolean") {
+    if (!Object.prototype.hasOwnProperty.call(out, "autoStartWithCodex")) {
       out.autoStartWithCodex = true;
+    } else if (typeof out.autoStartWithCodex !== "boolean") {
+      // An explicitly-present malformed value is not reliable user consent.
+      out.autoStartWithCodex = false;
     }
     out.version = 18;
   }

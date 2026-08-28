@@ -4,7 +4,9 @@ const { isAgentEnabled } = require("./agent-gate");
 const { requireBoolean } = require("./settings-validators");
 
 const CLAUDE_HOOKS_LOCK_KEY = "claude-hooks";
-const CODEX_AUTO_START_LOCK_KEY = "codex-auto-start-gate";
+// The preference and Codex install/enable commands all publish the same
+// durable gate, so they must serialize through one lock domain.
+const CODEX_AUTO_START_LOCK_KEY = "agentIntegration";
 
 // autoStartWithClaude: writes/removes a SessionStart hook in
 // ~/.claude/settings.json via hooks/install.js. Failure to write the file must

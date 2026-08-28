@@ -1530,6 +1530,26 @@ describe("prefs.migrate v17 → v18 (Codex cold-launch opt-in)", () => {
     }));
     assert.strictEqual(upgraded.autoStartWithCodex, false);
   });
+
+  it("repairs an explicitly malformed v17 opt-in to false and keeps it false after reload", () => {
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({
+      version: 17,
+      autoStartWithCodex: "yes",
+    }));
+
+    const loaded = prefs.load(p);
+    assert.strictEqual(loaded.locked, false);
+    assert.strictEqual(loaded.codexAutoStartAuthoritative, false);
+    assert.strictEqual(loaded.snapshot.autoStartWithCodex, false);
+
+    prefs.save(p, loaded.snapshot);
+    assert.strictEqual(JSON.parse(fs.readFileSync(p, "utf8")).autoStartWithCodex, false);
+
+    const relaunched = prefs.load(p);
+    assert.strictEqual(relaunched.codexAutoStartAuthoritative, undefined);
+    assert.strictEqual(relaunched.snapshot.autoStartWithCodex, false);
+  });
 });
 
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {

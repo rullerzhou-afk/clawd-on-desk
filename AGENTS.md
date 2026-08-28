@@ -229,7 +229,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 所有进程内对 `~/.claude/settings.json` 的 mutation（启动 reconcile、watcher 自动恢复、周期健康自愈、Settings Install/Enable、Doctor Fix、auto-start 开关、卸载、About 清理）必须经过 `src/claude-hook-operations.js` 的 server-owned 队列；不要绕开队列直接 `require("../hooks/install.js")` 写文件，否则会与其他来源的写入竞态
 - 周期健康巡检（`src/claude-settings-watcher.js`）只读判断用 `src/claude-hook-health.js`；同一 repair signature 连续 3 次修复+复验失败后必须停在 `manual-fix-required`，不再自动 mutation，只保留 5 分钟只读复查；suspicious-shrink 通知同一持续问题只弹一次，不要每轮重复
 - opencode 的 `permission.ask` hook 目前不可用，权限只能走 event hook + bridge
-- Codex CLI official hooks 已接入；JSONL 轮询仍是 fallback，用于 hook 不可用、hook 未覆盖事件（如 WebSearch / compaction / abort）和历史兼容。Windows `commandWindows` 由 PowerShell 解析：legacy 直接命令必须用 `& "node" ...` call operator；本机 stable 入口必须保持“固定内联 PowerShell dispatcher → UTF-8/Base64 `codex-hook.js.windows.run` 数据 sidecar → `& $node $target`”形态（JSON manifest 只供 Doctor），不得改回裸 `"node" "hook.js"`（会 exit 1）、二次 `powershell.exe -File` 或无 BOM `.ps1`
+- Codex CLI official hooks 已接入；JSONL 轮询仍是 fallback，用于 hook 不可用、hook 未覆盖事件（如 WebSearch / compaction / abort）和历史兼容。本机 `SessionStart` 冷启动还受 `autoStartWithCodex` 控制：新安装默认关闭，v17 升级保持原先的开启行为，损坏/非权威 prefs 在当前进程内 fail closed，WSL / WSL interop / Remote SSH 永不走冷启动。Windows `commandWindows` 由 PowerShell 解析：legacy 直接命令必须用 `& "node" ...` call operator；本机 stable 入口必须保持“固定内联 PowerShell dispatcher → UTF-8/Base64 `codex-hook.js.windows.run` 数据 sidecar → `& $node $target`”形态（JSON manifest 只供 Doctor），不得改回裸 `"node" "hook.js"`（会 exit 1）、二次 `powershell.exe -File` 或无 BOM `.ps1`
 - Kiro 没有 global hooks，只能注入到 `~/.kiro/agents/*.json`
 - `src/renderer.js` 里给 `<img>` SVG 追加的 `?_t=` cache-bust query 不能删；Chromium 会复用同 URL SVG 的动画时间线，一次性动画会停在末帧
 

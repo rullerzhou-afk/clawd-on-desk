@@ -27,10 +27,25 @@ const shouldSyncAgentIntegration = (snapshot, agentId) => (
 // Unlike legacy per-agent flags, Codex cold-launch is an explicit opt-in for
 // fresh installs. It also requires the local integration to be both installed
 // and enabled; WSL/remote exclusion is enforced inside codex-hook.js.
-const isCodexAutoStartEnabled = (snapshot) => (
-  !!(snapshot && snapshot.autoStartWithCodex === true)
-  && shouldSyncAgentIntegration(snapshot, "codex")
-);
+const isCodexAutoStartEnabled = (snapshot) => {
+  if (!snapshot || typeof snapshot !== "object" || snapshot.autoStartWithCodex !== true) {
+    return false;
+  }
+  const agents = snapshot.agents;
+  if (!agents || typeof agents !== "object" || Array.isArray(agents)) return false;
+  const codex = agents.codex;
+  if (!codex || typeof codex !== "object" || Array.isArray(codex)) return false;
+  return codex.integrationInstalled === true && codex.enabled === true;
+};
+
+// Capture startup authority once. A normalized fallback snapshot can look
+// valid after malformed prefs have been repaired in memory, so authority lost
+// during the initial load must stay lost for this process and recover only
+// after a clean restart.
+function createCodexAutoStartGateEvaluator({ authorityLost = false } = {}) {
+  const canEnable = authorityLost !== true;
+  return (snapshot) => canEnable && isCodexAutoStartEnabled(snapshot);
+}
 const isAgentPermissionsEnabled = (snapshot, agentId) => readFlag(snapshot, agentId, "permissionsEnabled");
 // #451 sub-gate under permissionsEnabled: bubbles for PermissionRequests that
 // fire from inside a Claude Code subagent (Task tool). Only claude-code's
@@ -113,6 +128,7 @@ function createRuntimeAgentGate({ getSnapshot, isAuthoritative = () => true } = 
 }
 
 module.exports = {
+  createCodexAutoStartGateEvaluator,
   createRuntimeAgentGate,
   getCodexPermissionMode,
   isAgentIntegrationInstalled,
