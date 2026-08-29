@@ -8,6 +8,7 @@ a Hermes hook callback.
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import subprocess
@@ -21,9 +22,23 @@ from typing import Any, Dict, Optional, Tuple
 from urllib import request
 from urllib.error import URLError
 
+try:
+    from hermes_constants import get_hermes_home as _hermes_get_hermes_home  # type: ignore
+except Exception:
+    _hermes_get_hermes_home = None
+
 AGENT_ID = "hermes"
 CLAWD_SERVER_HEADER = "x-clawd-server"
 CLAWD_SERVER_ID = "clawd-on-desk"
+ROUTING_NONCE_HEADER = "x-clawd-routing-nonce"
+REMOTE_IDENTITY_VERSION = 2
+REMOTE_IDENTITY_FILENAME = "clawd-remote.json"
+SSH_SECURE_MARKER_FILENAME = "clawd-ssh-secure-v1"
+# The latch checks existence only; this constant documents the exact on-disk contract.
+SSH_SECURE_MARKER_CONTENT = "clawd-ssh-secure-v1"
+ROUTING_NONCE_RE = re.compile(r"^[a-f0-9]{32}$", re.ASCII)
+INSTALL_ID_RE = re.compile(r"^[a-f0-9]{64}$", re.ASCII)
+SAFE_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,64}$", re.ASCII)
 SERVER_PORTS = (23333, 23334, 23335, 23336, 23337)
 POST_TIMEOUT_SECONDS = 0.25
 PERMISSION_POST_TIMEOUT_SECONDS = 600.0
@@ -83,6 +98,9 @@ PROCESS_QUERY_TIMEOUT_SECONDS = 0.8
 
 _cached_port: Optional[int] = None
 _no_server_until = 0.0
+_secure_latched: bool = False
+_secure_latch_lock = threading.Lock()
+_secure_latch_source: str = ""
 _log_lock = threading.Lock()
 _session_lock = threading.Lock()
 _process_meta_lock = threading.Lock()
@@ -113,6 +131,12 @@ def _debug_enabled() -> bool:
 
 
 def _hermes_home() -> Path:
+    if callable(_hermes_get_hermes_home):
+        try:
+            return Path(_hermes_get_hermes_home())
+        except Exception:
+            pass
+
     value = os.environ.get("HERMES_HOME", "").strip()
     if value:
         return Path(value)
@@ -134,13 +158,30 @@ def _runtime_path() -> Path:
     return Path.home() / ".clawd" / "runtime.json"
 
 
+def _remote_identity_path() -> Path:
+    override = os.environ.get("CLAWD_REMOTE_IDENTITY_PATH", "").strip()
+    if override:
+        return Path(override)
+    return Path.home() / ".claude" / "hooks" / REMOTE_IDENTITY_FILENAME
+
+
+def _ssh_secure_marker_path() -> Path:
+    override = os.environ.get("CLAWD_SSH_SECURE_MARKER_PATH", "").strip()
+    if override:
+        return Path(override)
+    try:
+        return Path(__file__).resolve().parent / SSH_SECURE_MARKER_FILENAME
+    except Exception:
+        return _hermes_home() / "plugins" / "clawd-on-desk" / SSH_SECURE_MARKER_FILENAME
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _is_secret_key(key: Any) -> bool:
     text = str(key).lower()
-    return any(part in text for part in ("token", "secret", "api_key", "apikey", "authorization"))
+    return any(part in text for part in ("token", "secret", "api_key", "apikey", "authorization", "nonce"))
 
 
 def _safe_value(value: Any, depth: int = 0) -> Any:
@@ -198,7 +239,134 @@ def _read_runtime_port() -> Optional[int]:
     return None
 
 
-def _port_candidates() -> list[int]:
+def _read_remote_identity() -> Tuple[Optional[Dict[str, Any]], str]:
+    try:
+        raw = json.loads(_remote_identity_path().read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return None, "identity-missing"
+    except Exception:
+        return None, "identity-unreadable"
+
+    if not isinstance(raw, dict):
+        return None, "identity-invalid"
+
+    version = raw.get("version")
+    layout_version = raw.get("layoutVersion")
+    runtime_key = raw.get("runtimeKey")
+    profile_id = raw.get("profileId")
+    install_id = raw.get("installId")
+    remote_port_value = raw.get("remotePort")
+    routing_nonce = raw.get("routingNonce")
+    deployed_at = raw.get("deployedAt")
+
+    if isinstance(remote_port_value, bool):
+        remote_port = None
+    elif isinstance(remote_port_value, int):
+        remote_port = remote_port_value
+    elif isinstance(remote_port_value, str) and re.fullmatch(r"[0-9]+", remote_port_value, re.ASCII):
+        try:
+            remote_port = int(remote_port_value)
+        except (ValueError, OverflowError):
+            remote_port = None
+    else:
+        remote_port = None
+
+    deployed_at_valid = isinstance(deployed_at, (int, float)) and not isinstance(deployed_at, bool)
+    if deployed_at_valid:
+        try:
+            deployed_at_valid = math.isfinite(deployed_at) and deployed_at > 0
+        except (OverflowError, ValueError):
+            deployed_at_valid = False
+
+    if (
+        not isinstance(version, int)
+        or isinstance(version, bool)
+        or version != REMOTE_IDENTITY_VERSION
+        or not isinstance(layout_version, int)
+        or isinstance(layout_version, bool)
+        or layout_version <= 0
+        or not isinstance(runtime_key, str)
+        or SAFE_ID_RE.fullmatch(runtime_key) is None
+        or not isinstance(profile_id, str)
+        or SAFE_ID_RE.fullmatch(profile_id) is None
+        or not isinstance(install_id, str)
+        or INSTALL_ID_RE.fullmatch(install_id) is None
+        or remote_port not in SERVER_PORTS
+        or not isinstance(routing_nonce, str)
+        or ROUTING_NONCE_RE.fullmatch(routing_nonce) is None
+        or not deployed_at_valid
+    ):
+        return None, "identity-invalid"
+
+    return {
+        "version": version,
+        "layoutVersion": layout_version,
+        "runtimeKey": runtime_key,
+        "profileId": profile_id,
+        "installId": install_id,
+        "remotePort": remote_port,
+        "routingNonce": routing_nonce,
+        "deployedAt": deployed_at,
+    }, "ok"
+
+
+def _env_flag_enabled(name: str) -> bool:
+    value = os.environ.get(name, "").strip().lower()
+    return value not in ("", "0", "false")
+
+
+def _latch_secure_mode(source: str) -> bool:
+    global _secure_latched, _secure_latch_source
+    first_latch = False
+    with _secure_latch_lock:
+        if not _secure_latched:
+            _secure_latched = True
+            _secure_latch_source = source
+            first_latch = True
+    if first_latch:
+        _append_log({
+            "ts": _utc_now(),
+            "event": "secure_transport_latched",
+            "source": source,
+        }, force=False)
+    return True
+
+
+def _path_exists_for_secure_latch(path: Path, override_name: str) -> bool:
+    try:
+        return path.exists()
+    except Exception:
+        return bool(os.environ.get(override_name, "").strip())
+
+
+def _ssh_secure_mode() -> bool:
+    if _secure_latched:
+        return True
+    if _env_flag_enabled("CLAWD_SSH_REMOTE"):
+        return _latch_secure_mode("env")
+    if _path_exists_for_secure_latch(_ssh_secure_marker_path(), "CLAWD_SSH_SECURE_MARKER_PATH"):
+        return _latch_secure_mode("marker")
+    if _path_exists_for_secure_latch(_remote_identity_path(), "CLAWD_REMOTE_IDENTITY_PATH"):
+        return _latch_secure_mode("identity")
+    return False
+
+
+def _resolve_secure_transport() -> Dict[str, Any]:
+    if not _ssh_secure_mode():
+        return {"secure": False, "identity": None, "reason": "local"}
+    identity, reason = _read_remote_identity()
+    if identity is None:
+        _append_log({"event": "secure_identity_unavailable", "reason": reason}, force=False)
+    return {"secure": True, "identity": identity, "reason": reason}
+
+
+def _port_candidates(transport: Optional[Dict[str, Any]] = None) -> list[int]:
+    if transport is None:
+        transport = _resolve_secure_transport()
+    if transport.get("secure"):
+        identity = transport.get("identity")
+        return [identity["remotePort"]] if isinstance(identity, dict) else []
+
     ports: list[int] = []
     seen = set()
 
@@ -215,10 +383,25 @@ def _port_candidates() -> list[int]:
     return ports
 
 
+def _secure_request_headers(transport: Dict[str, Any]) -> Dict[str, str]:
+    identity = transport.get("identity")
+    if not transport.get("secure") or not isinstance(identity, dict):
+        return {}
+    return {ROUTING_NONCE_HEADER: identity["routingNonce"]}
+
+
 def _post_state(body: Dict[str, Any]) -> None:
     global _cached_port, _no_server_until
+    transport = _resolve_secure_transport()
+    if transport["secure"] and transport["identity"] is None:
+        _append_log({
+            "ts": _utc_now(),
+            "event": "post_state_skipped_no_identity",
+            "reason": transport["reason"],
+        })
+        return
     now = time.monotonic()
-    if _cached_port is None and _no_server_until > now:
+    if (transport["secure"] or _cached_port is None) and _no_server_until > now:
         _append_log({
             "ts": _utc_now(),
             "event": "post_state_skipped_no_server",
@@ -226,12 +409,17 @@ def _post_state(body: Dict[str, Any]) -> None:
         })
         return
 
-    payload = json.dumps(body).encode("utf-8")
+    request_body = dict(body)
+    if transport["secure"]:
+        for key in ("agent_pid", "source_pid", "pid_chain", "editor", "tmux_socket", "tmux_client"):
+            request_body.pop(key, None)
+    payload = json.dumps(request_body).encode("utf-8")
     headers = {
         "Content-Type": "application/json",
         "Content-Length": str(len(payload)),
+        **_secure_request_headers(transport),
     }
-    for port in _port_candidates():
+    for port in _port_candidates(transport):
         req = request.Request(
             f"http://127.0.0.1:{port}/state",
             data=payload,
@@ -241,7 +429,8 @@ def _post_state(body: Dict[str, Any]) -> None:
         try:
             with _local_urlopen(req, timeout=POST_TIMEOUT_SECONDS) as response:
                 if response.headers.get(CLAWD_SERVER_HEADER) == CLAWD_SERVER_ID:
-                    _cached_port = port
+                    if not transport["secure"]:
+                        _cached_port = port
                     _no_server_until = 0.0
                     try:
                         response.read()
@@ -270,7 +459,8 @@ def _post_state(body: Dict[str, Any]) -> None:
                 "error": str(exc),
             })
             continue
-    _cached_port = None
+    if not transport["secure"]:
+        _cached_port = None
     _no_server_until = time.monotonic() + NO_SERVER_COOLDOWN_SECONDS
 
 
@@ -286,8 +476,17 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
     Hermes tool call for up to PERMISSION_POST_TIMEOUT_SECONDS.
     """
     global _cached_port, _no_server_until
+    probe_transport = _resolve_secure_transport()
+    if probe_transport["secure"] and probe_transport["identity"] is None:
+        _append_log({
+            "ts": _utc_now(),
+            "event": "post_permission_skipped_no_identity",
+            "reason": probe_transport["reason"],
+        })
+        return None
+
     now = time.monotonic()
-    if _cached_port is None and _no_server_until > now:
+    if (probe_transport["secure"] or _cached_port is None) and _no_server_until > now:
         _append_log({
             "ts": _utc_now(),
             "event": "post_permission_skipped_no_server",
@@ -295,22 +494,8 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
         })
         return None
 
-    payload_dict: Dict[str, Any] = {
-        "agent_id": AGENT_ID,
-        "tool_name": tool_name,
-        "tool_input": tool_input,
-        "session_id": session_id,
-        "cwd": _runtime_cwd(),
-        "agent_pid": os.getpid(),
-    }
-    if platform != "webui":
-        _add_process_meta(payload_dict)
-    payload = json.dumps(payload_dict).encode("utf-8")
-    headers = {
-        "Content-Type": "application/json",
-        "Content-Length": str(len(payload)),
-    }
-    for port in _port_candidates():
+    probe_headers = _secure_request_headers(probe_transport)
+    for port in _port_candidates(probe_transport):
         # ── Short probe — verify Clawd is on this port before the long POST ──
         # Reuse the existing GET /state health route instead of inventing a
         # plugin-only /probe endpoint.  The server includes CLAWD_SERVER_HEADER
@@ -318,6 +503,7 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
         # here with a short timeout and never reach the 600s permission POST.
         probe_req = request.Request(
             f"http://127.0.0.1:{port}/state",
+            headers=probe_headers,
             method="GET",
         )
         try:
@@ -327,9 +513,50 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
         except Exception:
             continue
 
+        post_transport = _resolve_secure_transport()
+        if post_transport["secure"] and post_transport["identity"] is None:
+            _append_log({
+                "ts": _utc_now(),
+                "event": "post_permission_skipped_no_identity",
+                "reason": post_transport["reason"],
+            })
+            return None
+        post_identity = post_transport.get("identity")
+        if post_transport["secure"] and post_identity["remotePort"] != port:
+            _append_log({
+                "ts": _utc_now(),
+                "event": "post_permission_port_changed",
+                "reason": "identity-port-changed",
+                "probed_port": port,
+                "new_port": post_identity["remotePort"],
+            })
+            return None
+        post_port = post_identity["remotePort"] if post_transport["secure"] else port
+        payload_dict: Dict[str, Any] = {
+            "agent_id": AGENT_ID,
+            "tool_name": tool_name,
+            "tool_input": tool_input,
+            "session_id": session_id,
+            "cwd": _runtime_cwd(),
+        }
+        if post_transport["secure"]:
+            orca_pane_key = _orca_pane_key_from_env(secure=True)
+            if orca_pane_key:
+                payload_dict["orca_pane_key"] = orca_pane_key
+        else:
+            payload_dict["agent_pid"] = os.getpid()
+        if not post_transport["secure"] and platform != "webui":
+            _add_process_meta(payload_dict)
+        payload = json.dumps(payload_dict).encode("utf-8")
+        headers = {
+            "Content-Type": "application/json",
+            "Content-Length": str(len(payload)),
+            **_secure_request_headers(post_transport),
+        }
+
         # ── Blocking permission POST ──
         req = request.Request(
-            f"http://127.0.0.1:{port}/permission",
+            f"http://127.0.0.1:{post_port}/permission",
             data=payload,
             headers=headers,
             method="POST",
@@ -337,22 +564,24 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
         try:
             with _local_urlopen(req, timeout=PERMISSION_POST_TIMEOUT_SECONDS) as response:
                 if response.status == 204:
-                    _cached_port = port
+                    if not post_transport["secure"]:
+                        _cached_port = post_port
                     return None
                 if response.headers.get(CLAWD_SERVER_HEADER) == CLAWD_SERVER_ID:
-                    _cached_port = port
+                    if not post_transport["secure"]:
+                        _cached_port = post_port
                     body = json.loads(response.read().decode("utf-8"))
                     return body
                 _append_log({
                     "ts": _utc_now(),
                     "event": "post_permission_header_mismatch",
-                    "port": port,
+                    "port": post_port,
                 })
         except (OSError, URLError) as exc:
             _append_log({
                 "ts": _utc_now(),
                 "event": "post_permission_failed",
-                "port": port,
+                "port": post_port,
                 "error": str(exc),
             })
             continue
@@ -360,11 +589,12 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
             _append_log({
                 "ts": _utc_now(),
                 "event": "post_permission_error",
-                "port": port,
+                "port": post_port,
                 "error": str(exc),
             })
             continue
-    _cached_port = None
+    if not probe_transport["secure"]:
+        _cached_port = None
     _no_server_until = time.monotonic() + NO_SERVER_COOLDOWN_SECONDS
     return None
 
@@ -688,7 +918,7 @@ _NESTED_TERMINAL_ENV = (
 )
 
 
-def _orca_pane_key_from_env() -> str:
+def _orca_pane_key_from_env(secure: bool = False) -> str:
     """Orca's pane key, or "" when this process is not an Orca pane.
 
     Read per payload rather than inside _resolve_process_metadata: that walk runs
@@ -697,7 +927,7 @@ def _orca_pane_key_from_env() -> str:
     walk raised. NESTED_TERMINAL_ENV in hooks/shared-process.js is the same list
     and carries the reasoning for each entry.
     """
-    if os.environ.get("TERM_PROGRAM") != "Orca":
+    if not secure and os.environ.get("TERM_PROGRAM") != "Orca":
         return ""
     if any(os.environ.get(key) for key in _NESTED_TERMINAL_ENV):
         return ""
@@ -976,6 +1206,7 @@ def _state_payload(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
 
     session_id = _session_id(event_name, kwargs)
     platform = _session_platform(session_id, kwargs)
+    transport = _resolve_secure_transport()
     payload: Dict[str, Any] = {
         "agent_id": AGENT_ID,
         "hook_source": "hermes-plugin",
@@ -983,9 +1214,14 @@ def _state_payload(event_name: str, kwargs: Dict[str, Any]) -> Dict[str, Any]:
         "event": clawd_event,
         "session_id": session_id,
         "cwd": _runtime_cwd(),
-        "agent_pid": os.getpid(),
     }
-    if platform != "webui":
+    if transport["secure"]:
+        orca_pane_key = _orca_pane_key_from_env(secure=True)
+        if orca_pane_key:
+            payload["orca_pane_key"] = orca_pane_key
+    else:
+        payload["agent_pid"] = os.getpid()
+    if not transport["secure"] and platform != "webui":
         _add_process_meta(payload)
     payload.update(_event_extra(event_name, kwargs, session_id))
     return payload
@@ -1206,7 +1442,8 @@ def _handle_permission_request(tool_name: str, **kwargs: Any):
 
 
 def register(ctx) -> None:
-    _ensure_process_meta_resolver_started()
+    if not _ssh_secure_mode():
+        _ensure_process_meta_resolver_started()
     for hook_name in HOOKS:
         ctx.register_hook(hook_name, _make_callback(hook_name))
     _append_log({
