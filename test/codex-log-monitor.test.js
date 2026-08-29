@@ -1741,7 +1741,10 @@ describe("CodexLogMonitor", () => {
     fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"task_complete"}}\n');
     monitor._pollFile(testFile, path.basename(testFile));
 
-    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_abandoned"]]);
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_abandoned", {
+      source: "turn-terminal",
+      reason: "turn-complete",
+    }]]);
   });
 
   it("clears a pending question's card on turn_aborted even without a matching function_call_output", () => {
@@ -1770,7 +1773,10 @@ describe("CodexLogMonitor", () => {
     fs.appendFileSync(testFile, '{"type":"event_msg","payload":{"type":"turn_aborted"}}\n');
     monitor._pollFile(testFile, path.basename(testFile));
 
-    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_aborted"]]);
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_aborted", {
+      source: "turn-terminal",
+      reason: "turn-aborted",
+    }]]);
   });
 
   it("uses stale Codex Desktop session_meta for later live events without replaying it", () => {

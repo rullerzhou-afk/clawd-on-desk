@@ -294,6 +294,19 @@ describe("agent-runtime-main", () => {
       "call_1",
       "codex-user-input-resolved",
     ]);
+
+    // turn_aborted/task_complete use the same card callback for passive
+    // cleanup, but must not refresh or revive lifecycle activity.
+    monitor.options.onUserInputResolved("codex:s1", "call_2", {
+      source: "turn-terminal",
+      reason: "turn-aborted",
+    });
+    assert.deepStrictEqual(calls[5], [
+      "clear",
+      localSessionKey("codex:s1"),
+      "call_2",
+      "codex-user-input-resolved",
+    ]);
   });
 
   it("handles JSONL token_count as metadata without clearing bubbles or changing state", () => {

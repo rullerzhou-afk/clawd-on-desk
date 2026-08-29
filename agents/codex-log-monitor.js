@@ -1737,7 +1737,7 @@ class CodexLogMonitor {
       tracked.lastState = resolved;
       // task_complete means the turn that asked is over — any question still
       // open for it is moot; Codex will not act on an answer after this.
-      this._clearPendingUserInputsForTrackedSession(tracked);
+      this._clearPendingUserInputsForTrackedSession(tracked, "turn-complete");
       if (tracked.backfilling) {
         finishTurnTerminal();
         return;
@@ -1753,7 +1753,7 @@ class CodexLogMonitor {
     // turn_aborted: same reasoning as task_complete above, just a different
     // terminal signal (the turn didn't finish, it was cut short).
     if (key === "event_msg:turn_aborted") {
-      this._clearPendingUserInputsForTrackedSession(tracked);
+      this._clearPendingUserInputsForTrackedSession(tracked, "turn-aborted");
     }
 
     // Backfill gate: first-pass replay of a file's historical content skips
@@ -2004,12 +2004,17 @@ class CodexLogMonitor {
   // function_call_output for the same callId can't resurrect it; the
   // dismiss callback only fires for a genuinely live (non-backfill,
   // non-initializing) transition, matching every other emit in this file.
-  _clearPendingUserInputsForTrackedSession(tracked) {
+  _clearPendingUserInputsForTrackedSession(tracked, reason = "turn-terminal") {
     if (!(tracked.pendingUserInputs instanceof Map) || tracked.pendingUserInputs.size === 0) return;
     const callIds = [...tracked.pendingUserInputs.keys()];
     tracked.pendingUserInputs.clear();
     if (tracked.backfilling || tracked.initializingUserInputs || !this._onUserInputResolved) return;
-    for (const callId of callIds) this._onUserInputResolved(tracked.sessionId, callId);
+    for (const callId of callIds) {
+      this._onUserInputResolved(tracked.sessionId, callId, {
+        source: "turn-terminal",
+        reason,
+      });
+    }
   }
 
   _emitPendingUserInputRequests(tracked) {

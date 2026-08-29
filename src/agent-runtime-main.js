@@ -321,11 +321,15 @@ function createAgentRuntimeMain(options = {}) {
             transientPermissionEvent: true,
           });
         },
-        onUserInputResolved: (sid, callId) => {
+        onUserInputResolved: (sid, callId, resolution = null) => {
           const sessionId = resolveSessionIdentity(sid, "local").sessionId;
           // The correlated function_call_output is also forward progress. It
           // used to close only the card, leaving the stale clock untouched.
-          touchLocalCodexUserInputActivity(sessionId);
+          // Terminal cleanup (task_complete / turn_aborted) uses the same card
+          // callback but is not forward progress and must never revive work.
+          if (!resolution || resolution.source !== "turn-terminal") {
+            touchLocalCodexUserInputActivity(sessionId);
+          }
           clearCodexUserInputBubbles(sessionId, callId, "codex-user-input-resolved");
         },
       });
