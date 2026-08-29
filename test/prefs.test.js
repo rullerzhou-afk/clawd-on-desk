@@ -1013,10 +1013,11 @@ describe("prefs.validate", () => {
     });
   });
 
-  it("defaults the three stale-cleanup intervals to the historical constants", () => {
+  it("defaults session cleanup while preserving the historical Codex 20-minute guard", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.sessionStaleMs, 600000);
     assert.strictEqual(d.workingStaleMs, 300000);
+    assert.strictEqual(d.codexWorkingStaleMs, 1200000);
     assert.strictEqual(d.detachedIdleStaleMs, 30000);
   });
 
@@ -1035,6 +1036,12 @@ describe("prefs.validate", () => {
   it("drops workingStaleMs=0 back to default (0 not allowed)", () => {
     const v = prefs.validate({ workingStaleMs: 0 });
     assert.strictEqual(v.workingStaleMs, 300_000);
+  });
+
+  it("accepts codexWorkingStaleMs=0 and rejects malformed non-zero values", () => {
+    assert.strictEqual(prefs.validate({ codexWorkingStaleMs: 0 }).codexWorkingStaleMs, 0);
+    assert.strictEqual(prefs.validate({ codexWorkingStaleMs: 30_000 }).codexWorkingStaleMs, 30_000);
+    assert.strictEqual(prefs.validate({ codexWorkingStaleMs: 10_000 }).codexWorkingStaleMs, 1_200_000);
   });
 
   it("drops detachedIdleStaleMs=0 back to default (0 not allowed)", () => {

@@ -189,6 +189,20 @@ function createAgentRuntimeMain(options = {}) {
     return callServer("stopIntegrationForAgent", agentId);
   }
 
+  function touchLocalCodexUserInputActivity(sessionId) {
+    const state = getStateRuntime();
+    return !!(
+      state
+      && typeof state.touchSessionActivity === "function"
+      && state.touchSessionActivity(sessionId, {
+        agentId: "codex",
+        profileId: "local",
+        localOnly: true,
+        reviveIdle: true,
+      })
+    );
+  }
+
   function uninstallIntegrationForAgent(agentId) {
     return callServer("uninstallIntegrationForAgent", agentId);
   }
@@ -288,6 +302,10 @@ function createAgentRuntimeMain(options = {}) {
         onUserInputRequest: (sid, request, extra) => {
           const sessionIdentity = resolveSessionIdentity(sid, "local");
           const sessionId = sessionIdentity.sessionId;
+          // A live blocking question proves the turn is still active even when
+          // the Desktop app has emitted no ordinary lifecycle hook during a
+          // long model/network-retry segment. Never creates a missing session.
+          touchLocalCodexUserInputActivity(sessionId);
           const shown = showCodexUserInputBubble({
             sessionId,
             callId: request.callId,
@@ -305,6 +323,9 @@ function createAgentRuntimeMain(options = {}) {
         },
         onUserInputResolved: (sid, callId) => {
           const sessionId = resolveSessionIdentity(sid, "local").sessionId;
+          // The correlated function_call_output is also forward progress. It
+          // used to close only the card, leaving the stale clock untouched.
+          touchLocalCodexUserInputActivity(sessionId);
           clearCodexUserInputBubbles(sessionId, callId, "codex-user-input-resolved");
         },
       });

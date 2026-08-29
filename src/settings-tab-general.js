@@ -44,6 +44,7 @@
     "updateBubbleAutoCloseSeconds",
     "sessionStaleMs",
     "workingStaleMs",
+    "codexWorkingStaleMs",
     "detachedIdleStaleMs",
   ]);
   const BUBBLE_POLICY_KEYS = new Set([
@@ -60,6 +61,7 @@
   const SESSION_CLEANUP_NUMBER_KEYS = new Set([
     "sessionStaleMs",
     "workingStaleMs",
+    "codexWorkingStaleMs",
     "detachedIdleStaleMs",
   ]);
   const FLASH_NUMBER_KEYS = new Set([
@@ -69,6 +71,7 @@
   const SESSION_CLEANUP_DEFAULTS = {
     sessionStaleMs: 600_000,
     workingStaleMs: 300_000,
+    codexWorkingStaleMs: 1_200_000,
     detachedIdleStaleMs: 30_000,
   };
   const SESSION_HUD_CHILD_SWITCH_KEYS = [
@@ -1172,6 +1175,19 @@
         fromDisplay: (sec) => Math.max(30_000, Math.min(86_400_000, Math.round(sec * 1000))),
         min: 30,
         max: 86_400,
+      }).row,
+      helpers.buildNumberInputRow({
+        key: "codexWorkingStaleMs",
+        labelKey: "rowCodexStaleWorking",
+        descKey: "rowCodexStaleWorkingDesc",
+        unitKey: "unitMinutes",
+        toDisplay: (ms) => Math.round(ms / 60_000),
+        fromDisplay: (min) => min === 0
+          ? 0
+          : Math.max(30_000, Math.min(86_400_000, Math.round(min * 60_000))),
+        min: 0,
+        max: 1440,
+        zeroLabelKey: "valueDisabled",
       }).row,
       helpers.buildNumberInputRow({
         key: "detachedIdleStaleMs",

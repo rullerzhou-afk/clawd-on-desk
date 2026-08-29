@@ -1292,6 +1292,40 @@ function updateSessionFocusMetadata(sessionId, opts = {}) {
   return true;
 }
 
+// Refresh lifecycle liveness from a request-bound observer without inventing a
+// hook event. This deliberately sits between updateSessionFocusMetadata (which
+// owns focus-only fields) and updateSessionMetadata (which must never affect
+// staleness): a correlated request_user_input request/output is real turn
+// activity, but it must not create a ghost row, append recentEvents, fire a
+// sound, or manufacture a completion boundary.
+function touchSessionActivity(sessionId, opts = {}) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  const session = sessions.get(id);
+  if (!session) return false;
+  const expectedAgentId = typeof opts.agentId === "string" ? opts.agentId : null;
+  if (expectedAgentId && session.agentId !== expectedAgentId) return false;
+  const expectedProfileId = typeof opts.profileId === "string" ? opts.profileId : null;
+  if (expectedProfileId && (session.profileId || "local") !== expectedProfileId) return false;
+  if (opts.localOnly === true && (session.host || session.headless)) return false;
+  // A completion awaiting acknowledgement is a stronger lifecycle boundary
+  // than a late transcript record; never revive or extend it.
+  if (session.requiresCompletionAck === true) return false;
+
+  const now = Number.isFinite(opts.now) ? opts.now : Date.now();
+  const reviveIdle = opts.reviveIdle === true && session.state === "idle";
+  session.updatedAt = now;
+  if (reviveIdle) {
+    session.state = "working";
+    session.displayHint = null;
+    session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
+    const resolved = resolveDisplayState();
+    setState(resolved, getSvgOverride(resolved));
+  }
+  emitSessionSnapshot();
+  return true;
+}
+
 // Statusline refresh POSTs (metadata_only: true) annotate a session that real
 // hook traffic already created — they are telemetry, not lifecycle. Hence:
 // never create a session (a statusline for a dead/unknown session id would
@@ -3130,6 +3164,7 @@ return {
   dismissSession,
   formatStdinDiag,
   updateSessionFocusMetadata,
+  touchSessionActivity,
   updateSessionMetadata,
   clearClaudeStatuslineAuthority,
   updateAccountQuota,

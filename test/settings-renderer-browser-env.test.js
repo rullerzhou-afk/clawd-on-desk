@@ -9186,7 +9186,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(toasts[0].options.error, true);
   });
 
-  it("registers the Session cleanup group with three number rows, atomic reset, and i18n keys", () => {
+  it("registers the Session cleanup group with four number rows, atomic reset, and i18n keys", () => {
     const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-general.js"), "utf8");
     const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
     const uiCoreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
@@ -9196,9 +9196,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("buildSessionCleanupGroup()"));
     assert.ok(generalSource.includes('id: "general:session-cleanup"'));
 
-    // All three numeric prefs map to their own number input row.
+    // All four numeric prefs map to their own number input row.
     assert.ok(generalSource.includes('key: "sessionStaleMs"'));
     assert.ok(generalSource.includes('key: "workingStaleMs"'));
+    assert.ok(generalSource.includes('key: "codexWorkingStaleMs"'));
     assert.ok(generalSource.includes('key: "detachedIdleStaleMs"'));
     assert.ok(generalSource.includes("buildNumberInputRow"));
     assert.ok(generalSource.includes("SESSION_CLEANUP_NUMBER_KEYS"));
@@ -9227,6 +9228,8 @@ describe("settings renderer browser environment", () => {
       "rowStaleSessionDesc",
       "rowStaleWorking",
       "rowStaleWorkingDesc",
+      "rowCodexStaleWorking",
+      "rowCodexStaleWorkingDesc",
       "rowStaleDetached",
       "rowStaleDetachedDesc",
       "unitMinutes",

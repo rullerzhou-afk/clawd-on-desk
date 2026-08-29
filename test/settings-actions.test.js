@@ -1756,6 +1756,14 @@ describe("session cleanup interval validators", () => {
     assert.strictEqual(updateRegistry.workingStaleMs(90_000_000, { snapshot }).status, "error");
   });
 
+  it("codexWorkingStaleMs accepts disabled or an independent in-range timeout", () => {
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(0, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(30_000, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(86_400_000, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(20_000, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(90_000_000, { snapshot }).status, "error");
+  });
+
   it("detachedIdleStaleMs enforces 5s-300s integer range", () => {
     assert.strictEqual(updateRegistry.detachedIdleStaleMs(5_000, { snapshot }).status, "ok");
     assert.strictEqual(updateRegistry.detachedIdleStaleMs(300_000, { snapshot }).status, "ok");
@@ -1774,6 +1782,7 @@ describe("sessionCleanup.setTriple command", () => {
       {
         sessionStaleMs: 600_000,
         workingStaleMs: 300_000,
+        codexWorkingStaleMs: 0,
         detachedIdleStaleMs: 30_000,
       },
       { snapshot: baseSnapshot }
@@ -1782,6 +1791,7 @@ describe("sessionCleanup.setTriple command", () => {
     assert.deepStrictEqual(result.commit, {
       sessionStaleMs: 600_000,
       workingStaleMs: 300_000,
+      codexWorkingStaleMs: 0,
       detachedIdleStaleMs: 30_000,
     });
   });
@@ -1804,6 +1814,7 @@ describe("sessionCleanup.setTriple command", () => {
       {
         sessionStaleMs: 0,
         workingStaleMs: 86_400_000,
+        codexWorkingStaleMs: 1_200_000,
         detachedIdleStaleMs: 30_000,
       },
       { snapshot: baseSnapshot }
@@ -1812,6 +1823,7 @@ describe("sessionCleanup.setTriple command", () => {
     assert.deepStrictEqual(result.commit, {
       sessionStaleMs: 0,
       workingStaleMs: 86_400_000,
+      codexWorkingStaleMs: 1_200_000,
       detachedIdleStaleMs: 30_000,
     });
   });
@@ -1828,6 +1840,7 @@ describe("sessionCleanup.setTriple command", () => {
     assert.deepStrictEqual(result.commit, {
       sessionStaleMs: 600_000,
       workingStaleMs: 450_000,
+      codexWorkingStaleMs: 1_200_000,
       detachedIdleStaleMs: 45_000,
     });
   });
@@ -1848,6 +1861,13 @@ describe("sessionCleanup.setTriple command", () => {
     );
     assert.strictEqual(tooSmall.status, "error");
     assert.strictEqual(tooSmall.commit, undefined);
+
+    const codexTooSmall = await cmd(
+      { sessionStaleMs: 600_000, workingStaleMs: 300_000, codexWorkingStaleMs: 1_000, detachedIdleStaleMs: 30_000 },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(codexTooSmall.status, "error");
+    assert.strictEqual(codexTooSmall.commit, undefined);
 
     const detTooBig = await cmd(
       { sessionStaleMs: 600_000, workingStaleMs: 300_000, detachedIdleStaleMs: 999_999 },

@@ -773,7 +773,7 @@ describe("settings-effect-router", () => {
   });
 
   it("triggers a cleanup sweep + forced snapshot when any stale-cleanup config key changes", () => {
-    for (const key of ["sessionStaleMs", "workingStaleMs", "detachedIdleStaleMs"]) {
+    for (const key of ["sessionStaleMs", "workingStaleMs", "codexWorkingStaleMs", "detachedIdleStaleMs"]) {
       const { calls, emit } = createHarness();
       emit({ [key]: key === "detachedIdleStaleMs" ? 60_000 : 900_000 });
       assert.deepStrictEqual(calls, [

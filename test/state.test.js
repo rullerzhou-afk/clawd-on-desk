@@ -1451,12 +1451,15 @@ describe("cleanStaleSessions()", () => {
     assert.strictEqual(api.deriveSessionBadge(completed), "done");
   });
 
-  it("pidReachable false + stale → delete", () => {
+  it("pidReachable false + stale work idles first, then expires through idle retention", () => {
     api = require("../src/state")(makeCtx());
     api.sessions.set("s1", rawSession("working", {
       pidReachable: false,
       updatedAt: Date.now() - 700000,
     }));
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    api.sessions.get("s1").updatedAt = Date.now() - 700000;
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.size, 0);
   });
@@ -3273,6 +3276,61 @@ describe("updateSession()", () => {
     assert.strictEqual(group.claudeFiveHour, undefined);
     assert.strictEqual(group.claudeWeekly.expired, undefined);
     assert.strictEqual(group.claudeWeekly.usedPercent, 41);
+  });
+
+  it("touchSessionActivity refreshes only a matching existing session and can revive proven work", () => {
+    update(api, {
+      id: "codex:s1",
+      state: "working",
+      agentId: "codex",
+      profileId: "local",
+    });
+    const session = api.sessions.get("codex:s1");
+    session.state = "idle";
+    session.updatedAt = 12345;
+    const recentEventsBefore = JSON.stringify(session.recentEvents);
+
+    assert.strictEqual(api.touchSessionActivity("ghost", {
+      agentId: "codex",
+      profileId: "local",
+      localOnly: true,
+      reviveIdle: true,
+      now: 50000,
+    }), false);
+    assert.strictEqual(api.sessions.has("ghost"), false);
+    assert.strictEqual(api.touchSessionActivity("codex:s1", {
+      agentId: "claude-code",
+      now: 50000,
+    }), false);
+    assert.strictEqual(session.updatedAt, 12345);
+
+    assert.strictEqual(api.touchSessionActivity("codex:s1", {
+      agentId: "codex",
+      profileId: "local",
+      localOnly: true,
+      reviveIdle: true,
+      now: 50000,
+    }), true);
+    assert.strictEqual(session.state, "working");
+    assert.strictEqual(session.updatedAt, 50000);
+    assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
+  });
+
+  it("touchSessionActivity does not extend a completed session awaiting acknowledgement", () => {
+    update(api, { id: "codex:done", state: "idle", agentId: "codex", profileId: "local" });
+    const session = api.sessions.get("codex:done");
+    session.requiresCompletionAck = true;
+    session.updatedAt = 12345;
+
+    assert.strictEqual(api.touchSessionActivity("codex:done", {
+      agentId: "codex",
+      profileId: "local",
+      localOnly: true,
+      reviveIdle: true,
+      now: 50000,
+    }), false);
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.updatedAt, 12345);
   });
 
   // #590 B2 — statusline refresh POSTs go through updateSessionMetadata,

@@ -66,17 +66,15 @@ function getStaleSessionDecision(session, options = {}) {
     : DETACHED_IDLE_STALE_MS;
 
   if (isLocalCodexWorkingLikeSession(session)) {
-    // Codex can spend many minutes in one silent model/command segment. Keep
-    // the stuck-session guard, but do not let the generic 5/10 minute defaults
-    // make an active local Codex turn look idle.
-    const floor = (
-      Number.isFinite(config.codexLocalWorkingStaleFloorMs)
-      && config.codexLocalWorkingStaleFloorMs > 0
-    )
-      ? config.codexLocalWorkingStaleFloorMs
+    // Local Codex can spend many minutes in one silent model/command segment,
+    // especially while the Desktop app is retrying a weak network. Unlike the
+    // generic working timeout, this is an explicit user choice. Zero means a
+    // silent-but-live local Codex turn is never idled by age alone.
+    const configuredCodexTimeout = Number.isFinite(config.codexWorkingStaleMs)
+      && config.codexWorkingStaleMs >= 0
+      ? config.codexWorkingStaleMs
       : CODEX_LOCAL_WORKING_STALE_FLOOR_MS;
-    workingStaleMs = Math.max(workingStaleMs, floor);
-    if (sessionStaleMs > 0) sessionStaleMs = Math.max(sessionStaleMs, floor);
+    workingStaleMs = configuredCodexTimeout;
   }
 
   if (isLocalOpencodeWorkingLikeSession(session)) {
@@ -91,7 +89,6 @@ function getStaleSessionDecision(session, options = {}) {
       ? config.opencodeLocalWorkingStaleFloorMs
       : OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS;
     workingStaleMs = Math.max(workingStaleMs, floor);
-    if (sessionStaleMs > 0) sessionStaleMs = Math.max(sessionStaleMs, floor);
   }
 
   const isProcessAlive = options.isProcessAlive;
@@ -165,9 +162,22 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: null, snapshotRefreshNeeded: true };
   }
 
-  // sessionStaleMs === 0 disables the idle-age cutoff entirely; the
-  // working-timeout branch below still applies for stuck working/thinking
-  // sessions because it's a UX guard, not an idle cutoff.
+  // Active-turn silence and idle-card retention are separate clocks. Always
+  // settle a working-like session through its effective working timeout first
+  // and stamp that transition. Otherwise a 20-minute-old Codex turn can be
+  // changed to idle with its old timestamp, then deleted immediately by the
+  // ordinary 10-minute idle cutoff on the next sweep.
+  if (isWorkingLikeState(session.state)) {
+    if (session.pidReachable && session.sourcePid && !isProcessAlive(session.sourcePid)) {
+      return { action: "delete", reason: "working-source-exit" };
+    }
+    if (workingStaleMs > 0 && age > workingStaleMs) {
+      return { action: "idle", reason: "working-timeout", updateTimestamp: true };
+    }
+    return { action: null };
+  }
+
+  // sessionStaleMs === 0 disables the idle/non-working age cutoff entirely.
   if (sessionStaleMs > 0 && age > sessionStaleMs) {
     if (session.pidReachable && session.sourcePid) {
       if (!isProcessAlive(session.sourcePid)) {
@@ -180,13 +190,6 @@ function getStaleSessionDecision(session, options = {}) {
       return { action: "delete", reason: "unreachable" };
     } else {
       return { action: "delete", reason: "no-source" };
-    }
-  } else if (age > workingStaleMs) {
-    if (session.pidReachable && session.sourcePid && !isProcessAlive(session.sourcePid)) {
-      return { action: "delete", reason: "working-source-exit" };
-    }
-    if (isWorkingLikeState(session.state)) {
-      return { action: "idle", reason: "working-timeout", updateTimestamp: true };
     }
   }
 

@@ -1224,6 +1224,7 @@ let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetach
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let sessionStaleMs = _settingsController.get("sessionStaleMs");
 let workingStaleMs = _settingsController.get("workingStaleMs");
+let codexWorkingStaleMs = _settingsController.get("codexWorkingStaleMs");
 let detachedIdleStaleMs = _settingsController.get("detachedIdleStaleMs");
 let soundMuted = _settingsController.get("soundMuted");
 let soundVolume = _settingsController.get("soundVolume");
@@ -2224,6 +2225,7 @@ const _stateCtx = {
   getStaleConfig: () => ({
     sessionStaleMs,
     workingStaleMs,
+    codexWorkingStaleMs,
     detachedIdleStaleMs,
   }),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
@@ -4258,6 +4260,7 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
+  codexWorkingStaleMs: (v) => { codexWorkingStaleMs = v; },
   detachedIdleStaleMs: (v) => { detachedIdleStaleMs = v; },
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },

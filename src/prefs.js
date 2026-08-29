@@ -228,6 +228,16 @@ const SCHEMA = {
     default: 300000,
     validate: (v) => Number.isInteger(v) && v >= 30_000 && v <= 86_400_000,
   },
+  // Local Codex Desktop/CLI turns can remain legitimately silent while the
+  // model or network retries. Keep the historical 20-minute guard as the
+  // default, but make it explicit and independently disableable so it does
+  // not inherit Claude Code's missing-Stop fallback.
+  codexWorkingStaleMs: {
+    type: "number",
+    default: 1_200_000,
+    validate: (v) =>
+      Number.isInteger(v) && (v === 0 || (v >= 30_000 && v <= 86_400_000)),
+  },
   detachedIdleStaleMs: {
     type: "number",
     default: 30000,

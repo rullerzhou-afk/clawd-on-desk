@@ -346,6 +346,7 @@ function createSettingsEffectRouter(options = {}) {
     if (
       "sessionStaleMs" in changes
       || "workingStaleMs" in changes
+      || "codexWorkingStaleMs" in changes
       || "detachedIdleStaleMs" in changes
     ) {
       try {
