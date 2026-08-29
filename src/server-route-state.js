@@ -18,6 +18,7 @@ const {
   buildShadowComparison,
   processMetadataForState,
 } = require("./server-windows-process-metadata");
+const { stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
@@ -225,16 +226,29 @@ function handleStatePost(req, res, options) {
       if (data.display_svg === null) display_svg = null;
       else if (typeof data.display_svg === "string") display_svg = pathApi.basename(data.display_svg);
       else display_svg = undefined;
-      const source_pid = Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null;
       const wtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
-      const editor = (data.editor === "code" || data.editor === "cursor") ? data.editor : null;
-      const pidChain = Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null;
-      const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
-      const tmuxClient = normalizeTmuxClient(data.tmux_client);
-      const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
-      const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
+      // Stripped at the parse boundary rather than at the updateSession call so
+      // that no downstream consumer (legacy metadata, the Windows chain gate,
+      // the codex user-input bubble) has to remember the rule. `orcaPaneKey`,
+      // `cwd` and `host` are untouched by design — see remote-process-metadata.js.
+      const {
+        sourcePid: source_pid,
+        agentPid,
+        pidChain,
+        editor,
+        tmuxSocket,
+        tmuxClient,
+      } = stripRemoteProcessMetadata({
+        sourcePid: Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null,
+        agentPid: Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null,
+        pidChain: Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null,
+        editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,
+        tmuxSocket: normalizeTmuxSocket(data.tmux_socket),
+        tmuxClient: normalizeTmuxClient(data.tmux_client),
+      }, remoteProfile);
+      const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const agentId = agentIdentity.agentId;
       const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
         ? remoteProfile.profileId

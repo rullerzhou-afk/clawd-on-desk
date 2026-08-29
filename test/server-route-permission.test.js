@@ -742,6 +742,166 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.addPendingPermission, [entry]);
   });
 
+  it("strips Codex permission process metadata on the profile-bound ingress", async () => {
+    const sessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      source_pid: 456,
+      agent_pid: 456,
+      pid_chain: [789, 456, -1],
+      editor: "cursor",
+      tmux_socket: "/tmp/tmux-1000/work",
+      tmux_client: "/dev/pts/7",
+      orca_pane_key: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/repo",
+      host: "spoofed-by-hook",
+      platform: "webui",
+      model: "gpt-5.4",
+      codex_originator: "Codex Desktop",
+      codex_source: "vscode",
+      hook_source: "codex-official",
+    }), {
+      options: {
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+
+    const remoteSessionId = makeSessionKey({ profileId: "ssh-work", rawSessionId: sessionId });
+    assert.deepStrictEqual(res.ctx.calls.updateSession, [[
+      remoteSessionId,
+      "notification",
+      "PermissionRequest",
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        sourcePid: null,
+        agentPid: null,
+        pidChain: null,
+        editor: null,
+        tmuxSocket: null,
+        tmuxClient: null,
+        // Survives the gate — it is the one terminal identity the secure
+        // transport is still allowed to send.
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+        cwd: "/repo",
+        host: "workbox",
+        platform: "webui",
+        model: "gpt-5.4",
+        codexOriginator: "Codex Desktop",
+        codexSource: "vscode",
+        profileId: "ssh-work",
+        rawSessionId: sessionId,
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "remote-session-lifecycle-not-authoritative",
+        },
+      },
+    ]]);
+    // The Codex permEntry never carried an `editor` key, hence the `?? null`.
+    const entry = res.ctx.pendingPermissions[0];
+    assert.deepStrictEqual({
+      sourcePid: entry.sourcePid ?? null,
+      agentPid: entry.agentPid ?? null,
+      pidChain: entry.pidChain ?? null,
+      editor: entry.editor ?? null,
+      tmuxSocket: entry.tmuxSocket ?? null,
+      tmuxClient: entry.tmuxClient ?? null,
+      orcaPaneKey: entry.orcaPaneKey ?? null,
+      cwd: entry.cwd ?? null,
+    }, {
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+      tmuxSocket: null,
+      tmuxClient: null,
+      orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/repo",
+    });
+  });
+
+  it("strips Hermes permission process metadata on the profile-bound ingress", async () => {
+    const sessionId = "hermes:01HQABCD";
+    const body = JSON.stringify({
+      agent_id: "hermes",
+      session_id: sessionId,
+      tool_name: "execute_bash",
+      tool_input: { command: "rm -rf /tmp/test" },
+      tool_use_id: "tool-1",
+      source_pid: 1234,
+      agent_pid: 1234,
+      pid_chain: [9999, 1234, -1],
+      tmux_socket: "/tmp/tmux-1000/work",
+      tmux_client: "/dev/pts/7",
+      orca_pane_key: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/home/user/repo",
+      editor: "cursor",
+    });
+    const processFields = (opts) => ({
+      sourcePid: opts.sourcePid ?? null,
+      agentPid: opts.agentPid ?? null,
+      pidChain: opts.pidChain ?? null,
+      editor: opts.editor ?? null,
+      tmuxSocket: opts.tmuxSocket ?? null,
+      tmuxClient: opts.tmuxClient ?? null,
+      orcaPaneKey: opts.orcaPaneKey ?? null,
+      cwd: opts.cwd ?? null,
+    });
+
+    const remote = await callPermissionPost(body, {
+      options: {
+        remoteProfile: { profileId: "ssh-work", displayHost: "workbox" },
+      },
+    });
+    const remoteOpts = remote.ctx.calls.updateSession[0][3];
+    assert.deepStrictEqual(remote.ctx.calls.updateSession[0].slice(0, 3), [
+      makeSessionKey({ profileId: "ssh-work", rawSessionId: sessionId }),
+      "notification",
+      "PermissionRequest",
+    ]);
+    assert.deepStrictEqual(processFields(remoteOpts), {
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+      tmuxSocket: null,
+      tmuxClient: null,
+      orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/home/user/repo",
+    });
+    assert.strictEqual(remoteOpts.host, "workbox");
+    assert.deepStrictEqual(processFields(remote.ctx.pendingPermissions[0]), {
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+      tmuxSocket: null,
+      tmuxClient: null,
+      orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/home/user/repo",
+    });
+
+    // Regression: the local path must stay exactly what it was before the gate.
+    const local = await callPermissionPost(body);
+    assert.deepStrictEqual(processFields(local.ctx.calls.updateSession[0][3]), {
+      sourcePid: 1234,
+      agentPid: 1234,
+      pidChain: [9999, 1234],
+      editor: "cursor",
+      tmuxSocket: "/tmp/tmux-1000/work",
+      tmuxClient: "/dev/pts/7",
+      orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/home/user/repo",
+    });
+    assert.strictEqual(
+      Object.prototype.hasOwnProperty.call(local.ctx.calls.updateSession[0][3], "host"),
+      false,
+    );
+  });
+
   it("keeps every permission focus entry carrying the same terminal identity fields", () => {
     // The test above covers the shared applyTerminalSessionOptions and the Codex
     // entry. The qwen, copilot and two hermes entries are hand-copied versions of
