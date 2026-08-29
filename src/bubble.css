@@ -120,6 +120,14 @@ body { padding: 6px; }
   opacity: 0;
   transform: translateX(60px);
 }
+.card.codex-user-input-focus-card { cursor: pointer; }
+.card.codex-user-input-focus-card:hover {
+  border-color: var(--sug-hover-border);
+}
+.card.codex-user-input-focus-card:focus-visible {
+  outline: 2px solid var(--sug-hover-border);
+  outline-offset: -2px;
+}
 
 /* ── Header ── */
 .header {

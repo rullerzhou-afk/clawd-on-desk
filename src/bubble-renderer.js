@@ -555,6 +555,10 @@ function resetBubbleContent() {
   elicitationAnswers = {};
   activeQuestionIndex = 0;
   card.classList.remove("elicitation-scrollable");
+  card.classList.remove("codex-user-input-focus-card");
+  card.removeAttribute("role");
+  card.removeAttribute("tabindex");
+  card.removeAttribute("aria-label");
   commandBlock.style.display = "";
   commandBlock.textContent = "";
   irreversibleBadge.style.display = "none";
@@ -671,13 +675,14 @@ function applyPresentationView() {
   const detailDiffers = typeof data.detailText === "string"
     && data.detailText
     && data.detailText !== compactPreview;
-  const needsExpansion = currentIsPlanReview
+  const needsExpansion = !codexUserInputMode && (
+    currentIsPlanReview
     || elicitationMode
-    || codexUserInputMode
     || detailDiffers
     || compactContentOverflow
     || data.detailTruncated === true
-    || hiddenOptions;
+    || hiddenOptions
+  );
   const expandLabel = currentIsPlanReview
     ? "viewPlan"
     : (elicitationMode
@@ -1174,9 +1179,7 @@ function renderCodexUserInputPreview(data) {
     ? data.toolInput.questions
     : [];
   activeQuestionIndex = 0;
-  elicitationForm.classList.add("visible");
   commandBlock.style.display = "none";
-  renderCodexUserInputStep(data);
 }
 
 function show(data) {
@@ -1338,11 +1341,18 @@ function show(data) {
   }
 
   if (data.isCodexUserInputNotify) {
+    currentExpanded = false;
     headerTitle.textContent = bubbleText(data.lang, "codexNeedsInput");
     toolPillText.textContent = "CODEX";
     toolPill.setAttribute("data-tool", "CodexUserInput");
     toolPill.style.display = "";
     renderCodexUserInputPreview(data);
+    card.classList.add("codex-user-input-focus-card");
+    card.setAttribute("role", "button");
+    card.setAttribute("tabindex", "0");
+    card.setAttribute("aria-label", data.isRemote
+      ? bubbleText(data.lang, "gotIt")
+      : bubbleText(data.lang, "goToCodex"));
     btnAllow.textContent = data.isRemote
       ? bubbleText(data.lang, "gotIt")
       : bubbleText(data.lang, "goToCodex");
@@ -1549,14 +1559,34 @@ btnAllow.addEventListener("click", () => {
     return;
   }
   if (codexUserInputMode) {
-    btnAllow.textContent = "...";
-    disableAll();
-    window.bubbleAPI.decide("codex-user-input-focus");
+    focusCodexUserInput();
     return;
   }
   btnAllow.textContent = "...";
   disableAll();
   window.bubbleAPI.decide("allow");
+});
+
+function focusCodexUserInput() {
+  if (!codexUserInputMode || btnAllow.disabled) return;
+  btnAllow.textContent = "...";
+  disableAll();
+  window.bubbleAPI.decide("codex-user-input-focus");
+}
+
+card.addEventListener("click", (event) => {
+  if (!codexUserInputMode) return;
+  const target = event && event.target;
+  if (target && typeof target.closest === "function"
+      && target.closest("button, input, textarea, select, a")) return;
+  focusCodexUserInput();
+});
+
+card.addEventListener("keydown", (event) => {
+  if (!codexUserInputMode || event.target !== card) return;
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  focusCodexUserInput();
 });
 
 btnDeny.addEventListener("click", () => {

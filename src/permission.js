@@ -4104,6 +4104,20 @@ function handleBubbleExpanded(event, expanded) {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find((entry) => entry.bubble === senderWin);
   if (!perm) return false;
+  // Codex request_user_input is intentionally read-only in Clawd because the
+  // answer must travel over Codex Desktop's private app-server connection.
+  // Expanding a copy of the options implies that they are actionable here.
+  // Treat any stale/old renderer expansion request as the card's real action:
+  // dismiss it and return to the native Codex UI.
+  if (perm.isCodexUserInputNotify) {
+    if (expanded === true) {
+      dismissPassiveNotify(perm, "expand-focus");
+      if (!perm.host) {
+        ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+      }
+    }
+    return false;
+  }
   ensureBubblePresentationState(perm);
   const wantsExpanded = expanded === true;
   if (wantsExpanded === perm.expanded) {

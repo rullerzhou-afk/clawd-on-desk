@@ -296,6 +296,47 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(harness.focused[0][0], "codex-a");
   });
 
+  it("turns a stale Codex question expansion request into native focus", () => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    api.showCodexUserInputBubble({
+      sessionId: "codex-expand",
+      callId: "call_expand",
+      questions: [{ id: "q", question: "Pick one", options: [] }],
+      sourcePid: 42,
+      cwd: "/repo",
+    });
+    const entry = api.pendingPermissions[0];
+
+    assert.strictEqual(
+      api.handleBubbleExpanded({ sender: { __window: entry.bubble } }, true),
+      false
+    );
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    assert.strictEqual(harness.focused.length, 1);
+    assert.strictEqual(harness.focused[0][0], "codex-expand");
+  });
+
+  it("dismisses a stale remote Codex expansion without focusing a local terminal", () => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    api.showCodexUserInputBubble({
+      sessionId: "codex-remote-expand",
+      callId: "call_remote_expand",
+      questions: [{ id: "q", question: "Pick one", options: [] }],
+      host: "remote.example",
+      cwd: "/repo",
+    });
+    const entry = api.pendingPermissions[0];
+
+    assert.strictEqual(
+      api.handleBubbleExpanded({ sender: { __window: entry.bubble } }, true),
+      false
+    );
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    assert.deepStrictEqual(harness.focused, []);
+  });
+
   it("clears only the matching Codex user-input call", () => {
     const { api } = createPermissionHarness();
     for (const callId of ["call_1", "call_2"]) {

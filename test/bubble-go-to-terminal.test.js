@@ -295,6 +295,78 @@ describe("permission bubble terminal fallback (issue #689)", () => {
 });
 
 describe("permission bubble compact/detail presentation", () => {
+  it("keeps Codex native questions compact and sends the whole card back to Codex", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "CodexUserInput",
+      isCodexUserInputNotify: true,
+      toolInput: {
+        questions: [{
+          id: "q1",
+          header: "Progress",
+          question: "How should daily progress be displayed?",
+          options: [
+            { label: "Count", description: "Show completed versus total." },
+            { label: "Percentage", description: "Show a percentage." },
+          ],
+        }],
+      },
+      interaction: interaction("notification", { nativeFallback: true }),
+      presentation: { expanded: true, measurementEpoch: 4 },
+    });
+
+    const card = harness.element("card");
+    assert.strictEqual(card.classList.contains("expanded"), false,
+      "a stale expanded presentation must still render as a compact focus cue");
+    assert.strictEqual(card.classList.contains("codex-user-input-focus-card"), true);
+    assert.strictEqual(card.getAttribute("role"), "button");
+    assert.strictEqual(card.getAttribute("tabindex"), "0");
+    assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), false,
+      "read-only Codex options must never advertise expansion");
+    assert.strictEqual(harness.element("elicitationForm").classList.contains("visible"), false,
+      "the unanswerable option list must not be rendered as an interaction form");
+
+    card.click();
+    card.click();
+    assert.deepStrictEqual(harness.decisions, ["codex-user-input-focus"]);
+  });
+
+  for (const key of ["Enter", " "]) {
+    it(`lets ${key === " " ? "Space" : key} activate the compact Codex question card`, () => {
+      const harness = createHarness();
+      harness.show({
+        toolName: "CodexUserInput",
+        isCodexUserInputNotify: true,
+        toolInput: { questions: [{ id: "q1", question: "Choose one", options: [] }] },
+        interaction: interaction("notification", { nativeFallback: true }),
+        presentation: { expanded: false, measurementEpoch: 0 },
+      });
+      let prevented = false;
+
+      harness.element("card").dispatch("keydown", {
+        key,
+        preventDefault() { prevented = true; },
+      });
+
+      assert.strictEqual(prevented, true);
+      assert.deepStrictEqual(harness.decisions, ["codex-user-input-focus"]);
+    });
+  }
+
+  it("keeps the explicit Codex focus button as the same single action", () => {
+    const harness = createHarness();
+    harness.show({
+      toolName: "CodexUserInput",
+      isCodexUserInputNotify: true,
+      toolInput: { questions: [{ id: "q1", question: "Choose one", options: [] }] },
+      interaction: interaction("notification", { nativeFallback: true }),
+      presentation: { expanded: false, measurementEpoch: 0 },
+    });
+
+    harness.element("btnAllow").click();
+    assert.deepStrictEqual(harness.decisions, ["codex-user-input-focus"]);
+  });
+
   it("keeps Ask compact, unfocused, and shows the question count on its Answer entry", () => {
     const harness = createHarness();
     harness.show({
