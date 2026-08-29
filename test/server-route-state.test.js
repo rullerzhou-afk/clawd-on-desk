@@ -636,6 +636,108 @@ describe("server-route-state POST", () => {
     ]]);
   });
 
+  it("strips remote process metadata from state updates on the profile-bound ingress", async () => {
+    const body = JSON.stringify({
+      state: "working",
+      session_id: "sid",
+      event: "PreToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      source_pid: 4242,
+      agent_pid: 4243,
+      pid_chain: [1, 4242, 4243],
+      editor: "cursor",
+      tmux_socket: "/tmp/tmux-1000/work",
+      tmux_client: "/dev/pts/7",
+      orca_pane_key: "tab-9:leaf-3",
+      cwd: "/home/user/repo",
+      wt_hwnd: "123456",
+      host: "spoofed-by-hook",
+    });
+    const processFields = (res) => {
+      const opts = res.calls.updateSession[0][3];
+      return {
+        sourcePid: opts.sourcePid,
+        agentPid: opts.agentPid,
+        pidChain: opts.pidChain,
+        editor: opts.editor,
+        tmuxSocket: opts.tmuxSocket,
+        tmuxClient: opts.tmuxClient,
+        orcaPaneKey: opts.orcaPaneKey,
+        cwd: opts.cwd,
+        wtHwnd: opts.wtHwnd,
+        host: opts.host,
+      };
+    };
+
+    const remote = await callStatePost(body, {
+      options: { remoteProfile: { profileId: "ssh-work", displayHost: "workbox" } },
+    });
+    assert.strictEqual(remote.statusCode, 200);
+    assert.deepStrictEqual(processFields(remote), {
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+      tmuxSocket: null,
+      tmuxClient: null,
+      // Untouched by the gate: opaque labels, not handles on a local process.
+      orcaPaneKey: "tab-9:leaf-3",
+      cwd: "/home/user/repo",
+      wtHwnd: "123456",
+      host: "workbox",
+    });
+
+    // Regression: the local path must stay exactly what it was before the gate.
+    const local = await callStatePost(body);
+    assert.strictEqual(local.statusCode, 200);
+    assert.deepStrictEqual(processFields(local), {
+      sourcePid: 4242,
+      agentPid: 4243,
+      pidChain: [1, 4242, 4243],
+      editor: "cursor",
+      tmuxSocket: "/tmp/tmux-1000/work",
+      tmuxClient: "/dev/pts/7",
+      orcaPaneKey: "tab-9:leaf-3",
+      cwd: "/home/user/repo",
+      wtHwnd: "123456",
+      host: "spoofed-by-hook",
+    });
+  });
+
+  it("keeps remote PIDs out of the Codex user-input bubble too", async () => {
+    const body = JSON.stringify({
+      state: "notification",
+      session_id: "codex:remote-pid",
+      event: "CodexUserInputRequest",
+      agent_id: "codex",
+      source_pid: 4242,
+      agent_pid: 4243,
+      cwd: "/home/user/repo",
+      codex_user_input: {
+        phase: "request",
+        call_id: "call_remote_pid",
+        questions: [{
+          id: "scope",
+          header: "Scope",
+          question: "Which scope?",
+          options: [{ label: "Focused", description: "One module" }],
+        }],
+      },
+    });
+
+    const remote = await callStatePost(body, {
+      options: { remoteProfile: { profileId: "ssh-work", displayHost: "workbox" } },
+    });
+    assert.strictEqual(remote.calls.userInputShown[0].sourcePid, null);
+    assert.strictEqual(remote.calls.userInputShown[0].agentPid, null);
+    assert.strictEqual(remote.calls.userInputShown[0].cwd, "/home/user/repo");
+
+    const local = await callStatePost(body);
+    assert.strictEqual(local.calls.userInputShown[0].sourcePid, 4242);
+    assert.strictEqual(local.calls.userInputShown[0].agentPid, 4243);
+  });
+
   it("preserves absent versus authoritative zero for typed Claude background subagents (#952)", async () => {
     const post = (value, include = true) => callStatePost(JSON.stringify({
       state: "attention",
