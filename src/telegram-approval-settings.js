@@ -13,8 +13,8 @@ const DEFAULT_TG_APPROVAL = Object.freeze({
   // R1b privacy default: do not send assistant output unless the user
   // explicitly opts into "Full answer" from Settings.
   completionOutputMode: "off",
-  // R3 dogfood gate. Slice 1/2/3a only focuses the selected local terminal;
-  // it does not paste text or press Enter.
+  // Direct replies can submit text into a local terminal. Keep the gate off by
+  // default so upgrading users must explicitly opt in to remote prompt input.
   r3DirectSendEnabled: false,
 });
 

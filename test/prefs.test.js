@@ -1559,6 +1559,47 @@ describe("prefs.migrate v17 → v18 (Codex cold-launch opt-in)", () => {
   });
 });
 
+describe("prefs.migrate v19 → v20 (Telegram reply submission opt-in)", () => {
+  it("turns off the legacy paste-only gate before it gains Enter submission", () => {
+    const upgraded = prefs.validate(prefs.migrate({
+      version: 19,
+      tgApproval: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        notifyOnComplete: true,
+        completionOutputMode: "full",
+        r3DirectSendEnabled: true,
+      },
+    }));
+
+    assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
+    assert.deepStrictEqual(upgraded.tgApproval, {
+      enabled: true,
+      allowedTgUserId: "123456789",
+      targetSessionKey: "telegram:123456789",
+      notifyOnComplete: true,
+      completionOutputMode: "full",
+      r3DirectSendEnabled: false,
+    });
+  });
+
+  it("preserves an explicit opt-in written by the v20 behavior", () => {
+    const current = prefs.validate(prefs.migrate({
+      version: 20,
+      tgApproval: {
+        enabled: true,
+        allowedTgUserId: "123456789",
+        targetSessionKey: "telegram:123456789",
+        r3DirectSendEnabled: true,
+      },
+    }));
+
+    assert.strictEqual(current.version, prefs.CURRENT_VERSION);
+    assert.strictEqual(current.tgApproval.r3DirectSendEnabled, true);
+  });
+});
+
 describe("prefs.migrate v12 → v13 (Settings window bounds)", () => {
   it("advances the schema without inventing geometry for existing users", () => {
     const upgraded = prefs.validate(prefs.migrate({ version: 12, lang: "zh" }));
@@ -1879,22 +1920,22 @@ describe("prefs.load", () => {
     }
   });
 
-  it("accepts the current v19 schema and locks an explicit v20 file", () => {
-    const currentPath = makeTempPath("v19.json");
-    fs.writeFileSync(currentPath, JSON.stringify({ version: 19, lang: "zh" }), "utf8");
+  it("accepts the current v20 schema and locks an explicit v21 file", () => {
+    const currentPath = makeTempPath("v20.json");
+    fs.writeFileSync(currentPath, JSON.stringify({ version: 20, lang: "zh" }), "utf8");
     const current = prefs.load(currentPath);
     assert.strictEqual(current.locked, false);
-    assert.strictEqual(current.snapshot.version, 19);
+    assert.strictEqual(current.snapshot.version, 20);
     assert.strictEqual(current.snapshot.lang, "zh");
 
-    const futurePath = makeTempPath("v20.json");
-    fs.writeFileSync(futurePath, JSON.stringify({ version: 20, lang: "ja" }), "utf8");
+    const futurePath = makeTempPath("v21.json");
+    fs.writeFileSync(futurePath, JSON.stringify({ version: 21, lang: "ja" }), "utf8");
     const originalWarn = console.warn;
     console.warn = () => {};
     try {
       const future = prefs.load(futurePath);
       assert.strictEqual(future.locked, true);
-      assert.strictEqual(future.snapshot.version, 20);
+      assert.strictEqual(future.snapshot.version, 21);
       assert.strictEqual(future.snapshot.lang, "ja");
     } finally {
       console.warn = originalWarn;

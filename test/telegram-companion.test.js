@@ -8,6 +8,7 @@ const {
   formatNotification,
   formatTelegramNotificationMessage,
 } = require("../src/telegram-companion");
+const { createTelegramDirectSend } = require("../src/telegram-direct-send");
 
 function tick() {
   // Flush the fire-and-forget microtask chain in onSnapshot.
@@ -134,6 +135,216 @@ test("registers completion notification message ids after successful sends", asy
 
   assert.equal(sink.sent.length, 1);
   assert.deepEqual(registrations, [{ messageId: 4242, sessionId: "sess-for-map" }]);
+});
+
+test("includes the configured chat id with completion mapping callbacks", async () => {
+  const registrations = [];
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => ({ ok: true, messageId: 4243, chatId: "-1001234567890" }),
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    onNotificationSent: (payload) => registrations.push(payload),
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-chat-map" })] });
+  await tick();
+
+  assert.deepEqual(registrations, [{
+    entry: doneEntry({ id: "sess-chat-map" }),
+    messageId: 4243,
+    chatId: "-1001234567890",
+  }]);
+});
+
+test("captures notification context before an asynchronous send resolves", async () => {
+  let generation = 7;
+  let resolveSend;
+  const registrations = [];
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: () => new Promise((resolve) => { resolveSend = resolve; }),
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: (entry) => ({ generation, sessionId: entry.id }),
+    isNotificationRouteCurrent: (context) => context.generation === generation,
+    onNotificationSent: (payload) => registrations.push(payload),
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-context" })] });
+  await tick();
+  generation = 8;
+  resolveSend({ ok: true, messageId: 4244, chatId: "123" });
+  await tick();
+
+  assert.deepEqual(registrations, [{
+    entry: doneEntry({ id: "sess-context" }),
+    messageId: 4244,
+    chatId: "123",
+    notificationContext: { generation: 7, sessionId: "sess-context" },
+  }]);
+});
+
+test("drops a queued notification when its route changes before send", async () => {
+  let generation = 7;
+  let sendCount = 0;
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: () => {
+        sendCount += 1;
+        return Promise.resolve({ ok: true, messageId: 4245, chatId: "123" });
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: (entry) => ({ generation, sessionId: entry.id }),
+    isNotificationRouteCurrent: (context) => context.generation === generation,
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-queued-context" })] });
+  // The send is intentionally still queued in the companion microtask. A
+  // recipient/token reconciliation completes in this gap; the old completion
+  // must be dropped instead of being sent to the replacement recipient.
+  generation = 8;
+  await tick();
+  assert.equal(sendCount, 0);
+});
+
+test("keeps completion notifications when the direct-send toggle is off", async () => {
+  let sendCount = 0;
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => {
+        sendCount += 1;
+        return { ok: true, messageId: 4246 };
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: (entry) => ({ generation: 1, sessionId: entry.id }),
+    // A context checker represents route identity only; it must not inherit
+    // the unrelated Direct Send feature toggle.
+    isNotificationRouteCurrent: () => true,
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-direct-off" })] });
+  await tick();
+  assert.equal(sendCount, 1);
+});
+
+test("drops a queued completion when the Direct Send notification route is invalidated", async () => {
+  const direct = createTelegramDirectSend({
+    getRouteGeneration: () => 11,
+    getSessionSnapshot: () => ({ sessions: [] }),
+  });
+  let sendCount = 0;
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => {
+        sendCount += 1;
+        return { ok: true, messageId: 4247, chatId: "456" };
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: direct.createCompletionNotificationContext,
+    isNotificationRouteCurrent: direct.isCompletionNotificationRouteCurrent,
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-old-recipient" })] });
+  // Recipient/token invalidation is synchronous; controller reconciliation may
+  // not have restarted the native poller yet, so the Direct Send route epoch is
+  // the pre-network fence for this queued microtask.
+  direct.invalidateMappings();
+  await tick();
+
+  assert.equal(sendCount, 0);
+});
+
+test("mapping-only invalidation keeps a queued completion but rejects its old reply mapping", async () => {
+  const direct = createTelegramDirectSend({
+    getRouteGeneration: () => 12,
+    getSessionSnapshot: () => ({ sessions: [] }),
+  });
+  let sendCount = 0;
+  const registrationResults = [];
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => {
+        sendCount += 1;
+        return { ok: true, messageId: 4248, chatId: "123" };
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: direct.createCompletionNotificationContext,
+    isNotificationRouteCurrent: direct.isCompletionNotificationRouteCurrent,
+    onNotificationSent: ({ entry, messageId, chatId, notificationContext }) => {
+      registrationResults.push(direct.registerCompletionNotification({
+        messageId,
+        chatId,
+        sessionId: entry.id,
+        notificationContext,
+      }));
+    },
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-toggle-only" })] });
+  direct.invalidateMappings({ notificationRouteChanged: false });
+  await tick();
+
+  assert.equal(sendCount, 1);
+  assert.deepEqual(registrationResults, [false]);
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("keeps concurrent notification registrations paired when sends resolve out of order", async () => {
+  const pending = [];
+  const registrations = [];
+  const client = {
+    sendNotification: (text) => new Promise((resolve) => {
+      pending.push({ text, resolve });
+    }),
+  };
+  const comp = createTelegramCompanion({
+    getClient: () => client,
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    onNotificationSent: ({ messageId, entry }) => {
+      registrations.push({ messageId, sessionId: entry && entry.id });
+    },
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({
+    sessions: [
+      doneEntry({ id: "sess-first", displayTitle: "first task" }),
+      doneEntry({ id: "sess-second", displayTitle: "second task" }),
+    ],
+  });
+  await tick();
+
+  assert.equal(pending.length, 2);
+  assert.match(pending[0].text.plainText, /first task/);
+  assert.match(pending[1].text.plainText, /second task/);
+
+  pending[1].resolve({ ok: true, messageId: 2002 });
+  await tick();
+  pending[0].resolve({ ok: true, messageId: 1001 });
+  await tick();
+
+  assert.deepEqual(registrations, [
+    { messageId: 2002, sessionId: "sess-second" },
+    { messageId: 1001, sessionId: "sess-first" },
+  ]);
 });
 
 test("does not register direct-send mapping when notification delivery fails", async () => {

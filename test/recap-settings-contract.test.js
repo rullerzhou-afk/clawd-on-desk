@@ -17,11 +17,11 @@ function controller(snapshot) {
 }
 
 test("recap is enabled by default and v18 upgrades opt in locally", () => {
-  assert.equal(prefs.CURRENT_VERSION, 19);
+  assert.equal(prefs.CURRENT_VERSION, 20);
   assert.equal(prefs.getDefaults().recapEnabled, true);
   const upgraded = prefs.migrate({ version: 18 });
   assert.equal(upgraded.recapEnabled, true);
-  assert.equal(upgraded.version, 19);
+  assert.equal(upgraded.version, prefs.CURRENT_VERSION);
   assert.deepEqual(updateRegistry.recapEnabled(false), { status: "ok" });
   assert.equal(updateRegistry.recapEnabled("false").status, "error");
 });

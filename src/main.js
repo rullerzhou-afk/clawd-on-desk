@@ -447,6 +447,7 @@ let systemWakeRecovery = null;
 let floatingWindowRuntime = null;
 let codexPetMain = null;
 let telegramApprovalIdentitySignature = "";
+let telegramDirectSendGateEnabled = null;
 let _telegramMigrationController = null;
 let telegramMigrationNudge = null;
 let feishuApprovalMigrationNudge = null;
@@ -2216,7 +2217,21 @@ const _stateCtx = {
     // R1a: best-effort completion notifications. Must never throw or block the
     // broadcast — the companion computes synchronously and fires sends async.
     if (telegramCompanion) {
-      try { telegramCompanion.onSnapshot(snapshot); } catch {}
+      try {
+        const telegramSnapshot = {
+          ...snapshot,
+          sessions: Array.isArray(snapshot && snapshot.sessions)
+            ? snapshot.sessions.map((entry) => {
+              const runtimeEntry = entry && entry.id ? sessions.get(String(entry.id)) : null;
+              return {
+                ...entry,
+                agentPid: runtimeEntry && runtimeEntry.agentPid || null,
+              };
+            })
+            : [],
+        };
+        telegramCompanion.onSnapshot(telegramSnapshot);
+      } catch {}
     }
     // Slack completion pings ride the same fanout; the client dedupes internally
     // and fires sends async, so this never throws or blocks the broadcast.
@@ -3646,6 +3661,12 @@ function telegramTokenFileDigest(filePath) {
   }
 }
 
+function invalidateTelegramDirectSendMappings(reason, options = {}) {
+  if (!telegramDirectSend || typeof telegramDirectSend.invalidateMappings !== "function") return;
+  telegramDirectSend.invalidateMappings(options);
+  try { telegramApprovalLog("debug", "direct-send mappings invalidated", { reason }); } catch {}
+}
+
 function writeTelegramApprovalToken(token) {
   const paths = getTelegramApprovalPaths();
   const beforeDigest = telegramTokenFileDigest(paths.tokenEnvFilePath);
@@ -3670,6 +3691,12 @@ function writeTelegramApprovalToken(token) {
   }
   if (result && result.status === "ok") {
     const identityChanged = beforeDigest !== telegramTokenFileDigest(paths.tokenEnvFilePath);
+    if (identityChanged) {
+      invalidateTelegramDirectSendMappings("token_changed");
+      if (telegramNativeRunner && typeof telegramNativeRunner.resetOffset === "function") {
+        telegramNativeRunner.resetOffset();
+      }
+    }
     if (_telegramMigrationController
       && typeof _telegramMigrationController.reconcileConfiguration === "function") {
       void _telegramMigrationController.reconcileConfiguration({ identityChanged });
@@ -3688,29 +3715,48 @@ async function initTelegramMigrationController() {
   const {
     createClipboardFallbackDeliveryAdapter,
     createTelegramDirectSend,
-    createWindowsPasteOnlyDeliveryAdapter,
   } = require("./telegram-direct-send");
+  const { createWindowsConsoleInputDeliveryAdapter } = require("./windows-console-input");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
   const { createTelegramFetchTransport } = require("./telegram-fetch-transport");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
-  telegramDirectSend = createTelegramDirectSend({
-    getSessionSnapshot: () => _state && typeof _state.buildSessionSnapshot === "function"
+  const getTelegramDirectSendSnapshot = () => {
+    const snapshot = _state && typeof _state.buildSessionSnapshot === "function"
       ? _state.buildSessionSnapshot()
-      : { sessions: [] },
+      : { sessions: [] };
+    const snapshotSessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
+    return {
+      ...snapshot,
+      sessions: snapshotSessions.map((entry) => {
+        const runtimeEntry = entry && entry.id ? sessions.get(String(entry.id)) : null;
+        return {
+          ...entry,
+          agentPid: runtimeEntry && runtimeEntry.agentPid || null,
+        };
+      }),
+    };
+  };
+  telegramDirectSend = createTelegramDirectSend({
+    getSessionSnapshot: getTelegramDirectSendSnapshot,
     getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
-    deliveryAdapter: createWindowsPasteOnlyDeliveryAdapter({
-      clipboard,
-      restoreClipboardOnSuccess: true,
-    }),
+    deliveryAdapter: createWindowsConsoleInputDeliveryAdapter(),
     fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
         ? _telegramMigrationController.getSnapshot()
         : null;
       return !!(snap && snap.state === "NATIVE_ACTIVE"
+        && telegramNativeRunner && typeof telegramNativeRunner.isPolling === "function"
+        && telegramNativeRunner.isPolling()
         && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
     },
+    getRouteGeneration: () => (
+      telegramNativeRunner
+      && typeof telegramNativeRunner.getRouteGeneration === "function"
+        ? telegramNativeRunner.getRouteGeneration()
+        : null
+    ),
     osPlatform: process.platform,
     getLang: () => lang,
     log: telegramApprovalLog,
@@ -3750,6 +3796,8 @@ async function initTelegramMigrationController() {
         ? _telegramMigrationController.getSnapshot()
         : null;
       return !!(snap && snap.state === "NATIVE_ACTIVE"
+        && telegramNativeRunner && typeof telegramNativeRunner.isPolling === "function"
+        && telegramNativeRunner.isPolling()
         && getTelegramApprovalPrefs().r3DirectSendEnabled === true);
     },
     onTextMessage: (payload) => telegramDirectSend && telegramDirectSend.handleTextMessage(payload),
@@ -3781,11 +3829,39 @@ async function initTelegramMigrationController() {
     // while native is inactive, and internally decides whether to send a bare
     // ping or require assistant output based on tgApproval prefs.
     isEnabled: () => !!getTelegramCompanionClient(),
-    onNotificationSent: ({ entry, messageId }) => {
+    getNotificationContext: (entry) => (
+      telegramDirectSend
+      && typeof telegramDirectSend.createCompletionNotificationContext === "function"
+        ? telegramDirectSend.createCompletionNotificationContext(entry)
+        : null
+    ),
+    isNotificationRouteCurrent: (context) => (
+      telegramDirectSend
+      && typeof telegramDirectSend.isCompletionNotificationRouteCurrent === "function"
+        ? telegramDirectSend.isCompletionNotificationRouteCurrent(context)
+        : false
+    ),
+    onNotificationSent: ({ entry, messageId, chatId, notificationContext }) => {
       if (telegramDirectSend && typeof telegramDirectSend.registerCompletionNotification === "function") {
+        // The notification context freezes the live agent PID when completion
+        // is observed. Keep this lookup only as a compatibility fallback for
+        // callers that do not provide that context; registration always
+        // prefers the earlier frozen identity so a reused session id cannot be
+        // rebound while Telegram delivery is in flight.
+        const runtimeEntry = entry && entry.id
+          ? sessions.get(String(entry.id))
+          : null;
         telegramDirectSend.registerCompletionNotification({
           messageId,
+          chatId,
           sessionId: entry && entry.id,
+          agentId: entry && entry.agentId,
+          sourcePid: entry && entry.sourcePid,
+          agentPid: runtimeEntry && runtimeEntry.agentPid || (entry && entry.agentPid),
+          editor: entry && entry.editor,
+          wtHwnd: entry && entry.wtHwnd,
+          orcaPaneKey: entry && entry.orcaPaneKey,
+          notificationContext,
         });
       }
     },
@@ -3798,6 +3874,7 @@ async function initTelegramMigrationController() {
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );
+  telegramDirectSendGateEnabled = getTelegramApprovalPrefs().r3DirectSendEnabled === true;
   _telegramMigrationController = createTelegramMigrationController({
     native: nativeRunner,
     readPrefs: () => readTelegramMigrationPrefsForController(),
@@ -3867,6 +3944,7 @@ async function initTelegramMigrationController() {
   telegramApprovalIdentitySignature = buildTelegramApprovalIdentitySignature(
     getTelegramApprovalPrefs()
   );
+  telegramDirectSendGateEnabled = getTelegramApprovalPrefs().r3DirectSendEnabled === true;
   return _telegramMigrationController;
 }
 
@@ -4402,11 +4480,22 @@ feishuApprovalMigrationNudge = createFeishuApprovalMigrationNudge({
 _settingsController.subscribeKey("tgApproval", (value) => {
   syncTelegramSessionAutomationRoute();
   if (suppressTelegramMigrationReconcile > 0) return;
+  const normalized = telegramApprovalSettings.normalizeTelegramApproval(value);
+  const nextDirectSendEnabled = normalized.r3DirectSendEnabled === true;
+  const directSendGateChanged = telegramDirectSendGateEnabled !== null
+    && nextDirectSendEnabled !== telegramDirectSendGateEnabled;
+  telegramDirectSendGateEnabled = nextDirectSendEnabled;
+  if (directSendGateChanged) {
+    invalidateTelegramDirectSendMappings("direct_send_toggle_changed", {
+      notificationRouteChanged: false,
+    });
+  }
   const nextSignature = buildTelegramApprovalIdentitySignature(value);
   const identityChanged = telegramApprovalIdentitySignature !== ""
     && nextSignature !== telegramApprovalIdentitySignature;
   telegramApprovalIdentitySignature = nextSignature;
   if (!identityChanged) return;
+  invalidateTelegramDirectSendMappings("recipient_changed");
   if (_telegramMigrationController
     && typeof _telegramMigrationController.reconcileConfiguration === "function") {
     void _telegramMigrationController.reconcileConfiguration({ identityChanged: true });

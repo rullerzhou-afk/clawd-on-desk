@@ -2,14 +2,21 @@
 
 [Back to setup guide](setup-guide.md)
 
-Telegram Approval is an optional remote approval path for existing Clawd
-permission bubbles. When a supported agent asks for tool permission, Clawd keeps
-the local desktop bubble and also sends an approval card to your Telegram bot.
-The first explicit Allow or Deny decision resolves the same pending permission.
+Telegram integration provides remote approval, completion notifications, and an
+optional reply path for live local sessions. When a supported agent asks for
+tool permission, Clawd keeps the local desktop bubble and also sends an approval
+card to your Telegram bot. The first explicit Allow or Deny decision resolves
+the same pending permission.
 
 The approval path does not create a remote shell or silently submit prompts.
-Completion notifications and Direct Send are separate opt-in Telegram features;
-their formatting does not change the approval decision policy described here.
+Completion notifications and **Reply to completion notifications** are separate
+opt-in Telegram features; their formatting does not change the approval decision
+policy described here.
+
+When **Reply to completion notifications** is enabled, replying directly to a
+completion notification selects the exact session that produced that message.
+This is a bounded prompt-delivery path, not a general Telegram chat bridge or
+remote shell.
 
 ## Supported Paths
 
@@ -90,6 +97,51 @@ proxy route before the Bot API request. It does not prove that Telegram accepted
 the token or request. Terminal verification failures are logged with allowlisted
 outcome and error-class fields; those terminal lines do not include tokens, chat
 ids, proxy addresses, or Telegram response bodies.
+
+4. **Enable replies (optional).** Native Telegram must be active. Turn on
+   **Reply to completion notifications** in step 3. Recent completion
+   notifications from the current Clawd run can be used as reply targets.
+
+   Upgrading from the earlier paste-only Direct Send beta turns this setting
+   off once because replies now include Enter and submit automatically. Review
+   the new delivery behavior below before enabling it again.
+
+   In Telegram, use the normal **Reply** action on the relevant completion
+   notification and send one line of text. Clawd uses Telegram's
+   `reply_to_message.message_id` to resolve the full session id, so concurrent
+   Codex or other agent sessions do not rely on titles or shortened ids.
+
+## Reply Delivery
+
+- The reply mapping is created only after Telegram confirms the completion
+  notification was sent. Clawd keeps at most 1,000 mappings in memory for up to
+  24 hours, so notifications from before a Clawd restart are no longer reply
+  targets. A confirmed or indeterminate automatic submission retires every
+  older notification for that session; a completion notification created after
+  that submission remains replyable. Changing the bot token, recipient, or
+  resolved chat also clears existing mappings.
+- For an eligible local Windows session, Clawd uses the session's agent PID to
+  attach to its Windows Console/ConPTY input and writes the single-line Unicode
+  reply followed by Enter. Successful delivery does not switch the foreground
+  window and does not read or write the system clipboard. Reply deliveries are
+  serialized so concurrent Telegram messages cannot interleave.
+- Terminal tabs or panes backed by independent ConPTY instances have separate
+  consoles and can be targeted independently. If another live Clawd session
+  shares the same Console as the target, Clawd treats the target as ambiguous,
+  skips automatic submission, and copies the reply to the clipboard for manual
+  paste. Text already present in the target terminal composer, or typed locally
+  at the same time, may be combined with the injected reply before Enter.
+- WSL, remote, headless, and non-Windows sessions use clipboard fallback, as do
+  sessions without a usable agent PID and replies containing multiple lines.
+  Clipboard fallback never injects paste or Enter.
+- Before writing input, Clawd rechecks that the mapped session is still the same
+  live, completed local session and is not waiting for an interactive permission
+  decision. A reused session id or changed session state is not submitted to a
+  newer run.
+- Only the single configured Telegram user in the configured chat is accepted;
+  multi-user and multi-chat routing are not configured separately. A plain
+  message that is not a reply to a mapped completion notification is not routed
+  to any session.
 
 ## Runtime Behavior
 

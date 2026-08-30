@@ -11,7 +11,8 @@ const { createTranslator } = require("./i18n");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 
 const DEFAULT_MAPPING_TTL_MS = 24 * 60 * 60 * 1000;
-const MAX_REPLY_TEXT = 3800;
+const MAX_AUTO_SUBMIT_TEXT = 3800;
+const DEFAULT_MAX_MAPPINGS = 1000;
 const DEFAULT_MAX_DELIVERIES = 100;
 const WINDOWS_PASTE_RESTORE_DELAY_MS = 800;
 const WINDOWS_PASTE_READY_DELAY_MS = 250;
@@ -24,6 +25,21 @@ const DELIVERY_STATUSES = new Set([
   "fallback_copied",
   "failed",
 ]);
+const TARGET_GUARD_ERRORS = new Set([
+  "direct_send_cancelled",
+  "direct_send_disabled",
+  "permission_pending",
+  "session_identity_changed",
+  "session_not_live",
+  "session_not_ready",
+  "target_not_focusable",
+  "target_validation_failed",
+]);
+const NO_FALLBACK_ERRORS = new Set([
+  ...TARGET_GUARD_ERRORS,
+  "partial_console_write",
+  "console_input_result_unknown",
+]);
 
 function normalizeMessageId(value) {
   if (value == null) return "";
@@ -35,18 +51,40 @@ function normalizeMessageId(value) {
   return "";
 }
 
+function normalizeChatId(value) {
+  if (value == null) return "";
+  const text = String(value).trim();
+  return /^-?[1-9]\d{0,19}$/.test(text) ? text : "";
+}
+
+function mappingKey(messageId, chatId = "") {
+  const message = normalizeMessageId(messageId);
+  if (!message) return "";
+  const chat = normalizeChatId(chatId);
+  return chat ? `${chat}\u0000${message}` : message;
+}
+
+function normalizeHwndString(value) {
+  if (value == null) return null;
+  const text = String(value).trim();
+  if (!/^[1-9]\d{0,18}$/.test(text)) return null;
+  try {
+    return BigInt(text) <= 9223372036854775807n ? text : null;
+  } catch {
+    return null;
+  }
+}
+
 function normalizeSessionId(value) {
   return typeof value === "string" && value.trim() ? value.trim() : "";
 }
 
 function normalizePromptText(value) {
   if (typeof value !== "string") return "";
-  let text = value
+  return value
     .replace(/\r\n?/g, "\n")
     .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]+/g, " ")
     .trim();
-  if (text.length > MAX_REPLY_TEXT) text = text.slice(0, MAX_REPLY_TEXT);
-  return text;
 }
 
 function shortSessionId(entry) {
@@ -56,6 +94,103 @@ function shortSessionId(entry) {
 function findSession(snapshot, sessionId) {
   const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
   return sessions.find((entry) => entry && entry.id === sessionId) || null;
+}
+
+function collectOtherSessionAgentPids(snapshot, targetEntry) {
+  const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
+  const targetId = String(targetEntry && targetEntry.id || "");
+  const targetPid = normalizePid(targetEntry && targetEntry.agentPid);
+  const out = [];
+  for (const entry of sessions) {
+    if (!entry || String(entry.id || "") === targetId) continue;
+    if (entry.host || entry.headless || entry.hiddenFromHud || entry.state === "sleeping") continue;
+    const pid = normalizePid(entry.agentPid);
+    if (!pid || pid === targetPid || out.includes(pid)) continue;
+    out.push(pid);
+  }
+  return out;
+}
+
+function hasSameAgentPidPeer(snapshot, targetEntry) {
+  const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
+  const targetId = String(targetEntry && targetEntry.id || "");
+  const targetPid = normalizePid(targetEntry && targetEntry.agentPid);
+  if (!targetId || !targetPid) return false;
+  return sessions.some((entry) => {
+    if (!entry || String(entry.id || "") === targetId) return false;
+    if (entry.host || entry.headless || entry.hiddenFromHud || entry.state === "sleeping") return false;
+    return normalizePid(entry.agentPid) === targetPid;
+  });
+}
+
+function deliveryAdapterRequiresFocus(deliveryAdapter) {
+  return !(deliveryAdapter && deliveryAdapter.requiresFocus === false);
+}
+
+function deliveryAdapterRequiresMappedAgentPid(deliveryAdapter) {
+  return !!(deliveryAdapter && deliveryAdapter.requiresMappedAgentPid === true);
+}
+
+function normalizePid(value) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : null;
+}
+
+function normalizeEditorIdentity(value) {
+  return value === "code" || value === "cursor" ? value : null;
+}
+
+function captureSessionIdentity(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  return {
+    id: normalizeSessionId(entry.id),
+    agentId: normalizeSessionId(entry.agentId),
+    sourcePid: normalizePid(entry.sourcePid),
+    agentPid: normalizePid(entry.agentPid),
+    editor: normalizeEditorIdentity(entry.editor),
+    wtHwnd: normalizeHwndString(entry.wtHwnd),
+    orcaPaneKey: normalizeSessionId(entry.orcaPaneKey) || null,
+  };
+}
+
+// Completion mappings may come from older callers that only recorded a
+// session id (or one of the process ids). Compare only identity fields that
+// were present when the mapping was created; a missing field cannot establish
+// an identity fence, while a recorded field must still match exactly.
+function mappingIdentityMatches(entry, mapping) {
+  const current = captureSessionIdentity(entry);
+  if (!current || !mapping) return false;
+  const expected = {
+    agentId: normalizeSessionId(mapping.agentId) || null,
+    sourcePid: normalizePid(mapping.sourcePid),
+    agentPid: normalizePid(mapping.agentPid),
+    editor: normalizeEditorIdentity(mapping.editor),
+    wtHwnd: normalizeHwndString(mapping.wtHwnd),
+    orcaPaneKey: normalizeSessionId(mapping.orcaPaneKey) || null,
+  };
+  for (const field of Object.keys(expected)) {
+    if (expected[field] != null && current[field] !== expected[field]) return false;
+  }
+  return true;
+}
+
+function hasSameSessionIdentity(entry, expectedIdentity) {
+  if (!expectedIdentity) return true;
+  const current = captureSessionIdentity(entry);
+  return !!current
+    && current.id === expectedIdentity.id
+    && current.agentId === expectedIdentity.agentId
+    && current.sourcePid === expectedIdentity.sourcePid
+    && current.agentPid === expectedIdentity.agentPid
+    && current.editor === expectedIdentity.editor
+    && current.wtHwnd === expectedIdentity.wtHwnd
+    && current.orcaPaneKey === expectedIdentity.orcaPaneKey;
+}
+
+function isReplyReadySession(entry) {
+  return !!entry
+    && entry.state === "idle"
+    && (entry.badge === "done" || entry.badge === "interrupted");
 }
 
 function isInteractivePermissionEntryForSession(permEntry, sessionId) {
@@ -93,8 +228,8 @@ function normalizeFocusGateResult(value) {
     return {
       reason: typeof value.reason === "string" && value.reason ? value.reason : "unknown",
       token: typeof value.token === "string" && value.token ? value.token : null,
-      targetHwnd: value.targetHwnd || null,
-      foregroundHwnd: value.foregroundHwnd || null,
+      targetHwnd: normalizeHwndString(value.targetHwnd),
+      foregroundHwnd: normalizeHwndString(value.foregroundHwnd),
       confirmed: value.confirmed === true,
       status: value.confirmed === true ? "confirmed" : "unconfirmed",
       // This normalizer is a whitelist: without a line here the pane outcome is
@@ -371,6 +506,12 @@ function formatDeliveryAck(status, entry, deliveryResult, t) {
     case "fallback_copied":
       return interpolate(t("directSendAckCopied"), "{session}", shortId);
     case "failed":
+      if (deliveryResult && deliveryResult.errorClass === "permission_pending") {
+        return t("directSendPermissionPending");
+      }
+      if (deliveryResult && TARGET_GUARD_ERRORS.has(deliveryResult.errorClass)) {
+        return t("directSendSessionChanged");
+      }
       return t("directSendAckFailed");
     case "focus_only":
     default:
@@ -388,20 +529,221 @@ function createTelegramDirectSend({
   deliveryAdapter = createFocusOnlyDeliveryAdapter(),
   fallbackAdapter = null,
   isEnabled = () => false,
+  getRouteGeneration = null,
   now = () => Date.now(),
   mappingTtlMs = DEFAULT_MAPPING_TTL_MS,
+  maxMappings = DEFAULT_MAX_MAPPINGS,
   maxDeliveries = DEFAULT_MAX_DELIVERIES,
   osPlatform = process.platform,
   log = () => {},
   getLang = () => "en",
 } = {}) {
   const t = createTranslator(getLang);
-  const mappings = new Map(); // Telegram completion message id -> { sessionId, expiresAt }
+  const mappings = new Map(); // chat + completion message id -> { sessionId, expiresAt }
+  const sessionSubmissionWatermarks = new Map(); // session id -> { sequence, expiresAt }
   const deliveries = new Map(); // delivery id -> in-memory prompt delivery entry
   let deliverySeq = 0;
+  let mappingGeneration = 0;
+  let notificationRouteGeneration = 0;
+  let notificationSequence = 0;
+  // Focus and clipboard are process-global resources on Windows. Queue the
+  // whole operation, including fallback and clipboard restoration, so two
+  // overlapping Telegram updates cannot switch the foreground window or
+  // overwrite each other's clipboard between focus confirmation and key input.
+  let deliveryChain = Promise.resolve();
 
   function safeLog(level, message, meta) {
     try { log(level, message, meta); } catch {}
+  }
+
+  function directSendEnabled() {
+    try {
+      return typeof isEnabled !== "function" || isEnabled() === true;
+    } catch {
+      return false;
+    }
+  }
+
+  function routeInvalidation(
+    expectedGeneration = null,
+    signal = null,
+    expectedRouteGeneration = undefined,
+  ) {
+    if (signal && signal.aborted) {
+      return {
+        status: "cancelled",
+        errorClass: "direct_send_cancelled",
+        textKey: "directSendSessionChanged",
+      };
+    }
+    if (expectedGeneration != null && expectedGeneration !== mappingGeneration) {
+      return {
+        status: "disabled",
+        errorClass: "direct_send_disabled",
+        textKey: "directSendSessionChanged",
+      };
+    }
+    // A completion mapping may outlive a native polling stop/restart when the
+    // token and recipient stay unchanged. Keep the mapping local to the exact
+    // polling route that delivered its notification; a new route must never
+    // reuse an old Telegram message as a session selector.
+    if (expectedRouteGeneration !== undefined) {
+      const expectedRoute = normalizeRouteGeneration(expectedRouteGeneration);
+      const currentRoute = readRouteGeneration();
+      if (expectedRoute === null
+        || currentRoute.bound !== true
+        || currentRoute.value === null
+        || currentRoute.value !== expectedRoute) {
+        return {
+          status: "disabled",
+          errorClass: "direct_send_disabled",
+          textKey: "directSendSessionChanged",
+        };
+      }
+    }
+    if (!directSendEnabled()) {
+      return {
+        status: "disabled",
+        errorClass: "direct_send_disabled",
+        textKey: "directSendSessionChanged",
+      };
+    }
+    return null;
+  }
+
+  function readRouteGeneration() {
+    if (typeof getRouteGeneration !== "function") {
+      return { bound: false, value: null };
+    }
+    try {
+      const rawValue = getRouteGeneration();
+      if (rawValue == null || rawValue === "") {
+        return { bound: true, value: null };
+      }
+      const value = Number(rawValue);
+      return {
+        bound: true,
+        value: Number.isSafeInteger(value) && value >= 0 ? value : null,
+      };
+    } catch {
+      return { bound: true, value: null };
+    }
+  }
+
+  function normalizeRouteGeneration(value) {
+    if (value == null || value === "") return null;
+    const numeric = Number(value);
+    return Number.isSafeInteger(numeric) && numeric >= 0 ? numeric : null;
+  }
+
+  function mappingRouteIsCurrent(mapping) {
+    if (!mapping || !Object.prototype.hasOwnProperty.call(mapping, "routeGeneration")) {
+      return true;
+    }
+    const expectedRoute = normalizeRouteGeneration(mapping.routeGeneration);
+    const currentRoute = readRouteGeneration();
+    return expectedRoute !== null
+      && currentRoute.bound === true
+      && currentRoute.value !== null
+      && currentRoute.value === expectedRoute;
+  }
+
+  function validateCurrentTarget(
+    sessionId,
+    expectedIdentity = null,
+    expectedGeneration = null,
+    signal = null,
+    expectedRouteGeneration = undefined,
+  ) {
+    const invalidation = routeInvalidation(expectedGeneration, signal, expectedRouteGeneration);
+    if (invalidation) {
+      return {
+        ok: false,
+        entry: null,
+        ...invalidation,
+      };
+    }
+    let snapshot;
+    try {
+      snapshot = typeof getSessionSnapshot === "function" ? getSessionSnapshot() : null;
+    } catch {
+      return {
+        ok: false,
+        entry: null,
+        status: "session_changed",
+        errorClass: "target_validation_failed",
+        textKey: "directSendSessionChanged",
+      };
+    }
+    const entry = findSession(snapshot, sessionId);
+    if (!entry) {
+      return {
+        ok: false,
+        entry: null,
+        status: "session_not_live",
+        errorClass: "session_not_live",
+        textKey: "directSendSessionNotLive",
+      };
+    }
+    if (!hasSameSessionIdentity(entry, expectedIdentity)) {
+      return {
+        ok: false,
+        entry,
+        status: "session_changed",
+        errorClass: "session_identity_changed",
+        textKey: "directSendSessionChanged",
+      };
+    }
+    if (hasInteractivePermissionPending(entry, getPendingPermissions)) {
+      return {
+        ok: false,
+        entry,
+        status: "permission_pending",
+        errorClass: "permission_pending",
+        textKey: "directSendPermissionPending",
+      };
+    }
+    if (!isReplyReadySession(entry)) {
+      return {
+        ok: false,
+        entry,
+        status: "session_changed",
+        errorClass: "session_not_ready",
+        textKey: "directSendSessionChanged",
+      };
+    }
+    const focusTarget = getSessionFocusTarget(entry, { osPlatform });
+    if (!isFocusableLocalHudSession(entry, { osPlatform }) || focusTarget.type !== "terminal") {
+      return {
+        ok: false,
+        entry,
+        status: "not_focusable",
+        errorClass: "target_not_focusable",
+        textKey: "directSendNotFocusable",
+      };
+    }
+    return { ok: true, entry, snapshot, status: null, errorClass: null, textKey: null };
+  }
+
+  function targetChangedResponse(deliveryEntry, validation, sessionId, focusResult = null) {
+    const entry = validation.entry || { id: sessionId };
+    safeLog("info", "direct-send stopped: target changed before delivery", {
+      sessionId,
+      errorClass: validation.errorClass,
+    });
+    updateDeliveryEntry(deliveryEntry, validation.status, {
+      sessionId,
+      agentId: entry.agentId || deliveryEntry.agentId || null,
+      focusResult: focusResult || deliveryEntry.focusResult || null,
+      errorClass: validation.errorClass,
+    });
+    return {
+      status: validation.status,
+      sessionId,
+      deliveryId: deliveryEntry.id,
+      focusResult: focusResult || undefined,
+      text: t(validation.textKey || "directSendSessionChanged"),
+    };
   }
 
   function nextDeliveryId() {
@@ -452,8 +794,29 @@ function createTelegramDirectSend({
     return deliveryEntry;
   }
 
-  async function tryClipboardFallback(deliveryEntry, entry, reason, patch = {}) {
+  async function tryClipboardFallback(
+    deliveryEntry,
+    entry,
+    reason,
+    patch = {},
+    expectedGeneration = null,
+    signal = null,
+    expectedRouteGeneration = undefined,
+  ) {
     if (!fallbackAdapter) return null;
+    if ((signal && signal.aborted)
+      || !directSendEnabled()
+      || (expectedGeneration != null && expectedGeneration !== mappingGeneration)
+      || (expectedRouteGeneration !== undefined
+        && !mappingRouteIsCurrent({ routeGeneration: expectedRouteGeneration }))) {
+      updateDeliveryEntry(deliveryEntry, "disabled", {
+        ...patch,
+        errorClass: signal && signal.aborted
+          ? "direct_send_cancelled"
+          : "direct_send_disabled",
+      });
+      return null;
+    }
     let fallbackResult;
     try {
       fallbackResult = normalizeDeliveryResult(await invokeFallbackAdapter(fallbackAdapter, {
@@ -465,6 +828,7 @@ function createTelegramDirectSend({
         entry,
         focusResult: patch.focusResult || null,
         autoEnter: false,
+        signal,
       }));
     } catch {
       fallbackResult = normalizeDeliveryResult({
@@ -472,6 +836,37 @@ function createTelegramDirectSend({
         delivered: false,
         errorClass: "fallback_adapter_threw",
       });
+    }
+
+    // The fallback adapter may have an asynchronous clipboard/OS boundary.
+    // Re-check the route after it resolves before reporting a successful copy:
+    // a token/recipient reset or polling abort can happen while that operation
+    // is in flight. The clipboard write is already an external side effect, so
+    // retain its result as an uncertain delivery, but never emit a success ack
+    // or let the stale operation masquerade as a current one.
+    const cancelled = !!(signal && signal.aborted);
+    const staleGeneration = expectedGeneration != null
+      && expectedGeneration !== mappingGeneration;
+    const staleRoute = expectedRouteGeneration !== undefined
+      && !mappingRouteIsCurrent({ routeGeneration: expectedRouteGeneration });
+    const disabled = !directSendEnabled();
+    if (cancelled || staleGeneration || staleRoute || disabled) {
+      const errorClass = cancelled ? "direct_send_cancelled" : "direct_send_disabled";
+      updateDeliveryEntry(deliveryEntry, cancelled ? "cancelled" : "disabled", {
+        ...patch,
+        deliveryResult: fallbackResult,
+        fallbackReason: reason,
+        fallbackErrorClass: errorClass,
+        errorClass,
+        fallbackUncertain: fallbackResult.status === "fallback_copied",
+      });
+      safeLog("info", "direct-send fallback completed after route became inactive", {
+        sessionId: patch.sessionId || (entry && entry.id) || undefined,
+        reason,
+        errorClass,
+        fallbackStatus: fallbackResult.status,
+      });
+      return null;
     }
 
     if (fallbackResult.status !== "fallback_copied") {
@@ -515,36 +910,256 @@ function createTelegramDirectSend({
     for (const [messageId, mapping] of mappings) {
       if (!mapping || mapping.expiresAt <= ts) mappings.delete(messageId);
     }
+    for (const [sessionId, watermark] of sessionSubmissionWatermarks) {
+      if (!watermark || watermark.expiresAt <= ts) sessionSubmissionWatermarks.delete(sessionId);
+    }
   }
 
-  function registerCompletionNotification({ messageId, sessionId } = {}) {
-    const key = normalizeMessageId(messageId);
-    const id = normalizeSessionId(sessionId);
-    if (!key || !id) return false;
-    pruneExpired();
-    mappings.set(key, {
-      sessionId: id,
-      expiresAt: now() + Math.max(1, mappingTtlMs),
-    });
-    safeLog("debug", "direct-send mapping registered", { messageId: key, sessionId: id });
+  function pruneMappingsToLimit() {
+    const limit = Math.max(1, Number.isFinite(maxMappings) ? Math.floor(maxMappings) : DEFAULT_MAX_MAPPINGS);
+    while (mappings.size > limit) {
+      const firstKey = mappings.keys().next().value;
+      if (!firstKey) break;
+      mappings.delete(firstKey);
+    }
+    while (sessionSubmissionWatermarks.size > limit) {
+      const firstKey = sessionSubmissionWatermarks.keys().next().value;
+      if (!firstKey) break;
+      sessionSubmissionWatermarks.delete(firstKey);
+    }
+  }
+
+  function createCompletionNotificationContext(entry = {}) {
+    notificationSequence += 1;
+    let identity = captureSessionIdentity(entry);
+    // The shared snapshot intentionally omits agentPid. The main-process
+    // snapshot supplied to Direct Send adds it from the live runtime map, but
+    // keep a synchronous best-effort backfill for callers that pass the public
+    // snapshot shape directly. Capturing it here is important: looking it up
+    // only after Telegram send completes can observe a reused session's new
+    // process and defeat the identity fence.
+    if (identity && identity.id && typeof getSessionSnapshot === "function") {
+      try {
+        const liveEntry = findSession(getSessionSnapshot(), identity.id);
+        const liveAgentPid = normalizePid(liveEntry && liveEntry.agentPid);
+        if (identity.agentPid == null && liveAgentPid != null) identity = {
+          ...identity,
+          agentPid: liveAgentPid,
+        };
+      } catch {}
+    }
+    const context = {
+      generation: mappingGeneration,
+      notificationRouteGeneration,
+      sequence: notificationSequence,
+      sessionId: normalizeSessionId(entry.sessionId || entry.id) || null,
+      identity,
+    };
+    const route = readRouteGeneration();
+    if (route.bound) context.routeGeneration = route.value;
+    return context;
+  }
+
+  function invalidateMappings({ notificationRouteChanged = true } = {}) {
+    mappingGeneration += 1;
+    if (notificationRouteChanged) notificationRouteGeneration += 1;
+    mappings.clear();
+    sessionSubmissionWatermarks.clear();
+    return mappingGeneration;
+  }
+
+  function isCompletionNotificationRouteCurrent(context) {
+    if (!context || typeof context !== "object") return false;
+    const expectedNotificationRoute = Number(context.notificationRouteGeneration);
+    if (!Number.isSafeInteger(expectedNotificationRoute)
+      || expectedNotificationRoute !== notificationRouteGeneration) {
+      return false;
+    }
+    if (Object.prototype.hasOwnProperty.call(context, "routeGeneration")) {
+      const rawExpectedRoute = context.routeGeneration;
+      if (rawExpectedRoute == null || rawExpectedRoute === "") return false;
+      const expectedRoute = Number(rawExpectedRoute);
+      const currentRoute = readRouteGeneration();
+      if (!Number.isSafeInteger(expectedRoute)
+        || currentRoute.bound !== true
+        || currentRoute.value === null
+        || currentRoute.value !== expectedRoute) {
+        return false;
+      }
+    } else if (typeof getRouteGeneration === "function") {
+      return false;
+    }
     return true;
   }
 
-  function resolveMapping(messageId) {
+  function isCompletionNotificationContextCurrent(context) {
+    if (!context || typeof context !== "object") return false;
+    const generation = Number(context.generation);
+    if (!Number.isSafeInteger(generation) || generation !== mappingGeneration) return false;
+    return isCompletionNotificationRouteCurrent(context);
+  }
+
+  function registerCompletionNotification({
+    messageId,
+    sessionId,
+    chatId,
+    agentId,
+    sourcePid,
+    agentPid,
+    editor,
+    wtHwnd,
+    orcaPaneKey,
+    notificationContext,
+  } = {}) {
+    const key = normalizeMessageId(messageId);
+    const id = normalizeSessionId(sessionId);
+    if (!key || !id) return false;
+    // Production binds mappings to the native poller's route generation. A
+    // context-free registration would silently create a mapping that survives
+    // stop/start and recipient lifecycle changes, so retain that compatibility
+    // only for standalone callers that did not configure a route provider.
+    const hasNotificationContext = !!notificationContext && typeof notificationContext === "object";
+    const routeProviderBound = typeof getRouteGeneration === "function";
+    if (!hasNotificationContext && routeProviderBound) return false;
+    let sequence;
+    let routeGeneration;
+    let hasRouteGeneration = false;
+    let contextIdentity = null;
+    if (hasNotificationContext) {
+      const generation = Number(notificationContext.generation);
+      sequence = Number(notificationContext.sequence);
+      if (!Number.isSafeInteger(generation) || generation !== mappingGeneration) return false;
+      if (!Number.isSafeInteger(sequence) || sequence <= 0) return false;
+      const contextSessionId = normalizeSessionId(notificationContext.sessionId);
+      if (contextSessionId && contextSessionId !== id) return false;
+      if (!isCompletionNotificationContextCurrent(notificationContext)) return false;
+      notificationSequence = Math.max(notificationSequence, sequence);
+      if (Object.prototype.hasOwnProperty.call(notificationContext, "routeGeneration")) {
+        routeGeneration = normalizeRouteGeneration(notificationContext.routeGeneration);
+        if (routeGeneration === null) return false;
+        hasRouteGeneration = true;
+      } else if (routeProviderBound) {
+        return false;
+      }
+      if (notificationContext.identity && typeof notificationContext.identity === "object") {
+        contextIdentity = captureSessionIdentity(notificationContext.identity);
+      }
+    } else {
+      notificationSequence += 1;
+      sequence = notificationSequence;
+    }
+    const normalizedChatId = normalizeChatId(chatId);
+    const scopedKey = mappingKey(key, normalizedChatId);
+    pruneExpired();
+    const watermark = sessionSubmissionWatermarks.get(id);
+    if (watermark && sequence <= watermark.sequence) return false;
+    // Refreshing an existing Telegram message mapping makes it the newest
+    // entry for capacity pruning, while preserving reference-based consume
+    // protection for an in-flight delivery that resolved the older value.
+    mappings.delete(scopedKey);
+    const identityValue = (field, fallback) => {
+      if (contextIdentity && Object.prototype.hasOwnProperty.call(contextIdentity, field)) {
+        return contextIdentity[field];
+      }
+      return fallback;
+    };
+    const mapping = {
+      sessionId: id,
+      chatId: normalizedChatId || null,
+      agentId: normalizeSessionId(identityValue("agentId", agentId)) || null,
+      sourcePid: normalizePid(identityValue("sourcePid", sourcePid)),
+      agentPid: normalizePid(identityValue("agentPid", agentPid)),
+      editor: normalizeEditorIdentity(identityValue("editor", editor)),
+      wtHwnd: normalizeHwndString(identityValue("wtHwnd", wtHwnd)),
+      orcaPaneKey: normalizeSessionId(identityValue("orcaPaneKey", orcaPaneKey)) || null,
+      generation: mappingGeneration,
+      sequence,
+      expiresAt: now() + Math.max(1, mappingTtlMs),
+    };
+    if (hasRouteGeneration) mapping.routeGeneration = routeGeneration;
+    mappings.set(scopedKey, mapping);
+    pruneMappingsToLimit();
+    safeLog("debug", "direct-send mapping registered", {
+      messageId: key,
+      chatId: normalizedChatId || undefined,
+      sessionId: id,
+      agentId: normalizeSessionId(agentId) || undefined,
+      sourcePid: normalizePid(sourcePid) || undefined,
+      agentPid: normalizePid(agentPid) || undefined,
+    });
+    return true;
+  }
+
+  function resolveMapping(messageId, chatId) {
     pruneExpired();
     const key = normalizeMessageId(messageId);
     if (!key) return null;
-    const mapping = mappings.get(key);
+    const normalizedChatId = normalizeChatId(chatId);
+    // Prefer a chat-scoped mapping. The unscoped fallback preserves mappings
+    // created by older callers and keeps the public helper backwards-compatible.
+    const scopedKey = normalizedChatId ? mappingKey(key, normalizedChatId) : "";
+    const resolvedKey = (scopedKey && mappings.has(scopedKey)) ? scopedKey : key;
+    const mapping = mappings.get(resolvedKey);
     if (!mapping) return null;
-    if (mapping.expiresAt <= now()) {
-      mappings.delete(key);
+    if (mapping.generation !== mappingGeneration || !mappingRouteIsCurrent(mapping)) {
+      mappings.delete(resolvedKey);
       return null;
     }
-    return mapping;
+    if (mapping.expiresAt <= now()) {
+      mappings.delete(resolvedKey);
+      return null;
+    }
+    return { key: resolvedKey, mapping };
   }
 
-  async function handleTextMessage(payload = {}) {
-    if (typeof isEnabled === "function" && !isEnabled()) return null;
+  function consumeMapping(resolved) {
+    if (!resolved || !resolved.key || !resolved.mapping) return false;
+    if (mappings.get(resolved.key) !== resolved.mapping) return false;
+    return mappings.delete(resolved.key);
+  }
+
+  function consumeSessionMappings(resolved, sequenceFence) {
+    if (!resolved || !resolved.mapping) return false;
+    if (resolved.mapping.generation !== mappingGeneration) return false;
+    const sessionId = normalizeSessionId(resolved.mapping.sessionId);
+    if (!sessionId) return consumeMapping(resolved);
+    const mappingSequence = Number(resolved.mapping.sequence);
+    const requestedFence = Number(sequenceFence);
+    const fence = Number.isSafeInteger(requestedFence) && requestedFence > 0
+      ? requestedFence
+      : mappingSequence;
+    if (!Number.isSafeInteger(fence) || fence <= 0) return consumeMapping(resolved);
+    const expiresAt = now() + Math.max(1, mappingTtlMs);
+    const previousWatermark = sessionSubmissionWatermarks.get(sessionId);
+    const watermarkSequence = previousWatermark
+      && Number.isSafeInteger(previousWatermark.sequence)
+      ? Math.max(previousWatermark.sequence, fence)
+      : fence;
+    sessionSubmissionWatermarks.delete(sessionId);
+    sessionSubmissionWatermarks.set(sessionId, {
+      sequence: watermarkSequence,
+      expiresAt: Math.max(expiresAt, Number(previousWatermark && previousWatermark.expiresAt) || 0),
+    });
+    let consumed = false;
+    for (const [key, mapping] of mappings) {
+      if (
+        mapping
+        && mapping.sessionId === sessionId
+        && mapping.generation === mappingGeneration
+        && Number(mapping.sequence) <= watermarkSequence
+      ) {
+        mappings.delete(key);
+        consumed = true;
+      }
+    }
+    pruneMappingsToLimit();
+    return consumed;
+  }
+
+  async function handleTextMessageNow(payload = {}) {
+    const signal = payload && payload.signal;
+    if (signal && signal.aborted) return null;
+    if (!directSendEnabled()) return null;
     const promptText = normalizePromptText(payload.text);
     if (!promptText) {
       return {
@@ -555,8 +1170,8 @@ function createTelegramDirectSend({
 
     const deliveryEntry = createDeliveryEntry(payload, promptText);
 
-    const mapping = resolveMapping(payload.replyToMessageId);
-    if (!mapping) {
+    const resolvedMapping = resolveMapping(payload.replyToMessageId, payload.chatId);
+    if (!resolvedMapping) {
       updateDeliveryEntry(deliveryEntry, "unmapped", { errorClass: "completion_mapping_missing" });
       return {
         status: "unmapped",
@@ -564,9 +1179,14 @@ function createTelegramDirectSend({
         text: t("directSendUnmapped"),
       };
     }
+    const mapping = resolvedMapping.mapping;
+    const expectedMappingGeneration = mapping.generation;
+    const expectedRouteGeneration = Object.prototype.hasOwnProperty.call(mapping, "routeGeneration")
+      ? mapping.routeGeneration
+      : undefined;
 
     const snapshot = typeof getSessionSnapshot === "function" ? getSessionSnapshot() : null;
-    const entry = findSession(snapshot, mapping.sessionId);
+    let entry = findSession(snapshot, mapping.sessionId);
     if (!entry) {
       safeLog("info", "direct-send fallback: session not live", { sessionId: mapping.sessionId });
       updateDeliveryEntry(deliveryEntry, "session_not_live", {
@@ -577,7 +1197,10 @@ function createTelegramDirectSend({
         deliveryEntry,
         { id: mapping.sessionId },
         "session_not_live",
-        { sessionId: mapping.sessionId, errorClass: "session_not_live" }
+        { sessionId: mapping.sessionId, errorClass: "session_not_live" },
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
       );
       if (fallback) return fallback;
       return {
@@ -586,6 +1209,15 @@ function createTelegramDirectSend({
         deliveryId: deliveryEntry.id,
         text: t("directSendSessionNotLive"),
       };
+    }
+    if (!mappingIdentityMatches(entry, mapping)) {
+      return targetChangedResponse(deliveryEntry, {
+        ok: false,
+        entry,
+        status: "session_changed",
+        errorClass: "session_identity_changed",
+        textKey: "directSendSessionChanged",
+      }, mapping.sessionId);
     }
 
     updateDeliveryEntry(deliveryEntry, "target_resolved", {
@@ -600,7 +1232,10 @@ function createTelegramDirectSend({
         deliveryEntry,
         entry,
         "permission_pending",
-        { errorClass: "permission_pending" }
+        { errorClass: "permission_pending" },
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
       );
       if (fallback) return fallback;
       return {
@@ -609,6 +1244,16 @@ function createTelegramDirectSend({
         deliveryId: deliveryEntry.id,
         text: t("directSendPermissionPending"),
       };
+    }
+
+    if (!isReplyReadySession(entry)) {
+      return targetChangedResponse(deliveryEntry, {
+        ok: false,
+        entry,
+        status: "session_changed",
+        errorClass: "session_not_ready",
+        textKey: "directSendSessionChanged",
+      }, entry.id);
     }
 
     const focusTarget = getSessionFocusTarget(entry, { osPlatform });
@@ -625,7 +1270,10 @@ function createTelegramDirectSend({
         deliveryEntry,
         entry,
         "not_focusable_terminal",
-        { errorClass: "not_focusable_terminal" }
+        { errorClass: "not_focusable_terminal" },
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
       );
       if (fallback) return fallback;
       return {
@@ -636,67 +1284,227 @@ function createTelegramDirectSend({
       };
     }
 
-    let focusResult;
-    try {
-      updateDeliveryEntry(deliveryEntry, "focus_requested");
-      const rawFocusResult = typeof focusSession === "function"
-        ? await focusSession(entry.id, { requestSource: "telegram-direct-send", fallbackEntry: entry })
-        : false;
-      focusResult = normalizeFocusGateResult(rawFocusResult);
-    } catch (err) {
-      safeLog("warn", "direct-send focus threw", { sessionId: entry.id, error: err && err.message });
-      focusResult = normalizeFocusGateResult({ reason: "focus-threw", confirmed: false });
-    }
-
-    if (!focusResult.confirmed) {
-      safeLog("info", "direct-send fallback: focus result unconfirmed", {
-        sessionId: entry.id,
-        reason: focusResult.reason,
+    // Never silently truncate a reply and then press Enter. Keep the full text
+    // in the clipboard fallback so the user can review and submit it manually.
+    if (promptText.length > MAX_AUTO_SUBMIT_TEXT) {
+      const deliveryResult = normalizeDeliveryResult({
+        status: "failed",
+        delivered: false,
+        errorClass: "reply_too_long",
       });
-      updateDeliveryEntry(deliveryEntry, "focus_unconfirmed", {
-        focusResult,
-        errorClass: "focus_unconfirmed",
+      updateDeliveryEntry(deliveryEntry, "failed", {
+        deliveryResult,
+        errorClass: deliveryResult.errorClass,
       });
       const fallback = await tryClipboardFallback(
         deliveryEntry,
         entry,
-        "focus_unconfirmed",
-        { focusResult, errorClass: "focus_unconfirmed" }
+        deliveryResult.errorClass,
+        { deliveryResult, errorClass: deliveryResult.errorClass },
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
       );
       if (fallback) return fallback;
       return {
-        status: "focus_unconfirmed",
+        status: "failed",
         sessionId: entry.id,
         deliveryId: deliveryEntry.id,
-        focusResult,
-        text: t("directSendFocusUnconfirmed"),
+        deliveryResult,
+        text: formatDeliveryAck("failed", entry, deliveryResult, t),
       };
     }
 
-    updateDeliveryEntry(deliveryEntry, "focus_confirmed", { focusResult });
+    const expectedIdentity = captureSessionIdentity(entry);
+    const requiresFocus = deliveryAdapterRequiresFocus(deliveryAdapter);
+    let focusResult = null;
+    let latestSnapshot = snapshot;
+
+    if (requiresFocus) {
+      if (signal && signal.aborted) {
+        return targetChangedResponse(deliveryEntry, {
+          ok: false,
+          entry,
+          status: "cancelled",
+          errorClass: "direct_send_cancelled",
+          textKey: "directSendSessionChanged",
+        }, entry.id);
+      }
+      try {
+        updateDeliveryEntry(deliveryEntry, "focus_requested");
+        const rawFocusResult = typeof focusSession === "function"
+          ? await focusSession(entry.id, { requestSource: "telegram-direct-send", fallbackEntry: entry })
+          : false;
+        focusResult = normalizeFocusGateResult(rawFocusResult);
+      } catch (err) {
+        safeLog("warn", "direct-send focus threw", { sessionId: entry.id, error: err && err.message });
+        focusResult = normalizeFocusGateResult({ reason: "focus-threw", confirmed: false });
+      }
+
+      if (!focusResult.confirmed) {
+        safeLog("info", "direct-send fallback: focus result unconfirmed", {
+          sessionId: entry.id,
+          reason: focusResult.reason,
+        });
+        updateDeliveryEntry(deliveryEntry, "focus_unconfirmed", {
+          focusResult,
+          errorClass: "focus_unconfirmed",
+        });
+        const fallback = await tryClipboardFallback(
+          deliveryEntry,
+          entry,
+          "focus_unconfirmed",
+          { focusResult, errorClass: "focus_unconfirmed" },
+          expectedMappingGeneration,
+          signal,
+          expectedRouteGeneration,
+        );
+        if (fallback) return fallback;
+        return {
+          status: "focus_unconfirmed",
+          sessionId: entry.id,
+          deliveryId: deliveryEntry.id,
+          focusResult,
+          text: t("directSendFocusUnconfirmed"),
+        };
+      }
+
+      const postFocusValidation = validateCurrentTarget(
+        entry.id,
+        expectedIdentity,
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
+      );
+      if (!postFocusValidation.ok) {
+        return targetChangedResponse(deliveryEntry, postFocusValidation, entry.id, focusResult);
+      }
+      entry = postFocusValidation.entry;
+      latestSnapshot = postFocusValidation.snapshot;
+      updateDeliveryEntry(deliveryEntry, "focus_confirmed", { focusResult });
+    } else {
+      const preDeliveryValidation = validateCurrentTarget(
+        entry.id,
+        expectedIdentity,
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
+      );
+      if (!preDeliveryValidation.ok) {
+        return targetChangedResponse(deliveryEntry, preDeliveryValidation, entry.id);
+      }
+      entry = preDeliveryValidation.entry;
+      latestSnapshot = preDeliveryValidation.snapshot;
+      updateDeliveryEntry(deliveryEntry, "target_revalidated");
+    }
 
     let deliveryResult;
+    // Capture notifications that existed before input submission. A completion
+    // emitted after Console input but before the helper returns stays replyable.
+    let submissionFence = notificationSequence;
     try {
       updateDeliveryEntry(deliveryEntry, "delivery_attempted");
-      deliveryResult = normalizeDeliveryResult(await invokeDeliveryAdapter(deliveryAdapter, {
-        deliveryId: deliveryEntry.id,
-        promptText,
-        sessionId: entry.id,
-        agentId: entry.agentId || null,
-        entry,
-        focusResult,
-        autoEnter: false,
-      }));
+      if (deliveryAdapterRequiresMappedAgentPid(deliveryAdapter)
+        && !normalizePid(mapping.agentPid)) {
+        deliveryResult = normalizeDeliveryResult({
+          status: "failed",
+          delivered: false,
+          errorClass: "agent_pid_unavailable",
+        });
+      } else if (hasSameAgentPidPeer(latestSnapshot, entry)) {
+        deliveryResult = normalizeDeliveryResult({
+          status: "failed",
+          delivered: false,
+          errorClass: "console_ambiguous",
+        });
+      } else {
+        deliveryResult = normalizeDeliveryResult(await invokeDeliveryAdapter(deliveryAdapter, {
+          deliveryId: deliveryEntry.id,
+          promptText,
+          sessionId: entry.id,
+          agentId: entry.agentId || null,
+          entry,
+          focusResult,
+          autoEnter: false,
+          signal,
+          otherSessionAgentPids: collectOtherSessionAgentPids(latestSnapshot, entry),
+          validateBeforeInput: () => {
+            const validation = validateCurrentTarget(
+              entry.id,
+              expectedIdentity,
+              expectedMappingGeneration,
+              signal,
+              expectedRouteGeneration,
+            );
+            if (!validation.ok) return { ok: false, errorClass: validation.errorClass };
+            if (hasSameAgentPidPeer(validation.snapshot, validation.entry)) {
+              return { ok: false, errorClass: "console_ambiguous" };
+            }
+            submissionFence = notificationSequence;
+            return {
+              ok: true,
+              otherSessionAgentPids: collectOtherSessionAgentPids(validation.snapshot, validation.entry),
+            };
+          },
+        }));
+      }
     } catch (err) {
       safeLog("warn", "direct-send delivery adapter threw", {
         sessionId: entry.id,
-        errorClass: "delivery_adapter_threw",
+        errorClass: signal && signal.aborted
+          ? "direct_send_cancelled"
+          : "delivery_adapter_threw",
       });
       deliveryResult = normalizeDeliveryResult({
         status: "failed",
         delivered: false,
-        errorClass: "delivery_adapter_threw",
+        errorClass: signal && signal.aborted
+          ? "direct_send_cancelled"
+          : "delivery_adapter_threw",
       });
+    }
+
+    // The adapter may cross an OS boundary (Console input or clipboard) after
+    // its last validation callback. A stop, feature-toggle change, or mapping
+    // invalidation can therefore happen before it resolves. Treat that result
+    // as uncertain: keep the caller-facing response out of the success path,
+    // avoid consuming a newer completion mapping, and let the native runner's
+    // route fence suppress the reply when the poll lifecycle was aborted.
+    const invalidation = routeInvalidation(
+      expectedMappingGeneration,
+      signal,
+      expectedRouteGeneration,
+    );
+    if (invalidation) {
+      const adapterAlreadyFailed = deliveryResult.status === "failed";
+      const responseStatus = adapterAlreadyFailed ? "failed" : invalidation.status;
+      const staleDeliveryResult = {
+        ...deliveryResult,
+        status: "failed",
+        delivered: false,
+        autoEnter: false,
+        errorClass: invalidation.errorClass,
+      };
+      updateDeliveryEntry(deliveryEntry, responseStatus, {
+        deliveryResult: staleDeliveryResult,
+        errorClass: invalidation.errorClass,
+      });
+      safeLog("info", "direct-send delivery completed after route became inactive", {
+        sessionId: entry.id,
+        attemptedStatus: deliveryResult.status,
+        errorClass: invalidation.errorClass,
+      });
+      return {
+        // Preserve the existing failed-delivery contract when the adapter
+        // already reported a validation error; a late success is downgraded
+        // to the route status so it can never be acknowledged as delivered.
+        status: responseStatus,
+        sessionId: entry.id,
+        deliveryId: deliveryEntry.id,
+        focusResult,
+        deliveryResult: staleDeliveryResult,
+        text: t(invalidation.textKey || "directSendSessionChanged"),
+      };
     }
 
     const resultStatus = deliveryResult.status === "focus_only"
@@ -707,7 +1515,18 @@ function createTelegramDirectSend({
       errorClass: deliveryResult.errorClass,
     });
 
-    if (deliveryResult.status === "failed") {
+    if (
+      deliveryResult.status === "sent_with_enter"
+      || deliveryResult.errorClass === "partial_console_write"
+      || deliveryResult.errorClass === "console_input_result_unknown"
+    ) {
+      consumeSessionMappings(resolvedMapping, submissionFence);
+    }
+
+    if (
+      deliveryResult.status === "failed"
+      && !NO_FALLBACK_ERRORS.has(deliveryResult.errorClass)
+    ) {
       const fallback = await tryClipboardFallback(
         deliveryEntry,
         entry,
@@ -716,7 +1535,10 @@ function createTelegramDirectSend({
           focusResult,
           deliveryResult,
           errorClass: deliveryResult.errorClass,
-        }
+        },
+        expectedMappingGeneration,
+        signal,
+        expectedRouteGeneration,
       );
       if (fallback) return fallback;
     }
@@ -724,7 +1546,7 @@ function createTelegramDirectSend({
     safeLog("info", "direct-send delivery result", {
       sessionId: entry.id,
       status: resultStatus,
-      reason: focusResult.reason,
+      reason: focusResult ? focusResult.reason : "terminal-channel",
       errorClass: deliveryResult.errorClass || undefined,
     });
     return {
@@ -737,7 +1559,21 @@ function createTelegramDirectSend({
     };
   }
 
+  function handleTextMessage(payload = {}) {
+    const run = deliveryChain
+      .catch(() => {})
+      .then(() => handleTextMessageNow(payload));
+    // Keep the queue alive after a caller-facing rejection while preserving
+    // that rejection for the current caller.
+    deliveryChain = run.catch(() => {});
+    return run;
+  }
+
   return {
+    createCompletionNotificationContext,
+    isCompletionNotificationRouteCurrent,
+    isCompletionNotificationContextCurrent,
+    invalidateMappings,
     registerCompletionNotification,
     handleTextMessage,
     _mappings: mappings,
@@ -748,6 +1584,7 @@ function createTelegramDirectSend({
 module.exports = {
   DEFAULT_MAPPING_TTL_MS,
   formatDeliveryAck,
+  DEFAULT_MAX_MAPPINGS,
   DEFAULT_MAX_DELIVERIES,
   createTelegramDirectSend,
   createClipboardFallbackDeliveryAdapter,
