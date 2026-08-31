@@ -644,6 +644,7 @@ module.exports = {
   EVENT_LABEL_KEYS,
   INTERNAL_WORKSPACE_AGENTS,
   SESSION_TITLE_MAX,
+  isDoneEvent,
   deriveSourceInfo,
   normalizeTitle,
   sessionUpdatedAt,

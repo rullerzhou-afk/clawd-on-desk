@@ -171,6 +171,9 @@ function createRuntime(overrides = {}) {
     repositionFloatingBubbles: () => calls.push(["repositionFloatingBubbles"]),
     showFloatingSurfacesForPet: () => calls.push(["showFloatingSurfacesForPet"]),
     hideFloatingSurfacesForPet: () => calls.push(["hideFloatingSurfacesForPet"]),
+    setFloatingSurfacesFullscreenSuppressed: (suppressed) => (
+      calls.push(["setFloatingSurfacesFullscreenSuppressed", suppressed])
+    ),
     syncSessionHudVisibilityAndBubbles: () => calls.push(["syncSessionHudVisibilityAndBubbles"]),
     syncPermissionShortcuts: () => calls.push(["syncPermissionShortcuts"]),
     buildTrayMenu: () => calls.push(["buildTrayMenu"]),
@@ -179,9 +182,10 @@ function createRuntime(overrides = {}) {
     ...(overrides.syncImeEditingPetDodge
       ? { syncImeEditingPetDodge: overrides.syncImeEditingPetDodge }
       : {}),
-    reassertWinTopmost: () => calls.push(["reassertWinTopmost"]),
+    reassertWinTopmost: (...args) => calls.push(["reassertWinTopmost", ...args]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
+    ...(overrides.noteManualPetShow ? { noteManualPetShow: overrides.noteManualPetShow } : {}),
     ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
     ...(overrides.isRoamAnimating ? { isRoamAnimating: overrides.isRoamAnimating } : {}),
     ...(overrides.isEdgeVirtualizationDisabled
@@ -3779,5 +3783,208 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
     assert.equal(h.runtime.recoverIfCloaked(), "failed");    // streak must restart at 1
     clock += 10_001;                                         // fresh 10s window, not 20s
     assert.equal(h.runtime.recoverIfCloaked(), "failed");
+  });
+});
+
+// ── #935: fullscreen auto-hide visibility layer ──
+//
+// A second, runtime-only hide reason stacked on the manual petHidden flag:
+// effective hidden = petHidden || fullscreenAutoHidden. The manual flag is the
+// user's; the auto flag belongs to topmost-runtime's fullscreen sync. Neither
+// layer may clobber the other's intent — a manual hide survives the auto
+// restore, and a manual show (setPetHidden(false)) clears the auto flag so
+// "show" always means show NOW.
+describe("fullscreen auto-hide visibility layer (#935)", () => {
+  it("setFullscreenAutoHidden hides the pet without touching the manual state", () => {
+    const h = createRuntime();
+    const r = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "hide"));
+    assert.ok(h.hitWin.calls.some((c) => c[0] === "hide"));
+    assert.ok(h.calls.some((c) => (
+      c[0] === "setFloatingSurfacesFullscreenSuppressed" && c[1] === true
+    )));
+  });
+
+  it("clearing the auto-hide restores the pet and its floating surfaces", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    const r = h.runtime.setFullscreenAutoHidden(false);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+    assert.ok(h.calls.some((c) => (
+      c[0] === "setFloatingSurfacesFullscreenSuppressed" && c[1] === false
+    )));
+    assert.ok(h.calls.some((c) => c[0] === "reassertWinTopmost"));
+  });
+
+  it("auto restore reasserts topmost with the focus poll's cached observation", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true, "game-1");
+    h.calls.length = 0;
+
+    h.runtime.setFullscreenAutoHidden(false, false);
+
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "reassertWinTopmost"),
+      [["reassertWinTopmost", false]],
+    );
+  });
+
+  it("treats an explicitly undefined observation as absent across wrapper seams", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.calls.length = 0;
+
+    h.runtime.setFullscreenAutoHidden(false, undefined);
+
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "reassertWinTopmost"),
+      [["reassertWinTopmost"]],
+    );
+  });
+
+  it("is idempotent when already in the target state", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    const before = h.renderWin.calls.length;
+    const r = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: false });
+    assert.equal(h.renderWin.calls.length, before);
+  });
+
+  it("is a visible no-op over a manually hidden pet", () => {
+    const h = createRuntime();
+    h.runtime.setPetHidden(true);
+    h.renderWin.calls.length = 0;
+    h.hitWin.calls.length = 0;
+
+    const hide = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(hide, { applied: true, deferred: false, changed: false });
+    const show = h.runtime.setFullscreenAutoHidden(false);
+    assert.deepEqual(show, { applied: true, deferred: false, changed: false });
+
+    assert.deepStrictEqual(h.renderWin.calls, []);
+    assert.deepStrictEqual(h.hitWin.calls, []);
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+  });
+
+  it("a manual hide placed during the auto-hide survives the auto restore", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(true);
+    h.renderWin.calls.length = 0;
+
+    h.runtime.setFullscreenAutoHidden(false);
+
+    assert.ok(!h.renderWin.calls.some((c) => c[0] === "showInactive"));
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+  });
+
+  it("setPetHidden(false) clears the auto flag and shows the pet immediately", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    const r = h.runtime.setPetHidden(false);
+    assert.deepEqual(r, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+
+  it("togglePetVisibility acts on the effective state: one toggle shows an auto-hidden pet", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.togglePetVisibility();
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+
+  it("defers during a mini transition without changing the flag", () => {
+    const h = createRuntime({ miniTransitioning: true });
+    const r = h.runtime.setFullscreenAutoHidden(true);
+    assert.deepEqual(r, { applied: false, deferred: true, changed: false });
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+  });
+
+  it("keeps the hit window click-through while auto-hidden (I5 suppression reason)", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    assert.ok(h.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === true));
+    h.hitWin.calls.length = 0;
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.ok(h.hitWin.calls.some((c) => c[0] === "setIgnoreMouseEvents" && c[1] === false));
+  });
+
+  it("recoverIfCloaked treats an auto-hidden pet as hidden (#525 strobe guard)", () => {
+    const h = createRuntime({ cloakInspector: makeCloakInspector({ flag: 2 }) });
+    h.runtime.setFullscreenAutoHidden(true);
+    assert.equal(h.runtime.recoverIfCloaked(), "hidden");
+  });
+
+  it("recoverVisiblePetAfterRendererLoad does not resurrect an auto-hidden pet", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.renderWin.calls.length = 0;
+    assert.equal(h.runtime.recoverVisiblePetAfterRendererLoad(), "hidden");
+    assert.ok(!h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+
+  it("bringPetToPrimaryDisplay clears the auto-hide (explicit show intent)", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.bringPetToPrimaryDisplay();
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
+});
+
+describe("manual show intent hook (#935 override latch)", () => {
+  it("setPetHidden(false) reports intent even when it is a visible no-op", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(notes, ["show"], "a no-op show is still an intent (the stale-menu click)");
+    assert.ok(h.calls.some(([name]) => name === "reassertWinTopmost"),
+      "the real manual Show path must surface immediately instead of waiting for the watchdog");
+  });
+
+  it("setPetHidden(false) reports intent when it lifts an auto-hide", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(notes, ["show"]);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.calls.some(([name]) => name === "reassertWinTopmost"));
+  });
+
+  it("setPetHidden(false) preserves intent when a mini transition defers the write", () => {
+    const notes = [];
+    const h = createRuntime({
+      miniTransitioning: true,
+      noteManualPetShow: () => notes.push("show"),
+    });
+    const result = h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(result, { applied: false, deferred: true, changed: false });
+    assert.deepStrictEqual(notes, ["show"],
+      "the later fullscreen retry needs to know that the user explicitly requested Show");
+  });
+
+  it("hides and the auto-hide writer never report show intent", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setPetHidden(true);
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.deepStrictEqual(notes, [], "only a manual SHOW is user intent");
   });
 });

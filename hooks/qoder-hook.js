@@ -186,6 +186,9 @@ function buildStateBody(hookName, payload, options = {}) {
     event: mapped.event,
     agent_id: "qoder",
   };
+  if (hookName === "PermissionRequest" || hookName === "PermissionDenied") {
+    body.recap_boundary = "permission";
+  }
 
   if (payload && typeof payload.cwd === "string" && payload.cwd) body.cwd = payload.cwd;
   if (payload && typeof payload.model === "string" && payload.model) body.model = payload.model;

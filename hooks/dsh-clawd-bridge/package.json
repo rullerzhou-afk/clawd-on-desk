@@ -8,9 +8,13 @@
   "exports": { ".": "./lib/index.js" },
   "license": "MIT",
   "clawd": {
-    "supportedDshRange": "=0.1.0-rc.6",
-    "verifiedDshArtifact": "@deepseek-ai/dsh@0.1.0-rc.6",
-    "verifiedDshArtifactIntegrity": "sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==",
+    "supportedDshRange": "=0.1.1-rc.2",
+    "supportedVersions": [
+      { "version": "0.1.1-rc.2", "range": "=0.1.1-rc.2", "verifiedArtifact": "@deepseek-ai/dsh@0.1.1-rc.2", "verifiedArtifactIntegrity": "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==" },
+      { "version": "0.1.0-rc.6", "range": "=0.1.0-rc.6", "verifiedArtifact": "@deepseek-ai/dsh@0.1.0-rc.6", "verifiedArtifactIntegrity": "sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==" }
+    ],
+    "verifiedDshArtifact": "@deepseek-ai/dsh@0.1.1-rc.2",
+    "verifiedDshArtifactIntegrity": "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==",
     "sourceAuditBaselineCommit": "47f943859bef60e4160492346772ded9b24f765a"
   },
   "dsh": {

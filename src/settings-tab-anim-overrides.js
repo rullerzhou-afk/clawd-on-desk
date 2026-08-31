@@ -1534,18 +1534,31 @@
 
   function buildAnimOverrideRow(card) {
     card = applyPendingAnimOverrideCard(card);
-    const row = document.createElement("details");
+    const row = document.createElement("div");
     row.className = "anim-override-row";
     if (card.fallbackTargetState) row.classList.add("inherited");
     row.dataset.rowId = card.id;
-    if (runtime.expandedOverrideRowIds.has(card.id)) row.open = true;
-    row.addEventListener("toggle", () => {
-      if (row.open) runtime.expandedOverrideRowIds.add(card.id);
-      else runtime.expandedOverrideRowIds.delete(card.id);
-    });
 
-    row.appendChild(buildAnimOverrideSummary(card));
-    row.appendChild(buildAnimOverrideDrawer(card));
+    const summary = buildAnimOverrideSummary(card);
+    const body = document.createElement("div");
+    body.className = "anim-override-body settings-disclosure-body";
+    const bodyInner = document.createElement("div");
+    bodyInner.className = "anim-override-body-inner settings-disclosure-body-inner";
+    bodyInner.appendChild(buildAnimOverrideDrawer(card));
+    body.appendChild(bodyInner);
+    row.appendChild(summary);
+    row.appendChild(body);
+
+    helpers.registerMountedDisposable(helpers.attachSettingsDisclosure({
+      root: row,
+      trigger: summary,
+      body,
+      expanded: runtime.expandedOverrideRowIds.has(card.id),
+      onExpandedChange(nextExpanded) {
+        if (nextExpanded) runtime.expandedOverrideRowIds.add(card.id);
+        else runtime.expandedOverrideRowIds.delete(card.id);
+      },
+    }), { scope: "animation-overrides" });
     if (card && card.id) {
       const controls = getMountedOverrideStatusControls();
       const current = controls.get(card.id) || { cardId: card.id };
@@ -1555,7 +1568,8 @@
   }
 
   function buildAnimOverrideSummary(card) {
-    const summary = document.createElement("summary");
+    const summary = document.createElement("div");
+    summary.className = "anim-override-summary";
 
     const chevron = helpers.createDisclosureChevron("anim-override-chevron");
     summary.appendChild(chevron);

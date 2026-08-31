@@ -17,6 +17,8 @@
 //                                       every settings-changed broadcast
 //   onAgentActivity(cb)                 cb({ agentId, timestamp, eventType }) —
 //                                       accepted custom /state activity only
+//   onRecapChanged(cb)                  cb() — coalesced signal that the local
+//                                       Footprints aggregate changed
 //   onAnimationPreviewPosterReady(cb)   cb({ themeId, filename, previewImageUrl,
 //                                       previewPosterCacheKey }) — incremental
 //                                       animation override preview poster
@@ -46,7 +48,10 @@ const remoteSshProgressListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const agentActivityListeners = new Set();
+const recapChangedListeners = new Set();
 const updateCheckStatusListeners = new Set();
+const requestedTabListeners = new Set();
+let pendingRequestedTab = null;
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
@@ -90,9 +95,21 @@ ipcRenderer.on("settings:agent-activity", (_event, payload) => {
     try { cb(payload); } catch (err) { console.warn("agent activity listener threw:", err); }
   }
 });
+ipcRenderer.on("settings:recap-changed", () => {
+  for (const cb of recapChangedListeners) {
+    try { cb(); } catch (err) { console.warn("recap changed listener threw:", err); }
+  }
+});
 ipcRenderer.on("settings:update-check-status", (_event, payload) => {
   for (const cb of updateCheckStatusListeners) {
     try { cb(payload); } catch (err) { console.warn("update check status listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:select-tab", (_event, tab) => {
+  if (typeof tab !== "string") return;
+  pendingRequestedTab = tab;
+  for (const cb of requestedTabListeners) {
+    try { cb(tab); } catch (err) { console.warn("settings requested-tab listener threw:", err); }
   }
 });
 
@@ -101,6 +118,18 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   // shipped), so the presence enable switch can be ready without a user-saved App ID.
   discordDefaultAppIdPresent,
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
+  queryRecap: (period) => ipcRenderer.invoke("settings:recap-query", period),
+  clearRecap: () => ipcRenderer.invoke("settings:recap-clear"),
+  consumeRequestedTab: () => {
+    const tab = pendingRequestedTab;
+    pendingRequestedTab = null;
+    return tab;
+  },
+  onRequestedTab: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    requestedTabListeners.add(cb);
+    return () => requestedTabListeners.delete(cb);
+  },
   getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
   getQuotaRingProviders: () => ipcRenderer.invoke("settings:get-quota-ring-providers"),
   getKimiQuotaStatus: () => ipcRenderer.invoke("settings:kimi-quota-status"),
@@ -170,6 +199,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     if (typeof cb !== "function") return () => {};
     agentActivityListeners.add(cb);
     return () => agentActivityListeners.delete(cb);
+  },
+  onRecapChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    recapChangedListeners.add(cb);
+    return () => recapChangedListeners.delete(cb);
   },
   onAnimationPreviewPosterReady: (cb) => {
     if (typeof cb !== "function") return () => {};

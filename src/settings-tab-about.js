@@ -69,18 +69,37 @@
       card.appendChild(nextStep);
     }
 
-    const details = document.createElement("details");
+    const details = document.createElement("div");
     details.className = "about-update-error-details";
-    const summary = document.createElement("summary");
-    summary.textContent = t("aboutUpdateErrorDetails");
+    const summary = document.createElement("button");
+    summary.type = "button";
+    summary.className = "about-update-error-details-trigger";
+    summary.appendChild(helpers.createDisclosureChevron("about-update-error-chevron"));
+    const summaryLabel = document.createElement("span");
+    summaryLabel.textContent = t("aboutUpdateErrorDetails");
+    summary.appendChild(summaryLabel);
+    const body = document.createElement("div");
+    body.className = "about-update-error-details-body settings-disclosure-body";
+    const bodyInner = document.createElement("div");
+    bodyInner.className = "about-update-error-details-inner settings-disclosure-body-inner";
     const technical = document.createElement("pre");
     technical.textContent = [
       report.code ? `${t("aboutUpdateErrorCode")}: ${report.code}` : "",
       report.phase ? `${t("aboutUpdateErrorPhase")}: ${report.phase}` : "",
       report.detail || "",
     ].filter(Boolean).join("\n");
+    bodyInner.appendChild(technical);
+    body.appendChild(bodyInner);
     details.appendChild(summary);
-    details.appendChild(technical);
+    details.appendChild(body);
+    state.mountedControls.aboutUpdateErrorDisclosure = helpers.registerMountedDisposable(
+      helpers.attachSettingsDisclosure({
+        root: details,
+        trigger: summary,
+        body,
+        expanded: false,
+      }),
+    );
     card.appendChild(details);
 
     const actions = document.createElement("div");
@@ -407,6 +426,8 @@
         updateBtn.textContent = normalized.state === "checking"
           ? t("aboutCheckingForUpdates")
           : t("aboutCheckForUpdates");
+        helpers.disposeMountedDisposable(state.mountedControls.aboutUpdateErrorDisclosure);
+        state.mountedControls.aboutUpdateErrorDisclosure = null;
         updateStatusHost.innerHTML = "";
         if (normalized.state === "error" && normalized.error) {
           updateStatusHost.appendChild(buildUpdateErrorCard(normalized.error, () => {

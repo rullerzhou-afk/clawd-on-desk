@@ -102,6 +102,7 @@ function createSettingsEffectRouter(options = {}) {
   const refreshDisplayedVisual = options.refreshDisplayedVisual || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
+  const setRecapEnabled = options.setRecapEnabled || noop;
   const now = options.now || (() => new Date());
 
   setPetAccessoryFloatingSurfaceRepositioner(repositionFloatingBubbles);
@@ -197,6 +198,9 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("keepAwakeWhileWorking" in changes) {
       safeCall(logWarn, "Clawd: reconcilePowerSaveBlocker failed:", reconcilePowerSaveBlocker);
+    }
+    if ("recapEnabled" in changes) {
+      safeCall(logWarn, "Clawd: recap recording toggle failed:", setRecapEnabled, changes.recapEnabled);
     }
     if ("lang" in changes) {
       safeCall(logWarn, "Clawd: dashboard lang broadcast failed:", sendDashboardI18n);

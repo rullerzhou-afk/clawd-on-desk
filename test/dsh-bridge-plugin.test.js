@@ -39,6 +39,7 @@ test("DSH bridge maps only public session events and never copies tool arguments
   assert.strictEqual(payload.session_id, "deepseek-harness:s1");
   assert.strictEqual(payload.event_seq, 7);
   assert.strictEqual(payload.headless, true);
+  assert.strictEqual(payload.recap_is_subagent, true);
   assert.strictEqual(Object.prototype.hasOwnProperty.call(payload, "tool_input"), false);
   assert.strictEqual(JSON.stringify(payload).includes("never"), false);
 });

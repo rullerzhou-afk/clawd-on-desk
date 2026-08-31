@@ -54,6 +54,11 @@ const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 // not an Internet DoS concern.
 const MAX_STATE_BODY_BYTES = 16 * 1024;
 const ASSISTANT_LAST_OUTPUT_MAX = 2400;
+const RECAP_PERMISSION_BOUNDARY_AGENT_IDS = new Set([
+  "qoder",
+  "qoderwork",
+  "qwenwork",
+]);
 // Transport recognition and metadata acceptance are distinct wire facts.
 // A recognized 204 may still mean "unknown session" or another designed
 // metadata drop; only this header allows a metadata sender to advance its
@@ -332,6 +337,20 @@ function handleStatePost(req, res, options) {
         || data.session_start_source === "clear"
         || data.session_start_source === "compact"
       ) ? data.session_start_source : null;
+      // Closed provenance used only by recap metric mapping. Never forward a
+      // free-form upstream event name into state, snapshots or future storage.
+      const recapBoundary = data.recap_boundary === "permission"
+        && RECAP_PERMISSION_BOUNDARY_AGENT_IDS.has(agentId)
+        ? "permission"
+        : (data.recap_boundary === "tool-call"
+            && agentId === "kimi-cli"
+            && event === "PermissionRequest"
+            && data.permission_gate_open === true
+          ? "tool-call"
+          : null);
+      const recapIsSubagent = data.recap_is_subagent === true
+        && agentId === "deepseek-harness"
+        && data.hook_source === "dsh-plugin";
       // #583: hook-reported stdin diagnostics, attached only when the hook's
       // stdin payload carried no session_id. Normalized here so state.js can
       // log it without trusting hook-side shapes.
@@ -874,6 +893,8 @@ function handleStatePost(req, res, options) {
             ...(subagentType ? { subagentType } : {}),
             ...(subagentLifecycleSource ? { subagentLifecycleSource } : {}),
             ...(sessionStartSource ? { sessionStartSource } : {}),
+            ...(recapBoundary ? { recapBoundary } : {}),
+            ...((recapIsSubagent || codexHookState.headless === true) ? { recapIsSubagent: true } : {}),
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             host,
@@ -892,6 +913,7 @@ function handleStatePost(req, res, options) {
             assistantLastOutput,
             assistantLastOutputTruncated,
             toolName,
+            ...(toolUseId ? { toolUseId } : {}),
             transcriptPath,
             permissionSuspect,
             permissionAction,
@@ -903,6 +925,7 @@ function handleStatePost(req, res, options) {
             preserveState,
             hookSource,
             ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
+            ...(codexHookState.turnId ? { recapDedupeId: codexHookState.turnId } : {}),
             backgroundTasksCount,
             ...(backgroundSubagentsCount !== null ? { backgroundSubagentsCount } : {}),
             sessionCronsCount,

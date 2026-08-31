@@ -41,6 +41,16 @@ function buildCodexMonitorSessionOptions(extra, options = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "pidChain")) out.pidChain = input.pidChain;
   if (Object.prototype.hasOwnProperty.call(input, "codexOriginator")) out.codexOriginator = input.codexOriginator;
   if (Object.prototype.hasOwnProperty.call(input, "codexSource")) out.codexSource = input.codexSource;
+  if (options.includeRecap === true) {
+    const hasTrustedRecapTime = Number.isSafeInteger(input.recapOccurredAt) && input.recapOccurredAt >= 0;
+    if (hasTrustedRecapTime) out.recapOccurredAt = input.recapOccurredAt;
+    if (typeof input.recapDedupeId === "string" && input.recapDedupeId) {
+      out.recapDedupeId = input.recapDedupeId;
+    }
+    if (typeof input.toolUseId === "string" && input.toolUseId) out.toolUseId = input.toolUseId;
+    if (input.headless === true) out.recapIsSubagent = true;
+    if (!hasTrustedRecapTime || input.syntheticBackfill === true) out.recapSuppressed = true;
+  }
   const contextUsage = normalizeContextUsage(input.contextUsage);
   if (contextUsage) out.contextUsage = contextUsage;
   if (options.includeHeadless) out.headless = input.headless === true;

@@ -1897,7 +1897,7 @@ describe("CodexLogMonitor", () => {
       JSON.stringify({ type: "session_meta", timestamp: oldTimestamp, payload: { cwd: "/tmp" } }),
       JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_started", turn_id: "old-turn" } }),
       JSON.stringify({ type: "event_msg", timestamp: oldTimestamp, payload: { type: "task_complete", turn_id: "old-turn" } }),
-      JSON.stringify({ type: "response_item", timestamp: liveTimestamp, payload: { type: "function_call", name: "shell_command" } }),
+      JSON.stringify({ type: "response_item", timestamp: liveTimestamp, payload: { type: "function_call", name: "shell_command", call_id: "live-call" } }),
     ].join("\n") + "\n");
 
     const events = [];
@@ -1908,6 +1908,8 @@ describe("CodexLogMonitor", () => {
 
     assert.deepStrictEqual(events.map((entry) => entry.event), ["response_item:function_call"]);
     assert.strictEqual(events[0].extra.turnId, undefined);
+    assert.strictEqual(events[0].extra.recapOccurredAt, Date.parse(liveTimestamp));
+    assert.strictEqual(events[0].extra.toolUseId, "live-call");
     assert.strictEqual(monitor._tracked.get(testFile).activeTurnId, null);
     assert.strictEqual(monitor._tracked.get(testFile).turnBoundaryOpen, false);
   });
@@ -1934,19 +1936,26 @@ describe("CodexLogMonitor", () => {
     assert.strictEqual(events[0].extra.turnId, "turn-backfill");
   });
 
-  it("should map function_call to working", (_, done) => {
+  it("emits every JSONL tool boundary even while the visual state stays working", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
-      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command","call_id":"call-1"}}',
+      '{"type":"response_item","payload":{"type":"custom_tool_call","name":"custom","call_id":"call-2"}}',
+      '{"type":"response_item","payload":{"type":"web_search_call","id":"call-3"}}',
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    const states = [];
-    monitor = new CodexLogMonitor(config, (sid, state) => {
-      states.push(state);
-      if (states.length === 2) {
-        assert.strictEqual(states[1], "working");
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
+      events.push({ state, event, toolUseId: extra && extra.toolUseId });
+      if (events.length === 4) {
+        assert.deepStrictEqual(events, [
+          { state: "idle", event: "session_meta", toolUseId: undefined },
+          { state: "working", event: "response_item:function_call", toolUseId: "call-1" },
+          { state: "working", event: "response_item:custom_tool_call", toolUseId: "call-2" },
+          { state: "working", event: "response_item:web_search_call", toolUseId: "call-3" },
+        ]);
         done();
       }
     });
@@ -2125,14 +2134,14 @@ describe("CodexLogMonitor", () => {
     monitor.start();
   });
 
-  it("should dedup repeated working states", (_, done) => {
+  it("dedups repeated non-boundary working states without dropping the tool boundary", (_, done) => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, [
       '{"type":"session_meta","payload":{"cwd":"/tmp"}}',
       '{"type":"event_msg","payload":{"type":"task_started"}}',
       '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
-      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
-      '{"type":"response_item","payload":{"type":"function_call","name":"shell_command"}}',
+      '{"type":"event_msg","payload":{"type":"exec_command_end"}}',
+      '{"type":"event_msg","payload":{"type":"patch_apply_end"}}',
       '{"type":"event_msg","payload":{"type":"task_complete"}}',
     ].join("\n") + "\n");
 
@@ -2141,7 +2150,8 @@ describe("CodexLogMonitor", () => {
     monitor = new CodexLogMonitor(config, (sid, state) => {
       states.push(state);
       if (state === "attention") {
-        // idle, thinking, working (deduped), attention — should be 4 not 6
+        // The tool start survives; repeated working-like completion signals
+        // remain visually deduped.
         assert.deepStrictEqual(states, ["idle", "thinking", "working", "attention"]);
         done();
       }
@@ -4223,15 +4233,19 @@ describe("CodexLogMonitor", () => {
     ].join("\n") + "\n");
 
     const config = makeConfig(tmpDir);
-    const states = [];
+    const observed = [];
     monitor = new CodexLogMonitor(config, (sid, state, event, extra) => {
-      states.push(state);
+      observed.push({ state, event, extra });
       assert.strictEqual(extra.permissionDetail, undefined);
     });
     monitor.start();
 
     setTimeout(() => {
-      assert.deepStrictEqual(states, ["idle", "working"]);
+      assert.deepStrictEqual(observed.map((entry) => entry.state), ["idle", "working"]);
+      assert.strictEqual(observed[1].event, "response_item:function_call");
+      assert.strictEqual(observed[1].extra.recapIsWebSearch, true);
+      assert.strictEqual(JSON.stringify(observed[1].extra).includes("test"), false);
+      assert.strictEqual(JSON.stringify(observed[1].extra).includes("web_search"), false);
       done();
     }, 100);
   });

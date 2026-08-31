@@ -44,6 +44,7 @@
 
   // startsWith("Mac") not /\bMac\b/ — "MacIntel" has \w after "c", fails \b (regression #135).
   const IS_MAC = (navigator.platform || "").startsWith("Mac");
+  const IS_WIN = (navigator.platform || "").startsWith("Win");
   const COLLAPSED_GROUPS_STORAGE_KEY = "clawd.settings.collapsedGroups.v1";
   const NAVIGATION_STORAGE_KEY = "clawd.settings.navigation.v1";
   const MAX_PERSISTED_SCROLL_TOP = 10_000_000;
@@ -79,7 +80,6 @@
       idleVisualPicker: null,
       bubblePolicySummary: null,
       sessionHudSummary: null,
-      languagePicker: null,
       size: null,
       soundSummary: null,
       soundVolume: null,
@@ -89,6 +89,7 @@
       roamArea: null,
       settingsSelects: new Set(),
       segmentedRadios: new Set(),
+      disposableScopes: new Map(),
       quotaRingDisplayMode: null,
       permissionAutomationMode: null,
       aboutAutoUpdate: null,
@@ -123,6 +124,7 @@
     nextAnimationOverrideEditSeq: 1,
     animOverridesSubtab: "map",
     settingsTabScrollPositions: new Map(),
+    persistedSettingsTab: "general",
     // null = not chosen yet; the Agents tab resolves it from what is connected.
     agentsSubtab: null,
     agentsUnavailableQuery: "",
@@ -594,6 +596,206 @@
     return chevron;
   }
 
+  let settingsDisclosureId = 0;
+
+  function prefersReducedMotion() {
+    return typeof window.matchMedia === "function"
+      && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
+  function scheduleSettingsTimeout(callback, delay) {
+    if (typeof setTimeout === "function") return setTimeout(callback, delay);
+    requestAnimationFrame(callback);
+    return null;
+  }
+
+  function cancelSettingsTimeout(timer) {
+    if (timer !== null && typeof clearTimeout === "function") clearTimeout(timer);
+  }
+
+  function getMountedDisposableScope(scope = "content") {
+    const scopes = state.mountedControls.disposableScopes;
+    if (!scopes.has(scope)) scopes.set(scope, new Set());
+    return scopes.get(scope);
+  }
+
+  function registerMountedDisposable(disposable, { scope = "content" } = {}) {
+    if (!disposable || typeof disposable.dispose !== "function") return disposable;
+    getMountedDisposableScope(scope).add(disposable);
+    return disposable;
+  }
+
+  function disposeMountedDisposable(disposable, { scope = null } = {}) {
+    if (!disposable || typeof disposable.dispose !== "function") return;
+    const scopes = state.mountedControls.disposableScopes;
+    if (scope !== null) {
+      const controls = scopes.get(scope);
+      if (controls) {
+        controls.delete(disposable);
+        if (controls.size === 0) scopes.delete(scope);
+      }
+    } else {
+      for (const [scopeName, controls] of scopes) {
+        controls.delete(disposable);
+        if (controls.size === 0) scopes.delete(scopeName);
+      }
+    }
+    disposable.dispose();
+  }
+
+  function disposeMountedDisposables(scope = null) {
+    const scopes = state.mountedControls.disposableScopes;
+    const scopeNames = scope === null ? Array.from(scopes.keys()) : [scope];
+    for (const scopeName of scopeNames) {
+      const controls = scopes.get(scopeName);
+      if (!controls) continue;
+      scopes.delete(scopeName);
+      for (const disposable of Array.from(controls)) disposable.dispose();
+    }
+  }
+
+  function attachSettingsDisclosure({
+    root: disclosureRoot,
+    trigger,
+    body,
+    expanded = false,
+    animate = true,
+    onExpandedChange = null,
+    preserveStateChange = null,
+    syncTrigger = null,
+  } = {}) {
+    if (!disclosureRoot || !trigger || !body) {
+      throw new TypeError("attachSettingsDisclosure requires root, trigger, and body");
+    }
+    const bodyInner = body.querySelector(".settings-disclosure-body-inner");
+    if (!bodyInner) throw new TypeError("Settings disclosure body requires an inner wrapper");
+
+    let isExpanded = !!expanded;
+    let transitionTimer = null;
+    let transitionState = null;
+    let disposed = false;
+    disclosureRoot.classList.add("settings-disclosure");
+    trigger.classList.add("settings-disclosure-trigger");
+    body.classList.add("settings-disclosure-body");
+
+    const triggerTag = String(trigger.tagName || "").toUpperCase();
+    if (triggerTag !== "BUTTON") {
+      if (!trigger.getAttribute("role")) trigger.setAttribute("role", "button");
+      if (!trigger.getAttribute("tabindex")) trigger.setAttribute("tabindex", "0");
+    }
+    if (!body.getAttribute("id")) {
+      settingsDisclosureId += 1;
+      body.setAttribute("id", `settings-disclosure-body-${settingsDisclosureId}`);
+    }
+    trigger.setAttribute("aria-controls", body.getAttribute("id"));
+
+    function finishTransition() {
+      cancelSettingsTimeout(transitionTimer);
+      transitionTimer = null;
+      transitionState = null;
+      disclosureRoot.classList.remove("expanding", "collapsing");
+      setBodyInteractivity(isExpanded);
+    }
+
+    function setBodyInteractivity(nextExpanded, isTransitioning = false) {
+      body.setAttribute("aria-hidden", nextExpanded ? "false" : "true");
+      const bodyInert = !nextExpanded || isTransitioning;
+      if ("inert" in body) {
+        body.inert = bodyInert;
+      } else if (bodyInert) {
+        body.setAttribute("inert", "");
+      } else {
+        body.removeAttribute("inert");
+      }
+    }
+
+    function syncState({ isTransitioning = false } = {}) {
+      trigger.setAttribute("aria-expanded", isExpanded ? "true" : "false");
+      disclosureRoot.classList.toggle("expanded", isExpanded);
+      disclosureRoot.classList.toggle("collapsed", !isExpanded);
+      setBodyInteractivity(isExpanded, isTransitioning);
+      if (typeof syncTrigger === "function") syncTrigger(isExpanded);
+    }
+
+    function suppressTransitionOnce() {
+      disclosureRoot.classList.add("settings-disclosure-no-motion");
+      requestAnimationFrame(() => {
+        if (!disposed) disclosureRoot.classList.remove("settings-disclosure-no-motion");
+      });
+    }
+
+    function setExpanded(nextExpanded, options = {}) {
+      if (disposed) return false;
+      const normalized = !!nextExpanded;
+      if (normalized === isExpanded) return false;
+      const animateRequested = options.animate === undefined ? animate : options.animate !== false;
+      const apply = () => {
+        finishTransition();
+        isExpanded = normalized;
+        const reducedMotion = prefersReducedMotion();
+        const shouldAnimate = animateRequested && !reducedMotion;
+        syncState({ isTransitioning: shouldAnimate });
+        if (!shouldAnimate) {
+          if (!reducedMotion) suppressTransitionOnce();
+          return;
+        }
+        transitionState = isExpanded ? "expanding" : "collapsing";
+        disclosureRoot.classList.add(transitionState);
+        transitionTimer = scheduleSettingsTimeout(finishTransition, 300);
+      };
+      if (typeof preserveStateChange === "function") preserveStateChange(apply);
+      else apply();
+      if (typeof onExpandedChange === "function") {
+        onExpandedChange(isExpanded, { persist: options.persist !== false });
+      }
+      return true;
+    }
+
+    function toggle(options = {}) {
+      return setExpanded(!isExpanded, options);
+    }
+
+    function onClick() {
+      toggle();
+    }
+
+    function onKeyDown(ev) {
+      if (ev.target !== trigger || (ev.key !== " " && ev.key !== "Enter")) return;
+      ev.preventDefault();
+      toggle();
+    }
+
+    function onBodyTransitionFinished(ev) {
+      if (ev.target !== body || ev.propertyName !== "grid-template-rows") return;
+      finishTransition();
+    }
+
+    trigger.addEventListener("click", onClick);
+    if (triggerTag !== "BUTTON") trigger.addEventListener("keydown", onKeyDown);
+    // A reversed transition emits a stale transitioncancel after the new
+    // generation starts. Only its transitionend or watchdog may release inert.
+    body.addEventListener("transitionend", onBodyTransitionFinished);
+    syncState();
+
+    return {
+      get expanded() { return isExpanded; },
+      get transitioning() { return transitionState; },
+      setExpanded,
+      expand: (options = {}) => setExpanded(true, options),
+      collapse: (options = {}) => setExpanded(false, options),
+      toggle,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        finishTransition();
+        disclosureRoot.classList.remove("settings-disclosure-no-motion");
+        trigger.removeEventListener("click", onClick);
+        if (triggerTag !== "BUTTON") trigger.removeEventListener("keydown", onKeyDown);
+        body.removeEventListener("transitionend", onBodyTransitionFinished);
+      },
+    };
+  }
+
   function buildCollapsibleGroup({
     id,
     title = "",
@@ -668,65 +870,39 @@
 
     const body = document.createElement("div");
     body.className = "collapsible-group-body";
-    for (const child of children) body.appendChild(child);
+    const bodyInner = document.createElement("div");
+    bodyInner.className = "collapsible-group-body-inner";
+    for (const child of children) bodyInner.appendChild(child);
+    body.appendChild(bodyInner);
 
-    function measureCollapsibleBodyHeight() {
-      return `${body.scrollHeight}px`;
-    }
-
-    function setExpandedBodyHeight() {
-      body.style.setProperty("--collapsible-body-height", measureCollapsibleBodyHeight());
-    }
-
+    const contentAnimationTimers = new Map();
     function refreshCollapsibleHeight() {
-      if (collapsed || !group.classList.contains("expanding")) return;
-      requestAnimationFrame(() => {
-        if (!collapsed && group.classList.contains("expanding")) setExpandedBodyHeight();
-      });
+      // Compatibility shim: the grid-based body follows its natural height.
     }
 
     function mutateCollapsibleBody(mutate) {
       if (typeof mutate !== "function") return;
-      if (collapsed || group.classList.contains("collapsing")) {
-        mutate();
-        return;
-      }
-      if (group.classList.contains("expanding")) {
-        mutate();
-        refreshCollapsibleHeight();
-        return;
-      }
-
-      const beforeHeight = body.scrollHeight;
-      mutate();
-      const afterHeight = body.scrollHeight;
-      const prefersReducedMotion = typeof window.matchMedia === "function"
-        && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-      if (beforeHeight === afterHeight || prefersReducedMotion) return;
-
-      // The settled-open body normally uses max-height:none so reflow can grow
-      // freely. Pin its pre-mutation height for one frame, then animate to the
-      // new measured height instead of letting async rows cause a layout jump.
-      body.style.setProperty("--collapsible-body-height", `${beforeHeight}px`);
-      group.classList.add("resizing");
-      void body.offsetHeight;
-      requestAnimationFrame(() => {
-        if (collapsed || !group.classList.contains("resizing")) return;
-        body.style.setProperty("--collapsible-body-height", `${afterHeight}px`);
-      });
-    }
-
-    function setBodyInteractivity(isCollapsed) {
-      body.setAttribute("aria-hidden", isCollapsed ? "true" : "false");
-      if ("inert" in body) {
-        body.inert = isCollapsed;
-      } else if (isCollapsed) {
-        body.setAttribute("inert", "");
-      } else {
-        body.removeAttribute("inert");
+      // Callers return the newly inserted or revealed elements so existing
+      // controls do not replay their entrance animation on every async update.
+      const result = mutate();
+      if (!controller.expanded || controller.transitioning === "collapsing" || prefersReducedMotion()) return;
+      const targets = Array.isArray(result) ? result : [result];
+      for (const target of targets) {
+        if (!target || !target.classList) continue;
+        if (contentAnimationTimers.has(target)) {
+          cancelSettingsTimeout(contentAnimationTimers.get(target));
+          contentAnimationTimers.delete(target);
+        }
+        target.classList.remove("collapsible-content-entering");
+        void target.offsetWidth;
+        target.classList.add("collapsible-content-entering");
+        const timer = scheduleSettingsTimeout(() => {
+          contentAnimationTimers.delete(target);
+          target.classList.remove("collapsible-content-entering");
+        }, 240);
+        if (timer !== null) contentAnimationTimers.set(target, timer);
       }
     }
-
     function preserveScrollAnchor(invoke) {
       const scroller = document.getElementById("content");
       if (!scroller || !document.body.contains(header)) {
@@ -744,93 +920,51 @@
       });
     }
 
-    function applyCollapsedState({ animate = false } = {}) {
-      disclosure.setAttribute("aria-expanded", collapsed ? "false" : "true");
-      const actionLabel = collapsed ? t("collapsibleExpand") : t("collapsibleCollapse");
-      disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
-      group.classList.remove("expanding", "collapsing", "resizing");
-      if (!animate) {
-        group.classList.toggle("collapsed", collapsed);
-        setBodyInteractivity(collapsed);
-        if (collapsed) {
-          body.style.setProperty("--collapsible-body-height", "0px");
-        } else {
-          // Settled-open groups must NOT keep a pinned max-height: text zoom
-          // or window-width changes rewrap descriptions and grow the content,
-          // and a stale pinned height clips the bottom rows (overflow:
-          // hidden). A measured height is only needed while animating.
-          body.style.setProperty("--collapsible-body-height", "none");
-        }
-        return;
-      }
-
-      if (collapsed) {
-        group.classList.add("collapsing");
-        setBodyInteractivity(true);
-        setExpandedBodyHeight();
-        requestAnimationFrame(() => {
-          group.classList.add("collapsed");
-          body.style.setProperty("--collapsible-body-height", "0px");
-        });
-        return;
-      }
-
-      group.classList.add("expanding", "collapsed");
-      setBodyInteractivity(false);
-      body.style.setProperty("--collapsible-body-height", "0px");
-      requestAnimationFrame(() => {
-        group.classList.remove("collapsed");
-        setExpandedBodyHeight();
-      });
-    }
-
-    function setCollapsed(
-      nextCollapsed,
-      { persist = true, animate = animateExpansion } = {},
-    ) {
-      if (collapsed === nextCollapsed) return;
-      collapsed = nextCollapsed;
-      if (persist) {
+    group.appendChild(header);
+    group.appendChild(body);
+    body.classList.add("settings-disclosure-body");
+    bodyInner.classList.add("settings-disclosure-body-inner");
+    const controller = attachSettingsDisclosure({
+      root: group,
+      trigger: disclosure,
+      body,
+      expanded: !collapsed,
+      animate: animateExpansion,
+      preserveStateChange: preserveScrollAnchor,
+      syncTrigger(isExpanded) {
+        const actionLabel = isExpanded ? t("collapsibleCollapse") : t("collapsibleExpand");
+        disclosure.setAttribute("aria-label", disclosureLabel ? `${actionLabel}: ${disclosureLabel}` : actionLabel);
+      },
+      onExpandedChange(isExpanded, { persist }) {
+        collapsed = !isExpanded;
+        if (!persist) return;
         const nextState = readCollapsedGroupState();
         nextState[id] = collapsed;
         writeCollapsedGroupState(nextState);
-      }
-      preserveScrollAnchor(() => applyCollapsedState({ animate }));
-    }
-
-    function toggleCollapsed() {
-      setCollapsed(!collapsed);
-    }
-
-    disclosure.addEventListener("click", toggleCollapsed);
-    disclosure.addEventListener("keydown", (ev) => {
-      if (ev.key === " " || ev.key === "Enter") {
-        ev.preventDefault();
-        toggleCollapsed();
-      }
+      },
     });
-
-    group.appendChild(header);
-    group.appendChild(body);
-    body.addEventListener("transitionend", (ev) => {
-      if (ev.target !== body || ev.propertyName !== "max-height") return;
-      group.classList.remove("expanding", "collapsing", "resizing");
-      // Release the pinned height once settled so later reflows (text zoom,
-      // window resize) can grow the body instead of clipping at the bottom.
-      if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
-    });
-    applyCollapsedState();
-    requestAnimationFrame(() => {
-      if (!collapsed) body.style.setProperty("--collapsible-body-height", "none");
-    });
+    const trackedDisclosure = {
+      dispose() {
+        controller.dispose();
+        for (const [target, timer] of contentAnimationTimers) {
+          cancelSettingsTimeout(timer);
+          target.classList.remove("collapsible-content-entering");
+        }
+        contentAnimationTimers.clear();
+      },
+    };
+    registerMountedDisposable(trackedDisclosure);
     group.expand = ({
       persist = true,
       animate = animateExpansion,
     } = {}) => {
-      setCollapsed(false, { persist, animate });
+      controller.expand({ persist, animate });
     };
     group.refreshCollapsibleHeight = refreshCollapsibleHeight;
     group.mutateCollapsibleBody = mutateCollapsibleBody;
+    group.disposeCollapsible = () => {
+      disposeMountedDisposable(trackedDisclosure);
+    };
     return group;
   }
 
@@ -1116,9 +1250,6 @@
   }
 
   function clearMountedControls() {
-    if (state.mountedControls.languagePicker && typeof state.mountedControls.languagePicker.dispose === "function") {
-      state.mountedControls.languagePicker.dispose();
-    }
     if (state.mountedControls.idleVisualPicker && typeof state.mountedControls.idleVisualPicker.dispose === "function") {
       state.mountedControls.idleVisualPicker.dispose();
     }
@@ -1142,6 +1273,7 @@
       if (control && typeof control.dispose === "function") control.dispose();
     }
     state.mountedControls.segmentedRadios.clear();
+    disposeMountedDisposables();
     state.mountedControls.generalSwitches.clear();
     state.mountedControls.bubblePolicyControls.clear();
     state.mountedControls.sessionCleanupControls.clear();
@@ -1153,7 +1285,6 @@
     state.mountedControls.animOverrideTimingSliders.clear();
     state.mountedControls.bubblePolicySummary = null;
     state.mountedControls.sessionHudSummary = null;
-    state.mountedControls.languagePicker = null;
     state.mountedControls.idleVisualPicker = null;
     state.mountedControls.size = null;
     state.mountedControls.soundSummary = null;
@@ -1166,6 +1297,7 @@
     state.mountedControls.roamArea = null;
     state.mountedControls.aboutAutoUpdate = null;
     state.mountedControls.aboutUpdateStatus = null;
+    state.mountedControls.aboutUpdateErrorDisclosure = null;
   }
 
   function syncMountedSizeControl({ fromBroadcast = false } = {}) {
@@ -1188,10 +1320,18 @@
     }
   }
 
-  function getActiveSettingsFocusKey() {
+  function getActiveSettingsFocusState() {
     const active = document.activeElement;
-    if (!active || active === document.body || typeof active.getAttribute !== "function") return "";
-    return String(active.getAttribute("data-settings-focus-key") || "").trim();
+    if (!active || active === document.body || typeof active.getAttribute !== "function") {
+      return { focusKey: "", fallbackKey: "" };
+    }
+    const focusKey = String(active.getAttribute("data-settings-focus-key") || "").trim();
+    return {
+      focusKey,
+      fallbackKey: focusKey
+        ? String(active.getAttribute("data-settings-focus-fallback-key") || "").trim()
+        : "",
+    };
   }
 
   function findSettingsFocusTarget(rootNode, focusKey) {
@@ -1214,12 +1354,41 @@
     try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
   }
 
-  function requestRender({ sidebar = false, content = false, modal = false } = {}) {
+  function requestRender({
+    sidebar = false,
+    content = false,
+    modal = false,
+    preserveScroll = false,
+  } = {}) {
     if (sidebar && typeof renderHooks.sidebar === "function") renderHooks.sidebar();
     if (content && typeof renderHooks.content === "function") {
-      const focusKey = getActiveSettingsFocusKey();
+      const { focusKey, fallbackKey } = getActiveSettingsFocusState();
+      const contentRoot = document.getElementById("content");
+      const scrollTop = preserveScroll && contentRoot
+        ? normalizePersistedScrollTop(Number(contentRoot.scrollTop))
+        : null;
+      const scrollTabId = state.activeTab;
       renderHooks.content();
-      if (focusKey) restoreSettingsFocus(document.getElementById("content"), focusKey);
+      if (focusKey) {
+        const currentContentRoot = document.getElementById("content");
+        const exactTarget = findSettingsFocusTarget(currentContentRoot, focusKey);
+        const restoreKey = exactTarget
+          && exactTarget.disabled !== true
+          && typeof exactTarget.focus === "function"
+          ? focusKey
+          : fallbackKey;
+        if (restoreKey) restoreSettingsFocus(currentContentRoot, restoreKey);
+      }
+      if (scrollTop !== null
+        && document.getElementById("content") === contentRoot
+        && state.activeTab === scrollTabId) {
+        contentRoot.scrollTop = scrollTop;
+        requestAnimationFrame(() => {
+          if (document.getElementById("content") !== contentRoot) return;
+          if (state.activeTab !== scrollTabId) return;
+          contentRoot.scrollTop = scrollTop;
+        });
+      }
     }
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
   }
@@ -1244,7 +1413,9 @@
     }
     try {
       localStorage.setItem(NAVIGATION_STORAGE_KEY, JSON.stringify({
-        activeTab: tabs[state.activeTab] ? state.activeTab : "general",
+        activeTab: tabs[runtime.persistedSettingsTab]
+          ? runtime.persistedSettingsTab
+          : (tabs[state.activeTab] ? state.activeTab : "general"),
         scrollPositions,
       }));
     } catch (_) {}
@@ -1261,6 +1432,7 @@
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
       if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
         state.activeTab = parsed.activeTab;
+        runtime.persistedSettingsTab = parsed.activeTab;
       }
       const scrollPositions = parsed.scrollPositions;
       if (scrollPositions && typeof scrollPositions === "object" && !Array.isArray(scrollPositions)) {
@@ -1290,9 +1462,17 @@
     });
   }
 
-  function selectTab(nextTab) {
+  function selectTab(nextTab, options = {}) {
+    if (!tabs[nextTab]) return false;
     const prevTabId = state.activeTab;
-    if (prevTabId === nextTab) return;
+    const shouldPersist = options.persist !== false;
+    if (prevTabId === nextTab) {
+      if (shouldPersist) {
+        runtime.persistedSettingsTab = nextTab;
+        writeNavigationState();
+      }
+      return false;
+    }
     captureActiveTabScrollPosition();
     const content = document.getElementById("content");
     const prevTab = tabs[prevTabId];
@@ -1300,9 +1480,10 @@
       prevTab.onExit(core);
     }
     state.activeTab = nextTab;
+    if (shouldPersist) runtime.persistedSettingsTab = nextTab;
     writeNavigationState();
     requestRender({ sidebar: true, content: true, modal: true });
-    if (!content) return;
+    if (!content) return true;
 
     const targetScrollTop = runtime.settingsTabScrollPositions.get(nextTab) || 0;
     content.scrollTop = targetScrollTop;
@@ -1311,6 +1492,7 @@
       if (document.getElementById("content") !== content) return;
       content.scrollTop = targetScrollTop;
     });
+    return true;
   }
 
   function applyBootstrap(snapshotValue) {
@@ -1321,7 +1503,12 @@
 
   function applyAgentMetadata(list) {
     runtime.agentMetadata = Array.isArray(list) ? list : [];
-    if (state.activeTab === "agents") requestRender({ content: true });
+    if (state.activeTab === "agents" || state.activeTab === "recap") {
+      requestRender({
+        content: true,
+        preserveScroll: state.activeTab === "recap",
+      });
+    }
   }
 
   function normalizeAgentInstallationHints(result) {
@@ -1690,6 +1877,7 @@
       }
       if (state.mountedControls.animOverrideStatusControls
         && typeof state.mountedControls.animOverrideStatusControls.clear === "function") {
+        disposeMountedDisposables("animation-overrides");
         state.mountedControls.animOverrideStatusControls.clear();
       }
     }
@@ -1710,26 +1898,44 @@
     if (changes && "themeOverrides" in changes) {
       if (state.activeTab === "theme") {
         fetchThemes().then(() => {
-          requestRender({ sidebar: true, content: true });
+          requestRender({
+            sidebar: true,
+            content: true,
+            preserveScroll: state.activeTab === "recap",
+          });
         });
         return;
       }
       if (state.activeTab === "animOverrides" || runtime.assetPicker.state) {
         Promise.all([fetchAnimationOverridesData(), fetchThemes()]).then(() => {
           normalizeAssetPickerSelection();
-          requestRender({ sidebar: true, content: true, modal: true });
+          requestRender({
+            sidebar: true,
+            content: true,
+            modal: true,
+            preserveScroll: state.activeTab === "recap",
+          });
         });
         return;
       }
       // Any other tab that surfaces theme-derived content: full re-render.
-      requestRender({ sidebar: true, content: true });
+      requestRender({
+        sidebar: true,
+        content: true,
+        preserveScroll: state.activeTab === "recap",
+      });
       return;
     }
 
     if (needsAnimOverridesRefresh && (state.activeTab === "animOverrides" || runtime.assetPicker.state)) {
       fetchAnimationOverridesData().then(() => {
         normalizeAssetPickerSelection();
-        requestRender({ sidebar: true, content: true, modal: true });
+        requestRender({
+          sidebar: true,
+          content: true,
+          modal: true,
+          preserveScroll: state.activeTab === "recap",
+        });
       });
       return;
     }
@@ -1741,7 +1947,11 @@
       }));
     }
 
-    requestRender({ sidebar: true, content: true });
+    requestRender({
+      sidebar: true,
+      content: true,
+      preserveScroll: state.activeTab === "recap",
+    });
   }
 
   core.readers = {
@@ -1928,6 +2138,9 @@
     buildSettingsSelect,
     buildSegmentedRadio,
     buildCollapsibleGroup,
+    attachSettingsDisclosure,
+    registerMountedDisposable,
+    disposeMountedDisposable,
     createDisclosureChevron,
     attachActivation,
     buildShortcutButton,
@@ -1947,6 +2160,7 @@
     MAINTAINERS,
     CONTRIBUTORS,
     IS_MAC,
+    IS_WIN,
     SHORTCUT_ACTIONS,
     SHORTCUT_ACTION_IDS,
     buildAcceleratorFromEvent,

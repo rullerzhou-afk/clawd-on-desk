@@ -287,6 +287,7 @@ describe("agent-runtime-main", () => {
     assert.strictEqual(calls[2][4].profileId, "local");
     assert.strictEqual(calls[2][4].rawSessionId, "codex:s1");
     assert.strictEqual(calls[2][4].transientPermissionEvent, true);
+    assert.strictEqual(calls[2][4].recapSuppressed, true);
     assert.deepStrictEqual(calls[3], expectedTouch);
     assert.deepStrictEqual(calls[4], [
       "clear",
@@ -479,11 +480,102 @@ describe("agent-runtime-main", () => {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Run tests",
+        recapIsSubagent: true,
+        recapSuppressed: true,
         headless: true,
         profileId: "local",
         rawSessionId: "sid",
       }],
     ]);
+  });
+
+  it("records late WebSearch boundaries without reviving an officially completed turn", () => {
+    const instances = [];
+    const updates = [];
+    const recapOnly = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: (agentId) => agentId === "codex",
+      getStateRuntime: () => ({
+        recordRecapEventOnly: (input) => { recapOnly.push(input); return true; },
+      }),
+      updateSession: (...args) => updates.push(args),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    const sessionId = localSessionKey("sid");
+    const officialOptions = {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: "sid",
+      turnId: "turn-web",
+    };
+    runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", officialOptions);
+    runtime.updateSessionFromServer(sessionId, "attention", "Stop", officialOptions);
+
+    monitor.emit("sid", "working", "response_item:function_call", {
+      turnId: "turn-web",
+      recapOccurredAt: 1234,
+      recapIsWebSearch: true,
+      toolUseId: "search-1",
+    });
+    monitor.emit("sid", "working", "response_item:web_search_call", {
+      turnId: "turn-web",
+      recapOccurredAt: 1235,
+      toolUseId: "search-1",
+    });
+    monitor.emit("sid", "working", "response_item:function_call", {
+      turnId: "turn-web",
+      recapOccurredAt: 1236,
+      toolUseId: "shell-1",
+    });
+
+    const idlessSessionId = localSessionKey("sid-idless");
+    const idlessOfficialOptions = {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: "sid-idless",
+      turnId: null,
+    };
+    runtime.updateSessionFromServer(
+      idlessSessionId,
+      "thinking",
+      "UserPromptSubmit",
+      idlessOfficialOptions
+    );
+    runtime.updateSessionFromServer(
+      idlessSessionId,
+      "attention",
+      "Stop",
+      idlessOfficialOptions
+    );
+    monitor.emit("sid-idless", "working", "response_item:function_call", {
+      recapOccurredAt: 2234,
+      recapIsWebSearch: true,
+      toolUseId: "search-idless",
+    });
+    monitor.emit("sid-idless", "working", "response_item:web_search_call", {
+      recapOccurredAt: 2235,
+      toolUseId: "search-idless",
+    });
+
+    assert.deepStrictEqual(updates.map((call) => call[2]), [
+      "UserPromptSubmit",
+      "Stop",
+      "UserPromptSubmit",
+      "Stop",
+    ]);
+    assert.deepStrictEqual(recapOnly.map((input) => [input.event, input.toolUseId]), [
+      ["response_item:function_call", "search-1"],
+      ["response_item:web_search_call", "search-1"],
+      ["response_item:function_call", "search-idless"],
+      ["response_item:web_search_call", "search-idless"],
+    ]);
+    assert.ok(recapOnly.every((input) => !Object.hasOwn(input, "recapIsWebSearch")));
   });
 
   it("shares canonical classifier identity from local JSONL to official hooks without leaking to remote profiles", () => {
@@ -784,6 +876,7 @@ describe("agent-runtime-main", () => {
         cwd: "D:\\repo",
         agentId: "codex",
         sessionTitle: "Codex turn",
+        recapSuppressed: true,
         headless: false,
         profileId: "local",
         rawSessionId: "codex:s1",

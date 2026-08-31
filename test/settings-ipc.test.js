@@ -218,6 +218,7 @@ function createHarness(overrides = {}) {
     fs: overrides.fs || fs,
     path: overrides.path || path,
     settingsController,
+    recapRuntime: overrides.recapRuntime,
     themeLoader,
     codexPetMain,
     getSettingsWindow: () => settingsWindow,
@@ -311,6 +312,8 @@ test("settings IPC registers owned channels and leaves animation override channe
   const { ipcMain, runtime } = createHarness();
 
   assert.ok(ipcMain.handlers.has("settings:get-snapshot"));
+  assert.ok(ipcMain.handlers.has("settings:recap-query"));
+  assert.ok(ipcMain.handlers.has("settings:recap-clear"));
   assert.ok(ipcMain.handlers.has("settings:get-quota-source-count"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-tint-options"));
   assert.ok(ipcMain.handlers.has("settings:get-pet-accessory-options"));
@@ -341,6 +344,44 @@ test("settings IPC registers owned channels and leaves animation override channe
 
   assert.strictEqual(ipcMain.handlers.size, 0);
   assert.strictEqual(ipcMain.listeners.size, 0);
+});
+
+test("recap IPC exposes only bounded queries and explicit clear to the trusted Settings window", async () => {
+  const calls = [];
+  const harness = createHarness({
+    recapRuntime: {
+      query(period) {
+        calls.push(["query", period]);
+        return { status: "ready", period, days: [] };
+      },
+      clear() {
+        calls.push(["clear"]);
+        return true;
+      },
+    },
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:recap-query", "year"), {
+    status: "ready",
+    period: "year",
+    days: [],
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:recap-query", "arbitrary"), {
+    status: "error",
+    reason: "invalid-period",
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:recap-clear"), { status: "ok" });
+  assert.deepStrictEqual(calls, [["query", "year"], ["clear"]]);
+
+  harness.ipcMain.invokeEvent = { sender: {}, senderFrame: null };
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:recap-query", "today"), {
+    status: "error",
+    message: "untrusted settings sender",
+  });
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:recap-clear"), {
+    status: "error",
+    message: "untrusted settings sender",
+  });
+  assert.equal(calls.length, 2);
 });
 
 test("settings IPC reads, selects, and clears the shared roam fence", async () => {

@@ -8,6 +8,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - "src/main.js"
+      - "src/recap-*.js"
       - "src/koffi-package-contract.js"
       - "src/native-package-target.js"
       - "src/package-koffi-smoke.js"
@@ -17,6 +18,8 @@ on:
       - "src/win-fullscreen-detect.js"
       - "src/settings-actions.js"
       - "src/settings-i18n.js"
+      - "src/settings-ui-core.js"
+      - "src/settings-tab-recap.js"
       - "src/telegram-*"
       - "src/settings-tab-telegram-approval.js"
       - "src/settings.css"
@@ -27,6 +30,8 @@ on:
       - "src/integration-sync.js"
       - "src/doctor-detectors/agent-descriptors.js"
       - "test/traecode-*.test.js"
+      - "test/recap*.test.js"
+      - "test/fixtures/recap-private-permissions-*.js"
       - "test/state-stale-cleanup.test.js"
       - "test/integration-sync.test.js"
       - "test/doctor-agent-descriptors.test.js"
@@ -51,6 +56,7 @@ on:
       - "test/win-foreground-terminal.test.js"
       - "test/win-fullscreen-detect.test.js"
       - "test/settings-renderer-browser-env.test.js"
+      - "test/settings-recap.test.js"
       - "test/telegram-legacy-retirement.test.js"
       - "test/telegram-migration-*.test.js"
       - ".github/workflows/build.yml"
@@ -100,6 +106,11 @@ jobs:
             test/server-hook-management.test.js \
             test/settings-renderer-browser-env.test.js \
             test/hook-adapter-offline-contract.test.js
+      - name: Run recap unit tests
+        run: >-
+          node --test
+          test/recap*.test.js
+          test/settings-recap.test.js
 
   package:
     needs: unit
@@ -162,6 +173,14 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm ci
+      - name: Run Windows recap ACL tests
+        if: runner.os == 'Windows'
+        run: >-
+          node --test
+          test/recap-private-permissions.test.js
+          test/recap-private-permissions-electron.test.js
+          test/recap-runtime.test.js
+          test/recap-store.test.js
       - run: npm run ${{ matrix.build_script }} -- --publish never
       - name: Assert installer exists
         shell: bash

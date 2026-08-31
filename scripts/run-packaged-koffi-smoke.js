@@ -79,7 +79,10 @@ function runPackagedSmoke(options) {
       process.stderr.write(`Packaged smoke user-data cleanup warning: ${err.message}\n`);
     }
   }
-  if (result.status !== 0) throw new Error(`Packaged smoke exited with status ${result.status}`);
+  if (result.status !== 0) {
+    const detail = report && report.error ? `: ${report.error}` : "";
+    throw new Error(`Packaged smoke exited with status ${result.status}${detail}`);
+  }
   if (!report) throw new Error(`Packaged smoke did not write: ${options.output}`);
   if (report.ok !== true || report.target !== options.targetId) {
     throw new Error(`Packaged smoke report failed: ${JSON.stringify(report)}`);

@@ -336,6 +336,37 @@ function registerSettingsIpc(options = {}) {
   }
 
   handle("settings:get-snapshot", () => settingsController.getSnapshot());
+  handle("settings:recap-query", async (event, period) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!["today", "week", "month", "year"].includes(period)) {
+      return { status: "error", reason: "invalid-period" };
+    }
+    const runtime = options.recapRuntime;
+    if (!runtime || typeof runtime.query !== "function") {
+      return { status: "error", reason: "runtime-unavailable" };
+    }
+    try {
+      if (typeof runtime.whenReady === "function") await runtime.whenReady();
+      return runtime.query(period);
+    }
+    catch { return { status: "error", reason: "query-failed" }; }
+  });
+  handle("settings:recap-clear", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.recapRuntime;
+    if (!runtime || typeof runtime.clear !== "function") {
+      return { status: "error", reason: "runtime-unavailable" };
+    }
+    try {
+      return runtime.clear()
+        ? { status: "ok" }
+        : { status: "error", reason: "clear-failed" };
+    } catch {
+      return { status: "error", reason: "clear-failed" };
+    }
+  });
   // Distinct quota-reporting sources (this machine + WSL / SSH remotes). The
   // General tab uses it to hide the "merge across machines" switch when it is
   // a single-machine no-op.

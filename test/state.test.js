@@ -114,6 +114,11 @@ function update(api, o = {}) {
       subagentType: o.subagentType ?? null,
       subagentLifecycleSource: o.subagentLifecycleSource ?? null,
       sessionStartSource: o.sessionStartSource ?? null,
+      recapBoundary: o.recapBoundary ?? null,
+      recapDedupeId: o.recapDedupeId ?? null,
+      recapOccurredAt: o.recapOccurredAt ?? null,
+      recapSuppressed: o.recapSuppressed === true,
+      toolUseId: o.toolUseId ?? null,
       replaceProcessMetadata: o.replaceProcessMetadata === true,
     },
   );
@@ -5812,6 +5817,80 @@ describe("DND mode", () => {
     // Should NOT have gone to idle from attention auto-return
     // yawning auto-return at 3s → collapsing (DND path)
     assert.strictEqual(api.getCurrentState(), "collapsing");
+  });
+
+  it("DND preserves pending completion arbitration and records it without sound", () => {
+    const { createMemoryRecapSink } = require("../src/recap-sink");
+    const recapSink = createMemoryRecapSink();
+    const sounds = [];
+    api.cleanup();
+    ctx = makeCtx({ recapSink, playSound: (name) => sounds.push(name) });
+    api = require("../src/state")(ctx);
+
+    update(api, { event: "UserPromptSubmit", state: "thinking", headless: true });
+    recapSink.clear();
+    update(api, {
+      event: "Stop",
+      state: "attention",
+      headless: true,
+      assistantLastOutput: "done",
+      recapOccurredAt: 123456,
+    });
+    assert.deepStrictEqual(recapSink.snapshot(), []);
+
+    api.enableDoNotDisturb();
+    mock.timers.tick(2000);
+
+    assert.deepStrictEqual(recapSink.snapshot().map((event) => event.metrics), [
+      ["activity", "turn-complete"],
+    ]);
+    assert.strictEqual(recapSink.snapshot()[0].occurredAt, 123456);
+    assert.notStrictEqual(api.getLastSessionSnapshot().sessions[0].lastEvent.at, 123456);
+    assert.deepStrictEqual(sounds, []);
+    assert.strictEqual(ctx.doNotDisturb, true);
+    assert.strictEqual(api.getCurrentState(), "yawning");
+  });
+
+  it("DND preserves Claude transcript completion fallback and records it without sound", () => {
+    const { createMemoryRecapSink } = require("../src/recap-sink");
+    const recapSink = createMemoryRecapSink();
+    const sounds = [];
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-dnd-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-dnd-probe-hit";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+    ].join("\n") + "\n");
+
+    api.cleanup();
+    ctx = makeCtx({ recapSink, playSound: (name) => sounds.push(name) });
+    api = require("../src/state")(ctx);
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      state: "working",
+      event: "PostToolUse",
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    recapSink.clear();
+    api.enableDoNotDisturb();
+    fs.appendFileSync(transcript, JSON.stringify({
+      type: "assistant",
+      message: { content: "Final answer while DND is enabled." },
+    }) + "\n");
+
+    mock.timers.tick(2000);
+
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get(sessionId)), "done");
+    assert.deepStrictEqual(recapSink.snapshot().map((event) => event.metrics), [
+      ["activity", "turn-complete"],
+    ]);
+    assert.deepStrictEqual(sounds, []);
+    assert.strictEqual(ctx.doNotDisturb, true);
+    assert.strictEqual(api.getCurrentState(), "yawning");
   });
 
   it("disableDoNotDisturb non-mini → waking", () => {

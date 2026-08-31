@@ -490,6 +490,31 @@ describe("menu dashboard action", () => {
   });
 });
 
+describe("menu recap action", () => {
+  it("adds a right-click item that deep-links to the recap tab", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: { buildFromTemplate: (template) => ({ template }) },
+      Tray: function Tray() {},
+      nativeImage: { createFromPath: () => ({ resize() { return this; }, setTemplateImage() {} }) },
+      screen: {
+        getAllDisplays: () => [{ id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } }],
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+    const calls = [];
+    const ctx = buildBaseCtx({ openSettingsWindow: (options) => calls.push(options) });
+    initMenu(ctx).buildContextMenu();
+    const item = ctx.contextMenu.template.find((candidate) => candidate.label === "Open Footprints");
+    assert.ok(item);
+    item.click();
+    assert.deepStrictEqual(calls, [{ tab: "recap" }]);
+  });
+});
+
 describe("menu new session action", () => {
   function fakeElectron() {
     return {

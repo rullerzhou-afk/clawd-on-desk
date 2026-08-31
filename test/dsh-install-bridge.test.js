@@ -10,9 +10,14 @@ const path = require("node:path");
 const {
   BRIDGE_PACKAGE_NAME,
   DSH_RESTART_HINT,
+  DSH_VERSION_CONTRACTS,
   SUPPORTED_DSH_RANGE,
   SUPPORTED_DSH_VERSION,
+  dshContractForMarker,
+  dshContractForVersion,
   installDeepSeekHarnessBridge,
+  isSupportedDshVersion,
+  supportedDshRangeLabel,
   inspectDeepSeekHarnessDiskSync,
   inspectDeepSeekHarnessIntegration,
   isBridgeInstalled,
@@ -641,6 +646,62 @@ test("npx-only hosts get an exact manual command and can later pass read-only ve
   assert.strictEqual(fs.existsSync(referencePath), false);
 });
 
+test("npx-only uninstall selects the exact contract recorded by each supported marker", async (t) => {
+  for (const version of ["0.1.1-rc.2", "0.1.0-rc.6"]) {
+    const harness = makeHarness();
+    const cli = makeOfficialCli(harness);
+    t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+    await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: version }));
+
+    const result = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
+      commandInfo: null,
+      dshCommand: false,
+      dshVersion: undefined,
+    }));
+
+    assert.strictEqual(result.status, "error", version);
+    assert.strictEqual(result.reason, "cli-unavailable", version);
+    assert.match(result.manualCommand, new RegExp(`@deepseek-ai/dsh@${version.replace(/\./g, "\\.")}`), version);
+    assert.match(result.manualCommand, /'remove'/, version);
+    assert.strictEqual(
+      (await inspectDeepSeekHarnessIntegration({
+        dshHome: harness.dshHome,
+        managedRoot: harness.managedRoot,
+        resolveCommandForInspection: false,
+      })).status,
+      "healthy",
+      version,
+    );
+  }
+});
+
+test("an rc.6 marker keeps its contract when npx-only Repair stages newer bridge bytes", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  const updatedSource = path.join(harness.root, "updated-rc6-source");
+  fs.cpSync(SOURCE_DIR, updatedSource, { recursive: true });
+  fs.appendFileSync(path.join(updatedSource, "lib", "index.js"), "\n// updated rc.6 bridge source\n", "utf8");
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: "0.1.0-rc.6" }));
+
+  const result = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+    operation: "explicit-repair",
+    sourceDir: updatedSource,
+  }));
+
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "cli-unavailable");
+  assert.strictEqual(result.manualGenerationReferenced, true);
+  assert.match(result.manualCommand, /@deepseek-ai\/dsh@0\.1\.0-rc\.6/);
+  const reference = readJson(dshInstallTest.manualGenerationReferencePath({ managedRoot: harness.managedRoot }));
+  const marker = readJson(path.join(harness.managedRoot, "generations", reference.bundleHash, "clawd-manifest.json"));
+  assert.strictEqual(marker.installedDshVersion, "0.1.0-rc.6");
+  assert.strictEqual(marker.supportedDshRange, "=0.1.0-rc.6");
+});
+
 test("explicit uninstall removes an unclaimed manual npx generation reference", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
@@ -1224,6 +1285,135 @@ test("explicit uninstall recovers an exact managed junction left by a manual off
   assert.strictEqual(fs.existsSync(packageDir(harness.profileDir)), false);
 });
 
+test("npx-only uninstall cleans the exact managed junction left by a manual official remove", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    dshVersion: "0.1.0-rc.6",
+  }));
+  await cli.runDshCommand(["plugin", "--profile", "web", "remove", BRIDGE_PACKAGE_NAME]);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  }).status, "managed-residue");
+
+  let lockObservedDuringUnlink = false;
+  const result = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+    unlinkManagedProfileLink: async (isolatedPath) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), true);
+      lockObservedDuringUnlink = true;
+      await fs.promises.unlink(isolatedPath);
+    },
+  }));
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.removed, true);
+  assert.strictEqual(lockObservedDuringUnlink, true);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), false);
+  assert.strictEqual(fs.existsSync(packageDir(harness.profileDir)), false);
+  assert.strictEqual(fs.existsSync(installed.generation), false);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  }).status, "absent");
+});
+
+test("managed residue isolation preserves a foreign link swapped before unlink", async (t) => {
+  const harness = makeHarness();
+  const foreign = path.join(harness.root, "foreign-package");
+  const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  await cli.runDshCommand(["plugin", "--profile", "web", "remove", BRIDGE_PACKAGE_NAME]);
+  fs.mkdirSync(foreign, { recursive: true });
+  fs.writeFileSync(path.join(foreign, "sentinel.txt"), "foreign\n");
+
+  const result = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
+    __testManagedProfileResidueHooks: {
+      beforeIsolateMove: async ({ linkDir }) => {
+        await fs.promises.unlink(linkDir);
+        await fs.promises.symlink(foreign, linkDir, "dir");
+      },
+    },
+  }));
+
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "inspection-required");
+  assert.strictEqual(result.cleanupReason, "residue-target-changed");
+  assert.strictEqual(fs.realpathSync(packageDir(harness.profileDir)), fs.realpathSync(foreign));
+  assert.strictEqual(fs.readFileSync(path.join(foreign, "sentinel.txt"), "utf8"), "foreign\n");
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "inspection-required.json")), true);
+});
+
+test("an interrupted managed residue isolation fences retries and preserves every generation", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  await cli.runDshCommand(["plugin", "--profile", "web", "remove", BRIDGE_PACKAGE_NAME]);
+  const canonicalLink = packageDir(harness.profileDir);
+  const isolatedLink = `${canonicalLink}.clawd-removing-simulated-crash`;
+  fs.renameSync(canonicalLink, isolatedLink);
+
+  const asyncHealth = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(asyncHealth.status, "inspection-required");
+  assert.strictEqual(asyncHealth.healthReason, "profile-removal-residue");
+  assert.strictEqual(path.basename(asyncHealth.residuePath), path.basename(isolatedLink));
+  assert.strictEqual(
+    canonicalRealpath(path.dirname(asyncHealth.residuePath)),
+    canonicalRealpath(path.dirname(isolatedLink)),
+  );
+  const syncHealth = inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  });
+  assert.strictEqual(syncHealth.status, "inspection-required");
+  assert.strictEqual(syncHealth.healthReason, "profile-removal-residue");
+
+  await dshInstallTest.cleanUnreferencedGenerations(null, {
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+  });
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+  assert.strictEqual(fs.existsSync(isolatedLink), true);
+
+  const noCliOptions = installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+  });
+  const repair = await installDeepSeekHarnessBridge({
+    ...noCliOptions,
+    operation: "explicit-repair",
+  });
+  assert.strictEqual(repair.status, "error");
+  assert.strictEqual(repair.reason, "inspection-required");
+  assert.strictEqual(repair.healthReason, "profile-removal-residue");
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+
+  const result = await uninstallDeepSeekHarnessBridge(noCliOptions);
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "inspection-required");
+  assert.strictEqual(result.healthReason, "profile-removal-residue");
+  assert.strictEqual(path.basename(result.residuePath), path.basename(isolatedLink));
+  assert.strictEqual(
+    canonicalRealpath(path.dirname(result.residuePath)),
+    canonicalRealpath(path.dirname(isolatedLink)),
+  );
+  assert.strictEqual(fs.existsSync(installed.generation), true);
+  assert.strictEqual(fs.existsSync(isolatedLink), true);
+});
+
 test("explicit uninstall recovers exact residue after an unknown remove result", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
@@ -1270,8 +1460,12 @@ test("a profile junction unlink failure latches inspection and a later explicit 
   const cli = makeOfficialCli(harness, { materializeAsLink: true, leaveResolvedResidue: true });
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
   await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  let lockObservedDuringFailure = false;
   const first = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, {
     unlinkManagedProfileLink: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), true);
+      lockObservedDuringFailure = true;
       const err = new Error("busy junction");
       err.code = "EPERM";
       throw err;
@@ -1279,6 +1473,8 @@ test("a profile junction unlink failure latches inspection and a later explicit 
   }));
   assert.strictEqual(first.status, "error");
   assert.strictEqual(first.cleanupReason, "residue-unlink-failed");
+  assert.strictEqual(lockObservedDuringFailure, true);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "mutation.lock")), false);
   assert.strictEqual(fs.lstatSync(packageDir(harness.profileDir)).isSymbolicLink(), true);
   assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "inspection-required.json")), true);
   const callsAfterFirst = cli.calls.length;
@@ -1303,7 +1499,7 @@ test("uninstall refuses an unsupported live DSH version before any remove mutati
   assert.strictEqual(result.status, "error");
   assert.strictEqual(result.reason, "version-unsupported");
   assert.strictEqual(result.detectedVersion, "0.1.0-rc.7");
-  assert.strictEqual(result.supportedRange, SUPPORTED_DSH_RANGE);
+  assert.strictEqual(result.supportedRange, supportedDshRangeLabel());
   assert.strictEqual(result.manualInspectionRequired, true);
   assert.strictEqual(cli.calls.length, beforeRemoveCalls);
   assert.strictEqual(fs.existsSync(packageDir(harness.profileDir)), true);
@@ -1580,6 +1776,30 @@ test("the locked version probe runs before a healthy fast return or latch clear"
   assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "inspection-required.json")), true);
 });
 
+test("a supported host version change under the lock aborts before plugin mutation", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  let probes = 0;
+
+  const result = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    dshVersion: undefined,
+    runCommand: async (_command, args) => {
+      assert.deepStrictEqual(args, ["--version"]);
+      probes += 1;
+      return { code: 0, stdout: probes === 1 ? "0.1.0-rc.6" : "0.1.1-rc.2" };
+    },
+  }));
+
+  assert.strictEqual(result.status, "error");
+  assert.strictEqual(result.reason, "version-changed");
+  assert.strictEqual(result.expectedVersion, "0.1.0-rc.6");
+  assert.strictEqual(result.detectedVersion, "0.1.1-rc.2");
+  assert.strictEqual(probes, 2);
+  assert.deepStrictEqual(cli.calls, []);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({ dshHome: harness.dshHome }).status, "absent");
+});
+
 test("newer managed generations win and same-version hash conflicts require explicit repair", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
@@ -1603,4 +1823,178 @@ test("newer managed generations win and same-version hash conflicts require expl
   assert.strictEqual(sameVersion.status, "error");
   assert.strictEqual(sameVersion.reason, "generation-conflict");
   assert.strictEqual(cli.calls.length, 1);
+});
+
+test("the verified-version table resolves only listed exact versions", () => {
+  assert.deepStrictEqual(
+    DSH_VERSION_CONTRACTS.map((contract) => contract.version),
+    ["0.1.1-rc.2", "0.1.0-rc.6"],
+  );
+  assert.strictEqual(isSupportedDshVersion("0.1.1-rc.2"), true);
+  assert.strictEqual(isSupportedDshVersion("0.1.0-rc.6"), true);
+  assert.strictEqual(isSupportedDshVersion("0.1.0-rc.7"), false);
+  assert.strictEqual(isSupportedDshVersion("0.2.0"), false);
+  assert.strictEqual(supportedDshRangeLabel(), "=0.1.1-rc.2 or =0.1.0-rc.6");
+  const metadata = readJson(path.join(SOURCE_DIR, "package.json")).clawd;
+  assert.strictEqual(metadata.supportedDshRange, DSH_VERSION_CONTRACTS[0].supportedDshRange);
+  assert.strictEqual(metadata.verifiedDshArtifact, DSH_VERSION_CONTRACTS[0].verifiedDshArtifact);
+  assert.strictEqual(
+    metadata.verifiedDshArtifactIntegrity,
+    DSH_VERSION_CONTRACTS[0].verifiedDshArtifactIntegrity,
+  );
+  assert.deepStrictEqual(
+    metadata.supportedVersions,
+    DSH_VERSION_CONTRACTS.map((contract) => ({
+      version: contract.version,
+      range: contract.supportedDshRange,
+      verifiedArtifact: contract.verifiedDshArtifact,
+      verifiedArtifactIntegrity: contract.verifiedDshArtifactIntegrity,
+    })),
+  );
+});
+
+test("marker contracts accept both listed versions and reject unlisted or mismatched markers", () => {
+  assert.strictEqual(dshContractForVersion("0.1.1-rc.2").supportedDshRange, "=0.1.1-rc.2");
+  assert.strictEqual(dshContractForVersion("0.1.0-rc.6").verifiedDshArtifact, "@deepseek-ai/dsh@0.1.0-rc.6");
+  assert.strictEqual(dshContractForVersion("0.1.0-rc.7"), null);
+  assert.strictEqual(
+    dshContractForMarker({ installedDshVersion: "0.1.0-rc.6", supportedDshRange: "=0.1.0-rc.6" }).version,
+    "0.1.0-rc.6",
+  );
+  assert.strictEqual(
+    dshContractForMarker({ installedDshVersion: "0.1.1-rc.2", supportedDshRange: "=0.1.0-rc.6" }),
+    null,
+  );
+  assert.strictEqual(dshContractForMarker({ installedDshVersion: "0.1.0-rc.7", supportedDshRange: "=0.1.0-rc.7" }), null);
+  assert.strictEqual(dshContractForMarker(null), null);
+});
+
+test("rc.6 hosts install, repair, and uninstall under their own contract", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const installed = await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: "0.1.0-rc.6" }));
+  assert.strictEqual(installed.status, "ok");
+  assert.strictEqual(installed.updated, true);
+  const health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(health.status, "healthy");
+  assert.strictEqual(health.marker.installedDshVersion, "0.1.0-rc.6");
+  assert.strictEqual(health.marker.supportedDshRange, "=0.1.0-rc.6");
+  assert.strictEqual(health.marker.verifiedDshArtifact, "@deepseek-ai/dsh@0.1.0-rc.6");
+  assert.strictEqual(
+    health.marker.verifiedDshArtifactIntegrity,
+    "sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==",
+  );
+  const repaired = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    dshVersion: "0.1.0-rc.6",
+    operation: "explicit-repair",
+  }));
+  assert.strictEqual(repaired.status, "ok");
+  assert.strictEqual(repaired.updated, false);
+  assert.strictEqual(cli.calls.length, 1);
+  const removed = await uninstallDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: "0.1.0-rc.6" }));
+  assert.strictEqual(removed.status, "ok");
+  assert.strictEqual(removed.removed, true);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({ dshHome: harness.dshHome }).status, "absent");
+});
+
+test("rc.2 installs record the preferred contract in the marker", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  const health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(health.status, "healthy");
+  assert.strictEqual(health.marker.installedDshVersion, "0.1.1-rc.2");
+  assert.strictEqual(health.marker.supportedDshRange, "=0.1.1-rc.2");
+  assert.strictEqual(health.marker.verifiedDshArtifact, "@deepseek-ai/dsh@0.1.1-rc.2");
+});
+
+test("an rc.6 generation migrates to rc.2 when the host is upgraded", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: "0.1.0-rc.6" }));
+  const rc6Health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  const rc6Hash = rc6Health.marker.bundleHash;
+  const rc6GenerationDir = path.join(harness.managedRoot, "generations", rc6Hash);
+  assert.strictEqual(fs.existsSync(rc6GenerationDir), true);
+  const migrated = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    dshVersion: "0.1.1-rc.2",
+    operation: "explicit-repair",
+  }));
+  assert.strictEqual(migrated.status, "ok");
+  assert.strictEqual(migrated.updated, true);
+  assert.strictEqual(cli.calls.length, 2);
+  const rc2Health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(rc2Health.status, "healthy");
+  assert.strictEqual(rc2Health.marker.installedDshVersion, "0.1.1-rc.2");
+  assert.notStrictEqual(rc2Health.marker.bundleHash, rc6Hash);
+  assert.strictEqual(fs.existsSync(rc6GenerationDir), false);
+  assert.strictEqual(
+    fs.existsSync(path.join(harness.managedRoot, "generations", rc2Health.marker.bundleHash)),
+    true,
+  );
+});
+
+test("a marker staged for an unlisted DSH version reports version-unsupported", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  const health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  const manifestPath = path.join(harness.managedRoot, "generations", health.marker.bundleHash, "clawd-manifest.json");
+  const profileManifestPath = path.join(packageDir(harness.profileDir), "clawd-manifest.json");
+  for (const target of [manifestPath, profileManifestPath]) {
+    const manifest = readJson(target);
+    manifest.installedDshVersion = "0.1.0-rc.7";
+    manifest.supportedDshRange = "=0.1.0-rc.7";
+    writeJson(target, manifest);
+  }
+  const tampered = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(tampered.status, "version-unsupported");
+
+  const noCliOptions = installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+  });
+  const repair = await installDeepSeekHarnessBridge({ ...noCliOptions, operation: "explicit-repair" });
+  assert.strictEqual(repair.status, "error");
+  assert.strictEqual(repair.reason, "version-unsupported");
+  assert.strictEqual(repair.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(repair.manualCommand, undefined);
+  const removed = await uninstallDeepSeekHarnessBridge(noCliOptions);
+  assert.strictEqual(removed.status, "error");
+  assert.strictEqual(removed.reason, "version-unsupported");
+  assert.strictEqual(removed.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(removed.manualCommand, undefined);
+  assert.strictEqual(
+    fs.existsSync(dshInstallTest.manualGenerationReferencePath({ managedRoot: harness.managedRoot })),
+    false,
+  );
 });

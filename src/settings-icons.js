@@ -74,6 +74,16 @@ const ICONS = {
     '<path d="M12 16v6"/>' +
     '</svg>',
 
+  // paw print (local activity footprints)
+  recap:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M8 16.2c0-2.3 1.8-4.2 4-4.2s4 1.9 4 4.2c0 2.2-1.5 3.4-4 3.4s-4-1.2-4-3.4Z"/>' +
+    '<circle cx="6.4" cy="10.2" r="1.7"/>' +
+    '<circle cx="9.6" cy="6.6" r="1.7"/>' +
+    '<circle cx="14.4" cy="6.6" r="1.7"/>' +
+    '<circle cx="17.6" cy="10.2" r="1.7"/>' +
+    '</svg>',
+
   // info circle
   about:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +

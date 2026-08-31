@@ -1617,7 +1617,20 @@ class CodexLogMonitor {
       tracked.activeTurnId = null;
       tracked.turnBoundaryOpen = false;
     };
-    const turnExtra = effectiveTurnId ? { turnId: effectiveTurnId } : null;
+    const parsedOccurredAt = obj && typeof obj.timestamp === "string"
+      ? Date.parse(obj.timestamp)
+      : NaN;
+    const rawToolUseId = payload && typeof payload === "object"
+      ? (payload.call_id || payload.tool_use_id || payload.id)
+      : null;
+    const turnExtra = {
+      ...(effectiveTurnId ? { turnId: effectiveTurnId, recapDedupeId: effectiveTurnId } : {}),
+      ...(Number.isFinite(parsedOccurredAt) ? { recapOccurredAt: parsedOccurredAt } : {}),
+      ...(typeof rawToolUseId === "string" && rawToolUseId ? { toolUseId: rawToolUseId } : {}),
+      ...(key === "response_item:function_call" && payload && payload.name === "web_search"
+        ? { recapIsWebSearch: true }
+        : {}),
+    };
 
     // Metadata is needed for future live writes even when the session_meta
     // record itself predates monitor start.
@@ -1723,7 +1736,10 @@ class CodexLogMonitor {
       tracked.assistantLastOutput = null;
       tracked.assistantLastOutputTruncated = false;
     }
-    if (key === "response_item:function_call") {
+    const isToolBoundary = key === "response_item:function_call"
+      || key === "response_item:custom_tool_call"
+      || key === "response_item:web_search_call";
+    if (isToolBoundary) {
       tracked.hadToolUse = true;
     }
 
@@ -1767,8 +1783,11 @@ class CodexLogMonitor {
       return;
     }
 
-    // Avoid spamming same state
-    if (state === tracked.lastState && state === "working") return;
+    // Avoid spamming repeated working state, except for one-shot tool
+    // boundaries. The official hook emits every PreToolUse; JSONL fallback
+    // must preserve the same counting boundary even when the pet is already
+    // visually working.
+    if (state === tracked.lastState && state === "working" && !isToolBoundary) return;
     tracked.lastState = state;
     this._emitStateChange(tracked, state, key, turnExtra);
     finishTurnTerminal();

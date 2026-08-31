@@ -302,6 +302,7 @@ const updateRegistry = {
 
   // ── Pure data prefs (function-form: validator only) ──
   lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]),
+  recapEnabled: requireBoolean("recapEnabled"),
   tutorialSeen: requireBoolean("tutorialSeen"),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
@@ -543,6 +544,7 @@ const updateRegistry = {
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
+  fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──

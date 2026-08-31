@@ -34,6 +34,7 @@
     "freeRoam",
     "roamConstrainAxis",
     "keepSizeAcrossDisplays",
+    "fullscreenAutoHide",
     "openAtLogin",
     "hideBubbles",
     "bubbleFollowPet",
@@ -99,7 +100,6 @@
   let helpers = null;
   let ops = null;
   let i18n = null;
-  const languagePickerApi = root.ClawdLanguagePicker || {};
 
   const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"];
   const ROAM_MOVEMENT_NATURAL = "natural";
@@ -540,6 +540,15 @@
       // "fullscreenOverlay" here AND add its key back into GENERAL_IN_PLACE_KEYS
       // (dropped so patchInPlace doesn't force a full re-render for a pref that
       // has no mounted control). The rowFullscreenOverlay[Desc] i18n keys remain.
+      // #935: unlike that overlay toggle, auto-hide CAN always deliver what it
+      // promises (hiding our own windows needs no z-order fight), so it gets a
+      // real switch. Windows-only: the fullscreen probe is constant false
+      // elsewhere, so rendering it off-Windows would be a dead toggle.
+      ...(i18n && i18n.IS_WIN ? [helpers.buildSwitchRow({
+        key: "fullscreenAutoHide",
+        labelKey: "rowFullscreenAutoHide",
+        descKey: "rowFullscreenAutoHideDesc",
+      })] : []),
     ]));
 
     // System & startup: machine-level toggles (low-power idle throttling and
@@ -779,13 +788,11 @@
     row.querySelector(".row-desc").textContent = t("rowLanguageDesc");
     const currentLang = readers.getLang();
     const getLabel = (lang) => t(LANGUAGE_LABEL_KEYS[lang] || "langEnglish");
-    if (typeof languagePickerApi.createLanguagePicker !== "function") {
-      throw new Error("language-picker.js failed to load before settings-tab-general.js");
-    }
-    const pickerControl = languagePickerApi.createLanguagePicker({
+    const pickerControl = helpers.buildSettingsSelect({
       value: currentLang,
       options: LANGUAGE_OPTIONS.map((lang) => ({ value: lang, label: getLabel(lang) })),
       ariaLabel: t("rowLanguage"),
+      className: "settings-language-select",
       onChange: (next) => {
         // Selecting the already committed language only closes the menu. This
         // also avoids sending a duplicate update while an earlier save settles.
@@ -811,7 +818,6 @@
       },
     });
     row.querySelector(".row-control").appendChild(pickerControl.element);
-    state.mountedControls.languagePicker = pickerControl;
     return row;
   }
 
@@ -872,7 +878,6 @@
       desc: t("rowQuotaRingGroupDesc"),
       defaultCollapsed: true,
       className: "quota-ring-collapsible",
-      animateExpansion: false,
       children: [optionList],
     });
     if (window.settingsAPI && typeof window.settingsAPI.getQuotaSourceCount === "function") {
@@ -881,6 +886,7 @@
           if (Number(count) <= 1) return;
           const revealMergeRow = () => {
             mergeRow.style.display = "";
+            return mergeRow;
           };
           if (typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(revealMergeRow);
@@ -986,6 +992,7 @@
               element.appendChild(buildProviderRow(provider));
             }
             element.style.display = "";
+            return element;
           };
           if (group && typeof group.mutateCollapsibleBody === "function") {
             group.mutateCollapsibleBody(reveal);
@@ -1248,7 +1255,6 @@
       summary: summaryControl.element,
       defaultCollapsed: true,
       className: "sound-collapsible",
-      animateExpansion: false,
       children: [buildOptionList("sound-option-list", [
         buildSoundEnabledRow(summaryControl),
         buildVolumeSliderRow(),
@@ -1263,7 +1269,6 @@
       desc: t("rowFlashDesc"),
       defaultCollapsed: true,
       className: "flash-collapsible",
-      animateExpansion: false,
       children: [buildOptionList("flash-option-list", [
         helpers.buildSwitchRow({
           key: "flashTaskbarOnComplete",

@@ -20,9 +20,12 @@ function createFloatingWindowRuntime(options = {}) {
   const repositionQuotaRing = options.repositionQuotaRing || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const syncUpdateBubbleVisibility = options.syncUpdateBubbleVisibility || noop;
-  const hideUpdateBubble = options.hideUpdateBubble || noop;
+  const suspendUpdateBubbleForPet = options.suspendUpdateBubbleForPet || options.hideUpdateBubble || noop;
+  const suspendUpdateBubbleForFullscreen = options.suspendUpdateBubbleForFullscreen || noop;
+  const resumeUpdateBubbleFromFullscreen = options.resumeUpdateBubbleFromFullscreen || noop;
   const showPermissionSurfacesForPet = options.showPermissionSurfacesForPet || null;
   const hidePermissionSurfacesForPet = options.hidePermissionSurfacesForPet || null;
+  const setPermissionSurfacesFullscreenSuppressed = options.setPermissionSurfacesFullscreenSuppressed || noop;
 
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
@@ -71,7 +74,14 @@ function createFloatingWindowRuntime(options = {}) {
         }
       }
     }
-    hideUpdateBubble();
+    suspendUpdateBubbleForPet();
+  }
+
+  function setFullscreenSuppressedForPet(suppressed) {
+    const target = suppressed === true;
+    setPermissionSurfacesFullscreenSuppressed(target);
+    if (target) suspendUpdateBubbleForFullscreen();
+    else resumeUpdateBubbleFromFullscreen();
   }
 
   return {
@@ -80,6 +90,7 @@ function createFloatingWindowRuntime(options = {}) {
     syncSessionHudVisibilityAndBubbles,
     showFloatingSurfacesForPet,
     hideFloatingSurfacesForPet,
+    setFullscreenSuppressedForPet,
   };
 }
 

@@ -594,6 +594,8 @@ describe("Kimi Code native events (#563)", () => {
     assert.strictEqual(body.permission_action, "Running: echo test-approve");
     assert.strictEqual(body.permission_command, "echo test-approve");
     assert.deepStrictEqual(body.permission_tool_input, { command: "echo test-approve" });
+    assert.strictEqual(body.recap_boundary, undefined);
+    assert.strictEqual(body.tool_use_id, undefined);
   });
 
   it("forwards a whitelisted tool_input subset for file tools (path → file_path)", () => {
@@ -832,6 +834,7 @@ describe("Kimi Code native events (#563)", () => {
     assert.strictEqual(body.permission_action, undefined);
     assert.strictEqual(body.permission_command, undefined);
     assert.strictEqual(body.permission_tool_input, undefined);
+    assert.strictEqual(body.recap_boundary, "tool-call");
   });
 
   it("synthesized PermissionRequest forwards the cue when the PreToolUse payload carries tool_input", () => {
@@ -895,6 +898,7 @@ describe("Kimi gate-ledger markers", () => {
       assert.strictEqual(body.permission_suspect, true);
       assert.strictEqual(body.permission_gate_open, true);
       assert.strictEqual(body.permission_gate_id, "call_abc");
+      assert.strictEqual(body.tool_use_id, "call_abc");
       assert.strictEqual(body.permission_gated, undefined);
       assert.strictEqual(body.tool_name, "shell");
       assert.deepStrictEqual(body.permission_tool_input, { command: "Remove-Item kimi-cue-test.txt" });
@@ -930,6 +934,8 @@ describe("Kimi gate-ledger markers", () => {
     assert.strictEqual(body.state, "notification");
     assert.strictEqual(body.permission_gate_open, true);
     assert.strictEqual(body.permission_gate_id, "call_now");
+    assert.strictEqual(body.tool_use_id, "call_now");
+    assert.strictEqual(body.recap_boundary, "tool-call");
     assert.deepStrictEqual(body.permission_tool_input, { command: "npm install" });
   });
 

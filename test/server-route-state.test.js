@@ -400,6 +400,95 @@ describe("server-route-state POST", () => {
     assert.strictEqual(invalid.calls.updateSession[0][3].sessionStartSource, undefined);
   });
 
+  it("forwards only the closed recap boundary provenance", async () => {
+    const permission = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "qwenwork:permission",
+      event: "PreToolUse",
+      agent_id: "qwenwork",
+      recap_boundary: "permission",
+      tool_use_id: "tool-1",
+    }));
+    assert.strictEqual(permission.statusCode, 200);
+    assert.strictEqual(permission.calls.updateSession[0][3].recapBoundary, "permission");
+    assert.strictEqual(permission.calls.updateSession[0][3].toolUseId, "tool-1");
+
+    const invalid = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "qwenwork:invalid",
+      event: "PreToolUse",
+      agent_id: "qwenwork",
+      recap_boundary: "PermissionRequest",
+    }));
+    assert.strictEqual(invalid.calls.updateSession[0][3].recapBoundary, undefined);
+
+    const spoofed = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "claude-spoof",
+      event: "PreToolUse",
+      agent_id: "claude-code",
+      recap_boundary: "permission",
+    }));
+    assert.strictEqual(spoofed.calls.updateSession[0][3].recapBoundary, undefined);
+
+    const kimiTool = await callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: "kimi-cli:tool",
+      event: "PermissionRequest",
+      agent_id: "kimi-cli",
+      recap_boundary: "tool-call",
+      tool_use_id: "kimi-tool-1",
+      permission_gate_open: true,
+    }));
+    assert.strictEqual(kimiTool.calls.updateSession[0][3].recapBoundary, "tool-call");
+    assert.strictEqual(kimiTool.calls.updateSession[0][3].toolUseId, "kimi-tool-1");
+
+    const spoofedTool = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "claude-tool-spoof",
+      event: "PreToolUse",
+      agent_id: "claude-code",
+      recap_boundary: "tool-call",
+    }));
+    assert.strictEqual(spoofedTool.calls.updateSession[0][3].recapBoundary, undefined);
+
+    const malformedKimiTool = await callStatePost(JSON.stringify({
+      state: "working",
+      session_id: "kimi-cli:tool-spoof",
+      event: "PreToolUse",
+      agent_id: "kimi-cli",
+      recap_boundary: "tool-call",
+      permission_gate_open: true,
+    }));
+    assert.strictEqual(malformedKimiTool.calls.updateSession[0][3].recapBoundary, undefined);
+
+    const dshSubagent = await callStatePost(JSON.stringify({
+      state: "attention",
+      session_id: "deepseek-harness:child",
+      event: "Stop",
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      event_seq: 0,
+      recap_is_subagent: true,
+    }), {
+      options: { dshStateSequenceFence: createDshStateSequenceFence() },
+    });
+    assert.strictEqual(dshSubagent.calls.updateSession[0][3].recapIsSubagent, true);
+
+    const spoofedSubagent = await callStatePost(JSON.stringify({
+      state: "attention",
+      session_id: "deepseek-harness:spoof",
+      event: "Stop",
+      agent_id: "deepseek-harness",
+      hook_source: "foreign-plugin",
+      event_seq: 0,
+      recap_is_subagent: true,
+    }), {
+      options: { dshStateSequenceFence: createDshStateSequenceFence() },
+    });
+    assert.strictEqual(spoofedSubagent.calls.updateSession[0][3].recapIsSubagent, undefined);
+  });
+
   it("clears main-thread and all subagent decisions on a main-session SessionEnd", async () => {
     const main = makePlanPermission("whole-session");
     const childPlan = {
@@ -2392,6 +2481,7 @@ describe("server-route-state wt_hwnd sampling (#627 residual)", () => {
 
     assert.strictEqual(res.statusCode, 200);
     assert.strictEqual(probeCalls, 0, "a codex subagent prompt must never sample the local foreground WT");
+    assert.strictEqual(res.calls.updateSession[0][3].recapIsSubagent, true);
   });
 
   it("codex main-session prompt still samples normally after the reorder", async () => {

@@ -63,7 +63,7 @@ const {
   PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 18;
+const CURRENT_VERSION = 19;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -142,6 +142,10 @@ const SCHEMA = {
   // Pure data prefs
   lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"] },
   showTray: { type: "boolean", default: true },
+  // Local activity recap is enabled by default for both fresh installs and
+  // upgrades. It stores only bounded aggregate/ticket data under ~/.clawd;
+  // there is no network export and the user can disable or clear it later.
+  recapEnabled: { type: "boolean", default: true },
   // Default off (macOS): a fresh install runs as an accessory/agent app — pet +
   // menu-bar icon, no Dock tile. Existing users keep their Dock — a persisted
   // showDock is kept (save() bakes the full snapshot), and the v11->v12 migration
@@ -326,6 +330,14 @@ const SCHEMA = {
   // settings-tab-general.js); this pref persists as an escape hatch and can be
   // re-exposed.
   fullscreenOverlay: { type: "boolean", default: true },
+  // #935: opt-in auto-hide — when a real fullscreen app owns the foreground
+  // (win-fullscreen-detect probe), hide the pet + its floating surfaces
+  // entirely and restore them when fullscreen ends. Takes precedence over
+  // fullscreenOverlay while active (a hidden pet has nothing to overlay).
+  // Windows-only in effect: the probe is constant false elsewhere. Default OFF
+  // so existing behavior — overlay by default, #538 stand-down as the escape
+  // hatch — is untouched.
+  fullscreenAutoHide: { type: "boolean", default: false },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
@@ -900,6 +912,13 @@ function migrate(raw) {
       out.autoStartWithCodex = false;
     }
     out.version = 18;
+  }
+  // v18 -> v19: recap is a local, privacy-minimized application history. Match
+  // Codex-style activity summaries by recording on upgrade without inserting
+  // a consent interstitial; Settings still exposes an immediate off switch.
+  if (out.version < 19) {
+    out.recapEnabled = typeof out.recapEnabled === "boolean" ? out.recapEnabled : true;
+    out.version = 19;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

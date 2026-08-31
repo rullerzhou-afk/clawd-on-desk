@@ -877,6 +877,71 @@ describe("permission overflow queue", () => {
     queueWindow.webContents.emit("render-process-gone", {}, { reason: "cleanup" });
   });
 
+  it("suppresses old and newly-created local surfaces for the whole fullscreen episode", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission } = loadPermission();
+    const ctx = {
+      win: { isDestroyed: () => false },
+      lang: "en",
+      sessions: new Map([["shared-session", { cwd: "/tmp/project" }]]),
+      bubbleFollowPet: false,
+      bubbleFixedCorner: "bottom-right",
+      doNotDisturb: false,
+      petHidden: false,
+      getSettingsSnapshot: () => ({}),
+      subscribeShortcuts: () => () => {},
+      getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      getPetWindowBounds: () => ({ x: 0, y: 0, width: 80, height: 80 }),
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 360 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 360 }),
+      getHitRectScreen: () => null,
+      getHudReservedOffset: () => 0,
+      getTextScale: () => 1,
+      guardAlwaysOnTop() {},
+      reapplyMacVisibility() {},
+      repositionUpdateBubble() {},
+      repositionSessionHud() {},
+    };
+    const permission = initPermission(ctx);
+    const oldEntries = [1, 2, 3].map((index) => requestEntry(index, requestBubble()));
+    permission.pendingPermissions.push(...oldEntries);
+    permission.reconcilePermissionPresentation("before-fullscreen");
+
+    permission.setPermissionSurfacesFullscreenSuppressed(true);
+    assert.ok(oldEntries.every((entry) => !entry.bubble.isVisible()));
+
+    const newEntries = [4, 5, 6].map((index) => requestEntry(index, null));
+    for (const entry of newEntries) {
+      permission.pendingPermissions.push(entry);
+      permission.showPermissionBubble(entry);
+    }
+    assert.ok(newEntries.every((entry) => !entry.bubble.isVisible()),
+      "the real bubble-creation path must stay local-surface silent in fullscreen");
+    const liveQueueWhileSuppressed = FakeBrowserWindow.instances.find((win) => (
+      !win.isDestroyed()
+      && win.options.webPreferences
+      && path.basename(win.options.webPreferences.preload) === "preload-permission-queue.js"
+    ));
+    assert.equal(liveQueueWhileSuppressed, undefined,
+      "fullscreen suppression must not replace hidden cards with a queue launcher");
+
+    permission.setPermissionSurfacesFullscreenSuppressed(false);
+    const queueWindow = FakeBrowserWindow.instances.find((win) => (
+      !win.isDestroyed()
+      && win.options.webPreferences
+      && path.basename(win.options.webPreferences.preload) === "preload-permission-queue.js"
+    ));
+    assert.ok(queueWindow, "pending requests should return after fullscreen exits");
+    queueWindow.webContents.emit("did-finish-load");
+    const payload = lastQueuePayload(queueWindow);
+    assert.strictEqual(payload.totalCount, 6);
+    permission.handleQueuePresentationAck(
+      { sender: queueWindow.webContents },
+      { revision: payload.revision }
+    );
+    permission.cleanup();
+  });
+
   it("auto-closes one hidden request and publishes the smaller queue without deciding siblings", () => {
     mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1_000_000 });
     let permission = null;

@@ -14,6 +14,7 @@ const SIDEBAR_TABS = [
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "discord-presence", labelKey: "sidebarDiscordPresence", available: true },
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
+  { id: "recap", labelKey: "sidebarRecap", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
 ];
 
@@ -92,11 +93,21 @@ globalThis.ClawdSettingsTabAnimOverrides.init(core);
 globalThis.ClawdSettingsTabShortcuts.init(core);
 if (globalThis.ClawdSettingsTabTelegramApproval) globalThis.ClawdSettingsTabTelegramApproval.init(core);
 if (globalThis.ClawdSettingsTabDiscordPresence) globalThis.ClawdSettingsTabDiscordPresence.init(core);
+if (globalThis.ClawdSettingsTabRecap) globalThis.ClawdSettingsTabRecap.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 
 core.ops.restoreNavigationState();
+function selectRequestedTab(tab) {
+  if (tab === "recap") core.ops.selectTab("recap", { persist: false });
+}
+if (window.settingsAPI && typeof window.settingsAPI.onRequestedTab === "function") {
+  window.settingsAPI.onRequestedTab(selectRequestedTab);
+}
+if (window.settingsAPI && typeof window.settingsAPI.consumeRequestedTab === "function") {
+  selectRequestedTab(window.settingsAPI.consumeRequestedTab());
+}
 if (typeof window.addEventListener === "function") {
   window.addEventListener("beforeunload", () => core.ops.persistNavigationState());
 }
@@ -109,6 +120,13 @@ if (window.settingsAPI && typeof window.settingsAPI.onAgentActivity === "functio
   window.settingsAPI.onAgentActivity((payload) => {
     const tab = core.tabs.agents;
     if (tab && typeof tab.applyAgentActivity === "function") tab.applyAgentActivity(payload);
+  });
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onRecapChanged === "function") {
+  window.settingsAPI.onRecapChanged(() => {
+    const tab = core.tabs.recap;
+    if (tab && typeof tab.applyDataChanged === "function") tab.applyDataChanged();
   });
 }
 

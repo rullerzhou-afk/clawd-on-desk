@@ -7,6 +7,7 @@ const {
   INTERNAL_WORKSPACE_AGENTS,
   deriveSessionBadge,
   deriveSourceInfo,
+  isDoneEvent,
   isSessionInProgress,
   buildDisplaySessionTag,
   buildSessionSnapshotEntry,
@@ -53,6 +54,14 @@ describe("deriveSourceInfo", () => {
         displayLabel: "",
       });
     }
+  });
+});
+
+describe("isDoneEvent", () => {
+  it("is the shared completion boundary for state arbitration and snapshots", () => {
+    assert.strictEqual(isDoneEvent("Stop"), true);
+    assert.strictEqual(isDoneEvent("event_msg:task_complete"), true);
+    assert.strictEqual(isDoneEvent("PostCompact"), false);
   });
 });
 

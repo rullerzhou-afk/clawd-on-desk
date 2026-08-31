@@ -22,6 +22,7 @@
     actionNotice: null,
     actionNoticeTimer: null,
     checkExpansionOverrides: new Map(),
+    disclosureControllers: [],
     checksLoading: false,
     connectionRunId: 0,
     repairRunId: 0,
@@ -465,8 +466,8 @@
           `<span class="doctor-check-summary">${escape(core, summary)}</span>` +
           `<span class="doctor-check-status">${escape(core, checkStatusLabel(core, check))}</span>` +
         `</button>` +
-        `<div class="doctor-agent-body" aria-hidden="${expanded ? "false" : "true"}"${expanded ? "" : " inert"}>` +
-          `<div class="doctor-agent-body-inner">` +
+        `<div class="doctor-agent-body settings-disclosure-body" aria-hidden="${expanded ? "false" : "true"}"${expanded ? "" : " inert"}>` +
+          `<div class="doctor-agent-body-inner settings-disclosure-body-inner">` +
             renderAgentRows(core, check) +
           `</div>` +
         `</div>` +
@@ -608,6 +609,7 @@
   }
 
   function closeModal() {
+    disposeDoctorDisclosures();
     state.modalOpen = false;
     state.connectionRunId += 1;
     state.repairRunId += 1;
@@ -639,6 +641,13 @@
     if (state.modalOpen) mountModal(core, state.lastResult);
   }
 
+  function disposeDoctorDisclosures() {
+    for (const controller of state.disclosureControllers) {
+      if (controller && typeof controller.dispose === "function") controller.dispose();
+    }
+    state.disclosureControllers = [];
+  }
+
   function mountModal(core, result) {
     const opening = !state.modalOpen;
     if (opening) startModalEntering();
@@ -646,6 +655,7 @@
     state.modalOpen = true;
     const rootEl = document.getElementById("modalRoot");
     if (!rootEl) return;
+    disposeDoctorDisclosures();
     rootEl.innerHTML = (
       `<div class="modal-backdrop doctor-modal-backdrop">` +
         renderModalBody(core, result, { entering }) +
@@ -721,23 +731,20 @@
       });
     }
     for (const button of toggleCheckButtons) {
-      button.addEventListener("click", () => {
-        const id = button.getAttribute("data-check-id") || "";
-        const expanded = button.getAttribute("aria-expanded") === "true";
-        if (id) state.checkExpansionOverrides.set(id, !expanded);
-        const row = button.parentElement || button.parentNode;
-        const body = row && row.querySelector ? row.querySelector(".doctor-agent-body") : null;
-        button.setAttribute("aria-expanded", expanded ? "false" : "true");
-        if (row && row.classList) {
-          row.classList.toggle("expanded", !expanded);
-          row.classList.toggle("collapsed", expanded);
-        }
-        if (body) {
-          body.setAttribute("aria-hidden", expanded ? "true" : "false");
-          if (expanded) body.setAttribute("inert", "");
-          else body.removeAttribute("inert");
-        }
+      const id = button.getAttribute("data-check-id") || "";
+      const row = button.parentElement || button.parentNode;
+      const body = row && row.querySelector ? row.querySelector(".doctor-agent-body") : null;
+      if (!row || !body) continue;
+      const controller = core.helpers.attachSettingsDisclosure({
+        root: row,
+        trigger: button,
+        body,
+        expanded: button.getAttribute("aria-expanded") === "true",
+        onExpandedChange(nextExpanded) {
+          if (id) state.checkExpansionOverrides.set(id, nextExpanded);
+        },
       });
+      state.disclosureControllers.push(controller);
     }
   }
 

@@ -291,6 +291,15 @@ module.exports = function initUpdateBubble(ctx) {
   let hideTimer = null;
   let autoCloseTimer = null;
   let visibleSince = 0;
+  let presentationActive = false;
+  let fullscreenSuppressed = false;
+  // A presentation paused by fullscreen or manual pet hiding stays pending
+  // until both visibility layers are clear and the renderer is ready.
+  let visibilityRestorePending = false;
+  // Only time spent actually visible counts toward auto-close. Tracking the
+  // accumulated visible duration lets policy changes during fullscreen use
+  // newTotal - elapsedVisible instead of clamping a stale remaining value.
+  let autoCloseElapsedVisibleMs = 0;
 
   function notifyOrbitGeometryChanged() {
     const reposition = typeof ctx.repositionQuotaRing === "function"
@@ -358,6 +367,7 @@ module.exports = function initUpdateBubble(ctx) {
     bubble.on("closed", () => {
       bubble = null;
       measuredHeight = 0;
+      presentationActive = false;
       notifyOrbitGeometryChanged();
       if (resolveAction) {
         const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
@@ -421,16 +431,42 @@ module.exports = function initUpdateBubble(ctx) {
   }
 
   function syncVisibility(hiddenOverride) {
-    if (!bubble || bubble.isDestroyed()) return;
-    const hidden = typeof hiddenOverride === "boolean" ? hiddenOverride : ctx.petHidden;
+    if (!bubble || bubble.isDestroyed()) return false;
+    const hidden = fullscreenSuppressed
+      || (typeof hiddenOverride === "boolean" ? hiddenOverride : ctx.petHidden);
     if (hidden) {
       bubble.hide();
-      return;
+      return false;
     }
+    if (visibilityRestorePending) {
+      return restoreSuspendedPresentation(hiddenOverride);
+    }
+    if (!presentationActive) return false;
+    return showPresentationWindow();
+  }
+
+  function showPresentationWindow() {
+    if (bubble.webContents.isLoading()) return false;
     bubble.showInactive();
     keepOutOfTaskbar(bubble);
     if (isMac) deferMacFloatingVisibility(ctx, bubble);
     else if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+    if (autoCloseTimer) return true;
+
+    const policy = getPolicy(ctx);
+    if (!policy.enabled) {
+      hideForPolicy();
+      return false;
+    }
+    if (policy.autoCloseMs > 0) {
+      const remainingMs = getAutoCloseRemainingMs(policy);
+      if (remainingMs <= 0) {
+        expireAutoClose(activePayload);
+        return false;
+      }
+      scheduleAutoCloseAfterResume(activePayload, remainingMs);
+    }
+    return true;
   }
 
   // Resolve the in-flight bubble promise with a tagged result.
@@ -453,40 +489,60 @@ module.exports = function initUpdateBubble(ctx) {
     }
   }
 
-  function scheduleAutoClose(payload) {
+  function captureVisibleAutoCloseElapsed(now = Date.now()) {
+    if (autoCloseTimer && Number.isFinite(visibleSince)) {
+      autoCloseElapsedVisibleMs += Math.max(0, now - visibleSince);
+    }
+    clearAutoCloseTimer();
+    visibleSince = 0;
+  }
+
+  function getAutoCloseRemainingMs(policy, now = Date.now()) {
+    let elapsed = autoCloseElapsedVisibleMs;
+    if (autoCloseTimer && Number.isFinite(visibleSince)) elapsed += Math.max(0, now - visibleSince);
+    return policy.autoCloseMs - elapsed;
+  }
+
+  function expireAutoClose(payload = activePayload) {
+    const fallback = payload && payload.defaultAction != null ? payload.defaultAction : null;
+    if (resolveAction) settlePrevious(fallback, "autoClose");
+    hideUpdateBubble();
+  }
+
+  function scheduleAutoCloseAfterResume(payload, remainingMs) {
     clearAutoCloseTimer();
     const policy = getPolicy(ctx);
     if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
+    const delay = Math.min(policy.autoCloseMs, Number(remainingMs));
+    if (!Number.isFinite(delay) || delay <= 0) return;
     visibleSince = Date.now();
     autoCloseTimer = setTimeout(() => {
       autoCloseTimer = null;
-      const fallback = payload && payload.defaultAction != null ? payload.defaultAction : null;
-      if (resolveAction) settlePrevious(fallback, "autoClose");
-      hideUpdateBubble();
-    }, policy.autoCloseMs);
+      expireAutoClose(payload);
+    }, delay);
   }
 
   function refreshAutoCloseForPolicy() {
     if (!bubble || bubble.isDestroyed() || !activePayload) return false;
-    clearAutoCloseTimer();
+    captureVisibleAutoCloseElapsed();
     const policy = getPolicy(ctx);
     if (!policy.enabled || !(policy.autoCloseMs > 0)) {
       hideForPolicy();
       return false;
     }
-    const remainingMs = computeAutoCloseRemainingMs(visibleSince, policy.autoCloseMs, Date.now());
+    const remainingMs = getAutoCloseRemainingMs(policy);
     if (remainingMs <= 0) {
-      const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
-      if (resolveAction) settlePrevious(fallback, "autoClose");
-      hideUpdateBubble();
+      expireAutoClose(activePayload);
       return false;
     }
-    autoCloseTimer = setTimeout(() => {
-      autoCloseTimer = null;
-      const fallback = activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null;
-      if (resolveAction) settlePrevious(fallback, "autoClose");
-      hideUpdateBubble();
-    }, remainingMs);
+    if (
+      !presentationActive
+      || bubble.webContents.isLoading()
+      || fullscreenSuppressed
+      || visibilityRestorePending
+      || ctx.petHidden
+    ) return true;
+    scheduleAutoCloseAfterResume(activePayload, remainingMs);
     return true;
   }
 
@@ -502,10 +558,14 @@ module.exports = function initUpdateBubble(ctx) {
       settlePrevious(fallback, "closed");
     }
     activePayload = payload;
+    visibilityRestorePending = fullscreenSuppressed;
+    autoCloseElapsedVisibleMs = 0;
+    visibleSince = 0;
     if (!policy.enabled) {
       hideUpdateBubble();
       return Promise.resolve({ action: fallback, source: "policy" });
     }
+    presentationActive = true;
     const win = ensureBubble();
 
     const send = () => {
@@ -515,7 +575,6 @@ module.exports = function initUpdateBubble(ctx) {
         win.webContents.send("update-bubble-show", payload);
         syncVisibility();
         notifyOrbitGeometryChanged();
-        scheduleAutoClose(payload);
       }
     };
 
@@ -537,6 +596,9 @@ module.exports = function initUpdateBubble(ctx) {
 
   function hideUpdateBubble() {
     if (!bubble || bubble.isDestroyed()) return;
+    presentationActive = false;
+    visibilityRestorePending = false;
+    autoCloseElapsedVisibleMs = 0;
     bubble.webContents.send("update-bubble-hide");
     clearAutoCloseTimer();
     visibleSince = 0;
@@ -547,6 +609,87 @@ module.exports = function initUpdateBubble(ctx) {
         notifyOrbitGeometryChanged();
       }
     }, 250);
+  }
+
+  function suspendActivePresentation() {
+    if (!bubble || bubble.isDestroyed() || !activePayload) return true;
+
+    visibilityRestorePending = presentationActive;
+    const policy = getPolicy(ctx);
+    captureVisibleAutoCloseElapsed();
+    if (
+      visibilityRestorePending
+      && policy.enabled
+      && policy.autoCloseMs > 0
+      && getAutoCloseRemainingMs(policy) <= 0
+    ) {
+      expireAutoClose(activePayload);
+    }
+    if (hideTimer) {
+      clearTimeout(hideTimer);
+      hideTimer = null;
+    }
+    bubble.hide();
+    notifyOrbitGeometryChanged();
+    return true;
+  }
+
+  function suspendForPetHidden() {
+    return suspendActivePresentation();
+  }
+
+  function suspendForFullscreen() {
+    if (fullscreenSuppressed) return false;
+    fullscreenSuppressed = true;
+    return suspendActivePresentation();
+  }
+
+  function restoreSuspendedPresentation(hiddenOverride) {
+    if (
+      fullscreenSuppressed
+      || !visibilityRestorePending
+      || !bubble
+      || bubble.isDestroyed()
+      || !activePayload
+    ) return false;
+    const hidden = typeof hiddenOverride === "boolean" ? hiddenOverride : ctx.petHidden;
+    if (hidden) return false;
+    if (bubble.webContents.isLoading()) return false;
+
+    const policy = getPolicy(ctx);
+    if (!policy.enabled) {
+      hideForPolicy();
+      return false;
+    }
+    const hasAutoClose = policy.autoCloseMs > 0;
+    const remainingMs = hasAutoClose ? getAutoCloseRemainingMs(policy) : null;
+    if (hasAutoClose && remainingMs <= 0) {
+      expireAutoClose(activePayload);
+      return false;
+    }
+
+    visibilityRestorePending = false;
+    bubble.webContents.send("update-bubble-show", activePayload);
+    repositionUpdateBubble();
+    const shown = syncVisibility(hiddenOverride);
+    notifyOrbitGeometryChanged();
+    return shown;
+  }
+
+  function resumeFromFullscreen() {
+    if (!fullscreenSuppressed) return false;
+    fullscreenSuppressed = false;
+    if (!visibilityRestorePending || !bubble || bubble.isDestroyed() || !activePayload) {
+      visibilityRestorePending = false;
+      autoCloseElapsedVisibleMs = 0;
+      return true;
+    }
+    // A manual hide is a second, independent layer. Keep the suspended
+    // presentation and its visible-time budget intact until Show Pet calls
+    // syncVisibility(false); consuming it here would strand actionable updater
+    // promises with no timer and no visible UI.
+    if (!ctx.petHidden) restoreSuspendedPresentation();
+    return true;
   }
 
   function hideForPolicy() {
@@ -606,6 +749,7 @@ module.exports = function initUpdateBubble(ctx) {
     settlePrevious(activePayload && activePayload.defaultAction != null ? activePayload.defaultAction : null, "closed");
     if (bubble && !bubble.isDestroyed()) bubble.destroy();
     bubble = null;
+    presentationActive = false;
   }
 
   return {
@@ -617,6 +761,9 @@ module.exports = function initUpdateBubble(ctx) {
     syncVisibility,
     hideForPolicy,
     refreshAutoCloseForPolicy,
+    suspendForPetHidden,
+    suspendForFullscreen,
+    resumeFromFullscreen,
     cleanup,
     getBubbleWindow: () => bubble,
   };

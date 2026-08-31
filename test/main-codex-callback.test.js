@@ -174,4 +174,40 @@ describe("Codex monitor callback helpers", () => {
     });
     assert.strictEqual(Object.prototype.hasOwnProperty.call(options, "headless"), false);
   });
+
+  it("passes trusted JSONL recap time and ephemeral ids without quota fields", () => {
+    assert.deepStrictEqual(buildCodexMonitorSessionOptions({
+      cwd: "/repo",
+      recapOccurredAt: 1788013260000,
+      recapDedupeId: "turn-secret",
+      toolUseId: "call-secret",
+      syntheticBackfill: true,
+    }, { includeHeadless: true, includeRecap: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
+      recapOccurredAt: 1788013260000,
+      recapDedupeId: "turn-secret",
+      toolUseId: "call-secret",
+      recapSuppressed: true,
+      headless: false,
+    });
+  });
+
+  it("marks trusted headless JSONL lifecycle as subagent recap input", () => {
+    assert.deepStrictEqual(buildCodexMonitorSessionOptions({
+      cwd: "/repo",
+      recapOccurredAt: 1788013260000,
+      recapDedupeId: "subagent-turn-secret",
+      headless: true,
+    }, { includeHeadless: true, includeRecap: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
+      recapOccurredAt: 1788013260000,
+      recapDedupeId: "subagent-turn-secret",
+      recapIsSubagent: true,
+      headless: true,
+    });
+  });
 });

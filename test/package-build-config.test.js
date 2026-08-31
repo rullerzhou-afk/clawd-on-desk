@@ -19,6 +19,19 @@ function sliceWorkflowBlock(workflow, startMarker, endMarker) {
   return workflow.slice(start, end);
 }
 
+function sliceWorkflowJob(workflow, jobName) {
+  const normalized = workflow.replace(/\r\n/g, "\n");
+  const marker = `\n  ${jobName}:\n`;
+  const markerIndex = normalized.indexOf(marker);
+  assert.ok(markerIndex >= 0, `workflow should contain the ${jobName} job`);
+  const start = markerIndex + 1;
+  const remainder = normalized.slice(start + marker.length - 1);
+  const nextJob = remainder.search(/\n  [a-zA-Z0-9_-]+:\n/);
+  return nextJob === -1
+    ? normalized.slice(start)
+    : normalized.slice(start, start + marker.length - 1 + nextJob);
+}
+
 describe("package build config", () => {
   describe("repository asset audit", () => {
     it("exposes a Windows-compatible npm audit command", () => {
@@ -630,6 +643,24 @@ describe("package build config", () => {
       assert.match(workflow, /dist\/native-package-manifests\/\*\.json/);
       assert.match(workflow, /runner: windows-11-arm/);
       assert.match(workflow, /runner: macos-15-intel/);
+      assert.match(workflow, /- "src\/recap-\*\.js"/);
+      assert.match(workflow, /- "src\/settings-ui-core\.js"/);
+      assert.match(workflow, /- "src\/settings-tab-recap\.js"/);
+      assert.match(workflow, /- "test\/recap\*\.test\.js"/);
+      assert.match(workflow, /- "test\/fixtures\/recap-private-permissions-\*\.js"/);
+      assert.match(workflow, /- "test\/settings-recap\.test\.js"/);
+      assert.match(workflow, /name: Run recap unit tests[\s\S]*?test\/recap\*\.test\.js[\s\S]*?test\/settings-recap\.test\.js/);
+      const packageJob = sliceWorkflowJob(workflow, "package");
+      assert.match(packageJob, /runs-on: \$\{\{ matrix\.runner \}\}/);
+      assert.match(packageJob, /name: Run Windows recap ACL tests\s+if: runner\.os == 'Windows'/);
+      for (const testFile of [
+        "test/recap-private-permissions.test.js",
+        "test/recap-private-permissions-electron.test.js",
+        "test/recap-runtime.test.js",
+        "test/recap-store.test.js",
+      ]) {
+        assert.ok(packageJob.includes(testFile), `Windows package job should run ${testFile}`);
+      }
       assert.doesNotMatch(workflow, /fetch:sidecars|verify-sidecar|assert:packaged-sidecar/);
       assert.match(workflow, /Clawd-on-Desk-\*-x86_64\.AppImage/);
       assert.match(workflow, /Clawd-on-Desk-\*-amd64\.deb/);

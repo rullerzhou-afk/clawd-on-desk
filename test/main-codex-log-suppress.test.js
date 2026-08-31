@@ -12,4 +12,47 @@ describe("main Codex official hook JSONL suppression", () => {
       "guardian_assessment should not re-drive hook-active Codex sessions from JSONL"
     );
   });
+
+  it("keeps official-covered tools suppressed but WebSearch on JSONL fallback", () => {
+    const runtime = createAgentRuntimeMain({ codexSubagentClassifier: {} });
+    runtime.markCodexOfficialHookSession("codex-1", "turn-1");
+
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent(
+        "codex-1",
+        "working",
+        "response_item:function_call",
+        "turn-1",
+      ),
+      true,
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent(
+        "codex-1",
+        "working",
+        "response_item:function_call",
+        "turn-1",
+        { recapIsWebSearch: true },
+      ),
+      false,
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent(
+        "codex-1",
+        "working",
+        "response_item:custom_tool_call",
+        "turn-1",
+      ),
+      true,
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexLogEvent(
+        "codex-1",
+        "working",
+        "response_item:web_search_call",
+        "turn-1",
+      ),
+      false,
+    );
+  });
 });

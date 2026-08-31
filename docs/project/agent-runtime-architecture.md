@@ -243,6 +243,14 @@ DeepSeek Harness 权限气泡（approval waterfall，阻塞）：
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 
+## Local Recap Projection
+
+The recap is a local projection of accepted runtime activity, not a second observer at the HTTP or `updateSession()` entry. After agent gates, Codex source/replay arbitration, permission provenance handling, subagent filtering, and completion arbitration settle, `src/state.js` maps the accepted boundary through `src/recap-metrics.js` and sends an allowlisted canonical event to `src/recap-runtime.js`.
+
+`src/recap-journal.js` freezes the desktop civil time and replaces any stable scope/session/dedupe identities with installation-local HMACs before appending a 14-day ticket. The same normalized record updates `src/recap-aggregate.js`; `src/recap-coverage.js` independently records when Clawd could receive signals. Daily aggregates and coverage remain bounded to 400 local days under `~/.clawd/recap-v1/`. Query IPC returns only the broad `local` / `wsl` / `remote` scope class and never returns HMAC values, profile IDs, or distribution names. Startup rebuilds the 14-day aggregate in bounded event-loop batches; unsupported pre-release aggregate/coverage schemas are quarantined instead of migrated.
+
+DND remains an interaction/visual gate and does not stop recap or coverage. Suspend, process shutdown, and `recapEnabled=false` close coverage. Historical records retain the time zone, UTC offset, local date, and local hour captured at acceptance; Codex JSONL uses only an accepted line's trusted timestamp. See `docs/guides/recap.md` for the full metric, privacy, and DST contract.
+
 ## Runtime Ownership Boundaries
 
 `src/main.js` 是 composition root，不再是各子系统的实现 owner。新增或修改行为时先进入对应 owner，避免把逻辑重新堆回 `main.js`：
@@ -376,11 +384,11 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - Hermes plugin 使用同步 POST，避免短命 `hermes -z` 进程退出前丢事件；Clawd 未启动时有短 cooldown，避免反复扫端口
 - Hermes 的 `agent_pid` 当前是 plugin worker 进程 PID；`source_pid` 来自异步进程树解析，给终端聚焦使用
 - Hermes config.yaml 是用户 YAML，不做 line-oriented 编辑；安装只复制托管 plugin 文件并调用 `hermes plugins enable clawd-on-desk`
-- DeepSeek Harness 首发只支持 web profile 与 npm 发布物 `@deepseek-ai/dsh@0.1.0-rc.6`。安装器按 canonical `DSH_HOME` 哈希命名空间把 bridge 复制成 immutable hash generation，再用官方 `dsh plugin --profile web add/remove` mutation；dependency、bundle row、installation-first/profile-second resolution 与 Clawd marker 必须同时验证，foreign 同名 package 永不覆盖或删除；不同 DSH_HOME 不共享可删除 generation、mutation lock 或 inspection latch
+- DeepSeek Harness 首发只支持 web profile，并维护一张 verified 版本契约表（`0.1.1-rc.2` 优先、`0.1.0-rc.6` 保留），每个版本绑定自己的 npm artifact 与 integrity；Install/Repair 按检测到的 host 版本（无 CLI 时按 owned marker）选择契约，Uninstall 与手动 npx 命令按 marker 契约选择，未列入表内的版本一律禁止 mutation。安装器按 canonical `DSH_HOME` 哈希命名空间把 bridge 复制成 immutable hash generation，再用官方 `dsh plugin --profile web add/remove` mutation；dependency、bundle row、installation-first/profile-second resolution 与 Clawd marker 必须同时验证，foreign 同名 package 永不覆盖或删除；不同 DSH_HOME 不共享可删除 generation、mutation lock 或 inspection latch
 - DSH mutation lock 只在 owner/schema/token/PID/timestamp/owner-recorded operation timeout 全合法、年龄超过该 owner timeout 的两倍、且 PID probe 明确返回 `ESRCH` 时通过 sibling atomic rename 接管；live PID、`EPERM`、unknown、corrupt/foreign owner 均 fail closed，错误必须暴露精确 lock path。owner write/release 只允许隔离并删除 exact owner file 与空 lock dir，禁止 recursive canonical cleanup。无全局 CLI 的手动 npx generation 通过同 namespace 的 owned reference 持久保活，直到验证或显式卸载；命令显式 pin shell-quoted canonical `DSH_HOME`，malformed/foreign/concurrent anchor 一律保留 generation 并要求人工检查
 - DSH state listener 是 fire-and-forget FIFO；approval listener 是唯一例外，必须阻塞等待决定或 `next()`。`session/created` observer 顶层 non-throwing，避免同步异常 veto DSH session 创建
 - DSH projection storage 不是稳定协议：首发不读取 workspace/projcache，也不运行 fallback monitor
-- DSH Install/Repair 成功与 Doctor healthy 都是 disk-only 结论，必须提示重启正在运行的 `dsh web`。安装器/Doctor 对非 `0.1.0-rc.6` 禁止 mutation 并报警；上游没有 external plugin 可用的公开 runtime host-version/activation seam，因此已安装 bridge 遇到 DSH 原地升级时无法在 listener 注册前可靠自禁用，这是 experimental residual，不得写成 runtime fail-closed 保证
+- DSH Install/Repair 成功与 Doctor healthy 都是 disk-only 结论，必须提示重启正在运行的 `dsh web`。安装器/Doctor 对未列入版本契约表的 DSH 禁止 mutation 并报警（rc.6 与 rc.2 各自按精确版本契约选择）；上游没有 external plugin 可用的公开 runtime host-version/activation seam，因此已安装 bridge 遇到 DSH 原地升级时无法在 listener 注册前可靠自禁用，这是 experimental residual，不得写成 runtime fail-closed 保证
 
 ## Pi Notes
 

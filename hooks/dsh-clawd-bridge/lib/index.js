@@ -52,6 +52,7 @@ function sessionFields(session) {
     session_id: canonicalSessionId(rawId),
     ...(cwd ? { cwd } : {}),
     ...(headless ? { headless: true } : {}),
+    ...(headless ? { recap_is_subagent: true } : {}),
   }
 }
 

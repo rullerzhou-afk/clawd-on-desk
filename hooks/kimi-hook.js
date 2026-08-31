@@ -394,6 +394,7 @@ const EVENT_TO_LIFECYCLE = {
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
+  const originalEvent = event;
 
   // Kimi currently emits string session_ids; we still coerce defensively so a
   // future payload shape drift (e.g. numeric ids) doesn't throw from
@@ -421,6 +422,14 @@ function buildStateBody(event, payload, resolve) {
 
   const body = { state: resolvedState, session_id: sessionId, event };
   body.agent_id = "kimi-cli";
+  // Legacy Kimi may rewrite a real PreToolUse into PermissionRequest for its
+  // passive approval cue. Preserve the closed recap boundary and the verified
+  // per-call id without teaching the main process about Kimi's raw payload.
+  if (originalEvent === "PreToolUse") {
+    const toolCallId = readToolCallId(payload);
+    if (toolCallId) body.tool_use_id = toolCallId;
+    if (classification === "immediate") body.recap_boundary = "tool-call";
+  }
   if (permissionSuspect) body.permission_suspect = true;
   if (cwd) body.cwd = cwd;
 
