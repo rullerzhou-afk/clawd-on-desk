@@ -125,6 +125,13 @@ ids, proxy addresses, or Telegram response bodies.
   reply followed by Enter. Successful delivery does not switch the foreground
   window and does not read or write the system clipboard. Reply deliveries are
   serialized so concurrent Telegram messages cannot interleave.
+- Codex Desktop sessions use Codex's thread queue instead of the shared
+  app-server Console. Clawd extracts the exact thread UUID or saved thread name
+  from the mapped completion session and runs
+  `codex queue --thread <THREAD> --message <TEXT>`; the reply is then picked up
+  by that Desktop conversation without depending on which app-server PID is
+  shared by other sessions. Ordinary Codex CLI sessions continue to use their
+  own local Console/ConPTY input.
 - Terminal tabs or panes backed by independent ConPTY instances have separate
   consoles and can be targeted independently. If another live Clawd session
   shares the same Console as the target, Clawd treats the target as ambiguous,
@@ -142,6 +149,11 @@ ids, proxy addresses, or Telegram response bodies.
   multi-user and multi-chat routing are not configured separately. A plain
   message that is not a reply to a mapped completion notification is not routed
   to any session.
+- Reply to a newly delivered completion notification from the current Clawd
+  run. A Clawd restart, bot token/recipient change, polling restart, or Direct
+  Send toggle change clears the in-memory mapping, so an older Telegram card
+  may still look like a completion notification while no longer selecting a
+  session.
 
 ## Runtime Behavior
 

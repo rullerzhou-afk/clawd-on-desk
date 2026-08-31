@@ -443,7 +443,7 @@ test("direct send asks for a reply target when no completion mapping exists", as
 
   const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 404 });
   assert.equal(res.status, "unmapped");
-  assert.match(res.text, /Reply to a Clawd completion notification/);
+  assert.match(res.text, /newly delivered Clawd completion notification/);
 });
 
 test("direct send falls back when the mapped session is no longer live", async () => {
@@ -2335,10 +2335,12 @@ test("direct send rejects a reused session when only the agent process changed",
 
 test("direct send rejects a reused session when mapped UI identity changes", async () => {
   const identityFields = [
+    ["rawSessionId", "raw-session:new"],
     ["agentId", "codex"],
     ["editor", "cursor"],
     ["wtHwnd", "12346"],
     ["orcaPaneKey", "window:new-pane"],
+    ["codexOriginator", "codex_work_desktop"],
   ];
 
   for (let index = 0; index < identityFields.length; index += 1) {
@@ -2346,12 +2348,14 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
     const messageId = 980 + index;
     const original = localTerminalEntry({
       id: `sess-ui-${field}`,
+      rawSessionId: "raw-session:old",
       agentId: "claude-code",
       sourcePid: 1234,
       agentPid: 2111,
       editor: "code",
       wtHwnd: "12345",
       orcaPaneKey: "window:old-pane",
+      codexOriginator: "codex-tui",
     });
     let current = original;
     const deliveries = [];
@@ -2372,12 +2376,14 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
       messageId,
       chatId: "123",
       sessionId: original.id,
+      rawSessionId: original.rawSessionId,
       agentId: original.agentId,
       sourcePid: original.sourcePid,
       agentPid: original.agentPid,
       editor: original.editor,
       wtHwnd: original.wtHwnd,
       orcaPaneKey: original.orcaPaneKey,
+      codexOriginator: original.codexOriginator,
     });
     current = { ...original, [field]: replacement };
 
@@ -2389,4 +2395,171 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
     assert.equal(result.status, "session_changed", field);
     assert.deepEqual(deliveries, [], field);
   }
+});
+
+test("direct send routes Codex Desktop replies through a focusless queue adapter", async () => {
+  const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
+  const desktop = localTerminalEntry({
+    id: `codex:${threadId}`,
+    rawSessionId: `codex:${threadId}`,
+    agentId: "codex",
+    codexOriginator: "codex_work_desktop",
+    sourcePid: null,
+    agentPid: 14220,
+  });
+  const focused = [];
+  const delivered = [];
+  const consoleAdapter = {
+    deliver: async () => {
+      throw new Error("Desktop replies must not use Console input");
+    },
+  };
+  const queueAdapter = {
+    requiresFocus: false,
+    requiresFocusableTarget: false,
+    requiresMappedAgentPid: false,
+    requiresPidDisambiguation: false,
+    canDeliver: (entry) => entry && entry.codexOriginator === "codex_work_desktop",
+    deliver: async (payload) => {
+      delivered.push({ sessionId: payload.sessionId, promptText: payload.promptText });
+      return { status: "queued", delivered: true, autoEnter: true };
+    },
+  };
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [desktop] }),
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: consoleAdapter,
+    getDeliveryAdapter: ({ entry }) => entry.agentId === "codex" ? queueAdapter : consoleAdapter,
+    osPlatform: "win32",
+  });
+
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9971,
+    sessionId: desktop.id,
+    agentId: desktop.agentId,
+    agentPid: desktop.agentPid,
+  }), true);
+  const result = await direct.handleTextMessage({
+    text: "Please continue from Telegram",
+    replyToMessageId: 9971,
+  });
+
+  assert.equal(result.status, "queued");
+  assert.equal(result.deliveryResult.status, "queued");
+  assert.match(result.text, /Codex session/);
+  assert.deepEqual(focused, []);
+  assert.deepEqual(delivered, [{
+    sessionId: desktop.id,
+    promptText: "Please continue from Telegram",
+  }]);
+});
+
+test("direct send does not apply Console PID ambiguity to Codex Desktop queue sessions", async () => {
+  const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
+  const target = localTerminalEntry({
+    id: `codex:${threadId}`,
+    rawSessionId: `codex:${threadId}`,
+    agentId: "codex",
+    codexOriginator: "Codex Desktop",
+    sourcePid: 14220,
+    agentPid: 14220,
+  });
+  const peer = localTerminalEntry({
+    id: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    rawSessionId: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    agentId: "codex",
+    codexOriginator: "codex_work_desktop",
+    sourcePid: 14220,
+    agentPid: 14220,
+  });
+  let calls = 0;
+  const queueAdapter = {
+    requiresFocus: false,
+    requiresFocusableTarget: false,
+    requiresPidDisambiguation: false,
+    canDeliver: () => true,
+    deliver: async () => {
+      calls += 1;
+      return { status: "queued", delivered: true };
+    },
+  };
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target, peer] }),
+    deliveryAdapter: queueAdapter,
+    osPlatform: "win32",
+  });
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9972,
+    sessionId: target.id,
+    agentId: target.agentId,
+    agentPid: target.agentPid,
+  }), true);
+  const result = await direct.handleTextMessage({ text: "same app-server", replyToMessageId: 9972 });
+  assert.equal(result.status, "queued");
+  assert.equal(calls, 1);
+});
+
+test("direct send copies replies when an unknown Codex originator selects the queue guard", async () => {
+  const target = localTerminalEntry({
+    id: "codex:019e115c-4df2-7ed0-b90e-8e6345aca777",
+    rawSessionId: "codex:019e115c-4df2-7ed0-b90e-8e6345aca777",
+    agentId: "codex",
+    codexOriginator: "future-unknown-client",
+    sourcePid: 14220,
+    agentPid: 14220,
+  });
+  let consoleCalls = 0;
+  let queueCalls = 0;
+  const copied = [];
+  const consoleAdapter = {
+    requiresFocus: false,
+    deliver: async () => {
+      consoleCalls += 1;
+      return { status: "sent_with_enter", delivered: true };
+    },
+  };
+  const queueGuardAdapter = {
+    requiresFocus: false,
+    requiresFocusableTarget: false,
+    requiresMappedAgentPid: false,
+    requiresPidDisambiguation: false,
+    canDeliver: () => false,
+    deliver: async () => {
+      queueCalls += 1;
+      return { status: "queued", delivered: true };
+    },
+  };
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: consoleAdapter,
+    getDeliveryAdapter: () => queueGuardAdapter,
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+  const context = direct.createCompletionNotificationContext(target);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9973,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+
+  const result = await direct.handleTextMessage({
+    text: "keep this out of the shared app-server Console",
+    replyToMessageId: 9973,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "fallback_copied");
+  assert.equal(consoleCalls, 0);
+  assert.equal(queueCalls, 0);
+  assert.deepEqual(copied, ["keep this out of the shared app-server Console"]);
 });

@@ -3717,6 +3717,11 @@ async function initTelegramMigrationController() {
     createTelegramDirectSend,
   } = require("./telegram-direct-send");
   const { createWindowsConsoleInputDeliveryAdapter } = require("./windows-console-input");
+  const { createCodexQueueDeliveryAdapter } = require("./codex-queue-delivery");
+  const {
+    isCodexCliOriginator,
+    isCodexDesktopOriginator,
+  } = require("../hooks/codex-originator");
   const { createTelegramNativeRunner } = require("./telegram-native-runner");
   const { createTelegramFetchTransport } = require("./telegram-fetch-transport");
   const tokenStore = envFileTokenStore({ filePath: paths.tokenEnvFilePath });
@@ -3736,11 +3741,27 @@ async function initTelegramMigrationController() {
       }),
     };
   };
+  const windowsConsoleDeliveryAdapter = createWindowsConsoleInputDeliveryAdapter();
+  const codexQueueDeliveryAdapter = createCodexQueueDeliveryAdapter({
+    osPlatform: process.platform,
+    log: telegramApprovalLog,
+  });
   telegramDirectSend = createTelegramDirectSend({
     getSessionSnapshot: getTelegramDirectSendSnapshot,
     getPendingPermissions: () => pendingPermissions,
     focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
-    deliveryAdapter: createWindowsConsoleInputDeliveryAdapter(),
+    deliveryAdapter: windowsConsoleDeliveryAdapter,
+    getDeliveryAdapter: ({ entry } = {}) => {
+      if (!entry || entry.agentId !== "codex") return windowsConsoleDeliveryAdapter;
+      const originator = entry.codexOriginator || entry.originator;
+      if (isCodexDesktopOriginator(originator)) return codexQueueDeliveryAdapter;
+      if (isCodexCliOriginator(originator)) return windowsConsoleDeliveryAdapter;
+      // Codex Desktop app-server processes can be shared by several threads.
+      // An unknown originator therefore must not inherit the CLI Console path.
+      // The queue adapter rejects non-Desktop targets through canDeliver(),
+      // which sends this reply to the clipboard fallback without OS input.
+      return codexQueueDeliveryAdapter;
+    },
     fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard }),
     isEnabled: () => {
       const snap = _telegramMigrationController && typeof _telegramMigrationController.getSnapshot === "function"
@@ -3824,7 +3845,13 @@ async function initTelegramMigrationController() {
     getClient: () => getTelegramCompanionClient(),
     getLang: () => _settingsController.get("lang") || lang || "en",
     getCompletionOutputMode: () => getTelegramApprovalPrefs().completionOutputMode || "off",
-    getNotifyOnComplete: () => getTelegramApprovalPrefs().notifyOnComplete === true,
+    getNotifyOnComplete: () => {
+      const prefs = getTelegramApprovalPrefs();
+      // Direct replies need a Telegram message to bind to even when the user
+      // keeps assistant output disabled. Treat the explicit reply opt-in as a
+      // bare completion-ping opt-in without changing the stored legacy flag.
+      return prefs.notifyOnComplete === true || prefs.r3DirectSendEnabled === true;
+    },
     // Native-active client present. The companion still advances its dedupe map
     // while native is inactive, and internally decides whether to send a bare
     // ping or require assistant output based on tgApproval prefs.

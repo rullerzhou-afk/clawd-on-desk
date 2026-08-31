@@ -63,6 +63,11 @@ test("Telegram completion sends use route-only validation while mapping registra
   assert.match(companionSource, /isCompletionNotificationRouteCurrent\(context\)/);
   assert.doesNotMatch(companionSource, /isCompletionNotificationContextCurrent\(context\)/);
   assert.match(companionSource, /registerCompletionNotification\(\{/);
+  assert.match(
+    companionSource,
+    /prefs\.notifyOnComplete\s*===\s*true\s*\|\|\s*prefs\.r3DirectSendEnabled\s*===\s*true/,
+    "reply opt-in must keep bare completion notifications available as reply targets",
+  );
 });
 
 test("Telegram completion mappings capture the live agent PID outside the snapshot contract", () => {
@@ -72,6 +77,21 @@ test("Telegram completion mappings capture the live agent PID outside the snapsh
   const source = MAIN_SOURCE.slice(start, end);
   assert.match(source, /sessions\.get\(String\(entry\.id\)\)/);
   assert.match(source, /agentPid:\s*runtimeEntry\s*&&\s*runtimeEntry\.agentPid/);
+});
+
+test("Telegram Codex delivery uses Console only for a known CLI originator", () => {
+  const start = MAIN_SOURCE.indexOf("const windowsConsoleDeliveryAdapter =");
+  const end = MAIN_SOURCE.indexOf("\n    fallbackAdapter:", start);
+  assert.ok(start >= 0 && end > start, "Telegram adapter selection wiring should exist");
+  const source = MAIN_SOURCE.slice(start, end);
+
+  assert.match(source, /isCodexDesktopOriginator\(originator\)[\s\S]*return codexQueueDeliveryAdapter/);
+  assert.match(source, /isCodexCliOriginator\(originator\)[\s\S]*return windowsConsoleDeliveryAdapter/);
+  assert.match(
+    source,
+    /isCodexCliOriginator\(originator\)[\s\S]*return codexQueueDeliveryAdapter;\s*\n\s*\}/,
+    "unknown Codex originators must use the queue guard and fall back instead of reaching Console",
+  );
 });
 
 test("Telegram polling offset resets only when the bot token identity changes", () => {

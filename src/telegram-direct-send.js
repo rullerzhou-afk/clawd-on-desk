@@ -21,6 +21,7 @@ const WINDOWS_PASTE_TIMEOUT_MS = 1500;
 const DELIVERY_STATUSES = new Set([
   "focus_only",
   "sent_with_enter",
+  "queued",
   "pasted_without_enter",
   "fallback_copied",
   "failed",
@@ -39,6 +40,7 @@ const NO_FALLBACK_ERRORS = new Set([
   ...TARGET_GUARD_ERRORS,
   "partial_console_write",
   "console_input_result_unknown",
+  "codex_queue_result_unknown",
 ]);
 
 function normalizeMessageId(value) {
@@ -131,6 +133,23 @@ function deliveryAdapterRequiresMappedAgentPid(deliveryAdapter) {
   return !!(deliveryAdapter && deliveryAdapter.requiresMappedAgentPid === true);
 }
 
+function deliveryAdapterRequiresFocusableTarget(deliveryAdapter) {
+  return !(deliveryAdapter && deliveryAdapter.requiresFocusableTarget === false);
+}
+
+function deliveryAdapterRequiresPidDisambiguation(deliveryAdapter) {
+  return !(deliveryAdapter && deliveryAdapter.requiresPidDisambiguation === false);
+}
+
+function deliveryAdapterAllowsTarget(deliveryAdapter, entry) {
+  if (!deliveryAdapter || typeof deliveryAdapter.canDeliver !== "function") return true;
+  try {
+    return deliveryAdapter.canDeliver(entry) === true;
+  } catch {
+    return false;
+  }
+}
+
 function normalizePid(value) {
   const numeric = Number(value);
   return Number.isFinite(numeric) && numeric > 0 ? Math.floor(numeric) : null;
@@ -140,16 +159,27 @@ function normalizeEditorIdentity(value) {
   return value === "code" || value === "cursor" ? value : null;
 }
 
+function normalizeStringIdentity(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function normalizeOriginatorIdentity(value) {
+  const text = normalizeStringIdentity(value);
+  return text ? text.toLowerCase() : null;
+}
+
 function captureSessionIdentity(entry) {
   if (!entry || typeof entry !== "object") return null;
   return {
     id: normalizeSessionId(entry.id),
+    rawSessionId: normalizeStringIdentity(entry.rawSessionId),
     agentId: normalizeSessionId(entry.agentId),
     sourcePid: normalizePid(entry.sourcePid),
     agentPid: normalizePid(entry.agentPid),
     editor: normalizeEditorIdentity(entry.editor),
     wtHwnd: normalizeHwndString(entry.wtHwnd),
     orcaPaneKey: normalizeSessionId(entry.orcaPaneKey) || null,
+    codexOriginator: normalizeOriginatorIdentity(entry.codexOriginator || entry.originator),
   };
 }
 
@@ -161,12 +191,14 @@ function mappingIdentityMatches(entry, mapping) {
   const current = captureSessionIdentity(entry);
   if (!current || !mapping) return false;
   const expected = {
+    rawSessionId: normalizeStringIdentity(mapping.rawSessionId),
     agentId: normalizeSessionId(mapping.agentId) || null,
     sourcePid: normalizePid(mapping.sourcePid),
     agentPid: normalizePid(mapping.agentPid),
     editor: normalizeEditorIdentity(mapping.editor),
     wtHwnd: normalizeHwndString(mapping.wtHwnd),
     orcaPaneKey: normalizeSessionId(mapping.orcaPaneKey) || null,
+    codexOriginator: normalizeOriginatorIdentity(mapping.codexOriginator),
   };
   for (const field of Object.keys(expected)) {
     if (expected[field] != null && current[field] !== expected[field]) return false;
@@ -177,14 +209,20 @@ function mappingIdentityMatches(entry, mapping) {
 function hasSameSessionIdentity(entry, expectedIdentity) {
   if (!expectedIdentity) return true;
   const current = captureSessionIdentity(entry);
-  return !!current
-    && current.id === expectedIdentity.id
-    && current.agentId === expectedIdentity.agentId
-    && current.sourcePid === expectedIdentity.sourcePid
-    && current.agentPid === expectedIdentity.agentPid
-    && current.editor === expectedIdentity.editor
-    && current.wtHwnd === expectedIdentity.wtHwnd
-    && current.orcaPaneKey === expectedIdentity.orcaPaneKey;
+  if (!current || current.id !== expectedIdentity.id) return false;
+  for (const field of [
+    "rawSessionId",
+    "agentId",
+    "sourcePid",
+    "agentPid",
+    "editor",
+    "wtHwnd",
+    "orcaPaneKey",
+    "codexOriginator",
+  ]) {
+    if (expectedIdentity[field] != null && current[field] !== expectedIdentity[field]) return false;
+  }
+  return true;
 }
 
 function isReplyReadySession(entry) {
@@ -456,7 +494,10 @@ function normalizeDeliveryResult(value) {
     const status = normalizeDeliveryStatus(value.status);
     return {
       status,
-      delivered: value.delivered === true || status === "sent_with_enter" || status === "pasted_without_enter",
+      delivered: value.delivered === true
+        || status === "sent_with_enter"
+        || status === "queued"
+        || status === "pasted_without_enter",
       autoEnter: value.autoEnter === true,
       errorClass: typeof value.errorClass === "string" && value.errorClass
         ? value.errorClass.replace(/[\r\n\t]+/g, " ").slice(0, 80)
@@ -498,6 +539,8 @@ function formatDeliveryAck(status, entry, deliveryResult, t) {
   switch (status) {
     case "sent_with_enter":
       return interpolate(t("directSendAckSent"), "{session}", shortId);
+    case "queued":
+      return interpolate(t("directSendAckQueued"), "{session}", shortId);
     case "pasted_without_enter":
       if (deliveryResult && deliveryResult.clipboardRestored === true) {
         return interpolate(t("directSendAckPastedRestored"), "{session}", shortId);
@@ -530,6 +573,7 @@ function createTelegramDirectSend({
   fallbackAdapter = null,
   isEnabled = () => false,
   getRouteGeneration = null,
+  getDeliveryAdapter = null,
   now = () => Date.now(),
   mappingTtlMs = DEFAULT_MAPPING_TTL_MS,
   maxMappings = DEFAULT_MAX_MAPPINGS,
@@ -654,6 +698,7 @@ function createTelegramDirectSend({
     expectedGeneration = null,
     signal = null,
     expectedRouteGeneration = undefined,
+    targetAdapter = deliveryAdapter,
   ) {
     const invalidation = routeInvalidation(expectedGeneration, signal, expectedRouteGeneration);
     if (invalidation) {
@@ -712,8 +757,13 @@ function createTelegramDirectSend({
         textKey: "directSendSessionChanged",
       };
     }
-    const focusTarget = getSessionFocusTarget(entry, { osPlatform });
-    if (!isFocusableLocalHudSession(entry, { osPlatform }) || focusTarget.type !== "terminal") {
+    const allowsTarget = deliveryAdapterAllowsTarget(targetAdapter, entry);
+    const requiresFocusableTarget = deliveryAdapterRequiresFocusableTarget(targetAdapter);
+    const focusTarget = requiresFocusableTarget
+      ? getSessionFocusTarget(entry, { osPlatform })
+      : null;
+    if (!allowsTarget || (requiresFocusableTarget
+      && (!isFocusableLocalHudSession(entry, { osPlatform }) || focusTarget.type !== "terminal"))) {
       return {
         ok: false,
         entry,
@@ -722,7 +772,26 @@ function createTelegramDirectSend({
         textKey: "directSendNotFocusable",
       };
     }
-    return { ok: true, entry, snapshot, status: null, errorClass: null, textKey: null };
+    return { ok: true, entry, snapshot, focusTarget, status: null, errorClass: null, textKey: null };
+  }
+
+  function selectDeliveryAdapter(entry, mapping, payload) {
+    let selected = deliveryAdapter;
+    if (typeof getDeliveryAdapter !== "function") return selected;
+    try {
+      const candidate = getDeliveryAdapter({
+        entry,
+        mapping,
+        payload,
+      });
+      if (candidate) selected = candidate;
+    } catch (err) {
+      safeLog("warn", "direct-send delivery adapter selection failed", {
+        sessionId: entry && entry.id,
+        error: err && err.message,
+      });
+    }
+    return selected;
   }
 
   function targetChangedResponse(deliveryEntry, validation, sessionId, focusResult = null) {
@@ -1003,12 +1072,14 @@ function createTelegramDirectSend({
     messageId,
     sessionId,
     chatId,
+    rawSessionId,
     agentId,
     sourcePid,
     agentPid,
     editor,
     wtHwnd,
     orcaPaneKey,
+    codexOriginator,
     notificationContext,
   } = {}) {
     const key = normalizeMessageId(messageId);
@@ -1066,12 +1137,14 @@ function createTelegramDirectSend({
     const mapping = {
       sessionId: id,
       chatId: normalizedChatId || null,
+      rawSessionId: normalizeStringIdentity(identityValue("rawSessionId", rawSessionId)),
       agentId: normalizeSessionId(identityValue("agentId", agentId)) || null,
       sourcePid: normalizePid(identityValue("sourcePid", sourcePid)),
       agentPid: normalizePid(identityValue("agentPid", agentPid)),
       editor: normalizeEditorIdentity(identityValue("editor", editor)),
       wtHwnd: normalizeHwndString(identityValue("wtHwnd", wtHwnd)),
       orcaPaneKey: normalizeSessionId(identityValue("orcaPaneKey", orcaPaneKey)) || null,
+      codexOriginator: normalizeOriginatorIdentity(identityValue("codexOriginator", codexOriginator)),
       generation: mappingGeneration,
       sequence,
       expiresAt: now() + Math.max(1, mappingTtlMs),
@@ -1083,9 +1156,11 @@ function createTelegramDirectSend({
       messageId: key,
       chatId: normalizedChatId || undefined,
       sessionId: id,
+      rawSessionId: normalizeStringIdentity(rawSessionId) || undefined,
       agentId: normalizeSessionId(agentId) || undefined,
       sourcePid: normalizePid(sourcePid) || undefined,
       agentPid: normalizePid(agentPid) || undefined,
+      codexOriginator: normalizeOriginatorIdentity(codexOriginator) || undefined,
     });
     return true;
   }
@@ -1220,6 +1295,13 @@ function createTelegramDirectSend({
       }, mapping.sessionId);
     }
 
+    // A session can have a delivery channel other than the foreground
+    // terminal. Codex Desktop owns a shared app-server and must receive text
+    // through its thread queue; ordinary CLI sessions continue through the
+    // Console adapter. Resolve this only after the mapping identity fence so
+    // the selected channel is based on the same live session we will validate.
+    const activeDeliveryAdapter = selectDeliveryAdapter(entry, mapping, payload);
+
     updateDeliveryEntry(deliveryEntry, "target_resolved", {
       sessionId: entry.id,
       agentId: entry.agentId || null,
@@ -1256,12 +1338,18 @@ function createTelegramDirectSend({
       }, entry.id);
     }
 
-    const focusTarget = getSessionFocusTarget(entry, { osPlatform });
-    const localFocusable = isFocusableLocalHudSession(entry, { osPlatform });
-    if (!localFocusable || focusTarget.type !== "terminal") {
+    const requiresFocusableTarget = deliveryAdapterRequiresFocusableTarget(activeDeliveryAdapter);
+    const allowsTarget = deliveryAdapterAllowsTarget(activeDeliveryAdapter, entry);
+    const focusTarget = requiresFocusableTarget
+      ? getSessionFocusTarget(entry, { osPlatform })
+      : null;
+    const localFocusable = requiresFocusableTarget
+      ? isFocusableLocalHudSession(entry, { osPlatform })
+      : true;
+    if (!allowsTarget || (requiresFocusableTarget && (!localFocusable || focusTarget.type !== "terminal"))) {
       safeLog("info", "direct-send fallback: session not local terminal", {
         sessionId: entry.id,
-        type: focusTarget.type || "none",
+        type: focusTarget && focusTarget.type || "queue-or-none",
       });
       updateDeliveryEntry(deliveryEntry, "not_focusable", {
         errorClass: "not_focusable_terminal",
@@ -1316,7 +1404,7 @@ function createTelegramDirectSend({
     }
 
     const expectedIdentity = captureSessionIdentity(entry);
-    const requiresFocus = deliveryAdapterRequiresFocus(deliveryAdapter);
+    const requiresFocus = deliveryAdapterRequiresFocus(activeDeliveryAdapter);
     let focusResult = null;
     let latestSnapshot = snapshot;
 
@@ -1375,6 +1463,7 @@ function createTelegramDirectSend({
         expectedMappingGeneration,
         signal,
         expectedRouteGeneration,
+        activeDeliveryAdapter,
       );
       if (!postFocusValidation.ok) {
         return targetChangedResponse(deliveryEntry, postFocusValidation, entry.id, focusResult);
@@ -1389,6 +1478,7 @@ function createTelegramDirectSend({
         expectedMappingGeneration,
         signal,
         expectedRouteGeneration,
+        activeDeliveryAdapter,
       );
       if (!preDeliveryValidation.ok) {
         return targetChangedResponse(deliveryEntry, preDeliveryValidation, entry.id);
@@ -1404,21 +1494,22 @@ function createTelegramDirectSend({
     let submissionFence = notificationSequence;
     try {
       updateDeliveryEntry(deliveryEntry, "delivery_attempted");
-      if (deliveryAdapterRequiresMappedAgentPid(deliveryAdapter)
+      if (deliveryAdapterRequiresMappedAgentPid(activeDeliveryAdapter)
         && !normalizePid(mapping.agentPid)) {
         deliveryResult = normalizeDeliveryResult({
           status: "failed",
           delivered: false,
           errorClass: "agent_pid_unavailable",
         });
-      } else if (hasSameAgentPidPeer(latestSnapshot, entry)) {
+      } else if (deliveryAdapterRequiresPidDisambiguation(activeDeliveryAdapter)
+        && hasSameAgentPidPeer(latestSnapshot, entry)) {
         deliveryResult = normalizeDeliveryResult({
           status: "failed",
           delivered: false,
           errorClass: "console_ambiguous",
         });
       } else {
-        deliveryResult = normalizeDeliveryResult(await invokeDeliveryAdapter(deliveryAdapter, {
+        deliveryResult = normalizeDeliveryResult(await invokeDeliveryAdapter(activeDeliveryAdapter, {
           deliveryId: deliveryEntry.id,
           promptText,
           sessionId: entry.id,
@@ -1435,9 +1526,11 @@ function createTelegramDirectSend({
               expectedMappingGeneration,
               signal,
               expectedRouteGeneration,
+              activeDeliveryAdapter,
             );
             if (!validation.ok) return { ok: false, errorClass: validation.errorClass };
-            if (hasSameAgentPidPeer(validation.snapshot, validation.entry)) {
+            if (deliveryAdapterRequiresPidDisambiguation(activeDeliveryAdapter)
+              && hasSameAgentPidPeer(validation.snapshot, validation.entry)) {
               return { ok: false, errorClass: "console_ambiguous" };
             }
             submissionFence = notificationSequence;
@@ -1517,8 +1610,10 @@ function createTelegramDirectSend({
 
     if (
       deliveryResult.status === "sent_with_enter"
+      || deliveryResult.status === "queued"
       || deliveryResult.errorClass === "partial_console_write"
       || deliveryResult.errorClass === "console_input_result_unknown"
+      || deliveryResult.errorClass === "codex_queue_result_unknown"
     ) {
       consumeSessionMappings(resolvedMapping, submissionFence);
     }
