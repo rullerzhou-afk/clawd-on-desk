@@ -1403,9 +1403,14 @@ html, body {
 /* ── Switch (iOS-style) ── */
 .switch {
   --switch-knob-x: 0;
+  appearance: none;
+  box-sizing: border-box;
   position: relative;
+  display: inline-block;
   width: 40px;
   height: 24px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0)), var(--switch-off);
   cursor: pointer;

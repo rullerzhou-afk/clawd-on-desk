@@ -1992,10 +1992,7 @@
 
   function syncAgentSwitchDisabledState(meta, disabled) {
     meta.disabled = !!disabled;
-    const sw = meta.element;
-    sw.classList.toggle("disabled", !!disabled);
-    sw.setAttribute("aria-disabled", disabled ? "true" : "false");
-    sw.setAttribute("tabindex", disabled ? "-1" : "0");
+    meta.control.setState({ disabled: !!disabled });
   }
 
   function syncAgentIntegrationBadge(badge, agentId) {
@@ -2112,24 +2109,25 @@
     if (typeof buildExtraControls === "function") {
       buildExtraControls(ctrl);
     }
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", disabled ? "-1" : "0");
-    sw.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-    });
-    sw.addEventListener("keydown", (ev) => {
-      ev.stopPropagation();
-    });
     const stateId = readers.agentSwitchStateId(agent.id, flag);
     const override = state.transientUiState.agentSwitches.get(stateId);
     const committedVisual = readers.readAgentFlagValue(agent.id, flag);
-    helpers.setSwitchVisual(sw, override ? override.visualOn : committedVisual, {
+    const label = text.querySelector(".row-label");
+    const desc = text.querySelector(".row-desc");
+    const controlId = `settings-agent-${agent.id}-${flag}`;
+    if (label) label.id = `${controlId}-label`;
+    if (desc) desc.id = `${controlId}-description`;
+    const switchControl = helpers.buildSwitch({
+      checked: override ? override.visualOn : committedVisual,
       pending: override ? override.pending : false,
+      disabled,
+      ariaLabelledBy: label ? label.id : null,
+      ariaDescribedBy: desc ? desc.id : null,
+      stopPropagation: true,
     });
     const meta = {
-      element: sw,
+      control: switchControl,
+      element: switchControl.element,
       agentId: agent.id,
       flag,
       disabled,
@@ -2137,7 +2135,7 @@
     };
     state.mountedControls.agentSwitches.set(stateId, meta);
     syncAgentSwitchDisabledState(meta, disabled);
-    helpers.attachAnimatedSwitch(sw, {
+    helpers.attachOptimisticSwitch(switchControl, {
       getCommittedVisual: () => readers.readAgentFlagValue(agent.id, flag),
       getTransientState: () => state.transientUiState.agentSwitches.get(stateId) || null,
       setTransientState: (value) => state.transientUiState.agentSwitches.set(stateId, value),
@@ -2153,7 +2151,7 @@
           value: !readers.readAgentFlagValue(agent.id, flag),
         }),
     });
-    ctrl.appendChild(sw);
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -2251,7 +2249,10 @@
       if (meta.flag !== "enabled") {
         meta.syncDisabledState(computeAgentSubSwitchDisabled(meta.agentId, meta.flag));
       }
-      helpers.setSwitchVisual(meta.element, readers.readAgentFlagValue(meta.agentId, meta.flag), { pending: false });
+      meta.control.setState({
+        checked: readers.readAgentFlagValue(meta.agentId, meta.flag),
+        pending: false,
+      });
     }
     for (const [, meta] of state.mountedControls.agentPermissionModes) {
       meta.syncFromSnapshot();

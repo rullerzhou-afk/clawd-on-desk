@@ -9234,6 +9234,105 @@ describe("settings renderer browser environment", () => {
     );
   });
 
+  it("builds a controlled Settings switch with unified input and accessibility state", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const toggles = [];
+    const control = core.helpers.buildSwitch({
+      checked: false,
+      ariaLabel: "Enable feature",
+      onToggle: (request) => toggles.push(request.nextChecked),
+    });
+
+    assert.equal(control.element.tagName, "BUTTON");
+    assert.equal(control.element.type, "button");
+    assert.equal(control.element.getAttribute("role"), "switch");
+    assert.equal(control.element.getAttribute("aria-label"), "Enable feature");
+    assert.equal(control.element.getAttribute("aria-checked"), "false");
+    assert.equal(control.element.getAttribute("aria-disabled"), "false");
+    assert.equal(control.element.getAttribute("aria-busy"), "false");
+    assert.equal(control.element.tabIndex, 0);
+
+    control.element.dispatchEvent({ type: "click" });
+    control.element.dispatchEvent({ type: "keydown", key: "Enter", preventDefault() {} });
+    control.element.dispatchEvent({ type: "keydown", key: " ", preventDefault() {} });
+    assert.deepStrictEqual(toggles, [true, true, true]);
+
+    control.setState({ checked: true, pending: true });
+    assert.equal(control.getChecked(), true);
+    assert.equal(control.element.classList.contains("on"), true);
+    assert.equal(control.element.classList.contains("pending"), true);
+    assert.equal(control.element.getAttribute("aria-checked"), "true");
+    assert.equal(control.element.getAttribute("aria-busy"), "true");
+    assert.equal(control.element.tabIndex, 0, "pending switches should retain keyboard focus");
+    control.element.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(toggles, [true, true, true], "pending switches must ignore duplicate activation");
+
+    control.setState({ disabled: true, ariaLabel: "Enable translated feature" });
+    assert.equal(control.element.classList.contains("pending"), true);
+    assert.equal(control.element.classList.contains("disabled"), true);
+    assert.equal(control.element.getAttribute("aria-label"), "Enable translated feature");
+    control.setState({ pending: false });
+    assert.equal(control.element.classList.contains("pending"), false);
+    assert.equal(control.element.classList.contains("disabled"), true);
+    assert.equal(control.element.getAttribute("aria-disabled"), "true");
+    assert.equal(control.element.disabled, true);
+    assert.equal(control.element.tabIndex, -1);
+    control.setState({ disabled: false });
+    assert.equal(control.element.disabled, false);
+    assert.equal(control.element.tabIndex, 0);
+
+    control.dispose();
+    control.element.dispatchEvent({ type: "click" });
+    assert.deepStrictEqual(toggles, [true, true, true]);
+  });
+
+  it("supports a separate switch host and visual track without duplicating semantics", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const host = document.createElement("button");
+    const track = document.createElement("span");
+    const control = core.helpers.buildSwitch({
+      element: host,
+      visualElement: track,
+      checked: true,
+      pending: true,
+      ariaLabelledBy: "remote-option-label",
+      ariaDescribedBy: "remote-option-description",
+      className: "remote-switch-track",
+    });
+
+    assert.strictEqual(control.element, host);
+    assert.strictEqual(control.visualElement, track);
+    assert.equal(host.getAttribute("role"), "switch");
+    assert.equal(host.getAttribute("aria-labelledby"), "remote-option-label");
+    assert.equal(host.getAttribute("aria-describedby"), "remote-option-description");
+    assert.equal(host.getAttribute("aria-checked"), "true");
+    assert.equal(host.getAttribute("aria-busy"), "true");
+    assert.equal(host.classList.contains("switch"), false);
+    assert.equal(track.classList.contains("switch"), true);
+    assert.equal(track.classList.contains("remote-switch-track"), true);
+    assert.equal(track.getAttribute("aria-checked"), undefined);
+  });
+
+  it("requires every shared Settings switch to have an accessible name", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    assert.throws(() => core.helpers.buildSwitch({ checked: false }), /requires ariaLabel or ariaLabelledBy/);
+  });
+
   it("uses the shared Settings dialog shell with ARIA links and focus restoration", async () => {
     const body = new FakeElement("body");
     const modalRoot = new FakeElement("div");
@@ -10305,7 +10404,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('id: "general:sound"'));
     assert.ok(generalSource.includes("sound-option-list"));
     assert.ok(generalSource.includes("state.mountedControls.soundSummary"));
-    assert.ok(generalSource.includes('sw.setAttribute("aria-label", t("rowSoundEnabled"));'));
+    assert.ok(generalSource.includes('ariaLabel: t("rowSoundEnabled")'));
     assert.ok(generalSource.includes("toggleSound"));
     assert.ok(generalSource.includes("syncVolumePreview"));
     assert.ok(!/key:\s*"soundMuted",[\s\S]{0,120}descKey:\s*"rowSoundDesc"/.test(generalSource));
@@ -10523,7 +10622,7 @@ describe("settings renderer browser environment", () => {
   it("clears successful switch transient state so rerenders do not keep wait cursors", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     assert.ok(
-      /clearTransientState\(seq\);\s*setSwitchVisual\(sw,\s*nextVisual,\s*\{\s*pending:\s*false\s*\}\);/.test(coreSource),
+      /clearTransientState\(seq\);\s*control\.setState\(\{\s*checked:\s*nextVisual,\s*pending:\s*false\s*\}\);/.test(coreSource),
       "successful switch actions must delete transient pending state before any later rerender"
     );
     assert.ok(
@@ -10572,12 +10671,16 @@ describe("settings renderer browser environment", () => {
       assert.ok(dock, `showDock should render for ${JSON.stringify(entry)}`);
       assert.strictEqual(tray.getAttribute("role"), "switch");
       assert.strictEqual(dock.getAttribute("role"), "switch");
-      assert.strictEqual(tray.getAttribute("aria-label"), "Show in menu bar");
-      assert.strictEqual(dock.getAttribute("aria-label"), "Show in Dock");
+      const trayMeta = harness.getSwitchMeta("showTray");
+      const dockMeta = harness.getSwitchMeta("showDock");
+      assert.strictEqual(tray.getAttribute("aria-labelledby"), trayMeta.text.querySelector(".row-label").id);
+      assert.strictEqual(dock.getAttribute("aria-labelledby"), dockMeta.text.querySelector(".row-label").id);
+      assert.strictEqual(trayMeta.text.querySelector(".row-label").textContent, "Show in menu bar");
+      assert.strictEqual(dockMeta.text.querySelector(".row-label").textContent, "Show in Dock");
       assert.strictEqual(tray.getAttribute("aria-checked"), String(entry.showTray));
       assert.strictEqual(dock.getAttribute("aria-checked"), String(entry.showDock));
-      assert.strictEqual(tray.getAttribute("aria-disabled"), entry.trayDisabled ? "true" : undefined);
-      assert.strictEqual(dock.getAttribute("aria-disabled"), entry.dockDisabled ? "true" : undefined);
+      assert.strictEqual(tray.getAttribute("aria-disabled"), entry.trayDisabled ? "true" : "false");
+      assert.strictEqual(dock.getAttribute("aria-disabled"), entry.dockDisabled ? "true" : "false");
       assert.strictEqual(tray.tabIndex, entry.trayDisabled ? -1 : 0);
       assert.strictEqual(dock.tabIndex, entry.dockDisabled ? -1 : 0);
     }
@@ -10686,9 +10789,9 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitch("showDock"), dock);
     assert.strictEqual(dock.focused, true);
     assert.strictEqual(harness.content.scrollTop, 247);
-    assert.strictEqual(tray.getAttribute("aria-disabled"), undefined);
+    assert.strictEqual(tray.getAttribute("aria-disabled"), "false");
     assert.strictEqual(tray.tabIndex, 0);
-    assert.strictEqual(dock.getAttribute("aria-disabled"), undefined);
+    assert.strictEqual(dock.getAttribute("aria-disabled"), "false");
 
     harness.core.ops.applyChanges({
       changes: { showTray: false },
@@ -10870,13 +10973,13 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(master.classList.contains("on"), true);
     assert.strictEqual(master.classList.contains("pending"), false);
     assert.strictEqual(labels.classList.contains("disabled"), false);
-    assert.strictEqual(labels.attributes["aria-disabled"], undefined);
+    assert.strictEqual(labels.attributes["aria-disabled"], "false");
     assert.strictEqual(labels.tabIndex, 0);
     assert.strictEqual(elapsed.classList.contains("disabled"), false);
-    assert.strictEqual(elapsed.attributes["aria-disabled"], undefined);
+    assert.strictEqual(elapsed.attributes["aria-disabled"], "false");
     assert.strictEqual(elapsed.tabIndex, 0);
     assert.strictEqual(contextUsage.classList.contains("disabled"), false);
-    assert.strictEqual(contextUsage.attributes["aria-disabled"], undefined);
+    assert.strictEqual(contextUsage.attributes["aria-disabled"], "false");
     assert.strictEqual(contextUsage.tabIndex, 0);
     assert.strictEqual(cleanup.classList.contains("disabled"), false);
     assert.strictEqual(cleanup.tabIndex, 0);
@@ -14685,13 +14788,13 @@ describe("settings renderer browser environment", () => {
     const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
     assert.ok(animMapSource.includes("state.transientUiState.animMapSwitches"));
     assert.ok(animMapSource.includes("state.mountedControls.animMapSwitches"));
-    assert.ok(animMapSource.includes("helpers.attachAnimatedSwitch(sw, {"));
+    assert.ok(animMapSource.includes("helpers.attachOptimisticSwitch(switchControl, {"));
     assert.ok(animMapSource.includes('command("setThemeOverrideDisabled"'));
     assert.ok(!animMapSource.includes("helpers.attachActivation(sw"));
     assert.ok(animMapSource.includes("function renderMapSubtab(parent)"));
     assert.ok(animMapSource.includes("function patchMapInPlace(changes)"));
     assert.ok(animMapSource.includes('Object.prototype.hasOwnProperty.call(changes, "themeOverrides")'));
-    assert.ok(animMapSource.includes("helpers.setSwitchVisual(meta.element, readAnimMapVisualOn(meta.themeId, meta.stateKey), { pending: false });"));
+    assert.ok(animMapSource.includes("meta.control.setState({"));
     // Folded in: the Animation & Sound Overrides tab renders + patches the map subtab.
     assert.ok(overridesSource.includes("ClawdSettingsTabAnimMap.renderMapSubtab"));
     assert.ok(overridesSource.includes("ClawdSettingsTabAnimMap.patchMapInPlace"));
@@ -14780,7 +14883,13 @@ describe("settings renderer browser environment", () => {
     const sw = new FakeElement("div");
     sw.className = "switch on";
     harness.content.appendChild(sw);
+    const control = harness.core.helpers.buildSwitch({
+      element: sw,
+      checked: true,
+      ariaLabel: "Error animation",
+    });
     harness.core.state.mountedControls.animMapSwitches.set("clawd:error", {
+      control,
       element: sw,
       themeId: "clawd",
       stateKey: "error",
@@ -14824,7 +14933,13 @@ describe("settings renderer browser environment", () => {
     const sw = new FakeElement("div");
     sw.className = "switch on";
     harness.content.appendChild(sw);
+    const control = harness.core.helpers.buildSwitch({
+      element: sw,
+      checked: true,
+      ariaLabel: "Error animation",
+    });
     harness.core.state.mountedControls.animMapSwitches.set("clawd:error", {
+      control,
       element: sw,
       themeId: "clawd",
       stateKey: "error",
@@ -14890,7 +15005,13 @@ describe("settings renderer browser environment", () => {
     const sw = new FakeElement("div");
     sw.className = "switch on";
     harness.content.appendChild(sw);
+    const control = harness.core.helpers.buildSwitch({
+      element: sw,
+      checked: true,
+      ariaLabel: "Error animation",
+    });
     harness.core.state.mountedControls.animMapSwitches.set("clawd:error", {
+      control,
       element: sw,
       themeId: "clawd",
       stateKey: "error",
