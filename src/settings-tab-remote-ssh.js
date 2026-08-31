@@ -825,35 +825,36 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "remote-ssh-option-card";
-      button.setAttribute("role", "switch");
 
       const text = document.createElement("span");
       text.className = "remote-ssh-option-card-text";
       const label = document.createElement("span");
       label.className = "remote-ssh-option-card-label";
+      label.id = `settings-remote-ssh-${key}-label`;
       label.textContent = t(labelKey);
       const desc = document.createElement("span");
       desc.className = "remote-ssh-option-card-desc";
+      desc.id = `settings-remote-ssh-${key}-description`;
       desc.textContent = t(descKey);
       text.appendChild(label);
       text.appendChild(desc);
 
       const sw = document.createElement("span");
-      sw.className = "switch remote-ssh-option-card-switch";
       sw.setAttribute("aria-hidden", "true");
-
-      function sync() {
-        const checked = !!formData[key];
-        button.setAttribute("aria-checked", checked ? "true" : "false");
-        sw.classList.toggle("on", checked);
-      }
-      button.addEventListener("click", () => {
-        formData[key] = !formData[key];
-        sync();
+      const switchControl = helpers.buildSwitch({
+        element: button,
+        visualElement: sw,
+        checked: !!formData[key],
+        ariaLabelledBy: label.id,
+        ariaDescribedBy: desc.id,
+        className: "remote-ssh-option-card-switch",
+        onToggle: ({ nextChecked }) => {
+          formData[key] = nextChecked;
+          switchControl.setState({ checked: nextChecked });
+        },
       });
       button.appendChild(text);
       button.appendChild(sw);
-      sync();
       return button;
     }
 

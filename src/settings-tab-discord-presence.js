@@ -164,9 +164,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-discord-presence-enabled-label";
     label.textContent = t("discordPresenceEnableLabel");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-discord-presence-enabled-description";
     desc.textContent = ready ? t("discordPresenceEnableDesc") : t("discordPresenceEnableNeedsAppId");
     text.appendChild(label);
     text.appendChild(desc);
@@ -174,23 +176,15 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.enabled, { pending: view.configPending });
-    if (!ready || view.configPending) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-    } else {
-      const toggle = () => saveConfig({ ...cfg, enabled: !cfg.enabled });
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
-      });
-    }
-    ctrl.appendChild(sw);
+    const switchControl = helpers.buildSwitch({
+      checked: cfg.enabled,
+      pending: view.configPending,
+      disabled: !ready,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => saveConfig({ ...cfg, enabled: !cfg.enabled }),
+    });
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -206,9 +200,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-discord-presence-mirror-label";
     label.textContent = t("discordPresenceMirrorAnimation");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-discord-presence-mirror-description";
     desc.textContent = t("discordPresenceMirrorAnimationDesc");
     text.appendChild(label);
     text.appendChild(desc);
@@ -216,23 +212,15 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.mirrorPetAnimation, { pending: view.configPending });
-    if (!cfg.enabled || view.configPending) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-    } else {
-      const toggle = () => saveConfig({ ...cfg, mirrorPetAnimation: !cfg.mirrorPetAnimation });
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
-      });
-    }
-    ctrl.appendChild(sw);
+    const switchControl = helpers.buildSwitch({
+      checked: cfg.mirrorPetAnimation,
+      pending: view.configPending,
+      disabled: !cfg.enabled,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => saveConfig({ ...cfg, mirrorPetAnimation: !cfg.mirrorPetAnimation }),
+    });
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -249,9 +237,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-discord-presence-project-label";
     label.textContent = t("discordPresencePrivacyProject");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-discord-presence-project-description";
     desc.textContent = t("discordPresencePrivacyProjectDesc");
     text.appendChild(label);
     text.appendChild(desc);
@@ -259,23 +249,15 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.privacyShowProject, { pending: view.configPending });
-    if (!cfg.enabled || view.configPending) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-    } else {
-      const toggle = () => saveConfig({ ...cfg, privacyShowProject: !cfg.privacyShowProject });
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
-      });
-    }
-    ctrl.appendChild(sw);
+    const switchControl = helpers.buildSwitch({
+      checked: cfg.privacyShowProject,
+      pending: view.configPending,
+      disabled: !cfg.enabled,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => saveConfig({ ...cfg, privacyShowProject: !cfg.privacyShowProject }),
+    });
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }

@@ -307,12 +307,6 @@
     }, ttl);
   }
 
-  function setSwitchVisual(sw, visualOn, { pending = false } = {}) {
-    sw.classList.toggle("on", !!visualOn);
-    sw.classList.toggle("pending", !!pending);
-    sw.setAttribute("aria-checked", visualOn ? "true" : "false");
-  }
-
   function buildSwitch(config = {}) {
     const element = config.element || document.createElement("button");
     const visualElement = config.visualElement || element;
@@ -2316,7 +2310,6 @@
     showSettingsDialog,
     showSettingsConfirmModal,
     escapeHtml,
-    setSwitchVisual,
     buildSwitch,
     attachOptimisticSwitch,
     buildSwitchRow,

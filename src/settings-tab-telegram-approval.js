@@ -1358,9 +1358,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-telegram-approval-enabled-label";
     label.textContent = t("telegramApprovalToggle");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-telegram-approval-enabled-description";
     desc.textContent = t("telegramApprovalToggleDesc");
     text.appendChild(label);
     text.appendChild(desc);
@@ -1368,22 +1370,17 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, effectiveEnabled, { pending: view.configPending || migrationPending });
     const migrationRequired = migrationState() === "NATIVE_MIGRATION_REQUIRED";
     const canToggle = ready
-      && !migrationPending
       && !migrationRequired
       && (effectiveEnabled || migrationSnapshot);
-    if (!canToggle) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-    } else {
-      const toggle = () => {
+    const switchControl = helpers.buildSwitch({
+      checked: effectiveEnabled,
+      pending: view.configPending || migrationPending,
+      disabled: !canToggle,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => {
         const turningOff = effectiveEnabled === true;
         // Runtime ownership lives in the migration controller. OFF dispatches
         // USER_DISABLE; fresh/explicit-off users turn ON through the native
@@ -1400,16 +1397,9 @@
           migrationDispatch("USER_TEST_NATIVE");
           return;
         }
-      };
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") {
-          ev.preventDefault();
-          toggle();
-        }
-      });
-    }
-    ctrl.appendChild(sw);
+      },
+    });
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -1424,9 +1414,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-telegram-direct-send-label";
     label.textContent = t("telegramApprovalDirectSend");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-telegram-direct-send-description";
     desc.textContent = t("telegramApprovalDirectSendDesc");
     text.appendChild(label);
     text.appendChild(desc);
@@ -1434,28 +1426,17 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.r3DirectSendEnabled === true, { pending: view.configPending });
-    if (!ready || view.configPending) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-    } else {
-      const toggle = () => {
+    const switchControl = helpers.buildSwitch({
+      checked: cfg.r3DirectSendEnabled === true,
+      pending: view.configPending,
+      disabled: !ready,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => {
         saveConfig({ ...cfg, r3DirectSendEnabled: cfg.r3DirectSendEnabled !== true }, { resetDraft: false });
-      };
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") {
-          ev.preventDefault();
-          toggle();
-        }
-      });
-    }
-    ctrl.appendChild(sw);
+      },
+    });
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -2176,7 +2157,7 @@
 
   function buildFeishuEnabledRow({ ready }) {
     const cfg = currentFeishuConfig();
-    const blocked = allFeishuControlsBlocked() || (!cfg.enabled && !ready);
+    const blocked = feishuLookupPending() || feishuView.testPending || (!cfg.enabled && !ready);
     const row = document.createElement("div");
     row.className = "row";
     if (!ready && !cfg.enabled) row.classList.add("tg-approval-row-disabled");
@@ -2185,9 +2166,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-feishu-approval-enabled-label";
     label.textContent = tBrand("feishuApprovalToggle");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-feishu-approval-enabled-description";
     desc.textContent = tBrand("feishuApprovalToggleDesc");
     text.appendChild(label);
     text.appendChild(desc);
@@ -2195,32 +2178,21 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.enabled, { pending: feishuView.configPersistencePending });
-    if (blocked) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-      if (!cfg.enabled && !ready) {
-        sw.title = feishuSetupReasonMessage(feishuSetupProgress().setupReason);
-      }
-    } else {
-      const toggle = () => {
+    const switchControl = helpers.buildSwitch({
+      checked: cfg.enabled,
+      pending: feishuView.configPersistencePending,
+      disabled: blocked,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => {
         if (allFeishuControlsBlocked()) return;
         saveFeishuConfig({ enabled: !cfg.enabled }, { resetDraft: false });
-      };
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") {
-          ev.preventDefault();
-          toggle();
-        }
-      });
+      },
+    });
+    if (!cfg.enabled && !ready) {
+      switchControl.element.title = feishuSetupReasonMessage(feishuSetupProgress().setupReason);
     }
-    ctrl.appendChild(sw);
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -3086,9 +3058,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = "settings-slack-notify-enabled-label";
     label.textContent = t("slackNotifyToggle");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-slack-notify-enabled-description";
     desc.textContent = t("slackNotifyToggleDesc");
     text.appendChild(label);
     text.appendChild(desc);
@@ -3096,23 +3070,15 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, cfg.enabled, { pending: slackView.configPending });
-    if (!canToggle) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.removeAttribute("tabindex");
-    } else {
-      const toggle = () => saveSlackConfig({ ...cfg, enabled: !cfg.enabled });
-      sw.addEventListener("click", toggle);
-      sw.addEventListener("keydown", (ev) => {
-        if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
-      });
-    }
-    ctrl.appendChild(sw);
+    const switchControl = helpers.buildSwitch({
+      checked: cfg.enabled,
+      pending: slackView.configPending,
+      disabled: !canToggle,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => saveSlackConfig({ ...cfg, enabled: !cfg.enabled }),
+    });
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -3124,9 +3090,11 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = `settings-slack-${labelKey}-label`;
     label.textContent = t(labelKey);
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = `settings-slack-${labelKey}-description`;
     desc.textContent = t(descKey);
     text.appendChild(label);
     text.appendChild(desc);
@@ -3134,17 +3102,14 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", "0");
-    helpers.setSwitchVisual(sw, value, { pending: slackView.configPending });
-    const toggle = () => onToggle(!value);
-    sw.addEventListener("click", toggle);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key === " " || ev.key === "Enter") { ev.preventDefault(); toggle(); }
+    const switchControl = helpers.buildSwitch({
+      checked: value,
+      pending: slackView.configPending,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      onToggle: () => onToggle(!value),
     });
-    ctrl.appendChild(sw);
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
   }

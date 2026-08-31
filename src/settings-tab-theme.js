@@ -605,25 +605,29 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    label.id = `settings-holiday-accessory-${theme.id}-label`;
     label.textContent = t("rowHolidayAccessory");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = `settings-holiday-accessory-${theme.id}-description`;
     desc.textContent = t("themeHolidayAccessoryDesc");
     text.appendChild(label);
     text.appendChild(desc);
 
     const control = document.createElement("div");
     control.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch holiday-accessory-switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("aria-label", t("rowHolidayAccessory"));
-    sw.setAttribute("tabindex", "0");
     let visualEnabled = getHolidayAccessoryEnabled(theme.id);
+    const switchControl = helpers.buildSwitch({
+      checked: visualEnabled,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      className: "holiday-accessory-switch",
+    });
+    const sw = switchControl.element;
 
     function setVisual(enabled, { pending = false } = {}) {
       visualEnabled = !!enabled;
-      helpers.setSwitchVisual(sw, visualEnabled, { pending });
+      switchControl.setState({ checked: visualEnabled, pending });
     }
 
     function syncFromSnapshot() {
@@ -634,9 +638,7 @@
       mountedCustomizationControls.holidayAccessoryEnabled = syncFromSnapshot;
     }
 
-    function run(ev) {
-      if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
-      if (sw.classList.contains("pending")) return;
+    function run() {
       const nextEnabled = !visualEnabled;
       const current = state.snapshot && state.snapshot.holidayAccessoryEnabled;
       const nextMap = current && typeof current === "object" && !Array.isArray(current)
@@ -658,15 +660,11 @@
           setVisual(getHolidayAccessoryEnabled(theme.id));
         })
         .finally(() => {
-          if (document.body.contains(sw)) sw.classList.remove("pending");
+          if (document.body.contains(sw)) switchControl.setState({ pending: false });
         });
     }
 
-    sw.addEventListener("click", run);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key !== " " && ev.key !== "Enter") return;
-      run(ev);
-    });
+    switchControl.setOnToggle(run);
 
     control.appendChild(sw);
     row.appendChild(text);

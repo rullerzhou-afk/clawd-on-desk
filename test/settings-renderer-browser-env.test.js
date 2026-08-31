@@ -645,6 +645,7 @@ function loadSharedButtonHelpersForTest(document, settingsAPI = {}, getTranslate
   return {
     buildButton: (config) => shared.buildButton(translateConfig(config)),
     setButtonState: (button, patch) => shared.setButtonState(button, translateConfig(patch)),
+    buildSwitch: (config) => shared.buildSwitch(config),
   };
 }
 
@@ -677,12 +678,13 @@ function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-recap.js"), "utf8"), context);
+  const sharedControls = loadSharedButtonHelpersForTest(document, context.settingsAPI);
   const core = {
     state: { activeTab: "recap", snapshot: { lang: "en", recapEnabled: true } },
     runtime: { agentMetadata },
     helpers: {
       t: (key) => strings[key] || key,
-      setSwitchVisual: (element, enabled) => element.setAttribute("aria-checked", String(enabled)),
+      buildSwitch: sharedControls.buildSwitch,
       buildSection: (title, rows) => {
         const section = document.createElement("section");
         section.setAttribute("aria-label", title);
@@ -1862,16 +1864,12 @@ function loadTelegramApprovalTabForTest({
       t: (key) => key,
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
+      buildSwitch: buttonHelpers.buildSwitch,
       showSettingsConfirmModal: showConfirmModal,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
         for (const row of rows) section.appendChild(row);
         return section;
-      },
-      setSwitchVisual: (el, checked, options = {}) => {
-        el.classList.toggle("on", !!checked);
-        el.classList.toggle("pending", !!options.pending);
-        el.setAttribute("aria-checked", checked ? "true" : "false");
       },
       buildSettingsSelect: (config) => {
         const control = context.ClawdLanguagePicker.createSettingsSelect(config);
@@ -2173,6 +2171,7 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
       t: (key) => key,
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
+      buildSwitch: buttonHelpers.buildSwitch,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
         for (const row of rows) section.appendChild(row);
@@ -2182,11 +2181,6 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
         const group = document.createElement("div");
         for (const child of children) group.appendChild(child);
         return group;
-      },
-      setSwitchVisual: (el, checked, options = {}) => {
-        el.classList.toggle("on", !!checked);
-        el.classList.toggle("pending", !!options.pending);
-        el.setAttribute("aria-checked", checked ? "true" : "false");
       },
       openExternalSafe: () => {},
     },
@@ -2374,6 +2368,7 @@ function loadAboutTabForTest({
       t: (key) => key,
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
+      buildSwitch: buttonHelpers.buildSwitch,
       attachSettingsDisclosure: attachDisclosureForHarness,
       registerMountedDisposable: disposableHarness.register,
       disposeMountedDisposable: disposableHarness.dispose,
@@ -2382,11 +2377,6 @@ function loadAboutTabForTest({
         chevron.className = className;
         chevron.setAttribute("aria-hidden", "true");
         return chevron;
-      },
-      setSwitchVisual: (element, checked, options = {}) => {
-        element.classList.toggle("on", !!checked);
-        element.classList.toggle("pending", !!options.pending);
-        element.setAttribute("aria-checked", checked ? "true" : "false");
       },
       openExternalSafe: () => {},
       showSettingsConfirmModal: () => Promise.resolve("cancel"),
@@ -3313,7 +3303,7 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     harness.render();
     const sw = harness.content.querySelector(".feishu-approval-channel-card").querySelector(".switch");
-    assert.equal(sw.getAttribute("aria-disabled"), undefined);
+    assert.equal(sw.getAttribute("aria-disabled"), "false");
     sw.dispatchEvent({ type: "click" });
     await Promise.resolve();
     assert.deepStrictEqual(
@@ -3353,7 +3343,7 @@ describe("settings renderer browser environment", () => {
     harness.render();
     const card = harness.content.querySelector(".feishu-approval-channel-card");
     const sw = card.querySelector(".switch");
-    assert.equal(sw.disabled, false);
+    assert.equal(sw.disabled, true);
     assert.equal(sw.getAttribute("aria-disabled"), "true");
     sw.dispatchEvent({ type: "click" });
     sw.dispatchEvent({ type: "keydown", key: "Enter" });
@@ -3454,7 +3444,7 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     harness.render();
     const sw = harness.content.querySelector(".feishu-approval-channel-card .switch");
-    assert.equal(sw.getAttribute("aria-disabled"), undefined, "an invalid enabled setup must remain disable-able");
+    assert.equal(sw.getAttribute("aria-disabled"), "false", "an invalid enabled setup must remain disable-able");
     sw.dispatchEvent({ type: "click" });
     await Promise.resolve();
     assert.deepStrictEqual(
@@ -3643,17 +3633,19 @@ describe("settings renderer browser environment", () => {
     const offMirror = off.content.querySelectorAll(".switch")[1];
     assert.ok(offMirror.classList.contains("disabled"));
     assert.strictEqual(offMirror.getAttribute("aria-disabled"), "true");
-    assert.strictEqual(offMirror.getAttribute("tabindex"), undefined);
-    assert.strictEqual((offMirror.eventListeners.click || []).length, 0);
+    assert.strictEqual(offMirror.getAttribute("tabindex"), "-1");
+    assert.strictEqual((offMirror.eventListeners.click || []).length, 1);
 
     const deferred = createDeferred();
     const pending = loadDiscordPresenceTabForTest({ update: () => deferred.promise });
     pending.content.querySelectorAll(".switch")[1].dispatchEvent({ type: "click", bubbles: false });
     pending.render();
     const pendingMirror = pending.content.querySelectorAll(".switch")[1];
-    assert.ok(pendingMirror.classList.contains("disabled"));
+    assert.ok(!pendingMirror.classList.contains("disabled"));
     assert.ok(pendingMirror.classList.contains("pending"));
-    assert.strictEqual(pendingMirror.getAttribute("aria-disabled"), "true");
+    assert.strictEqual(pendingMirror.getAttribute("aria-disabled"), "false");
+    assert.strictEqual(pendingMirror.getAttribute("aria-busy"), "true");
+    assert.strictEqual(pendingMirror.getAttribute("tabindex"), "0");
     deferred.resolve({ status: "ok" });
     await Promise.resolve();
   });
@@ -3996,11 +3988,12 @@ describe("settings renderer browser environment", () => {
     assert.equal(cards.length, 3);
     assert.deepStrictEqual(cards.map((card) => card.getAttribute("role")), ["switch", "switch", "switch"]);
     assert.deepStrictEqual(cards.map((card) => card.getAttribute("aria-checked")), ["false", "false", "false"]);
+    assert.ok(cards.every((card) => card.getAttribute("aria-labelledby")));
+    assert.ok(cards.every((card) => card.getAttribute("aria-describedby")));
+    assert.ok(cards.every((card) => card.querySelector(".switch").getAttribute("aria-hidden") === "true"));
+    assert.ok(cards.every((card) => card.querySelector(".switch").getAttribute("role") === undefined));
     cards[0].dispatchEvent({ type: "click" });
     cards[2].dispatchEvent(createKeyboardEventForTest(" "));
-    // FakeElement does not synthesize a click from keyboard activation; the
-    // native button does so in Chromium. Dispatch the resulting click here.
-    cards[2].dispatchEvent({ type: "click" });
     assert.deepStrictEqual(cards.map((card) => card.getAttribute("aria-checked")), ["true", "false", "true"]);
     assert.deepStrictEqual(harness.commandCalls, [], "draft edits must not persist before Save");
 
@@ -4051,7 +4044,9 @@ describe("settings renderer browser environment", () => {
     autoUpdateSwitch.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(harness.updateCalls, [{ key: "autoUpdateCheck", value: false }]);
     assert.equal(autoUpdateSwitch.classList.contains("pending"), true);
-    assert.equal(autoUpdateSwitch.getAttribute("aria-disabled"), "true");
+    assert.equal(autoUpdateSwitch.getAttribute("aria-busy"), "true");
+    assert.equal(autoUpdateSwitch.getAttribute("aria-disabled"), "false");
+    assert.equal(autoUpdateSwitch.tabIndex, 0);
 
     save.resolve({ status: "ok" });
     await new Promise((resolve) => setImmediate(resolve));
@@ -9331,6 +9326,31 @@ describe("settings renderer browser environment", () => {
     };
     const core = loadSettingsCoreForTest({}, { document });
     assert.throws(() => core.helpers.buildSwitch({ checked: false }), /requires ariaLabel or ariaLabelledBy/);
+  });
+
+  it("keeps interactive Settings switch DOM and semantics owned by the shared primitive", () => {
+    const allowedOwner = "settings-ui-core.js";
+    const sourceFiles = fs.readdirSync(SRC_DIR)
+      .filter((name) => name.endsWith(".js") && name.startsWith("settings"));
+    const forbidden = [
+      /role=["']switch["']/,
+      /setAttribute\(["']role["'],\s*["']switch["']\)/,
+      /className\s*=\s*["'][^"']*\bswitch\b/,
+      /class=["'][^"']*\bswitch\b/,
+      /classList\.add\(["']switch["']\)/,
+      /\bsetSwitchVisual\b/,
+      /\battachAnimatedSwitch\b/,
+    ];
+    const offenders = [];
+    for (const name of sourceFiles) {
+      if (name === allowedOwner) continue;
+      const source = fs.readFileSync(path.join(SRC_DIR, name), "utf8");
+      if (forbidden.some((pattern) => pattern.test(source))) offenders.push(name);
+    }
+    assert.deepStrictEqual(offenders, []);
+
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.equal((coreSource.match(/setAttribute\("role", "switch"\)/g) || []).length, 1);
   });
 
   it("uses the shared Settings dialog shell with ARIA links and focus restoration", async () => {

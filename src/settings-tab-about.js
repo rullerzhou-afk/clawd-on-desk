@@ -471,8 +471,10 @@
       const autoUpdateLabelWrap = document.createElement("div");
       autoUpdateLabelWrap.className = "about-info-label";
       const autoUpdateLabel = document.createElement("div");
+      autoUpdateLabel.id = "settings-about-auto-update-label";
       autoUpdateLabel.textContent = t("autoUpdateCheck");
       const autoUpdateDesc = document.createElement("div");
+      autoUpdateDesc.id = "settings-about-auto-update-description";
       autoUpdateDesc.className = "about-info-description";
       autoUpdateDesc.textContent = t("autoUpdateCheckDescription");
       autoUpdateDesc.style.opacity = "0.7";
@@ -481,18 +483,18 @@
       autoUpdateLabelWrap.appendChild(autoUpdateDesc);
       const autoUpdateValue = document.createElement("div");
       autoUpdateValue.className = "about-info-value";
-      const autoUpdateSwitch = document.createElement("div");
-      autoUpdateSwitch.className = "switch about-auto-update-switch";
-      autoUpdateSwitch.setAttribute("role", "switch");
-      autoUpdateSwitch.setAttribute("tabindex", "0");
-      autoUpdateSwitch.setAttribute("aria-label", t("autoUpdateCheck"));
       let committedAutoUpdate = safe.autoUpdateCheck !== false;
       let autoUpdatePending = false;
+      const autoUpdateControl = helpers.buildSwitch({
+        checked: committedAutoUpdate,
+        ariaLabelledBy: autoUpdateLabel.id,
+        ariaDescribedBy: autoUpdateDesc.id,
+        className: "about-auto-update-switch",
+      });
+      const autoUpdateSwitch = autoUpdateControl.element;
 
       function paintAutoUpdate(value, pending = autoUpdatePending) {
-        helpers.setSwitchVisual(autoUpdateSwitch, value, { pending });
-        autoUpdateSwitch.classList.toggle("disabled", pending);
-        autoUpdateSwitch.setAttribute("aria-disabled", pending ? "true" : "false");
+        autoUpdateControl.setState({ checked: value, pending });
       }
 
       function syncAutoUpdateFromSnapshot() {
@@ -534,13 +536,9 @@
           });
       }
 
-      autoUpdateSwitch.addEventListener("click", toggleAutoUpdate);
-      autoUpdateSwitch.addEventListener("keydown", (event) => {
-        if (event.key !== " " && event.key !== "Enter") return;
-        event.preventDefault();
-        toggleAutoUpdate();
-      });
+      autoUpdateControl.setOnToggle(toggleAutoUpdate);
       state.mountedControls.aboutAutoUpdate = {
+        control: autoUpdateControl,
         element: autoUpdateSwitch,
         syncFromSnapshot: syncAutoUpdateFromSnapshot,
       };
