@@ -174,8 +174,8 @@ Clawd 会保留原端口，按退避节奏最多重试四次（目前总计约�
 
 Hermes 不改变这一点：它的部署阶段同样跑在远端 Node runtime 上，装好的 plugin
 则跑在 Hermes 自己的 virtualenv Python 里。如果 Hermes 阶段因为解析不到 `hermes`
-CLI 而失败，请让它可通过 `<home>/hermes-agent/venv/bin/hermes` 或非 login PATH 里的
-`hermes` 访问到，然后重新部署。
+CLI 而失败，请让它可通过 `<home>/hermes-agent/venv/bin/hermes`、`~/.local/bin/hermes`
+或非 login PATH 里的 `hermes` 访问到，然后重新部署。
 
 ### 可以手动开 SSH 隧道吗？
 

@@ -210,8 +210,8 @@ dedicated ingress, not from port secrecy.
 Hermes does not change this: its deployment phase also runs through the remote
 Node runtime, while the installed plugin itself runs under Hermes' own
 virtualenv Python. If the Hermes phase fails because the `hermes` CLI cannot be
-resolved, make it reachable as `<home>/hermes-agent/venv/bin/hermes` or as
-`hermes` on the non-login `PATH`, then redeploy.
+resolved, make it reachable as `<home>/hermes-agent/venv/bin/hermes`, as
+`~/.local/bin/hermes`, or as `hermes` on the non-login `PATH`, then redeploy.
 
 ### Can I open the SSH tunnel manually?
 
