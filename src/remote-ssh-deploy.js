@@ -21,7 +21,18 @@
 //
 // Steps in order: verify → remote-shell → mkdir → check-node → scp →
 // host-prefix → install-claude → install-codex → install-copilot
-// (last three are best-effort — failures don't abort).
+// (last three are best-effort — failures don't abort). That list describes
+// the retired legacy path only.
+//
+// secureDeploy additionally runs the Hermes Agent phase — hermes-files →
+// install-hermes — as its LAST remote mutation, after the identity-tracked
+// components (installers, Claude permission readback, Codex monitor) and
+// before it returns success. Hermes assets live in their own exact staging
+// directory, a sibling of the flat hook stage, cleaned with rm -f of the two
+// known files plus a single rmdir; an unknown transport result leaves that
+// stage, the deploy lock and the recovery evidence untouched. Hermes has no
+// identity transaction step of its own (REMOTE_IDENTITY_STEP_NAMES is
+// unchanged) and never sets the local integrationInstalled flag.
 //
 // remote-shell aborts the deploy when the remote default shell is cmd.exe:
 // every later step would fail anyway (`mkdir -p`, `~/...` expansion, the
@@ -49,6 +60,10 @@ const {
 } = require("./remote-ssh-layout");
 const { buildRemoteIdentityDocument } = require("./remote-ssh-identity");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
+const {
+  HERMES_PLUGIN_ASSET_FILES,
+  parseHermesInstallerResult,
+} = require("./hermes-installer-result");
 
 // ── Hook files manifest ──
 //
@@ -82,7 +97,15 @@ const HOOK_FILES = [
   "codex-subagent-fields.js",
   "copilot-hook.js",
   "copilot-install.js",
+  "hermes-install.js",
 ];
+// Hermes plugin assets never join HOOK_FILES: they are not hook scripts and
+// go to their own exact staging directory, not ~/.claude/hooks.
+const HERMES_PLUGIN_DIR = "hermes-plugin";
+const HERMES_CLI_TIMEOUT_MS = 15000;
+const HERMES_OUTER_TIMEOUT_BASE_MS = 30000;
+const HERMES_OUTER_TIMEOUT_PER_TARGET_MS = 5000;
+const HERMES_OUTER_TIMEOUT_MAX_MS = 300000;
 const ISOLATED_CLI_MINIMUMS = Object.freeze({
   // Claude has a reviewed baseline in plan v8. Codex/Copilot stay fail-closed
   // until the real CLI matrix establishes supported minimums.
@@ -634,6 +657,66 @@ async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, 
   return result;
 }
 
+// ── Hermes preflight (C5 / C6) ──
+//
+// Runs inside the same read-only ownership preflight `node -e` script, so the
+// Hermes target set is frozen before any mutation and the deploy never
+// re-discovers homes mid-flight. The classification below is the same
+// algorithm hooks/hermes-install.js re-runs immediately before it touches a
+// directory — duplicated on purpose: the remote script has no module to
+// require, and preflight must be able to fail closed on a foreign directory
+// before the installer is ever shipped.
+//
+// hermesPresent is deliberately narrow (config.yaml or the venv CLI): an empty
+// ~/.hermes left over from an uninstall is not a Hermes installation.
+function buildHermesPreflightLines(layout) {
+  const hermesHome = resolveRemoteHermesHome(layout);
+  if (!hermesHome) {
+    // Phase 1 scope: profile-isolated runtimes report the phase as not
+    // applicable rather than guessing at a non-standard HERMES_HOME.
+    return [
+      "const hermesHome=null;",
+      "const hermesPresent=false;",
+      "const hermesTargets=[];",
+    ];
+  }
+  return [
+    "const hpath=require('path');",
+    `const hermesHome=${JSON.stringify(hermesHome)};`,
+    "const hstat=p=>{try{return {st:fs.lstatSync(p)}}catch(e){return {err:(e&&e.code)||'EUNKNOWN'}}};",
+    "const hread=p=>{try{return fs.readFileSync(p,'utf8')}catch{return null}};",
+    "function hclassify(dir){",
+    "const allowed=['plugin.yaml','__init__.py','clawd-ssh-secure-v1','__pycache__'];",
+    "const top=hstat(dir);",
+    "if(top.err)return top.err==='ENOENT'?'absent':'foreign';",
+    "if(top.st.isSymbolicLink())return 'symlink';",
+    "if(!top.st.isDirectory())return 'foreign';",
+    "let entries;try{entries=fs.readdirSync(dir)}catch{return 'foreign'}",
+    "for(const n of entries){const s=hstat(hpath.join(dir,n));if(s.err)return 'foreign';if(allowed.includes(n)&&s.st.isSymbolicLink())return 'symlink'}",
+    "if(entries.some(n=>!allowed.includes(n)))return 'foreign';",
+    "const isFile=n=>{const s=hstat(hpath.join(dir,n));return !!(s.st&&s.st.isFile())};",
+    "if(!isFile('plugin.yaml')||!isFile('__init__.py'))return 'foreign';",
+    "if(entries.includes('__pycache__')){",
+    "const cacheDir=hpath.join(dir,'__pycache__');const c=hstat(cacheDir);",
+    "if(!c.st||!c.st.isDirectory())return 'foreign';",
+    "let cached;try{cached=fs.readdirSync(cacheDir)}catch{return 'foreign'}",
+    "for(const n of cached){const s=hstat(hpath.join(cacheDir,n));if(!s.st||!s.st.isFile()||!n.endsWith('.pyc'))return 'foreign'}}",
+    "if(entries.includes('clawd-ssh-secure-v1')){",
+    "const marker=hread(hpath.join(dir,'clawd-ssh-secure-v1'));",
+    "return marker!==null&&marker.trim()==='clawd-ssh-secure-v1'?'managed':'foreign'}",
+    "const yaml=hread(hpath.join(dir,'plugin.yaml'));const init=hread(hpath.join(dir,'__init__.py'));",
+    "if(yaml===null||init===null)return 'foreign';",
+    "if(!/^name:\\s*[\"']?clawd-on-desk[\"']?\\s*$/m.test(yaml))return 'foreign';",
+    "if(!init.includes('CLAWD_SERVER_ID = \"clawd-on-desk\"'))return 'foreign';",
+    "return 'legacy';",
+    "}",
+    "const hermesPresent=fs.existsSync(hpath.join(hermesHome,'config.yaml'))||fs.existsSync(hpath.join(hermesHome,'hermes-agent','venv','bin','hermes'));",
+    "let hermesProfileHomes=[];",
+    "try{const pdir=hpath.join(hermesHome,'profiles');hermesProfileHomes=fs.readdirSync(pdir,{withFileTypes:true}).filter(e=>e.isDirectory()&&fs.existsSync(hpath.join(pdir,e.name,'config.yaml'))).map(e=>hpath.join(pdir,e.name)).sort()}catch{}",
+    "const hermesTargets=hermesPresent?[{home:hermesHome,kind:'root',plugin:hclassify(hpath.join(hermesHome,'plugins','clawd-on-desk'))}].concat(hermesProfileHomes.map(h=>({home:h,kind:'profile',plugin:hclassify(hpath.join(h,'plugins','clawd-on-desk'))}))):[];",
+  ];
+}
+
 function buildOwnershipPreflightScript({ profile, layout, installId }) {
   const expected = {
     installId,
@@ -677,11 +760,12 @@ function buildOwnershipPreflightScript({ profile, layout, installId }) {
     "if(identity){for(const k of Object.keys(expected)){if(identity[k]!==expected[k]){console.log(JSON.stringify({ok:false,reason:'ownership_conflict',field:k}));process.exit(83)}}}",
     "const traces=tracePaths.filter(p=>{try{return fs.existsSync(p)}catch{return true}});",
     "const configTraces=configTracePaths.filter(p=>{try{const raw=fs.readFileSync(p,'utf8');return managedConfigMarkers.some(m=>raw.includes(m))}catch(e){return e&&e.code!=='ENOENT'}});",
+    ...buildHermesPreflightLines(layout),
     "console.log(JSON.stringify({ok:true,identity:!!identity,legacyTraces:traces.length,legacyConfigTraces:configTraces.length,legacyMonitorPresent:"
       + (layout.legacyMonitorPidFile
         ? `fs.existsSync(${JSON.stringify(layout.legacyMonitorPidFile)})`
         : "false")
-      + ",claudePresent:fs.existsSync(" + JSON.stringify(layout.claudeConfigDir) + "),codexPresent:fs.existsSync(" + JSON.stringify(layout.codexHome) + "),copilotPresent:fs.existsSync(" + JSON.stringify(layout.copilotHome) + ")}));",
+      + ",claudePresent:fs.existsSync(" + JSON.stringify(layout.claudeConfigDir) + "),codexPresent:fs.existsSync(" + JSON.stringify(layout.codexHome) + "),copilotPresent:fs.existsSync(" + JSON.stringify(layout.copilotHome) + "),hermesHome:hermesHome,hermesPresent:hermesPresent,hermesTargets:hermesTargets}));",
   ].join("");
 }
 
@@ -781,7 +865,17 @@ async function cleanupLegacyMonitor({
   };
 }
 
+// Phase 1 scope: the standard `~/.hermes` root of an account-default layout.
+// profile-isolated runtimes get null — the Hermes phase is not applicable
+// there and no HERMES_HOME is exported to the remote installers.
+function resolveRemoteHermesHome(layout) {
+  if (!layout || layout.runtimeMode !== "account-default") return null;
+  if (typeof layout.remoteHome !== "string" || !layout.remoteHome) return null;
+  return path.posix.join(layout.remoteHome, ".hermes");
+}
+
 function buildRemoteInstallerEnv(layout, remotePermissionTransport = "path") {
+  const hermesHome = resolveRemoteHermesHome(layout);
   return [
     `CLAUDE_CONFIG_DIR=${quoteForPosixShellArg(layout.claudeConfigDir)}`,
     `CODEX_HOME=${quoteForPosixShellArg(layout.codexHome)}`,
@@ -798,6 +892,7 @@ function buildRemoteInstallerEnv(layout, remotePermissionTransport = "path") {
         ? remotePermissionTransport
         : "path"
     )}`,
+    ...(hermesHome ? [`HERMES_HOME=${quoteForPosixShellArg(hermesHome)}`] : []),
   ].join(" ");
 }
 
@@ -1126,6 +1221,39 @@ async function verifyIsolatedArtifacts({
       )),
     capabilities,
   };
+}
+
+// Budget the outer fenced command by the frozen target count: each target can
+// spend one enable call plus one enable-verification call at the per-profile
+// CLI timeout, plus fixed per-target overhead. The maintainer's single-profile
+// timing (0.559 s for `plugins list --json`) must not be generalized into a
+// multi-profile budget, so this stays a worst case with a hard cap.
+function hermesOuterTimeoutMs(targetCount) {
+  return Math.min(
+    HERMES_OUTER_TIMEOUT_MAX_MS,
+    HERMES_OUTER_TIMEOUT_BASE_MS
+      + targetCount * (2 * HERMES_CLI_TIMEOUT_MS + HERMES_OUTER_TIMEOUT_PER_TARGET_MS),
+  );
+}
+
+// One progress line for the Hermes phase. Activation wording is the
+// maintainer's: enabling a plugin takes effect on the next session, while a
+// replaced module needs a gateway restart Clawd deliberately never performs.
+function summarizeHermesTargets(targets) {
+  const counts = new Map();
+  for (const target of targets) {
+    const action = target && target.action;
+    if (!action) continue;
+    counts.set(action, (counts.get(action) || 0) + 1);
+  }
+  const actions = [...counts].map(([action, count]) => `${action} ${count}`).join(", ");
+  const restart = targets
+    .filter((target) => target && target.activation === "restart-required")
+    .map((target) => target.home);
+  const activation = restart.length
+    ? `gateway restart required for: ${restart.join(", ")}`
+    : "effective on next session";
+  return [actions, activation].filter(Boolean).join("; ");
 }
 
 async function secureDeploy({
@@ -1590,6 +1718,189 @@ async function secureDeploy({
       );
     }
 
+    // ── Hermes Agent phase ──
+    //
+    // Q4: this is the LAST remote mutation of the deploy. It sits after every
+    // identity-tracked component — including the Codex monitor restart, which
+    // is itself a mutating command — so that once the Hermes installer has
+    // run, nothing else touches the remote host except this phase's own stage
+    // cleanup and the lease release. Hermes has no identity transaction step:
+    // REMOTE_IDENTITY_STEP_NAMES and the persisted transaction schema stay
+    // frozen, and a Hermes failure simply leaves the transaction uncommitted.
+    let hermesSummary = null;
+    const remoteHermesHome = resolveRemoteHermesHome(layout);
+    const hermesTargets = Array.isArray(componentPresence.hermesTargets)
+      ? componentPresence.hermesTargets
+      : [];
+    if (componentPresence.hermesPresent !== true || !remoteHermesHome || hermesTargets.length === 0) {
+      progress("install-hermes", "ok", "not applicable");
+    } else {
+      // Ownership gate first: a foreign or symlinked plugin directory fails
+      // the deploy before a single byte is staged. Never overwrite, never
+      // recursively delete.
+      const hermesConflicts = hermesTargets.filter((target) =>
+        target && (target.plugin === "foreign" || target.plugin === "symlink"));
+      if (hermesConflicts.length) {
+        return fail(
+          "install-hermes",
+          `Hermes plugin directory is not managed by Clawd: ${hermesConflicts.map((target) => target.home).join(", ")}`,
+          "hermes_plugin_ownership_conflict",
+        );
+      }
+
+      progress("hermes-files", "start");
+      const hermesAssetPaths = HERMES_PLUGIN_ASSET_FILES
+        .map((name) => path.join(hooksDir, HERMES_PLUGIN_DIR, name));
+      const missingHermesAssets = hermesAssetPaths.filter((file) => !fs.existsSync(file));
+      if (missingHermesAssets.length) {
+        return fail("hermes-files", `Missing files: ${missingHermesAssets.join(", ")}`);
+      }
+      // Sibling of the flat hook stage (`<deployStagingDir>/<leaseId>`), never
+      // nested inside it: the flat stage is rmdir'd during hook promotion, and
+      // a nested Hermes directory would make that rmdir fail.
+      const hermesStage = path.posix.join(layout.deployStagingDir, `${leaseId}-hermes`);
+      const hermesStageArg = quoteForPosixShellArg(hermesStage);
+      const hermesStageMkdir = await spawnAndWait(
+        spawn,
+        "ssh",
+        buildSshArgs(profile).concat([
+          fencedCommand(
+            layout,
+            leaseId,
+            remoteNode,
+            `umask 077 && mkdir -p ${hermesStageArg} && chmod 700 ${hermesStageArg}`,
+          ),
+        ]),
+        { runtime, role: "hermes-stage-create", mutation: true },
+      );
+      if (hermesStageMkdir.code !== 0) {
+        return fail("hermes-files", hermesStageMkdir.stderr || "Hermes staging directory creation failed");
+      }
+      const hermesScp = await spawnAndWait(
+        spawn,
+        "scp",
+        buildScpArgs(profile).concat([
+          ...hermesAssetPaths,
+          buildScpRemoteTarget(profile.host, hermesStage),
+        ]),
+        { timeoutMs: 120000, runtime, role: "hermes-files-upload", mutation: true },
+      );
+      if (hermesScp.code !== 0) {
+        return fail("hermes-files", hermesScp.stderr || "Hermes asset staging upload failed");
+      }
+      const hermesExpectedHashes = Object.fromEntries(HERMES_PLUGIN_ASSET_FILES.map((name, index) => [
+        name,
+        crypto.createHash("sha256").update(fs.readFileSync(hermesAssetPaths[index])).digest("hex"),
+      ]));
+      const hermesHashScript = [
+        "const fs=require('fs'),c=require('crypto'),p=require('path');",
+        `const d=${JSON.stringify(hermesStage)},e=${JSON.stringify(hermesExpectedHashes)};`,
+        "for(const [n,h] of Object.entries(e)){const a=c.createHash('sha256').update(fs.readFileSync(p.join(d,n))).digest('hex');if(a!==h)process.exit(1)}",
+      ].join("");
+      const hermesHashVerify = await spawnAndWait(
+        spawn,
+        "ssh",
+        buildSshArgs(profile).concat([
+          fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, hermesHashScript)),
+        ]),
+        { runtime },
+      );
+      if (hermesHashVerify.code !== 0) {
+        return fail("hermes-files", "Hermes staged asset hash verification failed");
+      }
+      progress("hermes-files", "ok");
+
+      progress("install-hermes", "start");
+      const hermesArgs = [
+        "--remote",
+        "--json",
+        "--source-dir",
+        hermesStage,
+        "--cli-timeout-ms",
+        String(HERMES_CLI_TIMEOUT_MS),
+        ...hermesTargets.flatMap((target) => ["--target-home", target.home]),
+      ];
+      const hermesRun = await spawnAndWait(
+        spawn,
+        "ssh",
+        buildSshArgs(profile).concat([
+          fencedCommand(
+            layout,
+            leaseId,
+            remoteNode,
+            `${envPrefix} ${buildRemoteHookNodeCommand(remoteNode, "hermes-install.js", hermesArgs, {
+              hooksDir: layout.claudeHooksDir,
+            })}`,
+          ),
+        ]),
+        {
+          timeoutMs: hermesOuterTimeoutMs(hermesTargets.length),
+          runtime,
+          role: "installer-hermes",
+          mutation: true,
+        },
+      );
+      // Reaching this line means the installer returned a KNOWN result, so the
+      // stage may be cleaned. An unknown transport result throws out of
+      // spawnAndWait above instead: no cleanup mutation, no retry, the lock
+      // stays quarantined and the staging evidence survives for recovery.
+      // Exact files only — no recursive removal anywhere.
+      const hermesCleanup = await spawnAndWait(
+        spawn,
+        "ssh",
+        buildSshArgs(profile).concat([
+          fencedCommand(
+            layout,
+            leaseId,
+            remoteNode,
+            `rm -f ${HERMES_PLUGIN_ASSET_FILES
+              .map((name) => quoteForPosixShellArg(path.posix.join(hermesStage, name)))
+              .join(" ")} && rmdir ${hermesStageArg}`,
+          ),
+        ]),
+        { timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
+      );
+      const hermesCleanupWarning = hermesCleanup.code !== 0
+        ? `staged assets could not be removed from ${hermesStage}`
+        : null;
+
+      const hermesParsed = parseHermesInstallerResult(hermesRun.stdout, "install");
+      if (!hermesParsed.ok) {
+        return fail("install-hermes", hermesParsed.error, "hermes_install_result_invalid");
+      }
+      const hermesResult = hermesParsed.result;
+      const hermesResultTargets = Array.isArray(hermesResult.targets) ? hermesResult.targets : [];
+      // Q2: a per-target error is a hard deploy failure even when the
+      // aggregate status would only be a warning. Default-home success plus a
+      // named-profile failure is a failed Remote SSH deploy.
+      const hermesFailedTargets = hermesResultTargets.filter((target) =>
+        target && (target.status === "error" || target.action === "failed"));
+      if (hermesRun.code !== 0 || hermesResult.status === "error" || hermesFailedTargets.length) {
+        const perTarget = hermesFailedTargets
+          .map((target) => `${target.home}: ${target.reason || target.message || target.status}`)
+          .join("; ");
+        return fail(
+          "install-hermes",
+          hermesResult.message || perTarget || summarizeStderr(hermesRun.stderr),
+          "hermes_install_failed",
+        );
+      }
+      hermesSummary = {
+        status: hermesResult.status,
+        message: hermesResult.message || null,
+        warning: hermesResult.warning || null,
+        targets: hermesResultTargets,
+        activeGatewayUnits: Array.isArray(hermesResult.activeGatewayUnits)
+          ? hermesResult.activeGatewayUnits
+          : null,
+      };
+      progress(
+        "install-hermes",
+        "ok",
+        [summarizeHermesTargets(hermesResultTargets), hermesCleanupWarning].filter(Boolean).join("; "),
+      );
+    }
+
     return {
       ok: true,
       secure: true,
@@ -1598,6 +1909,7 @@ async function secureDeploy({
       remoteNode: remoteNodeInfo,
       transactionReady: true,
       isolation,
+      hermes: hermesSummary,
     };
     })();
   } catch (err) {
@@ -2105,6 +2417,11 @@ async function secureUninstallRemoteIntegrations({
         optionalInstaller("uninstall.js", []),
         optionalInstaller("codex-install.js", ["--uninstall"]),
         optionalInstaller("copilot-install.js", ["--uninstall"]),
+        // Runs before the hook payload is removed, under the same lease and
+        // fence. The installer discovers its own targets from HERMES_HOME
+        // (exported by buildRemoteInstallerEnv) and removes exactly the
+        // managed leaves — never a recursive delete.
+        optionalInstaller("hermes-install.js", ["--uninstall", "--remote", "--json"]),
         `rm -f ${[
           layout.hostPrefixFile,
           layout.statuslineSidecarFile,
@@ -2282,6 +2599,10 @@ module.exports = {
     acquireDeployLock,
     releaseDeployLock,
     buildOwnershipPreflightScript,
+    buildHermesPreflightLines,
+    resolveRemoteHermesHome,
+    hermesOuterTimeoutMs,
+    summarizeHermesTargets,
     buildLegacyMonitorCleanupScript,
     buildInstallerVerificationCommand,
     buildMonitorVerificationCommand,
