@@ -104,22 +104,27 @@
 
     const actions = document.createElement("div");
     actions.className = "about-update-error-actions";
-    const copyButton = document.createElement("button");
-    copyButton.type = "button";
-    copyButton.className = "soft-btn about-update-error-copy";
-    copyButton.textContent = t("aboutUpdateErrorCopy");
+    const copyButton = helpers.buildButton({
+      labelKey: "aboutUpdateErrorCopy",
+      size: "compact",
+      className: "about-update-error-copy",
+    });
     copyButton.addEventListener("click", async () => {
-      copyButton.disabled = true;
+      helpers.setButtonState(copyButton, { pending: true });
       try {
         const copy = window.settingsAPI && window.settingsAPI.copyUpdateError;
         if (typeof copy !== "function") throw new Error("clipboard unavailable");
         const result = await copy(String(report.copyText || report.detail || report.message || ""));
         if (!result || result.status !== "ok") throw new Error(result && result.message || "copy failed");
-        copyButton.textContent = t("aboutUpdateErrorCopied");
+        helpers.setButtonState(copyButton, {
+          pending: false,
+          labelKey: "aboutUpdateErrorCopied",
+        });
       } catch (_) {
-        copyButton.textContent = t("aboutUpdateErrorCopyFailed");
-      } finally {
-        copyButton.disabled = false;
+        helpers.setButtonState(copyButton, {
+          pending: false,
+          labelKey: "aboutUpdateErrorCopyFailed",
+        });
       }
     });
     actions.appendChild(copyButton);

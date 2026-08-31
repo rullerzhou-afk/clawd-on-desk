@@ -338,15 +338,18 @@
 
     const controls = document.createElement("div");
     controls.className = "row-control roam-area-controls";
-    const resetButton = document.createElement("button");
-    resetButton.type = "button";
-    resetButton.className = "soft-btn roam-area-reset";
-    resetButton.textContent = t("roamAreaReset");
+    const resetButton = helpers.buildButton({
+      labelKey: "roamAreaReset",
+      size: "compact",
+      className: "roam-area-reset",
+    });
     resetButton.style.display = "none";
-    const chooseButton = document.createElement("button");
-    chooseButton.type = "button";
-    chooseButton.className = "soft-btn accent roam-area-choose";
-    chooseButton.textContent = t("roamAreaChoose");
+    const chooseButton = helpers.buildButton({
+      labelKey: "roamAreaChoose",
+      tone: "accent",
+      size: "compact",
+      className: "roam-area-choose",
+    });
     controls.appendChild(resetButton);
     controls.appendChild(chooseButton);
     row.appendChild(text);
@@ -358,9 +361,8 @@
     }
     function setBusy(next) {
       busy = !!next;
-      chooseButton.disabled = busy;
-      resetButton.disabled = busy;
-      chooseButton.classList.toggle("pending", busy);
+      helpers.setButtonState(chooseButton, { pending: busy });
+      helpers.setButtonState(resetButton, { pending: busy });
     }
     function applyStatus(result) {
       if (!isMounted()) return;
@@ -744,23 +746,28 @@
   function buildDashboardRow() {
     const row = document.createElement("div");
     row.className = "row";
-    row.innerHTML =
-      `<div class="row-text">` +
-        `<span class="row-label"></span>` +
-        `<span class="row-desc"></span>` +
-      `</div>` +
-      `<div class="row-control">` +
-        `<button type="button" class="soft-btn accent"></button>` +
-      `</div>`;
-    row.querySelector(".row-label").textContent = t("rowSessionDashboard");
-    row.querySelector(".row-desc").textContent = t("rowSessionDashboardDesc");
-    const btn = row.querySelector("button");
-    btn.textContent = t("actionOpenDashboard");
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowSessionDashboard");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("rowSessionDashboardDesc");
+    text.append(label, desc);
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const btn = helpers.buildButton({
+      labelKey: "actionOpenDashboard",
+      tone: "accent",
+    });
     btn.addEventListener("click", () => {
       if (window.settingsAPI && typeof window.settingsAPI.openDashboard === "function") {
         window.settingsAPI.openDashboard();
       }
     });
+    control.appendChild(btn);
+    row.append(text, control);
     return row;
   }
 
@@ -1212,12 +1219,12 @@
     // as a card; mirrors how Sound group puts the volume slider on its own row.
     const resetRow = document.createElement("div");
     resetRow.className = "row session-cleanup-reset-row";
-    const resetButton = document.createElement("button");
-    resetButton.type = "button";
-    resetButton.className = "soft-btn";
-    resetButton.textContent = t("actionResetSessionCleanup");
+    const resetButton = helpers.buildButton({
+      labelKey: "actionResetSessionCleanup",
+      size: "compact",
+    });
     resetButton.addEventListener("click", async () => {
-      resetButton.disabled = true;
+      helpers.setButtonState(resetButton, { pending: true });
       try {
         const result = await window.settingsAPI.command(
           "sessionCleanup.setTriple",
@@ -1230,7 +1237,7 @@
       } catch (err) {
         ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       } finally {
-        resetButton.disabled = false;
+        helpers.setButtonState(resetButton, { pending: false });
       }
     });
     resetRow.appendChild(resetButton);

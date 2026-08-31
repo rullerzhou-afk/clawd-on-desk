@@ -700,57 +700,57 @@
     row.className = "theme-actions";
 
     const codexGroup = buildThemeActionGroup(t("themeActionGroupCodexPets"));
-    const importBtn = document.createElement("button");
-    importBtn.type = "button";
-    importBtn.className = "soft-btn";
-    importBtn.textContent = t("themeImportPetZip");
-    importBtn.disabled = !!runtime.codexPetZipImportPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.importCodexPetZip !== "function";
-    if (runtime.codexPetZipImportPending) importBtn.classList.add("pending");
+    const importBtn = helpers.buildButton({
+      labelKey: "themeImportPetZip",
+      size: "compact",
+      disabled: !!runtime.codexPetZipImportPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.importCodexPetZip !== "function",
+      pending: !!runtime.codexPetZipImportPending,
+    });
     importBtn.addEventListener("click", handleImportCodexPetZip);
     codexGroup.buttons.appendChild(importBtn);
 
-    const refreshBtn = document.createElement("button");
-    refreshBtn.type = "button";
-    refreshBtn.className = "soft-btn";
-    refreshBtn.textContent = t("themeRefreshImportedPets");
-    refreshBtn.disabled = !!runtime.codexPetsRefreshPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.refreshCodexPets !== "function";
-    if (runtime.codexPetsRefreshPending) refreshBtn.classList.add("pending");
+    const refreshBtn = helpers.buildButton({
+      labelKey: "themeRefreshImportedPets",
+      size: "compact",
+      disabled: !!runtime.codexPetsRefreshPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.refreshCodexPets !== "function",
+      pending: !!runtime.codexPetsRefreshPending,
+    });
     refreshBtn.addEventListener("click", handleRefreshCodexPets);
     codexGroup.buttons.appendChild(refreshBtn);
     row.appendChild(codexGroup.group);
 
     const userThemeGroup = buildThemeActionGroup(t("themeActionGroupUserThemes"));
-    const importThemeBtn = document.createElement("button");
-    importThemeBtn.type = "button";
-    importThemeBtn.className = "soft-btn";
-    importThemeBtn.textContent = t("themeImportUserThemeZip");
-    importThemeBtn.title = t("themeImportUserThemeZipHint");
-    importThemeBtn.disabled = !!runtime.userThemeZipImportPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.importUserThemeZip !== "function";
-    if (runtime.userThemeZipImportPending) importThemeBtn.classList.add("pending");
+    const importThemeBtn = helpers.buildButton({
+      labelKey: "themeImportUserThemeZip",
+      size: "compact",
+      title: t("themeImportUserThemeZipHint"),
+      disabled: !!runtime.userThemeZipImportPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.importUserThemeZip !== "function",
+      pending: !!runtime.userThemeZipImportPending,
+    });
     importThemeBtn.addEventListener("click", handleImportUserThemeZip);
     userThemeGroup.buttons.appendChild(importThemeBtn);
 
-    const userThemeFolderBtn = document.createElement("button");
-    userThemeFolderBtn.type = "button";
-    userThemeFolderBtn.className = "soft-btn";
-    userThemeFolderBtn.textContent = t("themeOpenUserThemesFolder");
-    userThemeFolderBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.openUserThemesDir !== "function";
+    const userThemeFolderBtn = helpers.buildButton({
+      labelKey: "themeOpenUserThemesFolder",
+      size: "compact",
+      disabled: !window.settingsAPI
+        || typeof window.settingsAPI.openUserThemesDir !== "function",
+    });
     userThemeFolderBtn.addEventListener("click", handleOpenUserThemesFolder);
     userThemeGroup.buttons.appendChild(userThemeFolderBtn);
 
-    const refreshThemesBtn = document.createElement("button");
-    refreshThemesBtn.type = "button";
-    refreshThemesBtn.className = "soft-btn";
-    refreshThemesBtn.textContent = t("themeRefreshThemes");
-    refreshThemesBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.listThemes !== "function";
+    const refreshThemesBtn = helpers.buildButton({
+      labelKey: "themeRefreshThemes",
+      size: "compact",
+      disabled: !window.settingsAPI
+        || typeof window.settingsAPI.listThemes !== "function",
+    });
     refreshThemesBtn.addEventListener("click", handleRefreshThemes);
     userThemeGroup.buttons.appendChild(refreshThemesBtn);
     row.appendChild(userThemeGroup.group);

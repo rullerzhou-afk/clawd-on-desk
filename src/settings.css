@@ -2713,8 +2713,26 @@ html, body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   min-height: 34px;
   line-height: 1.25;
+}
+.settings-button-icon,
+.settings-button-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.settings-button-icon {
+  flex: 0 0 auto;
+}
+.settings-button-icon > svg,
+.settings-button-icon > img {
+  width: 1em;
+  height: 1em;
+}
+.settings-button-label {
+  min-width: 0;
 }
 .settings-button-compact {
   min-height: 28px;

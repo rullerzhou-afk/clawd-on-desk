@@ -129,11 +129,12 @@
       view.appIdDirty = true;
     });
 
-    const saveBtn = document.createElement("button");
-    saveBtn.type = "button";
-    saveBtn.className = "soft-btn accent";
-    saveBtn.textContent = view.configPending ? t("discordPresenceSaving") : t("discordPresenceSaveAppId");
-    saveBtn.disabled = view.configPending;
+    const saveBtn = helpers.buildButton({
+      labelKey: view.configPending ? "discordPresenceSaving" : "discordPresenceSaveAppId",
+      tone: "accent",
+      disabled: view.configPending,
+      pending: view.configPending,
+    });
     saveBtn.addEventListener("click", () => {
       const raw = String(view.appIdDraft == null ? draft : view.appIdDraft).trim();
       if (raw && !APP_ID_RE.test(raw)) {
