@@ -11,7 +11,8 @@
 - 远端已安装 Node.js
 - 远端已安装至少一个支持的 agent：Claude Code、Codex CLI、Copilot CLI 或 Hermes Agent
 - 使用 Hermes Agent 时，远端需要已经装好 Hermes，且其 CLI 可通过
-  `<home>/hermes-agent/venv/bin/hermes` 或非 login PATH 里的 `hermes` 访问到。
+  `<home>/hermes-agent/venv/bin/hermes`、`~/.local/bin/hermes`（git 安装）
+  或非 login PATH 里的 `hermes` 访问到。
   plugin 跑在 Hermes 自己的 virtualenv Python 里；上面的 Node.js 要求不变
 
 Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase、ssh-agent
@@ -41,8 +42,8 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
 打开 **Copilot CLI**，这样 Clawd 才会接收远程 hook 事件；不需要点
 **Install / 安装**，除非你也想在本机安装 Copilot hooks。
 
-全新本机安装下，如果只是接收远程 Hermes Agent 事件，请到 **Settings -> Agents**
-打开 **Hermes Agent**，这样 Clawd 才会接收远程 hook 事件；不需要点
+如果只是接收远程 Hermes Agent 事件，远程 SSH 部署完整验证通过后，Clawd 会自动在
+**Settings -> Agents** 打开 **Hermes Agent**，远程 hook 事件随即被接收；不需要点
 **Install / 安装**，除非你也想在本机安装 Hermes plugin：远程部署不会在本机装任何
 东西，也不会把本机集成标记为已安装。
 
@@ -104,7 +105,7 @@ Clawd HTTP 服务，不是远端集群的 IP。远端 hook 也不直接访问你
 - 远端 agent 已启动并产生至少一条 hook 事件
 - Codex 如需 `/hooks` review，已经在远端 Codex TUI 里 review 通过
 - 全新本机安装下，如果只接收远程 Copilot CLI，本机 **Settings -> Agents -> Copilot CLI** 已打开
-- 全新本机安装下，如果只接收远程 Hermes Agent，本机 **Settings -> Agents -> Hermes Agent** 已打开；部署日志要求时，远端 gateway 也已手动重启
+- 如果只接收远程 Hermes Agent，本机 **Settings -> Agents -> Hermes Agent** 仍处于打开状态（完整验证通过的部署会自动打开它）；部署日志要求时，远端 gateway 也已手动重启
 
 ## 共享服务器隔离与升级边界
 

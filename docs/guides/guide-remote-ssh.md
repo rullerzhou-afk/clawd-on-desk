@@ -13,8 +13,9 @@ ownership-fenced cleanup required by the secure transport.
 - Node.js is installed on the remote
 - At least one supported remote agent is installed on the remote: Claude Code, Codex CLI, Copilot CLI, or Hermes Agent
 - For Hermes Agent, Hermes is already installed on the remote and its CLI is
-  reachable either as `<home>/hermes-agent/venv/bin/hermes` or as `hermes` on
-  the non-login `PATH`. The plugin runs under Hermes' own virtualenv Python;
+  reachable as `<home>/hermes-agent/venv/bin/hermes`, as `~/.local/bin/hermes`
+  (git-based installs), or as `hermes` on the non-login `PATH`. The plugin runs
+  under Hermes' own virtualenv Python;
   the Node.js requirement above is unchanged
 
 Clawd does not store SSH passwords or private-key passphrases. First-time host
@@ -46,11 +47,12 @@ For remote-only Copilot CLI tracking on a fresh local install, turn on
 events. You do not need to click **Install** unless you also want local Copilot
 hooks on this machine.
 
-For remote-only Hermes Agent tracking on a fresh local install, turn on
-**Hermes Agent** in **Settings → Agents** so Clawd accepts those remote hook
-events. You do not need to click **Install** unless you also want the local
-Hermes plugin on this machine: a remote deployment installs nothing locally and
-does not set the local integration as installed.
+For remote-only Hermes Agent tracking, Clawd turns on **Hermes Agent** in
+**Settings → Agents** by itself once the Remote SSH deployment is fully
+verified, so those remote hook events are accepted right away. You do not need
+to click **Install** unless you also want the local Hermes plugin on this
+machine: a remote deployment installs nothing locally and does not set the
+local integration as installed.
 
 If the profile has **Auto-start Codex fallback monitor on connect** enabled,
 Clawd launches `~/.claude/hooks/codex-remote-monitor.js` as connection
@@ -122,7 +124,7 @@ appear in the Dashboard, you still need:
 - The remote agent started, with at least one hook event emitted
 - For Codex, the remote Codex TUI has reviewed the hooks via `/hooks` if your version requires it
 - For remote-only Copilot CLI on a fresh local install, local **Settings → Agents → Copilot CLI** is turned on
-- For remote-only Hermes Agent on a fresh local install, local **Settings → Agents → Hermes Agent** is turned on, and the remote gateway has been restarted manually if the deploy log asked for it
+- For remote-only Hermes Agent, local **Settings → Agents → Hermes Agent** is still turned on (a fully verified deploy enables it automatically), and the remote gateway has been restarted manually if the deploy log asked for it
 
 ## Shared-server isolation and upgrade boundary
 
