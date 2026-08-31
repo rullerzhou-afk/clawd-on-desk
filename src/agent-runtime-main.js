@@ -10,6 +10,7 @@ const { resolveSessionIdentity } = require("./session-key");
 const { digestCodexTurnId } = require("./codex-turn-id");
 const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
+const { createQoderSessionTitleTracker } = require("./qoder-session-title");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
 // Intentionally excludes response_item:web_search_call. Codex official hooks
@@ -75,6 +76,8 @@ function createAgentRuntimeMain(options = {}) {
   const getPermissionRuntime = options.getPermissionRuntime || (() => null);
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
+  const qoderSessionTitleTracker = options.qoderSessionTitleTracker
+    || createQoderSessionTitleTracker();
   const captureGhosttyTerminalId = options.captureGhosttyTerminalId || null;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
   const showCodexUserInputBubble = options.showCodexUserInputBubble || (() => false);
@@ -185,6 +188,11 @@ function createAgentRuntimeMain(options = {}) {
     return result;
   }
 
+  function resolveQoderSessionTitle(input) {
+    if (!qoderSessionTitleTracker || typeof qoderSessionTitleTracker.resolve !== "function") return null;
+    try { return qoderSessionTitleTracker.resolve(input); } catch { return null; }
+  }
+
   function maybeCaptureGhosttyTerminalId(sessionId, event, opts = {}) {
     if (typeof captureGhosttyTerminalId !== "function") return false;
     if (!sessionId || opts.host || opts.ghosttyTerminalId || !opts.sourcePid || !opts.cwd) return false;
@@ -245,6 +253,9 @@ function createAgentRuntimeMain(options = {}) {
 
   function clearSessionsByAgent(agentId) {
     if (agentId === "codex") resetLocalCodexLifecycleTracking();
+    if (agentId === "qoder" && qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
+      qoderSessionTitleTracker.clear();
+    }
     const state = getStateRuntime();
     return state && typeof state.clearSessionsByAgent === "function"
       ? state.clearSessionsByAgent(agentId)
@@ -392,6 +403,9 @@ function createAgentRuntimeMain(options = {}) {
   function cleanup() {
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
     resetLocalCodexLifecycleTracking();
+    if (qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
+      qoderSessionTitleTracker.clear();
+    }
   }
 
   function resetLocalCodexLifecycleTracking() {
@@ -411,6 +425,7 @@ function createAgentRuntimeMain(options = {}) {
     clearSessionsByAgent,
     dismissPermissionsByAgent,
     updateSessionFromServer,
+    resolveQoderSessionTitle,
     markCodexOfficialHookSession,
     shouldSuppressCodexLogEvent,
     resetLocalCodexLifecycleTracking,

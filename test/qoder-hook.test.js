@@ -1,29 +1,13 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const fs = require("node:fs");
-const os = require("node:os");
-const path = require("node:path");
 const {
   HOOK_MAP,
   buildStateBody,
   sendHookEvent,
   normalizeSessionId,
   normalizeSessionTitle,
-  extractSessionTitleFromEntries,
-  readQoderSessionTitle,
   isQoderAgentCommandLine,
 } = require("../hooks/qoder-hook");
-
-function withTempTranscript(lines, run) {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-title-"));
-  const transcriptPath = path.join(dir, "session.jsonl");
-  try {
-    fs.writeFileSync(transcriptPath, `${lines.join("\n")}\n`, "utf8");
-    return run(transcriptPath);
-  } finally {
-    fs.rmSync(dir, { recursive: true, force: true });
-  }
-}
 
 describe("Qoder hook runtime (Phase 1 state-only)", () => {
   it("maps Stop to attention so the completion animation/sound plays", () => {
@@ -68,46 +52,6 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
     assert.ok(normalized.endsWith("…"));
   });
 
-  it("uses Qoder custom title before AI title and honors a cleared custom title", () => {
-    assert.strictEqual(extractSessionTitleFromEntries([
-      { type: "ai-title", aiTitle: "Generated title" },
-      { type: "custom-title", customTitle: "My title" },
-      { type: "ai-title", aiTitle: "Regenerated title" },
-    ]), "My title");
-    assert.strictEqual(extractSessionTitleFromEntries([
-      { type: "ai-title", aiTitle: "Generated title" },
-      { type: "custom-title", customTitle: "" },
-    ]), "Generated title");
-    assert.strictEqual(extractSessionTitleFromEntries([
-      { type: "ai-title", sessionId: "other", aiTitle: "Wrong session" },
-      { type: "ai-title", sessionId: "s1", aiTitle: "Right session" },
-    ], { sessionId: "qoder:s1" }), "Right session");
-  });
-
-  it("reads Qoder title metadata while ignoring malformed transcript lines", () => {
-    withTempTranscript([
-      JSON.stringify({ type: "ai-title", sessionId: "s1", aiTitle: "Generated title" }),
-      "{broken-json",
-      JSON.stringify({ type: "custom-title", sessionId: "s1", customTitle: "Renamed title" }),
-    ], (transcriptPath) => {
-      assert.strictEqual(readQoderSessionTitle(transcriptPath), "Renamed title");
-    });
-    assert.strictEqual(readQoderSessionTitle("/missing/qoder-transcript.jsonl"), null);
-  });
-
-  it("uses bounded head/tail windows for oversized Qoder transcripts", () => {
-    withTempTranscript([
-      JSON.stringify({ type: "ai-title", sessionId: "s1", aiTitle: "Head title" }),
-      JSON.stringify({ type: "user", message: "x".repeat(500) }),
-      JSON.stringify({ type: "custom-title", sessionId: "s1", customTitle: "Tail title" }),
-    ], (transcriptPath) => {
-      assert.strictEqual(readQoderSessionTitle(transcriptPath, {
-        maxBytes: 320,
-        edgeBytes: 160,
-      }), "Tail title");
-    });
-  });
-
   it("builds a state body with agent_id, namespaced session, and safe metadata", () => {
     const body = buildStateBody("PreToolUse", {
       session_id: "s1",
@@ -134,30 +78,23 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(body.source_pid, 123);
   });
 
-  it("adds the Qoder transcript title to the posted state body", () => {
-    withTempTranscript([
-      JSON.stringify({ type: "ai-title", sessionId: "s1", aiTitle: "Investigate session titles" }),
-    ], (transcriptPath) => {
-      const body = buildStateBody("PreToolUse", {
-        session_id: "s1",
-        cwd: "/work",
-        transcript_path: transcriptPath,
-      }, { pidMeta: {} });
-      assert.strictEqual(body.session_title, "Investigate session titles");
-    });
+  it("forwards transcript metadata without reading it in the command hook", () => {
+    const body = buildStateBody("PreToolUse", {
+      session_id: "s1",
+      cwd: "/work",
+      transcript_path: "/path/that/does/not/exist.jsonl",
+    }, { pidMeta: {} });
+    assert.strictEqual(body.transcript_path, "/path/that/does/not/exist.jsonl");
+    assert.strictEqual(body.session_title, undefined);
   });
 
-  it("prefers an explicit Qoder session title over transcript metadata", () => {
-    withTempTranscript([
-      JSON.stringify({ type: "ai-title", sessionId: "s1", aiTitle: "Generated title" }),
-    ], (transcriptPath) => {
-      const body = buildStateBody("Stop", {
-        session_id: "s1",
-        session_title: "Explicit title",
-        transcript_path: transcriptPath,
-      }, { pidMeta: {} });
-      assert.strictEqual(body.session_title, "Explicit title");
-    });
+  it("keeps the explicit-title fast path independent of transcript availability", () => {
+    const body = buildStateBody("Stop", {
+      session_id: "s1",
+      session_title: "Explicit title",
+      transcript_path: "/path/that/does/not/exist.jsonl",
+    }, { pidMeta: {} });
+    assert.strictEqual(body.session_title, "Explicit title");
   });
 
   it("returns null for events outside the Phase 1 map", () => {

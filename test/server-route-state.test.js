@@ -725,6 +725,100 @@ describe("server-route-state POST", () => {
     ]]);
   });
 
+  it("enriches Qoder titles only on low-frequency lifecycle events", async () => {
+    const enrichCalls = [];
+    const resolveQoderSessionTitle = (input) => {
+      enrichCalls.push(input);
+      return "Runtime title";
+    };
+    const transcriptPath = "/tmp/qoder-session.jsonl";
+
+    for (const [event, state] of [
+      ["PreToolUse", "working"],
+      ["PostToolUse", "working"],
+      ["PostToolUseFailure", "error"],
+      ["Notification", "notification"],
+    ]) {
+      const res = await callStatePost(JSON.stringify({
+        state,
+        event,
+        session_id: "qoder:s1",
+        agent_id: "qoder",
+        transcript_path: transcriptPath,
+      }), { ctx: { resolveQoderSessionTitle } });
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(res.calls.updateSession[0][3].sessionTitle, null);
+    }
+    assert.strictEqual(enrichCalls.length, 0);
+
+    for (const [event, state] of [
+      ["SessionStart", "idle"],
+      ["UserPromptSubmit", "thinking"],
+      ["Stop", "attention"],
+      ["SessionEnd", "sleeping"],
+    ]) {
+      const res = await callStatePost(JSON.stringify({
+        state,
+        event,
+        session_id: "qoder:s1",
+        agent_id: "qoder",
+        transcript_path: transcriptPath,
+      }), { ctx: { resolveQoderSessionTitle } });
+      assert.strictEqual(res.statusCode, 200);
+      assert.strictEqual(res.calls.updateSession[0][3].sessionTitle, "Runtime title");
+    }
+    assert.deepStrictEqual(enrichCalls, [
+      "SessionStart",
+      "UserPromptSubmit",
+      "Stop",
+      "SessionEnd",
+    ].map((event) => ({
+      event,
+      sessionId: "qoder:s1",
+      transcriptPath,
+    })));
+  });
+
+  it("keeps explicit Qoder titles on a zero-enrichment-I/O fast path", async () => {
+    let enrichCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "attention",
+      event: "Stop",
+      session_id: "qoder:s1",
+      agent_id: "qoder",
+      session_title: "Explicit title",
+      transcript_path: "/path/that/does/not/exist.jsonl",
+    }), {
+      ctx: {
+        resolveQoderSessionTitle: () => { enrichCalls++; return "Wrong title"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(enrichCalls, 0);
+    assert.strictEqual(res.calls.updateSession[0][3].sessionTitle, "Explicit title");
+  });
+
+  it("drops disabled Qoder traffic before transcript enrichment", async () => {
+    let enrichCalls = 0;
+    const res = await callStatePost(JSON.stringify({
+      state: "attention",
+      event: "Stop",
+      session_id: "qoder:s1",
+      agent_id: "qoder",
+      transcript_path: "/tmp/qoder-session.jsonl",
+    }), {
+      ctx: {
+        isAgentEnabled: () => false,
+        resolveQoderSessionTitle: () => { enrichCalls++; return "Wrong title"; },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(enrichCalls, 0);
+    assert.deepStrictEqual(res.calls.updateSession, []);
+  });
+
   it("preserves absent versus authoritative zero for typed Claude background subagents (#952)", async () => {
     const post = (value, include = true) => callStatePost(JSON.stringify({
       state: "attention",
