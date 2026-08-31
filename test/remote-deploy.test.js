@@ -18,6 +18,23 @@ function findRelativeRequires(filePath) {
 }
 
 describe("Remote SSH secure hook manifest", () => {
+  it("ships the Hermes installer right after the Copilot installer", () => {
+    const deployed = parseDeployedFiles();
+    assert.ok(
+      deployed.includes("hermes-install.js"),
+      "hermes-install.js must ship with the Remote SSH hook payload — the deploy runs it under the fence"
+    );
+    assert.strictEqual(
+      deployed[deployed.indexOf("copilot-install.js") + 1],
+      "hermes-install.js"
+    );
+    // Plugin assets are not hook scripts: they go to their own exact staging
+    // directory, never to ~/.claude/hooks.
+    for (const asset of ["plugin.yaml", "__init__.py", "hermes-plugin/plugin.yaml"]) {
+      assert.ok(!deployed.includes(asset), `${asset} must not be in HOOK_FILES`);
+    }
+  });
+
   it("ships every relative require target of every listed file", () => {
     const deployed = parseDeployedFiles();
     assert.ok(deployed.length > 0, "FILES array parsed as empty");

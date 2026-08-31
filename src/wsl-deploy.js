@@ -8,8 +8,13 @@ const childProcess = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const wslUtils = require("./wsl-utils");
+// Shared with src/remote-ssh-deploy.js: WSL and Remote SSH have separate
+// orchestration but one installer result contract.
+const {
+  HERMES_RESULT_SENTINEL,
+  parseHermesInstallerResult,
+} = require("./hermes-installer-result");
 
-const HERMES_RESULT_SENTINEL = "CLAWD_HERMES_RESULT_V1=";
 const HERMES_TEMP_SENTINEL = "CLAWD_HERMES_TMP_V1=";
 const HERMES_TEMP_PARENT = "/tmp";
 const HERMES_TEMP_TEMPLATE = "/tmp/clawd-hermes-XXXXXXXX";
@@ -252,22 +257,6 @@ function parseConnectivityProbe(stdout) {
   if (match) return { reachable: true, port: parseInt(match[1], 10) };
   if (/^UNREACHABLE$/m.test(text)) return { reachable: false, port: null };
   return { reachable: null, port: null };
-}
-
-function parseHermesInstallerResult(stdout, expectedOperation) {
-  const text = typeof stdout === "string" ? stdout : "";
-  const lines = text.split(/\r?\n/).filter((line) => line.startsWith(HERMES_RESULT_SENTINEL));
-  if (lines.length !== 1) return { ok: false, error: "Hermes installer did not return exactly one result sentinel" };
-  let result;
-  try {
-    result = JSON.parse(lines[0].slice(HERMES_RESULT_SENTINEL.length));
-  } catch (err) {
-    return { ok: false, error: `Hermes installer returned invalid JSON: ${err.message}` };
-  }
-  if (!result || result.schemaVersion !== 1) return { ok: false, error: "Unsupported Hermes installer result schema" };
-  if (!["ok", "warning", "error"].includes(result.status)) return { ok: false, error: "Invalid Hermes installer result status" };
-  if (expectedOperation && result.operation !== expectedOperation) return { ok: false, error: "Hermes installer returned the wrong operation" };
-  return { ok: true, result };
 }
 
 function parseHermesTempDir(stdout) {

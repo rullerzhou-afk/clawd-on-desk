@@ -79,9 +79,65 @@ function secureFixture(overrides = {}) {
   };
 }
 
+// ── Hermes phase fixtures ──
+//
+// The Hermes preflight fields are additive: with `hermes` unset the preflight
+// JSON is byte-for-byte the pre-Hermes payload, the phase reports "not
+// applicable", and NO spawn index moves. Every existing test keeps its
+// indices.
+const HERMES_ROOT_HOME = "/home/remote-user/.hermes";
+const HERMES_PROFILE_HOME = "/home/remote-user/.hermes/profiles/qarpus";
+
+// hermes-install.js is a HOOK_FILES member now, so its name also appears in
+// the hook promotion and hash-verification commands. Only the fenced remote
+// *install* run carries --source-dir.
+function isHermesInstallerRun(command) {
+  return command.includes("hermes-install.js") && command.includes("'--source-dir'");
+}
+
+function hermesTarget(home, kind, plugin = "absent") {
+  return { home, kind, plugin };
+}
+
+function hermesResultTarget(home, kind, overrides = {}) {
+  return {
+    home,
+    kind,
+    plugin: "absent",
+    action: "installed",
+    status: "ok",
+    reason: null,
+    message: "installed",
+    hashes: { "plugin.yaml": "a".repeat(64), "__init__.py": "b".repeat(64) },
+    marker: true,
+    enabled: true,
+    activation: "next-session",
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function hermesInstallerStdout(result = {}) {
+  return `CLAWD_HERMES_RESULT_V1=${JSON.stringify({
+    schemaVersion: 1,
+    operation: "install",
+    status: "ok",
+    message: "Hermes plugin installed",
+    remote: true,
+    cliCommand: "/home/remote-user/.local/bin/hermes",
+    targets: [hermesResultTarget(HERMES_ROOT_HOME, "root")],
+    activeGatewayUnits: ["hermes-gateway.service"],
+    ...result,
+  })}\n`;
+}
+
 function secureHappySpawn(options = {}) {
   let index = 0;
-  const preflight = options.preflight || {
+  const hermes = options.hermes || null;
+  const hermesTargets = hermes && hermes.present
+    ? (hermes.targets || [hermesTarget(HERMES_ROOT_HOME, "root")])
+    : [];
+  const basePreflight = options.preflight || {
     ok: true,
     identity: false,
     legacyTraces: 0,
@@ -89,9 +145,18 @@ function secureHappySpawn(options = {}) {
     codexPresent: true,
     copilotPresent: true,
   };
+  const preflight = hermes
+    ? {
+        ...basePreflight,
+        hermesHome: HERMES_ROOT_HOME,
+        hermesPresent: !!hermes.present,
+        hermesTargets,
+      }
+    : basePreflight;
   return makeRecordingSpawn((_child, meta) => {
     const child = _child;
     const current = index++;
+    const command = String((meta && meta.args && meta.args.at(-1)) || "");
     let response = { code: 0 };
     if (options.responses && Object.prototype.hasOwnProperty.call(options.responses, current)) {
       response = options.responses[current];
@@ -106,6 +171,17 @@ function secureHappySpawn(options = {}) {
       code: 0,
       stdout: `${options.permissionMode === "native" ? "native" : "managed"}\n`,
     };
+    // Keyed by content, not index: the Hermes installer runs last and its
+    // position shifts with the optional Codex monitor step.
+    if (hermes && hermes.present && isHermesInstallerRun(command)) {
+      response = hermes.installer || {
+        code: 0,
+        stdout: hermesInstallerStdout(hermes.result || {}),
+      };
+    } else if (hermes && hermes.present && hermes.cleanupFailure
+      && command.includes("rmdir ") && command.includes("-hermes")) {
+      response = hermes.cleanupFailure;
+    }
     queueMicrotask(() => {
       if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
       if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
@@ -785,6 +861,888 @@ test("native permission fallback and absent optional agents persist evidence-bac
   const monitor = nativeUpdates.find(([name]) => name === "codexMonitor")[1];
   assert.equal(monitor.status, "not-applicable");
   assert.ok(monitor.evidence);
+});
+
+// ── Hermes Agent phase ──
+
+const IDENTITY_STEP_NAMES = [
+  "identity",
+  "secureMarker",
+  "hookFiles",
+  "installClaude",
+  "installCodex",
+  "installCopilot",
+  "claudePermission",
+  "codexMonitor",
+];
+
+function accountDefaultLayout(remoteHome = "/home/remote-user") {
+  return require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome,
+  });
+}
+
+function hermesStagePaths(leaseByte = 0xab) {
+  const layout = accountDefaultLayout();
+  const leaseId = Buffer.alloc(16, leaseByte).toString("hex");
+  const flatStage = path.posix.join(layout.deployStagingDir, leaseId);
+  return { layout, leaseId, flatStage, hermesStage: `${flatStage}-hermes` };
+}
+
+function deployDeps(extra = {}) {
+  return {
+    hooksDir: path.join(REPO_ROOT, "hooks"),
+    detectRemoteShell: stubPosixShellProbe,
+    randomBytes: () => Buffer.alloc(16, 0xab),
+    onIdentityStep: async () => {},
+    ...extra,
+  };
+}
+
+function lastArg(call) {
+  return String(call.args.at(-1));
+}
+
+test("no Hermes on the remote: the phase is not applicable and adds no spawn at all", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({ hermes: { present: false } });
+  const runtime = makeRuntimeStub();
+  const stepUpdates = [];
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: deployDeps({
+      spawn: recorder.spawn,
+      onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.hermes, null);
+  const commands = recorder.calls.map(lastArg);
+  assert.equal(commands.some(isHermesInstallerRun), false);
+  assert.equal(commands.some((command) => command.includes("-hermes")), false);
+  assert.equal(recorder.calls.filter((call) => call.command === "scp").length, 1);
+  // No transaction step is added for Hermes in any outcome.
+  assert.deepEqual(stepUpdates.map(([name]) => name), IDENTITY_STEP_NAMES);
+  const hermesProgress = runtime.events
+    .filter(({ payload }) => payload && payload.step === "install-hermes")
+    .map(({ payload }) => [payload.status, payload.message]);
+  assert.deepEqual(hermesProgress, [["ok", "not applicable"]]);
+  assert.equal(
+    runtime.events.some(({ payload }) => payload && payload.step === "hermes-files"),
+    false,
+  );
+});
+
+test("Hermes phase stages exactly two assets, installs under the fence, and removes its own stage", async () => {
+  const fixture = secureFixture();
+  const { leaseId, flatStage, hermesStage } = hermesStagePaths();
+  const recorder = secureHappySpawn({
+    hermes: {
+      present: true,
+      targets: [
+        hermesTarget(HERMES_ROOT_HOME, "root", "absent"),
+        hermesTarget(HERMES_PROFILE_HOME, "profile", "managed"),
+      ],
+      result: {
+        message: "Hermes plugin installed on 2 targets (1 installed, 1 updated)",
+        targets: [
+          hermesResultTarget(HERMES_ROOT_HOME, "root"),
+          hermesResultTarget(HERMES_PROFILE_HOME, "profile", {
+            plugin: "managed",
+            action: "updated",
+            activation: "restart-required",
+          }),
+        ],
+      },
+    },
+  });
+  const runtime = makeRuntimeStub();
+  const stepUpdates = [];
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: deployDeps({
+      spawn: recorder.spawn,
+      onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  // Q1: the Hermes stage is a SIBLING of the flat hook stage, never nested,
+  // so its rmdir can never break the flat-stage rmdir.
+  assert.equal(hermesStage, `${flatStage}-hermes`);
+  assert.equal(path.posix.dirname(hermesStage), path.posix.dirname(flatStage));
+  assert.equal(hermesStage.startsWith(`${flatStage}/`), false);
+  assert.match(hermesStage, new RegExp(`/${leaseId}-hermes$`));
+
+  const commands = recorder.calls.map(lastArg);
+  const labels = recorder.calls.map((call) => {
+    if (call.command === "scp") {
+      return call.args.some((arg) => String(arg).includes("hermes-plugin")) ? "hermes-scp" : "hook-scp";
+    }
+    const command = lastArg(call);
+    if (isHermesInstallerRun(command)) return "hermes-installer";
+    if (command.includes(hermesStage)) {
+      if (command.includes("mkdir -p")) return "hermes-mkdir";
+      if (command.includes("rmdir ")) return "hermes-cleanup";
+      return "hermes-readback";
+    }
+    if (command.includes("rm -rf")) return "lock-release";
+    return "other";
+  });
+  assert.deepEqual(labels.slice(15), [
+    "hermes-mkdir",
+    "hermes-scp",
+    "hermes-readback",
+    "hermes-installer",
+    "hermes-cleanup",
+    "lock-release",
+  ]);
+  assert.equal(labels.length, 21);
+
+  // scp carries exactly the two plugin assets into the exact stage directory.
+  const assetScp = recorder.calls.find((call, index) => call.command === "scp" && labels[index] === "hermes-scp");
+  assert.deepEqual(assetScp.args.slice(-3), [
+    path.join(REPO_ROOT, "hooks", "hermes-plugin", "plugin.yaml"),
+    path.join(REPO_ROOT, "hooks", "hermes-plugin", "__init__.py"),
+    `${fixture.profile.host}:${hermesStage}/`,
+  ]);
+
+  const installerCommand = commands.find(isHermesInstallerRun);
+  const expectedArgv = [
+    "--remote",
+    "--json",
+    "--source-dir",
+    hermesStage,
+    "--cli-timeout-ms",
+    "15000",
+    "--target-home",
+    HERMES_ROOT_HOME,
+    "--target-home",
+    HERMES_PROFILE_HOME,
+  ].map((arg) => `'${arg}'`).join(" ");
+  assert.ok(installerCommand.includes(expectedArgv), installerCommand);
+  assert.ok(installerCommand.includes(`HERMES_HOME='${HERMES_ROOT_HOME}'`));
+
+  // Every Hermes mutation is fenced by the lease assertion.
+  for (const label of ["hermes-mkdir", "hermes-installer", "hermes-cleanup"]) {
+    const command = commands[labels.indexOf(label)];
+    assert.match(command, /leaseId/, label);
+    assert.match(command, /runtimeKey/, label);
+  }
+
+  // Exact-file cleanup, after the installer, never recursive.
+  const cleanupCommand = commands[labels.indexOf("hermes-cleanup")];
+  assert.ok(labels.indexOf("hermes-cleanup") > labels.indexOf("hermes-installer"));
+  assert.ok(cleanupCommand.includes(
+    `rm -f '${hermesStage}/plugin.yaml' '${hermesStage}/__init__.py' && rmdir '${hermesStage}'`,
+  ));
+  assert.doesNotMatch(cleanupCommand, /rm -rf|rmSync|recursive/);
+
+  assert.equal(result.hermes.status, "ok");
+  assert.deepEqual(result.hermes.targets.map((target) => target.home), [
+    HERMES_ROOT_HOME,
+    HERMES_PROFILE_HOME,
+  ]);
+  assert.deepEqual(result.hermes.activeGatewayUnits, ["hermes-gateway.service"]);
+  // No installHermes transaction step: the persisted schema is untouched.
+  assert.deepEqual(stepUpdates.map(([name]) => name), IDENTITY_STEP_NAMES);
+
+  const hermesSteps = runtime.events
+    .filter(({ payload }) => payload && (payload.step === "hermes-files" || payload.step === "install-hermes"))
+    .map(({ payload }) => [payload.step, payload.status]);
+  assert.deepEqual(hermesSteps, [
+    ["hermes-files", "start"],
+    ["hermes-files", "ok"],
+    ["install-hermes", "start"],
+    ["install-hermes", "ok"],
+  ]);
+  const summary = runtime.events
+    .filter(({ payload }) => payload && payload.step === "install-hermes" && payload.status === "ok")
+    .map(({ payload }) => payload.message)[0];
+  assert.match(summary, /installed 1/);
+  assert.match(summary, /updated 1/);
+  assert.match(summary, /gateway restart required for/);
+});
+
+test("Hermes outer timeout scales with the frozen target count and is capped", () => {
+  assert.equal(__test.hermesOuterTimeoutMs(1), 30000 + 35000);
+  assert.equal(__test.hermesOuterTimeoutMs(2), 30000 + 2 * 35000);
+  assert.equal(__test.hermesOuterTimeoutMs(3), 30000 + 3 * 35000);
+  assert.equal(__test.hermesOuterTimeoutMs(7), 275000);
+  assert.equal(__test.hermesOuterTimeoutMs(8), 300000);
+  assert.equal(__test.hermesOuterTimeoutMs(50), 300000);
+});
+
+test("any per-target Hermes error fails the whole deploy, even under an aggregate warning", async () => {
+  const cases = [
+    [
+      "aggregate error and non-zero exit",
+      {
+        installer: {
+          code: 1,
+          stdout: hermesInstallerStdout({
+            status: "error",
+            message: "Hermes plugin registration failed on 1 of 2 targets",
+            targets: [
+              hermesResultTarget(HERMES_ROOT_HOME, "root"),
+              hermesResultTarget(HERMES_PROFILE_HOME, "profile", {
+                action: "failed",
+                status: "error",
+                reason: "hermes-cli-enable-failed",
+                marker: false,
+                enabled: false,
+                activation: null,
+              }),
+            ],
+          }),
+        },
+      },
+    ],
+    [
+      "aggregate warning with a failing profile still fails the deploy",
+      {
+        installer: {
+          code: 0,
+          stdout: hermesInstallerStdout({
+            status: "warning",
+            message: "Hermes plugin installed with warnings",
+            targets: [
+              hermesResultTarget(HERMES_ROOT_HOME, "root"),
+              hermesResultTarget(HERMES_PROFILE_HOME, "profile", {
+                action: "failed",
+                status: "error",
+                reason: "hermes-enable-not-verified",
+                marker: false,
+                enabled: false,
+                activation: null,
+              }),
+            ],
+          }),
+        },
+      },
+    ],
+  ];
+
+  for (const [label, hermesOptions] of cases) {
+    const fixture = secureFixture();
+    const { hermesStage } = hermesStagePaths();
+    const recorder = secureHappySpawn({
+      hermes: {
+        present: true,
+        targets: [
+          hermesTarget(HERMES_ROOT_HOME, "root"),
+          hermesTarget(HERMES_PROFILE_HOME, "profile"),
+        ],
+        ...hermesOptions,
+      },
+    });
+    const stepUpdates = [];
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: deployDeps({
+        spawn: recorder.spawn,
+        onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+      }),
+    });
+
+    assert.equal(result.ok, false, label);
+    assert.equal(result.step, "install-hermes", label);
+    assert.equal(result.reason, "hermes_install_failed", label);
+    assert.equal(result.transactionReady, undefined, label);
+    const commands = recorder.calls.map(lastArg);
+    // The installer returned a KNOWN result, so the stage is still cleaned.
+    assert.ok(
+      commands.some((command) => command.includes(`rmdir '${hermesStage}'`)),
+      `${label}: stage cleanup must still run`,
+    );
+    assert.ok(commands.some((command) => command.includes("rm -rf")), `${label}: lock released`);
+    // No Hermes transaction step exists, so nothing new can be marked failed.
+    assert.deepEqual(stepUpdates.map(([name]) => name), IDENTITY_STEP_NAMES, label);
+    assert.equal(stepUpdates.some(([, update]) => update.status === "failed"), false, label);
+  }
+});
+
+test("a foreign or symlinked Hermes plugin directory fails closed before any Hermes spawn", async () => {
+  for (const plugin of ["foreign", "symlink"]) {
+    const fixture = secureFixture();
+    const recorder = secureHappySpawn({
+      hermes: {
+        present: true,
+        targets: [
+          hermesTarget(HERMES_ROOT_HOME, "root", "managed"),
+          hermesTarget(HERMES_PROFILE_HOME, "profile", plugin),
+        ],
+      },
+    });
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: deployDeps({ spawn: recorder.spawn }),
+    });
+
+    assert.equal(result.ok, false, plugin);
+    assert.equal(result.step, "install-hermes", plugin);
+    assert.equal(result.reason, "hermes_plugin_ownership_conflict", plugin);
+    assert.match(result.message, /not managed by Clawd/, plugin);
+    assert.ok(result.message.includes(HERMES_PROFILE_HOME), plugin);
+    const commands = recorder.calls.map(lastArg);
+    assert.equal(commands.some((command) => command.includes("-hermes")), false, plugin);
+    assert.equal(commands.some(isHermesInstallerRun), false, plugin);
+    assert.equal(recorder.calls.filter((call) => call.command === "scp").length, 1, plugin);
+  }
+});
+
+test("an unparseable Hermes installer result fails the deploy but still cleans the stage", async () => {
+  const line = hermesInstallerStdout().trimEnd();
+  for (const [label, stdout] of [
+    ["two sentinels", `${line}\n${line}\n`],
+    ["invalid JSON", "CLAWD_HERMES_RESULT_V1={\n"],
+    ["no sentinel", "installed\n"],
+  ]) {
+    const fixture = secureFixture();
+    const { hermesStage } = hermesStagePaths();
+    const recorder = secureHappySpawn({
+      hermes: { present: true, installer: { code: 0, stdout } },
+    });
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: deployDeps({ spawn: recorder.spawn }),
+    });
+    assert.equal(result.ok, false, label);
+    assert.equal(result.step, "install-hermes", label);
+    assert.equal(result.reason, "hermes_install_result_invalid", label);
+    const commands = recorder.calls.map(lastArg);
+    assert.ok(commands.some((command) => command.includes(`rmdir '${hermesStage}'`)), label);
+  }
+});
+
+test("an unknown Hermes installer result runs no cleanup and never releases the lock", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    hermes: {
+      present: true,
+      installer: { code: 255, stderr: "Connection closed by remote host" },
+    },
+  });
+  const roles = [];
+  let active = true;
+  let invalidated = null;
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => {
+      roles.push(spec.role);
+      return recorder.spawn(spec.tool, spec.args, spec.options);
+    },
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive transport");
+    },
+    invalidateManagedOperation: (err) => {
+      active = false;
+      invalidated = err;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => {},
+  };
+
+  await assert.rejects(
+    secureDeploy({ ...fixture, runtime, deps: deployDeps() }),
+    (err) => err && err.code === "transport_unknown_result" && err.role === "installer-hermes",
+  );
+  assert.ok(invalidated);
+  const { hermesStage } = hermesStagePaths();
+  const commands = recorder.calls.map(lastArg);
+  // Q1: no follow-up cleanup mutation in the unknown state — the stage, the
+  // lock and the recovery evidence all survive.
+  assert.equal(roles.includes("hermes-stage-cleanup"), false);
+  assert.equal(commands.some((command) => command.includes(`rmdir '${hermesStage}'`)), false);
+  assert.equal(roles.includes("deploy-lock-release"), false);
+  assert.equal(roles.filter((role) => role === "installer-hermes").length, 1, "never replayed");
+});
+
+test("Q4: Hermes is the final remote mutation phase of the deploy", async () => {
+  const fixture = secureFixture({ profile: { autoStartCodexMonitor: true } });
+  const recorder = secureHappySpawn({ hermes: { present: true } });
+  const roles = [];
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => {
+      roles.push(spec.role);
+      return recorder.spawn(spec.tool, spec.args, spec.options);
+    },
+    assertTransportActive: () => {},
+    invalidateManagedOperation: () => {},
+    setManagedLockStage: () => {},
+  };
+  const result = await secureDeploy({ ...fixture, runtime, deps: deployDeps() });
+  assert.equal(result.ok, true);
+
+  const installerAt = roles.indexOf("installer-hermes");
+  assert.ok(installerAt > 0);
+  // Nothing runs after the Hermes installer except the phase's own stage
+  // cleanup and the lease teardown. Every other mutating phase — the Codex
+  // monitor restart included — happens before it.
+  //
+  // deploy-lock-release is itself a mutation, but it is the lease teardown
+  // that closes every secureDeploy outcome: no deploy phase can run after it,
+  // so "Hermes is the final remote mutation phase" means exactly this shape.
+  assert.deepEqual(roles.slice(installerAt + 1), ["hermes-stage-cleanup", "deploy-lock-release"]);
+  for (const mutatingRole of [
+    "layout-create",
+    "identity-write",
+    "secure-marker-write",
+    "hook-files-upload",
+    "hook-files-promote",
+    "installer-installClaude",
+    "installer-installCodex",
+    "installer-installCopilot",
+    "codex-monitor-restart",
+  ]) {
+    assert.ok(roles.indexOf(mutatingRole) >= 0, mutatingRole);
+    assert.ok(roles.indexOf(mutatingRole) < installerAt, `${mutatingRole} must precede Hermes`);
+  }
+});
+
+test("the read-only steps around the Hermes phase carry no mutation flag", async () => {
+  // Behavioural proof: a managed mutating spawn that closes 255 becomes an
+  // unknown transport result. These two spawns close 255 and stay ordinary
+  // known failures, so neither is declared as a mutation.
+  for (const [label, index, expectedStep] of [
+    ["claude permission readback", 14, "claude-permission"],
+    ["hermes staged asset readback", 17, "hermes-files"],
+  ]) {
+    const fixture = secureFixture();
+    const recorder = secureHappySpawn({
+      hermes: { present: true },
+      responses: { [index]: { code: 255, stderr: "Connection closed by remote host" } },
+    });
+    const runtime = {
+      emit: () => {},
+      spawnManagedTransportChild: (spec) => recorder.spawn(spec.tool, spec.args, spec.options),
+      assertTransportActive: () => {},
+      invalidateManagedOperation: () => assert.fail(`${label} must not be an unknown mutation`),
+      setManagedLockStage: () => {},
+    };
+    const result = await secureDeploy({ ...fixture, runtime, deps: deployDeps() });
+    assert.equal(result.ok, false, label);
+    assert.equal(result.step, expectedStep, label);
+  }
+});
+
+test("secure cleanup uninstalls the Hermes plugin before the shipped installer is removed", async () => {
+  const profile = {
+    ...secureFixture().profile,
+    installId: "c".repeat(64),
+    remoteHome: "/home/remote-user",
+  };
+  let index = 0;
+  const recorder = makeRecordingSpawn((child) => {
+    const current = index++;
+    const response = current === 1
+      ? {
+          code: 0,
+          stdout: `${JSON.stringify({
+            ok: true,
+            identity: true,
+            legacyTraces: 0,
+            legacyMonitorPresent: false,
+            claudePresent: true,
+            codexPresent: true,
+            copilotPresent: true,
+          })}\n`,
+        }
+      : { code: 0 };
+    queueMicrotask(() => {
+      if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+      child.emit("exit", response.code, null);
+      child.emit("close", response.code, null);
+    });
+  });
+  const cleaned = await secureUninstallRemoteIntegrations({
+    profile,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xcd),
+    },
+  });
+
+  assert.equal(cleaned.ok, true);
+  const commands = recorder.calls.map(lastArg);
+  const hermesIndex = commands.findIndex((command) =>
+    command.includes("hermes-install.js") && command.includes("'--uninstall'"));
+  const removalIndex = commands.findIndex((command) =>
+    command.includes("rm -f") && command.includes("copilot-install.js"));
+  assert.ok(hermesIndex >= 0, "hermes uninstall must run");
+  assert.ok(removalIndex > hermesIndex, "hook files are removed only after the uninstaller ran");
+  const hermesCommand = commands[hermesIndex];
+  assert.match(hermesCommand, /if \[ -f '[^']*hermes-install\.js' \]; then/);
+  assert.ok(hermesCommand.includes("'--uninstall' '--remote' '--json'"));
+  assert.ok(hermesCommand.includes("HERMES_HOME='/home/remote-user/.hermes'"));
+  assert.match(hermesCommand, /leaseId/);
+  assert.doesNotMatch(hermesCommand, /rm -rf/);
+});
+
+test("the Hermes phase changes neither the identity step list nor the persisted txn schema", () => {
+  const {
+    REMOTE_IDENTITY_STEP_NAMES,
+    sanitizeIdentityTxn,
+  } = require("../src/remote-ssh-profile");
+  assert.deepStrictEqual([...REMOTE_IDENTITY_STEP_NAMES], IDENTITY_STEP_NAMES);
+  assert.equal(REMOTE_IDENTITY_STEP_NAMES.includes("installHermes"), false);
+
+  const persisted = {
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    phase: "verifying",
+    fromNonce: "a".repeat(32),
+    toNonce: "b".repeat(32),
+    startedAt: 1000,
+    previousExpiresAt: 901000,
+    steps: Object.fromEntries(IDENTITY_STEP_NAMES.map((name) => [
+      name,
+      { status: "done", evidence: "verified" },
+    ])),
+  };
+  const sanitized = sanitizeIdentityTxn(persisted, {
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+  });
+  assert.ok(sanitized);
+  assert.deepStrictEqual(Object.keys(sanitized.steps), IDENTITY_STEP_NAMES);
+
+  // An installHermes step is not persisted even if something offers one.
+  const withHermes = sanitizeIdentityTxn({
+    ...persisted,
+    steps: { ...persisted.steps, installHermes: { status: "done", evidence: "nope" } },
+  }, { runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1 });
+  assert.ok(withHermes);
+  assert.deepStrictEqual(Object.keys(withHermes.steps), IDENTITY_STEP_NAMES);
+});
+
+test("preflight freezes the Hermes target set and classifies plugin directories per C6", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and symlink semantics" : false,
+}, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hermes-preflight-"));
+  try {
+    const hermesHome = path.join(temp, ".hermes");
+    fs.mkdirSync(hermesHome, { recursive: true });
+    fs.writeFileSync(path.join(hermesHome, "config.yaml"), "plugins: {}\n");
+
+    const managedYaml = 'name: "clawd-on-desk"\nversion: "0.3.0"\n';
+    const managedInit = 'CLAWD_SERVER_ID = "clawd-on-desk"\n';
+    const pluginDir = (home) => path.join(home, "plugins", "clawd-on-desk");
+    const makeProfile = (name) => {
+      const home = path.join(hermesHome, "profiles", name);
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(path.join(home, "config.yaml"), "plugins: {}\n");
+      fs.mkdirSync(pluginDir(home), { recursive: true });
+      return home;
+    };
+
+    // root: managed (marker + both files + tolerated __pycache__)
+    fs.mkdirSync(pluginDir(hermesHome), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "__init__.py"), managedInit);
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "clawd-ssh-secure-v1"), "clawd-ssh-secure-v1");
+    fs.mkdirSync(path.join(pluginDir(hermesHome), "__pycache__"));
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "__pycache__", "x.pyc"), "");
+
+    const legacy = makeProfile("a-legacy");
+    fs.writeFileSync(path.join(pluginDir(legacy), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(legacy), "__init__.py"), managedInit);
+
+    const noEvidence = makeProfile("b-no-evidence");
+    fs.writeFileSync(path.join(pluginDir(noEvidence), "plugin.yaml"), 'name: "other"\n');
+    fs.writeFileSync(path.join(pluginDir(noEvidence), "__init__.py"), "pass\n");
+
+    const extra = makeProfile("c-extra-file");
+    fs.writeFileSync(path.join(pluginDir(extra), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(extra), "__init__.py"), managedInit);
+    fs.writeFileSync(path.join(pluginDir(extra), "notes.txt"), "hi");
+
+    const symlinked = makeProfile("d-symlink");
+    fs.writeFileSync(path.join(pluginDir(symlinked), "plugin.yaml"), managedYaml);
+    fs.symlinkSync(path.join(hermesHome, "config.yaml"), path.join(pluginDir(symlinked), "__init__.py"));
+
+    const badCache = makeProfile("e-bad-cache");
+    fs.writeFileSync(path.join(pluginDir(badCache), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(badCache), "__init__.py"), managedInit);
+    fs.mkdirSync(path.join(pluginDir(badCache), "__pycache__"));
+    fs.writeFileSync(path.join(pluginDir(badCache), "__pycache__", "note.txt"), "");
+
+    const absent = makeProfile("f-absent");
+    fs.rmdirSync(pluginDir(absent));
+
+    const badMarker = makeProfile("g-bad-marker");
+    fs.writeFileSync(path.join(pluginDir(badMarker), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(badMarker), "__init__.py"), managedInit);
+    fs.writeFileSync(path.join(pluginDir(badMarker), "clawd-ssh-secure-v1"), "not-the-marker");
+
+    const layout = accountDefaultLayout(temp);
+    // The lines run inside buildOwnershipPreflightScript, which already has fs.
+    const script = [
+      "const fs=require('fs');",
+      ...__test.buildHermesPreflightLines(layout),
+      "console.log(JSON.stringify({hermesHome,hermesPresent,hermesTargets}));",
+    ].join("");
+    const run = childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    const detail = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1));
+
+    assert.equal(detail.hermesHome, `${temp}/.hermes`);
+    assert.equal(detail.hermesPresent, true);
+    assert.equal(detail.hermesTargets[0].kind, "root");
+    assert.deepEqual(
+      detail.hermesTargets.map((target) => [path.posix.basename(target.home), target.kind, target.plugin]),
+      [
+        [".hermes", "root", "managed"],
+        ["a-legacy", "profile", "legacy"],
+        ["b-no-evidence", "profile", "foreign"],
+        ["c-extra-file", "profile", "foreign"],
+        ["d-symlink", "profile", "symlink"],
+        ["e-bad-cache", "profile", "foreign"],
+        ["f-absent", "profile", "absent"],
+        ["g-bad-marker", "profile", "foreign"],
+      ],
+    );
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("profile-isolated runtimes report no Hermes home and no targets", () => {
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    remoteHome: "/home/shared",
+  });
+  assert.equal(__test.resolveRemoteHermesHome(layout), null);
+  const script = [
+    "const fs=require('fs');",
+    ...__test.buildHermesPreflightLines(layout),
+    "console.log(JSON.stringify({hermesHome,hermesPresent,hermesTargets}));",
+  ].join("");
+  const run = childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim()), {
+    hermesHome: null,
+    hermesPresent: false,
+    hermesTargets: [],
+  });
+  // No HERMES_HOME leaks into a profile-isolated installer environment.
+  assert.equal(__test.buildRemoteInstallerEnv(layout, "path").includes("HERMES_HOME"), false);
+  assert.ok(__test.buildRemoteInstallerEnv(accountDefaultLayout(), "path")
+    .includes(`HERMES_HOME='${HERMES_ROOT_HOME}'`));
+});
+
+// ── §4.9: post-verify local Hermes enable ──
+//
+// After a fully verified Remote SSH deploy in which the Hermes phase actually
+// ran, Clawd flips the LOCAL Hermes toggle through the same Settings
+// controller command the Settings → Agents switch uses (setAgentFlag), so the
+// local ingress/state/permission gates accept the remote events. It never
+// writes the settings file and never touches integrationInstalled.
+
+function localEnableHarness({ agents = { hermes: { integrationInstalled: false, enabled: false } } } = {}) {
+  const commandCalls = [];
+  const state = { agents: JSON.parse(JSON.stringify(agents)) };
+  let profiles = [{
+    id: "p1",
+    label: "Pi",
+    host: "user@pi",
+    remoteForwardPort: 23333,
+    autoStartCodexMonitor: false,
+    connectOnLaunch: false,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    routingNonce: "b".repeat(32),
+    remoteHome: "/home/user",
+    lastDeployedAt: 1_700_000_000_000,
+  }];
+  const settingsController = {
+    getSnapshot: () => ({
+      remoteSsh: { installId: "a".repeat(64), profiles },
+      agents: state.agents,
+    }),
+    applyCommand: async (action, args) => {
+      commandCalls.push({ action, args });
+      if (action === "remoteSsh.beginIdentityRotation") {
+        profiles = profiles.map((profile) => (profile.id === args.id
+          ? {
+              ...profile,
+              identityTxn: {
+                runtimeKey: "account-default",
+                layoutVersion: 1,
+                phase: "rotating",
+                fromNonce: null,
+                toNonce: "c".repeat(32),
+                startedAt: 1,
+                previousExpiresAt: 900001,
+                steps: {},
+              },
+            }
+          : profile));
+        return { status: "ok" };
+      }
+      if (action === "setAgentFlag") {
+        // Mirrors src/settings-actions-agents.js: integrationInstalled is not
+        // in SETTABLE_AGENT_FLAGS, so this command can never write it.
+        assert.notEqual(args.flag, "integrationInstalled");
+        const current = state.agents[args.agentId] || {};
+        if (current[args.flag] === args.value) return { status: "ok", noop: true };
+        state.agents = {
+          ...state.agents,
+          [args.agentId]: { ...current, [args.flag]: args.value },
+        };
+        return { status: "ok" };
+      }
+      return { status: "ok" };
+    },
+  };
+  const ipcHandlers = new Map();
+  const ipcMain = {
+    handle: (channel, listener) => ipcHandlers.set(channel, listener),
+    removeHandler: (channel) => ipcHandlers.delete(channel),
+    invoke: async (channel, payload) => ipcHandlers.get(channel)({}, payload),
+  };
+  const runtime = new EventEmitter();
+  runtime.connect = () => null;
+  runtime.disconnect = (id) => ({ profileId: id, status: "idle" });
+  runtime.cleanup = () => {};
+  runtime.getProfileStatus = (id) => ({ profileId: id, status: "idle" });
+  runtime.listStatuses = () => [];
+  const BrowserWindow = {
+    getAllWindows: () => [{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send: () => {} },
+    }],
+  };
+  return {
+    commandCalls,
+    agents: () => state.agents,
+    register: (deployResult) => require("../src/remote-ssh-ipc").registerRemoteSshIpc({
+      ipcMain,
+      settingsController,
+      remoteSshRuntime: runtime,
+      BrowserWindow,
+      spawn: () => {
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.kill = () => {};
+        queueMicrotask(() => child.emit("spawn"));
+        return child;
+      },
+      getInstallationIdentity: () => ({ installId: "a".repeat(64) }),
+      enableProfileIsolation: true,
+      finalizeRetiredRemoteLayoutFn: async () => ({ ok: true }),
+      deployFn: async () => deployResult,
+    }),
+    invoke: (channel, payload) => ipcMain.invoke(channel, payload),
+  };
+}
+
+function deployResultWithHermes(hermes) {
+  return {
+    ok: true,
+    secure: true,
+    transactionReady: true,
+    remoteNode: { nodeBin: "/usr/bin/node", version: "20.1.0", source: "path" },
+    layout: { remoteHome: "/home/user" },
+    isolation: null,
+    hermes,
+  };
+}
+
+test("a verified deploy with a Hermes phase enables Hermes locally, leaving integrationInstalled alone", async () => {
+  for (const status of ["ok", "warning"]) {
+    const harness = localEnableHarness();
+    const ipc = harness.register(deployResultWithHermes({
+      status,
+      message: "Hermes plugin installed",
+      warning: null,
+      targets: [hermesResultTarget(HERMES_ROOT_HOME, "root")],
+      activeGatewayUnits: null,
+    }));
+    const result = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+    assert.equal(result.status, "ok", status);
+    assert.equal(result.hermes.status, status);
+
+    const flagCalls = harness.commandCalls.filter((call) => call.action === "setAgentFlag");
+    assert.deepEqual(flagCalls.map((call) => call.args), [
+      { agentId: "hermes", flag: "enabled", value: true },
+    ], status);
+    assert.deepEqual(harness.agents().hermes, { integrationInstalled: false, enabled: true }, status);
+    ipc.dispose();
+  }
+});
+
+test("the local Hermes enable is idempotent and never claims a local install", async () => {
+  const harness = localEnableHarness({
+    agents: { hermes: { integrationInstalled: true, enabled: true } },
+  });
+  const ipc = harness.register(deployResultWithHermes({
+    status: "ok",
+    message: "unchanged",
+    warning: null,
+    targets: [hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "unchanged", activation: "unchanged" })],
+    activeGatewayUnits: null,
+  }));
+  const first = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+  const second = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+  assert.equal(first.status, "ok");
+  assert.equal(second.status, "ok");
+  // Already enabled → the controller reports a no-op; a true value is never
+  // written twice and integrationInstalled: true is preserved as true.
+  assert.deepEqual(harness.agents().hermes, { integrationInstalled: true, enabled: true });
+  ipc.dispose();
+});
+
+test("not-applicable, failed and unknown-result deploys touch no local Hermes flag", async () => {
+  const cases = [
+    ["not applicable", deployResultWithHermes(null)],
+    ["installer error", { ok: false, step: "install-hermes", reason: "hermes_install_failed", message: "boom" }],
+    ["aggregate error summary", deployResultWithHermes({
+      status: "error",
+      message: "failed",
+      warning: null,
+      targets: [],
+      activeGatewayUnits: null,
+    })],
+  ];
+  for (const [label, deployResult] of cases) {
+    const harness = localEnableHarness();
+    const ipc = harness.register(deployResult);
+    await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+    assert.equal(
+      harness.commandCalls.some((call) => call.action === "setAgentFlag"),
+      false,
+      label,
+    );
+    assert.deepEqual(harness.agents().hermes, { integrationInstalled: false, enabled: false }, label);
+    ipc.dispose();
+  }
+
+  // An unknown transport result throws out of deploy: nothing local changes.
+  const harness = localEnableHarness();
+  const ipc = harness.register(Promise.reject(Object.assign(
+    new Error("Remote SSH mutation completed with an unknown transport result"),
+    { code: "transport_unknown_result" },
+  )));
+  const thrown = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+  assert.equal(thrown.status, "error");
+  assert.equal(harness.commandCalls.some((call) => call.action === "setAgentFlag"), false);
+  assert.deepEqual(harness.agents().hermes, { integrationInstalled: false, enabled: false });
+  ipc.dispose();
 });
 
 test("cleanup/start/stop all fail closed for missing or mismatched ownership identity", async () => {
