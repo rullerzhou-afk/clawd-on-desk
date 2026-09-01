@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:">
 <title>Sessions</title>
+<link rel="stylesheet" href="language-picker.css">
 <style>
 * { box-sizing: border-box; }
 
@@ -456,6 +457,7 @@ h1 {
 .session-automation-row {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 6px;
   min-width: 0;
   margin-top: 3px;
@@ -467,17 +469,44 @@ h1 {
   font-size: 11px;
 }
 
-.session-automation-select {
-  min-width: 0;
-  max-width: 220px;
-  height: 26px;
-  padding: 0 24px 0 8px;
-  border: 1px solid var(--border);
+.session-automation-readonly {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
   border-radius: 6px;
   background: var(--surface-alt);
-  color: var(--text);
-  font: inherit;
+  color: var(--muted);
   font-size: 11px;
+}
+
+.session-automation-unavailable {
+  flex: 1 1 220px;
+  min-width: 180px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.session-automation-picker {
+  min-width: 0;
+  width: 176px;
+  max-width: 100%;
+  font-size: 11px;
+}
+
+.session-automation-picker .language-picker-trigger {
+  height: 26px;
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+.session-automation-picker .language-picker-menu {
+  min-width: 176px;
+}
+
+.session-automation-picker .language-picker-option {
+  min-height: 28px;
 }
 
 .automation-orphans-hint {
@@ -714,9 +743,10 @@ button:disabled {
       </div>
       <div id="quotaSummary" class="quota-summary" hidden></div>
     </header>
-    <main id="content" class="content" aria-live="polite"></main>
+    <main id="content" class="content" aria-live="polite" data-language-picker-boundary></main>
   </div>
   <script src="./session-focus-unavailable.js"></script>
+  <script src="./language-picker.js"></script>
   <script src="./dashboard-renderer.js"></script>
 </body>
 </html>
