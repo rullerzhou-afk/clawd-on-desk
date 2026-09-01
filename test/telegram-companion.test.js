@@ -453,6 +453,18 @@ test("ignores non-completion badges and events", async () => {
   assert.deepEqual(sent, []);
 });
 
+test("does not notify for headless subagent completions", async () => {
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({
+    id: "codex-subagent-replay",
+    headless: true,
+    lastEvent: { rawEvent: "event_msg:task_complete", at: 42 },
+  })] });
+  await tick();
+  assert.deepEqual(sent, []);
+});
+
 test("interrupted badge uses the warning marker", async () => {
   const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });

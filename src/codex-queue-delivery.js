@@ -13,7 +13,6 @@ const {
 const DEFAULT_TIMEOUT_MS = 8000;
 const MAX_BUFFER_BYTES = 64 * 1024;
 const CODEX_QUEUE_UNSUPPORTED_RE = /(?:unexpected argument|unrecognized (?:sub)?command|unknown (?:sub)?command|invalid subcommand)/i;
-const CODEX_QUEUE_UNCERTAIN_RE = /(?:timed? out|timeout|aborted|abort_err|killed)/i;
 const WINDOWS_CMD_EXTENSIONS = new Set([".cmd", ".bat"]);
 const WINDOWS_POWERSHELL_EXTENSIONS = new Set([".ps1"]);
 
@@ -158,7 +157,10 @@ function resolveNpmCodexShimInvocation(candidate, args, { fsModule = fs, pathMod
   if (!scriptPath) return null;
 
   const candidateDir = pathModule.dirname(candidate);
-  const hasLocalNode = /(?:%dp0%|\$basedir)[\\/]node\.exe/i.test(source);
+  // npm's PowerShell shim uses `$exe` as a platform suffix in some releases
+  // (`$basedir/node$exe`) and spells the cmd form as `node.exe`. Both resolve
+  // to the same sibling executable on Windows.
+  const hasLocalNode = /(?:%dp0%|\$basedir)[\\/]node(?:\.exe|\$exe)/i.test(source);
   let nodeBin = "node";
   if (hasLocalNode) {
     const localNode = pathModule.join(candidateDir, "node.exe");
@@ -395,8 +397,6 @@ function resolveCodexQueueExecutableCandidates({
       add(pathModule.join(dir, "codex.cmd"), true);
       add(pathModule.join(dir, "codex.ps1"), true);
     }
-    add("codex.exe");
-    add("codex");
   } else {
     for (const dir of pathEntries(read("PATH"), platform)) {
       add(pathModule.join(dir, "codex"), true);
@@ -433,15 +433,31 @@ function execFileAsync(execFile, command, args, options) {
 
 function errorText(error) {
   if (!error) return "";
-  return [error.message, error.stdout, error.stderr]
+  // Bound each field before joining. A long Telegram prompt can be echoed in
+  // `message` by child_process and otherwise push the useful stderr diagnosis
+  // out of the classification window.
+  return [error.stderr, error.stdout, error.message]
     .filter((value) => typeof value === "string" && value)
+    .map((value) => value.slice(0, 1000))
     .join("\n")
-    .replace(/[\r\n\t]+/g, " ")
-    .slice(0, 1000);
+    .replace(/[\r\n\t]+/g, " ");
+}
+
+function queueDiagnosticText(error) {
+  if (!error) return "";
+  const output = [error.stderr, error.stdout]
+    .filter((value) => typeof value === "string" && value)
+    .map((value) => value.slice(0, 2000))
+    .join("\n")
+    .replace(/[\r\n\t]+/g, " ");
+  // Synthetic errors and spawn failures often have no stderr. Keep the
+  // message fallback for those cases, but never mix it with a large argv when
+  // a real child diagnostic is already available.
+  return output || (typeof error.message === "string" ? error.message.slice(0, 2000) : "");
 }
 
 function classifyQueueError(error) {
-  const text = errorText(error);
+  const text = queueDiagnosticText(error);
   const code = error && error.code;
   if (
     code === "ENOENT"
@@ -457,7 +473,6 @@ function classifyQueueError(error) {
   ) {
     return "codex_queue_unavailable";
   }
-  if (CODEX_QUEUE_UNSUPPORTED_RE.test(text)) return "codex_queue_unsupported";
   if (error && (error.name === "AbortError" || code === "ABORT_ERR")) {
     return "direct_send_cancelled";
   }
@@ -465,10 +480,11 @@ function classifyQueueError(error) {
     error.killed === true
     || error.signal
     || code === "ETIMEDOUT"
-    || CODEX_QUEUE_UNCERTAIN_RE.test(text)
+    || code === "ERR_CHILD_PROCESS_STDIO_MAXBUFFER"
   )) {
     return "codex_queue_result_unknown";
   }
+  if (CODEX_QUEUE_UNSUPPORTED_RE.test(text)) return "codex_queue_unsupported";
   if (/(?:no active session found matching|no rollout found|invalid thread|failed to read thread|thread-store)/i.test(text)) {
     return "codex_thread_not_found";
   }

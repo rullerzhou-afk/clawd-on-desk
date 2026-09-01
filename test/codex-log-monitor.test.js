@@ -30,6 +30,8 @@ function makeConfig(tmpDir) {
 
 const TEST_FILENAME = "rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl";
 const EXPECTED_SID = "codex:019d23d4-f1a9-7633-b9c7-758327137228";
+const DESKTOP_TURN_FILENAME = "rollout-2026-09-01T09-35-17-01a04e10-d510-7be1-9577-ba8145e64c2c_01a05a9b-3a56-7af3-b0c3-d599832f7b06.jsonl";
+const EXPECTED_DESKTOP_TURN_SID = "codex:01a04e10-d510-7be1-9577-ba8145e64c2c";
 
 function uniqueRolloutName(index) {
   return `rollout-2026-03-25T15-10-51-${String(index).padStart(8, "0")}-f1a9-7633-b9c7-758327137228.jsonl`;
@@ -60,6 +62,26 @@ describe("CodexLogMonitor", () => {
       done();
     });
     monitor.start();
+  });
+
+  it("extracts the parent thread from a Codex Desktop turn-suffixed rollout filename", () => {
+    const testFile = path.join(dateDir, DESKTOP_TURN_FILENAME);
+    fs.writeFileSync(testFile, JSON.stringify({
+      type: "session_meta",
+      payload: {
+        session_id: "01a04e10-d510-7be1-9577-ba8145e64c2c",
+        cwd: "C:\\GitRepos\\clawd-on-desk",
+        originator: "Codex Desktop",
+        source: "vscode",
+      },
+    }) + "\n");
+
+    const config = makeConfig(tmpDir);
+    const events = [];
+    monitor = new CodexLogMonitor(config, (sid, state) => events.push({ sid, state }));
+    monitor._pollFile(testFile, path.basename(testFile));
+
+    assert.deepStrictEqual(events, [{ sid: EXPECTED_DESKTOP_TURN_SID, state: "idle" }]);
   });
 
   it("should map session_meta to idle", (_, done) => {

@@ -166,6 +166,26 @@ test("Codex queue adapter classifies unavailable and uncertain execution results
   assert.equal(classifyQueueError(Object.assign(new Error("spawn ETIMEDOUT"), { code: "ETIMEDOUT" })), "codex_queue_result_unknown");
   assert.equal(classifyQueueError(Object.assign(new Error("aborted"), { code: "ABORT_ERR" })), "direct_send_cancelled");
   assert.equal(classifyQueueError(new Error("No active session found matching 'missing'")), "codex_thread_not_found");
+  assert.equal(
+    classifyQueueError(Object.assign(new Error("Command timed out: unrecognized subcommand in argv"), {
+      killed: true,
+      signal: "SIGTERM",
+      stderr: "",
+    })),
+    "codex_queue_result_unknown",
+  );
+  assert.equal(
+    classifyQueueError(Object.assign(new Error("stdout exceeded maxBuffer"), {
+      code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+    })),
+    "codex_queue_result_unknown",
+  );
+  assert.equal(
+    classifyQueueError(Object.assign(new Error("spawn failed: " + "x".repeat(2200)), {
+      stderr: "error: unrecognized subcommand 'queue'",
+    })),
+    "codex_queue_unsupported",
+  );
 });
 
 test("Codex queue executable discovery prefers native Desktop binaries", () => {
@@ -366,6 +386,17 @@ test("generated npm Codex shims are recognized for both cmd and PowerShell forms
     assert.ok(result, item.candidate);
     assert.match(result.args[0], /node_modules[\\/]@openai[\\/]codex[\\/]bin[\\/]codex\.js$/i);
   }
+});
+
+test("generated PowerShell npm shim with $exe uses its sibling node binary", () => {
+  const result = resolveNpmCodexShimInvocation("C:\\Tools\\codex.ps1", ["queue"], {
+    fsModule: {
+      readFileSync: () => '& "$basedir/node$exe" "$basedir/node_modules/@openai/codex/bin/codex.js" $args',
+      existsSync: (value) => value === "C:\\Tools\\node.exe" || value.endsWith("codex.js"),
+    },
+  });
+  assert.ok(result);
+  assert.equal(result.command, "C:\\Tools\\node.exe");
 });
 
 test("encoded PowerShell shim invocation quotes embedded single quotes literally", () => {

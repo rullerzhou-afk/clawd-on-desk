@@ -106,7 +106,12 @@ function dedupeKey(entry) {
 }
 
 function isCompletion(entry) {
-  if (!entry || !DONE_BADGES.has(entry.badge)) return false;
+  // Codex subagent sessions are intentionally headless. Their rollout files
+  // can contain a replay of many historical turns when a parent task starts;
+  // forwarding those internal completions would both leak implementation
+  // detail and flood the user's chat. Only user-facing sessions can become a
+  // Telegram completion target.
+  if (!entry || entry.headless === true || !DONE_BADGES.has(entry.badge)) return false;
   const le = entry.lastEvent;
   return !!(le && COMPLETION_EVENTS.has(le.rawEvent));
 }

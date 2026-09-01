@@ -1824,9 +1824,20 @@ class CodexLogMonitor {
   // Extract UUID from rollout filename
   // rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl
   _extractSessionId(fileName) {
-    // UUID v7 is the last 5 segments of the filename (before .jsonl)
-    const base = fileName.replace(".jsonl", "");
-    const parts = base.split("-");
+    // Codex Desktop can append the turn UUID to a rollout filename:
+    // rollout-<timestamp>-<thread UUID>_<turn UUID>.jsonl. The thread UUID
+    // remains the session identity; using the final five hyphen segments here
+    // would instead create a new Clawd session for every Desktop turn and
+    // bypass the official-hook suppression fence.
+    const base = String(fileName || "").replace(/\.jsonl$/i, "");
+    const uuid = "([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})";
+    const match = base.match(new RegExp(`${uuid}(?:_${uuid})?$`, "i"));
+    if (match) return match[1];
+
+    // Keep the historical permissive fallback for older/custom fixtures, but
+    // strip a UUID-shaped turn suffix before taking the final five segments.
+    const withoutTurnSuffix = base.replace(new RegExp(`_${uuid}$`, "i"), "");
+    const parts = withoutTurnSuffix.split("-");
     // UUID: last 5 parts (8-4-4-4-12 hex)
     if (parts.length < 10) return null;
     return parts.slice(-5).join("-");
