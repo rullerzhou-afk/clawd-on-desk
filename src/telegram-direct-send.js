@@ -1187,6 +1187,22 @@ function createTelegramDirectSend({
     return { key: resolvedKey, mapping };
   }
 
+  function hasReplyableCompletionMapping(sessionId, entry = null) {
+    const id = normalizeSessionId(sessionId);
+    if (!id || !directSendEnabled()) return false;
+    pruneExpired();
+    for (const [key, mapping] of mappings) {
+      if (!mapping || mapping.sessionId !== id) continue;
+      if (mapping.generation !== mappingGeneration || !mappingRouteIsCurrent(mapping)) {
+        mappings.delete(key);
+        continue;
+      }
+      if (entry && !mappingIdentityMatches({ ...entry, id }, mapping)) continue;
+      return true;
+    }
+    return false;
+  }
+
   function consumeMapping(resolved) {
     if (!resolved || !resolved.key || !resolved.mapping) return false;
     if (mappings.get(resolved.key) !== resolved.mapping) return false;
@@ -1670,6 +1686,7 @@ function createTelegramDirectSend({
     isCompletionNotificationContextCurrent,
     invalidateMappings,
     registerCompletionNotification,
+    hasReplyableCompletionMapping,
     handleTextMessage,
     _mappings: mappings,
     _deliveries: deliveries,

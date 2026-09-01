@@ -131,7 +131,10 @@ ids, proxy addresses, or Telegram response bodies.
   `codex queue --thread <THREAD> --message <TEXT>`; the reply is then picked up
   by that Desktop conversation without depending on which app-server PID is
   shared by other sessions. Ordinary Codex CLI sessions continue to use their
-  own local Console/ConPTY input.
+  own local Console/ConPTY input. While at least one current completion mapping
+  remains replyable, Clawd retains the completed Codex Desktop session beyond
+  the normal idle-session cutoff. Mapping expiry, submission, route changes,
+  or disabling Direct Send restores the normal cleanup behavior.
 - Terminal tabs or panes backed by independent ConPTY instances have separate
   consoles and can be targeted independently. If another live Clawd session
   shares the same Console as the target, Clawd treats the target as ambiguous,

@@ -1359,6 +1359,58 @@ test("direct send expires notification mappings", async () => {
   assert.equal(res.status, "unmapped");
 });
 
+test("direct send reports a completion mapping as replyable only until it expires", () => {
+  let ts = 1000;
+  const target = localTerminalEntry({
+    id: "sess-retained",
+    rawSessionId: "raw-retained",
+    agentPid: 4321,
+  });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    now: () => ts,
+    mappingTtlMs: 10,
+  });
+
+  const context = direct.createCompletionNotificationContext(target);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 43,
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, {
+    ...target,
+    agentPid: 9876,
+  }), false, "a reused session identity must not be retained by an older mapping");
+
+  ts += 11;
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), false);
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("direct send stops reporting completion mappings after their native route changes", () => {
+  let routeGeneration = 31;
+  const target = localTerminalEntry({ id: "sess-route-retained", agentPid: 4331 });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getRouteGeneration: () => routeGeneration,
+  });
+  const context = direct.createCompletionNotificationContext(target);
+
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 44,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), true);
+
+  routeGeneration = 32;
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), false);
+  assert.equal(direct._mappings.size, 0);
+});
+
 test("normalizePromptText keeps newlines but removes control characters", () => {
   assert.equal(normalizePromptText("  hi\r\nthere\u0007  "), "hi\nthere");
 });
