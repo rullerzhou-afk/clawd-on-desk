@@ -114,6 +114,13 @@ function getStaleSessionDecision(session, options = {}) {
     && age > sessionStaleMs
     && isLocalCodexDesktopIdleSession(session)
   ) {
+    if (typeof options.hasReplyableCompletionMapping === "function") {
+      try {
+        if (options.hasReplyableCompletionMapping(session) === true) {
+          return { action: null };
+        }
+      } catch {}
+    }
     return { action: "delete", reason: "codex-desktop-idle-timeout" };
   }
 

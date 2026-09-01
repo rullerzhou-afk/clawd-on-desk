@@ -1,8 +1,6 @@
 "use strict";
 
-const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
-
-const CODEX_THREAD_SESSION_ID_RE = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const { CODEX_THREAD_ID_RE, getCodexThreadId } = require("./codex-thread-id");
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -13,18 +11,14 @@ function normalizeOsPlatform(options) {
   return normalizeString(options.osPlatform || options.focusHostPlatform).toLowerCase();
 }
 
-function getCodexThreadId(entry) {
-  if (!entry || entry.agentId !== "codex") return null;
-  if (!isCodexDesktopOriginator(entry.codexOriginator || entry.originator)) return null;
-  const sessionId =
-    normalizeString(entry.rawSessionId) || normalizeString(entry.id);
-  const match = sessionId.match(CODEX_THREAD_SESSION_ID_RE);
-  return match ? match[1] : null;
-}
-
 function getCodexThreadUrl(entry) {
   const threadId = getCodexThreadId(entry);
-  return threadId ? `codex://threads/${threadId}` : null;
+  // `codex queue --thread` accepts exact saved names, but the Desktop deep-link
+  // contract is only established for UUIDs. Keep focus narrower than delivery
+  // instead of assuming queue selectors are also valid URL route parameters.
+  return threadId && CODEX_THREAD_ID_RE.test(threadId)
+    ? `codex://threads/${threadId}`
+    : null;
 }
 
 function hasSupportedOrcaPaneTarget(entry, options = {}) {

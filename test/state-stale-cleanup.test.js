@@ -66,6 +66,7 @@ function decision(target, overrides = {}) {
     deriveSessionBadge: overrides.deriveSessionBadge || (() => "idle"),
     shouldAutoClearDetachedSession: overrides.shouldAutoClearDetachedSession || (() => false),
     staleConfig: overrides.staleConfig,
+    hasReplyableCompletionMapping: overrides.hasReplyableCompletionMapping,
   });
   return { result, calls };
 }
@@ -214,6 +215,36 @@ describe("state stale cleanup decisions", () => {
 
     assert.deepStrictEqual(result, { action: "delete", reason: "codex-desktop-idle-timeout" });
     assert.deepStrictEqual(calls, [10]);
+  });
+
+  it("keeps an expired-age Codex Desktop thread while a completion reply mapping is valid", () => {
+    const target = desktopSession({
+      updatedAt: 1000000 - 60_001,
+    });
+    const checked = [];
+    const { result } = decision(target, {
+      alivePids: new Set([10]),
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: (value) => {
+        checked.push(value);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(checked, [target]);
+  });
+
+  it("deletes an expired-age Codex Desktop thread after its completion mapping expires", () => {
+    const { result } = decision(desktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([10]),
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: () => false,
+    });
+
+    assert.deepStrictEqual(result, { action: "delete", reason: "codex-desktop-idle-timeout" });
   });
 
   it("keeps idle Codex Desktop threads forever when sessionStaleMs=0", () => {

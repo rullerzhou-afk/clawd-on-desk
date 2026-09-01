@@ -69,6 +69,17 @@ const MAX_NOTIFY_RETRY_DELAY_MS = 30000;
 const DEFAULT_POLL_RETRY_INITIAL_MS = 1000;
 const DEFAULT_POLL_RETRY_MAX_MS = 30000;
 const DEFAULT_SESSION_AUTOMATION_EDIT_TIMEOUT_MS = 10000;
+const ROUTE_INACTIVE_ERROR_CODE = "TELEGRAM_ROUTE_INACTIVE";
+
+function createRouteInactiveError() {
+  const err = new Error("Telegram route is no longer active");
+  err.code = ROUTE_INACTIVE_ERROR_CODE;
+  return err;
+}
+
+function isRouteInactiveError(err) {
+  return !!err && err.code === ROUTE_INACTIVE_ERROR_CODE;
+}
 
 // Status line appended to an approval card whose decision landed somewhere
 // other than this Telegram chat, so the chat history shows the outcome
@@ -355,6 +366,12 @@ function extractTelegramMessageId(result) {
   return null;
 }
 
+function sameTelegramMessageId(left, right) {
+  const leftId = extractTelegramMessageId({ message_id: left });
+  const rightId = extractTelegramMessageId({ message_id: right });
+  return leftId != null && rightId != null && String(leftId) === String(rightId);
+}
+
 function createTelegramNativeRunner({
   tokenStore,
   transport,
@@ -400,9 +417,187 @@ function createTelegramNativeRunner({
   let lastError = null;
   let pollRetryDelayMs = Math.max(1, pollRetryInitialMs);
   let sessionAutomationRouteSignature = null;
+  let botUsername = null;
+  let botUsernamePromise = null;
+  let botIdentityGeneration = 0;
+  let pollingRouteGeneration = null;
+  let pollingRouteContext = null;
+  let testLifecycleGeneration = 0;
+  const routeRequestControllers = new Set();
 
   function isPolling() {
     return polling;
+  }
+
+  // Expose the active bot route to consumers that bind work (such as
+  // completion-notification mappings) to a polling lifecycle. Returning null
+  // while stopped makes an otherwise equal generation unusable after a stop;
+  // the next start receives a fresh generation from invalidateRouteLifecycle.
+  function getRouteGeneration() {
+    if (!polling
+      || pollingRouteGeneration !== botIdentityGeneration
+      || !pollingRouteContext) {
+      return null;
+    }
+    try {
+      return isCurrentRouteContext(pollingRouteContext)
+        ? botIdentityGeneration
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function resetOffset() {
+    // A token reset changes both the Bot API update namespace and the route
+    // identity. Tear down the active lifecycle synchronously; the migration
+    // controller may start a fresh poller after it reconciles the new token.
+    client.resetOffset();
+    // Enumerate active remote grants before clearing the runner-owned card
+    // state. The coordinator uses this callback to revoke those grants when a
+    // bot identity is rotated; notifying after clear would lose the IDs.
+    notifySessionAutomationRouteChange();
+    invalidateRouteLifecycle();
+    polling = false;
+    if (abortController) {
+      try { abortController.abort(); } catch {}
+      abortController = null;
+    }
+    pollingRouteGeneration = null;
+    pollingRouteContext = null;
+    clearPendingTest();
+    // Unlike a normal stop, resetOffset runs after the replacement token has
+    // already been persisted. Resolve old-route callers without trying to edit
+    // their cards through the new bot credential.
+    clearAllApprovals();
+    clearAllElicitations();
+  }
+
+  function ownsPollingSignal(signal) {
+    return !!signal
+      && polling
+      && !signal.aborted
+      && !!abortController
+      && abortController.signal === signal
+      && pollingRouteGeneration === botIdentityGeneration;
+  }
+
+  function invalidateRouteLifecycle() {
+    botIdentityGeneration += 1;
+    botUsername = null;
+    botUsernamePromise = null;
+    for (const controller of routeRequestControllers) {
+      try { controller.abort(); } catch {}
+    }
+    routeRequestControllers.clear();
+  }
+
+  function clearPendingTest() {
+    testLifecycleGeneration += 1;
+    pendingTest = null;
+  }
+
+  function captureRouteContext() {
+    const chatId = getChatId();
+    const allowedUser = getAllowedUserId();
+    return {
+      generation: botIdentityGeneration,
+      chatId: chatId == null ? "" : String(chatId),
+      allowedUser: allowedUser == null ? "" : String(allowedUser),
+    };
+  }
+
+  function isCurrentRouteContext(route, signal = null) {
+    if (!route || !polling || route.generation !== botIdentityGeneration) return false;
+    if (signal && !ownsPollingSignal(signal)) return false;
+    const currentChat = getChatId();
+    const currentUser = getAllowedUserId();
+    return String(currentChat == null ? "" : currentChat) === route.chatId
+      && String(currentUser == null ? "" : currentUser) === route.allowedUser;
+  }
+
+  // A callback/render operation may need both the poll lifecycle signal and a
+  // card-work deadline signal. AbortSignal.any() is not available on every
+  // Electron runtime we support, so link them explicitly and tear the
+  // listeners down when the operation settles.
+  function linkAbortSignals(signals) {
+    const parents = [...new Set((Array.isArray(signals) ? signals : [])
+      .filter((signal) => signal && typeof signal.addEventListener === "function"))];
+    if (typeof AbortController !== "function") {
+      return {
+        signal: parents[0] || undefined,
+        cleanup: () => {},
+      };
+    }
+    const controller = new AbortController();
+    const listeners = [];
+    const abort = () => {
+      try { controller.abort(); } catch {}
+    };
+    for (const parent of parents) {
+      if (parent.aborted) {
+        abort();
+        break;
+      }
+      try {
+        parent.addEventListener("abort", abort, { once: true });
+        listeners.push(parent);
+      } catch {}
+    }
+    return {
+      signal: controller.signal,
+      cleanup: () => {
+        for (const parent of listeners) {
+          try { parent.removeEventListener("abort", abort); } catch {}
+        }
+      },
+    };
+  }
+
+  function isOperationRouteCurrent(route, signal, allowInactive = false) {
+    if (allowInactive) return true;
+    if (!route && !signal) return true;
+    return isCurrentRouteContext(route, signal);
+  }
+
+  function callbackContextIsCurrent(context) {
+    return !!context
+      && isCurrentRouteContext(context.route, context.signal);
+  }
+
+  function callbackRequestOptions(context) {
+    return context && context.signal ? { signal: context.signal } : undefined;
+  }
+
+  async function answerCallbackQuery(cb, context, extra = {}) {
+    if (!callbackContextIsCurrent(context)) return false;
+    try {
+      await client.answerCallbackQuery({
+        callback_query_id: cb && cb.id,
+        ...extra,
+      }, callbackRequestOptions(context));
+    } catch {}
+    return callbackContextIsCurrent(context);
+  }
+
+  function answerCallbackQuerySoon(cb, context, extra = {}) {
+    if (!callbackContextIsCurrent(context)) return;
+    try {
+      Promise.resolve(client.answerCallbackQuery({
+        callback_query_id: cb && cb.id,
+        ...extra,
+      }, callbackRequestOptions(context))).catch(() => {});
+    } catch {}
+  }
+
+  function isCurrentAuthorizedMessage(auth, signal) {
+    if (!auth || !ownsPollingSignal(signal)) return false;
+    const currentChat = getChatId();
+    const currentUser = getAllowedUserId();
+    return !!currentChat
+      && !!currentUser
+      && String(currentChat) === auth.chatId
+      && String(currentUser) === auth.fromId;
   }
 
   function isEnabled() {
@@ -433,30 +628,46 @@ function createTelegramNativeRunner({
     }
     const preferPlain = deliveryOptions.preferPlain === true;
     const signal = requestOptions && requestOptions.signal;
+    const assertDeliveryActive = () => {
+      if (signal && signal.aborted) {
+        const err = new Error("aborted");
+        err.name = "AbortError";
+        throw err;
+      }
+      if (typeof deliveryOptions.isRouteCurrent === "function"
+        && deliveryOptions.isRouteCurrent() !== true) {
+        throw createRouteInactiveError();
+      }
+    };
     const plainBasePayload = { ...basePayload };
     delete plainBasePayload.parse_mode;
-    const sendPlain = () => {
+    const sendPlain = async () => {
+      assertDeliveryActive();
       if (typeof deliveryOptions.onPlainAttempt === "function") {
         try { deliveryOptions.onPlainAttempt(); } catch {}
       }
-      return client[method]({
+      const result = await client[method]({
         ...plainBasePayload,
         text: message.plainText,
       }, requestOptions);
+      assertDeliveryActive();
+      return result;
     };
     if (preferPlain) {
       return { result: await sendPlain(), usedPlain: true };
     }
     try {
+      assertDeliveryActive();
       const result = await client[method]({
         ...basePayload,
         text: message.html,
         parse_mode: "HTML",
       }, requestOptions);
+      assertDeliveryActive();
       return { result, usedPlain: false };
     } catch (err) {
       if (!isTelegramHtmlParseError(err)) throw err;
-      if (signal && signal.aborted) throw err;
+      assertDeliveryActive();
       safeLog("warn", "native Telegram HTML rejected, retrying rendered plain text", {
         operation: method === "editMessageText" ? "edit" : "send",
       });
@@ -501,35 +712,63 @@ function createTelegramNativeRunner({
 
   async function start() {
     if (polling) return;
+    invalidateRouteLifecycle();
+    const route = captureRouteContext();
     polling = true;
     const controller = new AbortController();
     abortController = controller;
+    pollingRouteGeneration = botIdentityGeneration;
+    pollingRouteContext = route;
     // First poll uses retry to absorb 409 from a still-releasing bot consumer.
     loopFirst(controller.signal).catch((err) => {
       log("warn", "native polling stopped", { error: err && err.message });
     }).finally(() => {
       if (abortController === controller) {
-        polling = false;
-        abortController = null;
         // stop() clears abortController before its intentional abort reaches
         // this finally block. Reaching here while still owning the controller
         // therefore means polling died unexpectedly (for example invalid bot
-        // credentials or a webhook conflict), so remote revocation can no
-        // longer be guaranteed and active grants must tighten to off.
-        notifySessionAutomationRouteChange();
+        // credentials or a webhook conflict). Tighten the route and settle all
+        // cards before a later start can expose the old generation again.
+        finalizeUnexpectedPolling(controller);
       }
     });
   }
 
+  function finalizeUnexpectedPolling(controller) {
+    if (!controller || abortController !== controller) return;
+    // The coordinator must see active grant IDs while the old client still
+    // owns them; after invalidation that inventory is intentionally empty.
+    notifySessionAutomationRouteChange();
+    // A route-change callback may synchronously stop (or even restart) the
+    // runner. Never let cleanup for this controller touch that replacement
+    // lifecycle.
+    if (abortController !== controller) return;
+    invalidateRouteLifecycle();
+    polling = false;
+    try { controller.abort(); } catch {}
+    abortController = null;
+    pollingRouteGeneration = null;
+    pollingRouteContext = null;
+    clearPendingTest();
+    clearAllApprovals({ allowInactive: true });
+    clearAllElicitations({ allowInactive: true });
+  }
+
   async function stop() {
     notifySessionAutomationRouteChange();
+    invalidateRouteLifecycle();
     polling = false;
     if (abortController) {
       try { abortController.abort(); } catch {}
       abortController = null;
     }
-    clearAllApprovals();
-    clearAllElicitations();
+    pollingRouteGeneration = null;
+    pollingRouteContext = null;
+    clearPendingTest();
+    // Explicit shutdown keeps the existing chat-history terminalization
+    // contract even though the route itself is no longer current.
+    clearAllApprovals({ allowInactive: true });
+    clearAllElicitations({ allowInactive: true });
   }
 
   async function loopFirst(signal) {
@@ -541,6 +780,7 @@ function createTelegramNativeRunner({
       );
       updates = firstPoll && firstPoll.result;
     } catch (err) {
+      if (!ownsPollingSignal(signal)) return;
       const cls = classifyError(err);
       if (cls === ERROR_CLASSES.TIMEOUT) return; // aborted
       if (pendingTest && (cls === ERROR_CLASSES.CONFLICT || isFatalPollError(cls))) {
@@ -554,8 +794,9 @@ function createTelegramNativeRunner({
       await sleep(delayMs);
       return loop(signal);
     }
+    if (!ownsPollingSignal(signal)) return;
     resetPollRetryDelay();
-    await handleUpdateBatch(updates);
+    await handleUpdateBatch(updates, signal);
     return loop(signal);
   }
 
@@ -565,6 +806,7 @@ function createTelegramNativeRunner({
       try {
         updates = await client.getUpdates({ timeout: longPollTimeoutMs, signal });
       } catch (err) {
+        if (!ownsPollingSignal(signal)) return;
         const cls = classifyError(err);
         if (cls === ERROR_CLASSES.TIMEOUT) return; // aborted
         noteError("polling", cls);
@@ -577,16 +819,18 @@ function createTelegramNativeRunner({
         await sleep(delayMs);
         continue;
       }
+      if (!ownsPollingSignal(signal)) return;
       resetPollRetryDelay();
-      await handleUpdateBatch(updates);
+      await handleUpdateBatch(updates, signal);
     }
   }
 
-  async function handleUpdateBatch(updates) {
+  async function handleUpdateBatch(updates, signal) {
     const batch = Array.isArray(updates) ? updates : [];
     for (const u of batch) {
+      if (!ownsPollingSignal(signal)) return;
       try {
-        await handleUpdate(u);
+        await handleUpdate(u, signal);
       } catch (err) {
         noteError("update", "handler_error");
         safeLog("warn", "native update handler failed", { error: err && err.message });
@@ -594,25 +838,54 @@ function createTelegramNativeRunner({
     }
   }
 
-  async function handleUpdate(update) {
-    if (!update) return;
+  async function handleUpdate(update, signal) {
+    if (!update || !ownsPollingSignal(signal)) return;
     if (update.callback_query) {
-      await handleCallbackQuery(update.callback_query);
+      await handleCallbackQuery(update.callback_query, signal);
       return;
     }
     if (update.message) {
-      await handleMessage(update.message);
+      await handleMessage(update.message, signal);
     }
   }
 
   function parseMessageCommand(text) {
     if (typeof text !== "string") return null;
-    const match = text.trim().match(/^\/([A-Za-z0-9_]+)(?:@[A-Za-z0-9_]+)?(?:\s+([\s\S]*))?$/);
+    const match = text.trim().match(/^\/([A-Za-z0-9_]+)(?:@([A-Za-z0-9_]+))?(?:\s+([\s\S]*))?$/);
     if (!match) return null;
     return {
       command: match[1].toLowerCase(),
-      args: (match[2] || "").trim(),
+      username: match[2] || null,
+      args: (match[3] || "").trim(),
     };
+  }
+
+  async function getBotUsername() {
+    if (botUsername) return botUsername;
+    if (botUsernamePromise) return botUsernamePromise;
+
+    const signal = abortController && abortController.signal;
+    const generation = botIdentityGeneration;
+    const lookup = client.getMe(signal ? { signal } : undefined).then((me) => {
+      const username = me && typeof me.username === "string" ? me.username.trim() : "";
+      if (username && generation === botIdentityGeneration) botUsername = username;
+      return username || null;
+    }).catch((err) => {
+      const cls = classifyError(err);
+      noteError("command_identity", cls);
+      safeLog("warn", "native bot identity lookup failed", { errorClass: cls });
+      return null;
+    }).finally(() => {
+      if (botUsernamePromise === lookup) botUsernamePromise = null;
+    });
+    botUsernamePromise = lookup;
+    return lookup;
+  }
+
+  async function commandTargetsThisBot(username) {
+    if (!username) return true;
+    const currentUsername = await getBotUsername();
+    return !!currentUsername && currentUsername.toLowerCase() === username.toLowerCase();
   }
 
   function getAuthorizedMessageContext(message) {
@@ -631,20 +904,44 @@ function createTelegramNativeRunner({
       : (response && typeof response.text === "string" ? response.text : "");
   }
 
-  async function replyToMessage(chatId, response, scope) {
+  async function replyToMessage(chatId, response, scope, route, signal) {
     const text = responseText(response);
-    if (!text) return;
+    if (!text || !isCurrentRouteContext(route, signal)) return;
     try {
-      await sendBoundedMessage(chatId, text);
+      await sendBoundedMessage(chatId, text, route);
     } catch (err) {
+      if (isRouteInactiveError(err) || !isCurrentRouteContext(route, signal)) return;
       const cls = classifyError(err);
       noteError(scope, cls);
       log("warn", `native ${scope} reply failed`, { errorClass: cls });
     }
   }
 
-  async function handleMessage(message) {
-    if (!message) return false;
+  async function dispatchTextMessage(message, text, auth, signal, route = captureRouteContext()) {
+    if (!ownsPollingSignal(signal)) return true;
+    let response;
+    try {
+      response = await onTextMessage({
+        text,
+        messageId: message.message_id,
+        replyToMessageId: message.reply_to_message && message.reply_to_message.message_id,
+        fromId: auth.fromId,
+        chatId: auth.chatId,
+        signal,
+      });
+    } catch (err) {
+      log("warn", "native text message failed", { error: err && err.message });
+      noteError("text_message", "handler_error");
+      return true;
+    }
+    if (!isCurrentAuthorizedMessage(auth, signal)) return true;
+    await replyToMessage(auth.chatId, response, "text_message", route, signal);
+    return true;
+  }
+
+  async function handleMessage(message, signal) {
+    if (!message || !ownsPollingSignal(signal)) return false;
+    const route = captureRouteContext();
     const text = typeof message.text === "string" ? message.text : "";
 
     // Checked before command parsing: a free-text "Other" answer that
@@ -654,9 +951,22 @@ function createTelegramNativeRunner({
     if (text.trim()) {
       const replyToMessageId = message.reply_to_message && message.reply_to_message.message_id;
       const handledOther = replyToMessageId
-        ? await handleElicitationOtherReply({ text, replyToMessageId, message })
+        ? await handleElicitationOtherReply({ text, replyToMessageId, message, route, signal })
         : false;
       if (handledOther) return true;
+    }
+
+    // A reply target is an explicit session-selection gesture. Route its text
+    // before Telegram bot command parsing so agent-native inputs such as
+    // `/compact` reach the mapped terminal instead of being swallowed as an
+    // unknown bot command. Elicitation "Other" replies keep priority above.
+    const replyToMessageId = message.reply_to_message && message.reply_to_message.message_id;
+    const textMessageEnabled = typeof onTextMessage === "function"
+      && (typeof isTextMessageEnabled !== "function" || isTextMessageEnabled());
+    if (replyToMessageId && text.trim() && textMessageEnabled) {
+      const auth = getAuthorizedMessageContext(message);
+      if (!auth) return true;
+      return dispatchTextMessage(message, text, auth, signal, route);
     }
 
     const parsed = parseMessageCommand(text);
@@ -665,6 +975,8 @@ function createTelegramNativeRunner({
       if (typeof isCommandEnabled === "function" && !isCommandEnabled()) return true;
       const auth = getAuthorizedMessageContext(message);
       if (!auth) return true;
+      if (!await commandTargetsThisBot(parsed.username)) return false;
+      if (!isCurrentAuthorizedMessage(auth, signal)) return true;
       let response;
       try {
         response = await onCommand({
@@ -677,53 +989,60 @@ function createTelegramNativeRunner({
         noteError("command", "handler_error");
         return true;
       }
-      await replyToMessage(auth.chatId, response, "command");
+      if (!isCurrentAuthorizedMessage(auth, signal)) return true;
+      await replyToMessage(auth.chatId, response, "command", route, signal);
       return true;
     }
 
     if (!text.trim()) return false;
 
+    // Direct Send is intentionally reply-scoped: a free-standing message has
+    // no stable session target and must not enter the text handler (or produce
+    // an "unmapped" bot response). Explicit slash commands were handled above.
+    if (!replyToMessageId) return false;
     if (typeof onTextMessage !== "function") return false;
     if (typeof isTextMessageEnabled === "function" && !isTextMessageEnabled()) return true;
     const auth = getAuthorizedMessageContext(message);
     if (!auth) return true;
-    let response;
-    try {
-      response = await onTextMessage({
-        text,
-        messageId: message.message_id,
-        replyToMessageId: message.reply_to_message && message.reply_to_message.message_id,
-        fromId: auth.fromId,
-        chatId: auth.chatId,
-      });
-    } catch (err) {
-      log("warn", "native text message failed", { error: err && err.message });
-      noteError("text_message", "handler_error");
-      return true;
-    }
-    await replyToMessage(auth.chatId, response, "text_message");
-    return true;
+    return dispatchTextMessage(message, text, auth, signal, route);
   }
 
-  async function handleCallbackQuery(cb) {
+  async function handleCallbackQuery(cb, signal) {
+    if (!ownsPollingSignal(signal)) return;
+    const route = captureRouteContext();
     const fromId = cb.from && String(cb.from.id);
     const chatId = cb.message && cb.message.chat && String(cb.message.chat.id);
 
-    const handledPersistentRevoke = await handleSessionGrantRevokeCallback(cb, { fromId, chatId });
+    const context = { fromId, chatId, route, signal };
+    const handledPersistentRevoke = await handleSessionGrantRevokeCallback(cb, context);
     if (handledPersistentRevoke) return;
+    if (!callbackContextIsCurrent(context)) return;
 
     if (pendingTest) {
-      const handledTest = await handleTestCallback(cb, { fromId, chatId });
+      const handledTest = await handleTestCallback(cb, { fromId, chatId }, signal);
       if (handledTest) return;
     }
 
-    const handledApproval = await handleApprovalCallback(cb, { fromId, chatId });
+    if (!callbackContextIsCurrent(context)) return;
+    const handledApproval = await handleApprovalCallback(cb, context);
     if (handledApproval) return;
 
-    await handleElicitationCallback(cb, { fromId, chatId });
+    if (!callbackContextIsCurrent(context)) return;
+    await handleElicitationCallback(cb, context);
   }
 
   function callbackMatchesApprovalCard(entry, cb, chatId) {
+    const messageId = cb && cb.message && cb.message.message_id;
+    return !!(
+      entry
+      && entry.messageId
+      && messageId
+      && String(entry.messageId) === String(messageId)
+      && String(entry.chatId) === String(chatId)
+    );
+  }
+
+  function callbackMatchesElicitationCard(entry, cb, chatId) {
     const messageId = cb && cb.message && cb.message.message_id;
     return !!(
       entry
@@ -743,8 +1062,19 @@ function createTelegramNativeRunner({
     };
   }
 
-  async function editSessionTrustPrompt(basePayload, message) {
-    const controller = typeof AbortController === "function" ? new AbortController() : null;
+  async function editSessionTrustPrompt(
+    basePayload,
+    message,
+    { route = null, signal = null, allowInactive = false } = {},
+  ) {
+    if (!isOperationRouteCurrent(route, signal, allowInactive)) {
+      throw createRouteInactiveError();
+    }
+    const timeoutController = typeof AbortController === "function" ? new AbortController() : null;
+    const linked = linkAbortSignals([
+      timeoutController && timeoutController.signal,
+      allowInactive ? null : signal,
+    ]);
     const timeoutMs = Number.isFinite(sessionAutomationEditTimeoutMs)
       && sessionAutomationEditTimeoutMs > 0
       ? sessionAutomationEditTimeoutMs
@@ -752,24 +1082,32 @@ function createTelegramNativeRunner({
     let timer = null;
     const timeout = new Promise((_, reject) => {
       timer = setTimeout(() => {
-        if (controller) {
-          try { controller.abort(); } catch {}
+        if (timeoutController) {
+          try { timeoutController.abort(); } catch {}
         }
         reject(new Error("Telegram session automation edit deadline exceeded"));
       }, timeoutMs);
       if (timer && typeof timer.unref === "function") timer.unref();
     });
     try {
-      return await Promise.race([
+      const result = await Promise.race([
         editFormattedMessage(
           basePayload,
           message,
-          controller ? { signal: controller.signal } : undefined
+          linked.signal ? { signal: linked.signal } : undefined,
+          allowInactive
+            ? undefined
+            : { isRouteCurrent: () => isOperationRouteCurrent(route, signal) },
         ).then((delivery) => delivery.result),
         timeout,
       ]);
+      if (!isOperationRouteCurrent(route, signal, allowInactive)) {
+        throw createRouteInactiveError();
+      }
+      return result;
     } finally {
       if (timer) clearTimeout(timer);
+      linked.cleanup();
     }
   }
 
@@ -793,10 +1131,15 @@ function createTelegramNativeRunner({
     return { inline_keyboard: inlineKeyboard };
   }
 
-  async function handleSessionTrustApprovalCallback(cb, { fromId, chatId }) {
+  async function handleSessionTrustApprovalCallback(
+    cb,
+    { fromId, chatId, route = null, signal = null } = {},
+  ) {
+    const context = { fromId, chatId, route, signal };
     const data = typeof cb.data === "string" ? cb.data : "";
     const match = data.match(SESSION_TRUST_CALLBACK_RE);
     if (!match) return false;
+    if (!callbackContextIsCurrent(context)) return true;
     const id = match[1];
     const action = match[2];
     const entry = pendingApprovals.get(id);
@@ -806,15 +1149,13 @@ function createTelegramNativeRunner({
       || !isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())
       || !callbackMatchesApprovalCard(entry, cb, chatId)
     ) {
-      try {
-        await client.answerCallbackQuery({
-          callback_query_id: cb.id,
-          text: entry ? t("telegramApprovalToastNotAllowed") : t("telegramApprovalToastExpired"),
-        });
-      } catch {}
+      await answerCallbackQuery(cb, context, {
+        text: entry ? t("telegramApprovalToastNotAllowed") : t("telegramApprovalToastExpired"),
+      });
       return true;
     }
     if (action === "open") {
+      if (!callbackContextIsCurrent(context)) return true;
       entry.trustConfirming = true;
       const confirmationMessage = appendTelegramStatus(
         entry.message,
@@ -826,59 +1167,55 @@ function createTelegramNativeRunner({
           chat_id: entry.chatId,
           message_id: entry.messageId,
           reply_markup: sessionTrustKeyboard(id, t),
-        }, confirmationMessage);
-        try {
-          await client.answerCallbackQuery({
-            callback_query_id: cb.id,
-            text: t("telegramSessionTrustConfirmToast"),
-          });
-        } catch {}
-      } catch {
+        }, confirmationMessage, { route, signal });
+        if (!callbackContextIsCurrent(context)) return true;
+        await answerCallbackQuery(cb, context, {
+          text: t("telegramSessionTrustConfirmToast"),
+        });
+      } catch (err) {
+        if (!callbackContextIsCurrent(context) || isRouteInactiveError(err)) return true;
         entry.trustConfirming = false;
-        try {
-          await client.answerCallbackQuery({
-            callback_query_id: cb.id,
-            text: t("telegramApprovalToastUnavailable"),
-          });
-        } catch {}
+        await answerCallbackQuery(cb, context, {
+          text: t("telegramApprovalToastUnavailable"),
+        });
       }
       return true;
     }
     if (action === "no") {
+      if (!callbackContextIsCurrent(context)) return true;
       try {
         await editSessionTrustPrompt({
           chat_id: entry.chatId,
           message_id: entry.messageId,
           reply_markup: buildApprovalKeyboard(id, entry),
-        }, entry.message);
+        }, entry.message, { route, signal });
+        if (!callbackContextIsCurrent(context)) return true;
         entry.trustConfirming = false;
-      } catch {
+      } catch (err) {
+        if (!callbackContextIsCurrent(context) || isRouteInactiveError(err)) return true;
         entry.trustConfirming = true;
-        try {
-          await client.answerCallbackQuery({
-            callback_query_id: cb.id,
-            text: t("telegramApprovalToastUnavailable"),
-          });
-        } catch {}
+        await answerCallbackQuery(cb, context, {
+          text: t("telegramApprovalToastUnavailable"),
+        });
         return true;
       }
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id }); } catch {}
+      await answerCallbackQuery(cb, context);
       return true;
     }
     if (entry.trustConfirming !== true) {
-      try {
-        await client.answerCallbackQuery({
-          callback_query_id: cb.id,
-          text: t("telegramApprovalToastExpired"),
-        });
-      } catch {}
+      await answerCallbackQuery(cb, context, {
+        text: t("telegramApprovalToastExpired"),
+      });
       return true;
     }
+    if (!callbackContextIsCurrent(context)) return true;
     const cardWork = sessionTrustCardWork.reserve(`pending:${id}`, {
       chatId: entry.chatId,
       messageId: entry.messageId,
       text: entry.text,
       message: entry.message,
+      route,
+      pollSignal: signal,
     });
     if (!cardWork) {
       try {
@@ -886,17 +1223,16 @@ function createTelegramNativeRunner({
           chat_id: entry.chatId,
           message_id: entry.messageId,
           reply_markup: buildApprovalKeyboard(id, entry),
-        }, entry.message);
+        }, entry.message, { route, signal });
+        if (!callbackContextIsCurrent(context)) return true;
         entry.trustConfirming = false;
-      } catch {
+      } catch (err) {
+        if (!callbackContextIsCurrent(context) || isRouteInactiveError(err)) return true;
         entry.trustConfirming = true;
       }
-      try {
-        await client.answerCallbackQuery({
-          callback_query_id: cb.id,
-          text: t("telegramApprovalToastUnavailable"),
-        });
-      } catch {}
+      await answerCallbackQuery(cb, context, {
+        text: t("telegramApprovalToastUnavailable"),
+      });
       return true;
     }
     const cardHandle = Object.freeze({
@@ -906,20 +1242,26 @@ function createTelegramNativeRunner({
       text: entry.text,
       message: entry.message,
       routeSignature: sessionAutomationRouteSignature,
+      route,
+      pollSignal: signal,
       cardWork,
     });
     issuedSessionTrustCardHandles.add(cardHandle);
-    client.answerCallbackQuery({
-      callback_query_id: cb.id,
+    answerCallbackQuerySoon(cb, context, {
       text: t("telegramSessionTrustPreparingToast"),
-    }).catch(() => {});
+    });
     finishApproval(id, { action: "session-trust", cardHandle });
     return true;
   }
 
-  async function handleSessionGrantRevokeCallback(cb, { fromId, chatId }) {
+  async function handleSessionGrantRevokeCallback(
+    cb,
+    { fromId, chatId, route = null, signal = null } = {},
+  ) {
     const grantId = parseSessionGrantRevokeAction(cb && cb.data);
     if (!grantId) return false;
+    const context = { fromId, chatId, route, signal };
+    if (!callbackContextIsCurrent(context)) return true;
     const messageId = cb && cb.message && cb.message.message_id;
     const currentUser = getAllowedUserId();
     const currentChat = getChatId();
@@ -931,16 +1273,18 @@ function createTelegramNativeRunner({
       ref
       && String(ref.chatId) === String(chatId)
       && String(ref.messageId) === String(messageId)
+      // Card-work may outlive a polling lifecycle while the coordinator is
+      // revoking or rebuilding grants. A callback replayed after restart must
+      // not revoke that old grant through the new route. Legacy injected card
+      // references without route metadata remain accepted for compatibility.
+      && (!ref.route || isOperationRouteCurrent(ref.route, ref.pollSignal))
     ));
     if (!active || typeof onSessionGrantRevoke !== "function") {
-      try {
-        await client.answerCallbackQuery({
-          callback_query_id: cb.id,
-          text: authorized
-            ? t("telegramSessionTrustStaleToast")
-            : t("telegramApprovalToastNotAllowed"),
-        });
-      } catch {}
+      await answerCallbackQuery(cb, context, {
+        text: authorized
+          ? t("telegramSessionTrustStaleToast")
+          : t("telegramApprovalToastNotAllowed"),
+      });
       return true;
     }
     let result;
@@ -952,88 +1296,125 @@ function createTelegramNativeRunner({
     if (result && typeof result.then === "function") result = { status: "invalid" };
     const revoked = result
       && (result.status === "applied" || result.status === "candidate-cancelled");
-    try {
-      await client.answerCallbackQuery({
-        callback_query_id: cb.id,
-        text: revoked
-          ? t("telegramSessionTrustRevokedToast")
-          : t("telegramSessionTrustStaleToast"),
-      });
-    } catch {}
+    if (!callbackContextIsCurrent(context)) return true;
+    await answerCallbackQuery(cb, context, {
+      text: revoked
+        ? t("telegramSessionTrustRevokedToast")
+        : t("telegramSessionTrustStaleToast"),
+    });
+    if (!callbackContextIsCurrent(context)) return true;
     if (!revoked) {
-      sessionTrustCardWork.deactivateGrant(grantId, (ref) => renderSessionTrustTerminal(
+      sessionTrustCardWork.deactivateGrant(grantId, (ref, _id, taskContext = {}) => renderSessionTrustTerminal(
         ref,
-        t("telegramSessionTrustStaleStatus")
+        t("telegramSessionTrustStaleStatus"),
+        { ...taskContext, route, pollSignal: signal, requireCurrentRoute: true },
       ));
     }
     return true;
   }
 
-  async function handleTestCallback(cb, { fromId, chatId }) {
+  async function handleTestCallback(cb, { fromId, chatId }, signal) {
+    const test = pendingTest;
+    if (!test) return false;
     // Fail closed against the CURRENT config: a blank allowed user must not let
     // any chat member mark a broken config as native-verified (codex finding 3).
     const currentUser = getAllowedUserId();
     const currentChat = getChatId();
     const isAllowedUser = !!currentUser && fromId === String(currentUser)
-      && !!pendingTest.allowedUser && fromId === String(pendingTest.allowedUser);
+      && !!test.allowedUser && fromId === String(test.allowedUser);
     const isExpectedChat = !!currentChat && chatId === String(currentChat)
-      && (!pendingTest.chatId || chatId === String(pendingTest.chatId));
-    if (cb.data !== `clawd-test:${pendingTest.nonce}` || !isAllowedUser || !isExpectedChat) {
+      && (!test.chatId || chatId === String(test.chatId));
+    if (cb.data !== `clawd-test:${test.nonce}` || !isAllowedUser || !isExpectedChat) {
       if (typeof cb.data !== "string" || !cb.data.startsWith("clawd-test:")) return false;
       // Acknowledge stray callbacks so the Telegram client closes its spinner.
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id }); } catch {}
+      try {
+        await client.answerCallbackQuery(
+          { callback_query_id: cb.id },
+          signal ? { signal } : undefined
+        );
+      } catch {}
       return true;
     }
-    try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastAck") }); } catch {}
-    try {
-      await client.editMessageReplyMarkup({
-        chat_id: chatId,
-        message_id: pendingTest.messageId,
-        reply_markup: { inline_keyboard: [] },
-      });
-    } catch {}
+    // Claim the matching test before yielding. A new test, stop, or route reset
+    // increments the lifecycle generation and prevents this callback from
+    // settling the replacement test after either Telegram request returns.
     pendingTest = null;
+    try {
+      await client.answerCallbackQuery(
+        { callback_query_id: cb.id, text: t("telegramApprovalToastAck") },
+        signal ? { signal } : undefined
+      );
+    } catch {}
+    if (test.generation !== testLifecycleGeneration
+      || !ownsPollingSignal(signal)
+      || String(getAllowedUserId() || "") !== String(test.allowedUser || "")
+      || String(getChatId() || "") !== String(test.chatId || "")) {
+      return true;
+    }
+    try {
+      await client.editMessageReplyMarkup(
+        {
+          chat_id: chatId,
+          message_id: test.messageId,
+          reply_markup: { inline_keyboard: [] },
+        },
+        signal ? { signal } : undefined
+      );
+    } catch {}
+    if (test.generation !== testLifecycleGeneration
+      || !ownsPollingSignal(signal)
+      || String(getAllowedUserId() || "") !== String(test.allowedUser || "")
+      || String(getChatId() || "") !== String(test.chatId || "")) {
+      return true;
+    }
     const dispatch = getDispatch && getDispatch();
     if (dispatch) await dispatch({ type: EVENTS.TEST_SUCCESS, at: Date.now() });
     return true;
   }
 
-  async function handleApprovalCallback(cb, { fromId, chatId }) {
-    if (await handleSessionTrustApprovalCallback(cb, { fromId, chatId })) return true;
+  async function handleApprovalCallback(
+    cb,
+    { fromId, chatId, route = null, signal = null } = {},
+  ) {
+    const context = { fromId, chatId, route, signal };
+    if (!callbackContextIsCurrent(context)) return true;
+    if (await handleSessionTrustApprovalCallback(cb, context)) return true;
+    if (!callbackContextIsCurrent(context)) return true;
     const data = typeof cb.data === "string" ? cb.data : "";
     const parsed = parseApprovalCallbackData(data);
     if (!parsed) return false;
     const entry = pendingApprovals.get(parsed.id);
     if (!entry) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastExpired") }); } catch {}
+      await answerCallbackQuery(cb, context, { text: t("telegramApprovalToastExpired") });
       return true;
     }
+    if (!isOperationRouteCurrent(entry.route, entry.pollSignal)) return true;
     if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastNotAllowed") }); } catch {}
+      await answerCallbackQuery(cb, context, { text: t("telegramApprovalToastNotAllowed") });
       return true;
     }
     if (!callbackMatchesApprovalCard(entry, cb, chatId) || entry.trustConfirming === true) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastExpired") }); } catch {}
+      await answerCallbackQuery(cb, context, { text: t("telegramApprovalToastExpired") });
       return true;
     }
 
     const decision = parsed.decision;
     if (decision.action === "suggestion" && !entry.suggestionIndexes.has(decision.index)) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramApprovalToastUnavailable") }); } catch {}
+      await answerCallbackQuery(cb, context, { text: t("telegramApprovalToastUnavailable") });
       return true;
     }
+    if (!callbackContextIsCurrent(context)) return true;
     // Acknowledge the tap (best-effort, NON-blocking) and then claim the
     // decision SYNCHRONOUSLY via finishApproval before any await. Awaiting the
     // toast or the card rewrite first would yield the event loop, and a
     // concurrent timeout / signal abort / stop could delete this pending entry
     // mid-flight and drop a real Allow/Deny. finishApproval resolves the
     // promise up front and fire-and-forgets the status-line rewrite.
-    client.answerCallbackQuery({
-      callback_query_id: cb.id,
+    answerCallbackQuerySoon(cb, context, {
       text: decision.action === "allow"
         ? t("telegramApprovalToastAllowed")
         : (decision.action === "deny" ? t("telegramApprovalToastDenied") : t("telegramApprovalToastApplied")),
-    }).catch(() => {});
+    });
     const messageId = entry.messageId || (cb.message && cb.message.message_id);
     finishApproval(parsed.id, decision, undefined, messageId);
     return true;
@@ -1044,8 +1425,9 @@ function createTelegramNativeRunner({
     if (dispatch) await dispatch(event);
   }
 
-  function dispatchEventSoon(event) {
+  function dispatchEventSoon(event, isCurrent = null) {
     const timer = setTimeout(() => {
+      if (typeof isCurrent === "function" && isCurrent() !== true) return;
       dispatchEvent(event).catch((err) => {
         log("warn", "native dispatch failed", { error: err && err.message });
       });
@@ -1053,7 +1435,22 @@ function createTelegramNativeRunner({
     if (timer && typeof timer.unref === "function") timer.unref();
   }
 
-  async function failTest(err, errorClass, { defer = false } = {}) {
+  async function failTest(
+    err,
+    errorClass,
+    { defer = false, generation = null, route = null, pollSignal = null } = {},
+  ) {
+    const expectedGeneration = generation != null && Number.isSafeInteger(Number(generation))
+      ? Number(generation)
+      : (pendingTest && pendingTest.generation != null
+        && Number.isSafeInteger(Number(pendingTest.generation))
+        ? Number(pendingTest.generation)
+        : null);
+    const isCurrent = () => (
+      (expectedGeneration == null || expectedGeneration === testLifecycleGeneration)
+      && (!route || isOperationRouteCurrent(route, pollSignal))
+    );
+    if (!isCurrent()) return false;
     noteError("polling", errorClass);
     pendingTest = null;
     const event = {
@@ -1061,18 +1458,30 @@ function createTelegramNativeRunner({
       errorClass,
       description: err && err.description,
     };
-    if (defer) dispatchEventSoon(event);
+    if (defer) dispatchEventSoon(event, isCurrent);
     else await dispatchEvent(event);
+    return true;
   }
 
   async function sendTestCard() {
+    // Claim a fresh lifecycle before reading the route. This invalidates a
+    // previous card and any deferred failure from it, even when this attempt
+    // discovers that the chat target is currently missing.
+    testLifecycleGeneration += 1;
+    const generation = testLifecycleGeneration;
+    pendingTest = null;
     const chatId = getChatId();
     const allowedUser = getAllowedUserId();
     if (!chatId) {
-      dispatchEventSoon({ type: EVENTS.TEST_FAILED, errorClass: "no_chat" });
+      dispatchEventSoon(
+        { type: EVENTS.TEST_FAILED, errorClass: "no_chat" },
+        () => generation === testLifecycleGeneration,
+      );
       return;
     }
     const nonce = randomId();
+    const route = polling ? captureRouteContext() : null;
+    const pollSignal = route && abortController ? abortController.signal : null;
     // Register before the network send resolves. The migration path starts
     // native polling and then sends the test card; if the first getUpdates()
     // hits a fatal setup error (for example webhook conflict) before
@@ -1083,34 +1492,86 @@ function createTelegramNativeRunner({
       chatId,
       allowedUser,
       messageId: null,
+      generation,
+    };
+
+    const requestController = typeof AbortController === "function"
+      ? new AbortController()
+      : null;
+    if (requestController) routeRequestControllers.add(requestController);
+    let onPollAbort = null;
+    if (requestController && pollSignal && typeof pollSignal.addEventListener === "function") {
+      onPollAbort = () => {
+        try { requestController.abort(); } catch {}
+      };
+      if (pollSignal.aborted) onPollAbort();
+      else {
+        try { pollSignal.addEventListener("abort", onPollAbort, { once: true }); } catch {}
+      }
+    }
+    const requestOptions = requestController ? { signal: requestController.signal } : undefined;
+    const isTestRouteCurrent = () => {
+      if (generation !== testLifecycleGeneration) return false;
+      if (requestController && requestController.signal.aborted) return false;
+      if (route && !isOperationRouteCurrent(route, pollSignal)) return false;
+      const currentChatId = getChatId();
+      const currentAllowedUser = getAllowedUserId();
+      return String(currentChatId == null ? "" : currentChatId) === String(chatId)
+        && String(currentAllowedUser == null ? "" : currentAllowedUser) === String(allowedUser);
     };
     try {
+      if (!isTestRouteCurrent()) {
+        if (pendingTest && pendingTest.nonce === nonce) clearPendingTest();
+        return;
+      }
       const msg = await client.sendMessage({
         chat_id: chatId,
         text: t("telegramTestMessage"),
         reply_markup: {
           inline_keyboard: [[{ text: t("telegramTestConfirmButton"), callback_data: `clawd-test:${nonce}` }]],
         },
-      });
-      if (pendingTest && pendingTest.nonce === nonce) {
+      }, requestOptions);
+      if (isTestRouteCurrent() && pendingTest && pendingTest.nonce === nonce) {
         pendingTest.messageId = msg && msg.message_id;
+      } else if (pendingTest && pendingTest.nonce === nonce) {
+        clearPendingTest();
       }
     } catch (err) {
+      if (!isTestRouteCurrent() || !pendingTest || pendingTest.nonce !== nonce) {
+        if (pendingTest && pendingTest.nonce === nonce) clearPendingTest();
+        return;
+      }
       const cls = classifyError(err);
       noteError("test", cls);
-      if (pendingTest && pendingTest.nonce === nonce) {
-        await failTest(err, cls, { defer: true });
+      await failTest(err, cls, { defer: true, generation, route, pollSignal });
+    } finally {
+      if (pollSignal && onPollAbort && typeof pollSignal.removeEventListener === "function") {
+        try { pollSignal.removeEventListener("abort", onPollAbort); } catch {}
       }
+      if (requestController) routeRequestControllers.delete(requestController);
     }
   }
 
-  // Best-effort: strip the inline keyboard off an approval card. Never throws.
-  function stripApprovalKeyboard(chatId, messageId) {
-    if (!chatId || !messageId) return Promise.resolve();
+  // Best-effort: strip the inline keyboard off an approval card. A normal
+  // operation is tied to its route; explicit shutdown passes allowInactive so
+  // the terminal card can still be written after polling has been stopped.
+  function stripApprovalKeyboard(
+    chatId,
+    messageId,
+    { route = null, signal = null, allowInactive = false } = {},
+  ) {
+    if (!chatId || !messageId || !isOperationRouteCurrent(route, signal, allowInactive)) {
+      return Promise.resolve();
+    }
+    const requestOptions = !allowInactive && signal ? { signal } : undefined;
+    const deliveryIsCurrent = () => isOperationRouteCurrent(route, signal, allowInactive);
     return client.editMessageReplyMarkup({
       chat_id: chatId,
       message_id: messageId,
       reply_markup: { inline_keyboard: [] },
+    }, requestOptions).then((result) => {
+      if (!deliveryIsCurrent()) return undefined;
+      return result;
     }).catch(() => {});
   }
 
@@ -1119,26 +1580,61 @@ function createTelegramNativeRunner({
   // also drops the inline keyboard; if the rewrite fails (deleted message, edit
   // window expired, ...) — or there's no status/body to render — fall back to
   // stripping just the keyboard so a stale prompt can't be tapped. Never throws.
-  function appendApprovalStatus(entry, status, messageId) {
+  function appendApprovalStatus(
+    entry,
+    status,
+    messageId,
+    { route = entry && entry.route, signal = entry && entry.pollSignal, allowInactive = false } = {},
+  ) {
     const chatId = entry && entry.chatId;
-    if (!chatId || !messageId) return Promise.resolve();
-    if (!status || !entry.message) return stripApprovalKeyboard(chatId, messageId);
+    if (!chatId || !messageId || !isOperationRouteCurrent(route, signal, allowInactive)) {
+      return Promise.resolve();
+    }
+    if (!status || !entry.message) {
+      return stripApprovalKeyboard(chatId, messageId, { route, signal, allowInactive });
+    }
     const message = appendTelegramStatus(entry.message, status, { maxLength: MAX_MESSAGE_TEXT });
+    const requestOptions = !allowInactive && signal ? { signal } : undefined;
+    const deliveryOptions = allowInactive
+      ? undefined
+      : { isRouteCurrent: () => isOperationRouteCurrent(route, signal) };
     return editFormattedMessage({
       chat_id: chatId,
       message_id: messageId,
-    }, message).catch(() => stripApprovalKeyboard(chatId, messageId));
+    }, message, requestOptions, deliveryOptions).then((delivery) => {
+      if (!isOperationRouteCurrent(route, signal, allowInactive)) return undefined;
+      return delivery.result;
+    }).catch(() => {
+      if (!isOperationRouteCurrent(route, signal, allowInactive)) return undefined;
+      return stripApprovalKeyboard(chatId, messageId, { route, signal, allowInactive });
+    });
   }
 
   function renderSessionTrustCard(cardRef, status, grantId, options = {}) {
     if (!cardRef || !cardRef.chatId || !cardRef.messageId || !grantId) {
       return Promise.reject(new Error("session trust card reference is unavailable"));
     }
+    const route = options.route !== undefined ? options.route : cardRef.route;
+    const pollSignal = options.pollSignal !== undefined ? options.pollSignal : cardRef.pollSignal;
+    const allowInactive = options.allowInactive === true;
+    const requireCurrentRoute = options.requireCurrentRoute === true
+      || !!(route || pollSignal);
+    if (requireCurrentRoute && !isOperationRouteCurrent(route, pollSignal, allowInactive)) {
+      return Promise.reject(createRouteInactiveError());
+    }
     const baseMessage = cardRef.message || plainTelegramText(cardRef.text || "", {
       maxLength: MAX_MESSAGE_TEXT,
       neutralizeMentions: true,
     });
     const message = appendTelegramStatus(baseMessage, status, { maxLength: MAX_MESSAGE_TEXT });
+    const linked = linkAbortSignals([
+      options.signal,
+      allowInactive || !requireCurrentRoute ? null : pollSignal,
+    ]);
+    const requestOptions = linked.signal ? { signal: linked.signal } : undefined;
+    const deliveryOptions = requireCurrentRoute && !allowInactive
+      ? { isRouteCurrent: () => isOperationRouteCurrent(route, pollSignal) }
+      : undefined;
     return editFormattedMessage({
       chat_id: cardRef.chatId,
       message_id: cardRef.messageId,
@@ -1148,20 +1644,45 @@ function createTelegramNativeRunner({
           callback_data: buildSessionGrantRevokeAction(grantId),
         }]],
       },
-    }, message, options).then((delivery) => delivery.result);
+    }, message, requestOptions, deliveryOptions)
+      .then((delivery) => {
+        if (requireCurrentRoute && !isOperationRouteCurrent(route, pollSignal, allowInactive)) {
+          throw createRouteInactiveError();
+        }
+        return delivery.result;
+      }).finally(() => linked.cleanup());
   }
 
   function renderSessionTrustTerminal(cardRef, status, options = {}) {
     if (!cardRef || !cardRef.chatId || !cardRef.messageId) return Promise.resolve();
+    const route = options.route !== undefined ? options.route : cardRef.route;
+    const pollSignal = options.pollSignal !== undefined ? options.pollSignal : cardRef.pollSignal;
+    const allowInactive = options.allowInactive === true;
+    const requireCurrentRoute = options.requireCurrentRoute === true;
+    if (requireCurrentRoute && !isOperationRouteCurrent(route, pollSignal, allowInactive)) {
+      return Promise.resolve();
+    }
     const baseMessage = cardRef.message || plainTelegramText(cardRef.text || "", {
       maxLength: MAX_MESSAGE_TEXT,
       neutralizeMentions: true,
     });
     const message = appendTelegramStatus(baseMessage, status, { maxLength: MAX_MESSAGE_TEXT });
+    const linked = linkAbortSignals([
+      options.signal,
+      allowInactive || !requireCurrentRoute ? null : pollSignal,
+    ]);
+    const requestOptions = linked.signal ? { signal: linked.signal } : undefined;
+    const deliveryOptions = requireCurrentRoute && !allowInactive
+      ? { isRouteCurrent: () => isOperationRouteCurrent(route, pollSignal) }
+      : undefined;
     return editFormattedMessage({
       chat_id: cardRef.chatId,
       message_id: cardRef.messageId,
-    }, message, options).then((delivery) => delivery.result);
+    }, message, requestOptions, deliveryOptions)
+      .then((delivery) => {
+        if (requireCurrentRoute && !isOperationRouteCurrent(route, pollSignal, allowInactive)) return undefined;
+        return delivery.result;
+      }).finally(() => linked.cleanup());
   }
 
   function notifySessionAutomationRouteChange() {
@@ -1190,6 +1711,8 @@ function createTelegramNativeRunner({
     if (
       !supportsSessionAutomation()
       || cardHandle.routeSignature !== sessionAutomationRouteSignature
+      || (cardHandle.route
+        && !isOperationRouteCurrent(cardHandle.route, cardHandle.pollSignal))
       || !sessionTrustCardWork.bindCandidateGrant(cardWork, grantId)
     ) {
       // The user already completed the two-step confirmation, so leaving the
@@ -1200,7 +1723,7 @@ function createTelegramNativeRunner({
         renderSessionTrustTerminal(
           cardRef,
           t("telegramSessionTrustFailedStatus"),
-          { signal }
+          { signal, allowInactive: true }
         )
       ), { terminal: true, outcome: "terminal" });
       return null;
@@ -1216,7 +1739,7 @@ function createTelegramNativeRunner({
       ? t("telegramSessionTrustRevokedStatus")
       : t("telegramSessionTrustResolvedStatus");
     sessionTrustCardWork.enqueue(cardWork, (cardRef, { signal }) => (
-      renderSessionTrustTerminal(cardRef, status, { signal })
+      renderSessionTrustTerminal(cardRef, status, { signal, allowInactive: true })
     ), { terminal: true, outcome: "terminal" });
     return true;
   }
@@ -1227,7 +1750,12 @@ function createTelegramNativeRunner({
         cardRef,
         t("telegramSessionTrustPreparingStatus"),
         grantId,
-        { signal }
+        {
+          signal,
+          route: cardRef.route,
+          pollSignal: cardRef.pollSignal,
+          requireCurrentRoute: true,
+        }
       )
     ), { outcome: "preparing" });
   }
@@ -1241,7 +1769,12 @@ function createTelegramNativeRunner({
       ? t("telegramSessionTrustAlreadyActiveStatus")
       : t("telegramSessionTrustActiveStatus");
     return sessionTrustCardWork.enqueue(cardWork, (cardRef, { signal }) => (
-      renderSessionTrustCard(cardRef, status, grantId, { signal })
+      renderSessionTrustCard(cardRef, status, grantId, {
+        signal,
+        route: cardRef.route,
+        pollSignal: cardRef.pollSignal,
+        requireCurrentRoute: true,
+      })
     ), { outcome: "active" });
   }
 
@@ -1259,7 +1792,7 @@ function createTelegramNativeRunner({
         ? t("telegramSessionTrustResolvedStatus")
         : t("telegramSessionTrustFailedStatus");
     sessionTrustCardWork.enqueue(cardWork, (cardRef, { signal }) => (
-      renderSessionTrustTerminal(cardRef, status, { signal })
+      renderSessionTrustTerminal(cardRef, status, { signal, allowInactive: true })
     ), { terminal: true, outcome: "terminal" });
     return true;
   }
@@ -1273,7 +1806,7 @@ function createTelegramNativeRunner({
         ? t("telegramSessionTrustRevokedStatus")
         : t("telegramSessionTrustExpiredStatus");
       sessionTrustCardWork.deactivateGrant(previous.grantId, (cardRef, _grantId, { signal }) => (
-        renderSessionTrustTerminal(cardRef, status, { signal })
+        renderSessionTrustTerminal(cardRef, status, { signal, allowInactive: true })
       ));
     }
   }
@@ -1287,7 +1820,7 @@ function createTelegramNativeRunner({
       ? t("telegramSessionTrustStaleStatus")
       : t("telegramSessionTrustExpiredStatus");
     return sessionTrustCardWork.deactivateGrant(grantId, (cardRef, _id, { signal }) => (
-      renderSessionTrustTerminal(cardRef, status, { signal })
+      renderSessionTrustTerminal(cardRef, status, { signal, allowInactive: true })
     ));
   }
 
@@ -1303,7 +1836,7 @@ function createTelegramNativeRunner({
   // `reason` has no default on purpose: a null-decision caller that forgets to
   // pass one yields `status === undefined`, which degrades to stripping just
   // the keyboard (the #446 behavior) rather than mislabeling the outcome.
-  function finishApproval(id, decision, reason, messageIdOverride) {
+  function finishApproval(id, decision, reason, messageIdOverride, { allowInactive = false } = {}) {
     const entry = pendingApprovals.get(id);
     if (!entry) return;
     pendingApprovals.delete(id);
@@ -1321,12 +1854,18 @@ function createTelegramNativeRunner({
     const status = normalized
       ? approvalDecidedStatusText(t, normalized.action)
       : approvalResolvedElsewhereStatusText(t, reason);
-    appendApprovalStatus(entry, status, messageIdOverride || entry.messageId);
+    appendApprovalStatus(entry, status, messageIdOverride || entry.messageId, {
+      route: entry.route,
+      signal: entry.pollSignal,
+      allowInactive,
+    });
   }
 
-  function clearAllApprovals() {
+  function clearAllApprovals({ allowInactive = false } = {}) {
     const ids = Array.from(pendingApprovals.keys());
-    for (const id of ids) finishApproval(id, null, "stopped");
+    for (const id of ids) {
+      finishApproval(id, null, "stopped", undefined, { allowInactive });
+    }
   }
 
   function requestApproval(payload, options = {}) {
@@ -1336,10 +1875,12 @@ function createTelegramNativeRunner({
     const text = message && message.plainText;
     const suggestions = normalizeApprovalSuggestions(payload && payload.suggestions);
     const signal = options && options.signal;
+    const route = captureRouteContext();
+    const pollSignal = abortController && abortController.signal;
     const onDelivered = options && typeof options.onDelivered === "function"
       ? options.onDelivered
       : null;
-    if (!polling || !chatId || !allowedUser || !text || (signal && signal.aborted)) {
+    if (!isCurrentRouteContext(route, pollSignal) || !chatId || !allowedUser || !text || (signal && signal.aborted)) {
       const reason = !polling ? "not polling"
         : (!chatId ? "missing chat" : (!allowedUser ? "missing allowed user" : (!text ? "missing text" : "aborted")));
       log("debug", `native approval skipped: ${reason}`);
@@ -1351,6 +1892,8 @@ function createTelegramNativeRunner({
         resolve,
         chatId,
         allowedUser,
+        route,
+        pollSignal,
         messageId: null,
         // Card body as sent, kept so a resolved-elsewhere edit can rebuild the
         // text with a status line appended (issue #457).
@@ -1374,15 +1917,19 @@ function createTelegramNativeRunner({
         signal.addEventListener("abort", entry.onAbort, { once: true });
       }
 
+      const cardSignalLink = linkAbortSignals([signal, pollSignal]);
       sendFormattedMessage({
         chat_id: chatId,
         reply_markup: {
           ...buildApprovalKeyboard(id, entry),
         },
-      }, message, signal ? { signal } : undefined).then((delivery) => {
+      }, message, cardSignalLink.signal ? { signal: cardSignalLink.signal } : undefined, {
+        isRouteCurrent: () => isOperationRouteCurrent(route, pollSignal),
+      }).then((delivery) => {
         const msg = delivery.result;
         const current = pendingApprovals.get(id);
-        if (!current || (signal && signal.aborted)) return;
+        if (!current || (signal && signal.aborted)
+          || !isOperationRouteCurrent(current.route, current.pollSignal)) return;
         const messageId = msg && msg.message_id;
         current.messageId = messageId;
         if (messageId !== null && messageId !== undefined && messageId !== "" && onDelivered) {
@@ -1392,7 +1939,7 @@ function createTelegramNativeRunner({
         }
         safeLog("debug", "native approval card sent");
       }).catch((err) => {
-        if (signal && signal.aborted) {
+        if (cardSignalLink.signal && cardSignalLink.signal.aborted) {
           safeLog("debug", "native approval send aborted");
           finishApproval(id, null);
           return;
@@ -1400,7 +1947,7 @@ function createTelegramNativeRunner({
         safeLog("warn", "native approval send failed", { error: err && err.message });
         noteError("approval", classifyError(err));
         finishApproval(id, null);
-      });
+      }).finally(() => cardSignalLink.cleanup());
     });
   }
 
@@ -1408,13 +1955,29 @@ function createTelegramNativeRunner({
   // next/previous question (with a fresh keyboard) or - when called without a
   // keyboard - to show a final status line with no keyboard, mirroring
   // appendApprovalStatus's fallback-to-stripped-keyboard behavior on failure.
-  function renderElicitationCard(entry, message, keyboard) {
-    if (!entry.chatId || !entry.messageId) return Promise.resolve();
+  function renderElicitationCard(
+    entry,
+    message,
+    keyboard,
+    { route = entry && entry.route, signal = entry && entry.pollSignal, allowInactive = false } = {},
+  ) {
+    if (!entry.chatId || !entry.messageId || !isOperationRouteCurrent(route, signal, allowInactive)) {
+      return Promise.resolve();
+    }
     const payload = { chat_id: entry.chatId, message_id: entry.messageId };
     if (keyboard) payload.reply_markup = { inline_keyboard: keyboard };
-    return editFormattedMessage(payload, message).then((delivery) => delivery.result).catch(() => {
+    const requestOptions = !allowInactive && signal ? { signal } : undefined;
+    const deliveryOptions = allowInactive
+      ? undefined
+      : { isRouteCurrent: () => isOperationRouteCurrent(route, signal) };
+    return editFormattedMessage(payload, message, requestOptions, deliveryOptions)
+      .then((delivery) => {
+        if (!isOperationRouteCurrent(route, signal, allowInactive)) return undefined;
+        return delivery.result;
+      }).catch(() => {
+      if (!isOperationRouteCurrent(route, signal, allowInactive)) return undefined;
       if (!keyboard) return undefined;
-      return stripApprovalKeyboard(entry.chatId, entry.messageId);
+      return stripApprovalKeyboard(entry.chatId, entry.messageId, { route, signal, allowInactive });
     });
   }
 
@@ -1449,7 +2012,7 @@ function createTelegramNativeRunner({
   // Telegram-side submit/terminal tap, a desktop answer (abort), a timeout, or
   // polling stop. Claims the entry synchronously before any network I/O, same
   // race-safety reasoning as finishApproval.
-  function finishElicitation(id, decision, reason) {
+  function finishElicitation(id, decision, reason, { allowInactive = false } = {}) {
     const entry = pendingElicitations.get(id);
     if (!entry) return;
     pendingElicitations.delete(id);
@@ -1474,18 +2037,25 @@ function createTelegramNativeRunner({
     const message = status
       ? appendTelegramStatus(baseMessage, status, { maxLength: MAX_MESSAGE_TEXT })
       : baseMessage;
-    renderElicitationCard(entry, message, null);
+    renderElicitationCard(entry, message, null, {
+      route: entry.route,
+      signal: entry.pollSignal,
+      allowInactive,
+    });
   }
 
-  function clearAllElicitations() {
+  function clearAllElicitations({ allowInactive = false } = {}) {
     const ids = Array.from(pendingElicitations.keys());
-    for (const id of ids) finishElicitation(id, null, "stopped");
+    for (const id of ids) {
+      finishElicitation(id, null, "stopped", { allowInactive });
+    }
   }
 
   // Records an answer for the active question and moves the entry forward:
   // to the next unanswered question, or - once every question has an answer -
   // resolves the whole request with the collected answers.
   function advanceElicitation(id, entry) {
+    if (!entry || !isOperationRouteCurrent(entry.route, entry.pollSignal)) return;
     entry.multiSelectSelections = new Set();
     entry.awaitingOtherFor = null;
     const nextIndex = findNextUnansweredQuestionIndex(entry.payload, entry.answers);
@@ -1497,31 +2067,43 @@ function createTelegramNativeRunner({
     renderElicitationQuestion(entry).catch(() => {});
   }
 
-  async function handleElicitationCallback(cb, { fromId, chatId }) {
+  async function handleElicitationCallback(
+    cb,
+    { fromId, chatId, route = null, signal = null } = {},
+  ) {
+    const context = { fromId, chatId, route, signal };
     const data = typeof cb.data === "string" ? cb.data : "";
     const parsed = parseElicitationCallbackData(data);
     if (!parsed) return false;
+    if (!callbackContextIsCurrent(context)) return true;
     const entry = pendingElicitations.get(parsed.id);
     if (!entry) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastExpired") }); } catch {}
+      await answerCallbackQuery(cb, context, { text: t("telegramElicitationToastExpired") });
       return true;
     }
+    if (!isOperationRouteCurrent(entry.route, entry.pollSignal)) return true;
     // Backfill from the callback's own message id if the in-flight sendMessage
     // for this card hasn't resolved yet (a fast enough tap can race it) -
     // every render below reads entry.messageId, and without this every card
     // edit for this exchange would silently no-op forever, not just once.
     if (!entry.messageId) {
+      if (!callbackContextIsCurrent(context)) return true;
       entry.messageId = (cb.message && cb.message.message_id) || entry.messageId;
     }
-    if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastNotAllowed") }); } catch {}
+    if (!callbackMatchesElicitationCard(entry, cb, chatId)) {
+      await answerCallbackQuery(cb, context, { text: t("telegramElicitationToastExpired") });
       return true;
     }
+    if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) {
+      await answerCallbackQuery(cb, context, { text: t("telegramElicitationToastNotAllowed") });
+      return true;
+    }
+    if (!callbackContextIsCurrent(context)) return true;
 
     const { action } = parsed;
 
     if (action.type === "terminal") {
-      client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastTerminal") }).catch(() => {});
+      answerCallbackQuerySoon(cb, context, { text: t("telegramElicitationToastTerminal") });
       finishElicitation(parsed.id, "terminal");
       return true;
     }
@@ -1531,18 +2113,19 @@ function createTelegramNativeRunner({
     // card already moved on) is a no-op rather than corrupting a later
     // question's state.
     if (action.questionIndex !== entry.activeQuestionIndex) {
-      try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastExpired") }); } catch {}
+      await answerCallbackQuery(cb, context, { text: t("telegramElicitationToastExpired") });
       return true;
     }
     const question = entry.payload.questions[entry.activeQuestionIndex];
-    if (!question) return true;
+    if (!question || !callbackContextIsCurrent(context)) return true;
 
     if (action.type === "back") {
       if (entry.activeQuestionIndex <= 0) {
-        try { await client.answerCallbackQuery({ callback_query_id: cb.id }); } catch {}
+        await answerCallbackQuery(cb, context);
         return true;
       }
-      client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+      answerCallbackQuerySoon(cb, context);
+      if (!callbackContextIsCurrent(context)) return true;
       entry.activeQuestionIndex -= 1;
       entry.multiSelectSelections = new Set();
       entry.awaitingOtherFor = null;
@@ -1551,14 +2134,16 @@ function createTelegramNativeRunner({
     }
 
     if (action.type === "other") {
-      client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+      answerCallbackQuerySoon(cb, context);
+      if (!callbackContextIsCurrent(context)) return true;
       entry.awaitingOtherFor = entry.activeQuestionIndex;
       renderElicitationQuestion(entry).catch(() => {});
       return true;
     }
 
     if (action.type === "cancelOther") {
-      client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+      answerCallbackQuerySoon(cb, context);
+      if (!callbackContextIsCurrent(context)) return true;
       entry.awaitingOtherFor = null;
       renderElicitationQuestion(entry).catch(() => {});
       return true;
@@ -1567,11 +2152,12 @@ function createTelegramNativeRunner({
     if (action.type === "option") {
       const option = question.options[action.optionIndex];
       if (!option) {
-        try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastUnavailable") }); } catch {}
+        await answerCallbackQuery(cb, context, { text: t("telegramElicitationToastUnavailable") });
         return true;
       }
       if (question.multiSelect) {
-        client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+        answerCallbackQuerySoon(cb, context);
+        if (!callbackContextIsCurrent(context)) return true;
         if (entry.multiSelectSelections.has(action.optionIndex)) {
           entry.multiSelectSelections.delete(action.optionIndex);
         } else {
@@ -1580,7 +2166,8 @@ function createTelegramNativeRunner({
         renderElicitationQuestion(entry).catch(() => {});
         return true;
       }
-      client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastAnswered") }).catch(() => {});
+      answerCallbackQuerySoon(cb, context, { text: t("telegramElicitationToastAnswered") });
+      if (!callbackContextIsCurrent(context)) return true;
       entry.answers[question.index] = option.label;
       advanceElicitation(parsed.id, entry);
       return true;
@@ -1588,14 +2175,15 @@ function createTelegramNativeRunner({
 
     if (action.type === "confirm") {
       if (!question.multiSelect) {
-        client.answerCallbackQuery({ callback_query_id: cb.id }).catch(() => {});
+        answerCallbackQuerySoon(cb, context);
         return true;
       }
       if (entry.multiSelectSelections.size === 0) {
-        try { await client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastPickAtLeastOne") }); } catch {}
+        await answerCallbackQuery(cb, context, { text: t("telegramElicitationToastPickAtLeastOne") });
         return true;
       }
-      client.answerCallbackQuery({ callback_query_id: cb.id, text: t("telegramElicitationToastAnswered") }).catch(() => {});
+      answerCallbackQuerySoon(cb, context, { text: t("telegramElicitationToastAnswered") });
+      if (!callbackContextIsCurrent(context)) return true;
       const labels = Array.from(entry.multiSelectSelections)
         .sort((a, b) => a - b)
         .map((optionIndex) => question.options[optionIndex].label);
@@ -1613,10 +2201,13 @@ function createTelegramNativeRunner({
   // a pending elicitation blocks the agent on this decision, so its reply
   // belongs to the question, not to whatever session Direct Send would guess
   // from the completion-notification mapping.
-  async function handleElicitationOtherReply({ text, replyToMessageId, message }) {
+  async function handleElicitationOtherReply({ text, replyToMessageId, message, route, signal }) {
+    if (!isOperationRouteCurrent(route, signal)) return true;
     let match = null;
     for (const [id, entry] of pendingElicitations) {
-      if (entry.awaitingOtherFor != null && entry.messageId === replyToMessageId) {
+      if (entry.awaitingOtherFor != null
+        && sameTelegramMessageId(entry.messageId, replyToMessageId)
+        && isOperationRouteCurrent(entry.route, entry.pollSignal)) {
         match = { id, entry };
         break;
       }
@@ -1631,9 +2222,16 @@ function createTelegramNativeRunner({
     // through to the generic Direct Send text pipeline instead of being
     // dropped here.
     if (!isCallerAuthorized(entry, fromId, chatId, getAllowedUserId(), getChatId())) return true;
+    if (!isOperationRouteCurrent(route, signal)
+      || !isOperationRouteCurrent(entry.route, entry.pollSignal)) return true;
     const question = entry.payload.questions[entry.awaitingOtherFor];
     const answer = compactMessageText(text, 500);
     if (!question || !answer) return true;
+    // Authorization and normalization can yield to callers in future (and
+    // direct tests may invoke this handler with a stale captured route). Re-
+    // validate both lifecycles immediately before mutating the pending entry.
+    if (!isOperationRouteCurrent(route, signal)
+      || !isOperationRouteCurrent(entry.route, entry.pollSignal)) return true;
     entry.answers[question.index] = answer;
     advanceElicitation(id, entry);
     return true;
@@ -1644,10 +2242,12 @@ function createTelegramNativeRunner({
     const allowedUser = getAllowedUserId();
     const normalized = normalizeElicitationPayload(payload);
     const signal = options && options.signal;
+    const route = captureRouteContext();
+    const pollSignal = abortController && abortController.signal;
     const onDelivered = options && typeof options.onDelivered === "function"
       ? options.onDelivered
       : null;
-    if (!polling || !chatId || !allowedUser || !normalized || (signal && signal.aborted)) {
+    if (!isCurrentRouteContext(route, pollSignal) || !chatId || !allowedUser || !normalized || (signal && signal.aborted)) {
       const reason = !polling ? "not polling"
         : (!chatId ? "missing chat" : (!allowedUser ? "missing allowed user" : (!normalized ? "invalid payload" : "aborted")));
       log("debug", `native elicitation skipped: ${reason}`);
@@ -1667,6 +2267,8 @@ function createTelegramNativeRunner({
         resolve,
         chatId,
         allowedUser,
+        route,
+        pollSignal,
         messageId: null,
         payload: normalized,
         activeQuestionIndex: 0,
@@ -1687,13 +2289,17 @@ function createTelegramNativeRunner({
         signal.addEventListener("abort", entry.onAbort, { once: true });
       }
 
+      const cardSignalLink = linkAbortSignals([signal, pollSignal]);
       sendFormattedMessage({
         chat_id: chatId,
         reply_markup: { inline_keyboard: keyboard },
-      }, message, signal ? { signal } : undefined).then((delivery) => {
+      }, message, cardSignalLink.signal ? { signal: cardSignalLink.signal } : undefined, {
+        isRouteCurrent: () => isOperationRouteCurrent(route, pollSignal),
+      }).then((delivery) => {
         const msg = delivery.result;
         const current = pendingElicitations.get(id);
-        if (!current || (signal && signal.aborted)) return;
+        if (!current || (signal && signal.aborted)
+          || !isOperationRouteCurrent(current.route, current.pollSignal)) return;
         const messageId = msg && msg.message_id;
         current.messageId = messageId;
         if (messageId !== null && messageId !== undefined && messageId !== "" && onDelivered) {
@@ -1703,7 +2309,7 @@ function createTelegramNativeRunner({
         }
         safeLog("debug", "native elicitation card sent");
       }).catch((err) => {
-        if (signal && signal.aborted) {
+        if (cardSignalLink.signal && cardSignalLink.signal.aborted) {
           safeLog("debug", "native elicitation send aborted");
           finishElicitation(id, null);
           return;
@@ -1711,7 +2317,7 @@ function createTelegramNativeRunner({
         safeLog("warn", "native elicitation send failed", { error: err && err.message });
         noteError("elicitation", classifyError(err));
         finishElicitation(id, null);
-      });
+      }).finally(() => cardSignalLink.cleanup());
     });
   }
 
@@ -1735,32 +2341,39 @@ function createTelegramNativeRunner({
     };
   }
 
-  async function sendBoundedMessage(chatId, text) {
+  async function sendBoundedMessage(chatId, text, route = null) {
     const controller = new AbortController();
+    routeRequestControllers.add(controller);
     const timer = setTimeout(() => {
       try { controller.abort(); } catch {}
     }, Math.max(1, notifyTimeoutMs));
     if (timer && typeof timer.unref === "function") timer.unref();
     try {
-      return await client.sendMessage(
+      if (route && !isCurrentRouteContext(route)) throw createRouteInactiveError();
+      const sent = await client.sendMessage(
         { chat_id: chatId, text },
         { signal: controller.signal },
       );
+      if (route && !isCurrentRouteContext(route)) throw createRouteInactiveError();
+      return sent;
     } finally {
       clearTimeout(timer);
+      routeRequestControllers.delete(controller);
     }
   }
 
-  async function sendBoundedNotification(chatId, message, deliveryState) {
+  async function sendBoundedNotification(chatId, message, deliveryState, route) {
     if (!isFormattedTelegramMessage(message)) {
-      return sendBoundedMessage(chatId, message);
+      return sendBoundedMessage(chatId, message, route);
     }
     const controller = new AbortController();
+    routeRequestControllers.add(controller);
     const timer = setTimeout(() => {
       try { controller.abort(); } catch {}
     }, Math.max(1, notifyTimeoutMs));
     if (timer && typeof timer.unref === "function") timer.unref();
     try {
+      if (!isCurrentRouteContext(route)) throw createRouteInactiveError();
       const delivery = await sendFormattedMessage(
         { chat_id: chatId },
         message,
@@ -1768,11 +2381,14 @@ function createTelegramNativeRunner({
         {
           preferPlain: deliveryState.preferPlain === true,
           onPlainAttempt: () => { deliveryState.preferPlain = true; },
+          isRouteCurrent: () => isCurrentRouteContext(route),
         },
       );
+      if (!isCurrentRouteContext(route)) throw createRouteInactiveError();
       return delivery.result;
     } finally {
       clearTimeout(timer);
+      routeRequestControllers.delete(controller);
     }
   }
 
@@ -1782,16 +2398,21 @@ function createTelegramNativeRunner({
   // else (403 blocked, timeout, network) is logged and dropped.
   async function sendNotification(value) {
     const chatId = getChatId();
+    const route = captureRouteContext();
     const body = isFormattedTelegramMessage(value) ? value : compactMessageText(value);
     const hasBody = isFormattedTelegramMessage(body) ? !!body.plainText : !!body;
-    if (!polling || !chatId || !hasBody) {
+    if (!polling || !chatId || !hasBody || !isCurrentRouteContext(route)) {
       return { ok: false, errorClass: "not_active" };
     }
     const deliveryState = { preferPlain: false };
     try {
-      const sent = await sendBoundedNotification(chatId, body, deliveryState);
-      return { ok: true, messageId: extractTelegramMessageId(sent) };
+      const sent = await sendBoundedNotification(chatId, body, deliveryState, route);
+      if (!isCurrentRouteContext(route)) return { ok: false, errorClass: "not_active" };
+      return { ok: true, messageId: extractTelegramMessageId(sent), chatId: String(chatId) };
     } catch (err) {
+      if (isRouteInactiveError(err) || !isCurrentRouteContext(route)) {
+        return { ok: false, errorClass: "not_active" };
+      }
       const cls = classifyError(err);
       if (cls === ERROR_CLASSES.RATE_LIMITED) {
         const retryAfter = Number(err && err.parameters && err.parameters.retry_after);
@@ -1807,12 +2428,18 @@ function createTelegramNativeRunner({
           // OR the target changed — re-firing a "done" ping at a different chat
           // than the one in flight is worse than dropping it.
           const retryChatId = getChatId();
-          if (!polling || !retryChatId || retryChatId !== chatId) {
+          if (!isCurrentRouteContext(route)
+            || !retryChatId
+            || String(retryChatId) !== route.chatId) {
             return { ok: false, errorClass: "not_active" };
           }
-          const sent = await sendBoundedNotification(retryChatId, body, deliveryState);
-          return { ok: true, messageId: extractTelegramMessageId(sent) };
+          const sent = await sendBoundedNotification(retryChatId, body, deliveryState, route);
+          if (!isCurrentRouteContext(route)) return { ok: false, errorClass: "not_active" };
+          return { ok: true, messageId: extractTelegramMessageId(sent), chatId: String(retryChatId) };
         } catch (err2) {
+          if (isRouteInactiveError(err2) || !isCurrentRouteContext(route)) {
+            return { ok: false, errorClass: "not_active" };
+          }
           const cls2 = classifyError(err2);
           noteError("notification", cls2);
           safeLog("warn", "native notification send failed", errorLogMeta(err2, { errorClass: cls2 }));
@@ -1832,6 +2459,8 @@ function createTelegramNativeRunner({
   const api = {
     isEnabled,
     isPolling,
+    getRouteGeneration,
+    resetOffset,
     start,
     stop,
     sendTestCard,

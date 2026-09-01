@@ -80,6 +80,19 @@ describe("Codex official hook", () => {
     assert.strictEqual(normalizeCodexSessionId("official-session", "/tmp/rollout.jsonl"), "codex:official-session");
   });
 
+  it("uses the parent thread id for Codex Desktop turn-suffixed rollouts", () => {
+    const transcriptPath = "/tmp/rollout-2026-09-01T09-35-17-01a04e10-d510-7be1-9577-ba8145e64c2c_01a05a9b-3a56-7af3-b0c3-d599832f7b06.jsonl";
+
+    assert.strictEqual(
+      extractCodexSessionIdFromTranscriptPath(transcriptPath),
+      "01a04e10-d510-7be1-9577-ba8145e64c2c"
+    );
+    assert.strictEqual(
+      normalizeCodexSessionId("official-session", transcriptPath),
+      "codex:01a04e10-d510-7be1-9577-ba8145e64c2c"
+    );
+  });
+
   it("builds SessionStart state payloads", () => {
     const body = buildStateBody({
       hook_event_name: "SessionStart",

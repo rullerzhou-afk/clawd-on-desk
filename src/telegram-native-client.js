@@ -37,6 +37,13 @@ const ERROR_CLASSES = Object.freeze({
   UNKNOWN: "unknown",
 });
 
+function throwIfAborted(signal) {
+  if (!signal || signal.aborted !== true) return;
+  const err = new Error("aborted");
+  err.name = "AbortError";
+  throw err;
+}
+
 function classifyError(err) {
   if (!err) return ERROR_CLASSES.UNKNOWN;
   if (err.name === "AbortError") return ERROR_CLASSES.TIMEOUT;
@@ -101,6 +108,7 @@ class TelegramNativeClient {
     this.transport = transport;
     this.logger = logger;
     this._offset = 0;
+    this._offsetGeneration = 0;
   }
 
   get offset() {
@@ -109,6 +117,7 @@ class TelegramNativeClient {
 
   resetOffset() {
     this._offset = 0;
+    this._offsetGeneration += 1;
   }
 
   async _call(method, payload = {}, { signal } = {}) {
@@ -118,7 +127,12 @@ class TelegramNativeClient {
     // call); the per-call API surface stays free of raw secrets so that any
     // future logging / debug serialization of {method, payload, signal}
     // cannot accidentally leak the token.
+    throwIfAborted(signal);
     const hasToken = await this.tokenStore.hasToken();
+    // Token lookup may touch disk. A route stop/reset that happens while it is
+    // pending must prevent the old request from crossing the transport boundary
+    // with the replacement bot credential.
+    throwIfAborted(signal);
     if (!hasToken) {
       throw new TelegramApiError({
         status: null,
@@ -161,12 +175,15 @@ class TelegramNativeClient {
   // long-poll one batch. Caller is responsible for looping; this method only
   // ever issues one HTTP call so tests stay deterministic.
   async getUpdates({ timeout = 25, signal } = {}) {
+    const offsetGeneration = this._offsetGeneration;
     const updates = await this._call(
       "getUpdates",
       { offset: this._offset, timeout },
       { signal },
     );
-    if (Array.isArray(updates) && updates.length > 0) {
+    if (!(signal && signal.aborted)
+      && offsetGeneration === this._offsetGeneration
+      && Array.isArray(updates) && updates.length > 0) {
       const lastId = updates[updates.length - 1].update_id;
       if (Number.isInteger(lastId)) {
         this._offset = Math.max(this._offset, lastId + 1);

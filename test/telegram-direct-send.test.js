@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const {
+  DEFAULT_MAX_MAPPINGS,
   buildWindowsPasteShortcutScript,
   createClipboardFallbackDeliveryAdapter,
   createTelegramDirectSend,
@@ -76,6 +77,266 @@ test("direct send maps a completion notification reply to the exact local sessio
   }]);
 });
 
+test("direct send routes replies to their own sessions when notifications overlap", async () => {
+  const sessions = [
+    localTerminalEntry({ id: "sess-alpha", sourcePid: 1111 }),
+    localTerminalEntry({ id: "sess-beta", sourcePid: 2222 }),
+  ];
+  const focused = [];
+  const delivered = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions }),
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: {
+      deliver: async ({ sessionId, promptText }) => {
+        delivered.push({ sessionId, promptText });
+        return { status: "pasted_without_enter", delivered: true };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 101, sessionId: "sess-alpha" });
+  direct.registerCompletionNotification({ messageId: 202, sessionId: "sess-beta" });
+
+  const betaReply = await direct.handleTextMessage({
+    text: "continue beta",
+    replyToMessageId: 202,
+    messageId: 301,
+  });
+  const alphaReply = await direct.handleTextMessage({
+    text: "continue alpha",
+    replyToMessageId: 101,
+    messageId: 302,
+  });
+
+  assert.equal(betaReply.sessionId, "sess-beta");
+  assert.equal(alphaReply.sessionId, "sess-alpha");
+  assert.deepEqual(focused, ["sess-beta", "sess-alpha"]);
+  assert.deepEqual(delivered, [
+    { sessionId: "sess-beta", promptText: "continue beta" },
+    { sessionId: "sess-alpha", promptText: "continue alpha" },
+  ]);
+});
+
+test("direct send serializes overlapping focus and delivery operations", async () => {
+  const sessions = [
+    localTerminalEntry({ id: "sess-alpha", sourcePid: 1111 }),
+    localTerminalEntry({ id: "sess-beta", sourcePid: 2222 }),
+  ];
+  const events = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions }),
+    focusSession: async (sessionId) => {
+      events.push(`focus:${sessionId}`);
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      return confirmedFocusResult({ token: `token-${sessionId}` });
+    },
+    deliveryAdapter: {
+      deliver: async ({ sessionId }) => {
+        events.push(`deliver:${sessionId}`);
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 301, sessionId: "sess-alpha" });
+  direct.registerCompletionNotification({ messageId: 302, sessionId: "sess-beta" });
+  const [alpha, beta] = await Promise.all([
+    direct.handleTextMessage({ text: "alpha", replyToMessageId: 301 }),
+    direct.handleTextMessage({ text: "beta", replyToMessageId: 302 }),
+  ]);
+
+  assert.equal(alpha.status, "sent_with_enter");
+  assert.equal(beta.status, "sent_with_enter");
+  assert.deepEqual(events, [
+    "focus:sess-alpha",
+    "deliver:sess-alpha",
+    "focus:sess-beta",
+    "deliver:sess-beta",
+  ]);
+});
+
+test("direct send prefers the matching chat when Telegram message ids repeat", async () => {
+  const sessions = [
+    localTerminalEntry({ id: "sess-one", sourcePid: 1111 }),
+    localTerminalEntry({ id: "sess-two", sourcePid: 2222 }),
+  ];
+  const focused = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions }),
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: {
+      deliver: async () => ({ status: "sent_with_enter", delivered: true, autoEnter: true }),
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 77, chatId: "123", sessionId: "sess-one" });
+  direct.registerCompletionNotification({ messageId: 77, chatId: "456", sessionId: "sess-two" });
+
+  const result = await direct.handleTextMessage({
+    text: "continue in two",
+    replyToMessageId: 77,
+    chatId: "456",
+  });
+
+  assert.equal(result.sessionId, "sess-two");
+  assert.deepEqual(focused, ["sess-two"]);
+});
+
+test("direct send does not resolve a chat-scoped mapping from another chat", async () => {
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [localTerminalEntry()] }),
+    focusSession: () => { throw new Error("must not focus"); },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({
+    messageId: 77,
+    chatId: "123",
+    sessionId: "sess-local-1",
+  });
+
+  const result = await direct.handleTextMessage({
+    text: "wrong chat",
+    replyToMessageId: 77,
+    chatId: "456",
+  });
+
+  assert.equal(result.status, "unmapped");
+});
+
+test("direct send caps mappings and evicts the oldest chat-scoped entry", async () => {
+  assert.equal(DEFAULT_MAX_MAPPINGS, 1000);
+  const sessions = [
+    localTerminalEntry({ id: "sess-old", sourcePid: 1001 }),
+    localTerminalEntry({ id: "sess-middle", sourcePid: 1002 }),
+    localTerminalEntry({ id: "sess-new", sourcePid: 1003 }),
+  ];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    maxMappings: 2,
+    getSessionSnapshot: () => ({ sessions }),
+    focusSession: () => confirmedFocusResult(),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 77, chatId: "123", sessionId: "sess-old" });
+  direct.registerCompletionNotification({ messageId: 77, chatId: "456", sessionId: "sess-middle" });
+  direct.registerCompletionNotification({ messageId: 88, chatId: "123", sessionId: "sess-new" });
+
+  assert.equal(direct._mappings.size, 2);
+  assert.equal((await direct.handleTextMessage({
+    text: "old",
+    replyToMessageId: 77,
+    chatId: "123",
+  })).status, "unmapped");
+  assert.equal((await direct.handleTextMessage({
+    text: "middle",
+    replyToMessageId: 77,
+    chatId: "456",
+  })).sessionId, "sess-middle");
+  assert.equal((await direct.handleTextMessage({
+    text: "new",
+    replyToMessageId: 88,
+    chatId: "123",
+  })).sessionId, "sess-new");
+});
+
+test("direct send consumes only the successfully submitted chat-scoped mapping", async () => {
+  const sessions = [
+    localTerminalEntry({ id: "sess-one", sourcePid: 1001 }),
+    localTerminalEntry({ id: "sess-two", sourcePid: 1002 }),
+  ];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions }),
+    focusSession: () => confirmedFocusResult(),
+    deliveryAdapter: {
+      deliver: async () => ({ status: "sent_with_enter", delivered: true, autoEnter: true }),
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 77, chatId: "123", sessionId: "sess-one" });
+  direct.registerCompletionNotification({ messageId: 77, chatId: "456", sessionId: "sess-two" });
+
+  const sent = await direct.handleTextMessage({ text: "first", replyToMessageId: 77, chatId: "123" });
+  const replay = await direct.handleTextMessage({ text: "again", replyToMessageId: 77, chatId: "123" });
+  const otherChat = await direct.handleTextMessage({ text: "other", replyToMessageId: 77, chatId: "456" });
+
+  assert.equal(sent.status, "sent_with_enter");
+  assert.equal(replay.status, "unmapped");
+  assert.equal(otherChat.sessionId, "sess-two");
+});
+
+test("direct send consumes mappings after uncertain console writes without fallback", async () => {
+  for (const errorClass of ["partial_console_write", "console_input_result_unknown"]) {
+    const fallbackWrites = [];
+    const direct = createTelegramDirectSend({
+      isEnabled: () => true,
+      getSessionSnapshot: () => ({ sessions: [localTerminalEntry()] }),
+      focusSession: () => { throw new Error("must not focus"); },
+      deliveryAdapter: {
+        requiresFocus: false,
+        deliver: async () => ({ status: "failed", delivered: false, errorClass }),
+      },
+      fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+        clipboard: { writeText: (value) => fallbackWrites.push(value) },
+      }),
+      osPlatform: "win32",
+    });
+
+    direct.registerCompletionNotification({ messageId: 90, chatId: "123", sessionId: "sess-local-1" });
+    const first = await direct.handleTextMessage({ text: "reply", replyToMessageId: 90, chatId: "123" });
+    const replay = await direct.handleTextMessage({ text: "again", replyToMessageId: 90, chatId: "123" });
+
+    assert.equal(first.status, "failed");
+    assert.equal(first.deliveryResult.errorClass, errorClass);
+    assert.equal(replay.status, "unmapped");
+    assert.deepEqual(fallbackWrites, []);
+  }
+});
+
+test("direct send queue continues after an earlier delivery rejects", async () => {
+  let snapshotCalls = 0;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => {
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) throw new Error("snapshot unavailable");
+      return { sessions: [localTerminalEntry()] };
+    },
+    focusSession: () => confirmedFocusResult(),
+    deliveryAdapter: {
+      deliver: async () => ({ status: "sent_with_enter", delivered: true, autoEnter: true }),
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 81, sessionId: "sess-local-1" });
+  direct.registerCompletionNotification({ messageId: 82, sessionId: "sess-local-1" });
+
+  const first = direct.handleTextMessage({ text: "first", replyToMessageId: 81 });
+  const second = direct.handleTextMessage({ text: "second", replyToMessageId: 82 });
+
+  await assert.rejects(first, /snapshot unavailable/);
+  const result = await second;
+  assert.equal(result.status, "sent_with_enter");
+});
+
 test("direct send falls back to clipboard when the platform paste adapter is unsupported", async () => {
   const writes = [];
   const direct = createTelegramDirectSend({
@@ -109,6 +370,14 @@ test("direct send falls back to clipboard when the platform paste adapter is uns
   assert.deepEqual(writes, [{ value: "continue please", type: "clipboard" }]);
   assert.match(res.text, /Copied text to this computer's clipboard/);
   assert.doesNotMatch(res.text, /focus-only dogfood mode/);
+
+  const retry = await direct.handleTextMessage({
+    text: "continue please",
+    replyToMessageId: 42,
+    chatId: "123",
+  });
+  assert.equal(retry.status, "fallback_copied");
+  assert.equal(writes.length, 2);
 });
 
 test("direct send treats bare carriage returns as multiline and falls back to clipboard", async () => {
@@ -174,7 +443,7 @@ test("direct send asks for a reply target when no completion mapping exists", as
 
   const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 404 });
   assert.equal(res.status, "unmapped");
-  assert.match(res.text, /Reply to a Clawd completion notification/);
+  assert.match(res.text, /newly delivered Clawd completion notification/);
 });
 
 test("direct send falls back when the mapped session is no longer live", async () => {
@@ -447,7 +716,7 @@ test("direct send adapter failures become failed deliveries without logging prom
   assert.equal(res.status, "failed");
   assert.equal(res.deliveryResult.errorClass, "delivery_adapter_threw");
   assert.equal(direct._deliveries.get(res.deliveryId).status, "failed");
-  assert.match(res.text, /No text was pasted/);
+  assert.match(res.text, /target terminal|No text was pasted/i);
   assert.doesNotMatch(res.text, /secret prompt/);
   const serializedLogs = JSON.stringify(logs);
   assert.doesNotMatch(serializedLogs, /secret prompt/);
@@ -745,6 +1014,7 @@ test("direct send preserves editor metadata from real session snapshots for past
         updatedAt: 1000,
         sourcePid: 1234,
         editor: "code",
+        recentEvents: [{ event: "Stop", at: 1000 }],
       }],
     ])),
     focusSession: () => confirmedFocusResult(),
@@ -790,6 +1060,7 @@ test("direct send gates the Orca paste using a real session snapshot", async () 
         updatedAt: 1000,
         sourcePid: 1234,
         orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+        recentEvents: [{ event: "Stop", at: 1000 }],
       }],
     ])),
     focusSession: () => confirmedFocusResult({
@@ -818,6 +1089,7 @@ test("direct send falls back to the clipboard when the Orca pane is unconfirmed"
         updatedAt: 1000,
         sourcePid: 1234,
         orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+        recentEvents: [{ event: "Stop", at: 1000 }],
       }],
     ])),
     // The window came forward, so the focus itself is genuinely confirmed; only the
@@ -863,6 +1135,7 @@ test("the focus gate carries the Orca pane outcome through to the adapter", asyn
         updatedAt: 1000,
         sourcePid: 1234,
         orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+        recentEvents: [{ event: "Stop", at: 1000 }],
       }],
     ])),
     focusSession: () => confirmedFocusResult({
@@ -1086,8 +1359,137 @@ test("direct send expires notification mappings", async () => {
   assert.equal(res.status, "unmapped");
 });
 
+test("direct send reports a completion mapping as replyable only until it expires", () => {
+  let ts = 1000;
+  const target = localTerminalEntry({
+    id: "sess-retained",
+    rawSessionId: "raw-retained",
+    agentPid: 4321,
+  });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    now: () => ts,
+    mappingTtlMs: 10,
+  });
+
+  const context = direct.createCompletionNotificationContext(target);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 43,
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, {
+    ...target,
+    agentPid: 9876,
+  }), false, "a reused session identity must not be retained by an older mapping");
+
+  ts += 11;
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), false);
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("direct send stops reporting completion mappings after their native route changes", () => {
+  let routeGeneration = 31;
+  const target = localTerminalEntry({ id: "sess-route-retained", agentPid: 4331 });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getRouteGeneration: () => routeGeneration,
+  });
+  const context = direct.createCompletionNotificationContext(target);
+
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 44,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), true);
+
+  routeGeneration = 32;
+  assert.equal(direct.hasReplyableCompletionMapping(target.id, target), false);
+  assert.equal(direct._mappings.size, 0);
+});
+
 test("normalizePromptText keeps newlines but removes control characters", () => {
   assert.equal(normalizePromptText("  hi\r\nthere\u0007  "), "hi\nthere");
+});
+
+test("direct send keeps a mapping and copies fallback while the Console helper is quarantined", async () => {
+  const fallbackWrites = [];
+  let attempts = 0;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [localTerminalEntry()] }),
+    focusSession: () => { throw new Error("must not focus"); },
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async () => {
+        attempts += 1;
+        return attempts === 1
+          ? { status: "failed", delivered: false, errorClass: "console_input_helper_quarantined" }
+          : { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => fallbackWrites.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 91, chatId: "123", sessionId: "sess-local-1" });
+  const quarantined = await direct.handleTextMessage({ text: "reply", replyToMessageId: 91, chatId: "123" });
+  const retried = await direct.handleTextMessage({ text: "reply", replyToMessageId: 91, chatId: "123" });
+
+  assert.equal(quarantined.status, "fallback_copied");
+  assert.equal(
+    direct._deliveries.get(quarantined.deliveryId).fallbackReason,
+    "console_input_helper_quarantined",
+  );
+  assert.equal(retried.status, "sent_with_enter");
+  assert.deepEqual(fallbackWrites, ["reply"]);
+});
+
+test("direct send preserves oversized replies and copies them without Console submission", async () => {
+  const target = localTerminalEntry({ id: "sess-long-reply", agentPid: 2111 });
+  const reply = `keep-all:${"x".repeat(3800)}`;
+  const copied = [];
+  let deliveryCount = 0;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    focusSession: () => { throw new Error("oversized reply must not focus"); },
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async () => {
+        deliveryCount += 1;
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+  direct.registerCompletionNotification({
+    messageId: 949,
+    chatId: "123",
+    sessionId: target.id,
+    agentPid: target.agentPid,
+  });
+
+  assert.equal(normalizePromptText(reply), reply);
+  const result = await direct.handleTextMessage({
+    text: reply,
+    replyToMessageId: 949,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "fallback_copied");
+  assert.equal(deliveryCount, 0);
+  assert.deepEqual(copied, [reply]);
+  assert.equal(direct._deliveries.get(result.deliveryId).fallbackReason, "reply_too_long");
+  assert.equal(direct._mappings.size, 1, "manual clipboard fallback keeps the reply target reusable");
 });
 
 test("the delivery ack names the display tag, not the key envelope or raw prefix", () => {
@@ -1114,4 +1516,1102 @@ test("the delivery ack names the display tag, not the key envelope or raw prefix
   assert.doesNotMatch(a, /111111/);
   assert.equal(a, "sent to a0a040910c");
   assert.equal(explicit, "sent to deadbeef00");
+});
+
+test("direct send rechecks session state after focus before invoking the delivery adapter", async () => {
+  let session = localTerminalEntry();
+  const deliveryCalls = [];
+  const fallbackWrites = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [session] }),
+    focusSession: async () => {
+      await Promise.resolve();
+      session = { ...session, state: "working", badge: "running" };
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: {
+      deliver: async (payload) => {
+        deliveryCalls.push(payload);
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => fallbackWrites.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 901, sessionId: session.id });
+  const result = await direct.handleTextMessage({ text: "continue", replyToMessageId: 901 });
+
+  assert.equal(result.status, "session_changed");
+  assert.deepEqual(deliveryCalls, []);
+  assert.deepEqual(fallbackWrites, []);
+  assert.match(result.text, /session changed/i);
+});
+
+test("direct send rechecks pending permissions after focus before invoking the delivery adapter", async () => {
+  const session = localTerminalEntry();
+  let pendingPermissions = [];
+  const deliveryCalls = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [session] }),
+    getPendingPermissions: () => pendingPermissions,
+    focusSession: async () => {
+      await Promise.resolve();
+      pendingPermissions = [{ sessionId: session.id, agentId: session.agentId }];
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: {
+      deliver: async (payload) => {
+        deliveryCalls.push(payload);
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 902, sessionId: session.id });
+  const result = await direct.handleTextMessage({ text: "continue", replyToMessageId: 902 });
+
+  assert.equal(result.status, "permission_pending");
+  assert.deepEqual(deliveryCalls, []);
+});
+
+test("direct send uses a focusless terminal-channel adapter and passes peer session PIDs", async () => {
+  const target = localTerminalEntry({ id: "sess-target", sourcePid: 1111, agentPid: 2111 });
+  const peer = localTerminalEntry({ id: "sess-peer", sourcePid: 1222, agentPid: 2222 });
+  const deliveries = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target, peer] }),
+    focusSession: () => { throw new Error("focus must not run for terminal-channel delivery"); },
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => {
+        deliveries.push(payload);
+        assert.deepEqual(await payload.validateBeforeInput(), {
+          ok: true,
+          otherSessionAgentPids: [2222],
+        });
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({
+    messageId: 950,
+    chatId: "123",
+    sessionId: target.id,
+    sourcePid: target.sourcePid,
+  });
+  const result = await direct.handleTextMessage({
+    text: "/compact",
+    replyToMessageId: 950,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "sent_with_enter");
+  assert.equal(result.focusResult, null);
+  assert.equal(deliveries.length, 1);
+  assert.equal(deliveries[0].entry.agentPid, 2111);
+  assert.deepEqual(deliveries[0].otherSessionAgentPids, [2222]);
+  assert.deepEqual(direct._deliveries.get(result.deliveryId).statusHistory.map((item) => item.status), [
+    "received",
+    "target_resolved",
+    "target_revalidated",
+    "delivery_attempted",
+    "sent_with_enter",
+  ]);
+});
+
+test("direct send rechecks its feature gate before Console input and does not fall back", async () => {
+  const target = localTerminalEntry({ id: "sess-disable-race", sourcePid: 1111, agentPid: 2111 });
+  let enabled = true;
+  let fallbackCount = 0;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => enabled,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => {
+        enabled = false;
+        const validation = await payload.validateBeforeInput();
+        return {
+          status: "failed",
+          delivered: false,
+          errorClass: validation.errorClass,
+        };
+      },
+    },
+    fallbackAdapter: {
+      copy: async () => {
+        fallbackCount += 1;
+        return { status: "fallback_copied", delivered: false };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({
+    messageId: 951,
+    chatId: "123",
+    sessionId: target.id,
+    sourcePid: target.sourcePid,
+    agentPid: target.agentPid,
+  });
+  const result = await direct.handleTextMessage({
+    text: "continue",
+    replyToMessageId: 951,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.deliveryResult.errorClass, "direct_send_disabled");
+  assert.equal(fallbackCount, 0);
+  assert.equal(direct._mappings.size, 1);
+});
+
+test("direct send drops a queued reply whose original poll signal was aborted", async () => {
+  const target = localTerminalEntry({ id: "sess-aborted-queue", agentPid: 2111 });
+  let deliveryCount = 0;
+  let releaseFirst;
+  let firstStarted;
+  const started = new Promise((resolve) => { firstStarted = resolve; });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async () => {
+        deliveryCount += 1;
+        if (deliveryCount === 1) {
+          firstStarted();
+          await new Promise((resolve) => { releaseFirst = resolve; });
+        }
+        return { status: "focus_only", delivered: false };
+      },
+    },
+    osPlatform: "win32",
+  });
+  direct.registerCompletionNotification({ messageId: 952, chatId: "123", sessionId: target.id });
+  direct.registerCompletionNotification({ messageId: 953, chatId: "123", sessionId: target.id });
+
+  const first = direct.handleTextMessage({ text: "first", replyToMessageId: 952, chatId: "123" });
+  await started;
+  const controller = new AbortController();
+  const stale = direct.handleTextMessage({
+    text: "stale",
+    replyToMessageId: 953,
+    chatId: "123",
+    signal: controller.signal,
+  });
+  controller.abort();
+  releaseFirst();
+
+  assert.equal((await first).status, "focused");
+  assert.equal(await stale, null);
+  assert.equal(deliveryCount, 1);
+});
+
+test("direct send rejects an aborted signal at focus and Console validation without fallback", async () => {
+  const target = localTerminalEntry({ id: "sess-aborted-input", agentPid: 2111 });
+  let adapterCount = 0;
+  let fallbackCount = 0;
+  const focusAbort = new AbortController();
+  const focusDirect = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    focusSession: () => {
+      focusAbort.abort();
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: {
+      deliver: async () => {
+        adapterCount += 1;
+        return { status: "sent_with_enter", delivered: true };
+      },
+    },
+    fallbackAdapter: { copy: async () => { fallbackCount += 1; } },
+    osPlatform: "win32",
+  });
+  focusDirect.registerCompletionNotification({ messageId: 954, chatId: "123", sessionId: target.id });
+  const focused = await focusDirect.handleTextMessage({
+    text: "stale focus",
+    replyToMessageId: 954,
+    chatId: "123",
+    signal: focusAbort.signal,
+  });
+  assert.equal(focused.status, "cancelled");
+
+  const inputAbort = new AbortController();
+  const inputDirect = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => {
+        adapterCount += 1;
+        assert.equal(payload.signal, inputAbort.signal);
+        inputAbort.abort();
+        const validation = payload.validateBeforeInput();
+        return { status: "failed", delivered: false, errorClass: validation.errorClass };
+      },
+    },
+    fallbackAdapter: { copy: async () => { fallbackCount += 1; } },
+    osPlatform: "win32",
+  });
+  inputDirect.registerCompletionNotification({ messageId: 955, chatId: "123", sessionId: target.id });
+  const validated = await inputDirect.handleTextMessage({
+    text: "stale input",
+    replyToMessageId: 955,
+    chatId: "123",
+    signal: inputAbort.signal,
+  });
+
+  assert.equal(validated.deliveryResult.errorClass, "direct_send_cancelled");
+  assert.equal(adapterCount, 1);
+  assert.equal(fallbackCount, 0);
+});
+
+test("direct send invalidates old notification routes and accepts the new generation", () => {
+  const direct = createTelegramDirectSend({ isEnabled: () => true });
+  const oldContext = direct.createCompletionNotificationContext({ id: "sess-route" });
+
+  direct.invalidateMappings();
+  assert.equal(
+    direct.isCompletionNotificationRouteCurrent(oldContext),
+    false,
+    "recipient and token invalidation must suppress a queued completion notification",
+  );
+  assert.equal(direct.isCompletionNotificationContextCurrent(oldContext), false);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 960,
+    chatId: "123",
+    sessionId: "sess-route",
+    notificationContext: oldContext,
+  }), false);
+
+  const currentContext = direct.createCompletionNotificationContext({ id: "sess-route" });
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 961,
+    chatId: "123",
+    sessionId: "sess-route",
+    notificationContext: currentContext,
+  }), true);
+  assert.equal(direct._mappings.size, 1);
+});
+
+test("direct send mapping-only invalidation keeps the notification route current", () => {
+  const direct = createTelegramDirectSend({ isEnabled: () => true });
+  const context = direct.createCompletionNotificationContext({ id: "sess-toggle" });
+
+  direct.invalidateMappings({ notificationRouteChanged: false });
+
+  assert.equal(direct.isCompletionNotificationRouteCurrent(context), true);
+  assert.equal(direct.isCompletionNotificationContextCurrent(context), false);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9601,
+    chatId: "123",
+    sessionId: "sess-toggle",
+    notificationContext: context,
+  }), false);
+});
+
+test("direct send binds completion contexts to the active native polling route", () => {
+  let generation = 11;
+  let polling = true;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getRouteGeneration: () => polling ? generation : null,
+  });
+
+  const context = direct.createCompletionNotificationContext({ id: "sess-native-route" });
+  assert.equal(context.routeGeneration, 11);
+  assert.equal(direct.isCompletionNotificationRouteCurrent(context), true);
+  assert.equal(direct.isCompletionNotificationContextCurrent(context), true);
+
+  polling = false;
+  const stoppedContext = direct.createCompletionNotificationContext({ id: "sess-stopped-route" });
+  assert.equal(stoppedContext.routeGeneration, null);
+  assert.equal(direct.isCompletionNotificationRouteCurrent(context), false);
+  assert.equal(direct.isCompletionNotificationRouteCurrent(stoppedContext), false);
+  assert.equal(direct.isCompletionNotificationContextCurrent(context), false);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9611,
+    chatId: "123",
+    sessionId: "sess-native-route",
+    notificationContext: context,
+  }), false);
+
+  polling = true;
+  generation = 12;
+  assert.equal(direct.isCompletionNotificationContextCurrent(context), false);
+});
+
+test("direct send rejects context-free mappings when a native route is bound", () => {
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getRouteGeneration: () => 12,
+  });
+
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 96115,
+    chatId: "123",
+    sessionId: "sess-context-required",
+  }), false);
+
+  const incompleteContext = direct.createCompletionNotificationContext({
+    id: "sess-context-required",
+  });
+  delete incompleteContext.routeGeneration;
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 96116,
+    chatId: "123",
+    sessionId: "sess-context-required",
+    notificationContext: incompleteContext,
+  }), false);
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("direct send does not reuse a completion mapping after native polling restarts", async () => {
+  let routeGeneration = 21;
+  const target = localTerminalEntry({ id: "sess-restarted-route", agentPid: 2111 });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getRouteGeneration: () => routeGeneration,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    focusSession: () => { throw new Error("stale mapping must not focus"); },
+    osPlatform: "win32",
+  });
+
+  const context = direct.createCompletionNotificationContext({ id: target.id });
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9612,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+
+  // The native runner increments its route generation on every stop/start,
+  // even when the bot token and recipient remain unchanged.
+  routeGeneration = 22;
+  const result = await direct.handleTextMessage({
+    text: "must not target the restarted route",
+    replyToMessageId: 9612,
+    chatId: "123",
+  });
+  assert.equal(result.status, "unmapped");
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("direct send captures the terminal identity when the completion is observed", async () => {
+  const original = localTerminalEntry({ id: "sess-captured-identity", agentPid: 2111 });
+  let current = original;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [current] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async () => ({ status: "sent_with_enter", delivered: true, autoEnter: true }),
+    },
+    osPlatform: "win32",
+  });
+
+  const context = direct.createCompletionNotificationContext({ id: original.id });
+  // Simulate the Telegram send completing after the session id was reused by
+  // a new agent process. Registration must retain the identity from the
+  // completion snapshot, rather than the later callback arguments.
+  current = { ...original, agentPid: 3222 };
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9613,
+    chatId: "123",
+    sessionId: original.id,
+    agentPid: current.agentPid,
+    notificationContext: context,
+  }), true);
+
+  const result = await direct.handleTextMessage({
+    text: "must not target the reused process",
+    replyToMessageId: 9613,
+    chatId: "123",
+  });
+  assert.equal(result.status, "session_changed");
+  assert.equal(direct._deliveries.get(result.deliveryId).errorClass, "session_identity_changed");
+});
+
+test("direct send falls back when Console input lacks a PID captured at notification time", async () => {
+  const original = localTerminalEntry({ id: "sess-missing-captured-pid", agentPid: null });
+  let current = original;
+  let deliveryCount = 0;
+  const copied = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [current] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      requiresMappedAgentPid: true,
+      deliver: async () => {
+        deliveryCount += 1;
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  const context = direct.createCompletionNotificationContext({ id: original.id });
+  current = { ...original, agentPid: 3222 };
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9614,
+    chatId: "123",
+    sessionId: original.id,
+    agentPid: current.agentPid,
+    notificationContext: context,
+  }), true);
+
+  const result = await direct.handleTextMessage({
+    text: "copy instead of targeting the later process",
+    replyToMessageId: 9614,
+    chatId: "123",
+  });
+  assert.equal(result.status, "fallback_copied");
+  assert.equal(deliveryCount, 0);
+  assert.deepEqual(copied, ["copy instead of targeting the later process"]);
+});
+
+test("direct send rejects an in-flight Console write after route invalidation", async () => {
+  const target = localTerminalEntry({ id: "sess-route-race", agentPid: 2111 });
+  let fallbackCount = 0;
+  let direct;
+  direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => {
+        direct.invalidateMappings();
+        const validation = await payload.validateBeforeInput();
+        return { status: "failed", delivered: false, errorClass: validation.errorClass };
+      },
+    },
+    fallbackAdapter: {
+      copy: async () => {
+        fallbackCount += 1;
+        return { status: "fallback_copied", delivered: false };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  const context = direct.createCompletionNotificationContext({ id: target.id });
+  direct.registerCompletionNotification({
+    messageId: 962,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  });
+  const result = await direct.handleTextMessage({
+    text: "continue",
+    replyToMessageId: 962,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.deliveryResult.errorClass, "direct_send_disabled");
+  assert.equal(fallbackCount, 0);
+});
+
+test("direct send suppresses a success returned after adapter route invalidation", async () => {
+  const target = localTerminalEntry({ id: "sess-route-return-race", agentPid: 2111 });
+  let releaseDelivery;
+  let deliveryStarted;
+  const started = new Promise((resolve) => { deliveryStarted = resolve; });
+  let direct;
+  direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => {
+        assert.equal(payload.validateBeforeInput().ok, true);
+        deliveryStarted();
+        await new Promise((resolve) => { releaseDelivery = resolve; });
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    fallbackAdapter: {
+      copy: async () => ({ status: "fallback_copied", delivered: false }),
+    },
+    osPlatform: "win32",
+  });
+
+  const context = direct.createCompletionNotificationContext({ id: target.id });
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9621,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+
+  const delivery = direct.handleTextMessage({
+    text: "continue",
+    replyToMessageId: 9621,
+    chatId: "123",
+  });
+  await started;
+  direct.invalidateMappings();
+  releaseDelivery();
+
+  const result = await delivery;
+  const record = direct._deliveries.get(result.deliveryId);
+  assert.equal(result.status, "disabled");
+  assert.equal(result.deliveryResult.status, "failed");
+  assert.equal(result.deliveryResult.errorClass, "direct_send_disabled");
+  assert.equal(record.status, "disabled");
+  assert.equal(record.errorClass, "direct_send_disabled");
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("direct send does not report a stale asynchronous fallback as copied", async () => {
+  let releaseFallback;
+  let fallbackStarted;
+  const started = new Promise((resolve) => { fallbackStarted = resolve; });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [] }),
+    fallbackAdapter: {
+      copy: async () => {
+        fallbackStarted();
+        return new Promise((resolve) => { releaseFallback = resolve; });
+      },
+    },
+    osPlatform: "win32",
+  });
+  const context = direct.createCompletionNotificationContext({ id: "sess-stale-fallback" });
+  direct.registerCompletionNotification({
+    messageId: 965,
+    chatId: "123",
+    sessionId: "sess-stale-fallback",
+    notificationContext: context,
+  });
+
+  const delivery = direct.handleTextMessage({
+    text: "manual copy",
+    replyToMessageId: 965,
+    chatId: "123",
+  });
+  await started;
+  direct.invalidateMappings();
+  releaseFallback({ status: "fallback_copied", delivered: false });
+
+  const result = await delivery;
+  const record = direct._deliveries.get(result.deliveryId);
+  assert.equal(result.status, "session_not_live");
+  assert.equal(record.status, "disabled");
+  assert.equal(record.errorClass, "direct_send_disabled");
+  assert.equal(record.fallbackUncertain, true);
+  assert.equal(record.deliveryResult.status, "fallback_copied");
+});
+
+test("direct send marks an aborted asynchronous fallback as cancelled", async () => {
+  let releaseFallback;
+  let fallbackStarted;
+  const started = new Promise((resolve) => { fallbackStarted = resolve; });
+  const controller = new AbortController();
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [] }),
+    fallbackAdapter: {
+      copy: async () => {
+        fallbackStarted();
+        return new Promise((resolve) => { releaseFallback = resolve; });
+      },
+    },
+    osPlatform: "win32",
+  });
+  direct.registerCompletionNotification({
+    messageId: 966,
+    chatId: "123",
+    sessionId: "sess-aborted-fallback",
+  });
+
+  const delivery = direct.handleTextMessage({
+    text: "manual copy",
+    replyToMessageId: 966,
+    chatId: "123",
+    signal: controller.signal,
+  });
+  await started;
+  controller.abort();
+  releaseFallback({ status: "fallback_copied", delivered: false });
+
+  const result = await delivery;
+  const record = direct._deliveries.get(result.deliveryId);
+  assert.equal(result.status, "session_not_live");
+  assert.equal(record.status, "cancelled");
+  assert.equal(record.errorClass, "direct_send_cancelled");
+  assert.equal(record.fallbackUncertain, true);
+});
+
+test("direct send retires every older notification for a submitted session", async () => {
+  const target = localTerminalEntry({ id: "sess-watermark", agentPid: 2111 });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async () => ({ status: "sent_with_enter", delivered: true, autoEnter: true }),
+    },
+    osPlatform: "win32",
+  });
+
+  const firstContext = direct.createCompletionNotificationContext({ id: target.id });
+  const secondContext = direct.createCompletionNotificationContext({ id: target.id });
+  const delayedContext = direct.createCompletionNotificationContext({ id: target.id });
+  direct.registerCompletionNotification({
+    messageId: 963,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: firstContext,
+  });
+  direct.registerCompletionNotification({
+    messageId: 964,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: secondContext,
+  });
+
+  const sent = await direct.handleTextMessage({ text: "first", replyToMessageId: 963, chatId: "123" });
+  const replay = await direct.handleTextMessage({ text: "second", replyToMessageId: 964, chatId: "123" });
+  const delayedRegistered = direct.registerCompletionNotification({
+    messageId: 965,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: delayedContext,
+  });
+  const freshContext = direct.createCompletionNotificationContext({ id: target.id });
+  const freshRegistered = direct.registerCompletionNotification({
+    messageId: 966,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: freshContext,
+  });
+
+  assert.equal(sent.status, "sent_with_enter");
+  assert.equal(replay.status, "unmapped");
+  assert.equal(delayedRegistered, false);
+  assert.equal(freshRegistered, true);
+});
+
+test("direct send preserves a completion created after Console input before its result returns", async () => {
+  const target = localTerminalEntry({ id: "sess-fast-completion", agentPid: 2111 });
+  let deliveryCount = 0;
+  let signalInputWritten;
+  let releaseFirstDelivery;
+  const inputWritten = new Promise((resolve) => { signalInputWritten = resolve; });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => {
+        deliveryCount += 1;
+        const validation = await payload.validateBeforeInput();
+        assert.equal(validation.ok, true);
+        if (deliveryCount === 1) {
+          signalInputWritten();
+          await new Promise((resolve) => { releaseFirstDelivery = resolve; });
+        }
+        return { status: "sent_with_enter", delivered: true, autoEnter: true };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  const initialContext = direct.createCompletionNotificationContext({ id: target.id });
+  direct.registerCompletionNotification({
+    messageId: 969,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: initialContext,
+  });
+
+  const firstDelivery = direct.handleTextMessage({
+    text: "first",
+    replyToMessageId: 969,
+    chatId: "123",
+  });
+  await inputWritten;
+
+  const freshContext = direct.createCompletionNotificationContext({ id: target.id });
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 970,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: freshContext,
+  }), true);
+
+  releaseFirstDelivery();
+  assert.equal((await firstDelivery).status, "sent_with_enter");
+  assert.equal(direct._mappings.size, 1);
+
+  const secondDelivery = await direct.handleTextMessage({
+    text: "second",
+    replyToMessageId: 970,
+    chatId: "123",
+  });
+  assert.equal(secondDelivery.status, "sent_with_enter");
+  assert.equal(deliveryCount, 2);
+});
+
+test("direct send falls back when two visible sessions share one agent PID", async () => {
+  const target = localTerminalEntry({ id: "sess-shared-a", sourcePid: 1111, agentPid: 2111 });
+  const peer = localTerminalEntry({ id: "sess-shared-b", sourcePid: 1222, agentPid: 2111 });
+  let deliveryCount = 0;
+  const copied = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target, peer] }),
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async () => {
+        deliveryCount += 1;
+        return { status: "sent_with_enter", delivered: true };
+      },
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({
+    messageId: 967,
+    chatId: "123",
+    sessionId: target.id,
+    agentPid: target.agentPid,
+  });
+  const result = await direct.handleTextMessage({
+    text: "manual only",
+    replyToMessageId: 967,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "fallback_copied");
+  assert.equal(deliveryCount, 0);
+  assert.deepEqual(copied, ["manual only"]);
+});
+
+test("direct send rejects an Orca pane identity change after focus", async () => {
+  let current = localTerminalEntry({ id: "sess-orca-change", orcaPaneKey: "window:old" });
+  let deliveryCount = 0;
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [current] }),
+    focusSession: () => {
+      current = { ...current, orcaPaneKey: "window:new" };
+      return confirmedFocusResult({ orcaPane: { ok: true, match: "exact", reason: "exact" } });
+    },
+    deliveryAdapter: {
+      deliver: async () => {
+        deliveryCount += 1;
+        return { status: "pasted_without_enter", delivered: true };
+      },
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 968, sessionId: current.id });
+  const result = await direct.handleTextMessage({ text: "continue", replyToMessageId: 968 });
+
+  assert.equal(result.status, "session_changed");
+  assert.equal(deliveryCount, 0);
+});
+
+test("direct send rejects a reused session id when the notification terminal changed", async () => {
+  const current = localTerminalEntry({ sourcePid: 9999, agentPid: 2999 });
+  const deliveries = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [current] }),
+    focusSession: () => { throw new Error("must not focus"); },
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => deliveries.push(payload),
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({
+    messageId: 951,
+    sessionId: current.id,
+    sourcePid: 1234,
+  });
+  const result = await direct.handleTextMessage({ text: "continue", replyToMessageId: 951 });
+
+  assert.equal(result.status, "session_changed");
+  assert.deepEqual(deliveries, []);
+});
+
+test("direct send rejects a reused session when only the agent process changed", async () => {
+  const current = localTerminalEntry({ sourcePid: 1234, agentPid: 2999 });
+  const deliveries = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [current] }),
+    focusSession: () => { throw new Error("must not focus"); },
+    deliveryAdapter: {
+      requiresFocus: false,
+      deliver: async (payload) => deliveries.push(payload),
+    },
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({
+    messageId: 952,
+    sessionId: current.id,
+    sourcePid: current.sourcePid,
+    agentPid: 2111,
+  });
+  const result = await direct.handleTextMessage({ text: "continue", replyToMessageId: 952 });
+
+  assert.equal(result.status, "session_changed");
+  assert.deepEqual(deliveries, []);
+});
+
+test("direct send rejects a reused session when mapped UI identity changes", async () => {
+  const identityFields = [
+    ["rawSessionId", "raw-session:new"],
+    ["agentId", "codex"],
+    ["editor", "cursor"],
+    ["wtHwnd", "12346"],
+    ["orcaPaneKey", "window:new-pane"],
+    ["codexOriginator", "codex_work_desktop"],
+  ];
+
+  for (let index = 0; index < identityFields.length; index += 1) {
+    const [field, replacement] = identityFields[index];
+    const messageId = 980 + index;
+    const original = localTerminalEntry({
+      id: `sess-ui-${field}`,
+      rawSessionId: "raw-session:old",
+      agentId: "claude-code",
+      sourcePid: 1234,
+      agentPid: 2111,
+      editor: "code",
+      wtHwnd: "12345",
+      orcaPaneKey: "window:old-pane",
+      codexOriginator: "codex-tui",
+    });
+    let current = original;
+    const deliveries = [];
+    const direct = createTelegramDirectSend({
+      isEnabled: () => true,
+      getSessionSnapshot: () => ({ sessions: [current] }),
+      deliveryAdapter: {
+        requiresFocus: false,
+        deliver: async (payload) => {
+          deliveries.push(payload);
+          return { status: "sent_with_enter", delivered: true, autoEnter: true };
+        },
+      },
+      osPlatform: "win32",
+    });
+
+    direct.registerCompletionNotification({
+      messageId,
+      chatId: "123",
+      sessionId: original.id,
+      rawSessionId: original.rawSessionId,
+      agentId: original.agentId,
+      sourcePid: original.sourcePid,
+      agentPid: original.agentPid,
+      editor: original.editor,
+      wtHwnd: original.wtHwnd,
+      orcaPaneKey: original.orcaPaneKey,
+      codexOriginator: original.codexOriginator,
+    });
+    current = { ...original, [field]: replacement };
+
+    const result = await direct.handleTextMessage({
+      text: "must stay on the original terminal",
+      replyToMessageId: messageId,
+      chatId: "123",
+    });
+    assert.equal(result.status, "session_changed", field);
+    assert.deepEqual(deliveries, [], field);
+  }
+});
+
+test("direct send routes Codex Desktop replies through a focusless queue adapter", async () => {
+  const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
+  const desktop = localTerminalEntry({
+    id: `codex:${threadId}`,
+    rawSessionId: `codex:${threadId}`,
+    agentId: "codex",
+    codexOriginator: "codex_work_desktop",
+    sourcePid: null,
+    agentPid: 14220,
+  });
+  const focused = [];
+  const delivered = [];
+  const consoleAdapter = {
+    deliver: async () => {
+      throw new Error("Desktop replies must not use Console input");
+    },
+  };
+  const queueAdapter = {
+    requiresFocus: false,
+    requiresFocusableTarget: false,
+    requiresMappedAgentPid: false,
+    requiresPidDisambiguation: false,
+    canDeliver: (entry) => entry && entry.codexOriginator === "codex_work_desktop",
+    deliver: async (payload) => {
+      delivered.push({ sessionId: payload.sessionId, promptText: payload.promptText });
+      return { status: "queued", delivered: true, autoEnter: true };
+    },
+  };
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [desktop] }),
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: consoleAdapter,
+    getDeliveryAdapter: ({ entry }) => entry.agentId === "codex" ? queueAdapter : consoleAdapter,
+    osPlatform: "win32",
+  });
+
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9971,
+    sessionId: desktop.id,
+    agentId: desktop.agentId,
+    agentPid: desktop.agentPid,
+  }), true);
+  const result = await direct.handleTextMessage({
+    text: "Please continue from Telegram",
+    replyToMessageId: 9971,
+  });
+
+  assert.equal(result.status, "queued");
+  assert.equal(result.deliveryResult.status, "queued");
+  assert.match(result.text, /Codex session/);
+  assert.deepEqual(focused, []);
+  assert.deepEqual(delivered, [{
+    sessionId: desktop.id,
+    promptText: "Please continue from Telegram",
+  }]);
+});
+
+test("direct send does not apply Console PID ambiguity to Codex Desktop queue sessions", async () => {
+  const threadId = "019e115a-4df2-7ed0-b90e-8e6345aca777";
+  const target = localTerminalEntry({
+    id: `codex:${threadId}`,
+    rawSessionId: `codex:${threadId}`,
+    agentId: "codex",
+    codexOriginator: "Codex Desktop",
+    sourcePid: 14220,
+    agentPid: 14220,
+  });
+  const peer = localTerminalEntry({
+    id: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    rawSessionId: "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
+    agentId: "codex",
+    codexOriginator: "codex_work_desktop",
+    sourcePid: 14220,
+    agentPid: 14220,
+  });
+  let calls = 0;
+  const queueAdapter = {
+    requiresFocus: false,
+    requiresFocusableTarget: false,
+    requiresPidDisambiguation: false,
+    canDeliver: () => true,
+    deliver: async () => {
+      calls += 1;
+      return { status: "queued", delivered: true };
+    },
+  };
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target, peer] }),
+    deliveryAdapter: queueAdapter,
+    osPlatform: "win32",
+  });
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9972,
+    sessionId: target.id,
+    agentId: target.agentId,
+    agentPid: target.agentPid,
+  }), true);
+  const result = await direct.handleTextMessage({ text: "same app-server", replyToMessageId: 9972 });
+  assert.equal(result.status, "queued");
+  assert.equal(calls, 1);
+});
+
+test("direct send copies replies when an unknown Codex originator selects the queue guard", async () => {
+  const target = localTerminalEntry({
+    id: "codex:019e115c-4df2-7ed0-b90e-8e6345aca777",
+    rawSessionId: "codex:019e115c-4df2-7ed0-b90e-8e6345aca777",
+    agentId: "codex",
+    codexOriginator: "future-unknown-client",
+    sourcePid: 14220,
+    agentPid: 14220,
+  });
+  let consoleCalls = 0;
+  let queueCalls = 0;
+  const copied = [];
+  const consoleAdapter = {
+    requiresFocus: false,
+    deliver: async () => {
+      consoleCalls += 1;
+      return { status: "sent_with_enter", delivered: true };
+    },
+  };
+  const queueGuardAdapter = {
+    requiresFocus: false,
+    requiresFocusableTarget: false,
+    requiresMappedAgentPid: false,
+    requiresPidDisambiguation: false,
+    canDeliver: () => false,
+    deliver: async () => {
+      queueCalls += 1;
+      return { status: "queued", delivered: true };
+    },
+  };
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [target] }),
+    deliveryAdapter: consoleAdapter,
+    getDeliveryAdapter: () => queueGuardAdapter,
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+  const context = direct.createCompletionNotificationContext(target);
+  assert.equal(direct.registerCompletionNotification({
+    messageId: 9973,
+    chatId: "123",
+    sessionId: target.id,
+    notificationContext: context,
+  }), true);
+
+  const result = await direct.handleTextMessage({
+    text: "keep this out of the shared app-server Console",
+    replyToMessageId: 9973,
+    chatId: "123",
+  });
+
+  assert.equal(result.status, "fallback_copied");
+  assert.equal(consoleCalls, 0);
+  assert.equal(queueCalls, 0);
+  assert.deepEqual(copied, ["keep this out of the shared app-server Console"]);
 });

@@ -148,6 +148,21 @@ describe("Codex monitor callback helpers", () => {
     });
   });
 
+  it("passes assistant output from terminal JSONL completions", () => {
+    assert.deepStrictEqual(buildCodexMonitorSessionOptions({
+      cwd: "/repo",
+      assistantLastOutput: "Implemented the fix.\nTests pass.",
+      assistantLastOutputTruncated: true,
+    }, { includeHeadless: true }), {
+      cwd: "/repo",
+      agentId: "codex",
+      sessionTitle: undefined,
+      assistantLastOutput: "Implemented the fix.\nTests pass.",
+      assistantLastOutputTruncated: true,
+      headless: false,
+    });
+  });
+
   it("omits invalid context usage from JSONL monitor updates", () => {
     assert.deepStrictEqual(buildCodexMonitorSessionOptions({
       cwd: "/repo",

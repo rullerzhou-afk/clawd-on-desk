@@ -53,6 +53,15 @@ function buildCodexMonitorSessionOptions(extra, options = {}) {
   }
   const contextUsage = normalizeContextUsage(input.contextUsage);
   if (contextUsage) out.contextUsage = contextUsage;
+  // Completion output is extracted by the JSONL monitor from the final
+  // assistant message. Keep it on the lifecycle callback so the state store
+  // and Telegram/Slack completion consumers receive the same answer as the
+  // official hook path. It is present only on terminal events, so ordinary
+  // monitor updates keep the existing payload shape.
+  if (typeof input.assistantLastOutput === "string" && input.assistantLastOutput.trim()) {
+    out.assistantLastOutput = input.assistantLastOutput;
+    out.assistantLastOutputTruncated = input.assistantLastOutputTruncated === true;
+  }
   if (options.includeHeadless) out.headless = input.headless === true;
   return out;
 }
