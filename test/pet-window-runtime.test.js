@@ -33,6 +33,7 @@ function makeWindow(bounds = { x: 10, y: 20, width: 100, height: 100 }) {
     setShape: (shape) => calls.push(["setShape", shape]),
     setIgnoreMouseEvents: (value) => calls.push(["setIgnoreMouseEvents", value]),
     setAlwaysOnTop: (...args) => calls.push(["setAlwaysOnTop", ...args]),
+    setVisibleOnAllWorkspaces: (...args) => calls.push(["setVisibleOnAllWorkspaces", ...args]),
     setFocusable: (value) => calls.push(["setFocusable", value]),
     showInactive: () => calls.push(["showInactive"]),
     hide: () => calls.push(["hide"]),
@@ -2825,6 +2826,67 @@ describe("pet-window-runtime", () => {
       true,
       "pop-up-menu",
     ]);
+  });
+
+  it("pins both pet windows to all workspaces on Linux so the pet follows workspace switches", () => {
+    const renderInstances = [];
+    const hitInstances = [];
+    const harness = createRuntime({ isLinux: true });
+
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(renderInstances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: { ok: true },
+      setRenderWindow: harness.setRenderWin,
+      isQuitting: () => false,
+    });
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(hitInstances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+    });
+
+    const expected = ["setVisibleOnAllWorkspaces", true, { visibleOnFullScreen: true }];
+    assert.deepStrictEqual(
+      renderInstances[0].calls.find((call) => call[0] === "setVisibleOnAllWorkspaces"),
+      expected,
+    );
+    assert.deepStrictEqual(
+      hitInstances[0].calls.find((call) => call[0] === "setVisibleOnAllWorkspaces"),
+      expected,
+    );
+  });
+
+  it("does not touch cross-workspace visibility off Linux (macOS keeps reapplyMacVisibility)", () => {
+    const renderInstances = [];
+    const hitInstances = [];
+    const harness = createRuntime({ isLinux: false });
+
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(renderInstances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: { ok: true },
+      setRenderWindow: harness.setRenderWin,
+      isQuitting: () => false,
+    });
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(hitInstances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+    });
+
+    assert.equal(renderInstances[0].calls.some((call) => call[0] === "setVisibleOnAllWorkspaces"), false);
+    assert.equal(hitInstances[0].calls.some((call) => call[0] === "setVisibleOnAllWorkspaces"), false);
   });
 
   it("reloadWindowWebContents ignores destroyed windows and webContents", () => {
