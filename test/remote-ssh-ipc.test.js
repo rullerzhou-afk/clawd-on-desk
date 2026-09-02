@@ -3013,24 +3013,23 @@ test("remoteSsh:authenticate spawns interactive ssh args (no -T, only BatchMode=
   });
   const r = await ipcMain.invoke("remoteSsh:authenticate", "p1");
   assert.equal(r.status, "ok");
-  // First (and only) call should be wt.exe (it succeeded).
   assert.equal(calls.length, 1);
-  assert.equal(calls[0].cmd, "wt.exe");
-  assert.equal(calls[0].args[0], "--");
-  assert.equal(calls[0].args[1], "ssh");
+  assert.equal(calls[0].cmd, "cmd.exe");
+  assert.deepEqual(calls[0].args.slice(0, 4), ["/d", "/v:off", "/s", "/k"]);
+  const command = calls[0].args[4];
   // Interactive ssh args MUST NOT include -T (would break remote pty).
-  assert.equal(calls[0].args.includes("-T"), false, "Authenticate must drop -T");
+  assert.equal(command.includes("-T"), false, "Authenticate must drop -T");
   // ssh -o is first-wins (see remote-ssh-runtime.js for the long comment).
   // Interactive base is empty, so BatchMode=no from extraOpts is the ONLY
   // BatchMode token AND the first one ssh sees → effective config allows
   // password / passphrase / host-key prompts. This is the #348 fix.
-  const bmTokens = calls[0].args.filter((v) => typeof v === "string" && v.startsWith("BatchMode="));
-  assert.equal(bmTokens.length, 1, "interactive must carry only the explicit BatchMode=no");
-  assert.equal(bmTokens[0], "BatchMode=no");
+  assert.equal((command.match(/BatchMode=/g) || []).length, 1,
+    "interactive must carry only the explicit BatchMode=no");
+  assert.match(command, /BatchMode=no/);
   // ConnectTimeout must NOT be in the interactive base — user controls the
   // pace, and we don't want a 15s ssh-level timeout fighting their typing.
   assert.equal(
-    calls[0].args.some((v) => typeof v === "string" && v.startsWith("ConnectTimeout=")),
+    command.includes("ConnectTimeout="),
     false,
     "interactive must not carry ConnectTimeout"
   );
@@ -3058,30 +3057,22 @@ test("remoteSsh:open-terminal uses the same interactive ssh args contract as Aut
   });
   const r = await ipcMain.invoke("remoteSsh:open-terminal", "p1");
   assert.equal(r.status, "ok");
-  assert.equal(calls[0].cmd, "wt.exe");
-  assert.equal(calls[0].args.includes("-T"), false);
-  const bmTokens = calls[0].args.filter((v) => typeof v === "string" && v.startsWith("BatchMode="));
-  assert.equal(bmTokens.length, 1);
-  assert.equal(bmTokens[0], "BatchMode=no");
-  assert.equal(
-    calls[0].args.some((v) => typeof v === "string" && v.startsWith("ConnectTimeout=")),
-    false
-  );
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "cmd.exe");
+  const command = calls[0].args[4];
+  assert.equal(command.includes("-T"), false);
+  assert.equal((command.match(/BatchMode=/g) || []).length, 1);
+  assert.match(command, /BatchMode=no/);
+  assert.equal(command.includes("ConnectTimeout="), false);
   ipc.dispose();
 });
 
-test("Windows: wt.exe missing → fall back to cmd.exe (real fallback chain)", async () => {
+test("Windows: launches cmd.exe directly without probing wt.exe", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const calls = [];
   const spawn = (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
-    if (cmd === "wt.exe") {
-      // Simulate ENOENT — emits async 'error' event.
-      return makeFakeSpawnChild({
-        error: Object.assign(new Error("spawn wt.exe ENOENT"), { code: "ENOENT" }),
-      });
-    }
     return makeFakeSpawnChild();
   };
   const ipc = registerRemoteSshIpc({
@@ -3095,23 +3086,17 @@ test("Windows: wt.exe missing → fall back to cmd.exe (real fallback chain)", a
   const r = await ipcMain.invoke("remoteSsh:authenticate", "p1");
   assert.equal(r.status, "ok");
   assert.equal(r.terminal, "cmd");
-  assert.equal(calls.length, 2);
-  assert.equal(calls[0].cmd, "wt.exe");
-  assert.equal(calls[1].cmd, "cmd.exe");
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].cmd, "cmd.exe");
   ipc.dispose();
 });
 
-test("Windows: cmd.exe fallback disables delayed expansion and passes verbatim escaped args", async () => {
+test("Windows: cmd.exe launch disables delayed expansion and passes verbatim escaped args", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const calls = [];
   const spawn = (cmd, args, opts) => {
     calls.push({ cmd, args, opts });
-    if (cmd === "wt.exe") {
-      return makeFakeSpawnChild({
-        error: Object.assign(new Error("spawn wt.exe ENOENT"), { code: "ENOENT" }),
-      });
-    }
     return makeFakeSpawnChild();
   };
   const ipc = registerRemoteSshIpc({
@@ -3127,15 +3112,15 @@ test("Windows: cmd.exe fallback disables delayed expansion and passes verbatim e
   });
   const r = await ipcMain.invoke("remoteSsh:authenticate", "p1");
   assert.equal(r.status, "ok");
-  assert.equal(calls[1].cmd, "cmd.exe");
-  assert.deepEqual(calls[1].args.slice(0, 4), ["/d", "/v:off", "/s", "/k"]);
-  assert.equal(calls[1].opts.windowsVerbatimArguments, true);
-  assert.match(calls[1].args[4], /\^%CLAWD_QUOTE_TEST\^%/);
-  assert.doesNotMatch(calls[1].args[4], /"%CLAWD_QUOTE_TEST%"/);
+  assert.equal(calls[0].cmd, "cmd.exe");
+  assert.deepEqual(calls[0].args.slice(0, 4), ["/d", "/v:off", "/s", "/k"]);
+  assert.equal(calls[0].opts.windowsVerbatimArguments, true);
+  assert.match(calls[0].args[4], /\^%CLAWD_QUOTE_TEST\^%/);
+  assert.doesNotMatch(calls[0].args[4], /"%CLAWD_QUOTE_TEST%"/);
   ipc.dispose();
 });
 
-test("Windows: both wt and cmd missing → returns error (no crash)", async () => {
+test("Windows: cmd.exe missing → returns error (no crash)", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
   const spawn = () => makeFakeSpawnChild({
