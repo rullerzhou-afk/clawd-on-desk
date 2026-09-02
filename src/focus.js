@@ -289,6 +289,10 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
                 }
             }
         } elseif ($editorProcessNames -contains $proc.ProcessName) {
+            # Cursor / VS Code: prefer a window whose title contains the project
+            # folder. Glass / Agents windows often title themselves "Cursor Agents"
+            # (or a chat name) with no cwd — falling back to the process's visible
+            # window / MainWindowHandle is what users expect from a HUD click.
             $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$cacheTitleNames))
             if ($matches.Count -eq 1) {
                 [WinFocus]::Focus($matches[0])
@@ -299,7 +303,22 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             } elseif ($matches.Count -gt 1) {
                 $reason = 'editor-parent-title-ambiguous'
             } else {
-                $reason = 'editor-parent-no-title-match'
+                $pidWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$curPid))
+                if ($pidWindows.Count -eq 1) {
+                    [WinFocus]::Focus($pidWindows[0])
+                    $selectedTargetHwnd = $pidWindows[0]
+                    $focused = $true
+                    $reason = 'editor-parent-pid-window'
+                } elseif ($pidWindows.Count -gt 1) {
+                    $reason = 'editor-parent-pid-window-ambiguous'
+                } elseif ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                    [WinFocus]::Focus($proc.MainWindowHandle)
+                    $selectedTargetHwnd = $proc.MainWindowHandle
+                    $focused = $true
+                    $reason = 'editor-parent-main-window'
+                } else {
+                    $reason = 'editor-parent-no-title-match'
+                }
             }
         } else {
             [WinFocus]::Focus($proc.MainWindowHandle)
@@ -310,7 +329,25 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
         }
         break` : `
         if ($editorProcessNames -contains $proc.ProcessName) {
-            $reason = 'editor-parent-no-title'
+            # No cwd title candidates: still raise the IDE window. Clicking a
+            # Cursor / Claude-in-Cursor session should bring the app forward even
+            # when we cannot pick a project-specific window by title.
+            $pidWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$curPid))
+            if ($pidWindows.Count -eq 1) {
+                [WinFocus]::Focus($pidWindows[0])
+                $selectedTargetHwnd = $pidWindows[0]
+                $focused = $true
+                $reason = 'editor-parent-pid-window-no-title'
+            } elseif ($pidWindows.Count -gt 1) {
+                $reason = 'editor-parent-pid-window-ambiguous-no-title'
+            } elseif ($proc.MainWindowHandle -ne [IntPtr]::Zero) {
+                [WinFocus]::Focus($proc.MainWindowHandle)
+                $selectedTargetHwnd = $proc.MainWindowHandle
+                $focused = $true
+                $reason = 'editor-parent-main-window-no-title'
+            } else {
+                $reason = 'editor-parent-no-title'
+            }
         } elseif ($wtProcessNames -notcontains $proc.ProcessName) {
             [WinFocus]::Focus($proc.MainWindowHandle)
             $selectedTargetHwnd = $proc.MainWindowHandle
@@ -636,6 +673,10 @@ const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
   "parent-direct",
   "parent-direct-no-title",
   "editor-parent-title-match",
+  "editor-parent-pid-window",
+  "editor-parent-main-window",
+  "editor-parent-pid-window-no-title",
+  "editor-parent-main-window-no-title",
   "wt-parent-title-match",
   "wt-title-match",
 ]);
