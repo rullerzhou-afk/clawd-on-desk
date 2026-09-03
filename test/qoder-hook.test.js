@@ -5,6 +5,7 @@ const {
   buildStateBody,
   sendHookEvent,
   normalizeSessionId,
+  normalizeSessionTitle,
   isQoderAgentCommandLine,
 } = require("../hooks/qoder-hook");
 
@@ -42,6 +43,15 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(normalizeSessionId("qoder:abc"), "qoder:abc");
   });
 
+  it("normalizes session titles without splitting Unicode code points", () => {
+    assert.strictEqual(normalizeSessionTitle("  Fix\n\u202E auth   flow  "), "Fix auth flow");
+    assert.strictEqual(normalizeSessionTitle(" \t "), null);
+    const long = "修".repeat(90);
+    const normalized = normalizeSessionTitle(long);
+    assert.strictEqual(Array.from(normalized).length, 80);
+    assert.ok(normalized.endsWith("…"));
+  });
+
   it("builds a state body with agent_id, namespaced session, and safe metadata", () => {
     const body = buildStateBody("PreToolUse", {
       session_id: "s1",
@@ -66,6 +76,25 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(body.transcript_path, "/t.jsonl");
     assert.ok(typeof body.tool_input_fingerprint === "string" && body.tool_input_fingerprint.length > 0);
     assert.strictEqual(body.source_pid, 123);
+  });
+
+  it("forwards transcript metadata without reading it in the command hook", () => {
+    const body = buildStateBody("PreToolUse", {
+      session_id: "s1",
+      cwd: "/work",
+      transcript_path: "/path/that/does/not/exist.jsonl",
+    }, { pidMeta: {} });
+    assert.strictEqual(body.transcript_path, "/path/that/does/not/exist.jsonl");
+    assert.strictEqual(body.session_title, undefined);
+  });
+
+  it("keeps the explicit-title fast path independent of transcript availability", () => {
+    const body = buildStateBody("Stop", {
+      session_id: "s1",
+      session_title: "Explicit title",
+      transcript_path: "/path/that/does/not/exist.jsonl",
+    }, { pidMeta: {} });
+    assert.strictEqual(body.session_title, "Explicit title");
   });
 
   it("returns null for events outside the Phase 1 map", () => {

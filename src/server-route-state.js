@@ -42,6 +42,7 @@ const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
 const { extractPermissionToolInput } = require("../hooks/kimi-hook");
 const { normalizeCodexUserInputWire } = require("../hooks/codex-user-input");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
+const { QODER_TITLE_EVENTS } = require("./qoder-session-title");
 
 // /state POST body size cap. Raised 1024 → 4096 → 16384: a CJK
 // assistant_last_output (3 UTF-8 bytes/char) on a Stop completion blew past
@@ -360,7 +361,7 @@ function handleStatePost(req, res, options) {
       // Non-string / empty values are silently dropped - matches the
       // "ignore + fall back" pattern used by cwd / agent_id above.
       const rawTitle = typeof data.session_title === "string" ? data.session_title.trim() : "";
-      const sessionTitle = rawTitle || null;
+      let sessionTitle = rawTitle || null;
       const contextUsage = normalizeContextUsage(data.context_usage);
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
@@ -565,6 +566,28 @@ function handleStatePost(req, res, options) {
           res.writeHead(400);
           res.end("mini states require svg override");
           return;
+        }
+        // Qoder title metadata is a private transcript contract, not a hot
+        // command-hook responsibility. Resolve it only after this live server
+        // has accepted the agent gate, only for local Qoder lifecycle events,
+        // and never when the payload already supplied a title. The long-lived
+        // runtime owns per-session offsets across the short-lived hook
+        // processes; its event allowlist keeps Pre/Post/Permission/Notification
+        // traffic at zero transcript I/O.
+        if (
+          !sessionTitle
+          && agentId === "qoder"
+          && trustedProfileId === "local"
+          && QODER_TITLE_EVENTS.has(event)
+          && typeof ctx.resolveQoderSessionTitle === "function"
+        ) {
+          try {
+            sessionTitle = ctx.resolveQoderSessionTitle({
+              event,
+              sessionId: sessionIdentity.rawSessionId,
+              transcriptPath,
+            }) || null;
+          } catch {}
         }
         // #627 residual: UserPromptSubmit no longer carries a fresh wt_hwnd
         // from the hook (cache-only prompt path, hooks/clawd-hook.js) — sample

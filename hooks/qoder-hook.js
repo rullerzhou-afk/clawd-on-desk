@@ -12,6 +12,8 @@ const crypto = require("crypto");
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]+/g;
+const SESSION_TITLE_MAX = 80;
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
@@ -46,6 +48,19 @@ const NO_DECISION_OUTPUT = "{}";
 function normalizeSessionId(value) {
   const raw = value != null && value !== "" ? String(value) : "default";
   return raw.startsWith("qoder:") ? raw : `qoder:${raw}`;
+}
+
+function normalizeSessionTitle(value) {
+  if (typeof value !== "string") return null;
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  const characters = Array.from(collapsed);
+  return characters.length > SESSION_TITLE_MAX
+    ? `${characters.slice(0, SESSION_TITLE_MAX - 1).join("")}\u2026`
+    : collapsed;
 }
 
 function normalizeToolUseId(value) {
@@ -198,6 +213,11 @@ function buildStateBody(hookName, payload, options = {}) {
   if (payload && typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
   }
+  const sessionTitle = normalizeSessionTitle(payload && payload.session_title)
+    || normalizeSessionTitle(payload && payload.sessionTitle)
+    || normalizeSessionTitle(payload && payload.session_name)
+    || normalizeSessionTitle(payload && payload.sessionName);
+  if (sessionTitle) body.session_title = sessionTitle;
   if (payload && TOOL_METADATA_EVENTS.has(hookName)) {
     maybeAddToolMetadata(body, payload);
   }
@@ -270,6 +290,7 @@ module.exports = {
   normalizeSessionId,
   normalizeToolMatchValue,
   buildToolInputFingerprint,
+  normalizeSessionTitle,
   isQoderAgentCommandLine,
   resolveHookName,
   shouldResolvePid,
