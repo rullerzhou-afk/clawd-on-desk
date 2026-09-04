@@ -2225,6 +2225,60 @@ describe("server-route-permission POST", () => {
     assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, [entry]);
   });
 
+  it("routes a DSH replied lifecycle before every create/decision gate and never records a request", async () => {
+    const lifecycleCalls = [];
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      permission_event: "replied",
+      session_id: "deepseek-harness:ses-life",
+      request_id: "call-life",
+    }), {
+      ctx: {
+        doNotDisturb: true,
+        hideBubbles: true,
+        isAgentEnabled: () => false,
+        isAgentPermissionsEnabled: () => false,
+        dismissDshPermissionResolvedExternally: (identity) => {
+          lifecycleCalls.push(identity);
+          return 1;
+        },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
+    assert.strictEqual(res.body, "ok");
+    assert.deepStrictEqual(lifecycleCalls, [{
+      agentId: "deepseek-harness",
+      requestId: "call-life",
+      sessionId: localSessionKey("deepseek-harness:ses-life"),
+    }]);
+    assert.deepStrictEqual(res.recorder, [], "lifecycle must not create a PermissionRequest recorder");
+    assert.deepStrictEqual(res.ctx.calls.updateSession, []);
+    assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+    assert.deepStrictEqual(res.ctx.calls.addPendingPermission, []);
+    assert.deepStrictEqual(res.ctx.calls.maybeStartRemoteApproval, []);
+  });
+
+  it("200-no-ops a malformed DSH replied lifecycle identity", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      permission_event: "replied",
+      session_id: null,
+      request_id: "call-life",
+    }), {
+      ctx: {
+        dismissDshPermissionResolvedExternally: () => { throw new Error("must not be called"); },
+      },
+    });
+
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.body, "ok");
+    assert.deepStrictEqual(res.ctx.calls.addPendingPermission, []);
+  });
+
   it("leaves DSH ask_user_question with the native provider", async () => {
     const res = await callPermissionPost(JSON.stringify({
       agent_id: "deepseek-harness",

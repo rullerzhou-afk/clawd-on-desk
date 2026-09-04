@@ -5029,6 +5029,66 @@ function dismissOpencodeFamilyPermissionResolvedExternally(identity) {
   return matches.length;
 }
 
+// DSH lifecycle reply (permission_event="replied" from the dsh-clawd-bridge
+// plugin): the plugin left an ApprovalRequest without a Clawd decision
+// (request cancelled, plugin reload). Remove the matching pending entry and
+// tear down its bubble immediately instead of parking it until the approval
+// timeout. Mirrors dismissOpencodeFamilyPermissionResolvedExternally above;
+// DSH entries are matched by entry.toolUseId (the plugin's request_id ==
+// ApprovalRequest.callId) plus the canonical session id.
+function dismissDshPermissionResolvedExternally(identity) {
+  const requestId = typeof identity?.requestId === "string" && identity.requestId
+    ? identity.requestId
+    : null;
+  const sessionId = identity?.sessionId || null;
+  if (!requestId || !sessionId) {
+    permLog("dsh external resolve no-op: invalid identity");
+    return 0;
+  }
+
+  const matches = pendingPermissions.filter((entry) => (
+    entry
+    && entry.agentId === "deepseek-harness"
+    && entry.isDsh === true
+    && entry.toolUseId === requestId
+    && entry.sessionId === sessionId
+  ));
+
+  if (matches.length === 0) {
+    permLog(`dsh external resolve no-op: request=${boundedPermissionIdentityForLog(requestId)}`);
+    return 0;
+  }
+
+  for (const entry of matches) {
+    const index = pendingPermissions.indexOf(entry);
+    if (index !== -1) pendingPermissions.splice(index, 1);
+  }
+  notifyPermissionsChanged("resolved-externally");
+
+  for (const entry of matches) {
+    cancelRemoteApproval(entry, { reason: "dsh-resolved-externally" });
+    if (entry._delayTimer) { clearTimeout(entry._delayTimer); entry._delayTimer = null; }
+    if (entry.autoCloseTimer) { clearTimeout(entry.autoCloseTimer); entry.autoCloseTimer = null; }
+    if (entry.autoExpireTimer) { clearTimeout(entry.autoExpireTimer); entry.autoExpireTimer = null; }
+    if (entry.abortHandler && entry.res) {
+      try { entry.res.removeListener("close", entry.abortHandler); } catch {}
+    }
+    hidePermissionBubbleSafely(entry);
+    notifyPermissionResolved(entry, "resolved-externally");
+    // Best-effort 204 so a still-open plugin long-poll cannot hang until the
+    // approval timeout; an already-destroyed socket is a no-op (writableFinished).
+    if (entry.res && !entry.res.writableFinished && typeof entry.res.writeHead === "function") {
+      try { sendNoDecisionResponse(entry.res, "resolved-externally", "dsh"); } catch {}
+    }
+  }
+
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  permLog(`dsh external resolve matched: request=${boundedPermissionIdentityForLog(requestId)} count=${matches.length}`);
+  return matches.length;
+}
+
 // Mirrors the DND dispatcher: CC res.destroy() so it falls back to chat,
 // opencode skips the bridge reply so TUI takes over, codex just closes.
 // options.subagentOnly (#451) restricts the sweep to entries that came from a
@@ -5174,6 +5234,7 @@ return {
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
   dismissPermissionsForDnd,
   dismissOpencodeFamilyPermissionResolvedExternally,
+  dismissDshPermissionResolvedExternally,
   syncPermissionShortcuts,
   replyOpencodeFamilyPermission,
   // Exposed for the payload↔renderer contract test (plan §3.5/§9): the

@@ -212,3 +212,50 @@ test("DSH plugin registers public seams only and contains session/created except
   assert.strictEqual(typeof disposer, "function");
   disposer();
 });
+
+test("DSH approval handler notifies Clawd lifecycle when the asker cancels", async () => {
+  const { createApprovalHandler } = await bridge();
+  const notified = [];
+  const controller = new AbortController();
+  const handler = createApprovalHandler(
+    async () => { throw new Error("must not contact Clawd"); },
+    1000,
+    null,
+    (payload) => { notified.push(payload); return Promise.resolve({ ok: true }); },
+  );
+  const req = {
+    agent: { session: { id: "s3", header: { cwd: "C:/repo" } } },
+    toolName: "bash",
+    callId: "call-lifecycle-1",
+    reason: "test",
+    signal: controller.signal,
+  };
+  controller.abort();
+  assert.strictEqual(await handler(req, async () => "native"), "cancelled");
+  assert.strictEqual(notified.length, 1);
+  assert.strictEqual(notified[0].agent_id, "deepseek-harness");
+  assert.strictEqual(notified[0].tool_use_id, "call-lifecycle-1");
+  assert.strictEqual(notified[0].session_id, "deepseek-harness:s3");
+});
+
+test("DSH approval handler notifies Clawd lifecycle on plugin disposal before delegating", async () => {
+  const { createApprovalHandler } = await bridge();
+  const notified = [];
+  const lifetime = new AbortController();
+  const handler = createApprovalHandler(
+    (_payload, { signal }) => new Promise((resolve) => {
+      signal.addEventListener("abort", () => resolve({ kind: "cancelled" }), { once: true });
+    }),
+    1000,
+    lifetime.signal,
+    (payload) => { notified.push(payload); return Promise.resolve({ ok: true }); },
+  );
+  const pending = handler(
+    { agent: { session: { id: "s4", header: { cwd: "C:/repo" } } }, toolName: "bash", callId: "call-lifecycle-2" },
+    async () => "native",
+  );
+  lifetime.abort();
+  assert.strictEqual(await pending, "native");
+  assert.strictEqual(notified.length, 1);
+  assert.strictEqual(notified[0].tool_use_id, "call-lifecycle-2");
+});

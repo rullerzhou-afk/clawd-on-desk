@@ -154,4 +154,31 @@ describe("DSH permission response contract", () => {
     assert.strictEqual(entry.res.captured.statusCode, 204);
     assert.strictEqual(entry.res.captured.destroyed, false);
   });
+
+  it("dismisses a pending DSH entry on an external resolved lifecycle reply", () => {
+    const perm = initPermission(makeCtx());
+    const entry = makeEntry({ toolUseId: "call-lifecycle-9" });
+    perm.pendingPermissions.push(entry);
+    const dismissed = perm.dismissDshPermissionResolvedExternally({
+      agentId: "deepseek-harness",
+      requestId: "call-lifecycle-9",
+      sessionId: "deepseek-harness:session-1",
+    });
+    assert.strictEqual(dismissed, 1);
+    assert.strictEqual(perm.pendingPermissions.includes(entry), false);
+    assert.strictEqual(entry.res.captured.statusCode, 204);
+    assert.strictEqual(entry.res.captured.ended, true);
+  });
+
+  it("no-ops when the resolved request is not pending", () => {
+    const perm = initPermission(makeCtx());
+    assert.strictEqual(
+      perm.dismissDshPermissionResolvedExternally({
+        agentId: "deepseek-harness",
+        requestId: "call-lifecycle-x",
+        sessionId: "deepseek-harness:session-1",
+      }),
+      0,
+    );
+  });
 });

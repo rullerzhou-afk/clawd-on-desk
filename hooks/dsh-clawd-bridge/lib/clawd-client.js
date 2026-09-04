@@ -221,6 +221,24 @@ export function parsePermissionResult(result) {
   }
 }
 
+export async function notifyPermissionReplied(payload = {}, options = {}) {
+  // Fire-and-forget lifecycle notification: the Clawd server may still hold
+  // this ApprovalRequest while we leave without a decision (request
+  // cancelled, plugin reload). permission_event: "replied" makes it dismiss
+  // the matching bubble instead of parking it until the approval timeout.
+  return post('/permission', {
+    agent_id: 'deepseek-harness',
+    hook_source: 'dsh-plugin',
+    hook_event_name: 'PermissionRequest',
+    ...payload,
+    permission_event: 'replied',
+  }, {
+    ...options,
+    timeoutMs: Number.isFinite(options.timeoutMs) ? options.timeoutMs : STATE_TIMEOUT_MS,
+    maxResponseBytes: 4096,
+  })
+}
+
 export async function requestPermission(body, options = {}) {
   const result = await post('/permission', body, {
     ...options,

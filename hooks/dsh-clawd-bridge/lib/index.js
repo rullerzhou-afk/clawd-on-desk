@@ -8,7 +8,7 @@
 // native provider remains the sole owner of ask_user_question.
 
 import { randomUUID } from 'node:crypto'
-import { postState, requestPermission } from './clawd-client.js'
+import { postState, requestPermission, notifyPermissionReplied } from './clawd-client.js'
 
 export const name = 'dsh-clawd-bridge'
 
@@ -218,9 +218,21 @@ export function createApprovalHandler(
   requestPermissionImpl = requestPermission,
   permissionTimeoutMs = DEFAULT_PERMISSION_TIMEOUT_MS,
   lifetimeSignal = null,
+  notifyRepliedImpl = notifyPermissionReplied,
 ) {
   return async (req, next) => {
-    if (req?.signal?.aborted) return 'cancelled'
+    const payload = buildApprovalPayload(req)
+    const notifyReplied = () => {
+      // Best-effort lifecycle notification: if the Clawd server still holds
+      // this request while we leave without a decision (request cancelled or
+      // plugin reload), dismiss its bubble instead of parking it until the
+      // 10-minute approval timeout. Fire-and-forget; a late/foreign post is a
+      // harmless no-op server-side (matched=0).
+      try {
+        void notifyRepliedImpl(payload)
+      } catch {}
+    }
+    if (req?.signal?.aborted) { notifyReplied(); return 'cancelled' }
     // A plugin reload/dispose only removes this answerer. It must not claim
     // that the DSH asker cancelled the approval; continue to the next
     // waterfall listener so the native/web answerer can take over.
@@ -237,8 +249,8 @@ export function createApprovalHandler(
     } finally {
       linked.cleanup()
     }
-    if (req?.signal?.aborted) return 'cancelled'
-    if (lifetimeSignal?.aborted) return next()
+    if (req?.signal?.aborted) { notifyReplied(); return 'cancelled' }
+    if (lifetimeSignal?.aborted) { notifyReplied(); return next() }
     if (answer?.kind === 'cancelled') return 'cancelled'
     if (answer?.kind === 'decision') {
       return answer.decision === 'allow' ? 'allowed-once' : 'rejected'
@@ -297,7 +309,7 @@ export function apply(ctx, config = {}) {
     if (!approvalCtx || typeof approvalCtx.on !== 'function') return
     approvalCtx.on(
       'approval/request',
-      createApprovalHandler(requestPermission, permissionTimeoutMs, generation.signal),
+      createApprovalHandler(requestPermission, permissionTimeoutMs, generation.signal, notifyPermissionReplied),
       { prepend: true },
     )
   })

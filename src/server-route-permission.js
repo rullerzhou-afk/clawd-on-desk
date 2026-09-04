@@ -645,7 +645,7 @@ function handlePermissionPost(req, res, options) {
       return;
     }
     const { agentId } = hookIdentity;
-    if (hasPermissionEventDiscriminator && !isOpencodeFamily(agentId)) {
+    if (hasPermissionEventDiscriminator && !isOpencodeFamily(agentId) && agentId !== "deepseek-harness") {
       res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
       res.end("ok");
       ctx.permLog(`permission lifecycle no-op: unsupported agent=${agentId || "unknown"}`);
@@ -1577,6 +1577,39 @@ function handlePermissionPost(req, res, options) {
       // Blocking HTTP. The in-process DSH plugin awaits this response inside
       // approval/request. A 204 means no Clawd decision; the plugin calls
       // next() so DSH's downstream web answerer remains authoritative.
+      // ── DeepSeek Harness permission lifecycle (permission_event=replied) ──
+      // The DSH bridge plugin posts fire-and-forget when it leaves an
+      // ApprovalRequest without a Clawd decision (request cancelled or plugin
+      // reload). Dismiss the matching bubble immediately instead of parking
+      // it until the 10-minute approval timeout — mirrors the opencode-family
+      // lifecycle channel above.
+      if (hasPermissionEventDiscriminator && agentId === "deepseek-harness") {
+        res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end("ok");
+        if (data.permission_event !== "replied") {
+          ctx.permLog("dsh permission lifecycle no-op: unsupported event");
+          return;
+        }
+        const rawSessionId = normalizeString(data.session_id);
+        const requestId = typeof data.request_id === "string" && data.request_id
+          ? data.request_id
+          : null;
+        if (!rawSessionId || !requestId) {
+          ctx.permLog(`dsh permission lifecycle no-op: ${!rawSessionId ? "missing session_id" : "missing request_id"}`);
+          return;
+        }
+        const sessionIdentity = resolvePermissionSession(rawSessionId, rawSessionId);
+        const dismissed = typeof ctx.dismissDshPermissionResolvedExternally === "function"
+          ? ctx.dismissDshPermissionResolvedExternally({
+            agentId,
+            requestId,
+            sessionId: sessionIdentity.sessionId,
+          })
+          : 0;
+        ctx.permLog(`dsh permission lifecycle replied: request=${boundedPermissionLogValue(requestId)} matched=${dismissed}`);
+        return;
+      }
+
       if (agentId === "deepseek-harness") {
         const toolName = typeof data.tool_name === "string" && data.tool_name.trim()
           ? data.tool_name.trim()
