@@ -635,7 +635,8 @@
         : "permissionAutomationAutoToolsConfirmTitle"),
       detail: t(unattended
         ? "permissionAutomationUnattendedConfirmDetail"
-        : "permissionAutomationAutoToolsConfirmDetail"),
+        : "permissionAutomationAutoToolsConfirmDetail")
+        + " " + t("permissionAutomationIrreversibleGuardNote"),
       checkboxLabel: t(unattended
         ? "permissionAutomationUnattendedDontShowAgain"
         : "permissionAutomationAutoToolsDontShowAgain"),

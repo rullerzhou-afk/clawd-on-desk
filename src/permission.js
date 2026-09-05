@@ -33,6 +33,7 @@ const {
   AUTOMATION_ACTION,
   classifyPermissionInteraction,
   evaluatePermissionAutomation,
+  describeAutomationHold,
   isValidInteraction,
   isDecisionInteraction,
 } = require("./permission-automation-policy");
@@ -2258,7 +2259,12 @@ function maybeAutoApprovePermission(permEntry) {
     entry: permEntry,
   });
   if (action === AUTOMATION_ACTION.DEFER) {
-    if (!isValidInteraction(permEntry.interaction)) {
+    const hold = describeAutomationHold(permEntry);
+    if (hold && mode !== PERMISSION_AUTOMATION_MODE.OFF) {
+      // Surfaced to the bubble so the human sees WHY automation paused here.
+      permEntry.automationHold = hold;
+      permLog(`automation hold: reason=${hold.reason} tag=${hold.tag} mode=${mode} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    } else if (!isValidInteraction(permEntry.interaction)) {
       permLog(`automation defer: invalid interaction tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     } else if (
       mode !== PERMISSION_AUTOMATION_MODE.OFF
@@ -2659,6 +2665,9 @@ function buildPermissionBubblePayload(permEntry) {
       ? permEntry.sessionTrustError
       : null,
     lang: ctx.lang,
+    automationHold: permEntry.automationHold && typeof permEntry.automationHold === "object"
+      ? { reason: permEntry.automationHold.reason, tag: permEntry.automationHold.tag }
+      : null,
     interaction: isValidInteraction(permEntry.interaction) ? permEntry.interaction : null,
     isElicitation: permEntry.isElicitation || false,
     // opencode-family provenance for the renderer, which has no registry

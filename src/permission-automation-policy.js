@@ -1,6 +1,7 @@
 "use strict";
 
 const { isOpencodeFamily } = require("../agents/opencode-family");
+const { detectIrreversible } = require("./bubble-format");
 
 const PERMISSION_AUTOMATION_MODE = Object.freeze({
   OFF: "off",
@@ -334,6 +335,43 @@ function classifyPermissionInteraction({
   });
 }
 
+/**
+ * Irreversible-action hold for automation.
+ *
+ * `detectIrreversible` has been a display-only hint on the bubble since the
+ * destructive-action badge landed. This is the single place where that hint
+ * becomes a decision boundary: an automatic allow must not fire for a
+ * force-push, publish, bulk delete, history rewrite, or explicit delete tool.
+ * The request is not denied — it is deferred to the ordinary manual path
+ * (bubble / hotkey / remote approval), i.e. what "Question prompts only"
+ * already shows for decisions.
+ *
+ * Scope is deliberately narrow and named: only tool-shaped interactions are
+ * inspected, and only through the same conservative shell-segment matcher the
+ * badge uses. Namespaced MCP tools, scripts that hide a delete, and non-shell
+ * inputs are NOT inspected (see the guard test for the documented blind spots).
+ * Returns `{ reason: "irreversible", tag }` or null. Never throws.
+ */
+function describeAutomationHold(entry) {
+  if (!entry || typeof entry !== "object") return null;
+  const interaction = entry.interaction;
+  if (
+    isValidInteraction(interaction)
+    && interaction.intent !== INTERACTION_INTENT.TOOL_APPROVAL
+    && interaction.intent !== INTERACTION_INTENT.UNKNOWN
+  ) {
+    return null;
+  }
+  let hit = null;
+  try {
+    hit = detectIrreversible(entry.toolName, entry.toolInput);
+  } catch (_e) {
+    hit = null;
+  }
+  if (!hit || typeof hit.tag !== "string") return null;
+  return Object.freeze({ reason: "irreversible", tag: hit.tag });
+}
+
 function isValidInteraction(interaction) {
   if (!interaction || typeof interaction !== "object") return false;
   if (!Object.values(INTERACTION_INTENT).includes(interaction.intent)) return false;
@@ -346,7 +384,12 @@ function isValidInteraction(interaction) {
     .every((key) => typeof capabilities[key] === "boolean");
 }
 
-function evaluatePermissionAutomation({ mode, interaction } = {}) {
+function evaluatePermissionAutomation({
+  mode,
+  interaction,
+  entry = null,
+  guardIrreversible = true,
+} = {}) {
   if (!Object.values(PERMISSION_AUTOMATION_MODE).includes(mode)) {
     return AUTOMATION_ACTION.DEFER;
   }
@@ -369,6 +412,11 @@ function evaluatePermissionAutomation({ mode, interaction } = {}) {
     )
     && interaction.capabilities.allowDeny
   ) {
+    // Destructive tool requests never auto-allow. Callers that pass no entry
+    // (pure policy probes) are unaffected; every live chokepoint passes one.
+    if (guardIrreversible !== false && describeAutomationHold(entry)) {
+      return AUTOMATION_ACTION.DEFER;
+    }
     return AUTOMATION_ACTION.AUTO_ALLOW;
   }
 
@@ -407,4 +455,5 @@ module.exports = {
   evaluatePermissionAutomation,
   isValidInteraction,
   isDecisionInteraction,
+  describeAutomationHold,
 };

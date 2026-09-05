@@ -154,7 +154,7 @@ function makePermEntry(overrides = {}) {
     bubble: null,
     hideTimer: null,
     toolName: "Bash",
-    toolInput: { command: "rm -rf /", description: "clean the tree" },
+    toolInput: { command: "npm test", description: "run the suite" },
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
     agentId: "claude-code",

@@ -166,7 +166,8 @@ module.exports = function initMenu(ctx) {
             : "permissionAutomationAutoToolsConfirmTitle"),
           detail: t(unattended
             ? "permissionAutomationUnattendedConfirmDetail"
-            : "permissionAutomationAutoToolsConfirmDetail"),
+            : "permissionAutomationAutoToolsConfirmDetail")
+            + " " + t("permissionAutomationIrreversibleGuardNote"),
           checkboxLabel: t(unattended
             ? "permissionAutomationUnattendedDontShowAgain"
             : "permissionAutomationAutoToolsDontShowAgain"),

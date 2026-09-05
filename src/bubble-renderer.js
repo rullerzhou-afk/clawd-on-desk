@@ -75,6 +75,7 @@ function setSessionTag(data) {
 const BUBBLE_STRINGS = {
   en: {
     irreversibleHint: "Destructive action \u2014 may not be recoverable",
+    irreversibleAutoHold: "Auto-approve paused \u2014 confirm this one yourself",
     autoAcceptEdits: "Auto-accept edits",
     switchToPlanMode: "Switch to plan mode",
     allowInDir: "Allow {tool} in {dir}/",
@@ -125,6 +126,7 @@ const BUBBLE_STRINGS = {
   },
   zh: {
     irreversibleHint: "\u7834\u574F\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u65E0\u6CD5\u6062\u590D",
+    irreversibleAutoHold: "已暂停自动放行——请手动确认",
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
     switchToPlanMode: "\u5207\u6362\u5230 Plan \u6A21\u5F0F",
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
@@ -175,6 +177,7 @@ const BUBBLE_STRINGS = {
   },
   "zh-TW": {
     irreversibleHint: "\u7834\u58DE\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u7121\u6CD5\u5FA9\u539F",
+    irreversibleAutoHold: "已暫停自動允許——請手動確認",
     autoAcceptEdits: "自動接受編輯",
     switchToPlanMode: "切換到計劃模式",
     allowInDir: "允許 {tool} 在 {dir}/",
@@ -225,6 +228,7 @@ const BUBBLE_STRINGS = {
   },
   ko: {
     irreversibleHint: "\uD30C\uAD34\uC801 \uC791\uC5C5 \u2014 \uBCF5\uAD6C\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4",
+    irreversibleAutoHold: "자동 승인 보류 — 직접 확인해 주세요",
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
     switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
@@ -275,6 +279,7 @@ const BUBBLE_STRINGS = {
   },
   ja: {
     irreversibleHint: "\u7834\u58CA\u7684\u306A\u64CD\u4F5C \u2014 \u5FA9\u5143\u3067\u304D\u306A\u3044\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059",
+    irreversibleAutoHold: "自動承認を一時停止 — 手動で確認してください",
     autoAcceptEdits: "編集を自動承認",
     switchToPlanMode: "Plan モードに切り替え",
     allowInDir: "{dir}/ で {tool} を許可",
@@ -325,6 +330,7 @@ const BUBBLE_STRINGS = {
   },
   "pt-BR": {
     irreversibleHint: "Ação destrutiva — pode não ter volta",
+    irreversibleAutoHold: "Aprovação automática pausada — confirme você mesmo",
     autoAcceptEdits: "Aceitar edições automaticamente",
     switchToPlanMode: "Mudar para o modo plano",
     allowInDir: "Permitir {tool} em {dir}/",
@@ -375,6 +381,7 @@ const BUBBLE_STRINGS = {
   },
   es: {
     irreversibleHint: "Acción destructiva — puede ser irreversible",
+    irreversibleAutoHold: "Aprobación automática en pausa — confírmalo tú mismo",
     autoAcceptEdits: "Aceptar ediciones automáticamente",
     switchToPlanMode: "Cambiar al modo plan",
     allowInDir: "Permitir {tool} en {dir}/",
@@ -1446,7 +1453,11 @@ function show(data) {
   // suggestion buttons, and the no-decision fallback are untouched. textContent only.
   const irreversible = detectIrreversible(data.toolName, data.toolInput);
   if (irreversible && !isPlanReview) {
-    irreversibleBadge.textContent = "\u26A0 " + bubbleText(data.lang, "irreversibleHint");
+    // When automation deferred this request (irreversible guard), say so on the
+    // badge: the user picked auto-approve and needs to know why a card appeared.
+    const held = data.automationHold && data.automationHold.reason === "irreversible";
+    irreversibleBadge.textContent = "\u26A0 " + bubbleText(data.lang, "irreversibleHint")
+      + (held ? " \u00B7 " + bubbleText(data.lang, "irreversibleAutoHold") : "");
     irreversibleBadge.setAttribute("data-reason", irreversible.tag);
     irreversibleBadge.style.display = "";
   } else {
