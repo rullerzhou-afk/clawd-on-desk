@@ -290,16 +290,30 @@ describe("permission automation: irreversible guard (wording)", () => {
     assert.strictEqual(count, SUPPORTED_LANGS.length);
   });
 
-  it("promises only what the guard enforces in the automation confirm dialogs", () => {
+  it("keeps the confirm-dialog note to one short sentence and moves the scope detail to Settings", () => {
+    // The confirm dialog is a fixed 520x376 window whose checkbox row already
+    // sits at the fold in several locales; a long note pushes "don't remind me"
+    // below it. So the dialog gets one sentence and the honest scope (4 KB cap,
+    // scripts / MCP not inspected) lives in the Settings row description.
     const { i18n } = require("../src/i18n");
     for (const lang of SUPPORTED_LANGS) {
       const note = i18n[lang].permissionAutomationIrreversibleGuardNote;
+      const detail = i18n[lang].permissionAutomationIrreversibleGuardDetail;
       assert.strictEqual(typeof note, "string", `${lang}.permissionAutomationIrreversibleGuardNote should exist`);
-      assert.ok(note.length > 20, `${lang} guard note must be a sentence`);
-      assert.ok(/4 ?KB/.test(note), `${lang} note must name the 4 KB cap`);
-      assert.ok(/MCP/.test(note), `${lang} note must name the MCP blind spot`);
+      assert.strictEqual(typeof detail, "string", `${lang}.permissionAutomationIrreversibleGuardDetail should exist`);
+      assert.ok(note.length > 20 && note.length <= 120, `${lang} dialog note must be one short sentence (got ${note.length})`);
+      assert.ok(/force-push/.test(note) && /rm -rf/.test(note), `${lang} dialog note names the headline patterns`);
+      assert.ok(!/4 ?KB/.test(note), `${lang} dialog note must not carry the cap detail`);
+      assert.ok(/4 ?KB/.test(detail), `${lang} detail must name the 4 KB cap`);
+      assert.ok(/MCP/.test(detail), `${lang} detail must name the MCP blind spot`);
     }
-    assert.ok(!/never auto-approved/.test(i18n.en.permissionAutomationIrreversibleGuardNote), "en wording must not over-promise");
+    assert.ok(!/never/.test(i18n.en.permissionAutomationIrreversibleGuardNote), "en wording must not over-promise");
+  });
+
+  it("the Settings permission-handling description appends the scope detail for automatic modes", () => {
+    const src = fs.readFileSync(path.join(__dirname, "..", "src", "settings-tab-general.js"), "utf8");
+    const hits = src.split('t("permissionAutomationIrreversibleGuardDetail")').length - 1;
+    assert.ok(hits >= 2, "both the initial render and syncFromSnapshot must append the detail (got " + hits + ")");
   });
 
   it("both automation confirm dialogs (tray menu + Settings) append the guard note", () => {

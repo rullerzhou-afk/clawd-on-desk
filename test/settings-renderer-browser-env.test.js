@@ -10388,7 +10388,9 @@ describe("settings renderer browser environment", () => {
     assert.equal(selected.getAttribute("aria-checked"), "true");
     assert.equal(
       findAncestorByClass(control, "permission-automation-row").querySelector(".row-desc").textContent,
+      // Automatic modes append the irreversible-guard scope detail to the description.
       harness.core.helpers.t("permissionAutomationAutoToolsDesc")
+        + " " + harness.core.helpers.t("permissionAutomationIrreversibleGuardDetail")
     );
   });
 

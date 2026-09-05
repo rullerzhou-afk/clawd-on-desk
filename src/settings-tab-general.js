@@ -696,7 +696,8 @@
       : (current === "unattended"
         ? "permissionAutomationUnattendedDesc"
         : "permissionAutomationOffDesc");
-    desc.textContent = t(descKey);
+    desc.textContent = t(descKey)
+      + (current === "off" ? "" : " " + t("permissionAutomationIrreversibleGuardDetail"));
     text.appendChild(label);
     text.appendChild(desc);
     row.appendChild(text);
@@ -736,7 +737,8 @@
           : (mode === "unattended"
             ? "permissionAutomationUnattendedDesc"
             : "permissionAutomationOffDesc");
-        desc.textContent = t(nextDescKey);
+        desc.textContent = t(nextDescKey)
+          + (mode === "off" ? "" : " " + t("permissionAutomationIrreversibleGuardDetail"));
       },
     };
     return row;
