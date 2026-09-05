@@ -11,7 +11,12 @@ ownership-fenced cleanup required by the secure transport.
 - A local Clawd instance is running
 - Your machine can reach the remote host via the system `ssh`
 - Node.js is installed on the remote
-- At least one supported remote agent is installed on the remote: Claude Code, Codex CLI, or Copilot CLI
+- At least one supported remote agent is installed on the remote: Claude Code, Codex CLI, Copilot CLI, or Hermes Agent
+- For Hermes Agent, Hermes is already installed on the remote and its CLI is
+  reachable as `<home>/hermes-agent/venv/bin/hermes`, as `~/.local/bin/hermes`
+  (git-based installs), or as `hermes` on the non-login `PATH`. The plugin runs
+  under Hermes' own virtualenv Python;
+  the Node.js requirement above is unchanged
 
 Clawd does not store SSH passwords or private-key passphrases. First-time host
 key confirmation, passphrase entry, and ssh-agent loading are all handled by
@@ -33,13 +38,21 @@ the system `ssh` and your system terminal.
    - It writes a profile identity atomically, pins hooks and the static Claude permission URL to the profile's exact remote port, and never exposes the general local `/state` or `/permission` routes to the tunnel
    - Then it copies hook files from the currently installed Clawd to the resolved remote runtime layout
    - Then it registers Claude Code hooks, Codex official hooks, and Copilot CLI hooks in remote mode when the matching remote agent is installed
+   - Then, when Hermes is detected on the remote, it uploads Clawd's Hermes plugin to a separate staging directory and registers it into the Hermes home and its profile homes
    - Connection / deployment logs are shown directly below the profile
-5. Start Claude Code, Codex CLI, or Copilot CLI on the remote. The Dashboard will show the session once the first remote hook event arrives.
+5. Start Claude Code, Codex CLI, Copilot CLI, or a Hermes session on the remote. The Dashboard will show the session once the first remote hook event arrives.
 
 For remote-only Copilot CLI tracking on a fresh local install, turn on
 **Copilot CLI** in **Settings → Agents** so Clawd accepts those remote hook
 events. You do not need to click **Install** unless you also want local Copilot
 hooks on this machine.
+
+For remote-only Hermes Agent tracking, Clawd turns on **Hermes Agent** in
+**Settings → Agents** by itself once the Remote SSH deployment is fully
+verified, so those remote hook events are accepted right away. You do not need
+to click **Install** unless you also want the local Hermes plugin on this
+machine: a remote deployment installs nothing locally and does not set the
+local integration as installed.
 
 If the profile has **Auto-start Codex fallback monitor on connect** enabled,
 Clawd launches `~/.claude/hooks/codex-remote-monitor.js` as connection
@@ -47,6 +60,24 @@ maintenance. On a serialized transport it finishes this one-shot maintenance
 before starting the persistent reverse tunnel; automatic tunnel reconnects do
 not replay the monitor mutation.
 The fallback is not needed when Codex official hooks are working.
+
+### Hermes Agent scope and activation
+
+Phase 1 covers the default `account-default` Remote SSH layout with a standard
+Hermes installation: the `~/.hermes` home plus the profile homes under
+`~/.hermes/profiles/*`, driven by the default and ordinary named-profile
+gateways. Clawd installs its managed plugin into the root home and each
+discovered profile home, then enables it through the remote `hermes` CLI.
+
+A custom `HERMES_HOME`, a multiplexed gateway, and the experimental
+`profile-isolated` runtime are **not supported and not verified** in Phase 1.
+
+Enabling the plugin takes effect in the **next** Hermes session. If the deploy
+replaced a managed plugin file that a running gateway has already loaded, that
+gateway needs a **manual** restart before it emits events from the new module.
+Clawd never restarts a Hermes gateway for you. The deploy progress line reports
+which of the two applies; a `systemctl --user is-active` reading is only a
+best-effort hint, not proof that a gateway is running the new module.
 
 ### GitHub Codespaces and single-session transports
 
@@ -78,7 +109,7 @@ your LAN IP directly either.
 The actual chain is:
 
 ```
-Remote Claude/Codex/Copilot hook
+Remote Claude/Codex/Copilot/Hermes hook
   -> POST http://127.0.0.1:<remote forward port>
   -> SSH reverse tunnel
   -> Profile-bound local ingress (routing nonce verified)
@@ -93,6 +124,7 @@ appear in the Dashboard, you still need:
 - The remote agent started, with at least one hook event emitted
 - For Codex, the remote Codex TUI has reviewed the hooks via `/hooks` if your version requires it
 - For remote-only Copilot CLI on a fresh local install, local **Settings → Agents → Copilot CLI** is turned on
+- For remote-only Hermes Agent, local **Settings → Agents → Hermes Agent** is still turned on (a fully verified deploy enables it automatically), and the remote gateway has been restarted manually if the deploy log asked for it
 
 ## Shared-server isolation and upgrade boundary
 
@@ -174,6 +206,12 @@ target; Clawd does not revive historical routing identity automatically.
 Deployment fails at the `check-node` step. Install Node.js on the remote first,
 then redeploy. The security boundary comes from the pinned identity and
 dedicated ingress, not from port secrecy.
+
+Hermes does not change this: its deployment phase also runs through the remote
+Node runtime, while the installed plugin itself runs under Hermes' own
+virtualenv Python. If the Hermes phase fails because the `hermes` CLI cannot be
+resolved, make it reachable as `<home>/hermes-agent/venv/bin/hermes`, as
+`~/.local/bin/hermes`, or as `hermes` on the non-login `PATH`, then redeploy.
 
 ### Can I open the SSH tunnel manually?
 

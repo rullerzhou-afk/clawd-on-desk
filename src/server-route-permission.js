@@ -12,6 +12,7 @@ const {
   buildShadowComparison,
   processMetadataForState,
 } = require("./server-windows-process-metadata");
+const { stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const {
   CODEX_OFFICIAL_HOOK_SOURCE,
   CODEX_SESSION_ROLE_SUBAGENT,
@@ -247,7 +248,12 @@ function applyTerminalSessionOptions(options, data) {
   if (orcaPaneKey) options.orcaPaneKey = orcaPaneKey;
 }
 
-function buildCodexPermissionSessionOptions(data) {
+// Every build*PermissionSessionOptions below takes `remoteProfile` for one
+// reason: their result is spread straight into ctx.updateSession (and into the
+// permEntry that focus/liveness reads), so this is the single choke point where
+// a PID from the Remote SSH ingress would otherwise become local session state.
+// See remote-process-metadata.js for why `orcaPaneKey`/`cwd`/`host` survive.
+function buildCodexPermissionSessionOptions(data, remoteProfile) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
   const agentPid = normalizePositiveInteger(rawAgentPid);
@@ -285,10 +291,10 @@ function buildCodexPermissionSessionOptions(data) {
   if (codexAgentNickname) options.codexAgentNickname = codexAgentNickname;
   if (codexAgentRole) options.codexAgentRole = codexAgentRole;
   if (codexParentThreadId) options.codexParentThreadId = codexParentThreadId;
-  return options;
+  return stripRemoteProcessMetadata(options, remoteProfile);
 }
 
-function buildQwenCodePermissionSessionOptions(data) {
+function buildQwenCodePermissionSessionOptions(data, remoteProfile) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
   const agentPid = normalizePositiveInteger(rawAgentPid);
@@ -309,10 +315,10 @@ function buildQwenCodePermissionSessionOptions(data) {
   if (host) options.host = host;
   if (platform) options.platform = platform;
   if (model) options.model = model;
-  return options;
+  return stripRemoteProcessMetadata(options, remoteProfile);
 }
 
-function buildCopilotPermissionSessionOptions(data) {
+function buildCopilotPermissionSessionOptions(data, remoteProfile) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const agentPid = normalizePositiveInteger(data.agent_pid);
   const pidChain = Array.isArray(data.pid_chain)
@@ -328,10 +334,10 @@ function buildCopilotPermissionSessionOptions(data) {
   const host = normalizeString(data.host);
   if (cwd) options.cwd = cwd;
   if (host) options.host = host;
-  return options;
+  return stripRemoteProcessMetadata(options, remoteProfile);
 }
 
-function buildHermesPermissionSessionOptions(data) {
+function buildHermesPermissionSessionOptions(data, remoteProfile) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const agentPid = normalizePositiveInteger(data.agent_pid);
   const pidChain = Array.isArray(data.pid_chain)
@@ -347,10 +353,10 @@ function buildHermesPermissionSessionOptions(data) {
   if (cwd) options.cwd = cwd;
   const editor = normalizeString(data.editor);
   if (editor) options.editor = editor;
-  return options;
+  return stripRemoteProcessMetadata(options, remoteProfile);
 }
 
-function buildZcodePermissionSessionOptions(data) {
+function buildZcodePermissionSessionOptions(data, remoteProfile) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const agentPid = normalizePositiveInteger(data.agent_pid);
   const pidChain = Array.isArray(data.pid_chain)
@@ -368,10 +374,10 @@ function buildZcodePermissionSessionOptions(data) {
   if (cwd) options.cwd = cwd;
   if (host) options.host = host;
   if (model) options.model = model;
-  return options;
+  return stripRemoteProcessMetadata(options, remoteProfile);
 }
 
-function buildDshPermissionSessionOptions(data) {
+function buildDshPermissionSessionOptions(data, remoteProfile) {
   const sourcePid = normalizePositiveInteger(data.source_pid);
   const agentPid = normalizePositiveInteger(data.agent_pid);
   const pidChain = Array.isArray(data.pid_chain)
@@ -384,7 +390,7 @@ function buildDshPermissionSessionOptions(data) {
   applyTerminalSessionOptions(options, data);
   const cwd = normalizeString(data.cwd);
   if (cwd) options.cwd = cwd;
-  return options;
+  return stripRemoteProcessMetadata(options, remoteProfile);
 }
 
 function sendCodexPermissionNoDecision(res) {
@@ -909,7 +915,7 @@ function handlePermissionPost(req, res, options) {
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
         const legacyCodexSessionOptions = {
-          ...buildCodexPermissionSessionOptions(data),
+          ...buildCodexPermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
@@ -1154,7 +1160,7 @@ function handlePermissionPost(req, res, options) {
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
         const qwenSessionOptions = {
-          ...buildQwenCodePermissionSessionOptions(data),
+          ...buildQwenCodePermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
@@ -1272,7 +1278,7 @@ function handlePermissionPost(req, res, options) {
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
         const zcodeSessionOptions = {
-          ...buildZcodePermissionSessionOptions(data),
+          ...buildZcodePermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
@@ -1459,7 +1465,7 @@ function handlePermissionPost(req, res, options) {
           ? data.tool_input_fingerprint
           : buildToolInputFingerprint(rawInput);
         const copilotSessionOptions = {
-          ...buildCopilotPermissionSessionOptions(data),
+          ...buildCopilotPermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
@@ -1633,7 +1639,7 @@ function handlePermissionPost(req, res, options) {
         );
         const toolInputFingerprint = buildToolInputFingerprint(rawInput);
         const sessionOptions = {
-          ...buildDshPermissionSessionOptions(data),
+          ...buildDshPermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
@@ -1794,7 +1800,7 @@ function handlePermissionPost(req, res, options) {
           }
           const elicitationInput = elicitation.displayInput;
           const hermesSessionOptions = {
-            ...buildHermesPermissionSessionOptions(data),
+            ...buildHermesPermissionSessionOptions(data, remoteProfile),
             sessionAutomationIdentity,
             ...trustedSessionFields(sessionIdentity),
           };
@@ -1864,7 +1870,7 @@ function handlePermissionPost(req, res, options) {
 
         // General permission request
         const hermesSessionOptions = {
-          ...buildHermesPermissionSessionOptions(data),
+          ...buildHermesPermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
           ...trustedSessionFields(sessionIdentity),
         };
