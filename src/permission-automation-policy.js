@@ -352,6 +352,33 @@ function classifyPermissionInteraction({
  * inputs are NOT inspected (see the guard test for the documented blind spots).
  * Returns `{ reason: "irreversible", tag }` or null. Never throws.
  */
+// Some adapters (Codex's legacy `shell` tool, argv-style wrappers) send
+// `command` as an argv array instead of a string. The badge matcher only reads
+// strings, so flatten the common shapes before inspection:
+//   ["git","push","--force"]          -> "git push --force"
+//   ["bash","-lc","git push --force"] -> "git push --force"   (shell -c wrapper)
+// Anything else is left untouched (precision over recall — an unrecognised
+// shape must not be guessed into a match, but must not crash the guard either).
+const ARGV_MAX = 64;
+const SHELL_WRAPPER_BIN = /^(?:.*\/)?(bash|sh|zsh|dash|fish|ksh)$/;
+function normalizeArgvToolInput(toolInput) {
+  if (!toolInput || typeof toolInput !== "object") return toolInput;
+  const argv = toolInput.command;
+  if (!Array.isArray(argv) || argv.length === 0 || argv.length > ARGV_MAX) return toolInput;
+  if (!argv.every((part) => typeof part === "string")) return toolInput;
+  let command;
+  if (
+    argv.length === 3
+    && SHELL_WRAPPER_BIN.test(argv[0])
+    && /^-[a-zA-Z]*c[a-zA-Z]*$/.test(argv[1])
+  ) {
+    command = argv[2];
+  } else {
+    command = argv.join(" ");
+  }
+  return { ...toolInput, command };
+}
+
 function describeAutomationHold(entry) {
   if (!entry || typeof entry !== "object") return null;
   const interaction = entry.interaction;
@@ -364,7 +391,7 @@ function describeAutomationHold(entry) {
   }
   let hit = null;
   try {
-    hit = detectIrreversible(entry.toolName, entry.toolInput);
+    hit = detectIrreversible(entry.toolName, normalizeArgvToolInput(entry.toolInput));
   } catch (_e) {
     hit = null;
   }

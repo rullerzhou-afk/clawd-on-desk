@@ -158,7 +158,26 @@
   // segment must contain the destructive SQL. `echo 'DROP TABLE'` stays quiet.
   const DB_CLIENTS = /^(psql|mysql|mysqlsh|sqlite3|mongosh|mongo)\b/;
   const DB_DESTROY = /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b/i;
-  const SHELL_TOOLS = new Set(["bash", "shell", "run_command", "exec", "run_terminal_cmd"]);
+  // Every shell-shaped tool name that can reach an automatic allow must be
+  // listed here — the automation guard (permission-automation-policy.js)
+  // reuses this matcher, so a missing alias is a silent hole, not just a
+  // missing badge. Keep in sync with CLAUDE_COMPATIBLE_TOOL_APPROVAL_NAMES
+  // (bash / execute_bash / powershell / run_command / run_shell_command / shell)
+  // plus the adapter-native names (Hermes execute_bash, Copilot powershell,
+  // Cursor run_terminal_cmd). PowerShell-native destructive forms
+  // (Remove-Item -Recurse -Force …) are NOT modelled yet; only the Unix-like
+  // patterns below are matched on a powershell tool.
+  const SHELL_TOOLS = new Set([
+    "bash",
+    "execute_bash",
+    "execute_command",
+    "exec",
+    "powershell",
+    "run_command",
+    "run_shell_command",
+    "run_terminal_cmd",
+    "shell",
+  ]);
   // Wrappers that prefix a command without changing what it runs.
   const WRAPPER = /^(sudo(\s+-[A-Za-z]+)*|env|nohup|time|command)\s+|^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 

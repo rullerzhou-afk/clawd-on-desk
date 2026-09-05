@@ -79,9 +79,47 @@ describe("permission automation: irreversible guard (policy)", () => {
     assert.deepStrictEqual(describeAutomationHold(entry), { reason: "irreversible", tag: "file-delete" });
   });
 
-  it("covers the Codex shell adapter (toolName Shell / command string)", () => {
-    const entry = toolEntry("git branch -D main", { toolName: "Shell", agentId: "codex" });
-    assert.strictEqual(evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, entry), AUTOMATION_ACTION.DEFER);
+  // Every shell-shaped tool name that can reach AUTO_ALLOW must be inspected.
+  // A name missing from SHELL_TOOLS is a silent hole, so this table is the
+  // contract between the automation allowlist and the matcher.
+  const shellAdapters = [
+    ["codex", "Shell"],
+    ["codex", "Bash"],
+    ["claude-code", "Bash"],
+    ["claude-code", "execute_bash"],
+    ["claude-code", "run_shell_command"],
+    ["claude-code", "powershell"],
+    ["claude-code", "run_command"],
+    ["qwen-code", "run_shell_command"],
+    ["hermes", "execute_bash"],
+    ["copilot-cli", "powershell"],
+    ["copilot-cli", "bash"],
+    ["codebuddy", "Bash"],
+    ["opencode", "bash"],
+  ];
+  for (const [agentId, toolName] of shellAdapters) {
+    it(`covers ${agentId} / ${toolName}`, () => {
+      const entry = toolEntry("git branch -D main", { toolName, agentId });
+      assert.strictEqual(
+        evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, toolEntry("npm test", { toolName, agentId })),
+        AUTOMATION_ACTION.AUTO_ALLOW,
+        `${agentId}/${toolName} must be auto-eligible for this case to be meaningful`
+      );
+      assert.strictEqual(evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, entry), AUTOMATION_ACTION.DEFER);
+      assert.deepStrictEqual(describeAutomationHold(entry), { reason: "irreversible", tag: "branch-delete" });
+    });
+  }
+
+  it("flattens argv-array commands (Codex legacy shell / shell -c wrappers)", () => {
+    const argv = toolEntry(null, { toolName: "Bash", agentId: "codex", toolInput: { command: ["git", "push", "--force", "origin", "main"] } });
+    assert.deepStrictEqual(describeAutomationHold(argv), { reason: "irreversible", tag: "force-push" });
+    const wrapped = toolEntry(null, { toolName: "Bash", agentId: "codex", toolInput: { command: ["bash", "-lc", "rm -rf build/"] } });
+    assert.deepStrictEqual(describeAutomationHold(wrapped), { reason: "irreversible", tag: "file-delete" });
+    const benign = toolEntry(null, { toolName: "Bash", agentId: "codex", toolInput: { command: ["npm", "test"] } });
+    assert.strictEqual(describeAutomationHold(benign), null);
+    // Not every array is argv: mixed types are left alone (no crash, no match).
+    const weird = toolEntry(null, { toolName: "Bash", toolInput: { command: ["rm", { flag: "-rf" }, "/"] } });
+    assert.strictEqual(describeAutomationHold(weird), null);
   });
 
   it("does not touch questions or plan reviews (unattended keeps auto-answer / auto-approve)", () => {
@@ -207,6 +245,11 @@ describe("permission automation: irreversible guard (chokepoints)", () => {
     assert.strictEqual(perm.pendingPermissions.includes(entry), true, "must stay pending for a human");
     assert.strictEqual(entry.res.writableEnded, false, "no allow may be written");
     assert.deepStrictEqual(entry.automationHold, { reason: "irreversible", tag: "file-delete" });
+    // The renderer learns WHY a card appeared through the bubble payload.
+    assert.deepStrictEqual(
+      perm.buildPermissionBubblePayload(entry).automationHold,
+      { reason: "irreversible", tag: "file-delete" }
+    );
   });
 
   it("unattended still auto-allows the ordinary sibling request", () => {
@@ -250,12 +293,21 @@ describe("permission automation: irreversible guard (wording)", () => {
   it("promises only what the guard enforces in the automation confirm dialogs", () => {
     const { i18n } = require("../src/i18n");
     for (const lang of SUPPORTED_LANGS) {
-      for (const key of ["permissionAutomationAutoToolsConfirmDetail", "permissionAutomationUnattendedConfirmDetail"]) {
-        const note = i18n[lang].permissionAutomationIrreversibleGuardNote;
-        assert.strictEqual(typeof note, "string", `${lang}.permissionAutomationIrreversibleGuardNote should exist`);
-        assert.ok(note.length > 20, `${lang} guard note must be a sentence`);
-        void key;
-      }
+      const note = i18n[lang].permissionAutomationIrreversibleGuardNote;
+      assert.strictEqual(typeof note, "string", `${lang}.permissionAutomationIrreversibleGuardNote should exist`);
+      assert.ok(note.length > 20, `${lang} guard note must be a sentence`);
+      assert.ok(/4 ?KB/.test(note), `${lang} note must name the 4 KB cap`);
+      assert.ok(/MCP/.test(note), `${lang} note must name the MCP blind spot`);
+    }
+    assert.ok(!/never auto-approved/.test(i18n.en.permissionAutomationIrreversibleGuardNote), "en wording must not over-promise");
+  });
+
+  it("both automation confirm dialogs (tray menu + Settings) append the guard note", () => {
+    for (const file of ["menu.js", "settings-tab-general.js"]) {
+      const src = fs.readFileSync(path.join(__dirname, "..", "src", file), "utf8");
+      const detailIdx = src.indexOf("permissionAutomationAutoToolsConfirmDetail");
+      const noteIdx = src.indexOf('t("permissionAutomationIrreversibleGuardNote")', detailIdx);
+      assert.ok(detailIdx !== -1 && noteIdx !== -1 && noteIdx - detailIdx < 200, `${file} must append the note to the confirm detail`);
     }
   });
 });
