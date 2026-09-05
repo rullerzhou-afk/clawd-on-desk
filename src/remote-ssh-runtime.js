@@ -560,6 +560,7 @@ function createRemoteSshRuntime(deps = {}) {
         ? (transportFailureReason || "transport_drain_timeout")
         : state.lastErrorReason,
       retryAttempt: state.retryAttempt,
+      nextRetryAt: state.nextRetryAt || null,
       forwardRecoveryFailures: state.forwardRecoveryFailures,
       ...(transport ? transport : {}),
       ...(ingressStatus ? {
@@ -684,6 +685,7 @@ function createRemoteSshRuntime(deps = {}) {
       }
       // Reset retry counters on a user-initiated re-connect.
       state.retryAttempt = 0;
+      state.nextRetryAt = null;
       state.unknownStrikes = 0;
       state.stopped = false;
       resetRecoveryContext(state);
@@ -1258,6 +1260,7 @@ function createRemoteSshRuntime(deps = {}) {
     if (state.sshChild !== child || state.stopped) return;
     clearSerializedReadinessTimer(state);
     state.retryAttempt = 0;
+    state.nextRetryAt = null;
     state.unknownStrikes = 0;
     state.healthyTunnelTargetKey = tunnelTargetKey(state.profile);
     resetRecoveryContext(state, { clearHealthy: false });
@@ -1764,6 +1767,7 @@ function createRemoteSshRuntime(deps = {}) {
       && !state.remoteNodeResolveInFlight;
     cleanupProbeLoop(state);
     state.retryAttempt = 0;
+    state.nextRetryAt = null;
     state.unknownStrikes = 0;
     state.healthyTunnelTargetKey = tunnelTargetKey(state.profile);
     resetRecoveryContext(state, { clearHealthy: false });
@@ -1886,6 +1890,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.message = message;
     state.hint = hint || null;
     const delay = backoffMsForAttempt(state.retryAttempt);
+    state.nextRetryAt = Date.now() + delay;
     state.retryAttempt += 1;
     setStatus(state, "reconnecting", {
       message,
@@ -1997,6 +2002,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.backoffTimer = null;
     }
     state.retryAttempt = 0;
+    state.nextRetryAt = null;
     state.unknownStrikes = 0;
     state.remoteNodeResolveInFlight = false;
     if (options.closeIngress === true) await closeProfileIngressAndWait(state);
@@ -2092,6 +2098,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.sshChild = null;
     }
     state.retryAttempt = 0;
+    state.nextRetryAt = null;
     state.unknownStrikes = 0;
     state.remoteNodeResolveInFlight = false;
     closeProfileIngress(state);

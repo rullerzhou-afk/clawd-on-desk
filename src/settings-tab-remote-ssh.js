@@ -130,6 +130,22 @@
     return t("remoteSshStatus_" + status) || status;
   }
 
+  function formatRetryTime(nextRetryAt) {
+    const d = new Date(nextRetryAt);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    const ss = String(d.getSeconds()).padStart(2, "0");
+    return `${hh}:${mm}:${ss}`;
+  }
+
+  function statusLabelWithTime(statusSnapshot) {
+    const base = statusLabel(statusSnapshot.status);
+    if (statusSnapshot.status === "reconnecting" && statusSnapshot.nextRetryAt) {
+      return base + " " + t("remoteSshReconnectAt").replace("{time}", formatRetryTime(statusSnapshot.nextRetryAt));
+    }
+    return base;
+  }
+
   function statusMessageText(status) {
     if (!status) return "";
     if (status.hint) {
@@ -320,7 +336,7 @@
     const status = statusForProfile(profile.id);
     const badge = document.createElement("span");
     badge.className = "remote-ssh-status-badge " + statusBadgeClass(status.status);
-    badge.textContent = statusLabel(status.status);
+    badge.textContent = statusLabelWithTime(status);
 
     const actions = document.createElement("div");
     actions.className = "remote-ssh-card-actions";
@@ -456,7 +472,7 @@
     statusRow.className = "remote-ssh-status-row";
     const statusBadge = document.createElement("span");
     statusBadge.className = "remote-ssh-status-badge " + statusBadgeClass(status.status);
-    statusBadge.textContent = statusLabel(status.status);
+    statusBadge.textContent = statusLabelWithTime(status);
     statusRow.appendChild(statusBadge);
     const messageText = statusMessageText(status);
     if (messageText) {
