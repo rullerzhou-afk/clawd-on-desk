@@ -105,6 +105,7 @@
   // pending lock. Keep those axes separate so async actions can recover
   // without accidentally enabling a button that should remain unavailable.
   const settingsButtonStates = new WeakMap();
+  let nextSettingsSwitchId = 1;
 
   const runtime = {
     agentMetadata: null,
@@ -312,21 +313,122 @@
     sw.setAttribute("aria-checked", visualOn ? "true" : "false");
   }
 
-  function attachAnimatedSwitch(sw, {
+  function buildSwitch(config = {}) {
+    const element = config.element || document.createElement("button");
+    const visualElement = config.visualElement || element;
+    const isButton = String(element.tagName || "").toLowerCase() === "button";
+    if (isButton) element.type = "button";
+    element.setAttribute("role", "switch");
+    visualElement.classList.add("switch");
+    for (const name of String(config.className || "").split(/\s+/).filter(Boolean)) {
+      visualElement.classList.add(name);
+    }
+
+    let checked = config.checked === true;
+    let disabled = config.disabled === true;
+    let pending = config.pending === true;
+    let disposed = false;
+    let onToggle = typeof config.onToggle === "function" ? config.onToggle : null;
+    const enabledTabIndex = Number.isInteger(config.tabIndex) ? config.tabIndex : 0;
+    const stopPropagation = config.stopPropagation === true;
+
+    function syncAccessibleName(patch) {
+      if (Object.prototype.hasOwnProperty.call(patch, "ariaLabel")) {
+        const value = patch.ariaLabel == null ? "" : String(patch.ariaLabel);
+        if (value) element.setAttribute("aria-label", value);
+        else element.removeAttribute("aria-label");
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "ariaLabelledBy")) {
+        const value = patch.ariaLabelledBy == null ? "" : String(patch.ariaLabelledBy);
+        if (value) element.setAttribute("aria-labelledby", value);
+        else element.removeAttribute("aria-labelledby");
+      }
+      if (Object.prototype.hasOwnProperty.call(patch, "ariaDescribedBy")) {
+        const value = patch.ariaDescribedBy == null ? "" : String(patch.ariaDescribedBy);
+        if (value) element.setAttribute("aria-describedby", value);
+        else element.removeAttribute("aria-describedby");
+      }
+    }
+
+    function syncState() {
+      visualElement.classList.toggle("on", checked);
+      visualElement.classList.toggle("pending", pending);
+      visualElement.classList.toggle("disabled", disabled);
+      element.setAttribute("aria-checked", checked ? "true" : "false");
+      element.setAttribute("aria-disabled", disabled ? "true" : "false");
+      element.setAttribute("aria-busy", pending ? "true" : "false");
+      element.tabIndex = disabled ? -1 : enabledTabIndex;
+      element.setAttribute("tabindex", String(element.tabIndex));
+      if (isButton) element.disabled = disabled;
+    }
+
+    function requestToggle(event) {
+      if (stopPropagation && event && typeof event.stopPropagation === "function") {
+        event.stopPropagation();
+      }
+      if (disposed || disabled || pending || typeof onToggle !== "function") return;
+      onToggle({ checked, nextChecked: !checked, event, control });
+    }
+
+    function onClick(event) {
+      requestToggle(event);
+    }
+
+    function onKeyDown(event) {
+      if (!event || (event.key !== " " && event.key !== "Enter")) return;
+      if (typeof event.preventDefault === "function") event.preventDefault();
+      requestToggle(event);
+    }
+
+    const control = {
+      element,
+      visualElement,
+      getChecked: () => checked,
+      setState(patch = {}) {
+        if (disposed) return control;
+        if (Object.prototype.hasOwnProperty.call(patch, "checked")) checked = patch.checked === true;
+        if (Object.prototype.hasOwnProperty.call(patch, "disabled")) disabled = patch.disabled === true;
+        if (Object.prototype.hasOwnProperty.call(patch, "pending")) pending = patch.pending === true;
+        syncAccessibleName(patch);
+        syncState();
+        return control;
+      },
+      setOnToggle(handler) {
+        onToggle = typeof handler === "function" ? handler : null;
+        return control;
+      },
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        onToggle = null;
+        element.removeEventListener("click", onClick);
+        element.removeEventListener("keydown", onKeyDown);
+      },
+    };
+
+    syncAccessibleName(config);
+    if (!element.getAttribute("aria-label") && !element.getAttribute("aria-labelledby")) {
+      throw new TypeError("buildSwitch requires ariaLabel or ariaLabelledBy");
+    }
+    syncState();
+    element.addEventListener("click", onClick);
+    element.addEventListener("keydown", onKeyDown);
+    return registerMountedDisposable(control);
+  }
+
+  function attachOptimisticSwitch(control, {
     getCommittedVisual,
     getTransientState,
     setTransientState,
     clearTransientState,
     invoke,
   }) {
-    const run = () => {
-      if (sw.classList.contains("disabled") || sw.getAttribute("aria-disabled") === "true") return;
-      if (sw.classList.contains("pending")) return;
+    control.setOnToggle(() => {
       const currentVisual = getCommittedVisual();
       const nextVisual = !currentVisual;
       const seq = state.nextTransientUiSeq++;
       setTransientState({ visualOn: nextVisual, pending: true, seq });
-      setSwitchVisual(sw, nextVisual, { pending: true });
+      control.setState({ checked: nextVisual, pending: true });
       Promise.resolve()
         .then(invoke)
         .then((result) => {
@@ -334,30 +436,24 @@
           if (!current || current.seq !== seq) return;
           if (!result || result.status !== "ok" || result.noop) {
             clearTransientState(seq);
-            setSwitchVisual(sw, getCommittedVisual(), { pending: false });
+            control.setState({ checked: getCommittedVisual(), pending: false });
             if (result && result.noop) return;
             const msg = (result && result.message) || "unknown error";
             showToast(t("toastSaveFailed") + msg, { error: true });
             return;
           }
           clearTransientState(seq);
-          setSwitchVisual(sw, nextVisual, { pending: false });
+          control.setState({ checked: nextVisual, pending: false });
         })
         .catch((err) => {
           const current = getTransientState();
           if (!current || current.seq !== seq) return;
           clearTransientState(seq);
-          setSwitchVisual(sw, getCommittedVisual(), { pending: false });
+          control.setState({ checked: getCommittedVisual(), pending: false });
           showToast(t("toastSaveFailed") + (err && err.message), { error: true });
         });
-    };
-    sw.addEventListener("click", run);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key === " " || ev.key === "Enter") {
-        ev.preventDefault();
-        run();
-      }
     });
+    return control;
   }
 
   function buildSection(title, rows) {
@@ -1088,13 +1184,18 @@
         `<span class="row-label"></span>` +
         `<span class="row-desc"></span>` +
       `</div>` +
-      `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
+      `<div class="row-control"></div>`;
     const labelEl = row.querySelector(".row-label");
     labelEl.textContent = t(labelKey);
+    const controlId = nextSettingsSwitchId++;
+    labelEl.id = `settings-switch-${controlId}-label`;
     if (danger) labelEl.classList.add("row-label-danger");
     const text = row.querySelector(".row-text");
     const desc = row.querySelector(".row-desc");
-    if (descKey) desc.textContent = t(descKey);
+    if (descKey) {
+      desc.textContent = t(descKey);
+      desc.id = `settings-switch-${controlId}-description`;
+    }
     else desc.remove();
     let extraElement = null;
     if (descExtraKey) {
@@ -1104,23 +1205,31 @@
       text.appendChild(extra);
       extraElement = extra;
     }
-    const sw = row.querySelector(".switch");
-    const control = row.querySelector(".row-control");
+    const rowControl = row.querySelector(".row-control");
     const override = state.transientUiState.generalSwitches.get(key);
     const visualOn = override ? override.visualOn : readGeneralSwitchVisual(key, invert);
-    setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
-    state.mountedControls.generalSwitches.set(key, { element: sw, invert, row, text, extraElement });
+    const switchControl = buildSwitch({
+      checked: visualOn,
+      pending: override ? override.pending : false,
+      disabled,
+      ariaLabelledBy: labelEl.id,
+      ariaDescribedBy: descKey ? desc.id : null,
+    });
+    rowControl.appendChild(switchControl.element);
+    state.mountedControls.generalSwitches.set(key, {
+      control: switchControl,
+      element: switchControl.element,
+      invert,
+      row,
+      text,
+      extraElement,
+    });
     if (actionButton) {
       const btn = buildButton({ labelKey: actionButton.labelKey, tone: "accent" });
-      control.insertBefore(btn, sw);
+      rowControl.insertBefore(btn, switchControl.element);
       attachActivation(btn, actionButton.invoke);
     }
-    if (disabled) {
-      sw.classList.add("disabled");
-      sw.setAttribute("aria-disabled", "true");
-      sw.tabIndex = -1;
-    }
-    attachAnimatedSwitch(sw, {
+    attachOptimisticSwitch(switchControl, {
       getCommittedVisual: () => readGeneralSwitchVisual(key, invert),
       getTransientState: () => state.transientUiState.generalSwitches.get(key) || null,
       setTransientState: (value) => state.transientUiState.generalSwitches.set(key, value),
@@ -2208,7 +2317,8 @@
     showSettingsConfirmModal,
     escapeHtml,
     setSwitchVisual,
-    attachAnimatedSwitch,
+    buildSwitch,
+    attachOptimisticSwitch,
     buildSwitchRow,
     buildSection,
     buildSettingsSelect,

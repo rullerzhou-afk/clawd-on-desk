@@ -127,12 +127,7 @@
         disabled: showDock && !showTray,
       },
     ];
-    return definitions.map((definition) => {
-      const row = helpers.buildSwitchRow(definition);
-      const sw = row.querySelector(".switch");
-      if (sw) sw.setAttribute("aria-label", t(definition.labelKey));
-      return row;
-    });
+    return definitions.map((definition) => helpers.buildSwitchRow(definition));
   }
 
   function readRoamMovementStyle() {
@@ -954,31 +949,28 @@
       text.appendChild(label);
       const control = document.createElement("div");
       control.className = "row-control";
-      const sw = document.createElement("div");
-      sw.className = "switch";
-      sw.setAttribute("role", "switch");
-      sw.tabIndex = 0;
       // ON means "shown", so the switch reads the way the label does. The pref
       // stores the inverse (what is HIDDEN) — see prefs.js for why.
       let shown = !hiddenList().includes(provider.key);
-      helpers.setSwitchVisual(sw, shown);
-      sw.setAttribute("aria-label", provider.label || provider.key);
-      control.appendChild(sw);
+      const switchControl = helpers.buildSwitch({
+        checked: shown,
+        ariaLabel: provider.label || provider.key,
+      });
+      control.appendChild(switchControl.element);
       row.append(text, control);
 
-      helpers.attachActivation(sw, () => {
-        const next = !shown;
+      switchControl.setOnToggle(({ nextChecked: next }) => {
         // Optimistic: the broadcast that confirms this rebuilds the tab, and
         // leaving the switch stale until then reads as an ignored click.
         shown = next;
-        helpers.setSwitchVisual(sw, shown, { pending: true });
+        switchControl.setState({ checked: shown, pending: true });
         const hidden = hiddenList().filter((key) => key !== provider.key);
         if (!next) hidden.push(provider.key);
         return Promise.resolve(
           window.settingsAPI.update("quotaRingHiddenProviders", hidden)
         ).catch(() => {
           shown = !next;
-          helpers.setSwitchVisual(sw, shown);
+          switchControl.setState({ checked: shown, pending: false });
         });
       });
       return row;
@@ -1317,30 +1309,31 @@
       `<div class="row-text">` +
         `<span class="row-label"></span>` +
       `</div>` +
-      `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
-    row.querySelector(".row-label").textContent = t("rowSoundEnabled");
-    const sw = row.querySelector(".switch");
+      `<div class="row-control"></div>`;
+    const label = row.querySelector(".row-label");
+    label.id = "settings-sound-enabled-label";
+    label.textContent = t("rowSoundEnabled");
     const text = row.querySelector(".row-text");
     const override = state.transientUiState.generalSwitches.get("soundMuted");
     const visualOn = override ? override.visualOn : readers.readGeneralSwitchVisual("soundMuted", true);
-    helpers.setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
+    const switchControl = helpers.buildSwitch({
+      checked: visualOn,
+      pending: override ? override.pending : false,
+      ariaLabelledBy: label.id,
+    });
+    row.querySelector(".row-control").appendChild(switchControl.element);
     state.mountedControls.generalSwitches.set("soundMuted", {
-      element: sw,
+      control: switchControl,
+      element: switchControl.element,
       invert: true,
       row,
       text,
       extraElement: null,
     });
 
-    const run = (ev) => {
-      if (sw.classList.contains("disabled") || sw.getAttribute("aria-disabled") === "true") return;
+    switchControl.setOnToggle(({ event }) => {
       if (!summaryControl || typeof summaryControl.toggleSound !== "function") return;
-      summaryControl.toggleSound(ev);
-    };
-    sw.addEventListener("click", run);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key !== " " && ev.key !== "Enter") return;
-      run(ev);
+      summaryControl.toggleSound(event);
     });
     return row;
   }
@@ -1349,13 +1342,14 @@
     const wrap = document.createElement("div");
     wrap.className = "sound-summary-control";
     const chip = document.createElement("span");
-    const sw = document.createElement("div");
-    sw.className = "switch sound-header-switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("aria-label", t("rowSoundEnabled"));
-    sw.setAttribute("tabindex", "0");
+    const switchControl = helpers.buildSwitch({
+      checked: readers.readGeneralSwitchVisual("soundMuted", true),
+      ariaLabel: t("rowSoundEnabled"),
+      className: "sound-header-switch",
+      stopPropagation: true,
+    });
     wrap.appendChild(chip);
-    wrap.appendChild(sw);
+    wrap.appendChild(switchControl.element);
 
     function getSnapshotVolumePct() {
       const v = state.snapshot && typeof state.snapshot.soundVolume === "number"
@@ -1384,7 +1378,7 @@
     function setSoundChildSwitchVisual(visualOn, pendingVisual) {
       const meta = getMountedGeneralSwitch("soundMuted");
       if (!meta) return;
-      helpers.setSwitchVisual(meta.element, visualOn, { pending: pendingVisual });
+      meta.control.setState({ checked: visualOn, pending: pendingVisual });
     }
 
     function normalizeVolumePct(pct) {
@@ -1397,7 +1391,7 @@
       const stateLabel = enabled ? t("bubblePolicySummaryOn") : t("bubblePolicySummaryOff");
       chip.className = "collapsible-summary-chip" + (enabled ? " accent" : "");
       chip.textContent = `${stateLabel} · ${normalizeVolumePct(volumePct)}%`;
-      helpers.setSwitchVisual(sw, enabled, { pending: pendingVisual });
+      switchControl.setState({ checked: enabled, pending: pendingVisual });
     }
 
     function syncFromSnapshot() {
@@ -1449,16 +1443,13 @@
       });
     }
 
-    sw.addEventListener("click", toggleSound);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key !== " " && ev.key !== "Enter") return;
-      toggleSound(ev);
-    });
+    switchControl.setOnToggle(({ event }) => toggleSound(event));
 
     syncFromSnapshot();
     return {
       element: wrap,
-      headerSwitch: sw,
+      headerSwitch: switchControl.element,
+      switchControl,
       syncFromSnapshot,
       syncVolumePreview,
       toggleSound,
@@ -1562,11 +1553,13 @@
         `<span class="row-label"></span>` +
         `<span class="row-desc"></span>` +
       `</div>` +
-      `<div class="bubble-policy-controls">` +
-        `<div class="switch" role="switch" tabindex="0"></div>` +
-      `</div>`;
-    item.querySelector(".row-label").textContent = t(labelKey);
-    item.querySelector(".row-desc").textContent = t(descKey);
+      `<div class="bubble-policy-controls"></div>`;
+    const label = item.querySelector(".row-label");
+    const description = item.querySelector(".row-desc");
+    label.id = `settings-bubble-${category}-label`;
+    description.id = `settings-bubble-${category}-description`;
+    label.textContent = t(labelKey);
+    description.textContent = t(descKey);
     if (warningKey) {
       const warning = document.createElement("span");
       warning.className = "row-desc bubble-policy-warning";
@@ -1574,8 +1567,13 @@
       item.querySelector(".bubble-policy-copy").appendChild(warning);
     }
 
-    const sw = item.querySelector(".switch");
     const controls = item.querySelector(".bubble-policy-controls");
+    const switchControl = helpers.buildSwitch({
+      checked: currentEnabled(),
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: description.id,
+    });
+    controls.appendChild(switchControl.element);
     let secondsInput = null;
     let secondsCommitTimer = null;
     let secondsDraftValue = null;
@@ -1596,7 +1594,7 @@
     }
 
     function setVisual(enabled, pending = false) {
-      helpers.setSwitchVisual(sw, enabled, { pending });
+      switchControl.setState({ checked: enabled, pending });
       if (secondsInput) secondsInput.disabled = !enabled || pending;
     }
 
@@ -1659,7 +1657,6 @@
     }
 
     function runToggle() {
-      if (sw.classList.contains("pending")) return;
       const nextEnabled = !currentEnabled();
       if (category === "update" && !nextEnabled) {
         setVisual(nextEnabled, true);
@@ -1687,13 +1684,7 @@
     }
 
     setVisual(currentEnabled(), false);
-    sw.addEventListener("click", runToggle);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key === " " || ev.key === "Enter") {
-        ev.preventDefault();
-        runToggle();
-      }
-    });
+    switchControl.setOnToggle(runToggle);
 
     if (secondsKey) {
       const input = document.createElement("input");
@@ -1709,9 +1700,9 @@
       const suffix = document.createElement("span");
       suffix.className = "bubble-policy-unit";
       suffix.textContent = t("bubbleSecondsUnit");
-      controls.insertBefore(prefix, sw);
-      controls.insertBefore(input, sw);
-      controls.insertBefore(suffix, sw);
+      controls.insertBefore(prefix, switchControl.element);
+      controls.insertBefore(input, switchControl.element);
+      controls.insertBefore(suffix, switchControl.element);
       secondsInput = input;
       input.disabled = !currentEnabled();
       input.addEventListener("input", () => {
@@ -2275,14 +2266,7 @@
   function setGeneralSwitchDisabled(key, disabled) {
     const meta = getMountedGeneralSwitch(key);
     if (!meta) return false;
-    meta.element.classList.toggle("disabled", !!disabled);
-    if (disabled) {
-      meta.element.setAttribute("aria-disabled", "true");
-      meta.element.tabIndex = -1;
-    } else {
-      meta.element.removeAttribute("aria-disabled");
-      meta.element.tabIndex = 0;
-    }
+    meta.control.setState({ disabled: !!disabled });
     return true;
   }
 
@@ -2466,7 +2450,10 @@
       if (key === "roamConstrainAxis") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       state.transientUiState.generalSwitches.delete(key);
-      helpers.setSwitchVisual(meta.element, readers.readGeneralSwitchVisual(key, meta.invert), { pending: false });
+      meta.control.setState({
+        checked: readers.readGeneralSwitchVisual(key, meta.invert),
+        pending: false,
+      });
       if (key === "soundMuted") {
         state.mountedControls.soundVolume.syncDisabled();
       }
