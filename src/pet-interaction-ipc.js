@@ -33,6 +33,9 @@ function registerPetInteractionIpc(options = {}) {
   );
   const setDragLocked = requiredDependency(options.setDragLocked, "setDragLocked");
   const setMouseOverPet = requiredDependency(options.setMouseOverPet, "setMouseOverPet");
+  // #545 follow-up: drag-alive heartbeat sink owned by main.js's stuck
+  // drag-lock watchdog. Optional so tests without a watchdog stay valid.
+  const onDragAlive = options.onDragAlive || (() => {});
   const cancelRoam = requiredDependency(options.cancelRoam, "cancelRoam");
   const beginDragSnapshot = requiredDependency(options.beginDragSnapshot, "beginDragSnapshot");
   const clearDragSnapshot = requiredDependency(options.clearDragSnapshot, "clearDragSnapshot");
@@ -114,9 +117,17 @@ function registerPetInteractionIpc(options = {}) {
     setAccessoryMirror(!!mirrored);
   });
 
+  on("drag-alive", () => {
+    onDragAlive();
+  });
+
   on("drag-lock", (_event, locked) => {
     setDragLocked(!!locked);
     if (locked) {
+      // The lock itself is the first heartbeat: a drag whose renderer dies
+      // before the first 1s tick must still age out of the watchdog instead
+      // of inheriting a stale timestamp from a previous drag.
+      onDragAlive();
       setMouseOverPet(true);
       cancelRoam();
       beginDragSnapshot();

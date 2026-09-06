@@ -1429,6 +1429,11 @@ function createPetWindowRuntime(options = {}) {
       setFloatingSurfacesFullscreenSuppressed(false);
     }
     const changed = applyVisibilityLayerChange(prevEffective);
+    // Manual hide is a user-invoked healing action: a drag lock stranded
+    // while hidden would keep syncHitWin deferred and recoverIfCloaked
+    // "busy" after the pet is shown again. Nothing meaningful can be dragged
+    // while hidden, so release on the flip to hidden.
+    if (target && changed) releaseStrandedDragLock();
     // showInactive restores native visibility but not necessarily the topmost
     // band an exclusive fullscreen HWND displaced. The override is already
     // armed above, so reassert can surface the pet immediately even when the
@@ -1590,6 +1595,12 @@ function createPetWindowRuntime(options = {}) {
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
     if (getMiniMode() || getMiniTransitioning()) return;
+
+    // This action is the documented escape hatch for a stranded input window;
+    // with a stranded drag lock it would move the render window while
+    // syncHitWin() defers, leaving the input window behind (still
+    // undraggable). Release before moving so the sync actually runs.
+    releaseStrandedDragLock();
 
     const workArea = getPrimaryWorkAreaFallback();
     const size = getEffectiveCurrentPixelSize(workArea);
@@ -2336,6 +2347,18 @@ function createPetWindowRuntime(options = {}) {
       }
       reloadRuntimeWindowWebContents(hitWin, { crashKey: "hitWin", details });
     });
+    // render-process-gone covers crashes; "unresponsive" covers a hung input
+    // renderer that stays alive — the exact state that strands dragLocked and
+    // defeats every recovery path (see releaseStrandedDragLock). Same policy
+    // as renderWin's unresponsive handler: release drag state, reload.
+    hitWin.webContents.on("unresponsive", () => {
+      if (typeof optionsArg.onUnresponsive === "function") {
+        optionsArg.onUnresponsive(hitWin);
+        return;
+      }
+      releaseStrandedDragLock();
+      reloadRuntimeWindowWebContents(hitWin, { crashKey: "hitWin" });
+    });
     return hitWin;
   }
 
@@ -2349,6 +2372,23 @@ function createPetWindowRuntime(options = {}) {
     const wasLocked = dragLocked;
     dragLocked = next;
     if (wasLocked && !next) releaseReconcileProtection();
+  }
+
+  // #545 follow-up: a drag lock whose hit renderer went silent (hung before
+  // pointerup, or the closing mouse-up was swallowed by a UAC secure desktop /
+  // RDP reconnect) strands dragLocked=true. While it is stranded, syncHitWin()
+  // defers forever, recoverIfCloaked() reports "busy", and tick gates cursor
+  // tracking / roam / position-follow off — the visible-but-undraggable pet.
+  // Every user-invoked healing action (bringPetToPrimaryDisplay, manual hide,
+  // send-to-display, the main-process watchdog) releases through here first.
+  // Collateral if the pointer is genuinely still held: dragMove() no-ops until
+  // the gesture ends, and the renderer's own pointerup completes the
+  // handshake (drag-lock(false) is idempotent), so recovery is immediate.
+  function releaseStrandedDragLock() {
+    if (!dragLocked) return false;
+    setDragLocked(false);
+    clearDragSnapshot();
+    return true;
   }
 
   function isDragLocked() {
@@ -2674,6 +2714,7 @@ function createPetWindowRuntime(options = {}) {
     reloadWindowWebContents: reloadRuntimeWindowWebContents,
     setDragLocked,
     isDragLocked,
+    releaseStrandedDragLock,
     beginDragSnapshot,
     clearDragSnapshot,
     moveWindowForDrag,

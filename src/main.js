@@ -175,6 +175,7 @@ const {
   resolveRuntimeDockIconPolicy,
 } = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
+const { createDragLockWatchdog } = require("./drag-lock-watchdog");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
 const {
   createHitWindowActivationRuntime,
@@ -1512,6 +1513,41 @@ function sendToRenderer(channel, ...args) {
   }
   return sendRawToRenderer(channel, ...args);
 }
+
+// ── #545 follow-up: stranded drag-lock watchdog ──
+// The hit renderer heartbeats "drag-alive" every 1s while a drag is captured;
+// a lock held with no heartbeat for DRAG_STUCK_AFTER_MS means the input
+// renderer went silent (hung, or the closing mouse-up was swallowed) and the
+// lock would otherwise strand forever: syncHitWin() defers, recoverIfCloaked()
+// reports "busy", tick gates cursor tracking/roam/follow off — the
+// visible-but-undraggable pet. main.js owns the timestamp because both the
+// "drag-alive" IPC sink and the watchdog live here. Thresholds live in
+// drag-lock-watchdog.js (8s stale after a 1s heartbeat, polled every 2s).
+let lastDragAliveAtMs = 0;
+const dragLockWatchdog = createDragLockWatchdog({
+  isDragLocked: () => petWindowRuntime.isDragLocked(),
+  getLastDragAliveAt: () => lastDragAliveAtMs,
+  forceRelease: (reason) => forceReleaseStrandedDragLock(reason),
+  log: (message) => console.warn(`Clawd: ${message}`),
+});
+
+function forceReleaseStrandedDragLock(reason) {
+  if (!petWindowRuntime.releaseStrandedDragLock()) return false;
+  console.warn(`Clawd: force-released stranded drag lock (${reason})`);
+  idlePaused = false;
+  mouseOverPet = false;
+  // If the hit renderer is alive with a phantom capture (its isDragging still
+  // true because the closing event was swallowed, not because it hung), let it
+  // drop through the normal stop path; a hung renderer ignores this and gets
+  // reloaded by the unresponsive handler instead.
+  sendToHitWin("force-drag-release");
+  return true;
+}
+
+function startDragLockWatchdog() {
+  dragLockWatchdog.start();
+}
+
 function sendToHitWin(channel, ...args) {
   if (hitWin && !hitWin.isDestroyed()) hitWin.webContents.send(channel, ...args);
 }
@@ -4098,6 +4134,9 @@ function showResumeInput(t) {
 const _menuCtx = {
   get win() { return win; },
   get sessions() { return sessions; },
+  // #545 follow-up: healing actions must defeat a stranded drag lock (syncHitWin
+  // defers while it is held); see pet-window-runtime releaseStrandedDragLock.
+  releaseStrandedDragLock: () => petWindowRuntime.releaseStrandedDragLock(),
   get currentSize() { return currentSize; },
   set currentSize(v) { _settingsController.applyUpdate("size", v); },
   get doNotDisturb() { return doNotDisturb; },
@@ -4845,6 +4884,16 @@ function createWindow() {
       mouseOverPet = false;
       petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
     },
+    // A hung (not crashed) input renderer strands dragLocked the same way a
+    // crash would — release and reload, mirroring the crash path above and
+    // renderWin's own unresponsive policy.
+    onUnresponsive: (ownedHitWin) => {
+      safeConsoleError("hitWin renderer unresponsive — releasing drag lock and reloading");
+      petWindowRuntime.releaseStrandedDragLock();
+      idlePaused = false;
+      mouseOverPet = false;
+      petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details: { reason: "unresponsive" } });
+    },
   });
 
   // Issue #690 plan §4.3.9: these replace (not supplement) the previous
@@ -4892,6 +4941,7 @@ function createWindow() {
     },
     setDragLocked: (value) => { petWindowRuntime.setDragLocked(value); },
     setMouseOverPet: (value) => { mouseOverPet = !!value; },
+    onDragAlive: () => { lastDragAliveAtMs = Date.now(); },
     cancelRoam: () => _roam.cancelRoam(),
     beginDragSnapshot: () => beginDragSnapshot(),
     clearDragSnapshot: () => clearDragSnapshot(),
@@ -5018,6 +5068,7 @@ function createWindow() {
 
   guardAlwaysOnTop(win);
   startTopmostWatchdog();
+  startDragLockWatchdog();
   startFocusablePoll();
 
   // display-metrics-changed fires in bursts during DPI changes and RDP

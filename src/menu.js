@@ -469,6 +469,12 @@ module.exports = function initMenu(ctx) {
   function sendToDisplay(display) {
     if (!ctx.win || ctx.win.isDestroyed()) return;
     if (ctx.getMiniMode()) return;
+    // #545 follow-up: with a stranded drag lock, syncHitWin() defers and the
+    // input window would stay behind while the pet jumps to the target
+    // display — recreating the "visible but undraggable" state. Release
+    // before moving. A genuinely live drag only loses its follow until the
+    // gesture's own pointerup completes the handshake.
+    if (typeof ctx.releaseStrandedDragLock === "function") ctx.releaseStrandedDragLock();
     const wa = display.workArea;
     const size = typeof ctx.getEffectiveCurrentPixelSize === "function"
       ? ctx.getEffectiveCurrentPixelSize(wa)

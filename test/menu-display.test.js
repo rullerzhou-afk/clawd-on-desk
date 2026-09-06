@@ -252,6 +252,55 @@ describe("menu send-to-display", () => {
   });
 });
 
+describe("menu send-to-display stranded drag-lock release (#545 follow-up)", () => {
+  it("releases a stranded drag lock before moving the pet so the input window follows", () => {
+    const fakeElectron = {
+      app: { quit: () => {}, setActivationPolicy: () => {}, dock: { show: () => {}, hide: () => {} } },
+      BrowserWindow: function BrowserWindow() {},
+      Menu: {
+        buildFromTemplate(template) {
+          return { template };
+        },
+      },
+      Tray: function Tray() {},
+      nativeImage: {
+        createFromPath() {
+          return {
+            resize() { return this; },
+            setTemplateImage() {},
+          };
+        },
+      },
+      screen: {
+        getAllDisplays: () => ([
+          { id: 1, bounds: { x: 0, y: 0, width: 1920, height: 1080 }, workArea: { x: 0, y: 0, width: 1920, height: 1040 } },
+          { id: 2, bounds: { x: 1920, y: 0, width: 2560, height: 1440 }, workArea: { x: 1920, y: 0, width: 2560, height: 1400 } },
+        ]),
+        getCursorScreenPoint: () => ({ x: 0, y: 0 }),
+        getDisplayNearestPoint: () => ({ id: 1 }),
+      },
+    };
+    const initMenu = loadMenuWithElectron(fakeElectron);
+    const order = [];
+
+    const ctx = buildBaseCtx({
+      releaseStrandedDragLock: () => order.push("release"),
+      applyPetWindowBounds: () => order.push("applyBounds"),
+      syncHitWin: () => order.push("syncHitWin"),
+    });
+
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+
+    const sendToDisplay = ctx.contextMenu.template.find((item) => item.label === "Send to Display");
+    sendToDisplay.submenu[0].click();
+
+    // syncHitWin() defers while the lock is held — the release must land
+    // before the move, or the input window stays behind at the old rect.
+    assert.deepStrictEqual(order, ["release", "applyBounds", "syncHitWin"]);
+  });
+});
+
 describe("menu recovery action", () => {
   it("adds a tray item that brings the pet back to the primary display", () => {
     const fakeElectron = {
