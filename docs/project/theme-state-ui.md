@@ -7,11 +7,11 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 桌宠使用两个独立的顶层窗口：
 
 - 渲染窗口（`win`）：透明大窗口，永久 `setIgnoreMouseEvents(true)`，只负责显示 SVG 动画和眼球追踪
-- 输入窗口（`hitWin`）：小矩形窗口，`transparent: true` + `setShape` 覆盖 hitbox 区域，`focusable: true`，永久 `setIgnoreMouseEvents(false)`，接收所有 pointer 事件
+- 输入窗口（`hitWin`）：小矩形窗口，`transparent: true` + `setShape` 覆盖 hitbox 区域，Linux 与原生 activation controller 可用的 Windows 以 Electron `focusable: false` 创建；Windows controller 不可用时回退为 `focusable: true`。窗口永久 `setIgnoreMouseEvents(false)`，接收所有 pointer 事件
 
 输入事件流：`hitWin renderer → IPC → main → renderWin renderer`
 
-这个架构解决了 Windows 上的拖拽失效 bug：`WS_EX_NOACTIVATE` + layered window + Chromium child HWND 的组合在 z-order 变化后会走进激活死路径。分离后输入窗口保持 `focusable: true`，避开了这个问题。
+Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除样式以恢复普通 activation 语义，全屏时设置样式以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable，避免 Chromium 在 pointerdown 时绕过原生样式主动激活窗口。真实合成点击已确认样式置位和清除时 pointer 都能到达 renderer，因此不能把 pointer 路由归因于清除样式。输入窗口仍和渲染窗口分离，并永久接收 mouse events，避免旧单窗口 alpha hit-test 路径的拖拽失效。
 
 ## State Machine
 
@@ -24,6 +24,7 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 - 逻辑状态与真正显示的视觉也彼此分离：所有 state、reaction、随机 idle、低功耗替换和回退都先生成带 `visualGeneration` 的显示请求；renderer 结算后，main 才提交 `{ displayState, file, hitBox, source, visualGeneration }`。原生 hit window、配饰投影与 Presence 只读这份 committed visual，输入窗口仍即时读取逻辑状态做反应门控
 - DND 模式：跳过 dozing，直接 yawning → collapsing → sleeping；同时屏蔽 hook 事件
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
+- Windows 全屏自动隐藏会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
 - working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building
 - juggling 子动画：1 个 subagent → juggling，2+ → conducting
 
@@ -43,7 +44,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
 - 配饰是两个独立的主题级槽：`petAccessory` 对应 head，`petMouthAccessory` 对应 mouth。renderer 中两者都是 pet media 的外部兄弟层，固定顺序为 `pet media → head → mouth`，因此 pet tint 不会染到配饰，mouth 也能稳定画在手或 head 配饰之上
-- head / mouth 选择以一个 `{ themeId, payloads, accessoryGeneration }` 快照原子投递；只有 renderer 收到同一快照后 main 才提交为权威值。主题热切或 renderer 重载会用新的 generation 重建两槽，旧消息不得覆盖新选择
+- head / mouth 选择以一个 `{ themeId, payloads, accessoryGeneration }` 快照原子投递；main 仅在发送成功后提交为权威值（send-gated commit），没有独立的 renderer 接收 ACK。同内容重投递可复用 generation；内容变化才推进 generation，旧消息不得覆盖新选择。这与 displayed-visual 的终结 ACK 是不同合同
 - 独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖 head 槽；mouth 槽保持用户选择。日期窗口结束后恢复常驻 head 选择，不回写任一配饰偏好
 - `idleEasterEggs` 是条件式 idle 彩蛋池：每项声明文件、时长、概率、冷却时间和 head / mouth 的精确配饰组合。只有普通 idle、窗口可见、非 mini / roam / drag / 菜单 / 低功耗且两个槽仍匹配时才参与抽签；只有 renderer 确认该逻辑视觉最终 committed 后才从实际显示时刻开始计时长和冷却
 - 用户主题 SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越；内置 SVG 不走运行时 sanitizer，必须由仓库测试做静态安全审计
@@ -59,7 +60,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 main 中的 displayed-visual projection 是文件、hitbox 和视觉来源的唯一权威。renderer 对每个仍有效的 request 恰好返回一个终结结果：正常加载为 `swapped`，当前文件已经显示为 `already-displayed`，实际显示了可投影的替代文件为 `fallback`，无法验证则为 `failed`；被后续请求取代的 generation 由 main 标为 `superseded`，renderer 不伪造 ACK。
 
 - renderer 的 object → img → accessory-settle 回退链必须先自行走完；main 的 9750ms settlement deadline 只是无 ACK 兜底
-- 同一 logical visual 最多自动 re-request 一次；连续两个 request 都没有 ACK 时，同一 renderer session 最多 reload 一次。visual timeout 本身不得循环 reload
+- 同一 logical visual 最多自动 re-request 一次；连续两个 request 都没有 ACK 时，同一 displayed-visual projection 实例最多尝试 reload 一次，失败也消耗预算。当前 main 只创建一个实例，因此该预算覆盖当前主进程寿命，不随 renderer reload 重置；独立 crash recovery 有自己的限制。visual timeout 本身不得循环 reload
 - 只有 `verified: true` 且实际 basename 合法的结果可提交；不可投影的 fallback 以 failed 终结，保留上一份 committed visual
 - reaction 也走 generation 合同，但不广播到 Presence；hit renderer 继续即时消费 logical state，不等待视觉 ACK
 - committed visual 到达后触发原生 hit-window 同步。拖拽锁、窗口未 live 或 Linux sliver 导致的 deferred sync，由 drag release、窗口恢复和现有 transition-end sweep 补做
@@ -195,7 +196,7 @@ Mini 状态映射：
 ## Electron And Platform Notes
 
 - `win.setFocusable(false)`：渲染窗口永不抢焦点
-- `hitWin.focusable: true`：输入窗口允许激活，这是修复拖拽 bug 的关键
+- Windows `hitWin`：原生 activation controller 可用时 Electron 始终 non-focusable；仅在非全屏前台时清除 `WS_EX_NOACTIVATE`，全屏时重新设置。controller / Koffi 不可用时回退到旧的 Electron focusable 构造，优先保住桌面点击与拖拽，但不承诺全屏防抢焦点
 - `win.showInactive()`：显示时不打断用户输入
 - 渲染 / 输入窗口都依赖 `backgroundThrottling: false`；unfocused 节流会放大眼球追踪和输入恢复的时序问题
 - 路径统一用 `path.join(__dirname, ...)`
@@ -206,7 +207,8 @@ Mini 状态映射：
 
 ## Known Limits
 
-- `hitWin` 点击会短暂抢焦点，这是当前可接受代价
+- Windows 原生 activation controller 依赖打包目标内的 Koffi；不可用时不调用会扰动前台的 Electron `setFocusable(false)`，而以旧的 focusable 输入窗降级，桌面交互仍可用但全屏点击可能短暂抢前台
+- Windows 非全屏态为恢复普通 activation 语义会清除输入窗的 `WS_EX_NOACTIVATE`；点击桌宠可能短暂把 OS 前台归属切到 Clawd，即使 Electron `win.isFocused()` 仍为 false
 - 当前开发环境没有 macOS 手测机；所有 macOS 特定路径都只能做 code review + best-effort 推断，真正行为变化需要额外人工验证
 - 启动恢复依赖 `detectRunningClaudeProcesses()` 与后续 hook 事件
 - Windows 前台窗口锁通过 ALT trick + `koffi` FFI 绕过，仍有边缘失败可能

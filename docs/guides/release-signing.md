@@ -144,6 +144,15 @@ base64 -i "/绝对路径/AuthKey_<KEY_ID>.p8" | pbcopy
 - 只配置一部分：立即失败并列出缺少的 Secret 名称，不打印 Secret 内容。
 - 推送 `v*` tag：五项缺任何一项都失败，绝不生成 ad-hoc 官方版本。
 
+当前锁定的 `app-builder-lib@26.15.7` 把证书导出密码误传给
+`security set-key-partition-list -k`，该参数实际需要临时钥匙串密码，
+会导致 `SecKeychainUnlock`。Developer ID 构建前会运行
+`node scripts/prepare-macos-signing.js`，仅修正 CI 安装的 macOS 签名模块，
+不更改共享依赖版本、Windows 构建或应用运行时代码。脚本核对版本及修改前后
+完整文件 SHA256；遇到未知版本/内容会停止，升级该依赖时必须重新审查并移除
+或更新此临时兼容处理。这个错误不要求改动现有 Secrets；修复仍须通过后续
+真实签名、公证和分发包验证。
+
 ## 5. 首次发布验证
 
 1. 在 Actions 手动运行 `Build & Release`，不要先推正式 tag。

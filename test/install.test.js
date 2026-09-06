@@ -36,6 +36,8 @@ const {
   getClaudeVersionAsync,
   isClawdPermissionUrl,
   parseClaudeInstallCliOptions,
+  findMissingHookDependencies,
+  formatMissingHookDependencies,
 } = __test;
 
 // registerHooks derives the hook command format from real-environment WSL
@@ -2933,5 +2935,121 @@ describe("Claude Code statusline installer", () => {
 
     assert.deepStrictEqual(result, { installed: true, removed: 0, changed: false, settingsPath });
     assert.strictEqual(readSettings(settingsPath).statusLine.command, "~/.claude/my-custom-statusline.sh");
+  });
+});
+
+describe("hook dependency closure validation", () => {
+  const HOOKS_DIR = path.join(__dirname, "..", "hooks");
+
+  function makePartialHooksDir(names) {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-partial-hooks-"));
+    tempDirs.push(tmpDir);
+    for (const name of names) {
+      fs.copyFileSync(path.join(HOOKS_DIR, name), path.join(tmpDir, name));
+    }
+    return tmpDir;
+  }
+
+  it("accepts the real hooks/ directory", () => {
+    const missing = findMissingHookDependencies(
+      ["clawd-hook.js", "claude-statusline.js"],
+      { hooksDir: HOOKS_DIR }
+    );
+    assert.deepStrictEqual(missing, [], "the shipped hooks/ tree must be self-contained");
+  });
+
+  // The exact file list docs/guides/setup-guide.md carried until this was
+  // fixed: it registers cleanly and then every hook dies at require time.
+  it("catches the stale documented subset, transitive deps included", () => {
+    const hooksDir = makePartialHooksDir([
+      "server-config.js",
+      "json-utils.js",
+      "shared-process.js",
+      "clawd-hook.js",
+      "install.js",
+      "codex-hook.js",
+      "codex-install.js",
+      "codex-install-utils.js",
+      "codex-remote-monitor.js",
+      "codex-session-index.js",
+      "codex-subagent-fields.js",
+      "copilot-hook.js",
+      "copilot-install.js",
+    ]);
+
+    const missing = findMissingHookDependencies(["clawd-hook.js"], { hooksDir });
+    const names = missing.map((entry) => entry.name);
+
+    assert.ok(names.includes("state-payload-size.js"), "direct require must be reported");
+    assert.ok(names.includes("context-usage.js"), "direct require must be reported");
+    assert.ok(names.includes("session-recovery-lease.js"), "direct require must be reported");
+    // shared-process.js is present but itself depends on a file the list omits;
+    // a one-level check would call this install healthy.
+    assert.ok(names.includes("pid-cache.js"), "transitive require must be reported");
+  });
+
+  it("attributes each missing file to the script that requires it", () => {
+    const hooksDir = makePartialHooksDir(["clawd-hook.js", "server-config.js"]);
+    const missing = findMissingHookDependencies(["clawd-hook.js"], { hooksDir });
+
+    const payloadSize = missing.find((entry) => entry.name === "state-payload-size.js");
+    assert.ok(payloadSize, "expected state-payload-size.js to be missing");
+    assert.strictEqual(payloadSize.from, "clawd-hook.js");
+  });
+
+  it("reports a missing entry point itself with no requiring file", () => {
+    const hooksDir = makePartialHooksDir(["server-config.js"]);
+    const missing = findMissingHookDependencies(["claude-statusline.js"], { hooksDir });
+
+    assert.deepStrictEqual(missing, [{ name: "claude-statusline.js", from: null, code: "ENOENT" }]);
+  });
+
+  it("does not walk out of hooks/ into the app tree", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-partial-hooks-"));
+    tempDirs.push(tmpDir);
+    fs.writeFileSync(
+      path.join(tmpDir, "entry.js"),
+      'require("../src/definitely-not-shipped-to-remote-hosts");\n',
+      "utf8"
+    );
+
+    const missing = findMissingHookDependencies(["entry.js"], { hooksDir: tmpDir });
+    assert.deepStrictEqual(missing, [{ name: "../src/definitely-not-shipped-to-remote-hosts.js", from: "entry.js", code: "OUTSIDE_HOOKS" }]);
+  });
+
+  it("reports a present-but-unreadable file without guessing its dependencies", () => {
+    const hooksDir = makePartialHooksDir(["clawd-hook.js"]);
+    const missing = findMissingHookDependencies(["clawd-hook.js"], {
+      hooksDir,
+      readFileSync: () => {
+        throw Object.assign(new Error("permission denied"), { code: "EACCES" });
+      },
+    });
+
+    assert.deepStrictEqual(missing, [{ name: "clawd-hook.js", from: null, code: "EACCES" }]);
+  });
+
+  it("handles whitespace, extensionless requires, and normalized cycles without executing hooks", () => {
+    const hooksDir = makePartialHooksDir([]);
+    fs.writeFileSync(path.join(hooksDir, "entry.js"), `throw new Error("must not execute");
+require ( './child.js' );
+require("./missing");`);
+    fs.writeFileSync(path.join(hooksDir, "child.js"), `require(
+ "./entry"
+); require('././missing.js');`);
+    assert.deepStrictEqual(findMissingHookDependencies(["./entry.js"], { hooksDir }), [
+      { name: "missing.js", from: "entry.js", code: "ENOENT" },
+    ]);
+  });
+
+  it("tells the user to copy the whole directory", () => {
+    const message = formatMissingHookDependencies([
+      { name: "state-payload-size.js", from: "clawd-hook.js", code: "ENOENT" },
+      { name: "claude-statusline.js", from: null, code: "EACCES" },
+    ]);
+
+    assert.match(message, /state-payload-size\.js \[ENOENT\] {2}\(required by clawd-hook\.js\)/);
+    assert.match(message, /^ {2}claude-statusline\.js \[EACCES\]$/m, "entry points carry no attribution");
+    assert.match(message, /hooks\/\*\.js/, "must point at the directory-wide copy");
   });
 });

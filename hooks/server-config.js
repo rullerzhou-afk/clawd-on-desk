@@ -19,6 +19,7 @@ const REMOTE_LAST_LOG_FILENAME = "clawd-remote-last-error.log";
 const CODEX_AUTO_START_GATE_FILENAME = "codex-auto-start.json";
 const CODEX_AUTO_START_GATE_VERSION = 1;
 const CODEX_WSL_INTEROP_ARG = "--clawd-wsl-interop";
+const CODEX_WINDOWS_STABLE_ARG = "--clawd-windows-stable";
 const APPIMAGE_HOOK_MARKER_FILE = ".clawd-appimage-path";
 const REMOTE_FAILURE_LOG_INTERVAL_MS = 5 * 60 * 1000;
 const ROUTING_NONCE_HEADER = "x-clawd-routing-nonce";
@@ -1368,6 +1369,7 @@ module.exports = {
   CODEX_AUTO_START_GATE_FILENAME,
   CODEX_AUTO_START_GATE_VERSION,
   CODEX_WSL_INTEROP_ARG,
+  CODEX_WINDOWS_STABLE_ARG,
   DEFAULT_HOOK_HTTP_TIMEOUT_MS,
   DEFAULT_SERVER_PORT,
   HOST_PREFIX_FILENAME,

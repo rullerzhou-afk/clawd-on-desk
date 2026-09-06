@@ -17,6 +17,8 @@ const { HOOK_ENTRIES: CODEWHALE_HOOK_ENTRIES } = require("../hooks/codewhale-ins
 const { QODER_HOOK_EVENTS, buildQoderHookCommand } = require("../hooks/qoder-install");
 const { KIMI_HOOK_EVENTS } = require("../hooks/kimi-install");
 const {
+  CODEX_WINDOWS_STABLE_ARG,
+  buildCodexHookCommand,
   buildStableCodexHookCommand,
   materializeStableCodexHookLauncher,
 } = require("../hooks/codex-install-utils");
@@ -2082,6 +2084,54 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.hookCommandIssue, "stable-manifest-invalid");
     assert.strictEqual(detail.scriptPath, stable.launcherPath);
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "codex" });
+  });
+
+  it("validates managed Windows sidecar integrity behind a direct command", () => {
+    const descriptor = codexDescriptor();
+    const target = path.join(descriptor.parentDir, "source", "codex-hook.js");
+    writeText(target, "process.stdout.write('{}');\n");
+    const stable = materializeStableCodexHookLauncher(target, {
+      codexDir: descriptor.parentDir,
+      nodeBin: process.execPath,
+      platform: "win32",
+    });
+    const commandWindows = `${buildCodexHookCommand(
+      stable.nodeBin,
+      stable.target,
+      "win32"
+    )} ${CODEX_WINDOWS_STABLE_ARG}`;
+    const settings = {
+      hooks: {
+        Stop: [{ hooks: [{
+          type: "command",
+          command: '"node.exe" "/mnt/c/app/hooks/codex-hook.js" --clawd-wsl-interop',
+          commandWindows,
+          timeout: 30,
+        }] }],
+      },
+    };
+    writeJson(descriptor.configPath, settings);
+    fs.writeFileSync(
+      descriptor.supplementary.configPath,
+      codexTrustState(descriptor, settings, "win32"),
+      "utf8"
+    );
+
+    const healthy = runOne(descriptor, {
+      platform: "win32",
+      validateTarget: (candidate) => ({ ok: true, ...candidate }),
+    });
+    assert.strictEqual(healthy.status, "ok");
+    assert.match(healthy.detail, /stable execution target verified/);
+
+    fs.writeFileSync(stable.windowsRunPath, "corrupt-sidecar\n", "utf8");
+    const damaged = runOne(descriptor, {
+      platform: "win32",
+      validateTarget: (candidate) => ({ ok: true, ...candidate }),
+    });
+    assert.strictEqual(damaged.status, "broken-path");
+    assert.strictEqual(damaged.hookCommandIssue, "stable-launcher-invalid");
+    assert.deepStrictEqual(damaged.fixAction, { type: "agent-integration", agentId: "codex" });
   });
 
   it("reports a missing Codex stable-launcher target as repairable", () => {

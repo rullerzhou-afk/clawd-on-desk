@@ -400,7 +400,8 @@
     const futureHour = hour !== null
       && localDate === anchorDate
       && hour > (Number.isInteger(data.currentLocalHour) ? data.currentLocalHour : 23);
-    if (afterToday || futureHour) return { state: "future", total: 0, counts: [], kind: "normal" };
+    // Historical local hours remain frozen after a timezone change. Existing
+    // activity and coverage are evidence, even if today's clock is now behind.
     if (total > 0) return { state: "activity", total, counts, kind };
     const coverage = coverageForDay(day);
     const coveredMinutes = hour === null
@@ -415,6 +416,7 @@
         kind,
       };
     }
+    if (afterToday || futureHour) return { state: "future", total: 0, counts: [], kind: "normal" };
     const startedDate = data.recordingStartedDate || data.startDate || anchorDate;
     const beforeStartedDate = compareLocalDates(localDate, startedDate) < 0;
     const beforeStartedHour = hour !== null
@@ -1075,6 +1077,8 @@
   function buildRecordingControls() {
     const rows = [];
     const enabled = !!(coreState.snapshot && coreState.snapshot.recapEnabled !== false);
+    const paused = enabled && view.status === "ready"
+      && view.data && view.data.recordingEnabled === false;
     const switchRow = document.createElement("div");
     switchRow.className = "row";
     const text = document.createElement("div");
@@ -1084,7 +1088,8 @@
     label.textContent = t("recapRecordingLabel");
     const desc = document.createElement("span");
     desc.className = "row-desc";
-    desc.textContent = t("recapRecordingDesc");
+    desc.textContent = t(paused ? "recapRecordingPaused" : "recapRecordingDesc");
+    if (paused) desc.setAttribute("role", "status");
     text.appendChild(label);
     text.appendChild(desc);
     switchRow.appendChild(text);

@@ -504,6 +504,86 @@ function getClaudeAutoStartScriptPath() {
   return asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
 }
 
+// A hooks/ directory copied by hand can be missing a transitive dependency of
+// an entry point. That install still writes a perfectly valid settings.json,
+// so the installer prints success — and then every registered hook dies at
+// require time with MODULE_NOT_FOUND. Claude Code discards the stderr of
+// `async: true` hooks, so the failure is invisible from both ends: the user
+// sees a healthy install and a desktop pet that never moves.
+//
+// Walk the relative-require closure of the entry points we are about to
+// register and refuse to write while anything is missing. This mirrors the
+// manifest closure that test/remote-deploy.test.js enforces for HOOK_FILES,
+// except it runs against the directory actually being installed from.
+// Literal CJS requires used by our hooks, not a general JavaScript parser.
+const HOOK_RELATIVE_REQUIRE_RE = /\brequire\s*\(\s*(["'])(\.\.?\/[^"'\r\n]+)\1\s*\)/g;
+
+function findMissingHookDependencies(entryNames, options = {}) {
+  const hooksDir = path.resolve(options.hooksDir || __dirname);
+  const statSync = options.statSync || fs.statSync;
+  const readFileSync = options.readFileSync || fs.readFileSync;
+  const missing = [];
+  const seen = new Set();
+  const queue = entryNames.map((name) => ({ name, from: null }));
+
+  while (queue.length) {
+    const entry = queue.shift();
+    const absPath = path.resolve(hooksDir, entry.name);
+    const name = path.relative(hooksDir, absPath).split(path.sep).join("/");
+    const { from } = entry;
+    if (seen.has(name)) continue;
+    seen.add(name);
+
+    if (!name || name === ".." || name.startsWith("../") || path.isAbsolute(name)) {
+      missing.push({ name, from, code: "OUTSIDE_HOOKS" });
+      continue;
+    }
+
+    let content;
+    try {
+      if (!statSync(absPath).isFile()) {
+        missing.push({ name, from, code: "NOT_FILE" });
+        continue;
+      }
+      content = readFileSync(absPath, "utf8");
+    } catch (err) {
+      missing.push({ name, from, code: err.code || "READ_FAILED" });
+      continue;
+    }
+
+    for (const match of content.matchAll(HOOK_RELATIVE_REQUIRE_RE)) {
+      const spec = match[2];
+      const target = path.resolve(
+        path.dirname(absPath),
+        path.extname(spec) ? spec : `${spec}.js`
+      );
+      const relative = path.relative(hooksDir, target).split(path.sep).join("/");
+      queue.push({ name: relative, from: name });
+    }
+  }
+
+  return missing;
+}
+
+function formatMissingHookDependencies(missing) {
+  const lines = [
+    "Clawd: refusing to install — required hook files are unavailable.",
+    "",
+  ];
+  for (const { name, from, code } of missing) {
+    lines.push(`  ${name} [${code}]${from ? `  (required by ${from})` : ""}`);
+  }
+  lines.push(
+    "",
+    "Restore missing files from the same complete Clawd source directory.",
+    "For unreadable files, check their permissions; copying alone may not fix them.",
+    "For a manual WSL copy, include every top-level JavaScript file:",
+    "",
+    "  cp /path/to/clawd-on-desk/hooks/*.js ~/.claude/hooks/"
+  );
+  return lines.join("\n");
+}
+
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
@@ -2066,6 +2146,8 @@ module.exports = {
   registerClaudeStatusline,
   unregisterClaudeStatusline,
   __test: {
+    findMissingHookDependencies,
+    formatMissingHookDependencies,
     parseClaudeVersion,
     getWindowsClaudePathSuffixes,
     getClaudePathCandidates,
@@ -2108,13 +2190,21 @@ if (require.main === module) {
   try {
     const { remote, chainExisting, installStatusline } =
       parseClaudeInstallCliOptions(process.argv.slice(2));
-    registerHooks({ remote });
-    if (installStatusline) {
-      // Remote installs register the statusline automatically (with the
-      // CLAWD_REMOTE=1 env prefix) so quota can ride the SSH tunnel. Local
-      // debug/reinstall commands require --statusline and otherwise preserve
-      // the default-off collection preference and the user's visible slot.
-      registerClaudeStatusline({ remote, chainExisting });
+    // Check only what this invocation requests. auto-start.js is opt-in and
+    // is not registered by this CLI, so it must not become a prerequisite.
+    const entryPoints = ["clawd-hook.js"];
+    if (installStatusline) entryPoints.push("claude-statusline.js");
+    const missingDeps = findMissingHookDependencies(entryPoints);
+    if (missingDeps.length) {
+      console.error(formatMissingHookDependencies(missingDeps));
+      process.exitCode = 1;
+    } else {
+      registerHooks({ remote });
+      if (installStatusline) {
+        // Remote installs also register statusline. Local commands opt in
+        // only with --statusline and otherwise preserve the visible slot.
+        registerClaudeStatusline({ remote, chainExisting });
+      }
     }
   } catch (err) {
     console.error(err.message);

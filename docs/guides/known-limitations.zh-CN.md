@@ -4,6 +4,7 @@
 
 | 限制 | 说明 |
 |------|------|
+| **Telegram Direct Send：Codex Desktop 使用剪贴板回退** | `codex://threads/...` 深链接可以把 Desktop 窗口带到前台，但无法证明当前输入框属于哪一个对话。为了避免把回复粘到另一个 Desktop 对话，即使存在 source PID，Direct Send 也会对 Codex Desktop 保持剪贴板回退；请在本地选中对话后再粘贴发送。HUD / Dashboard 导航仍会打开 Desktop 对话深链接。 |
 | **Codex CLI：终端跳转是 best-effort** | `request_user_input` 卡片会在 official hook / session metadata 能定位本地窗口时跳回 Codex。仅靠 JSONL 可能拿不到可用终端 PID；Remote SSH 会话也无法从本机聚焦远端窗口，此时卡片只作为只读提醒。 |
 | **Codex CLI：hook 覆盖仍不完整** | Official hooks 已覆盖实时状态和 `PermissionRequest` 观察 / intercept 模式，但不是所有运行时信号都有 hook。Clawd 会保留 JSONL 轮询，用于 hook 被禁用的会话，以及 web search、context compaction、turn aborted 等 fallback-only 状态 / metadata 事件；这些事件仍可能有轮询延迟。审批不再从 JSONL 猜测，必须依赖 official `PermissionRequest` hook。 |
 | **Codex CLI：用户提问卡片只读** | Codex official hook 事件集目前不包含 `request_user_input`。Clawd 从 JSONL transcript 观察它，因此提醒可能有一个轮询周期的延迟。选项和自由输入仍在 Codex 原生界面完成；Clawd 不注入按键，也不会把这些问题变成 Telegram / 飞书可操作审批。 |
@@ -34,8 +35,8 @@
 | **Windows Terminal：tab 聚焦能力有限** | Windows Terminal 会用一个宿主窗口 / 进程承载多个 tab，Clawd 无法可靠激活其中某一个指定 tab。HUD / Dashboard 终端跳转最适合单独的传统 `cmd.exe` / PowerShell 窗口，或标题里包含项目目录名的独立 Windows Terminal 窗口。Windows 11 上，`cmd.exe` 和 PowerShell 也可能默认被 Windows Terminal 托管；如果要使用传统窗口，需要把默认终端应用程序改为 Windows 控制台主机。 |
 | **Windows：hook 的进程信息需要 Clawd 正在运行** | 终端聚焦和会话 PID 来自一次进程树查询，hook 只在 Clawd 真正运行时才做。从 **v0.13.0** 起，退出 Clawd 后残留的 CLI hook 不再查询进程树——它只上报已有信息就结束。可见影响是：在 Clawd 关闭期间开始的会话，要等到 Clawd 运行后的下一个事件才有可点击聚焦的目标；Clawd 已经认识的会话会保留此前学到的 PID。强杀 Clawd 后的几秒内、以及 `~/.clawd/runtime.json` 不可读时（Doctor → Local server 会给出警告）同理。升级到 v0.13.0 后首次重启 Clawd 之前，旧版 `runtime.json` 没有 owner 字段，hook 会按"Clawd 未运行"处理并省略这些信息——重启一次即可恢复。 |
 | **Windows：Clawd 在线时部分 agent 仍会跑一次 PowerShell 进程查询** | 上面那次查询目前仍是一个隐藏的 PowerShell，会读取进程列表，安全软件可能因此告警。**v0.13.0** 已经做到：Clawd 未运行时不再执行它，且临时缓存不再保存 agent 的命令行（只保存 `headless` 是/否）。在线路径暂时未变，跟踪于 [#681](https://github.com/rullerzhou-afk/clawd-on-desk/issues/681)、[#627](https://github.com/rullerzhou-afk/clawd-on-desk/issues/627) 和 [#634](https://github.com/rullerzhou-afk/clawd-on-desk/issues/634)。 |
-| **macOS 安装包自动更新需要一次桥接安装** | 旧版 macOS 应用没有 ZIP 更新载荷，无法把自己自动升级到首个支持应用内更新的版本；现有用户需要先手动安装一次首个已签名桥接版 DMG。装上桥接版后，后续签名并公证的版本可在 Clawd 内下载，选择“立即重启”完成安装，或选择“稍后”并在退出、重新打开后完成。单元测试和包检查不能替代真实签名 A→B 真机升级；尚未覆盖的平台必须在发版证据中标为 pending。 |
-| **Linux 安装包不支持自动更新** | AppImage/deb 仍需从 GitHub Releases 手动下载；使用 `git clone` + `npm start` 的源码版本可走应用内 `git pull` 更新。 |
+| **macOS 安装包自动更新需要一次桥接安装** | 旧版 macOS 应用没有 ZIP 更新载荷，无法把自己自动升级到首个支持应用内更新的版本；现有用户需要先手动安装一次首个已签名桥接版 DMG。装上桥接版后，后续签名并公证的版本可在 Clawd 内下载，选择“立即重启”完成安装，或选择“稍后”并在退出、重新打开后完成。Homebrew cask 安装可用 `brew upgrade --cask clawd-on-desk` 升级，不必走桥接路径。单元测试和包检查不能替代真实签名 A→B 真机升级；尚未覆盖的平台必须在发版证据中标为 pending。 |
+| **Linux 安装包不支持自动更新** | 直接安装的 AppImage/deb 仍需从 GitHub Releases 手动下载；Homebrew cask 可用 `brew upgrade --cask clawd-on-desk` 升级。使用 `git clone` + `npm start` 的源码版本可走应用内 `git pull` 更新。 |
 | **Linux/Wayland：拖动和鼠标跟踪受限** | 原生 Wayland 禁止客户端定位窗口和查询全局光标，因此桌宠会居中出现、无法拖动，也无法跟踪鼠标。若 Wayland 会话中存在可用的 X server，Clawd 会在 XWayland 下自动重启一次（`--ozone-platform=x11`），以恢复窗口定位和拖动；此时鼠标跟踪仍仅限桌宠自身窗口。普通应用无法在 Wayland 下实现全屏光标跟踪；如需此能力，请使用原生 X11（Xorg）登录会话。`CLAWD_OZONE_PLATFORM` 可控制自动重启：`x11` 强制使用 XWayland，`wayland` / `auto` 保持原生 Wayland；命令行显式传入的 `--ozone-platform=…` 始终优先。详见 [#441](https://github.com/rullerzhou-afk/clawd-on-desk/issues/441)。 |
 | **Electron 主进程无自动化测试** | 单元测试覆盖了 agent 配置和日志轮询，但状态机、窗口管理、托盘等 Electron 逻辑暂无自动化测试。 |
 | **Claude Code：桌宠未运行时工具被自动拒绝** | 桌宠 HTTP 服务未运行时，Clawd 注册的 `PermissionRequest` hook 因 `ECONNREFUSED` 失败，Claude Code 当前会把这种失败当作"用户拒绝"，影响 `Edit`、`Write`、`Bash` 等所有需要权限的工具。这违反 CC 自己的 hooks 文档（声明 HTTP hook 失败应 non-blocking） —— 见 [anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)。绕过：保持桌宠运行（推荐），或临时把 `~/.claude/settings.json` 里的 `PermissionRequest` key 重命名以禁用该 hook。 |

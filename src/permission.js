@@ -819,6 +819,12 @@ const overflowPresentation = {
   queueCommittedBounds: null,
   petHidden: !!ctx.petHidden,
   petHiddenCutoffOrdinal: null,
+  // Fullscreen auto-hide is stricter than the user's ordinary Hide Pet
+  // action. Manual hide deliberately lets requests created afterwards surface;
+  // fullscreen suppression must keep every local permission surface hidden
+  // until the fullscreen episode ends. Keep the two reasons independent so
+  // leaving fullscreen can restore the manual cutoff semantics exactly.
+  fullscreenSuppressed: false,
   reconciling: false,
   reconcileAgain: false,
 };
@@ -941,9 +947,24 @@ function getOverflowHotkeyTarget() {
 }
 
 function getHotkeyTargetPermission() {
-  if (overflowPresentation.mode === "overflow") return getOverflowHotkeyTarget();
-  const targets = getHotkeyActionablePermissions();
-  return targets.length > 0 ? targets[targets.length - 1] : null;
+  let target;
+  if (overflowPresentation.mode === "overflow") target = getOverflowHotkeyTarget();
+  else {
+    const targets = getHotkeyActionablePermissions();
+    target = targets.length > 0 ? targets[targets.length - 1] : null;
+  }
+  // Preserve the existing normal-mode fallback for requests without a window.
+  if (!target || !target.bubble) return target;
+  // isVisible() only means the native window was shown. In the ACK/failure
+  // fallback a tall stack can extend past the display, and macOS may clamp
+  // just its top edge while leaving the decision buttons below the screen.
+  // Protected expanded cards can also retain crowded normal-mode bounds.
+  // Validate the original target in both modes, never switch to another card.
+  try {
+    if (!isLiveBrowserWindow(target.bubble) || !target.bubble.isVisible()) return null;
+    if (!areBubbleBoundsSafe([target.bubble.getBounds()], getAnchorWorkArea(), getHudAvoidRects())) return null;
+  } catch { return null; }
+  return target;
 }
 
 function syncSingle(actionId, current, target, handler, setState) {
@@ -1057,6 +1078,15 @@ function showPermissionSurfacesForPet() {
   overflowPresentation.petHidden = false;
   overflowPresentation.petHiddenCutoffOrdinal = null;
   reconcilePermissionPresentation("pet-shown");
+}
+
+function setPermissionSurfacesFullscreenSuppressed(suppressed) {
+  const target = suppressed === true;
+  if (overflowPresentation.fullscreenSuppressed === target) return false;
+  overflowPresentation.fullscreenSuppressed = target;
+  if (target) overflowPresentation.queueDrawerOpen = false;
+  reconcilePermissionPresentation(target ? "fullscreen-suppressed" : "fullscreen-restored");
+  return true;
 }
 
 function hotkeyResolve(behavior, message) {
@@ -1200,6 +1230,7 @@ function ensurePermissionUiIdentity(entry) {
 }
 
 function isEntryCutOffByPet(entry) {
+  if (overflowPresentation.fullscreenSuppressed) return true;
   return !!(
     overflowPresentation.petHidden
     && Number.isInteger(overflowPresentation.petHiddenCutoffOrdinal)
@@ -2461,6 +2492,7 @@ function showPermissionBubble(permEntry) {
       && isLiveBrowserWindow(overflowPresentation.queueWindow);
     if (
       !queueAlreadyRepresentsPending
+      && !isEntryCutOffByPet(permEntry)
       && (typeof bub.isVisible !== "function" || !bub.isVisible())
       && typeof bub.showInactive === "function"
     ) {
@@ -5119,6 +5151,7 @@ return {
   hasVisiblePermissionBubbles,
   showPermissionSurfacesForPet,
   hidePermissionSurfacesForPet,
+  setPermissionSurfacesFullscreenSuppressed,
   reconcilePermissionPresentation,
   addPendingPermission, removePendingPermission,
   isPermissionEntryLive, canAutoResolvePendingPermission,

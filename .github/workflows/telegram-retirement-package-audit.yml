@@ -8,6 +8,11 @@ on:
       - "package.json"
       - "package-lock.json"
       - "src/main.js"
+      - "src/network/mobile-preview-lifecycle.js"
+      - "src/network/mobile-preview-server.js"
+      - "src/pet-window-runtime.js"
+      - "src/topmost-runtime.js"
+      - "src/win-hit-window-activation.js"
       - "src/recap-*.js"
       - "src/koffi-package-contract.js"
       - "src/native-package-target.js"
@@ -38,6 +43,8 @@ on:
       - "test/doctor-agent-integrations.test.js"
       - "test/server-hook-management.test.js"
       - "test/hook-adapter-offline-contract.test.js"
+      - "test/accessory-motion-electron.test.js"
+      - "test/fixtures/accessory-motion-electron.js"
       - "scripts/assert-no-retired-telegram-sidecar.js"
       - "scripts/audit-repository-assets.js"
       - "scripts/after-pack-koffi.js"
@@ -52,6 +59,11 @@ on:
       - "test/native-package-target.test.js"
       - "test/package-koffi-smoke.test.js"
       - "test/package-build-config.test.js"
+      - "test/mobile-preview-lifecycle.test.js"
+      - "test/mobile-preview-server.test.js"
+      - "test/pet-window-runtime.test.js"
+      - "test/topmost-runtime.test.js"
+      - "test/win-hit-window-activation.test.js"
       - "test/verify-updater-metadata.test.js"
       - "test/win-foreground-terminal.test.js"
       - "test/win-fullscreen-detect.test.js"
@@ -84,15 +96,20 @@ jobs:
             test/dependency-security-floor.test.js \
             test/koffi-lockfile.test.js \
             test/native-package-target.test.js \
+            test/mobile-preview-lifecycle.test.js \
+            test/mobile-preview-server.test.js \
             test/package-koffi-smoke.test.js \
             test/package-build-config.test.js \
+            test/pet-window-runtime.test.js \
             test/telegram-legacy-retirement.test.js \
             test/telegram-migration-state.test.js \
             test/telegram-migration-controller.test.js \
             test/telegram-migration-user-data.test.js \
             test/verify-updater-metadata.test.js \
             test/win-foreground-terminal.test.js \
-            test/win-fullscreen-detect.test.js
+            test/win-fullscreen-detect.test.js \
+            test/win-hit-window-activation.test.js \
+            test/topmost-runtime.test.js
       - name: Run TraeCode integration tests
         run: |
           node --test \
@@ -111,6 +128,8 @@ jobs:
           node --test
           test/recap*.test.js
           test/settings-recap.test.js
+      - name: Run native SVG motion audit
+        run: xvfb-run -a node --test test/accessory-motion-electron.test.js
 
   package:
     needs: unit

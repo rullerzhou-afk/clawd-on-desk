@@ -45,7 +45,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
       - name: Run package validation tests
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
-        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - run: npx electron-builder --win --publish never
       - name: Assert retired Telegram sidecar is absent
         run: |
@@ -98,7 +98,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
       - name: Run package validation tests
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
-        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - name: Prepare macOS signing credentials
         id: mac-signing
         shell: bash
@@ -178,6 +178,12 @@ jobs:
             exit 1
           fi
           echo "mode=developer-id" >> "$GITHUB_OUTPUT"
+
+      - name: Correct macOS signing keychain password
+        if: steps.mac-signing.outputs.mode == 'developer-id'
+        run: |
+          node --test test/macos-signing-keychain.test.js
+          node scripts/prepare-macos-signing.js
 
       - name: Build macOS (Developer ID signed and notarized)
         if: steps.mac-signing.outputs.mode == 'developer-id'
@@ -456,7 +462,7 @@ jobs:
         if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
       - name: Run package validation tests
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
-        run: xvfb-run -a node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
+        run: xvfb-run -a node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - run: npx electron-builder --linux --publish never
       - name: Verify final AppImage AppRun search paths
         run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json

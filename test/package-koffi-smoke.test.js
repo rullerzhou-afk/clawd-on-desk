@@ -11,6 +11,10 @@ const {
   comparablePath,
   isInside,
   callStableNativeFunction,
+  assertFullscreenProbeValue,
+  nativeWindowHandleId,
+  runWindowsFullscreenIdentityProbe,
+  runHitWindowNoActivateRoundTrip,
 } = require("../src/package-koffi-smoke");
 const {
   parseArgs: parseRunnerArgs,
@@ -82,4 +86,158 @@ test("packaged smoke cleanup removes only its exact adjacent temporary profile",
     () => cleanupSmokeUserData(output, { runtime: { userDataPath: path.join(root, "unrelated") } }),
     /unsafe smoke user-data cleanup path/i,
   );
+});
+
+test("fullscreen probe smoke check accepts a verdict or a window identity", () => {
+  assert.equal(assertFullscreenProbeValue(false), false);
+  assert.equal(assertFullscreenProbeValue(true), true);
+  assert.equal(assertFullscreenProbeValue("81985529216486895"), "81985529216486895");
+  assert.throws(() => assertFullscreenProbeValue(""), /empty string/);
+  assert.throws(() => assertFullscreenProbeValue(0), /number/);
+  assert.throws(() => assertFullscreenProbeValue(null), /object/);
+  assert.throws(() => assertFullscreenProbeValue(undefined), /undefined/);
+});
+
+test("packaged fullscreen identity decodes the HWND value from Electron's native handle buffer", () => {
+  const handle = Buffer.alloc(8);
+  handle.writeBigUInt64LE(184467n);
+  assert.equal(nativeWindowHandleId({ getNativeWindowHandle: () => handle }), "184467");
+  assert.throws(() => nativeWindowHandleId({}), /no native handle/i);
+  assert.throws(
+    () => nativeWindowHandleId({ getNativeWindowHandle: () => Buffer.alloc(8) }),
+    /null native handle/i,
+  );
+});
+
+test("packaged fullscreen identity smoke requires distinct live HWNDs and rejects an invalid handle", async () => {
+  let nextId = 100;
+  let foregroundId = null;
+  const liveIds = new Set();
+  class FakeBrowserWindow {
+    constructor() {
+      this.id = String(nextId++);
+      this.destroyed = false;
+      this.focused = false;
+      liveIds.add(this.id);
+    }
+    setFullScreen() {}
+    show() {}
+    hide() {
+      this.focused = false;
+      if (foregroundId === this.id) foregroundId = null;
+    }
+    focus() {
+      this.focused = true;
+      foregroundId = this.id;
+    }
+    getNativeWindowHandle() {
+      const handle = Buffer.alloc(8);
+      handle.writeBigUInt64LE(BigInt(this.id));
+      return handle;
+    }
+    isFocused() { return this.focused; }
+    isDestroyed() { return this.destroyed; }
+    destroy() {
+      this.destroyed = true;
+      this.focused = false;
+      liveIds.delete(this.id);
+      if (foregroundId === this.id) foregroundId = null;
+    }
+  }
+  const fullscreenProbe = () => foregroundId || false;
+  fullscreenProbe.isWindowIdAlive = (id) => {
+    if (id === "18446744073709551615") {
+      assert.equal(liveIds.size, 2, "both identity HWNDs must still be live during the negative check");
+      return false;
+    }
+    return liveIds.has(id);
+  };
+  const koffi = {
+    address: (handle) => BigInt(handle.id),
+    load: () => ({
+      func: () => (id) => ({ id: String(id) }),
+    }),
+  };
+
+  const result = await runWindowsFullscreenIdentityProbe({
+    BrowserWindow: FakeBrowserWindow,
+    fullscreenProbe,
+    koffi,
+    timeoutMs: 100,
+    sleepFn: async () => {},
+  });
+
+  assert.deepEqual(result, {
+    firstId: "100",
+    secondId: "101",
+    distinct: true,
+    nativeRoundTrip: true,
+    liveAccepted: true,
+    invalidRejected: true,
+    foregroundControllable: true,
+    fullscreenObserved: true,
+  });
+  assert.equal(liveIds.size, 0, "the smoke must destroy both fixture windows during cleanup");
+});
+
+test("packaged native HWND proof survives a runner that cannot foreground BrowserWindows", async () => {
+  let nextId = 200;
+  class UnfocusableBrowserWindow {
+    constructor() {
+      this.id = String(nextId++);
+      this.destroyed = false;
+    }
+    getNativeWindowHandle() {
+      const handle = Buffer.alloc(8);
+      handle.writeBigUInt64LE(BigInt(this.id));
+      return handle;
+    }
+    setFullScreen() {}
+    show() {}
+    focus() {}
+    isFocused() { return false; }
+    isDestroyed() { return this.destroyed; }
+    destroy() { this.destroyed = true; }
+  }
+  const fullscreenProbe = () => false;
+  fullscreenProbe.isWindowIdAlive = (id) => id !== "18446744073709551615";
+  const koffi = {
+    address: (handle) => BigInt(handle.id),
+    load: () => ({ func: () => (id) => ({ id: String(id) }) }),
+  };
+
+  const result = await runWindowsFullscreenIdentityProbe({
+    BrowserWindow: UnfocusableBrowserWindow,
+    fullscreenProbe,
+    koffi,
+    timeoutMs: 5,
+    sleepFn: () => new Promise((resolve) => setTimeout(resolve, 1)),
+  });
+
+  assert.equal(result.nativeRoundTrip, true);
+  assert.equal(result.liveAccepted, true);
+  assert.equal(result.invalidRejected, true);
+  assert.equal(result.foregroundControllable, false);
+  assert.equal(result.fullscreenObserved, false);
+});
+
+test("packaged hit-window smoke proves initial, clear, enable, and final restore states", () => {
+  let nonActivating = true;
+  const calls = [];
+  const result = runHitWindowNoActivateRoundTrip({
+    isNonActivating: () => nonActivating,
+    setFocusable: (_win, focusable) => {
+      calls.push(focusable);
+      nonActivating = !focusable;
+      return true;
+    },
+  }, {});
+
+  assert.deepEqual(calls, [true, false, true]);
+  assert.deepEqual(result, {
+    initialNonActivating: true,
+    afterInitialClear: false,
+    afterFullscreenEnable: true,
+    afterFinalRestore: false,
+  });
 });

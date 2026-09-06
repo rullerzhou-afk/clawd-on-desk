@@ -330,6 +330,14 @@ const SCHEMA = {
   // settings-tab-general.js); this pref persists as an escape hatch and can be
   // re-exposed.
   fullscreenOverlay: { type: "boolean", default: true },
+  // #935: opt-in auto-hide — when a real fullscreen app owns the foreground
+  // (win-fullscreen-detect probe), hide the pet + its floating surfaces
+  // entirely and restore them when fullscreen ends. Takes precedence over
+  // fullscreenOverlay while active (a hidden pet has nothing to overlay).
+  // Windows-only in effect: the probe is constant false elsewhere. Default OFF
+  // so existing behavior — overlay by default, #538 stand-down as the escape
+  // hatch — is untouched.
+  fullscreenAutoHide: { type: "boolean", default: false },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the
@@ -911,6 +919,18 @@ function migrate(raw) {
   if (out.version < 19) {
     out.recapEnabled = typeof out.recapEnabled === "boolean" ? out.recapEnabled : true;
     out.version = 19;
+  }
+  // Field-level migration also covers development snapshots that already have
+  // the current schema. Preserve the old effective Codex timeout only when no
+  // explicit independent value exists; fresh installs do not run migrate().
+  if (!Object.prototype.hasOwnProperty.call(out, "codexWorkingStaleMs")) {
+    const legacy = normalizeStaleTriple({
+      workingStaleMs: isValidValue(SCHEMA.workingStaleMs, out.workingStaleMs)
+        ? out.workingStaleMs : SCHEMA.workingStaleMs.default,
+      sessionStaleMs: isValidValue(SCHEMA.sessionStaleMs, out.sessionStaleMs)
+        ? out.sessionStaleMs : SCHEMA.sessionStaleMs.default,
+    });
+    out.codexWorkingStaleMs = Math.max(SCHEMA.codexWorkingStaleMs.default, legacy.workingStaleMs);
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

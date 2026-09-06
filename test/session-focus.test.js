@@ -6,6 +6,7 @@ const assert = require("node:assert");
 const {
   getCodexThreadId,
   getCodexThreadUrl,
+  getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
   isFocusableLocalHudSession,
@@ -99,7 +100,7 @@ describe("session focus helpers", () => {
     });
   });
 
-  it("downgrades Codex Desktop thread focus targets on Windows", () => {
+  it("uses Codex Desktop thread focus targets on Windows", () => {
     const entry = {
       id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
       agentId: "codex",
@@ -116,13 +117,13 @@ describe("session focus helpers", () => {
 
     assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "win32" }), {
       canFocus: true,
-      type: "terminal",
-      url: null,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
     assert.deepStrictEqual(getSessionFocusTarget(noTerminalEntry, { osPlatform: "win32" }), {
-      canFocus: false,
-      type: null,
-      url: null,
+      canFocus: true,
+      type: "codex-thread",
+      url: "codex://threads/019e115b-4df2-7ed0-b90e-8e6345aca777",
     });
     assert.deepStrictEqual(getSessionFocusTarget(noTerminalEntry, { osPlatform: "darwin" }), {
       canFocus: true,
@@ -133,8 +134,78 @@ describe("session focus helpers", () => {
       sessions: [entry, noTerminalEntry],
     }, { osPlatform: "win32" }), [
       "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      "codex:019e115b-4df2-7ed0-b90e-8e6345aca777",
     ]);
-    assert.strictEqual(isFocusableLocalHudSession(noTerminalEntry, { osPlatform: "win32" }), false);
+    assert.strictEqual(isFocusableLocalHudSession(noTerminalEntry, { osPlatform: "win32" }), true);
+  });
+
+  it("keeps Codex Desktop out of the Direct Send paste target", () => {
+    const entry = {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      agentId: "codex",
+      codexOriginator: "codex_work_desktop",
+      sourcePid: 123,
+    };
+
+    assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "win32" }), {
+      canFocus: true,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
+    });
+    assert.deepStrictEqual(getDirectSendFocusTarget(entry, { osPlatform: "win32" }), {
+      canFocus: false,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
+      reason: "codex_desktop_requires_manual_paste",
+    });
+    assert.deepStrictEqual(getDirectSendFocusTarget({
+      id: "cli-session",
+      agentId: "codex",
+      sourcePid: 123,
+    }, { osPlatform: "win32" }), {
+      canFocus: true,
+      type: "terminal",
+      url: null,
+    });
+  });
+
+  it("uses Desktop identity rather than the parsed navigation target for Direct Send", () => {
+    const malformedDesktop = {
+      id: "codex:not-a-uuid",
+      agentId: "codex",
+      originator: "Codex Desktop",
+      sourcePid: 123,
+    };
+    const desktopWithOrcaPane = {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      agentId: "codex",
+      codexOriginator: "codex_work_desktop",
+      sourcePid: null,
+      orcaPaneKey: "tab-local:leaf-local",
+    };
+
+    assert.deepStrictEqual(getSessionFocusTarget(malformedDesktop, { osPlatform: "win32" }), {
+      canFocus: true,
+      type: "terminal",
+      url: null,
+    });
+    assert.deepStrictEqual(getDirectSendFocusTarget(malformedDesktop, { osPlatform: "win32" }), {
+      canFocus: false,
+      type: "codex-thread",
+      url: null,
+      reason: "codex_desktop_requires_manual_paste",
+    });
+    assert.deepStrictEqual(getSessionFocusTarget(desktopWithOrcaPane, { osPlatform: "win32" }), {
+      canFocus: true,
+      type: "terminal",
+      url: null,
+    });
+    assert.deepStrictEqual(getDirectSendFocusTarget(desktopWithOrcaPane, { osPlatform: "win32" }), {
+      canFocus: false,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
+      reason: "codex_desktop_requires_manual_paste",
+    });
   });
 
   it("allows only supported Orca pane targets to cross the remote boundary", () => {

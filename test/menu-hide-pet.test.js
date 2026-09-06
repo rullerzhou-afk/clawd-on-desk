@@ -98,11 +98,11 @@ function buildBaseCtx(overrides = {}) {
 }
 
 describe("context menu hide pet action (#460)", () => {
-  it("exposes a Hide Pet item right before Quit that toggles visibility", () => {
+  it("exposes a Hide Pet item right before Quit that changes visibility", () => {
     const initMenu = loadMenuWithElectron(fakeElectron());
-    let toggles = 0;
+    const visCalls = [];
     const ctx = buildBaseCtx({
-      togglePetVisibility: () => { toggles += 1; },
+      setPetVisibility: (visible) => visCalls.push(visible),
     });
 
     const menu = initMenu(ctx);
@@ -117,7 +117,7 @@ describe("context menu hide pet action (#460)", () => {
     assert.strictEqual(ctx.contextMenu.template[hideIdx + 1].type, "separator");
 
     ctx.contextMenu.template[hideIdx].click();
-    assert.strictEqual(toggles, 1);
+    assert.deepStrictEqual(visCalls, [false]);
   });
 
   it("labels the item Show Pet while the pet is hidden", () => {
@@ -352,5 +352,72 @@ describe("macOS runtime Dock visibility", () => {
       ["setIcon", path.join(__dirname, "../assets/dock-icon.png")],
       ["reapplyMacVisibility"],
     ]);
+  });
+});
+
+// The Show/Hide Pet items carry their intent from BUILD time. The fullscreen
+// auto-hide sync can restore (or hide) the pet from a background timer while a
+// built menu is still on screen — most easily on the tray: right-clicking the
+// tray icon moves the foreground off the fullscreen app, so the auto-restore
+// fires ~1s later, under the open menu. A live toggle would then invert the
+// labeled action (an item reading "Show Pet" would hide the pet). Applying the
+// captured intent instead makes the worst case an idempotent no-op that
+// matches what the user read.
+describe("show/hide pet intent is captured at menu build time", () => {
+  it("context menu: a click after a background restore shows, never re-hides", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    const visCalls = [];
+    const ctx = buildBaseCtx({
+      petHidden: true,
+      setPetVisibility: (visible) => visCalls.push(visible),
+    });
+
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+    const item = ctx.contextMenu.template.find((entry) => entry.label === "Show Pet");
+    assert.ok(item, "menu built while hidden should offer Show Pet");
+
+    // Background restore flips the live state while the menu is displayed.
+    ctx.petHidden = false;
+
+    item.click();
+    assert.deepStrictEqual(visCalls, [true], "click must apply the labeled intent (show)");
+  });
+
+  it("tray menu: a click after a background restore shows, never re-hides", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    const visCalls = [];
+    let trayTemplate = null;
+    const ctx = buildBaseCtx({
+      petHidden: true,
+      setPetVisibility: (visible) => visCalls.push(visible),
+      tray: { setContextMenu(menuObj) { trayTemplate = menuObj.template; } },
+    });
+
+    initMenu(ctx).buildTrayMenu();
+    const item = trayTemplate.find((entry) => entry.label === "Show Pet");
+    assert.ok(item, "tray menu built while hidden should offer Show Pet");
+
+    ctx.petHidden = false;
+
+    item.click();
+    assert.deepStrictEqual(visCalls, [true], "click must apply the labeled intent (show)");
+  });
+
+  it("a click with unchanged state applies the labeled action as before", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    const visCalls = [];
+    const ctx = buildBaseCtx({
+      petHidden: false,
+      setPetVisibility: (visible) => visCalls.push(visible),
+    });
+
+    const menu = initMenu(ctx);
+    menu.buildContextMenu();
+    const item = ctx.contextMenu.template.find((entry) => entry.label === "Hide Pet");
+    assert.ok(item, "menu built while visible should offer Hide Pet");
+
+    item.click();
+    assert.deepStrictEqual(visCalls, [false], "click must hide, matching the label");
   });
 });

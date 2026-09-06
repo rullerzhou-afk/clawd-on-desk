@@ -406,6 +406,13 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
     "Remote sessions cannot focus a terminal on this computer.",
     "WebUI sessions do not have a local terminal window.",
   ]);
+
+  const cards = byClass(root, "card");
+  const jumpButtons = (card) => descendants(card)
+    .filter((el) => el.tagName === "BUTTON" && el.textContent === "Jump");
+  assert.deepStrictEqual(jumpButtons(cards[0]).map((button) => button.disabled), [true]);
+  assert.deepStrictEqual(jumpButtons(cards[1]), []);
+  assert.deepStrictEqual(jumpButtons(cards[2]).map((button) => button.disabled), [true]);
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
 });
 
@@ -762,8 +769,13 @@ test("Dashboard session automation sends only sessionId/mode and exact grantId",
     sessionAutomationMode: "auto-tools",
     sessionAutomationGrantId: "grant-current",
   });
-  const { root, automationCalls } = await loadDashboard([configurable, activeButIneligible]);
+  const inactiveIneligible = session("inactive", {
+    canConfigureSessionAutomation: false,
+    sessionAutomationMode: "inherit",
+  });
+  const { root, automationCalls } = await loadDashboard([configurable, activeButIneligible, inactiveIneligible]);
   const selects = byClass(root, "session-automation-select");
+  assert.strictEqual(selects.length, 2);
 
   selects[0].value = "off";
   await selects[0].dispatch("change");

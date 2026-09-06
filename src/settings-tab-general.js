@@ -34,6 +34,7 @@
     "freeRoam",
     "roamConstrainAxis",
     "keepSizeAcrossDisplays",
+    "fullscreenAutoHide",
     "openAtLogin",
     "hideBubbles",
     "bubbleFollowPet",
@@ -539,6 +540,15 @@
       // "fullscreenOverlay" here AND add its key back into GENERAL_IN_PLACE_KEYS
       // (dropped so patchInPlace doesn't force a full re-render for a pref that
       // has no mounted control). The rowFullscreenOverlay[Desc] i18n keys remain.
+      // #935: unlike that overlay toggle, auto-hide CAN always deliver what it
+      // promises (hiding our own windows needs no z-order fight), so it gets a
+      // real switch. Windows-only: the fullscreen probe is constant false
+      // elsewhere, so rendering it off-Windows would be a dead toggle.
+      ...(i18n && i18n.IS_WIN ? [helpers.buildSwitchRow({
+        key: "fullscreenAutoHide",
+        labelKey: "rowFullscreenAutoHide",
+        descKey: "rowFullscreenAutoHideDesc",
+      })] : []),
     ]));
 
     // System & startup: machine-level toggles (low-power idle throttling and

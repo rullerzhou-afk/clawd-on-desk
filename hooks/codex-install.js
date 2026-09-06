@@ -30,10 +30,11 @@ function registerCodexHooks(options = {}) {
     scriptName: MARKER,
     events: CODEX_OFFICIAL_HOOK_EVENTS,
     label: "Codex official hooks",
-    // Codex trusts the resolved command shape. Keep that command on a stable
-    // per-CODEX_HOME platform entry (Windows data-sidecar dispatcher, POSIX
-    // wrapper); Node and the active packaged/dev hook path can then change
-    // without rewriting hooks.json.
+    // Codex trusts the resolved command shape. POSIX keeps a stable wrapper;
+    // Windows uses a direct PowerShell call-operator command because Defender
+    // flags the former inline data-sidecar dispatcher. In-place app upgrades
+    // keep the direct path stable, while a real Node/hook path change requires
+    // a fresh Codex /hooks review.
     stableLauncher: options.remote !== true && options.stableLauncher !== false,
   });
 }

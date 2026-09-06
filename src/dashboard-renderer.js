@@ -1149,28 +1149,32 @@ function createCard(session, now) {
 
   const actions = document.createElement("div");
   actions.className = "actions";
-  const button = document.createElement("button");
-  button.type = "button";
-  const focusTargetType = session.focusTarget && session.focusTarget.type;
-  button.textContent = focusTargetType === "codex-thread"
-    ? t("dashboardOpenCodexSession")
-    : t("dashboardJumpTerminal");
-  button.disabled = session.canFocus !== true;
-  if (button.disabled) {
-    button.title = focusUnavailableText(session);
-  }
-  button.addEventListener("click", async () => {
-    window.dashboardAPI.focusSession(session.id);
-    // Best-effort ack alongside focus. Most remote-Codex sessions have
-    // canFocus=false (no terminal-jump target) and reach ack through the
-    // Mark-read button instead, but local Codex Stop sessions can land
-    // here so we ack on focus too.
-    if (window.dashboardAPI && typeof window.dashboardAPI.ackCompletion === "function") {
-      try { await window.dashboardAPI.ackCompletion(session.id); }
-      catch (err) { console.warn("ack completion threw:", err); }
+  const hideRemoteFocusButton = session.canFocus !== true
+    && focusUnavailableReasonKey(session) === "sessionFocusUnavailableRemote";
+  if (!hideRemoteFocusButton) {
+    const button = document.createElement("button");
+    button.type = "button";
+    const focusTargetType = session.focusTarget && session.focusTarget.type;
+    button.textContent = focusTargetType === "codex-thread"
+      ? t("dashboardOpenCodexSession")
+      : t("dashboardJumpTerminal");
+    button.disabled = session.canFocus !== true;
+    if (button.disabled) {
+      button.title = focusUnavailableText(session);
     }
-  });
-  actions.appendChild(button);
+    button.addEventListener("click", async () => {
+      window.dashboardAPI.focusSession(session.id);
+      // Best-effort ack alongside focus. Most remote-Codex sessions have
+      // canFocus=false (no terminal-jump target) and reach ack through the
+      // Mark-read button instead, but local Codex Stop sessions can land
+      // here so we ack on focus too.
+      if (window.dashboardAPI && typeof window.dashboardAPI.ackCompletion === "function") {
+        try { await window.dashboardAPI.ackCompletion(session.id); }
+        catch (err) { console.warn("ack completion threw:", err); }
+      }
+    });
+    actions.appendChild(button);
+  }
 
   if (session.canFocus !== true) {
     const reason = focusUnavailableText(session);
@@ -1240,6 +1244,7 @@ function automationActionState(key) {
 
 function appendSessionAutomation(container, session) {
   if (!container || !session) return;
+  if (session.canConfigureSessionAutomation !== true && !session.sessionAutomationGrantId) return;
   const row = document.createElement("div");
   row.className = "session-automation-row";
   const label = createText("span", "session-automation-label", t("sessionAutomationLabel"));

@@ -1114,7 +1114,22 @@ function prunePendingClaudeRecapStarts() {
   }
 }
 
+function captureRecapRecordingToken() {
+  return recapSink && typeof recapSink.captureRecordingToken === "function"
+    ? recapSink.captureRecordingToken()
+    : undefined;
+}
+
+function hasCurrentRecapRecordingToken(input) {
+  // Minimal/testing sinks without recording controls retain their old contract.
+  return input.recapRecordingToken === undefined || !!(
+    recapSink && typeof recapSink.isRecordingTokenCurrent === "function"
+    && recapSink.isRecordingTokenCurrent(input.recapRecordingToken)
+  );
+}
+
 function persistRecapMetrics(input, metrics) {
+  if (!hasCurrentRecapRecordingToken(input)) return false;
   let dedupeId = null;
   if (metrics.includes("session-start")) {
     dedupeId = `session-start:${input.rawSessionId}`;
@@ -1161,8 +1176,11 @@ function recordAcceptedRecapEvent(input, snapshot) {
     && !input.subagentType
   );
   if (isFreshClaudeStart) {
-    if (!pendingClaudeRecapStarts.has(pendingKey)) {
-      pendingClaudeRecapStarts.set(pendingKey, { input: { ...input } });
+    const pending = pendingClaudeRecapStarts.get(pendingKey);
+    if (!pending || !hasCurrentRecapRecordingToken(pending.input)) {
+      pendingClaudeRecapStarts.set(pendingKey, {
+        input: { ...input, recapRecordingToken: captureRecapRecordingToken() },
+      });
     }
     prunePendingClaudeRecapStarts();
     return false;
@@ -1448,6 +1466,7 @@ function touchSessionActivity(sessionId, opts = {}) {
   // than a late transcript record; never revive or extend it.
   if (session.requiresCompletionAck === true) return false;
 
+  if (session.agentId === "codex") cancelCodexExitProbe(id, "session-activity");
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const reviveIdle = opts.reviveIdle === true && session.state === "idle";
   session.updatedAt = now;
@@ -1601,6 +1620,7 @@ function scheduleCompletionDebounce(sessionId, debounceMs, payload = {}) {
   const text = normalizeAssistantOutput(payload && payload.text);
   const record = {
     timer: null,
+    recapRecordingToken: captureRecapRecordingToken(),
     occurredAt: Number.isSafeInteger(payload.occurredAt) && payload.occurredAt >= 0
       ? payload.occurredAt
       : Date.now(),
@@ -1611,6 +1631,7 @@ function scheduleCompletionDebounce(sessionId, debounceMs, payload = {}) {
     if (pendingCompletionDebounces.get(sessionId) !== record) return;
     pendingCompletionDebounces.delete(sessionId);
     promoteCompletion(sessionId, {
+      recapRecordingToken: record.recapRecordingToken,
       occurredAt: record.occurredAt,
       text: record.assistantLastOutput,
       truncated: record.assistantLastOutputTruncated,
@@ -1676,7 +1697,10 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
   cancelClaudeTranscriptCompletionProbe(sessionId, "reschedule");
 
   const startedAt = Date.now();
-  const probe = { timer: null, transcriptPath: safePath, startedAt };
+  const probe = {
+    timer: null, transcriptPath: safePath, startedAt,
+    recapRecordingToken: captureRecapRecordingToken(),
+  };
 
   const runProbe = () => {
     const session = sessions.get(sessionId);
@@ -1705,6 +1729,7 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
       session.assistantLastOutputTruncated = assistantOutput.truncated === true;
       debugSession(`claude-transcript-stop-probe promote sid=${sessionId}`);
       promoteCompletion(sessionId, {
+        recapRecordingToken: probe.recapRecordingToken,
         occurredAt: Date.now(),
         text: session.assistantLastOutput,
         truncated: session.assistantLastOutputTruncated,
@@ -1760,6 +1785,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   const recapSnapshot = emitSessionSnapshot({ force: true }).snapshot;
   recordAcceptedRecapEvent({
     occurredAt: completionOccurredAt,
+    recapRecordingToken: completionPayload && completionPayload.recapRecordingToken,
     sessionId,
     rawSessionId: session.rawSessionId || sessionId,
     agentId: session.agentId,
@@ -1952,7 +1978,9 @@ function updateSession(sessionId, state, event, opts = {}) {
 
   const isTransientAttentionRequest = event === "PermissionRequest" || event === "CodexUserInputRequest";
   if (isTransientAttentionRequest) {
-    if (permAgentId === "codex") cancelCodexExitProbe(sessionId, event);
+    const isPassiveUserInput = permAgentId === "codex"
+      && event === "CodexUserInputRequest" && transientPermissionEvent === true;
+    if (permAgentId === "codex" && !isPassiveUserInput) cancelCodexExitProbe(sessionId, event);
     // A transient route event owns its identity assessment just as ordinary
     // state traffic does. Merge it only into an existing session for the same agent:
     // PermissionRequest must not create a ghost session, and a raw-id collision
@@ -2056,8 +2084,12 @@ function updateSession(sessionId, state, event, opts = {}) {
         ? (Array.isArray(existing && existing.recentEvents) ? existing.recentEvents.slice() : [])
         : pushRecentEvent(existing, storedState, event);
       sessions.set(sessionId, {
+        // A recovered question may refresh focus metadata, but cannot erase
+        // terminal/acknowledgement state or extend an existing turn's lifetime.
+        // Accepted live activity already touched the session through its fence.
+        ...(isPassiveUserInput ? existing : null),
         state: storedState,
-        updatedAt: Date.now(),
+        updatedAt: isPassiveUserInput && existing ? existing.updatedAt : Date.now(),
         displayHint: existing ? existing.displayHint : null,
         sourcePid: srcPid,
         wtHwnd: srcWtHwnd,

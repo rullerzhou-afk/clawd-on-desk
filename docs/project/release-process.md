@@ -62,7 +62,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.16.0 Draft Smoke Checklist
+### v1.0.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -75,7 +75,7 @@ Before launching:
 - On macOS, download each DMG through a browser so it carries quarantine
   metadata. Confirm it opens without a Privacy & Security override, then verify
   the copied app with `spctl` and `stapler` as documented in the signing guide.
-- Confirm the packaged app shows `0.16.0` metadata.
+- Confirm the packaged app shows `1.0.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
   and `app.asar.unpacked/themes`.
@@ -86,10 +86,10 @@ Before launching:
 - Download the native-package, Koffi prune/smoke, and updater metadata manifests.
   Confirm the target has one matching `koffi.node`, no foreign native payload,
   and no unreviewed exception. Confirm each updater metadata `version` and every
-  listed artifact filename identify `0.16.0`.
-- For migration smoke, install v0.15.0 first and save a copy of the old
+  listed artifact filename identify `1.0.0`.
+- For migration smoke, install v0.16.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
-- For Feishu/Lark migration smoke, enable remote approval in v0.15.0 with saved
+- For legacy Feishu/Lark migration smoke, enable remote approval in v0.15.0 with saved
   App credentials and an approver before upgrading. Keep the old
   `feishu-approval.env` alongside the prefs copy.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
@@ -102,9 +102,25 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.15.0, launch, pet appears, no error dialog. Existing
+- Footprints is enabled by default. Confirm Today/Week/Month/Year show local
+  accepted activity and coverage, preserve unsupported metrics as a dash, and
+  add no content or raw identifiers to storage. Turn recording off/on and clear
+  during a pending completion: old counts must not reappear, while the normal
+  completion animation still works. Recovered/locked preferences must visibly
+  report recording paused until an explicit, permitted Settings action resumes it.
+- Move the system timezone west after recording, then inspect Today/Week.
+  Recorded activity and coverage at the frozen local hour remain visible.
+- With enough permission requests to overflow a small display, exercise queue
+  loading/ACK failure and native window clamping. Allow/Deny shortcuts must not
+  decide a partly clipped or hidden target; normal safe cards remain usable.
+- End Codex turn A, then let its delayed question/output reach the JSONL monitor.
+  It must not revive A or extend turn B. Real current-turn questions still keep
+  an active task alive. Upgrade a profile with a long generic working timeout
+  and no Codex-specific value: preserve its previous effective Codex duration.
+
+- Upgrade install over v0.16.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v0.16.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v1.0.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
@@ -113,9 +129,9 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the six v0.16.0 first-time
-  contributors: `CheeseAgent`, `RS-Nocsi`, `Cobb04`, `wang4433`,
-  `shengmai-justin`, and `Zamaniego`.
+- Settings -> About contributors include the three v1.0.0 first-time
+  contributors: `eugenewang5425`, `draintovmasyan783-creator`, and `Yueh-H`,
+  while preserving all previous contributors.
 - Make `clawd-prefs.json` temporarily unreadable and launch once. Confirm the
   startup warning and Doctor critical item both explain that agent events and
   approvals are paused; restore access and restart before continuing.
@@ -197,7 +213,7 @@ Required all-platform checks:
   values remain, and approval plus completion notifications stay disabled until
   a real native verification callback succeeds. Failure/timeout must not restart
   the retired sidecar.
-- Upgrade the prepared v0.15.0 Feishu/Lark profile. Confirm the legacy setup
+- Upgrade the prepared legacy v0.15.0 Feishu/Lark profile. Confirm the legacy setup
   remains fail-closed, a one-time startup warning points to Remote Approval,
   and Doctor reports the binding problem. Re-save the selected platform and
   App ID/App Secret, then re-save the approver; restart and confirm the client
@@ -225,7 +241,7 @@ Recommended all-platform checks:
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.16.0`.
+- Update labels never show a duplicated prefix such as `vv1.0.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -234,6 +250,10 @@ Recommended all-platform checks:
 
 Windows checks:
 
+- Required: enable fullscreen auto-hide, enter a fullscreen application, and
+  send a new permission request. Local surfaces stay hidden; leaving fullscreen
+  restores only requests still pending. Manual Hide pet keeps its separate
+  behavior for new requests; remote approval and configured auto-close still work.
 - Required: cold-start the packaged app twice with a saved upgrade position;
   the first rendered pet visual must appear at that position without using
   "Bring Pet to Primary Display" / "将桌宠拉回主屏".
@@ -254,6 +274,11 @@ Windows checks:
 
 macOS checks:
 
+- Required when macOS hardware is available: manually install the signed v1.0.0
+  DMG over v0.16.0 once, preserving app data. Validate a signed A→B updater pair
+  from an update-capable build on each available architecture, including
+  Restart Now and Later/quit/reopen; record exact versions and asset hashes.
+  A source run or a mocked updater does not complete this gate.
 - Required when macOS hardware is available: toggle menu-bar and Dock visibility,
   restart, and confirm both preferences persist and Settings can still regain focus.
 - Required when macOS hardware is available: test Dock left/right/bottom plus
@@ -466,6 +491,6 @@ token.
   the validated artifact, then track validation, merge and the publish-pipeline
   result. A successful prepare run alone does **not** publish the release.
 - v0.15.0 is present upstream, but its locale still points `LicenseUrl` and
-  `ReleaseNotesUrl` at v0.14.0. Do not copy those stale values into v0.16.0.
+  `ReleaseNotesUrl` at v0.14.0. Do not copy those stale values into v1.0.0.
 - After the catalog refreshes, run an independent Windows `winget install` or
   `winget upgrade` smoke test before documenting the command in the READMEs.

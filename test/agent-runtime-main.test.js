@@ -256,12 +256,16 @@ describe("agent-runtime-main", () => {
       cwd: "/repo",
       sourcePid: 42,
       agentPid: 42,
+      turnId: "live-question-turn",
+      recapOccurredAt: Date.now(),
       headless: false,
       contextUsage: { used: 10, limit: 100, percent: 10, source: "codex" },
     };
 
     monitor.options.onUserInputRequest("codex:s1", request, extra);
-    monitor.options.onUserInputResolved("codex:s1", "call_1");
+    monitor.options.onUserInputResolved("codex:s1", "call_1", {
+      source: "function-call-output", turnId: extra.turnId, recapOccurredAt: extra.recapOccurredAt,
+    });
 
     const expectedTouch = [
       "touch",

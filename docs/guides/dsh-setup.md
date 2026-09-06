@@ -162,17 +162,21 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
 
 - Windows x64 native DSH web is the first target. Real rc.6 install, config
   composition, web boot, uninstall, and packaged-app source loading were verified
-  on 2026-08-14. On 2026-08-29, a Windows x64 packaged-app smoke with real rc.2
-  also verified install, web boot, a real API-backed DSH web session, and both
-  manual Clawd **Allow Once** and **Deny** approval round trips. The installer
-  suite covers rc.6 retention, rc.2 installation, cross-contract generation
-  migration, and unlisted-version rejection.
-- On 2026-08-29, a macOS source-checkout smoke under a Finder-like GUI `PATH`
-  verified Settings Install, managed plugin loading, a real API-backed DSH web
-  session, and both manual Clawd **Allow Once** and **Deny** approval round trips.
-  The allowed command completed with exit code 0 and the denied command produced
-  no side effect. This remains source-checkout evidence rather than macOS
-  packaged-app verification.
+  on 2026-08-14.
+- On 2026-08-29, **rc.6 source-checkout** runs on Windows x64 and macOS
+  verified real API-backed DSH web sessions plus manual Clawd **Allow Once**
+  and **Deny** round trips. macOS also verified Settings Install under a
+  Finder-like GUI `PATH`. These are source-run results, not packaged API-session
+  verification ([#962](https://github.com/rullerzhou-afk/clawd-on-desk/pull/962)).
+- Separately, the 2026-08-29 **Windows x64 rc.2 packaged-app** evidence covered
+  install, web boot, and `/state` plus Allow/Deny round trips driven directly
+  through the bridge's `clawd-client`. It did not demonstrate an API-backed rc.2
+  DSH session. On 2026-08-31, maintainer validation also covered the rc.2 Windows
+  install/uninstall lifecycle through isolated pnpm and the real rc.6 macOS
+  lifecycle, including no-CLI commands
+  ([#938](https://github.com/rullerzhou-afk/clawd-on-desk/pull/938)).
+  Automated installer coverage includes rc.6 retention, rc.2 installation,
+  cross-contract generation migration, and unlisted-version rejection.
 - Linux, WSL, remote SSH, non-web profiles, macOS packaging, and ARM64 packaging
   remain unverified.
 - There is no terminal-focus action because DSH web is a browser surface.

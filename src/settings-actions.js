@@ -544,6 +544,7 @@ const updateRegistry = {
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
   keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
+  fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──

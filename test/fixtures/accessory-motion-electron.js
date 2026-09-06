@@ -181,6 +181,31 @@ async function sampleMatrices(win, targetId, options = {}) {
       if (typeof window.__cloudlingSetPointer !== "function") {
         throw new Error("cloudling scripted pointer hook is unavailable");
       }
+      if (typeof window.__clawdSetLowPowerPaused !== "function") {
+        throw new Error("cloudling animation pause hook is unavailable");
+      }
+      // Drive the SVG's own frame callbacks at a fixed cadence. Wall-clock
+      // sleeps under-sample hidden windows on busy CI hosts, particularly the
+      // mini visual whose rotation lag advances once per rendered frame.
+      window.__clawdSetLowPowerPaused(true);
+      const nativeRequest = window.requestAnimationFrame;
+      const nativeCancel = window.cancelAnimationFrame;
+      const pendingFrames = new Map();
+      let nextFrameId = 0;
+      let frameTime = performance.now();
+      window.requestAnimationFrame = (callback) => {
+        const id = ++nextFrameId;
+        pendingFrames.set(id, callback);
+        return id;
+      };
+      window.cancelAnimationFrame = (id) => pendingFrames.delete(id);
+      const advanceFrame = () => {
+        const callbacks = [...pendingFrames.values()];
+        pendingFrames.clear();
+        if (callbacks.length !== 1) throw new Error("expected one live SVG frame callback");
+        frameTime += 1000 / 60;
+        callbacks[0](frameTime);
+      };
       // The diagonals alone cap the eye offset's x component at 1/sqrt(2), so
       // they can never reach the full MAX_ROT_DEG the horizontal probes do —
       // which is how the sampled envelope came out short of the real one.
@@ -194,13 +219,22 @@ async function sampleMatrices(win, targetId, options = {}) {
         { x: -1000, y: 1000, inside: true },
         { x: 1000, y: 1000, inside: true },
       ];
-      for (const probe of probes) {
-        window.__cloudlingSetPointer(probe);
-        await wait(1200);
-        for (let i = 0; i < 12; i++) {
-          out.push(snapshot());
-          await wait(16);
+      try {
+        window.__clawdSetLowPowerPaused(false);
+        frameTime = performance.now();
+        for (const probe of probes) {
+          window.__cloudlingSetPointer(probe);
+          // Include the lag's transition, then a complete breath cycle after
+          // settling (both pointer visuals use a five-second period).
+          for (let i = 0; i <= 480; i++) {
+            advanceFrame();
+            out.push(snapshot());
+          }
         }
+      } finally {
+        window.__clawdSetLowPowerPaused(true);
+        window.requestAnimationFrame = nativeRequest;
+        window.cancelAnimationFrame = nativeCancel;
       }
       return out;
     }

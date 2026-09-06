@@ -160,6 +160,12 @@ Para un uso normal, descarga el instalador precompilado más reciente desde **[G
 - **macOS**: `.dmg`
 - **Linux**: `.AppImage` o `.deb`
 
+En macOS, o en Linux x86_64, también puedes instalarlo con Homebrew:
+
+```bash
+brew install --cask clawd-on-desk
+```
+
 Inicia Clawd después de instalarlo. Las instalaciones nuevas solo sincronizan automáticamente Claude Code y Codex; instala las demás integraciones locales desde **Ajustes → Agentes** cuando las necesites.
 
 Ejecuta desde el código fuente únicamente si vas a contribuir, probar código aún no publicado o depurar integraciones. Las instalaciones desde el código fuente descargan Electron y herramientas de compilación, y pueden crear un árbol `node_modules` grande.
@@ -372,6 +378,9 @@ Gracias a todas las personas que han ayudado a mejorar Clawd:
     <td align="center" valign="top" width="110"><a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /><br /><sub>CheeseAgent</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /><br /><sub>RS-Nocsi</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /><br /><sub>Cobb04</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/eugenewang5425"><img src="https://github.com/eugenewang5425.png" width="50" style="border-radius:50%" /><br /><sub>eugenewang5425</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/draintovmasyan783-creator"><img src="https://github.com/draintovmasyan783-creator.png" width="50" style="border-radius:50%" /><br /><sub>draintovmasyan783-creator</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Yueh-H"><img src="https://github.com/Yueh-H.png" width="50" style="border-radius:50%" /><br /><sub>Yueh-H</sub></a></td>
   </tr>
 </table>
 

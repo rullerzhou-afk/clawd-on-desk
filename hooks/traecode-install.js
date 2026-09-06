@@ -157,11 +157,16 @@ function registerTraeCodeHooks(options = {}) {
       // instead of leaving them flat.
       if (!found && commandMatchesMarker(entry.command, MARKER)) {
         found = true;
-        const index = arr.indexOf(entry);
-        arr[index] = {
-          matcher: "",
-          hooks: [{ type: "command", command: desiredCommand }],
-        };
+        if (entry.hooks != null && !Array.isArray(entry.hooks)) {
+          throw new Error(`Refusing to modify ${hooksPath}: managed flat hook has unrecognized nested hooks`);
+        }
+        // Keep the user's matcher, foreign hooks and unknown entry fields.
+        // Only the owned flat command and its old shell/type move to a child.
+        entry.hooks = [...(entry.hooks || []), { type: "command", command: desiredCommand }];
+        if (entry.matcher === undefined) entry.matcher = "";
+        delete entry.command;
+        if (entry.type === "command") delete entry.type;
+        delete entry.shell;
         stalePath = true;
       }
       if (found) break;

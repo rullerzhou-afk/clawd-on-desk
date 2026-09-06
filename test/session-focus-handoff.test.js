@@ -58,6 +58,48 @@ describe("session focus handoff", () => {
     assert.ok(!logs.some((line) => line.includes("codex-thread-fallback-no-source-pid")));
   });
 
+  it("falls back to terminal focus when opening the deep link throws synchronously", async () => {
+    const terminalCalls = [];
+    const focusEntry = { id: "codex:thread", agentId: "codex", sourcePid: 123 };
+
+    await focusCodexThreadTarget({
+      shell: {
+        openExternal: () => {
+          throw new Error("protocol unavailable");
+        },
+      },
+      focusEntry,
+      sessionId: "codex:thread",
+      url: "codex://threads/thread",
+      focusTerminalSession: (...args) => {
+        terminalCalls.push(args);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(terminalCalls, [[focusEntry, "codex:thread", "dashboard"]]);
+  });
+
+  it("does not reject when terminal fallback fails", async () => {
+    for (const fail of [
+      () => { throw new Error("sync fallback failure"); },
+      () => Promise.reject(new Error("async fallback failure")),
+    ]) {
+      const logs = [];
+      await assert.doesNotReject(() => focusCodexThreadTarget({
+        shell: {
+          openExternal: () => Promise.reject(new Error("protocol unavailable")),
+        },
+        focusEntry: { id: "codex:thread", agentId: "codex", sourcePid: 123 },
+        sessionId: "codex:thread",
+        url: "codex://threads/thread",
+        focusLog: (line) => logs.push(line),
+        focusTerminalSession: fail,
+      }));
+      assert.ok(logs.some((line) => line.includes("reason=codex-thread-fallback-failed")));
+    }
+  });
+
   it("logs when Codex Desktop deep link fallback has no terminal source pid", async () => {
     const logs = [];
 

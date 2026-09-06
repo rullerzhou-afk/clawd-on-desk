@@ -7,7 +7,7 @@ const {
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
 const { resolveSessionIdentity } = require("./session-key");
-const { digestCodexTurnId } = require("./codex-turn-id");
+const { digestCodexTurnId, normalizeCodexTurnId } = require("./codex-turn-id");
 const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
 
@@ -225,7 +225,19 @@ function createAgentRuntimeMain(options = {}) {
     return callServer("stopIntegrationForAgent", agentId);
   }
 
-  function touchLocalCodexUserInputActivity(sessionId) {
+  function touchLocalCodexUserInputActivity(sessionId, activity) {
+    if (!activity || activity.userInputReplay === true
+      || !Number.isSafeInteger(activity.recapOccurredAt)
+      || activity.recapOccurredAt < 0 || activity.recapOccurredAt > now() + 1500) return false;
+    const snapshot = codexTurnFence.getSnapshot(sessionId);
+    const turnId = normalizeCodexTurnId(activity.turnId);
+    // An idless observer cannot prove it belongs to a known active turn.
+    if (snapshot && snapshot.currentTurnId && !turnId) return false;
+    const decision = codexTurnFence.observe({
+      sessionId, source: "jsonl", event: "CodexUserInputActivity", state: "working",
+      turnId,
+    });
+    if (!decision.accept) return false;
     const state = getStateRuntime();
     return !!(
       state
@@ -347,7 +359,7 @@ function createAgentRuntimeMain(options = {}) {
           // A live blocking question proves the turn is still active even when
           // the Desktop app has emitted no ordinary lifecycle hook during a
           // long model/network-retry segment. Never creates a missing session.
-          touchLocalCodexUserInputActivity(sessionId);
+          touchLocalCodexUserInputActivity(sessionId, extra);
           const shown = showCodexUserInputBubble({
             sessionId,
             callId: request.callId,
@@ -361,10 +373,9 @@ function createAgentRuntimeMain(options = {}) {
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             transientPermissionEvent: true,
-            // This passive/recovery card deliberately bypasses the ordinary
-            // JSONL timestamp + turn-fence path. Until it carries the original
-            // line time and equivalent official suppression, it is UI-only and
-            // must never be stamped into recap with receipt time.
+            // Card/focus recovery is independent of accepted activity. Only
+            // the fenced touch above may extend the session's lifetime, and
+            // this UI event must never enter recap with receipt time.
             recapSuppressed: true,
           });
         },
@@ -375,7 +386,7 @@ function createAgentRuntimeMain(options = {}) {
           // Terminal cleanup (task_complete / turn_aborted) uses the same card
           // callback but is not forward progress and must never revive work.
           if (!resolution || resolution.source !== "turn-terminal") {
-            touchLocalCodexUserInputActivity(sessionId);
+            touchLocalCodexUserInputActivity(sessionId, resolution);
           }
           clearCodexUserInputBubbles(sessionId, callId, "codex-user-input-resolved");
         },

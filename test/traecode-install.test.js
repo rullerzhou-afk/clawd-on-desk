@@ -50,6 +50,23 @@ afterEach(() => {
 });
 
 describe("TraeCode hook installer", () => {
+  it("migrates an owned flat command without losing nested foreign hooks or user fields", () => {
+    const foreign = { type: "command", command: "echo foreign", timeout: 42 };
+    const configPath = makeTempConfigFile({ hooks: { PreToolUse: [{
+      matcher: "Bash", userNote: "keep", shell: "old-shell", type: "command",
+      command: '"/old/node" "/old/path/traecode-hook.js"', hooks: [foreign],
+    }] } });
+    registerTraeCodeHooks({ silent: true, hooksPath: configPath, nodeBin: "/usr/local/bin/node" });
+    const entry = readJson(configPath).hooks.PreToolUse[0];
+    assert.strictEqual(entry.matcher, "Bash");
+    assert.strictEqual(entry.userNote, "keep");
+    assert.deepStrictEqual(entry.hooks[0], foreign);
+    assert.ok(commandText(entry.hooks[1].command).includes(MARKER));
+    assert.strictEqual(Object.hasOwn(entry, "command"), false);
+    const before = fs.readFileSync(configPath, "utf8");
+    registerTraeCodeHooks({ silent: true, hooksPath: configPath, nodeBin: "/usr/local/bin/node" });
+    assert.strictEqual(fs.readFileSync(configPath, "utf8"), before);
+  });
   it("registers all 6 command events on fresh install", () => {
     const configPath = makeTempConfigFile({});
     const result = registerTraeCodeHooks({

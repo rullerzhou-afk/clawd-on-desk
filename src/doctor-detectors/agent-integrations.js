@@ -401,6 +401,7 @@ function validateCodexCommandList(descriptor, commands, options) {
     const stable = inspectStableCodexHookCommand(command, {
       platform: options.platform,
       fs: options.fs,
+      codexDir: descriptor.parentDir,
     });
     if (!stable.matched) {
       return options.validateCommand(command, { platform: options.platform, fs: options.fs });

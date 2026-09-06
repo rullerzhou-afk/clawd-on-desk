@@ -44,6 +44,7 @@
 
   // startsWith("Mac") not /\bMac\b/ — "MacIntel" has \w after "c", fails \b (regression #135).
   const IS_MAC = (navigator.platform || "").startsWith("Mac");
+  const IS_WIN = (navigator.platform || "").startsWith("Win");
   const COLLAPSED_GROUPS_STORAGE_KEY = "clawd.settings.collapsedGroups.v1";
   const NAVIGATION_STORAGE_KEY = "clawd.settings.navigation.v1";
   const MAX_PERSISTED_SCROLL_TOP = 10_000_000;
@@ -2159,6 +2160,7 @@
     MAINTAINERS,
     CONTRIBUTORS,
     IS_MAC,
+    IS_WIN,
     SHORTCUT_ACTIONS,
     SHORTCUT_ACTION_IDS,
     buildAcceleratorFromEvent,

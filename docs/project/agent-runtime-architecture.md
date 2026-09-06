@@ -35,13 +35,18 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
-`commandWindows` 在 Codex 已启动的 PowerShell 进程内读取 UTF-8/Base64
-`clawd-hooks/codex-hook.js.windows.run` 数据 sidecar，再直接调用其中的 Node /
-hook target；不落地或二次启动 `.ps1`。旁路 JSON manifest 只供 Doctor 做完整性
-与目标健康校验。POSIX 使用 `clawd-hooks/codex-hook.js.sh` 与对应 manifest。
-正式包、开发目录、不同 worktree、Node 安装路径切换时只原子更新
-这些受管 artifact，不再改 `hooks.json` 的命令字符串，因此首次迁移 review 后
-不会反复触发 `/hooks` review。Windows 与 WSL 的 manifest/wrapper 分开保存，
+`commandWindows` 使用 PowerShell call-operator 直连：
+`& "node" "codex-hook.js" --clawd-windows-stable`；
+hook 进程启动时自读 UTF-8/Base64 `clawd-hooks/codex-hook.js.windows.run`
+数据 sidecar 注入 env（2026-09-04 起由内联 PowerShell dispatcher 改为直连：
+原 dispatcher 的“解码并执行”命令行被 Windows Defender ML 判为
+Trojan:Win32/Commando.A!ml，见 clawd-on-desk#986）；不落地或二次启动 `.ps1`。
+旁路 JSON manifest 供安装器恢复与 Doctor 做完整性、目标健康校验。POSIX 使用
+`clawd-hooks/codex-hook.js.sh` 与对应 manifest。
+Windows 原地升级只要 Node 与安装目录不变就保持同一命令；切换正式包、开发目录、
+worktree 或 Node 安装路径会改写直连命令，并需要重新完成一次 `/hooks` review。
+sidecar 中仅有 env 变化时不改命令。POSIX 仍只原子更新受管 wrapper，不改
+`hooks.json` 的命令字符串。Windows 与 WSL 的 manifest/wrapper 分开保存，
 共用 `CODEX_HOME` 时不会互相覆盖目标。Remote SSH 部署继续直接引用已部署的
 远端 hook 文件，不经过本机固定入口。Doctor 按 Codex 官方的归一化 handler
 SHA-256 精确核对 `trusted_hash`，命令变更后不会因原位置仍有旧 hash 而误报
@@ -350,7 +355,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - bubble 通过 IPC `bubble-height` 回报 `{state, measurementEpoch, height}`。主进程只接受当前摘要/详情 epoch 的测量，避免展开→收起→展开期间的旧高度覆盖新布局；详情高度以 `min(60% workArea, 620 CSS px)` 为偏好，并以实测 chrome + 5 行正文为可读下限、当前 workArea 为硬上限。卡片没有自己的宽度（`html/body` 撑满窗口），自然高度随 BrowserWindow 宽度变化，所以 renderer 在窗口宽度真正改变后会再报一次高度；详情→摘要的 presentation 早于 `repositionBubbles()` 收窄窗口，没有这次补测就会按详情宽度少算一个折行，摘要卡底部被窗口裁掉
 - `permission.js` 是 permission presentation 的唯一 owner：它用目标 workArea、text scale、HUD avoid rect 和每张卡实测宽高先尝试原逐窗栈；不安全时按 agent + session 选 FIFO 代表并预留队列入口，再只向减少非保护代表的方向收敛。详情、IME composition、文本输入和用户显式选中的请求是保护项。可选代表准入按 expanded owner 的 frozen size 计算，不能靠压扁保护项腾位置；代表集合确定后，带 launcher 的最终 layout 才从 expanded viewport 的本轮有效高度中扣除 launcher、已选其他代表和全部 gaps。该 effective cap 不改 frozen normal-mode budget；含 expanded representative 且最终仍不安全的候选不得进入新的 queue revision/ACK。首次从 normal mode 命中该 guard 时仍应用 crowded normal bounds 并同步全可见 ownership，已有 committed overflow 则保持原样；普通非展开请求继续沿用既有 queue-failure fallback。Follow 模式详情朝远离桌宠的一侧扩展，Fixed 模式保持所选角的边缘对齐
 - overflow 队列使用独立 `permission-queue.html` / preload / renderer，只暴露 open、close、select、ACK 四类导航 IPC，没有任何决定 IPC，也不接收本地详情、wire input、suggestions 或 token。抽屉打开时隐藏请求窗口但不销毁；选中项后恢复原 BrowserWindow/DOM。每个队列 revision 必须先 ACK 再提交 visible/hidden 集合，提交期限从第一条尚未被当前 ACK 表示的请求开始且不会被后续 revision 续期；队列加载、renderer、window 或 ACK 失败时，本 overflow episode 只回退逐窗栈且不重建、不决定请求
-- overflow 模式关闭全局 Allow/Deny 快捷键；Slack 只在请求窗口自身 height ACK 或已 ACK 队列的 main-owned hidden snapshot 上执行现有 once-guard。petHidden 使用 request ordinal cutoff 隔离旧请求与隐藏期间的新请求；topmost、IME overlap、HUD/update/Orbit 避让和 roam hold 都只扫描 presentation owner 返回的真实可见 permission windows（含队列及仍在 fade 的请求窗）
+- 全局 Allow/Deny 快捷键对已有窗口的请求，只作用于 presentation owner 选定、可见且可操作、完整处于 workArea 内并避开 HUD 的原目标卡片；ACK 前、队列失败回退与保留 crowded normal bounds 的保护项回退也必须满足这一条件。normal 模式没有窗口的请求保留既有 fallback。目标不安全时停用快捷键，不能跳过它去决定另一张卡片；Slack 只在请求窗口自身 height ACK 或已 ACK 队列的 main-owned hidden snapshot 上执行现有 once-guard。petHidden 使用 request ordinal cutoff 隔离旧请求与隐藏期间的新请求；topmost、IME overlap、HUD/update/Orbit 避让和 roam hold 都只扫描 presentation owner 返回的真实可见 permission windows（含队列及仍在 fade 的请求窗）
 - 本地详情数据与网络/决策数据分离：route 在生成有界摘要的同时保留最多 128 KiB 的仅本地显示详情；fingerprint、automation、HTTP 回包、Telegram/飞书/Slack payload 继续使用原有数据。Ask 的 wire question/answer key 保持上游原文，长正文和选项说明只影响详情显示
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
 - `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer

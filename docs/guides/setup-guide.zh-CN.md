@@ -144,105 +144,73 @@ Keychain 登录。准确边界见专门指南。
 
 ## WSL（Windows Subsystem for Linux）
 
-> 本节的主线是 Claude Code / 其他 hook 型 agent 的 WSL 配置。关于 `Codex CLI + WSL` 的官方支持现状、Codex hooks feature flag 行为、以及 Clawd 当前为什么默认扫不到 WSL Linux home 下的 Codex 日志，见：[codex-wsl-clarification.zh-CN.md](codex-wsl-clarification.zh-CN.md)
+在 Windows 上运行 Clawd，并在 agent 所在的 WSL 发行版里安装集成。推荐打开 **Settings → Agents → Connected → WSL Scan**，找到对应的 agent / 发行版行，选择 **Pair**。如果 Windows 没有安装该 agent，行可能位于 **Unavailable** 折叠区。请确认 Clawd 中该 agent 已**启用**：Pair 通常不会替你打开被关闭的 agent，也不会安装或标记 Windows 本机集成为已安装。
 
-如果 agent 跑在 WSL 里、Clawd 跑在 Windows 宿主上，集成会向 `127.0.0.1:23333-23337` 上报。WSL1 天然共享这条 loopback；WSL2 通常需要镜像网络，默认 NAT 并不能让 Linux 访问 Windows 的 loopback 服务。应用内 Pair 会探测这条链路，并在安装成功但网络不可达时给出警告。
+Pair 会分别安装集成和探测连通性。安装成功不代表能连接 Windows Clawd；探测失败或结果未知都不能视为已连接。随后启动新的 agent 会话，确认它出现在 Clawd 中。Codex 的独立 home 与共享 home 路径见 [Codex + WSL 说明](codex-wsl-clarification.zh-CN.md)。
 
-对于已支持的 agent，请在 **Settings → Agents** 的 Connected 区执行 **WSL Scan**，再找到对应发行版并点击 **Pair**。仅存在于 WSL 的 agent 仍可能位于 **Unavailable** 折叠区，因为本机安装状态与 WSL 配对是两套状态。Pair 会打开 Clawd 的事件入口，但不会把它标记为 Windows 本机集成，也不会在 Windows 安装文件。
+**WSL 中的 Hermes Agent：** 所选发行版必须已经安装 Hermes。Pair 会向 WSL 复制私有临时安装 payload，在主 Hermes home 和发现的 profiles 中安装并启用 `clawd-on-desk`，随后移除临时文件。**Unpair** 只禁用/移除该发行版中的 Clawd Hermes 插件，保留无关插件；当本机或其他 WSL 来源仍可能工作时，不会全局禁用 Hermes 事件。自定义 WSL `HERMES_HOME` 从发行版的登录 shell 解析。
 
-**WSL 中的 Hermes Agent：** 请先在目标发行版里安装 Hermes。Pair 会把一份私有临时安装 payload 传入 WSL，在 Hermes 主 home 和已发现 profiles 中安装并启用 `clawd-on-desk`，随后删除临时 payload。**Unpair** 只禁用/移除该发行版里的 Clawd Hermes plugin，保留其他 plugin；如果本机或其他 WSL 来源仍可能使用 Hermes，也不会关闭全局 Hermes 事件入口。自定义 WSL `HERMES_HOME` 会从该发行版的 login shell 中解析。
+### Pair 不可用时的手动安装
 
-**配置步骤：**
-
-```bash
-# 在 WSL shell 中执行：
-mkdir -p ~/.claude/hooks
-
-# 从 Windows 侧的 Clawd 仓库复制 hook 文件（按实际路径调整 /mnt/ 前缀）
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields,copilot-hook,copilot-install}.js ~/.claude/hooks/
-
-# 以远程模式注册 Claude hooks
-node ~/.claude/hooks/install.js --remote
-
-# 如果 WSL 中安装了 Codex CLI，也以远程模式注册 Codex official hooks
-node ~/.claude/hooks/codex-install.js --remote
-
-# 如果 WSL 中安装了 Copilot CLI，也以远程模式注册 Copilot CLI hooks
-node ~/.claude/hooks/copilot-install.js --remote
-```
-
-配置完成后，在 Windows 上启动 Clawd，在 WSL 里运行 Claude Code —— Clawd 会自动感知你的会话。权限气泡也能正常弹出。
-
-应用内 WSL 部署路径会故意以不带 `--statusline` 的方式运行 Claude installer，因此只提供 transcript fallback，不宣称能拿到自定义 provider 的权威窗口。上面的手动 `--remote` 命令会在 WSL 的独立 home 中安装一条可见 statusline，但 Windows 端应用只有在 **采集本机 Claude 使用信息** 开启时才接受它的 context/quota metadata；开关关闭时这些 POST 会被当作成功 no-op。Windows 本机启动 reconcile 也无法移除 WSL 独立 home 里的 statusline。
-
-如果 Codex 运行在 WSL 里，official hooks 需要安装到 WSL 自己的 `~/.codex` 下。如果你希望 WSL 与 Windows 共用同一份 Codex home，也可以在 WSL 里先设置 `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` 再运行 Codex。
-
-### WSL 网络与 Hook 注册（替代方案）
-
-Clawd 跑在 Windows 的 Electron 应用里，而你的 AI 编程助手（Claude Code、Kiro CLI 等）可能跑在 WSL 里。WSL 中的 hook 脚本会把 HTTP 请求发到 `127.0.0.1:23333`，所以 WSL 和 Windows 必须共享同一个 localhost。
-
-- **WSL1** — 开箱即用。WSL1 天然与 Windows 共享 localhost，无需额外配置。
-- **WSL2** — 需要镜像网络模式。WSL2 默认拥有独立网络栈，`127.0.0.1` 指向 WSL 自身而不是 Windows。请在 `%USERPROFILE%\.wslconfig` 中启用镜像模式（文件不存在就新建），然后执行 `wsl --shutdown` 重启 WSL：
-
-```ini
-[wsl2]
-networkingMode=mirrored
-```
-
-**在 WSL 中手动注册 hooks：**
-
-Clawd 在 Windows 启动时会自动注册 Claude Code hooks 到 `~/.claude/settings.json`。但如果你的 Agent 跑在 WSL 里，hooks 需要注册到 WSL 自己的 home 目录。请在 WSL 中执行：
+在 WSL 内使用 Linux Node.js 和完整源码仓库，只运行你需要的 agent 安装器。Claude Code 默认命令会检测 WSL，安装模式与 Pair 一致，默认不安装 statusline：
 
 ```bash
-git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd clawd-on-desk
-
-# Claude Code
+# 在 WSL 中执行；使用不含空格的 Linux 目标路径，并保留此仓库。
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git ~/clawd-on-desk
+cd ~/clawd-on-desk
 node hooks/install.js
 
-# Codex CLI
-node hooks/codex-install.js --remote
-
-# Kiro CLI - 会将 hooks 注册到 ~/.kiro/agents/ 下所有自定义 agent，
-# 并自动创建一个 clawd agent
-node hooks/kiro-install.js
-
-# Kimi Code CLI（Kimi-CLI）
-node hooks/kimi-install.js
-
-# Qwen Code
-node hooks/qwen-code-install.js
-
-# Cursor Agent
-node hooks/cursor-install.js
-
-# Gemini CLI
-node hooks/gemini-install.js
-
-# Antigravity CLI (agy)
-node hooks/antigravity-install.js
-
-# CodeBuddy
-# 保留已有、由版本化 marker 管理的自定义权限 URL
-node hooks/codebuddy-install.js
-# 明确指定目标：
-# node hooks/codebuddy-install.js --permission-url local
-# node hooks/codebuddy-install.js --permission-url https://approval.example/permission
-
-# WorkBuddy
-node hooks/workbuddy-install.js
-
-# opencode
-node hooks/opencode-install.js
-
-# Pi
-node hooks/pi-install.js
-
-# OpenClaw
-node hooks/openclaw-install.js
+# 可选：同时安装 Claude statusline，上报上下文与配额元数据。
+node hooks/install.js --statusline
 ```
 
-> 提示：如果仓库克隆在 WSL 内（如 `~/clawd-on-desk`），hook 脚本会自动使用 WSL 的 Node.js 路径。如果仓库放在 Windows 盘里（如 `/mnt/c/...`），请确保 WSL 的 PATH 中有 `node`。
+已有第三方 statusline 会被保留，除非你显式选择串联，详见 [Agent 配置说明](#agent-配置说明)。只有 Windows 端 **Collect local Claude usage** 开启时，Clawd 才会接收 WSL Claude 的上下文/配额元数据；关闭后，相应 POST 虽返回成功，但不会摄入数据。Pair 本身不安装 statusline，仅提供 transcript fallback，不保证自定义 provider 的权威上下文窗口。Windows 启动同步无法移除 WSL 独立 home 中的 statusline。
+
+其他 hook agent 的手动命令也从同一仓库执行：
+
+| Agent | 命令 |
+| --- | --- |
+| Codex CLI | `node hooks/codex-install.js --remote` |
+| Copilot CLI | `node hooks/copilot-install.js --remote` |
+| Kiro CLI | `node hooks/kiro-install.js` |
+| Kimi Code CLI（Kimi-CLI） | `node hooks/kimi-install.js` |
+| Qwen Code | `node hooks/qwen-code-install.js` |
+| Cursor Agent | `node hooks/cursor-install.js` |
+| Gemini CLI | `node hooks/gemini-install.js` |
+| Antigravity CLI（agy） | `node hooks/antigravity-install.js` |
+| CodeBuddy | `node hooks/codebuddy-install.js` |
+
+Kiro 会为 `~/.kiro/agents/` 中的自定义 agent 注册 hooks，并创建 `clawd` agent。CodeBuddy 裸跑安装器会保留已有的 managed 自定义权限 URL；显式替代参数是 `--permission-url local` 或 `--permission-url https://approval.example/permission`。通用安装命令也可从 [Agent 配置说明](#agent-配置说明) 找到。
+
+WorkBuddy 没有经过验证的独立 Linux/WSL CLI，请使用其 macOS/Windows 桌面集成。opencode、MiMo Code、Pi、OpenClaw 当前不在 WSL Pair 映射中，其 WSL 集成仍未验证；存在通用安装器不等于已有可验证的 WSL 教程。
+
+如果完整源码仓库只在 Windows 上，可以将 `hooks/` 下**全部顶层 JavaScript 文件**复制到 WSL。Pair 的持久 hook agent 同样复制这个完整集合；Hermes 使用前述独立临时 payload。不要手动挑选文件：hooks 存在直接及传递依赖。
+
+```bash
+# 在 WSL 中执行；把引号内的来源路径替换为完整源码仓库的位置。
+mkdir -p ~/.claude/hooks
+cp "/mnt/c/path/to/clawd-on-desk/hooks/"*.js ~/.claude/hooks/
+node ~/.claude/hooks/install.js
+
+# 可选的 Claude statusline：
+node ~/.claude/hooks/install.js --statusline
+```
+
+其他 hook agent 使用表格中的安装器文件名，在复制目录中执行并保留表中参数。Claude CLI 会在写配置前检查本次请求的 hook 入口及其本地依赖；遇到缺失或不可读文件时，从同一源码版本恢复完整集合后重试。
+
+Claude 默认 WSL hook 命令目前没有给路径加引号。最终的 Linux Node 和 hook 路径应避免空格；Windows **复制来源**可以加引号，但安装器能读取含空格路径，不代表生成的 hook 命令能从该路径执行。
+
+Claude 的旧 `--remote` 用法仍受支持。它还会安装 statusline、设置 `CLAWD_REMOTE=1`、使用 remote 命令形态与 host 标签、将状态 hook 超时从 5 秒改为 10 秒，并跳过 SessionStart PID 预解析。上面的 WSL 显式 statusline 选项使用 `--statusline`；`--remote` 有更广的语义。这个默认选择只针对 Claude，不能机械套用到其他 agent 的安装器。
+
+### 网络与排障
+
+Windows Clawd 监听 `127.0.0.1:23333-23337` 范围内的回环端口。**Linux Node → Windows Clawd** 通常需要 WSL2 mirrored networking；默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored 模式要求 Windows 11 22H2 或更高版本。Microsoft 的 [WSL 网络文档](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) 说明了 `%USERPROFILE%\.wslconfig` 中的 `networkingMode=mirrored` 与重启步骤；重启 WSL 会停止其中运行的会话。WSL1 共享回环地址，但这一网络事实不代表当前 Codex 支持 WSL1。
+
+**Codex 共享 home 的 Windows interop** 使用 Windows `node.exe` 执行 hook，访问 Windows 回环服务，因此该传输路径不要求 mirrored networking。共享 `CODEX_HOME` 本身并不决定使用 interop：由 WSL 拥有的原生 launcher 仍使用 Linux Node 和 Linux 网络路径。修改网络前先核对 [三种路径对照](codex-wsl-clarification.zh-CN.md#配置与执行路径)。
+
+普通 WSL **状态事件**会在 23333–23337 中发现服务。Claude 的 HTTP **PermissionRequest** URL 在安装时固定写入，不会在权限请求触发时逐端口探测。安装器使用显式端口或有效的本地 `~/.clawd/runtime.json`，否则回退 23333。独立 WSL home 通常没有 Windows 的 runtime 记录，所以 Pair 和手动安装通常都注册 23333。如果 Windows Clawd 实际监听 23334 或更高端口，可能出现状态正常而权限气泡不可达。请对照 Windows 的实际 runtime 端口与 WSL Claude 配置中的 URL；状态探测成功不能验证权限 URL。WSL 权限端口自动同步仍是后续待解决的限制。
+
+如果新会话没有出现，依次检查所选发行版、agent 启用状态、已注册命令及其 Node 路径，再看连通性结果。安装、可达和真实会话到达是三个独立检查。
 
 ## Windows 说明
 
@@ -252,13 +220,15 @@ node hooks/openclaw-install.js
 ## macOS 说明
 
 - **源码运行**（`npm start`）：Intel 和 Apple Silicon 均可直接使用。
-- **正式 DMG 安装包**：GitHub 正式 Release 同时提供 x64 与 arm64 DMG；发布工作流会用 Developer ID 签名、Apple 公证并 stapled。手动 `workflow_dispatch` 在没有签名凭据时可能只生成 ad-hoc 验证 artifact，不能当作正式安装包分发。
+- **Homebrew**：`brew install --cask clawd-on-desk` 会从对应当前架构的官方 DMG 中安装已签名并公证的应用。之后可用 `brew upgrade --cask clawd-on-desk` 升级。
+- **正式 DMG 安装包**：GitHub 正式 Release 同时提供 x64 与 arm64 DMG，其中的应用已使用 Developer ID 签名、通过 Apple 公证并附有公证票据；DMG 容器本身不单独签名。手动 `workflow_dispatch` 在没有签名凭据时可能只生成 ad-hoc 验证 artifact，不能当作正式安装包分发。
 - **自动更新桥接**：旧版 DMG 没有 ZIP 更新载荷，不能把自己自动升级到首个支持应用内更新的版本。现有用户需要从 GitHub Releases 手动安装一次首个桥接版 DMG；装上桥接版后，后续正式版本可在 Clawd 内下载，选择“立即重启”安装，或选择“稍后”并在退出、重新打开后完成。真实能力仍以同一 Developer ID 的 A→B 真机升级记录为准，不能用单元测试代替。
 - **源码自动更新**：源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
 
 ## Linux 说明
 
 - **源码运行**（`npm start`）：默认启用 Electron sandbox。如果你的 Linux 开发环境仍然遇到 chrome-sandbox 初始化失败，可临时使用 `CLAWD_DISABLE_SANDBOX=1 npm start` 作为兼容方案。
+- **Homebrew**：`brew install --cask clawd-on-desk` 会安装 x86_64 AppImage；目前没有 Linux ARM 的 cask 产物。之后可用 `brew upgrade --cask clawd-on-desk` 升级。
 - **安装包**：AppImage 和 `.deb` 可从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载。deb 安装后应用图标会出现在 GNOME 应用菜单。
 - **终端聚焦**：依赖 `wmctrl` 或 `xdotool`（有一个就行）。安装：`sudo apt install wmctrl` 或 `sudo apt install xdotool`。
-- **自动更新**：AppImage / deb 安装包仍需从 GitHub Releases 手动下载；源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
+- **自动更新**：Clawd 不会自行更新 Linux 安装包。Homebrew 管理的安装可用 `brew upgrade --cask clawd-on-desk` 升级；直接安装的 AppImage / deb 仍需从 GitHub Releases 手动下载。源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。

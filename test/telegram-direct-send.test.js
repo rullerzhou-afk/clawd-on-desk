@@ -39,6 +39,22 @@ function confirmedFocusResult(overrides = {}) {
   };
 }
 
+function codexDesktopEntry(overrides = {}) {
+  return {
+    id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    agentId: "codex",
+    codexOriginator: "codex_work_desktop",
+    state: "idle",
+    badge: "done",
+    sourcePid: 1234,
+    host: null,
+    headless: false,
+    hiddenFromHud: false,
+    platform: null,
+    ...overrides,
+  };
+}
+
 test("direct send maps a completion notification reply to the exact local session and focuses only", async () => {
   const focused = [];
   const direct = createTelegramDirectSend({
@@ -243,6 +259,102 @@ test("direct send never focuses remote, headless, sleeping, or permission-pendin
     });
     assert.notEqual(res.status, "focused");
   }
+});
+
+test("direct send keeps Codex Desktop on the clipboard path even with a source pid", async () => {
+  const focused = [];
+  const pasted = [];
+  const copied = [];
+  const entry = codexDesktopEntry();
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [entry] }),
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return confirmedFocusResult();
+    },
+    deliveryAdapter: async () => {
+      pasted.push("called");
+      return { status: "pasted_without_enter", delivered: true };
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 42, sessionId: entry.id });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 42 });
+
+  assert.equal(res.status, "fallback_copied");
+  assert.equal(res.deliveryResult.status, "fallback_copied");
+  assert.equal(direct._deliveries.get(res.deliveryId).fallbackReason, "codex_desktop_requires_manual_paste");
+  assert.deepEqual(focused, []);
+  assert.deepEqual(pasted, []);
+  assert.deepEqual(copied, ["continue"]);
+  assert.match(res.text, /Copied text to this computer's clipboard/);
+});
+
+test("direct send keeps Codex Desktop without a pid on the same safe fallback path", async () => {
+  let focused = 0;
+  const copied = [];
+  const entry = codexDesktopEntry({ sourcePid: null });
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [entry] }),
+    focusSession: () => { focused += 1; return confirmedFocusResult(); },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  direct.registerCompletionNotification({ messageId: 43, sessionId: entry.id });
+  const res = await direct.handleTextMessage({ text: "continue", replyToMessageId: 43 });
+
+  assert.equal(res.status, "fallback_copied");
+  assert.equal(focused, 0);
+  assert.deepEqual(copied, ["continue"]);
+  assert.equal(direct._deliveries.get(res.deliveryId).fallbackReason, "codex_desktop_requires_manual_paste");
+});
+
+test("direct send blocks Desktop identity even when navigation would choose a terminal", async () => {
+  const cases = [
+    codexDesktopEntry({
+      id: "codex:not-a-uuid",
+      codexOriginator: null,
+      originator: "Codex Desktop",
+    }),
+    codexDesktopEntry({
+      orcaPaneKey: "tab-local:leaf-local",
+    }),
+  ];
+  const focused = [];
+  const copied = [];
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: cases }),
+    focusSession: (sessionId) => {
+      focused.push(sessionId);
+      return confirmedFocusResult();
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({
+      clipboard: { writeText: (value) => copied.push(value) },
+    }),
+    osPlatform: "win32",
+  });
+
+  for (const [index, entry] of cases.entries()) {
+    const messageId = 50 + index;
+    direct.registerCompletionNotification({ messageId, sessionId: entry.id });
+    const res = await direct.handleTextMessage({ text: `continue-${index}`, replyToMessageId: messageId });
+
+    assert.equal(res.status, "fallback_copied");
+    assert.equal(direct._deliveries.get(res.deliveryId).fallbackReason, "codex_desktop_requires_manual_paste");
+  }
+
+  assert.deepEqual(focused, []);
+  assert.deepEqual(copied, ["continue-0", "continue-1"]);
 });
 
 test("direct send rejects sessions with an authoritative interactive pending permission", async () => {

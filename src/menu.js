@@ -330,9 +330,17 @@ module.exports = function initMenu(ctx) {
       const updateItem = ctx.getUpdateMenuItem();
       if (updateItem) appGroup.push(updateItem);
     }
+    // Intent is captured at build time: the fullscreen auto-hide sync can
+    // restore or hide the pet from its background poll while this menu is
+    // still on screen (the tray is the easy case — right-clicking the tray
+    // icon takes the foreground off the fullscreen app, so the auto-restore
+    // fires under the open menu). A live toggle would invert the labeled
+    // action then; applying the captured intent makes the worst case an
+    // idempotent no-op that matches what the user read.
+    const petHiddenAtBuild = ctx.petHidden;
     appGroup.push({
-      label: ctx.petHidden ? t("showPet") : t("hidePet"),
-      click: () => ctx.togglePetVisibility(),
+      label: petHiddenAtBuild ? t("showPet") : t("hidePet"),
+      click: () => ctx.setPetVisibility(petHiddenAtBuild),
     });
 
     const quitGroup = [
@@ -546,9 +554,17 @@ module.exports = function initMenu(ctx) {
       const updateItem = ctx.getUpdateMenuItem();
       if (updateItem) appGroup.push(updateItem);
     }
+    // Intent is captured at build time: the fullscreen auto-hide sync can
+    // restore or hide the pet from its background poll while this menu is
+    // still on screen (the tray is the easy case — right-clicking the tray
+    // icon takes the foreground off the fullscreen app, so the auto-restore
+    // fires under the open menu). A live toggle would invert the labeled
+    // action then; applying the captured intent makes the worst case an
+    // idempotent no-op that matches what the user read.
+    const petHiddenAtBuild = ctx.petHidden;
     appGroup.push({
-      label: ctx.petHidden ? t("showPet") : t("hidePet"),
-      click: () => ctx.togglePetVisibility(),
+      label: petHiddenAtBuild ? t("showPet") : t("hidePet"),
+      click: () => ctx.setPetVisibility(petHiddenAtBuild),
     });
 
     // Quit stands alone as the final group so it is always set off by a
