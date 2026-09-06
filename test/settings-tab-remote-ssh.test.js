@@ -197,7 +197,7 @@ test("settings-tab-remote-ssh.js blocks unstamped Connect and handles the IPC de
   assert.match(code, /function\s+hasDeploymentStamp\s*\(\s*profile\s*\)/);
   assert.match(code, /profile\.lastDeployedAt/);
   assert.match(code, /const\s+deploymentReady\s*=\s*hasDeploymentStamp\(profile\)/);
-  assert.match(code, /connectBtn\.disabled\s*=\s*!deploymentReady\s*\|\|\s*transportOperationActive/);
+  assert.match(code, /disabled:\s*!disconnectAvailable\s*&&\s*\(!deploymentReady\s*\|\|\s*transportOperationActive\)/);
   assert.match(code, /result\.reason\s*===\s*"deployment_required"/);
   assert.match(code, /result\.hint\s*\|\|\s*"remoteSshErrDeploymentRequired"/);
   const readinessBody = code.match(/function\s+hasDeploymentStamp\s*\([^)]*\)\s*\{([\s\S]*?)\n\s*\}/);
@@ -212,7 +212,7 @@ test("settings-tab-remote-ssh.js keeps Disconnect available while a managed oper
   assert.match(code, /status\.transportDesiredConnected\s*===\s*true/);
   assert.match(code, /transportOperationActive\s*&&\s*status\.transportDesiredConnected/);
   assert.match(code, /requestProfileDisconnect\(profile\.id\)/);
-  assert.match(code, /connectBtn\.disabled\s*=\s*!deploymentReady\s*\|\|\s*transportOperationActive/);
+  assert.match(code, /disabled:\s*!disconnectAvailable\s*&&\s*\(!deploymentReady\s*\|\|\s*transportOperationActive\)/);
   assert.match(code, /else if \(transportOperationActive\)[\s\S]*connectBtn\.title\s*=\s*statusMessageText\(status\)/);
 });
 

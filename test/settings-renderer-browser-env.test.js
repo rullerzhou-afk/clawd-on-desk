@@ -382,14 +382,12 @@ class FakeClassList {
   }
 }
 
-// FakeElement.textContent is a plain field, not an aggregating DOM getter, so
-// reading it on a container yields "" and any "does this text appear?" check
-// against it passes vacuously. Walk the tree instead, and include innerHTML —
-// the guide rows render through it.
+// Walk the tree using each node's own text so checks can include innerHTML
+// without double-counting the aggregating textContent getter below.
 function collectText(el) {
   if (!el) return "";
   const parts = [];
-  if (el.textContent) parts.push(String(el.textContent));
+  if (el._textContent) parts.push(String(el._textContent));
   if (el.innerHTML) parts.push(String(el.innerHTML));
   for (const child of el.children || []) parts.push(collectText(child));
   return parts.join(" ");
@@ -403,7 +401,7 @@ class FakeElement {
     this.dataset = {};
     this.eventListeners = {};
     this.className = "";
-    this.textContent = "";
+    this._textContent = "";
     this.title = "";
     this.type = "";
     this.disabled = false;
@@ -432,6 +430,17 @@ class FakeElement {
     child.parentNode = this;
     this.children.push(child);
     return child;
+  }
+
+  set textContent(value) {
+    this._textContent = value == null ? "" : String(value);
+    for (const child of this.children) child.parentNode = null;
+    this.children = [];
+    this._innerHTML = "";
+  }
+
+  get textContent() {
+    return this._textContent + this.children.map((child) => child.textContent).join("");
   }
 
   append(...children) {
@@ -522,6 +531,7 @@ class FakeElement {
   set innerHTML(_value) {
     for (const child of this.children) child.parentNode = null;
     this.children = [];
+    this._textContent = "";
     const html = String(_value || "");
     this._innerHTML = html;
     const stack = [this];
@@ -620,6 +630,22 @@ class FakeElement {
     if (!this.isConnected) return 0;
     return Math.max(40, this.children.length * 40);
   }
+}
+
+function loadSharedButtonHelpersForTest(document, settingsAPI = {}, getTranslate = null) {
+  const shared = loadSettingsCoreForTest(settingsAPI, { document }).helpers;
+  const translateConfig = (config = {}) => {
+    if (!Object.prototype.hasOwnProperty.call(config, "labelKey")) return config;
+    const translate = typeof getTranslate === "function" ? getTranslate() : null;
+    return {
+      ...config,
+      label: typeof translate === "function" ? translate(config.labelKey) : config.labelKey,
+    };
+  };
+  return {
+    buildButton: (config) => shared.buildButton(translateConfig(config)),
+    setButtonState: (button, patch) => shared.setButtonState(button, translateConfig(patch)),
+  };
 }
 
 function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
@@ -1809,6 +1835,7 @@ function loadTelegramApprovalTabForTest({
   vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(FEISHU_APPROVAL_RECIPIENT, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
+  const buttonHelpers = loadSharedButtonHelpersForTest(document, api, () => core.helpers.t);
 
   const core = {
     state: {
@@ -1833,6 +1860,8 @@ function loadTelegramApprovalTabForTest({
     runtime: {},
     helpers: {
       t: (key) => key,
+      buildButton: buttonHelpers.buildButton,
+      setButtonState: buttonHelpers.setButtonState,
       showSettingsConfirmModal: showConfirmModal,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
@@ -2126,6 +2155,7 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(SETTINGS_TAB_DISCORD_PRESENCE, "utf8"), context);
+  const buttonHelpers = loadSharedButtonHelpersForTest(document, settingsAPI, () => core.helpers.t);
 
   const core = {
     state: {
@@ -2141,6 +2171,8 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
     },
     helpers: {
       t: (key) => key,
+      buildButton: buttonHelpers.buildButton,
+      setButtonState: buttonHelpers.setButtonState,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
         for (const row of rows) section.appendChild(row);
@@ -2329,6 +2361,7 @@ function loadAboutTabForTest({
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-about.js"), "utf8"), context);
+  const buttonHelpers = loadSharedButtonHelpersForTest(document, context.settingsAPI, () => core.helpers.t);
 
   const core = {
     state: {
@@ -2339,6 +2372,8 @@ function loadAboutTabForTest({
     runtime: { about: { infoCache: null, clickCount: 0, updateCheckSnapshot: { state: "idle" } } },
     helpers: {
       t: (key) => key,
+      buildButton: buttonHelpers.buildButton,
+      setButtonState: buttonHelpers.setButtonState,
       attachSettingsDisclosure: attachDisclosureForHarness,
       registerMountedDisposable: disposableHarness.register,
       disposeMountedDisposable: disposableHarness.dispose,
@@ -3792,11 +3827,15 @@ describe("settings renderer browser environment", () => {
     const pendingDelete = harness.content.querySelector(".remote-ssh-btn-danger");
     assert.notStrictEqual(pendingDelete, originalDelete, "starting cleanup rebuilds the detail view");
     assert.strictEqual(pendingDelete.disabled, true);
+    assert.strictEqual(pendingDelete.classList.contains("pending"), true);
+    assert.strictEqual(pendingDelete.getAttribute("aria-busy"), "true");
 
     harness.emitStatus({ profileId: profile.id, status: "idle" });
     const afterStatusRerender = harness.content.querySelector(".remote-ssh-btn-danger");
     assert.notStrictEqual(afterStatusRerender, pendingDelete);
     assert.strictEqual(afterStatusRerender.disabled, true, "runtime status repaint preserves pending state");
+    assert.strictEqual(afterStatusRerender.classList.contains("pending"), true);
+    assert.strictEqual(afterStatusRerender.getAttribute("aria-busy"), "true");
 
     // FakeElement permits dispatching a disabled button, unlike the browser.
     // The handler guard must still prevent duplicate destructive IPC work.
@@ -9129,6 +9168,70 @@ describe("settings renderer browser environment", () => {
     assert.equal(button.disabled, true);
     assert.equal(button.getAttribute("aria-busy"), "true");
     assert.equal(button.getAttribute("aria-label"), "Delete profile");
+    assert.equal(button.querySelector(".settings-button-label").textContent, "Delete");
+  });
+
+  it("preserves a DOM Node icon while updating label, pressed, pending, and disabled state", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const icon = document.createElement("svg");
+    const button = core.helpers.buildButton({
+      label: "Install",
+      icon,
+      disabled: true,
+      ariaPressed: false,
+    });
+    const iconWrapper = button.querySelector(".settings-button-icon");
+    const label = button.querySelector(".settings-button-label");
+
+    assert.ok(iconWrapper);
+    assert.strictEqual(iconWrapper.children[0], icon);
+    assert.equal(iconWrapper.getAttribute("aria-hidden"), "true");
+    assert.equal(label.textContent, "Install");
+    assert.equal(button.getAttribute("aria-pressed"), "false");
+    assert.equal(button.disabled, true);
+
+    core.helpers.setButtonState(button, {
+      label: "Installing",
+      pending: true,
+      ariaPressed: true,
+    });
+    assert.strictEqual(iconWrapper.children[0], icon, "state updates must retain the icon node");
+    assert.strictEqual(button.querySelector(".settings-button-icon"), iconWrapper);
+    assert.strictEqual(button.querySelector(".settings-button-label"), label);
+    assert.equal(label.textContent, "Installing");
+    assert.equal(button.getAttribute("aria-pressed"), "true");
+    assert.equal(button.getAttribute("aria-busy"), "true");
+    assert.equal(button.disabled, true);
+
+    core.helpers.setButtonState(button, { pending: false });
+    assert.equal(button.disabled, true, "clearing pending must preserve business disabled state");
+    core.helpers.setButtonState(button, { disabled: false, ariaPressed: null });
+    assert.equal(button.disabled, false);
+    assert.equal(button.getAttribute("aria-pressed"), undefined);
+    assert.strictEqual(iconWrapper.children[0], icon);
+  });
+
+  it("rejects non-node icons and state updates for unmanaged buttons", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    assert.throws(
+      () => core.helpers.buildButton({ label: "Invalid", icon: "not-a-node" }),
+      /icon must be a DOM Node/,
+    );
+    const rawButton = document.createElement("button");
+    assert.throws(
+      () => core.helpers.setButtonState(rawButton, { pending: true }),
+      /requires a button built by buildButton/,
+    );
   });
 
   it("uses the shared Settings dialog shell with ARIA links and focus restoration", async () => {
@@ -10106,6 +10209,31 @@ describe("settings renderer browser environment", () => {
       "Clawd is larger than this display's work area. Reduce the pet size before choosing an activity area.",
     );
     assert.strictEqual(toasts[0].options.error, true);
+  });
+
+  it("restores the General cleanup action after a failed shared pending state", async () => {
+    const commandDeferred = createDeferred();
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot(),
+      settingsAPI: {
+        command: () => commandDeferred.promise,
+      },
+    });
+    harness.renderContent();
+
+    const button = harness.content.querySelector(".session-cleanup-reset-row button");
+    assert.ok(button);
+    assert.equal(button.classList.contains("settings-button"), true);
+    button.dispatchEvent({ type: "click", bubbles: false });
+    assert.equal(button.disabled, true);
+    assert.equal(button.classList.contains("pending"), true);
+    assert.equal(button.getAttribute("aria-busy"), "true");
+
+    commandDeferred.resolve({ status: "error", message: "reset failed" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(button.disabled, false);
+    assert.equal(button.classList.contains("pending"), false);
+    assert.equal(button.getAttribute("aria-busy"), "false");
   });
 
   it("registers the Session cleanup group with four number rows, atomic reset, and i18n keys", () => {
@@ -12739,8 +12867,11 @@ describe("settings renderer browser environment", () => {
     input.value = "sk-renderer-secret";
     connectPrimary[0].dispatchEvent({ type: "click", stopPropagation() {} });
     assert.strictEqual(input.value, "", "the DOM must drop the key immediately after submission");
+    assert.strictEqual(connectPrimary[0].classList.contains("pending"), true);
+    assert.strictEqual(connectPrimary[0].getAttribute("aria-busy"), "true");
     await flush();
     assert.strictEqual(connectedKey, "sk-renderer-secret");
+    assert.strictEqual(connectPrimary[0].classList.contains("pending"), false);
     assert.strictEqual(
       genericCommands.some((call) => JSON.stringify(call).includes("sk-renderer-secret")),
       false,
@@ -12759,9 +12890,16 @@ describe("settings renderer browser environment", () => {
     // The password field only appears after opting into the replace flow.
     const replaceToggle = primaryRow.querySelectorAll("button")
       .find((button) => button.classList.contains("quiet"));
+    assert.strictEqual(replaceToggle.getAttribute("aria-pressed"), "false");
     replaceToggle.dispatchEvent({ type: "click", stopPropagation() {} });
     assert.strictEqual(replacePanel.hidden, false);
+    assert.strictEqual(replaceToggle.getAttribute("aria-pressed"), "true");
     assert.ok(replacePanel.querySelector(".kimi-quota-key-input"));
+    const replaceCancel = replacePanel.querySelectorAll("button")
+      .find((button) => button.textContent === "kimiQuotaCancel");
+    replaceCancel.dispatchEvent({ type: "click", stopPropagation() {} });
+    assert.strictEqual(replacePanel.hidden, true);
+    assert.strictEqual(replaceToggle.getAttribute("aria-pressed"), "false");
 
     // Destructive / low-frequency actions live in the separated danger zone,
     // each with its own consequence note — never beside Refresh.
@@ -13070,7 +13208,7 @@ describe("settings renderer browser environment", () => {
     const subtabs = harness.content.querySelector(".agents-subtabs");
     assert.ok(subtabs, "the Agents tab should render a subtab switcher");
     const pills = subtabs.querySelectorAll(".segmented button");
-    assert.deepStrictEqual(pills.map((pill) => pill.textContent), ["Connected", "Discover and add"]);
+    assert.deepStrictEqual(pills.map((pill) => pill._textContent), ["Connected", "Discover and add"]);
     assert.strictEqual(pills[0].classList.contains("active"), true);
     assert.strictEqual(pills[0].getAttribute("aria-selected"), "true");
     // The badge counts what can be acted on now, not the whole catalog.
@@ -13818,6 +13956,54 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(toasts.length, 1);
     assert.match(toasts[0].message, /Qwen Code/);
     assert.notStrictEqual(toasts[0].options.error, true);
+  });
+
+  it("restores an Agent integration action after a failed shared pending state", async () => {
+    const commandDeferred = createDeferred();
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { "qwen-code": { integrationInstalled: false, enabled: false } },
+        customApplications: [],
+        customToolDiscoveryPaths: [],
+        dismissedAgentCleanupHints: {},
+        dismissedAgentInstallHints: {},
+      },
+      agentMetadata: [{
+        id: "qwen-code",
+        name: "Qwen Code",
+        eventSource: "hook",
+        capabilities: {},
+      }],
+      settingsAPI: {
+        command: () => commandDeferred.promise,
+      },
+    });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 1,
+      agents: [],
+      customAgents: [],
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true });
+
+    const button = harness.content.querySelector(".agent-integration-action");
+    assert.ok(button);
+    assert.equal(button.querySelector(".settings-button-label").textContent, "Install");
+    button.dispatchEvent({ type: "click", bubbles: false });
+    assert.equal(button.disabled, true);
+    assert.equal(button.classList.contains("pending"), true);
+    assert.equal(button.getAttribute("aria-busy"), "true");
+
+    commandDeferred.resolve({ status: "error", message: "install failed" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(button.disabled, false);
+    assert.equal(button.classList.contains("pending"), false);
+    assert.equal(button.getAttribute("aria-busy"), "false");
+    assert.equal(button.querySelector(".settings-button-label").textContent, "Install");
   });
 
   it("shows a non-error toast when a manual agent install is skipped", async () => {

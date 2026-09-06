@@ -371,19 +371,22 @@
 
     const control = document.createElement("div");
     control.className = "custom-tool-discovery-control custom-tool-discovery-actions";
-    const addButton = document.createElement("button");
-    addButton.type = "button";
-    addButton.className = "soft-btn accent custom-tool-path-picker";
-    addButton.textContent = t("customToolManualAdd");
+    const addButton = helpers.buildButton({
+      labelKey: "customToolManualAdd",
+      tone: "accent",
+      size: "compact",
+      className: "custom-tool-path-picker",
+    });
     addButton.addEventListener("click", () => addPickedCustomDiscoveryPath(addButton));
     control.appendChild(addButton);
-    const scanButton = document.createElement("button");
-    scanButton.type = "button";
-    scanButton.className = "soft-btn custom-tool-scan";
-    scanButton.textContent = t("customToolRescan");
+    const scanButton = helpers.buildButton({
+      labelKey: "customToolRescan",
+      size: "compact",
+      className: "custom-tool-scan",
+    });
     scanButton.addEventListener("click", async () => {
       const scanStartedAt = Date.now();
-      scanButton.disabled = true;
+      helpers.setButtonState(scanButton, { pending: true });
       scanStatus.classList.remove("failed");
       scanStatus.classList.add("pending");
       scanStatus.textContent = t("customToolScanStatusScanning");
@@ -401,7 +404,7 @@
         scanStatus.textContent = t("customToolScanStatusFailed");
       } finally {
         scanStatus.classList.remove("pending");
-        scanButton.disabled = false;
+        helpers.setButtonState(scanButton, { pending: false });
       }
     });
     control.appendChild(scanButton);
@@ -422,14 +425,17 @@
 
     const control = document.createElement("div");
     control.className = "custom-tool-wsl-scan";
-    const scanButton = document.createElement("button");
-    scanButton.type = "button";
-    scanButton.className = "soft-btn agent-instance-scan-btn";
-    scanButton.textContent = t("agentInstanceScanWsl");
-    scanButton.title = t("agentInstanceScanWslDesc");
+    const scanButton = helpers.buildButton({
+      labelKey: "agentInstanceScanWsl",
+      size: "compact",
+      className: "agent-instance-scan-btn",
+      title: t("agentInstanceScanWslDesc"),
+    });
     scanButton.addEventListener("click", async () => {
-      scanButton.disabled = true;
-      scanButton.textContent = t("agentInstanceScanning");
+      helpers.setButtonState(scanButton, {
+        pending: true,
+        labelKey: "agentInstanceScanning",
+      });
       try {
         if (ops && typeof ops.fetchAgentInstallationHints === "function") {
           await ops.fetchAgentInstallationHints({ refreshWsl: true });
@@ -438,8 +444,10 @@
       } catch (err) {
         console.warn("WSL scan failed:", err && err.message);
       } finally {
-        scanButton.disabled = false;
-        scanButton.textContent = t("agentInstanceScanWsl");
+        helpers.setButtonState(scanButton, {
+          pending: false,
+          labelKey: "agentInstanceScanWsl",
+        });
       }
     });
     control.appendChild(scanButton);
@@ -476,9 +484,12 @@
       ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
       return;
     }
-    const originalLabel = button.textContent;
-    button.disabled = true;
-    button.textContent = t("customToolScanStatusScanning");
+    const labelElement = button.querySelector(".settings-button-label");
+    const originalLabel = labelElement ? labelElement.textContent : "";
+    helpers.setButtonState(button, {
+      pending: true,
+      labelKey: "customToolScanStatusScanning",
+    });
     try {
       const result = await window.settingsAPI.pickAgentDiscoveryPath("directory");
       if (!result || result.status === "cancel") return;
@@ -502,8 +513,10 @@
     } catch (err) {
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     } finally {
-      button.disabled = false;
-      button.textContent = originalLabel;
+      helpers.setButtonState(button, {
+        pending: false,
+        label: originalLabel,
+      });
     }
   }
 
@@ -560,22 +573,29 @@
     row.appendChild(text);
 
     if (result.application) {
-      const status = document.createElement(result.application.added ? "span" : "button");
-      status.className = result.application.added
-        ? "custom-tool-result-status"
-        : "soft-btn accent custom-tool-add";
-      status.textContent = result.application.added ? t("customToolAdded") : t("customToolAdd");
-      if (!result.application.added) {
-        status.type = "button";
+      const status = result.application.added
+        ? document.createElement("span")
+        : helpers.buildButton({
+          labelKey: "customToolAdd",
+          tone: "accent",
+          size: "compact",
+          className: "custom-tool-add",
+        });
+      if (result.application.added) {
+        status.className = "custom-tool-result-status";
+        status.textContent = t("customToolAdded");
+      } else {
         status.addEventListener("click", () => addCustomApplication(result, status));
       }
       row.appendChild(status);
     }
     if (result.path) {
-      const removePathButton = document.createElement("button");
-      removePathButton.type = "button";
-      removePathButton.className = "soft-btn danger custom-tool-remove-path";
-      removePathButton.textContent = t("customToolRemovePath");
+      const removePathButton = helpers.buildButton({
+        labelKey: "customToolRemovePath",
+        tone: "danger",
+        size: "compact",
+        className: "custom-tool-remove-path",
+      });
       removePathButton.addEventListener("click", () => removeCustomDiscoveryPath(result.path, removePathButton));
       row.appendChild(removePathButton);
     }
@@ -584,7 +604,7 @@
 
   async function removeCustomDiscoveryPath(pathToRemove, button) {
     if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
-    button.disabled = true;
+    helpers.setButtonState(button, { pending: true });
     try {
       const paths = readers.readAgentCustomDiscoveryPaths("custom")
         .filter((entry) => entry !== pathToRemove);
@@ -600,7 +620,7 @@
       }
       ops.requestRender({ content: true });
     } catch (err) {
-      button.disabled = false;
+      helpers.setButtonState(button, { pending: false });
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     }
   }
@@ -618,7 +638,7 @@
   }
 
   async function addCustomApplication(result, button) {
-    button.disabled = true;
+    helpers.setButtonState(button, { pending: true });
     try {
       const response = await window.settingsAPI.command("addCustomApplication", { path: result.path });
       if (!response || response.status !== "ok") throw new Error((response && response.message) || "add failed");
@@ -629,7 +649,7 @@
       await refreshCustomAgentUi();
     } catch (err) {
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-      button.disabled = false;
+      helpers.setButtonState(button, { pending: false });
     }
   }
 
@@ -708,20 +728,24 @@
 
     const actions = document.createElement("div");
     actions.className = "agent-hint-actions agent-install-hint-actions";
-    const installBtn = document.createElement("button");
-    installBtn.type = "button";
-    installBtn.className = "soft-btn accent agent-install-hint-install";
-    installBtn.textContent = agentHintActionPending
-      ? t("agentIntegrationWorking")
-      : t("agentInstallHintInstallRecommended");
-    installBtn.disabled = !!agentHintActionPending;
+    const installBtn = helpers.buildButton({
+      labelKey: agentHintActionPending
+        ? "agentIntegrationWorking"
+        : "agentInstallHintInstallRecommended",
+      tone: "accent",
+      size: "compact",
+      className: "agent-install-hint-install",
+      disabled: !!agentHintActionPending,
+      pending: !!agentHintActionPending,
+    });
     installBtn.addEventListener("click", () => installRecommendedHints(agentIds));
 
-    const dismissBtn = document.createElement("button");
-    dismissBtn.type = "button";
-    dismissBtn.className = "soft-btn agent-install-hint-dismiss";
-    dismissBtn.textContent = t("agentInstallHintDismiss");
-    dismissBtn.disabled = !!agentHintActionPending;
+    const dismissBtn = helpers.buildButton({
+      labelKey: "agentInstallHintDismiss",
+      size: "compact",
+      className: "agent-install-hint-dismiss",
+      disabled: !!agentHintActionPending,
+    });
     dismissBtn.addEventListener("click", () => dismissInstallHints(agentIds));
 
     actions.appendChild(installBtn);
@@ -749,20 +773,22 @@
 
     const actions = document.createElement("div");
     actions.className = "agent-hint-actions agent-cleanup-hint-actions";
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "soft-btn accent agent-cleanup-hint-remove";
-    removeBtn.textContent = agentHintActionPending
-      ? t("agentIntegrationWorking")
-      : t("agentCleanupHintRemove");
-    removeBtn.disabled = !!agentHintActionPending;
+    const removeBtn = helpers.buildButton({
+      labelKey: agentHintActionPending ? "agentIntegrationWorking" : "agentCleanupHintRemove",
+      tone: "accent",
+      size: "compact",
+      className: "agent-cleanup-hint-remove",
+      disabled: !!agentHintActionPending,
+      pending: !!agentHintActionPending,
+    });
     removeBtn.addEventListener("click", () => removeCleanupHints(agentIds));
 
-    const dismissBtn = document.createElement("button");
-    dismissBtn.type = "button";
-    dismissBtn.className = "soft-btn agent-cleanup-hint-dismiss";
-    dismissBtn.textContent = t("agentCleanupHintDismiss");
-    dismissBtn.disabled = !!agentHintActionPending;
+    const dismissBtn = helpers.buildButton({
+      labelKey: "agentCleanupHintDismiss",
+      size: "compact",
+      className: "agent-cleanup-hint-dismiss",
+      disabled: !!agentHintActionPending,
+    });
     dismissBtn.addEventListener("click", () => dismissCleanupHints(agentIds));
 
     actions.appendChild(removeBtn);
@@ -1070,19 +1096,21 @@
       },
       buildExtraControls: (ctrl) => {
         if (agent.custom) {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.className = "soft-btn danger custom-agent-remove";
-          button.textContent = t("customToolRemove");
+          const button = helpers.buildButton({
+            labelKey: "customToolRemove",
+            tone: "danger",
+            size: "compact",
+            className: "custom-agent-remove",
+          });
           button.addEventListener("click", async () => {
-            button.disabled = true;
+            helpers.setButtonState(button, { pending: true });
             try {
               const result = await window.settingsAPI.command("removeCustomApplication", { id: agent.id });
               if (!result || result.status !== "ok") throw new Error((result && result.message) || "remove failed");
               await refreshCustomAgentUi();
             } catch (err) {
               ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-              button.disabled = false;
+              helpers.setButtonState(button, { pending: false });
             }
           });
           ctrl.appendChild(button);
@@ -1141,10 +1169,11 @@
         text.appendChild(desc);
         row.appendChild(text);
         if (["customToolAgentId", "customAgentStateEndpoint", "customAgentPayloadExample"].includes(labelKey)) {
-          const copyButton = document.createElement("button");
-          copyButton.type = "button";
-          copyButton.className = "soft-btn custom-agent-copy";
-          copyButton.textContent = t("customAgentCopy");
+          const copyButton = helpers.buildButton({
+            labelKey: "customAgentCopy",
+            size: "compact",
+            className: "custom-agent-copy",
+          });
           copyButton.addEventListener("click", async () => {
             try {
               if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
@@ -1342,10 +1371,12 @@
     }
 
     function makeConsoleLink() {
-      const link = document.createElement("button");
-      link.type = "button";
-      link.className = "soft-btn quiet kimi-quota-console-link";
-      link.textContent = t("kimiQuotaOpenConsole");
+      const link = helpers.buildButton({
+        labelKey: "kimiQuotaOpenConsole",
+        tone: "quiet",
+        size: "compact",
+        className: "kimi-quota-console-link",
+      });
       link.addEventListener("click", (event) => {
         event.stopPropagation();
         if (window.settingsAPI && typeof window.settingsAPI.openExternal === "function") {
@@ -1364,10 +1395,11 @@
     const connectRow = document.createElement("div");
     connectRow.className = "kimi-quota-connect-row";
     const connectInput = makePasswordInput();
-    const connectButton = document.createElement("button");
-    connectButton.type = "button";
-    connectButton.className = "soft-btn accent settings-button kimi-quota-primary";
-    connectButton.textContent = t("kimiQuotaConnect");
+    const connectButton = helpers.buildButton({
+      labelKey: "kimiQuotaConnect",
+      tone: "accent",
+      className: "kimi-quota-primary",
+    });
     connectRow.appendChild(connectInput);
     connectRow.appendChild(connectButton);
     connectSection.appendChild(connectRow);
@@ -1407,13 +1439,16 @@
 
     const primaryRow = document.createElement("div");
     primaryRow.className = "kimi-quota-primary-row";
-    const refreshButton = document.createElement("button");
-    refreshButton.type = "button";
-    refreshButton.className = "soft-btn accent settings-button kimi-quota-primary";
-    const replaceToggle = document.createElement("button");
-    replaceToggle.type = "button";
-    replaceToggle.className = "soft-btn quiet";
-    replaceToggle.textContent = t("kimiQuotaReplace");
+    const refreshButton = helpers.buildButton({
+      tone: "accent",
+      className: "kimi-quota-primary",
+    });
+    const replaceToggle = helpers.buildButton({
+      labelKey: "kimiQuotaReplace",
+      tone: "quiet",
+      size: "compact",
+      ariaPressed: false,
+    });
     primaryRow.appendChild(refreshButton);
     primaryRow.appendChild(replaceToggle);
     manageSection.appendChild(primaryRow);
@@ -1425,14 +1460,16 @@
     replacePanel.appendChild(replaceInput);
     const replaceActions = document.createElement("div");
     replaceActions.className = "kimi-quota-replace-actions";
-    const replaceConfirm = document.createElement("button");
-    replaceConfirm.type = "button";
-    replaceConfirm.className = "soft-btn accent";
-    replaceConfirm.textContent = t("kimiQuotaReplaceConfirm");
-    const replaceCancel = document.createElement("button");
-    replaceCancel.type = "button";
-    replaceCancel.className = "soft-btn quiet";
-    replaceCancel.textContent = t("kimiQuotaCancel");
+    const replaceConfirm = helpers.buildButton({
+      labelKey: "kimiQuotaReplaceConfirm",
+      tone: "accent",
+      size: "compact",
+    });
+    const replaceCancel = helpers.buildButton({
+      labelKey: "kimiQuotaCancel",
+      tone: "quiet",
+      size: "compact",
+    });
     replaceActions.appendChild(replaceConfirm);
     replaceActions.appendChild(replaceCancel);
     replacePanel.appendChild(replaceActions);
@@ -1442,10 +1479,10 @@
     dangerZone.className = "kimi-quota-danger";
     const disconnectRow = document.createElement("div");
     disconnectRow.className = "kimi-quota-danger-row";
-    const disconnectButton = document.createElement("button");
-    disconnectButton.type = "button";
-    disconnectButton.className = "soft-btn";
-    disconnectButton.textContent = t("kimiQuotaDisconnect");
+    const disconnectButton = helpers.buildButton({
+      labelKey: "kimiQuotaDisconnect",
+      size: "compact",
+    });
     const disconnectDesc = document.createElement("span");
     disconnectDesc.className = "row-desc kimi-quota-danger-desc";
     disconnectDesc.textContent = t("kimiQuotaDisconnectDesc");
@@ -1454,10 +1491,11 @@
     dangerZone.appendChild(disconnectRow);
     const forgetRow = document.createElement("div");
     forgetRow.className = "kimi-quota-danger-row";
-    const forgetButton = document.createElement("button");
-    forgetButton.type = "button";
-    forgetButton.className = "soft-btn danger";
-    forgetButton.textContent = t("kimiQuotaForgetLocal");
+    const forgetButton = helpers.buildButton({
+      labelKey: "kimiQuotaForgetLocal",
+      tone: "danger",
+      size: "compact",
+    });
     const forgetDesc = document.createElement("span");
     forgetDesc.className = "row-desc kimi-quota-danger-desc";
     forgetDesc.textContent = t("kimiQuotaForgetDesc");
@@ -1479,11 +1517,15 @@
     let statusLoaded = false;
     let busy = false;
     let replaceOpen = false;
+    let pendingButton = null;
 
     function setReplaceOpen(open) {
       replaceOpen = open;
       replacePanel.hidden = !open;
-      replaceToggle.disabled = busy || open;
+      helpers.setButtonState(replaceToggle, {
+        disabled: busy || open,
+        ariaPressed: open,
+      });
       if (!open) replaceInput.value = "";
     }
 
@@ -1502,20 +1544,38 @@
       // The single primary action: Refresh while connected, Reconnect with
       // the stored key while disconnected. Reconnect/Refresh both stay
       // manual-only user actions, exactly like Connect.
-      refreshButton.textContent = t(collectionEnabled ? "kimiQuotaRefresh" : "kimiQuotaReconnect");
-      refreshButton.disabled = busy || !decryptable || (collectionEnabled && !agentEnabled);
-      connectButton.disabled = busy;
+      helpers.setButtonState(refreshButton, {
+        labelKey: collectionEnabled ? "kimiQuotaRefresh" : "kimiQuotaReconnect",
+        disabled: busy || !decryptable || (collectionEnabled && !agentEnabled),
+        pending: pendingButton === refreshButton,
+      });
+      helpers.setButtonState(connectButton, {
+        disabled: busy,
+        pending: pendingButton === connectButton,
+      });
       connectInput.disabled = busy;
       replaceInput.disabled = busy;
-      replaceConfirm.disabled = busy;
-      replaceCancel.disabled = busy;
-      replaceToggle.disabled = busy || replaceOpen;
+      helpers.setButtonState(replaceConfirm, {
+        disabled: busy,
+        pending: pendingButton === replaceConfirm,
+      });
+      helpers.setButtonState(replaceCancel, { disabled: busy });
+      helpers.setButtonState(replaceToggle, {
+        disabled: busy || replaceOpen,
+        ariaPressed: replaceOpen,
+      });
       replacePanel.hidden = !replaceOpen;
       disconnectRow.hidden = !collectionEnabled;
-      disconnectButton.disabled = busy;
+      helpers.setButtonState(disconnectButton, {
+        disabled: busy,
+        pending: pendingButton === disconnectButton,
+      });
       // Forget is only legal once collection is off (the runtime enforces
       // "disconnect-required"); the disabled state plus its desc says so.
-      forgetButton.disabled = busy || collectionEnabled;
+      helpers.setButtonState(forgetButton, {
+        disabled: busy || collectionEnabled,
+        pending: pendingButton === forgetButton,
+      });
       statusLine.textContent = busy
         ? t("kimiQuotaStatusRefreshing")
         : kimiQuotaStatusText(currentStatus);
@@ -1533,15 +1593,17 @@
       syncControls();
     }
 
-    async function runAction(invoke) {
+    async function runAction(invoke, sourceButton) {
       if (busy) return;
       busy = true;
+      pendingButton = sourceButton || null;
       setReplaceOpen(false);
       syncControls();
       let result;
       try { result = await invoke(); }
       catch { result = { status: "error", reason: "runtime-unavailable" }; }
       busy = false;
+      pendingButton = null;
       await reloadStatus();
       if (!result || result.status !== "ok") {
         const reason = (result && (result.reason || result.message)) || "unknown-error";
@@ -1557,7 +1619,7 @@
         ops.showToast(t("kimiQuotaKeyRequired"), { error: true });
         return;
       }
-      runAction(() => invoke(apiKey));
+      runAction(() => invoke(apiKey), input === connectInput ? connectButton : replaceConfirm);
     }
 
     connectButton.addEventListener("click", (event) => {
@@ -1569,7 +1631,7 @@
       const collectionEnabled = !!(currentStatus && currentStatus.collectionEnabled);
       runAction(() => (collectionEnabled
         ? window.settingsAPI.refreshKimiQuota()
-        : window.settingsAPI.reconnectKimiQuota()));
+        : window.settingsAPI.reconnectKimiQuota()), refreshButton);
     });
     replaceToggle.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -1585,12 +1647,12 @@
     });
     disconnectButton.addEventListener("click", (event) => {
       event.stopPropagation();
-      runAction(() => window.settingsAPI.disconnectKimiQuota());
+      runAction(() => window.settingsAPI.disconnectKimiQuota(), disconnectButton);
     });
     forgetButton.addEventListener("click", (event) => {
       event.stopPropagation();
       if (typeof window.confirm === "function" && !window.confirm(t("kimiQuotaForgetConfirm"))) return;
-      runAction(() => window.settingsAPI.forgetKimiQuotaCredential());
+      runAction(() => window.settingsAPI.forgetKimiQuotaCredential(), forgetButton);
     });
     connectInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter") submitKey(connectInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
@@ -1718,13 +1780,17 @@
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
 
-    const button = document.createElement("button");
-    button.className = "soft-btn agent-instance-action";
-    button.textContent = t("agentInstancePair");
-    button.title = `WSL: ${wslEntry.distro}`;
+    const button = helpers.buildButton({
+      labelKey: "agentInstancePair",
+      size: "compact",
+      className: "agent-instance-action",
+      title: `WSL: ${wslEntry.distro}`,
+    });
     button.addEventListener("click", async () => {
-      button.disabled = true;
-      button.textContent = t("agentInstancePairing");
+      helpers.setButtonState(button, {
+        pending: true,
+        labelKey: "agentInstancePairing",
+      });
       try {
         if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
           const result = await window.settingsAPI.command("deployToWsl", {
@@ -1758,8 +1824,10 @@
         // Refresh after both success and failure: an installer can leave
         // managed files that the user must be able to Unpair/repair.
         refreshWslHints();
-        button.disabled = false;
-        button.textContent = t("agentInstancePair");
+        helpers.setButtonState(button, {
+          pending: false,
+          labelKey: "agentInstancePair",
+        });
       }
     });
     ctrl.appendChild(button);
@@ -1772,13 +1840,17 @@
       ? wslEntry.integrationFilesPresent === true
       : wslEntry.hooksFilesPresent === true;
     if (canUnpair) {
-      const unpairBtn = document.createElement("button");
-      unpairBtn.className = "soft-btn agent-instance-action";
-      unpairBtn.textContent = t("agentInstanceUnpair");
-      unpairBtn.title = `WSL: ${wslEntry.distro}`;
+      const unpairBtn = helpers.buildButton({
+        labelKey: "agentInstanceUnpair",
+        size: "compact",
+        className: "agent-instance-action",
+        title: `WSL: ${wslEntry.distro}`,
+      });
       unpairBtn.addEventListener("click", async () => {
-        unpairBtn.disabled = true;
-        unpairBtn.textContent = t("agentInstanceUnpairing");
+        helpers.setButtonState(unpairBtn, {
+          pending: true,
+          labelKey: "agentInstanceUnpairing",
+        });
         try {
           if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
             const result = await window.settingsAPI.command("removeFromWsl", {
@@ -1798,8 +1870,10 @@
           ops.showToast(String(err && err.message ? err.message : err), { error: true });
         } finally {
           refreshWslHints();
-          unpairBtn.disabled = false;
-          unpairBtn.textContent = t("agentInstanceUnpair");
+          helpers.setButtonState(unpairBtn, {
+            pending: false,
+            labelKey: "agentInstanceUnpair",
+          });
         }
       });
       ctrl.appendChild(unpairBtn);
@@ -1960,9 +2034,11 @@
   function syncAgentIntegrationAction(meta) {
     if (!meta || !meta.button) return;
     const installed = readers.readAgentIntegrationInstalled(meta.agentId);
-    meta.button.disabled = false;
-    meta.button.classList.remove("pending");
-    meta.button.textContent = t(installed ? "agentIntegrationUninstall" : "agentIntegrationInstall");
+    helpers.setButtonState(meta.button, {
+      disabled: false,
+      pending: false,
+      labelKey: installed ? "agentIntegrationUninstall" : "agentIntegrationInstall",
+    });
     meta.button.setAttribute(
       "aria-label",
       t(installed ? "agentIntegrationUninstall" : "agentIntegrationInstall")
@@ -1971,9 +2047,10 @@
   }
 
   function buildAgentIntegrationActionButton(agent) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "soft-btn agent-integration-action";
+    const button = helpers.buildButton({
+      size: "compact",
+      className: "agent-integration-action",
+    });
     const meta = {
       button,
       agentId: agent.id,
@@ -1989,9 +2066,10 @@
       if (installed && typeof window.confirm === "function" && !window.confirm(t("agentIntegrationUninstallConfirm"))) {
         return;
       }
-      button.disabled = true;
-      button.classList.add("pending");
-      button.textContent = t("agentIntegrationWorking");
+      helpers.setButtonState(button, {
+        pending: true,
+        labelKey: "agentIntegrationWorking",
+      });
       window.settingsAPI.command(command, { agentId: agent.id }).then((result) => {
         if (result && result.status === "skipped") {
           ops.showToast(formatHintResult(t("agentIntegrationInstallSkipped"), {
