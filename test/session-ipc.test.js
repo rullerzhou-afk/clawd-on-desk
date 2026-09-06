@@ -99,10 +99,6 @@ function createHarness(overrides = {}) {
       return { status: "applied" };
     }),
     getDashboardWindow: overrides.getDashboardWindow || (() => dashboardWindow),
-    consumeQuickSelectIntent: overrides.consumeQuickSelectIntent || (() => {
-      calls.push(["consumeQuickSelectIntent"]);
-      return { status: "ok", enterQuickSelect: false };
-    }),
     getKimiQuotaStatus: overrides.getKimiQuotaStatus || (() => ({
       status: "ok",
       configured: true,
@@ -130,9 +126,7 @@ test("session IPC registers owned channels and disposes them", () => {
   const { ipcMain, runtime } = createHarness();
 
   assert.deepStrictEqual([...ipcMain.handlers.keys()].sort(), [
-    "dashboard:activate-quick-select-session",
     "dashboard:clear-session-automation-grant",
-    "dashboard:consume-quick-select-intent",
     "dashboard:get-i18n",
     "dashboard:get-kimi-quota-status",
     "dashboard:get-snapshot",
@@ -248,94 +242,6 @@ test("Kimi quota Dashboard IPC accepts only the real Dashboard main frame", asyn
     );
   }
   assert.deepStrictEqual(calls, [["refreshKimiQuota"]]);
-});
-
-test("Dashboard Quick Select intent is consumable only by the trusted main frame", async () => {
-  const { ipcMain, calls, trustedDashboardEvent } = createHarness({
-    consumeQuickSelectIntent: () => {
-      calls.push(["consumeQuickSelectIntent"]);
-      return { status: "ok", enterQuickSelect: true };
-    },
-  });
-
-  assert.deepStrictEqual(
-    await ipcMain.invokeFrom(
-      trustedDashboardEvent,
-      "dashboard:consume-quick-select-intent"
-    ),
-    { status: "ok", enterQuickSelect: true }
-  );
-  assert.deepStrictEqual(calls, [["consumeQuickSelectIntent"]]);
-  assert.deepStrictEqual(
-    await ipcMain.invokeFrom(
-      { sender: trustedDashboardEvent.sender },
-      "dashboard:consume-quick-select-intent"
-    ),
-    { status: "error", reason: "untrusted-dashboard-sender" }
-  );
-  assert.deepStrictEqual(calls, [["consumeQuickSelectIntent"]]);
-});
-
-test("Dashboard Quick Select validates the exact payload and reports submission, not confirmation", async () => {
-  const outcomes = [
-    [true, { status: "submitted" }],
-    [{ reason: "submitted" }, { status: "submitted", reason: "submitted" }],
-    [{ reason: "queued" }, { status: "submitted", reason: "queued" }],
-    [
-      { reason: "linux-command-submitted" },
-      { status: "submitted", reason: "linux-command-submitted" },
-    ],
-    [Promise.resolve({ status: "confirmed" }), { status: "submitted" }],
-    [{ reason: "dropped-duplicate" }, { status: "rejected", reason: "dropped-duplicate" }],
-    [false, { status: "rejected", reason: "focus-unavailable" }],
-  ];
-  for (const [focusResult, expected] of outcomes) {
-    const { ipcMain, calls, trustedDashboardEvent } = createHarness({
-      focusSession: (sessionId, options) => {
-        calls.push(["focusSession", sessionId, options]);
-        return focusResult;
-      },
-    });
-    assert.deepStrictEqual(
-      await ipcMain.invokeFrom(
-        trustedDashboardEvent,
-        "dashboard:activate-quick-select-session",
-        { sessionId: "s1" }
-      ),
-      expected
-    );
-    assert.deepStrictEqual(calls, [[
-      "focusSession",
-      "s1",
-      { requestSource: "dashboard-quick-select" },
-    ]]);
-  }
-
-  const { ipcMain, calls, trustedDashboardEvent } = createHarness();
-  for (const payload of [
-    null,
-    {},
-    { sessionId: "" },
-    { sessionId: "s1", extra: true },
-  ]) {
-    assert.deepStrictEqual(
-      await ipcMain.invokeFrom(
-        trustedDashboardEvent,
-        "dashboard:activate-quick-select-session",
-        payload
-      ),
-      { status: "rejected", reason: "invalid-payload" }
-    );
-  }
-  assert.deepStrictEqual(calls, []);
-  assert.deepStrictEqual(
-    await ipcMain.invokeFrom(
-      { sender: trustedDashboardEvent.sender },
-      "dashboard:activate-quick-select-session",
-      { sessionId: "s1" }
-    ),
-    { status: "error", reason: "untrusted-dashboard-sender" }
-  );
 });
 
 test("session IPC owns dashboard open bridges", () => {

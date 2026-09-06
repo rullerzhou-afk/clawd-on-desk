@@ -31,79 +31,39 @@ class FakeElement {
     this.hidden = false;
     this.disabled = false;
     this.style = {};
-    this.parentNode = null;
-    this.ownerDocument = null;
   }
-  appendChild(child) {
-    if (child && typeof child === "object") child.parentNode = this;
-    this.children.push(child);
-    return child;
-  }
-  replaceChildren(...children) {
-    this.children = [];
-    for (const child of children) this.appendChild(child);
-  }
+  appendChild(child) { this.children.push(child); return child; }
+  replaceChildren(...children) { this.children = children; }
   setAttribute(name, value) { this.attributes[name] = String(value); }
   addEventListener(name, listener) {
     if (!this.listeners.has(name)) this.listeners.set(name, []);
     this.listeners.get(name).push(listener);
   }
-  async dispatch(name, overrides = {}) {
-    const event = {
-      stopped: false,
-      prevented: false,
-      stopPropagation() { this.stopped = true; },
-      preventDefault() { this.prevented = true; },
-      key: "",
-      ...overrides,
-    };
+  async dispatch(name) {
+    const event = { stopPropagation() {}, preventDefault() {}, key: "" };
     for (const listener of this.listeners.get(name) || []) await listener(event);
-    return event;
   }
   querySelector(selector) {
     if (!selector.startsWith(".")) return null;
     return byClass(this, selector.slice(1))[0] || null;
   }
   replaceWith() {}
-  contains(target) {
-    if (target === this) return true;
-    return descendants(this).includes(target);
-  }
-  focus() {
-    if (this.ownerDocument) this.ownerDocument.activeElement = this;
-  }
+  focus() {}
   select() {}
 }
 
 function createDocument(ids) {
-  const listeners = new Map();
-  const document = {
+  const elements = new Map(ids.map((id) => [id, new FakeElement("div")]));
+  return {
     title: "",
-    activeElement: null,
-    createElement: (tag) => {
-      const element = new FakeElement(tag);
-      element.ownerDocument = document;
-      return element;
-    },
+    createElement: (tag) => new FakeElement(tag),
     createTextNode: (text) => ({ textContent: String(text), children: [] }),
-    createDocumentFragment: () => document.createElement("fragment"),
-    getElementById: (id) => document.elements.get(id) || null,
+    createDocumentFragment: () => new FakeElement("fragment"),
+    getElementById: (id) => elements.get(id) || null,
     querySelectorAll: () => [],
     contains: () => true,
-    addEventListener(name, listener) {
-      if (!listeners.has(name)) listeners.set(name, []);
-      listeners.get(name).push(listener);
-    },
-    async dispatch(name, event = {}) {
-      for (const listener of listeners.get(name) || []) await listener(event);
-    },
-    elements: new Map(),
+    elements,
   };
-  for (const id of ids) {
-    const element = document.createElement("div");
-    document.elements.set(id, element);
-  }
-  return document;
 }
 
 function descendants(root) {
@@ -156,11 +116,6 @@ function translations() {
     dashboardKimiQuotaRefreshFailed: "Refresh failed: {reason}",
     dashboardKimiQuotaEmpty: "No quota data yet. Click refresh to fetch it.",
     dashboardKimiQuotaRefreshShort: "Refresh",
-    dashboardQuickSelectTitle: "Quick Select",
-    dashboardQuickSelectHint: "Press 1–9 to jump · Esc to exit",
-    dashboardQuickSelectEmpty: "No focusable sessions are available.",
-    dashboardQuickSelectUnavailable: "This session is no longer available.",
-    dashboardQuickSelectAlreadyRequested: "A jump to this session was already requested.",
   };
 }
 
@@ -192,40 +147,14 @@ async function loadDashboard(
     "count",
     "content",
     "quotaSummary",
-    "quickSelectLayer",
-    "quickSelectTitle",
-    "quickSelectHint",
-    "quickSelectOptions",
-    "quickSelectFeedback",
   ]);
   const openCalls = [];
   const automationCalls = [];
   const kimiRefreshCalls = [];
-  const quickSelectActivationCalls = [];
-  const timeoutCallbacks = new Map();
-  let nextTimeoutId = 1;
-  let timeoutNowMs = 0;
   let renderInterval = null;
-  let snapshotListener = null;
-  let quickSelectIntentListener = null;
-  let quickSelectExitListener = null;
-  let pendingQuickSelectIntent = kimiOptions.quickSelectIntent === true;
   const api = {
     onLangChange: () => {},
-    onSessionSnapshot: (listener) => { snapshotListener = listener; },
-    onQuickSelectIntent: (listener) => { quickSelectIntentListener = listener; },
-    onQuickSelectExit: (listener) => { quickSelectExitListener = listener; },
-    consumeQuickSelectIntent: async () => {
-      const enterQuickSelect = pendingQuickSelectIntent;
-      pendingQuickSelectIntent = false;
-      return { status: "ok", enterQuickSelect };
-    },
-    activateQuickSelectSession: async (payload) => {
-      quickSelectActivationCalls.push(payload);
-      return typeof kimiOptions.quickSelectActivationResult === "function"
-        ? kimiOptions.quickSelectActivationResult(payload)
-        : (kimiOptions.quickSelectActivationResult || { status: "submitted" });
-    },
+    onSessionSnapshot: () => {},
     getI18n: async () => ({ lang: "en", translations: translations() }),
     getSnapshot: async () => ({
       sessions,
@@ -263,55 +192,9 @@ async function loadDashboard(
       return kimiOptions.refreshResult || { status: "ok" };
     },
   };
-  const windowListeners = new Map();
-  const fakeWindow = {
-    dashboardAPI: api,
-    addEventListener(name, listener) {
-      if (!windowListeners.has(name)) windowListeners.set(name, []);
-      windowListeners.get(name).push(listener);
-    },
-  };
-  const scheduleTimeout = (callback, delayMs = 0) => {
-    const timeoutId = nextTimeoutId++;
-    const delay = Number.isFinite(Number(delayMs)) ? Math.max(0, Number(delayMs)) : 0;
-    timeoutCallbacks.set(timeoutId, {
-      callback,
-      dueAt: timeoutNowMs + delay,
-    });
-    if (kimiOptions.deferTimeouts !== true) {
-      queueMicrotask(() => {
-        const pending = timeoutCallbacks.get(timeoutId);
-        if (!pending) return;
-        timeoutCallbacks.delete(timeoutId);
-        timeoutNowMs = Math.max(timeoutNowMs, pending.dueAt);
-        pending.callback();
-      });
-    }
-    return timeoutId;
-  };
-  const advanceTimersByTime = async (advanceMs) => {
-    const amount = Number(advanceMs);
-    if (!Number.isFinite(amount) || amount < 0) throw new Error("advanceMs must be non-negative");
-    const targetTime = timeoutNowMs + amount;
-    while (true) {
-      const next = [...timeoutCallbacks.entries()]
-        .filter(([, pending]) => pending.dueAt <= targetTime)
-        .sort((a, b) => a[1].dueAt - b[1].dueAt || a[0] - b[0])[0];
-      if (!next) break;
-      const [timeoutId, pending] = next;
-      timeoutCallbacks.delete(timeoutId);
-      timeoutNowMs = pending.dueAt;
-      pending.callback();
-      await Promise.resolve();
-    }
-    timeoutNowMs = targetTime;
-    await flush();
-  };
   const context = vm.createContext({
-    window: fakeWindow, document, console, Intl, Date,
+    window: { dashboardAPI: api }, document, console, Intl, Date,
     setInterval: (callback) => { renderInterval = callback; return 1; },
-    setTimeout: scheduleTimeout,
-    clearTimeout: (timeoutId) => timeoutCallbacks.delete(timeoutId),
     requestAnimationFrame: (cb) => cb(),
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-focus-unavailable.js"), "utf8"), context);
@@ -320,32 +203,9 @@ async function loadDashboard(
   return {
     root: document.elements.get("content"),
     quotaSummary: document.elements.get("quotaSummary"),
-    quickSelectLayer: document.elements.get("quickSelectLayer"),
-    quickSelectOptions: document.elements.get("quickSelectOptions"),
-    quickSelectFeedback: document.elements.get("quickSelectFeedback"),
     openCalls,
     automationCalls,
     kimiRefreshCalls,
-    quickSelectActivationCalls,
-    pushSnapshot: async (nextSessions, nextOverrides = {}) => {
-      snapshotListener({
-        sessions: nextSessions,
-        groups: [{ host: "", ids: nextSessions.map((entry) => entry.id) }],
-        ...nextOverrides,
-      });
-      await flush();
-    },
-    triggerQuickSelect: async () => {
-      pendingQuickSelectIntent = true;
-      quickSelectIntentListener();
-      await flush();
-    },
-    exitQuickSelect: () => quickSelectExitListener(),
-    blurWindow: async () => {
-      for (const listener of windowListeners.get("blur") || []) await listener();
-    },
-    pointerDown: async (target) => document.dispatch("pointerdown", { target }),
-    advanceTimersByTime,
     tickRender: () => { if (renderInterval) renderInterval(); },
   };
 }
@@ -414,213 +274,6 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
   assert.deepStrictEqual(jumpButtons(cards[1]), []);
   assert.deepStrictEqual(jumpButtons(cards[2]).map((button) => button.disabled), [true]);
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
-});
-
-test("Dashboard Quick Select keeps digit mapping stable while the live order changes", async () => {
-  const dashboard = await loadDashboard(
-    [
-      session("a", { canFocus: true, displayTitle: "Alpha", agentId: "codex" }),
-      session("b", { canFocus: true, displayTitle: "Beta", agentId: "claude-code" }),
-      session("c", { canFocus: false, displayTitle: "Gamma" }),
-    ],
-    { status: "ok" },
-    {},
-    { status: "applied" },
-    { quickSelectIntent: true }
-  );
-
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, false);
-  assert.deepStrictEqual(
-    byClass(dashboard.quickSelectOptions, "quick-select-option-title")
-      .map((element) => element.textContent),
-    ["Alpha", "Beta"]
-  );
-
-  await dashboard.pushSnapshot([
-    session("b", { canFocus: true, displayTitle: "Beta", agentId: "claude-code" }),
-    session("a", { canFocus: true, displayTitle: "Alpha", agentId: "codex" }),
-  ]);
-  await dashboard.quickSelectLayer.dispatch("keydown", { key: "1" });
-  await dashboard.quickSelectLayer.dispatch("keyup", { key: "1" });
-  await flush();
-
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls[0].sessionId, "a");
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
-});
-
-test("Dashboard Quick Select consumes rapid repeated digits before focus handoff", async () => {
-  const dashboard = await loadDashboard(
-    [
-      session("a", { canFocus: true, displayTitle: "Alpha", agentId: "codex" }),
-      session("b", { canFocus: true, displayTitle: "Beta", agentId: "claude-code" }),
-    ],
-    { status: "ok" },
-    {},
-    { status: "applied" },
-    { quickSelectIntent: true, deferTimeouts: true }
-  );
-
-  const firstDown = await dashboard.quickSelectLayer.dispatch("keydown", {
-    key: "1",
-    code: "Digit1",
-  });
-  const firstUp = await dashboard.quickSelectLayer.dispatch("keyup", {
-    key: "1",
-    code: "Digit1",
-  });
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, false);
-
-  await dashboard.advanceTimersByTime(60);
-  const secondDown = await dashboard.quickSelectLayer.dispatch("keydown", {
-    key: "1",
-    code: "Digit1",
-  });
-  const repeatedDown = await dashboard.quickSelectLayer.dispatch("keydown", {
-    key: "1",
-    code: "Digit1",
-    repeat: true,
-  });
-  await dashboard.advanceTimersByTime(120);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-
-  const secondUp = await dashboard.quickSelectLayer.dispatch("keyup", {
-    key: "1",
-    code: "Digit1",
-  });
-  for (const event of [firstDown, firstUp, secondDown, repeatedDown, secondUp]) {
-    assert.strictEqual(event.prevented, true);
-    assert.strictEqual(event.stopped, true);
-  }
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-
-  await dashboard.advanceTimersByTime(119);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-  await dashboard.advanceTimersByTime(1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls[0].sessionId, "a");
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
-});
-
-test("Dashboard Quick Select tracks a digit release when Shift changes event.key", async () => {
-  const dashboard = await loadDashboard(
-    [session("a", { canFocus: true, displayTitle: "Alpha", agentId: "codex" })],
-    { status: "ok" },
-    {},
-    { status: "applied" },
-    { quickSelectIntent: true, deferTimeouts: true }
-  );
-
-  await dashboard.quickSelectLayer.dispatch("keydown", {
-    key: "1",
-    code: "Digit1",
-  });
-  const shiftedUp = await dashboard.quickSelectLayer.dispatch("keyup", {
-    key: "!",
-    code: "Digit1",
-    shiftKey: true,
-  });
-  assert.strictEqual(shiftedUp.prevented, true);
-  assert.strictEqual(shiftedUp.stopped, true);
-
-  await dashboard.advanceTimersByTime(119);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-  await dashboard.advanceTimersByTime(1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls[0].sessionId, "a");
-});
-
-test("Dashboard Quick Select waits for distinct top-row and numpad digit releases", async () => {
-  const dashboard = await loadDashboard(
-    [session("a", { canFocus: true, displayTitle: "Alpha", agentId: "codex" })],
-    { status: "ok" },
-    {},
-    { status: "applied" },
-    { quickSelectIntent: true, deferTimeouts: true }
-  );
-
-  await dashboard.quickSelectLayer.dispatch("keydown", {
-    key: "1",
-    code: "Digit1",
-  });
-  await dashboard.quickSelectLayer.dispatch("keydown", {
-    key: "1",
-    code: "Numpad1",
-  });
-  await dashboard.quickSelectLayer.dispatch("keyup", {
-    key: "1",
-    code: "Digit1",
-  });
-  await dashboard.advanceTimersByTime(500);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-
-  await dashboard.quickSelectLayer.dispatch("keyup", {
-    key: "1",
-    code: "Numpad1",
-  });
-  await dashboard.advanceTimersByTime(119);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 0);
-  await dashboard.advanceTimersByTime(1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls.length, 1);
-  assert.strictEqual(dashboard.quickSelectActivationCalls[0].sessionId, "a");
-});
-
-test("Dashboard Quick Select cancels a pending digit handoff when it exits", async () => {
-  const dashboard = await loadDashboard(
-    [session("a", { canFocus: true, displayTitle: "Alpha", agentId: "codex" })],
-    { status: "ok" },
-    {},
-    { status: "applied" },
-    { quickSelectIntent: true, deferTimeouts: true }
-  );
-
-  await dashboard.quickSelectLayer.dispatch("keydown", { key: "1", code: "Digit1" });
-  await dashboard.quickSelectLayer.dispatch("keydown", { key: "Escape" });
-  await dashboard.advanceTimersByTime(1000);
-
-  assert.deepStrictEqual(dashboard.quickSelectActivationCalls, []);
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
-});
-
-test("Dashboard Quick Select keeps stale digits unavailable and exits without trapping focus", async () => {
-  const dashboard = await loadDashboard(
-    [
-      session("a", { canFocus: true, displayTitle: "Alpha" }),
-      session("b", { canFocus: true, displayTitle: "Beta" }),
-    ],
-    { status: "ok" },
-    {},
-    { status: "applied" },
-    { quickSelectIntent: true }
-  );
-
-  await dashboard.pushSnapshot([
-    session("b", { canFocus: true, displayTitle: "Beta" }),
-  ]);
-  await dashboard.quickSelectLayer.dispatch("keydown", { key: "1" });
-  await flush();
-  assert.deepStrictEqual(dashboard.quickSelectActivationCalls, []);
-  assert.strictEqual(
-    dashboard.quickSelectFeedback.textContent,
-    "This session is no longer available."
-  );
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, false);
-
-  await dashboard.quickSelectLayer.dispatch("keydown", { key: "Escape" });
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
-
-  await dashboard.triggerQuickSelect();
-  await dashboard.quickSelectLayer.dispatch("keydown", { key: "Tab" });
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
-
-  await dashboard.triggerQuickSelect();
-  await dashboard.pointerDown(dashboard.root);
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
-
-  await dashboard.triggerQuickSelect();
-  await dashboard.blurWindow();
-  assert.strictEqual(dashboard.quickSelectLayer.hidden, true);
 });
 
 test("Dashboard hosts the manual Kimi quota refresh inside the Kimi quota section", async () => {

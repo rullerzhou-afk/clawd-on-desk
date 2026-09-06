@@ -22,20 +22,8 @@ const AGENT_LABELS = {
 let snapshot = { sessions: [], groups: [], orderedIds: [] };
 let i18nPayload = { lang: "en", translations: {} };
 let activeEdit = null;
-let dashboardInitialized = false;
-let quickSelectActive = false;
-let quickSelectActivationPending = false;
-let quickSelectFeedbackKey = "";
-let quickSelectDigitMap = new Map();
-let quickSelectFallbackTitles = new Map();
-let quickSelectGeneration = 0;
-let quickSelectHeldDigits = new Set();
-let quickSelectHandoffTimer = null;
-let quickSelectHandoffPromise = null;
-let quickSelectHandoffResolve = null;
 
 const SESSION_FOLDER_FEEDBACK_MS = 4000;
-const QUICK_SELECT_HANDOFF_QUIET_MS = 120;
 const sessionFolderActionState = new Map();
 const sessionAutomationActionState = new Map();
 
@@ -43,11 +31,6 @@ const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
 const contentEl = document.getElementById("content");
 const quotaSummaryEl = document.getElementById("quotaSummary");
-const quickSelectLayerEl = document.getElementById("quickSelectLayer");
-const quickSelectTitleEl = document.getElementById("quickSelectTitle");
-const quickSelectHintEl = document.getElementById("quickSelectHint");
-const quickSelectOptionsEl = document.getElementById("quickSelectOptions");
-const quickSelectFeedbackEl = document.getElementById("quickSelectFeedback");
 // The manual Kimi quota refresh lives inside the Kimi quota section header
 // (built by renderQuotaSummary), so these refs are re-pointed on every quota
 // summary rebuild and stay null whenever the section is not rendered.
@@ -600,276 +583,6 @@ function createText(tag, className, text) {
 
 function sessionTitleText(session) {
   return session.displayTitle || session.sessionTitle || session.id || "";
-}
-
-function orderedQuickSelectCandidates(currentSnapshot) {
-  const sessions = Array.isArray(currentSnapshot && currentSnapshot.sessions)
-    ? currentSnapshot.sessions
-    : [];
-  const byId = new Map(sessions.map((session) => [session.id, session]));
-  const seen = new Set();
-  const ordered = [];
-  const addId = (id) => {
-    if (!id || seen.has(id)) return;
-    seen.add(id);
-    const session = byId.get(id);
-    if (session && session.canFocus === true) ordered.push(session);
-  };
-  for (const group of deriveGroups(currentSnapshot || {})) {
-    for (const id of Array.isArray(group.ids) ? group.ids : []) addId(id);
-  }
-  for (const id of Array.isArray(currentSnapshot && currentSnapshot.orderedIds)
-    ? currentSnapshot.orderedIds
-    : []) addId(id);
-  for (const session of sessions) addId(session && session.id);
-  return ordered.slice(0, 9);
-}
-
-function renderQuickSelectLayer() {
-  if (
-    !quickSelectLayerEl
-    || !quickSelectTitleEl
-    || !quickSelectHintEl
-    || !quickSelectOptionsEl
-    || !quickSelectFeedbackEl
-  ) return;
-  quickSelectLayerEl.hidden = !quickSelectActive;
-  if (!quickSelectActive) {
-    quickSelectOptionsEl.replaceChildren();
-    quickSelectFeedbackEl.textContent = "";
-    return;
-  }
-
-  quickSelectTitleEl.textContent = t("dashboardQuickSelectTitle");
-  quickSelectHintEl.textContent = t("dashboardQuickSelectHint");
-  quickSelectFeedbackEl.textContent = quickSelectFeedbackKey
-    ? t(quickSelectFeedbackKey)
-    : "";
-  const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-  const byId = new Map(sessions.map((session) => [session.id, session]));
-  const fragment = document.createDocumentFragment();
-
-  if (quickSelectDigitMap.size === 0) {
-    fragment.appendChild(createText("div", "quick-select-empty", t("dashboardQuickSelectEmpty")));
-  } else {
-    for (const [digit, sessionId] of quickSelectDigitMap) {
-      const session = byId.get(sessionId);
-      const available = !!session && session.canFocus === true;
-      const option = document.createElement("div");
-      option.className = available
-        ? "quick-select-option"
-        : "quick-select-option unavailable";
-      option.setAttribute("role", "option");
-      option.setAttribute("aria-disabled", available ? "false" : "true");
-      option.appendChild(createText("span", "quick-select-digit", String(digit)));
-      const main = document.createElement("div");
-      main.className = "quick-select-option-main";
-      const fallbackTitle = quickSelectFallbackTitles.get(sessionId) || sessionId;
-      main.appendChild(createText(
-        "div",
-        "quick-select-option-title",
-        session ? sessionTitleText(session) : fallbackTitle
-      ));
-      main.appendChild(createText(
-        "div",
-        "quick-select-option-meta",
-        available
-          ? `${agentLabel(session.agentId, session.agentName)} · ${badgeLabel(session.badge)}`
-          : t("dashboardQuickSelectUnavailable")
-      ));
-      option.appendChild(main);
-      fragment.appendChild(option);
-    }
-  }
-  quickSelectOptionsEl.replaceChildren(fragment);
-}
-
-function pauseQuickSelectHandoffTimer() {
-  if (quickSelectHandoffTimer !== null && typeof clearTimeout === "function") {
-    clearTimeout(quickSelectHandoffTimer);
-  }
-  quickSelectHandoffTimer = null;
-}
-
-function finishQuickSelectHandoff(ready) {
-  pauseQuickSelectHandoffTimer();
-  const resolve = quickSelectHandoffResolve;
-  quickSelectHandoffPromise = null;
-  quickSelectHandoffResolve = null;
-  if (typeof resolve === "function") resolve(ready === true);
-}
-
-function armQuickSelectHandoffTimer() {
-  if (!quickSelectHandoffPromise || quickSelectHeldDigits.size > 0) return;
-  pauseQuickSelectHandoffTimer();
-  quickSelectHandoffTimer = setTimeout(() => {
-    quickSelectHandoffTimer = null;
-    finishQuickSelectHandoff(true);
-  }, QUICK_SELECT_HANDOFF_QUIET_MS);
-}
-
-function waitForQuickSelectHandoff() {
-  if (!quickSelectHandoffPromise) {
-    quickSelectHandoffPromise = new Promise((resolve) => {
-      quickSelectHandoffResolve = resolve;
-    });
-  }
-  armQuickSelectHandoffTimer();
-  return quickSelectHandoffPromise;
-}
-
-function resetQuickSelectHandoff() {
-  finishQuickSelectHandoff(false);
-  quickSelectHeldDigits = new Set();
-}
-
-function exitQuickSelect() {
-  if (!quickSelectActive) return;
-  quickSelectGeneration += 1;
-  resetQuickSelectHandoff();
-  quickSelectActive = false;
-  quickSelectActivationPending = false;
-  quickSelectFeedbackKey = "";
-  quickSelectDigitMap = new Map();
-  quickSelectFallbackTitles = new Map();
-  renderQuickSelectLayer();
-}
-
-function enterQuickSelect() {
-  quickSelectGeneration += 1;
-  resetQuickSelectHandoff();
-  const candidates = orderedQuickSelectCandidates(snapshot);
-  quickSelectDigitMap = new Map();
-  quickSelectFallbackTitles = new Map();
-  candidates.forEach((session, index) => {
-    const digit = index + 1;
-    quickSelectDigitMap.set(digit, session.id);
-    quickSelectFallbackTitles.set(session.id, sessionTitleText(session));
-  });
-  quickSelectActive = true;
-  quickSelectActivationPending = false;
-  quickSelectFeedbackKey = "";
-  renderQuickSelectLayer();
-  if (quickSelectLayerEl && typeof quickSelectLayerEl.focus === "function") {
-    quickSelectLayerEl.focus();
-  }
-}
-
-async function activateQuickSelectDigit(digit) {
-  if (!quickSelectActive || quickSelectActivationPending) return;
-  const sessionId = quickSelectDigitMap.get(digit);
-  if (!sessionId) return;
-  const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
-  const session = sessions.find((entry) => entry && entry.id === sessionId);
-  if (!session || session.canFocus !== true) {
-    quickSelectFeedbackKey = "dashboardQuickSelectUnavailable";
-    renderQuickSelectLayer();
-    return;
-  }
-  if (
-    !window.dashboardAPI
-    || typeof window.dashboardAPI.activateQuickSelectSession !== "function"
-  ) {
-    quickSelectFeedbackKey = "dashboardQuickSelectUnavailable";
-    renderQuickSelectLayer();
-    return;
-  }
-
-  quickSelectActivationPending = true;
-  const activationGeneration = quickSelectGeneration;
-  quickSelectFeedbackKey = "";
-  const handoffReady = await waitForQuickSelectHandoff();
-  if (
-    !handoffReady
-    || activationGeneration !== quickSelectGeneration
-    || !quickSelectActive
-  ) return;
-  let result;
-  try {
-    result = await window.dashboardAPI.activateQuickSelectSession({ sessionId });
-  } catch (_err) {
-    result = { status: "rejected", reason: "invoke-failed" };
-  }
-  if (activationGeneration !== quickSelectGeneration) return;
-  if (result && result.status === "submitted") {
-    exitQuickSelect();
-    return;
-  }
-  quickSelectActivationPending = false;
-  quickSelectFeedbackKey = result && result.reason === "dropped-duplicate"
-    ? "dashboardQuickSelectAlreadyRequested"
-    : "dashboardQuickSelectUnavailable";
-  renderQuickSelectLayer();
-}
-
-async function consumeQuickSelectIntent() {
-  if (
-    !window.dashboardAPI
-    || typeof window.dashboardAPI.consumeQuickSelectIntent !== "function"
-  ) return;
-  let result;
-  try { result = await window.dashboardAPI.consumeQuickSelectIntent(); }
-  catch { return; }
-  if (result && result.status === "ok" && result.enterQuickSelect === true) {
-    enterQuickSelect();
-  }
-}
-
-function quickSelectPhysicalDigitKey(event) {
-  if (!event) return null;
-  const code = typeof event.code === "string" ? event.code : "";
-  if (/^(?:Digit|Numpad)[1-9]$/.test(code)) return code;
-  return /^[1-9]$/.test(event.key) ? `key:${event.key}` : null;
-}
-
-function onQuickSelectKeyDown(event) {
-  if (!quickSelectActive || !event) return;
-  if (
-    event.isComposing
-    || event.metaKey
-    || event.ctrlKey
-    || event.altKey
-    || event.shiftKey
-  ) return;
-  if (/^[1-9]$/.test(event.key)) {
-    event.preventDefault();
-    event.stopPropagation();
-    const physicalKey = quickSelectPhysicalDigitKey(event);
-    if (physicalKey) quickSelectHeldDigits.add(physicalKey);
-    if (quickSelectActivationPending) {
-      pauseQuickSelectHandoffTimer();
-      return;
-    }
-    if (event.repeat) return;
-    void activateQuickSelectDigit(Number(event.key));
-    return;
-  }
-  if (event.key === "Escape") {
-    event.preventDefault();
-    event.stopPropagation();
-    exitQuickSelect();
-    return;
-  }
-  if (event.key === "Tab") {
-    if (typeof setTimeout === "function") setTimeout(exitQuickSelect, 0);
-    else Promise.resolve().then(exitQuickSelect);
-  }
-}
-
-function onQuickSelectKeyUp(event) {
-  if (!quickSelectActive || !event) return;
-  const physicalKey = quickSelectPhysicalDigitKey(event);
-  if (!physicalKey) return;
-  event.preventDefault();
-  event.stopPropagation();
-  quickSelectHeldDigits.delete(physicalKey);
-  if (
-    quickSelectActivationPending
-    && quickSelectHandoffPromise
-    && quickSelectHeldDigits.size === 0
-  ) {
-    armQuickSelectHandoffTimer();
-  }
 }
 
 function snapshotHasSession(currentSnapshot, sessionId) {
@@ -1467,7 +1180,6 @@ function hasFocusedSessionAutomationSelect() {
 }
 
 function render(options = {}) {
-  renderQuickSelectLayer();
   // The one-second elapsed-time tick normally rebuilds the entire card tree.
   // Replacing a focused native <select> closes its open menu on Windows, so
   // defer ordinary snapshot/timer renders until the user finishes choosing.
@@ -1529,29 +1241,6 @@ function render(options = {}) {
 }
 
 async function init() {
-  if (quickSelectLayerEl && typeof quickSelectLayerEl.addEventListener === "function") {
-    quickSelectLayerEl.addEventListener("keydown", onQuickSelectKeyDown);
-    quickSelectLayerEl.addEventListener("keyup", onQuickSelectKeyUp);
-  }
-  if (typeof document.addEventListener === "function") {
-    document.addEventListener("pointerdown", (event) => {
-      if (!quickSelectActive || !quickSelectLayerEl) return;
-      if (typeof quickSelectLayerEl.contains === "function"
-          && quickSelectLayerEl.contains(event.target)) return;
-      exitQuickSelect();
-    });
-  }
-  if (typeof window.addEventListener === "function") {
-    window.addEventListener("blur", exitQuickSelect);
-  }
-  if (window.dashboardAPI && typeof window.dashboardAPI.onQuickSelectIntent === "function") {
-    window.dashboardAPI.onQuickSelectIntent(() => {
-      if (dashboardInitialized) void consumeQuickSelectIntent();
-    });
-  }
-  if (window.dashboardAPI && typeof window.dashboardAPI.onQuickSelectExit === "function") {
-    window.dashboardAPI.onQuickSelectExit(exitQuickSelect);
-  }
   window.dashboardAPI.onLangChange((payload) => {
     i18nPayload = payload || i18nPayload;
     render();
@@ -1582,8 +1271,6 @@ async function init() {
   snapshot = nextSnapshot || snapshot;
   kimiQuotaStatus = nextKimiQuotaStatus || null;
   render();
-  dashboardInitialized = true;
-  await consumeQuickSelectIntent();
 
   setInterval(render, 1000);
 }

@@ -485,7 +485,7 @@ let slackNotifyClient = null;
 let slackNotifyConfigRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
-  quickSelectSession: () => showDashboard({ source: "shortcut", quickSelect: true }),
+  quickSelectSession: () => showQuickSelect(),
 };
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -1339,6 +1339,11 @@ function applyTextScaleNow() {
   } catch (err) {
     console.warn("Clawd: dashboard text scale failed:", err && err.message);
   }
+  try {
+    _quickSelect.applyTextScaleToWindow();
+  } catch (err) {
+    console.warn("Clawd: quick select text scale failed:", err && err.message);
+  }
   repositionAnchoredFloatingSurfaces();
 }
 
@@ -2108,6 +2113,7 @@ function syncSessionHudVisibilityAndBubbles() {
 
 // ── State machine — delegated to src/state.js ──
 let showDashboard = () => {};
+let showQuickSelect = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
@@ -2577,8 +2583,28 @@ const _dashboard = require("./dashboard")({
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
-broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
-sendDashboardI18n = _dashboard.sendI18n;
+
+const _quickSelect = require("./session-quick-select")({
+  ipcMain,
+  t: (key) => translate(key),
+  getSessionSnapshot: () => _state.buildSessionSnapshot(),
+  getI18n: () => getDashboardI18nPayload(),
+  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+  getTextScale: (bounds) => effectiveTextScaleForKey(
+    getDisplayKeyForBounds(bounds) || getPetDisplayKey()
+  ),
+  iconPath: settingsWindowRuntime.getIconPath(),
+});
+showQuickSelect = _quickSelect.show;
+broadcastDashboardSessionSnapshot = (snapshot) => {
+  _dashboard.broadcastSessionSnapshot(snapshot);
+  _quickSelect.broadcastSessionSnapshot(snapshot);
+};
+sendDashboardI18n = () => {
+  _dashboard.sendI18n();
+  _quickSelect.sendI18n();
+};
+app.on("will-quit", () => _quickSelect.dispose());
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
@@ -4729,7 +4755,6 @@ registerSessionIpc({
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
   getDashboardWindow: () => _dashboard.getWindow(),
-  consumeQuickSelectIntent: () => _dashboard.consumeQuickSelectIntent(),
   getKimiQuotaStatus: () => _kimiQuotaRuntime.getStatus(),
   refreshKimiQuota: () => _kimiQuotaRuntime.refresh(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),

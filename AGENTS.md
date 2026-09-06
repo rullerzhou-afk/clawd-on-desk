@@ -120,6 +120,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/pet-window-runtime.js` + `src/floating-window-runtime.js` + `src/topmost-runtime.js` | 双窗口 owner、浮层重排、z-order / fullscreen / focusability |
 | `src/update-bubble.js` | 更新气泡创建、测高、跟随桌宠定位，避让 HUD / permission stack |
 | `src/dashboard.js` + `src/dashboard-renderer.js` | Sessions Dashboard 窗口、会话列表、别名编辑、终端跳转 |
+| `src/session-quick-select.js` + `src/session-quick-select-renderer.js` | 独立会话快选窗口、固定数字映射、可信 IPC 与释放按键后的跳转；Windows 显式取消的来源恢复在 `src/quick-select-origin-focus.js` |
 | `src/session-hud.js` + `src/session-hud-renderer.js` | 桌宠旁轻量会话 HUD、折叠行、点击跳转 |
 | `src/session-alias.js` | session alias key 规范化、TTL pruning、Kiro cwd scope |
 | `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner |

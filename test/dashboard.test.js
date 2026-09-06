@@ -49,14 +49,13 @@ describe("dashboard window", () => {
         this.parentWindows = [];
         this.setBoundsCalls = [];
         this.setMinimumSizeCalls = [];
-        this.sent = [];
         this.onceCallbacks = new Map();
         this.onCallbacks = new Map();
         this.normalBounds = null;
         this.webContents = {
           isDestroyed: () => false,
           once: () => {},
-          send: (...args) => this.sent.push(args),
+          send: () => {},
         };
         createdWindow = this;
       }
@@ -164,39 +163,6 @@ describe("dashboard window", () => {
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
-  });
-
-  it("keeps Quick Select intent until the renderer consumes it", () => {
-    const { dashboard, getCreatedWindow } = createWindowHarness();
-
-    dashboard.showDashboard({ source: "shortcut", quickSelect: true });
-    const win = getCreatedWindow();
-    assert.deepStrictEqual(
-      win.sent.filter(([channel]) => channel.startsWith("dashboard:quick-select")),
-      []
-    );
-    assert.deepStrictEqual(dashboard.consumeQuickSelectIntent(), {
-      status: "ok",
-      enterQuickSelect: true,
-    });
-    assert.deepStrictEqual(dashboard.consumeQuickSelectIntent(), {
-      status: "ok",
-      enterQuickSelect: false,
-    });
-
-    dashboard.showDashboard({ source: "shortcut", quickSelect: true });
-    assert.deepStrictEqual(win.sent.slice(-1), [["dashboard:quick-select-intent"]]);
-    assert.deepStrictEqual(dashboard.consumeQuickSelectIntent(), {
-      status: "ok",
-      enterQuickSelect: true,
-    });
-
-    dashboard.showDashboard({ source: "settings" });
-    assert.deepStrictEqual(win.sent.slice(-1), [["dashboard:quick-select-exit"]]);
-    assert.deepStrictEqual(dashboard.consumeQuickSelectIntent(), {
-      status: "ok",
-      enterQuickSelect: false,
-    });
   });
 
   it("anchors dashboard windows opened from settings to the settings window bounds", () => {

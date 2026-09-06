@@ -30,10 +30,6 @@ function registerSessionIpc(options = {}) {
     "clearSessionAutomationGrant"
   );
   const getDashboardWindow = requiredDependency(options.getDashboardWindow, "getDashboardWindow");
-  const consumeQuickSelectIntent = requiredDependency(
-    options.consumeQuickSelectIntent,
-    "consumeQuickSelectIntent"
-  );
   const getKimiQuotaStatus = requiredDependency(options.getKimiQuotaStatus, "getKimiQuotaStatus");
   const refreshKimiQuota = requiredDependency(options.refreshKimiQuota, "refreshKimiQuota");
   const disposers = [];
@@ -78,52 +74,6 @@ function registerSessionIpc(options = {}) {
   handle("dashboard:refresh-kimi-quota", (event) => {
     const rejected = rejectUntrustedDashboardEvent(event);
     return rejected || refreshKimiQuota();
-  });
-  handle("dashboard:consume-quick-select-intent", (event) => {
-    const rejected = rejectUntrustedDashboardEvent(event);
-    return rejected || consumeQuickSelectIntent();
-  });
-  handle("dashboard:activate-quick-select-session", (event, payload) => {
-    const rejected = rejectUntrustedDashboardEvent(event);
-    if (rejected) return rejected;
-    const keys = payload && typeof payload === "object" && !Array.isArray(payload)
-      ? Object.keys(payload)
-      : [];
-    if (
-      keys.length !== 1
-      || keys[0] !== "sessionId"
-      || typeof payload.sessionId !== "string"
-      || !payload.sessionId
-    ) {
-      return { status: "rejected", reason: "invalid-payload" };
-    }
-
-    let result;
-    try {
-      result = focusSession(payload.sessionId, { requestSource: "dashboard-quick-select" });
-    } catch (err) {
-      return {
-        status: "rejected",
-        reason: "focus-threw",
-        message: err && err.message,
-      };
-    }
-
-    // Windows focus resolves later with foreground diagnostics. Quick Select
-    // reports only whether a request was accepted for submission; it must not
-    // keep the Dashboard open while waiting for a best-effort focus ack.
-    if (result && typeof result.then === "function") {
-      Promise.resolve(result).catch((err) => {
-        console.warn("Dashboard quick select focus request rejected after submission:", err);
-      });
-      return { status: "submitted" };
-    }
-    if (result === true) return { status: "submitted" };
-    const reason = result && typeof result === "object" ? result.reason : null;
-    if (["submitted", "queued", "linux-command-submitted"].includes(reason)) {
-      return { status: "submitted", reason };
-    }
-    return { status: "rejected", reason: reason || "focus-unavailable" };
   });
   on("dashboard:focus-session", (_event, sessionId) =>
     focusSession(sessionId, { requestSource: "dashboard" })

@@ -325,109 +325,6 @@ h1 {
 .content::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
 .content::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
-.quick-select-layer {
-  flex: 0 0 auto;
-  max-height: 46%;
-  padding: 12px 18px 14px;
-  overflow-y: auto;
-  border-bottom: 1px solid var(--border);
-  background: var(--surface);
-  outline: none;
-}
-
-.quick-select-layer[hidden] { display: none; }
-
-.quick-select-heading {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 9px;
-}
-
-.quick-select-title {
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.quick-select-hint {
-  color: var(--muted);
-  font-size: 11px;
-  text-align: right;
-}
-
-.quick-select-options {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 6px;
-}
-
-.quick-select-option {
-  display: grid;
-  grid-template-columns: 23px minmax(0, 1fr);
-  align-items: center;
-  gap: 7px;
-  min-height: 38px;
-  padding: 6px 8px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-}
-
-.quick-select-option.unavailable { opacity: 0.55; }
-
-.quick-select-digit {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 23px;
-  height: 23px;
-  border-radius: 6px;
-  background: var(--accent);
-  color: #ffffff;
-  font-size: 12px;
-  font-weight: 800;
-  font-variant-numeric: tabular-nums;
-}
-
-.quick-select-option-main { min-width: 0; }
-
-.quick-select-option-title,
-.quick-select-option-meta {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-select-option-title {
-  color: var(--text);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.quick-select-option-meta {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 10px;
-}
-
-.quick-select-empty,
-.quick-select-feedback {
-  color: var(--muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.quick-select-empty { padding: 6px 2px; }
-
-.quick-select-feedback {
-  min-height: 16px;
-  margin-top: 7px;
-  color: var(--interrupted);
-}
-
-.quick-select-feedback:empty { display: none; }
-
 .group {
   margin: 0 0 18px;
 }
@@ -797,8 +694,6 @@ button:disabled {
 
 @media (max-width: 420px) {
   .header { padding: 16px 16px 12px; }
-  .quick-select-layer { padding: 10px 16px 12px; }
-  .quick-select-options { grid-template-columns: 1fr; }
   .content { padding: 12px; }
   .card {
     grid-template-columns: 28px minmax(0, 1fr);
@@ -819,27 +714,6 @@ button:disabled {
       </div>
       <div id="quotaSummary" class="quota-summary" hidden></div>
     </header>
-    <section
-      id="quickSelectLayer"
-      class="quick-select-layer"
-      tabindex="-1"
-      role="dialog"
-      aria-modal="false"
-      aria-labelledby="quickSelectTitle"
-      hidden
-    >
-      <div class="quick-select-heading">
-        <span id="quickSelectTitle" class="quick-select-title"></span>
-        <span id="quickSelectHint" class="quick-select-hint"></span>
-      </div>
-      <div id="quickSelectOptions" class="quick-select-options" role="listbox"></div>
-      <div
-        id="quickSelectFeedback"
-        class="quick-select-feedback"
-        role="status"
-        aria-live="polite"
-      ></div>
-    </section>
     <main id="content" class="content" aria-live="polite"></main>
   </div>
   <script src="./session-focus-unavailable.js"></script>
