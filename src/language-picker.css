@@ -74,6 +74,9 @@
   overscroll-behavior: contain;
   transition: opacity 0.14s ease, transform 0.14s ease;
 }
+.language-picker.viewport-fixed .language-picker-menu {
+  position: fixed;
+}
 .language-picker.menu-mounted .language-picker-menu {
   display: block;
 }

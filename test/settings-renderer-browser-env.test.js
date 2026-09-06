@@ -746,6 +746,8 @@ function loadSharedLanguagePickerForTest({
   transitionDuration = "0.14s",
   transitionDelay = "0s",
   lockWhilePending = false,
+  viewportPlacement = null,
+  innerWidth = 1000,
 } = {}) {
   const body = new FakeElement("body");
   const boundary = new FakeElement("div");
@@ -761,12 +763,13 @@ function loadSharedLanguagePickerForTest({
   const document = {
     body,
     activeElement: body,
-    documentElement: { clientHeight: innerHeight },
+    documentElement: { clientHeight: innerHeight, clientWidth: innerWidth },
     createElement(tagName) {
       const element = new FakeElement(tagName);
-      element.focus = () => {
+      element.focus = (options = {}) => {
         element.focused = true;
         document.activeElement = element;
+        if (options.preventScroll !== true) boundary.scrollTop = 0;
       };
       return element;
     },
@@ -785,6 +788,7 @@ function loadSharedLanguagePickerForTest({
     console,
     document,
     innerHeight,
+    innerWidth,
     addEventListener(type, cb) {
       if (!windowListeners.has(type)) windowListeners.set(type, []);
       windowListeners.get(type).push(cb);
@@ -833,6 +837,7 @@ function loadSharedLanguagePickerForTest({
     ariaLabel: "Language",
     onChange,
     lockWhilePending,
+    viewportPlacement,
   });
   boundary.appendChild(control.element);
 
@@ -1348,7 +1353,16 @@ function loadThemeTabForTest({
   let themeListState = Array.isArray(themes) ? themes : [];
   const document = {
     body,
-    createElement: (tagName) => new FakeElement(tagName),
+    activeElement: body,
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      element.focus = (options) => {
+        element.focused = true;
+        element.focusOptions = options;
+        document.activeElement = element;
+      };
+      return element;
+    },
     getElementById(id) {
       if (id === "content") return content;
       return null;
@@ -9536,6 +9550,141 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.menu.scrollTop, 0);
   });
 
+  it("keeps viewport-fixed theme pickers inside the content boundary at enlarged text sizes", () => {
+    const css = fs.readFileSync(LANGUAGE_PICKER_CSS, "utf8");
+    assert.match(css, /\.language-picker\.viewport-fixed\s+\.language-picker-menu\s*\{\s*position:\s*fixed;/);
+
+    for (const scale of [1, 1.25, 1.5, 1.6]) {
+      const tint = loadSharedLanguagePickerForTest({
+        options: ["none", "midnight", "gold", "vaporwave", "matcha", "mono"],
+        viewportPlacement: "down",
+      });
+      tint.boundary.getBoundingClientRect = () => ({
+        top: 38, bottom: 690, left: 250, right: 982,
+      });
+      tint.trigger.getBoundingClientRect = () => ({
+        top: 220, bottom: 268, left: 690, right: 910, width: 220,
+      });
+      const tintHeight = Math.round(190 * scale);
+      Object.defineProperty(tint.menu, "scrollHeight", { value: tintHeight });
+      Object.defineProperty(tint.menu, "offsetHeight", { value: tintHeight + 2 });
+      Object.defineProperty(tint.menu, "clientHeight", { value: tintHeight });
+
+      tint.trigger.dispatchEvent({ type: "click" });
+      assert.strictEqual(tint.picker.classList.contains("viewport-fixed"), true);
+      assert.strictEqual(tint.picker.classList.contains("open-up"), false);
+      assert.ok(parseInt(tint.menu.style.top, 10) >= 274);
+      assert.ok(parseInt(tint.menu.style.top, 10) + parseInt(tint.menu.style.maxHeight, 10) <= 678);
+      assert.strictEqual(tint.menu.style.left, "690px");
+      assert.strictEqual(tint.menu.style.width, "220px");
+
+      const accessory = loadSharedLanguagePickerForTest({
+        options: ["none", "cowboy", "party", "wizard", "top", "santa", "pumpkin", "halo"],
+        viewportPlacement: "up",
+      });
+      accessory.boundary.getBoundingClientRect = tint.boundary.getBoundingClientRect;
+      accessory.trigger.getBoundingClientRect = () => ({
+        top: 450, bottom: 498, left: 690, right: 910, width: 220,
+      });
+      const accessoryHeight = Math.round(240 * scale);
+      Object.defineProperty(accessory.menu, "scrollHeight", { value: accessoryHeight });
+      Object.defineProperty(accessory.menu, "offsetHeight", { value: accessoryHeight + 2 });
+      Object.defineProperty(accessory.menu, "clientHeight", { value: accessoryHeight });
+
+      accessory.trigger.dispatchEvent({ type: "click" });
+      assert.strictEqual(accessory.picker.classList.contains("open-up"), true);
+      assert.ok(parseInt(accessory.menu.style.top, 10) >= 50);
+      assert.ok(parseInt(accessory.menu.style.top, 10) + parseInt(accessory.menu.style.maxHeight, 10) <= 444);
+      assert.ok(parseInt(accessory.menu.style.maxHeight, 10) <= 240);
+    }
+  });
+
+  it("falls back from a preferred theme-menu direction only when the other side is safer", () => {
+    const preferDown = loadSharedLanguagePickerForTest({
+      viewportPlacement: "down",
+      innerHeight: 280,
+    });
+    preferDown.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 280, left: 0, right: 500 });
+    preferDown.trigger.getBoundingClientRect = () => ({
+      top: 190, bottom: 238, left: 240, right: 368, width: 128,
+    });
+    Object.defineProperty(preferDown.menu, "scrollHeight", { value: 180 });
+    Object.defineProperty(preferDown.menu, "offsetHeight", { value: 182 });
+    Object.defineProperty(preferDown.menu, "clientHeight", { value: 180 });
+    preferDown.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(preferDown.picker.classList.contains("open-up"), true);
+    assert.ok(parseInt(preferDown.menu.style.top, 10) >= 12);
+
+    const preferUp = loadSharedLanguagePickerForTest({
+      viewportPlacement: "up",
+      innerHeight: 280,
+    });
+    preferUp.boundary.getBoundingClientRect = preferDown.boundary.getBoundingClientRect;
+    preferUp.trigger.getBoundingClientRect = () => ({
+      top: 28, bottom: 76, left: 240, right: 368, width: 128,
+    });
+    Object.defineProperty(preferUp.menu, "scrollHeight", { value: 180 });
+    Object.defineProperty(preferUp.menu, "offsetHeight", { value: 182 });
+    Object.defineProperty(preferUp.menu, "clientHeight", { value: 180 });
+    preferUp.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual(preferUp.picker.classList.contains("open-up"), false);
+    assert.ok(parseInt(preferUp.menu.style.top, 10) + parseInt(preferUp.menu.style.maxHeight, 10) <= 268);
+  });
+
+  it("keeps outer overflow stable across repeated fixed-menu opens and closes", () => {
+    const harness = loadSharedLanguagePickerForTest({
+      options: ["none", "cowboy", "party", "wizard", "top", "santa", "pumpkin", "halo"],
+      viewportPlacement: "up",
+    });
+    harness.boundary.getBoundingClientRect = () => ({ top: 0, bottom: 600, left: 250, right: 982 });
+    const triggerRect = {
+      top: 390, bottom: 438, left: 690, right: 910, width: 220,
+    };
+    harness.trigger.getBoundingClientRect = () => ({ ...triggerRect });
+    Object.defineProperty(harness.menu, "scrollHeight", { value: 310 });
+    Object.defineProperty(harness.menu, "offsetHeight", { value: 312 });
+    Object.defineProperty(harness.menu, "clientHeight", { value: 310 });
+    const outerScrollHeight = harness.boundary.scrollHeight;
+
+    for (let index = 0; index < 5; index += 1) {
+      harness.trigger.dispatchEvent({ type: "click" });
+      assert.strictEqual(harness.picker.classList.contains("open-up"), true);
+      assert.strictEqual(harness.boundary.scrollHeight, outerScrollHeight);
+      harness.trigger.dispatchEvent({ type: "click" });
+      harness.flushTimers();
+      assert.strictEqual(harness.picker.classList.contains("menu-mounted"), false);
+      assert.strictEqual(harness.menu.style.top, "");
+      assert.strictEqual(harness.menu.style.left, "");
+      assert.strictEqual(harness.boundary.scrollHeight, outerScrollHeight);
+    }
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    assert.strictEqual((harness.boundary.eventListeners.scroll || []).length, 1);
+    const originalTop = harness.menu.style.top;
+    triggerRect.top -= 40;
+    triggerRect.bottom -= 40;
+    harness.dispatchWindowEvent("resize");
+    harness.flushAnimationFrames();
+    assert.notStrictEqual(harness.menu.style.top, originalTop);
+    harness.boundary.scrollTop = 180;
+    assert.strictEqual(harness.getActiveElement(), harness.optionElements[0]);
+    harness.boundary.dispatchEvent({ type: "scroll", bubbles: false });
+    assert.strictEqual(harness.picker.classList.contains("open"), false);
+    assert.strictEqual(harness.getActiveElement(), harness.trigger,
+      "scroll-close restores focus when an option owned focus");
+    assert.strictEqual(harness.boundary.scrollTop, 180,
+      "focus restoration must not change the user's scroll position");
+    assert.strictEqual((harness.boundary.eventListeners.scroll || []).length, 0);
+
+    harness.trigger.dispatchEvent({ type: "click" });
+    const externalControl = new FakeElement("button");
+    harness.body.appendChild(externalControl);
+    harness.setActiveElement(externalControl);
+    harness.boundary.dispatchEvent({ type: "scroll", bubbles: false });
+    assert.strictEqual(harness.getActiveElement(), externalControl,
+      "scroll-close does not steal focus from another control");
+  });
+
   it("reveals selected and keyboard-focused options in a scrollable picker", () => {
     const harness = loadSharedLanguagePickerForTest({
       value: "halo",
@@ -12230,6 +12379,8 @@ describe("settings renderer browser environment", () => {
       .find((button) => collectText(findAncestorByClass(button, "theme-card")).includes("Cloudling"));
     assert.ok(cloudlingButton);
 
+    harness.content.scrollTop = 211;
+    cloudlingButton.focus();
     cloudlingButton.dispatchEvent({ type: "click" });
     assert.deepStrictEqual(
       JSON.parse(JSON.stringify(harness.commands)),
@@ -12247,7 +12398,17 @@ describe("settings renderer browser environment", () => {
     assert.ok(harness.content.querySelector(".pet-accessory-select"));
     assert.strictEqual(harness.content.querySelector(".pet-tint-select"), null);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
+    assert.strictEqual(harness.content.scrollTop, 0);
+    assert.strictEqual(harness.core.state.activeTab, "theme");
+    assert.strictEqual(harness.content.querySelector(".theme-detail-back").focused, true);
     assert.strictEqual(listThemesCalls, 0, "opening details should not depend on a second theme fetch");
+
+    harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
+    const restoredCloudlingButton = harness.content.querySelectorAll(".theme-customize-btn")
+      .find((button) => collectText(findAncestorByClass(button, "theme-card")).includes("Cloudling"));
+    assert.strictEqual(harness.content.scrollTop, 211);
+    assert.strictEqual(restoredCloudlingButton.focused, true);
+    assert.strictEqual(restoredCloudlingButton.focusOptions.preventScroll, true);
   });
 
   it("does not open stale customization when the activated runtime disables it", async () => {
@@ -12418,13 +12579,20 @@ describe("settings renderer browser environment", () => {
       ],
     });
 
-    harness.content.querySelector(".theme-customize-btn").dispatchEvent({ type: "click" });
+    harness.content.scrollTop = 173;
+    const customizeButton = harness.content.querySelector(".theme-customize-btn");
+    customizeButton.focus();
+    customizeButton.dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-detail-back"));
     assert.ok(harness.content.querySelector(".theme-detail-hero"));
     assert.strictEqual(harness.content.querySelectorAll(".theme-customization-row").length, 4);
     assert.strictEqual(harness.content.querySelector(".theme-grid"), null);
+    assert.strictEqual(harness.content.scrollTop, 0);
+    assert.strictEqual(harness.content.querySelector(".theme-detail-back").focused, true);
+    assert.strictEqual(harness.content.querySelector(".theme-detail-back").focusOptions.preventScroll, true);
 
     const select = harness.content.querySelector(".pet-tint-select");
+    assert.strictEqual(select.classList.contains("viewport-fixed"), true);
     assert.strictEqual(getSelectedPickerValue(select), "matcha");
     assert.deepStrictEqual(
       select.querySelectorAll(".language-picker-option").map((option) => option.textContent),
@@ -12450,6 +12618,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(select.classList.contains("pending"), false);
 
     const accessorySelect = harness.content.querySelector(".pet-accessory-select");
+    assert.strictEqual(accessorySelect.classList.contains("viewport-fixed"), true);
     assert.strictEqual(getSelectedPickerValue(accessorySelect), "wizard-hat");
     assert.deepStrictEqual(
       accessorySelect.querySelectorAll(".language-picker-option").map((option) => option.textContent),
@@ -12518,6 +12687,10 @@ describe("settings renderer browser environment", () => {
     harness.content.querySelector(".theme-detail-back").dispatchEvent({ type: "click" });
     assert.ok(harness.content.querySelector(".theme-grid"));
     assert.strictEqual(harness.content.querySelector(".theme-detail-hero"), null);
+    assert.strictEqual(harness.content.scrollTop, 173);
+    const restoredCustomizeButton = harness.content.querySelector(".theme-customize-btn");
+    assert.strictEqual(restoredCustomizeButton.focused, true);
+    assert.strictEqual(restoredCustomizeButton.focusOptions.preventScroll, true);
   });
 
   it("patches theme customization broadcasts in place without replacing the detail view", () => {
