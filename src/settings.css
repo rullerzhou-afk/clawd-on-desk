@@ -1368,27 +1368,9 @@ html, body {
   gap: 7px;
 }
 .bubble-policy-seconds {
-  width: 42px;
-  box-sizing: border-box;
-  height: 28px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--panel-bg);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 12px;
+  width: 58px;
   font-variant-numeric: tabular-nums;
   text-align: center;
-  padding: 0 3px;
-  outline: none;
-}
-.bubble-policy-seconds:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px rgba(217, 119, 87, 0.16);
-}
-.bubble-policy-seconds:disabled {
-  opacity: 0.45;
-  cursor: not-allowed;
 }
 .bubble-policy-unit {
   font-size: 11px;
@@ -1748,23 +1730,6 @@ html, body {
 }
 .agent-section-search {
   width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 5px 9px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--bg);
-  color: var(--text-primary);
-  font-family: inherit;
-  font-size: 12px;
-}
-.agent-section-search::placeholder {
-  color: var(--text-secondary);
-}
-.agent-section-search:focus {
-  outline: 2px solid color-mix(in srgb, var(--accent) 28%, transparent);
-  outline-offset: 1px;
-  border-color: var(--accent);
 }
 .agent-row-filtered-out {
   display: none;
@@ -1871,20 +1836,6 @@ html, body {
 }
 .agent-text-input-control input {
   width: 100%;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--bg);
-  color: var(--text-primary);
-  font: inherit;
-  font-size: 12px;
-}
-.agent-text-input-control input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-color: var(--accent);
 }
 @media (max-width: 720px) {
   .agent-text-input-row {
@@ -2148,8 +2099,6 @@ html, body {
 }
 
 .kimi-quota-key-input {
-  box-sizing: border-box;
-  min-width: 0;
   width: 100%;
 }
 
@@ -2724,6 +2673,63 @@ html, body {
 .settings-button-large {
   min-height: 42px;
   padding: 8px 12px;
+}
+.settings-text-input {
+  min-width: 0;
+  box-sizing: border-box;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
+  transition: border-color 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+.settings-text-input-regular {
+  min-height: 34px;
+  padding: 8px 10px;
+}
+.settings-text-input-compact {
+  height: 28px;
+  padding: 4px 8px;
+  font-size: 12px;
+}
+.settings-text-input::placeholder {
+  color: var(--text-tertiary);
+}
+.settings-text-input:hover:not(:disabled):not(.invalid) {
+  border-color: color-mix(in srgb, var(--text-secondary) 38%, var(--border));
+}
+.settings-text-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 24%, transparent);
+}
+.settings-text-input.invalid,
+.settings-text-input[aria-invalid="true"] {
+  border-color: var(--toast-error);
+}
+.settings-text-input.invalid:focus,
+.settings-text-input[aria-invalid="true"]:focus {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--toast-error) 22%, transparent);
+}
+.settings-text-input:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+.settings-text-input.pending:not(:disabled) {
+  cursor: progress;
+}
+.settings-form-field-validation {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 .soft-btn.danger {
   color: var(--toast-error);
@@ -4627,9 +4633,6 @@ html, body {
   font-weight: 500;
   color: var(--text-secondary);
 }
-.remote-ssh-field input[type="text"],
-.remote-ssh-field input[type="password"],
-.remote-ssh-field input[type="number"],
 .remote-ssh-field select {
   padding: 8px 10px;
   border: 1px solid var(--border);
@@ -4639,9 +4642,6 @@ html, body {
   font-size: 13px;
   font-family: inherit;
 }
-.remote-ssh-field input[type="text"]:focus,
-.remote-ssh-field input[type="password"]:focus,
-.remote-ssh-field input[type="number"]:focus,
 .remote-ssh-field select:focus {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
@@ -4959,20 +4959,6 @@ html, body {
 }
 .tg-approval-input {
   flex: 1 1 220px;
-  min-width: 0;
-  box-sizing: border-box;
-  padding: 8px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel-bg);
-  color: var(--text-primary);
-  font-size: 13px;
-  font-family: inherit;
-}
-.tg-approval-input:focus {
-  outline: 2px solid var(--accent);
-  outline-offset: 1px;
-  border-color: var(--accent);
 }
 .tg-approval-output-select {
   min-width: 220px;

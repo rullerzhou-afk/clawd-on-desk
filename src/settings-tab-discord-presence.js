@@ -95,36 +95,46 @@
 
   function buildAppIdRow() {
     const draft = appIdDraft();
-    const row = document.createElement("div");
     // tg-approval-token-edit-row stacks the row vertically (label above,
     // input+button below). Both classes are required together: input-row's
     // width:100% inside a default horizontal .row squeezes .row-text into a
     // single-glyph column (see the settings.css note above that rule).
-    row.className = "row tg-approval-token-edit-row";
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("discordPresenceAppIdLabel");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.innerHTML = escapeWithLink(t("discordPresenceAppIdHintHtml"));
-    bindExternalLinks(desc);
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control tg-approval-input-row";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.inputMode = "numeric";
-    input.spellcheck = false;
-    input.placeholder = t("discordPresenceAppIdPlaceholder");
-    input.className = "tg-approval-input";
-    input.value = draft || "";
+    const rowParts = helpers.buildSettingRow({
+      labelKey: "discordPresenceAppIdLabel",
+      description: t("discordPresenceAppIdHintHtml"),
+      className: "tg-approval-token-edit-row",
+      controlClassName: "tg-approval-input-row",
+    });
+    const row = rowParts.element;
+    const ctrl = rowParts.controlElement;
+    rowParts.descriptionElement.textContent = "";
+    rowParts.descriptionElement.innerHTML = escapeWithLink(t("discordPresenceAppIdHintHtml"));
+    bindExternalLinks(rowParts.descriptionElement);
+    function submitAppId() {
+      const raw = String(view.appIdDraft == null ? draft : view.appIdDraft).trim();
+      if (raw && !APP_ID_RE.test(raw)) {
+        helpers.setTextInputState(input, { invalid: true });
+        input.focus();
+        ops.showToast(t("discordPresenceInvalidAppId"), { error: true });
+        return;
+      }
+      const cfg = currentConfig();
+      saveConfig({ ...cfg, applicationId: raw });
+    }
+    const input = helpers.buildTextInput({
+      type: "text",
+      inputMode: "numeric",
+      spellcheck: false,
+      placeholder: t("discordPresenceAppIdPlaceholder"),
+      className: "tg-approval-input",
+      value: draft || "",
+      labelledBy: rowParts.labelElement.id,
+      describedBy: rowParts.descriptionElement.id,
+      pending: view.configPending,
+      onEnter: submitAppId,
+    });
     input.addEventListener("input", () => {
+      helpers.setTextInputState(input, { pending: view.configPending, invalid: false });
       view.appIdDraft = input.value;
       view.appIdDirty = true;
     });
@@ -134,19 +144,10 @@
     saveBtn.className = "soft-btn accent";
     saveBtn.textContent = view.configPending ? t("discordPresenceSaving") : t("discordPresenceSaveAppId");
     saveBtn.disabled = view.configPending;
-    saveBtn.addEventListener("click", () => {
-      const raw = String(view.appIdDraft == null ? draft : view.appIdDraft).trim();
-      if (raw && !APP_ID_RE.test(raw)) {
-        ops.showToast(t("discordPresenceInvalidAppId"), { error: true });
-        return;
-      }
-      const cfg = currentConfig();
-      saveConfig({ ...cfg, applicationId: raw });
-    });
+    saveBtn.addEventListener("click", submitAppId);
 
     ctrl.appendChild(input);
     ctrl.appendChild(saveBtn);
-    row.appendChild(ctrl);
     return row;
   }
 

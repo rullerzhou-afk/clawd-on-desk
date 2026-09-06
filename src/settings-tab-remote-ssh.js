@@ -753,10 +753,13 @@
       const label = document.createElement("label");
       label.className = "remote-ssh-field-label";
       label.textContent = t(labelKey);
-      const inputEl = document.createElement("input");
-      inputEl.type = attrs.type || "text";
-      if (attrs.placeholder) inputEl.placeholder = attrs.placeholder;
-      inputEl.value = formData[key] != null ? String(formData[key]) : "";
+      const inputEl = helpers.buildTextInput({
+        type: attrs.type || "text",
+        placeholder: attrs.placeholder || "",
+        value: formData[key] != null ? String(formData[key]) : "",
+        ariaLabel: t(labelKey),
+        inputMode: attrs.type === "number" ? "numeric" : undefined,
+      });
       inputEl.addEventListener("input", () => {
         if (attrs.type === "number") {
           const n = parseInt(inputEl.value, 10);

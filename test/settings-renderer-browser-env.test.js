@@ -622,6 +622,33 @@ class FakeElement {
   }
 }
 
+let nextFakeSettingRowId = 1;
+function buildFakeSettingRow(document, config = {}) {
+  const element = document.createElement("div");
+  element.className = ["row", config.className || ""].filter(Boolean).join(" ");
+  const textElement = document.createElement("div");
+  textElement.className = "row-text";
+  const labelElement = document.createElement("span");
+  labelElement.className = "row-label";
+  labelElement.id = `fake-row-label-${nextFakeSettingRowId++}`;
+  labelElement.textContent = config.label != null ? String(config.label) : (config.labelKey || "");
+  textElement.appendChild(labelElement);
+  let descriptionElement = null;
+  const description = config.description != null ? String(config.description) : (config.descriptionKey || "");
+  if (description) {
+    descriptionElement = document.createElement("span");
+    descriptionElement.className = "row-desc";
+    descriptionElement.id = `fake-row-description-${nextFakeSettingRowId++}`;
+    descriptionElement.textContent = description;
+    textElement.appendChild(descriptionElement);
+  }
+  const controlElement = document.createElement("div");
+  controlElement.className = ["row-control", config.controlClassName || ""].filter(Boolean).join(" ");
+  element.appendChild(textElement);
+  element.appendChild(controlElement);
+  return { element, textElement, labelElement, descriptionElement, controlElement };
+}
+
 function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -736,6 +763,58 @@ function sampleRecapView() {
       ],
     }],
   };
+}
+
+function setFakeTextInputState(input, nextState = {}) {
+  const state = { disabled: false, pending: false, invalid: false, lockWhilePending: true,
+    ...(input._settingsTextInputState || {}) };
+  for (const key of ["disabled", "pending", "invalid"]) {
+    if (Object.prototype.hasOwnProperty.call(nextState, key)) state[key] = nextState[key] === true;
+  }
+  if (Object.prototype.hasOwnProperty.call(nextState, "lockWhilePending")) {
+    state.lockWhilePending = nextState.lockWhilePending !== false;
+  }
+  input._settingsTextInputState = state;
+  input.disabled = state.disabled || (state.pending && state.lockWhilePending);
+  input.classList.toggle("pending", state.pending);
+  input.classList.toggle("invalid", state.invalid);
+  input.setAttribute("aria-busy", state.pending ? "true" : "false");
+  input.setAttribute("aria-invalid", state.invalid ? "true" : "false");
+  if (Object.prototype.hasOwnProperty.call(nextState, "describedBy")) {
+    if (nextState.describedBy) input.setAttribute("aria-describedby", nextState.describedBy);
+    else input.removeAttribute("aria-describedby");
+  }
+  return input;
+}
+
+function buildFakeTextInput(document, config = {}) {
+  const input = document.createElement("input");
+  const size = config.size === "compact" ? "compact" : "regular";
+  input.type = config.type || "text";
+  input.className = [
+    "settings-text-input",
+    `settings-text-input-${size}`,
+    config.className || "",
+  ].filter(Boolean).join(" ");
+  if (config.value != null) input.value = String(config.value);
+  if (config.placeholder != null) input.placeholder = String(config.placeholder);
+  if (config.autocomplete != null) input.autocomplete = String(config.autocomplete);
+  if (config.spellcheck != null) input.spellcheck = config.spellcheck === true;
+  if (config.inputMode != null) input.inputMode = String(config.inputMode);
+  if (config.maxLength != null) input.maxLength = Number(config.maxLength);
+  if (config.pattern != null) input.pattern = String(config.pattern);
+  if (config.ariaLabel) input.setAttribute("aria-label", config.ariaLabel);
+  if (config.describedBy) input.setAttribute("aria-describedby", config.describedBy);
+  if (typeof config.onInput === "function") input.addEventListener("input", config.onInput);
+  if (config.stopPropagation === true) input.addEventListener("click", (event) => event.stopPropagation());
+  input.addEventListener("keydown", (event) => {
+    if (config.stopPropagation === true) event.stopPropagation();
+    if (event.key !== "Enter" || typeof config.onEnter !== "function"
+      || event.isComposing === true || event.keyCode === 229) return;
+    event.preventDefault();
+    config.onEnter(event, input);
+  });
+  return setFakeTextInputState(input, config);
 }
 
 function loadSharedLanguagePickerForTest({
@@ -1833,6 +1912,9 @@ function loadTelegramApprovalTabForTest({
     runtime: {},
     helpers: {
       t: (key) => key,
+      buildSettingRow: (config) => buildFakeSettingRow(document, config),
+      buildTextInput: (config) => buildFakeTextInput(document, config),
+      setTextInputState: setFakeTextInputState,
       showSettingsConfirmModal: showConfirmModal,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
@@ -2141,6 +2223,9 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
     },
     helpers: {
       t: (key) => key,
+      buildSettingRow: (config) => buildFakeSettingRow(document, config),
+      buildTextInput: (config) => buildFakeTextInput(document, config),
+      setTextInputState: setFakeTextInputState,
       buildSection: (_title, rows) => {
         const section = document.createElement("section");
         for (const row of rows) section.appendChild(row);
@@ -2272,7 +2357,10 @@ function assertVisibleFeishuLookupPreflight(card, lookupButton, expectedMessage)
   assert.equal(status.getAttribute("role"), "status");
   assert.equal(status.getAttribute("aria-live"), "polite");
   assert.equal(status.getAttribute("aria-atomic"), "true");
-  assert.equal(input.getAttribute("aria-describedby"), status.id);
+  const describedByIds = String(input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+  assert.ok(describedByIds.includes(status.id));
+  assert.ok(describedByIds.some((id) => id !== status.id),
+    "the field keeps its row description while adding preflight status");
   assert.equal(input.getAttribute("aria-invalid"), valueInvalid ? "true" : "false");
   assert.equal(lookupButton.getAttribute("aria-describedby"), status.id);
   assert.equal(lookupButton.title, "", "visible status must replace title-only feedback");
@@ -2427,6 +2515,8 @@ function loadAnimOverridesTabForTest({
     runtime,
     helpers: {
       t: (key) => key,
+      buildTextInput: (config) => buildFakeTextInput(document, config),
+      setTextInputState: setFakeTextInputState,
       createDisclosureChevron: (className) => {
         const chevron = document.createElement("span");
         chevron.className = className;
@@ -2906,7 +2996,9 @@ describe("settings renderer browser environment", () => {
 
     assert.equal(input.value, "");
     assert.equal(input.getAttribute("aria-invalid"), "false");
-    assert.equal(input.getAttribute("aria-describedby"), undefined);
+    const initialDescriptionIds = String(input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+    assert.equal(initialDescriptionIds.length, 1, "the untouched field is described only by its row hint");
+    assert.notEqual(initialDescriptionIds[0], status.id);
     assert.equal(status.getAttribute("hidden") == null, true);
     assert.equal(status.textContent, "");
     assert.equal(saveButton.disabled, false);
@@ -3057,7 +3149,8 @@ describe("settings renderer browser environment", () => {
     assert.equal(lookupButton.disabled, false);
     assert.equal(status.getAttribute("hidden") == null, true);
     assert.equal(status.textContent, "");
-    assert.equal(input.getAttribute("aria-describedby"), undefined);
+    assert.ok(input.getAttribute("aria-describedby"), "the field keeps its row hint after preflight clears");
+    assert.notEqual(input.getAttribute("aria-describedby"), status.id);
     assert.equal(input.getAttribute("aria-invalid"), "false");
     assert.equal(lookupButton.getAttribute("aria-describedby"), undefined);
     lookupButton.dispatchEvent({ type: "click" });
@@ -3121,7 +3214,7 @@ describe("settings renderer browser environment", () => {
     );
     assert.equal(pendingStatus.textContent, "feishuApprovalLookupMissingContactScope");
     assert.equal(pendingStatus.getAttribute("hidden") == null, true);
-    assert.equal(pendingInput.getAttribute("aria-describedby"), pendingStatus.id);
+    assert.ok(String(pendingInput.getAttribute("aria-describedby")).split(/\s+/).includes(pendingStatus.id));
     assert.equal(cancelButton.disabled, true);
     assert.equal(harness.renderRequests.length, renderRequestCount);
 
@@ -5685,7 +5778,10 @@ describe("settings renderer browser environment", () => {
       const returnedInput = returnedCard.querySelectorAll("input").at(-1);
       const returnedStatus = returnedCard.querySelector(".feishu-approval-lookup-preflight-status");
       assert.equal(returnedInput.value, "");
-      assert.equal(returnedInput.getAttribute("aria-describedby"), undefined);
+      const returnedDescriptionIds = String(returnedInput.getAttribute("aria-describedby") || "")
+        .split(/\s+/).filter(Boolean);
+      assert.equal(returnedDescriptionIds.length, 1);
+      assert.notEqual(returnedDescriptionIds[0], returnedStatus.id);
       assert.equal(returnedStatus.textContent, "");
     }
   });
@@ -6314,7 +6410,8 @@ describe("settings renderer browser environment", () => {
         retryInput.value = "retry@example.com";
         retryInput.dispatchEvent({ type: "input" });
         assert.equal(resultStatus.textContent, "", `${platform}/${code} should clear on input`);
-        assert.equal(retryInput.getAttribute("aria-describedby"), undefined);
+        assert.ok(retryInput.getAttribute("aria-describedby"));
+        assert.notEqual(retryInput.getAttribute("aria-describedby"), resultStatus.id);
       }
     }
   });
@@ -9131,6 +9228,211 @@ describe("settings renderer browser environment", () => {
     assert.equal(button.getAttribute("aria-label"), "Delete profile");
   });
 
+  it("builds Settings text inputs from one size, accessibility, state, and IME-safe Enter contract", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const submitted = [];
+    const input = core.helpers.buildTextInput({
+      type: "password",
+      size: "compact",
+      value: "secret",
+      placeholder: "API key",
+      autocomplete: "new-password",
+      spellcheck: false,
+      inputMode: "text",
+      ariaLabel: "Dedicated API key",
+      describedBy: "key-help",
+      pending: true,
+      lockWhilePending: false,
+      onEnter: (_event, element) => submitted.push(element.value),
+    });
+
+    assert.equal(input.classList.contains("settings-text-input"), true);
+    assert.equal(input.classList.contains("settings-text-input-compact"), true);
+    assert.equal(input.classList.contains("pending"), true);
+    assert.equal(input.type, "password");
+    assert.equal(input.value, "secret");
+    assert.equal(input.autocomplete, "new-password");
+    assert.equal(input.spellcheck, false);
+    assert.equal(input.disabled, false, "editable-pending fields stay editable");
+    assert.equal(input.getAttribute("aria-busy"), "true");
+    assert.equal(input.getAttribute("aria-invalid"), "false");
+    assert.equal(input.getAttribute("aria-label"), "Dedicated API key");
+    assert.equal(input.getAttribute("aria-describedby"), "key-help");
+
+    input.dispatchEvent({ type: "keydown", key: "Enter", isComposing: true });
+    input.dispatchEvent({ type: "keydown", key: "Enter", keyCode: 229 });
+    assert.deepStrictEqual(submitted, [], "IME composition must not submit");
+    const enter = { type: "keydown", key: "Enter" };
+    input.dispatchEvent(enter);
+    assert.deepStrictEqual(submitted, ["secret"]);
+    assert.equal(enter.defaultPrevented, true);
+
+    core.helpers.setTextInputState(input, {
+      invalid: true,
+      describedBy: "key-error",
+    });
+    assert.equal(input.disabled, false, "partial state updates preserve editable-pending mode");
+    assert.equal(input.getAttribute("aria-busy"), "true", "partial updates preserve pending state");
+    assert.equal(input.classList.contains("invalid"), true);
+    assert.equal(input.getAttribute("aria-invalid"), "true");
+    assert.equal(input.getAttribute("aria-describedby"), "key-error");
+
+    core.helpers.setTextInputState(input, { lockWhilePending: true });
+    assert.equal(input.disabled, true, "pending fields lock when requested");
+    const passive = core.helpers.buildTextInput({ ariaLabel: "Passive field" });
+    const passiveEnter = { type: "keydown", key: "Enter" };
+    passive.dispatchEvent(passiveEnter);
+    assert.notEqual(passiveEnter.defaultPrevented, true, "Enter remains untouched without an onEnter callback");
+
+    const canonical = core.helpers.buildTextInput({
+      ariaLabel: "Canonical description",
+      ariaDescribedBy: "canonical-help",
+    });
+    assert.equal(canonical.getAttribute("aria-describedby"), "canonical-help");
+    const compatibility = core.helpers.buildTextInput({
+      ariaLabel: "Compatibility description",
+      describedBy: "compatibility-help",
+    });
+    assert.equal(compatibility.getAttribute("aria-describedby"), "compatibility-help");
+    core.helpers.setTextInputState(compatibility, { describedBy: "" });
+    assert.equal(compatibility.getAttribute("aria-describedby"), null,
+      "an explicit empty compatibility value clears the relationship");
+  });
+
+  it("builds Setting rows with stable label and description relationships", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const first = core.helpers.buildSettingRow({
+      label: "Host",
+      description: "Remote host name",
+      className: "remote-row",
+      controlClassName: "remote-control",
+    });
+    const second = core.helpers.buildSettingRow({ label: "Port" });
+
+    assert.equal(first.element.classList.contains("row"), true);
+    assert.equal(first.element.classList.contains("remote-row"), true);
+    assert.equal(first.textElement.classList.contains("row-text"), true);
+    assert.equal(first.labelElement.textContent, "Host");
+    assert.equal(first.descriptionElement.textContent, "Remote host name");
+    assert.equal(first.controlElement.classList.contains("row-control"), true);
+    assert.equal(first.controlElement.classList.contains("remote-control"), true);
+    assert.notEqual(first.labelElement.id, second.labelElement.id);
+    assert.equal(second.descriptionElement, null, "description-less rows do not mount an empty node");
+  });
+
+  it("controls Form Field state axes, validation relationships, callbacks, and disposal independently", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const calls = [];
+    const field = core.helpers.buildFormField({
+      type: "search",
+      value: "draft",
+      ariaLabelledBy: "field-label",
+      ariaDescribedBy: "field-help",
+      stopPropagation: true,
+      disabled: true,
+      pending: true,
+      onInput: ({ value }) => calls.push(value),
+    });
+
+    assert.equal(field.element.classList.contains("settings-form-field"), true);
+    assert.equal(field.element.getAttribute("aria-labelledby"), "field-label");
+    assert.equal(field.element.getAttribute("aria-describedby"), "field-help");
+    assert.equal(field.element.disabled, true);
+    assert.equal(field.element.getAttribute("aria-busy"), "true");
+    field.setState({ pending: false });
+    assert.equal(field.element.disabled, true, "ending pending does not clear business disabled");
+    field.setState({
+      disabled: false,
+      invalid: true,
+      validationMessage: "Host is required",
+    });
+    assert.equal(field.element.disabled, false);
+    assert.equal(field.element.getAttribute("aria-invalid"), "true");
+    assert.equal(field.validationElement.textContent, "Host is required");
+    assert.equal(field.validationElement.hidden, false);
+    assert.equal(field.element.getAttribute("aria-describedby"), `field-help ${field.validationElement.id}`);
+    assert.equal(document.body.contains(field.validationElement), true,
+      "validation messages must be mounted so aria-describedby resolves");
+
+    field.element.value = "new draft";
+    field.setState({ invalid: false });
+    assert.equal(field.getValue(), "new draft", "unspecified value does not overwrite an active draft");
+    field.element.dispatchEvent({ type: "input" });
+    assert.deepStrictEqual(calls, ["new draft"]);
+    field.setState({ validationMessage: "" });
+    assert.equal(field.element.getAttribute("aria-describedby"), "field-help",
+      "clearing validation keeps the row description relationship");
+
+    field.dispose();
+    assert.equal(document.body.contains(field.validationElement), false,
+      "disposed fields remove their validation node");
+    field.element.value = "ignored";
+    field.element.dispatchEvent({ type: "input" });
+    assert.deepStrictEqual(calls, ["new draft"], "disposed fields remove their callbacks");
+    assert.equal(core.state.mountedControls.formFields.size, 0);
+    const rerenderedField = core.helpers.buildFormField({ ariaLabel: "Rerendered field" });
+    assert.equal(core.state.mountedControls.formFields.size, 1);
+    core.ops.clearMountedControls();
+    rerenderedField.element.dispatchEvent({ type: "input" });
+    assert.equal(core.state.mountedControls.formFields.size, 0,
+      "Settings rerenders dispose every mounted Form Field controller");
+    assert.throws(() => core.helpers.buildFormField({ type: "text" }), /ariaLabel or ariaLabelledBy/);
+  });
+
+  it("routes every Settings single-line text surface through the shared primitive", () => {
+    const files = [
+      "settings-tab-agents.js",
+      "settings-tab-discord-presence.js",
+      "settings-tab-general.js",
+      "settings-tab-remote-ssh.js",
+      "settings-tab-telegram-approval.js",
+    ];
+    for (const file of files) {
+      const source = fs.readFileSync(path.join(SRC_DIR, file), "utf8");
+      assert.ok(source.includes("buildTextInput({"), `${file} should use the compatibility adapter`);
+      assert.doesNotMatch(source, /document\.createElement\("input"\)/, `${file} should not create raw inputs`);
+    }
+    const coreSource = fs.readFileSync(SETTINGS_UI_CORE, "utf8");
+    assert.ok(coreSource.includes("function buildFormField(config = {})"));
+    assert.ok(coreSource.includes("function buildSettingRow(config = {})"));
+    assert.ok(coreSource.includes("const control = buildFormField({"),
+      "the compatibility adapter must route through the Form Field controller");
+    assert.ok(coreSource.includes("state.mountedControls.formFields.add(control)"));
+    assert.ok(coreSource.includes("state.mountedControls.formFields.delete(control)"));
+    for (const file of [
+      "settings-tab-agents.js",
+      "settings-tab-discord-presence.js",
+      "settings-tab-telegram-approval.js",
+    ]) {
+      const source = fs.readFileSync(path.join(SRC_DIR, file), "utf8");
+      assert.ok(source.includes("buildSettingRow({"), `${file} should compose standard fields with Setting Row`);
+    }
+    const animSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8");
+    assert.match(animSource, /const range = document\.createElement\("input"\);[\s\S]*range\.type = "range";/,
+      "Range remains a documented P2 exception");
+    assert.match(animSource, /const number = document\.createElement\("input"\);[\s\S]*number\.type = "number";/,
+      "the number input paired with Range remains in the Range contract");
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.settings-text-input\s*\{[\s\S]*border-radius:\s*8px;[\s\S]*background:\s*var\(--panel-bg\);/);
+    assert.match(css, /\.settings-text-input:focus\s*\{[\s\S]*var\(--accent\)/);
+    assert.match(css, /\.settings-text-input\.invalid/);
+  });
+
   it("uses the shared Settings dialog shell with ARIA links and focus restoration", async () => {
     const body = new FakeElement("body");
     const modalRoot = new FakeElement("div");
@@ -9722,14 +10024,14 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes("notificationBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("updateBubbleAutoCloseSeconds"));
     assert.ok(generalSource.includes("bubble-policy-prefix"));
-    assert.ok(generalSource.includes('input.type = "text"'));
-    assert.ok(generalSource.includes("input.maxLength = 4"));
-    assert.ok(generalSource.includes('input.pattern = "[0-9]*"'));
+    assert.ok(generalSource.includes("helpers.buildTextInput({"));
+    assert.ok(generalSource.includes("maxLength: 4"));
+    assert.ok(generalSource.includes('pattern: "[0-9]*"'));
     assert.ok(generalSource.includes('input.value.replace(/\\D+/g, "").slice(0, 4)'));
     assert.ok(generalSource.includes("showSettingsConfirmModal"));
     assert.ok(generalSource.includes("updateBubbleDisableConfirmTitle"));
-    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*42px;/.test(css));
-    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*box-sizing:\s*border-box;[\s\S]*text-align:\s*center;[\s\S]*padding:\s*0 3px;/.test(css));
+    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*width:\s*58px;/.test(css));
+    assert.ok(/\.bubble-policy-seconds\s*\{[\s\S]*text-align:\s*center;/.test(css));
     assert.ok(i18nSource.includes("rowHideBubbles"));
     assert.ok(i18nSource.includes("rowBubblePolicy"));
     assert.ok(i18nSource.includes("bubbleUpdateWarning"));
@@ -12730,12 +13032,19 @@ describe("settings renderer browser environment", () => {
     const input = connectSection.querySelector(".kimi-quota-key-input");
     assert.strictEqual(input.type, "password");
     assert.strictEqual(input.autocomplete, "new-password");
+    assert.ok(input.classList.contains("settings-text-input"));
     const connectPrimary = connectSection.querySelectorAll(".kimi-quota-primary");
     assert.strictEqual(connectPrimary.length, 1, "the connect card has exactly one primary action");
     assert.ok(connectPrimary[0].classList.contains("accent"));
     // The Console link is present but quiet — it never competes with Connect.
     assert.ok(connectSection.querySelector(".kimi-quota-console-link").classList.contains("quiet"));
 
+    input.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.strictEqual(input.getAttribute("aria-invalid"), "true", "empty Enter marks the key invalid");
+    input.value = "ime-draft";
+    input.dispatchEvent({ type: "keydown", key: "Enter", isComposing: true });
+    assert.strictEqual(connectedKey, null, "IME composition must not submit a key");
+    assert.strictEqual(input.value, "ime-draft");
     input.value = "sk-renderer-secret";
     connectPrimary[0].dispatchEvent({ type: "click", stopPropagation() {} });
     assert.strictEqual(input.value, "", "the DOM must drop the key immediately after submission");
@@ -12761,7 +13070,13 @@ describe("settings renderer browser environment", () => {
       .find((button) => button.classList.contains("quiet"));
     replaceToggle.dispatchEvent({ type: "click", stopPropagation() {} });
     assert.strictEqual(replacePanel.hidden, false);
-    assert.ok(replacePanel.querySelector(".kimi-quota-key-input"));
+    const replaceInput = replacePanel.querySelector(".kimi-quota-key-input");
+    assert.ok(replaceInput);
+    replaceInput.value = "sk-replacement-secret";
+    replaceInput.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.strictEqual(replaceInput.value, "", "Enter clears replacement credentials immediately");
+    await flush();
+    assert.strictEqual(connectedKey, "sk-replacement-secret", "Enter uses the dedicated key IPC");
 
     // Destructive / low-frequency actions live in the separated danger zone,
     // each with its own consequence note — never beside Refresh.
@@ -12970,6 +13285,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(group.classList.contains("collapsed"), "catalog starts collapsed");
     const search = group.querySelector(".agent-section-search");
     assert.ok(search, "the catalog header carries a search box");
+    assert.ok(search.classList.contains("settings-text-input"));
+    assert.ok(search.classList.contains("settings-text-input-compact"));
     assert.strictEqual(search.placeholder, "Search");
     assert.strictEqual(group.querySelector(".agent-section-count").textContent, "3");
 
