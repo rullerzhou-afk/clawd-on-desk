@@ -113,6 +113,17 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(loadSettingsI18nStrings(), "settings");
   });
 
+  it("localizes every focus-session shortcut label", () => {
+    const settings = loadSettingsI18nStrings();
+    for (const lang of SUPPORTED_LANGS) {
+      for (let slot = 1; slot <= 9; slot++) {
+        const value = settings[lang][`shortcutLabelFocusSession${slot}`];
+        assert.strictEqual(typeof value, "string", `${lang} focus session ${slot}`);
+        assert.ok(value.includes(String(slot)), `${lang} focus session ${slot} should show its slot`);
+      }
+    }
+  });
+
   it("localizes every Feishu provenance, lookup lifecycle, and persistence outcome", () => {
     const strings = loadSettingsI18nStrings();
     const keys = [

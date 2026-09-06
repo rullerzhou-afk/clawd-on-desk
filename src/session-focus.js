@@ -1,6 +1,7 @@
 "use strict";
 
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
+const { FOCUS_SESSION_SHORTCUT_COUNT } = require("./shortcut-actions");
 
 const CODEX_THREAD_SESSION_ID_RE = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
 
@@ -97,11 +98,57 @@ function getFocusableLocalHudSessionIds(snapshot, options = {}) {
     .map((entry) => entry.id);
 }
 
+function isShortcutFocusableHudSession(entry) {
+  return !!entry
+    && entry.canFocus === true
+    && !entry.headless
+    && entry.state !== "sleeping"
+    && !entry.hiddenFromHud;
+}
+
+function getOrderedSnapshotSessions(snapshot) {
+  const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
+  const byId = new Map(sessions.map((entry) => [entry.id, entry]));
+  const orderedIds = Array.isArray(snapshot && snapshot.orderedIds)
+    ? snapshot.orderedIds
+    : sessions.map((entry) => entry.id);
+  const ordered = orderedIds.map((id) => byId.get(id)).filter(Boolean);
+  const seen = new Set(ordered.map((entry) => entry.id));
+  return ordered.concat(sessions.filter((entry) => !seen.has(entry.id)));
+}
+
+function getShortcutFocusableHudSessionIds(snapshot) {
+  return getOrderedSnapshotSessions(snapshot)
+    .filter(isShortcutFocusableHudSession)
+    .slice(0, FOCUS_SESSION_SHORTCUT_COUNT)
+    .map((entry) => entry.id);
+}
+
+function createFocusSessionShortcutHandlers(options = {}) {
+  const getSnapshot = options.getSnapshot;
+  const focusSession = options.focusSession;
+  const handlers = {};
+
+  for (let slot = 1; slot <= FOCUS_SESSION_SHORTCUT_COUNT; slot++) {
+    handlers[`focusSession${slot}`] = () => {
+      if (typeof getSnapshot !== "function" || typeof focusSession !== "function") return false;
+      const sessionId = getShortcutFocusableHudSessionIds(getSnapshot())[slot - 1];
+      if (!sessionId) return false;
+      return focusSession(sessionId, { requestSource: "shortcut" });
+    };
+  }
+
+  return handlers;
+}
+
 module.exports = {
+  createFocusSessionShortcutHandlers,
   getCodexThreadId,
   getCodexThreadUrl,
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
+  getShortcutFocusableHudSessionIds,
   getSessionFocusTarget,
   isFocusableLocalHudSession,
+  isShortcutFocusableHudSession,
 };

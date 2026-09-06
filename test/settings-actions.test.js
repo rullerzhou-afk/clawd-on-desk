@@ -13,6 +13,7 @@ const {
   requireEnum,
 } = require("../src/settings-actions");
 const prefs = require("../src/prefs");
+const { SHORTCUT_ACTION_IDS } = require("../src/shortcut-actions");
 
 describe("validator helpers", () => {
   it("requireBoolean accepts only booleans", () => {
@@ -2231,11 +2232,9 @@ describe("shortcut commands", () => {
       deps: {
         snapshot,
         globalShortcut,
-        shortcutHandlers: {
-          togglePet: () => {},
-          permissionAllow: () => {},
-          permissionDeny: () => {},
-        },
+        shortcutHandlers: Object.fromEntries(
+          SHORTCUT_ACTION_IDS.map((actionId) => [actionId, () => {}])
+        ),
         getShortcutFailure: (actionId) => failures.get(actionId) || null,
         clearShortcutFailure: (actionId) => failures.delete(actionId),
       },

@@ -1,6 +1,7 @@
 "use strict";
 
 const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+const { FOCUS_SESSION_SHORTCUT_COUNT } = globalThis.ClawdShortcutActions;
 
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
@@ -105,6 +106,18 @@ function orderedHudSessions(currentSnapshot) {
   const orderedIds = new Set(ordered.map((session) => session.id));
   const missing = sessions.filter((session) => !orderedIds.has(session.id));
   return ordered.concat(missing).filter(isHudSession);
+}
+
+function buildFocusShortcutSlots(sessions) {
+  const slots = new Map();
+  let slot = 1;
+  for (const session of sessions) {
+    if (session.canFocus !== true) continue;
+    if (slot > FOCUS_SESSION_SHORTCUT_COUNT) break;
+    slots.set(session.id, slot);
+    slot += 1;
+  }
+  return slots;
 }
 
 const STATE_CHIP_MAP = {
@@ -251,7 +264,7 @@ function openFolderFailureText(result) {
   return t("sessionOpenFolderUnavailable");
 }
 
-function createRowForSession(session, now) {
+function createRowForSession(session, now, shortcutSlot) {
   const row = document.createElement("div");
   row.className = "row";
   const canFocus = session.canFocus === true;
@@ -263,6 +276,12 @@ function createRowForSession(session, now) {
 
   const left = document.createElement("div");
   left.className = "left";
+
+  const index = document.createElement("span");
+  index.className = "row-index";
+  index.textContent = Number.isInteger(shortcutSlot) ? String(shortcutSlot) : "";
+  index.setAttribute("aria-hidden", "true");
+  left.appendChild(index);
 
   const dot = document.createElement("span");
   dot.className = `dot dot-${session.badge || "idle"}`;
@@ -297,6 +316,9 @@ function createRowForSession(session, now) {
     title.title = fullTitle;
   }
   left.appendChild(title);
+  if (Number.isInteger(shortcutSlot)) {
+    row.setAttribute("aria-label", `${shortcutSlot}. ${fullTitle}`);
+  }
 
   const showElapsed = snapshot.hudShowElapsed !== false;
   const right = document.createElement("span");
@@ -417,6 +439,11 @@ function createFoldedRow(count) {
   const left = document.createElement("div");
   left.className = "left";
 
+  const index = document.createElement("span");
+  index.className = "row-index";
+  index.setAttribute("aria-hidden", "true");
+  left.appendChild(index);
+
   const dot = document.createElement("span");
   dot.className = "dot dot-idle";
   left.appendChild(dot);
@@ -452,6 +479,7 @@ function createPinButton(pinned) {
 
 function render() {
   const sessions = orderedHudSessions(snapshot);
+  const focusShortcutSlots = buildFocusShortcutSlots(sessions);
   const currentIds = new Set(sessions.map((session) => session.id));
   for (const sessionId of pendingFolderSessions) {
     if (!currentIds.has(sessionId)) pendingFolderSessions.delete(sessionId);
@@ -472,7 +500,11 @@ function render() {
   const { expanded, folded } = splitHudLayout(sessions);
 
   for (const session of expanded) {
-    hudEl.appendChild(createRowForSession(session, now));
+    hudEl.appendChild(createRowForSession(
+      session,
+      now,
+      focusShortcutSlots.get(session.id)
+    ));
   }
   if (folded.length > 0) {
     hudEl.appendChild(createFoldedRow(folded.length));

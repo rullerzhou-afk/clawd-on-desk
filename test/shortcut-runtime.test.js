@@ -4,6 +4,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 
 const createShortcutRuntime = require("../src/shortcut-runtime");
+const { SHORTCUT_ACTION_IDS, getDefaultShortcuts } = require("../src/shortcut-actions");
 
 class FakeIpcMain {
   constructor() {
@@ -100,10 +101,10 @@ function createRuntime(options = {}) {
     ? new FakeSettingsWindow()
     : options.settingsWindow;
   const snapshot = options.snapshot || {
-    shortcuts: { togglePet: "CommandOrControl+Shift+Alt+C" },
+    shortcuts: getDefaultShortcuts(),
   };
   const globalShortcut = options.globalShortcut || createGlobalShortcut();
-  const togglePetCalls = [];
+  const handlerCalls = [];
   const runtime = createShortcutRuntime({
     ipcMain,
     globalShortcut,
@@ -111,11 +112,14 @@ function createRuntime(options = {}) {
       getSnapshot: () => snapshot,
     },
     getSettingsWindow: () => settingsWindow,
-    shortcutHandlers: {
-      togglePet: () => togglePetCalls.push("togglePet"),
-    },
+    shortcutHandlers: Object.fromEntries(
+      SHORTCUT_ACTION_IDS.map((actionId) => [
+        actionId,
+        () => handlerCalls.push(actionId),
+      ])
+    ),
   });
-  return { globalShortcut, ipcMain, runtime, settingsWindow, togglePetCalls };
+  return { globalShortcut, handlerCalls, ipcMain, runtime, settingsWindow };
 }
 
 test("shortcut runtime owns settings shortcut IPC channels and disposes them", async () => {
@@ -219,6 +223,20 @@ test("shortcut runtime restores a persisted macOS Control accelerator on startup
     ["register", "Control+Shift+1"],
   ]);
   assert.ok(globalShortcut.registered.has("Control+Shift+1"));
+});
+
+test("shortcut runtime registers and invokes an assigned focus-session shortcut", () => {
+  const { runtime, globalShortcut, handlerCalls } = createRuntime({
+    snapshot: { shortcuts: { focusSession1: "Control+Shift+1" } },
+  });
+
+  runtime.registerPersistentShortcutsFromSettings();
+
+  assert.deepStrictEqual(globalShortcut.calls, [
+    ["register", "Control+Shift+1"],
+  ]);
+  globalShortcut.registered.get("Control+Shift+1")();
+  assert.deepStrictEqual(handlerCalls, ["focusSession1"]);
 });
 
 test("shortcut runtime deduplicates failure broadcasts and ignores empty clears", () => {

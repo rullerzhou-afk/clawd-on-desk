@@ -9,12 +9,28 @@
     root.ClawdShortcutActions = api;
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function factory() {
+  const FOCUS_SESSION_SHORTCUT_COUNT = 9;
+
+  function buildFocusSessionActions() {
+    const actions = {};
+    for (let slot = 1; slot <= FOCUS_SESSION_SHORTCUT_COUNT; slot++) {
+      actions[`focusSession${slot}`] = Object.freeze({
+        persistent: true,
+        defaultAccelerator: null,
+        labelKey: `shortcutLabelFocusSession${slot}`,
+        showInTutorial: false,
+      });
+    }
+    return actions;
+  }
+
   const SHORTCUT_ACTIONS = Object.freeze({
     togglePet: Object.freeze({
       persistent: true,
       defaultAccelerator: "CommandOrControl+Shift+Alt+C",
       labelKey: "shortcutLabelTogglePet",
     }),
+    ...buildFocusSessionActions(),
     permissionAllow: Object.freeze({
       persistent: false,
       defaultAccelerator: "CommandOrControl+Shift+Y",
@@ -108,6 +124,11 @@
 
   function getDefaultShortcuts() {
     return { ...DEFAULT_SHORTCUTS };
+  }
+
+  function getTutorialShortcutActionIds() {
+    return SHORTCUT_ACTION_IDS.filter((actionId) =>
+      SHORTCUT_ACTIONS[actionId].showInTutorial !== false);
   }
 
   function isPlainObject(value) {
@@ -423,10 +444,12 @@
   }
 
   return {
+    FOCUS_SESSION_SHORTCUT_COUNT,
     SHORTCUT_ACTIONS,
     SHORTCUT_ACTION_IDS,
     DANGEROUS_ACCELERATORS,
     getDefaultShortcuts,
+    getTutorialShortcutActionIds,
     parseAccelerator,
     normalizeKey,
     buildAcceleratorFromEvent,

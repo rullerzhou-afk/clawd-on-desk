@@ -187,6 +187,17 @@ describe("session HUD visual shell", () => {
     assert.match(sessionHudRenderer, /window\.sessionHudAPI\.focusSession\(session\.id\);/);
   });
 
+  it("loads shortcut metadata and numbers only shortcut-addressable rows", () => {
+    assert.ok(
+      sessionHudHtml.indexOf('src="./shortcut-actions.js"')
+        < sessionHudHtml.indexOf('src="./session-hud-renderer.js"')
+    );
+    assert.match(sessionHudHtml, /\.row-index\s*\{[\s\S]*width:\s*14px;[\s\S]*text-align:\s*right;[\s\S]*font-variant-numeric:\s*tabular-nums;[\s\S]*\}/);
+    assert.match(sessionHudRenderer, /function buildFocusShortcutSlots\(sessions\)/);
+    assert.match(sessionHudRenderer, /session\.canFocus !== true/);
+    assert.match(sessionHudRenderer, /focusShortcutSlots\.get\(session\.id\)/);
+  });
+
   it("renders transient feedback inline instead of covering fixed-height rows", () => {
     assert.match(sessionHudHtml, /\.session-inline-feedback\s*\{/);
     assert.doesNotMatch(sessionHudHtml, /\.session-action-feedback\s*\{/);

@@ -5,6 +5,7 @@ const assert = require("node:assert");
 
 const prefs = require("../src/prefs");
 const shortcutCommands = require("../src/settings-actions-shortcuts");
+const { SHORTCUT_ACTION_IDS } = require("../src/shortcut-actions");
 
 function makeDeps(overrides = {}) {
   const snapshot = overrides.snapshot || prefs.getDefaults();
@@ -30,9 +31,9 @@ function makeDeps(overrides = {}) {
       snapshot,
       globalShortcut,
       platform: overrides.platform,
-      shortcutHandlers: {
-        togglePet: () => {},
-      },
+      shortcutHandlers: Object.fromEntries(
+        SHORTCUT_ACTION_IDS.map((actionId) => [actionId, () => {}])
+      ),
     },
     calls,
     registered,
@@ -92,6 +93,22 @@ test("settings shortcut actions register an explicit macOS Control accelerator",
   assert.deepStrictEqual(calls.register.map((call) => call.accelerator), ["Control+Shift+1"]);
   assert.deepStrictEqual(calls.unregister, ["CommandOrControl+J"]);
   assert.deepStrictEqual([...registered].sort(), ["Control+Shift+1"]);
+});
+
+test("settings shortcut actions bind an unassigned focus-session action", () => {
+  const snapshot = prefs.getDefaults();
+  const { deps, calls, registered } = makeDeps({ snapshot, platform: "darwin" });
+
+  const result = shortcutCommands.registerShortcut({
+    actionId: "focusSession1",
+    accelerator: "Control+Shift+1",
+  }, deps);
+
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.commit.shortcuts.focusSession1, "Control+Shift+1");
+  assert.deepStrictEqual(calls.register.map((call) => call.accelerator), ["Control+Shift+1"]);
+  assert.deepStrictEqual(calls.unregister, []);
+  assert.deepStrictEqual([...registered], ["Control+Shift+1"]);
 });
 
 test("settings shortcut actions reject contextual conflicts before touching globalShortcut", () => {

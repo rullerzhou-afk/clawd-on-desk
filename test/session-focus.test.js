@@ -4,12 +4,15 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  createFocusSessionShortcutHandlers,
   getCodexThreadId,
   getCodexThreadUrl,
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
+  getShortcutFocusableHudSessionIds,
   getSessionFocusTarget,
   isFocusableLocalHudSession,
+  isShortcutFocusableHudSession,
 } = require("../src/session-focus");
 const { makeSessionKey } = require("../src/session-key");
 
@@ -228,10 +231,80 @@ describe("session focus helpers", () => {
     assert.strictEqual(isFocusableLocalHudSession(remoteOrca, { osPlatform: "darwin" }), false);
   });
 
+  it("selects up to nine focusable HUD sessions in snapshot order", () => {
+    const sessions = [
+      { id: "old", canFocus: true, state: "idle" },
+      { id: "unfocusable", canFocus: false, state: "working" },
+      { id: "newest", canFocus: true, state: "working" },
+      { id: "hidden", canFocus: true, state: "working", hiddenFromHud: true },
+      { id: "sleeping", canFocus: true, state: "sleeping" },
+      { id: "headless", canFocus: true, state: "working", headless: true },
+      { id: "missing-from-order", canFocus: true, state: "working" },
+    ];
+    const snapshot = {
+      sessions,
+      orderedIds: ["unfocusable", "newest", "hidden", "sleeping", "headless", "old"],
+    };
+
+    assert.deepStrictEqual(getShortcutFocusableHudSessionIds(snapshot), [
+      "newest",
+      "old",
+      "missing-from-order",
+    ]);
+    assert.strictEqual(isShortcutFocusableHudSession(sessions[0]), true);
+    assert.strictEqual(isShortcutFocusableHudSession(sessions[1]), false);
+
+    const many = Array.from({ length: 11 }, (_unused, index) => ({
+      id: `session-${index + 1}`,
+      canFocus: true,
+      state: "working",
+    }));
+    assert.deepStrictEqual(
+      getShortcutFocusableHudSessionIds({
+        sessions: many,
+        orderedIds: many.map((entry) => entry.id),
+      }),
+      many.slice(0, 9).map((entry) => entry.id)
+    );
+  });
+
+  it("builds dynamic Focus session 1-9 handlers", () => {
+    let snapshot = {
+      sessions: [
+        { id: "first", canFocus: true, state: "working" },
+        { id: "second", canFocus: true, state: "working" },
+      ],
+      orderedIds: ["second", "first"],
+    };
+    const calls = [];
+    const handlers = createFocusSessionShortcutHandlers({
+      getSnapshot: () => snapshot,
+      focusSession: (sessionId, options) => {
+        calls.push([sessionId, options]);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(Object.keys(handlers), Array.from(
+      { length: 9 },
+      (_unused, index) => `focusSession${index + 1}`
+    ));
+    assert.strictEqual(handlers.focusSession1(), true);
+    assert.deepStrictEqual(calls, [["second", { requestSource: "shortcut" }]]);
+    assert.strictEqual(handlers.focusSession9(), false);
+    assert.strictEqual(calls.length, 1);
+
+    snapshot = { ...snapshot, orderedIds: ["first", "second"] };
+    assert.strictEqual(handlers.focusSession1(), true);
+    assert.deepStrictEqual(calls[1], ["first", { requestSource: "shortcut" }]);
+  });
+
   it("rejects malformed entries defensively", () => {
     assert.strictEqual(isFocusableLocalHudSession(null), false);
     assert.strictEqual(isFocusableLocalHudSession({ sourcePid: 1 }), false);
     assert.deepStrictEqual(getFocusableLocalHudSessionIds({ sessions: "bad" }), []);
     assert.deepStrictEqual(getFocusableLocalHudSessionIds(null), []);
+    assert.deepStrictEqual(getShortcutFocusableHudSessionIds({ sessions: "bad" }), []);
+    assert.deepStrictEqual(getShortcutFocusableHudSessionIds(null), []);
   });
 });

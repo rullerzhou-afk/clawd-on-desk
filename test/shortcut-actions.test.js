@@ -4,6 +4,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const {
+  FOCUS_SESSION_SHORTCUT_COUNT,
   SHORTCUT_ACTIONS,
   SHORTCUT_ACTION_IDS,
   DANGEROUS_ACCELERATORS,
@@ -15,15 +16,35 @@ const {
   normalizeShortcuts,
   isDangerousAccelerator,
   acceleratorsConflict,
+  getTutorialShortcutActionIds,
   validateShortcutMapShape,
 } = require("../src/shortcut-actions");
 
+const FOCUS_ACTION_IDS = Array.from(
+  { length: FOCUS_SESSION_SHORTCUT_COUNT },
+  (_unused, index) => `focusSession${index + 1}`
+);
+
 describe("shortcut-actions metadata", () => {
   it("exposes all known shortcut action ids", () => {
-    assert.deepStrictEqual(SHORTCUT_ACTION_IDS, ["togglePet", "permissionAllow", "permissionDeny"]);
+    assert.deepStrictEqual(SHORTCUT_ACTION_IDS, [
+      "togglePet",
+      ...FOCUS_ACTION_IDS,
+      "permissionAllow",
+      "permissionDeny",
+    ]);
     assert.strictEqual(SHORTCUT_ACTIONS.togglePet.persistent, true);
+    for (const actionId of FOCUS_ACTION_IDS) {
+      assert.strictEqual(SHORTCUT_ACTIONS[actionId].persistent, true);
+      assert.strictEqual(SHORTCUT_ACTIONS[actionId].defaultAccelerator, null);
+      assert.strictEqual(SHORTCUT_ACTIONS[actionId].showInTutorial, false);
+    }
     assert.strictEqual(SHORTCUT_ACTIONS.permissionAllow.persistent, false);
     assert.strictEqual(SHORTCUT_ACTIONS.permissionDeny.persistent, false);
+    assert.deepStrictEqual(
+      getTutorialShortcutActionIds(),
+      ["togglePet", "permissionAllow", "permissionDeny"]
+    );
   });
 
   it("builds fresh default shortcut maps", () => {
@@ -32,6 +53,7 @@ describe("shortcut-actions metadata", () => {
     assert.notStrictEqual(a, b);
     assert.deepStrictEqual(a, {
       togglePet: "CommandOrControl+Shift+Alt+C",
+      ...Object.fromEntries(FOCUS_ACTION_IDS.map((actionId) => [actionId, null])),
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -316,9 +338,8 @@ describe("normalizeShortcuts", () => {
     assert.deepStrictEqual(
       normalizeShortcuts({ togglePet: "Ctrl+K", bogus: "Ctrl+J" }, getDefaultShortcuts()),
       {
+        ...getDefaultShortcuts(),
         togglePet: "CommandOrControl+K",
-        permissionAllow: "CommandOrControl+Shift+Y",
-        permissionDeny: "CommandOrControl+Shift+N",
       }
     );
   });
@@ -331,6 +352,7 @@ describe("normalizeShortcuts", () => {
         permissionDeny: undefined,
       }, getDefaultShortcuts()),
       {
+        ...getDefaultShortcuts(),
         togglePet: null,
         permissionAllow: null,
         permissionDeny: null,
@@ -366,9 +388,8 @@ describe("normalizeShortcuts", () => {
         permissionDeny: "Ctrl+Shift+Y",
       }, getDefaultShortcuts()),
       {
+        ...getDefaultShortcuts(),
         togglePet: "CommandOrControl+K",
-        permissionAllow: "CommandOrControl+Shift+Y",
-        permissionDeny: "CommandOrControl+Shift+N",
       }
     );
   });
@@ -380,9 +401,8 @@ describe("normalizeShortcuts", () => {
         permissionAllow: "CommandOrControl+Shift+K",
       }, getDefaultShortcuts(), { isMac: false }),
       {
+        ...getDefaultShortcuts(),
         togglePet: "Control+Shift+K",
-        permissionAllow: "CommandOrControl+Shift+Y",
-        permissionDeny: "CommandOrControl+Shift+N",
       }
     );
   });
@@ -394,9 +414,9 @@ describe("normalizeShortcuts", () => {
         permissionAllow: "CommandOrControl+Shift+K",
       }, getDefaultShortcuts(), { isMac: true }),
       {
+        ...getDefaultShortcuts(),
         togglePet: "Control+Shift+K",
         permissionAllow: "CommandOrControl+Shift+K",
-        permissionDeny: "CommandOrControl+Shift+N",
       }
     );
   });

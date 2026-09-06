@@ -235,6 +235,7 @@ async function loadHud(sessions, openResult = { status: "ok" }) {
     clearTimeout: () => { feedbackTimeout = null; },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-focus-unavailable.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "shortcut-actions.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-hud-renderer.js"), "utf8"), context);
   await flush();
   snapshotListener({ sessions, orderedIds: sessions.map((entry) => entry.id) });
@@ -497,6 +498,24 @@ test("HUD unfocusable click explains why and offers folder only for local non-we
     "This session did not provide terminal window information."
   );
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
+});
+
+test("HUD numbers only focusable sessions in visible order", async () => {
+  const { root } = await loadHud([
+    session("unfocusable"),
+    session("first-focusable", { canFocus: true }),
+    session("hidden", { canFocus: true, hiddenFromHud: true }),
+    session("second-focusable", { canFocus: true }),
+  ]);
+
+  assert.deepStrictEqual(
+    byClass(root, "row-index").map((element) => element.textContent),
+    ["", "1", "2"]
+  );
+  assert.deepStrictEqual(
+    byClass(root, "row").map((row) => row.attributes["aria-label"] || ""),
+    ["", "1. first-focusable", "2. second-focusable"]
+  );
 });
 
 test("HUD folder click sends only id and exposes open failure", async () => {

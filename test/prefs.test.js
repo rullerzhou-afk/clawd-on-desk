@@ -7,6 +7,7 @@ const path = require("path");
 const os = require("os");
 
 const prefs = require("../src/prefs");
+const { getDefaultShortcuts } = require("../src/shortcut-actions");
 
 const tempDirs = [];
 
@@ -980,11 +981,10 @@ describe("prefs.validate", () => {
 
   it("shortcuts defaults to the built-in shortcut map", () => {
     const d = prefs.getDefaults();
-    assert.deepStrictEqual(d.shortcuts, {
-      togglePet: "CommandOrControl+Shift+Alt+C",
-      permissionAllow: "CommandOrControl+Shift+Y",
-      permissionDeny: "CommandOrControl+Shift+N",
-    });
+    assert.deepStrictEqual(d.shortcuts, getDefaultShortcuts());
+    for (let slot = 1; slot <= 9; slot++) {
+      assert.strictEqual(d.shortcuts[`focusSession${slot}`], null);
+    }
   });
 
   it("shortcuts fills missing keys and normalizes valid values", () => {
@@ -994,9 +994,8 @@ describe("prefs.validate", () => {
       },
     });
     assert.deepStrictEqual(v.shortcuts, {
+      ...getDefaultShortcuts(),
       togglePet: "CommandOrControl+K",
-      permissionAllow: "CommandOrControl+Shift+Y",
-      permissionDeny: "CommandOrControl+Shift+N",
     });
   });
 
@@ -1008,11 +1007,7 @@ describe("prefs.validate", () => {
         permissionDeny: 42,
       },
     });
-    assert.deepStrictEqual(v.shortcuts, {
-      togglePet: "CommandOrControl+Shift+Alt+C",
-      permissionAllow: "CommandOrControl+Shift+Y",
-      permissionDeny: "CommandOrControl+Shift+N",
-    });
+    assert.deepStrictEqual(v.shortcuts, getDefaultShortcuts());
   });
 
   it("shortcuts de-duplicates conflicting load-time values with default priority", () => {
@@ -1024,9 +1019,8 @@ describe("prefs.validate", () => {
       },
     });
     assert.deepStrictEqual(v.shortcuts, {
+      ...getDefaultShortcuts(),
       togglePet: "CommandOrControl+K",
-      permissionAllow: "CommandOrControl+Shift+Y",
-      permissionDeny: "CommandOrControl+Shift+N",
     });
   });
 
@@ -1495,9 +1489,8 @@ describe("prefs.migrate v15 → v16 (native macOS Control shortcuts)", () => {
 
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.deepStrictEqual(upgraded.shortcuts, {
+      ...getDefaultShortcuts(),
       togglePet: "CommandOrControl+Shift+K",
-      permissionAllow: "CommandOrControl+Shift+Y",
-      permissionDeny: "CommandOrControl+Shift+N",
     });
   });
 
@@ -1506,11 +1499,13 @@ describe("prefs.migrate v15 → v16 (native macOS Control shortcuts)", () => {
       version: 16,
       shortcuts: {
         togglePet: "Control+Shift+1",
+        focusSession2: "Control+Shift+2",
       },
     }));
 
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.strictEqual(upgraded.shortcuts.togglePet, "Control+Shift+1");
+    assert.strictEqual(upgraded.shortcuts.focusSession2, "Control+Shift+2");
   });
 });
 

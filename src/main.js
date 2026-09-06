@@ -191,6 +191,7 @@ const { createDisplayedVisualProjection } = require("./displayed-visual-projecti
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
 const {
+  createFocusSessionShortcutHandlers,
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
 } = require("./session-focus");
@@ -485,6 +486,14 @@ let slackNotifyClient = null;
 let slackNotifyConfigRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
+  ...createFocusSessionShortcutHandlers({
+    getSnapshot: () => (
+      _state && typeof _state.buildSessionSnapshot === "function"
+        ? _state.buildSessionSnapshot()
+        : null
+    ),
+    focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+  }),
 };
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -2607,9 +2616,12 @@ function buildTutorialAgentOnboardingState() {
 // binding (null when they've unassigned it) and falls back to the shipped
 // default only when the key has never been touched.
 function buildTutorialShortcutsSummary() {
-  const { SHORTCUT_ACTIONS, SHORTCUT_ACTION_IDS } = require("./shortcut-actions");
+  const {
+    SHORTCUT_ACTIONS,
+    getTutorialShortcutActionIds,
+  } = require("./shortcut-actions");
   const userShortcuts = _settingsController.get("shortcuts") || {};
-  return SHORTCUT_ACTION_IDS.map((id) => {
+  return getTutorialShortcutActionIds().map((id) => {
     const action = SHORTCUT_ACTIONS[id] || {};
     const accelerator = Object.prototype.hasOwnProperty.call(userShortcuts, id)
       ? userShortcuts[id]
