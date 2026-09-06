@@ -56,6 +56,7 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
       hitAPI: {
         onThemeConfig: (cb) => { apiHandlers.themeConfig = cb; },
         dragLock: (v) => apiCalls.push(["dragLock", v]),
+        dragAlive: () => apiCalls.push(["dragAlive"]),
         dragMove: () => apiCalls.push(["dragMove"]),
         dragEnd: () => apiCalls.push(["dragEnd"]),
         showContextMenu: () => apiCalls.push(["showContextMenu"]),
@@ -68,6 +69,7 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
         playClickReaction: (svg, d) => apiCalls.push(["playClickReaction", svg, d]),
         onStateSync: (cb) => { apiHandlers.stateSync = cb; },
         onCancelReaction: (cb) => { apiHandlers.cancelReaction = cb; },
+        onForceDragRelease: (cb) => { apiHandlers.forceDragRelease = cb; },
         // Drop bridge (#459): fake files carry .path; "" mimics webUtils
         // returning nothing for non-filesystem Files.
         getPathForFile: (file) => (file && file.path) || "",
@@ -82,6 +84,15 @@ function createHarness({ isMac = false, sendState = {} } = {}) {
       return t;
     },
     clearTimeout: (t) => { if (t) t.cleared = true; },
+    // #545 follow-up: drag-alive heartbeat uses intervals. Same fire-once
+    // contract as the setTimeout stub (fireTimer marks the timer cleared
+    // before invoking it).
+    setInterval: (cb, ms) => {
+      const t = { id: ++timerId, cb, ms, interval: true, cleared: false };
+      timers.push(t);
+      return t;
+    },
+    clearInterval: (t) => { if (t) t.cleared = true; },
     requestAnimationFrame: (cb) => context.setTimeout(cb, 16),
     cancelAnimationFrame: (t) => context.clearTimeout(t),
     console: { warn() {} },
@@ -366,5 +377,71 @@ describe("hit-renderer OS file drop (#459)", () => {
     const busy = createHarness({ sendState: { currentState: "working", miniMode: false, dndEnabled: false } });
     busy.apiHandlers.dropAccepted();
     assert.deepStrictEqual(busy.apiCalls.filter((c) => c[0] === "playClickReaction"), []);
+  });
+});
+
+describe("hit-renderer drag-alive heartbeat (#545 follow-up)", () => {
+  it("starts the heartbeat on pointerdown and stops it on pointerup", () => {
+    const h = createHarness();
+    h.pointerdown({});
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragLock"),
+      [["dragLock", true]],
+    );
+    assert.strictEqual(
+      h.timers.filter((t) => t.interval && !t.cleared).length,
+      1,
+      "heartbeat interval should be running while the drag is captured",
+    );
+    h.pointerup({});
+    assert.ok(
+      h.timers.some((t) => t.interval && t.cleared),
+      "heartbeat must stop when the drag ends",
+    );
+  });
+
+  it("does not start a heartbeat in mini mode (no drag lock there)", () => {
+    const h = createHarness({ sendState: { currentState: "idle", miniMode: true, dndEnabled: false } });
+    h.pointerdown({});
+    assert.strictEqual(
+      h.timers.filter((t) => t.interval).length,
+      0,
+      "mini mode never locks the drag, so it must not heartbeat",
+    );
+  });
+
+  it("emits dragAlive on a heartbeat tick while the drag is held", () => {
+    const h = createHarness();
+    h.pointerdown({});
+    assert.ok(h.fireTimer((t) => t.interval), "heartbeat tick should fire");
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragAlive"),
+      [["dragAlive"]],
+    );
+    h.pointerup({});
+  });
+
+  it("drops a phantom drag on force-drag-release and stays idempotent", () => {
+    const h = createHarness();
+    h.pointerdown({});
+    h.apiHandlers.forceDragRelease();
+
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragLock").map((c) => c[1]),
+      [true, false],
+      "force release should run the normal stop path (lock false)",
+    );
+    assert.ok(
+      h.timers.some((t) => t.interval && t.cleared),
+      "force release should stop the heartbeat",
+    );
+
+    // A later pointerup must not re-send drag-lock(false): isDragging was
+    // already dropped, so the next real gesture starts clean.
+    h.pointerup({});
+    assert.deepStrictEqual(
+      h.apiCalls.filter((c) => c[0] === "dragLock").map((c) => c[1]),
+      [true, false],
+    );
   });
 });

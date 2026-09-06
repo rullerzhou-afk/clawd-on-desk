@@ -20,6 +20,10 @@ contextBridge.exposeInMainWorld("hitAPI", {
   onThemeConfig: (cb) => ipcRenderer.on("theme-config", (_, cfg) => cb(cfg)),
   // Sends → main
   dragLock: (locked) => ipcRenderer.send("drag-lock", locked),
+  // #545 follow-up: 1s liveness heartbeat while a drag is captured; lets the
+  // main-process stuck-drag-lock watchdog tell a live drag from a hung input
+  // renderer (a held-still mouse emits no moves, so this must be a timer).
+  dragAlive: () => ipcRenderer.send("drag-alive"),
   dragMove: () => ipcRenderer.send("drag-move"),
   dragEnd: () => ipcRenderer.send("drag-end"),
   showContextMenu: () => ipcRenderer.send("show-context-menu"),
@@ -43,4 +47,8 @@ contextBridge.exposeInMainWorld("hitAPI", {
   // State sync ← main
   onStateSync: (cb) => ipcRenderer.on("hit-state-sync", (_, data) => cb(data)),
   onCancelReaction: (cb) => ipcRenderer.on("hit-cancel-reaction", () => cb()),
+  // Watchdog push: main force-released a stranded drag lock (renderer was
+  // silent past the stale threshold, or went unresponsive). Drop any local
+  // isDragging so a recovered renderer cannot keep a phantom capture.
+  onForceDragRelease: (cb) => ipcRenderer.on("force-drag-release", () => cb()),
 });

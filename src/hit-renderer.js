@@ -40,7 +40,28 @@ let mouseDownX, mouseDownY;
 let lastDragClientX;
 let dragReactionDirection = null;
 let dragMoveRAF = null;
+// #545 follow-up: while a drag is captured, emit a 1s "drag-alive" heartbeat.
+// Main's stuck-drag-lock watchdog treats silence past its threshold as a hung
+// input renderer and force-releases the stranded lock. The heartbeat must be
+// timer-based — a held-still mouse produces no pointermove, and a rAF would
+// queue behind dragMove anyway. hitWin disables backgroundThrottling, so the
+// interval is not deferred while the drag holds the pointer still.
+let dragAliveTimer = null;
+const DRAG_ALIVE_INTERVAL_MS = 1000;
 const DRAG_THRESHOLD = 3;
+
+function startDragAliveHeartbeat() {
+  if (dragAliveTimer !== null) return;
+  dragAliveTimer = setInterval(() => {
+    window.hitAPI.dragAlive();
+  }, DRAG_ALIVE_INTERVAL_MS);
+}
+
+function stopDragAliveHeartbeat() {
+  if (dragAliveTimer === null) return;
+  clearInterval(dragAliveTimer);
+  dragAliveTimer = null;
+}
 
 // --- Reaction state (tracked here to gate input) ---
 let isReacting = false;
@@ -81,6 +102,7 @@ area.addEventListener("pointerdown", (e) => {
     lastDragClientX = e.clientX;
     dragReactionDirection = null;
     window.hitAPI.dragLock(true);
+    startDragAliveHeartbeat();
     area.classList.add("dragging");
   }
 });
@@ -105,6 +127,7 @@ document.addEventListener("pointermove", (e) => {
 
 function stopDrag() {
   if (!isDragging) return;
+  stopDragAliveHeartbeat();
   clearQueuedDragMove();
   isDragging = false;
   window.hitAPI.dragLock(false);
@@ -148,6 +171,14 @@ document.addEventListener("pointerup", (e) => {
 area.addEventListener("pointercancel", () => stopDrag());
 area.addEventListener("lostpointercapture", () => { if (isDragging) stopDrag(); });
 window.addEventListener("blur", stopDrag);
+
+// Main released a lock it proved stranded (heartbeat silent past threshold,
+// or the renderer went unresponsive and was reloaded). If this renderer is
+// alive with a phantom capture, drop it through the normal stop path so the
+// next pointerdown starts a clean drag instead of inheriting stale state.
+window.hitAPI.onForceDragRelease(() => {
+  if (isDragging) stopDrag();
+});
 
 // --- Click reaction logic (2-click = poke, 4-click = flail) ---
 const CLICK_WINDOW_MS = 400;

@@ -4002,3 +4002,90 @@ describe("manual show intent hook (#935 override latch)", () => {
     assert.deepStrictEqual(notes, [], "only a manual SHOW is user intent");
   });
 });
+
+describe("stranded drag-lock release (#545 follow-up)", () => {
+  it("hitWin unresponsive releases a stranded drag lock and reloads by default", () => {
+    const instances = [];
+    const harness = createRuntime();
+    harness.runtime.setDragLocked(true);
+
+    const hitWin = harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+    });
+
+    hitWin.emit("unresponsive");
+
+    assert.equal(harness.runtime.isDragLocked(), false);
+    assert.ok(hitWin.calls.some((call) => call[0] === "reload"), "unresponsive hitWin should reload");
+  });
+
+  it("hitWin unresponsive delegates to the onUnresponsive hook when provided", () => {
+    const instances = [];
+    const harness = createRuntime();
+    harness.runtime.setDragLocked(true);
+    const seen = [];
+
+    const hitWin = harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+      // Mirror main.js's hook: the runtime delegates, main releases + reloads.
+      onUnresponsive: (win) => {
+        seen.push(win);
+        harness.runtime.releaseStrandedDragLock();
+      },
+    });
+
+    hitWin.emit("unresponsive");
+
+    assert.deepStrictEqual(seen, [hitWin]);
+    assert.equal(harness.runtime.isDragLocked(), false);
+    // main.js owns the reload in that path; the default reload must not
+    // double-fire.
+    assert.ok(!hitWin.calls.some((call) => call[0] === "reload"));
+  });
+
+  it("bringPetToPrimaryDisplay releases a stranded lock so the input window follows", () => {
+    const harness = createRuntime({
+      effectivePixelSize: { width: 200, height: 160 },
+    });
+    harness.runtime.setDragLocked(true);
+    harness.hitWin.calls.length = 0;
+
+    harness.runtime.bringPetToPrimaryDisplay();
+
+    assert.equal(harness.runtime.isDragLocked(), false);
+    // The whole point: syncHitWin() defers while the lock is held, so the
+    // release must land BEFORE the move for the input window to follow.
+    assert.ok(
+      harness.hitWin.calls.some((call) => call[0] === "setBounds"),
+      "hitWin bounds must be re-synced after the release",
+    );
+  });
+
+  it("manual hide releases a stranded lock; manual show does not", () => {
+    const harness = createRuntime();
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.setPetHidden(true);
+    assert.equal(harness.runtime.isDragLocked(), false);
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.setPetHidden(false);
+    assert.equal(
+      harness.runtime.isDragLocked(),
+      true,
+      "showing the pet must not release a lock a live drag may legitimately hold",
+    );
+  });
+
+  it("releaseStrandedDragLock is a no-op without a lock", () => {
+    const harness = createRuntime();
+    assert.equal(harness.runtime.releaseStrandedDragLock(), false);
+    assert.equal(harness.runtime.isDragLocked(), false);
+  });
+});

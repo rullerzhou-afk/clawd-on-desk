@@ -113,6 +113,7 @@ function createHarness(overrides = {}) {
     // Default to the enabled platforms so the suite behaves the same on a
     // macOS dev machine; the macOS-disabled path has its own explicit test.
     isMacPlatform: overrides.isMacPlatform != null ? overrides.isMacPlatform : false,
+    onDragAlive: overrides.onDragAlive || (() => calls.push(["onDragAlive"])),
   });
   return { ipcMain, runtime, calls, state };
 }
@@ -145,6 +146,7 @@ test("pet interaction IPC registers owned channels and disposes them", () => {
 
   assert.deepStrictEqual([...ipcMain.listeners.keys()].sort(), [
     "accessory-mirror",
+    "drag-alive",
     "drag-end",
     "drag-lock",
     "drag-move",
@@ -272,6 +274,8 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
 
   assert.deepStrictEqual(calls, [
     ["setDragLocked", true],
+    // The lock is itself the first watchdog heartbeat (#545 follow-up).
+    ["onDragAlive"],
     ["setMouseOverPet", true],
     ["cancelRoam"],
     ["beginDragSnapshot"],
@@ -283,6 +287,30 @@ test("pet interaction IPC preserves drag lock lifecycle", () => {
     // is in flight — releasing the lock must re-run the sync.
     ["syncImeEditingPetDodge"],
   ]);
+});
+
+test("pet interaction IPC forwards drag-alive heartbeats to the watchdog sink", () => {
+  const { ipcMain, calls } = createHarness();
+
+  ipcMain.send("drag-alive");
+  ipcMain.send("drag-alive");
+
+  assert.deepStrictEqual(calls, [["onDragAlive"], ["onDragAlive"]]);
+});
+
+test("drag-lock(true) refreshes the watchdog heartbeat timestamp", () => {
+  const { ipcMain, calls } = createHarness();
+
+  ipcMain.send("drag-lock", true);
+
+  // The lock itself counts as the first heartbeat, so a drag whose renderer
+  // dies before the first 1s tick still ages out of the watchdog instead of
+  // inheriting a stale timestamp from a previous drag.
+  assert.strictEqual(
+    calls.filter((c) => c[0] === "onDragAlive").length,
+    1,
+    calls.map((c) => c[0]).join("; "),
+  );
 });
 
 test("pet interaction IPC requires the roam cancel dependency", () => {
