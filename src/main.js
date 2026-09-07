@@ -185,6 +185,11 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { findRenderMarkerRect } = require("./niri-inspect-artifact");
+const {
+  createNiriPlacementInspect,
+  resolveNiriInspectRequest,
+} = require("./niri-placement-inspect");
 const { collectRequiredAssetFiles } = require("./theme-schema");
 const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
@@ -470,6 +475,11 @@ let discordPresenceBridge = null;
 let lastDiscordPresenceVisual = null;
 let displayedVisualProjection = null;
 let lastAppliedVisualGeneration = 0;
+let niriPlacementInspect = null;
+let niriInspectVisualLeaseActive = false;
+let niriInspectPreviousIdlePaused = false;
+let niriInspectPreviousRoamEnabled = false;
+let niriInspectWindowGeneration = 0;
 let suppressTelegramMigrationReconcile = 0;
 let _remoteSshTransportCoordinator = null;
 let feishuApprovalClient = null;
@@ -1409,6 +1419,7 @@ function inferVisualSource(displayState, file) {
 }
 
 function requestDisplayedVisual(displayState, file, options = {}) {
+  if (niriInspectVisualLeaseActive) return null;
   if (!displayedVisualProjection) return null;
   const activeTheme = getActiveTheme();
   return displayedVisualProjection.request({
@@ -4757,7 +4768,90 @@ registerSessionIpc({
   getLanWsServer: () => _lanWss,
 });
 
+function isRuntimeWindowVisible(candidate) {
+  try {
+    return !!candidate
+      && (typeof candidate.isDestroyed !== "function" || !candidate.isDestroyed())
+      && (typeof candidate.isVisible !== "function" || candidate.isVisible());
+  } catch {
+    return false;
+  }
+}
+
+function setNiriInspectVisualLease(active) {
+  const next = active === true;
+  if (niriInspectVisualLeaseActive === next) return;
+  if (next) {
+    niriInspectPreviousIdlePaused = idlePaused;
+    niriInspectPreviousRoamEnabled = !!(_roam && _roam.enabled);
+    idlePaused = true;
+    niriInspectVisualLeaseActive = true;
+    try { _roam.cancelRoam(); } catch {}
+    try { _roam.setEnabled(false); } catch {}
+    return;
+  }
+
+  niriInspectVisualLeaseActive = false;
+  idlePaused = niriInspectPreviousIdlePaused;
+  if (isQuitting) return;
+  try { _roam.setEnabled(niriInspectPreviousRoamEnabled); } catch {}
+  try {
+    const displayState = resolveDisplayState();
+    applyState(displayState, getSvgOverride(displayState));
+    syncHitWin();
+  } catch {}
+}
+
+function createNiriInspectPrerequisiteChecker() {
+  let baselineSignature = null;
+  return () => {
+    if (_mini.getMiniMode() || _mini.getMiniTransitioning() || _mini.getIsAnimating()) {
+      return { ok: false, reason: "mini-mode-active" };
+    }
+    if (_roam.isRoamAnimating()) return { ok: false, reason: "roam-active" };
+    if (themeRuntime.isReloadInProgress()) return { ok: false, reason: "theme-reload-active" };
+    if (petWindowRuntime.isDragLocked()) return { ok: false, reason: "drag-active" };
+    if (petWindowRuntime.isPetEffectivelyHidden()) return { ok: false, reason: "pet-hidden" };
+    if (menuOpen) return { ok: false, reason: "pet-menu-open" };
+    if (isRuntimeWindowVisible(getSettingsWindow())) return { ok: false, reason: "settings-window-visible" };
+    if (pendingPermissions.length > 0 || _perm.getVisibleBubbleBounds().length > 0) {
+      return { ok: false, reason: "permission-surface-active" };
+    }
+    if (getVisibleSessionHudBounds().length > 0) return { ok: false, reason: "session-hud-visible" };
+    if (isRuntimeWindowVisible(_updateBubble.getBubbleWindow())) {
+      return { ok: false, reason: "update-bubble-visible" };
+    }
+    if (isRuntimeWindowVisible(getQuotaRingWindow())) {
+      return { ok: false, reason: "quota-ring-visible" };
+    }
+    const snapshot = _state.buildSessionSnapshot();
+    if (snapshot.sessions.some((session) => isSessionInProgress(session))) {
+      return { ok: false, reason: "active-agent-session" };
+    }
+
+    const theme = getActiveTheme();
+    const visual = getDisplayedVisualTuple();
+    const signature = JSON.stringify({
+      themeId: theme && theme._id,
+      variantId: theme && theme._variantId,
+      size: currentSize,
+      accessories: getEffectivePetAccessoryIds(),
+      displayState: visual && visual.displayState,
+      file: visual && visual.file,
+      hitBox: visual && visual.hitBox,
+    });
+    if (baselineSignature === null) baselineSignature = signature;
+    else if (signature !== baselineSignature) return { ok: false, reason: "inspect-visual-mutated" };
+    return { ok: true };
+  };
+}
+
 function createWindow() {
+  if (niriPlacementInspect) {
+    niriPlacementInspect.dispose();
+    niriPlacementInspect = null;
+  }
+  const inspectWindowGeneration = ++niriInspectWindowGeneration;
   // Read everything from the settings controller. The mirror caches above
   // (lang/showTray/etc.) were already initialized at module-load time, so
   // here we just need the position/mini fields plus the legacy size migration.
@@ -4806,6 +4900,87 @@ function createWindow() {
     restoreMiniFromPrefs: (prefsSnapshot, pixelSize) => _mini.restoreFromPrefs(prefsSnapshot, pixelSize),
   });
 
+  const rawNiriInspectConfig = resolveNiriInspectRequest({
+    platform: process.platform,
+    env: process.env,
+    argv: process.argv,
+  });
+  let niriInspectConfig = rawNiriInspectConfig;
+  let renderInspectMarker = null;
+  if (rawNiriInspectConfig.enabled) {
+    const plannedHitBounds = petWindowRuntime.getInitialHitWindowBounds(initialVirtualBounds);
+    renderInspectMarker = findRenderMarkerRect(initialVirtualBounds, plannedHitBounds);
+    if (!renderInspectMarker) {
+      niriInspectConfig = {
+        ...rawNiriInspectConfig,
+        enabled: false,
+        reason: "render-marker-overlaps-hit-region",
+      };
+    }
+  }
+  if (niriInspectConfig.requested && !niriInspectConfig.enabled) {
+    console.warn(`Clawd niri inspect: unavailable (${niriInspectConfig.reason}) — using the normal Electron placement path.`);
+  }
+
+  let inspectRuntime = null;
+  function ensurePetHitWindow() {
+    if (hitWin && !hitWin.isDestroyed()) return hitWin;
+    hitWin = petWindowRuntime.createHitWindow({
+      BrowserWindow,
+      preloadPath: path.join(__dirname, "preload-hit.js"),
+      loadFilePath: path.join(__dirname, "hit.html"),
+      hitThemeConfig: themeRuntime.getHitRendererConfig(),
+      additionalArguments: niriInspectConfig.enabled
+        ? ["--niri-inspect-role=hit", "--niri-inspect-corner=top-left"]
+        : [],
+      deferShow: niriInspectConfig.enabled,
+      guardAlwaysOnTop,
+      onDidFinishLoad: () => {
+        sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
+        if (themeRuntime.isReloadInProgress()) return;
+        syncHitStateAfterLoad();
+      },
+      onRenderProcessGone: (details, ownedHitWin) => {
+        safeConsoleError("hitWin renderer crashed:", details.reason);
+        petWindowRuntime.setDragLocked(false);
+        petWindowRuntime.clearDragSnapshot();
+        idlePaused = false;
+        mouseOverPet = false;
+        petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
+      },
+    });
+    if (inspectRuntime) inspectRuntime.attachHitWindow(hitWin);
+    hitWin.on("move", () => petWindowRuntime.onHitNativeGeometryEvent());
+    hitWin.on("resize", () => petWindowRuntime.onHitNativeGeometryEvent());
+    return hitWin;
+  }
+
+  inspectRuntime = createNiriPlacementInspect({
+    config: niriInspectConfig,
+    ipcMain,
+    screen,
+    nativeImage,
+    pid: process.pid,
+    generation: inspectWindowGeneration,
+    isTrustedEvent: (event, contents) => isTrustedMainFrameEvent(event, contents),
+    getRenderWindow: () => win,
+    getHitWindow: () => hitWin,
+    getExpectedHitBounds: () => petWindowRuntime.getInitialHitWindowBounds(),
+    getLogicalRenderBounds: () => petWindowRuntime.getPetWindowBounds(),
+    getPhysicalRenderBounds: () => petWindowRuntime.getPhysicalRenderBounds(),
+    getViewportOffsets: () => ({
+      x: petWindowRuntime.getViewportOffsetX(),
+      y: petWindowRuntime.getViewportOffsetY(),
+    }),
+    checkDynamicPrerequisites: createNiriInspectPrerequisiteChecker(),
+    ensureHitWindow: ensurePetHitWindow,
+    showDeferredHit: () => petWindowRuntime.showHitWindow(hitWin),
+    startMainTick: () => startMainTick(),
+    setVisualLease: setNiriInspectVisualLease,
+  });
+  niriPlacementInspect = inspectRuntime;
+  inspectRuntime.registerIpc();
+
   const initialAccessoryDelivery = prepareCurrentAccessorySlotsDelivery();
   petWindowRuntime.createRenderWindow({
     BrowserWindow,
@@ -4815,10 +4990,17 @@ function createWindow() {
     preloadPath: path.join(__dirname, "preload.js"),
     loadFilePath: path.join(__dirname, "index.html"),
     themeConfig: buildRendererThemeConfig(initialAccessoryDelivery.snapshot),
+    additionalArguments: niriInspectConfig.enabled
+      ? [
+          "--niri-inspect-role=render",
+          `--niri-inspect-corner=${renderInspectMarker.corner}`,
+        ]
+      : [],
     setRenderWindow: (createdWindow) => { win = createdWindow; },
     isQuitting: () => isQuitting,
     applyDockVisibility,
   });
+  inspectRuntime.attachRenderWindow(win);
   finalizePetAccessorySlotsDelivery(initialAccessoryDelivery, true);
 
   buildContextMenu();
@@ -4826,26 +5008,10 @@ function createWindow() {
   ensureContextMenuOwner();
 
   // ── Create input window (hitWin) — small rect over hitbox, receives all pointer events ──
-  hitWin = petWindowRuntime.createHitWindow({
-    BrowserWindow,
-    preloadPath: path.join(__dirname, "preload-hit.js"),
-    loadFilePath: path.join(__dirname, "hit.html"),
-    hitThemeConfig: themeRuntime.getHitRendererConfig(),
-    guardAlwaysOnTop,
-    onDidFinishLoad: () => {
-      sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
-      if (themeRuntime.isReloadInProgress()) return;
-      syncHitStateAfterLoad();
-    },
-    onRenderProcessGone: (details, ownedHitWin) => {
-      safeConsoleError("hitWin renderer crashed:", details.reason);
-      petWindowRuntime.setDragLocked(false);
-      petWindowRuntime.clearDragSnapshot();
-      idlePaused = false;
-      mouseOverPet = false;
-      petWindowRuntime.reloadWindowWebContents(ownedHitWin, { crashKey: "hitWin", details });
-    },
-  });
+  // The inspect experiment deliberately waits for a trusted render hover
+  // before it creates/maps hitWin. Default-off retains the historical
+  // synchronous creation order exactly.
+  if (!inspectRuntime.shouldDeferHitMapping()) ensurePetHitWindow();
 
   // Issue #690 plan §4.3.9: these replace (not supplement) the previous
   // synchronous "move"/"resize" -> syncFloatingWindowsAfterPetBoundsChange()
@@ -4856,10 +5022,8 @@ function createWindow() {
   // it has classified the settled geometry.
   win.on("move", () => petWindowRuntime.onNativeGeometryEvent());
   win.on("resize", () => petWindowRuntime.onNativeGeometryEvent());
-  // §4.3.11: the hit window gets the same geometry-blind debounced treatment,
-  // on its own (longer) HIT_QUIET_MS quiet period.
-  hitWin.on("move", () => petWindowRuntime.onHitNativeGeometryEvent());
-  hitWin.on("resize", () => petWindowRuntime.onHitNativeGeometryEvent());
+  // §4.3.11 hit-window move/resize wiring is installed by
+  // ensurePetHitWindow(), including the deferred inspect path.
 
   syncSessionHudVisibility();
 
@@ -4939,7 +5103,11 @@ function createWindow() {
   });
 
   initFocusHelper();
-  startMainTick();
+  if (inspectRuntime.shouldDeferHitMapping()) {
+    void inspectRuntime.start();
+  } else {
+    startMainTick();
+  }
   // Silently connect any remote SSH profile flagged "connect on launch" once
   // the hook server is ACTUALLY listening and its real port is known.
   // runtime.connect() reads getHookServerPort() synchronously to build the SSH
@@ -5613,6 +5781,7 @@ if (!gotTheLock) {
     trayBalloonOwner.dispose();
     holidayAccessoryRuntime.dispose();
     if (systemWakeRecovery) systemWakeRecovery.dispose();
+    if (niriPlacementInspect) niriPlacementInspect.dispose();
     // #525: release the IVirtualDesktopManager COM ref and pay back our own
     // CoInitializeEx count (see win-cloak-recovery.js dispose()).
     _cloakInspector.dispose();
