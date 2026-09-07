@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'">
+  <title>Quick Select</title>
+  <style>
+    :root { color-scheme: light dark; --bg: #f5f5f7; --card: #fff; --text: #202027; --muted: #686873; --line: #dedee5; --accent: #6c55c5; }
+    @media (prefers-color-scheme: dark) { :root { --bg: #1c1c1f; --card: #29292e; --text: #f0f0f4; --muted: #acacba; --line: #414149; --accent: #baa6ff; } }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: var(--bg); color: var(--text); font: 13px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+    main { height: calc(100vh / var(--clawd-text-zoom, 1)); display: flex; flex-direction: column; padding: 16px 18px 12px; outline: none; }
+    header { display: flex; align-items: start; gap: 12px; margin-bottom: 12px; }
+    .heading { flex: 1; min-width: 0; }
+    h1 { font-size: 17px; line-height: 1.3; margin: 0 0 5px; }
+    #hint { color: var(--muted); margin: 0; font-size: 12px; }
+    #close { border: 1px solid var(--line); border-radius: 7px; background: var(--card); color: var(--muted); padding: 4px 8px; font: inherit; cursor: pointer; }
+    #close:focus-visible { outline: 2px solid var(--accent); }
+    #options { display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; overflow-y: auto; overflow-x: hidden; min-height: 0; }
+    .option { display: flex; align-items: center; gap: 12px; background: var(--card); border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px; min-height: 52px; min-width: 0; flex-shrink: 0; }
+    .digit { flex: 0 0 27px; text-align: center; color: var(--accent); font-size: 18px; font-weight: 650; font-variant-numeric: tabular-nums; }
+    .details { min-width: 0; flex: 1; }
+    .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+    .meta { margin-top: 2px; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .unavailable { opacity: .55; }
+    .unavailable .digit { color: var(--muted); }
+    #empty { padding: 16px 0; color: var(--muted); }
+    #feedback { min-height: 18px; margin: 9px 0 0; color: var(--muted); font-size: 12px; }
+    [hidden] { display: none !important; }
+  </style>
+</head>
+<body>
+  <main id="palette" tabindex="-1" aria-labelledby="title">
+    <header>
+      <div class="heading"><h1 id="title"></h1><p id="hint"></p></div>
+      <button id="close" type="button">Esc</button>
+    </header>
+    <div id="options" role="list"></div>
+    <div id="empty" role="status" hidden></div>
+    <p id="feedback" role="status" aria-live="polite"></p>
+  </main>
+  <script src="session-quick-select-renderer.js"></script>
+</body>
+</html>

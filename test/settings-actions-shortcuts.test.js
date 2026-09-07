@@ -19,6 +19,7 @@ function makeDeps(overrides = {}) {
     },
     unregister(accelerator) {
       calls.unregister.push(accelerator);
+      if (overrides.failUnregister && overrides.failUnregister.has(accelerator)) return;
       registered.delete(accelerator);
     },
     isRegistered(accelerator) {
@@ -32,6 +33,7 @@ function makeDeps(overrides = {}) {
       platform: overrides.platform,
       shortcutHandlers: {
         togglePet: () => {},
+        quickSelectSession: () => {},
       },
     },
     calls,
@@ -181,4 +183,36 @@ test("settings shortcut actions treat an alias-only non-macOS rebind as a no-op"
   assert.deepStrictEqual(calls.register, []);
   assert.deepStrictEqual(calls.unregister, []);
   assert.deepStrictEqual([...registered], ["Control+Shift+K"]);
+});
+
+test("reset all rolls back an earlier persistent shortcut when a later one fails", () => {
+  const snapshot = prefs.validate({
+    shortcuts: {
+      togglePet: "CommandOrControl+J",
+      quickSelectSession: "CommandOrControl+Shift+J",
+    },
+  });
+  const { deps, calls, registered } = makeDeps({
+    snapshot,
+    registered: [snapshot.shortcuts.togglePet, snapshot.shortcuts.quickSelectSession],
+    failUnregister: new Set([snapshot.shortcuts.quickSelectSession]),
+  });
+
+  const result = shortcutCommands.resetAllShortcuts(null, deps);
+
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /quickSelectSession/);
+  assert.deepStrictEqual([...registered].sort(), [
+    "CommandOrControl+J",
+    "CommandOrControl+Shift+J",
+  ]);
+  assert.deepStrictEqual(calls.register.map((call) => call.accelerator), [
+    "CommandOrControl+Shift+Alt+C",
+    "CommandOrControl+J",
+  ]);
+  assert.deepStrictEqual(calls.unregister, [
+    "CommandOrControl+J",
+    "CommandOrControl+Shift+J",
+    "CommandOrControl+Shift+Alt+C",
+  ]);
 });

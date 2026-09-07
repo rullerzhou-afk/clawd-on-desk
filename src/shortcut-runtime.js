@@ -105,13 +105,13 @@ function createShortcutRuntime(options = {}) {
       } catch {}
     }
 
-    const { actionId, tempUnregisteredAccel } = recording;
-    if (tempUnregisteredAccel) {
-      const current = getSnapshotShortcuts()[actionId];
-      if (current === tempUnregisteredAccel) {
-        const handler = getPersistentHandler(actionId);
+    const { tempUnregistered } = recording;
+    const currentShortcuts = getSnapshotShortcuts();
+    for (const entry of tempUnregistered) {
+      if (currentShortcuts[entry.actionId] === entry.accelerator) {
+        const handler = getPersistentHandler(entry.actionId);
         if (handler) {
-          try { globalShortcut.register(tempUnregisteredAccel, handler); } catch {}
+          try { globalShortcut.register(entry.accelerator, handler); } catch {}
         }
       }
     }
@@ -130,15 +130,20 @@ function createShortcutRuntime(options = {}) {
 
     stopRecording();
 
-    let tempUnregisteredAccel = null;
-    const meta = SHORTCUT_ACTIONS[actionId];
-    if (meta && meta.persistent) {
-      const current = getSnapshotShortcuts()[actionId];
+    const tempUnregistered = [];
+    const shortcuts = getSnapshotShortcuts();
+    for (const persistentActionId of SHORTCUT_ACTION_IDS) {
+      const meta = SHORTCUT_ACTIONS[persistentActionId];
+      if (!meta || !meta.persistent) continue;
+      const current = shortcuts[persistentActionId];
       if (current) {
         try {
           if (globalShortcut.isRegistered(current)) {
             globalShortcut.unregister(current);
-            tempUnregisteredAccel = current;
+            tempUnregistered.push({
+              actionId: persistentActionId,
+              accelerator: current,
+            });
           }
         } catch {}
       }
@@ -158,7 +163,7 @@ function createShortcutRuntime(options = {}) {
       });
     };
     settingsWindow.webContents.on("before-input-event", listener);
-    recording = { actionId, listener, tempUnregisteredAccel };
+    recording = { actionId, listener, tempUnregistered };
     return { status: "ok" };
   }
 

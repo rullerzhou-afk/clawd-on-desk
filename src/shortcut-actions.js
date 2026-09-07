@@ -15,6 +15,12 @@
       defaultAccelerator: "CommandOrControl+Shift+Alt+C",
       labelKey: "shortcutLabelTogglePet",
     }),
+    quickSelectSession: Object.freeze({
+      persistent: true,
+      defaultAccelerator: null,
+      labelKey: "shortcutLabelQuickSelectSession",
+      showInTutorial: false,
+    }),
     permissionAllow: Object.freeze({
       persistent: false,
       defaultAccelerator: "CommandOrControl+Shift+Y",

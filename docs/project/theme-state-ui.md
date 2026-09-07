@@ -156,6 +156,18 @@ Mini 状态映射：
 
 ## Runtime UI Systems
 
+### Session Quick Select
+
+- Settings → Shortcuts 的“快速选择会话”默认未分配；一个全局快捷键打开独立快选窗口，普通 Dashboard 继续负责会话管理。
+- `src/session-quick-select.js` 同时拥有窗口、可消费的进入 intent 和本轮固定的最多九个 session ID。窗口按鼠标所在显示器的 work area 定位，并使用该显示器的文字缩放；极小工作区可滚动查看。
+- 按 `1–9` 跳转，主键区和小键盘分别跟踪物理按键。全部数字键释放后静默 120ms 才提交，连续按键只提交一次。Esc、Tab、Shift+Tab、关闭按钮或失焦取消尚未提交的跳转。
+- 数字映射只在明确再次进入时建立；snapshot 更新只刷新原 ID 的标题、状态和可用性。消失或变得不可聚焦的会话保留原数字但不可激活，新会话不会顶替它。空列表展示提示，不进入数字模式；单个候选也要显式按 `1`。
+- `preload-session-quick-select.js` 只提供进入、展示数据订阅、激活和取消。三个 invoke channel 都检查当前 owner 的真实 main frame 和精确本地页面 URL；激活只接受 `{ sessionId }`，并在主进程按最新共享 snapshot 再校验候选。
+- `submitted` 仅表示已交给现有平台 focus 路径，不表示已确认前台，更不 ack completion。成功提交不提前隐藏/销毁窗口；原生焦点离开后才收起。若目标未取得焦点，保留窄提示和 Esc 退出入口。
+- Windows 固定使用 `skipTaskbar:true`、`type:"toolbar"`，不进入 Alt+Tab。显式取消时，`quick-select-origin-focus.js` 仅在快选仍持有原生前台、来源 HWND 的 PID 一致且仍可见时尝试返回本轮来源；失焦和正常目标交接不执行这个恢复，不注入 ALT 或改 z-order。
+- macOS 独立快选使用 framed `type:"panel"`：Electron 的 `show()` / `focus()` 只取得 key-window 焦点，不激活整个应用，避免 Dock 可见时把 Clawd 插入 Cmd+Tab 返回链。用户 Dock 设置、应用 activation policy 和普通 Dashboard 均不变；沿用 keep-open、原生 blur 后收起的交接顺序。两种 Dock 设置下的数字输入、取消及 Terminal / Codex task 返回均需真实键盘与前台窗口验收，不能从 unit tests 推断。
+- renderer 的 main-frame navigation/reload 会使旧 readiness、映射和 revision 失效。新页面挂好订阅后消费 intent，窗口同时等到页面完成加载才显示；关闭或 renderer 崩溃清理 owner 状态，下次快捷键重建。
+
 ### Sound
 
 - `app.commandLine.appendSwitch("autoplay-policy", "no-user-gesture-required")` 要在窗口创建前设置
