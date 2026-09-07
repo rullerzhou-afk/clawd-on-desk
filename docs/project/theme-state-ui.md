@@ -165,7 +165,7 @@ Mini 状态映射：
 - `preload-session-quick-select.js` 只提供进入、展示数据订阅、激活和取消。三个 invoke channel 都检查当前 owner 的真实 main frame 和精确本地页面 URL；激活只接受 `{ sessionId }`，并在主进程按最新共享 snapshot 再校验候选。
 - `submitted` 仅表示已交给现有平台 focus 路径，不表示已确认前台，更不 ack completion。成功提交不提前隐藏/销毁窗口；原生焦点离开后才收起。若目标未取得焦点，保留窄提示和 Esc 退出入口。
 - Windows 固定使用 `skipTaskbar:true`、`type:"toolbar"`，不进入 Alt+Tab。显式取消时，`quick-select-origin-focus.js` 仅在快选仍持有原生前台、来源 HWND 的 PID 一致且仍可见时尝试返回本轮来源；失焦和正常目标交接不执行这个恢复，不注入 ALT 或改 z-order。
-- macOS 保留普通 framed window 和应用既有 activation policy，沿用 keep-open 交接顺序。旧 Terminal 实验 PASS 不代表新 owner、收起时机和 Codex task 返回已完成 Mac 真机验收；这些仍需在最终实现上验证。
+- macOS 独立快选使用 framed `type:"panel"`：Electron 的 `show()` / `focus()` 只取得 key-window 焦点，不激活整个应用，避免 Dock 可见时把 Clawd 插入 Cmd+Tab 返回链。用户 Dock 设置、应用 activation policy 和普通 Dashboard 均不变；沿用 keep-open、原生 blur 后收起的交接顺序。两种 Dock 设置下的数字输入、取消及 Terminal / Codex task 返回均需真实键盘与前台窗口验收，不能从 unit tests 推断。
 - renderer 的 main-frame navigation/reload 会使旧 readiness、映射和 revision 失效。新页面挂好订阅后消费 intent，窗口同时等到页面完成加载才显示；关闭或 renderer 崩溃清理 owner 状态，下次快捷键重建。
 
 ### Sound

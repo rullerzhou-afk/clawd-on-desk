@@ -230,13 +230,13 @@ test("only explicit cancellation restores the captured source, never target-driv
   h.owner.dispose();
 });
 
-test("Windows uses the proven tool-window shape; Mac stays ordinary and geometry fits the display", () => {
+test("Windows keeps its tool window, Mac uses a non-activating panel, and geometry fits the display", () => {
   for (const platform of ["win32", "darwin", "linux"]) {
     const h = harness({ platform, textScale: 1.6, workArea: { x: -400, y: 20, width: 400, height: 300 } });
     h.open();
     const win = h.owner.getWindow();
     assert.equal(win.opts.skipTaskbar, platform !== "darwin");
-    assert.equal(win.opts.type, platform === "win32" ? "toolbar" : undefined);
+    assert.equal(win.opts.type, { win32: "toolbar", darwin: "panel" }[platform]);
     assert.equal(win.opts.alwaysOnTop, false);
     assert.equal(win.opts.parent, undefined);
     assert.equal(win.opts.webPreferences.sandbox, true);
@@ -249,4 +249,31 @@ test("Windows uses the proven tool-window shape; Mac stays ordinary and geometry
     assert.equal(h.handlers.size, 0);
     assert.equal(h.theme.listenerCount("updated"), 0);
   }
+});
+
+test("Mac panel retains focused trusted IPC through reload and reuse, hiding only after target blur", () => {
+  const h = harness({ platform: "darwin" });
+  h.open();
+  const win = h.owner.getWindow();
+  assert.equal(win.opts.type, "panel");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    win.webContents.emit("did-start-navigation", {}, "file:///reload", false, true);
+    win.webContents.emit("did-finish-load");
+    assert.equal(h.invoke("consume-intent").enterQuickSelect, true);
+    assert.equal(win.focused, true);
+    assert.equal(h.invoke("activate-session", { sessionId: "a" }).status, "submitted");
+    assert.equal(h.invoke("activate-session", { sessionId: "a" }).reason, "dropped-duplicate");
+    assert.equal(win.visible, true);
+    win.focused = false;
+    win.emit("blur");
+    assert.equal(win.visible, false);
+    assert.equal(h.invoke("activate-session", { sessionId: "a" }).reason, "quick-select-inactive");
+    h.open();
+    assert.equal(h.owner.getWindow(), win);
+  }
+  assert.equal(h.calls.length, 2);
+  h.invoke("dismiss");
+  assert.equal(win.visible, false);
+  assert.equal(h.windows.length, 1);
+  h.owner.dispose();
 });

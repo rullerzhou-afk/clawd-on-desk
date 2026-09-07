@@ -121,10 +121,12 @@ module.exports = function initSessionQuickSelect(ctx) {
       maximizable: false,
       alwaysOnTop: false,
       // Windows tool windows can take keyboard focus without entering Alt+Tab.
-      // macOS keeps the ordinary window shape from the successful keep-open
-      // experiment; never destroy or hide it before dispatching the handoff.
+      // macOS panels take key focus without activating the app in show()/focus().
+      // This keeps Clawd out of the Cmd+Tab return path even with its Dock tile
+      // visible. Keep the panel open until native blur completes the handoff.
       skipTaskbar: platform !== "darwin",
       ...(platform === "win32" ? { type: "toolbar" } : {}),
+      ...(platform === "darwin" ? { type: "panel" } : {}),
       title: ctx.t("dashboardQuickSelectTitle"),
       backgroundColor: background(),
       ...(ctx.iconPath ? { icon: ctx.iconPath } : {}),
