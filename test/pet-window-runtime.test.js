@@ -2945,6 +2945,7 @@ describe("pet-window-runtime", () => {
       "setBounds",
       { x: 40, y: 0, width: 120, height: 120 },
     ]);
+    assert.equal(Object.hasOwn(instances[0].options.webPreferences, "sandbox"), false);
     assert.equal(harness.runtime.getViewportOffsetY(), 25);
   });
 
@@ -3007,6 +3008,85 @@ describe("pet-window-runtime", () => {
 
     assert.equal(instances[0].options.focusable, false);
     assert.equal(instances[0].options.type, "toolbar");
+    assert.equal(Object.hasOwn(instances[0].options, "show"), false);
+    assert.equal(Object.hasOwn(instances[0].options.webPreferences, "sandbox"), false);
+  });
+
+  it("disables the preload sandbox only for the exact experimental window role", () => {
+    const renderInstances = [];
+    const renderHarness = createRuntime({ isWin: false, isLinux: true });
+    const renderOptions = {
+      BrowserWindow: makeBrowserWindow(renderInstances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: {},
+      setRenderWindow: renderHarness.setRenderWin,
+    };
+    renderHarness.runtime.createRenderWindow({
+      ...renderOptions,
+      additionalArguments: ["--niri-inspect-role=render"],
+    });
+    renderHarness.runtime.createRenderWindow({
+      ...renderOptions,
+      additionalArguments: ["--unrelated-argument=1"],
+    });
+    renderHarness.runtime.createRenderWindow({
+      ...renderOptions,
+      additionalArguments: ["--niri-inspect-role=hit"],
+    });
+    renderHarness.runtime.createRenderWindow({
+      ...renderOptions,
+      additionalArguments: ["--niri-inspect-role=render-extra"],
+    });
+
+    assert.equal(renderInstances[0].options.webPreferences.sandbox, false);
+    assert.ok(renderInstances[0].options.webPreferences.additionalArguments.includes("--niri-inspect-role=render"));
+    assert.equal(Object.hasOwn(renderInstances[1].options.webPreferences, "sandbox"), false);
+    assert.equal(Object.hasOwn(renderInstances[2].options.webPreferences, "sandbox"), false);
+    assert.equal(Object.hasOwn(renderInstances[3].options.webPreferences, "sandbox"), false);
+
+    const instances = [];
+    const harness = createRuntime({ isWin: false, isLinux: true });
+
+    const hit = harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: {},
+      additionalArguments: ["--niri-inspect-role=hit"],
+      deferShow: true,
+    });
+
+    assert.deepStrictEqual(hit.calls.filter((call) => call[0] === "showInactive"), []);
+    assert.equal(hit.options.show, false);
+    assert.equal(hit.options.webPreferences.sandbox, false);
+    assert.ok(hit.options.webPreferences.additionalArguments.includes("--niri-inspect-role=hit"));
+    assert.equal(harness.runtime.showHitWindow(hit), true);
+    assert.equal(harness.runtime.showHitWindow(hit), true);
+    assert.deepStrictEqual(hit.calls.filter((call) => call[0] === "showInactive"), [["showInactive"]]);
+
+    const wrongRoleInstances = [];
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(wrongRoleInstances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: {},
+      additionalArguments: ["--niri-inspect-role=render"],
+    });
+    assert.equal(Object.hasOwn(wrongRoleInstances[0].options.webPreferences, "sandbox"), false);
+
+    const nearMatchInstances = [];
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(nearMatchInstances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: {},
+      additionalArguments: ["--niri-inspect-role=hit-extra"],
+    });
+    assert.equal(Object.hasOwn(nearMatchInstances[0].options.webPreferences, "sandbox"), false);
   });
 
   it("materializes virtual bounds into viewport offset and syncs the hit shape once per size", () => {

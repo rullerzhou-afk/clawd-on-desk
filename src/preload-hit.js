@@ -1,4 +1,11 @@
 const { contextBridge, ipcRenderer, webUtils } = require("electron");
+const niriInspectRoleArg = process.argv.find(
+  (arg) => arg === "--niri-inspect-role=render" || arg === "--niri-inspect-role=hit"
+);
+if (niriInspectRoleArg) {
+  const { exposeNiriInspectBridge } = require("./niri-inspect-preload");
+  exposeNiriInspectBridge(contextBridge, ipcRenderer, process.argv);
+}
 
 // Parse hit-renderer theme config from additionalArguments (synchronous, available on first load)
 const hitThemeArg = process.argv.find(a => a.startsWith("--hit-theme-config="));

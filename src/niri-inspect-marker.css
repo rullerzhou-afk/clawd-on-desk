@@ -1,0 +1,42 @@
+.niri-inspect-marker {
+  position: fixed;
+  z-index: 2147483647;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  pointer-events: none;
+}
+
+.niri-inspect-marker--top-left { left: 3px; top: 3px; }
+.niri-inspect-marker--top-right { right: 3px; top: 3px; }
+.niri-inspect-marker--bottom-left { left: 3px; bottom: 3px; }
+.niri-inspect-marker--bottom-right { right: 3px; bottom: 3px; }
+
+.niri-inspect-marker--render {
+  background: rgb(0, 255, 76);
+  border: 2px solid rgb(7, 7, 7);
+}
+
+.niri-inspect-marker--render::after {
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  right: 0;
+  bottom: 0;
+  background: rgb(255, 255, 255);
+}
+
+.niri-inspect-marker--hit {
+  border: 3px solid rgb(255, 0, 212);
+}
+
+.niri-inspect-marker--hit::after {
+  content: "";
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  left: -3px;
+  top: -3px;
+  background: rgb(0, 234, 255);
+}
