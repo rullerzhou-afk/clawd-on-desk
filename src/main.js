@@ -1044,6 +1044,18 @@ function setAccessoryMirrored(mirrored) {
 }
 
 const petWindowRuntime = createPetWindowRuntime({
+  // Every stranded-lock release entry (bring to primary display, send to
+  // display, manual hide) funnels through releaseStrandedDragLock and hence
+  // through this hook: one full cross-process cleanup instead of each caller
+  // reimplementing it.
+  onStrandedDragLockReleased: () => {
+    idlePaused = false;
+    mouseOverPet = false;
+    // An alive renderer with a phantom capture (its isDragging still true
+    // because the closing event was swallowed) drops it through the normal
+    // stop path, so gesture state, drag reaction and the input gate unwind.
+    sendToHitWin("force-drag-release");
+  },
   screen,
   isWin,
   isMac,
@@ -4119,6 +4131,9 @@ function showResumeInput(t) {
 const _menuCtx = {
   get win() { return win; },
   get sessions() { return sessions; },
+  // Recovery actions must defeat a stranded drag lock (syncHitWin defers while
+  // it is held); see pet-window-runtime releaseStrandedDragLock.
+  releaseStrandedDragLock: () => petWindowRuntime.releaseStrandedDragLock(),
   get currentSize() { return currentSize; },
   set currentSize(v) { _settingsController.applyUpdate("size", v); },
   get doNotDisturb() { return doNotDisturb; },

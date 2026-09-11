@@ -87,6 +87,17 @@ area.addEventListener("pointerdown", (e) => {
 
 document.addEventListener("pointermove", (e) => {
   if (isDragging) {
+    // A swallowed pointerup (UAC secure desktop, RDP reconnect, fullscreen
+    // transition) leaves isDragging and the main-process drag lock stranded
+    // while hover moves keep flowing. The first move with no pressed button
+    // proves the physical gesture is over — finish through the normal stop
+    // path (drag-lock false, drag-end if moved). A real drag always carries
+    // buttons != 0, and a held-still mouse emits no moves at all, so a
+    // genuine long press is never cut short by this.
+    if (e.buttons === 0) {
+      stopDrag();
+      return;
+    }
     if (!didDrag) {
       const totalDx = e.clientX - mouseDownX;
       const totalDy = e.clientY - mouseDownY;
@@ -148,6 +159,14 @@ document.addEventListener("pointerup", (e) => {
 area.addEventListener("pointercancel", () => stopDrag());
 area.addEventListener("lostpointercapture", () => { if (isDragging) stopDrag(); });
 window.addEventListener("blur", stopDrag);
+
+// Main released the lock because a user-invoked recovery ran (bring to
+// primary display / send to display / hide show). If this renderer is alive
+// and still holding a phantom capture, drop it through the normal stop path
+// so gesture state, drag reaction and the input gate all unwind together.
+window.hitAPI.onForceDragRelease(() => {
+  if (isDragging) stopDrag();
+});
 
 // --- Click reaction logic (2-click = poke, 4-click = flail) ---
 const CLICK_WINDOW_MS = 400;

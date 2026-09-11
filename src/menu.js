@@ -469,6 +469,10 @@ module.exports = function initMenu(ctx) {
   function sendToDisplay(display) {
     if (!ctx.win || ctx.win.isDestroyed()) return;
     if (ctx.getMiniMode()) return;
+    // With a stranded drag lock, syncHitWin() defers and the input window
+    // would stay behind while the pet jumps displays. Release before moving;
+    // a live drag only loses its follow until its own pointerup completes.
+    if (typeof ctx.releaseStrandedDragLock === "function") ctx.releaseStrandedDragLock();
     const wa = display.workArea;
     const size = typeof ctx.getEffectiveCurrentPixelSize === "function"
       ? ctx.getEffectiveCurrentPixelSize(wa)

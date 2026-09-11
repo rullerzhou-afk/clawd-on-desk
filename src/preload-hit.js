@@ -43,4 +43,7 @@ contextBridge.exposeInMainWorld("hitAPI", {
   // State sync ← main
   onStateSync: (cb) => ipcRenderer.on("hit-state-sync", (_, data) => cb(data)),
   onCancelReaction: (cb) => ipcRenderer.on("hit-cancel-reaction", () => cb()),
+  // Main released a drag lock from a user-invoked recovery action; drop any
+  // local capture so the next gesture starts clean.
+  onForceDragRelease: (cb) => ipcRenderer.on("force-drag-release", () => cb()),
 });
