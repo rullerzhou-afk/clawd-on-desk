@@ -134,19 +134,17 @@
       count.textContent = String(shown);
     }
 
-    const search = document.createElement("input");
-    search.type = "search";
-    search.className = "agent-section-search";
-    search.placeholder = t("agentSearchPlaceholder");
-    search.value = runtime.agentsUnavailableQuery || "";
-    // The input sits inside the collapsible header, whose click and Enter/Space
-    // handlers would otherwise toggle the group out from under the typist.
-    const stopHeaderToggle = (event) => {
-      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
-    };
-    search.addEventListener("click", stopHeaderToggle);
-    search.addEventListener("keydown", stopHeaderToggle);
-
+    const search = helpers.buildTextInput({
+      type: "search",
+      size: "compact",
+      className: "agent-section-search",
+      placeholder: t("agentSearchPlaceholder"),
+      ariaLabel: t("agentSearchPlaceholder"),
+      value: runtime.agentsUnavailableQuery || "",
+      stopPropagation: true,
+    });
+    // The input sits inside the collapsible header, so the shared primitive
+    // stops click/keydown propagation before the header can toggle.
     function commitQuery(event) {
       runtime.agentsUnavailableQuery = (event && event.target && event.target.value) || "";
       applyFilter();
@@ -1357,17 +1355,18 @@
     statusLine.textContent = t("kimiQuotaStatusLoading");
     card.appendChild(statusLine);
 
-    function makePasswordInput() {
-      const input = document.createElement("input");
-      input.type = "password";
-      input.className = "kimi-quota-key-input";
-      input.placeholder = t("kimiQuotaApiKeyPlaceholder");
-      input.autocomplete = "new-password";
-      input.spellcheck = false;
-      input.setAttribute("aria-label", t("kimiQuotaApiKeyPlaceholder"));
-      input.addEventListener("click", (event) => event.stopPropagation());
-      input.addEventListener("keydown", (event) => event.stopPropagation());
-      return input;
+    function makePasswordInput(onEnter) {
+      return helpers.buildTextInput({
+        type: "password",
+        className: "kimi-quota-key-input",
+        placeholder: t("kimiQuotaApiKeyPlaceholder"),
+        autocomplete: "new-password",
+        spellcheck: false,
+        ariaLabel: t("kimiQuotaApiKeyPlaceholder"),
+        stopPropagation: true,
+        onEnter,
+        onInput: (event) => helpers.setTextInputState(event.currentTarget, { invalid: false }),
+      });
     }
 
     function makeConsoleLink() {
@@ -1394,7 +1393,9 @@
     connectSection.hidden = true;
     const connectRow = document.createElement("div");
     connectRow.className = "kimi-quota-connect-row";
-    const connectInput = makePasswordInput();
+    const connectInput = makePasswordInput((_event, input) => {
+      submitKey(input, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
     const connectButton = helpers.buildButton({
       labelKey: "kimiQuotaConnect",
       tone: "accent",
@@ -1456,7 +1457,9 @@
     const replacePanel = document.createElement("div");
     replacePanel.className = "kimi-quota-replace";
     replacePanel.hidden = true;
-    const replaceInput = makePasswordInput();
+    const replaceInput = makePasswordInput((_event, input) => {
+      submitKey(input, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
     replacePanel.appendChild(replaceInput);
     const replaceActions = document.createElement("div");
     replaceActions.className = "kimi-quota-replace-actions";
@@ -1553,8 +1556,8 @@
         disabled: busy,
         pending: pendingButton === connectButton,
       });
-      connectInput.disabled = busy;
-      replaceInput.disabled = busy;
+      helpers.setTextInputState(connectInput, { pending: busy });
+      helpers.setTextInputState(replaceInput, { pending: busy });
       helpers.setButtonState(replaceConfirm, {
         disabled: busy,
         pending: pendingButton === replaceConfirm,
@@ -1616,6 +1619,8 @@
       const apiKey = input.value;
       input.value = "";
       if (!apiKey) {
+        helpers.setTextInputState(input, { invalid: true });
+        input.focus();
         ops.showToast(t("kimiQuotaKeyRequired"), { error: true });
         return;
       }
@@ -1654,13 +1659,6 @@
       if (typeof window.confirm === "function" && !window.confirm(t("kimiQuotaForgetConfirm"))) return;
       runAction(() => window.settingsAPI.forgetKimiQuotaCredential(), forgetButton);
     });
-    connectInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") submitKey(connectInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
-    });
-    replaceInput.addEventListener("keydown", (event) => {
-      if (event.key === "Enter") submitKey(replaceInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
-    });
-
     syncControls();
     void reloadStatus();
     return card;
@@ -2164,38 +2162,29 @@
     placeholderKey,
     value,
   }) {
-    const row = document.createElement("div");
-    row.className = "row row-sub agent-text-input-row";
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t(labelKey);
-    text.appendChild(label);
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t(descKey);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control agent-text-input-control";
-    const input = document.createElement("input");
-    input.type = "text";
-    input.value = typeof value === "function" ? value() : "";
-    input.placeholder = t(placeholderKey);
-    input.spellcheck = false;
-    input.addEventListener("click", (ev) => ev.stopPropagation());
-    input.addEventListener("keydown", (ev) => {
-      ev.stopPropagation();
-      if (ev.key === "Enter") input.blur();
+    const rowParts = helpers.buildSettingRow({
+      labelKey,
+      descriptionKey: descKey,
+      className: "row-sub agent-text-input-row",
+      controlClassName: "agent-text-input-control",
+    });
+    const row = rowParts.element;
+    const ctrl = rowParts.controlElement;
+    const input = helpers.buildTextInput({
+      type: "text",
+      value: typeof value === "function" ? value() : "",
+      placeholder: t(placeholderKey),
+      spellcheck: false,
+      labelledBy: rowParts.labelElement.id,
+      describedBy: rowParts.descriptionElement ? rowParts.descriptionElement.id : null,
+      stopPropagation: true,
+      onEnter: () => input.blur(),
+      onInput: (event) => helpers.setTextInputState(event.currentTarget, { invalid: false }),
     });
     input.addEventListener("change", () => {
       saveAgentTextInput(input, { agentId, command });
     });
     ctrl.appendChild(input);
-    row.appendChild(ctrl);
     row._settingsInput = input;
     row._settingsControl = ctrl;
     return row;
@@ -2207,7 +2196,7 @@
       return { status: "error", message: "settings API unavailable" };
     }
     const nextValue = input.value;
-    input.disabled = true;
+    helpers.setTextInputState(input, { pending: true });
     try {
       const result = await window.settingsAPI.command(command, {
         agentId,
@@ -2215,19 +2204,24 @@
       });
       if (!result || result.status !== "ok") {
         const msg = (result && result.message) || "unknown error";
+        helpers.setTextInputState(input, { invalid: true });
+        input.focus();
         ops.showToast(t("toastSaveFailed") + msg, { error: true });
         return result || { status: "error", message: msg };
       }
+      helpers.setTextInputState(input, { invalid: false });
       ops.showToast(t("toastAgentCustomSaved"));
       if (command === "setAgentCustomDiscoveryPaths" && typeof ops.fetchAgentInstallationHints === "function") {
         await ops.fetchAgentInstallationHints({ force: true });
       }
       return result;
     } catch (err) {
+      helpers.setTextInputState(input, { invalid: true });
+      input.focus();
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       return { status: "error", message: err && err.message };
     } finally {
-      input.disabled = false;
+      helpers.setTextInputState(input, { pending: false });
     }
   }
 
