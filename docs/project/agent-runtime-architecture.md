@@ -41,9 +41,11 @@ Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 
 它只在本地 `CODEX_HOME` 的 `archived_sessions` 里寻找 regular `rollout-*.jsonl`，
 用文件名推导出的 canonical UUID 与文件头部有界 `session_meta`（`payload.id` /
 `payload.session_id`，两者同时存在必须一致且等于文件名 id）校验，再对同一 path 做
-读后快照复核。缺文件是 unarchive 证据；目录不可列、stat/read 的 EACCES/EPERM/EIO 等
-I/O 错误、截断/损坏/冲突元数据、部分扫描都只算 UNKNOWN：保留既有 suppression、绝不据此
-退役，也不会清缓存把晚到 hook 放进来。
+读后快照复核。归档文件消失是 unarchive 证据；截断/损坏/冲突或 id 不匹配的元数据从不构成
+归档证据，不会据此退役；目录不可列、stat/read 的 EACCES/EPERM/EIO 等 I/O 错误与被中断的
+扫描只算 UNKNOWN：保留既有 suppression、绝不据此退役，也不会清缓存把晚到 hook 放进来。
+已确认的归档文件若内容变化会完整重验：重验遇 I/O 错误仍保留 suppression；重验确认已无效
+（元数据损坏/冲突、不再是该任务或文件已消失）则丢弃该缓存并解除 suppression。
 正向证据确认后，`agent-runtime-main` 先经由窄的 archive 生命周期入口（复用 session
 automation coordinator 的 `onSessionLifecycleEnd`/`clearIdentity`）撤销该 session 的
 automation grant 并取消待决 trust candidate；再复用 `state.dismissSession` 移除该
