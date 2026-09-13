@@ -34,6 +34,23 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
+Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 从
+`sessions/` 移入扁平的 `<CODEX_HOME>/archived_sessions/`（文件名不变，`codex archive` /
+`unarchive` 已验证于 0.154.0）。`src/codex-archive-tracker.js` 由
+`src/agent-runtime-main.js` 与本地 Codex runtime 同启同停，独立于 JSONL 内容解析：
+它只在本地 `CODEX_HOME` 的 `archived_sessions` 里寻找 regular `rollout-*.jsonl`，
+用文件名推导出的 canonical UUID 与文件头部有界 `session_meta`（`payload.id` /
+`payload.session_id`）双重校验，再对同一 path 做读后快照复核。缺文件、目录不可列、
+权限错误、截断/损坏元数据、部分扫描与 I/O 错误都只算 UNKNOWN，绝不据此退役。
+正向证据确认后，`agent-runtime-main` 复用 `state.dismissSession` 移除该 local Codex
+session 的 live card/focus 条目，并只对该 session 清 owned passive 气泡、把 owned
+交互审批交还 no-decision（不播放完成音效、不计 recap、不伪造 allow/deny）。归档证据
+有效期间，迟到的 official hook / JSONL / passive user-input 回调被拦截（access quota/
+context 仍照常摄入）；归档文件消失（unarchive）即解除抑制，之后的新真实活动可重新建卡。
+remote SSH profile、WSL 与其它 agent 即使 raw id 相同也不匹配。每轮只做一次
+readdir、至多校验一个 batch，跨轮排空超过一个 batch 的目录（live 候选优先），无同步
+热路径扫描；disable/cleanup/根代际变化会作废在途异步结果。
+
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
 `commandWindows` 使用 PowerShell call-operator 直连：
 `& "node" "codex-hook.js" --clawd-windows-stable`；
@@ -371,6 +388,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus、permission；无 subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
+- `src/codex-archive-tracker.js` — 本地 Codex `archived_sessions` 正向归档证据 tracker（有界异步扫描、读后快照复核、generation 作废；无同步热路径）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
 
 运行时的 agent 安装意图 / 启停 / 权限气泡开关通过 `src/agent-gate.js` 读 `prefs.agents[id].integrationInstalled` / `.enabled` / `.permissionsEnabled`。`enabled` 仍然只表示是否处理该 agent 的事件：关闭会让 `state.js` / `server.js` 停止处理事件、清理 session / bubble；`integrationInstalled` 才表示本机 hook/plugin/extension 是否由 Clawd 维护。snapshot 缺字段时 gate 保守默认 true 以兼容旧版；新安装的 schema 会显式把 Claude Code / Codex 设为已安装且启用，其余 agent 设为未安装且未启用。Claude Code 额外有 `.subagentPermissionsEnabled` 子开关（#451，仅 claude-code 默认条目携带该 flag），控制 Task 子 agent 发起的 PermissionRequest 是否弹泡泡。

@@ -7,6 +7,7 @@ const {
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
 const { resolveSessionIdentity } = require("./session-key");
+const { bareCodexSessionId } = require("../hooks/codex-session-index");
 const { digestCodexTurnId, normalizeCodexTurnId } = require("./codex-turn-id");
 const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
@@ -109,6 +110,128 @@ function createAgentRuntimeMain(options = {}) {
     return codexOfficialActivity.hasRecent(sessionId, turnId);
   }
 
+  // ── Local Codex archive lifecycle (#655) ────────────────────────────────
+  // Positive local archive evidence retires the live card/focus entry and
+  // suppresses late lifecycle callbacks for that raw id until the archived file
+  // disappears (unarchive). Remote profiles, WSL and other agents are never
+  // matched even when their raw id collides. The tracker is independent of the
+  // JSONL monitor so official-hook-only sessions are covered too.
+  const loadCodexArchiveTracker = typeof options.loadCodexArchiveTracker === "function"
+    ? options.loadCodexArchiveTracker
+    : null;
+  let codexArchiveTracker = options.codexArchiveTracker || null;
+
+  function clearCodexSessionTracking(sessionId) {
+    if (codexTurnFence && typeof codexTurnFence.clearSession === "function") {
+      codexTurnFence.clearSession(sessionId);
+    }
+    if (codexOfficialActivity && typeof codexOfficialActivity.clearSession === "function") {
+      codexOfficialActivity.clearSession(sessionId);
+    }
+  }
+
+  function isLocalCodexSessionRecord(session) {
+    return !!(
+      session
+      && session.agentId === "codex"
+      && (session.profileId || "local") === "local"
+      && !session.host
+      && !session.wslDistro
+    );
+  }
+
+  function collectLiveLocalCodexCandidates() {
+    const state = getStateRuntime();
+    const sessions = state && state.sessions;
+    const out = [];
+    if (!sessions || typeof sessions.forEach !== "function") return out;
+    sessions.forEach((session, id) => {
+      if (!isLocalCodexSessionRecord(session)) return;
+      const raw = bareCodexSessionId(session.rawSessionId || id);
+      if (raw) out.push(raw);
+    });
+    return out;
+  }
+
+  function retireArchivedCodexSession(sessionId) {
+    const state = getStateRuntime();
+    if (!state || typeof state.dismissSession !== "function") return false;
+    // Owned passive cards are cleared; any owned interactive prompt is handed
+    // back with no-decision semantics scoped to this session only.
+    clearCodexNotifyBubbles(sessionId, "codex-session-archived");
+    clearCodexUserInputBubbles(sessionId, undefined, "codex-session-archived");
+    const perm = getPermissionRuntime();
+    if (perm && typeof perm.dismissPermissionsForSession === "function") {
+      perm.dismissPermissionsForSession(sessionId, "codex-session-archived");
+    }
+    // Archive is not a completion: no sound, recap or completion push. Reset
+    // per-session fence tombstones so a later unarchive + real turn resumes.
+    clearCodexSessionTracking(sessionId);
+    return state.dismissSession(sessionId) === true;
+  }
+
+  function handleCodexArchiveConfirmed(rawArchiveId) {
+    const state = getStateRuntime();
+    const sessions = state && state.sessions;
+    if (!sessions || typeof sessions.forEach !== "function") return false;
+    const targets = [];
+    sessions.forEach((session, id) => {
+      if (!isLocalCodexSessionRecord(session)) return;
+      const raw = bareCodexSessionId(session.rawSessionId || id);
+      if (raw === rawArchiveId) targets.push(id);
+    });
+    let retired = false;
+    for (const id of targets) {
+      if (retireArchivedCodexSession(id)) retired = true;
+    }
+    return retired;
+  }
+
+  function ensureCodexArchiveTracker() {
+    if (codexArchiveTracker) return codexArchiveTracker;
+    if (typeof loadCodexArchiveTracker !== "function") return null;
+    try {
+      const createTracker = loadCodexArchiveTracker();
+      const trackerOptions = options.codexArchiveOptions
+        && typeof options.codexArchiveOptions === "object"
+        ? options.codexArchiveOptions
+        : {};
+      codexArchiveTracker = createTracker({
+        debugLog,
+        now,
+        getLiveCandidateIds: collectLiveLocalCodexCandidates,
+        onArchiveConfirmed: handleCodexArchiveConfirmed,
+        ...trackerOptions,
+      });
+    } catch (err) {
+      logWarn("Clawd: Codex archive tracker not started:", err && err.message);
+      codexArchiveTracker = null;
+    }
+    return codexArchiveTracker;
+  }
+
+  function startCodexArchiveTracker() {
+    const tracker = ensureCodexArchiveTracker();
+    if (tracker && typeof tracker.start === "function") tracker.start();
+    return tracker;
+  }
+
+  function stopCodexArchiveTracker() {
+    if (codexArchiveTracker && typeof codexArchiveTracker.stop === "function") {
+      codexArchiveTracker.stop();
+    }
+  }
+
+  function shouldSuppressCodexArchive(rawSessionId, opts = {}) {
+    if (!codexArchiveTracker || typeof codexArchiveTracker.isArchived !== "function") return false;
+    if (!opts || opts.agentId !== "codex") return false;
+    if ((opts.profileId || "local") !== "local") return false;
+    if (opts.host || opts.wslDistro) return false;
+    const raw = bareCodexSessionId(rawSessionId);
+    if (!raw) return false;
+    return codexArchiveTracker.isArchived(raw) === true;
+  }
+
   // JSONL fallback rescue. Official Codex hooks normally emit a Stop that closes
   // the turn, so the matching JSONL event_msg:task_complete is suppressed as a
   // duplicate. But when the official Stop never arrives, the session stays stuck
@@ -170,6 +293,22 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function updateSessionFromServer(sessionId, state, event, opts = {}) {
+    // Late official hooks for a locally archived task must not recreate an
+    // entry. Scoped to the local profile only; remote/WSL are never matched.
+    // Decision-bearing permission events are never gated here: an archived
+    // task's prompt must still reach the user (or fall back to native), never
+    // be silently dropped by archive bookkeeping.
+    const decisionEvent = event === "PermissionRequest"
+      || (opts && opts.transientPermissionEvent === true);
+    if (!decisionEvent
+      && shouldSuppressCodexArchive(opts && opts.rawSessionId ? opts.rawSessionId : sessionId, {
+        agentId: opts && opts.agentId,
+        profileId: opts && opts.profileId,
+        host: opts && opts.host,
+        wslDistro: opts && opts.wslDistro,
+      })) {
+      return false;
+    }
     if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
       markCodexOfficialHookSession(sessionId, opts.turnId);
       if (opts.profileId === "local") {
@@ -259,11 +398,15 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function startMonitorForAgent(agentId) {
-    if (agentId === "codex" && codexMonitor) codexMonitor.start();
+    if (agentId !== "codex") return;
+    if (codexMonitor) codexMonitor.start();
+    if (isAgentEnabled("codex")) startCodexArchiveTracker();
   }
 
   function stopMonitorForAgent(agentId) {
-    if (agentId === "codex" && codexMonitor) codexMonitor.stop();
+    if (agentId !== "codex") return;
+    if (codexMonitor) codexMonitor.stop();
+    stopCodexArchiveTracker();
   }
 
   function callServer(method, ...args) {
@@ -314,7 +457,10 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function clearSessionsByAgent(agentId) {
-    if (agentId === "codex") resetLocalCodexLifecycleTracking();
+    if (agentId === "codex") {
+      resetLocalCodexLifecycleTracking();
+      stopCodexArchiveTracker();
+    }
     if (agentId === "qoder" && qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
       qoderSessionTitleTracker.clear();
     }
@@ -344,7 +490,10 @@ function createAgentRuntimeMain(options = {}) {
 
   function startCodexLogMonitor() {
     if (codexMonitor) {
-      if (isAgentEnabled("codex")) codexMonitor.start();
+      if (isAgentEnabled("codex")) {
+        codexMonitor.start();
+        startCodexArchiveTracker();
+      }
       return codexMonitor;
     }
     try {
@@ -384,6 +533,16 @@ function createAgentRuntimeMain(options = {}) {
           annotateCodexAccountQuota();
           return;
         }
+        // Positive archive evidence: drop the lifecycle without recreating the
+        // card, but keep session-independent quota/context ingestion intact.
+        if (shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
+          agentId: "codex",
+          profileId: sessionIdentity.profileId,
+        })) {
+          annotateCodexContextUsage();
+          annotateCodexAccountQuota();
+          return;
+        }
         const fenceDecision = codexTurnFence.observe({
           sessionId,
           source: "jsonl",
@@ -417,6 +576,10 @@ function createAgentRuntimeMain(options = {}) {
         onUserInputRequest: (sid, request, extra) => {
           const sessionIdentity = resolveSessionIdentity(sid, "local");
           const sessionId = sessionIdentity.sessionId;
+          if (shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
+            agentId: "codex",
+            profileId: sessionIdentity.profileId,
+          })) return;
           // A live blocking question proves the turn is still active even when
           // the Desktop app has emitted no ordinary lifecycle hook during a
           // long model/network-retry segment. Never creates a missing session.
@@ -452,18 +615,20 @@ function createAgentRuntimeMain(options = {}) {
           clearCodexUserInputBubbles(sessionId, callId, "codex-user-input-resolved");
         },
       });
-      if (isAgentEnabled("codex")) {
-        codexMonitor.start();
-      }
+      if (isAgentEnabled("codex")) codexMonitor.start();
     } catch (err) {
       logWarn("Clawd: Codex log monitor not started:", err && err.message);
     }
+    // The archive observer is independent of the JSONL monitor, so it still
+    // starts when the monitor is unavailable.
+    if (isAgentEnabled("codex")) startCodexArchiveTracker();
     return codexMonitor;
   }
 
   function cleanup() {
     disposed = true;
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
+    stopCodexArchiveTracker();
     resetLocalCodexLifecycleTracking();
     if (qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
       qoderSessionTitleTracker.clear();
@@ -490,6 +655,10 @@ function createAgentRuntimeMain(options = {}) {
     updateSessionMetadataFromServer,
     markCodexOfficialHookSession,
     shouldSuppressCodexLogEvent,
+    shouldSuppressCodexArchive,
+    startCodexArchiveTracker,
+    stopCodexArchiveTracker,
+    getCodexArchiveTracker: () => codexArchiveTracker,
     resetLocalCodexLifecycleTracking,
     getCodexTurnFenceSnapshot: (sessionId) => codexTurnFence.getSnapshot(sessionId),
     getCodexOfficialActivitySnapshot: (sessionId) => codexOfficialActivity.getSnapshot(sessionId),

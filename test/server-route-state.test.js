@@ -849,6 +849,61 @@ describe("server-route-state POST", () => {
     assert.strictEqual(local.calls.userInputShown[0].agentPid, 4243);
   });
 
+  it("drops archived local Codex lifecycle and passive user-input while keeping quota (#655)", async () => {
+    const suppressedRaw = "codex:archived-1";
+    const isArchived = (raw) => raw === suppressedRaw;
+    const base = {
+      state: "working",
+      session_id: suppressedRaw,
+      event: "PreToolUse",
+      agent_id: "codex",
+      codex_quota: { codexFiveHour: { usedPercent: 5 } },
+    };
+
+    const dropped = await callStatePost(JSON.stringify(base), {
+      ctx: { shouldSuppressCodexArchive: isArchived },
+    });
+    assert.strictEqual(dropped.statusCode, 204);
+    assert.deepStrictEqual(dropped.calls.updateSession, []);
+    assert.strictEqual(dropped.calls.updateAccountQuota.length, 1);
+    assert.deepStrictEqual(
+      dropped.calls.recorder.map((entry) => entry.outcome).filter(Boolean),
+      ["unsupported"]
+    );
+
+    const userInput = await callStatePost(JSON.stringify({
+      state: "notification",
+      session_id: suppressedRaw,
+      event: "CodexUserInputRequest",
+      agent_id: "codex",
+      codex_user_input: {
+        phase: "request",
+        call_id: "call_archived",
+        questions: [{ id: "q", header: "H", question: "Q?", options: [] }],
+      },
+    }), { ctx: { shouldSuppressCodexArchive: isArchived } });
+    assert.strictEqual(userInput.statusCode, 204);
+    assert.deepStrictEqual(userInput.calls.userInputShown, []);
+    assert.deepStrictEqual(userInput.calls.updateSession, []);
+
+    const remote = await callStatePost(JSON.stringify(base), {
+      ctx: { shouldSuppressCodexArchive: isArchived },
+      options: { remoteProfile: { profileId: "ssh-work", displayHost: "workbox" } },
+    });
+    assert.strictEqual(remote.statusCode, 200);
+    assert.strictEqual(remote.calls.updateSession.length, 1);
+
+    const metadata = await callStatePost(JSON.stringify({
+      agent_id: "codex",
+      session_id: suppressedRaw,
+      event: "SessionStart",
+      state: "idle",
+      metadata_only: true,
+    }), { ctx: { shouldSuppressCodexArchive: isArchived } });
+    assert.strictEqual(metadata.statusCode, 204);
+    assert.strictEqual(metadata.calls.updateSession.length, 0);
+  });
+
   it("preserves absent versus authoritative zero for typed Claude background subagents (#952)", async () => {
     const post = (value, include = true) => callStatePost(JSON.stringify({
       state: "attention",

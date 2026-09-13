@@ -490,6 +490,30 @@ function handleStatePost(req, res, options) {
           ...(trustedProfileId === "local" ? {} : { displayHost: host }),
         });
       }
+      // Local Codex archive lifecycle (#655): once the local task's rollout is
+      // confirmed archived, a late lifecycle hook or passive user-input request
+      // must not recreate its card/focus entry. Quota/context above already
+      // landed, so this only drops session lifecycle. Remote SSH and WSL
+      // sessions are excluded even when their raw id collides.
+      const codexArchiveSuppressed = agentId === "codex"
+        && trustedProfileId === "local"
+        && !host
+        && !wslDistro
+        && !metadataOnly
+        && !(codexUserInput && codexUserInput.phase === "resolved")
+        && typeof ctx.shouldSuppressCodexArchive === "function"
+        && ctx.shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
+          agentId,
+          profileId: trustedProfileId,
+          host,
+          wslDistro,
+        });
+      if (codexArchiveSuppressed) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
       if (agentId === "codex" && codexUserInput) {
         const sid = session_id || "default";
         if (codexUserInput.phase === "resolved") {

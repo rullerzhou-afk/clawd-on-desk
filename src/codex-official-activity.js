@@ -91,6 +91,13 @@ function createCodexOfficialActivity(options = {}) {
     sessions.clear();
   }
 
+  // Narrow per-session reset used when a session is retired (archived).
+  function clearSession(sessionId) {
+    const key = String(sessionId || "");
+    if (!key) return false;
+    return sessions.delete(key);
+  }
+
   function getSnapshot(sessionId) {
     const record = sessions.get(String(sessionId || ""));
     if (!record) return null;
@@ -105,6 +112,7 @@ function createCodexOfficialActivity(options = {}) {
     mark,
     hasRecent,
     clear,
+    clearSession,
     getSnapshot,
     get size() { return sessions.size; },
   };

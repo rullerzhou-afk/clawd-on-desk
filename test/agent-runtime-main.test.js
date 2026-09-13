@@ -3,6 +3,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const createAgentRuntimeMain = require("../src/agent-runtime-main");
@@ -1244,5 +1245,294 @@ describe("agent-runtime-main", () => {
     assert.strictEqual(clears, 1);
     runtime.cleanup();
     assert.strictEqual(clears, 2);
+  });
+
+  // ── Local Codex archive lifecycle (#655) ────────────────────────────────
+  const ARCHIVE_UUID = {
+    a: "019d23d4-f1a9-7633-b9c7-758327137228",
+    b: "019d23d4-f1a9-7633-b9c7-758327137229",
+    c: "019d23d4-f1a9-7633-b9c7-75832713722a",
+    d: "019d23d4-f1a9-7633-b9c7-75832713722b",
+    e: "019d23d4-f1a9-7633-b9c7-75832713722c",
+    f: "019d23d4-f1a9-7633-b9c7-75832713722d",
+  };
+
+  function makeTempArchiveHome() {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-archive-runtime-"));
+    const archiveDir = path.join(root, "archived_sessions");
+    fs.mkdirSync(archiveDir);
+    return { root, archiveDir };
+  }
+
+  function archiveSessionMetaLine(id) {
+    return JSON.stringify({
+      timestamp: "2026-03-25T15:10:51.000Z",
+      type: "session_meta",
+      payload: { id, session_id: id, cwd: "/repo" },
+    });
+  }
+
+  function writeArchivedRollout(archiveDir, bare) {
+    const filePath = path.join(archiveDir, `rollout-2026-03-25T15-10-51-${bare}.jsonl`);
+    fs.writeFileSync(filePath, `${archiveSessionMetaLine(bare)}\n`);
+    return filePath;
+  }
+
+  function makeArchiveRuntimeHarness({ root, extraOptions = {} } = {}) {
+    const instances = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      loadCodexArchiveTracker: () => require("../src/codex-archive-tracker"),
+      codexArchiveOptions: {
+        codexHome: root,
+        setInterval: () => 0,
+        clearInterval: () => {},
+      },
+      ...extraOptions,
+    });
+    const monitor = runtime.startCodexLogMonitor();
+    return { runtime, monitor, harness, instances };
+  }
+
+  it("does not build an archive tracker unless a loader is composed", () => {
+    const instances = [];
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+    });
+    runtime.startCodexLogMonitor();
+    assert.strictEqual(runtime.getCodexArchiveTracker(), null);
+    assert.strictEqual(
+      runtime.shouldSuppressCodexArchive(`codex:${ARCHIVE_UUID.a}`, { agentId: "codex", profileId: "local" }),
+      false
+    );
+    runtime.cleanup();
+  });
+
+  it("retires a local Codex task on archive evidence, suppresses late callbacks, and resumes after unarchive", async () => {
+    const { root, archiveDir } = makeTempArchiveHome();
+    const { runtime, monitor, harness } = makeArchiveRuntimeHarness({ root });
+    const bare = ARCHIVE_UUID.a;
+    const raw = `codex:${bare}`;
+    const id = localSessionKey(raw);
+    const official = (state, event) => runtime.updateSessionFromServer(id, state, event, {
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: raw,
+      sourcePid: 42,
+      turnId: "A",
+    });
+    try {
+      assert.notStrictEqual(official("working", "UserPromptSubmit"), false);
+      assert.notStrictEqual(official("attention", "Stop"), false);
+      assert.ok(harness.state.sessions.get(id));
+      const completionSoundsBefore = harness.sounds.filter((name) => name === "complete").length;
+
+      const archivedPath = writeArchivedRollout(archiveDir, bare);
+      await runtime.getCodexArchiveTracker().scanNow();
+
+      assert.strictEqual(harness.state.sessions.get(id), undefined);
+      assert.strictEqual(
+        harness.sounds.filter((name) => name === "complete").length,
+        completionSoundsBefore,
+        "archive retirement is not a completion"
+      );
+
+      assert.strictEqual(official("working", "PostToolUse"), false);
+      assert.strictEqual(harness.state.sessions.get(id), undefined);
+      monitor.emit(raw, "working", "response_item:function_call", { turnId: "A" });
+      assert.strictEqual(harness.state.sessions.get(id), undefined);
+
+      fs.unlinkSync(archivedPath);
+      await runtime.getCodexArchiveTracker().scanNow();
+      assert.notStrictEqual(official("thinking", "UserPromptSubmit"), false);
+      assert.ok(harness.state.sessions.get(id), "fresh activity after unarchive recreates the task");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("archives one local Codex task without touching a sibling sharing the same PID", async () => {
+    const { root, archiveDir } = makeTempArchiveHome();
+    const { runtime, harness } = makeArchiveRuntimeHarness({ root });
+    const rawA = `codex:${ARCHIVE_UUID.b}`;
+    const rawB = `codex:${ARCHIVE_UUID.c}`;
+    const idA = localSessionKey(rawA);
+    const idB = localSessionKey(rawB);
+    const opts = (raw) => ({
+      agentId: "codex",
+      hookSource: "codex-official",
+      profileId: "local",
+      rawSessionId: raw,
+      sourcePid: 42,
+    });
+    try {
+      runtime.updateSessionFromServer(idA, "attention", "Stop", opts(rawA));
+      runtime.updateSessionFromServer(idB, "attention", "Stop", opts(rawB));
+      writeArchivedRollout(archiveDir, ARCHIVE_UUID.b);
+      await runtime.getCodexArchiveTracker().scanNow();
+
+      assert.strictEqual(harness.state.sessions.get(idA), undefined);
+      assert.ok(harness.state.sessions.get(idB));
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("does not retire a remote Codex session that collides on the raw id", async () => {
+    const { root, archiveDir } = makeTempArchiveHome();
+    const { runtime, harness } = makeArchiveRuntimeHarness({ root });
+    const bare = ARCHIVE_UUID.d;
+    const raw = `codex:${bare}`;
+    const localId = localSessionKey(raw);
+    const remoteId = makeSessionKey({ profileId: "profile-a", rawSessionId: raw });
+    try {
+      runtime.updateSessionFromServer(localId, "attention", "Stop", {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: raw,
+        sourcePid: 42,
+      });
+      runtime.updateSessionFromServer(remoteId, "attention", "Stop", {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "profile-a",
+        rawSessionId: raw,
+        host: "box",
+        turnId: "R",
+      });
+      writeArchivedRollout(archiveDir, bare);
+      await runtime.getCodexArchiveTracker().scanNow();
+
+      assert.strictEqual(harness.state.sessions.get(localId), undefined);
+      assert.ok(harness.state.sessions.get(remoteId));
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("scopes archive suppression to local Codex and rejects non-canonical ids", () => {
+    const bare = ARCHIVE_UUID.e;
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      codexArchiveTracker: { isArchived: (raw) => raw === bare, start() {}, stop() {} },
+    });
+    const raw = `codex:${bare}`;
+    assert.strictEqual(runtime.shouldSuppressCodexArchive(raw, { agentId: "codex", profileId: "local" }), true);
+    assert.strictEqual(runtime.shouldSuppressCodexArchive(bare, { agentId: "codex" }), true);
+    assert.strictEqual(runtime.shouldSuppressCodexArchive(raw, { agentId: "codex", profileId: "profile-a" }), false);
+    assert.strictEqual(
+      runtime.shouldSuppressCodexArchive(raw, { agentId: "codex", profileId: "local", wslDistro: "Ubuntu" }),
+      false
+    );
+    assert.strictEqual(
+      runtime.shouldSuppressCodexArchive(raw, { agentId: "codex", profileId: "local", host: "box" }),
+      false
+    );
+    assert.strictEqual(runtime.shouldSuppressCodexArchive(raw, { agentId: "claude-code", profileId: "local" }), false);
+    assert.strictEqual(runtime.shouldSuppressCodexArchive("not-a-uuid", { agentId: "codex", profileId: "local" }), false);
+  });
+
+  it("never gates a decision-bearing permission event behind archive suppression", () => {
+    const bare = ARCHIVE_UUID.e;
+    const raw = `codex:${bare}`;
+    const updates = [];
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      codexArchiveTracker: { isArchived: () => true, start() {}, stop() {} },
+      updateSession: (...args) => updates.push(args),
+    });
+    const opts = {
+      agentId: "codex",
+      profileId: "local",
+      rawSessionId: raw,
+      hookSource: "codex-official",
+    };
+    runtime.updateSessionFromServer(localSessionKey(raw), "working", "PreToolUse", opts);
+    assert.strictEqual(updates.length, 0);
+    runtime.updateSessionFromServer(localSessionKey(raw), "notification", "PermissionRequest", opts);
+    assert.strictEqual(updates.length, 1);
+  });
+
+  it("suppresses archived JSONL lifecycle and passive user-input cards but keeps quota/context", () => {
+    const instances = [];
+    const calls = [];
+    const quotaCalls = [];
+    const metadataCalls = [];
+    const shown = [];
+    const bare = ARCHIVE_UUID.f;
+    const raw = `codex:${bare}`;
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      codexArchiveTracker: { isArchived: (value) => value === bare, start() {}, stop() {} },
+      updateSession: (...args) => calls.push(["update", ...args]),
+      getStateRuntime: () => ({
+        updateAccountQuota: (...args) => quotaCalls.push(args),
+        updateSessionMetadata: (...args) => metadataCalls.push(args),
+      }),
+      showCodexUserInputBubble: (input) => { shown.push(input); return true; },
+      clearCodexUserInputBubbles: (...args) => calls.push(["clear", ...args]),
+    });
+    const monitor = runtime.startCodexLogMonitor();
+
+    monitor.emit(raw, "working", "response_item:function_call", {
+      turnId: "A",
+      contextUsage: { used: 10, limit: 100, percent: 10, source: "codex" },
+      codexQuota: { codexFiveHour: { usedPercent: 1, resetAt: 1 } },
+    });
+    assert.strictEqual(calls.filter((call) => call[0] === "update").length, 0);
+    assert.strictEqual(metadataCalls.length, 1);
+    assert.strictEqual(quotaCalls.length, 1);
+
+    monitor.options.onUserInputRequest(raw, {
+      callId: "call-1",
+      questions: [],
+      autoResolutionMs: null,
+    }, { recapOccurredAt: Date.now(), turnId: "A" });
+    assert.strictEqual(shown.length, 0);
+  });
+
+  it("starts and stops the archive tracker with the Codex gate and cleanup", () => {
+    let starts = 0;
+    let stops = 0;
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      codexArchiveTracker: {
+        isArchived: () => false,
+        start: () => { starts += 1; },
+        stop: () => { stops += 1; },
+      },
+    });
+    runtime.startMonitorForAgent("codex");
+    assert.strictEqual(starts, 1);
+    runtime.startMonitorForAgent("claude-code");
+    assert.strictEqual(starts, 1);
+    runtime.stopMonitorForAgent("codex");
+    assert.strictEqual(stops, 1);
+    runtime.clearSessionsByAgent("codex");
+    assert.strictEqual(stops, 2);
+    runtime.cleanup();
+    assert.strictEqual(stops, 3);
   });
 });

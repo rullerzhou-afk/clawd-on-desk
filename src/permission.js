@@ -5057,6 +5057,29 @@ function dismissPermissionsByAgent(agentId, options = {}) {
   return toDismiss.length;
 }
 
+// Session-scoped retirement used by Codex archive lifecycle (#655). Drops only
+// the surfaces owned by this session: passive notify/user-input cards are
+// cleared, and any interactive prompt is handed back with the normal
+// no-decision semantics — never an allow/deny on the user's behalf.
+function dismissPermissionsForSession(sessionId, reason = "session-dismissed") {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return 0;
+  const toDismiss = pendingPermissions.filter((p) => p && p.sessionId === id);
+  if (toDismiss.length === 0) return 0;
+  for (const perm of toDismiss) {
+    if (isPassiveNotifyEntry(perm)) {
+      dismissPassiveNotify(perm, reason);
+      continue;
+    }
+    dismissInteractivePermissionWithoutDecision(perm, reason);
+  }
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  permLog(`dismissPermissionsForSession(${id}): cleared ${toDismiss.length}`);
+  return toDismiss.length;
+}
+
 function dismissInteractivePermissionBubbles() {
   const toDismiss = pendingPermissions.filter((p) => p && !isPassiveNotifyEntry(p));
   if (toDismiss.length === 0) return 0;
@@ -5172,6 +5195,7 @@ return {
   refreshPassiveNotifyAutoClose,
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
+  dismissPermissionsForSession,
   dismissPermissionsForDnd,
   dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,

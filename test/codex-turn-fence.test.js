@@ -214,6 +214,24 @@ describe("codex turn fence", () => {
       { accept: true, reason: "work" }
     );
   });
+
+  it("clears a single retired session without disturbing its siblings", () => {
+    const fence = createCodexTurnFence();
+    fence.observe(event({ sessionId: "s1", event: "UserPromptSubmit", state: "thinking", turnId: "A" }));
+    fence.observe(event({ sessionId: "s1", event: "Stop", state: "attention", turnId: "A" }));
+    fence.observe(event({ sessionId: "s2", event: "UserPromptSubmit", state: "thinking", turnId: "B" }));
+
+    assert.strictEqual(fence.clearSession("s1"), true);
+    assert.strictEqual(fence.getSnapshot("s1"), null);
+    assert.deepStrictEqual(fence.getSnapshot("s2").currentTurnId, "B");
+    // s1's tombstone is gone: a fresh start can reopen after unarchive.
+    assert.deepStrictEqual(
+      fence.observe(event({ sessionId: "s1", event: "UserPromptSubmit", state: "thinking", turnId: "C" })),
+      { accept: true, reason: "start" }
+    );
+    assert.strictEqual(fence.clearSession("missing"), false);
+    assert.strictEqual(fence.clearSession(""), false);
+  });
 });
 
 describe("codex official activity index", () => {
@@ -248,5 +266,15 @@ describe("codex official activity index", () => {
     activity.mark("s3", "A");
     assert.strictEqual(activity.size, 2);
     assert.strictEqual(activity.getSnapshot("s1"), null);
+  });
+
+  it("clears one retired session's official marks only", () => {
+    const activity = createCodexOfficialActivity();
+    activity.mark("s1", "A");
+    activity.mark("s2", "B");
+    assert.strictEqual(activity.clearSession("s1"), true);
+    assert.strictEqual(activity.hasRecent("s1", "A"), false);
+    assert.strictEqual(activity.hasRecent("s2", "B"), true);
+    assert.strictEqual(activity.clearSession("missing"), false);
   });
 });
