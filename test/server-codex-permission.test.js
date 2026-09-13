@@ -118,13 +118,8 @@ function startServer(overrides = {}) {
 
 describe("Codex official /permission path", () => {
   it("returns no-decision for an archived local task before any bubble, state or automation", async () => {
-    const automation = [];
     const { handler, pendingPermissions, updates, shown } = startServer({
       shouldSuppressCodexArchive: (raw) => raw === "codex:archived",
-      maybeAutoResolveSessionPermission: (entry, options) => {
-        automation.push([entry, options]);
-        return true;
-      },
     });
 
     const res = await callPermission(handler, {
@@ -139,8 +134,9 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(res.body, "");
     assert.strictEqual(pendingPermissions.length, 0);
     assert.strictEqual(updates.length, 0, "no session/card is created");
-    assert.strictEqual(shown.length, 0, "no bubble is created");
-    assert.strictEqual(automation.length, 0, "no automation runs before the archive gate");
+    // Codex automation is evaluated inside showPermissionBubble. The separate
+    // maybeAutoResolveSessionPermission callback belongs to other adapters.
+    assert.strictEqual(shown.length, 0, "Codex bubble/automation entry is not reached");
   });
 
   it("only gates the archived task on the exact local codex boundary", async () => {
