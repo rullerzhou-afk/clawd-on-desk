@@ -41,8 +41,9 @@ Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 
 它只在本地 `CODEX_HOME` 的 `archived_sessions` 里寻找 regular `rollout-*.jsonl`，
 用文件名推导出的 canonical UUID 与文件头部有界 `session_meta`（`payload.id` /
 `payload.session_id`，两者同时存在必须一致且等于文件名 id）校验，再对同一 path 做
-读后快照复核。缺文件、目录不可列、权限错误、截断/损坏/冲突元数据、部分扫描与 I/O
-错误都只算 UNKNOWN，绝不据此退役。
+读后快照复核。缺文件是 unarchive 证据；目录不可列、stat/read 的 EACCES/EPERM/EIO 等
+I/O 错误、截断/损坏/冲突元数据、部分扫描都只算 UNKNOWN：保留既有 suppression、绝不据此
+退役，也不会清缓存把晚到 hook 放进来。
 正向证据确认后，`agent-runtime-main` 先经由窄的 archive 生命周期入口（复用 session
 automation coordinator 的 `onSessionLifecycleEnd`/`clearIdentity`）撤销该 session 的
 automation grant 并取消待决 trust candidate；再复用 `state.dismissSession` 移除该
@@ -53,14 +54,18 @@ SessionEnd 统计）。归档证据有效期间，迟到的 official hook / JSON
 bubble/状态/automation 之前直接 no-decision，交还 Codex 原生审批。归档文件消失
 （unarchive）即解除抑制，恢复正常审批与建卡。remote SSH profile、WSL 与其它 agent
 即使 raw id 相同也不匹配。
-每轮只做一次 readdir、至多校验一个 batch；evidence 与失败指纹缓存都有 LRU 上限，未变化
-的坏条目按指数退避跳过读取、指纹变化立即重验，大目录用游标跨轮公平推进（live 候选优先，
-无硬 cap 永久漏尾项）。在应用退役前会对该 live 候选的当前文件再做一次 stat（内容变化则
-完整重验），因此等待其它候选校验期间发生的 unarchive/替换不会被过时缓存误删。无同步热
-路径扫描；disable/cleanup/根代际变化会作废在途异步结果。已知边界：unarchive 的识别最多
-延迟一个普通轮询周期（默认 5s），该窗口内若恰好来了一个短 turn 的首个事件可能被丢弃，
-需要后续活动重建卡片——本次范围不引入事件重放队列，也不宣称立即恢复。`CODEX_HOME`
-在 tracker 实例生命周期内按启动时解析，运行时改动需重启生效。
+每轮只做一次异步 readdir（names/Set 临时 O(N)，不是恒定开销）并据此检测 unarchive；
+**只对当前 live 候选读 metadata**，每轮至多一个 batch，不为无关历史归档预先索引——当没有
+live 候选且没有已确认 suppression 时 metadata reads 为 0。evidence 与失败指纹缓存都有
+LRU 上限，未变化的坏 live 指纹按指数退避跳过读取、指纹变化立即重验；多个 live 超过
+batch 时用游标跨轮公平推进，避免固定顺序的坏头部饿死尾部；LRU 淘汰只意味着稍后作为 live
+候选重新匹配，不是永久漏项。在应用退役前会对该 live 候选的当前文件再做一次 stat（内容
+变化则完整重验，I/O 错误则保留 suppression），因此等待其它候选校验期间发生的
+unarchive/替换不会被过时缓存误删。无同步热路径扫描；disable/cleanup/根代际变化会作废
+在途异步结果。已知边界：unarchive 的识别最多延迟一个普通轮询周期（默认 5s），该窗口内
+若恰好来了一个短 turn 的首个事件可能被丢弃，需要后续活动重建卡片——本次范围不引入事件
+重放队列，也不宣称立即恢复。`CODEX_HOME` 在 tracker 实例生命周期内按启动时解析，运行时
+改动需重启生效。
 
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
 `commandWindows` 使用 PowerShell call-operator 直连：

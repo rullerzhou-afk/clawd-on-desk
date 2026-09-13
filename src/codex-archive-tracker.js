@@ -14,18 +14,24 @@
 // The tracker is deliberately independent of the JSONL turn-content parser so
 // it also covers official-hook-only sessions the monitor never tracked.
 //
-// Bounded I/O. Each poll lists the archive directory once, validates at most
-// `validateBatchSize` candidates, and keeps LRU-capped evidence + failure
-// caches instead of one permanent entry per historical file. A directory larger
-// than one batch is swept with a rotating cursor (live candidates always first)
-// so late entries are reached across polls without a cap that could permanently
-// skip the tail. A failing candidate that has not changed is not re-read until
-// its backoff expires; a changed/replaced file is re-validated immediately.
+// Bounded I/O. Each poll lists the archive directory once (one async readdir,
+// transient O(N) names/Set — not a constant-cost enumeration) and reads metadata
+// only for currently-live candidates, at most `validateBatchSize` per poll.
+// Unrelated historical archives are never pre-indexed, so with no live
+// candidates and no cached suppression there are zero metadata reads. Evidence
+// and failure-fingerprint caches are LRU-capped rather than one permanent entry
+// per file. When more live candidates exist than one batch, a rotating cursor
+// reaches the tail across polls. A failing candidate whose fingerprint has not
+// changed is not re-read until its backoff expires; a changed/replaced file is
+// re-validated immediately. Confirmed cached evidence keeps suppressing late
+// hooks, and a real unarchive is detected from the directory listing.
 //
 // Evidence staleness. Before a live candidate is retired, its evidence is
 // re-checked against the current filesystem (and re-validated in full if it
 // changed). This closes the cross-candidate await race where A was unarchived
 // while B was being validated: the stale cached entry is dropped, never applied.
+// A filesystem/I-O error during that check is UNKNOWN — suppression is kept and
+// nothing is retired — so EACCES/EIO can never masquerade as an unarchive.
 
 const fs = require("fs");
 const os = require("os");
@@ -132,13 +138,11 @@ async function defaultStatFile(filePath) {
   }
 }
 
+// Returns the first complete line, or null when the file has no complete first
+// line (truncated/partial). Any open/read failure is thrown so callers can
+// treat a pure I/O error as UNKNOWN rather than as a structural invalid file.
 async function defaultReadFirstLine(filePath) {
-  let handle;
-  try {
-    handle = await fs.promises.open(filePath, "r");
-  } catch {
-    return null;
-  }
+  const handle = await fs.promises.open(filePath, "r");
   try {
     const buf = Buffer.alloc(FIRST_LINE_MAX_BYTES);
     let total = 0;
@@ -153,8 +157,6 @@ async function defaultReadFirstLine(filePath) {
     const newline = slice.indexOf(0x0a);
     if (newline === -1) return null;
     return slice.subarray(0, newline).toString("utf8");
-  } catch {
-    return null;
   } finally {
     try { await handle.close(); } catch {}
   }
@@ -197,15 +199,13 @@ function createCodexArchiveTracker(options = {}) {
   let started = false;
   let timer = null;
   let inFlight = null;
-  // Cursor into the current directory listing for the rotating sweep. Live
-  // candidates are always evaluated first; this only orders non-live work so a
-  // directory larger than one batch is covered across polls without starving
-  // the tail. It advances by entries examined, so a changing cache size cannot
-  // trap it in a subset.
-  let cursor = 0;
+  // Rotation cursor over the live-candidate list when there are more live
+  // candidates than one batch, so a fixed-order bad head cannot starve the tail.
+  let liveCursor = 0;
   // LRU-capped evidence, keyed by file name; indexById is the id -> file name
-  // lookup the suppression gate uses. A name without evidence is re-evaluated
-  // on the next rotating sweep, so an eviction is never a permanent miss.
+  // lookup the suppression gate uses. A confirmed entry keeps suppressing late
+  // hooks while cached; eviction only means a later live candidate is matched
+  // again, never a permanent miss.
   const evidenceByFile = new Map();
   const indexById = new Map();
   // Unchanged failing candidates are not re-read until retryAt; a changed
@@ -257,10 +257,15 @@ function createCodexArchiveTracker(options = {}) {
     return live;
   }
 
-  // stat -> bounded head read -> stat. Returns validated evidence only when a
-  // regular file's session_meta declares exactly this canonical id and the
-  // pre/post snapshots agree. `preStat` lets callers reuse a stat they already
-  // performed.
+  // stat -> bounded head read -> stat. `status` is one of:
+  //   valid   — evidence returned; a regular file whose session_meta declares
+  //             exactly this canonical id and whose pre/post snapshots agree
+  //   invalid — readable but structurally unusable (truncated/malformed/
+  //             mismatched id, wrong type, non-regular file, snapshot race)
+  //   missing — the path does not exist (statFile returned null)
+  //   unknown — a filesystem/I-O error occurred; must never be treated as
+  //             unarchive or as a structural failure
+  // `preStat` lets callers reuse a stat they already performed.
   async function validateCandidate(fileName, id, preStat = null) {
     const filePath = path.join(archiveDir, fileName);
     let before = preStat;
@@ -269,84 +274,97 @@ function createCodexArchiveTracker(options = {}) {
         before = await statFile(filePath);
       } catch (err) {
         debugLog(`codex-archive stat-unknown file=${fileName} reason=${err && err.code ? err.code : "error"}`);
-        return null;
+        return { status: "unknown" };
       }
     }
+    if (before === null || before === undefined) return { status: "missing" };
     // lstat + isFile rejects symlinks, directories and other special files.
-    if (!isRegularFileStat(before)) return null;
+    if (!isRegularFileStat(before)) return { status: "invalid" };
     const beforeSize = statSize(before);
-    if (!Number.isFinite(beforeSize) || beforeSize <= 0) return null;
+    if (!Number.isFinite(beforeSize) || beforeSize <= 0) return { status: "invalid" };
 
     let firstLine;
     try {
       firstLine = await readFirstLine(filePath);
-    } catch {
-      return null;
+    } catch (err) {
+      debugLog(`codex-archive read-unknown file=${fileName} reason=${err && err.code ? err.code : "error"}`);
+      return { status: "unknown" };
     }
-    if (typeof firstLine !== "string" || !firstLine) return null;
+    if (typeof firstLine !== "string" || !firstLine) return { status: "invalid" };
 
     let record;
     try {
       record = JSON.parse(firstLine);
     } catch {
-      return null;
+      return { status: "invalid" };
     }
-    if (!record || record.type !== "session_meta") return null;
+    if (!record || record.type !== "session_meta") return { status: "invalid" };
     const payload = record.payload;
-    if (!payload || typeof payload !== "object") return null;
+    if (!payload || typeof payload !== "object") return { status: "invalid" };
     // Both id fields may be present. They must agree with each other and with
     // the filename-derived id; a conflict is UNKNOWN, never "one matched".
     const declared = [];
     if (typeof payload.id === "string") declared.push(payload.id);
     if (typeof payload.session_id === "string") declared.push(payload.session_id);
-    if (declared.length === 0) return null;
-    if (new Set(declared).size !== 1) return null;
-    if (declared[0] !== id) return null;
+    if (declared.length === 0) return { status: "invalid" };
+    if (new Set(declared).size !== 1) return { status: "invalid" };
+    if (declared[0] !== id) return { status: "invalid" };
 
     // Reconcile the read against a fresh snapshot: a file removed, replaced or
-    // grown between stat and read is UNKNOWN, so an unarchive that lands mid-
-    // scan can never be committed as fresh archive evidence.
+    // grown between stat and read is a race, so it is not committed as fresh
+    // archive evidence. A stat error here is I/O-unknown, not unarchive.
     let after;
     try {
       after = await statFile(filePath);
-    } catch {
-      return null;
+    } catch (err) {
+      debugLog(`codex-archive poststat-unknown file=${fileName} reason=${err && err.code ? err.code : "error"}`);
+      return { status: "unknown" };
     }
-    if (!isRegularFileStat(after)) return null;
+    if (after === null || after === undefined) return { status: "missing" };
+    if (!isRegularFileStat(after)) return { status: "invalid" };
     const beforeIdentity = statIdentity(before);
     const afterIdentity = statIdentity(after);
     if (beforeIdentity !== null || afterIdentity !== null) {
-      if (beforeIdentity !== afterIdentity) return null;
+      if (beforeIdentity !== afterIdentity) return { status: "invalid" };
     }
     const afterSize = statSize(after);
     const afterMtime = statMtime(after);
     const beforeMtime = statMtime(before);
-    if (!Number.isFinite(afterSize) || afterSize !== beforeSize) return null;
+    if (!Number.isFinite(afterSize) || afterSize !== beforeSize) return { status: "invalid" };
     if (Number.isFinite(afterMtime) && Number.isFinite(beforeMtime) && afterMtime !== beforeMtime) {
-      return null;
+      return { status: "invalid" };
     }
 
     return {
-      fileName,
-      id,
-      identity: afterIdentity,
-      size: afterSize,
-      mtimeMs: afterMtime,
-      validatedAt: now(),
+      status: "valid",
+      evidence: {
+        fileName,
+        id,
+        identity: afterIdentity,
+        size: afterSize,
+        mtimeMs: afterMtime,
+        validatedAt: now(),
+      },
     };
   }
 
   // Current-filesystem check of an already-cached entry. Cheap (one lstat) and
   // used immediately before retirement so an async gap cannot apply stale
   // evidence that an unarchive or replacement invalidated.
+  //   stable  — unchanged; cached evidence is still current
+  //   changed — same path now names different content; caller must re-validate
+  //   missing — path is gone; a real unarchive
+  //   unknown — the stat itself failed (EACCES/EIO/...); keep suppression
   async function currentEvidenceStatus(fileName, evidence) {
     const filePath = path.join(archiveDir, fileName);
     let stat;
     try {
       stat = await statFile(filePath);
-    } catch {
-      return { status: "missing" };
+    } catch (err) {
+      debugLog(`codex-archive stat-unknown file=${fileName} reason=${err && err.code ? err.code : "error"}`);
+      return { status: "unknown" };
     }
+    if (stat === null || stat === undefined) return { status: "missing" };
     if (!isRegularFileStat(stat)) return { status: "missing" };
     const identity = statIdentity(stat);
     if (identity !== null || evidence.identity !== null) {
@@ -363,31 +381,30 @@ function createCodexArchiveTracker(options = {}) {
     return { status: "stable", stat };
   }
 
+  // Only currently-live ids are read. Unrelated historical archives are never
+  // pre-indexed: if none of the live ids match the listing, this performs zero
+  // metadata reads. Confirmed evidence already in the LRU keeps suppressing
+  // late hooks, and a genuine unarchive is caught by the name-based removal
+  // reconcile above (no metadata read needed).
   function buildQueue(names, live) {
+    if (live.size === 0) return { queue: [] };
     const liveCandidates = [];
     for (const name of names) {
       if (evidenceByFile.has(name)) continue;
       const id = deriveCanonicalSessionId(name);
-      if (!id) continue;
-      if (live.has(id)) liveCandidates.push({ fileName: name, id });
+      if (!id || !live.has(id)) continue;
+      liveCandidates.push({ fileName: name, id });
     }
-    const remaining = Math.max(0, validateBatchSize - liveCandidates.length);
-    const picked = [];
-    const count = names.length;
-    if (count > 0 && remaining > 0) {
-      const start = cursor % count;
-      let examined = 0;
-      while (examined < count && picked.length < remaining) {
-        const name = names[(start + examined) % count];
-        examined += 1;
-        if (evidenceByFile.has(name)) continue;
-        const id = deriveCanonicalSessionId(name);
-        if (!id || live.has(id)) continue;
-        picked.push({ fileName: name, id });
-      }
-      cursor = (start + examined) % count;
+    if (liveCandidates.length <= validateBatchSize) {
+      liveCursor = 0;
+      return { queue: liveCandidates };
     }
-    return { queue: liveCandidates.concat(picked) };
+    // More live candidates than one batch: rotate so a fixed-order bad head
+    // cannot starve the tail across polls.
+    const start = liveCursor % liveCandidates.length;
+    const rotated = liveCandidates.slice(start).concat(liveCandidates.slice(0, start));
+    liveCursor = (start + validateBatchSize) % liveCandidates.length;
+    return { queue: rotated.slice(0, validateBatchSize) };
   }
 
   async function runScan(gen) {
@@ -451,23 +468,18 @@ function createCodexArchiveTracker(options = {}) {
       if (gen !== generation) return;
       const fingerprint = failureFingerprint(stat);
       const failed = failedByFile.get(item.fileName);
-      // Unchanged failing candidates are not re-read until their backoff
-      // expires. Live candidates bypass the skip so a wanted retirement is not
-      // delayed by a previous transient failure.
-      if (
-        failed
-        && !live.has(item.id)
-        && fingerprint
-        && failed.fingerprint === fingerprint
-        && now() < failed.retryAt
-      ) {
+      // An unchanged failed fingerprint within its backoff is not re-read,
+      // including for live candidates: a bad-head live session must not be
+      // re-read every poll. A changed fingerprint (repaired/replaced) bypasses
+      // the backoff immediately, and so does expiry.
+      if (failed && fingerprint && failed.fingerprint === fingerprint && now() < failed.retryAt) {
         continue;
       }
-      const evidence = await validateCandidate(item.fileName, item.id, stat);
+      const result = await validateCandidate(item.fileName, item.id, stat);
       if (gen !== generation) return;
-      if (evidence) {
+      if (result.status === "valid") {
         failedByFile.delete(item.fileName);
-        setEvidence(item.fileName, evidence);
+        setEvidence(item.fileName, result.evidence);
         continue;
       }
       if (fingerprint) {
@@ -499,19 +511,47 @@ function createCodexArchiveTracker(options = {}) {
       }
       const current = await currentEvidenceStatus(fileName, cached);
       if (gen !== generation) return;
+      if (current.status === "unknown") {
+        // A filesystem/I-O error is UNKNOWN: keep suppression, never retire.
+        continue;
+      }
       if (current.status === "missing") {
         clearEvidence(fileName);
         continue;
       }
       if (current.status === "changed") {
-        const refreshed = await validateCandidate(fileName, raw, current.stat);
-        if (gen !== generation) return;
-        if (!refreshed) {
-          clearEvidence(fileName);
+        // A changed path must be re-read; reuse the failure backoff so a
+        // persistent read error does not re-read every poll.
+        const fingerprint = failureFingerprint(current.stat);
+        const failed = failedByFile.get(fileName);
+        if (failed && fingerprint && failed.fingerprint === fingerprint && now() < failed.retryAt) {
           continue;
         }
-        setEvidence(fileName, refreshed);
-        onArchiveConfirmed(raw, refreshed);
+        const result = await validateCandidate(fileName, raw, current.stat);
+        if (gen !== generation) return;
+        if (result.status === "valid") {
+          failedByFile.delete(fileName);
+          setEvidence(fileName, result.evidence);
+          onArchiveConfirmed(raw, result.evidence);
+        } else if (result.status === "unknown") {
+          // Keep the cached suppression; a read error is not an unarchive and
+          // must not clear the cache and admit a late hook.
+          if (fingerprint) {
+            const retryLevel = Math.min(
+              FAILED_RETRY_MAX_LEVEL,
+              (failed && failed.fingerprint === fingerprint ? failed.retryLevel : 0) + 1
+            );
+            const backoffMs = Math.min(
+              FAILED_RETRY_MAX_MS,
+              FAILED_RETRY_BASE_MS * (2 ** (retryLevel - 1))
+            );
+            setFailure(fileName, fingerprint, retryLevel, now() + backoffMs);
+          }
+        } else {
+          // Readable but no longer this canonical task (or gone): drop it.
+          failedByFile.delete(fileName);
+          clearEvidence(fileName);
+        }
         continue;
       }
       onArchiveConfirmed(raw, cached);
@@ -545,7 +585,7 @@ function createCodexArchiveTracker(options = {}) {
     if (started) return;
     started = true;
     generation += 1;
-    cursor = 0;
+    liveCursor = 0;
     try {
       timer = setIntervalFn(() => { scan(); }, pollIntervalMs);
     } catch {
@@ -565,7 +605,7 @@ function createCodexArchiveTracker(options = {}) {
     evidenceByFile.clear();
     indexById.clear();
     failedByFile.clear();
-    cursor = 0;
+    liveCursor = 0;
   }
 
   function isArchived(rawSessionId) {
