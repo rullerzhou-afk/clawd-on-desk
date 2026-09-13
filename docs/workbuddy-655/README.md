@@ -6,9 +6,9 @@ the current `origin/main` at `9367b8c3` (including #1014).
 
 ## Included material
 
-- `workbuddy-support.patch` is the original local fusion patch. It is supplied
-  for review as-is; it was created against an older WorkBuddy integration
-  baseline and is not claimed to apply cleanly without review.
+- `workbuddy-support.zip` contains the original local fusion patch. It is
+  supplied for review as-is; it was created against an older WorkBuddy
+  integration baseline and is not claimed to apply cleanly without review.
 - `reproduction.log` contains the exact Clawd debug lines from the earlier
   `workbuddy-ui-smoke-*` hook smoke. That session was injected by local test
   automation, not typed by a user in WorkBuddy. It proves event delivery and
@@ -34,4 +34,3 @@ that hide idle/done sessions or keep only the newest session per process.
 Those rules conflict with #655's requirement to keep completed sessions until
 reliable archive/delete evidence exists. Completion retention and archive/delete
 semantics should therefore be reviewed as a separate lifecycle change.
-
