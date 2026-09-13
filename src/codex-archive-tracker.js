@@ -14,10 +14,18 @@
 // The tracker is deliberately independent of the JSONL turn-content parser so
 // it also covers official-hook-only sessions the monitor never tracked.
 //
-// I/O is asynchronous and bounded: each poll lists the archive directory once,
-// validates at most `validateBatchSize` not-yet-confirmed files, and retains a
-// per-file confirmation cache. A directory larger than one batch drains across
-// successive polls instead of blocking a hot path or an arbitrary cap.
+// Bounded I/O. Each poll lists the archive directory once, validates at most
+// `validateBatchSize` candidates, and keeps LRU-capped evidence + failure
+// caches instead of one permanent entry per historical file. A directory larger
+// than one batch is swept with a rotating cursor (live candidates always first)
+// so late entries are reached across polls without a cap that could permanently
+// skip the tail. A failing candidate that has not changed is not re-read until
+// its backoff expires; a changed/replaced file is re-validated immediately.
+//
+// Evidence staleness. Before a live candidate is retired, its evidence is
+// re-checked against the current filesystem (and re-validated in full if it
+// changed). This closes the cross-candidate await race where A was unarchived
+// while B was being validated: the stale cached entry is dropped, never applied.
 
 const fs = require("fs");
 const os = require("os");
@@ -36,6 +44,14 @@ const FIRST_LINE_MAX_BYTES = 256 * 1024;
 const FIRST_LINE_MAX_READS = 8;
 const DEFAULT_POLL_INTERVAL_MS = 5000;
 const DEFAULT_VALIDATE_BATCH_SIZE = 64;
+// Retained caches are capped so a user with a huge archive history does not
+// keep one metadata entry per file forever. Eviction is not a permanent miss:
+// a name without evidence is a candidate again on the next rotating sweep.
+const DEFAULT_MAX_EVIDENCE_ENTRIES = 2048;
+const DEFAULT_MAX_FAILED_ENTRIES = 2048;
+const FAILED_RETRY_BASE_MS = 15 * 1000;
+const FAILED_RETRY_MAX_MS = 10 * 60 * 1000;
+const FAILED_RETRY_MAX_LEVEL = 6;
 
 function resolveCodexHome(env = process.env, homedir = os.homedir) {
   const configured = env && env.CODEX_HOME;
@@ -90,6 +106,17 @@ function statSize(stat) {
 function statMtime(stat) {
   const mtime = Number(stat && stat.mtimeMs);
   return Number.isFinite(mtime) ? mtime : NaN;
+}
+
+// Cheap, allocation-light identity for a failed candidate so an unchanged bad
+// file does not get its head re-read every poll. `null` means the stat itself
+// was unavailable, in which case no negative cache entry is kept.
+function failureFingerprint(stat) {
+  if (!stat || !isRegularFileStat(stat)) return null;
+  const identity = statIdentity(stat);
+  const size = statSize(stat);
+  const mtime = statMtime(stat);
+  return `${identity || "no-identity"}|${Number.isFinite(size) ? size : "?"}|${Number.isFinite(mtime) ? mtime : "?"}`;
 }
 
 async function defaultListDirectory(dir) {
@@ -147,14 +174,17 @@ function createCodexArchiveTracker(options = {}) {
   const validateBatchSize = Number.isInteger(options.validateBatchSize) && options.validateBatchSize > 0
     ? options.validateBatchSize
     : DEFAULT_VALIDATE_BATCH_SIZE;
+  const maxEvidenceEntries = Number.isInteger(options.maxEvidenceEntries) && options.maxEvidenceEntries > 0
+    ? options.maxEvidenceEntries
+    : DEFAULT_MAX_EVIDENCE_ENTRIES;
+  const maxFailedEntries = Number.isInteger(options.maxFailedEntries) && options.maxFailedEntries > 0
+    ? options.maxFailedEntries
+    : DEFAULT_MAX_FAILED_ENTRIES;
   const getLiveCandidateIds = typeof options.getLiveCandidateIds === "function"
     ? options.getLiveCandidateIds
     : () => [];
   const onArchiveConfirmed = typeof options.onArchiveConfirmed === "function"
     ? options.onArchiveConfirmed
-    : () => {};
-  const onArchiveCleared = typeof options.onArchiveCleared === "function"
-    ? options.onArchiveCleared
     : () => {};
   const codexHome = typeof options.codexHome === "string" && options.codexHome
     ? options.codexHome
@@ -167,14 +197,50 @@ function createCodexArchiveTracker(options = {}) {
   let started = false;
   let timer = null;
   let inFlight = null;
-  // Confirmed archive evidence, keyed by file name (the validation cache) and
-  // by canonical session id (the lookup index). Both are proportional to the
-  // on-disk archive directory; the per-poll work is bounded separately.
-  const confirmed = new Map();
+  // Cursor into the current directory listing for the rotating sweep. Live
+  // candidates are always evaluated first; this only orders non-live work so a
+  // directory larger than one batch is covered across polls without starving
+  // the tail. It advances by entries examined, so a changing cache size cannot
+  // trap it in a subset.
+  let cursor = 0;
+  // LRU-capped evidence, keyed by file name; indexById is the id -> file name
+  // lookup the suppression gate uses. A name without evidence is re-evaluated
+  // on the next rotating sweep, so an eviction is never a permanent miss.
+  const evidenceByFile = new Map();
   const indexById = new Map();
-  // Names awaiting validation, drained `validateBatchSize` per poll.
-  const pending = [];
-  const pendingNames = new Set();
+  // Unchanged failing candidates are not re-read until retryAt; a changed
+  // fingerprint (replaced/repaired file) bypasses the backoff immediately.
+  const failedByFile = new Map();
+
+  function evictOldest(map, limit, onEvict) {
+    while (map.size > limit) {
+      const oldestKey = map.keys().next().value;
+      const oldestValue = map.get(oldestKey);
+      map.delete(oldestKey);
+      if (onEvict) onEvict(oldestKey, oldestValue);
+    }
+  }
+
+  function setEvidence(fileName, evidence) {
+    evidenceByFile.delete(fileName);
+    evidenceByFile.set(fileName, evidence);
+    indexById.set(evidence.id, fileName);
+    evictOldest(evidenceByFile, maxEvidenceEntries, (evictedName, evicted) => {
+      if (evicted && indexById.get(evicted.id) === evictedName) indexById.delete(evicted.id);
+    });
+  }
+
+  function clearEvidence(fileName) {
+    const existing = evidenceByFile.get(fileName);
+    evidenceByFile.delete(fileName);
+    if (existing && indexById.get(existing.id) === fileName) indexById.delete(existing.id);
+  }
+
+  function setFailure(fileName, fingerprint, retryLevel, retryAt) {
+    failedByFile.delete(fileName);
+    failedByFile.set(fileName, { fingerprint, retryLevel, retryAt });
+    evictOldest(failedByFile, maxFailedEntries);
+  }
 
   function normalizeLiveSet() {
     const live = new Set();
@@ -191,14 +257,20 @@ function createCodexArchiveTracker(options = {}) {
     return live;
   }
 
-  async function validateCandidate(fileName, id) {
+  // stat -> bounded head read -> stat. Returns validated evidence only when a
+  // regular file's session_meta declares exactly this canonical id and the
+  // pre/post snapshots agree. `preStat` lets callers reuse a stat they already
+  // performed.
+  async function validateCandidate(fileName, id, preStat = null) {
     const filePath = path.join(archiveDir, fileName);
-    let before;
-    try {
-      before = await statFile(filePath);
-    } catch (err) {
-      debugLog(`codex-archive stat-unknown file=${fileName} reason=${err && err.code ? err.code : "error"}`);
-      return null;
+    let before = preStat;
+    if (!before) {
+      try {
+        before = await statFile(filePath);
+      } catch (err) {
+        debugLog(`codex-archive stat-unknown file=${fileName} reason=${err && err.code ? err.code : "error"}`);
+        return null;
+      }
     }
     // lstat + isFile rejects symlinks, directories and other special files.
     if (!isRegularFileStat(before)) return null;
@@ -222,8 +294,14 @@ function createCodexArchiveTracker(options = {}) {
     if (!record || record.type !== "session_meta") return null;
     const payload = record.payload;
     if (!payload || typeof payload !== "object") return null;
-    const declared = [payload.id, payload.session_id].filter((value) => typeof value === "string");
-    if (!declared.includes(id)) return null;
+    // Both id fields may be present. They must agree with each other and with
+    // the filename-derived id; a conflict is UNKNOWN, never "one matched".
+    const declared = [];
+    if (typeof payload.id === "string") declared.push(payload.id);
+    if (typeof payload.session_id === "string") declared.push(payload.session_id);
+    if (declared.length === 0) return null;
+    if (new Set(declared).size !== 1) return null;
+    if (declared[0] !== id) return null;
 
     // Reconcile the read against a fresh snapshot: a file removed, replaced or
     // grown between stat and read is UNKNOWN, so an unarchive that lands mid-
@@ -258,6 +336,60 @@ function createCodexArchiveTracker(options = {}) {
     };
   }
 
+  // Current-filesystem check of an already-cached entry. Cheap (one lstat) and
+  // used immediately before retirement so an async gap cannot apply stale
+  // evidence that an unarchive or replacement invalidated.
+  async function currentEvidenceStatus(fileName, evidence) {
+    const filePath = path.join(archiveDir, fileName);
+    let stat;
+    try {
+      stat = await statFile(filePath);
+    } catch {
+      return { status: "missing" };
+    }
+    if (!isRegularFileStat(stat)) return { status: "missing" };
+    const identity = statIdentity(stat);
+    if (identity !== null || evidence.identity !== null) {
+      if (identity !== evidence.identity) return { status: "changed", stat };
+    }
+    const size = statSize(stat);
+    const mtimeMs = statMtime(stat);
+    // Compare mtime even when the inode matches: an in-place same-size rewrite
+    // must trigger a full re-validation rather than being trusted from cache.
+    if (size !== evidence.size) return { status: "changed", stat };
+    if (Number.isFinite(mtimeMs) && Number.isFinite(evidence.mtimeMs) && mtimeMs !== evidence.mtimeMs) {
+      return { status: "changed", stat };
+    }
+    return { status: "stable", stat };
+  }
+
+  function buildQueue(names, live) {
+    const liveCandidates = [];
+    for (const name of names) {
+      if (evidenceByFile.has(name)) continue;
+      const id = deriveCanonicalSessionId(name);
+      if (!id) continue;
+      if (live.has(id)) liveCandidates.push({ fileName: name, id });
+    }
+    const remaining = Math.max(0, validateBatchSize - liveCandidates.length);
+    const picked = [];
+    const count = names.length;
+    if (count > 0 && remaining > 0) {
+      const start = cursor % count;
+      let examined = 0;
+      while (examined < count && picked.length < remaining) {
+        const name = names[(start + examined) % count];
+        examined += 1;
+        if (evidenceByFile.has(name)) continue;
+        const id = deriveCanonicalSessionId(name);
+        if (!id || live.has(id)) continue;
+        picked.push({ fileName: name, id });
+      }
+      cursor = (start + examined) % count;
+    }
+    return { queue: liveCandidates.concat(picked) };
+  }
+
   async function runScan(gen) {
     // Never follow a symlinked archive root: the archive tree must be the real
     // CODEX_HOME/archived_sessions directory, not a link to an arbitrary tree.
@@ -287,70 +419,102 @@ function createCodexArchiveTracker(options = {}) {
       }
     }
     if (gen !== generation) return;
-    const nameSet = new Set(Array.isArray(names) ? names : []);
+    const nameList = Array.isArray(names) ? names : [];
+    const nameSet = new Set(nameList);
 
     // A removal is only trusted against a *complete* directory listing (one
     // readdir, not a partial validation batch), so an unscanned entry is never
     // silently declared unarchived.
-    for (const [fileName, entry] of [...confirmed]) {
+    for (const fileName of [...evidenceByFile.keys()]) {
       if (nameSet.has(fileName)) continue;
-      confirmed.delete(fileName);
-      if (indexById.get(entry.id) === fileName) indexById.delete(entry.id);
-      onArchiveCleared(entry.id);
+      clearEvidence(fileName);
     }
-
-    for (let i = pending.length - 1; i >= 0; i -= 1) {
-      const item = pending[i];
-      if (nameSet.has(item.fileName) && !confirmed.has(item.fileName)) continue;
-      pendingNames.delete(item.fileName);
-      pending.splice(i, 1);
+    for (const fileName of [...failedByFile.keys()]) {
+      if (!nameSet.has(fileName)) failedByFile.delete(fileName);
     }
 
     const live = normalizeLiveSet();
-    for (const name of nameSet) {
-      if (confirmed.has(name) || pendingNames.has(name)) continue;
-      const id = deriveCanonicalSessionId(name);
-      if (!id) continue;
-      pending.push({ fileName: name, id });
-      pendingNames.add(name);
-    }
-    if (live.size > 0 && pending.length > 1) {
-      // Late candidates still drain after live ones, but a live archived
-      // session is retired on the earliest poll that reaches it. A stable
-      // partition is O(n); a full sort on a very large backlog is not.
-      const liveFirst = [];
-      const rest = [];
-      for (const item of pending) {
-        if (live.has(item.id)) liveFirst.push(item);
-        else rest.push(item);
-      }
-      pending.length = 0;
-      for (const item of liveFirst) pending.push(item);
-      for (const item of rest) pending.push(item);
-    }
+    const { queue } = buildQueue(nameList, live);
 
     let budget = validateBatchSize;
-    while (budget > 0 && pending.length > 0) {
+    for (const item of queue) {
+      if (budget <= 0) break;
       if (gen !== generation) return;
-      const item = pending.shift();
-      pendingNames.delete(item.fileName);
       budget -= 1;
-      const evidence = await validateCandidate(item.fileName, item.id);
+      let stat = null;
+      try {
+        stat = await statFile(path.join(archiveDir, item.fileName));
+      } catch (err) {
+        debugLog(`codex-archive stat-unknown file=${item.fileName} reason=${err && err.code ? err.code : "error"}`);
+        continue;
+      }
       if (gen !== generation) return;
-      if (!evidence) continue;
-      confirmed.set(item.fileName, evidence);
-      indexById.set(item.id, item.fileName);
+      const fingerprint = failureFingerprint(stat);
+      const failed = failedByFile.get(item.fileName);
+      // Unchanged failing candidates are not re-read until their backoff
+      // expires. Live candidates bypass the skip so a wanted retirement is not
+      // delayed by a previous transient failure.
+      if (
+        failed
+        && !live.has(item.id)
+        && fingerprint
+        && failed.fingerprint === fingerprint
+        && now() < failed.retryAt
+      ) {
+        continue;
+      }
+      const evidence = await validateCandidate(item.fileName, item.id, stat);
+      if (gen !== generation) return;
+      if (evidence) {
+        failedByFile.delete(item.fileName);
+        setEvidence(item.fileName, evidence);
+        continue;
+      }
+      if (fingerprint) {
+        const retryLevel = Math.min(
+          FAILED_RETRY_MAX_LEVEL,
+          (failed && failed.fingerprint === fingerprint ? failed.retryLevel : 0) + 1
+        );
+        const backoffMs = Math.min(
+          FAILED_RETRY_MAX_MS,
+          FAILED_RETRY_BASE_MS * (2 ** (retryLevel - 1))
+        );
+        setFailure(item.fileName, fingerprint, retryLevel, now() + backoffMs);
+      } else {
+        failedByFile.delete(item.fileName);
+      }
     }
 
-    if (gen !== generation) return;
-    // Idempotent per-poll reconciliation: a session recreated by a late hook
-    // after it was first indexed is retired on the next poll. `onArchiveConfirmed`
-    // implementations must tolerate a session that is already gone.
+    // Retire only after re-checking each live candidate's evidence against the
+    // current filesystem. This is the point where an unarchive/replacement that
+    // happened during the validation awaits above must win over the cache.
     for (const raw of live) {
+      if (gen !== generation) return;
       const fileName = indexById.get(raw);
       if (!fileName) continue;
-      const evidence = confirmed.get(fileName);
-      if (evidence) onArchiveConfirmed(raw, evidence);
+      const cached = evidenceByFile.get(fileName);
+      if (!cached) {
+        indexById.delete(raw);
+        continue;
+      }
+      const current = await currentEvidenceStatus(fileName, cached);
+      if (gen !== generation) return;
+      if (current.status === "missing") {
+        clearEvidence(fileName);
+        continue;
+      }
+      if (current.status === "changed") {
+        const refreshed = await validateCandidate(fileName, raw, current.stat);
+        if (gen !== generation) return;
+        if (!refreshed) {
+          clearEvidence(fileName);
+          continue;
+        }
+        setEvidence(fileName, refreshed);
+        onArchiveConfirmed(raw, refreshed);
+        continue;
+      }
+      onArchiveConfirmed(raw, cached);
     }
   }
 
@@ -381,6 +545,7 @@ function createCodexArchiveTracker(options = {}) {
     if (started) return;
     started = true;
     generation += 1;
+    cursor = 0;
     try {
       timer = setIntervalFn(() => { scan(); }, pollIntervalMs);
     } catch {
@@ -397,10 +562,10 @@ function createCodexArchiveTracker(options = {}) {
       try { clearIntervalFn(timer); } catch {}
       timer = null;
     }
-    confirmed.clear();
+    evidenceByFile.clear();
     indexById.clear();
-    pending.length = 0;
-    pendingNames.clear();
+    failedByFile.clear();
+    cursor = 0;
   }
 
   function isArchived(rawSessionId) {
@@ -413,7 +578,7 @@ function createCodexArchiveTracker(options = {}) {
     const raw = bareCodexSessionId(rawSessionId);
     if (!raw || !CANONICAL_SESSION_ID_RE.test(raw)) return null;
     const fileName = indexById.get(raw);
-    return fileName ? (confirmed.get(fileName) || null) : null;
+    return fileName ? (evidenceByFile.get(fileName) || null) : null;
   }
 
   return {
@@ -427,6 +592,7 @@ function createCodexArchiveTracker(options = {}) {
     getEvidence,
     get started() { return started; },
     get size() { return indexById.size; },
+    get failedSize() { return failedByFile.size; },
   };
 }
 
@@ -436,5 +602,7 @@ createCodexArchiveTracker.ARCHIVE_DIR_NAME = ARCHIVE_DIR_NAME;
 createCodexArchiveTracker.CANONICAL_SESSION_ID_RE = CANONICAL_SESSION_ID_RE;
 createCodexArchiveTracker.DEFAULT_POLL_INTERVAL_MS = DEFAULT_POLL_INTERVAL_MS;
 createCodexArchiveTracker.DEFAULT_VALIDATE_BATCH_SIZE = DEFAULT_VALIDATE_BATCH_SIZE;
+createCodexArchiveTracker.DEFAULT_MAX_EVIDENCE_ENTRIES = DEFAULT_MAX_EVIDENCE_ENTRIES;
+createCodexArchiveTracker.DEFAULT_MAX_FAILED_ENTRIES = DEFAULT_MAX_FAILED_ENTRIES;
 
 module.exports = createCodexArchiveTracker;

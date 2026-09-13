@@ -1450,7 +1450,7 @@ describe("agent-runtime-main", () => {
     assert.strictEqual(runtime.shouldSuppressCodexArchive("not-a-uuid", { agentId: "codex", profileId: "local" }), false);
   });
 
-  it("never gates a decision-bearing permission event behind archive suppression", () => {
+  it("gates archived local Codex lifecycle including a late PermissionRequest card", () => {
     const bare = ARCHIVE_UUID.e;
     const raw = `codex:${bare}`;
     const updates = [];
@@ -1466,9 +1466,85 @@ describe("agent-runtime-main", () => {
       hookSource: "codex-official",
     };
     runtime.updateSessionFromServer(localSessionKey(raw), "working", "PreToolUse", opts);
-    assert.strictEqual(updates.length, 0);
     runtime.updateSessionFromServer(localSessionKey(raw), "notification", "PermissionRequest", opts);
-    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(updates.length, 0);
+  });
+
+  it("revokes the archived session's automation grant before dismissal and leaves siblings untouched", async () => {
+    const { root, archiveDir } = makeTempArchiveHome();
+    const raw = `codex:${ARCHIVE_UUID.a}`;
+    const id = localSessionKey(raw);
+    const otherRaw = `codex:${ARCHIVE_UUID.b}`;
+    const otherId = localSessionKey(otherRaw);
+    const harness = makeRealStateHarness();
+    const lifecycleEnds = [];
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      loadCodexArchiveTracker: () => require("../src/codex-archive-tracker"),
+      codexArchiveOptions: {
+        codexHome: root,
+        setInterval: () => 0,
+        clearInterval: () => {},
+      },
+      onCodexArchiveLifecycleEnd: (payload) => {
+        // The grant/candidate must be revoked while the session still exists,
+        // i.e. before dismissal and before any async authorization could land.
+        lifecycleEnds.push({
+          ...payload,
+          sessionPresent: harness.state.sessions.has(payload.sessionId),
+        });
+      },
+    });
+    try {
+      runtime.startCodexLogMonitor();
+      runtime.updateSessionFromServer(id, "attention", "Stop", {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: raw,
+        sourcePid: 42,
+      });
+      runtime.updateSessionFromServer(otherId, "attention", "Stop", {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: otherRaw,
+        sourcePid: 42,
+      });
+      const completionSoundsBefore = harness.sounds.filter((name) => name === "complete").length;
+
+      writeArchivedRollout(archiveDir, ARCHIVE_UUID.a);
+      await runtime.getCodexArchiveTracker().scanNow();
+
+      assert.deepStrictEqual(lifecycleEnds, [{
+        agentId: "codex",
+        sessionId: id,
+        reason: "codex-session-archived",
+        sessionPresent: true,
+      }]);
+      assert.strictEqual(harness.state.sessions.get(id), undefined);
+      assert.ok(harness.state.sessions.get(otherId), "a sibling task keeps its card");
+      assert.strictEqual(
+        harness.sounds.filter((name) => name === "complete").length,
+        completionSoundsBefore,
+        "archive retirement is not a completion"
+      );
+
+      // Unarchive must not resurrect a stale grant: a fresh archive cycle has
+      // no lifecycle-end to replay.
+      fs.unlinkSync(path.join(archiveDir, `rollout-2026-03-25T15-10-51-${ARCHIVE_UUID.a}.jsonl`));
+      await runtime.getCodexArchiveTracker().scanNow();
+      assert.strictEqual(lifecycleEnds.length, 1);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("suppresses archived JSONL lifecycle and passive user-input cards but keeps quota/context", () => {
@@ -1513,11 +1589,14 @@ describe("agent-runtime-main", () => {
     assert.strictEqual(shown.length, 0);
   });
 
-  it("starts and stops the archive tracker with the Codex gate and cleanup", () => {
+  it("starts the archive tracker on an enable/install command even when the pre-commit gate is still false", () => {
     let starts = 0;
     let stops = 0;
     const runtime = createAgentRuntimeMain({
       codexSubagentClassifier: {},
+      // Settings calls startMonitorForAgent inside the pre-commit window, where
+      // the persisted gate it just wrote is not observable yet.
+      isAgentEnabled: () => false,
       codexArchiveTracker: {
         isArchived: () => false,
         start: () => { starts += 1; },
@@ -1534,5 +1613,21 @@ describe("agent-runtime-main", () => {
     assert.strictEqual(stops, 2);
     runtime.cleanup();
     assert.strictEqual(stops, 3);
+    runtime.startMonitorForAgent("codex");
+    assert.strictEqual(starts, 1, "a disposed runtime must not revive the tracker");
+  });
+
+  it("still respects the persisted gate when constructing the monitor at startup", () => {
+    let starts = 0;
+    const runtime = createAgentRuntimeMain({
+      codexSubagentClassifier: {},
+      loadCodexLogMonitor: () => makeFakeMonitorClass([]),
+      loadCodexAgent: () => ({ id: "codex" }),
+      isAgentEnabled: () => false,
+      codexArchiveTracker: { isArchived: () => false, start: () => { starts += 1; }, stop() {} },
+    });
+    runtime.startCodexLogMonitor();
+    assert.strictEqual(starts, 0);
+    runtime.cleanup();
   });
 });

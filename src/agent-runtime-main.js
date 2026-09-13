@@ -83,6 +83,13 @@ function createAgentRuntimeMain(options = {}) {
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || (() => {});
   const showCodexUserInputBubble = options.showCodexUserInputBubble || (() => false);
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || (() => {});
+  // Narrow archive-specific lifecycle-end hook: revokes this session's
+  // automation grant/candidate exactly like a real lifecycle end, without
+  // faking SessionEnd into recap/completion. Wired by main.js to the session
+  // automation coordinator.
+  const onCodexArchiveLifecycleEnd = typeof options.onCodexArchiveLifecycleEnd === "function"
+    ? options.onCodexArchiveLifecycleEnd
+    : null;
 
   let codexMonitor = null;
   let disposed = false;
@@ -156,6 +163,20 @@ function createAgentRuntimeMain(options = {}) {
   function retireArchivedCodexSession(sessionId) {
     const state = getStateRuntime();
     if (!state || typeof state.dismissSession !== "function") return false;
+    // Narrow archive lifecycle end for this one session: revoke its automation
+    // grant / cancel a pending trust candidate before any async authorization
+    // can land. This is not a SessionEnd — no recap/completion is recorded.
+    if (onCodexArchiveLifecycleEnd) {
+      try {
+        onCodexArchiveLifecycleEnd({
+          agentId: "codex",
+          sessionId,
+          reason: "codex-session-archived",
+        });
+      } catch (err) {
+        debugLog(`codex-archive automation-end failed sid=${sessionId} reason=${err && err.message}`);
+      }
+    }
     // Owned passive cards are cleared; any owned interactive prompt is handed
     // back with no-decision semantics scoped to this session only.
     clearCodexNotifyBubbles(sessionId, "codex-session-archived");
@@ -211,6 +232,7 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function startCodexArchiveTracker() {
+    if (disposed) return null;
     const tracker = ensureCodexArchiveTracker();
     if (tracker && typeof tracker.start === "function") tracker.start();
     return tracker;
@@ -295,18 +317,15 @@ function createAgentRuntimeMain(options = {}) {
   function updateSessionFromServer(sessionId, state, event, opts = {}) {
     // Late official hooks for a locally archived task must not recreate an
     // entry. Scoped to the local profile only; remote/WSL are never matched.
-    // Decision-bearing permission events are never gated here: an archived
-    // task's prompt must still reach the user (or fall back to native), never
-    // be silently dropped by archive bookkeeping.
-    const decisionEvent = event === "PermissionRequest"
-      || (opts && opts.transientPermissionEvent === true);
-    if (!decisionEvent
-      && shouldSuppressCodexArchive(opts && opts.rawSessionId ? opts.rawSessionId : sessionId, {
-        agentId: opts && opts.agentId,
-        profileId: opts && opts.profileId,
-        host: opts && opts.host,
-        wslDistro: opts && opts.wslDistro,
-      })) {
+    // Decision-bearing permission prompts never reach here for an archived
+    // task: the /permission route returns no-decision before any bubble, state
+    // or automation is created, so this gate is only a second line of defense.
+    if (shouldSuppressCodexArchive(opts && opts.rawSessionId ? opts.rawSessionId : sessionId, {
+      agentId: opts && opts.agentId,
+      profileId: opts && opts.profileId,
+      host: opts && opts.host,
+      wslDistro: opts && opts.wslDistro,
+    })) {
       return false;
     }
     if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
@@ -398,9 +417,12 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function startMonitorForAgent(agentId) {
-    if (agentId !== "codex") return;
+    // Caller (Settings pre-commit enable/install, or startup) has already
+    // decided to start; re-reading the persisted gate here races the settings
+    // store write. Match the existing monitor.start() semantics.
+    if (agentId !== "codex" || disposed) return;
     if (codexMonitor) codexMonitor.start();
-    if (isAgentEnabled("codex")) startCodexArchiveTracker();
+    startCodexArchiveTracker();
   }
 
   function stopMonitorForAgent(agentId) {

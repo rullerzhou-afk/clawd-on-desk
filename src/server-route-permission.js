@@ -908,6 +908,23 @@ function handlePermissionPost(req, res, options) {
         const permissionDetail = preparePermissionDetail(toolName, rawInput, { description });
         const sessionIdentity = resolvePermissionSession(data.session_id, "codex:default");
         const sessionId = sessionIdentity.sessionId;
+        // Local Codex archive lifecycle (#655): an archived task's approval is
+        // handed back to Codex's native flow BEFORE any bubble, state or
+        // automation is created. Always no-decision, never allow/deny, and only
+        // for the exact local codex/profile boundary (remote SSH and WSL are
+        // excluded even on a raw-id collision).
+        if (typeof ctx.shouldSuppressCodexArchive === "function"
+          && ctx.shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
+            agentId: "codex",
+            profileId: trustedProfileId,
+            host: trustedDisplayHost || normalizeString(data.host),
+            wslDistro: normalizeString(data.wsl_distro),
+          })) {
+          recordRequestHookEvent.droppedUnsupported();
+          ctx.permLog(`codex archived session=${sessionId} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendCodexPermissionNoDecision(res);
+          return;
+        }
         const toolUseId = normalizeHookToolUseId(
           data.tool_use_id ?? data.toolUseId ?? data.toolUseID
         );

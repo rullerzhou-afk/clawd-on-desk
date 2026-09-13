@@ -40,16 +40,27 @@ Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 
 `src/agent-runtime-main.js` 与本地 Codex runtime 同启同停，独立于 JSONL 内容解析：
 它只在本地 `CODEX_HOME` 的 `archived_sessions` 里寻找 regular `rollout-*.jsonl`，
 用文件名推导出的 canonical UUID 与文件头部有界 `session_meta`（`payload.id` /
-`payload.session_id`）双重校验，再对同一 path 做读后快照复核。缺文件、目录不可列、
-权限错误、截断/损坏元数据、部分扫描与 I/O 错误都只算 UNKNOWN，绝不据此退役。
-正向证据确认后，`agent-runtime-main` 复用 `state.dismissSession` 移除该 local Codex
-session 的 live card/focus 条目，并只对该 session 清 owned passive 气泡、把 owned
-交互审批交还 no-decision（不播放完成音效、不计 recap、不伪造 allow/deny）。归档证据
-有效期间，迟到的 official hook / JSONL / passive user-input 回调被拦截（access quota/
-context 仍照常摄入）；归档文件消失（unarchive）即解除抑制，之后的新真实活动可重新建卡。
-remote SSH profile、WSL 与其它 agent 即使 raw id 相同也不匹配。每轮只做一次
-readdir、至多校验一个 batch，跨轮排空超过一个 batch 的目录（live 候选优先），无同步
-热路径扫描；disable/cleanup/根代际变化会作废在途异步结果。
+`payload.session_id`，两者同时存在必须一致且等于文件名 id）校验，再对同一 path 做
+读后快照复核。缺文件、目录不可列、权限错误、截断/损坏/冲突元数据、部分扫描与 I/O
+错误都只算 UNKNOWN，绝不据此退役。
+正向证据确认后，`agent-runtime-main` 先经由窄的 archive 生命周期入口（复用 session
+automation coordinator 的 `onSessionLifecycleEnd`/`clearIdentity`）撤销该 session 的
+automation grant 并取消待决 trust candidate；再复用 `state.dismissSession` 移除该
+local Codex session 的 live card/focus 条目，只对该 session 清 owned passive 气泡、把
+owned 交互审批交还 no-decision（不播放完成音效、不计 recap、不伪造 allow/deny、不伪造
+SessionEnd 统计）。归档证据有效期间，迟到的 official hook / JSONL / passive user-input
+回调被拦截（account quota/context 仍照常摄入）；本地归档任务的 `/permission` 在
+bubble/状态/automation 之前直接 no-decision，交还 Codex 原生审批。归档文件消失
+（unarchive）即解除抑制，恢复正常审批与建卡。remote SSH profile、WSL 与其它 agent
+即使 raw id 相同也不匹配。
+每轮只做一次 readdir、至多校验一个 batch；evidence 与失败指纹缓存都有 LRU 上限，未变化
+的坏条目按指数退避跳过读取、指纹变化立即重验，大目录用游标跨轮公平推进（live 候选优先，
+无硬 cap 永久漏尾项）。在应用退役前会对该 live 候选的当前文件再做一次 stat（内容变化则
+完整重验），因此等待其它候选校验期间发生的 unarchive/替换不会被过时缓存误删。无同步热
+路径扫描；disable/cleanup/根代际变化会作废在途异步结果。已知边界：unarchive 的识别最多
+延迟一个普通轮询周期（默认 5s），该窗口内若恰好来了一个短 turn 的首个事件可能被丢弃，
+需要后续活动重建卡片——本次范围不引入事件重放队列，也不宣称立即恢复。`CODEX_HOME`
+在 tracker 实例生命周期内按启动时解析，运行时改动需重启生效。
 
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
 `commandWindows` 使用 PowerShell call-operator 直连：
