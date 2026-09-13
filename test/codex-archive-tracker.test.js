@@ -639,6 +639,43 @@ describe("codex archive tracker", () => {
     }
   });
 
+  it("recovers a same-id orphan when the indexed duplicate is removed (D1)", async () => {
+    const { root, archiveDir } = makeTempHome();
+    const id = uuidFor(93);
+    const n1 = `rollout-2026-03-25T15-10-51-${id}.jsonl`;
+    const n2 = `rollout-2026-03-26T10-20-30-${id}.jsonl`;
+    fs.writeFileSync(path.join(archiveDir, n1), `${sessionMetaLine(id)}\n`);
+    fs.writeFileSync(path.join(archiveDir, n2), `${sessionMetaLine(id)}\n`);
+    const confirmed = [];
+    const tracker = createCodexArchiveTracker({
+      codexHome: root,
+      getLiveCandidateIds: () => [id],
+      onArchiveConfirmed: (raw) => confirmed.push(raw),
+    });
+    try {
+      await tracker.scanNow();
+      assert.equal(tracker.isArchived(id), true);
+      assert.ok(confirmed.includes(id));
+
+      // Remove whichever duplicate the index currently points at; the other
+      // becomes an evidence orphan that must be requeued, not skipped forever.
+      const indexed = tracker.getEvidence(id).fileName;
+      const survivor = indexed === n1 ? n2 : n1;
+      fs.unlinkSync(path.join(archiveDir, indexed));
+      await tracker.scanNow();
+      assert.equal(tracker.isArchived(id), true, "the surviving duplicate still suppresses");
+      assert.equal(tracker.getEvidence(id).fileName, survivor, "the orphan is re-indexed");
+
+      // Only a real unarchive of the remaining file releases suppression.
+      fs.unlinkSync(path.join(archiveDir, survivor));
+      await tracker.scanNow();
+      assert.equal(tracker.isArchived(id), false);
+    } finally {
+      tracker.stop();
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("drops in-flight work after stop and clears prior evidence", async () => {
     const id = uuidFor(70);
     let release;

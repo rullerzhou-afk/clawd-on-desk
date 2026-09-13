@@ -67,4 +67,3 @@ Retain precise base/final commits, focused test outputs and full formal implemen
 4. 云宝: independently adjudicate every finding, send valid issues back to the same 鲸宝 session, obtain follow-up review as needed, and perform final verification.
 
 No self-approval or clean-looking test counts substitute for this sequence.
-

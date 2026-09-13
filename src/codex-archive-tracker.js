@@ -386,13 +386,19 @@ function createCodexArchiveTracker(options = {}) {
   // metadata reads. Confirmed evidence already in the LRU keeps suppressing
   // late hooks, and a genuine unarchive is caught by the name-based removal
   // reconcile above (no metadata read needed).
+  //
+  // A file is skipped only when it is the id's *current* index target. If two
+  // valid archives share one canonical id (different timestamp filenames), the
+  // index points at one of them and the other is an orphan with evidence but no
+  // index entry; requeueing it lets the next scan restore the index instead of
+  // permanently skipping it after the target is removed.
   function buildQueue(names, live) {
     if (live.size === 0) return { queue: [] };
     const liveCandidates = [];
     for (const name of names) {
-      if (evidenceByFile.has(name)) continue;
       const id = deriveCanonicalSessionId(name);
       if (!id || !live.has(id)) continue;
+      if (evidenceByFile.has(name) && indexById.get(id) === name) continue;
       liveCandidates.push({ fileName: name, id });
     }
     if (liveCandidates.length <= validateBatchSize) {
