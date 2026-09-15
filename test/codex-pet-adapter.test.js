@@ -728,6 +728,8 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(themeJson.states.working[0], "codex-pet-running-loop.svg");
     assert.strictEqual(themeJson.states.notification[0], "codex-pet-waiting-loop.svg");
     assert.strictEqual(themeJson.states.error[0], "codex-pet-failed-loop.svg");
+    assert.strictEqual(themeJson.states.juggling[0], "codex-pet-waving-loop.svg");
+    assert.strictEqual(themeJson.jugglingTiers[0].file, "codex-pet-waving-loop.svg");
     assert.deepStrictEqual(themeJson.hitBoxes.default, { x: 0, y: 0, w: 192, h: 208 });
     assert.strictEqual(themeJson.reactions.drag.file, "codex-pet-running-loop.svg");
     assert.strictEqual(themeJson.reactions.drag.fileLeft, adapter.DIRECTIONAL_DRAG_WRAPPER);
@@ -751,6 +753,41 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
       left: adapter.DIRECTIONAL_DRAG_WRAPPER,
       right: adapter.DIRECTIONAL_DRAG_WRAPPER,
     });
+  });
+
+  it("gives juggling a pose of its own, and moves the tier with it", () => {
+    const root = makeTempDir();
+    const packageDir = copyFixturePackage(path.join(root, "pets"));
+    const validation = adapter.validateCodexPetPackage(packageDir);
+    const materialized = adapter.materializeCodexPetTheme(
+      validation.packageInfo,
+      path.join(root, "userData", "themes")
+    );
+    const themeJson = readJson(path.join(materialized.themeDir, "theme.json"));
+
+    // The defect: juggling rendered the same file as working, so "several
+    // subagents" and "a tool is running" were the same picture.
+    assert.notStrictEqual(
+      themeJson.states.juggling[0],
+      themeJson.states.working[0],
+      "juggling must not resolve to the working file"
+    );
+
+    // getJugglingSvg() reads jugglingTiers first and only falls back to the
+    // state file; juggling means at least one live subagent, so a minSessions:1
+    // tier always wins. Changing one site without the other is a no-op, and this
+    // assertion is what says so.
+    assert.strictEqual(themeJson.jugglingTiers[0].minSessions, 1);
+    assert.strictEqual(themeJson.jugglingTiers[0].file, themeJson.states.juggling[0]);
+    assert.notStrictEqual(themeJson.jugglingTiers[0].file, themeJson.workingTiers[0].file);
+
+    // The waving row is drawn by every pack; before this it was reachable only
+    // through the double-click reaction, and from no state at all.
+    const statesUsingWavingLoop = Object.entries(themeJson.states)
+      .filter(([, files]) => Array.isArray(files) && files.includes("codex-pet-waving-loop.svg"))
+      .map(([state]) => state);
+    assert.deepStrictEqual(statesUsingWavingLoop, ["juggling"]);
+    assert.deepStrictEqual(themeJson.reactions.double.files, ["codex-pet-waving-once.svg"]);
   });
 
   it("does not overwrite unmanaged theme IDs and keeps managed suffixes stable", () => {

@@ -426,7 +426,13 @@ function buildThemeJson(packageInfo, themeId) {
       idle: ["codex-pet-idle-loop.svg"],
       thinking: ["codex-pet-review-loop.svg"],
       working: ["codex-pet-running-loop.svg"],
-      juggling: ["codex-pet-running-loop.svg"],
+      // Imported packs draw a `waving` row, and until now nothing reached it: the
+      // only consumer was the double-click reaction, which uses `waving-once`.
+      // Meanwhile `juggling` rendered the same file as `working`, so "several
+      // subagents are running" looked identical to "a tool is running". Every
+      // built-in theme gives juggling a pose of its own (clawd headphones-groove,
+      // calico working-juggling, cloudling juggling); this path was the exception.
+      juggling: ["codex-pet-waving-loop.svg"],
       sweeping: ["codex-pet-running-loop.svg"],
       carrying: ["codex-pet-running-loop.svg"],
       notification: ["codex-pet-waiting-loop.svg"],
@@ -441,7 +447,11 @@ function buildThemeJson(packageInfo, themeId) {
       { minSessions: 1, file: "codex-pet-running-loop.svg" },
     ],
     jugglingTiers: [
-      { minSessions: 1, file: "codex-pet-running-loop.svg" },
+      // Must move together with states.juggling above: getJugglingSvg() consults
+      // the tier list first and only falls back to the state file, and juggling
+      // means at least one live subagent, so a minSessions:1 tier always wins.
+      // Changing one without the other is a no-op.
+      { minSessions: 1, file: "codex-pet-waving-loop.svg" },
     ],
     hitBoxes: {
       default: { x: 0, y: 0, w: atlas.frameWidth, h: atlas.frameHeight },
