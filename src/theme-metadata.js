@@ -11,17 +11,23 @@ const {
   isPlainObject,
   getStateFiles,
   buildCapabilities,
+  basenameOnly,
+  getCanonicalFileViewBoxes,
 } = require("./theme-schema");
 
 function fileUrl(absPath) {
   try { return pathToFileURL(absPath).href; } catch { return null; }
 }
 
-function buildPreviewUrl(raw, themeDir, isBuiltin, options = {}) {
-  const assetsSvgDir = options.assetsSvgDir || null;
-  const previewFile = (typeof raw.preview === "string" && raw.preview)
+function getPreviewFile(raw) {
+  return (typeof raw.preview === "string" && raw.preview)
     || getStateFiles(raw.states && raw.states.idle)[0]
     || null;
+}
+
+function buildPreviewUrl(raw, themeDir, isBuiltin, options = {}) {
+  const assetsSvgDir = options.assetsSvgDir || null;
+  const previewFile = getPreviewFile(raw);
   if (!previewFile) return null;
   const filename = path.basename(previewFile);
   let absPath = null;
@@ -84,8 +90,18 @@ function buildVariantMetadata(raw, themeDir, isBuiltin, options = {}) {
   return out;
 }
 
+// The thumbnail shows only the preview file's own canvas. A file placed through
+// fileViewBoxes covers that box of the theme's coordinate space, not the root
+// viewBox, so the content box must be framed against it.
+function getPreviewFrameViewBox(raw) {
+  if (!raw) return null;
+  const previewFile = getPreviewFile(raw);
+  const fileViewBox = previewFile && getCanonicalFileViewBoxes(raw)[basenameOnly(previewFile)];
+  return fileViewBox || raw.viewBox;
+}
+
 function computePreviewContentRatio(raw) {
-  const vb = raw && raw.viewBox;
+  const vb = getPreviewFrameViewBox(raw);
   const cb = raw && raw.layout && raw.layout.contentBox;
   if (!vb || !cb) return null;
   if (!(vb.width > 0) || !(vb.height > 0)) return null;
@@ -94,7 +110,7 @@ function computePreviewContentRatio(raw) {
 }
 
 function computePreviewContentOffsetPct(raw) {
-  const vb = raw && raw.viewBox;
+  const vb = getPreviewFrameViewBox(raw);
   const cb = raw && raw.layout && raw.layout.contentBox;
   if (!vb || !cb) return null;
   if (!(vb.width > 0) || !(vb.height > 0)) return null;

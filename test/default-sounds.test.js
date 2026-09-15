@@ -42,7 +42,7 @@ test("bundled completion sound keeps the attenuated CC0 asset distinct from its 
 });
 
 test("built-in themes resolve completion and confirmation to distinct bundled files", () => {
-  for (const themeId of ["clawd", "calico", "cloudling"]) {
+  for (const themeId of ["clawd", "calico", "cloudling", "hash-sage"]) {
     const theme = themeLoader.loadTheme(themeId, { strict: true });
     const context = createThemeContext(theme, { assetsSoundsDir: SOUNDS_DIR });
     const completeUrl = context.getSoundUrl("complete");

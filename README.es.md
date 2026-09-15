@@ -31,7 +31,7 @@
 
 Clawd vive en tu escritorio y reacciona en tiempo real a lo que hace tu agente de programación con IA. Inicia una tarea larga, aléjate y vuelve cuando el cangrejo te avise de que terminó.
 
-Piensa cuando envías un prompt, escribe cuando se ejecutan herramientas, se mueve o hace malabares con los subagentes, revisa permisos, celebra al terminar las tareas y duerme cuando te alejas. Incluye tres temas: **Clawd** (cangrejo pixelado), **Calico** (三花猫) y **Cloudling** (云宝), además de compatibilidad completa con temas personalizados y paquetes de animaciones Codex Pet importados.
+Piensa cuando envías un prompt, escribe cuando se ejecutan herramientas, se mueve o hace malabares con los subagentes, revisa permisos, celebra al terminar las tareas y duerme cuando te alejas. Incluye cuatro temas: **Clawd** (cangrejo pixelado), **Calico** (三花猫), **Cloudling** (云宝) y **Hash Sage** (哈希仙人), además de compatibilidad completa con temas personalizados y paquetes de animaciones Codex Pet importados.
 
 > Compatible con Windows 11, macOS y Ubuntu/Linux. Las releases de Windows incluyen instaladores x64 y ARM64 separados. Las compilaciones desde el código fuente requieren Node.js. Funciona con **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI** y **DeepSeek Harness**.
 

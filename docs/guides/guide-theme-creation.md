@@ -26,7 +26,7 @@ A Clawd theme is a folder whose top level contains `theme.json`. The folder name
 
 4. Open `Settings...` -> `Theme` and select the theme. If Clawd was already open and the theme does not appear, restart Clawd.
 
-Avoid using a folder id that matches a built-in theme (`clawd`, `calico`, or `cloudling`). Built-in themes take priority over user themes with the same id.
+Avoid using a folder id that matches a built-in theme (`clawd`, `calico`, `cloudling`, or `hash-sage`). Built-in themes take priority over user themes with the same id.
 
 ## Create A New Theme
 
@@ -190,6 +190,7 @@ While free roam moves the pet across the screen, themes without a `roam` binding
 - Any playback format works (SVG with CSS/SMIL animations, GIF, APNG, WebP)
 - Draw the walk art **facing right** — the renderer mirrors it automatically while the pet walks left
 - If your art faces left instead, declare a top-level `"roamFlipAssets": true` to invert the mirror
+- If the walk art carries legible glyphs, give it a pre-mirrored variant in `mirroredFiles` (see Mini Mode)
 - Without a `roam` binding nothing breaks: the pet keeps the idle-visual-plus-bob fallback
 
 ### Optional Update Visuals
@@ -492,6 +493,17 @@ If `miniMode.supported` is `true`, the validator expects all 8 mini states shown
 
 `mini-working` is optional. If you provide `miniMode.states["mini-working"]`, Clawd can show a compact working animation while the pet is in mini mode. If you omit it, working/thinking/juggling events do not break mini mode; Clawd keeps the current mini visual.
 
+`mirroredFiles` (top level) is optional. Clawd mirrors some visuals: every mini visual against the left screen edge, and a dedicated `roam` visual while the walk heads left (including the pre-entry crabwalk toward the left edge). Raster art with legible text or glyphs (a scroll, a talisman, code symbols) reads backwards once mirrored. Map each such file to a variant whose glyphs are pre-mirrored; whenever Clawd draws that file mirrored it shows the variant instead, and the mirror turns its text the right way round:
+
+```json
+"mirroredFiles": {
+  "mini-happy.apng": "mini-happy-left.apng",
+  "my-theme-walk.apng": "my-theme-walk-left.apng"
+}
+```
+
+Keep the variant pixel-identical to the original outside the glyphs. It reuses the original file's hit box, while per-file layout entries (`fileViewBoxes`, `objectScale.fileScales` / `fileOffsets`) are looked up by the file actually shown, so repeat any you set for the original. A walk that turns around swaps between the two files, so the loop restarts at the turn.
+
 ### Timings
 
 All values in milliseconds. Omit any to use defaults:
@@ -584,7 +596,7 @@ If two themes have very different visible body heights even though the window si
 }
 ```
 
-- `contentBox` — the visible body area in viewBox units, not the whole exported canvas
+- `contentBox` — the visible body area in viewBox units, not the whole exported canvas. Settings also uses it to frame the theme card thumbnail, measured against the preview file's `fileViewBoxes` entry when it has one
 - `centerX` — the horizontal anchor inside the viewBox
 - `baselineY` — the standing baseline inside the viewBox
 - `visibleHeightRatio` — how tall the visible body should be relative to the window height

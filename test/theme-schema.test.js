@@ -117,6 +117,48 @@ describe("theme schema validation", () => {
     }
   });
 
+  it("validates mirroredFiles as a map to distinct file names", () => {
+    const withMap = (mirroredFiles) => validThemeJson({ mirroredFiles });
+    assert.deepStrictEqual(schema.validateTheme(withMap({ "mini-happy.apng": "mini-happy-left.apng" })), []);
+
+    for (const bad of ["mini-happy-left.apng", ["mini-happy-left.apng"], 1, null]) {
+      const errors = schema.validateTheme(withMap(bad));
+      assert.ok(
+        errors.some((error) => error.includes("mirroredFiles must be an object")),
+        `expected a mirroredFiles shape error for ${JSON.stringify(bad)}`
+      );
+    }
+    for (const bad of [{ "mini-happy.apng": "" }, { "mini-happy.apng": 3 }, { "mini-happy.apng": "../mini-happy.apng" }]) {
+      const errors = schema.validateTheme(withMap(bad));
+      assert.ok(
+        errors.some((error) => error.includes('mirroredFiles["mini-happy.apng"]')),
+        `expected a mirroredFiles entry error for ${JSON.stringify(bad)}`
+      );
+    }
+  });
+
+  it("mergeDefaults normalizes mirroredFiles to basenames and defaults it to {}", () => {
+    assert.deepStrictEqual(schema.mergeDefaults(validThemeJson()).mirroredFiles, {});
+    const theme = schema.mergeDefaults(validThemeJson({
+      mirroredFiles: {
+        "../mini-happy.apng": "nested/mini-happy-left.apng",
+        "bad.apng": 7,
+        "same.apng": "same.apng",
+      },
+    }));
+    assert.deepStrictEqual(theme.mirroredFiles, { "mini-happy.apng": "mini-happy-left.apng" });
+  });
+
+  it("collectRequiredAssetFiles includes mirrored-display variants", () => {
+    const files = schema.collectRequiredAssetFiles({
+      states: { idle: ["idle.svg"], roam: ["walk.apng"] },
+      mirroredFiles: { "walk.apng": "../walk-left.apng", "odd.apng": 4 },
+    });
+    assert.ok(files.includes("walk.apng"));
+    assert.ok(files.includes("walk-left.apng"));
+    assert.ok(!files.includes("4"));
+  });
+
   it("validates and derives the explicit pet tint capability", () => {
     assert.deepStrictEqual(
       schema.validateTheme(validThemeJson({ customization: { petTint: true } })),

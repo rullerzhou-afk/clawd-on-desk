@@ -3,6 +3,7 @@
 const defaultFs = require("fs");
 const defaultPath = require("path");
 const { pathToFileURL: defaultPathToFileURL } = require("url");
+const { hasDedicatedRoamVisual } = require("./mirrored-files");
 
 function createThemeContext(theme, options = {}) {
   const fs = options.fs || defaultFs;
@@ -87,9 +88,7 @@ function createThemeContext(theme, options = {}) {
       // idle[0]) means "no dedicated visual" — the renderer then keeps its
       // roam-walk bob compensation. Multi-entry bindings count as dedicated
       // even if one entry reuses the idle file.
-      hasRoamVisual: !!(theme.states && Array.isArray(theme.states.roam)
-        && theme.states.roam.length > 0
-        && !(theme.states.roam.length === 1 && theme.states.roam[0] === theme.states.idle[0])),
+      hasRoamVisual: hasDedicatedRoamVisual(theme),
       eyeTrackingStates: theme.eyeTracking.enabled ? theme.eyeTracking.states : [],
       trustedScriptedSvgFiles: [...trustedScriptedSvgFiles],
       rendering: theme.rendering || { svgChannel: "auto" },

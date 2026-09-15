@@ -1,0 +1,490 @@
+{
+  "schemaVersion": 1,
+  "name": "Hash Sage",
+  "author": "rullerzhou",
+  "version": "1.0.0",
+  "description": "Hash Sage (哈希仙人) — hand-directed Seedance animations, colour-harmonised, with the approved SVG effects baked into APNG",
+  "customization": {
+    "petTint": false
+  },
+  "viewBox": {
+    "x": -272,
+    "y": -442,
+    "width": 1504,
+    "height": 1504
+  },
+  "fileViewBoxes": {
+    "hash-sage-idle.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-dozing.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-collapsing.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-sleeping.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-waking.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-dnd-sleep.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-react-surprise.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-react-annoyed.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-thinking.apng": {
+      "x": 85.0,
+      "y": 74.0,
+      "width": 854.4,
+      "height": 854.4
+    },
+    "hash-sage-working.apng": {
+      "x": 41.0,
+      "y": 99.0,
+      "width": 777.6,
+      "height": 777.6
+    },
+    "hash-sage-juggling.apng": {
+      "x": -272,
+      "y": -442,
+      "width": 1504,
+      "height": 1504
+    },
+    "hash-sage-busy.apng": {
+      "x": -5.0,
+      "y": 38.0,
+      "width": 940.8,
+      "height": 940.8
+    },
+    "hash-sage-attention.apng": {
+      "x": -423.0,
+      "y": 9.0,
+      "width": 1257.6,
+      "height": 944.0
+    },
+    "hash-sage-notification.apng": {
+      "x": -20.0,
+      "y": 30.0,
+      "width": 928.0,
+      "height": 928.0
+    },
+    "hash-sage-error.apng": {
+      "x": 77.0,
+      "y": 125.0,
+      "width": 739.2,
+      "height": 739.2
+    },
+    "hash-sage-sweeping.apng": {
+      "x": 34.0,
+      "y": 50.0,
+      "width": 876.8,
+      "height": 876.8
+    },
+    "hash-sage-carrying.apng": {
+      "x": 121.93,
+      "y": -7.23,
+      "width": 905.6,
+      "height": 905.6
+    },
+    "hash-sage-yawning.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    },
+    "hash-sage-roam.apng": {
+      "x": -272,
+      "y": -442,
+      "width": 1504,
+      "height": 1504
+    },
+    "hash-sage-react-drag.apng": {
+      "x": 10.0,
+      "y": 51.0,
+      "width": 915.2,
+      "height": 915.2
+    },
+    "hash-sage-roam-left.apng": {
+      "x": -272,
+      "y": -442,
+      "width": 1504,
+      "height": 1504
+    },
+    "hash-sage-idle-cloud-play.apng": {
+      "x": 0.0,
+      "y": 0.0,
+      "width": 960.0,
+      "height": 960.0
+    }
+  },
+  "layout": {
+    "contentBox": {
+      "x": 264,
+      "y": 142,
+      "width": 432,
+      "height": 668
+    },
+    "centerX": 480.0,
+    "baselineY": 810,
+    "visibleHeightRatio": 0.444149,
+    "baselineBottomRatio": 0.167553
+  },
+  "eyeTracking": {
+    "enabled": false,
+    "states": []
+  },
+  "sleepSequence": {
+    "mode": "full"
+  },
+  "states": {
+    "idle": [
+      "hash-sage-idle.apng"
+    ],
+    "thinking": [
+      "hash-sage-thinking.apng"
+    ],
+    "working": [
+      "hash-sage-working.apng"
+    ],
+    "juggling": [
+      "hash-sage-juggling.apng"
+    ],
+    "attention": [
+      "hash-sage-attention.apng"
+    ],
+    "notification": [
+      "hash-sage-notification.apng"
+    ],
+    "error": [
+      "hash-sage-error.apng"
+    ],
+    "sweeping": [
+      "hash-sage-sweeping.apng"
+    ],
+    "carrying": [
+      "hash-sage-carrying.apng"
+    ],
+    "yawning": [
+      "hash-sage-yawning.apng"
+    ],
+    "dozing": [
+      "hash-sage-dozing.apng"
+    ],
+    "collapsing": [
+      "hash-sage-collapsing.apng"
+    ],
+    "sleeping": [
+      "hash-sage-sleeping.apng"
+    ],
+    "waking": [
+      "hash-sage-waking.apng"
+    ],
+    "roam": [
+      "hash-sage-roam.apng"
+    ]
+  },
+  "idleAnimations": [
+    {
+      "file": "hash-sage-idle-cloud-play.apng",
+      "duration": 5389
+    }
+  ],
+  "workingTiers": [
+    {
+      "minSessions": 3,
+      "file": "hash-sage-busy.apng"
+    },
+    {
+      "minSessions": 2,
+      "file": "hash-sage-juggling.apng"
+    },
+    {
+      "minSessions": 1,
+      "file": "hash-sage-working.apng"
+    }
+  ],
+  "jugglingTiers": [
+    {
+      "minSessions": 2,
+      "file": "hash-sage-busy.apng"
+    },
+    {
+      "minSessions": 1,
+      "file": "hash-sage-juggling.apng"
+    }
+  ],
+  "displayHintMap": {
+    "clawd-working-building.svg": "hash-sage-busy.apng",
+    "clawd-working-typing.svg": "hash-sage-working.apng",
+    "clawd-headphones-groove.svg": "hash-sage-juggling.apng",
+    "clawd-working-juggling.svg": "hash-sage-juggling.apng",
+    "clawd-working-conducting.svg": "hash-sage-busy.apng",
+    "clawd-working-thinking.svg": "hash-sage-thinking.apng"
+  },
+  "timings": {
+    "minDisplay": {
+      "attention": 5059,
+      "error": 3600,
+      "sweeping": 5500,
+      "notification": 5000,
+      "carrying": 4042,
+      "working": 1000,
+      "thinking": 1000
+    },
+    "autoReturn": {
+      "attention": 5059,
+      "error": 3600,
+      "sweeping": 300000,
+      "notification": 5000,
+      "carrying": 4042
+    },
+    "yawnDuration": 5042,
+    "wakeDuration": 5361,
+    "collapseDuration": 6042,
+    "dndSleepTransitionSvg": "hash-sage-dnd-sleep.apng",
+    "dndSleepTransitionDuration": 4028,
+    "deepSleepTimeout": 600000,
+    "mouseIdleTimeout": 20000,
+    "mouseSleepTimeout": 60000
+  },
+  "hitBoxes": {
+    "default": {
+      "x": 270,
+      "y": 140,
+      "w": 420,
+      "h": 675
+    },
+    "sleeping": {
+      "x": 60,
+      "y": 200,
+      "w": 840,
+      "h": 580
+    },
+    "wide": {
+      "x": 150,
+      "y": 120,
+      "w": 660,
+      "h": 700
+    }
+  },
+  "sleepingHitboxFiles": [
+    "hash-sage-sleeping.apng"
+  ],
+  "wideHitboxFiles": [
+    "hash-sage-roam.apng",
+    "hash-sage-roam-left.apng",
+    "hash-sage-attention.apng",
+    "hash-sage-busy.apng",
+    "hash-sage-react-drag.apng",
+    "hash-sage-carrying.apng"
+  ],
+  "fileHitBoxes": {
+    "hash-sage-mini-idle.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-enter.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-peek.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-alert.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-happy.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-working.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-enter-sleep.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-sleep.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-happy-left.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-mini-working-left.apng": {
+      "x": 190,
+      "y": 30,
+      "w": 420,
+      "h": 900
+    },
+    "hash-sage-collapsing.apng": {
+      "x": 60,
+      "y": 130,
+      "w": 840,
+      "h": 682
+    },
+    "hash-sage-dnd-sleep.apng": {
+      "x": 60,
+      "y": 130,
+      "w": 840,
+      "h": 682
+    },
+    "hash-sage-waking.apng": {
+      "x": 60,
+      "y": 130,
+      "w": 840,
+      "h": 682
+    },
+    "hash-sage-juggling.apng": {
+      "x": 239,
+      "y": 40,
+      "w": 483,
+      "h": 776
+    },
+    "hash-sage-carrying.apng": {
+      "x": 120,
+      "y": 58,
+      "w": 719,
+      "h": 763
+    }
+  },
+  "mirroredFiles": {
+    "hash-sage-mini-happy.apng": "hash-sage-mini-happy-left.apng",
+    "hash-sage-mini-working.apng": "hash-sage-mini-working-left.apng",
+    "hash-sage-roam.apng": "hash-sage-roam-left.apng"
+  },
+  "reactions": {
+    "drag": {
+      "file": "hash-sage-react-drag.apng"
+    },
+    "clickLeft": {
+      "file": "hash-sage-react-surprise.apng",
+      "duration": 4642
+    },
+    "clickRight": {
+      "file": "hash-sage-react-surprise.apng",
+      "duration": 4642
+    },
+    "annoyed": {
+      "file": "hash-sage-react-annoyed.apng",
+      "duration": 4042
+    },
+    "double": {
+      "files": [
+        "hash-sage-react-annoyed.apng"
+      ],
+      "duration": 4042
+    }
+  },
+  "miniMode": {
+    "supported": true,
+    "offsetRatio": 0.45,
+    "viewBox": {
+      "x": 0,
+      "y": 0,
+      "width": 960,
+      "height": 960
+    },
+    "states": {
+      "mini-idle": [
+        "hash-sage-mini-idle.apng"
+      ],
+      "mini-enter": [
+        "hash-sage-mini-enter.apng"
+      ],
+      "mini-peek": [
+        "hash-sage-mini-peek.apng"
+      ],
+      "mini-alert": [
+        "hash-sage-mini-alert.apng"
+      ],
+      "mini-happy": [
+        "hash-sage-mini-happy.apng"
+      ],
+      "mini-crabwalk": [
+        "hash-sage-roam.apng"
+      ],
+      "mini-enter-sleep": [
+        "hash-sage-mini-enter-sleep.apng"
+      ],
+      "mini-sleep": [
+        "hash-sage-mini-sleep.apng"
+      ],
+      "mini-working": [
+        "hash-sage-mini-working.apng"
+      ]
+    },
+    "timings": {
+      "minDisplay": {
+        "mini-alert": 4042,
+        "mini-happy": 3246
+      },
+      "autoReturn": {
+        "mini-alert": 4042,
+        "mini-happy": 3246
+      }
+    }
+  },
+  "objectScale": {
+    "widthRatio": 0.4255,
+    "heightRatio": 0.4255,
+    "offsetX": 0.301934,
+    "offsetY": 0.1531,
+    "imgWidthRatio": 0.4255,
+    "imgOffsetX": 0.301934,
+    "imgBottom": 0.1531,
+    "objBottom": 0.1531
+  }
+}

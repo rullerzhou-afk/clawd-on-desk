@@ -235,7 +235,7 @@ Recommended all-platform checks:
   Targets must remain reachable and on-screen, with invalid input falling back
   safely.
 - Dizzy spin: on the Clawd theme, circle the cursor rapidly and confirm dizzy
-  triggers; repeat on Calico/Cloudling and confirm no unsupported-state glitch.
+  triggers; repeat on Calico/Cloudling/Hash Sage and confirm no unsupported-state glitch.
 - Low-power idle mode: verify sleeping/Cloudling static sleep behavior and that
   the HUD can be reclaimed/reopened without a blank surface.
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving

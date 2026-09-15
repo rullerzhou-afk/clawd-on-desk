@@ -226,6 +226,10 @@ function validateTheme(cfg) {
     errors.push(`roamFlipAssets must be a boolean, got ${JSON.stringify(cfg.roamFlipAssets)}`);
   }
 
+  if (cfg.mirroredFiles !== undefined) {
+    errors.push(...validateMirroredFiles(cfg.mirroredFiles));
+  }
+
   const fallbackStateKeys = Object.keys(normalizedStates);
   for (const stateKey of fallbackStateKeys) {
     const entry = normalizedStates[stateKey];
@@ -1193,6 +1197,35 @@ function buildCapabilities(cfg, options = {}) {
   };
 }
 
+// mirroredFiles: { "<file>": "<variant>" }. Whenever the runtime draws a file
+// mirrored (left mini edge, leftward roam) it shows the variant, whose glyphs
+// are pre-mirrored so text reads the right way round (src/mirrored-files.js).
+function validateMirroredFiles(value) {
+  if (!isPlainObject(value)) {
+    return [`mirroredFiles must be an object mapping a file to its mirrored-display variant, got ${JSON.stringify(value)}`];
+  }
+  const errors = [];
+  for (const [from, to] of Object.entries(value)) {
+    if (typeof to !== "string" || !basenameOnly(to)) {
+      errors.push(`mirroredFiles["${from}"] must be a file name, got ${JSON.stringify(to)}`);
+    } else if (basenameOnly(to) === basenameOnly(from)) {
+      errors.push(`mirroredFiles["${from}"] must name a different file`);
+    }
+  }
+  return errors;
+}
+
+function normalizeMirroredFiles(value) {
+  const out = {};
+  if (!isPlainObject(value)) return out;
+  for (const [from, to] of Object.entries(value)) {
+    const source = basenameOnly(from);
+    const target = typeof to === "string" ? basenameOnly(to) : "";
+    if (source && target && source !== target) out[source] = target;
+  }
+  return out;
+}
+
 function addThemeAssetFile(out, filename) {
   if (typeof filename !== "string") return;
   const safe = basenameOnly(filename);
@@ -1215,6 +1248,10 @@ function collectRequiredAssetFiles(theme) {
   }
   const objectChannelFiles = theme && theme.rendering && theme.rendering.objectChannelFiles;
   for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {
+    addThemeAssetFile(files, file);
+  }
+  const mirroredFiles = theme && theme.mirroredFiles;
+  for (const file of Object.values(isPlainObject(mirroredFiles) ? mirroredFiles : {})) {
     addThemeAssetFile(files, file);
   }
   return [...files];
@@ -1460,6 +1497,8 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   // artwork; themes whose roam asset is drawn facing left set this to invert
   // the mirror. Pure rendering flag — safe for external themes.
   theme.roamFlipAssets = !!raw.roamFlipAssets;
+  // Pre-mirrored-glyph variants shown whenever a file is drawn mirrored.
+  theme.mirroredFiles = normalizeMirroredFiles(raw.mirroredFiles);
 
   // miniMode
   if (raw.miniMode) {
@@ -1622,6 +1661,7 @@ module.exports = {
   normalizeTrustedRuntime,
   normalizeRendering,
   normalizeFileViewBoxes,
+  getCanonicalFileViewBoxes,
   normalizeFileHitBoxes,
   mergeFileHitBoxes,
 };

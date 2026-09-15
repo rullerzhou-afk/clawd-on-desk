@@ -127,6 +127,31 @@ Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mod
 | Notification | Alert pop | <img src="../../assets/gif/clawd-mini-alert.gif" width="100"> | <img src="../../assets/gif/calico-mini-alert.gif" width="80"> | <img src="../../assets/gif/cloudling-mini-alert.gif" width="90"> |
 | Task complete | Happy celebration | <img src="../../assets/gif/clawd-mini-happy.gif" width="100"> | <img src="../../assets/gif/calico-mini-happy.gif" width="80"> | <img src="../../assets/gif/cloudling-mini-happy.gif" width="90"> |
 
+## Hash Sage
+
+Hash Sage (哈希仙人) is a built-in APNG theme. It uses the same logical states; the approved SVG effects are baked into each APNG, and it has no cursor eye tracking.
+
+| State | Hash Sage animation |
+|---|---|
+| idle | 空手待机 — standing breath (approved sample; the full idle set is not final yet) |
+| idle random pool (after 20 s without mouse movement) | 小云捉迷藏 — a little cloud flies in, circles her with a gold trail, plays on her fingertip and flies off; starts and ends on the idle pose |
+| thinking | 掐诀推演 — palm compass turns, code glyphs rise |
+| working (1 session) | 执笔制符 — writes the verification talisman |
+| working (2 sessions) / juggling (1 subagent) | 御剑 · 哈希符文 — twin swords with hash runes |
+| working (3+ sessions) / juggling (2+ subagents) | 忙碌协作 — two paper spirits help out |
+| attention | 完成收功 — unrolls the seal scroll |
+| notification | 小铃轻唤 — rings the small bell |
+| error | 怎么又炸了 — the talisman backfires |
+| sweeping | 拂尘引纸 — the whisk gathers flying papers |
+| carrying | 牵云运匣 — leads a cloud carrying a case |
+| yawning → dozing → collapsing → sleeping → waking | 哈欠入盹 → 托腮轻盹 → 云来安睡 → 云上代码梦 → 伸懒腰醒来 |
+| DND sleep transition | 直接安睡 |
+| roam, mini crab-walk | 乘云而行 (drawn heading right, mirrored when heading left) |
+| drag / double-click / annoyed, 4-click | 张手轻摆 / 小小吃惊 / 有点嫌弃 |
+| mini idle / enter / hover peek | 贴边探头 / 从右侧走入 / 探出与呼吸 |
+| mini alert / task complete / working | 摇铃 / 竖卷收功 / 挥符 |
+| mini enter-sleep / sleep (DND) | 闭眼入场 / 贴墙睡眠呼吸 |
+
 ## Click Reactions
 
 Easter eggs — try double-clicking, rapid 4-clicks, or poking Clawd repeatedly to discover hidden reactions.

@@ -25,14 +25,16 @@ Windows 的 hit window 在原生 activation controller 可用时按前台全屏�
 - DND 模式：跳过 dozing，直接 yawning → collapsing → sleeping；同时屏蔽 hook 事件
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
 - Windows 全屏自动隐藏会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
-- working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building
-- juggling 子动画：1 个 subagent → juggling，2+ → conducting
+- working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；Hash Sage 为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作
+- juggling 子动画：1 个 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作）
 
 ## Theme System
 
 Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数都来自主题配置。
 
-- 内置主题目录：`themes/clawd/`、`themes/calico/`、`themes/cloudling/`；`themes/template/` 是脚手架模板
+- 内置主题目录：`themes/clawd/`、`themes/calico/`、`themes/cloudling/`、`themes/hash-sage/`；`themes/template/` 是脚手架模板
+- Hash Sage 的坐标约定：根 `viewBox` 就是宠物窗口在规范坐标（标准站姿 960 画布）里的区域，其余普通素材都用 `fileViewBoxes` 声明各自画布与角色缩放；`hash-sage-roam.apng` 的 `fileViewBoxes` 与根 viewBox 相同，因此同一个文件既是 `roam`，也是 pre-entry 的 `mini-crabwalk`（`hasRootViewBoxFileOverride` 让它继续走普通布局）。Mini 素材只走 `objectScale`：Mini 原画按标准站姿的 1.5 倍画（按脸部匹配；身高只有 1.33 倍是因为探头时身体前倾），所以 `imgWidthRatio = (960/1504)/1.5 = 0.4255`，人物与普通状态一样大；`imgOffsetX 0.3019` 与 `miniMode.offsetRatio 0.45` 配合，使素材 58.3% 的墙线正好落在屏幕边；`imgBottom 0.1531` 让 Mini 脚底与普通状态站在同一高度；改其中任一数值都要同时重算其余几个。roam 原片的代码符号会飘出宠物窗口左边界，所以 `hash-sage-roam(-left).apng` 按原管线重渲，符号在碰到窗口边之前逐个淡出。御剑（`hash-sage-juggling.apng`）和搬运（`hash-sage-carrying.apng`）两段原画的头比标准站姿小（身高本来就一致；与 idle 的脸部匹配 1.185 / 1.115、头饰匹配 1.10 / 1.06），按两者的中间值放大 1.15 / 1.09 倍，锚点是脚落在 idle 的地面线（y 807）、脸对准 x 480，所以这两段比其他状态高约 15% / 12%；御剑的光环跟着变大，文件改为按窗口取景（`fileViewBoxes` 等于根 viewBox），碰到窗口边的淡光在边上淡出；两者的 `fileHitBoxes` 按同一锚点同比放大。随机待机池 `idleAnimations` 只有一段「小云捉迷藏」（`hash-sage-idle-cloud-play.apng`，1.5×、约 5.39 秒）：从 idle 的站姿关键帧出发、回到同一关键帧，画布与 idle 相同（`fileViewBoxes` 为 {0,0,960,960}），云和拖尾穿过画布左右边时在边上淡出；APNG 设为循环，被选作默认待机时也能连续播放。会被镜像显示、又带字的素材都配了预镜像字纹的变体（Mini 左边缘整只镜像；向左漫游和走向左边缘的 pre-entry crabwalk 镜像 roam）：`hash-sage-mini-happy-left.apng` / `hash-sage-mini-working-left.apng` 只把卷轴、符纸上的字纹预先镜像，`hash-sage-roam-left.apng` 把风里每个代码符号原地镜像，其余与原片逐像素相同，经 `mirroredFiles` 替换后镜像显示正读。胸口 `</>` 徽章仍随整体镜像（每个左侧画面都有，没有做变体）
+- `mirroredFiles`（顶层，`{ 原文件: 镜像显示用变体 }`）：只要运行时要把某个文件镜像画出（判定复用 `pet-accessory-mirror.js`：Mini 左边缘、向左漫游、走向左边缘的 crabwalk，也覆盖 `roamFlipAssets` / `miniMode.flipAssets` 反向绘制的主题），main 在 `requestDisplayedVisual` 生成显示请求时就换成变体，renderer、结算 ACK 与 committed visual 看到同一个文件；hitbox 仍按原文件解析（变体只改字纹）。漫游中途掉头不产生新 state，所以 `setRoamHeading` 在朝向真的变化、且当前 roam 文件有变体时，会重发一次 roam 显示请求
 - 用户主题目录：`<userData>/themes/<id>/theme.json`
 - `theme.json` 必需状态：`idle`、`working`、`thinking`
 - `states.idle[0]` 是主题默认的 follow-idle；Settings 的“默认待机动画”选项来自该主题声明的 idle 状态与 idle animation pool，并按主题分别持久化到 `prefs.idleVisual`
@@ -139,8 +141,8 @@ Mini 状态映射：
 
 权威表格见 `docs/guides/state-mapping.md`。这里只保留实现层面的补充：
 
-- working 子动画：Clawd 主题为 1 会话 → typing，2 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building
-- juggling 子动画：1 subagent → juggling，2+ → conducting
+- working 子动画：Clawd 主题为 1 会话 → typing，2 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；Hash Sage 为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作
+- juggling 子动画：1 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作）
 - mini 状态有独立动画槽；`mini-working` 是可选能力
 - 睡眠序列和 DND 行为见上面的 State Machine
 - `attention / error / sweeping / notification / carrying` 是一次性状态，显示后按 `autoReturn` 回退

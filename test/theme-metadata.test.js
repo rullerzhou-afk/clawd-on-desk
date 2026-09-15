@@ -106,6 +106,27 @@ describe("theme metadata preview helpers", () => {
     assert.deepStrictEqual(computePreviewContentOffsetPct(raw), { x: 15, y: -20 });
     assert.strictEqual(computePreviewContentRatio(validThemeJson()), null);
   });
+
+  it("frames preview content in the preview file's own fileViewBox", () => {
+    const layout = { contentBox: { x: 32, y: 96, width: 128, height: 128 } };
+    const viewBox = { x: -128, y: -128, width: 512, height: 512 };
+    const fileViewBox = { x: 0, y: 0, width: 256, height: 256 };
+    const placedIdle = validThemeJson({ viewBox, layout, fileViewBoxes: { "idle.svg": fileViewBox } });
+    const placedPreview = validThemeJson({
+      viewBox,
+      layout,
+      preview: "../still.svg",
+      fileViewBoxes: { "still.svg": fileViewBox },
+    });
+    const placedOther = validThemeJson({ viewBox, layout, fileViewBoxes: { "working.svg": fileViewBox } });
+
+    for (const raw of [placedIdle, placedPreview]) {
+      assert.strictEqual(computePreviewContentRatio(raw), 0.5);
+      assert.deepStrictEqual(computePreviewContentOffsetPct(raw), { x: 12.5, y: -12.5 });
+    }
+    assert.strictEqual(computePreviewContentRatio(placedOther), 0.25);
+    assert.deepStrictEqual(computePreviewContentOffsetPct(placedOther), { x: 6.25, y: -6.25 });
+  });
 });
 
 describe("theme metadata variants", () => {

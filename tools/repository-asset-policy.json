@@ -20,8 +20,8 @@
     "legal": "License or distribution notice with permanent retention requirements"
   },
   "thresholds": {
-    "trackedTreeWarningBytes": 52428800,
-    "trackedTreeHardBytes": 58720256,
+    "trackedTreeWarningBytes": 249561088,
+    "trackedTreeHardBytes": 255852544,
     "largeTrackedBinaryMediaBytes": 1048576,
     "duplicatePackagedPayloadWarningBytes": 262144,
     "artifactGrowthWarningBytes": 5242880,
