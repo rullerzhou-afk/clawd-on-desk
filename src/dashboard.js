@@ -1,8 +1,16 @@
 "use strict";
 
-const { BrowserWindow, nativeTheme } = require("electron");
+const electron = require("electron");
+const { nativeTheme } = electron;
 const path = require("path");
-const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
+const {
+  clampTextScale,
+  scaleWidth,
+  scaleHeight,
+  applyZoomToWebContents,
+} = require("./text-scale");
+const { createDashboardHost } = require("./dashboard-host");
+const { createDashboardQuickMode } = require("./dashboard-quick-mode");
 
 const DEFAULT_WIDTH = 480;
 const DEFAULT_HEIGHT = 600;
@@ -70,7 +78,11 @@ function sameBounds(a, b) {
 }
 
 module.exports = function initDashboard(ctx) {
+  const platform = ctx.platform || process.platform;
   let dashboardWindow = null;
+  // Host wrapper for the single Dashboard page: BaseWindow + WebContentsView
+  // on darwin/win32, plain BrowserWindow on Linux.
+  let dashboardHost = null;
   let saveBoundsTimer = null;
   let lastSavedBounds = null;
   let programmaticEventBounds = null;
@@ -392,20 +404,35 @@ module.exports = function initDashboard(ctx) {
     }
   }
 
+  // The one Dashboard WebContents. On darwin/win32 it belongs to the
+  // WebContentsView, not to any window, so nothing may resolve it through
+  // `window.webContents` or `BrowserWindow.fromWebContents()`.
+  function getWebContents() {
+    if (!dashboardHost) return null;
+    const contents = dashboardHost.webContents;
+    if (!contents) return null;
+    if (typeof contents.isDestroyed === "function" && contents.isDestroyed()) return null;
+    return contents;
+  }
+
+  function sendToPage(channel, payload) {
+    const contents = getWebContents();
+    if (!contents) return;
+    try { contents.send(channel, payload); } catch {}
+  }
+
   function sendSnapshot(snapshot = getCurrentSnapshot()) {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
-    dashboardWindow.webContents.send("dashboard:session-snapshot", snapshot);
+    sendToPage("dashboard:session-snapshot", snapshot);
   }
 
   function sendI18n() {
     if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    if (!dashboardWindow.webContents || dashboardWindow.webContents.isDestroyed()) return;
     if (typeof ctx.getI18n !== "function") return;
-    dashboardWindow.webContents.send("dashboard:lang-change", ctx.getI18n());
+    sendToPage("dashboard:lang-change", ctx.getI18n());
   }
 
-  function createDashboardWindow(options = {}) {
+  function createDashboardWindow(options = {}, { autoShow = true } = {}) {
     const placement = getDashboardPlacement(options);
     const metrics = getScaledMetrics(placement.bounds);
     const opts = {
@@ -432,7 +459,12 @@ module.exports = function initDashboard(ctx) {
     };
     if (ctx.iconPath) opts.icon = ctx.iconPath;
 
-    dashboardWindow = new BrowserWindow(opts);
+    dashboardHost = createDashboardHost({
+      platform,
+      electron: ctx.electron || electron,
+      windowOptions: opts,
+    });
+    dashboardWindow = dashboardHost.window;
     // BrowserWindow's constructor can quantize framed window geometry at
     // fractional Windows DPI. Re-apply the requested outer bounds before
     // listeners are attached, and treat the post-correction rectangle as the
@@ -452,7 +484,7 @@ module.exports = function initDashboard(ctx) {
     } catch {}
     lastSavedBounds = getNormalWindowBounds(dashboardWindow) || placement.bounds;
     dashboardWindow.setMenuBarVisibility(false);
-    dashboardWindow.loadFile(path.join(__dirname, "dashboard.html"));
+    dashboardHost.loadFile(path.join(__dirname, "dashboard.html"));
     // textScale is per-display: re-resolve after the user drags the window
     // somewhere else (debounced — "move" fires continuously during drags).
     let moveTextScaleTimer = null;
@@ -461,34 +493,100 @@ module.exports = function initDashboard(ctx) {
       if (moveTextScaleTimer) clearScheduled(moveTextScaleTimer);
       moveTextScaleTimer = scheduleLater(() => {
         moveTextScaleTimer = null;
+        // A borrowed page follows the quick host, not this window.
+        if (quickMode.isShown()) return;
         applyTextScaleToWindow();
       }, 350);
       // Every move can cross into a display with a different text scale, even
       // while maximized/fullscreen or when native delivery follows setBounds().
       // The guards below only decide whether the rectangle is user geometry.
+      if (quickMode.isShown()) return;
       if (hasTransientWindowBounds(createdWindow)) return;
       if (isProgrammaticBoundsEvent(createdWindow)) return;
       scheduleWindowBoundsSave(createdWindow);
     });
     dashboardWindow.on("resize", () => {
+      // While parked and empty the ordinary host is not showing user geometry;
+      // nothing that happens to it during a borrow may reach prefs.
+      if (quickMode.isShown()) return;
       if (hasTransientWindowBounds(createdWindow)) return;
       if (isProgrammaticBoundsEvent(createdWindow)) return;
       scheduleWindowBoundsSave(createdWindow);
     });
+    // A real ordinary activation must end any live borrow AND leave the page
+    // holding the keyboard.
+    //
+    // Handle either event ordering. On Electron 41.10.4 we measured the quick
+    // host blurring first — which already ends the round and returns the view —
+    // and ordinary focus arriving with nothing left to end. Tests also cover
+    // focus arriving while the borrow is still live. Gating the page focus on
+    // "did this event end a borrow" only handles that second ordering, so in
+    // the measured first ordering the window held the keyboard while
+    // document.hasFocus() stayed false.
+    //
+    // The two decisions are therefore independent: end a borrow if one is
+    // still live, then separately ask whether this window is genuinely the
+    // key host that currently owns the page.
+    let focusingOwnedPage = false;
+    dashboardWindow.on("focus", () => {
+      if (dashboardWindow !== createdWindow) return;
+      if (focusingOwnedPage) return;
+      quickMode.handleNormalHostFocus();
+      if (!shouldGivePageKeyboard()) return;
+      // Only the page is focused — re-focusing the window would re-enter this
+      // handler, and BrowserWindow already does this implicitly, so this just
+      // restores the same behaviour for the BaseWindow + view host.
+      focusingOwnedPage = true;
+      try { focusOwnedWebContents(); } finally { focusingOwnedPage = false; }
+    });
+    // An in-place round lives on this window, so its blur ends the round.
+    dashboardWindow.on("blur", () => {
+      if (dashboardWindow !== createdWindow) return;
+      quickMode.handleNormalHostBlur();
+    });
     // `closed` is too late to query native geometry. Flush while the window
     // is still live so a pending debounce cannot lose the user's last move.
     dashboardWindow.on("close", () => persistWindowBoundsNow(createdWindow));
-    dashboardWindow.webContents.once("did-finish-load", () => {
-      applyZoomToWindow(dashboardWindow, getTextScale());
+    const createdHost = dashboardHost;
+    createdHost.webContents.once("did-finish-load", () => {
+      if (dashboardHost !== createdHost) return;
+      applyZoomToWebContents(createdHost.webContents, getTextScale());
       sendI18n();
       sendSnapshot();
     });
-    dashboardWindow.once("ready-to-show", () => {
+    // `ready-to-show` never fires on BaseWindow; the host maps the first-paint
+    // signal to the real WebContents load on that path.
+    createdHost.onceFirstPaint(() => {
+      if (dashboardHost !== createdHost) return;
       if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
+      if (!autoShow) return;
       applySettingsPlacement(options);
       dashboardWindow.show();
       scheduleSettingsPlacementSync(options);
-      dashboardWindow.focus();
+      focusPage();
+    });
+    // A crashed or closed page must never leave a parked, invisible,
+    // click-through ordinary host behind.
+    createdHost.webContents.on("render-process-gone", () => {
+      if (dashboardHost !== createdHost) return;
+      quickMode.handlePageGone();
+    });
+    // A main-frame navigation or reload replaces the document the round was
+    // negotiated with: no late enter/ready reply from the old one may revive
+    // it, and a failed load must not leave a borrow in place either.
+    createdHost.webContents.on("did-start-navigation", (_event, _url, isInPlace, isMainFrame) => {
+      if (dashboardHost !== createdHost) return;
+      if (isInPlace || isMainFrame === false) return;
+      quickMode.invalidateRound("navigation");
+    });
+    createdHost.webContents.on("did-fail-load", (_event, _code, _desc, _url, isMainFrame) => {
+      if (dashboardHost !== createdHost) return;
+      if (isMainFrame === false) return;
+      quickMode.invalidateRound("load-failed");
+    });
+    createdHost.webContents.on("destroyed", () => {
+      if (dashboardHost !== createdHost) return;
+      quickMode.handlePageGone();
     });
     dashboardWindow.on("closed", () => {
       clearSaveBoundsTimer();
@@ -497,14 +595,74 @@ module.exports = function initDashboard(ctx) {
         moveTextScaleTimer = null;
       }
       programmaticEventBounds = null;
+      // The ordinary host is gone: end any borrow before dropping the handles,
+      // then release the single WebContents exactly once.
+      quickMode.handlePageGone();
+      if (dashboardHost === createdHost) {
+        createdHost.closeWebContents();
+        dashboardHost = null;
+        // A closed ordinary owner ends this Dashboard's lifetime. Its quick
+        // shell may still contain the now-closed view after a failed return;
+        // never reuse that shell for the next Dashboard's different page.
+        quickMode.dispose();
+      }
       dashboardWindow = null;
     });
     return dashboardWindow;
   }
 
+  // Whether an ordinary-host focus event should hand the keyboard to the page.
+  // Deliberately independent of whether a borrow just ended: the quick host's
+  // blur may already have ended it. The guards are about where the page and
+  // the native focus actually are right now.
+  function shouldGivePageKeyboard() {
+    if (!dashboardWindow || dashboardWindow.isDestroyed()) return false;
+    // Our own detach/attach/show/hide is not a user activation.
+    if (quickMode.isSelfFocusing()) return false;
+    // The page is in the quick host; focusing it would pull focus back there.
+    if (quickMode.isShown()) return false;
+    // A parked host is transparent, input-disabled and holds no page.
+    if (quickMode.isParked()) return false;
+    try {
+      if (typeof dashboardWindow.isFocused === "function" && !dashboardWindow.isFocused()) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+    return true;
+  }
+
+  // Hand the keyboard to the page itself. Kept separate from focusPage() so a
+  // window that already has native focus can be given a focused page without
+  // re-focusing the window (which would re-enter its own focus handler).
+  function focusOwnedWebContents() {
+    const contents = getWebContents();
+    if (contents && typeof contents.focus === "function") {
+      try { contents.focus(); } catch {}
+    }
+  }
+
+  // Focus the page that currently owns the view, never a parked empty host.
+  function focusPage() {
+    const host = quickMode.getActiveHost() || dashboardWindow;
+    if (host && (typeof host.isDestroyed !== "function" || !host.isDestroyed())) {
+      try { host.focus(); } catch {}
+    }
+    focusOwnedWebContents();
+  }
+
   function syncThemeBackground() {
-    if (!dashboardWindow || dashboardWindow.isDestroyed()) return;
-    dashboardWindow.setBackgroundColor(getDashboardBackgroundColor());
+    const color = getDashboardBackgroundColor();
+    if (dashboardWindow && !dashboardWindow.isDestroyed()) {
+      dashboardWindow.setBackgroundColor(color);
+    }
+    // The quick host shows the same page and must not flash the other theme
+    // behind it on the next borrow.
+    const quickWindow = quickMode.getQuickWindow();
+    if (quickWindow && typeof quickWindow.setBackgroundColor === "function") {
+      try { quickWindow.setBackgroundColor(color); } catch {}
+    }
   }
 
   if (nativeTheme && typeof nativeTheme.on === "function") {
@@ -512,6 +670,10 @@ module.exports = function initDashboard(ctx) {
   }
 
   function showDashboard(options = {}) {
+    // An ordinary open always wins over an in-flight quick round: return the
+    // page and restore opacity/input before the window takes the keyboard, so
+    // the user never focuses a blank parked host.
+    quickMode.endForOrdinaryOpen();
     if (dashboardWindow && !dashboardWindow.isDestroyed()) {
       if (dashboardWindow.isMinimized()) dashboardWindow.restore();
       // A debounce still pending on an open window holds the user's own last
@@ -524,12 +686,23 @@ module.exports = function initDashboard(ctx) {
       applySettingsPlacement(options);
       dashboardWindow.show();
       scheduleSettingsPlacementSync(options);
-      dashboardWindow.focus();
+      focusPage();
       sendI18n();
       sendSnapshot();
       return dashboardWindow;
     }
     return createDashboardWindow(options);
+  }
+
+  // Quick mode needs the page to exist without forcing the ordinary host to
+  // appear: a cold or hidden/minimized Dashboard goes straight to the quick
+  // host and the ordinary window stays exactly as the user left it.
+  function ensurePageForQuickMode() {
+    if (dashboardWindow && !dashboardWindow.isDestroyed() && dashboardHost) {
+      return dashboardHost;
+    }
+    createDashboardWindow({}, { autoShow: false });
+    return dashboardHost;
   }
 
   function broadcastSessionSnapshot(snapshot) {
@@ -549,7 +722,12 @@ module.exports = function initDashboard(ctx) {
     }
     runProgrammaticBoundsMutation(() => {
       const metrics = getScaledMetrics();
-      applyZoomToWindow(dashboardWindow, getTextScale());
+      // Page zoom follows whichever host actually shows the page: a settings
+      // change during a borrow must not re-zoom the borrowed page to the
+      // parked ordinary window's display. The window metrics below stay tied
+      // to the ordinary window, so minimum size and geometry debt are
+      // unaffected by the quick host.
+      applyPageScale();
       if (typeof dashboardWindow.setMinimumSize === "function") {
         dashboardWindow.setMinimumSize(metrics.minWidth, metrics.minHeight);
       }
@@ -565,11 +743,134 @@ module.exports = function initDashboard(ctx) {
     });
   }
 
+  // Quick host geometry: the ordinary host's restorable rectangle, clamped to
+  // the work area it lands on. Never the transient fullscreen/maximized/Zoom
+  // rectangle — borrowing that would cover the whole screen and hide the very
+  // source window the jump is supposed to return to.
+  function getQuickHostBounds() {
+    // getNormalWindowBounds() prefers getNormalBounds(), which stays the
+    // restorable rectangle while the window is maximized/fullscreen/zoomed.
+    const base = getNormalWindowBounds(dashboardWindow)
+      || getSavedDashboardBounds()
+      || computeInitialBounds();
+    const cx = base.x + base.width / 2;
+    const cy = base.y + base.height / 2;
+    const workArea = getWorkAreaNear(cx, cy);
+    const metrics = getScaledMetrics(base);
+    return clampBoundsToWorkArea({
+      ...base,
+      width: Math.max(Math.min(base.width, workArea.width), Math.min(metrics.minWidth, workArea.width)),
+      height: Math.max(Math.min(base.height, workArea.height), Math.min(metrics.minHeight, workArea.height)),
+    }, workArea);
+  }
+
+  // Move the single view between hosts. Detach from every known host first so
+  // the page can never be attached twice.
+  function attachViewTo(targetWindow) {
+    if (!dashboardHost || !dashboardHost.usesView || !dashboardHost.view) return false;
+    if (!targetWindow || (typeof targetWindow.isDestroyed === "function" && targetWindow.isDestroyed())) {
+      return false;
+    }
+    const view = dashboardHost.view;
+    for (const host of [dashboardWindow, quickMode.getQuickWindow()]) {
+      if (!host || host === targetWindow) continue;
+      if (typeof host.isDestroyed === "function" && host.isDestroyed()) continue;
+      try { host.contentView.removeChildView(view); } catch {}
+    }
+    try {
+      targetWindow.contentView.addChildView(view);
+    } catch {
+      // The page is now parented to nothing. Put it back where it belongs so
+      // the caller's rollback has something to restore.
+      try { dashboardWindow.contentView.addChildView(view); } catch {}
+      dashboardHost.setHostedWindow(dashboardWindow);
+      return false;
+    }
+    dashboardHost.setHostedWindow(targetWindow);
+    syncViewBoundsFor(targetWindow);
+    return true;
+  }
+
+  function syncViewBoundsFor(targetWindow) {
+    if (!dashboardHost || !dashboardHost.usesView || !dashboardHost.view) return;
+    const host = targetWindow || quickMode.getActiveHost() || dashboardWindow;
+    if (!host || (typeof host.isDestroyed === "function" && host.isDestroyed())) return;
+    let size = null;
+    try { size = host.getContentSize(); } catch { size = null; }
+    if (!Array.isArray(size) || size.length < 2) return;
+    try {
+      dashboardHost.view.setBounds({ x: 0, y: 0, width: size[0], height: size[1] });
+    } catch {}
+  }
+
+  // Re-inject the page zoom for whichever display the active host sits on.
+  // Deliberately narrow: it must not touch minimum size, the geometry
+  // baseline or pendingUserBounds, because a borrow is not user geometry.
+  function applyPageScale() {
+    const host = quickMode.getActiveHost() || dashboardWindow;
+    const bounds = getCurrentWindowBounds(host);
+    applyZoomToWebContents(getWebContents(), getTextScale(bounds));
+  }
+
+  const quickMode = createDashboardQuickMode({
+    platform,
+    electron: ctx.electron || electron,
+    t: ctx.t,
+    iconPath: ctx.iconPath,
+    getBackgroundColor: getDashboardBackgroundColor,
+    getSessionSnapshot: getCurrentSnapshot,
+    focusSession: ctx.focusSession,
+    isAppQuitting: ctx.isAppQuitting,
+    getNormalWindow: () => dashboardWindow,
+    getWebContents,
+    // getWebContents() filters dead pages; null alone is not death proof.
+    isPageDestroyed: () => dashboardHost?.webContents?.isDestroyed() === true,
+    ensurePage: ensurePageForQuickMode,
+    getQuickHostBounds,
+    attachViewTo,
+    syncViewBounds: () => syncViewBoundsFor(null),
+    applyPageScale,
+    focusPage,
+    focusReturnedPage: (win) => {
+      // The mode has just confirmed this exact native foreground. Recheck the
+      // owner's actual view attachment before focusing only its WebContents.
+      if (win !== dashboardWindow || !dashboardHost || dashboardHost.getHostedWindow() !== win) return;
+      const contents = getWebContents();
+      if (!contents || (typeof contents.isCrashed === "function" && contents.isCrashed())) return;
+      focusOwnedWebContents();
+    },
+  });
+
   return {
     showDashboard,
-    broadcastSessionSnapshot,
+    broadcastSessionSnapshot(snapshot) {
+      broadcastSessionSnapshot(snapshot);
+      quickMode.broadcastSessionSnapshot(snapshot);
+    },
     sendI18n,
     getWindow: () => dashboardWindow,
+    getWebContents,
+    // The window that currently owns the page — the modal parent and the
+    // focus check must both use this, not `BrowserWindow.fromWebContents()`.
+    getActiveHost: () => quickMode.getActiveHost() || dashboardWindow,
+    getHostForWebContents(sender) {
+      const contents = getWebContents();
+      if (!contents || !sender || sender !== contents) return null;
+      return quickMode.getActiveHost() || dashboardWindow;
+    },
+    // Management actions that need a modal must run against a real ordinary
+    // window, so end the borrow and promote the Dashboard first.
+    promoteToOrdinaryWindow() {
+      quickMode.endForOrdinaryOpen();
+      if (!dashboardWindow || dashboardWindow.isDestroyed()) return null;
+      try {
+        if (dashboardWindow.isMinimized()) dashboardWindow.restore();
+        dashboardWindow.show();
+      } catch {}
+      focusPage();
+      return dashboardWindow;
+    },
     applyTextScaleToWindow,
+    quick: quickMode,
   };
 };

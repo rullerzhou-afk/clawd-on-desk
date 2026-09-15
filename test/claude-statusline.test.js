@@ -77,6 +77,41 @@ describe("Claude Code statusline adapter", () => {
     assert.strictEqual(buildStateBody({ session_id: "abc" }, null, null), null);
   });
 
+  it("carries the live model id so a /model switch reaches the session card", () => {
+    assert.deepStrictEqual(
+      buildStateBody({ session_id: "switched", model: { id: "claude-opus-5", display_name: "Opus 5" } }, null, null),
+      {
+        state: "idle",
+        preserve_state: true,
+        metadata_only: true,
+        session_id: "switched",
+        agent_id: "claude-code",
+        model: "claude-opus-5",
+      }
+    );
+  });
+
+  // display_name would flip the card label away from the model id SessionStart
+  // reported, so a payload carrying only a display name posts no model.
+  it("posts no model when the payload carries only a display name", () => {
+    const body = buildStateBody(
+      { session_id: "display-only", model: { display_name: "Claude Sonnet 5" } },
+      { claudeWeekly: { usedPercent: 1 } },
+      null
+    );
+    assert.strictEqual(body.model, undefined);
+    assert.strictEqual(
+      buildStateBody({ session_id: "display-only", model: { display_name: "Claude Sonnet 5" } }, null, null),
+      null
+    );
+  });
+
+  it("drops malformed model ids rather than rendering them on the card", () => {
+    for (const id of ["  \t ", "m".repeat(129), "claude-opus-5\nspoofed", 5]) {
+      assert.strictEqual(buildStateBody({ session_id: "bad", model: { id } }, null, null), null);
+    }
+  });
+
   it("stamps local WSL source fields and preserves an SSH host on remote WSL", () => {
     const applyWsl = (body, options) => {
       body.wsl_distro = "Ubuntu";

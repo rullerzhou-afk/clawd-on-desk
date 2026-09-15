@@ -115,10 +115,30 @@ function spawnDetached(spawnProcess, command, args, options, onError) {
   return child;
 }
 
+function isGrokCompatibilityHookEnv(env = process.env) {
+  // Only the runner-injected official GROK_HOOK_EVENT activates the guard.
+  // GROK_HOME, an unrelated GROK_* variable, or the user's shell config must
+  // not suppress the Claude auto-start hook, and GROK_SESSION_ID alone is not
+  // official evidence that Grok invoked this process.
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
+}
+
 function main(deps = {}) {
+  const env = deps.env || process.env;
+  const exit = deps.exit || ((code) => process.exit(code));
+  // Grok scans Claude settings by default. SessionStart would otherwise cold-
+  // launch Clawd through the Claude auto-start hook even when Grok is not
+  // enabled in Settings. Emit the host-required passive stdout and exit
+  // without discovering a port or launching anything.
+  if (isGrokCompatibilityHookEnv(env)) {
+    const writeStdout = deps.writeStdout || ((text) => process.stdout.write(text));
+    writeStdout("{}\n");
+    exit(0);
+    return;
+  }
+
   const discover = deps.discoverClawdPort || discoverClawdPort;
   const launch = deps.launchApp || launchApp;
-  const exit = deps.exit || ((code) => process.exit(code));
 
   discover({ timeoutMs: INITIAL_DISCOVER_TIMEOUT_MS }, (port) => {
     if (port) {
@@ -245,5 +265,6 @@ module.exports = {
   resolveAppImageExecutable,
   resolveMacBundleExecutable,
   launchApp,
+  isGrokCompatibilityHookEnv,
   main,
 };

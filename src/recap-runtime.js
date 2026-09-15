@@ -105,6 +105,9 @@ function createRecapRuntime(options = {}) {
   let started = false;
   let enabled = false;
   let explicitEnabledIntent = null;
+  // An in-memory capability for delayed activity. It never enters a ticket or
+  // snapshot; clear and recording transitions revoke previously issued tokens.
+  let recordingToken = Object.freeze({});
   let suspended = false;
   let midnightTimer = null;
   let unavailable = false;
@@ -384,6 +387,7 @@ function createRecapRuntime(options = {}) {
 
   function setEnabled(next) {
     const value = next !== false;
+    if (value !== enabled) recordingToken = Object.freeze({});
     // A controller-accepted toggle is authoritative for the rest of this
     // process, even when startup prefs were recovered or storage is currently
     // unavailable. Clear must not silently revert that explicit user intent.
@@ -396,6 +400,14 @@ function createRecapRuntime(options = {}) {
       else coverage.stop(now());
     }
     return true;
+  }
+
+  function captureRecordingToken() {
+    return started && enabled && !unavailable ? recordingToken : null;
+  }
+
+  function isRecordingTokenCurrent(token) {
+    return token !== null && token === captureRecordingToken();
   }
 
   function record(event, identity = {}) {
@@ -529,6 +541,7 @@ function createRecapRuntime(options = {}) {
   }
 
   function clear() {
+    recordingToken = Object.freeze({});
     // Clear is an explicit user recovery action and is allowed to reset an
     // unavailable/corrupt recap generation. No other path rotates its salt.
     // Invalidate async hydration before touching memory. The generation is
@@ -575,6 +588,7 @@ function createRecapRuntime(options = {}) {
   }
 
   function dispose() {
+    recordingToken = Object.freeze({});
     const discardHydrationRebuild = hydrationRebuilding;
     cancelStorageRetry();
     if (midnightTimer) clearTimer(midnightTimer);
@@ -609,6 +623,8 @@ function createRecapRuntime(options = {}) {
   }
 
   return Object.freeze({
+    captureRecordingToken,
+    isRecordingTokenCurrent,
     clear,
     dispose,
     flush,

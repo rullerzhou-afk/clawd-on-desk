@@ -589,7 +589,7 @@ describe("permission overflow queue", () => {
     permission.pendingPermissions.push(...entries);
 
     permission.syncPermissionShortcuts();
-    assert.strictEqual(registered.size, 2, "normal mode keeps existing shortcuts");
+    assert.strictEqual(registered.size, 0, "not-yet-visible windows are not shortcut targets");
 
     permission.reconcilePermissionPresentation("test-overflow");
     const queueWindow = FakeBrowserWindow.instances.find((win) => (
@@ -600,8 +600,8 @@ describe("permission overflow queue", () => {
     assert.ok(entries.every((entry) => entry.bubble.isVisible()),
       "request cards remain visible until the queue renderer proves delivery");
     assert.strictEqual(queueWindow.isVisible(), false);
-    assert.strictEqual(registered.size, 2,
-      "overflow keeps shortcuts while a request card is visibly represented");
+    assert.strictEqual(registered.size, 0,
+      "overflow cannot decide a clipped fallback card before the queue ACK");
 
     queueWindow.webContents.emit("did-finish-load");
     const firstPayload = lastQueuePayload(queueWindow);
@@ -737,6 +737,80 @@ describe("permission overflow queue", () => {
       "queue failure restores the first-stage request stack");
     assert.strictEqual(permission.pendingPermissions.length, 5,
       "queue failure never decides or releases requests");
+  });
+
+  for (const phase of ["before-ack", "load-failure", "ack-timeout", "native-clamp"]) {
+    it(`does not decide a clipped overflow target: ${phase}`, () => {
+      mock.timers.enable({ apis: ["setTimeout"] });
+      FakeBrowserWindow.instances = [];
+      const { initPermission, registered } = loadPermission();
+      const permission = initPermission(makeCtx({
+        getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 400 }),
+        getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 400 }),
+        getSettingsSnapshot: () => ({ shortcuts: { permissionAllow: "CommandOrControl+Enter", permissionDeny: "Escape" } }),
+      }));
+      try {
+        const entries = [1, 2, 3, 4, 5, 6].map((index) => requestEntry(index, requestBubble()));
+        entries.forEach((entry) => entry.bubble.showInactive());
+        permission.pendingPermissions.push(...entries);
+        permission.syncPermissionShortcuts();
+        const queuedKeypress = registered.get("CommandOrControl+Enter");
+        assert.strictEqual(typeof queuedKeypress, "function");
+        permission.reconcilePermissionPresentation("crowded-test");
+        const queue = FakeBrowserWindow.instances.find((win) => win.loadedFile && win.loadedFile.endsWith("permission-queue.html"));
+        assert.ok(queue);
+        if (phase === "load-failure") queue.webContents.emit("did-fail-load", {}, -1, "fixture failure");
+        if (phase === "ack-timeout") mock.timers.tick(1600);
+        if (phase === "native-clamp") {
+          // Native placement can clamp every overflowing top edge to the same
+          // point. The newest tied card must remain the selected unsafe target.
+          for (const entry of entries) {
+            const bounds = entry.bubble.getBounds();
+            if (bounds.y + bounds.height > 400) entry.bubble.setBounds({ ...bounds, y: 390 });
+          }
+          assert.ok(entries[5].bubble.isVisible());
+        }
+        queuedKeypress();
+        assert.strictEqual(permission.pendingPermissions.length, 6);
+        permission.syncPermissionShortcuts();
+        assert.strictEqual(registered.size, 0);
+      } finally { permission.cleanup(); mock.timers.reset(); }
+    });
+  }
+
+  it("refuses a clipped normal fallback when an expanded Ask and HUD prevent a safe queue", () => {
+    FakeBrowserWindow.instances = [];
+    const { initPermission, registered } = loadPermission();
+    let hud = null;
+    const permission = initPermission(makeCtx({
+      getBubbleWorkArea: () => ({ x: 0, y: 0, width: 800, height: 400 }),
+      getNearestWorkArea: () => ({ x: 0, y: 0, width: 800, height: 400 }),
+      getSessionHudBounds: () => hud,
+    }));
+    const show = (entry, height) => {
+      permission.addPendingPermission(entry);
+      permission.showPermissionBubble(entry);
+      entry.bubble.webContents.emit("did-finish-load");
+      permission.handleBubbleHeight({ sender: entry.bubble.webContents }, {
+        state: entry.expanded ? "expanded" : "compact",
+        measurementEpoch: entry.measurementEpoch, height,
+      });
+    };
+    try {
+      const ask = askEntry("protected");
+      show(ask, 280);
+      assert.strictEqual(ask.expanded, true);
+      hud = { x: 560, y: 180, width: 240, height: 32 };
+      const arriving = requestEntry("arriving");
+      show(arriving, 150);
+      assert.strictEqual(findQueueWindow(), undefined, "protected layout remains in normal mode");
+      const bounds = arriving.bubble.getBounds();
+      assert.ok(bounds.y + bounds.height > 400);
+      assert.ok(arriving.bubble.isVisible());
+      permission.syncPermissionShortcuts();
+      assert.strictEqual(registered.size, 0);
+      assert.strictEqual(permission.pendingPermissions.length, 2);
+    } finally { permission.cleanup(); }
   });
 
   it("hotkeys resolve only the bottommost visible request and wait for hidden requests", () => {

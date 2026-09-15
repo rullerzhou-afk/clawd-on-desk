@@ -157,6 +157,12 @@ Clawd 支援多螢幕場景：按啟動時所在螢幕做等比縮放，直立�
 - **macOS**：`.dmg`
 - **Linux**：`.AppImage` 或 `.deb`
 
+macOS 以及 Linux x86_64 也可以用 Homebrew 安裝：
+
+```bash
+brew install --cask clawd-on-desk
+```
+
 安裝後啟動 Clawd；支援的 agent hooks 或外掛會在啟動時自動同步。
 
 只有參與開發、測試還沒發布的程式碼或除錯整合時，才建議從原始碼跑。從原始碼安裝會下載 Electron 和打包工具，並產生比較大的 `node_modules`。
@@ -339,6 +345,9 @@ Clawd on Desk 是社群驅動的專案。歡迎提 Bug、提需求、提 PR —�
 <a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/eugenewang5425"><img src="https://github.com/eugenewang5425.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/draintovmasyan783-creator"><img src="https://github.com/draintovmasyan783-creator.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/Yueh-H"><img src="https://github.com/Yueh-H.png" width="50" style="border-radius:50%" /></a>
 
 ## 致謝
 

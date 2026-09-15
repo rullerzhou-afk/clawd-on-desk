@@ -1,0 +1,6 @@
+{"type":"user","uuid":"fixture-user-1","timestamp":"2026-01-01T00:00:00.000Z","sessionId":"fixture-session","version":"1.1.9","message":{"role":"user","content":"[redacted]"}}
+{"type":"ai-title","sessionId":"fixture-session","aiTitle":"Investigate session titles"}
+{"type":"assistant","uuid":"fixture-assistant-1","timestamp":"2026-01-01T00:00:01.000Z","sessionId":"fixture-session","version":"1.1.9","message":{"role":"assistant","content":"[redacted]"}}
+{"type":"last-prompt","sessionId":"fixture-session","lastPrompt":"[redacted]"}
+{"type":"custom-title","sessionId":"fixture-session","customTitle":"Qoder native titles"}
+{"type":"user","uuid":"fixture-user-2","timestamp":"2026-01-01T00:00:02.000Z","sessionId":"fixture-session","version":"1.1.9","message":{"role":"user","content":"[redacted]"}}

@@ -10,6 +10,8 @@ const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
+const { recordSessionHistoryFromStateBody } = require("./session-history");
+const { normalizeModelId } = require("./claude-rate-limits");
 // #634: the pid cache + lifecycle orchestration is owned by the shared resolver
 // now (hooks/shared-process.js); this adapter no longer touches pid-cache,
 // processAlive, or isWin directly.
@@ -617,6 +619,10 @@ function buildStateBody(event, payload, resolve) {
     }
   }
   if (cwd) body.cwd = cwd;
+  // Only SessionStart carries a model, and even there it is optional (`clear`
+  // omits it). state.js merges it stickily, so one report is enough.
+  const model = normalizeModelId(payload.model);
+  if (model) body.model = model;
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
   const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);
   const toolInputFingerprint = buildToolInputFingerprint(
@@ -787,7 +793,20 @@ function attachStdinDiag(body, stdinRead) {
   return body;
 }
 
+function launchedByGrok(env = process.env) {
+  // Only the runner-injected official GROK_HOOK_EVENT activates the guard.
+  // GROK_HOME, an unrelated GROK_* variable, or the user's shell config must
+  // not suppress the Claude hook, and GROK_SESSION_ID alone is not official.
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
+}
+
 function main() {
+  // Grok scans ~/.claude/settings.json by default. Those Claude hooks must not
+  // report a phantom claude-code session; Grok events go through grok-hook.js.
+  if (launchedByGrok()) {
+    process.stdout.write("{}\n");
+    process.exit(0);
+  }
   const event = process.argv[2];
   if (!EVENT_TO_STATE[event]) process.exit(0);
   const eventAt = Date.now();
@@ -830,6 +849,10 @@ function main() {
       // same session id and last sustained state. This is best-effort and never
       // changes the hook's stdout or exit contract.
       updateRecoveryLeaseFromStateBody(body, { eventAt });
+      // The lease above is liveness-scoped and is erased once its PID dies,
+      // which is every PID after a reboot. Keep a separate durable row so a
+      // session interrupted by a restart can still be found and resumed.
+      recordSessionHistoryFromStateBody(body, { eventAt });
       postStateToRunningServer(
         JSON.stringify(fitted.body),
         { timeoutMs: statePostTimeoutMs },
@@ -847,6 +870,7 @@ module.exports = {
   isRecognizedTestCommand,
   isClaudeHeadlessCommandLine,
   attachStdinDiag,
+  launchedByGrok,
   STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,

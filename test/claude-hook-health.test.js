@@ -596,3 +596,52 @@ describe("hasNoAutomaticRepairWork / isExplicitRepairVerified", () => {
     assert.strictEqual(reportHasUnparseableCommand(null), false);
   });
 });
+
+describe("inspectClaudeHookHealth — UTF-8 BOM compatibility (#657)", () => {
+  const BOM = "\uFEFF";
+
+  it("reports a BOM-prefixed healthy config identically to the BOM-free one", () => {
+    const raw = JSON.stringify(buildHealthySettings());
+    const bomRaw = BOM + raw;
+
+    const plain = inspectClaudeHookHealth(raw, baseOptions());
+    const withBom = inspectClaudeHookHealth(bomRaw, baseOptions());
+
+    assert.strictEqual(withBom.status, "healthy");
+    assert.deepStrictEqual(withBom, plain);
+  });
+
+  it("flags a BOM-prefixed deleted Temp script path as repairable, like the BOM-free case", () => {
+    const bomRaw = BOM + JSON.stringify(buildHealthySettings({ scriptPath: OLD_TEMP_SCRIPT_PATH }));
+
+    const report = inspectClaudeHookHealth(bomRaw, baseOptions());
+
+    assert.strictEqual(report.status, "unhealthy");
+    assert.strictEqual(report.repairable, true);
+    assert.ok(report.issues.some((issue) => issue.code === "script-path-missing"), JSON.stringify(report.issues));
+  });
+
+  it("keeps BOM-only, BOM + malformed JSON, and BOM + non-object roots unreadable and unrepairable", () => {
+    const cases = [
+      ["bom-only", BOM],
+      ["bom-malformed", BOM + "{ not json"],
+      ["bom-array", BOM + "[1,2,3]"],
+      ["bom-scalar", BOM + "42"],
+      ["bom-null", BOM + "null"],
+    ];
+    for (const [label, raw] of cases) {
+      const report = inspectClaudeHookHealth(raw, baseOptions());
+      assert.strictEqual(report.status, "unreadable", label);
+      assert.strictEqual(report.repairable, false, label);
+      assert.deepStrictEqual(report.issues, [], label);
+    }
+  });
+
+  it("reports source-script-missing for a BOM config when the current packaged source is gone", () => {
+    const bomRaw = BOM + JSON.stringify(buildHealthySettings());
+    const report = inspectClaudeHookHealth(bomRaw, baseOptions({ fs: makeFakeFs([]) }));
+
+    assert.strictEqual(report.status, "source-script-missing");
+    assert.strictEqual(report.repairable, false);
+  });
+});

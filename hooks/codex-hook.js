@@ -5,6 +5,7 @@
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const { spawn } = require("child_process");
 const { StringDecoder } = require("string_decoder");
 const {
@@ -14,6 +15,7 @@ const {
   readHostPrefix,
   readRuntimeIdentity,
   readWindowsProcessChainHookContext,
+  CODEX_WINDOWS_STABLE_ARG,
   CODEX_WSL_INTEROP_ARG,
   resolveWslDistro,
   applyWslSourceFields,
@@ -39,6 +41,84 @@ const {
   isCodexDesktopOriginator,
 } = require("./codex-originator");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
+
+const WINDOWS_STABLE_RUN_SIGNATURE = "clawd-codex-stable-windows-run-v1";
+
+function decodeStableSidecarValue(value) {
+  if (typeof value !== "string") throw new Error("invalid-sidecar-value");
+  const bytes = Buffer.from(value, "base64");
+  if (bytes.toString("base64") !== value) throw new Error("invalid-sidecar-base64");
+  const decoded = bytes.toString("utf8");
+  if (!Buffer.from(decoded, "utf8").equals(bytes)) throw new Error("invalid-sidecar-utf8");
+  return decoded;
+}
+
+function normalizeWindowsStablePath(value) {
+  return String(value || "").replace(/\\/g, "/").toLowerCase();
+}
+
+// Windows local stable entries used to run through an inline PowerShell
+// dispatcher that decoded this sidecar and injected env vars before invoking
+// Node. Defender flags that command-line shape, so the reviewed command now
+// calls Node directly and the hook imports only the data portion here.
+//
+// Keep this main-process-only and native-Windows-only: requiring codex-hook.js
+// from tests must not mutate their env, while remote and WSL-interop commands
+// have separate environment contracts. Parse and validate the complete file
+// before applying any key so a damaged tail cannot leave a partially-mutated
+// process environment. The target binding prevents an unrelated/stale sidecar
+// from supplying env to a different copy of codex-hook.js.
+function applyWindowsStableSidecarEnv(options = {}) {
+  const platform = options.platform || process.platform;
+  const argv = Array.isArray(options.argv) ? options.argv : process.argv;
+  const env = options.env || process.env;
+  if (platform !== "win32") return { applied: false, reason: "not-windows" };
+  if (!argv.includes(CODEX_WINDOWS_STABLE_ARG)) return { applied: false, reason: "not-stable" };
+  if (argv.includes(CODEX_WSL_INTEROP_ARG)) return { applied: false, reason: "wsl-interop" };
+  if (env.CLAWD_REMOTE) return { applied: false, reason: "remote" };
+
+  const fsApi = options.fs || fs;
+  const codexHome = options.codexHome || env.CODEX_HOME || path.join(os.homedir(), ".codex");
+  const sidecarPath = path.join(codexHome, "clawd-hooks", "codex-hook.js.windows.run");
+  let lines;
+  try {
+    lines = fsApi.readFileSync(sidecarPath, "utf8").replace(/\r\n/g, "\n").split("\n");
+  } catch {
+    return { applied: false, reason: "missing" };
+  }
+
+  try {
+    if (lines[0] !== WINDOWS_STABLE_RUN_SIGNATURE || !lines[1] || !lines[2]) {
+      return { applied: false, reason: "invalid" };
+    }
+    decodeStableSidecarValue(lines[1]); // Node path is validated by installer + Doctor.
+    const target = decodeStableSidecarValue(lines[2]);
+    const expectedTarget = options.hookPath || __filename;
+    if (normalizeWindowsStablePath(target) !== normalizeWindowsStablePath(expectedTarget)) {
+      return { applied: false, reason: "target-mismatch" };
+    }
+
+    const entries = [];
+    for (const line of lines.slice(3).filter(Boolean)) {
+      const separator = line.indexOf(".");
+      if (!line.startsWith("E") || separator < 2) {
+        return { applied: false, reason: "invalid" };
+      }
+      const key = decodeStableSidecarValue(line.slice(1, separator));
+      const value = decodeStableSidecarValue(line.slice(separator + 1));
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        return { applied: false, reason: "invalid" };
+      }
+      entries.push([key, value]);
+    }
+    for (const [key, value] of entries) env[key] = value;
+    return { applied: true, reason: null, count: entries.length };
+  } catch {
+    return { applied: false, reason: "invalid" };
+  }
+}
+
+if (require.main === module) applyWindowsStableSidecarEnv();
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -731,6 +811,7 @@ module.exports = {
   CODEX_AUTO_START_TIMEOUT_MS,
   EVENT_TO_STATE,
   applyCodexSessionMetaFields,
+  applyWindowsStableSidecarEnv,
   applyLocalProcessFields,
   buildCodexNoDecisionOutput,
   buildCodexPermissionOutput,

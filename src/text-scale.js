@@ -45,7 +45,13 @@ function scaleHeight(cssPx, scale) {
 
 function applyZoomToWindow(win, scale) {
   if (!win || typeof win.isDestroyed !== "function" || win.isDestroyed()) return false;
-  const wc = win.webContents;
+  return applyZoomToWebContents(win.webContents, scale);
+}
+
+// The Dashboard page lives in a WebContentsView on darwin/win32, so its
+// WebContents belongs to no window. Take the contents directly instead of
+// inventing a window-shaped object with a `.webContents` property.
+function applyZoomToWebContents(wc, scale) {
   if (!wc) return false;
   if (typeof wc.isDestroyed === "function" && wc.isDestroyed()) return false;
   // The text-window pages ship CSP without 'unsafe-eval', which makes the
@@ -157,6 +163,7 @@ module.exports = {
   scaleWidth,
   scaleHeight,
   applyZoomToWindow,
+  applyZoomToWebContents,
   resolveTextScaleForKey,
   normalizeTextScaleByDisplay,
   textScaleToUiPercent,

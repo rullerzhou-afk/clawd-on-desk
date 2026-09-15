@@ -70,6 +70,13 @@ const CONTEXT_LIMIT_CACHE_MS = 60 * 1000;
 // tracked, so long-lived hosts (days of sessions) stay bounded even though
 // _lastStatePerSession itself is intentionally unbounded.
 const MAX_CONTEXT_USAGE_ENTRIES = 1024;
+// Resume hydration reads one recent page. Bootstrap examines at most 20
+// directory-owned root sessions; it never creates Clawd lifecycle activity.
+const CONTEXT_HISTORY_LIMIT = 20;
+const CONTEXT_BOOTSTRAP_LIMIT = 20;
+const CONTEXT_HISTORY_TIMEOUT_MS = 2000;
+const CONTEXT_HISTORY_RETRY_MS = 30 * 1000;
+const CONTEXT_HISTORY_MAX_CONCURRENT = 4;
 // Fire-and-forget: the IIFE never blocks the event hook's return value, so a
 // generous timeout is safe. 200ms was too tight when Clawd's IPC roundtrip
 // (main → renderer → main) ran under load and silently timed out.
@@ -726,7 +733,7 @@ export function createOpencodeFamilyPlugin(config) {
     return sessions || null;
   }
 
-  function getContextState(instanceToken, sessionId, create = false) {
+  function getContextState(instanceToken, sessionId, create = false, activityObserved = true) {
     const normalized = normalizeSessionId(sessionId);
     if (!normalized) return null;
     const sessions = getContextSessionMap(instanceToken, create);
@@ -739,10 +746,37 @@ export function createOpencodeFamilyPlugin(config) {
         latestSequence: 0,
         inFlight: new Map(),
         delivered: null,
+        liveRevision: 0,
+        hydration: null,
+        nextHydrationAt: 0,
+        pendingHydration: null,
+        undeliveredContext: null,
+        historyController: null,
+        wakeHydration: null,
+        activityObserved,
       };
       sessions.set(normalized, state);
+      if (sessions.size > MAX_CONTEXT_USAGE_ENTRIES) {
+        // Prefer an unserved bootstrap candidate over an explicit selection.
+        const oldest = [...sessions].find(([id, entry]) => (
+          id !== normalized && !entry.activityObserved && entry.pendingHydration
+        ))?.[0] || sessions.keys().next().value;
+        if (oldest !== normalized) {
+          invalidateContextHydration(sessions.get(oldest));
+          sessions.delete(oldest);
+        }
+      }
     }
+    if (state && create && activityObserved) state.activityObserved = true;
     return state || null;
+  }
+
+  function invalidateContextHydration(state) {
+    if (!state) return;
+    state.pendingHydration = null;
+    state.undeliveredContext = null;
+    state.historyController?.abort();
+    state.wakeHydration?.();
   }
 
   function resetContextSession(sessionId, instanceToken) {
@@ -750,6 +784,7 @@ export function createOpencodeFamilyPlugin(config) {
     if (!normalized) return;
     const sessions = getContextSessionMap(instanceToken);
     if (!sessions) return;
+    invalidateContextHydration(sessions.get(normalized));
     sessions.delete(normalized);
     if (sessions.size === 0) _contextStateByInstance.delete(contextInstanceToken(instanceToken));
   }
@@ -760,17 +795,25 @@ export function createOpencodeFamilyPlugin(config) {
       ? _contextStateByInstance.values()
       : [getContextSessionMap(instanceToken)].filter(Boolean);
     for (const sessions of maps) {
-      for (const sessionId of sessions.keys()) ids.add(sessionId);
+      for (const [sessionId, state] of sessions) {
+        if (state.activityObserved) ids.add(sessionId);
+      }
     }
     return ids;
   }
 
   function cleanupContextState(sessionIds, options = {}) {
     if (options.clearAll === true) {
+      for (const sessions of _contextStateByInstance.values()) {
+        for (const state of sessions.values()) invalidateContextHydration(state);
+      }
       _contextStateByInstance.clear();
       return;
     }
     if (options.clearInstance === true && options.instanceToken != null) {
+      for (const state of getContextSessionMap(options.instanceToken)?.values() || []) {
+        invalidateContextHydration(state);
+      }
       _contextStateByInstance.delete(contextInstanceToken(options.instanceToken));
       return;
     }
@@ -780,7 +823,10 @@ export function createOpencodeFamilyPlugin(config) {
       ? _contextStateByInstance.values()
       : [getContextSessionMap(options.instanceToken)].filter(Boolean);
     for (const sessions of maps) {
-      for (const sessionId of ids) sessions.delete(sessionId);
+      for (const sessionId of ids) {
+        invalidateContextHydration(sessions.get(sessionId));
+        sessions.delete(sessionId);
+      }
     }
     for (const [token, sessions] of _contextStateByInstance) {
       if (sessions.size === 0) _contextStateByInstance.delete(token);
@@ -795,7 +841,12 @@ export function createOpencodeFamilyPlugin(config) {
       ..._lastStatePerSession.keys(),
       ..._sessionParentById.keys(),
       ..._sessionParentById.values(),
-      ..._statePostTailBySession.keys(),
+      // A bootstrap-only metadata queue cannot create a session and must not
+      // manufacture SessionEnd ownership during a global disposal.
+      ...[..._statePostQueueBySession].filter(([, queue]) => (
+        (queue.active && queue.active.body.metadata_only !== true)
+        || queue.pending.some((entry) => entry.body.metadata_only !== true)
+      )).map(([sessionId]) => sessionId),
     ]);
     for (const sessionId of collectContextSessionIds()) ids.add(sessionId);
     const root = normalizeSessionId(_rootSessionId);
@@ -925,7 +976,7 @@ export function createOpencodeFamilyPlugin(config) {
   // Snapshot mutable request data synchronously. session.deleted cleanup runs
   // immediately after enqueue, so cwd/title/process fields must already be
   // frozen before a queued delivery waits behind an older request.
-  function snapshotPost(body, logTag) {
+  function snapshotPost(body, logTag, contextDirectory) {
     const outbound = { ...(body || {}) };
     // Enrich every outbound body with process-tree fields. Cached after first
     // call so this is just a few object assignments per POST.
@@ -941,7 +992,9 @@ export function createOpencodeFamilyPlugin(config) {
     // walk finds no terminal to report.
     const orcaPaneKey = orcaPaneKeyFromEnv();
     if (orcaPaneKey) outbound.orca_pane_key = orcaPaneKey;
-    const cwd = resolveSessionDirectory(outbound.session_id);
+    const cwd = contextDirectory === undefined
+      ? resolveSessionDirectory(outbound.session_id)
+      : { directory: contextDirectory, source: "context-instance" };
     if (cwd.directory) outbound.cwd = cwd.directory;
     else delete outbound.cwd;
     outbound.agent_pid = process.pid;
@@ -965,6 +1018,9 @@ export function createOpencodeFamilyPlugin(config) {
     debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start candidates=[${candidates.join(",")}]`);
 
     for (const port of candidates) {
+      if (urlPath === STATE_PATH && !pruneStaleContextSnapshot(snapshot)) {
+        return { recognized: false, metadataAccepted: false };
+      }
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
       const t0 = Date.now();
@@ -1026,8 +1082,23 @@ export function createOpencodeFamilyPlugin(config) {
     return snapshot;
   }
 
-  function createStatePostSnapshot(body) {
-    const snapshot = snapshotPost(body, `STATE state=${body && body.state}`);
+  function pruneStaleContextSnapshot(snapshot) {
+    if (!snapshot.contextIsCurrent || snapshot.contextIsCurrent()) return true;
+    delete snapshot.body.context_usage;
+    snapshot.contextIsCurrent = null;
+    snapshot.waiters = (snapshot.waiters || []).filter((waiter) => {
+      if (!waiter.kinds.has("context")) return true;
+      waiter.resolve(false);
+      return false;
+    });
+    refreshSnapshotPayload(snapshot);
+    // A title may share this queued POST. Drop only the stale context field
+    // and its acknowledgement waiter, not the independent title update.
+    return metadataFieldKinds(snapshot).size > 0;
+  }
+
+  function createStatePostSnapshot(body, contextDirectory) {
+    const snapshot = snapshotPost(body, `STATE state=${body && body.state}`, contextDirectory);
     let resolve;
     snapshot.completion = new Promise((done) => { resolve = done; });
     snapshot.waiters = [{ resolve, kinds: metadataFieldKinds(snapshot) }];
@@ -1043,6 +1114,7 @@ export function createOpencodeFamilyPlugin(config) {
 
   function mergeQueuedMetadataSnapshot(existing, incoming) {
     const incomingKinds = metadataFieldKinds(incoming);
+    if (!incomingKinds.has("context")) incoming.contextIsCurrent = existing.contextIsCurrent;
     const mergedBody = { ...existing.body, ...incoming.body };
     incoming.body = mergedBody;
     refreshSnapshotPayload(incoming);
@@ -1126,9 +1198,10 @@ export function createOpencodeFamilyPlugin(config) {
     debugLog(`POST[${incoming.reqId}] ${incoming.logTag} overflow=dropped-old req=${dropped.reqId}`);
   }
 
-  function postStateToClawd(body) {
+  function postStateToClawd(body, contextDirectory, contextIsCurrent = null) {
     const sessionId = normalizeSessionId(body && body.session_id) || DEFAULT_SESSION_ID;
-    const snapshot = createStatePostSnapshot(body);
+    const snapshot = createStatePostSnapshot(body, contextDirectory);
+    snapshot.contextIsCurrent = contextIsCurrent;
     const replaceable = isReplaceableStateSnapshot(snapshot);
     const metadata = isMetadataStateSnapshot(snapshot);
     const terminal = !!body && body.event === "SessionEnd";
@@ -1555,7 +1628,7 @@ export function createOpencodeFamilyPlugin(config) {
   // message.updated handler: the session message rides on properties.info
   // (assistant role, tokens populated after the step finishes). The event hook
   // never awaits this path; its returned promise is intentionally detached.
-  function handleContextUsageEvent(event, instance) {
+  function handleContextUsageEvent(event, instance, hydration = null) {
     try {
       // MiMo uses this shared core but its SDK/event contract is not proven to
       // match OpenCode's message.updated/provider.list contract. Keep #830
@@ -1581,17 +1654,21 @@ export function createOpencodeFamilyPlugin(config) {
         debugLog("CTX skip reason=no-session-id");
         return;
       }
+      const previousState = getContextState(instanceToken, clawdSessionId);
+      // Even an unfinished assistant update supersedes a historical read.
+      // Keep the existing valid-sample sequence independent: zero-token live
+      // updates must not change the real-time pipeline's calculation/dedup.
+      if (!hydration && previousState) {
+        previousState.liveRevision += 1;
+        invalidateContextHydration(previousState);
+      }
       const used = extractContextUsageUsed(info.tokens);
       if (!Number.isFinite(used) || used <= 0) {
         debugLog(`CTX skip reason=${Number.isFinite(used) ? "zero-tokens" : "no-tokens"}`);
         return;
       }
-      const state = getContextState(instanceToken, clawdSessionId, true);
-      const sessions = getContextSessionMap(instanceToken);
-      if (sessions && sessions.size > MAX_CONTEXT_USAGE_ENTRIES) {
-        const oldest = sessions.keys().next().value;
-        if (oldest !== undefined && oldest !== clawdSessionId) sessions.delete(oldest);
-      }
+      const state = getContextState(instanceToken, clawdSessionId, true, hydration?.activityObserved !== false);
+      if (!hydration && !previousState) state.liveRevision += 1;
 
       const sequence = ++state.sequence;
       state.latestSequence = sequence;
@@ -1601,7 +1678,8 @@ export function createOpencodeFamilyPlugin(config) {
       const modelID = info.modelID || null;
       return resolveContextLimit(providerID, modelID, instance && instance.client)
         .then((limit) => {
-          if (!isCurrentContextSample(instanceToken, clawdSessionId, state, generation, sequence)) {
+          if (!isCurrentContextSample(instanceToken, clawdSessionId, state, generation, sequence)
+            || (hydration && state.liveRevision !== hydration.liveRevision)) {
             debugLog(`CTX discard session=${clawdSessionId} seq=${sequence} reason=stale`);
             return null;
           }
@@ -1621,23 +1699,222 @@ export function createOpencodeFamilyPlugin(config) {
           // Same serialized metadata delivery as the session-title push
           // (#841): state/event scaffolding is inert on the route side because
           // metadata_only short-circuits lifecycle handling.
-          const body = buildContextUsageBody(clawdSessionId, used, sample.limit);
-          body.state = "idle";
-          body.event = "SessionUpdate";
-          return postStateToClawd(body).then((delivered) => {
-            if (delivered && isCurrentContextSample(instanceToken, clawdSessionId, state, generation, sequence)) {
-              state.delivered = sample;
-            }
-          });
+          const packet = { sample, generation, sequence, liveRevision: hydration?.liveRevision };
+          if (hydration) state.undeliveredContext = packet;
+          return deliverContextSample(instanceToken, clawdSessionId, state, packet,
+            hydration ? instance.directory : undefined);
         })
         .catch((err) => {
           debugLog(`CTX handler ASYNC THROW msg=${err && err.message}`);
         })
         .finally(() => {
           state.inFlight.delete(sequence);
+          state.wakeHydration?.();
         });
     } catch (err) {
       debugLog(`CTX handler THROW msg=${err && err.message}`);
+    }
+  }
+
+  function deliverContextSample(instanceToken, sessionId, state, packet, directory) {
+    const current = () => isCurrentContextSample(instanceToken, sessionId, state,
+      packet.generation, packet.sequence)
+      && (packet.liveRevision === undefined || state.liveRevision === packet.liveRevision);
+    if (!current()) return Promise.resolve();
+    const body = buildContextUsageBody(sessionId, packet.sample.used, packet.sample.limit);
+    body.state = "idle";
+    body.event = "SessionUpdate";
+    return postStateToClawd(body, directory, packet.liveRevision === undefined ? null : current).then((delivered) => {
+      if (delivered && current()) {
+        state.delivered = packet.sample;
+        if (state.undeliveredContext === packet) state.undeliveredContext = null;
+      }
+    });
+  }
+
+  function hydrateContextUsage(event, instance) {
+    if (AGENT_ID !== "opencode" || !instance.directory
+      || !["session.created", "session.updated", "session.status", "session.idle", "tui.session.select"].includes(event.type)
+      || typeof instance.client?.session?.messages !== "function") return;
+
+    const rawId = getEventSessionId(event);
+    const sessionId = normalizeSessionId(rawId);
+    if (!sessionId) return;
+    if (event.type === "session.created" || event.type === "session.updated") {
+      const info = getEventSessionInfo(event);
+      if ((info.infoSessionId && normalizeSessionId(info.infoSessionId) !== sessionId)
+        || (info.directory && normalizeDirectoryOwnershipKey(info.directory)
+          !== normalizeDirectoryOwnershipKey(instance.directory))) return;
+    }
+    return hydrateContextSession(rawId, instance);
+  }
+
+  // Both list and message reads are cancellable and bounded even if an SDK
+  // ignores AbortSignal. Register before yielding so a burst of events cannot
+  // exceed the per-Instance request limit.
+  async function readContextHistory(instance, read, state = null) {
+    const controller = new AbortController();
+    if (state) state.historyController = controller;
+    instance.historyRequests.add(controller);
+    let onAbort;
+    const aborted = new Promise((_, reject) => {
+      onAbort = () => reject(new Error("context history cancelled"));
+      controller.signal.addEventListener("abort", onAbort, { once: true });
+    });
+    const timer = setTimeout(() => controller.abort(), CONTEXT_HISTORY_TIMEOUT_MS);
+    try {
+      return await Promise.race([Promise.resolve().then(() => read(controller.signal)), aborted]);
+    } finally {
+      clearTimeout(timer);
+      controller.signal.removeEventListener("abort", onAbort);
+      instance.historyRequests.delete(controller);
+      if (state?.historyController === controller) state.historyController = null;
+      scheduleContextHydration(instance);
+    }
+  }
+
+  function hydrateContextSession(rawId, instance, activityObserved = true) {
+    if (instance.disposed) return;
+    const sessionId = normalizeSessionId(rawId);
+    const state = getContextState(instance.instanceToken, sessionId, true, activityObserved);
+    if (!state) return;
+    state.wakeHydration = () => scheduleContextHydration(instance);
+    // A signal is an intent, not a best-effort attempt to acquire a slot. Keep
+    // one per state so deletion/eviction also bounds all retained work.
+    state.pendingHydration = {
+      rawId, liveRevision: state.liveRevision,
+      activityObserved: activityObserved || state.pendingHydration?.activityObserved === true,
+    };
+    scheduleContextHydration(instance);
+  }
+
+  function scheduleContextHydration(instance) {
+    if (instance.disposed || instance.hydrationDrainQueued) return;
+    instance.hydrationDrainQueued = true;
+    // The originating event must enqueue its lifecycle POST first.
+    queueMicrotask(() => {
+      instance.hydrationDrainQueued = false;
+      if (!instance.disposed) drainContextHydration(instance);
+    });
+  }
+
+  function drainContextHydration(instance) {
+    clearTimeout(instance.hydrationTimer);
+    instance.hydrationTimer = null;
+    const sessions = getContextSessionMap(instance.instanceToken);
+    if (!sessions) return;
+    let nextWake = Infinity;
+    const now = Date.now();
+    const pending = [...sessions].filter(([, state]) => state.pendingHydration)
+      .sort(([, a], [, b]) => Number(b.pendingHydration.activityObserved) - Number(a.pendingHydration.activityObserved));
+    for (const [sessionId, state] of pending) {
+      const intent = state.pendingHydration;
+      if (state.liveRevision !== intent.liveRevision
+        || (state.delivered && Number.isFinite(state.delivered.limit) && state.delivered.limit > 0)) {
+        state.pendingHydration = null;
+        continue;
+      }
+      if (state.hydration || state.inFlight.size > 0) continue;
+      if (state.undeliveredContext) {
+        state.pendingHydration = null;
+        state.hydration = deliverContextSample(instance.instanceToken, sessionId, state,
+          state.undeliveredContext, instance.directory).finally(() => {
+          state.hydration = null;
+          scheduleContextHydration(instance);
+        });
+        continue;
+      }
+      if (now < state.nextHydrationAt) {
+        nextWake = Math.min(nextWake, state.nextHydrationAt);
+        continue;
+      }
+      if (instance.historyRequests.size >= CONTEXT_HISTORY_MAX_CONCURRENT) continue;
+      state.pendingHydration = null;
+      startContextHydration(intent.rawId, instance, state, intent.activityObserved);
+    }
+    if (Number.isFinite(nextWake)) {
+      instance.hydrationTimer = setTimeout(() => scheduleContextHydration(instance), Math.max(1, nextWake - Date.now()));
+      instance.hydrationTimer.unref?.();
+    }
+  }
+
+  function startContextHydration(rawId, instance, state, activityObserved) {
+    const sessionId = normalizeSessionId(rawId);
+    const liveRevision = state.liveRevision;
+    const current = () => !instance.disposed && getContextState(instance.instanceToken, sessionId) === state
+      && state.liveRevision === liveRevision;
+    const id = rawId.startsWith(sessionIdPrefix) ? rawId.slice(sessionIdPrefix.length) : rawId;
+    state.nextHydrationAt = Date.now() + CONTEXT_HISTORY_RETRY_MS;
+    // Defer SDK entry until after the current event enqueues its lifecycle
+    // POST. Hydrated metadata must never race ahead of that session creation.
+    state.hydration = readContextHistory(instance, (signal) => current()
+      ? instance.client.session.messages({
+        path: { id },
+        query: { directory: instance.directory, limit: CONTEXT_HISTORY_LIMIT },
+        signal,
+      })
+      : null, state).then(async (result) => {
+      if (!current()) return;
+      const messages = Array.isArray(result) ? result : result?.data;
+      if (!Array.isArray(messages)) return;
+      // The SDK returns a chronological page. Use the message timestamp/id
+      // to select the newest usable assistant, never the largest token sum
+      // (compaction can reduce usage). Reject foreign/malformed identities.
+      let latest = null;
+      for (const message of messages.slice(-CONTEXT_HISTORY_LIMIT)) {
+        const info = message?.info;
+        if (info?.role !== "assistant" || info.sessionID !== id
+          || typeof info.id !== "string" || !info.id
+          || !Number.isFinite(info.time?.created)
+          || !(extractContextUsageUsed(info.tokens) > 0)) continue;
+        if (!latest || info.time.created > latest.time.created
+          || (info.time.created === latest.time.created && info.id > latest.id)) latest = info;
+      }
+      if (latest) {
+        await handleContextUsageEvent({ type: "message.updated", properties: { info: latest } }, instance,
+          { liveRevision, activityObserved });
+      }
+    }).catch(() => {
+      // A missing/unsupported SDK route or a timeout leaves usage unknown.
+      // A later resume signal may retry; errors never become lifecycle events.
+      debugLog(`CTX history unavailable session=${sessionId}`);
+    }).finally(() => {
+      state.hydration = null;
+      scheduleContextHydration(instance);
+    });
+    return state.hydration;
+  }
+
+  async function bootstrapContextUsage(instance) {
+    if (AGENT_ID !== "opencode" || !instance.directory
+      || typeof instance.client?.session?.list !== "function"
+      || typeof instance.client?.session?.messages !== "function") return;
+    const revision = instance.lifecycleRevision;
+    const current = () => !instance.disposed && instance.lifecycleRevision === revision;
+    try {
+      const result = await readContextHistory(instance, (signal) => instance.client.session.list({
+        query: { directory: instance.directory, limit: CONTEXT_BOOTSTRAP_LIMIT, roots: true }, signal,
+      }));
+      if (!current()) return;
+      const sessions = Array.isArray(result) ? result : result?.data;
+      if (!Array.isArray(sessions)) return;
+      const candidates = sessions.filter((info) => (
+        typeof info?.id === "string" && info.id.trim() && info.id.trim() === info.id
+        && !info.parentID && !info.time?.archived
+        && normalizeDirectoryOwnershipKey(info.directory) === normalizeDirectoryOwnershipKey(instance.directory)
+      )).sort((a, b) => (b.time?.updated || 0) - (a.time?.updated || 0)).slice(0, CONTEXT_BOOTSTRAP_LIMIT);
+      for (const info of candidates) {
+        if (!current()) break;
+        // Existing state may own a pending selection, an active query or a
+        // live sample. All pending work now belongs to the same scheduler.
+        const id = normalizeSessionId(info.id);
+        if (getContextState(instance.instanceToken, id)
+          || _sessionDirectoryById.has(id) || _sessionInstanceDirectoryById.has(id)) continue;
+        hydrateContextSession(info.id, instance, false);
+      }
+    } catch {
+      // Hosts without this query contract retain event-driven hydration.
+      debugLog("CTX bootstrap unavailable");
     }
   }
 
@@ -2000,13 +2277,36 @@ export function createOpencodeFamilyPlugin(config) {
       ? ctx.directory
       : "";
     const instanceToken = registerInstanceDirectory(instanceDirectory);
+    const contextInstance = {
+      client: instanceClient, instanceToken, directory: instanceDirectory,
+      historyRequests: new Set(), lifecycleRevision: 0, disposed: false,
+      hydrationTimer: null, hydrationDrainQueued: false,
+    };
     let instanceDisposed = false;
     debugLog(`INIT directory=${instanceDirectory} serverUrl=${instanceServerUrl} pid=${process.pid} hasClient=${!!instanceClient}`);
     // Sync init blocks the TUI boot path; later POSTs hit the cached result.
     getStablePid();
     await startBridge();
+    // Never await SDK requests during plugin initialization: the host router
+    // may itself be waiting for this initializer to return.
+    queueMicrotask(() => { void bootstrapContextUsage(contextInstance); });
+
+    function disposeInstance(event) {
+      if (instanceDisposed) return;
+      instanceDisposed = true;
+      contextInstance.disposed = true;
+      clearTimeout(contextInstance.hydrationTimer);
+      contextInstance.hydrationTimer = null;
+      for (const controller of contextInstance.historyRequests) controller.abort();
+      cleanupSessionDirectory(event, "before-send", instanceDirectory, instanceToken);
+      unregisterInstanceDirectory(instanceToken);
+    }
 
     return {
+      // Newer hosts invoke dispose() instead of delivering the legacy event.
+      dispose: async () => disposeInstance({
+        type: "server.instance.disposed", properties: { directory: instanceDirectory },
+      }),
       event: async ({ event }) => {
         try {
           if (!event || typeof event.type !== "string") return;
@@ -2031,15 +2331,14 @@ export function createOpencodeFamilyPlugin(config) {
           // source. Capture before translate/drop because session.updated does
           // not map to a Clawd state and info-only deleted events need its id.
           if (event.type === "server.instance.disposed") {
-            cleanupSessionDirectory(event, "before-send", instanceDirectory, instanceToken);
-            if (!instanceDisposed) {
-              instanceDisposed = true;
-              unregisterInstanceDirectory(instanceToken);
-            }
+            disposeInstance(event);
             // Instance disposal is cleanup-only. Some host versions may attach
             // a session id, but it must never revive fallback pointers or
             // synthesize a SessionEnd for that (possibly unrelated) session.
             return;
+          }
+          if (event.type === "session.created" || event.type === "session.deleted") {
+            contextInstance.lifecycleRevision += 1;
           }
           captureSessionDirectory(event);
           captureSessionInstanceDirectory(event, instanceDirectory);
@@ -2097,6 +2396,7 @@ export function createOpencodeFamilyPlugin(config) {
           }
 
           const mapped = translateEvent(event);
+          if (mapped?.event !== "SessionEnd") hydrateContextUsage(event, contextInstance);
           if (!mapped) {
             // Log ignored session.* events only — they are low-frequency and
             // occasionally useful for diagnosis. message.part.updated ignores

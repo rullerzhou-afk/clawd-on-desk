@@ -30,7 +30,9 @@ test("cigarette SMIL advances and restarts in the production mouth object channe
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cigarette-electron-"));
   const env = { ...process.env };
   delete env.ELECTRON_RUN_AS_NODE;
-  const args = ["--disable-gpu", `--user-data-dir=${profile}`];
+  // Fractional scale factors round the embedded SVG viewport to whole device
+  // pixels (50x90 css at 125% lands at 50.4x90.4), breaking the fixture's 0.1px fill check.
+  const args = ["--disable-gpu", "--force-device-scale-factor=1", `--user-data-dir=${profile}`];
   if (process.platform === "linux") args.push("--no-sandbox");
   args.push(fixture);
   let result;

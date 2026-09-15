@@ -53,10 +53,6 @@ preference recovery, Windows fullscreen detection, and Developer ID packaging.
 
 ### Desktop Runtime And Reliability
 
-- **Independent bubble placement** (#918, #934) — permission and update bubbles
-  can follow Clawd automatically or on a preferred side, or stay at one of four
-  screen corners. Fixed placement uses the primary display while continuing to
-  avoid the session HUD and other bubbles.
 - **Accessory-aware drag hitboxes** (#866) — moving and animated accessories now
   participate in the canonical geometry handshake, including mini mode and
   holiday/accessory changes, so the interactive surface follows what is drawn.
@@ -125,9 +121,6 @@ Returning contributors include @chrono-meta (#888, #892), @KaiC5504 (#889),
   approval smoke is not yet claimed as Windows-verified.
 - Slack is notification-only. Answer permission requests in Clawd, Telegram, or
   Feishu/Lark; Slack cannot Allow or Deny.
-- If bubble following was previously turned off, permission and update bubbles
-  now use the selected corner of the primary display instead of the display that
-  currently contains Clawd. This is the intended fixed-placement behavior.
 - Packaged macOS and Linux builds still do not perform in-app updates. Download
   future versions manually from GitHub Releases.
 

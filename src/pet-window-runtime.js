@@ -113,6 +113,7 @@ function createPetWindowRuntime(options = {}) {
   const isWin = !!options.isWin;
   const isMac = !!options.isMac;
   const isLinux = !!options.isLinux;
+  const windowsHitWindowFocusable = isWin && options.windowsHitWindowFocusable === true;
   const linuxWindowType = options.linuxWindowType;
   const topmostLevel = options.topmostLevel;
   const getRenderWindow = options.getRenderWindow || (() => null);
@@ -213,6 +214,11 @@ function createPetWindowRuntime(options = {}) {
   // it (see the call site below).
   const notifyMiniTopologyChangedDuringTransition =
     options.notifyMiniTopologyChangedDuringTransition || noop;
+  // Invoked by releaseStrandedDragLock() on every actual release, so main can
+  // run the full cross-process cleanup (renderer force-drag-release push,
+  // idle / mouse-over resets) from each recovery entry instead of every
+  // caller clearing main-side state on its own.
+  const onStrandedDragLockReleased = options.onStrandedDragLockReleased || null;
   const exitMiniMode = options.exitMiniMode || noop;
   const shouldReloadAfterRenderProcessGone = createRenderProcessGoneReloadGuard(options);
 
@@ -1442,6 +1448,10 @@ function createPetWindowRuntime(options = {}) {
       setFloatingSurfacesFullscreenSuppressed(false);
     }
     const changed = applyVisibilityLayerChange(prevEffective);
+    // Manual hide is a user-invoked recovery action: a lock stranded while the
+    // pet was hidden would keep syncHitWin() deferred after it is shown again.
+    // Nothing meaningful can be dragged while hidden, so release on the flip.
+    if (target && changed) releaseStrandedDragLock();
     // showInactive restores native visibility but not necessarily the topmost
     // band an exclusive fullscreen HWND displaced. The override is already
     // armed above, so reassert can surface the pet immediately even when the
@@ -1603,6 +1613,11 @@ function createPetWindowRuntime(options = {}) {
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return;
     if (getMiniMode() || getMiniTransitioning()) return;
+
+    // This action is a documented escape hatch for a stranded input window;
+    // with the lock held, syncHitWin() would defer and the input window would
+    // stay behind while the pet moves. Release before moving.
+    releaseStrandedDragLock();
 
     const workArea = getPrimaryWorkAreaFallback();
     const size = getEffectiveCurrentPixelSize(workArea);
@@ -2291,6 +2306,7 @@ function createPetWindowRuntime(options = {}) {
     }
     const initialHitWindowBounds = getInitialHitWindowBounds();
     const hitWin = new BrowserWindow({
+      ...(isWin ? { show: false } : {}),
       width: initialHitWindowBounds.width,
       height: initialHitWindowBounds.height,
       x: initialHitWindowBounds.x,
@@ -2305,9 +2321,11 @@ function createPetWindowRuntime(options = {}) {
       enableLargerThanScreen: true,
       ...(isLinux ? { type: linuxWindowType } : {}),
       ...(isMac ? { type: "panel", roundedCorners: false } : {}),
-      // KEY EXPERIMENT: allow activation to avoid WS_EX_NOACTIVATE input
-      // routing bugs. Linux keeps the old non-focusable behavior.
-      focusable: !isLinux,
+      // Windows normally starts with Electron activation disabled. The native
+      // controller installs the click-delivery guard and toggles only
+      // WS_EX_NOACTIVATE. If setup is unavailable, retain the legacy focusable
+      // path so desktop click/drag still works.
+      focusable: isWin ? windowsHitWindowFocusable : !isLinux,
       webPreferences: {
         preload: optionsArg.preloadPath,
         backgroundThrottling: false,
@@ -2326,6 +2344,10 @@ function createPetWindowRuntime(options = {}) {
     // window until createHitWindow() returns and the caller assigns it.
     applyHitInputState(hitWin);
     if (isMac) hitWin.setFocusable(false);
+    if (isWin && typeof optionsArg.prepareActivation === "function") {
+      const prepared = optionsArg.prepareActivation(hitWin);
+      if (prepared === false && !windowsHitWindowFocusable) hitWin.setFocusable(true);
+    }
     applyLinuxAllWorkspaces(hitWin);
     hitWin.showInactive();
     keepOutOfTaskbar(hitWin);
@@ -2358,6 +2380,22 @@ function createPetWindowRuntime(options = {}) {
     const wasLocked = dragLocked;
     dragLocked = next;
     if (wasLocked && !next) releaseReconcileProtection();
+  }
+
+  // A drag lock whose closing mouse-up was swallowed (UAC secure desktop, RDP
+  // reconnect, fullscreen transition) strands dragLocked=true. While it is
+  // stranded, syncHitWin() defers forever — the input window freezes at its
+  // old rect while the render window moves — and recoverIfCloaked() reports
+  // "busy". User-invoked recovery actions therefore release through here
+  // before moving or resyncing. Collateral for a genuinely live drag is
+  // bounded: dragMove() no-ops until the gesture's own pointerup completes the
+  // handshake (drag-lock(false) is idempotent).
+  function releaseStrandedDragLock() {
+    if (!dragLocked) return false;
+    setDragLocked(false);
+    clearDragSnapshot();
+    if (typeof onStrandedDragLockReleased === "function") onStrandedDragLockReleased();
+    return true;
   }
 
   function isDragLocked() {
@@ -2683,6 +2721,7 @@ function createPetWindowRuntime(options = {}) {
     reloadWindowWebContents: reloadRuntimeWindowWebContents,
     setDragLocked,
     isDragLocked,
+    releaseStrandedDragLock,
     beginDragSnapshot,
     clearDragSnapshot,
     moveWindowForDrag,

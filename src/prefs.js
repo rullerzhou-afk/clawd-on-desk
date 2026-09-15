@@ -443,6 +443,10 @@ const SCHEMA = {
       "qoderwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       // QwenWork (千问办公) is state-only (Phase 1) — permission bubbles default off.
       "qwenwork": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // Grok Build is state + Notification only: it has no PermissionRequest
+      // hook, so permission bubbles default off. Opt-in like other non-default
+      // agents — agent-gate fail-opens missing entries.
+      "grok-build": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
     }),
     normalize: normalizeAgents,
   },
@@ -919,6 +923,18 @@ function migrate(raw) {
   if (out.version < 19) {
     out.recapEnabled = typeof out.recapEnabled === "boolean" ? out.recapEnabled : true;
     out.version = 19;
+  }
+  // Field-level migration also covers development snapshots that already have
+  // the current schema. Preserve the old effective Codex timeout only when no
+  // explicit independent value exists; fresh installs do not run migrate().
+  if (!Object.prototype.hasOwnProperty.call(out, "codexWorkingStaleMs")) {
+    const legacy = normalizeStaleTriple({
+      workingStaleMs: isValidValue(SCHEMA.workingStaleMs, out.workingStaleMs)
+        ? out.workingStaleMs : SCHEMA.workingStaleMs.default,
+      sessionStaleMs: isValidValue(SCHEMA.sessionStaleMs, out.sessionStaleMs)
+        ? out.sessionStaleMs : SCHEMA.sessionStaleMs.default,
+    });
+    out.codexWorkingStaleMs = Math.max(SCHEMA.codexWorkingStaleMs.default, legacy.workingStaleMs);
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

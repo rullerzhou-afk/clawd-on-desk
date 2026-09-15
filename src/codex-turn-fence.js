@@ -172,6 +172,27 @@ function createCodexTurnFence(options = {}) {
     closedLru.clear();
   }
 
+  // Narrow per-session reset used when a session is retired (archived). Global
+  // `clear()` would drop unrelated live sessions' fences.
+  function clearSession(sessionId) {
+    const id = typeof sessionId === "string" ? sessionId : "";
+    if (!id) return false;
+    const record = records.get(id);
+    const had = !!record;
+    deleteRecord(id, null);
+    if (had) return true;
+    // A session with only tombstoned turns but no live record still owns
+    // closedLru entries that must not leak into a recreated session.
+    let removed = false;
+    for (const [key, entry] of [...closedLru]) {
+      if (entry && entry.sessionId === id) {
+        closedLru.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
+  }
+
   function getSnapshot(sessionId) {
     const record = records.get(sessionId);
     if (!record) return null;
@@ -186,6 +207,7 @@ function createCodexTurnFence(options = {}) {
   return {
     observe,
     clear,
+    clearSession,
     getSnapshot,
     get size() { return records.size; },
     get closedSize() { return closedLru.size; },

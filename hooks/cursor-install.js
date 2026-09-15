@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Merge Clawd Cursor Agent hooks into ~/.cursor/hooks.json (append-only, idempotent)
+// Merge Clawd Cursor Agent hooks into ~/.cursor/hooks.json (marker-scoped, idempotent)
 
 const fs = require("fs");
 const path = require("path");
@@ -34,11 +34,12 @@ const CURSOR_HOOK_EVENTS = [
 ];
 
 function buildCursorHookCommand(nodeBin, hookScript, platform = process.platform) {
-  // Cursor's Windows hook launcher is more reliable when the command goes
-  // through cmd.exe explicitly instead of invoking node directly.
+  // Cursor's Windows launcher is PowerShell (including its temp-file stdin
+  // bridge). Calling Node directly preserves spaced paths; an extra cmd /s /c
+  // round trip strips their quotes. Keep the marker visible in the command.
   return formatNodeHookCommand(nodeBin, hookScript, {
     platform,
-    windowsWrapper: "cmd",
+    windowsWrapper: "powershell",
   });
 }
 
@@ -101,21 +102,31 @@ function registerCursorHooks(options = {}) {
     }
 
     const arr = settings.hooks[event];
-    let found = false;
-    let stalePath = false;
+    let ownedEntry = null;
+    let needsUpdate = false;
+    const kept = [];
     for (const entry of arr) {
-      if (!entry || typeof entry !== "object" || typeof entry.command !== "string") continue;
-      if (!entry.command.includes(MARKER)) continue;
-      found = true;
+      if (!entry || typeof entry !== "object" || !commandMatchesMarker(entry.command, MARKER)) {
+        kept.push(entry);
+        continue;
+      }
+      // Repair duplicates left by installers that could not recognize an
+      // EncodedCommand marker. Retain the first owned entry's other settings.
+      if (ownedEntry) {
+        needsUpdate = true;
+        continue;
+      }
+      ownedEntry = entry;
+      kept.push(entry);
       if (entry.command !== desiredCommand) {
         entry.command = desiredCommand;
-        stalePath = true;
+        needsUpdate = true;
       }
-      break;
     }
 
-    if (found) {
-      if (stalePath) {
+    if (ownedEntry) {
+      if (needsUpdate) {
+        settings.hooks[event] = kept;
         updated++;
         changed = true;
       } else {

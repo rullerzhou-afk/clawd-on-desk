@@ -1648,7 +1648,7 @@ class CodexLogMonitor {
     // mtime into the "live" window even though the actual question line is
     // old. A still-open question must not be dropped just because the guard
     // saw a stale timestamp on the line that carries it.
-    if (this._processCodexUserInputRecord(obj, tracked)) return;
+    if (this._processCodexUserInputRecord(obj, tracked, turnExtra)) return;
 
     // Skip historical events that predate monitor start — prevents replay
     // storms on app restart from driving stale state transitions.
@@ -1982,11 +1982,16 @@ class CodexLogMonitor {
     );
   }
 
-  _processCodexUserInputRecord(obj, tracked) {
+  _processCodexUserInputRecord(obj, tracked, turnExtra = {}) {
     const record = parseCodexUserInputRecord(obj);
     if (!record) return false;
     if (!(tracked.pendingUserInputs instanceof Map)) tracked.pendingUserInputs = new Map();
     if (record.phase === "request") {
+      record.activity = {
+        turnId: turnExtra.turnId || null,
+        recapOccurredAt: turnExtra.recapOccurredAt ?? null,
+        userInputReplay: this._isUserInputReplay(tracked, turnExtra),
+      };
       // #707 follow-up review round 4: the recovery sweep's own age cap only
       // protects files it actually opens (mtime outside the active window).
       // A file Codex Desktop refreshed back into the active window attaches
@@ -2009,11 +2014,25 @@ class CodexLogMonitor {
       return true;
     }
     if (!tracked.pendingUserInputs.has(record.callId)) return true;
+    const request = tracked.pendingUserInputs.get(record.callId);
     tracked.pendingUserInputs.delete(record.callId);
     if (!tracked.backfilling && !tracked.initializingUserInputs && this._onUserInputResolved) {
-      this._onUserInputResolved(tracked.sessionId, record.callId);
+      this._onUserInputResolved(tracked.sessionId, record.callId, {
+        source: "function-call-output",
+        // Correlate to the original request, not a newer active turn that may
+        // already have started before this output is drained from the file.
+        turnId: request.activity && request.activity.turnId || null,
+        recapOccurredAt: turnExtra.recapOccurredAt ?? null,
+        userInputReplay: this._isUserInputReplay(tracked, turnExtra),
+      });
     }
     return true;
+  }
+
+  _isUserInputReplay(tracked, extra) {
+    return !!(tracked.backfilling || tracked.initializingUserInputs)
+      || !Number.isSafeInteger(extra.recapOccurredAt)
+      || extra.recapOccurredAt < this._startedAtMs - 1500;
   }
 
   // Drop any request_user_input still open for this session because its
@@ -2047,6 +2066,7 @@ class CodexLogMonitor {
     if (!this._onUserInputRequest || this._isTrackedSubagent(tracked)) return;
     const agentPid = this._resolveTrackedAgentPid(tracked);
     this._onUserInputRequest(tracked.sessionId, request, {
+      ...(request.activity || { userInputReplay: true }),
       cwd: tracked.cwd,
       sourcePid: agentPid,
       agentPid,

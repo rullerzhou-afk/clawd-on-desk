@@ -14,6 +14,7 @@ const {
   assertFullscreenProbeValue,
   nativeWindowHandleId,
   runWindowsFullscreenIdentityProbe,
+  runHitWindowNoActivateRoundTrip,
 } = require("../src/package-koffi-smoke");
 const {
   parseArgs: parseRunnerArgs,
@@ -218,4 +219,38 @@ test("packaged native HWND proof survives a runner that cannot foreground Browse
   assert.equal(result.invalidRejected, true);
   assert.equal(result.foregroundControllable, false);
   assert.equal(result.fullscreenObserved, false);
+});
+
+test("packaged hit-window smoke preserves the style round trip and delivers both mouse-activation modes", async () => {
+  let nonActivating = true;
+  const calls = [];
+  let mouseActivateCalls = 0;
+  const win = {
+    isFocusable: () => false,
+    isWindowMessageHooked: () => true,
+  };
+  const result = await runHitWindowNoActivateRoundTrip({
+    isNonActivating: () => nonActivating,
+    setFocusable: (_win, focusable) => {
+      calls.push(focusable);
+      nonActivating = !focusable;
+      return true;
+    },
+  }, win, [], () => {
+    mouseActivateCalls += 1;
+    return { result: 3, ignorePropertyConsumed: true };
+  });
+
+  assert.deepEqual(calls, [true, false, true]);
+  assert.equal(mouseActivateCalls, 3);
+  assert.deepEqual(result, {
+    electronFocusable: false,
+    initialNonActivating: true,
+    afterInitialClear: false,
+    desktopMouseActivate: 3,
+    afterFullscreenRequest: true,
+    fullscreenMouseActivate: 3,
+    afterFinalRestore: false,
+    restoredMouseActivate: 3,
+  });
 });

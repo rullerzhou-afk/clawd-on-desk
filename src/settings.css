@@ -1403,9 +1403,14 @@ html, body {
 /* ── Switch (iOS-style) ── */
 .switch {
   --switch-knob-x: 0;
+  appearance: none;
+  box-sizing: border-box;
   position: relative;
+  display: inline-block;
   width: 40px;
   height: 24px;
+  padding: 0;
+  border: 0;
   border-radius: 999px;
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0)), var(--switch-off);
   cursor: pointer;
@@ -2713,8 +2718,26 @@ html, body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: 6px;
   min-height: 34px;
   line-height: 1.25;
+}
+.settings-button-icon,
+.settings-button-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.settings-button-icon {
+  flex: 0 0 auto;
+}
+.settings-button-icon > svg,
+.settings-button-icon > img {
+  width: 1em;
+  height: 1em;
+}
+.settings-button-label {
+  min-width: 0;
 }
 .settings-button-compact {
   min-height: 28px;

@@ -20,8 +20,16 @@ const {
 
 describe("shortcut-actions metadata", () => {
   it("exposes all known shortcut action ids", () => {
-    assert.deepStrictEqual(SHORTCUT_ACTION_IDS, ["togglePet", "permissionAllow", "permissionDeny"]);
+    assert.deepStrictEqual(SHORTCUT_ACTION_IDS, [
+      "togglePet",
+      "quickSelectSession",
+      "permissionAllow",
+      "permissionDeny",
+    ]);
     assert.strictEqual(SHORTCUT_ACTIONS.togglePet.persistent, true);
+    assert.strictEqual(SHORTCUT_ACTIONS.quickSelectSession.persistent, true);
+    assert.strictEqual(SHORTCUT_ACTIONS.quickSelectSession.defaultAccelerator, null);
+    assert.strictEqual(SHORTCUT_ACTIONS.quickSelectSession.showInTutorial, false);
     assert.strictEqual(SHORTCUT_ACTIONS.permissionAllow.persistent, false);
     assert.strictEqual(SHORTCUT_ACTIONS.permissionDeny.persistent, false);
   });
@@ -32,6 +40,7 @@ describe("shortcut-actions metadata", () => {
     assert.notStrictEqual(a, b);
     assert.deepStrictEqual(a, {
       togglePet: "CommandOrControl+Shift+Alt+C",
+      quickSelectSession: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -317,6 +326,7 @@ describe("normalizeShortcuts", () => {
       normalizeShortcuts({ togglePet: "Ctrl+K", bogus: "Ctrl+J" }, getDefaultShortcuts()),
       {
         togglePet: "CommandOrControl+K",
+        quickSelectSession: null,
         permissionAllow: "CommandOrControl+Shift+Y",
         permissionDeny: "CommandOrControl+Shift+N",
       }
@@ -332,6 +342,7 @@ describe("normalizeShortcuts", () => {
       }, getDefaultShortcuts()),
       {
         togglePet: null,
+        quickSelectSession: null,
         permissionAllow: null,
         permissionDeny: null,
       }
@@ -367,6 +378,7 @@ describe("normalizeShortcuts", () => {
       }, getDefaultShortcuts()),
       {
         togglePet: "CommandOrControl+K",
+        quickSelectSession: null,
         permissionAllow: "CommandOrControl+Shift+Y",
         permissionDeny: "CommandOrControl+Shift+N",
       }
@@ -381,6 +393,7 @@ describe("normalizeShortcuts", () => {
       }, getDefaultShortcuts(), { isMac: false }),
       {
         togglePet: "Control+Shift+K",
+        quickSelectSession: null,
         permissionAllow: "CommandOrControl+Shift+Y",
         permissionDeny: "CommandOrControl+Shift+N",
       }
@@ -391,10 +404,12 @@ describe("normalizeShortcuts", () => {
     assert.deepStrictEqual(
       normalizeShortcuts({
         togglePet: "Control+Shift+K",
+        quickSelectSession: null,
         permissionAllow: "CommandOrControl+Shift+K",
       }, getDefaultShortcuts(), { isMac: true }),
       {
         togglePet: "Control+Shift+K",
+        quickSelectSession: null,
         permissionAllow: "CommandOrControl+Shift+K",
         permissionDeny: "CommandOrControl+Shift+N",
       }

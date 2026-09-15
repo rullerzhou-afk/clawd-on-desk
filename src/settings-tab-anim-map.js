@@ -41,22 +41,32 @@
         `<span class="row-label"></span>` +
         `<span class="row-desc"></span>` +
       `</div>` +
-      `<div class="row-control"><div class="switch" role="switch" tabindex="0"></div></div>`;
-    row.querySelector(".row-label").textContent = t(spec.labelKey);
-    row.querySelector(".row-desc").textContent = t(spec.descKey);
-    const sw = row.querySelector(".switch");
+      `<div class="row-control"></div>`;
+    const label = row.querySelector(".row-label");
+    const desc = row.querySelector(".row-desc");
+    label.textContent = t(spec.labelKey);
+    desc.textContent = t(spec.descKey);
 
     const switchId = animMapSwitchId(themeId, spec.stateKey);
+    label.id = `settings-anim-map-${themeId}-${spec.stateKey}-label`;
+    desc.id = `settings-anim-map-${themeId}-${spec.stateKey}-description`;
     const override = state.transientUiState.animMapSwitches.get(switchId);
     const visualOn = override ? override.visualOn : readAnimMapVisualOn(themeId, spec.stateKey);
-    helpers.setSwitchVisual(sw, visualOn, { pending: override ? override.pending : false });
+    const switchControl = helpers.buildSwitch({
+      checked: visualOn,
+      pending: override ? override.pending : false,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+    });
+    row.querySelector(".row-control").appendChild(switchControl.element);
     state.mountedControls.animMapSwitches.set(switchId, {
-      element: sw,
+      control: switchControl,
+      element: switchControl.element,
       themeId,
       stateKey: spec.stateKey,
     });
 
-    helpers.attachAnimatedSwitch(sw, {
+    helpers.attachOptimisticSwitch(switchControl, {
       getCommittedVisual: () => readAnimMapVisualOn(themeId, spec.stateKey),
       getTransientState: () => state.transientUiState.animMapSwitches.get(switchId) || null,
       setTransientState: (value) => state.transientUiState.animMapSwitches.set(switchId, value),
@@ -135,7 +145,10 @@
     }
     for (const [id, meta] of state.mountedControls.animMapSwitches) {
       state.transientUiState.animMapSwitches.delete(id);
-      helpers.setSwitchVisual(meta.element, readAnimMapVisualOn(meta.themeId, meta.stateKey), { pending: false });
+      meta.control.setState({
+        checked: readAnimMapVisualOn(meta.themeId, meta.stateKey),
+        pending: false,
+      });
     }
     const reset = state.mountedControls.animMapReset;
     if (reset && document.body.contains(reset.element)) {

@@ -17,6 +17,11 @@ const IDENTITY_OVERRIDES = new Map(Object.entries({
   "liufeng@dtstack.com": "liugou27",
   "akaa1941@gmail.com": "chrono-meta",
   "luis@aumentra.com": "Zamaniego",
+  "kaichuan2004@gmail.com": "KaiC5504",
+  "411551294@qq.com": "YOIMIYA66",
+  "a1330661071@gmail.com": "xiaoshidefeng",
+  "draintovmasyan783@gmail.com": "draintovmasyan783-creator",
+  "264600648+draintovmasryan783-creator@users.noreply.github.com": "draintovmasyan783-creator",
 }));
 
 function parseVersion(value) {

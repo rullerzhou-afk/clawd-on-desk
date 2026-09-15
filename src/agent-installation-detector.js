@@ -13,6 +13,7 @@ const dsh = require("../hooks/dsh-install");
 const zcode = require("../hooks/zcode-install");
 const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
+const grok = require("../hooks/grok-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication } = require("./custom-applications");
 
@@ -206,6 +207,16 @@ function resolveAgentPaths(descriptor, options) {
       parentDir: dshHome,
       configPath: dsh.resolveDshProfileDir(dshHome),
       commandPaths: dsh.dshCommandPathsSync({ fs: options.fs, env, platform }),
+    }, options);
+  }
+
+  if (descriptor.agentId === "grok-build") {
+    // Dynamic GROK_HOME path + structured ownership both come from the shared
+    // inspector so Doctor, the installation detector, and the installer agree.
+    const inspected = grok.inspectGrokHookFile({ fs: options.fs, env, homeDir });
+    return finalizeAgentPaths(descriptor, {
+      parentDir: inspected.grokHome,
+      configPath: inspected.configPath,
     }, options);
   }
 
@@ -476,6 +487,9 @@ function detectInstallation(descriptor, paths, options) {
       }
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
+    case "grok-build":
+      if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
+      return notFound();
     case "copilot-cli":
     case "cursor-agent":
     case "qwen-code":
@@ -639,6 +653,33 @@ function detectClawdIntegration(descriptor, paths, options) {
     return found
       ? { detected: true, reason: "managed-files", detail: `${paths.configPath} contains Clawd plugin files`, paths: { pluginDir: paths.configPath } }
       : { detected: false, reason: "not-found", detail: "No Clawd-managed Hermes plugin files found" };
+  }
+  if (descriptor.configMode === "grok-hooks") {
+    const inspected = grok.inspectGrokHookFile({
+      fs: fsImpl,
+      env: options.env,
+      homeDir: options.homeDir,
+      grokHome: paths.parentDir,
+      configPath: paths.configPath,
+    });
+    if (inspected.health === "healthy") {
+      return {
+        detected: true,
+        reason: "structured-marker",
+        detail: `${inspected.configPath} contains the verified Clawd handler marker`,
+        paths: { configPath: inspected.configPath },
+        stalePreview: inspected.stalePreview,
+        warnings: inspected.warnings,
+      };
+    }
+    return {
+      detected: false,
+      reason: inspected.health,
+      detail: inspected.detail || `Grok Build hook file is ${inspected.health}`,
+      paths: { configPath: inspected.configPath },
+      stalePreview: inspected.stalePreview,
+      warnings: inspected.warnings,
+    };
   }
   if (descriptor.configMode === "dir") {
     return markerInDirectoryFiles(fsImpl, paths.configPath, descriptor.marker)

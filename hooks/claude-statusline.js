@@ -26,8 +26,15 @@ const {
   readHostPrefix,
 } = require("./server-config");
 const { readStdinJson } = require("./shared-process");
-const { resolveClaudeRateLimitQuota, resolveClaudeModelLabel } = require("./claude-rate-limits");
+const {
+  resolveClaudeRateLimitQuota,
+  resolveClaudeModelLabel,
+  resolveClaudeModelId,
+} = require("./claude-rate-limits");
 const { extractClaudeStatuslineContextUsage } = require("./context-usage");
+const {
+  LOCAL_CHAIN_FLAG, LOCAL_CHAIN_FILE, readLocalChainRecord, resolveLocalChainShell,
+} = require("./claude-statusline-local-chain");
 
 const STATE_POST_TIMEOUT_MS = 150;
 
@@ -82,29 +89,86 @@ function readChainedCommand(sidecarPath) {
 // status line blank).
 function runChainedStatusLine(command, stdinText, deps = {}) {
   const spawnFn = deps.spawn || spawn;
+  const platform = deps.platform || process.platform;
+  const env = deps.env || process.env;
+  const localWindows = deps.localChain === true && platform === "win32";
   return new Promise((resolve) => {
     let child;
     try {
-      // detached: the chained command runs in its own POSIX process group
-      // (chain mode is POSIX-remote-only), so the timeout below can kill the
+      // detached: the chained command runs in its own POSIX process group,
+      // so the timeout below can kill the
       // whole tree — SIGKILLing only the sh wrapper would orphan whatever it
       // spawned, and a hung statusline invoked on every sub-second refresh
       // accumulates exactly the orphans the cap exists to prevent.
-      child = spawnFn("sh", ["-c", command], { stdio: ["pipe", "inherit", "ignore"], detached: true });
+      const shell = deps.localChain === true
+        ? resolveLocalChainShell({ platform, env, exists: deps.shellExists })
+        : { file: "sh", kind: "posix" };
+      const args = shell.kind === "powershell"
+        ? ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command]
+        : ["-c", command];
+      child = spawnFn(shell.file, args, {
+        stdio: ["pipe", "inherit", "ignore"], detached: !localWindows,
+        ...(deps.localChain === true ? {
+          windowsHide: true,
+          env: { ...env, CLAWD_LOCAL_STATUSLINE_CHAIN_ACTIVE: "1" },
+        } : {}),
+      });
     } catch {
       resolve("spawn-failed");
       return;
     }
-    const cap = setTimeout(() => {
+    let stopping = null;
+    let settled = false;
+    const stopOwnedTree = () => {
+      if (stopping) return stopping;
+      if (localWindows && Number.isInteger(child.pid) && child.pid > 0) {
+        // Only this invocation's child tree. Never kill by image/process name.
+        stopping = new Promise((done) => {
+          let killer;
+          const fallback = () => { try { child.kill(); } catch {} };
+          const finishKill = () => { clearTimeout(killCap); done(); };
+          const killCap = setTimeout(() => {
+            fallback();
+            try { killer.kill(); } catch {}
+            finishKill();
+          }, 1000);
+          try {
+            const systemRootKey = Object.keys(env).find((key) => key.toLowerCase() === "systemroot");
+            killer = spawnFn(path.win32.join(env[systemRootKey] || "C:\\Windows", "System32", "taskkill.exe"),
+              ["/PID", String(child.pid), "/T", "/F"], { stdio: "ignore", windowsHide: true });
+            killer.on("error", () => { fallback(); finishKill(); });
+            killer.on("close", (code) => { if (code !== 0) fallback(); finishKill(); });
+          } catch { fallback(); finishKill(); }
+        });
+        return stopping;
+      }
+      stopping = Promise.resolve();
       try {
         process.kill(-child.pid, "SIGKILL");
       } catch {
         try { child.kill("SIGKILL"); } catch {}
       }
-      resolve("timeout");
-    }, Number.isFinite(deps.chainCapMs) ? deps.chainCapMs : CHAIN_EXIT_CAP_MS);
-    child.on("error", () => { clearTimeout(cap); resolve("spawn-failed"); });
-    child.on("close", () => { clearTimeout(cap); resolve("ok"); });
+      return stopping;
+    };
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(result);
+    };
+    const interrupted = () => { stopOwnedTree().then(() => finish("timeout")); };
+    if (deps.localChain === true) {
+      process.once("SIGTERM", interrupted);
+      process.once("SIGINT", interrupted);
+    }
+    const cleanup = () => {
+      clearTimeout(cap);
+      process.removeListener("SIGTERM", interrupted);
+      process.removeListener("SIGINT", interrupted);
+    };
+    const cap = setTimeout(interrupted, Number.isFinite(deps.chainCapMs) ? deps.chainCapMs : CHAIN_EXIT_CAP_MS);
+    child.on("error", () => { if (!stopping) finish("spawn-failed"); });
+    child.on("close", () => { if (!stopping) finish("ok"); });
     try {
       child.stdin.on("error", () => {});
       child.stdin.end(stdinText || "");
@@ -125,7 +189,8 @@ function buildStatusLineText(payload, quota, modelLabel) {
 
 function buildStateBody(payload, quota, contextUsage, options = {}) {
   const sessionId = payload && payload.session_id;
-  if (!sessionId || (!quota && !contextUsage)) return null;
+  const model = resolveClaudeModelId(payload);
+  if (!sessionId || (!quota && !contextUsage && !model)) return null;
 
   // metadata_only routes this around the updateSession lifecycle machine:
   // quota is annotated onto an existing session and dropped otherwise -
@@ -141,6 +206,7 @@ function buildStateBody(payload, quota, contextUsage, options = {}) {
   };
   if (quota) body.claude_quota = quota;
   if (contextUsage) body.context_usage = contextUsage;
+  if (model) body.model = model;
   const cwd = payload && payload.workspace && typeof payload.workspace.current_dir === "string"
     ? payload.workspace.current_dir
     : "";
@@ -175,6 +241,7 @@ async function main(deps = {}) {
   const env = deps.env || process.env;
   const argv = deps.argv || process.argv.slice(2);
   const writeStdout = deps.writeStdout || ((chunk) => process.stdout.write(chunk));
+  if (env.CLAWD_LOCAL_STATUSLINE_CHAIN_ACTIVE === "1") return;
   let payload = null;
   try {
     payload = deps.payload !== undefined ? deps.payload : await (deps.readStdinJson || readStdinJson)();
@@ -197,10 +264,19 @@ async function main(deps = {}) {
 
   // Chain first, POST second: the chained script streams the user's visible
   // line as soon as it spawns, so a slow or downed tunnel can never delay
-  // their rendering. Missing/unreadable sidecar degrades to plain mode
-  // (rendering our own text beats a blank status line).
+  // their rendering. A missing legacy remote sidecar degrades to plain mode;
+  // local coexistence requires valid recovery evidence and stays silent otherwise.
   let chainPromise = null;
-  if (argv.includes("--chain")) {
+  if (argv.includes(LOCAL_CHAIN_FLAG)) {
+    const id = argv[argv.indexOf(LOCAL_CHAIN_FLAG) + 1];
+    const recordPath = deps.localChainSidecarPath
+      || path.join(path.dirname(resolveChainSidecarPath(deps)), LOCAL_CHAIN_FILE);
+    let record;
+    try { record = readLocalChainRecord(recordPath); } catch { return; }
+    if (!record || record.id !== id || record.platform !== (deps.platform || process.platform)) return;
+    chainPromise = runChainedStatusLine(record.statusLine.command,
+      payload === null ? "" : JSON.stringify(payload), { ...deps, localChain: true });
+  } else if (argv.includes("--chain")) {
     const chainedCommand = (deps.readChainedCommand || readChainedCommand)(
       resolveChainSidecarPath(deps)
     );
@@ -239,7 +315,7 @@ async function main(deps = {}) {
   // e.g. the command's binary is gone) rendered nothing, so falling back to
   // our plain line beats a permanently blank status line. A "timeout" chain
   // may have already rendered before hanging - stay silent there.
-  if (chainResult === "spawn-failed") writeStdout(`${text}\n`);
+  if (chainResult === "spawn-failed" && !argv.includes(LOCAL_CHAIN_FLAG)) writeStdout(`${text}\n`);
 }
 
 if (require.main === module) {

@@ -11,6 +11,7 @@ const {
   readLeaseFile,
   updateRecoveryLeaseFromStateBody,
 } = require("../hooks/session-recovery-lease");
+const { getHistoryFilePath, readHistoryFile } = require("../hooks/session-history");
 
 const HOOK = path.join(__dirname, "..", "hooks", "clawd-hook.js");
 
@@ -71,5 +72,24 @@ describe("Claude hook recovery lease ordering", () => {
     const lease = readLeaseFile(getLeaseFilePath("claude-code", "offline-session", { recoveryDir }));
     assert.strictEqual(lease.active, false);
     assert.strictEqual(lease.state, null);
+  });
+
+  it("persists history through the real offline hook without leaking the prompt or reply", () => {
+    const historyDir = path.join(home, ".clawd", "session-history-v1");
+    const file = getHistoryFilePath("claude-code", "offline-session", { historyDir });
+    const started = run("UserPromptSubmit", { prompt: "private prompt must stay in Claude" });
+    assert.strictEqual(started.status, 0, started.stderr);
+    assert.strictEqual(started.stdout, "");
+    const active = readHistoryFile(file);
+    assert.ok(active, "history must persist even though the HTTP receiver is offline");
+    assert.strictEqual(active.title, null);
+    assert.strictEqual(active.endedAt, null);
+    const stopped = run("Stop", { last_assistant_message: "private reply must stay in Claude" });
+    assert.strictEqual(stopped.status, 0, stopped.stderr);
+    assert.strictEqual(stopped.stdout, "");
+    assert.ok(readHistoryFile(file).endedAt);
+    const disk = fs.readFileSync(file, "utf8");
+    assert.ok(!disk.includes("private prompt"));
+    assert.ok(!disk.includes("private reply"));
   });
 });

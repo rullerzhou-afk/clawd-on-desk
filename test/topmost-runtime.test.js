@@ -8,6 +8,11 @@ const path = require("node:path");
 
 const createTopmostRuntime = require("../src/topmost-runtime");
 const createPetWindowRuntime = require("../src/pet-window-runtime");
+const {
+  createHitWindowActivationController,
+  createHitWindowFocusableSetter,
+  WS_EX_NOACTIVATE,
+} = require("../src/win-hit-window-activation");
 
 class FakeWindow extends EventEmitter {
   constructor(options = {}) {
@@ -54,6 +59,14 @@ class FakeWindow extends EventEmitter {
 
   setIgnoreMouseEvents(...args) {
     this.calls.push(["setIgnoreMouseEvents", ...args]);
+  }
+
+  hookWindowMessage(...args) {
+    this.calls.push(["hookWindowMessage", ...args]);
+  }
+
+  unhookWindowMessage(...args) {
+    this.calls.push(["unhookWindowMessage", ...args]);
   }
 }
 
@@ -619,9 +632,9 @@ describe("topmost runtime Windows recovery", () => {
 
     // Up-front sync: starting while already fullscreen drops activation
     // immediately, not after a full poll interval — closes the startup/restore
-    // window where the hit window (created focusable: true) could still steal
-    // the game's focus (#562). The poll runs at the ~1s focusable cadence, NOT
-    // the 5s watchdog.
+    // window where the hit window could otherwise retain activating native
+    // styles and steal the game's focus (#562). The poll runs at the ~1s
+    // focusable cadence, NOT the 5s watchdog.
     assert.deepStrictEqual(focusableCalls, [false]);
     assert.strictEqual(timers.intervals[0].ms, createTopmostRuntime.FOCUSABLE_POLL_MS);
 
@@ -631,13 +644,61 @@ describe("topmost runtime Windows recovery", () => {
     assert.strictEqual(timers.intervals.length, 1);
     assert.deepStrictEqual(focusableCalls, [false]);
 
-    // Leaving fullscreen restores activation on the next tick (drag needs it, #545).
+    // Leaving fullscreen restores ordinary desktop activation semantics on the next tick.
     fullscreen = false;
     timers.intervals[0].fn();
     assert.deepStrictEqual(focusableCalls, [false, true]);
 
     runtime.stopFocusablePoll();
     assert.strictEqual(timers.intervals[0].cleared, true);
+  });
+
+  it("assembly: focusable poll drives the real Windows native-style controller without Electron focus calls", () => {
+    const timers = makeTimers();
+    const hitWin = new FakeWindow();
+    let fullscreen = true;
+    let style = 0x00080088n;
+    const nativeWrites = [];
+    const controller = createHitWindowActivationController({
+      isWin: true,
+      pointerBits: 64,
+      hwndOf: (candidate) => candidate === hitWin ? 42n : null,
+      bindings: {
+        getStyle: () => style,
+        setStyle: (_hwnd, next) => {
+          style = BigInt.asUintN(64, BigInt(next));
+          nativeWrites.push(style);
+          return 0n;
+        },
+        refreshStyle: () => true,
+        armMouseActivate: () => true,
+        clearMouseActivate: () => null,
+      },
+    });
+    const setHitWinFocusable = createHitWindowFocusableSetter({
+      isWin: true,
+      controller,
+      getHitWindow: () => hitWin,
+    });
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => new FakeWindow(),
+      getHitWin: () => hitWin,
+      isForegroundFullscreen: () => fullscreen,
+      setHitWinFocusable,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startFocusablePoll();
+    assert.equal((style & WS_EX_NOACTIVATE) !== 0n, true);
+    fullscreen = false;
+    timers.intervals[0].fn();
+    assert.equal((style & WS_EX_NOACTIVATE) !== 0n, false);
+    assert.equal(nativeWrites.length, 2);
+    assert.equal(hitWin.calls.some((call) => call[0] === "setFocusable"), false);
+    assert.equal(hitWin.calls.filter((call) => call[0] === "hookWindowMessage").length, 1);
+    assert.equal(hitWin.calls.some((call) => call[0] === "unhookWindowMessage"), false);
   });
 
   it("uses one fullscreen native observation for both focusability and auto-hide per poll tick", () => {

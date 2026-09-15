@@ -18,6 +18,7 @@ const {
   buildShadowComparison,
   processMetadataForState,
 } = require("./server-windows-process-metadata");
+const { stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
@@ -184,6 +185,7 @@ function handleStatePost(req, res, options) {
     shouldDropForDnd,
     codexOfficialTurns,
     dshStateSequenceFence = null,
+    grokTurnFence = null,
     pathApi = path,
     // #627 residual: injectable so unit tests never load the real koffi FFI.
     // Defaults to the real host OS check / a probe that never samples.
@@ -230,16 +232,29 @@ function handleStatePost(req, res, options) {
       if (data.display_svg === null) display_svg = null;
       else if (typeof data.display_svg === "string") display_svg = pathApi.basename(data.display_svg);
       else display_svg = undefined;
-      const source_pid = Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null;
       const wtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
-      const editor = (data.editor === "code" || data.editor === "cursor") ? data.editor : null;
-      const pidChain = Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null;
-      const tmuxSocket = normalizeTmuxSocket(data.tmux_socket);
-      const tmuxClient = normalizeTmuxClient(data.tmux_client);
-      const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
-      const agentPid = Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null;
+      // Stripped at the parse boundary rather than at the updateSession call so
+      // that no downstream consumer (legacy metadata, the Windows chain gate,
+      // the codex user-input bubble) has to remember the rule. `orcaPaneKey`,
+      // `cwd` and `host` are untouched by design — see remote-process-metadata.js.
+      const {
+        sourcePid: source_pid,
+        agentPid,
+        pidChain,
+        editor,
+        tmuxSocket,
+        tmuxClient,
+      } = stripRemoteProcessMetadata({
+        sourcePid: Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null,
+        agentPid: Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null,
+        pidChain: Array.isArray(data.pid_chain) ? data.pid_chain.filter(n => Number.isFinite(n) && n > 0) : null,
+        editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,
+        tmuxSocket: normalizeTmuxSocket(data.tmux_socket),
+        tmuxClient: normalizeTmuxClient(data.tmux_client),
+      }, remoteProfile);
+      const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const agentId = agentIdentity.agentId;
       const trustedProfileId = remoteProfile && typeof remoteProfile.profileId === "string"
         ? remoteProfile.profileId
@@ -476,6 +491,30 @@ function handleStatePost(req, res, options) {
           ...(trustedProfileId === "local" ? {} : { displayHost: host }),
         });
       }
+      // Local Codex archive lifecycle (#655): once the local task's rollout is
+      // confirmed archived, a late lifecycle hook or passive user-input request
+      // must not recreate its card/focus entry. Quota/context above already
+      // landed, so this only drops session lifecycle. Remote SSH and WSL
+      // sessions are excluded even when their raw id collides.
+      const codexArchiveSuppressed = agentId === "codex"
+        && trustedProfileId === "local"
+        && !host
+        && !wslDistro
+        && !metadataOnly
+        && !(codexUserInput && codexUserInput.phase === "resolved")
+        && typeof ctx.shouldSuppressCodexArchive === "function"
+        && ctx.shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
+          agentId,
+          profileId: trustedProfileId,
+          host,
+          wslDistro,
+        });
+      if (codexArchiveSuppressed) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
       if (agentId === "codex" && codexUserInput) {
         const sid = session_id || "default";
         if (codexUserInput.phase === "resolved") {
@@ -530,6 +569,7 @@ function handleStatePost(req, res, options) {
             metaUpdate.contextUsage = contextUsage;
             metaUpdate.contextUsageOrigin = resolveMetadataContextUsageOrigin(agentId, contextUsage);
           }
+          if (model && localClaudeStatuslineMetadataAllowed) metaUpdate.model = model;
           // OpenCode title changes ride the same metadata-only channel (the
           // placeholder → real title swap arrives on session.updated, which
           // maps to no Clawd state). Not gated on the Claude telemetry flag —
@@ -545,6 +585,27 @@ function handleStatePost(req, res, options) {
         });
         res.end();
         return;
+      }
+      // Grok Build turn-order fence. Assessed before any lifecycle mutation but
+      // committed only after the synchronous state update succeeds, so a
+      // dropped event returns immediately (no state / recentEvents touched) and
+      // a state-update exception can never mark an un-applied terminal event as
+      // handled.
+      let grokFenceDecision = null;
+      if (agentId === "grok-build" && grokTurnFence && typeof grokTurnFence.assess === "function") {
+        grokFenceDecision = grokTurnFence.assess({
+          sessionId: sessionIdentity.sessionId,
+          event,
+          state,
+          promptId: typeof data.prompt_id === "string" ? data.prompt_id : null,
+          notificationType: typeof data.notification_type === "string" ? data.notification_type : null,
+        });
+        if (!grokFenceDecision.accept) {
+          recordRequestHookEvent.droppedUnsupported();
+          res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+          res.end();
+          return;
+        }
       }
       if (ctx.STATE_SVGS[state]) {
         const sid = session_id || "default";
@@ -860,11 +921,12 @@ function handleStatePost(req, res, options) {
           );
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
+        let sessionUpdateApplied = true;
         if (svg) {
           const safeSvg = pathApi.basename(svg);
           ctx.setState(state, safeSvg);
         } else {
-          ctx.updateSession(sid, state, event, {
+          sessionUpdateApplied = ctx.updateSession(sid, state, event, {
             sourcePid: effectiveProcessMetadata.sourcePid,
             wtHwnd: effectiveWtHwnd,
             cwd,
@@ -921,7 +983,10 @@ function handleStatePost(req, res, options) {
             ...(codexUserInput ? { transientPermissionEvent: true } : {}),
             ...(agentIdentity.defaulted ? { agentIdDefaulted: true } : {}),
             ...(replaceProcessMetadata ? { replaceProcessMetadata: true } : {}),
-          });
+          }) !== false;
+        }
+        if (grokFenceDecision && typeof grokFenceDecision.commit === "function" && sessionUpdateApplied) {
+          grokFenceDecision.commit();
         }
         // Decorative only: the lifecycle update above remains authoritative.
         // Main owns the opt-in / DND / visibility / mini / drag gate; a visual

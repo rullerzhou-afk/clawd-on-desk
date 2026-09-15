@@ -176,6 +176,10 @@ const {
 } = require("./mac-dock-icon-runtime");
 const createTopmostRuntime = require("./topmost-runtime");
 const { WIN_TOPMOST_LEVEL } = createTopmostRuntime;
+const {
+  createHitWindowActivationRuntime,
+} = require("./win-hit-window-activation");
+const { startMobilePreviewServerSafely } = require("./network/mobile-preview-lifecycle");
 const createThemeFadeSequencer = require("./theme-fade-sequencer");
 const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
@@ -193,6 +197,7 @@ const {
 const { focusCodexThreadTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
+const { createSessionHistoryRuntime } = require("./session-history-runtime");
 const { getAllAgents, getAgent } = require("../agents/registry");
 const { getAgentIconUrl } = require("./state-agent-icons");
 // ── Autoplay policy: allow sound playback without user gesture ──
@@ -229,6 +234,11 @@ const { createForegroundFullscreenProbe } = require("./win-fullscreen-detect");
 const _isForegroundFullscreen = createForegroundFullscreenProbe({
   isWin,
   onError: (err) => console.warn("Clawd: win-fullscreen-detect not available:", err && err.message),
+});
+const _hitWindowActivationRuntime = createHitWindowActivationRuntime({
+  isWin,
+  getHitWindow: () => hitWin,
+  onError: (err) => console.warn("Clawd: win-hit-window-activation failed:", err && err.message),
 });
 
 // ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
@@ -307,6 +317,7 @@ const prefsModule = require("./prefs");
 const { createSettingsController } = require("./settings-controller");
 const { loadOrCreateInstallationIdentity } = require("./remote-ssh-identity");
 const { createTranslator, i18n, SUPPORTED_LANGS } = require("./i18n");
+const { setClaudeCollectionWithConsent } = require("./claude-statusline-consent");
 const {
   getBubblePolicy,
   isAllBubblesHidden,
@@ -476,6 +487,7 @@ let slackNotifyClient = null;
 let slackNotifyConfigRevision = 0;
 const shortcutHandlers = {
   togglePet: () => togglePetVisibility(),
+  quickSelectSession: () => showQuickSelect(),
 };
 const _settingsController = createSettingsController({
   prefsPath: PREFS_PATH,
@@ -485,9 +497,23 @@ const _settingsController = createSettingsController({
     uninstallAutoStart: _uninstallAutoStartHook,
     resolveTextScaleDisplayKey: () => getSettingsDisplayKey(),
     syncClaudeHooksNow: () => _server.syncClawdHooks({ source: "settings", automatic: false }),
-    setClaudeQuotaCollectionEnabled: (enabled) => _server.setClaudeQuotaCollectionEnabled({
-      enabled,
-      source: "settings-quota-collection",
+    setClaudeQuotaCollectionEnabled: (enabled) => setClaudeCollectionWithConsent(enabled, {
+      setEnabled: (options) => _server.setClaudeQuotaCollectionEnabled({
+        ...options, source: "settings-quota-collection",
+      }),
+      confirm: async () => {
+        const parent = settingsWindowRuntime.getWindow();
+        const options = {
+          type: "question", noLink: true, defaultId: 1, cancelId: 1,
+          buttons: [translate("confirm"), translate("cancel")],
+          message: translate("claudeStatuslineCoexistTitle"),
+          detail: translate("claudeStatuslineCoexistDetail"),
+        };
+        const { response } = parent && !parent.isDestroyed()
+          ? await electronDialog.showMessageBox(parent, options)
+          : await electronDialog.showMessageBox(options);
+        return response === 0;
+      },
     }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
@@ -887,6 +913,7 @@ roamFencePickerRuntime = createRoamFencePicker({
 shortcutRuntime = createShortcutRuntime({
   ipcMain,
   globalShortcut,
+  platform: process.platform,
   settingsController: _settingsController,
   getSettingsWindow,
   shortcutHandlers,
@@ -1033,10 +1060,23 @@ function setAccessoryMirrored(mirrored) {
 }
 
 const petWindowRuntime = createPetWindowRuntime({
+  // Every stranded-lock release entry (bring to primary display, send to
+  // display, manual hide) funnels through releaseStrandedDragLock and hence
+  // through this hook: one full cross-process cleanup instead of each caller
+  // reimplementing it.
+  onStrandedDragLockReleased: () => {
+    idlePaused = false;
+    mouseOverPet = false;
+    // An alive renderer with a phantom capture (its isDragging still true
+    // because the closing event was swallowed) drops it through the normal
+    // stop path, so gesture state, drag reaction and the input gate unwind.
+    sendToHitWin("force-drag-release");
+  },
   screen,
   isWin,
   isMac,
   isLinux,
+  windowsHitWindowFocusable: _hitWindowActivationRuntime.windowsHitWindowFocusable,
   linuxWindowType: LINUX_WINDOW_TYPE,
   topmostLevel: WIN_TOPMOST_LEVEL,
   getRenderWindow: () => win,
@@ -1810,31 +1850,13 @@ function beginDragSnapshot() { return petWindowRuntime.beginDragSnapshot(); }
 function clearDragSnapshot() { return petWindowRuntime.clearDragSnapshot(); }
 function moveWindowForDrag() { return petWindowRuntime.moveWindowForDrag(); }
 
-// Windows-only (#538 drag focus-steal): the topmost watchdog calls this each
-// tick with the inverse of the fullscreen state. While a fullscreen app owns
-// the foreground we drop the hit window's activation so a click on the pet
-// can't steal focus from an exclusive-fullscreen game and minimize it; we
-// restore it when fullscreen ends because dragging needs activation (#545).
-// Idempotent via isFocusable() so the per-tick call is a no-op when unchanged.
-function setHitWinFocusable(focusable) {
-  if (!isWin) return;
-  if (!hitWin || hitWin.isDestroyed() || typeof hitWin.setFocusable !== "function") return;
-  const next = !!focusable;
-  if (typeof hitWin.isFocusable === "function" && hitWin.isFocusable() === next) return;
-  hitWin.setFocusable(next);
-  // Electron's NativeWindowViews::SetFocusable couples activation to the
-  // taskbar on Windows: SetFocusable(true) internally calls
-  // SetSkipTaskbar(false) → ITaskbarList::AddTab, so restoring activation
-  // after a fullscreen exit (or a screenshot overlay dismissing) flashes a
-  // taskbar button for the hit window (#586). Delete the tab again in the
-  // same turn, before the taskbar repaints.
-  // true-direction ONLY: SetFocusable(false) already deletes the tab
-  // internally, and re-deleting on that path broke cursor-drag while a
-  // fullscreen app was foreground (real-machine repro during #586 review;
-  // exact Windows-side mechanism unconfirmed). Do not "simplify" this into
-  // an unconditional call.
-  if (next) keepOutOfTaskbar(hitWin);
-}
+// Windows-only (#538/#562 drag focus-steal): the topmost runtime calls this
+// with the inverse of the fullscreen state. The native controller toggles
+// WS_EX_NOACTIVATE without calling BrowserWindow.setFocusable(false), whose
+// Focus(false) side effect deactivates the user's fullscreen foreground app.
+// A WM_MOUSEACTIVATE hook keeps clicks deliverable while Electron remains
+// non-focusable. If setup fails, the window falls back before first show.
+const setHitWinFocusable = _hitWindowActivationRuntime.setHitWinFocusable;
 
 // ── Mini Mode — delegated to src/mini.js ──
 // Initialized after state module (needs applyState, resolveDisplayState, etc.)
@@ -2112,6 +2134,7 @@ function syncSessionHudVisibilityAndBubbles() {
 
 // ── State machine — delegated to src/state.js ──
 let showDashboard = () => {};
+let showQuickSelect = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
 let sendDashboardI18n = () => {};
 
@@ -2568,6 +2591,8 @@ const _dashboard = require("./dashboard")({
   t: (key) => translate(key),
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
+  focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
+  isAppQuitting: () => isQuitting,
   getPetWindowBounds,
   getNearestWorkArea,
   getSettingsWindow: () => settingsWindowRuntime.getWindow(),
@@ -2581,8 +2606,24 @@ const _dashboard = require("./dashboard")({
   iconPath: settingsWindowRuntime.getIconPath(),
 });
 showDashboard = _dashboard.showDashboard;
-broadcastDashboardSessionSnapshot = _dashboard.broadcastSessionSnapshot;
-sendDashboardI18n = _dashboard.sendI18n;
+// The keyboard mode is a temporary state of the real Dashboard page, so it is
+// owned by the Dashboard rather than by a second window/renderer.
+showQuickSelect = () => _dashboard.quick.show();
+broadcastDashboardSessionSnapshot = (snapshot) => {
+  _dashboard.broadcastSessionSnapshot(snapshot);
+};
+sendDashboardI18n = () => {
+  _dashboard.sendI18n();
+};
+// The quick host is a real window whose own `close` handler refuses to close
+// (it is a borrow surface for the shared page, not something the user destroys).
+// Electron closes every window BEFORE `will-quit`, so disposing it only there
+// deadlocks a normal Quit: the close is refused, the window survives and
+// `will-quit` never arrives. Tear it down while the app is still deciding to
+// quit; the `will-quit` call stays as an idempotent backstop for a host created
+// after that point.
+app.on("before-quit", () => _dashboard.quick.dispose());
+app.on("will-quit", () => _dashboard.quick.dispose());
 
 // ── First-run onboarding tutorial ──
 // Buckets the installable agents for the tutorial's step 2. We call the
@@ -2614,7 +2655,10 @@ function buildTutorialAgentOnboardingState() {
 function buildTutorialShortcutsSummary() {
   const { SHORTCUT_ACTIONS, SHORTCUT_ACTION_IDS } = require("./shortcut-actions");
   const userShortcuts = _settingsController.get("shortcuts") || {};
-  return SHORTCUT_ACTION_IDS.map((id) => {
+  return SHORTCUT_ACTION_IDS.filter((id) => {
+    const action = SHORTCUT_ACTIONS[id] || {};
+    return action.showInTutorial !== false;
+  }).map((id) => {
     const action = SHORTCUT_ACTIONS[id] || {};
     const accelerator = Object.prototype.hasOwnProperty.call(userShortcuts, id)
       ? userShortcuts[id]
@@ -2745,6 +2789,10 @@ agentRuntime = createAgentRuntimeMain({
   clearCodexNotifyBubbles: (...args) => clearCodexNotifyBubbles(...args),
   showCodexUserInputBubble: (...args) => showCodexUserInputBubble(...args),
   clearCodexUserInputBubbles: (...args) => clearCodexUserInputBubbles(...args),
+  loadCodexArchiveTracker: () => require("./codex-archive-tracker"),
+  onCodexArchiveLifecycleEnd: (payload) => {
+    if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
+  },
 });
 
 // ── HTTP server — delegated to src/server.js ──
@@ -2791,7 +2839,9 @@ const _serverCtx = {
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
-  updateSessionMetadata: (sessionId, opts) => _state.updateSessionMetadata(sessionId, opts),
+  updateSessionMetadata: agentRuntime.updateSessionMetadataFromServer,
+  shouldSuppressCodexArchive: (rawSessionId, opts) =>
+    agentRuntime.shouldSuppressCodexArchive(rawSessionId, opts),
   clearClaudeStatuslineAuthority: (profileId) => _state.clearClaudeStatuslineAuthority(profileId),
   clearLocalClaudeQuota: () => _state.clearLocalClaudeQuota(),
   updateAccountQuota: (host, quotas) => _state.updateAccountQuota(host, quotas),
@@ -4103,6 +4153,9 @@ function showResumeInput(t) {
 const _menuCtx = {
   get win() { return win; },
   get sessions() { return sessions; },
+  // Recovery actions must defeat a stranded drag lock (syncHitWin defers while
+  // it is held); see pet-window-runtime releaseStrandedDragLock.
+  releaseStrandedDragLock: () => petWindowRuntime.releaseStrandedDragLock(),
   get currentSize() { return currentSize; },
   set currentSize(v) { _settingsController.applyUpdate("size", v); },
   get doNotDisturb() { return doNotDisturb; },
@@ -4464,7 +4517,7 @@ _settingsController.subscribeKey("slackNotify", () => {
   slackNotifyConfigRevision += 1;
   broadcastSlackNotifyStatus();
 });
-_settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
+_settingsController.subscribeKey("mobilePreviewEnabled", (enabled) => {
   if (enabled) {
     if (!_lanWss) {
       const { initMobilePreviewServer } = require("./network/mobile-preview-server");
@@ -4474,7 +4527,13 @@ _settingsController.subscribeKey("mobilePreviewEnabled", async (enabled) => {
         isEnabled: () => _settingsController.get("mobilePreviewEnabled") === true,
       });
     }
-    await _lanWss.start();
+    void startMobilePreviewServerSafely(_lanWss, {
+      source: "settings-enable",
+      onError: (err) => console.warn(
+        "Clawd mobile preview: settings start failed:",
+        err && err.message ? err.message : err,
+      ),
+    });
   } else if (_lanWss) {
     _lanWss.cleanup();
   }
@@ -4719,11 +4778,21 @@ const settingsIpcRuntime = registerSettingsIpc({
   getLanWsServer: () => _lanWss,
 });
 
+const sessionHistoryRuntime = createSessionHistoryRuntime({
+  getSessions: () => _state.sessions,
+  isAgentEnabled: (agentId) => (
+    _runtimeAgentGate.isAgentEnabled(agentId)
+    && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
+  ),
+  launchClaudeSession,
+});
+
 registerSessionIpc({
   ipcMain,
   getSessionSnapshot: () => _state.buildSessionSnapshot(),
   getI18n: () => getDashboardI18nPayload(),
-  getDashboardWindow: () => _dashboard.getWindow(),
+  getDashboardWebContents: () => _dashboard.getWebContents(),
+  quickMode: _dashboard.quick,
   getKimiQuotaStatus: () => _kimiQuotaRuntime.getStatus(),
   refreshKimiQuota: () => _kimiQuotaRuntime.refresh(),
   focusSession: (sessionId, options) => focusDashboardSession(sessionId, options),
@@ -4732,14 +4801,26 @@ registerSessionIpc({
   ackSessionCompletion: (sessionId) => _state.ackSessionCompletion(sessionId),
   setSessionAlias: (payload) => _settingsController.applyCommand("setSessionAlias", payload),
   setSessionAutomationOverride: (payload, context) => {
+    // The Dashboard page can live in a WebContentsView, where
+    // BrowserWindow.fromWebContents() returns null and the warning would fall
+    // back to the always-on-top pet — visible but not interactive on Windows.
+    // Resolve the owner instead, and make sure a quick round is ended so the
+    // modal parents onto a real ordinary window.
     let warningParent = null;
     try {
-      warningParent = BrowserWindow.fromWebContents(context && context.sender);
+      const sender = context && context.sender;
+      if (_dashboard.getHostForWebContents(sender)) {
+        warningParent = _dashboard.promoteToOrdinaryWindow();
+      } else {
+        warningParent = BrowserWindow.fromWebContents(sender);
+      }
     } catch {}
     return sessionAutomationCoordinator.setSessionAutomationOverride(payload, { warningParent });
   },
   clearSessionAutomationGrant: (payload) =>
     sessionAutomationCoordinator.clearSessionAutomationGrant(payload),
+  getSessionHistory: () => sessionHistoryRuntime.getHistory(),
+  resumeSessionFromHistory: (payload) => sessionHistoryRuntime.resume(payload),
   showDashboard: (options) => showDashboard(options),
   setSessionHudPinned: (value) => {
     const result = _settingsController.applyUpdate("sessionHudPinned", !!value);
@@ -4831,6 +4912,9 @@ function createWindow() {
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
     guardAlwaysOnTop,
+    prepareActivation: (createdHitWin) => (
+      _hitWindowActivationRuntime.controller.prepare(createdHitWin)
+    ),
     onDidFinishLoad: () => {
       sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
       if (themeRuntime.isReloadInProgress()) return;
@@ -4976,7 +5060,15 @@ function createWindow() {
       console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
     });
   }).catch(() => {});
-  if (_settingsController.get("mobilePreviewEnabled") === true) _lanWss.start();
+  if (_settingsController.get("mobilePreviewEnabled") === true) {
+    void startMobilePreviewServerSafely(_lanWss, {
+      source: "app-startup",
+      onError: (err) => console.warn(
+        "Clawd mobile preview: startup failed:",
+        err && err.message ? err.message : err,
+      ),
+    });
+  }
   startStaleCleanup();
   // Wait for renderer to be ready before sending initial state
   // If hooks arrived during startup, respect them instead of forcing idle
@@ -5640,6 +5732,7 @@ if (!gotTheLock) {
     if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
       try { _remoteSshRuntime.cleanup(); } catch {}
     }
+    _hitWindowActivationRuntime.controller.dispose();
     if (hitWin && !hitWin.isDestroyed()) hitWin.destroy();
   });
 

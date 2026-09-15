@@ -56,10 +56,24 @@ function createHarness(overrides = {}) {
   const dashboardMainFrame = {
     url: pathToFileURL(path.join(__dirname, "..", "src", "dashboard.html")).toString(),
   };
-  const dashboardWebContents = { mainFrame: dashboardMainFrame };
-  const dashboardWindow = {
-    webContents: dashboardWebContents,
+  // The page's WebContents belongs to a WebContentsView on darwin/win32, so
+  // the trust check must resolve it directly and never through a window.
+  const dashboardWebContents = {
+    mainFrame: dashboardMainFrame,
     isDestroyed: () => false,
+  };
+  // A supported-platform quick mode by default, so the shared channel set
+  // reflects a darwin/win32 install.
+  const quickMode = {
+    isSupported: () => overrides.quickSupported !== false,
+    getPendingRevision: () => 7,
+    enter: (payload) => { calls.push(["quickEnter", payload]); return { status: "ok" }; },
+    ready: (payload) => { calls.push(["quickReady", payload]); return { status: "ok" }; },
+    activate: (payload) => { calls.push(["quickActivate", payload]); return { status: "submitted" }; },
+    dismissFromRenderer: (payload) => {
+      calls.push(["quickDismiss", payload]);
+      return { status: "ok" };
+    },
   };
   const runtime = registerSessionIpc({
     ipcMain,
@@ -98,7 +112,19 @@ function createHarness(overrides = {}) {
       calls.push(["clearSessionAutomationGrant", payload]);
       return { status: "applied" };
     }),
-    getDashboardWindow: overrides.getDashboardWindow || (() => dashboardWindow),
+    getSessionHistory: overrides.getSessionHistory || (() => {
+      calls.push(["getSessionHistory"]);
+      return [{ agentId: "claude-code", sessionId: "h1", cwd: "/work" }];
+    }),
+    resumeSessionFromHistory: overrides.resumeSessionFromHistory || ((payload) => {
+      calls.push(["resumeSessionFromHistory", payload]);
+      return { status: "ok" };
+    }),
+    getDashboardWebContents: overrides.getDashboardWebContents
+      || (() => dashboardWebContents),
+    quickMode: Object.prototype.hasOwnProperty.call(overrides, "quickMode")
+      ? overrides.quickMode
+      : quickMode,
     getKimiQuotaStatus: overrides.getKimiQuotaStatus || (() => ({
       status: "ok",
       configured: true,
@@ -129,10 +155,17 @@ test("session IPC registers owned channels and disposes them", () => {
     "dashboard:clear-session-automation-grant",
     "dashboard:get-i18n",
     "dashboard:get-kimi-quota-status",
+    "dashboard:get-session-history",
     "dashboard:get-snapshot",
     "dashboard:hide-session",
     "dashboard:open-session-folder",
+    "dashboard:quick-activate",
+    "dashboard:quick-dismiss",
+    "dashboard:quick-enter",
+    "dashboard:quick-pending",
+    "dashboard:quick-ready",
     "dashboard:refresh-kimi-quota",
+    "dashboard:resume-session",
     "dashboard:set-session-alias",
     "dashboard:set-session-automation",
     "session-hud:get-i18n",
@@ -152,6 +185,56 @@ test("session IPC registers owned channels and disposes them", () => {
 
   assert.strictEqual(ipcMain.handlers.size, 0);
   assert.strictEqual(ipcMain.listeners.size, 0);
+});
+
+test("an unsupported platform never registers the keyboard-mode channels", () => {
+  const { ipcMain } = createHarness({ quickSupported: false });
+  const quickChannels = [...ipcMain.handlers.keys()].filter((c) => c.startsWith("dashboard:quick-"));
+
+  // Not registered at all: there is no capability to reach, rather than a
+  // handler that politely answers "unsupported".
+  assert.deepStrictEqual(quickChannels, []);
+  // The rest of the Dashboard is untouched.
+  assert.ok(ipcMain.handlers.has("dashboard:get-snapshot"));
+  assert.ok(ipcMain.handlers.has("dashboard:get-kimi-quota-status"));
+  assert.ok(ipcMain.listeners.has("dashboard:focus-session"));
+});
+
+test("keyword-mode channels reach the owner only from the trusted page", async () => {
+  const { ipcMain, calls, trustedDashboardEvent } = createHarness();
+
+  assert.deepStrictEqual(
+    await ipcMain.invokeFrom(trustedDashboardEvent, "dashboard:quick-pending"),
+    { status: "ok", revision: 7 }
+  );
+  await ipcMain.invokeFrom(trustedDashboardEvent, "dashboard:quick-enter", { revision: 7 });
+  await ipcMain.invokeFrom(trustedDashboardEvent, "dashboard:quick-ready", { revision: 7 });
+  await ipcMain.invokeFrom(
+    trustedDashboardEvent,
+    "dashboard:quick-activate",
+    { sessionId: "s1", revision: 7 }
+  );
+  await ipcMain.invokeFrom(trustedDashboardEvent, "dashboard:quick-dismiss", { revision: 7 });
+  assert.deepStrictEqual(calls.map(([name]) => name), [
+    "quickEnter",
+    "quickReady",
+    "quickActivate",
+    "quickDismiss",
+  ]);
+
+  // An untrusted sender is refused before the owner is consulted.
+  calls.length = 0;
+  for (const channel of [
+    "dashboard:quick-pending",
+    "dashboard:quick-enter",
+    "dashboard:quick-ready",
+    "dashboard:quick-activate",
+    "dashboard:quick-dismiss",
+  ]) {
+    const result = await ipcMain.invoke(channel, { revision: 7 });
+    assert.strictEqual(result.reason, "untrusted-dashboard-sender", channel);
+  }
+  assert.deepStrictEqual(calls, []);
 });
 
 test("session IPC delegates dashboard and HUD behavior", async () => {
@@ -242,6 +325,73 @@ test("Kimi quota Dashboard IPC accepts only the real Dashboard main frame", asyn
     );
   }
   assert.deepStrictEqual(calls, [["refreshKimiQuota"]]);
+});
+
+test("session history IPC accepts only the real Dashboard main frame", async () => {
+  const { ipcMain, calls, trustedDashboardEvent } = createHarness();
+
+  assert.deepStrictEqual(
+    await ipcMain.invokeFrom(trustedDashboardEvent, "dashboard:get-session-history"),
+    [{ agentId: "claude-code", sessionId: "h1", cwd: "/work" }]
+  );
+  assert.deepStrictEqual(
+    await ipcMain.invokeFrom(
+      trustedDashboardEvent,
+      "dashboard:resume-session",
+      { agentId: "claude-code", sessionId: "h1" }
+    ),
+    { status: "ok" }
+  );
+  assert.deepStrictEqual(calls, [
+    ["getSessionHistory"],
+    ["resumeSessionFromHistory", { agentId: "claude-code", sessionId: "h1" }],
+  ]);
+
+  // Rows expose working-directory paths and resuming spawns a real process,
+  // so a near-miss sender must not reach either owner.
+  calls.length = 0;
+  for (const event of [
+    { sender: trustedDashboardEvent.sender },
+    { sender: {}, senderFrame: trustedDashboardEvent.senderFrame },
+    { sender: trustedDashboardEvent.sender, senderFrame: { ...trustedDashboardEvent.senderFrame } },
+  ]) {
+    for (const channel of ["dashboard:get-session-history", "dashboard:resume-session"]) {
+      assert.deepStrictEqual(
+        await ipcMain.invokeFrom(event, channel, { agentId: "claude-code", sessionId: "h1" }),
+        { status: "error", reason: "untrusted-dashboard-sender" },
+        channel
+      );
+    }
+  }
+  assert.deepStrictEqual(calls, []);
+});
+
+test("resume-session takes exactly an agentId/sessionId pair", async () => {
+  const { ipcMain, calls, trustedDashboardEvent } = createHarness();
+
+  for (const bad of [
+    null,
+    undefined,
+    "claude-code",
+    42,
+    [],
+    {},
+    { sessionId: "h1" },
+    { agentId: "claude-code" },
+    { agentId: "claude-code", sessionId: "" },
+    { agentId: "", sessionId: "h1" },
+    { agentId: "claude-code", sessionId: "h1", mode: "resume-dangerous" },
+    { agentId: "claude-code", sessionId: "h1", cwd: "/somewhere/else" },
+  ]) {
+    assert.deepStrictEqual(
+      await ipcMain.invokeFrom(trustedDashboardEvent, "dashboard:resume-session", bad),
+      { status: "invalid" },
+      JSON.stringify(bad)
+    );
+  }
+  // Above all: no extra field may ride along. cwd is resolved in main from the
+  // store, and a dangerous-mode flag has no route in from the Dashboard.
+  assert.deepStrictEqual(calls, []);
 });
 
 test("session IPC owns dashboard open bridges", () => {

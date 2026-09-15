@@ -16,6 +16,7 @@ const {
   commandMatchesMarker,
   findManagedClaudeEnvNodeBinCandidates,
   parseClaudeEnvStateHookCommand,
+  stripUtf8Bom,
 } = require("../hooks/json-utils");
 
 // Deliberately NOT imported from ./claude-settings-watcher: that module will
@@ -263,7 +264,7 @@ function inspectClaudeHookHealth(rawSettings, options = {}) {
 
   let parsed;
   try {
-    parsed = JSON.parse(rawSettings);
+    parsed = JSON.parse(stripUtf8Bom(rawSettings));
   } catch {
     return unreadable();
   }

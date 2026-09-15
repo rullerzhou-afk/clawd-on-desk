@@ -62,7 +62,9 @@ Footprints does not add telemetry, network requests, export, sharing, notificati
 
 Malformed managed files and unsupported pre-release schemas are rejected without historical projection. When possible they move into `quarantine/`, which is pruned after seven days and capped at 16 files / 1 MiB total. It may therefore temporarily contain bounded copies of rejected old shapes. **Clear footprint data** removes the quarantine together with the rest of the managed recap generation.
 
-Turn off **Record footprints** to stop new event tickets and close the current coverage interval. **Clear footprint data** removes the managed recap history and rotates its local HMAC salt; the operation cannot be undone.
+If Clawd recovered damaged preferences or could not safely use them, Footprints stays paused even when the saved recording preference is on. The page explains the pause. Review Settings and use the recording switch off/on to resume when Settings writes are available; unreadable or backup-failed preferences must be repaired and Clawd restarted first.
+
+Turn off **Record footprints** to stop new event tickets and close the current coverage interval. **Clear footprint data** removes the managed recap history and rotates its local HMAC salt; the operation cannot be undone. Pending counts from before a clear or recording-off boundary cannot be written afterward; ordinary completion feedback still works.
 
 ## Maintainer invariants
 

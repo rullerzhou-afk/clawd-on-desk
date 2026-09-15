@@ -147,6 +147,36 @@ describe("buildStateBody", () => {
     assert.strictEqual(body.state, "working");
   });
 
+  it("reports the SessionStart model so the session card can label it", () => {
+    const body = buildStateBody(
+      "SessionStart",
+      { session_id: "sid-model", model: "claude-opus-5" },
+      mockResolve
+    );
+    assert.strictEqual(body.model, "claude-opus-5");
+  });
+
+  it("omits model when SessionStart carries none (clear / some resume paths)", () => {
+    const body = buildStateBody("SessionStart", { session_id: "sid-no-model" }, mockResolve);
+    assert.strictEqual(body.model, undefined);
+  });
+
+  for (const [label, model] of [
+    ["blank", "  \t "],
+    ["overlong", "m".repeat(129)],
+    ["line break", "claude-opus-5\nspoofed"],
+    ["non-string", 5],
+  ]) {
+    it(`drops ${label} model ids rather than rendering them on the card`, () => {
+      const body = buildStateBody(
+        "SessionStart",
+        { session_id: `bad-model-${label.replace(/\s+/g, "-")}`, model },
+        mockResolve
+      );
+      assert.strictEqual(body.model, undefined);
+    });
+  }
+
   it("maps current Agent and legacy Task tool starts to synthetic SubagentStart", () => {
     for (const toolName of ["Agent", "Task"]) {
       const body = buildStateBody(

@@ -54,7 +54,8 @@ test("quoteForCmd throws on non-string", () => {
   assert.throws(() => quoteForCmd(undefined), /must be a string/);
 });
 
-test("quoteForCmd round-trips through real cmd.exe without env expansion", { skip: process.platform !== "win32" }, () => {
+for (const deferred of [false, true]) {
+test(`quoteForCmd round-trips through real cmd.exe without env expansion (deferred=${deferred})`, { skip: process.platform !== "win32" }, () => {
   const values = [
     "foo bar",
     'he said "hi"',
@@ -63,6 +64,9 @@ test("quoteForCmd round-trips through real cmd.exe without env expansion", { ski
     "!CLAWD_QUOTE_TEST!",
     "path\\",
     "树莓派",
+    "C:\\keys (work)\\id",
+    "",
+    'a\\"b',
   ];
   const js = "console.log(JSON.stringify(process.argv.slice(1)))";
   const command = [
@@ -71,9 +75,15 @@ test("quoteForCmd round-trips through real cmd.exe without env expansion", { ski
     quoteForCmd(js),
     ...values.map(quoteForCmd),
   ].join(" ");
-  const r = spawnSync("cmd.exe", ["/d", "/v:off", "/s", "/c", command], {
+  // Windows terminal launch passes an environment-variable reference through
+  // the starter to a fresh cmd. Its expansion must preserve the same argv as
+  // a direct command, without recursively expanding values inside SSH args.
+  const outerCommand = deferred
+    ? 'cmd.exe /d /v:off /s /c ^%CLAWD_REMOTE_SSH_COMMAND^%'
+    : command;
+  const r = spawnSync("cmd.exe", ["/d", "/v:off", "/s", "/c", outerCommand], {
     encoding: "utf8",
-    env: { ...process.env, CLAWD_QUOTE_TEST: 'bad"&echo injected' },
+    env: { ...process.env, CLAWD_QUOTE_TEST: 'bad"&echo injected', CLAWD_REMOTE_SSH_COMMAND: command },
     windowsVerbatimArguments: true,
   });
   const detail = JSON.stringify({
@@ -87,6 +97,7 @@ test("quoteForCmd round-trips through real cmd.exe without env expansion", { ski
   assert.ok(r.stdout && r.stdout.trim(), detail);
   assert.deepEqual(JSON.parse(r.stdout.trim()), values);
 });
+}
 
 // ── quoteForPosixShellArg ──
 

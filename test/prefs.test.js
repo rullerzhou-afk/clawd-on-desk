@@ -22,6 +22,23 @@ afterEach(() => {
   }
 });
 
+describe("legacy independent Codex timeout migration", () => {
+  for (const [label, old, expected] of [
+    ["long silent work", { workingStaleMs: 86400000, sessionStaleMs: 0 }, 86400000],
+    ["default", {}, 1200000],
+    ["invalid pair", { workingStaleMs: 86400000, sessionStaleMs: 600000 }, 1200000],
+    ["invalid working value", { workingStaleMs: "86400000" }, 1200000],
+    ["explicit disabled", { workingStaleMs: 86400000, codexWorkingStaleMs: 0 }, 0],
+    ["explicit shorter", { workingStaleMs: 86400000, codexWorkingStaleMs: 30000 }, 30000],
+  ]) {
+    it(label, () => {
+      const file = makeTempPath();
+      fs.writeFileSync(file, JSON.stringify({ version: 15, ...old }));
+      assert.strictEqual(prefs.load(file).snapshot.codexWorkingStaleMs, expected);
+    });
+  }
+});
+
 describe("prefs.getDefaults", () => {
   it("returns a fresh snapshot every call (no shared object refs)", () => {
     const a = prefs.getDefaults();
@@ -965,6 +982,7 @@ describe("prefs.validate", () => {
     const d = prefs.getDefaults();
     assert.deepStrictEqual(d.shortcuts, {
       togglePet: "CommandOrControl+Shift+Alt+C",
+      quickSelectSession: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -978,6 +996,7 @@ describe("prefs.validate", () => {
     });
     assert.deepStrictEqual(v.shortcuts, {
       togglePet: "CommandOrControl+K",
+      quickSelectSession: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -993,6 +1012,7 @@ describe("prefs.validate", () => {
     });
     assert.deepStrictEqual(v.shortcuts, {
       togglePet: "CommandOrControl+Shift+Alt+C",
+      quickSelectSession: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -1008,6 +1028,7 @@ describe("prefs.validate", () => {
     });
     assert.deepStrictEqual(v.shortcuts, {
       togglePet: "CommandOrControl+K",
+      quickSelectSession: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });
@@ -1479,6 +1500,7 @@ describe("prefs.migrate v15 → v16 (native macOS Control shortcuts)", () => {
     assert.strictEqual(upgraded.version, prefs.CURRENT_VERSION);
     assert.deepStrictEqual(upgraded.shortcuts, {
       togglePet: "CommandOrControl+Shift+K",
+      quickSelectSession: null,
       permissionAllow: "CommandOrControl+Shift+Y",
       permissionDeny: "CommandOrControl+Shift+N",
     });

@@ -264,6 +264,23 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
   // A bool, not the pane key itself: the script only needs the gate, and the
   // pane key never has to cross into PowerShell to get it.
   const orcaHostedLiteral = orcaHosted ? "$true" : "$false";
+  // Cursor Agents windows need not contain the project name. A unique window
+  // from the source editor process is enough to raise the app, but cannot prove
+  // which chat/input is active. Do not cache it or confirm it for Direct Send.
+  // If enumeration finds no window, MainWindowHandle is not a safer substitute;
+  // if it finds several, that handle cannot disambiguate them.
+  const editorWindowFallback = `
+            $pidWindows = @(Get-ClawdVisiblePidWindows -pids @([int]$curPid))
+            if ($pidWindows.Count -eq 1) {
+                [WinFocus]::Focus($pidWindows[0])
+                $selectedTargetHwnd = $pidWindows[0]
+                $focused = $true
+                $reason = 'editor-parent-pid-window${psNames ? "" : "-no-title"}'
+            } elseif ($pidWindows.Count -gt 1) {
+                $reason = 'editor-parent-pid-window-ambiguous${psNames ? "" : "-no-title"}'
+            } else {
+                $reason = 'editor-parent-${psNames ? "no-title-match" : "no-title"}'
+            }`;
   const parentWindowBlock = psNames ? `
         if ($wtProcessNames -contains $proc.ProcessName) {
             $matches = @([WinFocus]::FindByPidTitles([uint32]$curPid, [string[]]$titleNames))
@@ -298,8 +315,7 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
                 $reason = 'editor-parent-title-match'
             } elseif ($matches.Count -gt 1) {
                 $reason = 'editor-parent-title-ambiguous'
-            } else {
-                $reason = 'editor-parent-no-title-match'
+            } else {${editorWindowFallback}
             }
         } else {
             [WinFocus]::Focus($proc.MainWindowHandle)
@@ -309,8 +325,7 @@ function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = n
             $reason = 'parent-direct'
         }
         break` : `
-        if ($editorProcessNames -contains $proc.ProcessName) {
-            $reason = 'editor-parent-no-title'
+        if ($editorProcessNames -contains $proc.ProcessName) {${editorWindowFallback}
         } elseif ($wtProcessNames -notcontains $proc.ProcessName) {
             [WinFocus]::Focus($proc.MainWindowHandle)
             $selectedTargetHwnd = $proc.MainWindowHandle
@@ -630,6 +645,8 @@ const MAC_OPEN_TIMEOUT_MS = 3000;
 const GHOSTTY_STEP_SETTLE_MS = 600;
 const WINDOWS_FOCUS_DEDUP_MS = 400;
 const WINDOWS_FOCUS_RESULT_TIMEOUT_MS = 3000;
+// Editor PID-window fallbacks only raise an app. Keep them unconfirmed even
+// when the helper observes the target HWND in front: Direct Send needs more.
 const WINDOWS_FOCUS_POSITIVE_REASONS = new Set([
   "legacy-conhost-window",
   "orca-window",

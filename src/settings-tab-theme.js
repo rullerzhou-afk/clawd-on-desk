@@ -12,6 +12,34 @@
   let customizationSelectionPendingThemeId = null;
   let customizationSelectionSeq = 0;
   let mountedCustomizationControls = null;
+  let themeListScrollTop = 0;
+  let customizationReturnFocusKey = "";
+
+  function getContentElement() {
+    return document.getElementById("content");
+  }
+
+  function stabilizeCustomizationView({ themeId = null, scrollTop, focusKey }) {
+    const apply = () => {
+      if (state.activeTab !== "theme") return;
+      if (themeId ? customizingThemeId !== themeId : customizingThemeId !== null) return;
+      const content = getContentElement();
+      if (content) content.scrollTop = scrollTop;
+      ops.focusSettingsTarget(content, focusKey);
+    };
+    apply();
+    if (root && typeof root.requestAnimationFrame === "function") root.requestAnimationFrame(apply);
+  }
+
+  function enterThemeCustomization(themeId) {
+    customizingThemeId = themeId;
+    ops.requestRender({ content: true });
+    stabilizeCustomizationView({
+      themeId,
+      scrollTop: 0,
+      focusKey: "theme-customization-back",
+    });
+  }
 
   function t(key) {
     return helpers.t(key);
@@ -226,9 +254,11 @@
 
   function openThemeCustomization(theme) {
     if (!theme || !supportsThemeCustomization(theme)) return;
+    const content = getContentElement();
+    themeListScrollTop = content && Number.isFinite(content.scrollTop) ? content.scrollTop : 0;
+    customizationReturnFocusKey = `theme-customize:${theme.id}`;
     if (theme.active) {
-      customizingThemeId = theme.id;
-      ops.requestRender({ content: true });
+      enterThemeCustomization(theme.id);
       return;
     }
     if (customizationSelectionPendingThemeId) return;
@@ -259,7 +289,10 @@
       .finally(() => {
         if (requestSeq !== customizationSelectionSeq) return;
         customizationSelectionPendingThemeId = null;
-        if (state.activeTab === "theme") ops.requestRender({ content: true });
+        if (state.activeTab === "theme") {
+          if (customizingThemeId === theme.id) enterThemeCustomization(theme.id);
+          else ops.requestRender({ content: true });
+        }
       });
   }
 
@@ -267,6 +300,10 @@
     customizingThemeId = null;
     mountedCustomizationControls = null;
     ops.requestRender({ content: true });
+    stabilizeCustomizationView({
+      scrollTop: themeListScrollTop,
+      focusKey: customizationReturnFocusKey,
+    });
   }
 
   function renderThemeDetail(parent, theme) {
@@ -280,6 +317,7 @@
     const back = document.createElement("button");
     back.type = "button";
     back.className = "theme-detail-back";
+    back.setAttribute("data-settings-focus-key", "theme-customization-back");
     back.textContent = `\u2039 ${t("themeBackToPets")}`;
     back.addEventListener("click", closeThemeCustomization);
     parent.appendChild(back);
@@ -409,6 +447,7 @@
       options: pickerOptions,
       ariaLabel: t("rowPetColor"),
       className: "pet-tint-select",
+      viewportPlacement: "down",
       disabled: options.length === 0,
       onChange(next) {
         const committed = getThemeTintId(theme.id, options);
@@ -477,6 +516,7 @@
       options: pickerOptions,
       ariaLabel: t("rowPetAccessory"),
       className: "pet-accessory-select",
+      viewportPlacement: "up",
       disabled: options.length === 0,
       onChange(next) {
         const committed = getThemeAccessoryId(theme.id, options);
@@ -605,25 +645,30 @@
     text.className = "row-text";
     const label = document.createElement("span");
     label.className = "row-label";
+    // Only one theme detail is mounted; folder names may contain IDREF whitespace.
+    label.id = "settings-holiday-accessory-label";
     label.textContent = t("rowHolidayAccessory");
     const desc = document.createElement("span");
     desc.className = "row-desc";
+    desc.id = "settings-holiday-accessory-description";
     desc.textContent = t("themeHolidayAccessoryDesc");
     text.appendChild(label);
     text.appendChild(desc);
 
     const control = document.createElement("div");
     control.className = "row-control";
-    const sw = document.createElement("div");
-    sw.className = "switch holiday-accessory-switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("aria-label", t("rowHolidayAccessory"));
-    sw.setAttribute("tabindex", "0");
     let visualEnabled = getHolidayAccessoryEnabled(theme.id);
+    const switchControl = helpers.buildSwitch({
+      checked: visualEnabled,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      className: "holiday-accessory-switch",
+    });
+    const sw = switchControl.element;
 
     function setVisual(enabled, { pending = false } = {}) {
       visualEnabled = !!enabled;
-      helpers.setSwitchVisual(sw, visualEnabled, { pending });
+      switchControl.setState({ checked: visualEnabled, pending });
     }
 
     function syncFromSnapshot() {
@@ -634,9 +679,7 @@
       mountedCustomizationControls.holidayAccessoryEnabled = syncFromSnapshot;
     }
 
-    function run(ev) {
-      if (ev && typeof ev.preventDefault === "function") ev.preventDefault();
-      if (sw.classList.contains("pending")) return;
+    function run() {
       const nextEnabled = !visualEnabled;
       const current = state.snapshot && state.snapshot.holidayAccessoryEnabled;
       const nextMap = current && typeof current === "object" && !Array.isArray(current)
@@ -658,15 +701,11 @@
           setVisual(getHolidayAccessoryEnabled(theme.id));
         })
         .finally(() => {
-          if (document.body.contains(sw)) sw.classList.remove("pending");
+          if (document.body.contains(sw)) switchControl.setState({ pending: false });
         });
     }
 
-    sw.addEventListener("click", run);
-    sw.addEventListener("keydown", (ev) => {
-      if (ev.key !== " " && ev.key !== "Enter") return;
-      run(ev);
-    });
+    switchControl.setOnToggle(run);
 
     control.appendChild(sw);
     row.appendChild(text);
@@ -700,57 +739,57 @@
     row.className = "theme-actions";
 
     const codexGroup = buildThemeActionGroup(t("themeActionGroupCodexPets"));
-    const importBtn = document.createElement("button");
-    importBtn.type = "button";
-    importBtn.className = "soft-btn";
-    importBtn.textContent = t("themeImportPetZip");
-    importBtn.disabled = !!runtime.codexPetZipImportPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.importCodexPetZip !== "function";
-    if (runtime.codexPetZipImportPending) importBtn.classList.add("pending");
+    const importBtn = helpers.buildButton({
+      labelKey: "themeImportPetZip",
+      size: "compact",
+      disabled: !!runtime.codexPetZipImportPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.importCodexPetZip !== "function",
+      pending: !!runtime.codexPetZipImportPending,
+    });
     importBtn.addEventListener("click", handleImportCodexPetZip);
     codexGroup.buttons.appendChild(importBtn);
 
-    const refreshBtn = document.createElement("button");
-    refreshBtn.type = "button";
-    refreshBtn.className = "soft-btn";
-    refreshBtn.textContent = t("themeRefreshImportedPets");
-    refreshBtn.disabled = !!runtime.codexPetsRefreshPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.refreshCodexPets !== "function";
-    if (runtime.codexPetsRefreshPending) refreshBtn.classList.add("pending");
+    const refreshBtn = helpers.buildButton({
+      labelKey: "themeRefreshImportedPets",
+      size: "compact",
+      disabled: !!runtime.codexPetsRefreshPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.refreshCodexPets !== "function",
+      pending: !!runtime.codexPetsRefreshPending,
+    });
     refreshBtn.addEventListener("click", handleRefreshCodexPets);
     codexGroup.buttons.appendChild(refreshBtn);
     row.appendChild(codexGroup.group);
 
     const userThemeGroup = buildThemeActionGroup(t("themeActionGroupUserThemes"));
-    const importThemeBtn = document.createElement("button");
-    importThemeBtn.type = "button";
-    importThemeBtn.className = "soft-btn";
-    importThemeBtn.textContent = t("themeImportUserThemeZip");
-    importThemeBtn.title = t("themeImportUserThemeZipHint");
-    importThemeBtn.disabled = !!runtime.userThemeZipImportPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.importUserThemeZip !== "function";
-    if (runtime.userThemeZipImportPending) importThemeBtn.classList.add("pending");
+    const importThemeBtn = helpers.buildButton({
+      labelKey: "themeImportUserThemeZip",
+      size: "compact",
+      title: t("themeImportUserThemeZipHint"),
+      disabled: !!runtime.userThemeZipImportPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.importUserThemeZip !== "function",
+      pending: !!runtime.userThemeZipImportPending,
+    });
     importThemeBtn.addEventListener("click", handleImportUserThemeZip);
     userThemeGroup.buttons.appendChild(importThemeBtn);
 
-    const userThemeFolderBtn = document.createElement("button");
-    userThemeFolderBtn.type = "button";
-    userThemeFolderBtn.className = "soft-btn";
-    userThemeFolderBtn.textContent = t("themeOpenUserThemesFolder");
-    userThemeFolderBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.openUserThemesDir !== "function";
+    const userThemeFolderBtn = helpers.buildButton({
+      labelKey: "themeOpenUserThemesFolder",
+      size: "compact",
+      disabled: !window.settingsAPI
+        || typeof window.settingsAPI.openUserThemesDir !== "function",
+    });
     userThemeFolderBtn.addEventListener("click", handleOpenUserThemesFolder);
     userThemeGroup.buttons.appendChild(userThemeFolderBtn);
 
-    const refreshThemesBtn = document.createElement("button");
-    refreshThemesBtn.type = "button";
-    refreshThemesBtn.className = "soft-btn";
-    refreshThemesBtn.textContent = t("themeRefreshThemes");
-    refreshThemesBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.listThemes !== "function";
+    const refreshThemesBtn = helpers.buildButton({
+      labelKey: "themeRefreshThemes",
+      size: "compact",
+      disabled: !window.settingsAPI
+        || typeof window.settingsAPI.listThemes !== "function",
+    });
     refreshThemesBtn.addEventListener("click", handleRefreshThemes);
     userThemeGroup.buttons.appendChild(refreshThemesBtn);
     row.appendChild(userThemeGroup.group);
@@ -842,6 +881,7 @@
       btn.className = "theme-customize-btn";
       btn.type = "button";
       btn.textContent = `${t("themeCustomize")} \u203a`;
+      btn.setAttribute("data-settings-focus-key", `theme-customize:${theme.id}`);
       btn.setAttribute("aria-label", `${t("themeCustomize")}: ${localizeField(theme.name) || theme.id}`);
       btn.disabled = !!customizationSelectionPendingThemeId;
       if (customizationSelectionPendingThemeId === theme.id) btn.classList.add("pending");
@@ -1118,6 +1158,8 @@
         customizingThemeId = null;
         customizationSelectionPendingThemeId = null;
         mountedCustomizationControls = null;
+        themeListScrollTop = 0;
+        customizationReturnFocusKey = "";
       },
     };
   }

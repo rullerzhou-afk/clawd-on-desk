@@ -30,7 +30,7 @@ function makeReq(method, url, body, headers = {}) {
   const req = new EventEmitter();
   req.method = method;
   req.url = url;
-  req.headers = headers;
+  req.headers = { host: "127.0.0.1:23333", "content-type": "application/json", ...headers };
   setImmediate(() => {
     if (body != null) req.emit("data", Buffer.from(body));
     req.emit("end");

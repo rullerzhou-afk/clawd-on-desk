@@ -201,11 +201,12 @@ function sleepSync(ms) {
   } catch {}
 }
 
-function acquireLeaseLock(filePath) {
+function acquireLeaseLock(filePath, options = {}) {
   const lockPath = `${filePath}.lock`;
   const ownerPath = path.join(lockPath, "owner");
   const token = `${process.pid}-${Date.now()}-${crypto.randomBytes(8).toString("hex")}`;
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
+  const retryCount = options.nonBlocking === true ? 1 : LOCK_RETRY_COUNT;
+  for (let attempt = 0; attempt < retryCount; attempt++) {
     const pendingPath = `${lockPath}.pending-${token}-${attempt}`;
     const pendingOwnerPath = path.join(pendingPath, "owner");
     try {
@@ -218,7 +219,7 @@ function acquireLeaseLock(filePath) {
     } catch (err) {
       try { fs.rmSync(pendingPath, { recursive: true, force: true }); } catch {}
       if (!err || !["EEXIST", "ENOTEMPTY", "EPERM"].includes(err.code)) return null;
-      sleepSync(LOCK_RETRY_MS);
+      if (attempt + 1 < retryCount) sleepSync(LOCK_RETRY_MS);
     }
   }
   return null;
@@ -385,7 +386,8 @@ function processAlive(pid, options = {}) {
 
 function cleanupOrphanedLeaseLocks(dir, options = {}) {
   let names;
-  try { names = fs.readdirSync(dir).filter((name) => name.endsWith(".json.lock")); }
+  try { names = fs.readdirSync(dir).filter((name) => name.endsWith(".json.lock")
+    && (!options.filePrefix || name.startsWith(options.filePrefix))); }
   catch { return; }
   for (const name of names) {
     const lockPath = path.join(dir, name);
@@ -394,6 +396,7 @@ function cleanupOrphanedLeaseLocks(dir, options = {}) {
     try { token = fs.readFileSync(ownerPath, "utf8"); } catch {}
     const match = /^(\d+)-(\d+)-[0-9a-f]+$/.exec(token);
     if (!match) {
+      if (options.requireDeadOwner === true) continue;
       // A writer can die after mkdir and before creating owner. Renaming is
       // atomic: a concurrently starting writer simply fails closed for this
       // event, while the next hook can acquire a clean lock.
@@ -401,6 +404,15 @@ function cleanupOrphanedLeaseLocks(dir, options = {}) {
       continue;
     }
     const ownerPid = Number(match[1]);
+    if (options.requireDeadOwner === true) {
+      if (!isPositivePid(ownerPid)) continue;
+      try {
+        (options.processKill || process.kill)(ownerPid, 0);
+        continue;
+      } catch (err) {
+        if (!err || err.code !== "ESRCH") continue;
+      }
+    }
     if (isPositivePid(ownerPid) && processAlive(ownerPid, options)) continue;
     quarantineAndRemoveLock(lockPath);
   }
@@ -648,6 +660,9 @@ function loadActiveRecoveryLeases(options = {}) {
 
 module.exports = {
   LEASE_VERSION,
+  // Exported so hooks/session-history.js can reuse this arbiter instead of
+  // deciding "is this session still running" a second, divergent way.
+  classifyStateBodyForRecovery: classifyBody,
   LEASE_FILE_PREFIX,
   MAX_LEASE_AGE_MS,
   MAX_LEASE_FILES,
@@ -663,5 +678,7 @@ module.exports = {
   updateRecoveryLeaseFromStateBody,
   pruneRecoveryLeaseFiles,
   cleanupOrphanedLeaseLocks,
+  acquireLeaseLock,
+  releaseLeaseLock,
   loadActiveRecoveryLeases,
 };

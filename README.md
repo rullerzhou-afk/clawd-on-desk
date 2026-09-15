@@ -33,7 +33,7 @@ Clawd lives on your desktop and reacts to what your AI coding agent is doing —
 
 Thinking when you prompt, typing when tools run, grooving or juggling for subagents, reviewing permissions, celebrating when tasks complete, sleeping when you step away. Ships with three built-in themes: **Clawd** (pixel crab), **Calico** (三花猫), and **Cloudling** (云宝), with full support for custom themes and imported Codex Pet animation packs.
 
-> Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**.
+> Supports Windows 11, macOS, and Ubuntu/Linux. Windows releases provide separate x64 and ARM64 installers. Source builds require Node.js. Works with **Claude Code**, **Codex CLI**, **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Grok Build**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**.
 
 ## Features
 
@@ -47,6 +47,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **CodeBuddy** — optional Claude Code-compatible command hooks + HTTP permission hooks via `~/.codebuddy/settings.json` (install from Settings → Agents or run `node hooks/codebuddy-install.js`)
 - **Custom HTTP agents** — register another local executable in Settings and POST lifecycle events to Clawd's dynamic `/state` endpoint. Registration does not install hooks or make an arbitrary application report automatically; v1 is state-only and leaves permission decisions in the application's own UI. See the [custom HTTP agent guide](docs/guides/custom-agent-http.md).
 - **WorkBuddy** — optional Claude Code-compatible command hooks via `~/.workbuddy-ai/settings.json` (current) or `~/.workbuddy/settings.json` (legacy; install from Settings → Agents or run `node hooks/workbuddy-install.js`). State + Notification only: the desktop app resolves permissions in its own native sandbox and GUI, so Clawd does not register a permission hook for it.
+- **Grok Build** — optional Claude Code-compatible command hooks via `~/.grok/hooks/clawd-on-desk.json` (install from Settings → Agents or run `node hooks/grok-install.js`). State + Notification only: Grok has no blocking `PermissionRequest` hook, so Allow/Deny stays in the Grok TUI.
 - **Kiro CLI** — optional command hooks injected into custom agent configs under `~/.kiro/agents/`, plus an auto-created `clawd` agent that is re-synced from Kiro's built-in `kiro_default` after you install the integration, so you can opt into hooks with minimal behavior drift via `kiro-cli --agent clawd` or `/agent swap clawd`. State hooks are verified on macOS and Windows.
 - **Kimi Code CLI (Kimi-CLI)** — optional command hooks via `~/.kimi/config.toml` (`[[hooks]]` entries) (install from Settings → Agents or run `npm run install:kimi-hooks`)
 - **Qwen Code** — optional command hooks via `~/.qwen/settings.json` (install from Settings → Agents or run `npm run install:qwen-hooks`); state tracking and Qwen `PermissionRequest` desktop approval bubbles are supported
@@ -57,7 +58,7 @@ Thinking when you prompt, typing when tools run, grooving or juggling for subage
 - **MiMo Code** — optional [plugin integration](https://opencode.ai/docs/plugins) via the effective file under `~/.config/mimocode/` (`config.json` → `mimocode.json` → default `mimocode.jsonc`, later wins; install from Settings → Agents or run `npm run install:mimocode-plugin`); shares the same `@mimo-ai/plugin` SDK and permission behavior as opencode. Its `task` child sessions are likewise headless
 - **Pi** — optional global extension via `~/.pi/agent/extensions/clawd-on-desk` (install from Settings → Agents or run `npm run install:pi-extension`); state-only interactive lifecycle and tool activity updates while preserving Pi's default YOLO behavior
 - **OpenClaw** — optional state-only plugin integration via `~/.openclaw/openclaw.json` (install from Settings → Agents or run `npm run install:openclaw-plugin`; OpenClaw also needs an initialized config); local `openclaw tui --local` sessions drive Clawd animations, without permission bubbles or terminal focus in Phase 1
-- **Hermes Agent** — optional [plugin integration](https://hermes-agent.org/) via Hermes' managed plugin directory (install from Settings → Agents or run `npm run install:hermes-plugin`); state, sessions, SessionEnd, terminal focus, and supported permission bubbles are available
+- **Hermes Agent** — optional [plugin integration](https://hermes-agent.org/) via Hermes' managed plugin directory (install from Settings → Agents or run `npm run install:hermes-plugin`); state, sessions, SessionEnd, terminal focus, and supported permission bubbles are available; **Settings → Remote SSH** can deploy the same plugin to a Hermes install on a remote host
 - **Qoder** — optional state-only command hooks via `~/.qoder/settings.json` (install from Settings → Agents or run `npm run install:qoder-hooks`); Phase 1 drives Clawd animations only — Qoder permission prompts are observed as notifications, and every Allow / Deny choice stays in Qoder's own flow
 - **QoderWork** — optional state-only command hooks via `~/.qoderwork/settings.json` (install from Settings → Agents or run `npm run install:qoderwork-hooks`); Phase 1 drives Clawd animations and the Session HUD — QoderWork permission events are observed silently as part of the working flow, and every Allow / Deny choice stays in QoderWork's own flow
 - **QwenWork (千问办公)** — optional hook-only, state-only command hooks via `~/.QwenWorkCN/settings.json` (install from Settings → Agents or run `npm run install:qwenwork-hooks`, uninstall with `npm run uninstall:qwenwork-hooks`); macOS and Windows desktop only — [qwenwork.cn/download](https://qwenwork.cn/download) has no Linux client, so there is no WSL pairing. Phase 1 drives Clawd animations and the Session HUD; `PermissionRequest` / `PermissionDenied` are observed only and mapped to `working`, the hook's stdout is always `{}`, and Clawd never produces an Allow / Deny — QwenWork's native permission flow stays the only decision maker. No startup recovery: the desktop process is long-lived and does not mean a turn is running
@@ -162,6 +163,12 @@ For normal use, download the latest prebuilt installer from **[GitHub Releases](
 - **macOS**: `.dmg`
 - **Linux**: `.AppImage` or `.deb`
 
+On macOS, or on Linux x86_64, you can also install with Homebrew:
+
+```bash
+brew install --cask clawd-on-desk
+```
+
 Launch Clawd after installing it. Fresh installs auto-sync Claude Code and Codex only; install other local agent integrations from **Settings → Agents** when you need them.
 
 Run from source only if you're contributing, testing unreleased code, or debugging integrations. Source installs download Electron/build tooling and can create a large `node_modules` tree.
@@ -180,7 +187,7 @@ npm start
 
 **Claude Code** and **Codex CLI** work out of the box with auto-registered hooks. For **Copilot CLI**, **Gemini CLI**, **Antigravity CLI (agy)**, **Cursor Agent**, **CodeBuddy**, **WorkBuddy**, **Kiro CLI**, **Kimi Code CLI (Kimi-CLI)**, **Qwen Code**, **ZCode**, **CodeWhale**, **opencode**, **MiMo Code**, **Pi**, **OpenClaw**, **Hermes Agent**, **Qoder**, **QoderWork**, **QwenWork (千问办公)**, **Reasonix CLI**, **DeepSeek Harness**, and **TraeCode (Trae CN)**, install the integration from **Settings → Agents** first; Clawd then keeps it synced while it remains enabled. Also covers remote SSH, WSL, and platform-specific notes (macOS / Linux): **[docs/guides/setup-guide.md](docs/guides/setup-guide.md)**
 
-Want to run Claude Code / Codex CLI on a remote server and surface state plus permission bubbles in your local Clawd? Use the in-app **Settings → Remote SSH → Deploy / Repair Hooks**. Full walkthrough, shared-server isolation boundary, Doctor boundary, and FAQ: **[docs/guides/guide-remote-ssh.md](docs/guides/guide-remote-ssh.md)**
+Want to run Claude Code / Codex CLI / Copilot CLI / Hermes Agent on a remote server and surface state plus permission bubbles in your local Clawd? Use the in-app **Settings → Remote SSH → Deploy / Repair Hooks**. Full walkthrough, shared-server isolation boundary, Doctor boundary, and FAQ: **[docs/guides/guide-remote-ssh.md](docs/guides/guide-remote-ssh.md)**
 
 For the official `Codex + WSL` status, Clawd's current implementation boundary, and why this is easy to misread, see: **[docs/guides/codex-wsl-clarification.md](docs/guides/codex-wsl-clarification.md)**
 
@@ -374,6 +381,9 @@ Thanks to everyone who has helped make Clawd better:
     <td align="center" valign="top" width="110"><a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /><br /><sub>CheeseAgent</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /><br /><sub>RS-Nocsi</sub></a></td>
     <td align="center" valign="top" width="110"><a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /><br /><sub>Cobb04</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/eugenewang5425"><img src="https://github.com/eugenewang5425.png" width="50" style="border-radius:50%" /><br /><sub>eugenewang5425</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/draintovmasyan783-creator"><img src="https://github.com/draintovmasyan783-creator.png" width="50" style="border-radius:50%" /><br /><sub>draintovmasyan783-creator</sub></a></td>
+    <td align="center" valign="top" width="110"><a href="https://github.com/Yueh-H"><img src="https://github.com/Yueh-H.png" width="50" style="border-radius:50%" /><br /><sub>Yueh-H</sub></a></td>
   </tr>
 </table>
 

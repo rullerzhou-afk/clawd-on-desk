@@ -7,6 +7,7 @@ const { EventEmitter } = require("node:events");
 const {
   INITIAL_DISCOVER_TIMEOUT_MS,
   STARTUP_DISCOVER_TIMEOUT_MS,
+  isGrokCompatibilityHookEnv,
   waitForClawdPort,
   resolveAppImageExecutable,
   resolveMacBundleExecutable,
@@ -14,11 +15,66 @@ const {
   main,
 } = require("../hooks/auto-start");
 
+test("auto-start does not launch Clawd when invoked from a Grok hook", async () => {
+  const calls = [];
+
+  await new Promise((resolve) => {
+    main({
+      env: { GROK_HOOK_EVENT: "session_start", GROK_SESSION_ID: "sess-1" },
+      writeStdout(text) {
+        calls.push(["stdout", text]);
+      },
+      discoverClawdPort() {
+        calls.push(["discover"]);
+      },
+      launchApp() {
+        calls.push(["launch"]);
+      },
+      exit(code) {
+        calls.push(["exit", code]);
+        resolve();
+      },
+    });
+  });
+
+  // Passive stdout, then exit — never a discovery probe or an app launch.
+  assert.deepStrictEqual(calls, [["stdout", "{}\n"], ["exit", 0]]);
+});
+
+test("the packaged auto-start script emits passive stdout under GROK_HOOK_EVENT", () => {
+  const { spawnSync } = require("node:child_process");
+  const fs = require("node:fs");
+  const os = require("node:os");
+  const path = require("node:path");
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-auto-start-"));
+  try {
+    const result = spawnSync(process.execPath, [path.join(__dirname, "..", "hooks", "auto-start.js")], {
+      encoding: "utf8",
+      timeout: 5000,
+      env: { ...process.env, HOME: home, USERPROFILE: home, GROK_HOOK_EVENT: "session_start" },
+    });
+    assert.strictEqual(result.status, 0);
+    assert.strictEqual(result.stdout, "{}\n");
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test("the Grok compatibility guard requires a non-empty official GROK_HOOK_EVENT", () => {
+  assert.strictEqual(isGrokCompatibilityHookEnv({ GROK_HOOK_EVENT: "session_start" }), true);
+  assert.strictEqual(isGrokCompatibilityHookEnv({ GROK_HOOK_EVENT: "  " }), false);
+  assert.strictEqual(isGrokCompatibilityHookEnv({ GROK_SESSION_ID: "s1" }), false);
+  assert.strictEqual(isGrokCompatibilityHookEnv({ GROK_HOME: "/custom" }), false);
+  assert.strictEqual(isGrokCompatibilityHookEnv({ GROK_API_KEY: "x" }), false);
+  assert.strictEqual(isGrokCompatibilityHookEnv({}), false);
+});
+
 test("auto-start exits without launching when Clawd is already listening", async () => {
   const calls = [];
 
   await new Promise((resolve) => {
     main({
+      env: {},
       discoverClawdPort(options, callback) {
         calls.push(["discover", options.timeoutMs]);
         callback(23333);
@@ -45,6 +101,7 @@ test("auto-start waits for the cold-launched app before exiting", async () => {
 
   await new Promise((resolve) => {
     main({
+      env: {},
       discoverClawdPort(options, callback) {
         calls.push(["discover", options.timeoutMs]);
         callback(ports.shift() || null);

@@ -139,6 +139,7 @@ function createRuntime(overrides = {}) {
     isWin: overrides.isWin ?? true,
     isMac: overrides.isMac ?? false,
     isLinux: overrides.isLinux ?? false,
+    windowsHitWindowFocusable: overrides.windowsHitWindowFocusable ?? false,
     linuxWindowType: "toolbar",
     topmostLevel: "pop-up-menu",
     getRenderWindow: () => renderWin,
@@ -194,6 +195,9 @@ function createRuntime(overrides = {}) {
       : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.edgeLog ? { edgeLog: overrides.edgeLog } : {}),
+    ...(overrides.onStrandedDragLockReleased
+      ? { onStrandedDragLockReleased: overrides.onStrandedDragLockReleased }
+      : {}),
     isNearWorkAreaEdge: () => overrides.nearEdge || false,
     flushRuntimeStateToPrefs: () => calls.push(["flushRuntimeStateToPrefs"]),
     handleMiniDisplayChange: () => calls.push(["handleMiniDisplayChange"]),
@@ -2806,18 +2810,29 @@ describe("pet-window-runtime", () => {
     assert.doesNotMatch(petRuntimeOptions, /[,{]\s*isNearWorkAreaEdge\s*,/);
   });
 
-  it("creates the hit window with the Windows drag focusability contract", () => {
+  it("prepares the Windows non-focusable hit window before its first show", () => {
     const instances = [];
     const harness = createRuntime();
+    let preparedWindow = null;
     harness.runtime.createHitWindow({
       BrowserWindow: makeBrowserWindow(instances),
       preloadPath: "preload-hit.js",
       loadFilePath: "hit.html",
       hitThemeConfig: { ok: true },
       guardAlwaysOnTop: (win) => harness.calls.push(["guard", win]),
+      prepareActivation: (win) => {
+        preparedWindow = win;
+        win.calls.push(["prepareActivation"]);
+      },
     });
 
-    assert.equal(instances[0].options.focusable, true);
+    assert.equal(instances[0].options.show, false);
+    assert.equal(instances[0].options.focusable, false);
+    assert.strictEqual(preparedWindow, instances[0]);
+    assert.ok(
+      instances[0].calls.findIndex((call) => call[0] === "prepareActivation")
+        < instances[0].calls.findIndex((call) => call[0] === "showInactive"),
+    );
     assert.deepStrictEqual(instances[0].calls.filter((call) => call[0] === "setIgnoreMouseEvents"), [
       ["setIgnoreMouseEvents", false],
     ]);
@@ -2826,6 +2841,37 @@ describe("pet-window-runtime", () => {
       true,
       "pop-up-menu",
     ]);
+  });
+
+  it("uses legacy Windows focusability when the native activation controller is unavailable", () => {
+    const instances = [];
+    const harness = createRuntime({ windowsHitWindowFocusable: true });
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+    });
+
+    assert.equal(instances[0].options.focusable, true);
+  });
+
+  it("falls back before show when per-window activation preparation fails", () => {
+    const instances = [];
+    const harness = createRuntime();
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+      prepareActivation: () => false,
+    });
+
+    const focusableIndex = instances[0].calls.findIndex(
+      (call) => call[0] === "setFocusable" && call[1] === true,
+    );
+    const showIndex = instances[0].calls.findIndex((call) => call[0] === "showInactive");
+    assert.ok(focusableIndex >= 0 && focusableIndex < showIndex);
   });
 
   it("pins both pet windows to all workspaces on Linux so the pet follows workspace switches", () => {
@@ -4048,5 +4094,72 @@ describe("manual show intent hook (#935 override latch)", () => {
     h.runtime.setFullscreenAutoHidden(true);
     h.runtime.setFullscreenAutoHidden(false);
     assert.deepStrictEqual(notes, [], "only a manual SHOW is user intent");
+  });
+});
+
+describe("stranded drag-lock release (#997 / #998)", () => {
+  it("fires the onStrandedDragLockReleased hook on every real release", () => {
+    const released = [];
+    const harness = createRuntime({
+      onStrandedDragLockReleased: () => released.push("hook"),
+    });
+
+    // Every recovery entry funnels through releaseStrandedDragLock, so the
+    // cross-process cleanup hook must fire for each of them.
+    harness.runtime.setDragLocked(true);
+    harness.runtime.bringPetToPrimaryDisplay();
+    assert.deepStrictEqual(released, ["hook"], "bring-to-primary must fire the hook");
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.setPetHidden(true);
+    assert.deepStrictEqual(released, ["hook", "hook"], "manual hide must fire the hook");
+
+    // A release with no lock, and a normal drag end, must both stay quiet.
+    harness.runtime.releaseStrandedDragLock();
+    assert.deepStrictEqual(released, ["hook", "hook"], "no-lock release stays quiet");
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.setDragLocked(false);
+    assert.deepStrictEqual(released, ["hook", "hook"], "normal drag end must not fire it");
+  });
+
+  it("bringPetToPrimaryDisplay releases a stranded lock so the input window follows", () => {
+    const harness = createRuntime({
+      effectivePixelSize: { width: 200, height: 160 },
+    });
+    harness.runtime.setDragLocked(true);
+    harness.hitWin.calls.length = 0;
+
+    harness.runtime.bringPetToPrimaryDisplay();
+
+    assert.equal(harness.runtime.isDragLocked(), false);
+    // syncHitWin() defers while the lock is held, so the release must land
+    // BEFORE the move for the input window to follow.
+    assert.ok(
+      harness.hitWin.calls.some((call) => call[0] === "setBounds"),
+      "hitWin bounds must be re-synced after the release",
+    );
+  });
+
+  it("manual hide releases a stranded lock; manual show does not", () => {
+    const harness = createRuntime();
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.setPetHidden(true);
+    assert.equal(harness.runtime.isDragLocked(), false);
+
+    harness.runtime.setDragLocked(true);
+    harness.runtime.setPetHidden(false);
+    assert.equal(
+      harness.runtime.isDragLocked(),
+      true,
+      "showing the pet must not release a lock a live drag may legitimately hold",
+    );
+  });
+
+  it("releaseStrandedDragLock is a no-op without a lock", () => {
+    const harness = createRuntime();
+    assert.equal(harness.runtime.releaseStrandedDragLock(), false);
+    assert.equal(harness.runtime.isDragLocked(), false);
   });
 });

@@ -29,6 +29,7 @@ const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./rea
 const { unregisterQoderWorkHooks } = require("./qoderwork-install");
 const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
+const { unregisterGrokHooks, resolveGrokConfigPath, resolveGrokHome } = require("./grok-install");
 const { unregisterTraeCodeHooks } = require("./traecode-install");
 const { unregisterDeepSeekHarness } = require("./dsh-install");
 
@@ -58,6 +59,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "qoderwork",
   "qwenwork",
   "workbuddy",
+  "grok-build",
   "traecode",
 ]);
 
@@ -70,6 +72,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
   workbuddy: "WorkBuddy",
+  "grok-build": "Grok Build",
   "kiro-cli": "Kiro CLI",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
@@ -294,6 +297,13 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
           path.join(homeDir, ".workbuddy", "settings.json"),
         ],
       },
+      "grok-build": {
+        ...common,
+        env,
+        homeDir,
+        grokHome: resolveGrokHome({ homeDir, env }),
+        configPath: resolveGrokConfigPath({ homeDir, env }),
+      },
       traecode: {
         ...common,
         hooksPath: path.join(homeDir, ".trae-cn", "hooks.json"),
@@ -360,6 +370,7 @@ const AGENT_CLEANERS = Object.freeze({
   qoderwork: unregisterQoderWorkHooks,
   qwenwork: unregisterQwenWorkHooks,
   workbuddy: unregisterWorkBuddyHooks,
+  "grok-build": unregisterGrokHooks,
   traecode: unregisterTraeCodeHooks,
 });
 

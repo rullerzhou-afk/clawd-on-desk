@@ -59,7 +59,95 @@ function loadFocusWithMock(options = {}) {
   };
 }
 
+function editorFocusHarness() {
+  const writes = [];
+  const stdout = new EventEmitter();
+  stdout.setEncoding = () => {};
+  stdout.unref = () => {};
+  const loaded = loadFocusWithMock({
+    spawn: () => ({
+      pid: 9994,
+      stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+      stdout, on() {}, unref() {}, kill() {},
+    }),
+  });
+  const focus = loaded.initFocus({ focusLog: () => {} });
+  focus.initFocusHelper();
+  writes.length = 0;
+  return {
+    focus,
+    finishRaise(reason) {
+      assert.equal(writes.length, 1, "navigation must dispatch the Windows helper");
+      const token = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      assert.ok(writes[0].includes(`$reason = '${reason}'`));
+      // The native helper can report foreground equality; Node must still
+      // reject that as proof of an active composer/terminal input.
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ ${JSON.stringify({
+        token, reason, targetHwnd: "101", foregroundHwnd: "101", confirmed: true, status: "confirmed",
+      })}\n`);
+    },
+    cleanup() { focus.cleanup(); loaded.cleanup(); },
+  };
+}
+
 describe("Windows terminal focus", () => {
+  for (const cwd of ["D:\\repo", null]) {
+    const reason = `editor-parent-pid-window${cwd ? "" : "-no-title"}`;
+    for (const requestSource of ["hud", "dashboard"]) {
+      it(`${requestSource} dispatches ${reason} but does not confirm a chat`, async () => {
+        const harness = editorFocusHarness();
+        try {
+          const pending = harness.focus.focusTerminalWindow({
+            sourcePid: 1234, cwd, sessionId: "cursor-session", agentId: "cursor-agent", requestSource,
+          });
+          harness.finishRaise(reason);
+          const result = await pending;
+          assert.equal(result.reason, reason);
+          assert.equal(result.targetHwnd, "101");
+          assert.equal(result.foregroundHwnd, "101");
+          assert.equal(result.confirmed, false);
+          assert.equal(result.status, "unconfirmed");
+        } finally {
+          harness.cleanup();
+        }
+      });
+    }
+
+    it(`Direct Send copies fallback after ${reason} without invoking paste`, async () => {
+      const { createTelegramDirectSend, createClipboardFallbackDeliveryAdapter } = require("../src/telegram-direct-send");
+      const harness = editorFocusHarness();
+      const copied = [];
+      const delivered = [];
+      const entry = { id: "cursor-session", agentId: "cursor-agent", sourcePid: 1234, state: "idle", badge: "done" };
+      try {
+        const direct = createTelegramDirectSend({
+          isEnabled: () => true,
+          getSessionSnapshot: () => ({ sessions: [entry] }),
+          focusSession: (sessionId, options) => {
+            assert.equal(sessionId, entry.id);
+            assert.equal(options.requestSource, "telegram-direct-send");
+            return harness.focus.focusTerminalWindow({ ...entry, sessionId, cwd, requestSource: options.requestSource });
+          },
+          deliveryAdapter: () => { delivered.push("paste"); return { status: "pasted", delivered: true }; },
+          fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard: { writeText: (text) => copied.push(text) } }),
+          osPlatform: "win32",
+        });
+        assert.equal(direct.registerCompletionNotification({ messageId: 806, sessionId: entry.id }), true);
+        const pending = direct.handleTextMessage({ text: "continue", replyToMessageId: 806 });
+        harness.finishRaise(reason);
+        const result = await pending;
+        assert.equal(result.status, "fallback_copied");
+        assert.equal(result.focusResult.confirmed, false);
+        assert.equal(result.focusResult.reason, reason);
+        assert.equal(direct._deliveries.get(result.deliveryId).errorClass, "focus_unconfirmed");
+        assert.deepEqual(copied, ["continue"]);
+        assert.deepEqual(delivered, []);
+      } finally {
+        harness.cleanup();
+      }
+    });
+  }
+
   it("does not generate the blind first-WindowsTerminal fallback", () => {
     const { initFocus, cleanup } = loadFocusWithMock();
     try {

@@ -53,6 +53,7 @@ const {
   resolveCodexOfficialHookState,
 } = require("./server-codex-official-turns");
 const { createDshStateSequenceFence } = require("./dsh-state-sequence");
+const createGrokTurnFence = require("./grok-turn-fence");
 const {
   HOOK_EVENT_RING_SIZE_PER_AGENT,
   createSingleRequestHookEventRecorder,
@@ -154,6 +155,8 @@ let lastClaudeHookGuardNotice = null;
 let claudeStatuslineIngressSuppressed = false;
 const codexOfficialTurns = new Map();
 const dshStateSequenceFence = createDshStateSequenceFence();
+// Grok Build turn-order fence: bounded, in-memory, injected into /state.
+const grokTurnFence = createGrokTurnFence();
 const recentHookEvents = new Map();
 
 function isClaudeStatuslineMetadataAllowed() {
@@ -497,11 +500,22 @@ function setClaudeQuotaCollectionEnabled(callOptions = {}) {
         message: "Enable the Claude Code integration before collecting its usage metadata",
       };
     }
-    const result = registerClaudeStatusline({ backup: true, silent: true });
+    if (callOptions.chainExisting === true
+      && !/^[a-f0-9]{64}$/.test(callOptions.expectedStatuslineFingerprint || "")) {
+      return { status: "error", message: "Confirm the current Claude statusline before enabling coexistence" };
+    }
+    const result = registerClaudeStatusline({
+      backup: true, silent: true,
+      ...(callOptions.chainExisting === true ? {
+        chainExisting: true,
+        expectedStatuslineFingerprint: callOptions.expectedStatuslineFingerprint,
+      } : {}),
+    });
     if (result.skippedExisting) {
       return {
         status: "error",
         reason: "statusline-occupied",
+        statuslineFingerprint: result.statuslineFingerprint,
         message: "Claude Code already has a custom statusline; Clawd left it unchanged",
       };
     }
@@ -715,6 +729,43 @@ function stopClaudeSettingsWatcher() {
   return claudeSettingsWatcher.stop();
 }
 
+function rejectUnsafeLocalPermissionRequest(req, res) {
+    // This endpoint is for native hooks, not browser UI. Loopback binding and
+    // absent CORS headers alone do not stop simple cross-origin POSTs. These
+    // checks do not authenticate unrestricted processes under the same OS user.
+    const headers = req.headers || {};
+    const host = typeof headers.host === "string"
+      ? /^(?:127\.0\.0\.1|localhost|\[::1\])(?::([0-9]{1,5}))?$/i.exec(headers.host)
+      : null;
+    let status = 0;
+    if (Object.prototype.hasOwnProperty.call(headers, "origin")
+      || !host
+      || (host[1] !== undefined && (Number(host[1]) < 1 || Number(host[1]) > 65535))) {
+      status = 403;
+    } else {
+      // Node discards duplicate Host / Content-Type fields by default. Reject
+      // ambiguous requests rather than validating only the retained first value.
+      const seen = new Set();
+      const raw = req.rawHeaders || [];
+      for (let i = 0; i < raw.length; i += 2) {
+        const name = raw[i].toLowerCase();
+        if (name !== "host" && name !== "content-type") continue;
+        if (seen.has(name)) { status = 400; break; }
+        seen.add(name);
+      }
+      const type = typeof headers["content-type"] === "string"
+        ? headers["content-type"].split(";", 1)[0].trim().toLowerCase()
+        : "";
+      if (!status && type !== "application/json") status = 415;
+    }
+    if (!status) return false;
+    // No agent decision or success marker on a transport rejection. Close
+    // without waiting for body bytes; native clients retain their own fallback.
+    res.writeHead(status, { "Connection": "close" });
+    res.end();
+    return true;
+}
+
 function routeHttpRequest(req, res, remoteProfile = null) {
     // Secure Remote SSH traffic must terminate at its profile-bound ingress,
     // never at the compatibility-oriented local main server. Rejecting the
@@ -737,6 +788,7 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         shouldDropForDnd,
         codexOfficialTurns,
         dshStateSequenceFence,
+        grokTurnFence,
         captureForegroundWindowsTerminal: ctx.captureForegroundWindowsTerminal,
         isWinHost: isWindowsHost,
         windowsProcessChainRuntime,
@@ -746,6 +798,7 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         isClaudeStatuslineMetadataAllowed,
       });
     } else if (req.method === "POST" && req.url === "/permission") {
+      if (!remoteProfile && rejectUnsafeLocalPermissionRequest(req, res)) return;
       handlePermissionPost(req, res, {
         ctx,
         createRequestHookRecorder,

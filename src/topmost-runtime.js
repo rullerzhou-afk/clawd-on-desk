@@ -138,9 +138,9 @@ function createTopmostRuntime(options = {}) {
   // Windows-only: toggle the hit window's activation with the fullscreen state.
   // While a fullscreen app owns the foreground we make the hit window
   // non-activating so a click on the pet can't steal focus from an
-  // exclusive-fullscreen game and minimize it; we re-enable activation when
-  // fullscreen ends because dragging needs it (#545). No-op off Windows / when
-  // unset. (#538 drag focus-steal)
+  // exclusive-fullscreen game and minimize it; outside fullscreen we restore
+  // ordinary desktop activation semantics. No-op off Windows / when unset.
+  // (#538 drag focus-steal)
   const setHitWinFocusable = options.setHitWinFocusable || (() => {});
   // #525: cloak self-heal hook, run at the tail of each watchdog tick. The
   // callee (pet-window-runtime recoverIfCloaked) carries its own guards and
@@ -598,8 +598,8 @@ function createTopmostRuntime(options = {}) {
 
   // #562: drop the hit window's activation whenever a fullscreen app owns the
   // foreground (a click on the pet must never steal focus and kick an
-  // exclusive-fullscreen game out), and restore it otherwise (desktop drag
-  // needs activation, #545). Runs on its own ~1s timer instead of the 5s
+  // exclusive-fullscreen game out), and otherwise restore ordinary desktop
+  // activation semantics (#545). Runs on its own ~1s timer instead of the 5s
   // watchdog so entering fullscreen flips activation within ~1s — closing the
   // window where an early drag could still kick the game out (#562). Decoupled
   // from the overlay/topmost decision: focus is never stolen from a fullscreen
@@ -776,8 +776,8 @@ function createTopmostRuntime(options = {}) {
     // Sync once up front: if Clawd starts (or this re-arms) while a fullscreen
     // game is already foreground, drop the hit window's activation immediately
     // rather than leaving it activatable for up to one poll interval (the hit
-    // window is created focusable: true). Idempotent, so the desktop case is a
-    // no-op. The #935 auto-hide gets the same up-front treatment for the same
+    // window could otherwise retain activating native styles). Idempotent, so
+    // the desktop case is a no-op. The #935 auto-hide gets the same up-front
     // reason.
     syncFocusablePollTick();
     focusablePoll = setIntervalFn(syncFocusablePollTick, focusablePollMs);

@@ -28,7 +28,7 @@ test("the current checkout satisfies the release version contract", () => {
   const result = verifyReleaseVersion({ root: path.join(__dirname, ".."), env: {} });
   assert.deepStrictEqual(result.errors, []);
   assert.strictEqual(result.ok, true);
-  assert.strictEqual(result.version, "0.16.0");
+  assert.strictEqual(result.version, "1.0.0");
 });
 
 test("the authoritative draft smoke checklist tracks the current package version", () => {

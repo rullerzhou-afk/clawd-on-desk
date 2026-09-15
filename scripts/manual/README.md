@@ -147,3 +147,62 @@ Pass output reports `exitCode:3`, `markerSeen:false`, and
 ## V15 ordinary-host release blocker
 
 The Codespaces script cannot validate the unchanged parallel path. Before release, use a separate ordinary Linux SSH host and verify Connect, Deploy / Repair, optional monitor, Disconnect, cleanup, and normal app quit. If no ordinary host is available, report V15 as pending; do not infer it from Codespaces or unit tests.
+
+## PR #975 Hermes Remote SSH verification (2026-09-09)
+
+The maintainer fixes were validated on a Raspberry Pi 5 (Debian Linux aarch64,
+Node 24.18.0, Hermes Agent 0.20.5), before pushing or merging. The harness used
+the production Settings controller/IPC, deployment, transport, nonce-checked
+ingress, state route and state machine with real SSH. It used cloned local
+Settings and the verified existing installation binding; this was a module
+composition smoke, not a Settings GUI smoke.
+
+- Standard-home Deploy verified the plugin hashes, secure marker, enable entry
+  and identity commit. Hermes CLI reported Clawd 0.3.0 enabled. The local
+  `enabled` flag changed only after success; `integrationInstalled` stayed intact.
+- A real API-backed Hermes session executed `printf PR975_PI_SMOKE` and returned
+  `PR975_PI_OK`. Clawd received SessionStart, UserPromptSubmit, PreToolUse,
+  PostToolUse, Stop and SessionEnd with the correct profile and no remote process
+  metadata. The ordinary SSH connection stayed healthy beyond 60 seconds.
+- Connected Repair succeeded and the plugin remained enabled. Cleanup with a
+  test-owned foreign leaf preserved that file, retained the installer, and
+  reported the precise residual path. Removing that exact fixture allowed the
+  real uninstaller to complete.
+- Original hook/config files and identity were restored with byte/mode checks;
+  all harness transport children exited. User Settings were not changed and no
+  Hermes gateway was restarted.
+- Windows regression: 541 passed, 9 POSIX skips across 13 files. Hermes installer,
+  plugin and SSH deploy regressions passed on both WSL and the Pi: 146 passed,
+  zero failures or skips in each. Pi fixtures used a dedicated HOME so the real
+  secure identity did not affect ordinary/no-server cases.
+
+The live API smoke covered the account-default root home. Named-profile
+filesystem behavior and isolated-layout cleanup exclusion were covered by the
+native Pi regressions. This adds no live gateway-reload or Codespaces claim.
+
+### Hermes opt-in permission callback follow-up (2026-09-09)
+
+Real API sessions exposed a pre-existing callback error: an opted-in tool name
+was passed both positionally and in the upstream keyword payload, so Python
+raised before the permission request and Hermes continued the tool. The fix
+passes the callback keywords once and preserves the tool name in subsequent
+state events. A regression invokes the registered callback for Allow, Deny and
+no-decision; it fails with the original TypeError before the fix.
+
+Validation used the running Windows desktop app and its Settings Deploy/Repair,
+with the same Raspberry Pi 5 / Hermes 0.20.5 account-default root home. Each
+fresh test CLI temporarily set `CLAWD_HERMES_PERMISSION_TOOLS=terminal`; no
+gateway was restarted and the opt-in was not persisted.
+
+- The user clicked Approve on the real desktop bubble. The remote tool record
+  contained the expected `printf` output and exit code 0.
+- The user clicked Deny on a second real bubble. Its remote tool record contained
+  `User denied this tool execution` and no execution output. The agent did not
+  retry the blocked tool.
+- Dashboard snapshots carried the correct remote profile/host with no local
+  terminal PID. The SSH connection remained healthy after both sessions.
+- Windows plugin, installer and permission-route regressions: 172 passed,
+  zero failures, one privileged-symlink skip.
+
+This verifies the explicit tool opt-in path. It does not claim that Hermes'
+native once/session/always approval UI is fully intercepted.

@@ -2,6 +2,9 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { EventEmitter } = require("node:events");
 
 const {
@@ -10,7 +13,12 @@ const {
   isSuspiciousShrink,
   takeSnapshot,
 } = require("../src/claude-settings-watcher");
-const { CLAUDE_CORE_HOOK_EVENTS } = require("../hooks/install");
+const {
+  CLAUDE_CORE_HOOK_EVENTS,
+  registerHooksAsync,
+  getClaudeHookScriptPath,
+  getClaudeAutoStartScriptPath,
+} = require("../hooks/install");
 
 const EXPECTED_HOOK_SCRIPT_PATH = "C:/app/resources/app.asar.unpacked/hooks/clawd-hook.js";
 const EXPECTED_AUTO_START_SCRIPT_PATH = "C:/app/resources/app.asar.unpacked/hooks/auto-start.js";
@@ -827,5 +835,196 @@ describe("createClaudeSettingsWatcher — checkNow / getHealthStatus", () => {
     assert.ok(Array.isArray(status.issues));
     assert.ok(status.issues.length <= 20);
     watcher.stop();
+  });
+});
+
+describe("createClaudeSettingsWatcher — UTF-8 BOM compatibility (#657)", () => {
+  const BOM = "\uFEFF";
+
+  it("settingsNeedClaudeHookResync and takeSnapshot parse through a leading BOM but reject BOM-only/non-object", () => {
+    const expectedUrl = EXPECTED_PERMISSION_URL;
+    const intact = BOM + JSON.stringify({
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "node clawd-hook.js Stop" }] }],
+        PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: expectedUrl }] }],
+      },
+    });
+    const missingPermission = BOM + JSON.stringify({
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "node clawd-hook.js Stop" }] }],
+      },
+    });
+
+    assert.strictEqual(settingsNeedClaudeHookResync(intact, expectedUrl), false);
+    assert.strictEqual(settingsNeedClaudeHookResync(missingPermission, expectedUrl), true);
+
+    const healthy = healthySettingsObject();
+    assert.deepStrictEqual(takeSnapshot(BOM + JSON.stringify(healthy)), takeSnapshot(JSON.stringify(healthy)));
+    assert.strictEqual(takeSnapshot(BOM), null);
+    assert.strictEqual(takeSnapshot(BOM + "[1,2,3]"), null);
+  });
+
+  for (const [name, override] of [
+    ["auto-manage", { shouldManageClaudeHooks: () => false }],
+    ["agent-enabled", { isAgentEnabled: () => false }],
+    ["integration-sync", { shouldSyncAgentIntegration: () => false }],
+  ]) {
+    it(`does not repair a BOM config when the ${name} gate is closed`, async () => {
+      const { watcher, clock, syncCalls } = makeWatcher({
+        initialSettingsRaw: BOM + JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })),
+        ...override,
+      });
+      watcher.start();
+      await clock.advance(0);
+      await clock.advance(5 * 60 * 1000);
+      await clock.advance(5 * 60 * 1000);
+
+      assert.deepStrictEqual(syncCalls, []);
+      watcher.stop();
+    });
+  }
+
+  it("guards on suspicious shrink when both the seed and the current config carry a BOM", async () => {
+    const notifyCalls = [];
+    function richHealthySettingsObject() {
+      const base = healthySettingsObject();
+      base.env = { FOO: "bar" };
+      base.permissions = { allow: ["*"], deny: [] };
+      base.enabledPlugins = { a: true };
+      base.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: "node /home/u/.claude/hooks/third-party.js" }] });
+      return base;
+    }
+    const { watcher, clock, syncCalls, getWatcher, setSettingsRaw } = makeWatcher({
+      initialSettingsRaw: BOM + JSON.stringify(richHealthySettingsObject()),
+      notifySuspiciousShrink: (before, after) => notifyCalls.push({ before, after }),
+    });
+    watcher.start();
+    await clock.advance(0); // seeds the trusted baseline through the BOM
+
+    setSettingsRaw(BOM + JSON.stringify({ skipDangerousModePermissionPrompt: true }));
+    getWatcher().emitChange("settings.json");
+    await clock.advance(1000);
+
+    assert.deepStrictEqual(syncCalls, []);
+    assert.strictEqual(notifyCalls.length, 1, "a BOM seed must still give the shrink guard a baseline");
+    assert.strictEqual(watcher.getHealthStatus().status, "guarded");
+    watcher.stop();
+  });
+
+  it("repairs a BOM config on both the periodic tick and an fs event, then stays quiet", async () => {
+    const harness = makeWatcher({
+      initialSettingsRaw: BOM + JSON.stringify(healthySettingsObject()),
+      syncClawdHooksImpl(options) {
+        harness.syncCalls.push(options);
+        harness.setSettingsRaw(BOM + JSON.stringify(healthySettingsObject()));
+        return { status: "ok", updated: 1 };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0);
+    assert.deepStrictEqual(harness.syncCalls, [], "a BOM-prefixed healthy config must not repair");
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+
+    // No fs event: the periodic tick discovers a BOM config whose script path is gone.
+    harness.setSettingsRaw(BOM + JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })));
+    await harness.clock.advance(5 * 60 * 1000);
+
+    assert.strictEqual(harness.syncCalls.length, 1, "the periodic tick must repair the BOM config");
+    assert.strictEqual(harness.syncCalls[0].source, "periodic-health");
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+
+    // A settings fs event with a BOM config must repair and re-verify too.
+    harness.setSettingsRaw(BOM + JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    assert.strictEqual(harness.syncCalls.length, 2, "the fs event must repair the BOM config");
+    assert.strictEqual(harness.syncCalls[1].source, "settings-watch");
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+
+    // Once the on-disk BOM config is healthy again, periodic ticks stay quiet.
+    await harness.clock.advance(5 * 60 * 1000);
+    assert.strictEqual(harness.syncCalls.length, 2);
+    harness.watcher.stop();
+  });
+
+  it("repairs a BOM settings.json through the real registerHooksAsync and verifies healthy on disk", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-watcher-bom-"));
+    const settingsPath = path.join(tmpDir, "settings.json");
+    const hookScript = getClaudeHookScriptPath();
+    const autoStartScript = getClaudeAutoStartScriptPath();
+    const clock = makeFakeClock();
+    const syncCalls = [];
+    let repairPromise = null;
+    let lastWatcher = null;
+    let watcher = null;
+    try {
+      fs.writeFileSync(settingsPath, BOM + JSON.stringify({ hooks: {} }), "utf8");
+
+      watcher = createClaudeSettingsWatcher({
+        fs: {
+          watch() {
+            lastWatcher = new FakeWatcher(() => {});
+            return lastWatcher;
+          },
+          readFileSync: (target) => fs.readFileSync(target, "utf-8"),
+          existsSync: (target) => fs.existsSync(target),
+          accessSync: (target) => fs.accessSync(target),
+        },
+        path,
+        os,
+        setTimeout: clock.setTimeout,
+        clearTimeout: clock.clearTimeout,
+        now: clock.now,
+        getHookServerPort: () => 23333,
+        shouldManageClaudeHooks: () => true,
+        isAgentEnabled: () => true,
+        shouldSyncAgentIntegration: () => true,
+        autoStartWithClaude: false,
+        platform: process.platform,
+        expectedHookScriptPath: hookScript,
+        expectedAutoStartScriptPath: autoStartScript,
+        coreEvents: CLAUDE_CORE_HOOK_EVENTS,
+        claudeSettingsPath: settingsPath,
+        claudeSettingsDir: tmpDir,
+        syncClawdHooks: (options) => {
+          syncCalls.push(options);
+          // Hand the real installer promise back to the watcher so the test can
+          // await the exact same async work instead of polling on wall-clock time.
+          repairPromise = registerHooksAsync({
+            silent: true,
+            settingsPath,
+            port: 23333,
+            nodeBin: process.execPath,
+            platform: process.platform,
+            claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+          });
+          return repairPromise;
+        },
+      });
+
+      watcher.start();
+      await clock.advance(0);
+      assert.ok(repairPromise, "the startup check must invoke the real installer");
+      await repairPromise;
+      // Let the watcher's own awaited continuation (re-read + re-verify) settle.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.strictEqual(syncCalls.length, 1, "the startup check must repair the BOM config");
+      assert.strictEqual(syncCalls[0].source, "periodic-health");
+      assert.strictEqual(watcher.getHealthStatus().status, "healthy", "the re-read must verify healthy");
+
+      const repaired = fs.readFileSync(settingsPath, "utf8");
+      assert.strictEqual(repaired.charCodeAt(0) === 0xFEFF, false, "registerHooksAsync writes the canonical BOM-free form");
+      assert.ok(repaired.includes("clawd-hook.js"));
+
+      // A later periodic tick stays quiet: the on-disk canonical file is healthy.
+      await clock.advance(5 * 60 * 1000);
+      assert.strictEqual(syncCalls.length, 1);
+    } finally {
+      if (watcher) watcher.stop();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

@@ -45,7 +45,7 @@ Fresh installs enable and install only Claude Code and Codex by default. For oth
 
 ### Claude Code usage: official status line, not scraping
 
-Local Claude usage collection is **off by default**. You can opt in under **Settings → General → Quota ring → Collect local Claude usage**. Enabling it adds Clawd's visible `statusLine.command` to `~/.claude/settings.json`.
+Local Claude usage collection is **off by default**. You can opt in under **Settings → Agents → Claude Code → Collect local Claude usage**. With an empty status-line slot, enabling it adds Clawd's visible `statusLine.command` to `~/.claude/settings.json`.
 
 This uses Claude Code's documented extension mechanism, not a private or reverse-engineered endpoint. Claude Code's [official status-line documentation](https://code.claude.com/docs/en/statusline) provides `context_window.current_usage`, `context_window.context_window_size`, and (when available) `rate_limits` in the JSON sent to a status-line command. It also states that the command runs locally without consuming API tokens.
 
@@ -69,11 +69,13 @@ Clawd therefore intentionally does **not** read Claude Code's internal usage cac
 
 Technical feasibility is not treated as platform support. Clawd will reconsider model-scoped Claude quota when Anthropic exposes it through the documented status-line payload, documents a read-only third-party usage interface, or otherwise explicitly supports that integration. Until then, missing Fable quota is expected behavior. See Anthropic's [Fable plan explanation](https://support.claude.com/en/articles/15424964-claude-fable-5-on-your-plan) and Claude Code's [official status-line schema](https://code.claude.com/docs/en/statusline).
 
-The status line is visible and Claude Code provides a single user-level slot. Clawd therefore never silently replaces an existing custom local status line: enabling collection fails safely and leaves the existing command unchanged. Turning collection off removes only a command carrying Clawd's ownership marker and immediately clears cached local Claude quota, while preserving Remote SSH quota and every non-Claude provider.
+The status line is visible and Claude Code provides a single user-level slot. If another status line (such as Orca) already owns it, enabling collection asks whether to preserve that display and collect usage alongside it. Cancel leaves the slot and collection preference unchanged. Confirm saves the full original registration in `~/.claude/hooks/clawd-statusline-local-chain.json`, then forwards the same JSON input to its command while Clawd collects usage locally. The original command keeps its working directory, environment, and stdout; its padding and refresh settings are retained. If the slot changes during confirmation, Clawd refuses the stale request. Startup and repair never acquire a new third-party slot automatically.
+
+Turning collection off restores a verified original registration (or removes a plain Clawd-owned slot) and immediately clears cached local Claude quota, while preserving Remote SSH quota and every non-Claude provider. A missing, corrupt, or mismatched recovery record stops automatic changes: keep the record and inspect the reported path instead of deleting it. If another tool has replaced the wrapper, Clawd leaves its new configuration alone. Local coexistence runs POSIX commands through `/bin/sh`; Windows uses Git Bash when available, otherwise PowerShell. Shell-specific inline commands should explicitly invoke their interpreter, just as script files use their shebang. Hung commands are capped at three seconds. These runner checks do not establish compatibility with every third-party statusline or a live Claude UI session.
 
 Without the Clawd statusline, ordinary Claude hooks still report transcript input-token usage. Clawd uses a closed list of known stock Claude IDs for a compatibility denominator; an empty, custom, or unknown model ID shows used tokens with an unknown limit instead of guessing 200K. For a custom provider's reported window to match Claude Code's `/context`, enable the usage statusline so Claude Code's own `context_window_size` becomes authoritative while transcript hooks continue refreshing the used count.
 
-Running `npm run install:claude-hooks` for a local hook repair does not opt in. The explicit debug form `npm run install:claude-hooks -- --statusline` can install and display Clawd's statusline, but the app still discards its local context/quota POSTs while the Settings switch is off; the next local startup reconcile also removes that Clawd-managed debug slot. Remote SSH deployment is a separate explicit action; when a remote already has its own status line, select **Chain into an existing statusline on deploy** to preserve and restore that registration.
+Running `npm run install:claude-hooks` for a local hook repair does not opt in. The explicit debug form `npm run install:claude-hooks -- --statusline` can install and display Clawd's statusline, but the app still discards its local context/quota POSTs while the Settings switch is off; the next local startup reconcile also removes that Clawd-managed debug slot. Remote SSH deployment is a separate explicit action; when a remote already has its own status line, select **Chain into an existing statusline on deploy** to preserve and restore that registration. If that account already uses Clawd's local coexistence mode, remote statusline registration refuses to convert it and preserves its configuration and recovery record. First turn off local Claude usage collection in Clawd on that account, verify the original statusline is restored, then deploy remotely with the desired remote chain setting. If local restoration fails, retain and inspect the reported recovery record instead of deleting it or forcing deployment.
 
 **Codex CLI** — works out of the box. Clawd auto-registers official Codex hooks in `~/.codex/hooks.json` when Codex is installed, and enables `[features].hooks = true` unless the user explicitly set hooks to `false`. The installer migrates the deprecated `[features].codex_hooks` key to `hooks` while preserving an explicit false value. Local installs use stable platform entries under `~/.codex/clawd-hooks/`: Windows reads a managed UTF-8/Base64 data sidecar inside Codex's existing PowerShell command process (with a separate JSON health manifest for Doctor), while POSIX uses a small `/bin/sh` wrapper plus manifest. No unsigned `.ps1` is executed. Codex therefore needs one review for the initial install or migration but does not ask again merely because Clawd, its development worktree, or its Node executable changed. Windows and WSL keep separate execution targets when they share `CODEX_HOME`. The official hook path gives live state updates plus real Allow/Deny permission bubbles. **Settings → Agents → Codex → Start with Codex** separately controls whether a local Codex `SessionStart` may cold-launch Clawd; turning it off keeps state and approval integration available whenever Clawd is already running. Fresh installs default this switch off, while upgrades preserve the prior on behavior. Remote SSH and WSL hooks never cold-launch the desktop app. JSONL polling of `~/.codex/sessions/` remains as a state/metadata fallback for hook-disabled sessions and events Codex hooks do not cover; approval prompts are no longer inferred from JSONL. Codex `request_user_input` calls are detected from that transcript stream: Clawd plays the notification reaction and shows a read-only preview of the questions/options. Answer in Codex itself; the card never injects a choice and closes when the matching tool output is recorded.
 
@@ -85,7 +87,11 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 
 **Cursor Agent** — hooks live in `~/.cursor/hooks.json`. Install it from **Settings → Agents** when you want local Cursor Agent tracking; after that Clawd keeps the hooks synced on launch while Cursor Agent remains enabled. You can also run `npm run install:cursor-hooks` manually.
 
+Clawd can display the chat name from Cursor's standard desktop profile when Node's SQLite module is available (Node 22.13+, 23.4+, or 24+; Node 22.12 needs the experimental SQLite flag). When the name is unavailable, Clawd uses a safe first prompt line; secret-looking lines are omitted. State tracking continues even when the title cannot be read. Custom Cursor `--user-data-dir` locations use the same fallback.
+
 **CodeBuddy** — uses Claude Code-compatible hooks in `~/.codebuddy/settings.json`. Install it from **Settings → Agents** when you want local CodeBuddy tracking; after that Clawd keeps the hooks synced on launch while CodeBuddy remains enabled. The PermissionRequest entry uses the versioned marker `clawd-on-desk.permission.v1`; registration and uninstall leave unrelated HTTP hooks—including a third-party hook named only `clawd`—untouched. Bare `node hooks/codebuddy-install.js` preserves an existing marker-owned custom permission URL. Use `--permission-url local` to explicitly restore the local Clawd endpoint, or `--permission-url https://example/permission` to explicitly set a custom HTTP(S) endpoint.
+
+**Grok Build** — uses Claude Code-compatible hooks in `~/.grok/hooks/clawd-on-desk.json` (or `$GROK_HOME/hooks/clawd-on-desk.json`). Install it from **Settings → Agents** when you want local Grok tracking; after that Clawd keeps the hooks synced on launch while Grok remains enabled. You can also run `node hooks/grok-install.js` manually. Integration is **state + Notification only**: Grok has no blocking `PermissionRequest` hook, so Clawd never registers `/permission`. Allow/Deny stays in the Grok TUI. A permission prompt can still ring the pet via Notification.
 
 **WorkBuddy** — uses Claude Code-compatible hooks in `~/.workbuddy-ai/settings.json` (current WorkBuddy AI) or `~/.workbuddy/settings.json` (legacy builds). Install it from **Settings → Agents** when you want local WorkBuddy tracking; after that Clawd keeps the hooks synced on launch while WorkBuddy remains enabled. You can also run `node hooks/workbuddy-install.js` manually. WorkBuddy is a macOS/Windows Electron desktop app with no standalone Linux/WSL CLI; state-driven animations have been verified on macOS. Integration is **state + Notification only**: the desktop app always handles permission approval inside its own native sandbox and GUI confirmation cards, so Clawd never registers a `/permission` HTTP hook. A permission prompt reaches Clawd only as a waiting-for-confirmation Notification carrying its `session_id` — the bell/attention cue works (verified on Windows), but the approve/deny decision stays inside WorkBuddy.
 
@@ -111,7 +117,7 @@ Running `npm run install:claude-hooks` for a local hook repair does not opt in. 
 
 **OpenClaw** — uses a plugin path under `~/.openclaw/openclaw.json`. Install it from **Settings → Agents** when you want local OpenClaw tracking; after that Clawd keeps the plugin synced on launch while OpenClaw remains enabled. You can also run `npm run install:openclaw-plugin` manually to let OpenClaw's CLI handle first-time setup. Phase 1 is state-only and targets local `openclaw tui --local` sessions.
 
-**Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), then install the Clawd integration from **Settings → Agents** when you want local Hermes tracking. Once the integration is installed and Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`. Hermes supports state, sessions, terminal focus, and supported permission bubbles; see [known-limitations.md](known-limitations.md) for the current boundary.
+**Hermes Agent** — install Hermes from [hermes-agent.org](https://hermes-agent.org/) or [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent), then install the Clawd integration from **Settings → Agents** when you want local Hermes tracking. Once the integration is installed and Hermes exists (`%LOCALAPPDATA%\hermes` on Windows or `~/.hermes` on macOS/Linux), Clawd copies its plugin into Hermes' managed plugin directory and enables it through `hermes plugins enable clawd-on-desk`. You can force a manual sync with `npm run install:hermes-plugin`, or remove Clawd's Hermes plugin with `npm run uninstall:hermes-plugin`. Hermes supports state, sessions, terminal focus, and supported permission bubbles; see [known-limitations.md](known-limitations.md) for the current boundary. For a Hermes install that lives on a remote host, deploy it from **Settings → Remote SSH** instead — the Phase 1 scope and the gateway-restart rule are in [guide-remote-ssh.md](guide-remote-ssh.md).
 
 **QwenWork (千问办公)** — agent id `qwenwork`; hooks live in `~/.QwenWorkCN/settings.json` (that is QwenWork's real user-data home, not the `~/.qwenwork` path its hooks docs mention). Install it from **Settings → Agents** when you want local QwenWork tracking; after that Clawd keeps the hooks synced on launch while QwenWork remains enabled. You can also run `npm run install:qwenwork-hooks` manually, and `npm run uninstall:qwenwork-hooks` to remove them.
 
@@ -230,108 +236,73 @@ macOS Claude Keychain auth. See the dedicated guide for the exact boundary.
 
 ## WSL (Windows Subsystem for Linux)
 
-> This section mainly covers Claude Code and other hook-based agents inside WSL. For the official `Codex CLI + WSL` status, Codex hook feature-flag behavior, and why Clawd does not auto-detect Codex logs under WSL's Linux home by default, see: [codex-wsl-clarification.md](codex-wsl-clarification.md)
+Run Clawd on Windows and install the agent integration in the WSL distro where the agent runs. Start with **Settings → Agents → Connected → WSL Scan**, find the matching agent/distro row, and choose **Pair**. The row may be under **Unavailable** when the agent is absent from Windows. Confirm that the agent is **enabled** in Clawd: Pair does not generally turn on a disabled agent and does not install or mark a Windows-local integration as installed.
 
-If an agent runs inside WSL while Clawd runs on the Windows host, its integration posts to `127.0.0.1:23333-23337`. WSL1 shares that loopback. WSL2 normally needs mirrored networking; default NAT does not make the Windows loopback server reachable from Linux. The in-app Pair flow probes this path and warns when installation succeeded but connectivity did not.
-
-For supported agents, open **Settings → Agents**, use **WSL Scan** from the Connected section, then find the matching distro row and choose **Pair**. A WSL-only agent can remain under the **Unavailable** collapsible section because local installation status and WSL pairing are separate. Pairing enables Clawd's event ingress but does not mark or install a Windows-local integration.
+Pair installs the integration and probes connectivity separately. An installed result is not proof that Windows Clawd is reachable; a failed or unknown probe is not a connection success. Start a new agent session and check that it appears in Clawd. For Codex's separate-home and shared-home paths, see [Codex + WSL clarification](codex-wsl-clarification.md).
 
 **Hermes Agent in WSL:** Hermes must already be installed in the selected distro. Pair copies a private, temporary installer payload into WSL, installs and enables `clawd-on-desk` in the primary Hermes home and its discovered profiles, then removes the temporary payload. **Unpair** disables/removes only Clawd's Hermes plugin from that distro; it preserves unrelated plugins and does not disable Hermes events globally when another local or WSL source may still be active. Custom WSL `HERMES_HOME` is resolved from the distro's login shell.
 
-**Setup:**
+### Manual installation when Pair is unavailable
+
+Use Linux Node.js inside WSL and a complete source checkout. Run only the installer for the agent you use. For Claude Code, the default command uses WSL detection, matching Pair's installation mode, and does not install a statusline:
 
 ```bash
-# Inside your WSL shell:
-mkdir -p ~/.claude/hooks
-
-# Copy hook files from the Windows-side repo (adjust the /mnt/ path to your Clawd location)
-cp /mnt/d/animation/hooks/{server-config,json-utils,shared-process,clawd-hook,install,codex-hook,codex-install,codex-install-utils,codex-remote-monitor,codex-session-index,codex-subagent-fields,copilot-hook,copilot-install}.js ~/.claude/hooks/
-
-# Register Claude hooks in remote mode
-node ~/.claude/hooks/install.js --remote
-
-# Register Codex official hooks in remote mode when Codex CLI is installed in WSL
-node ~/.claude/hooks/codex-install.js --remote
-
-# Register Copilot CLI hooks in remote mode when Copilot CLI is installed in WSL
-node ~/.claude/hooks/copilot-install.js --remote
-```
-
-After setup, start Clawd on Windows and run Claude Code in WSL — Clawd reacts to your sessions automatically. Permission bubbles work too.
-
-The in-app WSL deploy path intentionally runs the Claude installer without `--statusline`, so it provides transcript fallback only and does not claim an authoritative custom-provider window. The manual `--remote` command above does install a visible statusline in WSL's separate home, but the Windows app accepts its context/quota metadata only while **Collect local Claude usage** is enabled. With the switch off, those POSTs are successful no-ops. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
-
-For Codex in WSL, official hooks work when Codex runs inside the WSL environment and `~/.codex` exists there. If you prefer sharing the Windows Codex home, set `CODEX_HOME=/mnt/c/Users/<windows-user>/.codex` inside WSL before running Codex.
-
-### WSL Networking & Hook Registration (Alternative Approach)
-
-Clawd runs as a Windows Electron app, while your AI coding agents (Claude Code, Kiro CLI, etc.) may run inside WSL. Hook scripts in WSL POST HTTP requests to `127.0.0.1:23333`, so WSL and Windows must share the same localhost.
-
-- **WSL1** — works out of the box. WSL1 naturally shares localhost with Windows, no extra configuration needed.
-- **WSL2** — requires mirrored networking mode. WSL2 has its own network stack by default, so `127.0.0.1` points to WSL itself, not Windows. Enable mirrored mode in `%USERPROFILE%\.wslconfig` (create the file if it doesn't exist), then run `wsl --shutdown` to restart WSL:
-
-```ini
-[wsl2]
-networkingMode=mirrored
-```
-
-**Manually register hooks inside WSL:**
-
-Clawd auto-registers Claude Code hooks to `~/.claude/settings.json` on Windows startup. But if your agent runs in WSL, hooks need to be registered in WSL's own home directory. Run inside WSL:
-
-```bash
-git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd clawd-on-desk
-
-# Claude Code
+# In WSL; use a Linux destination without spaces and keep this checkout.
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git ~/clawd-on-desk
+cd ~/clawd-on-desk
 node hooks/install.js
 
-# Codex CLI
-node hooks/codex-install.js --remote
-
-# Kiro CLI - registers hooks for all custom agents under ~/.kiro/agents/,
-# and auto-creates a clawd agent
-node hooks/kiro-install.js
-
-# Kimi Code CLI (Kimi-CLI)
-node hooks/kimi-install.js
-
-# Qwen Code
-node hooks/qwen-code-install.js
-
-# Cursor Agent
-node hooks/cursor-install.js
-
-# Gemini CLI
-node hooks/gemini-install.js
-
-# Antigravity CLI (agy)
-node hooks/antigravity-install.js
-
-# CodeBuddy
-# Preserves an existing marker-owned custom permission URL.
-node hooks/codebuddy-install.js
-# Explicit alternatives:
-# node hooks/codebuddy-install.js --permission-url local
-# node hooks/codebuddy-install.js --permission-url https://approval.example/permission
-
-# WorkBuddy
-node hooks/workbuddy-install.js
-
-# opencode
-node hooks/opencode-install.js
-
-# MiMo Code
-npm run install:mimocode-plugin
-
-# Pi
-node hooks/pi-install.js
-
-# OpenClaw
-node hooks/openclaw-install.js
+# Optional: also install the Claude statusline for context/quota metadata.
+node hooks/install.js --statusline
 ```
 
-> **Tip:** If the repo is cloned inside WSL (e.g. `~/clawd-on-desk`), hook scripts will automatically use WSL's Node.js path. If the repo is on a Windows drive (e.g. `/mnt/c/...`), make sure `node` is in WSL's `PATH`.
+The statusline installer preserves an existing third-party statusline unless you explicitly opt into chaining; see [Agent Setup](#agent-setup). The Windows app accepts WSL Claude context/quota metadata only while **Collect local Claude usage** is enabled. With that switch off, metadata POSTs are successful no-ops. Pair itself does not install the statusline and supplies transcript fallback rather than an authoritative custom-provider context window. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
+
+Other manual hook commands, run from the same checkout:
+
+| Agent | Command |
+| --- | --- |
+| Codex CLI | `node hooks/codex-install.js --remote` |
+| Copilot CLI | `node hooks/copilot-install.js --remote` |
+| Kiro CLI | `node hooks/kiro-install.js` |
+| Kimi Code CLI (Kimi-CLI) | `node hooks/kimi-install.js` |
+| Qwen Code | `node hooks/qwen-code-install.js` |
+| Cursor Agent | `node hooks/cursor-install.js` |
+| Gemini CLI | `node hooks/gemini-install.js` |
+| Antigravity CLI (agy) | `node hooks/antigravity-install.js` |
+| CodeBuddy | `node hooks/codebuddy-install.js` |
+
+Kiro registers hooks in custom agents under `~/.kiro/agents/` and creates a `clawd` agent. CodeBuddy's bare installer preserves an existing managed custom permission URL; explicit alternatives are `--permission-url local` or `--permission-url https://approval.example/permission`. General installer commands are also listed in [Agent Setup](#agent-setup).
+
+WorkBuddy has no verified standalone Linux/WSL CLI; use its macOS/Windows desktop integration. opencode, MiMo Code, Pi, and OpenClaw are not currently in the WSL Pair mapping and their WSL integration remains unverified. A general installer for one of these agents is not a verified WSL recipe.
+
+If the complete source checkout is only on Windows, copy **all top-level JavaScript files** from its `hooks/` directory into WSL. Persistent hook agents in Pair also copy this complete set; Hermes uses the separate temporary payload described above. Do not maintain a hand-picked file list: hooks have direct and transitive dependencies.
+
+```bash
+# In WSL; replace the quoted source path with your complete source checkout.
+mkdir -p ~/.claude/hooks
+cp "/mnt/c/path/to/clawd-on-desk/hooks/"*.js ~/.claude/hooks/
+node ~/.claude/hooks/install.js
+
+# Optional Claude statusline:
+node ~/.claude/hooks/install.js --statusline
+```
+
+For another hook agent, use its installer filename from the table in the copied directory and keep its listed flags. The Claude CLI checks the requested hook entry points and their local dependencies before writing configuration; if files are missing or unreadable, restore the complete set from the same source version and retry.
+
+Claude's default WSL hook command currently has unquoted paths. Keep the final Linux Node and hook paths free of spaces; quoting the Windows **copy source** is supported, but successful installation from a path containing spaces does not prove the generated hook can execute from it.
+
+Claude's legacy `--remote` remains supported. It also installs the statusline, sets `CLAWD_REMOTE=1`, uses the remote command form and host label, raises state-hook timeouts from 5 to 10 seconds, and skips SessionStart PID pre-resolution. Use `--statusline` for the explicit WSL statusline option above; `--remote` has broader semantics. This default applies to Claude, not every agent's installer.
+
+### Networking and troubleshooting
+
+Windows Clawd listens on loopback in `127.0.0.1:23333-23337`. **Linux Node → Windows Clawd** normally requires WSL2 mirrored networking; default NAT does not expose the Windows loopback listener to Linux. Mirrored mode requires Windows 11 22H2 or later. Microsoft documents `networkingMode=mirrored` in `%USERPROFILE%\.wslconfig` and the restart procedure in [WSL networking](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking); restarting WSL stops its running sessions. WSL1 shares loopback, but this network fact does not imply current Codex support for WSL1.
+
+**Codex shared-home Windows interop** runs the hook with Windows `node.exe` and uses Windows loopback, so that transport does not require mirrored networking. A shared `CODEX_HOME` alone does not select interop: a WSL-owned native launcher still uses Linux Node and the Linux network path. Check the [three-path comparison](codex-wsl-clarification.md#configuration-and-execution-paths) before changing network settings.
+
+Ordinary WSL **state events** discover the service across ports 23333–23337. Claude's HTTP **PermissionRequest** URL is fixed when installed; it does not scan ports when a permission request fires. The installer uses an explicit port or a valid local `~/.clawd/runtime.json`, otherwise 23333. A separate WSL home normally has no Windows runtime record, so both Pair and manual installation normally register 23333. If Windows Clawd listens on 23334 or above, state updates may work while permission bubbles do not. Compare Windows' actual runtime port with the URL in WSL's Claude settings; a successful state probe does not validate the permission URL. Automatic WSL permission-port synchronization remains a follow-up limitation.
+
+If a new session does not appear, check the selected distro, the agent's enabled state, the registered command and its Node executable, then the connectivity result. Installation, reachability, and receipt of a real session are separate checks.
 
 ## Windows Notes
 
@@ -341,13 +312,15 @@ node hooks/openclaw-install.js
 ## macOS Notes
 
 - **From source** (`npm start`): works out of the box on Intel and Apple Silicon.
-- **Official DMG installers**: official GitHub Releases provide both x64 and arm64 DMGs. The release workflow signs them with Developer ID, notarizes them with Apple, and staples the notarization ticket. A manual `workflow_dispatch` run without signing credentials may produce only ad-hoc validation artifacts; those are not official distribution packages.
+- **Homebrew**: `brew install --cask clawd-on-desk` installs the signed and notarized app from the official DMG for the current architecture. Upgrade later with `brew upgrade --cask clawd-on-desk`.
+- **Official DMG installers**: official GitHub Releases provide both x64 and arm64 DMGs containing the Developer ID-signed and Apple-notarized app with its stapled ticket. The DMG container itself is not separately signed. A manual `workflow_dispatch` run without signing credentials may produce only ad-hoc validation artifacts; those are not official distribution packages.
 - **Auto-update bridge**: older DMG releases do not include ZIP update payloads, so they cannot update themselves directly to the first release with in-app updates. Existing users must manually install that bridge release from GitHub Releases once. Afterward, official releases can be downloaded inside Clawd and installed either with **Restart Now**, or with **Later** followed by quitting and reopening the app. The capability is not considered verified until an A→B upgrade signed with the same Developer ID succeeds on real hardware; unit tests are not a substitute.
 - **Source auto-update**: when running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
 
 ## Linux Notes
 
 - **From source** (`npm start`): the Electron sandbox is enabled by default. If your Linux dev environment still fails chrome-sandbox initialization, use `CLAWD_DISABLE_SANDBOX=1 npm start` as a temporary workaround.
+- **Homebrew**: `brew install --cask clawd-on-desk` installs the x86_64 AppImage. There is no Linux ARM cask artifact. Upgrade later with `brew upgrade --cask clawd-on-desk`.
 - **Packages**: AppImage and `.deb` are available from [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases). After deb install, the app icon appears in GNOME's app menu.
 - **Terminal focus**: uses `wmctrl` or `xdotool` (whichever is available). Install one for session terminal jumping to work: `sudo apt install wmctrl` or `sudo apt install xdotool`.
-- **Auto-update**: AppImage and deb installs must still be downloaded manually from GitHub Releases. When running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
+- **Auto-update**: Clawd does not self-update Linux packages. Upgrade Homebrew-managed installs with `brew upgrade --cask clawd-on-desk`; directly installed AppImage and deb packages require a manual download from GitHub Releases. When running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.

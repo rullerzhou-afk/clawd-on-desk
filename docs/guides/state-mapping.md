@@ -74,6 +74,30 @@ ZCode uses config-file hooks under `~/.zcode/cli/config.json`:
 
 `PermissionRequest` is a blocking permission approval since Phase 2: the hook waits on Clawd's local bubble or remote approval and answers a manual allow/deny via `hookSpecificOutput` on stdout. Permission automation deliberately defers for ZCode until its tool surface and session identity are audited. The `notification` mapping above only fires on the fail-closed path (missing/unknown tool name) or when Clawd is not running; a real decision never posts `/state`. ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. When Clawd yields no decision (timeout, disconnect, DND, bubbles off), the hook prints `{}` and ZCode's own permission flow takes over.
 
+## Grok Build Hook Events
+
+Grok Build uses config-file hooks under `<GROK_HOME or ~/.grok>/hooks/clawd-on-desk.json`:
+
+| Grok Hook Event | State | Notes |
+|---|---|---|
+| SessionStart | idle | |
+| UserPromptSubmit | thinking | records the newest turn in the turn fence |
+| PreToolUse / PostToolUse | working | |
+| PostToolUseFailure / StopFailure | error | |
+| Stop (`reason="end_turn"`, no live background tasks/crons, inactive stop hook) | attention | only a genuine unblocked end of turn |
+| Stop (continuation signal) | working with `event=null` | adapter-local; never latches a terminal |
+| Stop (`channel_closed` / `shutdown` / missing / unknown reason) | dropped | never synthesizes Done; the real `SessionEnd` or `idle_prompt` settles |
+| StopCancelled | idle | settles without Done; corrects a same-turn Stop tail |
+| Notification (`notificationType="idle_prompt"`) | notification | plays the one-shot, then stores the session idle; fence settles the turn |
+| Other Notification | notification | presentation only; does not settle the active turn |
+| PreCompact | sweeping | |
+| PostCompact (manual) | idle | never a completion |
+| PostCompact (auto) | thinking | never a completion |
+| PermissionDenied | notification (passive) | no decision; Grok owns permissions |
+| SessionEnd | remove session; idle if no live sessions | clears the turn fence record |
+
+Grok never registers `/permission`; the adapter always emits `{}`. Subagent events (`subagentType`) and `SubagentStart` / `SubagentStop` are out of scope in Phase 1.
+
 ## Pi Extension Events
 
 Pi uses a global extension (`~/.pi/agent/extensions/clawd-on-desk`) and maps interactive-session lifecycle events to shared Clawd states:

@@ -1,0 +1,60 @@
+name: Cursor Hook Compatibility
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/cursor-hook-compatibility.yml"
+      - ".nvmrc"
+      - "package.json"
+      - "package-lock.json"
+      - "hooks/cursor-*.js"
+      - "hooks/shared-process.js"
+      - "hooks/server-config.js"
+      - "hooks/json-utils.js"
+      - "src/remote-ssh-deploy.js"
+      - "test/cursor-*.test.js"
+      - "test/shared-process.test.js"
+      - "test/helpers/spawned-hook.js"
+      - "test/helpers/hook-post-recorder.js"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: ${{ matrix.os }} / ${{ matrix.runtime }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+        runtime: [project, node-22-floor]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        if: matrix.runtime == 'project'
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/setup-node@v4
+        if: matrix.runtime == 'node-22-floor'
+        with:
+          node-version: '22.12.0'
+      - run: npm ci
+      - name: Test Cursor hooks, title delivery, and dependency closure
+        run: >-
+          node --test
+          test/cursor-install.test.js
+          test/cursor-session-title.test.js
+          test/remote-deploy.test.js
+          test/hook-adapter-b1a-contract.test.js
+          test/hook-adapter-offline-contract.test.js
+          test/hook-pid-cache-contexts.test.js
+          test/doctor-node-bin-parser.test.js
+          test/doctor-find-hook-commands.test.js
+      - name: Verify the unchanged production stdin read deadline
+        run: node --test --test-name-pattern=readStdinJson test/shared-process.test.js
+      - name: Exercise SQLite on the supported Node 22.12 floor
+        if: matrix.runtime == 'node-22-floor'
+        run: node --experimental-sqlite --test test/cursor-session-title.test.js test/remote-deploy.test.js

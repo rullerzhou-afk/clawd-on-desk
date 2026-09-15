@@ -7,11 +7,21 @@ const {
   parseAccelerator,
   isDangerousAccelerator,
   acceleratorsConflict,
+  isShortcutActionSupported,
 } = require("./shortcut-actions");
 
+function getShortcutPlatform(deps) {
+  return deps && typeof deps.platform === "string" && deps.platform
+    ? deps.platform
+    : process.platform;
+}
+
 function getShortcutPlatformOptions(deps) {
-  const platform = deps && typeof deps.platform === "string" ? deps.platform : process.platform;
-  return { isMac: platform === "darwin" };
+  return { isMac: getShortcutPlatform(deps) === "darwin" };
+}
+
+function supportsShortcutAction(actionId, deps) {
+  return isShortcutActionSupported(actionId, getShortcutPlatform(deps));
 }
 
 function getShortcutSnapshot(snapshot) {
@@ -75,6 +85,11 @@ function validateShortcutBinding(actionId, accelerator, deps) {
   if (!meta) {
     return { status: "error", message: "unknown shortcut action" };
   }
+  // A UI-bypassing command must be refused outright rather than writing a
+  // binding this platform will never register.
+  if (!supportsShortcutAction(actionId, deps)) {
+    return { status: "error", message: "shortcut action unsupported on this platform" };
+  }
 
   if (accelerator === null) {
     return { status: "ok", accelerator: null };
@@ -95,6 +110,9 @@ function validateShortcutBinding(actionId, accelerator, deps) {
   const shortcuts = getShortcutSnapshot(deps && deps.snapshot);
   for (const otherActionId of SHORTCUT_ACTION_IDS) {
     if (otherActionId === actionId) continue;
+    // A leftover binding for an unsupported action holds no OS registration,
+    // so it must not block a supported action from taking that accelerator.
+    if (!supportsShortcutAction(otherActionId, deps)) continue;
     if (acceleratorsConflict(shortcuts[otherActionId], parsed.accelerator, platformOptions)) {
       return {
         status: "error",
@@ -276,9 +294,16 @@ function rollbackAppliedShortcutChanges(appliedChanges, deps) {
 function resetAllShortcuts(_payload, deps) {
   const currentShortcuts = getShortcutSnapshot(deps && deps.snapshot);
   const targetShortcuts = getDefaultShortcuts();
+  for (const actionId of SHORTCUT_ACTION_IDS) {
+    if (supportsShortcutAction(actionId, deps)) continue;
+    targetShortcuts[actionId] = currentShortcuts[actionId] ?? null;
+  }
 
   const seen = new Set();
   for (const actionId of SHORTCUT_ACTION_IDS) {
+    // Unsupported actions keep whatever prefs already hold; Reset All neither
+    // validates nor rewrites them, and they claim no accelerator here.
+    if (!supportsShortcutAction(actionId, deps)) continue;
     const validated = validateShortcutBinding(actionId, targetShortcuts[actionId], {
       ...deps,
       snapshot: { ...(deps && deps.snapshot), shortcuts: {} },
@@ -292,15 +317,13 @@ function resetAllShortcuts(_payload, deps) {
     }
   }
 
-  // Track successfully applied persistent changes so we can roll back on
-  // mid-loop failure. Today only `togglePet` is persistent so the loop runs
-  // at most once and rollback is a no-op, but this future-proofs the plan
-  // v3 section 4.2 all-or-nothing contract for when additional persistent
-  // actions get added.
+  // Track successfully applied persistent changes so a later action failure
+  // restores every earlier registration before prefs are allowed to commit.
   const appliedChanges = [];
   for (const actionId of SHORTCUT_ACTION_IDS) {
     const meta = SHORTCUT_ACTIONS[actionId];
     if (!meta.persistent) continue;
+    if (!supportsShortcutAction(actionId, deps)) continue;
     const oldAccelerator = currentShortcuts[actionId] ?? null;
     const newAccelerator = targetShortcuts[actionId] ?? null;
     const currentFailure = getShortcutFailure(actionId, deps);

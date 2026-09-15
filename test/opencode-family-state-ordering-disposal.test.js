@@ -1269,3 +1269,354 @@ describe("opencode-family context usage event wiring", () => {
     assert.strictEqual(plugin.__test._contextStateByInstance.has(instanceToken), false);
   });
 });
+
+// #883: resume signals must hydrate metadata without synthesizing activity.
+describe("opencode resume context hydration", () => {
+  const directory = path.join(TMP_HOME, "resume-context");
+  const sessionID = "ses_resume";
+  const history = (used = 321, id = "msg_latest", created = 2, sid = sessionID) => ({
+    info: { id, sessionID: sid, role: "assistant", time: { created, completed: created + 1 },
+      providerID: "openai", modelID: "test-model", tokens: { input: used } },
+    parts: [],
+  });
+  const resumed = (sid = sessionID) => lifecycle("session.updated", sid, directory);
+  async function setup(messages, params = CONFIG, list = null) {
+    const calls = [];
+    const queries = [];
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      return clawdResponse(call.body);
+    };
+    const client = {
+      session: { messages: async (options) => { queries.push(options); return messages(options); } },
+      provider: { list: async () => ({ data: { all: [
+        { id: "openai", models: { "test-model": { limit: { context: 1000 } } } },
+      ] } }) },
+    };
+    if (list) client.session.list = list;
+    const plugin = createOpencodeFamilyPlugin(params);
+    const hooks = await plugin({ ...createContext(directory), client });
+    return { plugin, hooks, client, calls, queries,
+      metadata: () => calls.filter((call) => call.body.context_usage).map((call) => call.body) };
+  }
+  async function settle(plugin) {
+    for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve));
+    await waitForQueueEmpty(plugin);
+  }
+
+  it("hydrates an existing session on session.updated without another assistant event or lifecycle POST", async () => {
+    const h = await setup(async () => ({ data: [history()] }));
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(h.metadata().length, 1);
+    assert.deepStrictEqual(h.metadata()[0].context_usage, { used: 321, limit: 1000, source: "opencode" });
+    assert.strictEqual(h.metadata()[0].metadata_only, true);
+    assert.strictEqual(h.metadata()[0].session_id, "opencode:ses_resume");
+    assert.strictEqual(h.calls.filter((call) => !call.body.metadata_only).length, 0);
+    assert.strictEqual(h.plugin.__test._lastStatePerSession.size, 0);
+    assert.strictEqual(h.queries[0].path.id, sessionID, "SDK receives the raw session id");
+    assert.strictEqual(h.queries[0].query.directory, directory);
+    assert.ok(h.queries[0].query.limit > 0 && h.queries[0].query.limit <= 100);
+  });
+
+  it("hydrates explicit TUI selection without treating it as session activity", async () => {
+    const h = await setup(async () => [history()]);
+    await emit(h.hooks, { type: "tui.session.select", properties: { sessionID } });
+    await settle(h.plugin);
+    assert.strictEqual(h.metadata().length, 1);
+    assert.ok(h.calls.every((call) => call.body.metadata_only));
+  });
+
+  it("queues hydration behind the lifecycle that first makes a resumed session visible", async () => {
+    const h = await setup(async () => ({ data: [history()] }));
+    await emit(h.hooks, { type: "session.status", properties: { sessionID, status: { type: "busy" } } });
+    await settle(h.plugin);
+    assert.deepStrictEqual(h.calls.map((call) => call.body.metadata_only === true), [false, true]);
+    assert.strictEqual(h.calls[0].body.event, "UserPromptSubmit");
+    assert.strictEqual(h.plugin.__test._lastStatePerSession.get("opencode:ses_resume"), "thinking");
+  });
+
+  it("chooses the latest valid assistant by message order, including decreased usage after compaction", async () => {
+    const h = await setup(async () => ({ data: [history(900, "msg_old", 1), history(100),
+      { info: { id: "msg_user", sessionID, role: "user", time: { created: 3 } }, parts: [] },
+      history(0, "msg_incomplete", 4), history(800, "msg_foreign", 5, "ses_other")] }));
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.deepStrictEqual(h.metadata().map((body) => body.context_usage.used), [100]);
+  });
+
+  it("coalesces repeated resume signals and stops querying after accepted hydration", async () => {
+    const gate = deferred();
+    const h = await setup(() => gate.promise);
+    for (let i = 0; i < 10; i++) await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 1);
+    gate.resolve({ data: [history()] });
+    await settle(h.plugin);
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 1);
+    assert.strictEqual(h.metadata().length, 1);
+  });
+
+  it("discards a delayed history result after a newer real-time sample, even when usage decreases", async () => {
+    const gate = deferred();
+    const h = await setup(() => gate.promise);
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 1);
+    await emit(h.hooks, { type: "message.updated", properties: { info: history(50).info } });
+    await settle(h.plugin);
+    gate.resolve({ data: [history(900)] });
+    await settle(h.plugin);
+    assert.deepStrictEqual(h.metadata().map((body) => body.context_usage.used), [50]);
+  });
+
+  it("invalidates pending history even when the incoming assistant update has no usable tokens yet", async () => {
+    const gate = deferred();
+    const h = await setup(() => gate.promise);
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    await emit(h.hooks, { type: "message.updated", properties: { info: history(0).info } });
+    gate.resolve({ data: [history(900)] });
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 1);
+    assert.strictEqual(h.metadata().length, 0);
+  });
+
+  for (const terminal of ["session.deleted", "server.instance.disposed"]) {
+    it(`drops a history result after ${terminal}`, async () => {
+      const gate = deferred();
+      const h = await setup(() => gate.promise);
+      await emit(h.hooks, resumed());
+      await settle(h.plugin);
+      assert.strictEqual(h.queries.length, 1);
+      await emit(h.hooks, terminal === "session.deleted" ? lifecycle(terminal, sessionID, directory)
+        : { type: terminal, properties: { directory } });
+      gate.resolve({ data: [history()] });
+      await settle(h.plugin);
+      assert.strictEqual(h.metadata().length, 0);
+      assert.strictEqual(h.plugin.__test._contextStateByInstance.size, 0);
+    });
+  }
+
+  it("does not publish unknown usage or invent a zero percentage", async () => {
+    for (const result of [{ data: [] }, { error: { message: "unavailable" } }, { data: [history(0)] },
+      { data: [history(100, "msg_foreign", 1, "ses_other")] }]) {
+      const h = await setup(async () => result);
+      await emit(h.hooks, resumed());
+      await settle(h.plugin);
+      assert.strictEqual(h.queries.length, 1);
+      assert.strictEqual(h.metadata().length, 0);
+    }
+  });
+
+  it("preserves unknown model limit as null", async () => {
+    const h = await setup(async () => ({ data: [history()] }));
+    h.client.provider.list = async () => ({ data: { all: [] } });
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.deepStrictEqual(h.metadata().map((body) => body.context_usage), [
+      { used: 321, limit: null, source: "opencode" },
+    ]);
+  });
+
+  it("does not query MiMo, missing identities, conflicting identities, or another directory", async () => {
+    const mimo = await setup(async () => ({ data: [history()] }), {
+      ...CONFIG, agentId: "mimocode", hookSource: "mimocode-plugin", sessionIdPrefix: "mimocode:",
+    });
+    await emit(mimo.hooks, resumed());
+    await settle(mimo.plugin);
+    assert.strictEqual(mimo.queries.length, 0);
+    const h = await setup(async () => ({ data: [history()] }));
+    await emit(h.hooks, { type: "session.updated", properties: {} });
+    await emit(h.hooks, lifecycle("session.updated", sessionID, directory, null, { id: "ses_other" }));
+    await emit(h.hooks, lifecycle("session.updated", sessionID, directory + "-other"));
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 0);
+  });
+
+  it("cools down failed reads but replays an unaccepted sample without rereading history", async () => {
+    const originalNow = Date.now;
+    let now = originalNow();
+    Date.now = () => now;
+    try {
+      let fail = true;
+      const h = await setup(async () => { if (fail) throw new Error("offline"); return { data: [history()] }; });
+      await emit(h.hooks, resumed());
+      await settle(h.plugin);
+      await emit(h.hooks, resumed());
+      await settle(h.plugin);
+      assert.strictEqual(h.queries.length, 1);
+      fail = false;
+      now += 31_000;
+      fetchImpl = async () => clawdResponse(null, { metadataAccepted: false });
+      await emit(h.hooks, resumed());
+      await settle(h.plugin);
+      assert.strictEqual(h.queries.length, 2);
+      assert.strictEqual([...h.plugin.__test._contextStateByInstance.values()][0].get("opencode:ses_resume").delivered, null);
+      fetchImpl = async (url, opts) => { const call = parseFetchCall(url, opts); h.calls.push(call); return clawdResponse(call.body); };
+      await emit(h.hooks, resumed());
+      await settle(h.plugin);
+      assert.strictEqual(h.queries.length, 2);
+      assert.strictEqual(h.metadata().length, 1);
+    } finally { Date.now = originalNow; }
+  });
+
+  it("bounds concurrent history requests per instance", async () => {
+    const gate = deferred();
+    const h = await setup(() => gate.promise);
+    for (let i = 0; i < 10; i++) await emit(h.hooks, resumed(`ses_${i}`));
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 4);
+    gate.resolve({ data: [] });
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 10, "all original signals are served after capacity is freed");
+    assert.strictEqual(new Set(h.queries.map((query) => query.path.id)).size, 10);
+  });
+
+  it("keeps client/directory lookups isolated across initialized instances", async () => {
+    const h = await setup(async () => ({ data: [history(100)] }));
+    const otherDirectory = directory + "-second";
+    const otherQueries = [];
+    const second = await h.plugin({ directory: otherDirectory, client: {
+      ...h.client,
+      session: { messages: async (options) => { otherQueries.push(options); return { data: [history(200, "msg_2", 2, "ses_second")] }; } },
+    } });
+    await emit(h.hooks, resumed());
+    await emit(second, lifecycle("session.updated", "ses_second", otherDirectory));
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 1);
+    assert.strictEqual(otherQueries.length, 1);
+    assert.strictEqual(otherQueries[0].query.directory, otherDirectory);
+    assert.deepStrictEqual(h.metadata().map((body) => [body.session_id, body.context_usage.used]), [
+      ["opencode:ses_resume", 100], ["opencode:ses_second", 200],
+    ]);
+  });
+
+  it("does not let old history overwrite a recreated generation", async () => {
+    const old = deferred();
+    let first = true;
+    const h = await setup(() => { if (first) { first = false; return old.promise; } return { data: [history(50)] }; });
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    await emit(h.hooks, lifecycle("session.deleted", sessionID, directory));
+    await settle(h.plugin);
+    await emit(h.hooks, lifecycle("session.created", sessionID, directory));
+    await settle(h.plugin);
+    old.resolve({ data: [history(900)] });
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 2);
+    assert.deepStrictEqual(h.metadata().map((body) => body.context_usage.used), [50]);
+  });
+
+  it("keeps the history fence through a delayed model-limit lookup", async () => {
+    const gate = deferred();
+    let providerCalls = 0;
+    const h = await setup(async () => ({ data: [history(900)] }));
+    h.client.provider.list = () => { providerCalls++; return gate.promise; };
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(providerCalls, 1);
+    await emit(h.hooks, { type: "message.updated", properties: { info: history(0).info } });
+    gate.resolve({ data: { all: [] } });
+    await settle(h.plugin);
+    assert.strictEqual(h.metadata().length, 0);
+  });
+
+  it("times out a hung SDK without blocking the event hook or publishing metadata", async () => {
+    const h = await setup(() => new Promise(() => {}));
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 1);
+    await waitFor(() => h.queries[0].signal.aborted, "history request did not time out", 3000);
+    await settle(h.plugin);
+    assert.strictEqual(h.metadata().length, 0);
+    assert.strictEqual([...h.plugin.__test._contextStateByInstance.values()][0].get("opencode:ses_resume").hydration, null);
+  });
+
+  it("hydrates recent directory-owned sessions at startup without lifecycle or fallback ownership", async () => {
+    const listQueries = [];
+    const h = await setup(async () => ({ data: [history()] }), CONFIG, async (options) => {
+      listQueries.push(options);
+      return { data: [
+        { id: sessionID, directory, time: { updated: 10 } },
+        { id: "ses_foreign", directory: directory + "-other", time: { updated: 20 } },
+        { id: "ses_child", directory, parentID: sessionID, time: { updated: 30 } },
+        { id: "ses_archived", directory, time: { updated: 40, archived: 50 } },
+      ] };
+    });
+    await settle(h.plugin);
+    assert.strictEqual(listQueries.length, 1);
+    assert.strictEqual(listQueries[0].query.directory, directory);
+    assert.ok(listQueries[0].query.limit > 0 && listQueries[0].query.limit <= 20);
+    assert.strictEqual(h.queries.length, 1);
+    assert.strictEqual(h.metadata().length, 1);
+    assert.strictEqual(h.metadata()[0].cwd, directory);
+    assert.ok(h.calls.every((call) => call.body.metadata_only));
+    assert.strictEqual(h.plugin.__test._rootSessionId, null);
+    assert.strictEqual(h.plugin.__test._lastSeenSessionId, null);
+    assert.strictEqual(h.plugin.__test._sessionInstanceDirectoryById.size, 0);
+    await emit(h.hooks, { type: "server.instance.disposed", properties: { directory } });
+    await settle(h.plugin);
+    assert.ok(h.calls.every((call) => call.body.metadata_only), "bootstrap-only sessions must not get SessionEnd");
+    assert.strictEqual(h.plugin.__test._contextStateByInstance.size, 0);
+  });
+
+  it("discards an obsolete bootstrap list when a session is deleted while listing", async () => {
+    const gate = deferred();
+    let listed = false;
+    const h = await setup(async () => ({ data: [history()] }), CONFIG, () => { listed = true; return gate.promise; });
+    await settle(h.plugin);
+    assert.strictEqual(listed, true);
+    await emit(h.hooks, lifecycle("session.deleted", sessionID, directory));
+    gate.resolve({ data: [{ id: sessionID, directory, time: { updated: 10 } }] });
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 0);
+    assert.strictEqual(h.metadata().length, 0);
+  });
+
+  it("does not replace a session already observed live while bootstrap was listing", async () => {
+    const gate = deferred();
+    let listed = false;
+    const h = await setup(async () => ({ data: [history(900)] }), CONFIG, () => { listed = true; return gate.promise; });
+    await settle(h.plugin);
+    assert.strictEqual(listed, true);
+    await emit(h.hooks, { type: "message.updated", properties: { info: history(50).info } });
+    await settle(h.plugin);
+    gate.resolve({ data: [{ id: sessionID, directory, time: { updated: 10 } }] });
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 0);
+    assert.deepStrictEqual(h.metadata().map((body) => body.context_usage.used), [50]);
+  });
+
+  it("caps bootstrap to the twenty most recent sessions without following history pages", async () => {
+    const h = await setup(async () => ({ data: [] }), CONFIG, async () => ({ data:
+      Array.from({ length: 30 }, (_, i) => ({ id: `ses_${i}`, directory, time: { updated: i } })),
+    }));
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 20);
+    assert.deepStrictEqual(h.queries.map((q) => q.path.id).sort(),
+      Array.from({ length: 20 }, (_, i) => `ses_${i + 10}`).sort());
+    assert.strictEqual(h.calls.length, 0);
+  });
+
+  it("honors the modern host dispose hook and cancels pending bootstrap without SessionEnd", async () => {
+    const gate = deferred();
+    let signal;
+    const h = await setup(async () => ({ data: [history()] }), CONFIG,
+      (options) => { signal = options.signal; return gate.promise; });
+    await settle(h.plugin);
+    assert.strictEqual(typeof h.hooks.dispose, "function");
+    await h.hooks.dispose();
+    assert.strictEqual(signal.aborted, true);
+    gate.resolve({ data: [{ id: sessionID, directory }] });
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 0);
+    assert.strictEqual(h.calls.length, 0);
+    await emit(h.hooks, resumed());
+    await settle(h.plugin);
+    assert.strictEqual(h.queries.length, 0);
+  });
+});

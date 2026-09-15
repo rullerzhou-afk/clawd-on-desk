@@ -7,6 +7,7 @@ const { EventEmitter } = require("events");
 const { runSpawnedHook } = require("./helpers/spawned-hook");
 const {
   CODEX_AUTO_START_TIMEOUT_MS,
+  applyWindowsStableSidecarEnv,
   buildCodexNoDecisionOutput,
   buildCodexPermissionOutput,
   buildPermissionBody,
@@ -21,7 +22,7 @@ const {
   startClawdAndWait,
 } = require("../hooks/codex-hook");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
-const { CODEX_WSL_INTEROP_ARG } = require("../hooks/server-config");
+const { CODEX_WINDOWS_STABLE_ARG, CODEX_WSL_INTEROP_ARG } = require("../hooks/server-config");
 
 const mockResolve = () => ({
   stablePid: 123,
@@ -60,6 +61,76 @@ function withTempCodexIndex(lines, fn) {
 }
 
 describe("Codex official hook", () => {
+  it("applies a matching native Windows sidecar atomically", () => {
+    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-hook-sidecar-"));
+    const stableDir = path.join(codexHome, "clawd-hooks");
+    const sidecarPath = path.join(stableDir, "codex-hook.js.windows.run");
+    const hookPath = path.resolve(__dirname, "..", "hooks", "codex-hook.js");
+    const encode = (value) => Buffer.from(String(value), "utf8").toString("base64");
+    fs.mkdirSync(stableDir, { recursive: true });
+    try {
+      fs.writeFileSync(sidecarPath, [
+        "clawd-codex-stable-windows-run-v1",
+        encode(process.execPath),
+        encode(hookPath),
+        `E${encode("CLAWD_TEST_ENV")}.${encode("环境 ✓")}`,
+        "",
+      ].join("\n"), "utf8");
+      const env = {};
+      assert.deepStrictEqual(applyWindowsStableSidecarEnv({
+        platform: "win32",
+        argv: [process.execPath, hookPath, CODEX_WINDOWS_STABLE_ARG],
+        env,
+        codexHome,
+        hookPath,
+      }), { applied: true, reason: null, count: 1 });
+      assert.strictEqual(env.CLAWD_TEST_ENV, "环境 ✓");
+
+      const unmarkedEnv = {};
+      assert.strictEqual(applyWindowsStableSidecarEnv({
+        platform: "win32",
+        argv: [process.execPath, hookPath],
+        env: unmarkedEnv,
+        codexHome,
+        hookPath,
+      }).reason, "not-stable");
+      assert.deepStrictEqual(unmarkedEnv, {});
+
+      const mismatchedEnv = {};
+      assert.strictEqual(applyWindowsStableSidecarEnv({
+        platform: "win32",
+        argv: [process.execPath, hookPath, CODEX_WINDOWS_STABLE_ARG],
+        env: mismatchedEnv,
+        codexHome,
+        hookPath: path.join(codexHome, "other", "codex-hook.js"),
+      }).reason, "target-mismatch");
+      assert.deepStrictEqual(mismatchedEnv, {});
+
+      fs.appendFileSync(sidecarPath, `E${encode("CLAWD_PARTIAL")}.%%%\n`, "utf8");
+      const damagedEnv = {};
+      assert.deepStrictEqual(applyWindowsStableSidecarEnv({
+        platform: "win32",
+        argv: [process.execPath, hookPath, CODEX_WINDOWS_STABLE_ARG],
+        env: damagedEnv,
+        codexHome,
+        hookPath,
+      }), { applied: false, reason: "invalid" });
+      assert.deepStrictEqual(damagedEnv, {}, "a damaged tail must not partially apply earlier env entries");
+
+      const skippedEnv = {};
+      assert.strictEqual(applyWindowsStableSidecarEnv({
+        platform: "win32",
+        argv: [process.execPath, hookPath, CODEX_WINDOWS_STABLE_ARG, CODEX_WSL_INTEROP_ARG],
+        env: skippedEnv,
+        codexHome,
+        hookPath,
+      }).reason, "wsl-interop");
+      assert.deepStrictEqual(skippedEnv, {});
+    } finally {
+      fs.rmSync(codexHome, { recursive: true, force: true });
+    }
+  });
+
   it("normalizes session ids with the codex prefix", () => {
     assert.strictEqual(normalizeCodexSessionId("abc"), "codex:abc");
     assert.strictEqual(normalizeCodexSessionId("codex:abc"), "codex:abc");

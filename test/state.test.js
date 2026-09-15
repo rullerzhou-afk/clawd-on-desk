@@ -1692,6 +1692,12 @@ describe("updateSession()", () => {
     assert.strictEqual(api.sessions.get("new1").state, "working");
   });
 
+  it("keeps a known model when a later event reports none (sticky merge)", () => {
+    update(api, { id: "sticky1", state: "working", model: "claude-opus-5" });
+    update(api, { id: "sticky1", state: "working", event: "PostToolUse" });
+    assert.strictEqual(api.sessions.get("sticky1").model, "claude-opus-5");
+  });
+
   it("stores only a normalized route-owned session automation assessment", () => {
     update(api, {
       id: "automation-identity",
@@ -2116,7 +2122,7 @@ describe("updateSession()", () => {
     });
   });
 
-  it("Codex Desktop focus metadata downgrades on Windows", () => {
+  it("Codex Desktop focus metadata uses thread targets on Windows", () => {
     api = require("../src/state")(makeCtx({ focusHostPlatform: "win32" }));
 
     update(api, {
@@ -2139,11 +2145,14 @@ describe("updateSession()", () => {
     const byId = new Map(api.getLastSessionSnapshot().sessions.map((entry) => [entry.id, entry]));
     assert.strictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
     assert.deepStrictEqual(byId.get("codex:019e115a-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
-      type: "terminal",
-      url: null,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
     });
-    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").canFocus, false);
-    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").focusTarget, null);
+    assert.strictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").canFocus, true);
+    assert.deepStrictEqual(byId.get("codex:019e115b-4df2-7ed0-b90e-8e6345aca777").focusTarget, {
+      type: "codex-thread",
+      url: "codex://threads/019e115b-4df2-7ed0-b90e-8e6345aca777",
+    });
   });
 
   it("keeps wtHwnd sticky when later events do not provide one", () => {
@@ -3690,6 +3699,43 @@ describe("updateSession()", () => {
     assert.strictEqual(session.metadataUpdatedAt, 777);
     assert.strictEqual(session.contextUsage, null);
     assert.strictEqual(session.contextUsageOrigin, null);
+  });
+
+  // The statusline is the only producer that reports the model after
+  // SessionStart, and a hook event carrying one would displace the Stop tail
+  // deriveSessionBadge reads.
+  it("updateSessionMetadata relabels the model without disturbing badge or lifecycle", () => {
+    update(api, { id: "s1", state: "working", model: "claude-sonnet-5" });
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    const session = api.sessions.get("s1");
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+    session.updatedAt = 12345;
+    session.metadataUpdatedAt = 777;
+    const recentEventsBefore = JSON.stringify(session.recentEvents);
+
+    const applied = api.updateSessionMetadata("s1", { model: "claude-opus-5" });
+
+    assert.strictEqual(applied, true);
+    assert.strictEqual(session.model, "claude-opus-5");
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+    assert.strictEqual(session.updatedAt, 12345);
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+    assert.strictEqual(JSON.stringify(session.recentEvents), recentEventsBefore);
+  });
+
+  it("updateSessionMetadata treats an unchanged model as a no-op", () => {
+    update(api, { id: "s1", state: "working", model: "claude-opus-5" });
+    const session = api.sessions.get("s1");
+    session.metadataUpdatedAt = 777;
+
+    assert.strictEqual(api.updateSessionMetadata("s1", { model: "claude-opus-5" }), true);
+    assert.strictEqual(api.updateSessionMetadata("s1", { model: "  claude-opus-5  " }), true);
+    assert.strictEqual(session.model, "claude-opus-5");
+    assert.strictEqual(session.metadataUpdatedAt, 777);
+  });
+
+  it("a model-only metadata payload never creates a ghost session", () => {
+    assert.strictEqual(api.updateSessionMetadata("ghost", { model: "claude-opus-5" }), false);
   });
 
   it("updateSessionMetadata treats a same/normalized-equivalent title as a no-op", () => {

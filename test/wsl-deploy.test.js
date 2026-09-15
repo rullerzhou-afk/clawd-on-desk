@@ -65,6 +65,10 @@ describe("wsl-deploy", () => {
       assert.strictEqual(getAgentInstallScriptName("openclaw"), null);
     });
 
+    it("excludes grok-build (Phase 1 has no WSL support)", () => {
+      assert.strictEqual(getAgentInstallScriptName("grok-build"), null);
+    });
+
     it("excludes workbuddy (no standalone Linux/WSL runtime)", () => {
       // WorkBuddy ships only as a macOS/Windows Electron desktop app, so there
       // is no in-WSL settings.json to deploy hooks into. See AGENT_INSTALL_SCRIPT.

@@ -11,7 +11,7 @@ const {
   escapeAppleScriptString,
 } = require("./remote-ssh-quote");
 
-const SAFE_CLAUDE_SESSION_ID = /^[A-Za-z0-9_-]+$/;
+const { normalizeClaudeSessionId } = require("../hooks/claude-session-id");
 
 // PowerShell single-quoted string quoting.
 //
@@ -41,18 +41,6 @@ function quoteCmdExecutablePath(arg) {
 
 function buildCmdLaunchCommand(executablePath, args) {
   return `"${[quoteCmdExecutablePath(executablePath), ...args.map(quoteForCmd)].join(" ")}"`;
-}
-
-function normalizeClaudeSessionId(sessionId) {
-  if (sessionId == null || sessionId === "") return "";
-  if (typeof sessionId !== "string") {
-    throw new TypeError("normalizeClaudeSessionId: sessionId must be a string");
-  }
-  const normalized = sessionId.trim();
-  if (!normalized || !SAFE_CLAUDE_SESSION_ID.test(normalized)) {
-    throw new Error("Invalid Claude session ID. Use only letters, numbers, underscores, and hyphens.");
-  }
-  return normalized;
 }
 
 // Spawn a detached terminal process. Resolves { ok: true } once the process

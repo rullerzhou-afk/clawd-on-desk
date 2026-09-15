@@ -116,6 +116,7 @@ function translations() {
     dashboardKimiQuotaRefreshFailed: "Refresh failed: {reason}",
     dashboardKimiQuotaEmpty: "No quota data yet. Click refresh to fetch it.",
     dashboardKimiQuotaRefreshShort: "Refresh",
+    dashboardModel: "Model",
   };
 }
 
@@ -266,6 +267,13 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
     "Remote sessions cannot focus a terminal on this computer.",
     "WebUI sessions do not have a local terminal window.",
   ]);
+
+  const cards = byClass(root, "card");
+  const jumpButtons = (card) => descendants(card)
+    .filter((el) => el.tagName === "BUTTON" && el.textContent === "Jump");
+  assert.deepStrictEqual(jumpButtons(cards[0]).map((button) => button.disabled), [true]);
+  assert.deepStrictEqual(jumpButtons(cards[1]), []);
+  assert.deepStrictEqual(jumpButtons(cards[2]).map((button) => button.disabled), [true]);
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
 });
 
@@ -415,8 +423,13 @@ test("Dashboard session automation sends only sessionId/mode and exact grantId",
     sessionAutomationMode: "auto-tools",
     sessionAutomationGrantId: "grant-current",
   });
-  const { root, automationCalls } = await loadDashboard([configurable, activeButIneligible]);
+  const inactiveIneligible = session("inactive", {
+    canConfigureSessionAutomation: false,
+    sessionAutomationMode: "inherit",
+  });
+  const { root, automationCalls } = await loadDashboard([configurable, activeButIneligible, inactiveIneligible]);
   const selects = byClass(root, "session-automation-select");
+  assert.strictEqual(selects.length, 2);
 
   selects[0].value = "off";
   await selects[0].dispatch("change");
@@ -538,5 +551,38 @@ test("unfocusable and folder feedback copy exists in all supported languages", (
   ];
   for (const lang of SUPPORTED_LANGS) {
     for (const key of keys) assert.ok(i18n[lang][key], `${lang}.${key} is required`);
+  }
+});
+
+test("Dashboard shows a model row only for sessions that report one", async () => {
+  const { root } = await loadDashboard([
+    session("with-model", { model: "claude-opus-5" }),
+    session("without-model"),
+  ]);
+
+  const rows = byClass(root, "model-row");
+  assert.strictEqual(rows.length, 1, "only the session reporting a model gets a row");
+  assert.strictEqual(rows[0].textContent, "Model: claude-opus-5");
+  // Long ids are ellipsized by CSS, so the full value must stay reachable.
+  assert.strictEqual(rows[0].title, "claude-opus-5");
+});
+
+test("model row is its own line, not a chip inside the clipped meta row", async () => {
+  // Regression guard: `.meta` is a single nowrap+overflow-hidden line, so a
+  // model appended there is invisible at the dashboard's default 480px width.
+  const { root } = await loadDashboard([session("with-model", { model: "claude-opus-5" })]);
+
+  const meta = byClass(root, "meta")[0];
+  assert.ok(meta, "meta row must still render");
+  assert.ok(
+    !descendants(meta).some((el) => String(el.textContent || "").includes("claude-opus-5")),
+    "the model must not live inside the clipped meta row"
+  );
+  assert.strictEqual(byClass(root, "model-row").length, 1);
+});
+
+test("model copy exists in all supported languages", () => {
+  for (const lang of SUPPORTED_LANGS) {
+    assert.ok(i18n[lang].dashboardModel, `${lang}.dashboardModel is required`);
   }
 });

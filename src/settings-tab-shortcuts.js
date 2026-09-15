@@ -134,7 +134,10 @@
     ));
     parent.appendChild(head);
 
-    const rows = i18n.SHORTCUT_ACTION_IDS.map((actionId) => buildShortcutRow(actionId));
+    // Platform-gated actions (Dashboard quick select is macOS/Windows only)
+    // are absent from the list entirely — no disabled row, no placeholder.
+    const actionIds = i18n.SUPPORTED_SHORTCUT_ACTION_IDS || i18n.SHORTCUT_ACTION_IDS;
+    const rows = actionIds.map((actionId) => buildShortcutRow(actionId));
     rows.push(buildFixedKeyRow("shortcutLabelBubbleNextOption", "Tab / ↓"));
     rows.push(buildFixedKeyRow("shortcutLabelBubblePrevOption", "Shift+Tab / ↑"));
     rows.push(buildFixedKeyRow("shortcutLabelBubbleToggleOption", "Space"));

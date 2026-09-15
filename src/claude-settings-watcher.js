@@ -4,7 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { buildPermissionUrl } = require("../hooks/server-config");
-const { classifyManagedClaudeStateHookCommand } = require("../hooks/json-utils");
+const { classifyManagedClaudeStateHookCommand, stripUtf8Bom } = require("../hooks/json-utils");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
@@ -64,7 +64,7 @@ function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
 
   let parsed;
   try {
-    parsed = JSON.parse(rawSettings);
+    parsed = JSON.parse(stripUtf8Bom(rawSettings));
   } catch {
     return false;
   }
@@ -150,7 +150,7 @@ function takeSnapshot(raw) {
   if (typeof raw !== "string" || !raw.trim()) return null;
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(stripUtf8Bom(raw));
   } catch {
     return null;
   }

@@ -3,10 +3,26 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const { getReleaseTarget, resolveRuntimeTarget } = require("./native-package-target");
+const {
+  WM_MOUSEACTIVATE,
+  MA_NOACTIVATE,
+  MOUSE_ACTIVATE_PROP,
+} = require("./win-hit-window-activation");
 
 const SMOKE_FLAG = "--clawd-package-smoke";
 const TARGET_PREFIX = "--clawd-package-smoke-target=";
 const OUTPUT_PREFIX = "--clawd-package-smoke-output=";
+const HIT_TEST_CLIENT_MOUSE_DOWN = 0x02010001;
+const WINDOWS_MOUSE_ACTIVATE_PROBE_SOURCE = `
+const koffi = require(process.argv[1]);
+const hwnd = BigInt(process.argv[2]);
+const property = process.argv[3];
+const user32 = koffi.load("user32.dll");
+const SendMessageW = user32.func("intptr_t __stdcall SendMessageW(void* hWnd, uint32 Msg, void* wParam, intptr_t lParam)");
+const GetPropW = user32.func("void* __stdcall GetPropW(void* hWnd, str16 lpString)");
+const result = Number(SendMessageW(hwnd, ${WM_MOUSEACTIVATE}, hwnd, ${HIT_TEST_CLIENT_MOUSE_DOWN}));
+process.stdout.write(JSON.stringify({ result, ignorePropertyConsumed: !GetPropW(hwnd, property) }));
+`;
 
 function comparablePath(value) {
   let resolved = path.resolve(String(value || ""));
@@ -238,11 +254,11 @@ async function waitForSmokeCondition(check, label, { timeoutMs = 8_000, sleepFn 
 async function runWindowsFullscreenAutoHideRuntimeProbe({
   BrowserWindow,
   fullscreenProbe,
+  hitActivation,
   timeoutMs = 8_000,
 } = {}) {
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-  const createPetWindow = (x, backgroundColor) => {
-    const win = new BrowserWindow({
+  const createPetWindow = (x, backgroundColor, focusable) => new BrowserWindow({
       show: false,
       x,
       y: 40,
@@ -252,17 +268,23 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
       alwaysOnTop: true,
       skipTaskbar: true,
       backgroundColor,
+      focusable,
     });
+  const showPetWindow = (win) => {
     win.showInactive();
     win.setAlwaysOnTop(true, "pop-up-menu");
-    return win;
   };
 
-  const renderWin = createPetWindow(40, "#245c3a");
-  const hitWin = createPetWindow(240, "#5c2424");
+  const renderWin = createPetWindow(40, "#245c3a", false);
+  const hitWin = createPetWindow(240, "#5c2424", false);
   const fullscreenWindows = [];
   let topmostRuntime = null;
   try {
+    if (!hitActivation.prepare(hitWin)) {
+      throw new Error("Packaged fullscreen runtime hit-window preparation failed");
+    }
+    showPetWindow(renderWin);
+    showPetWindow(hitWin);
     const createPetWindowRuntime = require("./pet-window-runtime");
     const createTopmostRuntime = require("./topmost-runtime");
     const petWindowRuntime = createPetWindowRuntime({
@@ -284,7 +306,7 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
       getFullscreenOverlay: () => false,
       setFullscreenAutoHidden: (...args) => petWindowRuntime.setFullscreenAutoHidden(...args),
       isFullscreenAutoHidden: () => petWindowRuntime.isFullscreenAutoHidden(),
-      setHitWinFocusable: (focusable) => hitWin.setFocusable(focusable),
+      setHitWinFocusable: (focusable) => hitActivation.setFocusable(hitWin, focusable),
     });
     topmostRuntime.startFocusablePoll();
 
@@ -393,14 +415,121 @@ async function runWindowsFullscreenAutoHideRuntimeProbe({
       if (!win.isDestroyed()) win.destroy();
     }
     if (!renderWin.isDestroyed()) renderWin.destroy();
+    hitActivation.dispose();
     if (!hitWin.isDestroyed()) hitWin.destroy();
   }
 }
 
+function createWindowsMouseActivateProbe(options = {}) {
+  const execFile = options.execFile || require("node:child_process").execFile;
+  const executable = options.executable || process.execPath;
+  const koffiPath = options.koffiPath || require.resolve("koffi");
+  return (win) => new Promise((resolve, reject) => {
+    const hwnd = nativeWindowHandleId(win);
+    execFile(
+      executable,
+      ["-e", WINDOWS_MOUSE_ACTIVATE_PROBE_SOURCE, koffiPath, hwnd, MOUSE_ACTIVATE_PROP],
+      {
+        encoding: "utf8",
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: "1" },
+        timeout: 5_000,
+        windowsHide: true,
+      },
+      (error, stdout, stderr) => {
+        if (error) {
+          reject(new Error(`Packaged external WM_MOUSEACTIVATE probe failed: ${stderr || error.message}`));
+          return;
+        }
+        try {
+          resolve(JSON.parse(stdout));
+        } catch (parseError) {
+          reject(new Error(`Packaged external WM_MOUSEACTIVATE probe returned invalid JSON: ${parseError.message}`));
+        }
+      },
+    );
+  });
+}
+
+async function runHitWindowNoActivateRoundTrip(hitActivation, win, errors = [], probeMouseActivate) {
+  const describeErrors = () => errors.join(" | ");
+  const initialNonActivating = hitActivation.isNonActivating(win);
+  if (initialNonActivating !== true || win.isFocusable() !== false) {
+    throw new Error(`Packaged hit window did not start fully non-activating: ${describeErrors()}`);
+  }
+  if (!win.isWindowMessageHooked(WM_MOUSEACTIVATE)) {
+    throw new Error("Packaged desktop WM_MOUSEACTIVATE guard was not installed");
+  }
+  if (!hitActivation.setFocusable(win, true) || hitActivation.isNonActivating(win) !== false) {
+    throw new Error(`Packaged WS_EX_NOACTIVATE initial clear failed: ${describeErrors()}`);
+  }
+  const desktopMouseActivate = await probeMouseActivate();
+  if (desktopMouseActivate.result !== MA_NOACTIVATE || !desktopMouseActivate.ignorePropertyConsumed) {
+    throw new Error(
+      `Packaged desktop WM_MOUSEACTIVATE returned ${desktopMouseActivate.result}, ` +
+      `propertyConsumed=${desktopMouseActivate.ignorePropertyConsumed}`,
+    );
+  }
+  if (!hitActivation.setFocusable(win, false) || hitActivation.isNonActivating(win) !== true) {
+    throw new Error(`Packaged WS_EX_NOACTIVATE enable failed: ${describeErrors()}`);
+  }
+  if (!win.isWindowMessageHooked(WM_MOUSEACTIVATE)) {
+    throw new Error("Packaged WM_MOUSEACTIVATE guard was not installed");
+  }
+  const fullscreenMouseActivate = await probeMouseActivate();
+  if (fullscreenMouseActivate.result !== MA_NOACTIVATE || !fullscreenMouseActivate.ignorePropertyConsumed) {
+    throw new Error(
+      `Packaged fullscreen-request WM_MOUSEACTIVATE returned ${fullscreenMouseActivate.result}, ` +
+      `propertyConsumed=${fullscreenMouseActivate.ignorePropertyConsumed}`,
+    );
+  }
+  if (!hitActivation.setFocusable(win, true) || hitActivation.isNonActivating(win) !== false) {
+    throw new Error(`Packaged WS_EX_NOACTIVATE final restore failed: ${describeErrors()}`);
+  }
+  if (!win.isWindowMessageHooked(WM_MOUSEACTIVATE)) {
+    throw new Error("Packaged restored WM_MOUSEACTIVATE guard was removed");
+  }
+  const restoredMouseActivate = await probeMouseActivate();
+  if (restoredMouseActivate.result !== MA_NOACTIVATE || !restoredMouseActivate.ignorePropertyConsumed) {
+    throw new Error(
+      `Packaged restored WM_MOUSEACTIVATE returned ${restoredMouseActivate.result}, ` +
+      `propertyConsumed=${restoredMouseActivate.ignorePropertyConsumed}`,
+    );
+  }
+  return {
+    electronFocusable: false,
+    initialNonActivating: true,
+    afterInitialClear: false,
+    desktopMouseActivate: MA_NOACTIVATE,
+    afterFullscreenRequest: true,
+    fullscreenMouseActivate: MA_NOACTIVATE,
+    afterFinalRestore: false,
+    restoredMouseActivate: MA_NOACTIVATE,
+  };
+}
+
 async function runPlatformProbe({ BrowserWindow, target, koffi }) {
   if (target.runtimePlatform === "win32") {
-    const win = new BrowserWindow({ show: false, width: 80, height: 80, skipTaskbar: true });
+    const { createHitWindowActivationController } = require("./win-hit-window-activation");
+    const hitActivationErrors = [];
+    const hitActivation = createHitWindowActivationController({
+      isWin: true,
+      koffi,
+      onError: (err) => hitActivationErrors.push(err && err.message ? err.message : String(err)),
+    });
+    if (!hitActivation.available) {
+      throw new Error(`Hit-window activation controller unavailable: ${hitActivationErrors.join(" | ")}`);
+    }
+    const win = new BrowserWindow({
+      show: false,
+      width: 80,
+      height: 80,
+      skipTaskbar: true,
+      focusable: false,
+    });
     try {
+      if (!hitActivation.prepare(win)) {
+        throw new Error(`Hit-window activation preparation failed: ${hitActivationErrors.join(" | ")}`);
+      }
       win.showInactive();
       await new Promise((resolve) => setTimeout(resolve, 100));
       const { createCloakInspector } = require("./win-cloak-recovery");
@@ -426,8 +555,18 @@ async function runPlatformProbe({ BrowserWindow, target, koffi }) {
           fullscreenProbe,
           koffi,
         });
+        const hitWindowNoActivateRoundTrip = await runHitWindowNoActivateRoundTrip(
+          hitActivation,
+          win,
+          hitActivationErrors,
+          createWindowsMouseActivateProbe().bind(null, win),
+        );
         const fullscreenAutoHideRuntime = fullscreenIdentity.foregroundControllable
-          ? await runWindowsFullscreenAutoHideRuntimeProbe({ BrowserWindow, fullscreenProbe })
+          ? await runWindowsFullscreenAutoHideRuntimeProbe({
+            BrowserWindow,
+            fullscreenProbe,
+            hitActivation,
+          })
           : {
             skipped: true,
             reason: "packaged-runner-cannot-focus-browser-windows",
@@ -461,6 +600,7 @@ async function runPlatformProbe({ BrowserWindow, target, koffi }) {
           foregroundFullscreen: fullscreen,
           fullscreenIdentity,
           fullscreenAutoHideRuntime,
+          hitWindowNoActivateRoundTrip,
           foregroundTerminalHwnd,
           foregroundTerminalExpectedMiss: foregroundTerminalHwnd === null,
           logs,
@@ -469,6 +609,7 @@ async function runPlatformProbe({ BrowserWindow, target, koffi }) {
         cloak.dispose();
       }
     } finally {
+      hitActivation.dispose();
       win.destroy();
     }
   }
@@ -600,6 +741,8 @@ module.exports = {
   runWindowsFullscreenIdentityProbe,
   waitForSmokeCondition,
   runWindowsFullscreenAutoHideRuntimeProbe,
+  createWindowsMouseActivateProbe,
+  runHitWindowNoActivateRoundTrip,
   runPlatformProbe,
   runPackageKoffiSmoke,
   writeResult,

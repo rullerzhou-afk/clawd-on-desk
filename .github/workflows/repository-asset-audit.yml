@@ -19,6 +19,8 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm install
+      - name: Test Claude installer CLI and WSL documentation
+        run: node --test test/install.test.js test/install-dependency-cli.test.js test/remote-deploy.test.js
       - name: Test audit, macOS icon contracts, and spawned-hook isolation
         run: >-
           node --test
@@ -40,6 +42,7 @@ jobs:
           test/spawned-hook-helper.test.js
           test/claude-recovery-lease-hook.test.js
           test/codex-hook.test.js
+          test/codex-install.test.js
           test/qwen-code-hook.test.js
           test/workbuddy-hook.test.js
       - run: npm run audit:assets

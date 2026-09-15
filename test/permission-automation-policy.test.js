@@ -434,6 +434,17 @@ describe("evaluatePermissionAutomation", () => {
     }
   });
 
+  it("defers every Grok Build interaction in auto-tools and unattended", () => {
+    // Grok Build is state-only (Phase 1) and never registers /permission, so no
+    // interaction may ever be automated for it.
+    for (const toolName of ["Bash", "AskUserQuestion", "ExitPlanMode"]) {
+      const interaction = classifyPermissionInteraction({ agentId: "grok-build", toolName });
+      assert.strictEqual(evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, interaction), AUTOMATION_ACTION.DEFER);
+      assert.strictEqual(evaluate(PERMISSION_AUTOMATION_MODE.UNATTENDED, interaction), AUTOMATION_ACTION.DEFER);
+      assert.strictEqual(evaluate(PERMISSION_AUTOMATION_MODE.OFF, interaction), AUTOMATION_ACTION.DEFER);
+    }
+  });
+
   it("auto-tools allows only eligible tool approvals", () => {
     assert.strictEqual(
       evaluate(PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, claudeTool),

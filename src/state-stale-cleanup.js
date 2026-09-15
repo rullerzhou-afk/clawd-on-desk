@@ -167,11 +167,25 @@ function getStaleSessionDecision(session, options = {}) {
   // and stamp that transition. Otherwise a 20-minute-old Codex turn can be
   // changed to idle with its old timestamp, then deleted immediately by the
   // ordinary 10-minute idle cutoff on the next sweep.
+  //
+  // With an age window enabled, only check source liveness after it elapses. A
+  // source_pid frequently belongs to a per-event launcher rather than to the
+  // session host — Windows Claude Code runs every hook through a throwaway
+  // pwsh wrapper, so the pid shipped with an event is already gone when the
+  // next sweep reads it. Probing it while the turn is still reporting deletes
+  // the live session between events, and the following event recreates it.
   if (isWorkingLikeState(session.state)) {
-    if (session.pidReachable && session.sourcePid && !isProcessAlive(session.sourcePid)) {
+    const workingWindowElapsed = workingStaleMs > 0 && age > workingStaleMs;
+    // Zero disables age-based expiry, not process-death cleanup. In particular,
+    // a local Codex session may have only a source PID when agent PID discovery
+    // failed, so the earlier agent-exit check cannot retire it on its own.
+    if (
+      (workingStaleMs === 0 || workingWindowElapsed)
+      && session.pidReachable && session.sourcePid && !isProcessAlive(session.sourcePid)
+    ) {
       return { action: "delete", reason: "working-source-exit" };
     }
-    if (workingStaleMs > 0 && age > workingStaleMs) {
+    if (workingWindowElapsed) {
       return { action: "idle", reason: "working-timeout", updateTimestamp: true };
     }
     return { action: null };

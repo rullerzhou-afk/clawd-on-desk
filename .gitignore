@@ -11,6 +11,7 @@ Thumbs.db
 # OpenCode local config
 .opencode/
 # Development plans & review notes
+/.release-reviews/
 PLAN.md
 PLAN-*.md
 codex-*.md
@@ -66,6 +67,7 @@ docs/**
 !docs/releases/release-v0.14.0.md
 !docs/releases/release-v0.15.0.md
 !docs/releases/release-v0.16.0.md
+!docs/releases/release-v1.0.0.md
 
 # Temp files from testing
 .tmp_*
@@ -126,6 +128,7 @@ scripts/manual/*
 !scripts/assert-no-retired-telegram-sidecar.js
 !scripts/verify-release-version.js
 !scripts/verify-release-contributors.js
+!scripts/prepare-macos-signing.js
 !scripts/after-pack-koffi.js
 !scripts/audit-packaged-native.js
 !scripts/native-package-policy.json

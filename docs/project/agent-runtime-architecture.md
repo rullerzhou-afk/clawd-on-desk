@@ -20,7 +20,7 @@ Copilot CLI 状态同步（command hook，非阻塞）：
 
 Cursor Agent 状态同步（command hook，stdin JSON，非阻塞）：
   Cursor IDE 触发事件
-    → hooks/cursor-hook.js（hook_event_name → 映射为 PascalCase event + HTTP POST，stdout 返回 allow/continue 以满足 preToolUse 等 hook）
+    → hooks/cursor-hook.js（hook_event_name → 映射为 PascalCase event + HTTP POST；beforeSubmitPrompt 的 stdout 为 {continue:true}，其余为 {}，不接管权限）
     → 同上状态机（agent_id: cursor-agent）
 
 Codex CLI 状态同步（official hooks primary + JSONL fallback）：
@@ -34,14 +34,57 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
+Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 从
+`sessions/` 移入扁平的 `<CODEX_HOME>/archived_sessions/`（文件名不变，`codex archive` /
+`unarchive` 已验证于 0.154.0）。`src/codex-archive-tracker.js` 由
+`src/agent-runtime-main.js` 与本地 Codex runtime 同启同停，独立于 JSONL 内容解析：
+它只在本地 `CODEX_HOME` 的 `archived_sessions` 里寻找 regular `rollout-*.jsonl`，
+用文件名推导出的 canonical UUID 与文件头部有界 `session_meta`（`payload.id` /
+`payload.session_id`，两者同时存在必须一致且等于文件名 id）校验，再对同一 path 做
+读后快照复核。归档文件消失是 unarchive 证据；截断/损坏/冲突或 id 不匹配的元数据从不构成
+归档证据，不会据此退役；目录不可列、stat/read 的 EACCES/EPERM/EIO 等 I/O 错误与被中断的
+扫描只算 UNKNOWN：保留既有 suppression、绝不据此退役，也不会清缓存把晚到 hook 放进来。
+已确认的归档文件若内容变化会完整重验：重验遇 I/O 错误仍保留 suppression；重验确认已无效
+（元数据损坏/冲突、不再是该任务或文件已消失）则丢弃该缓存并解除 suppression。
+正向证据确认后，`agent-runtime-main` 先经由窄的 archive 生命周期入口（复用 session
+automation coordinator 的 `onSessionLifecycleEnd`/`clearIdentity`）撤销该 session 的
+automation grant 并取消待决 trust candidate；再复用 `state.dismissSession` 移除该
+local Codex session 的 live card/focus 条目，只对该 session 清 owned passive 气泡、把
+owned 交互审批交还 no-decision（不播放完成音效、不计 recap、不伪造 allow/deny、不伪造
+SessionEnd 统计）。归档证据有效期间，迟到的 official hook / JSONL / passive user-input
+回调被拦截（account quota/context 仍照常摄入）；本地归档任务的 `/permission` 在
+bubble/状态/automation 之前直接 no-decision，交还 Codex 原生审批。归档文件消失
+（unarchive）即解除抑制，恢复正常审批与建卡。remote SSH profile、WSL 与其它 agent
+即使 raw id 相同也不匹配。
+每轮只做一次异步 readdir（names/Set 临时 O(N)，不是恒定开销）并据此检测 unarchive；
+**只对当前 live 候选读 metadata**，每轮至多一个 batch，不为无关历史归档预先索引——当没有
+live 候选且没有已确认 suppression 时 metadata reads 为 0。evidence 与失败指纹缓存都有
+LRU 上限，未变化的坏 live 指纹按指数退避跳过读取、指纹变化立即重验；多个 live 超过
+batch 时用游标跨轮公平推进，避免固定顺序的坏头部饿死尾部；LRU 淘汰只意味着稍后作为 live
+候选重新匹配，不是永久漏项。在应用退役前会对该 live 候选的当前文件再做一次 stat（内容
+变化则完整重验，I/O 错误则保留 suppression），因此等待其它候选校验期间发生的
+unarchive/替换不会被过时缓存误删。无同步热路径扫描；disable/cleanup/根代际变化会作废
+在途异步结果。冷缓存取舍（只索引 live）：本进程尚未确认的已归档会话若收到迟到事件，可能
+先短暂建卡，再由后续扫描移除；轮询基准是 5s，但 batch 积压或文件 I/O 都会增加延迟，因此
+不宣称普遍 ≤5s。已知边界：unarchive 同样依赖普通轮询（默认 5s，I/O 失败会延后识别）；在下一轮
+扫描确认归档文件消失之前，该任务到达的 official hook、JSONL 与 passive user-input 事件仍被
+丢弃（审批请求仍无决定返回），一个很短的 turn 可能整轮都落在这个窗口内，需要窗口之后的
+后续活动才能重建卡片——本次范围不引入事件重放队列，也不宣称立即恢复。`CODEX_HOME` 在
+tracker 实例生命周期内按启动时解析，运行时改动需重启生效。
+
 本机 Codex 注册使用每个 `CODEX_HOME` 下固定的分平台入口。Windows 的固定
-`commandWindows` 在 Codex 已启动的 PowerShell 进程内读取 UTF-8/Base64
-`clawd-hooks/codex-hook.js.windows.run` 数据 sidecar，再直接调用其中的 Node /
-hook target；不落地或二次启动 `.ps1`。旁路 JSON manifest 只供 Doctor 做完整性
-与目标健康校验。POSIX 使用 `clawd-hooks/codex-hook.js.sh` 与对应 manifest。
-正式包、开发目录、不同 worktree、Node 安装路径切换时只原子更新
-这些受管 artifact，不再改 `hooks.json` 的命令字符串，因此首次迁移 review 后
-不会反复触发 `/hooks` review。Windows 与 WSL 的 manifest/wrapper 分开保存，
+`commandWindows` 使用 PowerShell call-operator 直连：
+`& "node" "codex-hook.js" --clawd-windows-stable`；
+hook 进程启动时自读 UTF-8/Base64 `clawd-hooks/codex-hook.js.windows.run`
+数据 sidecar 注入 env（2026-09-04 起由内联 PowerShell dispatcher 改为直连：
+原 dispatcher 的“解码并执行”命令行被 Windows Defender ML 判为
+Trojan:Win32/Commando.A!ml，见 clawd-on-desk#986）；不落地或二次启动 `.ps1`。
+旁路 JSON manifest 供安装器恢复与 Doctor 做完整性、目标健康校验。POSIX 使用
+`clawd-hooks/codex-hook.js.sh` 与对应 manifest。
+Windows 原地升级只要 Node 与安装目录不变就保持同一命令；切换正式包、开发目录、
+worktree 或 Node 安装路径会改写直连命令，并需要重新完成一次 `/hooks` review。
+sidecar 中仅有 env 变化时不改命令。POSIX 仍只原子更新受管 wrapper，不改
+`hooks.json` 的命令字符串。Windows 与 WSL 的 manifest/wrapper 分开保存，
 共用 `CODEX_HOME` 时不会互相覆盖目标。Remote SSH 部署继续直接引用已部署的
 远端 hook 文件，不经过本机固定入口。Doctor 按 Codex 官方的归一化 handler
 SHA-256 精确核对 `trusted_hash`，命令变更后不会因原位置仍有旧 hash 而误报
@@ -83,12 +126,35 @@ CodeBuddy 状态同步（Claude Code 兼容 hook，command）：
     → server-agent-id.js 只接受当前仍注册的 custom ID，enabled gate 决定是否进入状态机
   v1 不支持 /permission；已注册 custom 的权限请求返回 204 no-decision，删除/伪造的 custom- ID 直接拒绝，不能降级成 Claude Code subagent。
 
+Grok Build 状态与通知同步（Claude Code 兼容 hook，command，camelCase stdin，Phase 1 local / main-session / state-only）：
+  Grok 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop / StopFailure / StopCancelled / Notification / PreCompact / PostCompact / PermissionDenied
+    → hooks/grok-hook.js（`hook_event_name` PascalCase 或 `hookEventName` snake_case / `sessionId`；Stop 由 adapter 本地按 reason / backgroundTasks / sessionCrons / stopHookActive 判定 → agents/grok-build.js 映射 → HTTP POST）
+    → src/grok-turn-fence.js bounded in-memory turn fence 仲裁后进入状态机（agent_id: grok-build）
+  Hook 注册到 <GROK_HOME 或 ~/.grok>/hooks/clawd-on-desk.json；所有权是 handler `env.CLAWD_GROK_HOOK=v1`，文件名只做告警。
+  集成为 state + Notification only：不注册 PermissionRequest HTTP hook，adapter 恒输出 `{}`；subagentType 事件直接丢弃。
+  Grok 默认扫描 ~/.claude/settings.json，因此 clawd-hook.js / cursor-hook.js / auto-start.js 只在非空 GROK_HOOK_EVENT 下直接退出，避免假会话。
+  未发布的 PR preview 路径 ~/.grok/hooks/clawd.json 只产生 warning，不自动接管或删除。
+
 WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   WorkBuddy 触发 SessionStart / SessionEnd / UserPromptSubmit / PreToolUse / PostToolUse / Stop / Notification / PreCompact
     → hooks/workbuddy-hook.js（PascalCase 事件 → agents/workbuddy.js 映射 → HTTP POST）
     → 同上状态机（agent_id: workbuddy）
   Hook 注册到当前 WorkBuddy AI 的 ~/.workbuddy-ai/settings.json（旧版兼容 ~/.workbuddy/settings.json）。集成为 state + Notification only：不注册 PermissionRequest HTTP hook，
   审批始终由 WorkBuddy 原生沙箱与 GUI 处理；无 session_id 的事件在返回合法 stdout 后直接丢弃，不进入 /state。
+
+Qoder 会话标题（本机、state-only）：
+  Hook 转发显式标题与 transcript 路径，保持 stdout 为 `{}` 和原生权限流程不变。
+  `agent-runtime-main` 先接受生命周期，再让 `qoder-session-title` 对 SessionStart /
+  UserPromptSubmit / Stop 异步增量读取；工具、权限、通知事件不触发扫描，显式标题也不触发 I/O。
+  仅处理 enabled、本机且非 WSL 的 Qoder 会话，远端 profile / host 的路径不在本机读取。
+  标题读取保持完整的顺序解析与 custom-title 优先级，不采用会遗漏中段改名的头尾采样。
+  结果通过既有 `updateSessionMetadata` 扇出到共享 snapshot，不改活动时间、状态、recentEvents 或 recap。
+  显式生命周期标题和 metadata-only 标题均同步记入 tracker；未读取/轮转的基线或已排队的旧扫描
+  不覆盖显式标题，之后观察到的新原生标题记录才可替代它（两个来源没有可比较的原生时间戳）。
+  同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
+  每个会话串行读取；完成时还需核对存活会话、
+  本机身份、当前路径及标题，防止旧异步结果污染重开的会话。读取中断时逐 chunk 保持 offset 与 partial
+  一致，重试可继续完整解析；FileHandle 始终在 finally 中关闭。
 
 QwenWork（千问办公）状态同步（hook-only / state-only，settings.json）：
   QwenWork 触发 SessionStart / UserPromptSubmit / PreToolUse / PostToolUse / PostToolUseFailure / Stop /
@@ -243,6 +309,49 @@ DeepSeek Harness 权限气泡（approval waterfall，阻塞）：
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 
+## Local Claude Session History
+
+- `hooks/session-history.js` 保存独立的本机会话索引，不能放宽 `session-recovery-lease.js` 的进程存活条件。lease 用于恢复仍在运行的状态，history 用于在进程退出或重启后找到可手动继续的旧会话；历史行本身不是 live session，不进入状态机、HUD、recap 或权限自动化。
+- Claude command hook 在 POST 前 best-effort 写入 `~/.clawd/session-history-v1/`，Clawd 离线也能记录。只覆盖本机交互式 Claude Code；remote、WSL、headless 和其他 agent 不写。保存 session ID、cwd、显式标题、状态和时间，不保存 prompt 派生标题、回复或工具内容；它是索引，不是 transcript 备份。目录 / 文件权限为 0700 / 0600（POSIX）。
+- 有效记录按 30 天 / 200 条清理，Dashboard 最多展示 25 条。每条记录复用 lease 的跨进程锁，锁内读取、合并并原子替换；同毫秒 terminal 事件优先。清理非阻塞拿锁并重读，跳过正在写入或已更新的行；无效 / foreign / future-schema 文件保留且不计入有效记录预算。主进程只回收 PID 明确已不存在的历史锁，未知 owner / 探测错误不能接管。
+- `src/session-history-loader.js` 只作 transcript 存在性提示，不读取内容；访问失败是 unknown，不能标成已丢失。历史、探测和启动共用 `hooks/claude-session-id.js` 的安全 ID 规则。boot 时间是 wall clock 与 uptime 的近似值，跨 boot 且没有 terminal 事件的行才标为中断；这不是崩溃检测器，`Stop` 也可能是正常一轮结束。
+- `src/session-history-runtime.js` 是唯一手动恢复 owner。只接受受信任 Dashboard 发来的 agent / session ID，在 main 重读已保存 cwd，并重新检查已安装、已启用和本机 live 状态；remote / WSL / 其他 agent 的同名 ID 不应误挡本机恢复。不会根据历史自动启动 agent。
+- 同一 session 的并发恢复合并为一次请求。启动器 `ok:false` 必须返回失败；终端成功提交只返回 `submitted`，不是“会话已恢复”。main 保留 30 秒确认窗口，页面重开也继续禁点；现有 hook/state 路径报告本机 live 后移除历史卡。超时只允许用户检查终端后手动重试，不自动重试，也不伪造 live 状态。
+
+## Local Permission HTTP Boundary
+
+The local `POST /permission` endpoint is a native hook/plugin interface. Before
+reading the body or recording a hook event, `src/server.js` rejects any `Origin`
+header (including empty or `null`), an HTTP Host other than explicit
+`127.0.0.1`, `localhost`, or `[::1]` with an optional valid port, and a media type
+other than `application/json` (parameters such as `charset=utf-8` are allowed).
+Duplicate Host or Content-Type fields are rejected. Forwarded headers do not
+grant access, and OPTIONS does not enable cross-origin preflight.
+
+These are browser-request guards: loopback binding and CORS response restrictions
+alone do not prevent a simple cross-origin POST from creating approval UI.
+Rejected requests receive an empty 400/403/415 response and a closed connection,
+without a Clawd success marker or an agent approval/denial. Native hooks retain
+their own no-decision fallback. Custom proxies targeting the local endpoint must
+preserve this native request contract; a browser frontend is not supported here.
+
+This does not authenticate unrestricted same-user processes, which can construct
+the permitted headers. A token stored in a same-user-readable runtime file would
+not provide that isolation either. Receiving an `allow` on a caller's own HTTP
+request does not establish authority over another pending request. Pi's legacy
+state-only response and Task passthrough semantics remain unchanged.
+
+Authenticated Remote SSH traffic retains its separate profile-bound nonce
+ingress and trusted profile stamping; these local checks do not replace that
+contract. `/state` is outside this permission-specific guard.
+
+Regression evidence uses the real HTTP router and permission ownership module
+in `test/server-permission-ingress.test.js`. The Electron fixture additionally
+checks a cross-origin loopback webpage and real approval windows with isolated
+user data, no installed hooks, no remote clients, and no executed agent tools.
+It does not establish public-Internet reachability across browser-specific local
+network access controls or replace real agent/OS compatibility checks.
+
 ## Local Recap Projection
 
 The recap is a local projection of accepted runtime activity, not a second observer at the HTTP or `updateSession()` entry. After agent gates, Codex source/replay arbitration, permission provenance handling, subagent filtering, and completion arbitration settle, `src/state.js` maps the accepted boundary through `src/recap-metrics.js` and sends an allowlisted canonical event to `src/recap-runtime.js`.
@@ -265,6 +374,16 @@ DND remains an interaction/visual gate and does not stop recap or coverage. Susp
 | Theme | `theme-loader` 是 stateless loader；`theme-runtime` 是唯一 active-theme owner |
 
 `state.js` 的 session snapshot 是共享 schema：Dashboard、Session HUD（含 Orbit quota ring）以及可选 Telegram completion、Discord presence、LAN PWA 等 consumer 都会读取它。新增、重命名或删除字段时必须检查全部 consumer，不能只看 Dashboard/HUD。
+
+## Cursor Hook Commands And Session Titles
+
+Cursor Windows hooks 由 PowerShell 执行。`cursor-install.js` 用 `& "node" "cursor-hook.js"` 直连，避免额外 `cmd /s /c` 解析丢失含空格路径的引号。marker 识别同时支持旧明文命令和 PowerShell EncodedCommand；注册只更新 Clawd-owned entry，并把同事件重复的 owned entry 收敛到首条，保留首条其他设置及全部第三方 hooks。
+
+`hooks/cursor-session-title.js` 只读标准 Cursor desktop profile 的 `User/globalStorage/state.vscdb`，按 conversation ID 查找 `composerHeaders`、旧 `ItemTable['composer.composerHeaders']` 或 `cursorDiskKV['composerData:<id>']` 中的 `name`。Windows 根目录来自 APPDATA，macOS 为 `~/Library/Application Support`，Linux 为 XDG_CONFIG_HOME 或 `~/.config`；自定义 `--user-data-dir` 不做扫描。单个 JSON record 最多读取 1 MiB，数据库缺失、损坏、锁定、未知 schema 或 SQLite 不可用都不阻塞状态 hook。`node:sqlite` 从 Node 22.13 / 23.4 起无需 flag；项目最低 Node 22.12 未开启实验模块时仍保留状态与 prompt fallback。
+
+Cursor 3.19.19 会把 stderr 非空标记为 Hook execution error，即使 exit 0 且 stdout 合法。helper 仅在同步加载 `node:sqlite` 期间过滤 Node 的固定 SQLite ExperimentalWarning，随后立即恢复 warning handler；不得全局关闭其他警告。
+
+没有可用名称时只在 `beforeSubmitPrompt` 使用 prompt 第一条非空行，沿用 Claude/Trae 的 secret-looking 过滤策略，先检查完整行再截断。hook 只上报 `session_title`，不发送 prompt 其余内容或数据库 record。`CLAWD_REMOTE` 路径不读取本机 Cursor 数据库。标题继续使用既有 `/state` → session snapshot → HUD/Dashboard 合约。
 
 ## Windows B1a Process Metadata Capability (#694)
 
@@ -299,6 +418,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus、permission；无 subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
+- `src/codex-archive-tracker.js` — 本地 Codex `archived_sessions` 正向归档证据 tracker（有界异步扫描、读后快照复核、generation 作废；无同步热路径）
 - `agents/gemini-log-monitor.js` — legacy Gemini session JSON 轮询器；当前 hook-only 路径不启动
 
 运行时的 agent 安装意图 / 启停 / 权限气泡开关通过 `src/agent-gate.js` 读 `prefs.agents[id].integrationInstalled` / `.enabled` / `.permissionsEnabled`。`enabled` 仍然只表示是否处理该 agent 的事件：关闭会让 `state.js` / `server.js` 停止处理事件、清理 session / bubble；`integrationInstalled` 才表示本机 hook/plugin/extension 是否由 Clawd 维护。snapshot 缺字段时 gate 保守默认 true 以兼容旧版；新安装的 schema 会显式把 Claude Code / Codex 设为已安装且启用，其余 agent 设为未安装且未启用。Claude Code 额外有 `.subagentPermissionsEnabled` 子开关（#451，仅 claude-code 默认条目携带该 flag），控制 Task 子 agent 发起的 PermissionRequest 是否弹泡泡。
@@ -332,8 +452,10 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - 巡检严格受 `manageClaudeHooksAutomatically`、`claude-code.integrationInstalled`、`claude-code.enabled` 三个 gate 保护，和目录 watcher 共用同一套 gate。
 - 所有 mutation 入口（启动 reconcile、watcher 自动恢复、周期自愈、Settings Agent Install/Enable、Doctor Fix、`autoStartWithClaude` 开关、Settings Agent Uninstall、legacy hooks Install/Uninstall、About 页 `cleanupIntegrations`）都经过 `src/server.js` 持有的同一个 `claude-hook-operations.js` 队列实例，串行执行、互不覆盖；statusline 注册/卸载只在 startup、Settings Agent Install/Enable、Settings Agent Uninstall、About cleanup 这几个来源触发，周期巡检和 Doctor Fix 不碰 statusline。
 - 历史 key `claudeQuotaCollectionEnabled` 现在是本机 Claude statusline metadata（context window + 可用 quota）的唯一用户授权。关闭或卸载时，server 先用进程内 suppression 挡住未结尾包，再 ownership-safe 卸载并清除 `profileId="local"`（含 WSL）会话的 statusline 分母所有权，同时从 account-quota store 定向删除所有非 `remote:` 来源的 `claudeQuota` 并立即广播、持久化；同源 Codex / Antigravity provider 与 Remote SSH quota 保留。关闭态启动也会执行同一缓存迁移。statusline 上报拥有 limit，普通 transcript hook 仍可更新 used，并按保留的权威 limit 重算 percent。
+- 本机第三方 statusline 共存由显式 Settings 开启动作触发：`claude-statusline-consent.js` 在 server mutation 队列外询问用户，确认后携带原槽 SHA-256 重入同一队列；原槽变化则拒绝。安装器把完整原对象存入配置目录的 `hooks/clawd-statusline-local-chain.json`（owner/version/随机 id/精确 wrapper command），只替换 command，保留 padding/refreshInterval 等字段。`--local-chain <id>` 将同一 JSON 交给原命令，stdout 仍由原命令独占，Clawd telemetry 并行发送。关闭/卸载仅在 wrapper 与恢复记录匹配时恢复原对象；第三方接管后不反抢、不删恢复记录。缺失/损坏的恢复记录不降级覆盖。启动同步只续用已确认链，不会弹框或自动接管。远程 `--chain` 与旧 sidecar 合约保持独立。
 - Kimi Code quota 是独立的 main-process、manual-only transport：只有 Settings 中显式 Connect/Replace/Reconnect/Refresh 才会请求固定的 `https://api.kimi.com/coding/v1/usages`，app ready、hook、resume、Dashboard show 都不联网。Kimi Code API Key 以 Electron `safeStorage` 密文保存在 `~/.clawd/kimi-code-quota-credential.json`，不进入 prefs、settings snapshot、日志或 `account-quota.json`；Linux `basic_text` backend fail closed。每次保存生成与 Key 无关的随机 `credentialId`，`~/.clawd/kimi-quota-runtime.json` 在 quota store 同步 flush 后才记录该 id；启动发现 id 缺失/不一致会先清理本机 Kimi cache，避免 Replace Key 的 crash 窗口把旧账户额度标成新连接。`kimiQuotaCollectionEnabled` 是 command-only durable gate，runtime 在请求 admission 和 response commit 两端都重读该 gate 与 `kimi-cli.enabled`；hook payload 永远不是 Kimi quota 来源。Disconnect 后的重连走专用 trusted IPC `settings:kimi-quota-reconnect` → `runtime.reconnect()`：只读校验本地密文可用后 re-enable 并立即走与 Refresh 完全相同的 admission/commit 路径，属于用户显式手动动作，Key 始终不离开 main process。
 - `server.getClaudeHookHealthStatus()` 暴露供 Doctor 使用的只读状态（`healthy` / `repairing` / `degraded` / `manual-fix-required` / `guarded` / `stopped`），与既有的 `getClaudeHookGuardStatus()`（仅覆盖 suspicious-shrink 一种通知）并存，互不替代。
+- settings.json 读取契约（#657）：installer 的四个读取入口（同步/异步 `registerHooks`、`unregisterAutoStart`、`isAutoStartRegistered`）与 health inspector、watcher 的 resync / snapshot 都只忽略文件绝对开头单个 UTF-8 BOM（`hooks/json-utils.js` 的 `stripUtf8Bom`）；字符串值中间的 U+FEFF 原样保留。BOM-only、BOM + 损坏 JSON 和普通坏 JSON 仍按不可读/读取失败处理，不自动覆盖，`unregisterAutoStart` 失败继续返回 false。配置已是 canonical（即使带 BOM）的重复注册为 no-op，不因去 BOM 重写文件或产生新备份；需要迁移时沿用原子写入与备份，备份保留原 BOM 字节，写回采用既有 BOM-free JSON 格式。installer 的两个注册读取入口对合法 JSON 但非对象（数组/标量）的顶层 fail closed，避免在 mutation 前把错误 schema 当空配置覆盖。此契约只覆盖 Clawd 自身读取；上游 Claude Code 自身能否读取带 BOM 的 canonical 配置并未由本补丁证明。
 
 ## Permission Bubble
 
@@ -350,7 +472,7 @@ CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL�
 - bubble 通过 IPC `bubble-height` 回报 `{state, measurementEpoch, height}`。主进程只接受当前摘要/详情 epoch 的测量，避免展开→收起→展开期间的旧高度覆盖新布局；详情高度以 `min(60% workArea, 620 CSS px)` 为偏好，并以实测 chrome + 5 行正文为可读下限、当前 workArea 为硬上限。卡片没有自己的宽度（`html/body` 撑满窗口），自然高度随 BrowserWindow 宽度变化，所以 renderer 在窗口宽度真正改变后会再报一次高度；详情→摘要的 presentation 早于 `repositionBubbles()` 收窄窗口，没有这次补测就会按详情宽度少算一个折行，摘要卡底部被窗口裁掉
 - `permission.js` 是 permission presentation 的唯一 owner：它用目标 workArea、text scale、HUD avoid rect 和每张卡实测宽高先尝试原逐窗栈；不安全时按 agent + session 选 FIFO 代表并预留队列入口，再只向减少非保护代表的方向收敛。详情、IME composition、文本输入和用户显式选中的请求是保护项。可选代表准入按 expanded owner 的 frozen size 计算，不能靠压扁保护项腾位置；代表集合确定后，带 launcher 的最终 layout 才从 expanded viewport 的本轮有效高度中扣除 launcher、已选其他代表和全部 gaps。该 effective cap 不改 frozen normal-mode budget；含 expanded representative 且最终仍不安全的候选不得进入新的 queue revision/ACK。首次从 normal mode 命中该 guard 时仍应用 crowded normal bounds 并同步全可见 ownership，已有 committed overflow 则保持原样；普通非展开请求继续沿用既有 queue-failure fallback。Follow 模式详情朝远离桌宠的一侧扩展，Fixed 模式保持所选角的边缘对齐
 - overflow 队列使用独立 `permission-queue.html` / preload / renderer，只暴露 open、close、select、ACK 四类导航 IPC，没有任何决定 IPC，也不接收本地详情、wire input、suggestions 或 token。抽屉打开时隐藏请求窗口但不销毁；选中项后恢复原 BrowserWindow/DOM。每个队列 revision 必须先 ACK 再提交 visible/hidden 集合，提交期限从第一条尚未被当前 ACK 表示的请求开始且不会被后续 revision 续期；队列加载、renderer、window 或 ACK 失败时，本 overflow episode 只回退逐窗栈且不重建、不决定请求
-- overflow 模式关闭全局 Allow/Deny 快捷键；Slack 只在请求窗口自身 height ACK 或已 ACK 队列的 main-owned hidden snapshot 上执行现有 once-guard。petHidden 使用 request ordinal cutoff 隔离旧请求与隐藏期间的新请求；topmost、IME overlap、HUD/update/Orbit 避让和 roam hold 都只扫描 presentation owner 返回的真实可见 permission windows（含队列及仍在 fade 的请求窗）
+- 全局 Allow/Deny 快捷键对已有窗口的请求，只作用于 presentation owner 选定、可见且可操作、完整处于 workArea 内并避开 HUD 的原目标卡片；ACK 前、队列失败回退与保留 crowded normal bounds 的保护项回退也必须满足这一条件。normal 模式没有窗口的请求保留既有 fallback。目标不安全时停用快捷键，不能跳过它去决定另一张卡片；Slack 只在请求窗口自身 height ACK 或已 ACK 队列的 main-owned hidden snapshot 上执行现有 once-guard。petHidden 使用 request ordinal cutoff 隔离旧请求与隐藏期间的新请求；topmost、IME overlap、HUD/update/Orbit 避让和 roam hold 都只扫描 presentation owner 返回的真实可见 permission windows（含队列及仍在 fade 的请求窗）
 - 本地详情数据与网络/决策数据分离：route 在生成有界摘要的同时保留最多 128 KiB 的仅本地显示详情；fingerprint、automation、HTTP 回包、Telegram/飞书/Slack payload 继续使用原有数据。Ask 的 wire question/answer key 保持上游原文，长正文和选项说明只影响详情显示
 - 支持 Allow / Deny / suggestion 决策，以及 `addRules` / `setMode` suggestion 类型
 - `permission-automation-policy.js` 的 off / auto-tools / unattended 与 `session-automation-coordinator.js` 的 per-session grant 会在 bubble 渲染前产生真实决定。auto-tools 对 Claude/Qwen 的未知 built-in（除有效 namespaced MCP）fail closed，但其他已知 adapter 对非空工具名不都使用逐工具 allowlist；unattended 在识别已知 decision tools 后仍有意对可作 Allow/Deny 的未知请求保留“handle every request”行为。新增 agent/tool/interaction 必须同时审查 policy 与 tests，不能笼统假设 unknown 一律 defer
@@ -419,9 +541,18 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - 不要用 `process.ppid` 做轻量替代：Claude Code / hook 进程链里它通常只是临时 shell PID，不稳定也不可持久化
 - `source_pid` 跟随状态更新送到 `main.js`，用于 Sessions 菜单聚焦
 - 右键 Sessions 子菜单点击后，`focusTerminalWindow()` 会用 PowerShell（Windows）或 `osascript`（macOS）聚焦终端
+- Windows 的 Cursor / VS Code 父进程窗口优先按项目标题唯一匹配；标题不匹配或缺少 cwd 时，仅在该进程的可见候选窗口唯一时兜底唤起。多窗口歧义或无可见候选时不以 `MainWindowHandle` 猜选。兜底不写 session HWND cache，`editor-parent-pid-window` / `editor-parent-pid-window-no-title` 即使成为前台也保持 `confirmed=false`：HUD / Dashboard 可以唤起 IDE，Telegram Direct Send 仍走手动粘贴回退，不能据此确认具体聊天或输入框。
 - 远程场景只通过 Settings Remote SSH controller 部署：`runtimeKey → layout` 解析、
   installId/profileId/nonce 身份、原子 lease/fencing、持久部署事务和 profile 专属 ingress
   共同把远端 hook 事件回送到本地 Clawd；`scripts/remote-deploy.sh` 已 fail-fast 停用
+- Remote SSH deploy 的 agent 集合是 Claude Code / Codex / Copilot hooks 加 Hermes plugin。
+  Hermes 是 `secureDeploy` 内的 `hermes-files` → `install-hermes` 两个阶段，跑在 installer
+  loop 和 `claude-permission` 之后，是部署的最后一次远程变更，复用同一条 serialized
+  transport、lease 与 fencing。
+  Phase 1 只覆盖 `account-default` layout 和标准 `~/.hermes` + `~/.hermes/profiles/*`；
+  自定义 `HERMES_HOME`、multiplexed gateway 和 `profile-isolated` 不在范围内。远程部署
+  不设置本机 `integrationInstalled`，也不自动重启 gateway：托管模块被替换时只报告
+  restart-required，`systemctl --user is-active` 仅作提示
 - `account-default` 用于不同 Unix 账号；同 Unix 账号默认冲突阻止。实验
   `profile-isolated` 仅在显式验证开关下出现，分开 Claude/Codex/Copilot 用户级
   config/session/runtime roots 与 wrapper，不虚拟化整个 HOME，也不是同 UID 安全边界

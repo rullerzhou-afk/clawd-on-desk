@@ -3,6 +3,7 @@
 
 const crypto = require("node:crypto");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 
@@ -138,6 +139,119 @@ function readRevision(repoRoot) {
     cwd: repoRoot,
     encoding: "utf8",
   }).trim();
+}
+
+// Strict parser for `git ls-files -s -z` output. Every NUL-delimited record must
+// match the index-record grammar; a malformed record rejects the whole audit
+// instead of being silently dropped.
+function parseIndexRecords(raw) {
+  const parts = String(raw).split("\0");
+  if (parts.length > 0 && parts[parts.length - 1] === "") parts.pop();
+  return parts.map((entry, index) => {
+    const match = entry.match(/^(\d+)\s+([0-9a-f]+)\s+(\d+)\t([\s\S]+)$/);
+    if (!match) {
+      throw new Error(`Unexpected git ls-files -s record #${index}: ${JSON.stringify(entry)}`);
+    }
+    return { mode: match[1], gitBlob: match[2], path: normalizePath(match[4]) };
+  });
+}
+
+// Strict parser for `git cat-file --batch-check=%(objectsize)` output. Git exits
+// 0 and prints "<oid> missing" for an unavailable object, so a non-numeric or
+// missing/extra line must fail the audit closed. A size is never defaulted to 0
+// and a record is never skipped: exactly one non-negative safe integer per
+// requested object is required.
+function parseBatchObjectSizes(output, expectedCount) {
+  if (!Number.isSafeInteger(expectedCount) || expectedCount < 0) {
+    throw new Error(`Invalid expected object count: ${expectedCount}`);
+  }
+  const lines = String(output).split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  if (lines.length !== expectedCount) {
+    throw new Error(
+      `git cat-file returned ${lines.length} size line(s) but ${expectedCount} object(s) were requested`
+    );
+  }
+  return lines.map((line, index) => {
+    if (!/^\d+$/.test(line)) {
+      throw new Error(`git cat-file returned a non-numeric size for object #${index}: ${JSON.stringify(line)}`);
+    }
+    const value = Number(line);
+    if (!Number.isSafeInteger(value) || value < 0) {
+      throw new Error(`git cat-file returned an unsafe object size for object #${index}: ${JSON.stringify(line)}`);
+    }
+    return value;
+  });
+}
+
+// Build the tracked-file view that WOULD exist if the current working tree were
+// committed: HEAD plus every non-ignored addition/modification/rename/deletion
+// (the "prospective tree"). Without this, the audit's tracked-tree gate reads
+// the stale committed HEAD and cannot judge an uncommitted implementation.
+//
+// Isolation: all new blobs go to a throwaway GIT_OBJECT_DIRECTORY and the index
+// to a throwaway GIT_INDEX_FILE, so the repository's real object database and
+// index are never mutated. There is NO path-based exclusion: a local untracked
+// node_modules symlink is conservatively counted (a tiny link blob), so a
+// legitimately tracked node_modules path is always retained.
+function readProspectiveTrackedTree(repoRoot) {
+  const gitCommonDir = execFileSync("git", ["rev-parse", "--git-common-dir"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  }).trim();
+  const resolvedCommonDir = path.isAbsolute(gitCommonDir)
+    ? gitCommonDir
+    : path.resolve(repoRoot, gitCommonDir);
+  const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-asset-prospective-"));
+  const env = {
+    ...process.env,
+    GIT_INDEX_FILE: path.join(tempRoot, "index"),
+    GIT_OBJECT_DIRECTORY: path.join(tempRoot, "objects"),
+    GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(resolvedCommonDir, "objects"),
+  };
+  fs.mkdirSync(env.GIT_OBJECT_DIRECTORY, { recursive: true });
+  try {
+    execFileSync("git", ["read-tree", "HEAD"], { cwd: repoRoot, env, stdio: "ignore" });
+    execFileSync("git", ["add", "-A"], { cwd: repoRoot, env, stdio: "ignore", maxBuffer: 64 * MIB });
+
+    const raw = execFileSync("git", ["ls-files", "-s", "-z"], {
+      cwd: repoRoot,
+      env,
+      encoding: "utf8",
+      maxBuffer: 64 * MIB,
+    });
+    const records = parseIndexRecords(raw);
+
+    const sizes = [];
+    const BATCH = 500;
+    for (let offset = 0; offset < records.length; offset += BATCH) {
+      const chunk = records.slice(offset, offset + BATCH);
+      const output = execFileSync("git", ["cat-file", "--batch-check=%(objectsize)"], {
+        cwd: repoRoot,
+        env,
+        input: `${chunk.map((record) => record.gitBlob).join("\n")}\n`,
+        encoding: "utf8",
+        maxBuffer: 64 * MIB,
+      });
+      sizes.push(...parseBatchObjectSizes(output, chunk.length));
+    }
+    if (sizes.length !== records.length) {
+      throw new Error(
+        `Prospective tree size count mismatch: ${sizes.length} size(s) for ${records.length} record(s)`
+      );
+    }
+
+    return records.map((record, index) => ({
+      path: record.path,
+      mode: record.mode,
+      gitBlob: record.gitBlob,
+      bytes: sizes[index],
+      extension: path.posix.extname(record.path).toLowerCase() || "(none)",
+      topLevel: record.path.includes("/") ? record.path.split("/")[0] : record.path,
+    }));
+  } finally {
+    fs.rmSync(tempRoot, { recursive: true, force: true });
+  }
 }
 
 function walkFiles(root, options = {}) {
@@ -692,6 +806,7 @@ function parseArgs(argv) {
     packageRoot: null,
     target: null,
     baselineManifest: null,
+    prospective: false,
   };
   for (let i = 0; i < argv.length; i += 1) {
     const value = argv[i];
@@ -699,8 +814,12 @@ function parseArgs(argv) {
     else if (value === "--package-root") args.packageRoot = argv[++i];
     else if (value === "--target") args.target = argv[++i];
     else if (value === "--baseline-manifest") args.baselineManifest = argv[++i];
+    else if (value === "--prospective") args.prospective = true;
     else if (value === "--help") args.help = true;
     else throw new Error(`Unknown argument: ${value}`);
+  }
+  if (args.prospective && args.packageRoot) {
+    throw new Error("--prospective audits the tracked tree and cannot be combined with --package-root");
   }
   if (args.packageRoot && !args.target) {
     throw new Error("--package-root requires --target");
@@ -717,7 +836,8 @@ function runAudit(options = {}) {
   const outputDir = path.resolve(repoRoot, options.output || "dist/repository-asset-audit");
   const packageRoot = options.packageRoot ? path.resolve(repoRoot, options.packageRoot) : null;
   const revision = options.revision || readRevision(repoRoot);
-  const trackedFiles = options.trackedFiles || readTrackedTree(repoRoot);
+  const trackedFiles = options.trackedFiles
+    || (options.prospective ? readProspectiveTrackedTree(repoRoot) : readTrackedTree(repoRoot));
   const policy = options.policy || JSON.parse(fs.readFileSync(policyPath, "utf8"));
   const build = options.build || readPackageConfig(repoRoot);
   const manifest = options.manifest || (packageRoot
@@ -740,6 +860,7 @@ function runAudit(options = {}) {
     packageRoot,
     baselinePackageBytes,
   });
+  if (options.prospective) report.prospective = true;
 
   fs.mkdirSync(outputDir, { recursive: true });
   fs.writeFileSync(path.join(outputDir, "package-manifest.json"), stableJson(manifest), "utf8");
@@ -757,7 +878,7 @@ function printSummary(report) {
   const warnings = report.findings.filter((finding) => finding.level === "warning");
   const errors = report.findings.filter((finding) => finding.level === "error");
   process.stdout.write([
-    `Repository asset audit @ ${report.revision}`,
+    `Repository asset audit @ ${report.revision}${report.prospective ? " (prospective working tree)" : ""}`,
     `Tracked: ${report.tracked.files} files, ${report.tracked.bytes} bytes (${formatMiB(report.tracked.bytes)} MiB)`,
     `Package manifest (${report.package.scope}): ${report.package.files} files, ${report.package.bytes} bytes (${formatMiB(report.package.bytes)} MiB)`,
     `Findings: ${errors.length} error(s), ${warnings.length} warning(s)`,
@@ -772,9 +893,11 @@ function printSummary(report) {
 
 function printHelp() {
   process.stdout.write(
-    "Usage: node scripts/audit-repository-assets.js [--output DIR] "
+    "Usage: node scripts/audit-repository-assets.js [--output DIR] [--prospective] "
     + "[--baseline-manifest PREVIOUS_JSON] "
-    + "[--package-root EXTRACTED_DIR --target windows-x64|windows-arm64|darwin-x64|darwin-arm64|linux-x64]\n",
+    + "[--package-root EXTRACTED_DIR --target windows-x64|windows-arm64|darwin-x64|darwin-arm64|linux-x64]\n"
+    + "  --prospective  audit the tree that would be committed from the working tree\n"
+    + "                 (HEAD + non-ignored changes), not just the committed HEAD\n",
   );
 }
 
@@ -804,7 +927,11 @@ module.exports = {
   inspectNativeBuffer,
   matchesGlob,
   parseArgs,
+  parseBatchObjectSizes,
+  parseIndexRecords,
   parseTrackedTree,
+  readProspectiveTrackedTree,
+  readTrackedTree,
   resolvePolicy,
   runAudit,
   stableJson,

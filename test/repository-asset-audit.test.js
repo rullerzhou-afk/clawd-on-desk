@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const {
   analyzeAudit,
   buildExtractedPackageManifest,
@@ -12,11 +13,60 @@ const {
   inspectNativeBuffer,
   matchesGlob,
   parseArgs,
+  parseBatchObjectSizes,
+  parseIndexRecords,
+  readProspectiveTrackedTree,
+  readTrackedTree,
   resolvePolicy,
   runAudit,
   stableJson,
   validatePolicy,
 } = require("../scripts/audit-repository-assets");
+
+// Isolate a temporary-repo fixture from ambient git state: global/system config,
+// signing, hooks, excludes, and any inherited git path variables. The product
+// prospective helper itself is unchanged; this only scrubs the environment it
+// runs under, then restores it.
+const GIT_ISOLATION_ENV_KEYS = [
+  "GIT_DIR",
+  "GIT_WORK_TREE",
+  "GIT_INDEX_FILE",
+  "GIT_OBJECT_DIRECTORY",
+  "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+  "GIT_CONFIG",
+  "GIT_CONFIG_GLOBAL",
+  "GIT_CONFIG_SYSTEM",
+  "GIT_CONFIG_NOSYSTEM",
+  "GIT_CONFIG_COUNT",
+  "GIT_CEILING_DIRECTORIES",
+  "GIT_ATTR_NOSYSTEM",
+  "HOME",
+  "USERPROFILE",
+  "XDG_CONFIG_HOME",
+];
+
+function withIsolatedGitEnv(homeDir, fn) {
+  const saved = new Map();
+  for (const key of GIT_ISOLATION_ENV_KEYS) {
+    saved.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  const nullDevice = process.platform === "win32" ? "NUL" : "/dev/null";
+  process.env.HOME = homeDir;
+  process.env.USERPROFILE = homeDir;
+  process.env.GIT_CONFIG_NOSYSTEM = "1";
+  process.env.GIT_CONFIG_GLOBAL = nullDevice;
+  process.env.GIT_CONFIG_SYSTEM = nullDevice;
+  try {
+    return fn();
+  } finally {
+    for (const key of GIT_ISOLATION_ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  }
+}
 
 function basePolicy() {
   return {
@@ -490,6 +540,128 @@ describe("repository asset audit", () => {
     const value = { revision: "abc", files: [{ path: "a", bytes: 1 }] };
     assert.strictEqual(stableJson(value), stableJson(value));
     assert.ok(stableJson(value).endsWith("\n"));
+  });
+
+  it("keeps the prospective repository tree under the hard budget", () => {
+    const root = path.resolve(__dirname, "..");
+    const policy = JSON.parse(
+      fs.readFileSync(path.join(root, "tools", "repository-asset-policy.json"), "utf8")
+    );
+    const prospective = readProspectiveTrackedTree(root);
+
+    const prospectiveBytes = prospective.reduce((sum, file) => sum + file.bytes, 0);
+    const headroom = policy.thresholds.trackedTreeHardBytes - prospectiveBytes;
+    // The hard-budget gate must judge the tree that would actually be committed.
+    assert.ok(
+      headroom >= 0,
+      `prospective tracked tree ${prospectiveBytes} bytes exceeds hard budget `
+      + `${policy.thresholds.trackedTreeHardBytes} bytes by ${-headroom}`
+    );
+  });
+
+  it("audits the prospective tree without a hard-budget error", () => {
+    const root = path.resolve(__dirname, "..");
+    const output = fs.mkdtempSync(path.join(os.tmpdir(), "asset-audit-prospective-"));
+    try {
+      const { report } = runAudit({ repoRoot: root, output, prospective: true });
+      assert.strictEqual(report.prospective, true);
+      assert.deepStrictEqual(
+        report.findings.filter((finding) => finding.level === "error"),
+        [],
+      );
+    } finally {
+      fs.rmSync(output, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects the successful-exit '<oid> missing' batch-check form", () => {
+    assert.throws(
+      () => parseBatchObjectSizes("deadbeefdeadbeefdeadbeefdeadbeefdeadbeef missing\n", 1),
+      /non-numeric/i
+    );
+  });
+
+  it("rejects malformed, extra, or missing size lines instead of defaulting to zero", () => {
+    assert.throws(() => parseBatchObjectSizes("12\n", 2));
+    assert.throws(() => parseBatchObjectSizes("12\n34\n", 1));
+    assert.throws(() => parseBatchObjectSizes("12\n\n", 2));
+    assert.throws(() => parseBatchObjectSizes("", 1));
+    assert.throws(() => parseBatchObjectSizes("12\n34", 1));
+  });
+
+  it("rejects unsafe, negative, and fractional sizes", () => {
+    assert.throws(() => parseBatchObjectSizes(`${Number.MAX_SAFE_INTEGER + 1}\n`, 1));
+    assert.throws(() => parseBatchObjectSizes("-1\n", 1));
+    assert.throws(() => parseBatchObjectSizes("1.5\n", 1));
+  });
+
+  it("accepts exactly one non-negative safe integer per requested object", () => {
+    assert.deepStrictEqual(parseBatchObjectSizes("0\n123\n", 2), [0, 123]);
+    assert.deepStrictEqual(parseBatchObjectSizes("7", 1), [7]);
+  });
+
+  it("rejects a malformed ls-files record instead of dropping it", () => {
+    assert.throws(() => parseIndexRecords("garbage\0"), /Unexpected git ls-files/);
+    assert.throws(() => parseIndexRecords("100644 nothex 0\tpath\0"), /Unexpected git ls-files/);
+    assert.throws(() => parseIndexRecords("100644 1111111111111111111111111111111111111111 0\t\0"), /Unexpected/);
+  });
+
+  it("parses well-formed NUL-delimited index records", () => {
+    const raw = "100644 1111111111111111111111111111111111111111 0\ta.txt\0"
+      + "100755 2222222222222222222222222222222222222222 0\tdir/b.txt\0";
+    assert.deepStrictEqual(parseIndexRecords(raw).map((record) => record.path), ["a.txt", "dir/b.txt"]);
+  });
+
+  it("evaluates every working-tree change without dropping a tracked node_modules path", () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-prospective-repo-"));
+    const fixture = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-git-fixture-"));
+    const hooksDir = path.join(fixture, "hooks");
+    const excludesFile = path.join(fixture, "excludes");
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(excludesFile, "");
+    try {
+      withIsolatedGitEnv(repo, () => {
+        const git = (...args) => execFileSync("git", [
+          "-c", "commit.gpgsign=false",
+          "-c", "commit.gpgSign=false",
+          "-c", `core.hooksPath=${hooksDir}`,
+          "-c", `core.excludesfile=${excludesFile}`,
+          "-c", "core.autocrlf=false",
+          "-c", "core.safecrlf=false",
+          ...args,
+        ], { cwd: repo, stdio: "ignore" });
+        git("init", "-q");
+        git("config", "user.email", "test@example.com");
+        git("config", "user.name", "test");
+        fs.writeFileSync(path.join(repo, "node_modules"), "tracked dependency file\n");
+        fs.writeFileSync(path.join(repo, "old.txt"), "rename me\n");
+        fs.writeFileSync(path.join(repo, "delete.txt"), "delete me\n");
+        fs.writeFileSync(path.join(repo, "edit.txt"), "before\n");
+        git("add", ".");
+        git("commit", "-q", "-m", "seed");
+
+        fs.renameSync(path.join(repo, "old.txt"), path.join(repo, "new.txt"));
+        fs.rmSync(path.join(repo, "delete.txt"));
+        fs.writeFileSync(path.join(repo, "edit.txt"), "after edit\n");
+        fs.writeFileSync(path.join(repo, "added.txt"), "new file\n");
+
+        const committed = new Map(readTrackedTree(repo).map((file) => [file.path, file]));
+        const prospective = new Map(readProspectiveTrackedTree(repo).map((file) => [file.path, file]));
+        assert.deepStrictEqual(
+          [...committed.keys()].sort(),
+          ["delete.txt", "edit.txt", "node_modules", "old.txt"]
+        );
+        assert.deepStrictEqual(
+          [...prospective.keys()].sort(),
+          ["added.txt", "edit.txt", "new.txt", "node_modules"]
+        );
+        assert.strictEqual(committed.get("edit.txt").bytes, Buffer.byteLength("before\n"));
+        assert.strictEqual(prospective.get("edit.txt").bytes, Buffer.byteLength("after edit\n"));
+      });
+    } finally {
+      fs.rmSync(repo, { recursive: true, force: true });
+      fs.rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it("audits the repository twice with byte-identical manifests and reports", () => {

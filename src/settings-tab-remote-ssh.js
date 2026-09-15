@@ -263,9 +263,11 @@
     headTitle.textContent = t("remoteSshSectionProfiles");
     header.appendChild(headTitle);
 
-    const addBtn = document.createElement("button");
-    addBtn.className = "soft-btn accent";
-    addBtn.textContent = t("remoteSshAddProfile");
+    const addBtn = helpers.buildButton({
+      labelKey: "remoteSshAddProfile",
+      tone: "accent",
+      size: "compact",
+    });
     addBtn.addEventListener("click", () => {
       view.editing = {
         id: uuid(),
@@ -337,8 +339,6 @@
       actions.appendChild(warn);
     }
 
-    const connectBtn = document.createElement("button");
-    connectBtn.className = "soft-btn";
     const transportOperationActive = !!(
       status.transportPhase && status.transportPhase !== "idle"
     );
@@ -346,16 +346,18 @@
       || status.status === "connecting"
       || status.status === "reconnecting"
       || (transportOperationActive && status.transportDesiredConnected === true);
+    const deploymentReady = hasDeploymentStamp(profile);
+    const connectBtn = helpers.buildButton({
+      labelKey: disconnectAvailable ? "remoteSshDisconnect" : "remoteSshConnect",
+      size: "compact",
+      disabled: !disconnectAvailable && (!deploymentReady || transportOperationActive),
+    });
     if (disconnectAvailable) {
-      connectBtn.textContent = t("remoteSshDisconnect");
       connectBtn.addEventListener("click", (e) => {
         e.stopPropagation();
         requestProfileDisconnect(profile.id);
       });
     } else {
-      connectBtn.textContent = t("remoteSshConnect");
-      const deploymentReady = hasDeploymentStamp(profile);
-      connectBtn.disabled = !deploymentReady || transportOperationActive;
       if (!deploymentReady) {
         connectBtn.title = t("remoteSshErrDeploymentRequired");
       } else if (transportOperationActive) {
@@ -395,11 +397,12 @@
     headTitle.textContent = profile.label;
     header.appendChild(headTitle);
 
-    const editBtn = document.createElement("button");
-    editBtn.className = "soft-btn";
-    editBtn.textContent = t("remoteSshEdit");
-    editBtn.disabled = transportOwnedByAnother;
-    if (transportConflictTitle) editBtn.title = transportConflictTitle;
+    const editBtn = helpers.buildButton({
+      labelKey: "remoteSshEdit",
+      size: "compact",
+      disabled: transportOwnedByAnother,
+      title: transportConflictTitle,
+    });
     editBtn.addEventListener("click", () => {
       if (transportOwnedByAnother) return;
       view.editing = { ...profile };
@@ -407,11 +410,15 @@
     });
     header.appendChild(editBtn);
 
-    const deleteBtn = document.createElement("button");
-    deleteBtn.className = "soft-btn remote-ssh-btn-danger";
-    deleteBtn.textContent = t("remoteSshDelete");
-    deleteBtn.disabled = view.deletingProfileIds.has(profile.id) || transportOwnedByAnother;
-    if (transportConflictTitle) deleteBtn.title = transportConflictTitle;
+    const deleteBtn = helpers.buildButton({
+      labelKey: "remoteSshDelete",
+      tone: "danger",
+      size: "compact",
+      className: "remote-ssh-btn-danger",
+      disabled: transportOwnedByAnother,
+      pending: view.deletingProfileIds.has(profile.id),
+      title: transportConflictTitle,
+    });
     deleteBtn.addEventListener("click", async () => {
       if (view.deletingProfileIds.has(profile.id) || transportOwnedByAnother) return;
       if (!confirm(t("remoteSshDeleteConfirm").replace("{label}", profile.label))) return;
@@ -419,11 +426,13 @@
       try {
         ops.requestRender({ content: true });
         let cleanupSucceeded = true;
+        let cleanupMessage = "";
         if (window.remoteSsh) {
           if (typeof window.remoteSsh.cleanup === "function") {
             try {
               const cleanup = await window.remoteSsh.cleanup(profile.id);
               cleanupSucceeded = !!(cleanup && cleanup.status === "ok" && cleanup.uninstalled !== false);
+              cleanupMessage = cleanup && typeof cleanup.message === "string" ? cleanup.message : "";
             } catch {
               cleanupSucceeded = false;
             }
@@ -431,7 +440,7 @@
             window.remoteSsh.disconnect(profile.id);
           }
         }
-        if (!cleanupSucceeded && !confirm(t("remoteSshDeleteCleanupFailedConfirm"))) return;
+        if (!cleanupSucceeded && !confirm([t("remoteSshDeleteCleanupFailedConfirm"), cleanupMessage].filter(Boolean).join("\n\n"))) return;
         const r = await callCommand("remoteSsh.delete", profile.id);
         if (!r || r.status !== "ok") return;
         if (view.selectedProfileId === profile.id) view.selectedProfileId = null;
@@ -507,17 +516,18 @@
       : t("remoteSshAccountDefault");
     runtimeRow.appendChild(runtimeValue);
     if (isolated || view.profileIsolationAvailable) {
-      const modeButton = document.createElement("button");
-      modeButton.className = "soft-btn";
-      modeButton.textContent = t(isolated ? "remoteSshDisableIsolation" : "remoteSshEnableIsolation");
-      modeButton.disabled = transportOwnedByAnother;
-      if (transportConflictTitle) modeButton.title = transportConflictTitle;
+      const modeButton = helpers.buildButton({
+        labelKey: isolated ? "remoteSshDisableIsolation" : "remoteSshEnableIsolation",
+        size: "compact",
+        disabled: transportOwnedByAnother,
+        title: transportConflictTitle,
+      });
       modeButton.addEventListener("click", async () => {
         if (transportOwnedByAnother) return;
         if (!window.remoteSsh || typeof window.remoteSsh.setRuntimeMode !== "function") return;
         const prompt = t(isolated ? "remoteSshDisableIsolationConfirm" : "remoteSshEnableIsolationConfirm");
         if (!confirm(prompt)) return;
-        modeButton.disabled = true;
+        helpers.setButtonState(modeButton, { pending: true });
         const target = isolated ? "account-default" : "profile-isolated";
         try {
           const result = await window.remoteSsh.setRuntimeMode(profile.id, target, true);
@@ -552,9 +562,10 @@
         for (const name of ["claude", "codex", "copilot"]) {
           const capability = isolatedRuntime.capabilities && isolatedRuntime.capabilities[name];
           if (!capability || !capability.present || !capability.wrapperPath) continue;
-          const copy = document.createElement("button");
-          copy.className = "soft-btn";
-          copy.textContent = t("remoteSshCopyWrapper").replace("{name}", name);
+          const copy = helpers.buildButton({
+            label: t("remoteSshCopyWrapper").replace("{name}", name),
+            size: "compact",
+          });
           copy.addEventListener("click", async () => {
             try {
               await navigator.clipboard.writeText(capability.wrapperPath);
@@ -574,17 +585,20 @@
       const revokeActions = document.createElement("div");
       revokeActions.className = "remote-ssh-actions";
       const addRevokeButton = (mode, labelKey, firstConfirmKey) => {
-        const button = document.createElement("button");
-        button.className = "soft-btn remote-ssh-btn-danger";
-        button.textContent = t(labelKey);
-        button.disabled = transportOwnedByAnother;
-        if (transportConflictTitle) button.title = transportConflictTitle;
+        const button = helpers.buildButton({
+          labelKey,
+          tone: "danger",
+          size: "compact",
+          className: "remote-ssh-btn-danger",
+          disabled: transportOwnedByAnother,
+          title: transportConflictTitle,
+        });
         button.addEventListener("click", async () => {
           if (transportOwnedByAnother) return;
           if (!window.remoteSsh || typeof window.remoteSsh.forceRevoke !== "function") return;
           if (!confirm(t(firstConfirmKey))) return;
           if (!confirm(t("remoteSshForceRevokeSecondConfirm"))) return;
-          button.disabled = true;
+          helpers.setButtonState(button, { pending: true });
           try {
             const result = await window.remoteSsh.forceRevoke(profile.id, mode, true);
             if (!result || result.status !== "ok") {
@@ -608,11 +622,11 @@
     // Action buttons
     const actions = document.createElement("div");
     actions.className = "remote-ssh-actions";
-    const authBtn = document.createElement("button");
-    authBtn.className = "soft-btn";
-    authBtn.textContent = t("remoteSshAuthenticate");
-    authBtn.disabled = transportOwnedByAnother;
-    authBtn.title = transportConflictTitle || t("remoteSshAuthenticateHint");
+    const authBtn = helpers.buildButton({
+      labelKey: "remoteSshAuthenticate",
+      disabled: transportOwnedByAnother,
+      title: transportConflictTitle || t("remoteSshAuthenticateHint"),
+    });
     authBtn.addEventListener("click", () => {
       if (transportOwnedByAnother) return;
       if (!window.remoteSsh) return;
@@ -622,11 +636,11 @@
     });
     actions.appendChild(authBtn);
 
-    const termBtn = document.createElement("button");
-    termBtn.className = "soft-btn";
-    termBtn.textContent = t("remoteSshOpenTerminal");
-    termBtn.disabled = transportOwnedByAnother;
-    if (transportConflictTitle) termBtn.title = transportConflictTitle;
+    const termBtn = helpers.buildButton({
+      labelKey: "remoteSshOpenTerminal",
+      disabled: transportOwnedByAnother,
+      title: transportConflictTitle,
+    });
     termBtn.addEventListener("click", () => {
       if (transportOwnedByAnother) return;
       if (!window.remoteSsh) return;
@@ -636,12 +650,14 @@
     });
     actions.appendChild(termBtn);
 
-    const deployBtn = document.createElement("button");
-    deployBtn.className = "soft-btn accent";
     const isDeploying = view.deployingProfileIds.has(profile.id);
-    deployBtn.textContent = isDeploying ? t("remoteSshDeploying") : t("remoteSshDeploy");
-    deployBtn.disabled = isDeploying || transportOwnedByAnother;
-    if (transportConflictTitle) deployBtn.title = transportConflictTitle;
+    const deployBtn = helpers.buildButton({
+      labelKey: isDeploying ? "remoteSshDeploying" : "remoteSshDeploy",
+      tone: "accent",
+      disabled: transportOwnedByAnother,
+      pending: isDeploying,
+      title: transportConflictTitle,
+    });
     deployBtn.addEventListener("click", () => {
       if (!window.remoteSsh || transportOwnedByAnother) return;
       view.deployingProfileIds.add(profile.id);
@@ -811,35 +827,36 @@
       const button = document.createElement("button");
       button.type = "button";
       button.className = "remote-ssh-option-card";
-      button.setAttribute("role", "switch");
 
       const text = document.createElement("span");
       text.className = "remote-ssh-option-card-text";
       const label = document.createElement("span");
       label.className = "remote-ssh-option-card-label";
+      label.id = `settings-remote-ssh-${key}-label`;
       label.textContent = t(labelKey);
       const desc = document.createElement("span");
       desc.className = "remote-ssh-option-card-desc";
+      desc.id = `settings-remote-ssh-${key}-description`;
       desc.textContent = t(descKey);
       text.appendChild(label);
       text.appendChild(desc);
 
       const sw = document.createElement("span");
-      sw.className = "switch remote-ssh-option-card-switch";
       sw.setAttribute("aria-hidden", "true");
-
-      function sync() {
-        const checked = !!formData[key];
-        button.setAttribute("aria-checked", checked ? "true" : "false");
-        sw.classList.toggle("on", checked);
-      }
-      button.addEventListener("click", () => {
-        formData[key] = !formData[key];
-        sync();
+      const switchControl = helpers.buildSwitch({
+        element: button,
+        visualElement: sw,
+        checked: !!formData[key],
+        ariaLabelledBy: label.id,
+        ariaDescribedBy: desc.id,
+        className: "remote-ssh-option-card-switch",
+        onToggle: ({ nextChecked }) => {
+          formData[key] = nextChecked;
+          switchControl.setState({ checked: nextChecked });
+        },
       });
       button.appendChild(text);
       button.appendChild(sw);
-      sync();
       return button;
     }
 
@@ -904,18 +921,19 @@
     const formActions = document.createElement("div");
     formActions.className = "remote-ssh-form-actions";
 
-    const cancelBtn = document.createElement("button");
-    cancelBtn.className = "soft-btn";
-    cancelBtn.textContent = t("remoteSshCancel");
+    const cancelBtn = helpers.buildButton({
+      labelKey: "remoteSshCancel",
+    });
     cancelBtn.addEventListener("click", () => {
       view.editing = null;
       ops.requestRender({ content: true });
     });
     formActions.appendChild(cancelBtn);
 
-    const saveBtn = document.createElement("button");
-    saveBtn.className = "soft-btn accent";
-    saveBtn.textContent = t("remoteSshSave");
+    const saveBtn = helpers.buildButton({
+      labelKey: "remoteSshSave",
+      tone: "accent",
+    });
     saveBtn.addEventListener("click", () => {
       // Strip empty optional strings before submitting.
       const payload = {

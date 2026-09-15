@@ -2233,6 +2233,7 @@ describe("shortcut commands", () => {
         globalShortcut,
         shortcutHandlers: {
           togglePet: () => {},
+          quickSelectSession: () => {},
           permissionAllow: () => {},
           permissionDeny: () => {},
         },

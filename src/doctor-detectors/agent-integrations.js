@@ -34,6 +34,7 @@ const { checkCodexHookTrust, checkCodexHooksFeature } = require("./codex-feature
 const { inspectStableCodexHookCommand } = require("../../hooks/codex-install-utils");
 const { validateOpencodeEntry } = require("./opencode-entry-validator");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
+const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 const { inspectDeepSeekHarnessDiskSync } = require("../../hooks/dsh-install");
 
@@ -264,6 +265,16 @@ function withAgentFixAction(detail, descriptor) {
   if (!descriptor.autoInstall || !REPAIRABLE_AGENT_STATUSES.has(detail.status)) return detail;
   if (detail.supplementary && detail.supplementary.key === "hook_group") return detail;
   if (
+    descriptor.agentId === "grok-build"
+    && detail.supplementary
+    && detail.supplementary.key === "grok_hooks"
+    && (detail.supplementary.value === "foreign-file" || detail.supplementary.value === "config-corrupt")
+  ) {
+    // Re-running the installer on a foreign or unparseable file fails closed,
+    // so a Fix button would be an ineffective loop.
+    return detail;
+  }
+  if (
     descriptor.agentId === "gemini-cli"
     && detail.supplementary
     && detail.supplementary.key === "gemini_hooks"
@@ -401,6 +412,7 @@ function validateCodexCommandList(descriptor, commands, options) {
     const stable = inspectStableCodexHookCommand(command, {
       platform: options.platform,
       fs: options.fs,
+      codexDir: descriptor.parentDir,
     });
     if (!stable.matched) {
       return options.validateCommand(command, { platform: options.platform, fs: options.fs });
@@ -1601,6 +1613,86 @@ function checkCopilotHooksMode(descriptor, options) {
   };
 }
 
+// Grok Build uses a dedicated inspector: the resolved path depends on
+// GROK_HOME, and ownership is the structured handler marker in `env`, not a
+// filename substring. Doctor and the installation detector share this verdict,
+// so a misreported state can never send Fix to a different path than Install.
+function checkGrokHooksMode(descriptor, options) {
+  const inspected = inspectGrokHookFile({
+    fs: options.fs,
+    env: options.env,
+    homeDir: options.homeDir,
+  });
+  const base = {
+    parentDirExists: inspected.parentDirExists,
+    configFileExists: inspected.configFileExists,
+    configPath: inspected.configPath,
+    grokHealth: inspected.health,
+  };
+  let detail;
+  if (inspected.health === "healthy") {
+    detail = makeDetail(descriptor, "ok", {
+      level: null,
+      detail: `Verified structured Clawd handler in ${inspected.configPath}`,
+      ...base,
+    });
+  } else if (inspected.health === "incomplete") {
+    // Re-running the installer repairs a partial or non-canonical managed set,
+    // so this stays a repairable "broken-path" (with a Fix action).
+    detail = makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      detail: inspected.detail || "Clawd-managed Grok handlers are incomplete",
+      ...base,
+    });
+  } else if (inspected.health === "needs-review") {
+    // Stale PR-preview `clawd.json`: Clawd must not mutate either file, so no
+    // Fix action is offered. Settings Install is blocked by the installer's
+    // needs-review result.
+    detail = makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      detail: inspected.detail || "A stale PR-preview Grok hook file requires manual review",
+      ...base,
+      supplementary: { key: "grok_hooks", value: "stale-preview" },
+      stalePreviewPath: inspected.previewPath,
+    });
+  } else if (inspected.health === "foreign-file") {
+    detail = makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      detail: `${inspected.configPath} exists but is not owned by Clawd; Clawd will not modify it`,
+      ...base,
+      supplementary: { key: "grok_hooks", value: "foreign-file" },
+    });
+  } else if (inspected.health === "config-corrupt") {
+    detail = makeDetail(descriptor, "config-corrupt", {
+      level: "warning",
+      detail: inspected.detail || `${inspected.configPath} could not be parsed`,
+      ...base,
+      supplementary: { key: "grok_hooks", value: "config-corrupt" },
+    });
+  } else if (inspected.health === "not-connected") {
+    detail = makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      detail: `${inspected.configPath} missing`,
+      ...base,
+    });
+  } else {
+    detail = makeDetail(descriptor, "not-installed", {
+      level: "info",
+      detail: `${inspected.grokHome} missing`,
+      ...base,
+    });
+  }
+  if (inspected.stalePreview) {
+    detail = {
+      ...detail,
+      stalePreview: true,
+      stalePreviewPath: inspected.previewPath,
+      detail: `${detail.detail}. ${inspected.warnings.join(" ")}`.trim(),
+    };
+  }
+  return detail;
+}
+
 function checkTomlTextMode(descriptor, options) {
   if (!fileExists(options.fs, descriptor.configPath)) {
     return makeDetail(descriptor, "not-connected", {
@@ -2463,6 +2555,14 @@ function checkAgent(descriptor, options) {
       });
     }
     return withAgentFixAction(withAgentBubbleNote(detail, prefs, descriptor.agentId), descriptor);
+  }
+
+  if (descriptor.configMode === "grok-hooks") {
+    // Dynamic GROK_HOME path + structured ownership are resolved by the shared
+    // inspector, so this branch must not rely on the static descriptor path or
+    // the generic parent-dir check below.
+    const grokDetail = checkGrokHooksMode(descriptor, options);
+    return withAgentFixAction(withAgentBubbleNote(grokDetail, prefs, descriptor.agentId), descriptor);
   }
 
   // Multi-home agents declare ordered configTargets. Most use the first

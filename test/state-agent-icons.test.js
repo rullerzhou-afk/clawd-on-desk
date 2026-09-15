@@ -240,8 +240,36 @@ describe("state agent icons", () => {
         .filter(([, record]) => record.fallback)
         .map(([agentId]) => agentId)
         .sort(),
-      ["codewhale", "kimi-cli", "qoderwork", "qwenwork", "reasonix", "traecode", "zcode"]
+      ["codewhale", "grok-build", "kimi-cli", "qoderwork", "qwenwork", "reasonix", "traecode", "zcode"]
     );
+  });
+
+  it("keeps the generated Grok fallback, its license, and the assets LICENSE aligned", () => {
+    const manifest = readSourceManifest();
+    const record = manifest.sources["grok-build"];
+    assert.strictEqual(record.license, "CC0-1.0");
+    assert.match(record.provenance, /tools\/generate-grok-fallback-icon\.js/);
+    assert.strictEqual(record.sourceFilename, "grok-fallback.png");
+    assert.strictEqual(record.exportMode, "passthrough");
+
+    const generatorPath = path.join(__dirname, "..", "tools", "generate-grok-fallback-icon.js");
+    assert.ok(fs.existsSync(generatorPath), "fallback generator must be tracked under tools/");
+
+    const sourcePath = getSourcePath("grok-build");
+    const runtimePath = path.join(AGENT_ICON_DIR, "grok-build.png");
+    assert.strictEqual(hashFileSource(sourcePath), record.sha256);
+    assert.strictEqual(hashFileSource(runtimePath), record.sha256);
+    assert.strictEqual(
+      manifest.outputs["grok-build"].generatedFromSourceSha256,
+      record.sha256
+    );
+
+    const licenseText = fs.readFileSync(path.join(__dirname, "..", "assets", "LICENSE"), "utf8");
+    assert.match(licenseText, /grok-fallback\.png/);
+    assert.match(licenseText, /grok-build\.png/);
+    assert.match(licenseText, /CC0-1\.0/);
+    // The blanket restriction must explicitly exclude the licensed exception.
+    assert.match(licenseText, /Except for assets that carry their own explicit license/i);
   });
 
   it("records complete LobeHub provenance for package and official website assets", () => {

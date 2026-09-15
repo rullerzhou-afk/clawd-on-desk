@@ -162,7 +162,7 @@ describe("CodexLogMonitor", () => {
       payload: { type: "function_call_output", call_id: "call_question", output: "{}" },
     }) + "\n");
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_question"]]);
+    assert.deepStrictEqual(resolved, [[EXPECTED_SID, "call_question", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("does not flash a request_user_input already resolved before initial attach", () => {
@@ -812,7 +812,7 @@ describe("CodexLogMonitor", () => {
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_partial_tail"]]);
+    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_partial_tail", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("seeds fileIdentity on the recovered tracker and mirrors it into the read-position ledger", () => {
@@ -868,7 +868,7 @@ describe("CodexLogMonitor", () => {
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[tracked.sessionId, "call_identity_check"]]);
+    assert.deepStrictEqual(resolved, [[tracked.sessionId, "call_identity_check", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("resets the recovery sweep on every real start(), not just the first one this instance ever saw", (_, done) => {
@@ -1179,7 +1179,7 @@ describe("CodexLogMonitor", () => {
     const resolved = [];
     monitor._onUserInputResolved = (...args) => resolved.push(args);
     monitor._pollFile(testFile, path.basename(testFile));
-    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_utf8_boundary"]]);
+    assert.deepStrictEqual(resolved, [[recovered.sessionId, "call_utf8_boundary", { source: "function-call-output", turnId: null, recapOccurredAt: null, userInputReplay: true }]]);
   });
 
   it("caps the recovery sweep to RECOVERY_SWEEP_MAX_FILES, prioritizing the most recently modified candidates", (_, done) => {

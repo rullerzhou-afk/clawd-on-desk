@@ -28,6 +28,7 @@ function makeReq(body) {
   const req = new EventEmitter();
   req.method = "POST";
   req.url = "/permission";
+  req.headers = { host: "127.0.0.1:23333", "content-type": "application/json" };
   setImmediate(() => {
     req.emit("data", Buffer.from(JSON.stringify(body)));
     req.emit("end");

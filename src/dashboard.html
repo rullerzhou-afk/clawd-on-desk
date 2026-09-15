@@ -374,6 +374,60 @@ h1 {
   justify-content: flex-start;
 }
 
+/* Keyboard mode. The banner lives in the header and the digit badge is
+   absolutely positioned, so entering the mode changes no card height and the
+   user's scroll position survives the next one-second rebuild. */
+.quick-banner {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.quick-banner[hidden] { display: none; }
+
+.quick-banner.is-active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.quick-digit-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #ffffff;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+#content:not(.is-quick-capture) .quick-digit-badge {
+  visibility: hidden;
+}
+
+.card-quick-tombstone {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  padding-left: 34px;
+  opacity: 0.55;
+}
+
+.card-quick-tombstone .quick-digit-badge {
+  background: var(--subtle);
+}
+
 .session-id-badge {
   position: absolute;
   top: 8px;
@@ -443,6 +497,7 @@ h1 {
 
 .meta,
 .path,
+.model-row,
 .event-row,
 .context-usage-row {
   overflow: hidden;
@@ -479,6 +534,75 @@ h1 {
   font: inherit;
   font-size: 11px;
 }
+
+.session-history-hint {
+  margin: -2px 2px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.session-history-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.session-history-main {
+  min-width: 0;
+}
+
+.session-history-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.session-history-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-history-flag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* A row whose transcript Claude Code no longer holds still offers Resume:
+   the probe can only be advisory, so the flag warns without blocking. */
+.session-history-flag.is-missing {
+  color: var(--muted);
+}
+
+.session-history-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.session-history-feedback {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-history-feedback:empty { display: none; }
 
 .automation-orphans-hint {
   margin: -2px 2px 8px;
@@ -520,6 +644,10 @@ h1 {
 }
 
 .event-row {
+  color: var(--muted);
+}
+
+.model-row {
   color: var(--muted);
 }
 
@@ -684,6 +812,14 @@ button:disabled {
   font-size: 15px;
 }
 
+/* Do not push the resume list below a full-height empty-state panel. */
+.empty.empty-with-history {
+  height: auto;
+  min-height: 0;
+  padding: 16px 24px;
+  margin-bottom: 16px;
+}
+
 .empty-hint {
   max-width: 260px;
   line-height: 1.45;
@@ -712,6 +848,7 @@ button:disabled {
         <h1 id="title">Sessions</h1>
         <span id="count" class="count"></span>
       </div>
+      <div id="quickBanner" class="quick-banner" role="status" aria-live="polite" hidden></div>
       <div id="quotaSummary" class="quota-summary" hidden></div>
     </header>
     <main id="content" class="content" aria-live="polite"></main>

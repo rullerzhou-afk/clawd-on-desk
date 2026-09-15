@@ -947,9 +947,24 @@ function getOverflowHotkeyTarget() {
 }
 
 function getHotkeyTargetPermission() {
-  if (overflowPresentation.mode === "overflow") return getOverflowHotkeyTarget();
-  const targets = getHotkeyActionablePermissions();
-  return targets.length > 0 ? targets[targets.length - 1] : null;
+  let target;
+  if (overflowPresentation.mode === "overflow") target = getOverflowHotkeyTarget();
+  else {
+    const targets = getHotkeyActionablePermissions();
+    target = targets.length > 0 ? targets[targets.length - 1] : null;
+  }
+  // Preserve the existing normal-mode fallback for requests without a window.
+  if (!target || !target.bubble) return target;
+  // isVisible() only means the native window was shown. In the ACK/failure
+  // fallback a tall stack can extend past the display, and macOS may clamp
+  // just its top edge while leaving the decision buttons below the screen.
+  // Protected expanded cards can also retain crowded normal-mode bounds.
+  // Validate the original target in both modes, never switch to another card.
+  try {
+    if (!isLiveBrowserWindow(target.bubble) || !target.bubble.isVisible()) return null;
+    if (!areBubbleBoundsSafe([target.bubble.getBounds()], getAnchorWorkArea(), getHudAvoidRects())) return null;
+  } catch { return null; }
+  return target;
 }
 
 function syncSingle(actionId, current, target, handler, setState) {
@@ -5042,6 +5057,29 @@ function dismissPermissionsByAgent(agentId, options = {}) {
   return toDismiss.length;
 }
 
+// Session-scoped retirement used by Codex archive lifecycle (#655). Drops only
+// the surfaces owned by this session: passive notify/user-input cards are
+// cleared, and any interactive prompt is handed back with the normal
+// no-decision semantics — never an allow/deny on the user's behalf.
+function dismissPermissionsForSession(sessionId, reason = "session-dismissed") {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return 0;
+  const toDismiss = pendingPermissions.filter((p) => p && p.sessionId === id);
+  if (toDismiss.length === 0) return 0;
+  for (const perm of toDismiss) {
+    if (isPassiveNotifyEntry(perm)) {
+      dismissPassiveNotify(perm, reason);
+      continue;
+    }
+    dismissInteractivePermissionWithoutDecision(perm, reason);
+  }
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  permLog(`dismissPermissionsForSession(${id}): cleared ${toDismiss.length}`);
+  return toDismiss.length;
+}
+
 function dismissInteractivePermissionBubbles() {
   const toDismiss = pendingPermissions.filter((p) => p && !isPassiveNotifyEntry(p));
   if (toDismiss.length === 0) return 0;
@@ -5157,6 +5195,7 @@ return {
   refreshPassiveNotifyAutoClose,
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
+  dismissPermissionsForSession,
   dismissPermissionsForDnd,
   dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,
