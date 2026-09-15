@@ -2790,6 +2790,40 @@ describe("PR #751 second-review batch C: event-evidence bit, per-side clamp elig
   });
 });
 
+// Fake BrowserWindow constructor for the pet-window creation contracts;
+// `patchWindow` can replace a method before the runtime first touches it.
+function makePatchedBrowserWindow(patchWindow = () => {}) {
+  const createWindow = makeBrowserWindow([]);
+  return function PatchedBrowserWindow(options) {
+    const win = createWindow(options);
+    patchWindow(win);
+    return win;
+  };
+}
+
+function createPetRenderWindowForTest(harness, BrowserWindow) {
+  return harness.runtime.createRenderWindow({
+    BrowserWindow,
+    size: { width: 120, height: 120 },
+    initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+    initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+    preloadPath: "preload.js",
+    loadFilePath: "index.html",
+    themeConfig: { ok: true },
+    setRenderWindow: harness.setRenderWin,
+    isQuitting: () => false,
+  });
+}
+
+function createPetHitWindowForTest(harness, BrowserWindow) {
+  return harness.runtime.createHitWindow({
+    BrowserWindow,
+    preloadPath: "preload-hit.js",
+    loadFilePath: "hit.html",
+    hitThemeConfig: { ok: true },
+  });
+}
+
 describe("pet-window-runtime", () => {
   it("keeps context menu owner creation outside the pet runtime and preserves parent ownership", () => {
     const runtimeSource = fs.readFileSync(path.join(SRC_DIR, "pet-window-runtime.js"), "utf8");
@@ -2874,65 +2908,95 @@ describe("pet-window-runtime", () => {
     assert.ok(focusableIndex >= 0 && focusableIndex < showIndex);
   });
 
-  it("pins both pet windows to all workspaces on Linux so the pet follows workspace switches", () => {
-    const renderInstances = [];
-    const hitInstances = [];
-    const harness = createRuntime({ isLinux: true });
+  describe("cross-workspace visibility (#979)", () => {
+    const LINUX = { isLinux: true, isWin: false, isMac: false };
+    const WINDOWS = { isWin: true, isMac: false, isLinux: false };
+    const MAC = { isMac: true, isWin: false, isLinux: false };
 
-    harness.runtime.createRenderWindow({
-      BrowserWindow: makeBrowserWindow(renderInstances),
-      size: { width: 120, height: 120 },
-      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
-      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
-      preloadPath: "preload.js",
-      loadFilePath: "index.html",
-      themeConfig: { ok: true },
-      setRenderWindow: harness.setRenderWin,
-      isQuitting: () => false,
-    });
-    harness.runtime.createHitWindow({
-      BrowserWindow: makeBrowserWindow(hitInstances),
-      preloadPath: "preload-hit.js",
-      loadFilePath: "hit.html",
-      hitThemeConfig: { ok: true },
-    });
-
-    const expected = ["setVisibleOnAllWorkspaces", true, { visibleOnFullScreen: true }];
-    assert.deepStrictEqual(
-      renderInstances[0].calls.find((call) => call[0] === "setVisibleOnAllWorkspaces"),
-      expected,
+    const callNames = (win) => win.calls.map((call) => call[0]);
+    const allWorkspacesCalls = (win) => (
+      win.calls.filter((call) => call[0] === "setVisibleOnAllWorkspaces")
     );
-    assert.deepStrictEqual(
-      hitInstances[0].calls.find((call) => call[0] === "setVisibleOnAllWorkspaces"),
-      expected,
-    );
-  });
 
-  it("does not touch cross-workspace visibility off Linux (macOS keeps reapplyMacVisibility)", () => {
-    const renderInstances = [];
-    const hitInstances = [];
-    const harness = createRuntime({ isLinux: false });
+    it("pins both Linux pet windows to all workspaces before their first show", () => {
+      const harness = createRuntime(LINUX);
+      const BrowserWindow = makePatchedBrowserWindow();
+      const renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+      const hitWin = createPetHitWindowForTest(harness, BrowserWindow);
 
-    harness.runtime.createRenderWindow({
-      BrowserWindow: makeBrowserWindow(renderInstances),
-      size: { width: 120, height: 120 },
-      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
-      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
-      preloadPath: "preload.js",
-      loadFilePath: "index.html",
-      themeConfig: { ok: true },
-      setRenderWindow: harness.setRenderWin,
-      isQuitting: () => false,
-    });
-    harness.runtime.createHitWindow({
-      BrowserWindow: makeBrowserWindow(hitInstances),
-      preloadPath: "preload-hit.js",
-      loadFilePath: "hit.html",
-      hitThemeConfig: { ok: true },
+      for (const win of [renderWin, hitWin]) {
+        assert.deepStrictEqual(allWorkspacesCalls(win), [["setVisibleOnAllWorkspaces", true]]);
+        const names = callNames(win);
+        assert.ok(names.indexOf("setVisibleOnAllWorkspaces") < names.indexOf("showInactive"));
+      }
     });
 
-    assert.equal(renderInstances[0].calls.some((call) => call[0] === "setVisibleOnAllWorkspaces"), false);
-    assert.equal(hitInstances[0].calls.some((call) => call[0] === "setVisibleOnAllWorkspaces"), false);
+    it("leaves both pet windows' workspace visibility alone on Windows", () => {
+      const harness = createRuntime(WINDOWS);
+      const BrowserWindow = makePatchedBrowserWindow();
+      const renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+      const hitWin = createPetHitWindowForTest(harness, BrowserWindow);
+
+      assert.deepStrictEqual(allWorkspacesCalls(renderWin), []);
+      assert.deepStrictEqual(allWorkspacesCalls(hitWin), []);
+    });
+
+    it("keeps delegating macOS cross-Space visibility to reapplyMacVisibility()", () => {
+      const harness = createRuntime(MAC);
+      const BrowserWindow = makePatchedBrowserWindow();
+      const delegations = () => harness.calls.filter((call) => call[0] === "reapplyMacVisibility").length;
+
+      const beforeRender = delegations();
+      const renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+      const afterRender = delegations();
+      const hitWin = createPetHitWindowForTest(harness, BrowserWindow);
+
+      assert.ok(afterRender > beforeRender, "render window creation must delegate to reapplyMacVisibility()");
+      assert.ok(delegations() > afterRender, "hit window creation must delegate to reapplyMacVisibility()");
+      assert.deepStrictEqual(allWorkspacesCalls(renderWin), []);
+      assert.deepStrictEqual(allWorkspacesCalls(hitWin), []);
+    });
+
+    it("still shows both Linux pet windows when setVisibleOnAllWorkspaces is missing", () => {
+      const harness = createRuntime(LINUX);
+      const BrowserWindow = makePatchedBrowserWindow((win) => {
+        delete win.setVisibleOnAllWorkspaces;
+      });
+
+      let renderWin;
+      let hitWin;
+      assert.doesNotThrow(() => {
+        renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+        hitWin = createPetHitWindowForTest(harness, BrowserWindow);
+      });
+      for (const win of [renderWin, hitWin]) {
+        assert.ok(callNames(win).includes("showInactive"));
+        assert.ok(callNames(win).includes("loadFile"));
+      }
+    });
+
+    it("still shows both Linux pet windows when setVisibleOnAllWorkspaces throws", () => {
+      const harness = createRuntime(LINUX);
+      const BrowserWindow = makePatchedBrowserWindow((win) => {
+        win.setVisibleOnAllWorkspaces = (...args) => {
+          win.calls.push(["setVisibleOnAllWorkspaces", ...args]);
+          throw new Error("window manager rejected the hint");
+        };
+      });
+
+      let renderWin;
+      let hitWin;
+      assert.doesNotThrow(() => {
+        renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+        hitWin = createPetHitWindowForTest(harness, BrowserWindow);
+      });
+      for (const win of [renderWin, hitWin]) {
+        const names = callNames(win);
+        assert.ok(names.includes("setVisibleOnAllWorkspaces"));
+        assert.ok(names.indexOf("setVisibleOnAllWorkspaces") < names.indexOf("showInactive"));
+        assert.ok(names.includes("loadFile"));
+      }
+    });
   });
 
   it("reloadWindowWebContents ignores destroyed windows and webContents", () => {

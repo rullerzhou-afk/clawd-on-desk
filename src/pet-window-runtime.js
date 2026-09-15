@@ -159,13 +159,14 @@ function createPetWindowRuntime(options = {}) {
   // Spaces. macOS goes through reapplyMacVisibility(); Linux has no equivalent
   // call anywhere in the tree, so the pet simply disappeared when the user
   // switched workspace. Electron's setVisibleOnAllWorkspaces() maps to
-  // _NET_WM_STATE_STICKY on Linux, which is exactly the missing piece. Guarded
-  // because window managers that ignore the hint must not break window setup.
+  // _NET_WM_STATE_STICKY on Linux, which is exactly the missing piece. No
+  // options: visibleOnFullScreen / skipTransformProcessType are macOS-only.
+  // The try also covers a missing method, so neither that nor a throwing
+  // native call can break window setup.
   function applyLinuxAllWorkspaces(win) {
     if (!isLinux || !win) return;
-    if (typeof win.setVisibleOnAllWorkspaces !== "function") return;
     try {
-      win.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+      win.setVisibleOnAllWorkspaces(true);
     } catch {}
   }
   // #640: re-run the editing-overlap dodge whenever the hit geometry syncs —
