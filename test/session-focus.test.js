@@ -82,6 +82,41 @@ describe("session focus helpers", () => {
     });
   });
 
+  it("keeps Codex CLI UUIDs on the terminal focus path", () => {
+    const entry = {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      agentId: "codex",
+      codexOriginator: "codex-tui",
+      sourcePid: 123,
+    };
+
+    assert.strictEqual(getCodexThreadId(entry), "019e115a-4df2-7ed0-b90e-8e6345aca777");
+    assert.strictEqual(getCodexThreadUrl(entry), null);
+    assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "win32" }), {
+      canFocus: true,
+      type: "terminal",
+      url: null,
+    });
+  });
+
+  it("does not infer a Desktop deep link from a queue-only named thread selector", () => {
+    const entry = {
+      id: "codex:Build / release?week#1",
+      rawSessionId: "codex:Build / release?week#1",
+      agentId: "codex",
+      codexOriginator: "Codex Desktop",
+    };
+
+    assert.strictEqual(getCodexThreadId(entry), "Build / release?week#1");
+    assert.strictEqual(getCodexThreadUrl(entry), null);
+    assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "darwin" }), {
+      canFocus: false,
+      type: null,
+      url: null,
+    });
+  });
+
   it("derives Codex Desktop thread focus targets from profile-scoped session entries", () => {
     const rawSessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
     const entry = {

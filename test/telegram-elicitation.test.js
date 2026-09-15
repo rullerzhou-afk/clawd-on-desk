@@ -506,7 +506,7 @@ test("requestElicitation answers the active question from a text reply after tap
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (msg) => {
     otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":x0")).callback_data;
-    return { ok: true, result: { message_id: 901, chat: { id: 123 } } };
+    return { ok: true, result: { message_id: "901", chat: { id: 123 } } };
   });
   server.enqueue("getUpdates", () => ({
     ok: true,

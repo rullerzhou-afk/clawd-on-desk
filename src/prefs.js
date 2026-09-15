@@ -63,7 +63,7 @@ const {
   PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
-const CURRENT_VERSION = 19;
+const CURRENT_VERSION = 20;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 
@@ -935,6 +935,19 @@ function migrate(raw) {
         ? out.sessionStaleMs : SCHEMA.sessionStaleMs.default,
     });
     out.codexWorkingStaleMs = Math.max(SCHEMA.codexWorkingStaleMs.default, legacy.workingStaleMs);
+  }
+
+  // v19 -> v20: Telegram Direct Send changed from the old paste-only
+  // experiment (which explicitly never pressed Enter) to submitting a reply
+  // directly through the target Console/ConPTY. A persisted true only records
+  // consent to the narrower behavior, so require every upgrading user to read
+  // the new Settings description and opt in again. Fresh installs already use
+  // the schema default false, while a true written by v20 is preserved.
+  if (out.version < 20) {
+    if (out.tgApproval && typeof out.tgApproval === "object") {
+      out.tgApproval.r3DirectSendEnabled = false;
+    }
+    out.version = 20;
   }
   if ((typeof out.version === "number" ? out.version : 0) < CURRENT_VERSION) {
     out.version = CURRENT_VERSION;

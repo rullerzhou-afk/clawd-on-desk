@@ -10,6 +10,7 @@ const {
   CODEX_LOCAL_WORKING_STALE_FLOOR_MS,
   isWorkingLikeState,
   isLocalCodexWorkingLikeSession,
+  isLocalQueueableCodexCliIdleSession,
   isLocalZcodeDesktopIdleSession,
   isLocalTraeDesktopIdleSession,
   getStaleSessionDecision,
@@ -32,6 +33,18 @@ function desktopSession(overrides = {}) {
     codexOriginator: "codex_work_desktop",
     agentPid: 10,
     sourcePid: 10,
+    ...overrides,
+  });
+}
+
+function queueableCliSession(overrides = {}) {
+  return session({
+    agentId: "codex",
+    codexOriginator: "codex-tui",
+    pidReachable: false,
+    transcriptPath: process.platform === "win32"
+      ? "C:\\Users\\tester\\.codex\\sessions\\2026\\09\\15\\rollout-test.jsonl"
+      : "/home/tester/.codex/sessions/2026/09/15/rollout-test.jsonl",
     ...overrides,
   });
 }
@@ -66,6 +79,7 @@ function decision(target, overrides = {}) {
     deriveSessionBadge: overrides.deriveSessionBadge || (() => "idle"),
     shouldAutoClearDetachedSession: overrides.shouldAutoClearDetachedSession || (() => false),
     staleConfig: overrides.staleConfig,
+    hasReplyableCompletionMapping: overrides.hasReplyableCompletionMapping,
   });
   return { result, calls };
 }
@@ -248,6 +262,73 @@ describe("state stale cleanup decisions", () => {
 
     assert.deepStrictEqual(result, { action: "delete", reason: "codex-desktop-idle-timeout" });
     assert.deepStrictEqual(calls, [10]);
+  });
+
+  it("keeps an expired-age Codex Desktop thread while a completion reply mapping is valid", () => {
+    const target = desktopSession({
+      updatedAt: 1000000 - 60_001,
+    });
+    const checked = [];
+    const { result } = decision(target, {
+      alivePids: new Set([10]),
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: (value) => {
+        checked.push(value);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(checked, [target]);
+  });
+
+  it("deletes an expired-age Codex Desktop thread after its completion mapping expires", () => {
+    const { result } = decision(desktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([10]),
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: () => false,
+    });
+
+    assert.deepStrictEqual(result, { action: "delete", reason: "codex-desktop-idle-timeout" });
+  });
+
+  it("retains a PID-less queueable Codex CLI session while its completion mapping is valid", () => {
+    const target = queueableCliSession({ updatedAt: 1000000 - 60_001 });
+    assert.strictEqual(isLocalQueueableCodexCliIdleSession(target), true);
+    const checked = [];
+    const { result } = decision(target, {
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: (value) => {
+        checked.push(value);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(checked, [target]);
+  });
+
+  it("retires a PID-less Codex CLI session when its mapping or store provenance is absent", () => {
+    const options = {
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: () => false,
+    };
+    assert.deepStrictEqual(
+      decision(queueableCliSession({ updatedAt: 1000000 - 60_001 }), options).result,
+      { action: "delete", reason: "unreachable" },
+    );
+    assert.deepStrictEqual(
+      decision(queueableCliSession({
+        updatedAt: 1000000 - 60_001,
+        transcriptPath: null,
+      }), {
+        ...options,
+        hasReplyableCompletionMapping: () => true,
+      }).result,
+      { action: "delete", reason: "unreachable" },
+    );
   });
 
   it("keeps idle Codex Desktop threads forever when sessionStaleMs=0", () => {

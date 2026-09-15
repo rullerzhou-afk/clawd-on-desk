@@ -106,7 +106,12 @@ function dedupeKey(entry) {
 }
 
 function isCompletion(entry) {
-  if (!entry || !DONE_BADGES.has(entry.badge)) return false;
+  // Codex subagent sessions are intentionally headless. Their rollout files
+  // can contain a replay of many historical turns when a parent task starts;
+  // forwarding those internal completions would both leak implementation
+  // detail and flood the user's chat. Only user-facing sessions can become a
+  // Telegram completion target.
+  if (!entry || entry.headless === true || !DONE_BADGES.has(entry.badge)) return false;
   const le = entry.lastEvent;
   return !!(le && COMPLETION_EVENTS.has(le.rawEvent));
 }
@@ -333,6 +338,8 @@ function createTelegramCompanion({
   getNotifyOnComplete = () => false,
   formatText = null,
   onNotificationSent = null,
+  getNotificationContext = null,
+  isNotificationRouteCurrent = null,
 } = {}) {
   const lastNotified = new Map(); // id -> last dedupe key
   let primed = false;
@@ -399,11 +406,45 @@ function createTelegramCompanion({
         ? formatText(entry, { lang, completionOutputMode, includeBare })
         : formatTelegramNotificationMessage(entry, { lang, completionOutputMode, includeBare });
       if (!message) continue;
+      // Bind the notification to the route that existed in this snapshot.
+      // The send itself is deliberately fire-and-forget, so a settings/token
+      // change can otherwise let an old completion leak into a new Telegram
+      // recipient while its mapping is silently rejected later.
+      let notificationContext = null;
+      try {
+        notificationContext = typeof getNotificationContext === "function"
+          ? getNotificationContext(entry)
+          : null;
+      } catch {}
       // Fire-and-forget: do NOT await — we are on the synchronous broadcast
       // path. sendNotification never throws, but guard anyway.
       Promise.resolve()
-        .then(() => client.sendNotification(message))
-        .then((res) => {
+        .then(() => {
+          // Re-check both the companion gate and the route before crossing the
+          // network boundary. A route change between onSnapshot and this
+          // microtask must drop the old notification entirely.
+          let current = true;
+          try {
+            if (typeof isEnabled === "function" && !isEnabled()) current = false;
+            if (current && notificationContext != null
+              && typeof isNotificationRouteCurrent === "function") {
+              current = isNotificationRouteCurrent(notificationContext) === true;
+            }
+          } catch {
+            current = false;
+          }
+          if (!current) {
+            safeLog("debug", "completion notification dropped after route change", { id: entry.id });
+            return { skipped: true };
+          }
+          return Promise.resolve(client.sendNotification(message)).then((res) => ({
+            res,
+            notificationContext,
+          }));
+        })
+        .then((result) => {
+          if (!result || result.skipped) return;
+          const { res, notificationContext: sentContext } = result;
           if (res && res.ok === false) {
             safeLog("warn", "completion notification not delivered", {
               id: entry.id, errorClass: res.errorClass,
@@ -412,7 +453,16 @@ function createTelegramCompanion({
           }
           const messageId = res && res.messageId;
           if (messageId != null && typeof onNotificationSent === "function") {
-            try { onNotificationSent({ entry, messageId }); } catch (err) {
+            try {
+              const callbackPayload = { entry, messageId };
+              if (res.chatId != null && String(res.chatId).trim()) {
+                callbackPayload.chatId = String(res.chatId).trim();
+              }
+              if (sentContext != null) {
+                callbackPayload.notificationContext = sentContext;
+              }
+              onNotificationSent(callbackPayload);
+            } catch (err) {
               safeLog("warn", "completion notification mapping callback failed", {
                 id: entry.id, error: err && err.message,
               });

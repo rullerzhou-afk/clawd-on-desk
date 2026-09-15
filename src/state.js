@@ -2972,6 +2972,9 @@ function cleanStaleSessions() {
       deriveSessionBadge,
       shouldAutoClearDetachedSession,
       staleConfig,
+      hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
+        ? (session) => ctx.hasReplyableCompletionMapping(id, session)
+        : null,
     });
 
     if (decision.snapshotRefreshNeeded) snapshotRefreshNeeded = true;
