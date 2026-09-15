@@ -2918,7 +2918,7 @@ describe("pet-window-runtime", () => {
       win.calls.filter((call) => call[0] === "setVisibleOnAllWorkspaces")
     );
 
-    it("pins both Linux pet windows to all workspaces before their first show", () => {
+    it("pins both Linux pet windows to all workspaces before showInactive()", () => {
       const harness = createRuntime(LINUX);
       const BrowserWindow = makePatchedBrowserWindow();
       const renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
@@ -2970,6 +2970,7 @@ describe("pet-window-runtime", () => {
         hitWin = createPetHitWindowForTest(harness, BrowserWindow);
       });
       for (const win of [renderWin, hitWin]) {
+        assert.equal(typeof win.setVisibleOnAllWorkspaces, "undefined");
         assert.ok(callNames(win).includes("showInactive"));
         assert.ok(callNames(win).includes("loadFile"));
       }
@@ -2977,9 +2978,11 @@ describe("pet-window-runtime", () => {
 
     it("still shows both Linux pet windows when setVisibleOnAllWorkspaces throws", () => {
       const harness = createRuntime(LINUX);
+      let throws = 0;
       const BrowserWindow = makePatchedBrowserWindow((win) => {
         win.setVisibleOnAllWorkspaces = (...args) => {
           win.calls.push(["setVisibleOnAllWorkspaces", ...args]);
+          throws += 1;
           throw new Error("window manager rejected the hint");
         };
       });
@@ -2990,6 +2993,7 @@ describe("pet-window-runtime", () => {
         renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
         hitWin = createPetHitWindowForTest(harness, BrowserWindow);
       });
+      assert.equal(throws, 2);
       for (const win of [renderWin, hitWin]) {
         const names = callNames(win);
         assert.ok(names.includes("setVisibleOnAllWorkspaces"));
