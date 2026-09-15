@@ -185,6 +185,15 @@ describe("animation-cycle raster probes", () => {
       source: "apng",
     });
   });
+
+  it("sums fractional APNG delays before rounding", () => {
+    const apng = buildApngBuffer(Array.from({ length: 12 }, () => ({ num: 1, den: 12 })));
+    assert.deepStrictEqual(probeApngCycle(apng), {
+      ms: 1000,
+      status: CYCLE_STATUS.EXACT,
+      source: "apng",
+    });
+  });
 });
 
 describe("probeAssetCycle", () => {

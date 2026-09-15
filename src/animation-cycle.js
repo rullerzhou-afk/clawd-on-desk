@@ -501,8 +501,10 @@ function probeApngCycle(buffer) {
         delayDen = 100;
         estimated = true;
       }
+      // Keep fractional delays and round the sum once; rounding each 1/12 s
+      // frame would drop 1/3 ms per frame and under-report long clips.
       const delayMs = delayNum > 0
-        ? Math.round((delayNum * 1000) / delayDen)
+        ? (delayNum * 1000) / delayDen
         : DEFAULT_ZERO_DELAY_MS;
       if (delayNum <= 0) estimated = true;
       frameDurations.push(delayMs);
@@ -513,7 +515,7 @@ function probeApngCycle(buffer) {
   }
 
   if (!isApng || !frameDurations.length) return buildUnavailableResult("apng");
-  const totalMs = frameDurations.reduce((sum, value) => sum + value, 0);
+  const totalMs = Math.round(frameDurations.reduce((sum, value) => sum + value, 0));
   if (!totalMs) return buildUnavailableResult("apng");
   return {
     ms: totalMs,

@@ -101,7 +101,7 @@ function createRuntimeHarness(overrides = {}) {
       getAssetPath: (filename) => path.join(assetsDir, path.basename(filename)),
       getThemeMetadata: (themeId) => ({ name: `Theme ${themeId}` }),
     },
-    animationCycle: {
+    animationCycle: overrides.animationCycle || {
       probeAssetCycle: () => ({ ms: null, status: "unavailable", source: null }),
     },
     settingsController: {
@@ -277,6 +277,64 @@ test("external object-channel SVG previews require posters without getting trust
       { status: "ok" }
     );
     assert.deepStrictEqual(delays, [animationOverrideTest.PREVIEW_HOLD_MAX_MS]);
+  } finally {
+    harness.cleanup();
+    global.setTimeout = originalSetTimeout;
+    global.clearTimeout = originalClearTimeout;
+  }
+});
+
+test("previews hold APNG and GIF files for their whole playthrough, bounded", () => {
+  const cycles = {
+    "long.apng": { ms: 15355, status: "exact", source: "apng" },
+    "corrupt.apng": { ms: 900000, status: "exact", source: "apng" },
+    "react.gif": { ms: 5628, status: "exact", source: "gif" },
+    "zero-delay.apng": { ms: 4000, status: "estimated", source: "apng" },
+    "smil.svg": { ms: 12000, status: "exact", source: "svg" },
+  };
+  const harness = createRuntimeHarness({
+    animationCycle: {
+      probeAssetCycle: (absPath) => cycles[path.basename(absPath)]
+        || { ms: null, status: "unavailable", source: null },
+    },
+  });
+  for (const name of Object.keys(cycles)) fs.writeFileSync(path.join(harness.assetsDir, name), "x");
+  const originalSetTimeout = global.setTimeout;
+  const originalClearTimeout = global.clearTimeout;
+  const delays = [];
+  try {
+    global.setTimeout = (_fn, ms) => {
+      delays.push(ms);
+      return { fakeTimer: true };
+    };
+    global.clearTimeout = () => {};
+
+    const preview = (file, durationMs) => harness.runtime.previewAnimationOverride({ stateKey: "thinking", file, durationMs });
+    preview("long.apng", 15355);
+    preview("long.apng");
+    preview("corrupt.apng", 900000);
+    preview("react.gif", 5628);
+    preview("zero-delay.apng", 4000);
+    preview("smil.svg", 12000);
+    preview("scripted.svg", 12000);
+    preview("scripted.svg");
+    assert.deepStrictEqual(delays, [
+      15355,
+      15355,
+      animationOverrideTest.FRAME_TIMED_PREVIEW_HOLD_MAX_MS,
+      5628,
+      animationOverrideTest.PREVIEW_HOLD_MAX_MS,
+      animationOverrideTest.PREVIEW_HOLD_MAX_MS,
+      12000,
+      5400,
+    ]);
+
+    harness.runtime.previewReaction({ file: "react.gif", durationMs: 5628 });
+    harness.runtime.previewReaction({ file: "smil.svg", durationMs: 12000 });
+    assert.deepStrictEqual(harness.stateCalls.filter((call) => call[0] === "sendToRenderer"), [
+      ["sendToRenderer", "play-click-reaction", "react.gif", 5628],
+      ["sendToRenderer", "play-click-reaction", "smil.svg", animationOverrideTest.PREVIEW_HOLD_MAX_MS],
+    ]);
   } finally {
     harness.cleanup();
     global.setTimeout = originalSetTimeout;

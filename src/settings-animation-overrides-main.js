@@ -16,6 +16,9 @@ const ASPECT_RATIO_WARN_THRESHOLD = 0.15;
 const PREVIEW_HOLD_MIN_MS = 800;
 const PREVIEW_HOLD_MAX_MS = 3500;
 const TRUSTED_SCRIPTED_PREVIEW_HOLD_MAX_MS = 15000;
+// APNG / GIF frame delays give a file's exact playthrough, so their previews can
+// hold for the whole of it; this ceiling only guards against corrupt delays.
+const FRAME_TIMED_PREVIEW_HOLD_MAX_MS = 60000;
 
 const REACTION_ORDER = [
   { key: "drag", triggerKind: "dragReaction", supportsDuration: false },
@@ -1152,6 +1155,26 @@ function createSettingsAnimationOverridesMain(options = {}) {
     return data;
   }
 
+  function getFrameTimedPreviewCycleMs(file, theme) {
+    const probe = buildAnimationAssetProbe(file, theme);
+    const frameTimed = probe.assetCycleSource === "apng" || probe.assetCycleSource === "gif";
+    return frameTimed && probe.assetCycleStatus === "exact" ? probe.assetCycleMs : null;
+  }
+
+  function resolvePreviewHoldMs(file, durationMs, theme = getActiveTheme()) {
+    const trustedScripted = isTrustedScriptedAnimationFile(file, theme, path);
+    const cycleMs = trustedScripted
+      ? getTrustedScriptedAnimationCycleMs(file, theme, path)
+      : getFrameTimedPreviewCycleMs(file, theme);
+    let previewMaxMs = PREVIEW_HOLD_MAX_MS;
+    if (trustedScripted) previewMaxMs = TRUSTED_SCRIPTED_PREVIEW_HOLD_MAX_MS;
+    else if (cycleMs != null) previewMaxMs = FRAME_TIMED_PREVIEW_HOLD_MAX_MS;
+    const requested = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0)
+      ? durationMs
+      : (cycleMs != null ? cycleMs : PREVIEW_HOLD_MIN_MS);
+    return Math.max(PREVIEW_HOLD_MIN_MS, Math.min(previewMaxMs, requested));
+  }
+
   function runAnimationOverridePreview(stateKey, file, durationMs) {
     clearPreviewTimer();
     const stateRuntime = getStateRuntime();
@@ -1160,15 +1183,7 @@ function createSettingsAnimationOverridesMain(options = {}) {
     } catch (err) {
       return { status: "error", message: `previewAnimationOverride: ${err && err.message}` };
     }
-    const activeTheme = getActiveTheme();
-    const trustedScriptedCycleMs = getTrustedScriptedAnimationCycleMs(file, activeTheme, path);
-    const previewMaxMs = isTrustedScriptedAnimationFile(file, activeTheme, path)
-      ? TRUSTED_SCRIPTED_PREVIEW_HOLD_MAX_MS
-      : PREVIEW_HOLD_MAX_MS;
-    const requested = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0)
-      ? durationMs
-      : (trustedScriptedCycleMs != null ? trustedScriptedCycleMs : PREVIEW_HOLD_MIN_MS);
-    const holdMs = Math.max(PREVIEW_HOLD_MIN_MS, Math.min(previewMaxMs, requested));
+    const holdMs = resolvePreviewHoldMs(file, durationMs);
     animationOverridePreviewTimer = setTimeout(() => {
       animationOverridePreviewTimer = null;
       const latestStateRuntime = getStateRuntime();
@@ -1209,11 +1224,7 @@ function createSettingsAnimationOverridesMain(options = {}) {
     if (typeof file !== "string" || !file) {
       return { status: "error", message: "previewReaction.file must be a non-empty string" };
     }
-    const requested = (typeof durationMs === "number" && Number.isFinite(durationMs) && durationMs > 0)
-      ? durationMs
-      : PREVIEW_HOLD_MIN_MS;
-    const clamped = Math.max(PREVIEW_HOLD_MIN_MS, Math.min(PREVIEW_HOLD_MAX_MS, requested));
-    sendToRenderer("play-click-reaction", file, clamped);
+    sendToRenderer("play-click-reaction", file, resolvePreviewHoldMs(file, durationMs));
     return { status: "ok" };
   }
 
@@ -1352,6 +1363,7 @@ createSettingsAnimationOverridesMain.__test = {
   PREVIEW_HOLD_MIN_MS,
   PREVIEW_HOLD_MAX_MS,
   TRUSTED_SCRIPTED_PREVIEW_HOLD_MAX_MS,
+  FRAME_TIMED_PREVIEW_HOLD_MAX_MS,
   isTrustedScriptedAnimationFile,
   isObjectChannelSvgAnimationFile,
   needsScriptedAnimationPreviewPoster,
