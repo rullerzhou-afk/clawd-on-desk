@@ -34,7 +34,22 @@ const MONITOR_DEFAULTTONEAREST = 2;
 // setFocusable(false) on Windows ends in Focus(false), which deactivates —
 // cancelling e.g. an in-place file rename on the desktop. Excluding the shell
 // window classes keeps "fullscreen" meaning an actual app.
-const DESKTOP_SHELL_WINDOW_CLASSES = new Set(["progman", "workerw"]);
+//
+// #1017: Windows 11 hosts more of its shell in XAML island windows that pass
+// the same geometry test: XamlExplorerHostIslandWindow (explorer's Alt-Tab
+// switcher, Task View, snap layouts) and TextInputHost's
+// Windows.UI.Core.CoreWindow (IME candidates, emoji panel, clipboard history).
+// They are borderless WS_POPUP windows with no caption and no WS_MAXIMIZE, so
+// the #871 style refinement cannot rescue them either, and they are foreground
+// only for a few hundred ms, so a 1s poll landing inside that window hid the
+// pet "at random". UWP apps are NOT affected by listing CoreWindow: their
+// foreground window is the ApplicationFrameWindow host, never the CoreWindow.
+const DESKTOP_SHELL_WINDOW_CLASSES = new Set([
+  "progman",
+  "workerw",
+  "xamlexplorerhostislandwindow",
+  "windows.ui.core.corewindow",
+]);
 // Ample for real class names; matches win-foreground-terminal.js.
 const CLASS_NAME_BUF_LEN = 256;
 

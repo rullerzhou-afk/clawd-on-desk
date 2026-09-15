@@ -133,6 +133,15 @@ describe("isDesktopShellWindowClass", () => {
     assert.strictEqual(isDesktopShellWindowClass(""), false);
     assert.strictEqual(isDesktopShellWindowClass(null), false);
   });
+
+  it("matches the Windows 11 shell hosts that flash foreground (#1017)", () => {
+    assert.strictEqual(isDesktopShellWindowClass("XamlExplorerHostIslandWindow"), true);
+    assert.strictEqual(isDesktopShellWindowClass("Windows.UI.Core.CoreWindow"), true);
+  });
+
+  it("keeps the UWP app frame host as an app class", () => {
+    assert.strictEqual(isDesktopShellWindowClass("ApplicationFrameWindow"), false);
+  });
 });
 
 describe("isMaximizedNormalWindow", () => {
@@ -247,6 +256,58 @@ describe("createForegroundFullscreenProbe", () => {
       }),
     });
     assert.strictEqual(probe(), false);
+  });
+
+  // #1017: the Win11 shell hosts are borderless WS_POPUP windows with no
+  // caption and no WS_MAXIMIZE, so the #871 style refinement cannot rescue
+  // them — only the class exclusion can.
+  const WIN11_SHELL_HOST_STYLE = 0x94000000; // WS_POPUP | WS_VISIBLE | WS_CLIPSIBLINGS
+
+  it("does not treat the Win11 Alt-Tab / Task View host as a fullscreen app", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "XamlExplorerHostIslandWindow", style: WIN11_SHELL_HOST_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), false);
+  });
+
+  it("does not treat the text input host (IME CoreWindow) as a fullscreen app", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "Windows.UI.Core.CoreWindow", style: WIN11_SHELL_HOST_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), false);
+  });
+
+  it("keeps a reliable foreground id for an excluded shell host", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "XamlExplorerHostIslandWindow", style: WIN11_SHELL_HOST_STYLE,
+      }),
+    });
+    probe();
+    assert.deepStrictEqual(probe.getLastObservation(), {
+      reliable: true, foregroundId: "4242", fullscreenId: null,
+    });
+  });
+
+  it("still reports fullscreen for a UWP app frame covering the monitor", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+        className: "ApplicationFrameWindow", style: WIN11_SHELL_HOST_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), "4242");
   });
 
   it("still reports fullscreen for a normal app class covering the monitor", () => {
