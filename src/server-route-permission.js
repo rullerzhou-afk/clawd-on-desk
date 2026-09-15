@@ -30,6 +30,7 @@ const {
   normalizeCodexPermissionToolInput,
   buildToolInputFingerprint,
 } = require("./server-permission-utils");
+const { preparePermissionReminder, NOT_INSPECTED_TAG } = require("./permission-reminder");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { getAgent } = require("../agents/registry");
 const { isOpencodeFamily, getFamilyConfig } = require("../agents/opencode-family");
@@ -562,6 +563,16 @@ function startRemoteApproval(ctx, permEntry) {
 }
 
 function addPendingPermission(ctx, permEntry) {
+  // Safety net for the destructive-action reminder: every path above derives a
+  // view from the accepted request, and a runtime test asserts that none of them
+  // land here without one. If a path added later does, it must fail toward the
+  // human -- an absent view is "not inspected", never "unmatched".
+  if (permEntry && permEntry.permissionReminder === undefined) {
+    permEntry.permissionReminder = { hold: true, tag: NOT_INSPECTED_TAG };
+    if (typeof ctx.permLog === "function") {
+      ctx.permLog(`destructive reminder: no view derived for tool=${permEntry.toolName || "(missing)"} agent=${permEntry.agentId || "unknown"} — treating as not inspected`);
+    }
+  }
   if (typeof ctx.addPendingPermission === "function") {
     return ctx.addPendingPermission(permEntry);
   }
@@ -763,6 +774,7 @@ function handlePermissionPost(req, res, options) {
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
         const permissionDetail = preparePermissionDetail(toolName, rawInput);
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "default");
         const sessionId = sessionIdentity.sessionId;
         const requestId = typeof data.request_id === "string" ? data.request_id : null;
@@ -822,6 +834,7 @@ function handlePermissionPost(req, res, options) {
           toolName,
           toolInput,
           ...permissionDetail,
+          ...permissionReminder,
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
@@ -906,6 +919,7 @@ function handlePermissionPost(req, res, options) {
           : (typeof rawInput.description === "string" ? rawInput.description : "");
         const toolInput = normalizeCodexPermissionToolInput(rawInput, description);
         const permissionDetail = preparePermissionDetail(toolName, rawInput, { description });
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "codex:default");
         const sessionId = sessionIdentity.sessionId;
         // Local Codex archive lifecycle (#655): an archived task's approval is
@@ -1097,6 +1111,7 @@ function handlePermissionPost(req, res, options) {
           toolName,
           toolInput,
           ...permissionDetail,
+          ...permissionReminder,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1168,6 +1183,7 @@ function handlePermissionPost(req, res, options) {
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
         const permissionDetail = preparePermissionDetail(toolName, rawInput);
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "qwen-code:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1224,6 +1240,7 @@ function handlePermissionPost(req, res, options) {
           toolName,
           toolInput,
           ...permissionDetail,
+          ...permissionReminder,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1286,6 +1303,7 @@ function handlePermissionPost(req, res, options) {
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
         const permissionDetail = preparePermissionDetail(toolName, rawInput);
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "zcode:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1359,6 +1377,7 @@ function handlePermissionPost(req, res, options) {
             host: zcodeSessionOptions.host || null,
             model: zcodeSessionOptions.model || null,
             ...trustedSessionFields(sessionIdentity),
+            ...permissionReminder,
           });
           if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available -> no decision, native prompt fallback (tool=${toolName})`);
@@ -1383,6 +1402,7 @@ function handlePermissionPost(req, res, options) {
           toolName,
           toolInput,
           ...permissionDetail,
+          ...permissionReminder,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1473,6 +1493,7 @@ function handlePermissionPost(req, res, options) {
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
         const permissionDetail = preparePermissionDetail(toolName, rawInput);
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "copilot-cli:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1529,6 +1550,7 @@ function handlePermissionPost(req, res, options) {
           toolName,
           toolInput,
           ...permissionDetail,
+          ...permissionReminder,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -1655,6 +1677,9 @@ function handlePermissionPost(req, res, options) {
           data.tool_use_id ?? data.toolUseId ?? data.toolUseID
         );
         const toolInputFingerprint = buildToolInputFingerprint(rawInput);
+        // DSH exposes no tool arguments, so there is nothing in rawInput to scan.
+        // The view is still derived so that every accepted request carries one.
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionOptions = {
           ...buildDshPermissionSessionOptions(data, remoteProfile),
           sessionAutomationIdentity,
@@ -1677,6 +1702,7 @@ function handlePermissionPost(req, res, options) {
               sessionAutomationIdentity,
               isDsh: true,
               ...sessionOptions,
+              ...permissionReminder,
             });
             if (remoteOnlyResult.handled) return;
           }
@@ -1697,6 +1723,7 @@ function handlePermissionPost(req, res, options) {
           toolInput,
           toolUseId,
           toolInputFingerprint,
+          ...permissionReminder,
           resolvedSuggestion: null,
           createdAt: Date.now(),
           interaction,
@@ -1767,6 +1794,7 @@ function handlePermissionPost(req, res, options) {
         const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
         const toolInput = truncateDeep(rawInput);
         const permissionDetail = preparePermissionDetail(toolName, rawInput);
+        const permissionReminder = preparePermissionReminder(toolName, rawInput);
         const sessionIdentity = resolvePermissionSession(data.session_id, "hermes:default");
         const sessionId = sessionIdentity.sessionId;
         const toolUseId = normalizeHookToolUseId(
@@ -1905,6 +1933,7 @@ function handlePermissionPost(req, res, options) {
           toolName,
           toolInput,
           ...permissionDetail,
+          ...permissionReminder,
           toolUseId,
           toolInputFingerprint,
           resolvedSuggestion: null,
@@ -2009,6 +2038,7 @@ function handlePermissionPost(req, res, options) {
         ? rawInput
         : null;
       const permissionDetail = preparePermissionDetail(toolName, rawInput);
+      const permissionReminder = preparePermissionReminder(toolName, rawInput);
       const toolUseId = normalizeHookToolUseId(
         data.tool_use_id ?? data.toolUseId ?? data.toolUseID
       );
@@ -2067,6 +2097,7 @@ function handlePermissionPost(req, res, options) {
             agentId: permAgentId, subagentId, subagentType, suggestions, interaction,
             sessionAutomationIdentity,
             ...trustedSessionFields(sessionIdentity),
+            ...permissionReminder,
           });
           if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available → destroy connection, chat fallback (tool=${toolName})`);
@@ -2174,6 +2205,7 @@ function handlePermissionPost(req, res, options) {
         toolInput,
         planReviewWireInput,
         ...permissionDetail,
+        ...permissionReminder,
         toolUseId,
         toolInputFingerprint,
         resolvedSuggestion: null,

@@ -23,6 +23,7 @@ const {
 } = require("../hooks/server-config");
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { reminderHolds } = require("./permission-reminder");
 const {
   normalizeOpencodeFamilyBridgeUrl,
   isValidOpencodeFamilyBridgeToken,
@@ -2162,6 +2163,66 @@ function isPermissionEntryHeadless(permEntry) {
     && !isInteractiveCodexSubagentEntry(permEntry));
 }
 
+// Destructive-action reminder (opt-in, off by default).
+//
+// Reads the stamp the route put on the entry instead of re-deriving anything
+// from entry.toolInput: that field is the display copy and has already been
+// through truncateDeep(), so a command whose destructive part sits past
+// PREVIEW_MAX would not be in it.
+//
+// If the setting cannot be read at all, an unmatched request keeps today's
+// behavior and a matched one ends at the human. A settings read that throws is
+// already a broken state, and the direction that costs an extra card is
+// preferable to the one that silently disarms a guard the user switched on.
+function permissionReminderHolds(permEntry) {
+  // Scoped to the same branch the policy scopes it to. Elicitation and plan
+  // entries are answered or reviewed on their own paths, and a question card
+  // must never show a reminder reason just because the safety net in the route
+  // stamped one.
+  if (!isValidInteraction(permEntry && permEntry.interaction)) return false;
+  const intent = permEntry.interaction.intent;
+  if (intent !== INTERACTION_INTENT.TOOL_APPROVAL && intent !== INTERACTION_INTENT.UNKNOWN) {
+    return false;
+  }
+  const stampHolds = reminderHolds(permEntry.permissionReminder);
+  if (typeof ctx.isDestructiveReminderEnabled !== "function") return false;
+  let enabled;
+  try {
+    enabled = ctx.isDestructiveReminderEnabled() === true;
+  } catch (err) {
+    permLog(`destructive reminder: setting read failed (${err && err.message ? err.message : err}); falling back to the match`);
+    return stampHolds;
+  }
+  return enabled ? stampHolds : false;
+}
+
+// Whether the reminder is the reason this request is in front of a human.
+//
+// permissionReminderHolds() answers "should automation stop here"; this answers
+// "did stopping here change anything". They differ whenever the request was going
+// to reach a human regardless -- automation off, an ineligible agent, a session
+// with no grant -- and in that case the card must not claim Clawd intervened.
+// The card still shows the ordinary destructive-action hint there, as before.
+function reminderIsWhyThisIsPending(permEntry) {
+  if (!permissionReminderHolds(permEntry)) return false;
+  let mode;
+  if (typeof ctx.getEffectivePermissionAutomationMode === "function") {
+    mode = ctx.getEffectivePermissionAutomationMode(permEntry, {
+      sessionOnly: permEntry.remoteOnly === true,
+    });
+  } else if (typeof ctx.getPermissionAutomationMode === "function") {
+    mode = ctx.getPermissionAutomationMode();
+  } else {
+    mode = PERMISSION_AUTOMATION_MODE.OFF;
+  }
+  return evaluatePermissionAutomation({
+    mode,
+    interaction: permEntry.interaction,
+    entry: permEntry,
+    reminderHold: false,
+  }) === AUTOMATION_ACTION.AUTO_ALLOW;
+}
+
 function canAutoResolvePendingPermission(permEntry, options = {}) {
   if (!isPermissionEntryLive(permEntry)) return false;
   if (ctx.doNotDisturb) return false;
@@ -2219,6 +2280,7 @@ function canAutoResolvePendingPermission(permEntry, options = {}) {
     mode,
     interaction: permEntry.interaction,
     entry: permEntry,
+    reminderHold: permissionReminderHolds(permEntry),
   }) === AUTOMATION_ACTION.AUTO_ALLOW;
 }
 
@@ -2252,13 +2314,17 @@ function maybeAutoApprovePermission(permEntry) {
           ? ctx.getPermissionAutomationMode()
           : PERMISSION_AUTOMATION_MODE.OFF
       );
+  const reminderHold = permissionReminderHolds(permEntry);
   const action = evaluatePermissionAutomation({
     mode,
     interaction: permEntry.interaction,
     entry: permEntry,
+    reminderHold,
   });
   if (action === AUTOMATION_ACTION.DEFER) {
-    if (!isValidInteraction(permEntry.interaction)) {
+    if (reminderHold) {
+      permLog(`destructive reminder: holding for a human mode=${mode} reason=${permEntry.permissionReminder.tag} tool=${permEntry.toolName || "(missing)"} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    } else if (!isValidInteraction(permEntry.interaction)) {
       permLog(`automation defer: invalid interaction tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     } else if (
       mode !== PERMISSION_AUTOMATION_MODE.OFF
@@ -2643,6 +2709,13 @@ function buildPermissionBubblePayload(permEntry) {
   return {
     toolName: permEntry.toolName,
     toolInput: permEntry.toolInput,
+    // Why this card exists, when it exists because the reminder held it. Null
+    // for every other card -- including one whose command the display hint
+    // badges anyway. The badge says "this looks destructive"; this says
+    // "automation would have allowed this and Clawd stopped for you".
+    reminderTag: reminderIsWhyThisIsPending(permEntry)
+      ? permEntry.permissionReminder.tag
+      : null,
     detailText: typeof permEntry.detailText === "string"
       ? permEntry.detailText
       : null,
@@ -2983,17 +3056,27 @@ function buildRemoteApprovalPayload(permEntry) {
   );
   // Label this value "Folder" (not "Session"): it is only the cwd basename,
   // never a session id or full local path.
+  // The same reason the local card shows, so a remote-only operator is not told
+  // less about why the request stopped than someone sitting at the desk.
+  const reminderTag = reminderIsWhyThisIsPending(permEntry)
+    ? permEntry.permissionReminder.tag
+    : null;
+  const reminderLine = reminderTag
+    ? interpolate(t("approvalDetailReminderValue"), "{reason}", reminderTag)
+    : null;
   const detail = [
     `${t("approvalDetailAgent")}: ${agentId}`,
     `${t("approvalDetailTool")}: ${toolName}`,
     sessionFolder ? `${t("approvalDetailFolder")}: ${sessionFolder}` : null,
     `${t("approvalDetailSummary")}: ${summary}`,
+    reminderLine ? `${t("approvalDetailReminder")}: ${reminderLine}` : null,
   ].filter(Boolean).join("\n");
   const fields = [
     { label: t("approvalDetailAgent"), value: agentId },
     { label: t("approvalDetailTool"), value: toolName },
     sessionFolder ? { label: t("approvalDetailFolder"), value: sessionFolder } : null,
     { label: t("approvalDetailSummary"), value: summary },
+    reminderLine ? { label: t("approvalDetailReminder"), value: reminderLine } : null,
   ].filter(Boolean);
   const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
   const payload = {

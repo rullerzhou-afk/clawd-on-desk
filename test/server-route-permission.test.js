@@ -11,6 +11,7 @@ const {
   CLAWD_HOOK_PID_HEADER,
   CLAWD_PROCESS_INSTANCE_HEADER,
 } = require("../hooks/server-config");
+const { PREVIEW_MAX } = require("../src/server-permission-utils");
 const {
   MAX_PERMISSION_BODY_BYTES,
   handlePermissionPost,
@@ -2995,5 +2996,137 @@ describe("server-route-permission POST — CC subagent requests (#451)", () => {
     assert.strictEqual(res.destroyed, true);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
     assert.deepStrictEqual(res.recorder.map((item) => item.outcome).filter(Boolean), ["disabled"]);
+  });
+});
+
+// The destructive-action reminder is decided in two places, and these lanes own
+// the route's half: whether the *stamp* on the pending entry is derived from the
+// accepted request. Whether a stamp then holds the request is the automation
+// chokepoint's half, in test/permission-destructive-reminder.test.js.
+describe("destructive-action reminder — the route stamps what it accepted", () => {
+  const ADAPTERS = [
+    { agentId: "claude-code", body: {} },
+    { agentId: "codebuddy", body: {} },
+    { agentId: "codex", body: { tool_input_description: "Run a generated command" } },
+    { agentId: "qwen-code", body: {} },
+    { agentId: "zcode", body: {} },
+    { agentId: "copilot-cli", body: {} },
+    { agentId: "hermes", body: {} },
+  ];
+
+  async function stampFor(agentId, extra, command) {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: agentId,
+      session_id: `${agentId}:reminder`,
+      tool_name: "Bash",
+      tool_input: { command },
+      ...extra,
+    }));
+    assert.strictEqual(res.ctx.pendingPermissions.length, 1, agentId);
+    return res.ctx.pendingPermissions[0].permissionReminder;
+  }
+
+  it("stamps a recognized destructive command on every permission adapter", async () => {
+    for (const { agentId, body } of ADAPTERS) {
+      assert.deepStrictEqual(
+        await stampFor(agentId, body, "git push --force origin main"),
+        { hold: true, tag: "force-push" },
+        agentId
+      );
+    }
+  });
+
+  it("stamps nothing for an ordinary command", async () => {
+    for (const { agentId, body } of ADAPTERS) {
+      assert.strictEqual(await stampFor(agentId, body, "npm test"), null, agentId);
+    }
+  });
+
+  it("stamps a deliberate exception as excused rather than as a hold", async () => {
+    assert.deepStrictEqual(
+      await stampFor("claude-code", {}, "git push --force-with-lease origin main"),
+      { hold: false, tag: "force-push", exception: "force-with-lease" }
+    );
+    assert.deepStrictEqual(
+      await stampFor("claude-code", {}, "npm publish --dry-run"),
+      { hold: false, tag: "publish", exception: "dry-run" }
+    );
+  });
+
+  it("carries a view on every accepted request", async () => {
+    // The invariant that matters is totality at runtime, not a source-text count.
+    // An earlier version of this lane compared call counts against the display-view
+    // helper; those counts stayed equal while the remote-only path spread neither,
+    // so it could not see that a bubbles-disabled install had no reminder at all.
+    const { NOT_INSPECTED_TAG } = require("../src/permission-reminder");
+    for (const { agentId, body } of ADAPTERS) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:reminder-total`,
+        tool_name: "Bash",
+        tool_input: { command: "git push --force origin main" },
+        ...body,
+      }));
+      const [entry] = res.ctx.pendingPermissions;
+      assert.ok(entry, agentId);
+      assert.notStrictEqual(entry.permissionReminder, undefined, agentId);
+      assert.notStrictEqual(entry.permissionReminder.tag, NOT_INSPECTED_TAG,
+        `${agentId}: the safety net must be unreachable on a real path`);
+      assert.deepStrictEqual(entry.permissionReminder, { hold: true, tag: "force-push" }, agentId);
+    }
+  });
+
+  it("carries a view on the remote-only path too, where bubbles are disabled", async () => {
+    // This is the path a reminder would otherwise miss entirely: with bubbles off
+    // the entry is built by tryRemoteOnlyApproval from its own field list, and a
+    // session grant resolves it through maybeAutoResolveSessionPermission without
+    // a card ever existing. claude-code and codebuddy reach it AND are eligible for
+    // an automatic allow, so an unstamped entry there is a silent miss.
+    const { NOT_INSPECTED_TAG } = require("../src/permission-reminder");
+    const bubblesOff = { ctx: { getBubblePolicy: () => ({ enabled: false, autoCloseMs: 0 }) } };
+    const cases = [
+      ["claude-code", {}, { hold: true, tag: "force-push" }],
+      ["codebuddy", {}, { hold: true, tag: "force-push" }],
+      ["zcode", {}, { hold: true, tag: "force-push" }],
+      // DeepSeek Harness deliberately exposes no tool arguments, so there is
+      // nothing to recognize -- but the view is still derived, which is what
+      // distinguishes "inspected, no match" from "nobody looked".
+      ["deepseek-harness", { reason: "run a generated command" }, null],
+    ];
+    for (const [agentId, extra, expected] of cases) {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: agentId,
+        session_id: `${agentId}:reminder-remote-only`,
+        tool_name: "Bash",
+        tool_input: { command: "git push --force origin main" },
+        ...extra,
+      }), bubblesOff);
+      const [entry] = res.ctx.pendingPermissions;
+      assert.ok(entry, `${agentId}: a remote-only request must still be pending`);
+      assert.strictEqual(res.ctx.calls.showPermissionBubble.length, 0,
+        `${agentId}: this arm must exercise the remote-only branch, not the ordinary one`);
+      assert.notStrictEqual(entry.permissionReminder, undefined,
+        `${agentId}: a remote-only entry must carry a view`);
+      if (entry.permissionReminder) {
+        assert.notStrictEqual(entry.permissionReminder.tag, NOT_INSPECTED_TAG, agentId);
+      }
+      assert.deepStrictEqual(entry.permissionReminder, expected, agentId);
+    }
+  });
+
+  it("stamps from the accepted input, not from the truncated display copy", async () => {
+    const command = `echo ${"x".repeat(PREVIEW_MAX + 100)} && npm publish`;
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "claude-code",
+      session_id: "claude:reminder-long",
+      tool_name: "Bash",
+      tool_input: { command },
+    }));
+    const entry = res.ctx.pendingPermissions[0];
+    assert.ok(
+      !String(entry.toolInput.command).includes("npm publish"),
+      "the display copy really has lost the destructive part -- otherwise this proves nothing"
+    );
+    assert.deepStrictEqual(entry.permissionReminder, { hold: true, tag: "publish" });
   });
 });

@@ -158,7 +158,25 @@
   // segment must contain the destructive SQL. `echo 'DROP TABLE'` stays quiet.
   const DB_CLIENTS = /^(psql|mysql|mysqlsh|sqlite3|mongosh|mongo)\b/;
   const DB_DESTROY = /\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE)\b/i;
-  const SHELL_TOOLS = new Set(["bash", "shell", "run_command", "exec", "run_terminal_cmd"]);
+  // Every tool name here carries a shell command line. `execute_bash`,
+  // `powershell` and `run_shell_command` were missing: they are Claude-compatible
+  // tool names that permission automation is willing to allow on its own, so a
+  // command sent under one of them was never scanned at all.
+  const SHELL_TOOLS = new Set([
+    "bash",
+    "exec",
+    "execute_bash",
+    "powershell",
+    "run_command",
+    "run_shell_command",
+    "run_terminal_cmd",
+    "shell",
+  ]);
+  // Inspection budget, named so a caller can state the same bound instead of
+  // repeating the number: at most SCAN_MAX characters of the command string and
+  // at most SEGMENT_MAX shell segments are ever examined.
+  const SCAN_MAX = 4096;
+  const SEGMENT_MAX = 50;
   // Wrappers that prefix a command without changing what it runs.
   const WRAPPER = /^(sudo(\s+-[A-Za-z]+)*|env|nohup|time|command)\s+|^[A-Za-z_][A-Za-z0-9_]*=\S*\s+/;
 
@@ -187,7 +205,7 @@
         if (ch === "&") i++;                    // consume '&&'
         if (cmd[i + 1] === "|" && ch === "|") i++;  // consume '||' second bar
         segs.push(cur); cur = "";
-        if (segs.length >= 50) return segs;     // segment cap
+        if (segs.length >= SEGMENT_MAX) return segs;  // segment cap
         continue;
       }
       cur += ch;
@@ -207,8 +225,15 @@
     return out;
   }
 
-  function detectIrreversible(name, input) {
-    try {
+  // One pattern list, two error policies. detectIrreversibleStrict lets a
+  // surprise throw so a caller can decide what a failed scan means; the display
+  // wrapper below swallows it, because a hint must never be able to break the
+  // bubble. Splitting the *policy* rather than the matcher is what keeps a
+  // second caller from drifting into a second pattern list.
+  // The matched `segment` is returned so a caller can apply its own carve-outs
+  // (a documented `--dry-run` exception, say) without re-splitting the command.
+  function detectIrreversibleStrict(name, input) {
+    {
       const toolName = typeof name === "string" ? name.trim().toLowerCase() : "";
       const obj = input && typeof input === "object" ? input : {};
       // Shell-ish tools: scan the command string, anchored per segment.
@@ -217,21 +242,27 @@
         if (!cmd) return null;
         // Cap the scanned prefix: the command string is attacker-influenced (a
         // prompt-injected agent controls it). Hard cap = O(4KB) by construction.
-        if (cmd.length > 4096) cmd = cmd.slice(0, 4096);
+        if (cmd.length > SCAN_MAX) cmd = cmd.slice(0, SCAN_MAX);
         for (const seg of segmentCommands(cmd)) {
           for (const p of IRREVERSIBLE_PATTERNS) {
-            if (p.re.test(seg)) return { tag: p.tag };
+            if (p.re.test(seg)) return { tag: p.tag, segment: seg };
           }
-          if (DB_CLIENTS.test(seg) && DB_DESTROY.test(seg)) return { tag: "db-destroy" };
+          if (DB_CLIENTS.test(seg) && DB_DESTROY.test(seg)) return { tag: "db-destroy", segment: seg };
         }
         return null;
       }
       // Explicit destructive file tools only (generic "delete" substrings would
       // over-match MCP tools like delete_draft — stay conservative).
       if (toolName === "delete_file" || toolName === "deletefile" || toolName === "remove_file") {
-        return { tag: "file-delete" };
+        return { tag: "file-delete", segment: null };
       }
       return null;
+    }
+  }
+
+  function detectIrreversible(name, input) {
+    try {
+      return detectIrreversibleStrict(name, input);
     } catch (_e) {
       // Display-only helper on the permission path — a hint must never be able to
       // break the bubble (which blocks tool execution). Any surprise → no hint.
@@ -254,7 +285,7 @@
     return { server, tool, display };
   }
 
-  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName, detectIrreversible };
+  const api = { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName, detectIrreversible, detectIrreversibleStrict, SCAN_MAX, SEGMENT_MAX };
 
   if (typeof module === "object" && module.exports) {
     module.exports = api;
