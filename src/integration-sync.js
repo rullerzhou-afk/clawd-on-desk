@@ -465,6 +465,30 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncOmpExtension() {
+    try {
+      if (typeof ctx.syncOmpExtensionImpl === "function") return ctx.syncOmpExtensionImpl();
+      const { registerOmpExtension } = require("../hooks/omp-install.js");
+      const result = registerOmpExtension({ silent: true });
+      if (result.installed && result.updated) {
+        console.log("Clawd: synced OMP extension");
+      }
+      // The community bridge owns the same events; leaving it in place is a
+      // deliberate skip, not a failure.
+      if (result && result.reason === "standalone-bridge-present") {
+        return asSkipped(
+          result,
+          "standalone-bridge-present",
+          "clawd-on-desk-omp.ts already bridges OMP; skipped extension sync"
+        );
+      }
+      return normalizeInstalledFlagResult(result, "OMP", "omp-not-found");
+    } catch (err) {
+      console.warn("Clawd: failed to sync OMP extension:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync OMP extension" };
+    }
+  }
+
   function syncOpenClawPlugin() {
     try {
       if (typeof ctx.syncOpenClawPluginImpl === "function") return ctx.syncOpenClawPluginImpl();
@@ -620,6 +644,7 @@ function createIntegrationSyncRuntime(options = {}) {
     opencode: syncOpencodePlugin,
     mimocode: syncMimocodePlugin,
     pi: syncPiExtension,
+    omp: syncOmpExtension,
     openclaw: syncOpenClawPlugin,
     hermes: syncHermesPlugin,
     qoder: syncQoderHooks,
@@ -771,6 +796,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncOpencodePlugin,
     syncMimocodePlugin,
     syncPiExtension,
+    syncOmpExtension,
     syncOpenClawPlugin,
     syncHermesPlugin,
     syncQoderHooks,

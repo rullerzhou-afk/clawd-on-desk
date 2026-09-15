@@ -81,6 +81,31 @@ Pi 使用全局 extension（`~/.pi/agent/extensions/clawd-on-desk`），会把�
 
 Pi 当前在 Clawd 中是 state-only 集成：Clawd 不接管权限、不新增确认弹窗，Pi 保持默认 YOLO 执行行为。
 
+## OMP Extension 事件
+
+OMP（oh-my-pi）使用按 agent 目录解析的 extension——默认环境下是 `~/.omp/agent/extensions/clawd-on-desk`——并把交互式会话生命周期事件映射到 Clawd 的共享状态：
+
+| OMP Extension Event | Clawd Event | 状态 |
+|---|---|---|
+| session_start | SessionStart | idle |
+| session_switch / session_branch | SessionStart | idle |
+| before_agent_start | UserPromptSubmit | thinking |
+| tool_call | PreToolUse | working |
+| tool_result（成功） | PostToolUse | working |
+| tool_result（isError） | PostToolUseFailure | error |
+| session_stop | Stop | attention |
+| session_before_compact | PreCompact | sweeping |
+| session_compact | PostCompact | attention |
+| session_shutdown | SessionEnd | 删除会话；无其他 live 会话时回到 idle |
+
+与 Pi extension 相比有三处刻意不同：
+
+- **完成事件绑定 `session_stop`，绝不绑定 `agent_end`。** OMP 在每个 agent-loop 边界都会触发 `agent_end`——后台任务仍在跑的调度暂停、排队的 follow-up、仍有 tool call 在飞的 settle——用它上报完成会让 Clawd 在回合中途播完成动效。`session_stop` 才是已 settle 的回合。
+- **会上报 `session_switch` / `session_branch`，并为被离开的会话补发合成 `SessionEnd`。** OMP 可以把交互式终端切到另一段对话而旧会话没有任何 shutdown，否则 HUD 会留下一条再也不会更新的事件行。
+- **始终发送 `session_title`。** 多个交互式 OMP 会话会合法地共用同一个工作目录，仅靠文件夹名回退会让每一行——以及每个跳转目标——显示成同一个名字。
+
+OMP 在 Clawd 中同样是 state-only 集成：Clawd 不接管权限、不新增确认弹窗，OMP 保持自身的执行行为。
+
 ## 极简模式
 
 拖到屏幕右边缘（或右键 →"极简模式"）进入——半身露出在屏幕边缘，悬停时探出来。

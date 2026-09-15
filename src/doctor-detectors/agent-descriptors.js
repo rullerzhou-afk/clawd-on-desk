@@ -19,6 +19,7 @@ const codewhale = require("../../hooks/codewhale-install");
 const opencode = require("../../hooks/opencode-install");
 const mimocode = require("../../hooks/mimocode-install");
 const pi = require("../../hooks/pi-install");
+const omp = require("../../hooks/omp-install");
 const openclaw = require("../../hooks/openclaw-install");
 const hermes = require("../../hooks/hermes-install");
 const qoder = require("../../hooks/qoder-install");
@@ -307,6 +308,22 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: pi.EXTENSION_FILE,
     coreFile: pi.CORE_FILE,
     markerFile: pi.MARKER_FILE,
+  }),
+  Object.freeze({
+    agentId: "omp",
+    agentName: agentName("omp"),
+    eventSource: agentEventSource("omp"),
+    // Resolved once, like DeepSeek Harness above: OMP's extension directory
+    // moves with PI_CONFIG_DIR / PI_CODING_AGENT_DIR / OMP_PROFILE, and install,
+    // the installation detector and Doctor must all judge the directory OMP
+    // would actually load rather than a fixed one.
+    parentDir: omp.resolveOmpAgentDir(),
+    configPath: omp.resolveExtensionDir(),
+    configMode: "omp-extension",
+    autoInstall: true,
+    marker: omp.EXTENSION_FILE,
+    coreFile: omp.CORE_FILE,
+    markerFile: omp.MARKER_FILE,
   }),
   Object.freeze({
     agentId: "openclaw",

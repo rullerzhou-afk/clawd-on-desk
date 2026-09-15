@@ -517,6 +517,7 @@ function detectInstallation(descriptor, paths, options) {
       if (dirExists(fsImpl, paths.configPath)) return installationResult(true, "medium", "config-dir", `${paths.configPath} exists`);
       return notFound();
     case "pi":
+    case "omp":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
     case "openclaw":
@@ -641,11 +642,12 @@ function detectClawdIntegration(descriptor, paths, options) {
         paths: { profileDir: health.profileDir },
       };
   }
-  if (descriptor.agentId === "pi") {
+  if (descriptor.agentId === "pi" || descriptor.agentId === "omp") {
+    const label = descriptor.agentId === "omp" ? "OMP" : "Pi";
     const markerPath = path.join(paths.configPath, descriptor.markerFile || ".clawd-managed.json");
     return fileExists(fsImpl, markerPath)
       ? { detected: true, reason: "marker-file", detail: `${markerPath} exists`, paths: { markerPath } }
-      : { detected: false, reason: "not-found", detail: "No Clawd-managed Pi extension marker found" };
+      : { detected: false, reason: "not-found", detail: `No Clawd-managed ${label} extension marker found` };
   }
   if (descriptor.agentId === "hermes") {
     const files = Array.isArray(descriptor.managedFiles) ? descriptor.managedFiles : [];

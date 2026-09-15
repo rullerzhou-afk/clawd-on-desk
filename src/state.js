@@ -3184,13 +3184,21 @@ function detectRunningAgentProcesses(callback) {
     // cmdline token disambiguates the working process from the GUI shell.
     { agentId: "zcode", needle: "zcode.cjs", processName: "zcode.exe" },
   ].filter((entry) => isEnabled(entry.agentId));
-  const platformCommandLineNeedles = process.platform === "win32" || !isEnabled("pi")
+  // POSIX-only cmdline markers. A bare `omp`/`pi` process name is ambiguous on
+  // POSIX — the GUI shell and unrelated binaries share it — so the package path
+  // is what identifies a running CLI. OMP's marker is deliberately the scoped
+  // package path: the unscoped `pi-coding-agent/dist/cli.js` needle above also
+  // matches an OMP process, and OMP keeps helper processes on that path, so
+  // this stays a bounded launch-time keep-awake (STARTUP_RECOVERY_MAX_MS) and
+  // never a session or a task-level state.
+  const posixCommandLineNeedles = [
+    { agentId: "pi", needle: "@earendil-works/pi-coding-agent" },
+    { agentId: "pi", needle: "pi-coding-agent/dist/cli.js" },
+    { agentId: "omp", needle: "@oh-my-pi/pi-coding-agent" },
+  ].filter((entry) => isEnabled(entry.agentId));
+  const platformCommandLineNeedles = process.platform === "win32"
     ? commandLineNeedles
-    : [
-        ...commandLineNeedles,
-        { agentId: "pi", needle: "@earendil-works/pi-coding-agent" },
-        { agentId: "pi", needle: "pi-coding-agent/dist/cli.js" },
-      ];
+    : [...commandLineNeedles, ...posixCommandLineNeedles];
   if (processEntries.length === 0 && platformCommandLineNeedles.length === 0) {
     done(false);
     return;

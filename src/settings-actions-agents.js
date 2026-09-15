@@ -71,6 +71,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "opencode",
   "mimocode",
   "pi",
+  "omp",
   "openclaw",
   "hermes",
   "qoder",

@@ -116,6 +116,31 @@ Pi uses a global extension (`~/.pi/agent/extensions/clawd-on-desk`) and maps int
 
 Pi is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so Pi keeps its default YOLO execution behavior.
 
+## OMP Extension Events
+
+OMP (oh-my-pi) uses a per-agent extension directory — `~/.omp/agent/extensions/clawd-on-desk` for the default environment — and maps interactive-session lifecycle events to shared Clawd states:
+
+| OMP Extension Event | Clawd Event | State |
+|---|---|---|
+| session_start | SessionStart | idle |
+| session_switch / session_branch | SessionStart | idle |
+| before_agent_start | UserPromptSubmit | thinking |
+| tool_call | PreToolUse | working |
+| tool_result (ok) | PostToolUse | working |
+| tool_result (isError) | PostToolUseFailure | error |
+| session_stop | Stop | attention |
+| session_before_compact | PreCompact | sweeping |
+| session_compact | PostCompact | attention |
+| session_shutdown | SessionEnd | remove session; idle if no live sessions |
+
+Three behaviours differ from the Pi extension deliberately:
+
+- **Completion binds to `session_stop`, never `agent_end`.** OMP fires `agent_end` at every agent-loop boundary — scheduling pauses with background jobs still running, queued follow-ups, settles that left tool calls in flight — so reporting completion from it makes Clawd play the finish chime mid-turn. `session_stop` is the settled turn.
+- **`session_switch` / `session_branch` are reported, and the session being left is retired** with a synthetic `SessionEnd`. OMP can move an interactive terminal to another conversation with no shutdown for the old one, which would otherwise leave a live HUD row for a session nothing reports on again.
+- **A `session_title` is always sent.** Several interactive OMP sessions legitimately share one working directory, and the folder-name fallback would render every row — and every jump target — identically.
+
+OMP is state-only in Clawd: Clawd does not intercept permissions or add confirmation prompts, so OMP keeps its own execution behavior.
+
 ## Mini Mode
 
 Drag to the right screen edge (or right-click → "Mini Mode") to enter mini mode — half-body visible at screen edge, peeking out on hover.

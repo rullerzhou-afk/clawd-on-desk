@@ -431,7 +431,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 
 启动链路只会自动补齐 `integrationInstalled=true` 且 `enabled=true` 的缺失集成；若 prefs 文件不可读（`locked && recovered`），内存 snapshot 只是非权威 defaults fallback，整条 prefs-backed agent runtime gate 会 fail closed，本次进程不自动同步集成、不启动 monitor、不接受 state/permission ingress，也不恢复旧 session：
 
-- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes / DeepSeek Harness plugins 和 Pi extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`；DSH startup sync 不初始化缺失的 web profile，只 repair 已 opt-in 的 marker-owned entry
+- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes / DeepSeek Harness plugins 和 Pi / OMP extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`；DSH startup sync 不初始化缺失的 web profile，只 repair 已 opt-in 的 marker-owned entry
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 Clawd hook。常规所有权仍认 command 中的字面 `clawd-hook.js` marker；兼容 #852 的外部 env 间接形式时，只有“单条简单 Node 调用 + 精确 `CLAWD_HOOK_PATH` token + 唯一事件参数”，且 `settings.env.CLAWD_HOOK_PATH` 的跨平台 basename 恰为 `clawd-hook.js` 才视为 owned。复合命令、间接 env 值和第三方同事件 hook 均 fail closed。deprecated / versioned / HTTP-only / uninstall 路径删除全部 owned 命中；active state hook 则按子项位置折叠成一条，优先保留已 canonical 的命令并保留 mixed wrapper 的 matcher / 第三方 sibling。迁移不会改写 `settings.env`；严格的反注入规则只校验外部 env Node 候选，不会拒绝安装器已解析/保留的绝对路径（如含括号的 Windows 路径）。若 env-only 事件无法验证可用的绝对 Node 路径，会保留一条 env hook 而不是降级成裸 `node`；若已有 literal hook，则保留 literal 而不让不可迁移的 env duplicate 取代它
 
 Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=true, enabled=true` 一起提交；Uninstall 会调用 marker-scoped 卸载器，并把 `integrationInstalled=false, enabled=false` 一起提交。单独重新启用一个未安装 agent 只打开事件入口，不会写本机配置；手动安装命令主要用于调试、重装或远程机部署。
@@ -522,6 +522,19 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - `tool_call` handler 必须顶层 catch 并返回 `undefined`；Pi 的 `emitToolCall()` 不 catch extension 异常，未捕获异常可能变成通用 `Extension failed, blocking execution`
 - `tool_result` 按 `isError` 拆成 `PostToolUse` / `PostToolUseFailure`
 - Pi permission subgate 默认关闭：`prefs` 默认把 `agents.pi.permissionsEnabled` 置为 `false`；v4 migration 会把旧 true 重置为 false
+
+## OMP Notes
+
+- OMP (oh-my-pi) 是 Pi 所基于 coding agent 的 fork，因此 extension API 与事件词汇一致；`hooks/omp-extension.ts` 与 `hooks/pi-extension.ts` 只差三行（package import、core import、导出函数名），全部 OMP 特有逻辑都在 `hooks/omp-extension-core.js`
+- Extension 目录不是固定路径：OMP 按 **active agent directory** 解析 —— 默认 `~/.omp/agent`，`PI_CONFIG_DIR` 改 config root，`PI_CODING_AGENT_DIR` 改无 profile 时的默认值，`OMP_PROFILE` / `PI_PROFILE` 选中 `~/.omp/profiles/<name>/agent`。`hooks/omp-install.js` 的 `resolveOmpAgentDir()` 是唯一解析入口，install / uninstall / cleanup / `doctor-detectors` 描述符 / 安装探测全部走它，否则会出现"安装成功但 OMP 永远不加载"的假成功
+- Clawd 只管理它自己环境解析出的那一个目录；同机其他 profile 不被安装，Doctor 会在 healthy 时附带列出未纳管的 profile 名，而不是给出无条件的 verified
+- 完成事件绑定 `session_stop`，**绝不绑定 `agent_end`**：OMP 的 `agent_end` 在每个 agent-loop 边界都会触发（后台任务未完成、排队 follow-up、仍有 tool call 在飞），绑它会让 Clawd 在回合中途播完成动效
+- `session_switch` / `session_branch` 会上报，并对被离开的 session 补发合成 `SessionEnd`；否则 HUD 会留下一条再也不会更新的事件行
+- 始终发送 `session_title`：多个交互式 OMP session 会共用同一工作目录，仅靠文件夹名回退会让每一行与每个跳转目标显示成同一个名字
+- `session_shutdown` 会 drain 所有 session 的投递链尾部（`drainDeliveries`），而不只是自己那条链：切换时被离开 session 的合成 `SessionEnd` 在旧链上，若只 await 自己的链，进程可能在其投递完成前退出
+- 社区 bridge `clawd-on-desk-omp.ts` 与内置 extension 互斥：安装器发现它就 fail closed；若 Clawd 先装而 bridge 后到，只删除经 marker 验证属于 Clawd 的那份拷贝，外来目录保持不动
+- OMP 是 state-only：`tool_call` 只上报 `PreToolUse`，不等待 `/permission`、不弹权限气泡、不改变 OMP 自身执行行为
+- POSIX 上裸 `omp` 进程名有歧义，启动期 keep-awake 回退靠 cmdline 中的 `@oh-my-pi/pi-coding-agent` 识别（仅弱 keep-awake，不创建 session、不发布 task 级状态）
 
 ## OpenClaw Notes
 

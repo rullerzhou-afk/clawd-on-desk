@@ -23,6 +23,7 @@ describe("Agent Registry", () => {
       "opencode",
       "mimocode",
       "pi",
+      "omp",
       "openclaw",
       "hermes",
       "qoder",

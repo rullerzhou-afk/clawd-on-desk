@@ -28,6 +28,9 @@
 | **opencode：终端聚焦锚定启动窗口** | Plugin 跑在 opencode 进程内，`source_pid` 指向启动 opencode 的那个终端。如果你用 `opencode attach` 从另一个窗口接入，点击桌宠只会聚焦到最初的启动窗口。 |
 | **Pi：仅状态同步** | Clawd 通过全局 extension 观察 Pi 交互式会话生命周期和工具事件，但不接管权限、不新增确认弹窗。Pi 会保留默认 YOLO 执行行为。 |
 | **Pi：session reload 可能短暂闪烁** | Pi 在 reload / session replacement 时会先发 `session_shutdown`，随后新 runtime 发 `session_start`。Clawd 可能短暂删除并重新创建 Pi 会话。 |
+| **OMP：仅状态同步** | Clawd 通过按 agent 目录解析的 extension 观察 OMP 交互式会话生命周期和工具事件，但不接管权限、不新增确认弹窗，OMP 保留自身执行行为。完成事件绑定 `session_stop` 而非 `agent_end`：OMP 在每个 agent-loop 边界都会触发 `agent_end`（包括仍有任务在飞的调度暂停），绑它会让 Clawd 在回合中途宣布完成。 |
+| **OMP：只纳管一个 agent 目录** | OMP 从**当前生效的** agent 目录加载 extension：默认 `~/.omp/agent`，设置 `OMP_PROFILE` / `PI_PROFILE` 时为 `~/.omp/profiles/<name>/agent`，`PI_CONFIG_DIR` 移动 config root，`PI_CODING_AGENT_DIR` 改无 profile 时的默认值。Clawd 这四项都遵循，但只安装到它为自身环境解析出的那一个目录，因此跑在另一个 profile 下的 OMP 不会加载它。其他 profile 不会被安装；要在某个 profile 下补装，请在该 profile 的 shell 里执行 `node hooks/omp-install.js`。Doctor 会列出它未纳管的 profile，而不是给出无条件的 verified。 |
+| **OMP：与社区 bridge 互斥** | `clawd-on-desk-omp` bridge 通过 Clawd 的自定义应用通道上报同一批生命周期事件。如果 `~/.omp/agent/extensions/clawd-on-desk-omp.ts` 存在，Clawd 的 extension 安装器拒绝与其并存，并且只删除经 marker 验证确实由自己写入的那份拷贝——否则 OMP 会同时加载两者，把每个事件上报两次。若希望由 Clawd 接管集成，请先移除该 bridge。 |
 | **OpenClaw：本地 TUI state-only 支持** | Phase 1 通过 OpenClaw plugin 观察 `openclaw tui --local` 的生命周期和工具事件。暂不提供权限气泡或终端聚焦；gateway / daemon / messaging 部署也未必能锚定到本地终端窗口。 |
 | **OpenClaw：启动时不编辑 JSON5 配置** | OpenClaw 支持 JSON5 和 include 型配置。Clawd 启动同步只会编辑已存在且是严格 JSON 的 `~/.openclaw/openclaw.json`；遇到 JSON5 / include 配置会跳过，除非你手动运行 installer，让 OpenClaw CLI 自己负责写入。 |
 | **OpenClaw on Windows：原生 codex relay 可能失败** | 如果 OpenClaw 使用原生 `agentRuntime: codex` 路径时卡住，或报 unsafe native hook relay bridge，建议切到 OpenAI-compatible model/provider，例如 `openai-codex/gpt-5.5`。这是 OpenClaw 自身行为；Clawd 只观察 plugin 状态事件，无法修复 relay。 |

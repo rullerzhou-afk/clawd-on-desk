@@ -30,6 +30,7 @@ const HOOK_SOURCE_AGENT_IDS = new Map([
   ["openclaw-plugin", "openclaw"],
   ["codewhale-hook", "codewhale"],
   ["pi-extension", "pi"],
+  ["omp-extension", "omp"],
 ]);
 
 function normalizeHookText(value) {

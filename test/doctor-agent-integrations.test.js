@@ -97,6 +97,8 @@ function runOne(descriptor, options = {}) {
   return checkAgentIntegrations({
     fs,
     platform: options.platform,
+    env: options.env,
+    homeDir: options.homeDir,
     prefs: options.prefs || {},
     descriptors: [descriptor],
     server: options.server || null,
@@ -2330,6 +2332,133 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "broken-path");
     assert.strictEqual(detail.coreFileExists, false);
     assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "pi" });
+  });
+
+  // OMP is the second agent on this shape. Sharing the checker is the point:
+  // a Pi-only marker validator reports a healthy OMP install as needs-review
+  // forever, and an unrouted config mode reports "Unsupported config mode"
+  // with no Fix button at all.
+  function ompDescriptor() {
+    const root = makeTempDir();
+    const parentDir = path.join(root, ".omp", "agent");
+    return baseDescriptor({
+      agentId: "omp",
+      agentName: "OMP",
+      eventSource: "extension",
+      parentDir,
+      configPath: path.join(parentDir, "extensions", "clawd-on-desk"),
+      configMode: "omp-extension",
+      marker: "index.ts",
+      coreFile: "omp-extension-core.js",
+      markerFile: ".clawd-managed.json",
+    });
+  }
+
+  it("reports missing OMP extension as repairable not-connected", () => {
+    const descriptor = ompDescriptor();
+    fs.mkdirSync(descriptor.parentDir, { recursive: true });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.notStrictEqual(detail.detail, "Unsupported config mode: omp-extension");
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "omp" });
+  });
+
+  it("reports a fully managed OMP extension as ok", () => {
+    const descriptor = ompDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "omp",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+    fs.writeFileSync(path.join(descriptor.configPath, "omp-extension-core.js"), "module.exports = {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok", detail.detail);
+    assert.strictEqual(detail.extensionFileExists, true);
+    assert.strictEqual(detail.coreFileExists, true);
+  });
+
+  it("reports managed OMP extension with missing copied files as repairable broken-path", () => {
+    const descriptor = ompDescriptor();
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "omp",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "broken-path");
+    assert.strictEqual(detail.coreFileExists, false);
+    assert.match(detail.detail, /OMP extension files/);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "omp" });
+  });
+
+  it("reports a Pi-owned directory as needs-review for OMP and vice versa", () => {
+    // The marker names the integration that wrote the files. A directory
+    // carrying the other agent's marker is foreign — Clawd must not report it
+    // connected, and must not claim it as its own.
+    for (const [descriptor, foreignIntegration] of [
+      [ompDescriptor(), "pi"],
+      [piDescriptor(), "omp"],
+    ]) {
+      writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+        app: "clawd-on-desk",
+        integration: foreignIntegration,
+        managed: true,
+      });
+      fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+
+      const detail = runOne(descriptor);
+      assert.strictEqual(detail.status, "needs-review", `${descriptor.agentId} on a ${foreignIntegration} marker`);
+      assert.strictEqual(detail.fixAction, undefined);
+    }
+  });
+
+  it("names the OMP profiles it does not manage instead of implying full coverage", () => {
+    // OMP's extension directory is per-profile and Clawd resolves exactly one,
+    // so "verified" alone would read as "every OMP session reports to Clawd".
+    const root = makeTempDir();
+    const homeDir = path.join(root, "home");
+    const agentDir = path.join(homeDir, ".omp", "agent");
+    const descriptor = baseDescriptor({
+      agentId: "omp",
+      agentName: "OMP",
+      eventSource: "extension",
+      parentDir: agentDir,
+      configPath: path.join(agentDir, "extensions", "clawd-on-desk"),
+      configMode: "omp-extension",
+      marker: "index.ts",
+      coreFile: "omp-extension-core.js",
+      markerFile: ".clawd-managed.json",
+    });
+    writeJson(path.join(descriptor.configPath, ".clawd-managed.json"), {
+      app: "clawd-on-desk",
+      integration: "omp",
+      managed: true,
+    });
+    fs.writeFileSync(path.join(descriptor.configPath, "index.ts"), "export default function() {}\n", "utf8");
+    fs.writeFileSync(path.join(descriptor.configPath, "omp-extension-core.js"), "module.exports = {}\n", "utf8");
+
+    const alone = runOne(descriptor, { homeDir, env: {} });
+    assert.strictEqual(alone.status, "ok", alone.detail);
+    assert.ok(!/profile/i.test(alone.detail), `no note expected: ${alone.detail}`);
+
+    fs.mkdirSync(path.join(homeDir, ".omp", "profiles", "work", "agent"), { recursive: true });
+    const withOther = runOne(descriptor, { homeDir, env: {} });
+    assert.strictEqual(withOther.status, "ok", "the note must not mask a healthy install");
+    assert.match(withOther.detail, /not managed here \(work\)/);
+    assert.deepStrictEqual(withOther.unmanagedOmpProfiles, ["work"]);
+
+    // Once Clawd's own environment selects that profile, it is the managed one
+    // and nothing is left to report.
+    const selected = runOne(descriptor, { homeDir, env: { OMP_PROFILE: "work" } });
+    assert.ok(!/profile/i.test(selected.detail), `no note expected: ${selected.detail}`);
   });
 
   it("reports opencode stale absolute plugin paths", () => {

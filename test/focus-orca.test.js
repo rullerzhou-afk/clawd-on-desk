@@ -283,6 +283,7 @@ describe("Orca pane key validator copies", () => {
   const jsCopies = [
     "hooks/shared-process.js",
     "hooks/pi-extension-core.js",
+    "hooks/omp-extension-core.js",
     "hooks/opencode-family-plugin/core.mjs",
     "src/server-route-state.js",
     "src/server-route-permission.js",
@@ -314,8 +315,8 @@ describe("Orca pane key validator copies", () => {
   // to shared-process.js alone would leave the standalone copies trusting an
   // inherited key, with the wrong window reported as a successful focus.
   it("keeps the nested-terminal marker list in step across every copy", () => {
-    for (const rel of ["hooks/pi-extension-core.js", "hooks/opencode-family-plugin/core.mjs",
-      "hooks/hermes-plugin/__init__.py"]) {
+    for (const rel of ["hooks/pi-extension-core.js", "hooks/omp-extension-core.js",
+      "hooks/opencode-family-plugin/core.mjs", "hooks/hermes-plugin/__init__.py"]) {
       const src = fs.readFileSync(path.join(repo, rel), "utf8");
       const match = /NESTED_TERMINAL_ENV\s*=\s*[[(]/.exec(src);
       assert.ok(match, `${rel} must declare the nested-terminal marker list`);

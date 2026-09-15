@@ -209,6 +209,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "opencode",
   "mimocode",
   "pi",
+  "omp",
   "openclaw",
   "hermes",
   "qoder",
