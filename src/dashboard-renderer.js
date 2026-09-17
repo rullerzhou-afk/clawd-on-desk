@@ -1,6 +1,7 @@
 "use strict";
 
 const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+const { createLanguagePicker } = globalThis.ClawdLanguagePicker;
 
 const AGENT_LABELS = {
   "claude-code": "Claude Code",
@@ -27,6 +28,7 @@ let activeEdit = null;
 const SESSION_FOLDER_FEEDBACK_MS = 4000;
 const sessionFolderActionState = new Map();
 const sessionAutomationActionState = new Map();
+let sessionAutomationPickers = [];
 
 const titleEl = document.getElementById("title");
 const countEl = document.getElementById("count");
@@ -1505,93 +1507,130 @@ function automationActionState(key) {
     : { pending: false, feedbackText: "" };
 }
 
+function sessionAutomationUnavailableText(session) {
+  const reason = session && session.sessionAutomationDisabledReason;
+  if (
+    session
+    && session.agentId === "codex"
+    && (
+      reason === "unsupported-codex-originator"
+      || reason === "unsupported-codex-session-source"
+    )
+  ) {
+    return t("sessionAutomationUnavailableCodexDesktop");
+  }
+  return t("sessionAutomationUnavailable");
+}
+
 function appendSessionAutomation(container, session) {
   if (!container || !session) return;
-  if (session.canConfigureSessionAutomation !== true && !session.sessionAutomationGrantId) return;
   const row = document.createElement("div");
   row.className = "session-automation-row";
   const label = createText("span", "session-automation-label", t("sessionAutomationLabel"));
-  const select = document.createElement("select");
-  select.className = "session-automation-select";
-  select.setAttribute("aria-label", t("sessionAutomationLabel"));
+  const canConfigure = session.canConfigureSessionAutomation === true;
+  const hasGrant = !!session.sessionAutomationGrantId;
+  const unavailableText = canConfigure ? "" : sessionAutomationUnavailableText(session);
+
+  if (!canConfigure && !hasGrant) {
+    const readonlyValue = createText(
+      "span",
+      "session-automation-readonly",
+      t("sessionAutomationFollowGlobal")
+    );
+    readonlyValue.setAttribute(
+      "aria-label",
+      `${t("sessionAutomationLabel")}: ${t("sessionAutomationFollowGlobal")}`
+    );
+    const unavailable = createText(
+      "span",
+      "session-automation-unavailable",
+      unavailableText
+    );
+    unavailable.setAttribute("role", "note");
+    row.appendChild(label);
+    row.appendChild(readonlyValue);
+    row.appendChild(unavailable);
+    container.appendChild(row);
+    return;
+  }
 
   const values = [
     ["inherit", t("sessionAutomationFollowGlobal")],
     ["off", t("sessionAutomationAsk")],
     ["auto-tools", t("sessionAutomationAutoTools")],
   ];
-  for (const [value, text] of values) {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = text;
-    if (
-      session.canConfigureSessionAutomation !== true
-      && value !== "inherit"
-    ) {
-      option.disabled = true;
-    }
-    select.appendChild(option);
-  }
-  select.value = session.sessionAutomationMode || "inherit";
   const key = automationActionKey(session);
   const actionState = automationActionState(key);
-  select.disabled = actionState.pending === true
-    || (
-      session.canConfigureSessionAutomation !== true
-      && !session.sessionAutomationGrantId
-    );
-  if (session.canConfigureSessionAutomation !== true) {
-    select.title = t("sessionAutomationUnavailable");
-  }
   const feedback = createText(
     "span",
     "session-automation-feedback",
     actionState.feedbackText
   );
-  select.addEventListener("change", async () => {
-    if (!window.dashboardAPI) return;
-    const previousValue = session.sessionAutomationMode || "inherit";
-    const nextValue = select.value;
-    sessionAutomationActionState.set(key, {
-      pending: true,
-      feedbackText: "",
-    });
-    select.disabled = true;
-    feedback.textContent = "";
-    let result;
-    try {
-      if (nextValue === "inherit") {
-        result = session.sessionAutomationGrantId
-          ? await window.dashboardAPI.clearSessionAutomationGrant({
-            grantId: session.sessionAutomationGrantId,
-          })
-          : { status: "equivalent" };
-      } else {
-        result = await window.dashboardAPI.setSessionAutomationOverride({
-          sessionId: session.id,
-          mode: nextValue,
-        });
+  const currentMode = session.sessionAutomationMode || "inherit";
+  const pickerValues = canConfigure
+    ? values
+    : values.filter(([value]) => value === "inherit" || value === currentMode);
+  const picker = createLanguagePicker({
+    className: "session-automation-picker",
+    ariaLabel: t("sessionAutomationLabel"),
+    value: currentMode,
+    options: pickerValues.map(([value, labelText]) => ({ value, label: labelText })),
+    lockWhilePending: true,
+    pending: actionState.pending === true,
+    onChange: async (nextValue) => {
+      if (!window.dashboardAPI) return false;
+      sessionAutomationActionState.set(key, {
+        pending: true,
+        feedbackText: "",
+      });
+      feedback.textContent = "";
+      let result;
+      try {
+        if (nextValue === "inherit") {
+          result = session.sessionAutomationGrantId
+            ? await window.dashboardAPI.clearSessionAutomationGrant({
+              grantId: session.sessionAutomationGrantId,
+            })
+            : { status: "equivalent" };
+        } else {
+          result = await window.dashboardAPI.setSessionAutomationOverride({
+            sessionId: session.id,
+            mode: nextValue,
+          });
+        }
+      } catch (err) {
+        result = { status: "error", message: err && err.message };
       }
-    } catch (err) {
-      result = { status: "error", message: err && err.message };
-    }
-    if (!result || !["applied", "equivalent"].includes(result.status)) {
-      select.value = previousValue;
-      if (result && result.status === "cancelled") {
-        sessionAutomationActionState.delete(key);
-      } else {
-        sessionAutomationActionState.set(key, {
-          pending: false,
-          feedbackText: t("sessionAutomationChangeFailed"),
-        });
+      if (!result || !["applied", "equivalent"].includes(result.status)) {
+        if (result && result.status === "cancelled") {
+          sessionAutomationActionState.delete(key);
+        } else {
+          const feedbackText = t("sessionAutomationChangeFailed");
+          sessionAutomationActionState.set(key, {
+            pending: false,
+            feedbackText,
+          });
+          feedback.textContent = feedbackText;
+        }
+        return false;
       }
-    } else {
       sessionAutomationActionState.delete(key);
-    }
-    render();
+      return true;
+    },
   });
+  sessionAutomationPickers.push(picker);
+  if (!canConfigure) picker.element.title = unavailableText;
   row.appendChild(label);
-  row.appendChild(select);
+  row.appendChild(picker.element);
+  if (!canConfigure) {
+    const unavailable = createText(
+      "span",
+      "session-automation-unavailable",
+      unavailableText
+    );
+    unavailable.setAttribute("role", "note");
+    row.appendChild(unavailable);
+  }
   row.appendChild(feedback);
   container.appendChild(row);
 }
@@ -1727,6 +1766,23 @@ function appendSessionAutomationOrphans(fragment) {
   for (const record of orphans) cards.appendChild(createSessionAutomationOrphan(record));
   section.appendChild(cards);
   fragment.appendChild(section);
+}
+
+function hasOpenSessionAutomationPicker() {
+  return sessionAutomationPickers.some((picker) => {
+    const element = picker && picker.element;
+    return !!(
+      element
+      && element.classList
+      && element.classList.contains("open")
+      && contentEl.contains(element)
+    );
+  });
+}
+
+function disposeSessionAutomationPickers() {
+  for (const picker of sessionAutomationPickers) picker.dispose();
+  sessionAutomationPickers = [];
 }
 
 // ── Session history ──────────────────────────────────────────────────────
@@ -2033,25 +2089,15 @@ function appendSessionGroups(fragment, byId, now) {
   }
 }
 
-function hasFocusedSessionAutomationSelect() {
-  const active = document.activeElement;
-  return !!(
-    active
-    && active.tagName === "SELECT"
-    && active.classList
-    && active.classList.contains("session-automation-select")
-    && contentEl.contains(active)
-  );
-}
-
 function render(options = {}) {
   // A round that ended settles here if no scroll or layout signal closed it
   // first: the guard must never stay armed indefinitely.
   if (scrollGuard.settling) handleScrollSignal();
   // The one-second elapsed-time tick normally rebuilds the entire card tree.
-  // Replacing a focused native <select> closes its open menu on Windows, so
-  // defer ordinary snapshot/timer renders until the user finishes choosing.
-  if ((activeEdit || hasFocusedSessionAutomationSelect()) && !options.force) return;
+  // Replacing an open picker closes its menu, but focus alone must not block an
+  // authoritative snapshot that carries a newly created automation grant.
+  if ((activeEdit || hasOpenSessionAutomationPicker()) && !options.force) return;
+  disposeSessionAutomationPickers();
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
   const now = Date.now();
