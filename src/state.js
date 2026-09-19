@@ -1767,9 +1767,15 @@ function scheduleClaudeTranscriptCompletionProbe(sessionId, transcriptPath) {
       return;
     }
 
+    // Claude transcript entries carry the raw `session_id` (UUID) that Claude
+    // emitted, not Clawd's canonical session key (#908). The probe map is keyed
+    // by the canonical id, so filter the transcript by the session's raw id;
+    // fall back to the canonical key only when no raw id was captured. Entries
+    // that carry no `sessionId` are still accepted by the extractor, keeping the
+    // mechanism-level fallback used by the #904 deletion-cleanup path intact.
     const assistantOutput = extractLastClaudeAssistantTextFromEntries(
       readClaudeTranscriptTailEntries(safePath),
-      sessionId
+      session.rawSessionId || sessionId
     );
     if (assistantOutput && assistantOutput.text) {
       claudeTranscriptCompletionProbes.delete(sessionId);
