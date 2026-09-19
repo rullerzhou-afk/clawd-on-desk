@@ -262,6 +262,12 @@ const SCHEMA = {
   // never suppress the stronger unattended warning.
   permissionAutomationAutoToolsWarningDismissed: { type: "boolean", default: false },
   permissionAutomationUnattendedWarningDismissed: { type: "boolean", default: false },
+  // Opt-in reminder that pauses an otherwise-automatic allow for recognized
+  // high-risk operations so a human sees the card. Off by default, and
+  // deliberately NOT command-gated like the keys above: those widen what runs
+  // without a human, this only narrows it, so there is no trust transition to
+  // confirm.
+  destructiveActionReminder: { type: "boolean", default: false },
   // One-release tombstone for old files/tests. It can never become the current
   // automation source: validation forces ephemeral fields to defaults, save()
   // drops them, and no product writer targets this key.

@@ -346,7 +346,18 @@ function isValidInteraction(interaction) {
     .every((key) => typeof capabilities[key] === "boolean");
 }
 
-function evaluatePermissionAutomation({ mode, interaction } = {}) {
+/**
+ * Decide what automation does with one request.
+ *
+ * `reminderHold` is the destructive-action reminder's only input to this
+ * function, and it can do exactly one thing: turn an automatic allow for an
+ * ordinary tool request into DEFER, so the request reaches a human through the
+ * existing approval channels. It cannot turn DEFER into an allow, it never
+ * produces a deny, and it is deliberately not consulted on the question-answer
+ * or plan-review branches below -- those keep their existing handling.
+ * Callers that do not pass it get today's behavior unchanged.
+ */
+function evaluatePermissionAutomation({ mode, interaction, reminderHold } = {}) {
   if (!Object.values(PERMISSION_AUTOMATION_MODE).includes(mode)) {
     return AUTOMATION_ACTION.DEFER;
   }
@@ -369,7 +380,11 @@ function evaluatePermissionAutomation({ mode, interaction } = {}) {
     )
     && interaction.capabilities.allowDeny
   ) {
-    return AUTOMATION_ACTION.AUTO_ALLOW;
+    // The one place the reminder applies: an ordinary tool request that
+    // automation would have allowed by itself.
+    return reminderHold === true
+      ? AUTOMATION_ACTION.DEFER
+      : AUTOMATION_ACTION.AUTO_ALLOW;
   }
 
   if (

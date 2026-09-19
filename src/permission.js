@@ -6,7 +6,7 @@ const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const { createTranslator } = require("./i18n");
-const { firstStringValue, formatDetail, truncate, parseMcpToolName } = require("./bubble-format");
+const { firstStringValue, formatDetail, formatReminderReason, truncate, parseMcpToolName } = require("./bubble-format");
 const {
   getPermissionSessionKey,
   groupPermissionEntries,
@@ -23,6 +23,7 @@ const {
 } = require("../hooks/server-config");
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { reminderHolds } = require("./permission-reminder");
 const {
   normalizeOpencodeFamilyBridgeUrl,
   isValidOpencodeFamilyBridgeToken,
@@ -2162,6 +2163,125 @@ function isPermissionEntryHeadless(permEntry) {
     && !isInteractiveCodexSubagentEntry(permEntry));
 }
 
+// Destructive-action reminder (opt-in, off by default).
+//
+// Reads the stamp the route put on the entry instead of re-deriving anything
+// from entry.toolInput: that field is the display copy and has already been
+// through truncateDeep(), so a command whose destructive part sits past
+// PREVIEW_MAX would not be in it.
+//
+// If the setting cannot be read at all, an unmatched request keeps today's
+// behavior and a matched one ends at the human. A settings read that throws is
+// already a broken state, and the direction that costs an extra card is
+// preferable to the one that silently disarms a guard the user switched on.
+//
+// #1021 review (5), TOCTOU: the match stamp (hold/tag) is computed once, at
+// accept time, by permission-reminder.js -- a module with no ctx, so it
+// cannot read this setting at all. Whether that stamp actually holds used to
+// re-read the LIVE setting on every call, including from
+// canAutoResolvePendingPermission()/sweep(), which can run much later than
+// accept time (a session grant can arrive after the request has already been
+// sitting, displayed, for a while). That let a request already shown to a
+// human as held become sweep-resolvable the moment the setting was turned
+// off, with no human action and no re-render of the already-shown card --
+// and the reverse (turning it on) could newly hold a request that automation
+// had already committed to resolving through a path that does not re-check
+// this predicate. Freezing the decision the first time it is asked answers
+// both directions the same way a snapshot answers a race: whichever value
+// was true when this request first became eligible for automation is the
+// value it keeps for its whole pending lifetime, so the display (whenever it
+// last rendered) and the decision can never silently diverge on a request
+// that neither the human nor policy has touched.
+function permissionReminderHolds(permEntry) {
+  // Scoped to the same branch the policy scopes it to. Elicitation and plan
+  // entries are answered or reviewed on their own paths, and a question card
+  // must never show a reminder reason just because the safety net in the route
+  // stamped one.
+  if (!isValidInteraction(permEntry && permEntry.interaction)) return false;
+  const intent = permEntry.interaction.intent;
+  if (intent !== INTERACTION_INTENT.TOOL_APPROVAL && intent !== INTERACTION_INTENT.UNKNOWN) {
+    return false;
+  }
+  if (typeof permEntry._reminderHoldAtAccept === "boolean") {
+    return permEntry._reminderHoldAtAccept;
+  }
+  const stampHolds = reminderHolds(permEntry.permissionReminder);
+  let result;
+  if (typeof ctx.isDestructiveReminderEnabled !== "function") {
+    result = false;
+  } else {
+    try {
+      result = ctx.isDestructiveReminderEnabled() === true ? stampHolds : false;
+    } catch (err) {
+      permLog(`destructive reminder: setting read failed (${err && err.message ? err.message : err}); falling back to the match`);
+      result = stampHolds;
+    }
+  }
+  permEntry._reminderHoldAtAccept = result;
+  return result;
+}
+
+// Whether the reminder is the reason this request is in front of a human.
+//
+// permissionReminderHolds() answers "should automation stop here"; this answers
+// "did stopping here change anything". They differ whenever the request was going
+// to reach a human regardless -- automation off, an ineligible agent, a session
+// with no grant -- and in that case the card must not claim Clawd intervened.
+// The card still shows the ordinary destructive-action hint there, as before.
+//
+// #1021 review (3): this used to re-evaluate automation policy with its own
+// partial copy of canAutoResolvePendingPermission()'s gates, which skipped the
+// entry-level ones entirely (agent/subagent enabled, headless, Codex permission
+// intercept, session-automation eligibility, live-response, DND). Reachable
+// miss: a remote-only entry with an existing session grant, where Codex
+// permission intercept or the subagent automation gate is off -- sweep()
+// would never have resolved that entry (canAutoResolvePendingPermission
+// returns false), yet this function said the reminder was why it was
+// pending, so the card rendered Tier 1 ("Automatic approval paused") when the
+// request needed a human regardless (Tier 2 is correct).
+//
+// Fix: derive from canAutoResolvePendingPermission() itself -- the same
+// predicate sweep()/session-grant flows use -- instead of keeping a second
+// copy of its gates, but ONLY in the exact circumstance where that predicate
+// is actually consulted for real auto-resolution: a session-automation
+// override exists, or this is an interactive Codex subagent entry
+// (maybeAutoApprovePermission's own `needsLiveGate` condition, unchanged
+// here). An ordinary global-automation request is never routed through
+// canAutoResolvePendingPermission()'s entry-level gates either -- see
+// maybeAutoApprovePermission(), which auto-allows it directly once
+// evaluatePermissionAutomation() says AUTO_ALLOW -- so asking this predicate
+// to apply those gates there would claim a stronger check happened than the
+// one that actually resolves the request, which would then wrongly downgrade
+// an otherwise-correct Tier 1 card (e.g. an opencode-family session under
+// plain global automation) to Tier 2.
+function reminderIsWhyThisIsPending(permEntry) {
+  if (!permissionReminderHolds(permEntry)) return false;
+  let mode;
+  if (typeof ctx.getEffectivePermissionAutomationMode === "function") {
+    mode = ctx.getEffectivePermissionAutomationMode(permEntry, {
+      sessionOnly: permEntry.remoteOnly === true,
+    });
+  } else if (typeof ctx.getPermissionAutomationMode === "function") {
+    mode = ctx.getPermissionAutomationMode();
+  } else {
+    mode = PERMISSION_AUTOMATION_MODE.OFF;
+  }
+  const wouldAutoAllow = evaluatePermissionAutomation({
+    mode,
+    interaction: permEntry.interaction,
+    entry: permEntry,
+    reminderHold: false,
+  }) === AUTOMATION_ACTION.AUTO_ALLOW;
+  if (!wouldAutoAllow) return false;
+
+  const hasSessionOverride = typeof ctx.hasSessionAutomationOverride === "function"
+    && ctx.hasSessionAutomationOverride(permEntry);
+  const needsLiveGate = hasSessionOverride || isInteractiveCodexSubagentEntry(permEntry);
+  if (!needsLiveGate) return true;
+
+  return canAutoResolvePendingPermission(permEntry, { mode, ignoreReminderHold: true }) === true;
+}
+
 function canAutoResolvePendingPermission(permEntry, options = {}) {
   if (!isPermissionEntryLive(permEntry)) return false;
   if (ctx.doNotDisturb) return false;
@@ -2215,10 +2335,18 @@ function canAutoResolvePendingPermission(permEntry, options = {}) {
         );
   }
 
+  // ignoreReminderHold lets reminderIsWhyThisIsPending() ask "would every
+  // OTHER gate have let this through" without re-implementing them: it is
+  // the neutralize-only-the-reminder-hold view onto this exact predicate.
+  const reminderHold = options.ignoreReminderHold === true
+    ? false
+    : permissionReminderHolds(permEntry);
+
   return evaluatePermissionAutomation({
     mode,
     interaction: permEntry.interaction,
     entry: permEntry,
+    reminderHold,
   }) === AUTOMATION_ACTION.AUTO_ALLOW;
 }
 
@@ -2252,13 +2380,17 @@ function maybeAutoApprovePermission(permEntry) {
           ? ctx.getPermissionAutomationMode()
           : PERMISSION_AUTOMATION_MODE.OFF
       );
+  const reminderHold = permissionReminderHolds(permEntry);
   const action = evaluatePermissionAutomation({
     mode,
     interaction: permEntry.interaction,
     entry: permEntry,
+    reminderHold,
   });
   if (action === AUTOMATION_ACTION.DEFER) {
-    if (!isValidInteraction(permEntry.interaction)) {
+    if (reminderHold) {
+      permLog(`destructive reminder: holding for a human mode=${mode} reason=${permEntry.permissionReminder.tag} tool=${permEntry.toolName || "(missing)"} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    } else if (!isValidInteraction(permEntry.interaction)) {
       permLog(`automation defer: invalid interaction tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
     } else if (
       mode !== PERMISSION_AUTOMATION_MODE.OFF
@@ -2643,6 +2775,13 @@ function buildPermissionBubblePayload(permEntry) {
   return {
     toolName: permEntry.toolName,
     toolInput: permEntry.toolInput,
+    // Why this card exists, when it exists because the reminder held it. Null
+    // for every other card -- including one whose command the display hint
+    // badges anyway. The badge says "this looks destructive"; this says
+    // "automation would have allowed this and Clawd stopped for you".
+    reminderTag: reminderIsWhyThisIsPending(permEntry)
+      ? permEntry.permissionReminder.tag
+      : null,
     detailText: typeof permEntry.detailText === "string"
       ? permEntry.detailText
       : null,
@@ -2983,17 +3122,48 @@ function buildRemoteApprovalPayload(permEntry) {
   );
   // Label this value "Folder" (not "Session"): it is only the cwd basename,
   // never a session id or full local path.
+  // The same reason the local card shows, so a remote-only operator is not told
+  // less about why the request stopped than someone sitting at the desk.
+  //
+  // Two tiers, mirroring bubble-renderer.js's badge exactly, because the local
+  // card degrades to a weaker line where this used to degrade to silence:
+  //   held BY the reminder        -> "Automatic approval paused: X"
+  //   destructive but pending anyway -> "Potentially destructive action: X"
+  // The second tier is the case the old single-tier code dropped. It is the
+  // ONLY tier a remote-only operator can ever see: bubbles are off, so the
+  // local irreversible badge that carries this hint is not on their screen at
+  // all. Dropping it left exactly one configuration -- the one named in the
+  // comment above -- told nothing, which is the opposite of what it promises.
+  // Tier 2 must NOT reuse the tier-1 wording: the request was reaching a human
+  // regardless, so claiming Clawd stopped it would be false.
+  // One extraction, not three: reminderHolds() already rejects a null stamp, a
+  // malformed one, and an empty tag (test/permission-reminder lanes pin all
+  // four shapes), so a true from either predicate GUARANTEES an object with a
+  // truthy tag. Two cross-family reviewers independently read the old shape as
+  // a null-dereference plus an empty-tag asymmetry; both were refuted at the
+  // source, and the per-branch guards that invited the reading are gone with
+  // them rather than being left as dead code that documents a fear.
+  const reminderTag = permissionReminderHolds(permEntry)
+    ? permEntry.permissionReminder.tag
+    : null;
+  const reminderLine = !reminderTag
+    ? null
+    : (reminderIsWhyThisIsPending(permEntry)
+      ? interpolate(t("approvalDetailReminderValue"), "{reason}", formatReminderReason(reminderTag, ctx.lang))
+      : interpolate(t("approvalDetailIrreversibleValue"), "{reason}", formatReminderReason(reminderTag, ctx.lang)));
   const detail = [
     `${t("approvalDetailAgent")}: ${agentId}`,
     `${t("approvalDetailTool")}: ${toolName}`,
     sessionFolder ? `${t("approvalDetailFolder")}: ${sessionFolder}` : null,
     `${t("approvalDetailSummary")}: ${summary}`,
+    reminderLine ? `${t("approvalDetailReminder")}: ${reminderLine}` : null,
   ].filter(Boolean).join("\n");
   const fields = [
     { label: t("approvalDetailAgent"), value: agentId },
     { label: t("approvalDetailTool"), value: toolName },
     sessionFolder ? { label: t("approvalDetailFolder"), value: sessionFolder } : null,
     { label: t("approvalDetailSummary"), value: summary },
+    reminderLine ? { label: t("approvalDetailReminder"), value: reminderLine } : null,
   ].filter(Boolean);
   const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
   const payload = {

@@ -2,6 +2,7 @@
 
 (function initSettingsTabGeneral(root) {
   const GENERAL_IN_PLACE_KEYS = new Set([
+    "destructiveActionReminder",
     "size",
     "textScale",
     "textScaleByDisplay",
@@ -573,6 +574,18 @@
     // trust boundary and require an explicit confirmation.
     parent.appendChild(helpers.buildSection(t("sectionPermissions"), [
       buildPermissionAutomationRow(),
+      // Reads as a modifier of the row above, and it is one: it only narrows
+      // what the automatic modes allow on their own, so unlike them it needs no
+      // confirmation to switch on.
+      helpers.buildSwitchRow({
+        key: "destructiveActionReminder",
+        labelKey: "rowDestructiveActionReminder",
+        descKey: "rowDestructiveActionReminderDesc",
+        // Second line for the limits, the way the agent rows carry their caveats.
+        // Keeping it in one description would have made this the longest blurb on
+        // the tab by a factor of three.
+        descExtraKey: "rowDestructiveActionReminderNote",
+      }),
     ]));
   }
 

@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
 
-const { detectIrreversible } = require("../src/bubble-format");
+const { detectIrreversible, formatReminderReason } = require("../src/bubble-format");
 const { SUPPORTED_LANGS } = require("../src/i18n");
 
 const bubbleRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "bubble-renderer.js"), "utf8");
@@ -78,6 +78,13 @@ describe("bubble wiring — badge is display-only", () => {
     const count = (bubbleRenderer.match(/irreversibleHint:/g) || []).length;
     assert.strictEqual(count, SUPPORTED_LANGS.length);
   });
+  it("renderer localizes reminder tags while retaining the stable data attribute", () => {
+    assert.match(bubbleRenderer, /formatReminderReason\(reminderTag, data\.lang\)/);
+    assert.match(bubbleRenderer, /setAttribute\("data-reason", reminderTag \|\| irreversible\.tag\)/);
+    for (const lang of SUPPORTED_LANGS) {
+      assert.notStrictEqual(formatReminderReason("scan-error", lang), "scan-error");
+    }
+  });
   it("badge element exists and starts hidden", () => {
     assert.match(bubbleHtml, /id="irreversibleBadge" style="display:none"/);
   });
@@ -107,6 +114,18 @@ describe("bubble wiring — badge is display-only", () => {
     // force-push / branch -D are reflog-recoverable — the hint must not overclaim.
     assert.doesNotMatch(bubbleRenderer, /cannot be undone/);
     assert.match(bubbleRenderer, /may not be recoverable/);
+  });
+
+  it("keeps an already-proven destructive hint when later syntax is incomplete", () => {
+    for (const command of [
+      'rm -rf /etc && echo "abc',
+      "rm -rf /etc && echo $(x",
+      "echo $(rm -rf /etc) && echo `x",
+    ]) {
+      const result = detectIrreversible("Bash", { command });
+      assert.ok(result, command);
+      assert.strictEqual(result.tag, "file-delete", command);
+    }
   });
 });
 

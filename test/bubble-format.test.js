@@ -3,7 +3,31 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName } = require("../src/bubble-format");
+const { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName } = require("../src/bubble-format");
+const { SUPPORTED_LANGS } = require("../src/i18n");
+
+describe("bubble-format reminder reason labels", () => {
+  it("turns stable diagnostic tags into readable text in every supported locale", () => {
+    for (const lang of SUPPORTED_LANGS) {
+      const label = formatReminderReason("force-push", lang);
+      assert.ok(label);
+      assert.notStrictEqual(label, "force-push");
+    }
+  });
+
+  it("never leaks an unknown future tag into user-visible text", () => {
+    assert.strictEqual(formatReminderReason("future-internal-tag", "en"), "destructive action");
+    assert.strictEqual(formatReminderReason("future-internal-tag", "zh"), "破坏性操作");
+    assert.strictEqual(formatReminderReason("force-push", "unsupported"), "force push");
+  });
+
+  it("treats inherited object names as unknown tags and languages", () => {
+    for (const tag of ["constructor", "__proto__", "toString"]) {
+      assert.strictEqual(formatReminderReason(tag, "en"), "destructive action");
+    }
+    assert.strictEqual(formatReminderReason("force-push", "constructor"), "force push");
+  });
+});
 
 describe("bubble-format truncate", () => {
   it("returns input unchanged when within max", () => {

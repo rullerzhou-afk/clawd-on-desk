@@ -49,6 +49,22 @@ jobs:
           test/codex-install.test.js
           test/qwen-code-hook.test.js
           test/workbuddy-hook.test.js
+      # #1021 review (6): these two files carry the destructive-action
+      # reminder feature (permission-reminder.js, the tier 1/tier 2 card
+      # wording, the argv scan budget, the setting's eager-scan + pinned
+      # accept-time decision) and its route-level wiring. Neither appeared in
+      # ANY workflow before this line -- confirmed by grepping every
+      # .github/workflows/*.yml for both filenames, zero hits -- so this PR's
+      # own test additions would never run in CI without it. This job's
+      # existing steps are curated per-subject fixed lists rather than a
+      # glob; matching that convention here (see this file's own listed
+      # rationale in the PR review) rather than introducing the first glob
+      # into this workflow.
+      - name: Test destructive-action reminder and its permission-route wiring
+        run: >-
+          node --test
+          test/permission-destructive-reminder.test.js
+          test/server-route-permission.test.js
       - run: npm run audit:assets
       - name: Audit PR-reachable history for large binary assets
         if: github.event_name == 'pull_request'

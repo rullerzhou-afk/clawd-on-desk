@@ -2023,6 +2023,8 @@ const _permCtx = {
   // headless, per-agent and bubble gates run before this chokepoint.
   getPermissionAutomationMode: () =>
     _settingsController.get("permissionAutomationMode") || "off",
+  isDestructiveReminderEnabled: () =>
+    _settingsController.get("destructiveActionReminder") === true,
   getEffectivePermissionAutomationMode: (entry, options) =>
     sessionAutomationCoordinator
       ? sessionAutomationCoordinator.getEffectiveMode(entry, options)
