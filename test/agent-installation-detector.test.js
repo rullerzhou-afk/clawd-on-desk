@@ -829,6 +829,7 @@ describe("agent installation detector", () => {
     const homeDir = makeHome();
     const executablePath = path.join(homeDir, "NovaAI.exe");
     writeText(executablePath, "");
+    if (process.platform !== "win32") fs.chmodSync(executablePath, 0o755);
     const application = {
       id: "custom-nova-ai-0123456789ab",
       executablePath,

@@ -206,6 +206,43 @@ test("settings agent actions handle an async custom permission URL sync failure"
   assert.strictEqual(result.commit, undefined);
 });
 
+test("settings agent actions wait for an async custom permission URL sync before committing", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.integrationInstalled = true;
+  let settled = false;
+  const resultPromise = agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    value: "https://new.example.test/permission",
+  }, {
+    snapshot,
+    syncIntegrationForAgent: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      settled = true;
+      return { status: "ok" };
+    },
+  });
+  assert.strictEqual(typeof resultPromise.then, "function");
+  const result = await resultPromise;
+  assert.strictEqual(settled, true);
+  assert.strictEqual(result.status, "ok");
+  assert.strictEqual(result.commit.agents.codebuddy.customPermissionUrl, "https://new.example.test/permission");
+});
+
+test("settings agent actions reject a rejected custom permission URL sync", async () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.integrationInstalled = true;
+  const result = await agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    value: "https://new.example.test/permission",
+  }, {
+    snapshot,
+    syncIntegrationForAgent: () => Promise.reject(new Error("network unavailable")),
+  });
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /network unavailable/);
+  assert.strictEqual(result.commit, undefined);
+});
+
 test("settings agent actions sync clearing an installed custom permission URL immediately", () => {
   const snapshot = prefs.getDefaults();
   snapshot.agents.codebuddy.integrationInstalled = true;

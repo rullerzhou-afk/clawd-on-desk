@@ -35,18 +35,15 @@ function isCustomApplicationNamespace(value) {
 function isLaunchable(filePath, stat, platform, pathApi, fsApi = fs) {
   if (!stat || !stat.isFile()) return false;
   if (platform === "win32") return WINDOWS_EXECUTABLE_EXTENSIONS.has(pathApi.extname(filePath).toLowerCase());
-  // Use the same effective X_OK check for discovery and registration. The
-  // mode-bit fallback is only for injected filesystem doubles that do not
-  // expose accessSync.
+  // Use the same effective X_OK check for discovery and registration. A mode
+  // bit alone is insufficient because ACLs, mounts, and platform policy can
+  // still deny execution.
   try {
-    if (typeof fsApi.accessSync === "function") {
-      fsApi.accessSync(filePath, fs.constants.X_OK);
-      return true;
-    }
+    fsApi.accessSync(filePath, fs.constants.X_OK);
+    return true;
   } catch {
     return false;
   }
-  return (stat.mode & 0o111) !== 0;
 }
 
 function findExecutable(directory, options) {
