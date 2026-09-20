@@ -53,6 +53,16 @@ test("requires a real executable inside a macOS app bundle", () => {
   assert.strictEqual(application.executablePath, executable);
 });
 
+test("does not register a non-executable POSIX extensionless file", { skip: process.platform === "win32" }, () => {
+  const dir = tempDir();
+  const executable = path.join(dir, "nova");
+  fs.writeFileSync(executable, "");
+  fs.chmodSync(executable, 0o644);
+  assert.strictEqual(identifyCustomApplication(executable, { platform: "linux" }), null);
+  fs.chmodSync(executable, 0o755);
+  assert.strictEqual(identifyCustomApplication(executable, { platform: "linux" }).executablePath, executable);
+});
+
 test("normalizes, deduplicates, and rejects malformed custom application records", () => {
   const valid = {
     id: "custom-nova-ai-0123456789ab",

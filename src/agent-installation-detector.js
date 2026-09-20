@@ -15,7 +15,7 @@ const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
 const grok = require("../hooks/grok-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
-const { identifyCustomApplication } = require("./custom-applications");
+const { identifyCustomApplication, isLaunchable } = require("./custom-applications");
 
 // Agents whose detector parent dir the DEFAULT startup sync creates on its own,
 // before the agent has left any evidence of its own. For those, "the directory
@@ -580,6 +580,7 @@ function detectCustomTools(options = {}) {
 
 function detectCustomAgents(options = {}) {
   const fsImpl = options.fs || fs;
+  const platform = options.platform || process.platform;
   const applications = Array.isArray(options.snapshot && options.snapshot.customApplications)
     ? options.snapshot.customApplications
     : [];
@@ -589,15 +590,27 @@ function detectCustomAgents(options = {}) {
       ? application.executablePath
       : "";
     const kind = executablePath ? statPath(fsImpl, executablePath) : null;
+    let launchable = false;
+    if (kind === "file") {
+      try { launchable = isLaunchable(executablePath, fsImpl.statSync(executablePath), platform, path, fsImpl); } catch {}
+    }
+    const reason = launchable
+      ? "registered-executable"
+      : (kind === "file" ? "not-executable" : (kind === "dir" ? "not-file" : "not-found"));
+    const detail = launchable
+      ? `Registered executable exists: ${executablePath} (${kind})`
+      : reason === "not-executable"
+        ? `Registered executable is not launchable: ${executablePath}`
+        : reason === "not-file"
+          ? `Registered executable path is a directory: ${executablePath}`
+          : `Registered executable was not found: ${executablePath}`;
     return {
       agentId,
       executablePath,
-      detectedInstalled: !!kind,
-      confidence: kind ? "high" : LOW_CONFIDENCE,
-      reason: kind ? "registered-executable" : "not-found",
-      detail: kind
-        ? `Registered executable exists: ${executablePath} (${kind})`
-        : `Registered executable was not found: ${executablePath}`,
+      detectedInstalled: launchable,
+      confidence: launchable ? "high" : LOW_CONFIDENCE,
+      reason,
+      detail,
     };
   }).filter((entry) => entry.agentId && entry.executablePath);
 }

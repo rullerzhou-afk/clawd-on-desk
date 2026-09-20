@@ -32,10 +32,21 @@ function isCustomApplicationNamespace(value) {
   return typeof value === "string" && value.toLowerCase().startsWith("custom-");
 }
 
-function isLaunchable(filePath, stat, platform, pathApi) {
+function isLaunchable(filePath, stat, platform, pathApi, fsApi = fs) {
   if (!stat || !stat.isFile()) return false;
   if (platform === "win32") return WINDOWS_EXECUTABLE_EXTENSIONS.has(pathApi.extname(filePath).toLowerCase());
-  return (stat.mode & 0o111) !== 0 || !pathApi.extname(filePath);
+  // Use the same effective X_OK check for discovery and registration. The
+  // mode-bit fallback is only for injected filesystem doubles that do not
+  // expose accessSync.
+  try {
+    if (typeof fsApi.accessSync === "function") {
+      fsApi.accessSync(filePath, fs.constants.X_OK);
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return (stat.mode & 0o111) !== 0;
 }
 
 function findExecutable(directory, options) {
@@ -59,7 +70,7 @@ function findExecutable(directory, options) {
     const filePath = pathApi.join(directory, entry.name);
     let stat;
     try { stat = fsApi.statSync(filePath); } catch { continue; }
-    if (!isLaunchable(filePath, stat, platform, pathApi)) continue;
+    if (!isLaunchable(filePath, stat, platform, pathApi, fsApi)) continue;
     const stem = pathApi.basename(filePath, pathApi.extname(filePath)).toLowerCase();
     let score = pathApi.extname(filePath).toLowerCase() === ".exe" ? 20 : 10;
     if (stem === dirName) score += 100;
@@ -80,7 +91,7 @@ function identifyCustomApplication(sourcePath, options = {}) {
   let stat;
   try { stat = fsApi.statSync(source); } catch { return null; }
   let executablePath = null;
-  if (stat.isFile() && isLaunchable(source, stat, platform, pathApi)) executablePath = source;
+  if (stat.isFile() && isLaunchable(source, stat, platform, pathApi, fsApi)) executablePath = source;
   if (stat.isDirectory()) executablePath = findExecutable(source, { fs: fsApi, path: pathApi, platform });
   if (!executablePath) return null;
   const name = applicationName(executablePath, pathApi);
@@ -122,6 +133,7 @@ function normalizeCustomApplications(value) {
 module.exports = {
   MAX_CUSTOM_APPLICATIONS,
   identifyCustomApplication,
+  isLaunchable,
   isCustomApplicationId,
   isCustomApplicationNamespace,
   normalizeCustomApplications,

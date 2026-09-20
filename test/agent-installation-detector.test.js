@@ -853,6 +853,22 @@ describe("agent installation detector", () => {
     assert.strictEqual(missing.customAgents[0].detectedInstalled, false);
   });
 
+  it("reports a registered POSIX file without execute permission as not-executable", { skip: process.platform === "win32" }, () => {
+    const homeDir = makeHome();
+    const executablePath = path.join(homeDir, "NovaAI");
+    writeText(executablePath, "");
+    fs.chmodSync(executablePath, 0o644);
+    const application = { id: "custom-nova-ai-0123456789ab", executablePath };
+    const report = detectAgentInstallations({
+      homeDir,
+      platform: "linux",
+      now: 1,
+      snapshot: { customApplications: [application], customToolDiscoveryPaths: [] },
+    });
+    assert.strictEqual(report.customAgents[0].detectedInstalled, false);
+    assert.strictEqual(report.customAgents[0].reason, "not-executable");
+  });
+
   it("does not infer built-in agent installs from generic Windows app-name guesses", () => {
     const root = makeHome();
     const localAppData = path.join(root, "LocalAppData");
