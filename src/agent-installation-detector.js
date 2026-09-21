@@ -596,13 +596,13 @@ function detectCustomAgents(options = {}) {
     }
     const reason = launchable
       ? "registered-executable"
-      : (kind === "file" ? "not-executable" : (kind === "dir" ? "not-file" : "not-found"));
+      : (kind === "file" ? "not-executable" : (kind ? "not-file" : "not-found"));
     const detail = launchable
       ? `Registered executable exists: ${executablePath} (${kind})`
       : reason === "not-executable"
         ? `Registered executable is not launchable: ${executablePath}`
         : reason === "not-file"
-          ? `Registered executable path is a directory: ${executablePath}`
+          ? `Registered executable path is not a regular file: ${executablePath} (${kind})`
           : `Registered executable was not found: ${executablePath}`;
     return {
       agentId,

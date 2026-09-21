@@ -190,6 +190,41 @@ test("settings agent actions do not commit a custom permission URL when sync fai
   assert.strictEqual(result.commit, undefined);
 });
 
+test("settings agent actions do not commit a custom permission URL when sync is unavailable", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.integrationInstalled = true;
+  snapshot.agents.codebuddy.customPermissionUrl = "https://old.example.test/permission";
+  const result = agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    value: "https://new.example.test/permission",
+  }, {
+    snapshot,
+    syncIntegrationForAgent: () => false,
+  });
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /Failed to sync custom permission URL/);
+  assert.strictEqual(result.commit, undefined);
+});
+
+test("settings agent actions do not commit a custom permission URL when sync is skipped", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.codebuddy.integrationInstalled = true;
+  snapshot.agents.codebuddy.customPermissionUrl = "https://old.example.test/permission";
+  const result = agentCommands.setAgentCustomPermissionUrl({
+    agentId: "codebuddy",
+    value: "https://new.example.test/permission",
+  }, {
+    snapshot,
+    syncIntegrationForAgent: () => ({
+      status: "skipped",
+      reason: "codebuddy-not-installed",
+    }),
+  });
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /codebuddy-not-installed/);
+  assert.strictEqual(result.commit, undefined);
+});
+
 test("settings agent actions handle an async custom permission URL sync failure", async () => {
   const snapshot = prefs.getDefaults();
   snapshot.agents.codebuddy.integrationInstalled = true;

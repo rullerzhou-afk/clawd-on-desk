@@ -298,6 +298,12 @@
     return entries.find((entry) => entry && entry.agentId === agentId) || null;
   }
 
+  function getCustomAgentUnavailableLabelKey(hint) {
+    if (hint && hint.reason === "not-executable") return "customToolDetectionNotExecutable";
+    if (hint && hint.reason === "not-file") return "customToolDetectionNotFile";
+    return "customToolDetectionMissing";
+  }
+
   function buildAgentRows(agents) {
     return agents.map((agent) => buildAgentGroup(agent));
   }
@@ -1068,7 +1074,7 @@
           if (customHint && customHint.detectedInstalled === false) {
             const missingBadge = document.createElement("span");
             missingBadge.className = "agent-badge custom-missing";
-            missingBadge.textContent = t("customToolDetectionMissing");
+            missingBadge.textContent = t(getCustomAgentUnavailableLabelKey(customHint));
             badges.appendChild(missingBadge);
           }
         } else {
