@@ -193,6 +193,7 @@ Required all-platform checks:
   confirm state + Notification events arrive without Clawd taking over approval.
 - Install MiMo Code into a commented/trailing-comma JSONC config, exercise
   Allow/Always/Deny and DND fallback, then uninstall and confirm user config is preserved.
+- opencode v2 acceptance (#1039, macOS real-machine verified 2026-09-24 with opencode 2.0.15 + GLM: dual-key register, live state flow idle→thinking→working→attention, evaluate-hook ask → no-decision fallback against an older Clawd, plugin inert-gate live). Pending: a full Allow/Always/Deny bubble round-trip against a packaged build carrying the v2 blocking branch, and the Windows real-machine matrix (both opencode 1.18.31 contract and 2.0.15).
 - Windows packaged opencode acceptance (#1026, requires a real opencode 1.18.31):
   install the Program Files Clawd package, confirm the opencode config points at
   `%USERPROFILE%\.clawd\integrations\...\generations\<hash>\opencode-plugin` (never

@@ -51,6 +51,21 @@ const OPENCODE_FAMILY = Object.freeze({
     // classifier, managed Doctor inspection and generation cleanup. It is an
     // explicit per-member switch — never inferred from runtime/platform.
     managedMaterialization: true,
+    // OpenCode 2.x (npm @opencode/cli) reads the renamed top-level `plugins`
+    // key with a `{ id, setup }` object plugin API — the v1 function entry
+    // under `plugin` fails the v2 loader schema. Verified on 2.0.15
+    // (docs/investigations/opencode-v2-e1-evidence.md): v2 also tolerates the
+    // legacy `plugin` key (the v1 entry logs a load warning and stays inert),
+    // and v1 1.18.32 silently drops an unknown `plugins` key, so the installer
+    // registers BOTH keys against the same generation without any host-version
+    // detection. `v2PluginDirName` is materialized as an extra single-file
+    // entry directory inside the generation; `v2HookSource` is the wire
+    // identity that routes v2 blocking permission POSTs; `v2PluginId` is the
+    // stable v2 loader id. MiMo stays v1-only (managedMaterialization:false,
+    // no v2 fields).
+    v2PluginDirName: "opencode-plugin-v2",
+    v2HookSource: "opencode-plugin-v2",
+    v2PluginId: "clawd-on-desk-opencode",
   }),
   // MiMo Code — opencode-derived runtime with the identical plugin loader +
   // event wire contract. Its config is JSONC (comments/trailing commas

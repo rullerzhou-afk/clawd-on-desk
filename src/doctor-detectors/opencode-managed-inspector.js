@@ -17,6 +17,7 @@ const { getFamilyConfig } = require("../../agents/opencode-family");
 const managedGeneration = require("../../hooks/opencode-family-managed-generation");
 const entryOwnership = require("../../hooks/opencode-family-entry-ownership");
 const jsoncEditor = require("../../hooks/opencode-family-jsonc");
+const v2Registry = require("../../hooks/opencode-family-v2-registration");
 const { resolveSourcePluginDir } = require("../../hooks/opencode-install");
 
 const SAFE_CATEGORIES = entryOwnership.OWNED_SAFE_CATEGORIES;
@@ -197,6 +198,69 @@ function inspectManagedOpencode(descriptor, options = {}) {
     platform,
     managedBoundary: true,
   });
+
+  // opencode v2 `plugins`-key assessment (issue #1039). Computed up front so
+  // the final verdicts below can factor it in: a healthy v1 `plugin` entry
+  // with a missing v2 entry means an older Clawd installed this target, and
+  // Repair (register) converges both keys.
+  const assessV2 = () => {
+    if (!cfg.v2PluginDirName) return null;
+    const v2States = v2Registry.readV2Candidates(cfg, descriptor.configPath);
+    const v2Effective = v2Registry.__test.selectEffectiveV2(v2States);
+    if (!v2Effective) {
+      return { state: "missing", detail: "no opencode config exists for the plugins-key entry" };
+    }
+    const expectedCanonicalV2Dir = bundleHash
+      ? managedGeneration.canonicalizeTargetPath(
+        path.join(managedGeneration.generationDir(target, bundleHash), cfg.v2PluginDirName),
+        platform,
+        fsImpl
+      )
+      : null;
+    const v2Ctx = v2Registry.buildV2ManagedContext({
+      cfg,
+      target,
+      expectedCanonicalDir: expectedCanonicalV2Dir,
+      expectedGeneration,
+      sourceFiles,
+      ownerRecord,
+      fsImpl,
+      platform,
+      managedBoundary: true,
+    });
+    if (!v2Registry.__test.hasV2Array(v2Effective)) {
+      return { state: "missing", detail: `${v2Effective.path} has no "plugins" array (opencode v2 entry not registered)` };
+    }
+    const { entries } = v2Registry.classifyV2PluginEntries(v2Effective.tree[v2Registry.V2_PLUGIN_KEY], v2Ctx);
+    const blocking = entries.filter((entry) => FAIL_CLOSED.has(entry.category));
+    if (blocking.length) {
+      return {
+        state: "needs-review",
+        detail: `${v2Effective.path} "plugins" entry needs manual review: ${blocking.map(describeEntry).join("; ")}`,
+        entries: entries.map((entry) => entry.rawEntry),
+      };
+    }
+    const owned = entries.filter((entry) => SAFE_CATEGORIES.has(entry.category));
+    if (owned.length === 0) {
+      return { state: "missing", detail: `${v2Effective.path} has no Clawd ${cfg.v2PluginDirName} plugins-key entry` };
+    }
+    if (owned.length > 1) {
+      return {
+        state: "duplicate",
+        detail: `${v2Effective.path} declares ${owned.length} Clawd v2 plugins-key entries`,
+        entries: entries.map((entry) => entry.rawEntry),
+      };
+    }
+    if (owned[0].category !== "canonical-current" || owned[0].generationPending) {
+      return {
+        state: "stale",
+        detail: `${v2Effective.path} v2 plugins-key entry can be safely migrated (${owned[0].category})`,
+        entries: entries.map((entry) => entry.rawEntry),
+      };
+    }
+    return { state: "ok", detail: `${v2Effective.path} v2 plugins-key entry verified`, entries: entries.map((entry) => entry.rawEntry) };
+  };
+  const v2Assessment = assessV2();
 
   // A corrupt/foreign/mismatched owner record means the managed core would go
   // inert; report it without any automatic Fix.
@@ -390,6 +454,12 @@ function inspectManagedOpencode(descriptor, options = {}) {
     opencodeEntry: single.rawEntry,
     opencodeEntries: entries.map((entry) => entry.rawEntry),
   };
+  const v2Suffix = v2Assessment && v2Assessment.state !== "ok"
+    ? `; v2: ${v2Assessment.detail}`
+    : "";
+  const v2Extras = v2Assessment && v2Assessment.state !== "ok"
+    ? { v2EntryState: v2Assessment.state, v2Entries: v2Assessment.entries || [] }
+    : {};
 
   if (single.category === "canonical-current" && !single.generationPending) {
     // Safe owned entries in masked lower candidates need a real cleanup, so
@@ -398,14 +468,43 @@ function inspectManagedOpencode(descriptor, options = {}) {
       return makeResult(descriptor, "duplicate-entry", {
         level: "warning",
         ...fields,
-        detail: `${effective.path} is current, but ${maskedOwned.length} masked lower-priority Clawd entr${maskedOwned.length === 1 ? "y" : "ies"} remain (${maskedOwned.map((entry) => `${entry.path}[${entry.index}]`).join(", ")}); Repair converges them`,
+        ...v2Extras,
+        detail: `${effective.path} is current, but ${maskedOwned.length} masked lower-priority Clawd entr${maskedOwned.length === 1 ? "y" : "ies"} remain (${maskedOwned.map((entry) => `${entry.path}[${entry.index}]`).join(", ")}); Repair converges them${v2Suffix}`,
         maskedEntries: maskedOwned,
+      });
+    }
+    // v1 entry verified — but the opencode v2 `plugins` key is part of the
+    // same contract now. A missing/stale v2 entry means an older Clawd (or a
+    // downgrade) wrote this config; Repair converges it.
+    if (v2Assessment && v2Assessment.state === "missing") {
+      return makeResult(descriptor, "legacy-path", {
+        level: "warning",
+        ...fields,
+        ...v2Extras,
+        detail: `${effective.path} v1 plugin entry verified, but the opencode v2 entry is not registered (${v2Assessment.detail}); Repair adds it`,
+      });
+    }
+    if (v2Assessment && (v2Assessment.state === "stale" || v2Assessment.state === "duplicate")) {
+      return makeResult(descriptor, v2Assessment.state === "duplicate" ? "duplicate-entry" : "broken-path", {
+        level: "warning",
+        ...fields,
+        ...v2Extras,
+        detail: `${effective.path} v1 plugin entry verified, but the v2 entry needs repair: ${v2Assessment.detail}`,
+      });
+    }
+    if (v2Assessment && v2Assessment.state === "needs-review") {
+      return makeResult(descriptor, "needs-review", {
+        level: "warning",
+        ...fields,
+        ...v2Extras,
+        detail: `${effective.path} v1 plugin entry verified, but the v2 entry needs manual review: ${v2Assessment.detail}`,
       });
     }
     const result = makeResult(descriptor, "ok", {
       level: null,
       ...fields,
-      detail: `${effective.path} plugin entry verified`,
+      v2Entries: v2Assessment ? v2Assessment.entries || [] : [],
+      detail: `${effective.path} plugin entry verified${v2Assessment ? `; ${v2Assessment.detail}` : ""}`,
     });
     if (maskedWarnings.length) {
       result.level = "warning";
@@ -429,7 +528,8 @@ function inspectManagedOpencode(descriptor, options = {}) {
   return makeResult(descriptor, status, {
     level: "warning",
     ...fields,
-    detail: `${effective.path} Clawd plugin entry can be safely migrated (${single.category})`,
+    ...v2Extras,
+    detail: `${effective.path} Clawd plugin entry can be safely migrated (${single.category})${v2Suffix}`,
   });
 }
 

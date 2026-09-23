@@ -311,8 +311,11 @@ describe("opencode installer CLI entry (node hooks/opencode-install.js)", () => 
     assert.ok(fs.existsSync(path.join(registered[0].replace(/\//g, path.sep))), "generation plugin dir must exist");
 
     const out2 = runCli(["--uninstall"], home);
-    assert.match(out2, /entries removed: 1/);
+    // #1039: both generation entries are swept — the v1 `plugin` entry and the
+    // v2 `plugins` entry.
+    assert.match(out2, /entries removed: 2/);
     assert.deepStrictEqual(readConfig(configPath).plugin, []);
+    assert.deepStrictEqual(readConfig(configPath).plugins, []);
   });
 
   it("skips politely when opencode is not installed (exit 0, no config created)", () => {

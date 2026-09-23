@@ -3858,6 +3858,20 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   // (Bun.serve or node:http on a random localhost port). The plugin then calls
   // the host's in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
   // response to complete on this connection.
+  if (permEntry.isOpencodeV2) {
+    // opencode v2 (issue #1039): the plugin's evaluate hook is BLOCKING on
+    // this very HTTP response — the decision is the response body. 204 keeps
+    // the effect untouched so the native ask UI takes over.
+    if (behavior === "no-decision") {
+      sendOpencodeV2NoDecisionResponse(res, message || "no-decision");
+      return;
+    }
+    const decision = behavior === "deny"
+      ? "deny"
+      : (permEntry.familyAlwaysPicked ? "always" : "allow");
+    sendOpencodeV2Response(res, decision, message);
+    return;
+  }
   if (isOpencodeFamilyEntry(permEntry)) {
     // Autoclose: silent drop — same DND semantics. The host falls back to its
     // built-in terminal or Desktop prompt so the user can answer natively.
@@ -4138,6 +4152,27 @@ function sendCodexPermissionResponse(res, decisionOrBehavior, message) {
 
 function sendQwenCodeNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "qwen-code");
+}
+
+// opencode v2 (issue #1039): the plugin's evaluate hook awaits this response.
+// 200 + JSON { decision: "allow" | "always" | "deny", message? } resolves the
+// await; 204 means "no decision" and leaves the hook's effect untouched so the
+// native prompt wins. Any non-2xx/identity-less answer is treated the same by
+// the plugin.
+function sendOpencodeV2Response(res, decision, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(message ? { decision, message } : { decision });
+  permLog(`opencode-v2 response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
+function sendOpencodeV2NoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "opencode-v2");
 }
 
 function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
@@ -5092,6 +5127,10 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isQwenCode) {
     sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isOpencodeV2) {
+    // v2 blocks on this connection: release the await explicitly instead of
+    // relying on socket close (same contract as codex/qwen above).
+    sendOpencodeV2NoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isZcode) {
     sendZcodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isCopilotCli) {
@@ -5370,6 +5409,8 @@ return {
   dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,
   replyOpencodeFamilyPermission,
+  sendOpencodeV2Response,
+  sendOpencodeV2NoDecisionResponse,
   // Exposed for the payload↔renderer contract test (plan §3.5/§9): the
   // builder closes over ctx, so it can only be reached through an instance.
   buildPermissionBubblePayload,

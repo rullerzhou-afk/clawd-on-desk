@@ -72,6 +72,31 @@ describe("#1026 managed OpenCode Doctor", () => {
     assert.strictEqual(detail.fixAction, undefined);
   });
 
+  it("issue #1039: a healthy install verifies both the plugin and plugins keys", () => {
+    const home = makeHome();
+    registerOpencodePlugin({ silent: true, homeDir: home });
+    const detail = runOne(managedDescriptor(home)).details[0];
+    assert.strictEqual(detail.status, "ok");
+    assert.ok(Array.isArray(detail.v2Entries) && detail.v2Entries.length === 1, "v2 entry listed");
+    assert.ok(/v2 plugins-key entry verified/.test(detail.detail), detail.detail);
+  });
+
+  it("issue #1039: v1 entry without the v2 key is a repairable legacy-path, never ok", () => {
+    const home = makeHome();
+    registerOpencodePlugin({ silent: true, homeDir: home });
+    // Simulate a pre-#1039 install: strip the v2 `plugins` key.
+    const cfgPath = path.join(home, ".config", "opencode", "opencode.json");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    delete cfg.plugins;
+    fs.writeFileSync(cfgPath, JSON.stringify(cfg, null, 2));
+
+    const detail = runOne(managedDescriptor(home)).details[0];
+    assert.strictEqual(detail.status, "legacy-path");
+    assert.strictEqual(detail.v2EntryState, "missing");
+    assert.ok(detail.fixAction, "repairable via Fix");
+    assert.match(detail.detail, /v2 entry is not registered/);
+  });
+
   it("reports no Clawd entry as a repairable not-connected", () => {
     const home = makeHome();
     writeJson(path.join(home, ".config", "opencode", "opencode.json"), { plugin: ["@vendor/keep"] });

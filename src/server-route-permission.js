@@ -399,6 +399,13 @@ function sendCodexPermissionNoDecision(res) {
   res.end();
 }
 
+// opencode v2 (issue #1039): the evaluate hook treats 204 as "no decision"
+// and leaves the permission effect untouched — native ask UI takes over.
+function sendOpencodeV2PermissionNoDecision(res) {
+  res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+  res.end();
+}
+
 function sendQwenCodePermissionNoDecision(res) {
   res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
   res.end();
@@ -712,6 +719,146 @@ function handlePermissionPost(req, res, options) {
       // leave the TUI hanging until timeout. Instead we route DND
       // through the same reverse bridge the plugin uses for replies.
       if (isOpencodeFamily(agentId)) {
+        // ── opencode v2 blocking sub-branch (issue #1039) ──
+        // The v2 plugin (hooks/opencode-plugin-v2/, `plugins` config key) no
+        // longer uses the reverse bridge: its permission evaluate hook blocks
+        // on this very request, and the decision IS the response body
+        // ({ decision: "allow" | "always" | "deny" }). Every "Clawd stays out"
+        // path answers 204 no-decision — the hook leaves the effect untouched
+        // and opencode's native ask UI takes over. DND therefore needs no
+        // special bridge routing here (unlike the v1 fire-and-forget flow
+        // below): a 204 IS the no-decision fallback.
+        if (data.hook_source === "opencode-plugin-v2") {
+          if (hasPermissionEventDiscriminator) {
+            // v2 has no lifecycle posts (the evaluate hook resolves inline).
+            recordRequestHookEvent.accepted();
+            ctx.permLog(`${agentId} v2 permission lifecycle no-op: unsupported event`);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+
+          const toolName = typeof data.tool_name === "string" && data.tool_name ? data.tool_name : "unknown";
+          const interaction = classifyPermissionInteraction({
+            agentId,
+            eventKind: "permission",
+            toolName,
+          });
+
+          if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(agentId)) {
+            recordRequestHookEvent.droppedByDisabled();
+            ctx.permLog(`${agentId} disabled -> no decision, native prompt fallback (tool=${toolName})`);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+
+          const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
+          const toolInput = truncateDeep(rawInput);
+          const permissionDetail = preparePermissionDetail(toolName, rawInput);
+          const permissionReminder = preparePermissionReminder(toolName, rawInput);
+          const sessionIdentity = resolvePermissionSession(data.session_id, "default");
+          const sessionId = sessionIdentity.sessionId;
+          const requestId = typeof data.request_id === "string" ? data.request_id : null;
+          const alwaysCandidates = Array.isArray(data.always) ? data.always : [];
+
+          ctx.permLog(`${agentId} v2 perm (blocking): tool=${toolName} session=${sessionId} req=${requestId} always=${alwaysCandidates.length}`);
+
+          if (ctx.doNotDisturb) {
+            recordRequestHookEvent.droppedByDnd();
+            ctx.permLog(`${agentId} v2 DND -> no decision, native prompt fallback — request=${requestId}`);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+
+          if (isHeadlessPermissionRequest(ctx, sessionId, data, agentId)) {
+            recordRequestHookEvent.accepted();
+            ctx.permLog(`${agentId} v2 headless session=${sessionId} -> no decision, native prompt fallback — request=${requestId}`);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+
+          // Per-family sub-gate (e.g. permissionsEnabled=false for opencode)
+          // keeps Clawd fully out of the loop, including remote channels.
+          const v2SubGateBypass = shouldBypassFamilyBubble(ctx, agentId);
+          if (v2SubGateBypass) {
+            recordRequestHookEvent.accepted();
+            ctx.permLog(`${agentId} v2 bubble hidden (subGateBypass) -> no decision, native prompt fallback (tool=${toolName})`);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+
+          // Global bubble switch only means "no desktop window": Telegram /
+          // Feishu remote-only approval stays alive (same contract as zcode).
+          if (!arePermissionBubblesEnabled(ctx)) {
+            recordRequestHookEvent.accepted();
+            const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
+              res, sessionId, toolName, toolInput,
+              agentId, isOpencodeV2: true, interaction, sessionAutomationIdentity,
+              cwd: typeof data.cwd === "string" ? data.cwd : "",
+              ...trustedSessionFields(sessionIdentity),
+              ...permissionReminder,
+            });
+            if (remoteOnlyResult.handled) return;
+            ctx.permLog(`${agentId} v2 permission bubbles disabled, no remote approval -> no decision, native prompt fallback (tool=${toolName})`);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+
+          const permEntry = {
+            res,
+            abortHandler: null,
+            suggestions: [],
+            sessionId,
+            ...trustedSessionFields(sessionIdentity),
+            bubble: null,
+            hideTimer: null,
+            toolName,
+            toolInput,
+            ...permissionDetail,
+            ...permissionReminder,
+            resolvedSuggestion: null,
+            createdAt: Date.now(),
+            interaction,
+            sessionAutomationIdentity,
+            agentId,
+            isOpencodeV2: true,
+            familyRequestId: requestId,
+            familyAlwaysCandidates: alwaysCandidates,
+            familyPatterns: [],
+            // v2 runs inside the shared background service: the plugin sends
+            // no process-tree fields, so terminal focus degrades gracefully.
+            cwd: typeof data.cwd === "string" ? data.cwd : "",
+            agentPid: Number.isInteger(data.agent_pid) ? data.agent_pid : null,
+          };
+          const abortHandler = () => {
+            if (res.writableFinished) return;
+            ctx.permLog("abortHandler fired (opencode-v2)");
+            ctx.resolvePermissionEntry(permEntry, "no-decision", "Client disconnected");
+          };
+          permEntry.abortHandler = abortHandler;
+          res.on("close", abortHandler);
+
+          addPendingPermission(ctx, permEntry);
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", {
+            agentId,
+            sessionAutomationIdentity,
+            ...trustedSessionFields(sessionIdentity),
+          });
+
+          ctx.permLog(`${agentId} v2 showing bubble: tool=${toolName} session=${sessionId} stack=${ctx.pendingPermissions.length}`);
+          recordRequestHookEvent.accepted();
+          try {
+            ctx.showPermissionBubble(permEntry);
+          } catch (bubbleErr) {
+            ctx.permLog(`${agentId} v2 bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
+            removePendingPermission(ctx, permEntry, "opencode-v2-bubble-failed");
+            if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+            sendOpencodeV2PermissionNoDecision(res);
+            return;
+          }
+          startRemoteApproval(ctx, permEntry);
+          return;
+        }
+
         res.writeHead(200, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
         res.end("ok");
 

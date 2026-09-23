@@ -111,6 +111,54 @@ export function orcaPaneKeyFromEnv(env = process.env) {
   return paneKey;
 }
 
+// Runtime-port readers are shared verbatim by the v1 event-hook runtime and the
+// v2 service runtime (createOpencodeFamilyPluginV2 below). They live at module
+// scope so the strict permission-target checks cannot drift between the two
+// runtimes. Any change here must keep satisfying the
+// opencode-family-core.test.js owner-only / live-owner fail-closed matrix.
+export function readRuntimePort() {
+  try {
+    const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+    const port = Number(raw && raw.port);
+    if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
+  } catch {}
+  return null;
+}
+
+// Permission payloads contain the one-time reverse-bridge bearer token (v1)
+// and an awaited blocking decision (v2). A full port scan is acceptable for
+// state telemetry, but must never disclose either to an arbitrary listener
+// which merely copies Clawd's static response header. Pin permission delivery
+// to the runtime identity written by a live Clawd process, and require
+// owner-only bytes on POSIX.
+export function readPermissionRuntimePort() {
+  try {
+    const stats = lstatSync(RUNTIME_CONFIG_PATH);
+    if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    if (platform() !== "win32") {
+      if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return null;
+      if ((stats.mode & 0o077) !== 0) return null;
+    }
+
+    const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+    const port = Number(raw && raw.port);
+    const ownerPid = raw && raw.ownerPid;
+    if (raw?.app !== CLAWD_SERVER_ID) return null;
+    if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
+    if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
+    try {
+      process.kill(ownerPid, 0);
+    } catch (err) {
+      // EPERM still proves that a process owns the PID; ESRCH/unknown does
+      // not prove the runtime writer is alive, so fail closed.
+      if (!err || err.code !== "EPERM") return null;
+    }
+    return port;
+  } catch {}
+  return null;
+}
+
+
 // Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
 // Claude-specific detection. See docs/plans/plan-opencode-integration.md Phase 4.
 // Spike confirmed (2026-04-05): plugin runs in-process with the host, so walk
@@ -562,47 +610,6 @@ export function createOpencodeFamilyPlugin(config) {
       };
       check();
     });
-  }
-
-  function readRuntimePort() {
-    try {
-      const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-      const port = Number(raw && raw.port);
-      if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
-    } catch {}
-    return null;
-  }
-
-  // Permission payloads contain the one-time reverse-bridge bearer token. A
-  // full port scan is acceptable for state telemetry, but must never disclose
-  // that token to an arbitrary listener which merely copies Clawd's static
-  // response header. Pin permission delivery to the runtime identity written
-  // by a live Clawd process, and require owner-only bytes on POSIX.
-  function readPermissionRuntimePort() {
-    try {
-      const stats = lstatSync(RUNTIME_CONFIG_PATH);
-      if (!stats.isFile() || stats.isSymbolicLink()) return null;
-      if (platform() !== "win32") {
-        if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return null;
-        if ((stats.mode & 0o077) !== 0) return null;
-      }
-
-      const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-      const port = Number(raw && raw.port);
-      const ownerPid = raw && raw.ownerPid;
-      if (raw?.app !== CLAWD_SERVER_ID) return null;
-      if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
-      if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
-      try {
-        process.kill(ownerPid, 0);
-      } catch (err) {
-        // EPERM still proves that a process owns the PID; ESRCH/unknown does
-        // not prove the runtime writer is alive, so fail closed.
-        if (!err || err.code !== "EPERM") return null;
-      }
-      return port;
-    } catch {}
-    return null;
   }
 
   // Ordered: cached → runtime.json → full scan. Only touches runtime.json when
@@ -2596,3 +2603,721 @@ export function createOpencodeFamilyPlugin(config) {
 
   return plugin;
 }
+
+// ============================================================================
+// opencode v2 runtime (OpenCode 2.x, npm @opencode/cli)
+// ============================================================================
+// OpenCode v2 (2026-09 GA) is a different plugin generation: the loader only
+// accepts a default-exported definition `{ id, setup(ctx) }` (a bare function
+// export fails the schema with "Expected object at [\"default\"]" — verified on
+// 2.0.15, see docs/investigations/opencode-v2-e1-evidence.md), events arrive
+// over `ctx.event.subscribe()` instead of the v1 `event` hook, and the plugin
+// runs inside a long-lived shared background service rather than the TUI
+// process. Evidence-verified deltas that shape this runtime:
+//
+//   - Permission has a native evaluate hook: `ctx.permission.hook("evaluate")`
+//     runs for allow/ask rules, its callback may await external work, and it
+//     decides by mutating `event.effect`. That replaces the v1 reverse bridge
+//     entirely: on an `ask` we block on a long POST to Clawd's /permission and
+//     the decision comes back as the HTTP response body
+//     ({ decision: "allow" | "always" | "deny" }). 204 / timeout / any error
+//     leave `effect` untouched, so the host falls back to its native prompt.
+//   - Configured `allow` rules also invoke the hook — we must return WITHOUT
+//     touching the effect so Clawd never downgrades a host-approved action.
+//   - The service process tree is not the user's terminal (ppid=1 daemon), so
+//     every process-derived field (source_pid, pid_chain, editor, tmux, orca)
+//     is intentionally omitted — fail-closed omission instead of wrong values.
+//     Terminal focus degrades for v2 sessions (known limitation).
+//   - Per-event cwd comes from the event envelope `location.directory`; titles
+//     arrive via `session.renamed`; `session.usage.updated` carries session
+//     tokens directly (no SDK provider lookup needed for context usage).
+//   - "Always allow" has no host persistence API (permission domain exposes
+//     only get/hook/list/reply), so an `always` decision records an in-memory
+//     per-session action rule inside the service. It covers the session's
+//     lifetime and dies with the service — documented degradation.
+//   - Unknown event types are ignored (fail-closed): the v1-era event vocabulary
+//     must never be assumed to fire on v2.
+//
+// Registration: v2 hosts read the `plugins` config key (they also tolerate the
+// legacy `plugin` key, where the v1 function entry merely logs a load warning).
+// The installer therefore keeps the v1 entry under `plugin` and registers this
+// entry directory under `plugins`; the two host generations never interfere
+// (verified both directions on 1.18.32 and 2.0.15).
+const V2_PERMISSION_BLOCKING_TIMEOUT_MS = 590 * 1000;
+// /permission bodies carry raw tool resources (shell commands, file paths).
+// Same fail-closed budget as the zcode hook: over budget → skip the POST and
+// leave the effect untouched so the native prompt takes over.
+const V2_PERMISSION_MAX_BODY_BYTES = 512 * 1024;
+const V2_STATE_POST_MAX_PENDING = 32;
+const V2_ALWAYS_ALLOW_MAX_ENTRIES = 128;
+
+/**
+ * Create the opencode v2 plugin definition for a specific agent.
+ *
+ * Identity params MUST stay aligned with agents/opencode-family.js and the v1
+ * entry (drift-lock tests). `markerPluginDirName` is the directory name of the
+ * owner record's activeSourceMarker — the v2 entry shares the v1 generation and
+ * its owner.json, whose marker still points at the v1 entry directory.
+ *
+ * @param {object} config
+ * @param {string} config.agentId             e.g. "opencode"
+ * @param {string} config.hookSource          e.g. "opencode-plugin-v2"
+ * @param {string} config.logFileName         e.g. "opencode-plugin-v2.log"
+ * @param {string} config.sessionIdPrefix     e.g. "opencode:"
+ * @param {string} config.pluginId            stable v2 loader id, e.g. "clawd-on-desk-opencode"
+ * @param {string} config.markerPluginDirName e.g. "opencode-plugin"
+ * @returns {object} `{ id, setup }` — the definition form v2's loader requires
+ */
+export function createOpencodeFamilyPluginV2(config) {
+  const {
+    agentId, hookSource, logFileName, sessionIdPrefix, pluginId, markerPluginDirName,
+  } = config || {};
+  for (const [key, value] of Object.entries({
+    agentId, hookSource, logFileName, sessionIdPrefix, pluginId, markerPluginDirName,
+  })) {
+    if (typeof value !== "string" || !value) {
+      throw new Error(`createOpencodeFamilyPluginV2: ${key} is required`);
+    }
+  }
+
+  const AGENT_ID = agentId;
+  const HOOK_SOURCE = hookSource;
+  const DEBUG_LOG_PATH = join(CLAWD_DIR, logFileName);
+  const { DEFAULT_SESSION_ID, normalizeSessionId } = createSessionIdHelpers(sessionIdPrefix);
+
+  // Per-definition runtime state. The v2 service loads this module once; a host
+  // reload() re-runs setup, so every map here must stay consistent with the
+  // single-subscription invariant enforced below.
+  let _cachedPort = null;
+  const _lastStatePerSession = new Map();
+  const _statePostQueueBySession = new Map();
+  const _sessionTitleById = new Map();
+  const _sessionCwdById = new Map();
+  // "Always allow" decisions: key `${sessionId}\u0000${action}`. Insertion-
+  // ordered; the oldest entry is evicted at the cap.
+  const _alwaysAllowedBySessionAction = new Map();
+  let _reqCounter = 0;
+  let _permissionReqCounter = 0;
+
+  const _debugBuffer = [];
+  let _debugFlushing = false;
+  function debugLog(msg) {
+    _debugBuffer.push(`[${new Date().toISOString()}] ${msg}\n`);
+    scheduleDebugFlush();
+  }
+  function scheduleDebugFlush() {
+    if (_debugFlushing || _debugBuffer.length === 0) return;
+    _debugFlushing = true;
+    setImmediate(async () => {
+      const chunk = _debugBuffer.join("");
+      _debugBuffer.length = 0;
+      try {
+        await fsp.appendFile(DEBUG_LOG_PATH, chunk, "utf8");
+      } catch {}
+      _debugFlushing = false;
+      if (_debugBuffer.length > 0) scheduleDebugFlush();
+    });
+  }
+  function resetDebugLog() {
+    try {
+      mkdirSync(CLAWD_DIR, { recursive: true });
+      writeFileSync(DEBUG_LOG_PATH, "", "utf8");
+    } catch {}
+  }
+  function flushDebugLog() {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (!_debugFlushing && _debugBuffer.length === 0) {
+          resolve();
+          return;
+        }
+        setImmediate(check);
+      };
+      check();
+    });
+  }
+
+  // Ordered: cached → runtime.json → full scan (same bargain as v1).
+  function getPortCandidates() {
+    const ordered = [];
+    const seen = new Set();
+    const add = (p) => {
+      if (p && !seen.has(p) && SERVER_PORTS.includes(p)) {
+        seen.add(p);
+        ordered.push(p);
+      }
+    };
+    add(_cachedPort);
+    if (_cachedPort == null) add(readRuntimePort());
+    SERVER_PORTS.forEach(add);
+    return ordered;
+  }
+
+  function getPermissionPortCandidates() {
+    const port = readPermissionRuntimePort();
+    return port ? [port] : [];
+  }
+
+  // Translate a v2 event (type + data) into a Clawd (state, eventName) pair,
+  // or null when Clawd should ignore it. Pure so tests can lock the mapping
+  // against the evidence table in docs/investigations/opencode-v2-e1-evidence.md.
+  function translateV2Event(type, data) {
+    if (typeof type !== "string") return null;
+    switch (type) {
+      case "session.created":
+        return { state: "idle", event: "SessionStart" };
+
+      case "session.status": {
+        // Defensive: documented v2 vocabulary (session.idle is deprecated in
+        // favor of status.type). Shape not yet observed on a real stream; any
+        // mismatch falls through to null and is ignored.
+        const statusType = data && data.status && data.status.type;
+        if (statusType === "idle") return { state: "attention", event: "Stop" };
+        if (statusType === "busy") return { state: "thinking", event: "UserPromptSubmit" };
+        return null;
+      }
+
+      case "session.step.started":
+      case "session.reasoning.started":
+        return { state: "thinking", event: "UserPromptSubmit" };
+
+      case "session.tool.called":
+        return { state: "working", event: "PreToolUse" };
+
+      case "session.tool.success":
+        return { state: "working", event: "PostToolUse" };
+
+      case "session.tool.error":
+        return { state: "error", event: "PostToolUseFailure" };
+
+      case "session.step.ended":
+        // Per-step teardown only ends the turn when the model stopped on its
+        // own; "tool-calls" steps continue into the next step.
+        return data && data.finish === "stop"
+          ? { state: "attention", event: "Stop" }
+          : null;
+
+      case "session.execution.succeeded":
+        return { state: "attention", event: "Stop" };
+
+      case "session.execution.failed":
+      case "session.error":
+        return { state: "error", event: "StopFailure" };
+
+      case "session.deleted":
+        return { state: "sleeping", event: "SessionEnd" };
+
+      default:
+        return null;
+    }
+  }
+
+  function snapshotV2Post(body, logTag) {
+    const outbound = { ...(body || {}) };
+    // The plugin runs inside the shared background service (ppid=1 on macOS):
+    // the process tree belongs to the service, not to the user's terminal, so
+    // source_pid / pid_chain / editor / tmux / orca are omitted rather than
+    // reporting values that would focus the wrong window. agent_pid stays —
+    // it truthfully identifies the opencode service process.
+    outbound.agent_pid = process.pid;
+    return {
+      body: outbound,
+      payload: JSON.stringify(outbound),
+      logTag,
+      reqId: ++_reqCounter,
+    };
+  }
+
+  async function deliverV2StatePost(snapshot) {
+    const candidates = getPortCandidates();
+    for (const port of candidates) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}${STATE_PATH}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: snapshot.payload,
+          signal: controller.signal,
+        });
+        const header = res.headers.get(CLAWD_SERVER_HEADER);
+        if (header === CLAWD_SERVER_ID) {
+          _cachedPort = port;
+          try { await res.text(); } catch {}
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port}`);
+          return true;
+        }
+      } catch (err) {
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} ERR ${err && err.name}/${err && err.message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    _cachedPort = null;
+    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} EXHAUSTED all candidates failed`);
+    return false;
+  }
+
+  // Compacted v1-parity per-session FIFO: serialized delivery, latest-lifecycle
+  // coalescing, terminal beats queued work, hard pending cap.
+  function isV2MetadataSnapshot(snapshot) {
+    return !!(snapshot && snapshot.body && snapshot.body.metadata_only === true);
+  }
+
+  function settleV2Snapshot(snapshot) {
+    if (snapshot && snapshot.settle) snapshot.settle();
+  }
+
+  function makeV2Snapshot(body, logTag) {
+    const snapshot = snapshotV2Post(body, logTag);
+    snapshot.completion = new Promise((resolve) => { snapshot.settle = resolve; });
+    return snapshot;
+  }
+
+  async function drainV2StateQueue(sessionId, queue) {
+    while (queue.pending.length > 0 || queue.active) {
+      if (queue.active) {
+        await queue.active.done;
+        continue;
+      }
+      const snapshot = queue.pending.shift();
+      queue.active = snapshot;
+      try {
+        const ok = await deliverV2StatePost(snapshot);
+        snapshot.ok = ok;
+      } catch (err) {
+        snapshot.ok = false;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+      } finally {
+        queue.active = null;
+        settleV2Snapshot(snapshot);
+      }
+    }
+    if (_statePostQueueBySession.get(sessionId) === queue) {
+      _statePostQueueBySession.delete(sessionId);
+    }
+  }
+
+  function postStateToClawdV2(body) {
+    const sessionId = normalizeSessionId(body && body.session_id) || DEFAULT_SESSION_ID;
+    const terminal = !!body && body.event === "SessionEnd";
+    const metadata = isV2MetadataSnapshot({ body });
+    const replaceable = !terminal && !metadata && !!body
+      && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"].includes(body.event);
+    const snapshot = makeV2Snapshot(body, `STATE ${body.event}→${body.state}${metadata ? " meta" : ""}`);
+    let queue = _statePostQueueBySession.get(sessionId);
+    if (!queue) {
+      queue = { pending: [], active: null, draining: false };
+      _statePostQueueBySession.set(sessionId, queue);
+    }
+
+    const activeTerminal = !!(queue.active && queue.active.body && queue.active.body.event === "SessionEnd");
+    const queuedTerminal = queue.pending.some((entry) => entry.body && entry.body.event === "SessionEnd");
+    if (!terminal && (activeTerminal || queuedTerminal)) {
+      settleV2Snapshot(snapshot);
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} dropped=after-terminal`);
+      return snapshot.completion;
+    }
+
+    if (terminal) {
+      for (const pending of queue.pending.splice(0)) settleV2Snapshot(pending);
+      queue.pending.push(snapshot);
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=terminal`);
+    } else {
+      const last = queue.pending.at(-1);
+      if (metadata && last && isV2MetadataSnapshot(last)) {
+        // Merge so a title push and a context-usage push never lose fields.
+        Object.assign(last.body, snapshot.body);
+        last.payload = JSON.stringify(last.body);
+        settleV2Snapshot(snapshot);
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=metadata-fields`);
+        return snapshot.completion;
+      }
+      if (replaceable && last && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"]
+        .includes(last.body && last.body.event) && !(last.body && last.body.metadata_only === true)) {
+        settleV2Snapshot(last);
+        queue.pending[queue.pending.length - 1] = snapshot;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=latest-state`);
+      } else {
+        if (queue.pending.length >= V2_STATE_POST_MAX_PENDING) {
+          const [dropped] = queue.pending.splice(0, 1);
+          settleV2Snapshot(dropped);
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} overflow=dropped-old req=${dropped.reqId}`);
+        }
+        queue.pending.push(snapshot);
+      }
+    }
+
+    if (!queue.draining) {
+      queue.draining = true;
+      void drainV2StateQueue(sessionId, queue).finally(() => { queue.draining = false; });
+    }
+    return snapshot.completion;
+  }
+
+  function sendStateV2(state, eventName, sessionId, cwd) {
+    if (!state || !eventName) return;
+    const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
+    const body = {
+      state,
+      session_id: clawdSessionId,
+      event: eventName,
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+    };
+    const title = _sessionTitleById.get(clawdSessionId);
+    if (title) body.session_title = title;
+    if (cwd) body.cwd = cwd;
+    const lastState = _lastStatePerSession.get(clawdSessionId) || null;
+    if (body.state === lastState) return;
+    debugLog(`SEND ${lastState || "null"} → ${body.state} event=${body.event} session=${clawdSessionId}`);
+    _lastStatePerSession.set(clawdSessionId, body.state);
+    postStateToClawdV2(body);
+  }
+
+  function sendMetadataV2(sessionId, fields) {
+    const clawdSessionId = normalizeSessionId(sessionId);
+    if (!clawdSessionId) return;
+    const body = {
+      state: "idle",
+      session_id: clawdSessionId,
+      event: "SessionUpdate",
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      metadata_only: true,
+      ...fields,
+    };
+    postStateToClawdV2(body);
+  }
+
+  function captureV2Title(sessionId, title) {
+    const normalized = normalizeSessionId(sessionId);
+    if (!normalized || typeof title !== "string" || !title.trim()) return null;
+    const prev = _sessionTitleById.get(normalized);
+    if (prev === title) return null;
+    _sessionTitleById.set(normalized, title);
+    debugLog(`SESSION_TITLE session=${normalized} changed=true len=${title.length}`);
+    return normalized;
+  }
+
+  function handleV2Event(envelope) {
+    if (!envelope || typeof envelope.type !== "string") return;
+    const type = envelope.type;
+    const data = envelope.data && typeof envelope.data === "object" ? envelope.data : {};
+    const rawSessionId = typeof data.sessionID === "string" && data.sessionID
+      ? data.sessionID
+      : (envelope.durable && typeof envelope.durable.aggregateID === "string"
+        ? envelope.durable.aggregateID
+        : "");
+    const sessionId = normalizeSessionId(rawSessionId) || null;
+
+    // Per-event cwd from the envelope location (authoritative for v2 —
+    // ctx.location is the service-level directory, never a session cwd).
+    const envelopeCwd = envelope.location && typeof envelope.location.directory === "string"
+      && envelope.location.directory.trim()
+      ? envelope.location.directory
+      : null;
+    if (sessionId && envelopeCwd) _sessionCwdById.set(sessionId, envelopeCwd);
+
+    if (type === "session.renamed") {
+      const titled = captureV2Title(sessionId, data.title);
+      if (titled) sendMetadataV2(titled, { session_title: data.title });
+      return;
+    }
+
+    if (type === "session.usage.updated") {
+      const used = extractContextUsageUsed(data.tokens);
+      if (used != null && sessionId) {
+        sendMetadataV2(sessionId, { context_usage: used });
+      }
+      return;
+    }
+
+    // Defensive capture: if a future minor reintroduces session-info payloads
+    // (info.directory / info.title on created/updated), honor them like v1 did.
+    const info = data.info && typeof data.info === "object" ? data.info : null;
+    if (info && sessionId) {
+      if (typeof info.title === "string" && info.title.trim()) {
+        const titled = captureV2Title(sessionId, info.title);
+        if (titled) sendMetadataV2(titled, { session_title: info.title });
+      }
+      if (typeof info.directory === "string" && info.directory.trim() && !envelopeCwd) {
+        _sessionCwdById.set(sessionId, info.directory);
+      }
+    }
+
+    const mapped = translateV2Event(type, data);
+    if (!mapped) {
+      // Log ignored session.* events only — low-frequency and diagnostic; the
+      // streaming text/reasoning delta events never reach translateV2Event's
+      // mapped path but still hit this branch, so gate the log on frequency.
+      if (type.startsWith("session.") && !type.endsWith(".delta")) {
+        debugLog(`IGNORE ${type}`);
+      }
+      return;
+    }
+    if (!sessionId) {
+      debugLog(`DROP ${type} event=${mapped.event} reason=no-session-id`);
+      return;
+    }
+    const cwd = envelopeCwd || _sessionCwdById.get(sessionId) || null;
+    sendStateV2(mapped.state, mapped.event, sessionId, cwd);
+  }
+
+  function rememberAlwaysAllow(sessionId, action) {
+    const normalized = normalizeSessionId(sessionId);
+    if (!normalized || typeof action !== "string" || !action) return;
+    const key = `${normalized}\u0000${action}`;
+    _alwaysAllowedBySessionAction.delete(key);
+    _alwaysAllowedBySessionAction.set(key, true);
+    while (_alwaysAllowedBySessionAction.size > V2_ALWAYS_ALLOW_MAX_ENTRIES) {
+      const oldest = _alwaysAllowedBySessionAction.keys().next().value;
+      if (oldest == null) break;
+      _alwaysAllowedBySessionAction.delete(oldest);
+    }
+  }
+
+  function buildV2PermissionBody(event, requestId) {
+    const sessionId = normalizeSessionId(typeof event.sessionID === "string" ? event.sessionID : "")
+      || DEFAULT_SESSION_ID;
+    const action = typeof event.action === "string" && event.action ? event.action : "unknown";
+    const resources = Array.isArray(event.resources) ? event.resources : [];
+    const boundedResources = resources
+      .map((value) => (typeof value === "string" ? value
+        : (value && typeof value === "object" ? JSON.stringify(value).slice(0, 4096) : String(value))))
+      .slice(0, 16);
+    const body = {
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      tool_name: action,
+      tool_input: boundedResources.length === 1
+        ? { resource: boundedResources[0] }
+        : { resources: boundedResources },
+      // v2 has no host-side pattern persistence; the single always-candidate is
+      // the action itself and resolves to a session-scoped in-plugin rule.
+      patterns: [],
+      always: [action],
+      session_id: sessionId,
+      request_id: requestId,
+    };
+    // Best-effort cwd learned from the event envelope (location.directory) —
+    // improves the bubble's session folder; omitted when unknown.
+    const cwd = _sessionCwdById.get(sessionId);
+    if (cwd) body.cwd = cwd;
+    const metadata = event.metadata;
+    if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+      body.permission_metadata = metadata;
+    }
+    return body;
+  }
+
+  // Decision contract with Clawd's v2 blocking adapter (server-route-permission
+  // opencode-v2 branch): 200 + identity header + JSON { decision, message? }
+  // resolves the await; 204 / identity mismatch / unparseable body / timeout /
+  // transport error all mean "no decision" and leave the effect untouched.
+  async function deliverV2BlockingPermission(snapshot) {
+    const candidates = getPermissionPortCandidates();
+    for (const port of candidates) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), V2_PERMISSION_BLOCKING_TIMEOUT_MS);
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/permission`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: snapshot.payload,
+          signal: controller.signal,
+        });
+        const header = res.headers.get(CLAWD_SERVER_HEADER);
+        if (header !== CLAWD_SERVER_ID) {
+          debugLog(`PERM[${snapshot.reqId}] port=${port} identity-mismatch header=${header}`);
+          continue;
+        }
+        if (res.status === 204) {
+          try { await res.text(); } catch {}
+          return { decision: null };
+        }
+        const text = await res.text();
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch {}
+        const decision = parsed && typeof parsed.decision === "string" ? parsed.decision : null;
+        if (decision !== "allow" && decision !== "always" && decision !== "deny") {
+          debugLog(`PERM[${snapshot.reqId}] port=${port} unsupported-decision`);
+          return { decision: null };
+        }
+        return {
+          decision,
+          message: parsed && typeof parsed.message === "string" ? parsed.message : "",
+        };
+      } catch (err) {
+        debugLog(`PERM[${snapshot.reqId}] port=${port} ERR ${err && err.name}/${err && err.message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    return { decision: null };
+  }
+
+  // evaluate-hook callback. Runs for host-configured allow AND ask effects;
+  // configured deny is final and never reaches the hook (upstream docs). Any
+  // failure path leaves `event.effect` untouched so the native prompt wins —
+  // this hook must never throw into the host.
+  async function handleV2PermissionEvaluate(event) {
+    if (!event || typeof event !== "object") return;
+    if (event.effect !== "ask") return;
+
+    const sessionId = normalizeSessionId(typeof event.sessionID === "string" ? event.sessionID : "");
+    const action = typeof event.action === "string" && event.action ? event.action : "unknown";
+    const alwaysKey = `${sessionId}\u0000${action}`;
+    if (_alwaysAllowedBySessionAction.has(alwaysKey)) {
+      event.effect = "allow";
+      debugLog(`PERM always-hit session=${sessionId || "(default)"} action=${action}`);
+      return;
+    }
+
+    const toolCallId = event.source && typeof event.source.id === "string" && event.source.id
+      ? event.source.id
+      : `req${++_permissionReqCounter}`;
+    const requestId = `v2:${toolCallId}`;
+    const body = buildV2PermissionBody(event, requestId);
+    const payload = JSON.stringify(body);
+    if (Buffer.byteLength(payload, "utf8") > V2_PERMISSION_MAX_BODY_BYTES) {
+      debugLog(`PERM skip action=${action} reason=body-over-budget bytes=${Buffer.byteLength(payload, "utf8")}`);
+      return;
+    }
+
+    const snapshot = {
+      body,
+      payload,
+      reqId: ++_reqCounter,
+      logTag: `PERM action=${action} req=${requestId}`,
+    };
+    debugLog(`PERM forward action=${action} session=${sessionId || "(default)"} req=${requestId}`);
+    const outcome = await deliverV2BlockingPermission(snapshot);
+    if (outcome.decision === "allow") {
+      event.effect = "allow";
+      debugLog(`PERM resolved allow req=${requestId}`);
+    } else if (outcome.decision === "always") {
+      rememberAlwaysAllow(sessionId, action);
+      event.effect = "allow";
+      debugLog(`PERM resolved always req=${requestId}`);
+    } else if (outcome.decision === "deny") {
+      event.effect = "deny";
+      if (outcome.message) event.message = outcome.message;
+      debugLog(`PERM resolved deny req=${requestId}`);
+    } else {
+      debugLog(`PERM no-decision → native prompt req=${requestId}`);
+    }
+  }
+
+  // Plugin definition (the object form v2's loader requires). setup runs when
+  // the service loads the plugin and returns its cleanup function.
+  const definition = {
+    id: pluginId,
+    async setup(ctx) {
+      // #1026 orphan inert gate — before every side effect, exactly like v1.
+      const managedGate = evaluateManagedLayoutGate(import.meta.url, {
+        agentId: AGENT_ID,
+        pluginDirName: markerPluginDirName,
+      });
+      if (managedGate.mode === "inert") {
+        return () => {};
+      }
+      resetDebugLog();
+      const app = ctx && ctx.app && typeof ctx.app === "object" ? ctx.app : {};
+      debugLog(`INIT v2 pid=${process.pid} app=${app.name || "?"}@${app.version || "?"} gate=${managedGate.mode}`);
+
+      // Reload idempotency: a host reload() re-runs setup. Abort the previous
+      // subscription so exactly one event loop and one evaluate hook stay live.
+      if (definition._dispose) {
+        try { definition._dispose(); } catch {}
+        definition._dispose = null;
+      }
+
+      const controller = new AbortController();
+
+      if (ctx && ctx.permission && typeof ctx.permission.hook === "function") {
+        try {
+          ctx.permission.hook("evaluate", (event) => {
+            // Never throw into the host: a rejected evaluate callback must not
+            // wedge the permission pipeline.
+            return handleV2PermissionEvaluate(event).catch((err) => {
+              debugLog(`PERM hook error: ${err && err.message}`);
+            });
+          });
+          debugLog("EVALUATE hook registered");
+        } catch (err) {
+          debugLog(`EVALUATE register-failed: ${err && err.message}`);
+        }
+      } else {
+        debugLog("EVALUATE unavailable: no ctx.permission.hook");
+      }
+
+      if (ctx && ctx.event && typeof ctx.event.subscribe === "function") {
+        void (async () => {
+          for await (const envelope of ctx.event.subscribe({ signal: controller.signal })) {
+            try {
+              handleV2Event(envelope);
+            } catch (err) {
+              debugLog(`ERROR in v2 event handler: ${err && err.message}`);
+            }
+          }
+          debugLog("EVENT stream ended");
+        })().catch((err) => {
+          debugLog(`EVENT stream error: ${err && err.message}`);
+        });
+        debugLog("EVENT subscription started");
+      } else {
+        debugLog("EVENT subscribe unavailable");
+      }
+
+      definition._dispose = () => controller.abort();
+      return () => {
+        if (definition._dispose) {
+          try { definition._dispose(); } catch {}
+          definition._dispose = null;
+        }
+      };
+    },
+  };
+
+  const __testInternalsV2 = {
+    buildStateBody: (state, eventName, sessionId) => {
+      const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
+      const body = {
+        state, session_id: clawdSessionId, event: eventName,
+        agent_id: AGENT_ID, hook_source: HOOK_SOURCE,
+      };
+      const title = _sessionTitleById.get(clawdSessionId);
+      if (title) body.session_title = title;
+      return body;
+    },
+    translateV2Event,
+    handleV2Event,
+    handleV2PermissionEvaluate,
+    buildV2PermissionBody,
+    deliverV2BlockingPermission,
+    deliverV2StatePost: (snapshot) => deliverV2StatePost(snapshot),
+    postStateToClawdV2,
+    sendStateV2,
+    sendMetadataV2,
+    rememberAlwaysAllow,
+    captureV2Title,
+    getPortCandidates,
+    getPermissionPortCandidates,
+    readRuntimePort,
+    readPermissionRuntimePort,
+    flushDebugLog,
+    get _debugLogPath() { return DEBUG_LOG_PATH; },
+    get _cachedPort() { return _cachedPort; },
+    set _cachedPort(v) { _cachedPort = v; },
+    get _lastStatePerSession() { return _lastStatePerSession; },
+    get _sessionTitleById() { return _sessionTitleById; },
+    get _sessionCwdById() { return _sessionCwdById; },
+    get _alwaysAllowedBySessionAction() { return _alwaysAllowedBySessionAction; },
+    get _statePostQueueBySession() { return _statePostQueueBySession; },
+  };
+  Object.defineProperty(definition, "__test", { value: __testInternalsV2 });
+
+  return definition;
+}
+

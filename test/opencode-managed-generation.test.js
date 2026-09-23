@@ -475,6 +475,11 @@ describe("#1026 generator materialization", () => {
     fs.writeFileSync(path.join(pluginDir, "package.json"), bytes["package.json"]);
     fs.writeFileSync(path.join(familyDir, "core.mjs"), "export const core = 1;\n");
     fs.writeFileSync(path.join(familyDir, "session-ids.mjs"), "export const ids = 1;\n");
+    // opencode v2 entry (issue #1039): part of the bundle now that OPENCODE_CFG
+    // declares v2PluginDirName.
+    const v2Dir = path.join(hooks, OPENCODE_CFG.v2PluginDirName);
+    fs.mkdirSync(v2Dir, { recursive: true });
+    fs.writeFileSync(path.join(v2Dir, "index.mjs"), "export default { id: 'x', setup: async () => () => {} };\n");
     return { pluginDir, familyDir };
   }
 
