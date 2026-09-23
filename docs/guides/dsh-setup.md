@@ -13,16 +13,21 @@ own npm artifact and integrity:
 
 | DSH version | npm artifact | npm integrity (sha512) |
 | --- | --- | --- |
-| `0.1.1-rc.2` (preferred for new installs) | `@deepseek-ai/dsh@0.1.1-rc.2` | `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==` |
+| `0.1.5-rc.1` (preferred for new installs) | `@deepseek-ai/dsh@0.1.5-rc.1` | `sha512-rmNmzQCg3oIc1z8xH7izRSOuy1TNzq+/NILyfM+7e8DKOyV+yBtg47WEsqR2SiIe1ATec3L/rUa1YhIcfQ2XEg==` |
+| `0.1.1-rc.2` | `@deepseek-ai/dsh@0.1.1-rc.2` | `sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==` |
 | `0.1.0-rc.6` | `@deepseek-ai/dsh@0.1.0-rc.6` | `sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==` |
 
 Install and Repair select the contract matching the detected host (or the owned
-marker when no CLI probe is available); new installs prefer `0.1.1-rc.2`.
+marker when no CLI probe is available); new installs prefer `0.1.5-rc.1`.
 Uninstall and manual `npx` commands select the contract of the installed
 marker. Pre-release versions are exact-pinned — a broad `>=0.1.x` range would
 admit artifacts this bridge has not verified. The public seams were first
 audited against upstream commit `47f9438`, then rechecked in the compiled
 rc.6 artifact; that commit is a source baseline, not a claimed tag mapping.
+The `0.1.5-rc.1` row was added after re-checking the same four public seams
+(`session/created`, `session/event`, `session/disposed`, and the
+`approval/request` waterfall) in the published `0.1.5-rc.1` artifact; that is
+an artifact-level seam audit, not a real API-backed session/approval run.
 Unlisted versions fail before Clawd changes the DSH profile.
 
 ## Behavior
@@ -61,7 +66,7 @@ mode is enabled; per-session grants are not offered in this experimental release
 
 ## Requirements
 
-- DSH `0.1.1-rc.2` (preferred) or `0.1.0-rc.6` on the same machine.
+- DSH `0.1.5-rc.1` (preferred), `0.1.1-rc.2`, or `0.1.0-rc.6` on the same machine.
 - The `web` profile.
 - `pnpm`, because the official DSH plugin command delegates profile mutation to
   pnpm.
@@ -94,9 +99,10 @@ Separate DSH homes therefore never share a generation that one home's uninstall
 or cleanup could delete.
 
 If DSH is only used through `npx`, Clawd does not download it automatically.
-Settings returns an exact manual `npx @deepseek-ai/dsh@0.1.1-rc.2 plugin ... add`
-command (the contract matching the staged generation, or `0.1.0-rc.6` when the
-installed marker is rc.6) pointing at the staged managed generation and explicitly setting the
+Settings returns an exact manual `npx @deepseek-ai/dsh@<contract> plugin ... add`
+command (the contract matching the staged generation — `0.1.5-rc.1` for a
+preferred-contract install, `0.1.1-rc.2`, or `0.1.0-rc.6` when the installed
+marker is rc.6) pointing at the staged managed generation and explicitly setting the
 canonical target `DSH_HOME` (PowerShell on Windows, POSIX environment-prefix
 syntax elsewhere). This keeps an alternate home from accidentally mutating the
 default `~/.dsh` when the command is pasted into a fresh terminal. After that command succeeds,
