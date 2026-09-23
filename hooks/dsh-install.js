@@ -89,23 +89,24 @@ function realpathSyncCanonical(fsImpl, value) {
 function resolveCanonicalDshHome(options = {}) {
   const platform = options.platform || process.platform;
   const pathApi = platform === "win32" ? path.win32 : path.posix;
-  const configured = options.canonicalDshHome
-    || options.dshHome
-    || resolveDshHome(options.env);
-  let canonical = pathApi.resolve(configured);
-  if (platform === process.platform) {
-    try {
-      canonical = realpathSyncCanonical(fs, canonical);
-    } catch {}
-  }
-  return canonical;
+  // A running mutation already chose this identity; never resolve it again if
+  // an ancestor is replaced while the operation is in progress.
+  if (options.canonicalDshHome) return pathApi.resolve(options.canonicalDshHome);
+  const configured = options.dshHome || resolveDshHome(options.env);
+  const resolved = pathApi.resolve(configured);
+  // DSH may create its home during plugin add. Resolve an existing ancestor
+  // now so its managed namespace stays the same before and after that step.
+  return platform === process.platform
+    ? resolveCanonicalLocalPath(resolved, options)
+    : resolved;
 }
 
 // Resolve symlinks in the deepest existing ancestor while preserving any
-// not-yet-created suffix. Managed roots are often created below a temporary or
-// relocated home whose lexical path differs from its real path (for example
-// macOS /var -> /private/var). Keeping the future suffix lets first install and
-// later ownership inspection agree without weakening marker/hash checks.
+// not-yet-created suffix. DSH homes and managed roots may be created below a
+// temporary or relocated parent whose lexical path differs from its real path
+// (for example macOS /tmp -> /private/tmp). Keeping the future suffix lets
+// first install and later ownership inspection agree without weakening
+// marker/hash checks.
 function resolveCanonicalLocalPath(value, options = {}) {
   const platform = options.platform || process.platform;
   const resolved = path.resolve(value);

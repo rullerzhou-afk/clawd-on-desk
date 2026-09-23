@@ -946,6 +946,50 @@ test("a DSH_HOME alias is frozen to one real target for namespace, CLI env, and 
   assert.strictEqual(observedDshHome, canonicalRealpath(harness.dshHome));
 });
 
+test("an absent DSH_HOME beneath a symlink keeps one canonical namespace through first install", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-absent-home-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const realParent = path.join(root, "real-parent");
+  const alias = path.join(root, "alias");
+  fs.mkdirSync(realParent);
+  fs.symlinkSync(realParent, alias, process.platform === "win32" ? "junction" : "dir");
+  const dshHome = path.join(alias, "new-dsh-home");
+  const canonicalDshHome = path.join(canonicalRealpath(realParent), "new-dsh-home");
+  const harness = {
+    root,
+    dshHome,
+    profileDir: path.join(dshHome, "profiles", "web"),
+    managedRoot: undefined,
+  };
+  const cli = makeOfficialCli(harness);
+  const options = installOptions(harness, cli, {
+    homeDir: root,
+    runDshCommand: async (args, operationOptions) => {
+      assert.strictEqual(operationOptions.env.DSH_HOME, canonicalDshHome);
+      return cli.runDshCommand(args);
+    },
+  });
+
+  assert.strictEqual(fs.existsSync(dshHome), false);
+  assert.strictEqual(dshInstallTest.resolveCanonicalDshHome(options), canonicalDshHome);
+  const managedRootBefore = resolveManagedRoot(options);
+  const hashInput = (process.platform === "win32" ? canonicalDshHome.toLowerCase() : canonicalDshHome)
+    .replace(/\\/g, "/");
+  const expectedNamespace = crypto.createHash("sha256").update(hashInput, "utf8").digest("hex");
+  assert.strictEqual(path.basename(managedRootBefore), expectedNamespace);
+
+  const result = await installDeepSeekHarnessBridge(options);
+  assert.strictEqual(result.status, "ok", JSON.stringify(result));
+  assert.strictEqual(result.health.status, "healthy");
+  assert.strictEqual(result.health.managedRoot, managedRootBefore);
+  assert.strictEqual(resolveManagedRoot(options), managedRootBefore);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync(options).status, "healthy");
+
+  const removed = await uninstallDeepSeekHarnessBridge(options);
+  assert.strictEqual(removed.status, "ok", JSON.stringify(removed));
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync(options).status, "absent");
+});
+
 test("a managed-root alias remains owned after package inspection resolves its real path", async (t) => {
   const harness = makeHarness();
   const managedTarget = path.join(harness.root, "managed-target");

@@ -26,8 +26,9 @@ audited against upstream commit `47f9438`, then rechecked in the compiled
 rc.6 artifact; that commit is a source baseline, not a claimed tag mapping.
 The `0.1.5-rc.1` row was added after re-checking the same four public seams
 (`session/created`, `session/event`, `session/disposed`, and the
-`approval/request` waterfall) in the published `0.1.5-rc.1` artifact; that is
-an artifact-level seam audit, not a real API-backed session/approval run.
+`approval/request` waterfall) in the published `0.1.5-rc.1` artifact. A
+controlled macOS API-backed session and approval smoke followed; its scope is
+described below.
 Unlisted versions fail before Clawd changes the DSH profile.
 
 ## Behavior
@@ -181,8 +182,19 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   install/uninstall lifecycle through isolated pnpm and the real rc.6 macOS
   lifecycle, including no-CLI commands
   ([#938](https://github.com/rullerzhou-afk/clawd-on-desk/pull/938)).
-  Automated installer coverage includes rc.6 retention, rc.2 installation,
-  cross-contract generation migration, and unlisted-version rejection.
+  Automated installer coverage includes rc.1 installation, first install below
+  a symlinked parent, rc.6 retention, rc.2 installation, cross-contract
+  generation migration, and unlisted-version rejection.
+- On 2026-09-23, a **macOS rc.1 source-run** used isolated `HOME` and `DSH_HOME`,
+  real `dsh web` sessions created and prompted through DSH's public API, and a
+  localhost mock Clawd endpoint. Without the bridge, the baseline session
+  emitted no `/state` request. With the bridge, the endpoint received
+  `SessionStart`, `UserPromptSubmit`, and `Stop`; a controlled ordinary approval
+  request sent to `/permission` resolved to `allowed-once` for Allow and
+  `rejected` for Deny. An HTTP 204 left the request pending until DSH session
+  cancellation produced `cancelled`. The probe ended before any model step.
+  This verifies the bridge and DSH API behavior, not the real Clawd UI or a
+  packaged app.
 - Linux, WSL, remote SSH, non-web profiles, macOS packaging, and ARM64 packaging
   remain unverified.
 - There is no terminal-focus action because DSH web is a browser surface.
