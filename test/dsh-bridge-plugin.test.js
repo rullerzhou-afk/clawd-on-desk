@@ -44,6 +44,44 @@ test("DSH bridge maps only public session events and never copies tool arguments
   assert.strictEqual(JSON.stringify(payload).includes("never"), false);
 });
 
+test("DSH projection metadata uses the same context occupancy as DSH and keeps titles bounded", async () => {
+  const { contextUsageFromPressure, metadataPayload, statePayload } = await bridge();
+  const pressure = { pressureTokens: 70, projectedTokens: 78, contextWindow: 100 };
+  assert.deepStrictEqual(contextUsageFromPressure(pressure), { used: 78, limit: 100, percent: 78 });
+  assert.deepStrictEqual(contextUsageFromPressure({ pressureTokens: 70, contextWindow: 100 }), {
+    used: 70, limit: 100, percent: 70,
+  });
+  assert.strictEqual(contextUsageFromPressure({ projectedTokens: 78 }), null);
+  assert.strictEqual(contextUsageFromPressure({ projectedTokens: 78, contextWindow: 0 }), null);
+  assert.strictEqual(contextUsageFromPressure({ projectedTokens: Number.POSITIVE_INFINITY, contextWindow: 100 }), null);
+  assert.deepStrictEqual(contextUsageFromPressure({ projectedTokens: 120, contextWindow: 100 }), {
+    used: 120, limit: 100, percent: 100,
+  });
+
+  const session = { id: "s1", header: { cwd: "/repo" } };
+  const metadata = metadataPayload(session, { title: "  Fix\nDSH  ", contextPressure: pressure });
+  assert.deepStrictEqual({
+    session_id: metadata.session_id,
+    metadata_only: metadata.metadata_only,
+    session_title: metadata.session_title,
+    context_usage: metadata.context_usage,
+    state: metadata.state,
+    event: metadata.event,
+  }, {
+    session_id: "deepseek-harness:s1",
+    metadata_only: true,
+    session_title: "Fix DSH",
+    context_usage: { used: 78, limit: 100, percent: 78 },
+    state: undefined,
+    event: undefined,
+  });
+  assert.strictEqual(metadataPayload(session, {}), null);
+  assert.deepStrictEqual(metadataPayload(session, { contextPressure: { contextWindow: 100 } }).context_usage, null);
+  assert.strictEqual(statePayload(session, {
+    event: "SessionStart", state: "idle", title: "Restored", contextUsage: metadata.context_usage,
+  }).context_usage.percent, 78);
+});
+
 test("DSH approval payload uses only ApprovalRequest public fields", async () => {
   const { buildApprovalPayload } = await bridge();
   const payload = buildApprovalPayload({
@@ -185,30 +223,106 @@ test("DSH state sender keeps its pending queue bounded and preserves terminal st
   assert.strictEqual(sent[0].event, "SessionStart");
 });
 
+test("DSH state sender coalesces pending projection metadata without losing title or context", async () => {
+  const { createStateSender } = await bridge();
+  const controller = new AbortController();
+  const calls = [];
+  let release;
+  const sender = createStateSender(controller.signal, (payload) => {
+    calls.push(payload);
+    return new Promise((resolve) => { release = resolve; });
+  });
+  const id = "deepseek-harness:s1";
+  sender.enqueue({ session_id: id, event: "SessionStart" });
+  sender.enqueue({ session_id: id, metadata_only: true, session_title: "First" });
+  sender.enqueue({ session_id: id, metadata_only: true, context_usage: { used: 2, limit: 10, percent: 20 } });
+  sender.enqueue({ session_id: id, metadata_only: true, session_title: "Second" });
+  release({ ok: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.strictEqual(calls.length, 2);
+  assert.deepStrictEqual(calls[1], {
+    session_id: id,
+    metadata_only: true,
+    session_title: "Second",
+    context_usage: { used: 2, limit: 10, percent: 20 },
+  });
+  controller.abort();
+  release({ ok: true });
+});
+
+test("DSH metadata backpressure cannot carry an old title across a restarted session", async () => {
+  const { createStateSender } = await bridge();
+  const controller = new AbortController();
+  const calls = [];
+  let releaseFirst;
+  const sender = createStateSender(controller.signal, (payload) => {
+    calls.push(payload);
+    if (calls.length === 1) return new Promise((resolve) => { releaseFirst = resolve; });
+    return Promise.resolve({ ok: true });
+  });
+  const id = "deepseek-harness:reused";
+  sender.enqueue({ session_id: id, event: "SessionStart", session_seq: 0 });
+  sender.enqueue({ session_id: id, metadata_only: true, session_title: "Old" });
+  sender.enqueue({ session_id: id, event: "SessionEnd", session_seq: 1 });
+  sender.enqueue({ session_id: id, event: "SessionStart", session_seq: 1, session_title: "New" });
+  for (let index = 0; index < 29; index += 1) {
+    sender.enqueue({ session_id: id, event: "PreToolUse", event_seq: index + 1 });
+  }
+  sender.enqueue({ session_id: id, metadata_only: true, context_usage: { used: 8, limit: 10, percent: 80 } });
+  releaseFirst({ ok: true });
+  await new Promise((resolve) => setImmediate(resolve));
+  const restartIndex = calls.findIndex((item) => item.event === "SessionStart" && item.session_title === "New");
+  assert.ok(restartIndex > 0);
+  assert.strictEqual(calls.at(-1).context_usage.percent, 80);
+  assert.strictEqual(calls.at(-1).session_title, undefined);
+  assert.ok(calls.slice(restartIndex + 1).every((item) => item.session_title !== "Old"));
+  controller.abort();
+});
+
 test("DSH plugin registers public seams only and contains session/created exceptions", async () => {
   const { apply } = await bridge();
   const listeners = new Map();
   const approvalListeners = [];
+  const projectionListeners = [];
+  const injections = [];
   let disposer = null;
+  let projectionDisposer = null;
+  let projectionUnsubscribes = 0;
   const approvalCtx = {
     on(name, handler, options) { approvalListeners.push({ name, handler, options }); },
   };
   const ctx = {
     on(name, handler) { listeners.set(name, handler); },
     inject(dependencies, register) {
-      assert.deepStrictEqual(dependencies, ["approval"]);
-      register(approvalCtx);
+      injections.push(dependencies);
+      if (dependencies[0] === "approval") register(approvalCtx);
+      else if (dependencies[0] === "sessionProjections") register({
+        sessionProjections: {
+          onChanged(handler) {
+            projectionListeners.push(handler);
+            return () => { projectionUnsubscribes += 1; };
+          },
+          snapshot() { return { values: { title: "Restored", contextPressure: { projectedTokens: 78, contextWindow: 100 } } }; },
+        },
+        effect(factory) { projectionDisposer = factory(); },
+      });
+      else assert.fail(`unexpected injection ${dependencies}`);
     },
     effect(factory) { disposer = factory(); },
   };
   apply(ctx);
   assert.deepStrictEqual([...listeners.keys()], ["session/created", "session/event", "session/disposed"]);
+  assert.deepStrictEqual(injections, [["sessionProjections"], ["approval"]]);
   assert.strictEqual(approvalListeners.length, 1);
   assert.strictEqual(approvalListeners[0].name, "approval/request");
   assert.deepStrictEqual(approvalListeners[0].options, { prepend: true });
+  assert.strictEqual(projectionListeners.length, 1);
+  assert.strictEqual(typeof projectionDisposer, "function");
   const hostileSession = {};
   Object.defineProperty(hostileSession, "id", { get() { throw new Error("observer bug"); } });
   assert.doesNotThrow(() => listeners.get("session/created")(hostileSession));
   assert.strictEqual(typeof disposer, "function");
+  projectionDisposer();
+  assert.strictEqual(projectionUnsubscribes, 1);
   disposer();
 });

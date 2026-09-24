@@ -26,7 +26,9 @@ audited against upstream commit `47f9438`, then rechecked in the compiled
 rc.6 artifact; that commit is a source baseline, not a claimed tag mapping.
 The `0.1.5-rc.1` row was added after re-checking the same four public seams
 (`session/created`, `session/event`, `session/disposed`, and the
-`approval/request` waterfall) in the published `0.1.5-rc.1` artifact. A
+`approval/request` waterfall) in the published `0.1.5-rc.1` artifact. The
+optional title and context-pressure projections were also checked against
+the published rc.1 packages. A
 controlled macOS API-backed session and approval smoke followed; its scope is
 described below.
 Unlisted versions fail before Clawd changes the DSH profile.
@@ -49,6 +51,24 @@ session.
 | failed tool result | `PostToolUseFailure` / `error` |
 | turn ended | `Stop` / `attention` (or `StopFailure` / `error`) |
 | session disposed | `SessionEnd` / `sleeping` |
+
+DSH's `session/title` event supplies the Session HUD and Dashboard title. When
+the public session projection service is present, the plugin also follows
+`contextPressure` changes and reads its current value when a session is
+created. Clawd displays the same reference occupancy as DSH's ContextMeter:
+`(projectedTokens ?? pressureTokens) / contextWindow`, rounded and capped at
+100%. It appears only after DSH has reported both usage and model capacity.
+The projection is a reference estimate, especially after content changes or a
+model switch. Projection updates annotate an existing Clawd session without
+creating a card or changing its activity time. If DSH no longer reports both
+operands, Clawd clears the old percentage instead of displaying a stale one.
+The standard completion bell appears when a finished DSH session is unread.
+
+The quota coin is separate account telemetry. DSH does not currently expose
+a five-hour usage bucket through this plugin's public session APIs, so Clawd
+does not invent a DSH `5h` percentage. DeepSeek's
+[API balance](https://api-docs.deepseek.com/api/get-user-balance/) is an amount
+of money and cannot be represented as that rolling-window percentage.
 
 For ordinary `approval/request`, the plugin prepends a blocking listener:
 
@@ -195,6 +215,14 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   cancellation produced `cancelled`. The probe ended before any model step.
   This verifies the bridge and DSH API behavior, not the real Clawd UI or a
   packaged app.
+- On 2026-09-24, a second isolated rc.1 Web API run verified `session/title`
+  forwarding and live `contextPressure` updates. A local fake SSE endpoint
+  supplied controlled model usage, so no real model call or user DSH profile
+  was involved. A synthetic 500013-token prompt against DSH's 1000000-token
+  context window produced `context_usage: { used: 500013, limit: 1000000,
+  percent: 50 }` at a mock Clawd `/state` endpoint, alongside SessionStart,
+  UserPromptSubmit, and Stop. This verifies the DSH-to-bridge calculation and
+  delivery, not a real user's usage, the Clawd UI, or a packaged app.
 - Linux, WSL, remote SSH, non-web profiles, macOS packaging, and ARM64 packaging
   remain unverified.
 - There is no terminal-focus action because DSH web is a browser surface.

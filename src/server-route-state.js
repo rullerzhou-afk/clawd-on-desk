@@ -456,6 +456,11 @@ function handleStatePost(req, res, options) {
       // around the full updateSession lifecycle machine.
       const metadataOnly = data.metadata_only === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      const clearDshContextUsage = metadataOnly
+        && agentId === "deepseek-harness"
+        && hookSource === "dsh-plugin"
+        && Object.hasOwn(data, "context_usage")
+        && data.context_usage === null;
       // #406 completion-gate inputs from the Claude Stop hook. Counts / boolean
       // only — the hook never forwards task command or description text.
       const backgroundTasksCount = Number.isFinite(data.background_tasks_count)
@@ -478,7 +483,19 @@ function handleStatePost(req, res, options) {
         res.end();
         return;
       }
-      if (agentId === "deepseek-harness") {
+      if (agentId === "deepseek-harness" && metadataOnly && (
+        hookSource !== "dsh-plugin"
+        || !sessionIdentity.rawSessionId.startsWith("deepseek-harness:")
+      )) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
+      // Projection updates are not lifecycle events and may share an upstream
+      // seq with a mapped turn/tool event. Only the lifecycle path advances the
+      // DSH fence; metadata_only can annotate an existing session below.
+      if (agentId === "deepseek-harness" && !metadataOnly) {
         const sequenceResult = dshStateSequenceFence
           && typeof dshStateSequenceFence.accept === "function"
           ? dshStateSequenceFence.accept({
@@ -605,6 +622,7 @@ function handleStatePost(req, res, options) {
             metaUpdate.contextUsage = contextUsage;
             metaUpdate.contextUsageOrigin = resolveMetadataContextUsageOrigin(agentId, contextUsage);
           }
+          if (clearDshContextUsage) metaUpdate.clearContextUsage = true;
           if (model && localClaudeStatuslineMetadataAllowed) metaUpdate.model = model;
           // OpenCode title changes ride the same metadata-only channel (the
           // placeholder → real title swap arrives on session.updated, which
