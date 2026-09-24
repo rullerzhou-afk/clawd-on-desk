@@ -59,7 +59,7 @@ describe("opencode v2 plugins-key registration", () => {
       plugins: ["oh-my-openagent@latest", foreignObject, foreignTuple],
     });
 
-    const result = registerOpencodePlugin({ silent: true, ...managedRoots(home) });
+    const result = registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
     assert.strictEqual(result.status, "ok", result.message);
 
     const cfg = readConfig(home);
@@ -99,13 +99,13 @@ describe("opencode v2 plugins-key registration", () => {
 
   it("converges duplicate v2 entries to exactly one", () => {
     const home = makeHome();
-    const first = registerOpencodePlugin({ silent: true, ...managedRoots(home) });
+    const first = registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
     assert.strictEqual(first.status, "ok");
     const cfgBefore = readConfig(home);
     const v2Entry = cfgBefore.plugins.find((entry) => String(entry).includes("opencode-plugin-v2"));
     writeConfig(home, { ...cfgBefore, plugins: [v2Entry, v2Entry] });
 
-    const second = registerOpencodePlugin({ silent: true, ...managedRoots(home) });
+    const second = registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
     assert.strictEqual(second.status, "ok", second.message);
     const cfgAfter = readConfig(home);
     const owned = cfgAfter.plugins.filter((entry) => String(entry).includes("opencode-plugin-v2"));
@@ -114,7 +114,7 @@ describe("opencode v2 plugins-key registration", () => {
 
   it("re-register after external plugins-key removal restores the v2 entry", () => {
     const home = makeHome();
-    assert.strictEqual(registerOpencodePlugin({ silent: true, ...managedRoots(home) }).status, "ok");
+    assert.strictEqual(registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) }).status, "ok");
 
     // Simulate the pre-#1039 state: the v1 entry exists but the v2 key was
     // never written (older Clawd), then the new Clawd repairs.
@@ -123,7 +123,7 @@ describe("opencode v2 plugins-key registration", () => {
       $schema: cfg.$schema,
       plugin: cfg.plugin,
     });
-    const repair = registerOpencodePlugin({ silent: true, ...managedRoots(home) });
+    const repair = registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
     assert.strictEqual(repair.status, "ok", repair.message);
     const repaired = readConfig(home);
     assert.ok(
@@ -136,8 +136,8 @@ describe("opencode v2 plugins-key registration", () => {
     const home = makeHome();
     const foreignObject = { package: "keep-me", options: { a: 1 } };
     writeConfig(home, { plugins: ["third-party@latest", foreignObject] });
-    assert.strictEqual(registerOpencodePlugin({ silent: true, ...managedRoots(home) }).status, "ok");
-    assert.strictEqual(registerOpencodePlugin({ silent: true, ...managedRoots(home) }).status, "ok");
+    assert.strictEqual(registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) }).status, "ok");
+    assert.strictEqual(registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) }).status, "ok");
 
     const result = unregisterOpencodePlugin({ silent: true, ...managedRoots(home) });
     assert.strictEqual(result.status, "ok", result.message);
@@ -147,6 +147,61 @@ describe("opencode v2 plugins-key registration", () => {
     const cfg = readConfig(home);
     assert.deepStrictEqual(cfg.plugin, [], "v1 key swept");
     assert.deepStrictEqual(cfg.plugins, ["third-party@latest", foreignObject], "v2 owned swept, foreign kept");
+  });
+
+  it("upstream #1045 review: a detected v1 host never writes the plugins key", () => {
+    const home = makeHome();
+    const result = registerOpencodePlugin({ silent: true, v2Host: "v1", ...managedRoots(home) });
+    assert.strictEqual(result.status, "ok", result.message);
+
+    const cfg = readConfig(home);
+    assert.ok(Array.isArray(cfg.plugin) && cfg.plugin.length === 1, "v1 entry registered");
+    assert.strictEqual(cfg.plugins, undefined, "opencode <= 1.18.15 must not see a plugins key");
+  });
+
+  it("upstream #1045 review: a detected v1 host sweeps a leftover owned v2 entry", () => {
+    const home = makeHome();
+    assert.strictEqual(registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) }).status, "ok");
+
+    // The host downgraded to 1.x: the stale key would make <= 1.18.15 refuse
+    // the whole config, so the next register (startup sync / Repair) sweeps it.
+    const repair = registerOpencodePlugin({ silent: true, v2Host: "v1", ...managedRoots(home) });
+    assert.strictEqual(repair.status, "ok", repair.message);
+    assert.ok(
+      repair.warnings.some((warning) => /leftover v2 plugins-key/.test(warning)),
+      repair.warnings
+    );
+
+    const cfg = readConfig(home);
+    assert.deepStrictEqual(
+      (cfg.plugins || []).filter((entry) => String(entry).includes("opencode-plugin-v2")),
+      [],
+      "v2 leftover swept"
+    );
+    assert.ok(Array.isArray(cfg.plugin) && cfg.plugin.length === 1, "v1 entry survives the sweep");
+  });
+
+  it("upstream #1045 review: an unknown host never touches the plugins key", () => {
+    const home = makeHome();
+    const foreign = ["oh-my-openagent@latest"];
+    writeConfig(home, { plugins: foreign.slice() });
+    assert.strictEqual(
+      registerOpencodePlugin({ silent: true, v2Host: "unknown", ...managedRoots(home) }).status,
+      "ok"
+    );
+    let cfg = readConfig(home);
+    assert.deepStrictEqual(cfg.plugins, foreign, "foreign plugins key untouched");
+    assert.ok(Array.isArray(cfg.plugin) && cfg.plugin.length === 1, "v1 entry registered");
+
+    // No plugins key is fabricated when none exists either.
+    const bare = makeHome();
+    assert.strictEqual(
+      registerOpencodePlugin({ silent: true, v2Host: "unknown", ...managedRoots(bare) }).status,
+      "ok"
+    );
+    cfg = readConfig(bare);
+    assert.strictEqual(cfg.plugins, undefined);
+    assert.ok(Array.isArray(cfg.plugin) && cfg.plugin.length === 1);
   });
 
   it("classifies v2-shape non-string entries as foreign (never owned)", () => {

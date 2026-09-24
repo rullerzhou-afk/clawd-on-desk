@@ -55,10 +55,14 @@ const OPENCODE_FAMILY = Object.freeze({
     // key with a `{ id, setup }` object plugin API — the v1 function entry
     // under `plugin` fails the v2 loader schema. Verified on 2.0.15
     // (docs/investigations/opencode-v2-e1-evidence.md): v2 also tolerates the
-    // legacy `plugin` key (the v1 entry logs a load warning and stays inert),
-    // and v1 1.18.32 silently drops an unknown `plugins` key, so the installer
-    // registers BOTH keys against the same generation without any host-version
-    // detection. `v2PluginDirName` is materialized as an extra single-file
+    // legacy `plugin` key (the v1 entry logs a load warning and stays inert).
+    // Upstream PR #1045 review: the v1 silent-drop of an unknown `plugins` key
+    // holds only from 1.18.16 (anomalyco/opencode#41312) — 1.18.15 and older
+    // REJECT the key outright. The installer therefore registers BOTH keys
+    // against the same generation only for a detected v2 host
+    // (hooks/opencode-host-detect.js): a 1.x host gets no `plugins` key (and
+    // leftover entries are swept), an unknown host never touches the key.
+    // `v2PluginDirName` is materialized as an extra single-file
     // entry directory inside the generation; `v2HookSource` is the wire
     // identity that routes v2 blocking permission POSTs; `v2PluginId` is the
     // stable v2 loader id. MiMo stays v1-only (managedMaterialization:false,

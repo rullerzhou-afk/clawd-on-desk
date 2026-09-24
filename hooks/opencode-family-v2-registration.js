@@ -8,8 +8,9 @@
 // docs/investigations/opencode-v2-e1-evidence.md:
 //   - opencode 2.0.15 loads `plugins` entries and merely logs a load warning
 //     for the legacy `plugin` key's v1 function entry (host stays healthy).
-//   - opencode 1.18.32 silently DROPS an unknown `plugins` key; the v1 config
-//     keeps parsing and the v1 entry keeps loading.
+//   - opencode 1.18.32 silently DROPS an unknown `plugins` key (true for
+//     1.18.16+ only — see the version-bound note below); the v1 config keeps
+//     parsing and the v1 entry keeps loading.
 //
 // The v1 managed planner (opencode-family-jsonc.js) is intentionally NOT
 // parameterized for this: the v2 key contract is a strict subset (Clawd only
@@ -22,6 +23,15 @@
 // masked lower-priority files cleaned before the effective file, fail-closed
 // categories refuse mutation, no plan ever touches a foreign entry, and
 // every entry removal of a legacy-missing candidate re-proves absence first.
+//
+// Upstream PR #1045 review: the silent-drop tolerance is version-bound. It was
+// probed on 1.18.32 only; opencode <= 1.18.15 REJECTS unknown top-level keys
+// ("Unrecognized key: plugins") — unknown fields are ignored only since
+// 1.18.16 (anomalyco/opencode#41312). Whether the `plugins` key is written at
+// all is therefore decided by the caller from the detected host version
+// (hooks/opencode-host-detect.js): "v2" registers, "v1" sweeps proven-owned
+// leftovers, "unknown" never touches the key. This module itself stays
+// version-agnostic: it only ever edits the key it is told to edit.
 
 const fs = require("fs");
 const path = require("path");

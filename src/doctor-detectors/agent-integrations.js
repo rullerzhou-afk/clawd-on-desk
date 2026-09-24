@@ -2877,6 +2877,9 @@ function checkAgentIntegrations(options = {}) {
     dshInstallRoot: options.dshInstallRoot,
     dshManagedRoot: options.dshManagedRoot,
     homeDir: options.homeDir,
+    // opencode v2 host verdict for the managed inspector (upstream PR #1045
+    // review); undefined in production → the inspector probes the real binary.
+    v2Host: options.v2Host,
   };
   const descriptors = options.descriptors || getAgentDescriptors();
   const details = descriptors.map((descriptor) => checkAgent(descriptor, detectorOptions));

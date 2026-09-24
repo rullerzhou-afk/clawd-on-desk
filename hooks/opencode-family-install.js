@@ -22,6 +22,7 @@ const { readJsonFile, writeJsonAtomic, writeJsonAtomicWithBackup, asarUnpackedPa
 const { getFamilyConfig } = require("../agents/opencode-family");
 const managedGeneration = require("./opencode-family-managed-generation");
 const entryOwnership = require("./opencode-family-entry-ownership");
+const hostDetect = require("./opencode-host-detect");
 
 // opencode v2 `plugins`-key registrar (issue #1039). Lazily required like the
 // jsonc editor: hooks/json-utils.js + this module stay dep-free for remote
@@ -33,6 +34,17 @@ function getV2Registrar() {
 
 function familyHasV2Entry(cfg) {
   return typeof cfg.v2PluginDirName === "string" && !!cfg.v2PluginDirName;
+}
+
+// Upstream PR #1045 review: opencode <= 1.18.15 rejects unknown top-level
+// config keys, so the v2 `plugins` write must follow the detected host, not a
+// static registry flag. Explicit options.v2Host ("v1" | "v2" | "unknown")
+// wins — tests and remote callers pin it — otherwise the real binary is
+// probed once per register call.
+function resolveV2Host(options) {
+  const explicit = hostDetect.__test.normalizeHostDetection(options.v2Host);
+  if (explicit) return explicit;
+  return hostDetect.detectOpencodeHost(options);
 }
 
 function normalizePluginEntry(value) {
@@ -389,11 +401,24 @@ function makeFamilyInstaller(agentId) {
 
     // v2 `plugins`-key entry (issue #1039): same generation, sibling entry dir.
     // Managed-register only — the pluginDir override path (test-only) keeps the
-    // single-entry v1 contract.
-    const v2Enabled = !isOverride && familyHasV2Entry(cfg);
+    // single-entry v1 contract. The write follows the detected host (upstream
+    // PR #1045 review — opencode <= 1.18.15 rejects unknown top-level keys):
+    //   "register" — v2 host detected: write/verify the entry (previous behavior)
+    //   "sweep"    — v1 host detected: never write; sweep proven-owned
+    //                leftovers so a v2→v1 downgrade self-heals on the next sync
+    //   "skip"     — host unknown (probe failed): never touch the key
+    const v2Mode = (() => {
+      if (isOverride || !familyHasV2Entry(cfg)) return "skip";
+      // This is the dep-free low-level primitive: it NEVER probes the host.
+      // An absent options.v2Host conservatively maps to "skip" (key left
+      // untouched); the register() wrapper is the only production caller that
+      // runs the real detection and passes the verdict in.
+      const v2Host = hostDetect.__test.normalizeHostDetection(options.v2Host);
+      return v2Host === "v2" ? "register" : v2Host === "v1" ? "sweep" : "skip";
+    })();
     let expectedCanonicalV2Dir = null;
     let canonicalV2Entry = null;
-    if (v2Enabled) {
+    if (v2Mode !== "skip") {
       const genDir = managedGeneration.generationDir(target, bundleHash);
       expectedCanonicalV2Dir = managedGeneration.canonicalizeTargetPath(
         path.join(genDir, cfg.v2PluginDirName), platform, fsImpl,
@@ -461,12 +486,15 @@ function makeFamilyInstaller(agentId) {
         managedBoundary: !isOverride,
       });
     };
-    const makeV2Context = v2Enabled
+    const makeV2Context = v2Mode !== "skip"
       ? () => getV2Registrar().buildV2ManagedContext({
         cfg,
         target,
         expectedCanonicalDir: expectedCanonicalV2Dir,
-        expectedGeneration,
+        // Sweep classification never re-verifies the generation (same
+        // contract as unregisterManaged): a leftover entry from an older
+        // bundle must stay removable even if the current generation moved.
+        expectedGeneration: v2Mode === "register" ? expectedGeneration : () => ({ ok: true }),
         sourceFiles,
         ownerRecord,
         fsImpl,
@@ -479,11 +507,17 @@ function makeFamilyInstaller(agentId) {
     // Read-only pre-scan.
     let candidates = jsonc.readCandidates(cfg, configPath);
     const pre = jsonc.inspectManagedRegister({ cfg, configPath, candidates, makeContext, canonicalEntry });
-    const v2Pre = v2Enabled
+    const v2Pre = v2Mode === "register"
       ? getV2Registrar().inspectV2Register({ cfg, configPath, candidates, makeContext: makeV2Context, canonicalV2Entry })
       : null;
-    const preNeedsMutation = pre.needsMutation || (v2Pre ? v2Pre.needsMutation : false);
-    const preWarnings = [...pre.warnings, ...v2Warnings(v2Pre)];
+    const v2SweepPre = v2Mode === "sweep"
+      ? getV2Registrar().inspectV2Unregister({ candidates, makeContext: makeV2Context })
+      : null;
+    const v2NeedsMutation = v2Pre
+      ? v2Pre.needsMutation
+      : (v2SweepPre ? v2SweepPre.hasRemovable : false);
+    const preNeedsMutation = pre.needsMutation || v2NeedsMutation;
+    const preWarnings = [...pre.warnings, ...v2Warnings(v2Pre), ...v2Warnings(v2SweepPre)];
     if (pre.needsReview || (v2Pre && v2Pre.needsReview)) {
       const review = pre.needsReview || v2Pre.needsReview;
       return {
@@ -572,11 +606,17 @@ function makeFamilyInstaller(agentId) {
         }
       }
       const lockedPre = jsonc.inspectManagedRegister({ cfg, configPath, candidates, makeContext, canonicalEntry });
-      const lockedV2Pre = v2Enabled
+      const lockedV2Pre = v2Mode === "register"
         ? getV2Registrar().inspectV2Register({ cfg, configPath, candidates, makeContext: makeV2Context, canonicalV2Entry })
         : null;
-      const lockedNeedsMutation = lockedPre.needsMutation || (lockedV2Pre ? lockedV2Pre.needsMutation : false);
-      const lockedWarnings = [...lockedPre.warnings, ...v2Warnings(lockedV2Pre)];
+      const lockedV2SweepPre = v2Mode === "sweep"
+        ? getV2Registrar().inspectV2Unregister({ candidates, makeContext: makeV2Context })
+        : null;
+      const lockedV2NeedsMutation = lockedV2Pre
+        ? lockedV2Pre.needsMutation
+        : (lockedV2SweepPre ? lockedV2SweepPre.hasRemovable : false);
+      const lockedNeedsMutation = lockedPre.needsMutation || lockedV2NeedsMutation;
+      const lockedWarnings = [...lockedPre.warnings, ...v2Warnings(lockedV2Pre), ...v2Warnings(lockedV2SweepPre)];
       if (lockedPre.needsReview || (lockedV2Pre && lockedV2Pre.needsReview)) {
         const review = lockedPre.needsReview || lockedV2Pre.needsReview;
         return {
@@ -650,7 +690,11 @@ function makeFamilyInstaller(agentId) {
         }
       }
 
-      if (!isOverride && lockedNeedsMutation) {
+      // Materialize/claim only for a real v1-key or owner mutation. A v2-only
+      // mutation (register-mode key rewrite, or sweep of leftover entries)
+      // targets the already-verified current generation — re-materializing or
+      // re-claiming ownership for it would be a spurious write.
+      if (!isOverride && lockedPre.needsMutation) {
         const materialized = managedGeneration.materializeGeneration(target, cfg, sourcePluginDir, {
           fs: fsImpl,
           platform,
@@ -675,7 +719,7 @@ function makeFamilyInstaller(agentId) {
       // Claim/refresh the owner exactly once and only when needed. This is
       // what lets a new source take over a dead previous one; a live other
       // source already returned owner-conflict above.
-      const ownerUpdated = !isOverride && (lockedNeedsMutation || lockedOwnerNeedsMutation);
+      const ownerUpdated = !isOverride && (lockedPre.needsMutation || lockedOwnerNeedsMutation);
       if (ownerUpdated) {
         managedGeneration.writeOwnerRecord(target, {
           agentId,
@@ -723,8 +767,12 @@ function makeFamilyInstaller(agentId) {
       // v2 `plugins` key runs after the v1 key write (which may have created
       // the default config file) and re-reads the candidates itself — the v1
       // apply may have mutated the same files moments ago inside this lock.
+      // lockedV2Pre is therefore only a heuristic here: when the v1 apply
+      // created the config, the pre-apply v2 scan saw no file at all, so the
+      // apply must also run whenever the v1 key mutated (applyV2Register
+      // no-ops on an already-converged config).
       let v2Apply = { status: "ok", added: false, created: false, mutatedPaths: [], warnings: [] };
-      if (v2Enabled && lockedNeedsMutation) {
+      if (v2Mode === "register" && (lockedPre.needsMutation || lockedV2Pre.needsMutation)) {
         v2Apply = getV2Registrar().applyV2Register({
           cfg,
           configPath,
@@ -763,13 +811,46 @@ function makeFamilyInstaller(agentId) {
           };
         }
       }
+
+      // Sweep mode (v1 host detected): remove any proven-owned v2 leftovers so
+      // a v2→v1 downgrade stops poisoning the config. Best-effort by contract —
+      // a sweep failure (fail-closed entry, unconfirmable legacy-missing
+      // candidate) must never fail the v1 registration, only warn.
+      let v2SweepApply = null;
+      if (v2Mode === "sweep") {
+        v2SweepApply = getV2Registrar().applyV2Unregister({
+          cfg,
+          configPath,
+          candidates: getV2Registrar().readV2Candidates(cfg, configPath),
+          makeContext: makeV2Context,
+          options,
+        });
+      }
+      const v2SweepWarnings = (v2SweepResult) => {
+        if (!v2SweepResult) return [];
+        const out = [];
+        if (v2SweepResult.removed > 0) {
+          out.push(`swept ${v2SweepResult.removed} leftover v2 plugins-key entr${v2SweepResult.removed === 1 ? "y" : "ies"} (no opencode v2 host detected)`);
+        }
+        if (v2SweepResult.error) {
+          out.push(`v2 plugins-key leftover sweep failed: ${v2SweepResult.error.reason}`);
+        } else if (v2SweepResult.activeEntryRemaining) {
+          out.push("v2 plugins-key leftover sweep retained a fail-closed entry; manual review required");
+        }
+        return out;
+      };
       const warnings = [
         ...recoveryWarnings,
         ...lockedWarnings,
         ...(apply.warnings || []),
         ...(v2Apply.warnings || []),
+        ...v2SweepWarnings(v2SweepApply),
       ];
-      const allMutatedPaths = [...apply.mutatedPaths, ...v2Apply.mutatedPaths];
+      const allMutatedPaths = [
+        ...apply.mutatedPaths,
+        ...v2Apply.mutatedPaths,
+        ...((v2SweepApply && v2SweepApply.mutatedPaths) || []),
+      ];
       const effectivePath = allMutatedPaths.length
         ? allMutatedPaths[allMutatedPaths.length - 1]
         : (lockedPre.effective ? lockedPre.effective.path : configPath);
@@ -1226,7 +1307,16 @@ function makeFamilyInstaller(agentId) {
    * @returns {object}
    */
   function register(options = {}) {
-    if (cfg.managedMaterialization === true) return registerManaged(options);
+    if (cfg.managedMaterialization === true) {
+      const prepared = { ...options };
+      // Upstream PR #1045 review: the v2 `plugins` write follows the detected
+      // host (opencode <= 1.18.15 rejects unknown top-level keys). Tests pin
+      // options.v2Host directly; production probes the real binary here.
+      if (familyHasV2Entry(cfg) && !prepared.pluginDir) {
+        prepared.v2Host = resolveV2Host(prepared);
+      }
+      return registerManaged(prepared);
+    }
 
     // options.homeDir mirrors unregister() (see below). Without it a caller
     // that passes a sandbox home — tests, cleanup planning — silently writes

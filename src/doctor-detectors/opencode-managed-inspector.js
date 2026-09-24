@@ -18,6 +18,7 @@ const managedGeneration = require("../../hooks/opencode-family-managed-generatio
 const entryOwnership = require("../../hooks/opencode-family-entry-ownership");
 const jsoncEditor = require("../../hooks/opencode-family-jsonc");
 const v2Registry = require("../../hooks/opencode-family-v2-registration");
+const hostDetect = require("../../hooks/opencode-host-detect");
 const { resolveSourcePluginDir } = require("../../hooks/opencode-install");
 
 const SAFE_CATEGORIES = entryOwnership.OWNED_SAFE_CATEGORIES;
@@ -202,7 +203,14 @@ function inspectManagedOpencode(descriptor, options = {}) {
   // opencode v2 `plugins`-key assessment (issue #1039). Computed up front so
   // the final verdicts below can factor it in: a healthy v1 `plugin` entry
   // with a missing v2 entry means an older Clawd installed this target, and
-  // Repair (register) converges both keys.
+  // Repair (register) converges both keys — but only when a v2 host is
+  // actually present (upstream PR #1045 review: opencode <= 1.18.15 rejects
+  // unknown top-level keys, so the key is neither required nor harmless for a
+  // 1.x host). Injected options.v2Host keeps tests hermetic; production
+  // probes the real binary once per inspection.
+  const v2Host = cfg.v2PluginDirName
+    ? hostDetect.__test.normalizeHostDetection(options.v2Host) || hostDetect.detectOpencodeHost(options)
+    : null;
   const assessV2 = () => {
     if (!cfg.v2PluginDirName) return null;
     const v2States = v2Registry.readV2Candidates(cfg, descriptor.configPath);
@@ -454,10 +462,17 @@ function inspectManagedOpencode(descriptor, options = {}) {
     opencodeEntry: single.rawEntry,
     opencodeEntries: entries.map((entry) => entry.rawEntry),
   };
-  const v2Suffix = v2Assessment && v2Assessment.state !== "ok"
+  // A missing v2 entry only demands repair when a v2 host is actually there.
+  // For a 1.x host (or an unknown one) the `plugins` key is legitimately
+  // absent — reporting it would nag every pre-1.18.16 user into a Fix that
+  // can never converge.
+  const v2Satisfied = !v2Assessment
+    || v2Assessment.state === "ok"
+    || (v2Assessment.state === "missing" && v2Host !== "v2");
+  const v2Suffix = v2Assessment && !v2Satisfied
     ? `; v2: ${v2Assessment.detail}`
     : "";
-  const v2Extras = v2Assessment && v2Assessment.state !== "ok"
+  const v2Extras = v2Assessment && !v2Satisfied
     ? { v2EntryState: v2Assessment.state, v2Entries: v2Assessment.entries || [] }
     : {};
 
@@ -473,10 +488,9 @@ function inspectManagedOpencode(descriptor, options = {}) {
         maskedEntries: maskedOwned,
       });
     }
-    // v1 entry verified — but the opencode v2 `plugins` key is part of the
-    // same contract now. A missing/stale v2 entry means an older Clawd (or a
-    // downgrade) wrote this config; Repair converges it.
-    if (v2Assessment && v2Assessment.state === "missing") {
+    // v1 entry verified — the opencode v2 `plugins` key is part of the same
+    // contract, but only for a detected v2 host: Repair (register) adds it.
+    if (v2Assessment && v2Assessment.state === "missing" && v2Host === "v2") {
       return makeResult(descriptor, "legacy-path", {
         level: "warning",
         ...fields,
@@ -484,12 +498,23 @@ function inspectManagedOpencode(descriptor, options = {}) {
         detail: `${effective.path} v1 plugin entry verified, but the opencode v2 entry is not registered (${v2Assessment.detail}); Repair adds it`,
       });
     }
+    // A leftover Clawd v2 entry on a 1.x host is actively harmful (opencode
+    // <= 1.18.15 rejects the whole config): Repair sweeps it.
+    if (v2Assessment && v2Assessment.state === "ok" && v2Host === "v1") {
+      return makeResult(descriptor, "broken-path", {
+        level: "warning",
+        ...fields,
+        v2EntryState: "leftover",
+        v2Entries: v2Assessment.entries || [],
+        detail: `${effective.path} v1 plugin entry verified, but a Clawd v2 plugins-key entry remains and no opencode v2 host was detected (opencode <= 1.18.15 rejects the key); Repair removes it`,
+      });
+    }
     if (v2Assessment && (v2Assessment.state === "stale" || v2Assessment.state === "duplicate")) {
       return makeResult(descriptor, v2Assessment.state === "duplicate" ? "duplicate-entry" : "broken-path", {
         level: "warning",
         ...fields,
         ...v2Extras,
-        detail: `${effective.path} v1 plugin entry verified, but the v2 entry needs repair: ${v2Assessment.detail}`,
+        detail: `${effective.path} v1 plugin entry verified, but the v2 entry needs repair: ${v2Assessment.detail}${v2Host === "v1" ? "; Repair sweeps it (no opencode v2 host detected)" : ""}`,
       });
     }
     if (v2Assessment && v2Assessment.state === "needs-review") {
@@ -500,11 +525,17 @@ function inspectManagedOpencode(descriptor, options = {}) {
         detail: `${effective.path} v1 plugin entry verified, but the v2 entry needs manual review: ${v2Assessment.detail}`,
       });
     }
+    const v2OkDetail = !v2Assessment
+      ? ""
+      : v2Assessment.state === "ok"
+        ? `; ${v2Assessment.detail}`
+        : `; no opencode v2 host detected, the "plugins" key is not required`;
     const result = makeResult(descriptor, "ok", {
       level: null,
       ...fields,
       v2Entries: v2Assessment ? v2Assessment.entries || [] : [],
-      detail: `${effective.path} plugin entry verified${v2Assessment ? `; ${v2Assessment.detail}` : ""}`,
+      ...(v2Assessment && v2Assessment.state === "missing" ? { v2EntryState: "not-required" } : {}),
+      detail: `${effective.path} plugin entry verified${v2OkDetail}`,
     });
     if (maskedWarnings.length) {
       result.level = "warning";
