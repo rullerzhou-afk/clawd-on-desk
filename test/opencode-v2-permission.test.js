@@ -178,3 +178,97 @@ test("legacy v1 hook_source keeps the fire-and-forget 200-ACK contract", async (
   assert.strictEqual(h.shown.length, 1);
   assert.strictEqual(h.shown[0].isOpencodeV2, undefined);
 });
+
+// Upstream PR #1045 review: the v2 plugin sends a single shell command as
+// tool_input.resource, which the destructive-action reminder never scanned —
+// a v2 `rm -rf` was auto-approved under permission automation and the bubble
+// showed no hint. The v2 adapter must alias a lone shell resource to command.
+test("upstream #1045 review: a v2 shell resource feeds the destructive-action reminder", async (t) => {
+  const h = await setup(t);
+  const posted = postPermission(h.port, makeV2Payload({
+    tool_input: { resource: "git push --force origin main" },
+  }));
+  await waitUntil(() => h.shown.length === 1);
+
+  const entry = h.shown[0];
+  assert.strictEqual(entry.permissionReminder && entry.permissionReminder.hold, true,
+    "the v2 resource is scanned as a shell command");
+  assert.ok(entry.permissionReminder.tag, "destructive hint tag present");
+  // Raw payload preserved: resource stays for display, the stored tool_input
+  // keeps the original v2 shape.
+  assert.strictEqual(entry.toolInput.resource, "git push --force origin main");
+  assert.strictEqual(entry.toolInput.command, undefined);
+
+  // With the stamp present, evaluatePermissionAutomation defers to a human
+  // under auto-tools (generic hold machinery — covered by
+  // test/permission-destructive-reminder.test.js runtime cases).
+  assert.strictEqual(posted.settled, false, "connection stays open for a human decision");
+
+  h.permission.resolvePermissionEntry(entry, "allow");
+  const result = await posted.response;
+  assert.strictEqual(result.status, 200);
+  assert.deepStrictEqual(JSON.parse(result.body), { decision: "allow" });
+});
+
+test("upstream #1045 review: a benign v2 shell resource gets no reminder hold", async (t) => {
+  const h = await setup(t);
+  const posted = postPermission(h.port, makeV2Payload({
+    tool_input: { resource: "npm test" },
+  }));
+  await waitUntil(() => h.shown.length === 1);
+
+  const entry = h.shown[0];
+  assert.strictEqual(entry.permissionReminder, null,
+    "an ordinary command must not be held");
+  h.permission.resolvePermissionEntry(entry, "allow");
+  const result = await posted.response;
+  assert.strictEqual(result.status, 200);
+});
+
+test("upstream #1045 review: a non-shell v2 resource is not command-mapped", async (t) => {
+  const h = await setup(t);
+  const posted = postPermission(h.port, makeV2Payload({
+    tool_name: "write",
+    tool_input: { resource: "git push --force origin main" },
+  }));
+  await waitUntil(() => h.shown.length === 1);
+
+  const entry = h.shown[0];
+  assert.strictEqual(entry.permissionReminder, null,
+    "file-path-like resources of non-shell tools must not scan as commands");
+  h.permission.resolvePermissionEntry(entry, "deny", "nope");
+  const result = await posted.response;
+  assert.strictEqual(result.status, 200);
+});
+
+test("upstream #1045 review: mapOpencodeV2ShellResource aliasing rules", () => {
+  const { mapOpencodeV2ShellResource } = require("../src/server-route-permission");
+
+  // Lone shell resource → command alias, original kept.
+  assert.deepStrictEqual(
+    mapOpencodeV2ShellResource("shell", { resource: "rm -rf /tmp/x" }),
+    { resource: "rm -rf /tmp/x", command: "rm -rf /tmp/x" }
+  );
+  // Tool-name matching is case-insensitive (same gate the reminder uses).
+  assert.deepStrictEqual(
+    mapOpencodeV2ShellResource("Shell", { resource: "x" }),
+    { resource: "x", command: "x" }
+  );
+  // An existing command key wins — never clobbered.
+  assert.deepStrictEqual(
+    mapOpencodeV2ShellResource("shell", { command: "safe", resource: "rm -rf /tmp/x" }),
+    { command: "safe", resource: "rm -rf /tmp/x" }
+  );
+  // Multi-resource shape and non-shell tools pass through untouched.
+  const multi = { resources: ["a", "b"] };
+  assert.strictEqual(mapOpencodeV2ShellResource("shell", multi), multi);
+  const read = { resource: "/etc/hosts" };
+  assert.strictEqual(mapOpencodeV2ShellResource("read", read), read);
+  // Degenerate inputs pass through.
+  assert.strictEqual(mapOpencodeV2ShellResource("shell", null), null);
+  assert.strictEqual(mapOpencodeV2ShellResource("shell", "raw"), "raw");
+  assert.deepStrictEqual(
+    mapOpencodeV2ShellResource("shell", { resource: 42 }),
+    { resource: 42 }
+  );
+});

@@ -31,6 +31,7 @@ const {
   buildToolInputFingerprint,
 } = require("./server-permission-utils");
 const { preparePermissionReminder, NOT_INSPECTED_TAG } = require("./permission-reminder");
+const { shouldScanIrreversibleCommand } = require("./bubble-format");
 const { resolveHookAgentId } = require("./server-agent-id");
 const { getAgent } = require("../agents/registry");
 const { isOpencodeFamily, getFamilyConfig } = require("../agents/opencode-family");
@@ -51,6 +52,22 @@ const {
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
+
+// opencode v2 sends a single shell command as tool_input.resource
+// (hooks/opencode-family-plugin/core.mjs buildV2PermissionBody), while the
+// destructive-action reminder scans command-carrying fields only. Alias a
+// lone shell `resource` to `command` for the detail/reminder view so a v2
+// `rm -rf` is held for a human under permission automation and the bubble
+// shows the destructive hint. The raw resource field stays in place for
+// display; the stored toolInput keeps the original payload. Multi-resource
+// requests ({ resources: [...] }) are intentionally left unmapped.
+function mapOpencodeV2ShellResource(toolName, rawInput) {
+  if (!rawInput || typeof rawInput !== "object" || Array.isArray(rawInput)) return rawInput;
+  if (typeof rawInput.resource !== "string" || !rawInput.resource) return rawInput;
+  if (typeof rawInput.command === "string" && rawInput.command) return rawInput;
+  if (!shouldScanIrreversibleCommand(toolName)) return rawInput;
+  return { ...rawInput, command: rawInput.resource };
+}
 
 // ExitPlanMode (Plan Review) and AskUserQuestion (elicitation) happen to
 // travel through /permission, but they're UX flows — not approvals the
@@ -753,8 +770,9 @@ function handlePermissionPost(req, res, options) {
 
           const rawInput = data.tool_input && typeof data.tool_input === "object" ? data.tool_input : {};
           const toolInput = truncateDeep(rawInput);
-          const permissionDetail = preparePermissionDetail(toolName, rawInput);
-          const permissionReminder = preparePermissionReminder(toolName, rawInput);
+          const viewInput = mapOpencodeV2ShellResource(toolName, rawInput);
+          const permissionDetail = preparePermissionDetail(toolName, viewInput);
+          const permissionReminder = preparePermissionReminder(toolName, viewInput);
           const sessionIdentity = resolvePermissionSession(data.session_id, "default");
           const sessionId = sessionIdentity.sessionId;
           const requestId = typeof data.request_id === "string" ? data.request_id : null;
@@ -2425,6 +2443,7 @@ function handlePermissionPost(req, res, options) {
 
 module.exports = {
   MAX_PERMISSION_BODY_BYTES,
+  mapOpencodeV2ShellResource,
   shouldBypassCCBubble,
   shouldBypassCCSubagentBubble,
   shouldBypassCodexBubble,
