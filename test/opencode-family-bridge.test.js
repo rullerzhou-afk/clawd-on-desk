@@ -669,3 +669,62 @@ describe("opencode-family permission completion lifecycle", () => {
     }
   });
 });
+
+describe("opencode-family permission fan-out (one bubble per request)", () => {
+  // OpenCode V2 loads one plugin instance per location and delivers every
+  // event to all of them. Before the per-request dedup, each instance posted
+  // its own /permission forward and the user saw N identical bubbles.
+  it("posts exactly one bubble when every instance receives the same permission.asked", async () => {
+    clawdResponseRecognized = true;
+    fetchBehavior = null;
+    try {
+      const plugin = createOpencodeFamilyPlugin(OC);
+      const a = await initInstance(OC, { plugin, directory: "C:\\project-a" });
+      const b = await initInstance(OC, { plugin, directory: "C:\\project-b" });
+      fetchCalls.length = 0;
+
+      await emitPermission(a, "per_fanout", "ses_fanout");
+      await emitPermission(b, "per_fanout", "ses_fanout");
+      await settlePermissionTail(plugin, "per_fanout");
+
+      const bubbles = fetchCalls.filter((call) => (
+        call.url.endsWith("/permission") && call.body && call.body.request_id === "per_fanout"
+      ));
+      assert.strictEqual(bubbles.length, 1, "duplicate permission.asked deliveries must not spawn a second bubble");
+    } finally {
+      clawdResponseRecognized = false;
+    }
+  });
+
+  it("still forwards duplicate completions as idempotent cleanup deliveries", async () => {
+    clawdResponseRecognized = true;
+    fetchBehavior = null;
+    try {
+      const plugin = createOpencodeFamilyPlugin(OC);
+      const a = await initInstance(OC, { plugin, directory: "C:\\project-a" });
+      const b = await initInstance(OC, { plugin, directory: "C:\\project-b" });
+      await emitPermission(a, "per_fanout_reply", "ses_fanout_reply");
+      await settlePermissionTail(plugin, "per_fanout_reply");
+      fetchCalls.length = 0;
+
+      await emitPermissionReplied(a, {
+        sessionID: "ses_fanout_reply",
+        requestID: "per_fanout_reply",
+        reply: "once",
+      });
+      await emitPermissionReplied(b, {
+        sessionID: "ses_fanout_reply",
+        requestID: "per_fanout_reply",
+        reply: "once",
+      });
+      await settlePermissionTail(plugin, "per_fanout_reply");
+
+      const dismissals = fetchCalls.filter((call) => (
+        call.body && call.body.permission_event === "replied" && call.body.request_id === "per_fanout_reply"
+      ));
+      assert.strictEqual(dismissals.length, 2, "completion delivery is idempotent by contract, not deduped");
+    } finally {
+      clawdResponseRecognized = false;
+    }
+  });
+});

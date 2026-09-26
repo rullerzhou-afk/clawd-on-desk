@@ -33,11 +33,13 @@ const AGENT_METRIC_POLICIES = Object.freeze({
   "qwen-code": policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   zcode: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   codewhale: policy(null, null, STANDARD_TOOL_START),
-  // OpenCode-family plugins dedupe and compact repeated visual states. A
-  // second PreToolUse inside the same working run may never reach /state, so
-  // claiming per-tool counts would turn a deterministic undercount into 0.
-  opencode: policy(null, STANDARD_COMPLETION, null),
-  mimocode: policy(null, STANDARD_COMPLETION, null),
+  // OpenCode-family tool lifecycle events are delivered per call: the family
+  // plugin exempts them from visual-state dedup/compaction so every
+  // PreToolUse reaches /state (hooks/opencode-family-plugin/core.mjs). Only a
+  // transport overflow that drops the oldest queued snapshot can undercount,
+  // and only during extreme delivery stalls.
+  opencode: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
+  mimocode: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   pi: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   // OMP records a main-session completion candidate at session_stop and emits
   // Stop only after the following agent_end proves willContinue !== true, so

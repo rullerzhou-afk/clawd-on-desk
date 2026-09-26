@@ -43,7 +43,7 @@ const OPENCODE_FAMILY = Object.freeze({
     configFileName: "opencode.json",
     configCandidates: Object.freeze(["opencode.jsonc", "opencode.json", "config.json"]),
     jsonc: true,
-    schema: "https://opencode.ai/config.json",
+    schema: "https://opencode.ai/config.json",
     // #1026: register a user-writable, content-addressed managed generation
     // under the target home instead of pointing opencode at the packaged
     // source dir (Program Files / app.asar.unpacked paths are silently
@@ -95,7 +95,7 @@ const OPENCODE_FAMILY = Object.freeze({
     configFileName: "mimocode.jsonc",
     configCandidates: Object.freeze(["mimocode.jsonc", "mimocode.json", "config.json"]),
     jsonc: true,
-    schema: "https://mimo.xiaomi.com/mimocode/config.json",
+    schema: "https://mimo.xiaomi.com/mimocode/config.json",
     // MiMo keeps the legacy direct-source register/unregister/Doctor behavior
     // in this change (#1026 §1.2). Flipping this to true requires real MiMo
     // loader evidence and explicit review authorization.

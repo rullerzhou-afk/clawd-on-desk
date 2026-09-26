@@ -555,6 +555,14 @@ export function createOpencodeFamilyPlugin(config) {
   // cannot cancel a live promise, so tails remove themselves only after
   // settlement and only when their identity is still current.
   const _permissionPostTailByRequestId = new Map();
+  // OpenCode V2 loads one plugin instance per location and fans every event
+  // out to all of them, so the same permission.asked arrives once per
+  // instance. A request must produce exactly ONE Clawd bubble: the first
+  // delivery owns it and later duplicates are dropped. Completion delivery
+  // stays untouched — a duplicate permission.replied is an idempotent cleanup
+  // delivery by contract (see opencode-family-bridge.test.js).
+  const _permissionAskedSeen = new Set();
+  const PERMISSION_SEEN_LIMIT = 256;
   // Reverse bridge state. Set by startBridge() at plugin init. Clawd receives
   // _bridgeUrl + _bridgeToken with every /permission forward and POSTs back.
   let _bridgeUrl = "";
@@ -1212,9 +1220,12 @@ export function createOpencodeFamilyPlugin(config) {
 
   function isReplaceableStateSnapshot(snapshot) {
     const body = snapshot && snapshot.body;
+    // Replaceable = visual-only repeats a newer snapshot can supersede. Tool
+    // lifecycle events are deliberately absent: coalescing them would silently
+    // drop tool calls that recap counts (see TOOL_LIFECYCLE_EVENTS).
     return !!body
       && body.metadata_only !== true
-      && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"].includes(body.event);
+      && ["UserPromptSubmit", "PreCompact"].includes(body.event);
   }
 
   function isMetadataStateSnapshot(snapshot) {
@@ -1475,14 +1486,45 @@ export function createOpencodeFamilyPlugin(config) {
   // Clawd uses PascalCase event names matching Claude Code's hook vocabulary so
   // state.js transition rules (e.g. SubagentStop → working whitelist) are
   // reusable across agents.
-  function sendState(state, eventName, sessionId) {
+  const TOOL_LIFECYCLE_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+
+  // Bounded memory of delivered tool lifecycle identities. Plugin instances
+  // (and plugin reloads) share this closure state, so exactly one POST per
+  // (call, phase) reaches /state no matter how many of them observe the
+  // event — recap counts tool calls from these POSTs.
+  const _toolEventSeen = new Set();
+  const TOOL_EVENT_SEEN_LIMIT = 512;
+
+  function toolEventIdentity(part, phase) {
+    return part && typeof part.id === "string" && part.id ? `${part.id}\0${phase}` : null;
+  }
+
+  function rememberToolEventKey(key) {
+    _toolEventSeen.add(key);
+    if (_toolEventSeen.size > TOOL_EVENT_SEEN_LIMIT) {
+      const oldest = _toolEventSeen.values().next().value;
+      if (oldest) _toolEventSeen.delete(oldest);
+    }
+  }
+
+  function sendState(state, eventName, sessionId, identity = null) {
     const body = buildStateBody(state, eventName, sessionId);
     if (!body) return;
 
     const lastState = _lastStatePerSession.get(body.session_id) || null;
 
     // Per-session dedup: skip only if the SAME session repeats the SAME state.
-    if (body.state === lastState) {
+    // Tool lifecycle events are data, not visuals — recap counts tool calls
+    // from them (src/recap-metrics.js) and parallel tools repeat the same
+    // working state — so they bypass the state dedup but are delivered once
+    // per (call, phase) identity instead.
+    if (TOOL_LIFECYCLE_EVENTS.has(body.event)) {
+      if (identity) {
+        const key = `${body.session_id}\0${identity}`;
+        if (_toolEventSeen.has(key)) return;
+        rememberToolEventKey(key);
+      }
+    } else if (body.state === lastState) {
       return;
     }
 
@@ -1523,9 +1565,9 @@ export function createOpencodeFamilyPlugin(config) {
           // pending → running → completed fires back-to-back; dedup absorbs the
           // repeat so only the first transition actually POSTs.
           const status = part.state && part.state.status;
-          if (status === "running") return { state: "working", event: "PreToolUse" };
-          if (status === "completed") return { state: "working", event: "PostToolUse" };
-          if (status === "error") return { state: "error", event: "PostToolUseFailure" };
+          if (status === "running") return { state: "working", event: "PreToolUse", identity: toolEventIdentity(part, "running") };
+          if (status === "completed") return { state: "working", event: "PostToolUse", identity: toolEventIdentity(part, "completed") };
+          if (status === "error") return { state: "error", event: "PostToolUseFailure", identity: toolEventIdentity(part, "error") };
           return null;
         }
 
@@ -2078,6 +2120,17 @@ export function createOpencodeFamilyPlugin(config) {
   // _lastSeenSessionId → _rootSessionId fallback.
   // Phase 1 dedup/state machine logic does not run for permission events — they
   // ride a parallel channel and never translate to a Clawd state transition.
+  // Bound the duplicate-ask memory without deleting history: entries only
+  // matter while a request is pending or shortly after it was resolved, so
+  // dropping the oldest past the cap cannot resurrect a bubble.
+  function rememberPermissionEvent(seen, requestId) {
+    seen.add(requestId);
+    if (seen.size > PERMISSION_SEEN_LIMIT) {
+      const oldest = seen.values().next().value;
+      if (oldest) seen.delete(oldest);
+    }
+  }
+
   function handlePermissionAsked(event, instance) {
     const p = (event && event.properties) || {};
     const requestId = p.id;
@@ -2085,6 +2138,11 @@ export function createOpencodeFamilyPlugin(config) {
       debugLog(`PERM skip: no request id in permission.asked`);
       return;
     }
+    if (_permissionAskedSeen.has(requestId)) {
+      debugLog(`PERM skip duplicate ask req=${boundedPermissionRequestId(requestId)}`);
+      return;
+    }
+    rememberPermissionEvent(_permissionAskedSeen, requestId);
     const sessionId = resolveSessionId(
       getEventSessionId(event),
       _lastSeenSessionId || _rootSessionId
@@ -2583,7 +2641,7 @@ export function createOpencodeFamilyPlugin(config) {
           );
 
           debugLog(`MAP ${event.type} → state=${mapped.state} event=${mapped.event}`);
-          sendState(mapped.state, mapped.event, sessionId);
+          sendState(mapped.state, mapped.event, sessionId, mapped.identity);
           // Unified cleanup happens only after postStateToClawd synchronously
           // snapshots the final SessionEnd body. This preserves cwd, title and
           // child/headless ownership while the queued network delivery waits.
@@ -2629,8 +2687,11 @@ export function createOpencodeFamilyPlugin(config) {
 //     is intentionally omitted — fail-closed omission instead of wrong values.
 //     Terminal focus degrades for v2 sessions (known limitation).
 //   - Per-event cwd comes from the event envelope `location.directory`; titles
-//     arrive via `session.renamed`; `session.usage.updated` carries session
-//     tokens directly (no SDK provider lookup needed for context usage).
+//     arrive via `session.renamed`; context usage comes from each
+//     `session.step.ended` (the step's own tokens = context occupancy), with
+//     the model limit resolved from the ctx.model registry in the background.
+//     `session.usage.updated` is the session's cumulative billing total and
+//     must never feed context usage.
 //   - "Always allow" has no host persistence API (permission domain exposes
 //     only get/hook/list/reply), so an `always` decision records an in-memory
 //     per-session action rule inside the service. It covers the session's
@@ -2699,6 +2760,38 @@ export function createOpencodeFamilyPluginV2(config) {
   let _reqCounter = 0;
   let _permissionReqCounter = 0;
 
+  // Child-session classification (parent map) and per-session model, both
+  // seeded from session.created / session.step.started and — for sessions
+  // that predate this plugin load — from a bounded identity hydration.
+  const _sessionParentById = new Map();
+  const _sessionModelById = new Map();
+  // Tool lifecycle identity dedup: recap counts tool calls from these POSTs,
+  // parallel tools repeat the same working state, and every module copy
+  // observes the same events — each (call, phase) is delivered exactly once.
+  const _toolEventSeen = new Set();
+  const TOOL_EVENT_SEEN_LIMIT = 512;
+  // Model -> context limit lookups (ctx.model registry), cached per model.
+  const _modelLimitCache = new Map();
+  // Identity hydration is best-effort, bounded, and never retried after a
+  // failure so one unreachable session cannot stall or hammer the service.
+  const _hydrationState = new Map();
+  const HYDRATION_TIMEOUT_MS = 3000;
+  // Token per in-flight hydration attempt. A live session.created (or a
+  // reload/dispose) deletes the token, so a late ctx.session.get result can
+  // never overwrite identity that already arrived on the event stream.
+  const _hydrationAttemptBySession = new Map();
+  // Per-session identity gate queue: mapped lifecycle/tool events staged while
+  // a recovered session's parent classification is unknown or still draining.
+  // The queue exists for the whole gate lifetime (even while empty), so any
+  // event arrives through the same ordered door until the gate closes.
+  const _pendingIdentityBySession = new Map();
+  // sessionId -> the queue array currently being drained (single-drain guard).
+  const _identityDrainingBySession = new Map();
+  const V2_IDENTITY_PENDING_MAX = 64;
+  // Bumped on reload/dispose so an in-flight gate drain stops immediately.
+  let _identityRecoveryGeneration = 0;
+  let _ctx = null;
+
   const _debugBuffer = [];
   let _debugFlushing = false;
   function debugLog(msg) {
@@ -2758,6 +2851,13 @@ export function createOpencodeFamilyPluginV2(config) {
     return port ? [port] : [];
   }
 
+  // Stable per-(call, phase) identity for tool lifecycle dedup. Null when the
+  // host event carries no call id — such events fall back to permissive
+  // sending rather than risking a dropped tool report.
+  function toolEventIdentity(data, phase) {
+    return data && typeof data.id === "string" && data.id ? `${data.id}\0${phase}` : null;
+  }
+
   // Translate a v2 event (type + data) into a Clawd (state, eventName) pair,
   // or null when Clawd should ignore it. Pure so tests can lock the mapping
   // against the evidence table in docs/investigations/opencode-v2-e1-evidence.md.
@@ -2779,16 +2879,20 @@ export function createOpencodeFamilyPluginV2(config) {
 
       case "session.step.started":
       case "session.reasoning.started":
+      case "session.text.started":
         return { state: "thinking", event: "UserPromptSubmit" };
 
       case "session.tool.called":
-        return { state: "working", event: "PreToolUse" };
+        return { state: "working", event: "PreToolUse", identity: toolEventIdentity(data, "running") };
 
       case "session.tool.success":
-        return { state: "working", event: "PostToolUse" };
+        return { state: "working", event: "PostToolUse", identity: toolEventIdentity(data, "completed") };
 
+      // v2.0.15's contract names this `session.tool.failed`; accept the older
+      // `session.tool.error` spelling too so either host shape maps.
+      case "session.tool.failed":
       case "session.tool.error":
-        return { state: "error", event: "PostToolUseFailure" };
+        return { state: "error", event: "PostToolUseFailure", identity: toolEventIdentity(data, "error") };
 
       case "session.step.ended":
         // Per-step teardown only ends the turn when the model stopped on its
@@ -2799,6 +2903,13 @@ export function createOpencodeFamilyPluginV2(config) {
 
       case "session.execution.succeeded":
         return { state: "attention", event: "Stop" };
+
+      // Interruption ends the turn WITHOUT completing it: StopFailure is the
+      // vocabulary's cancellation terminal (deriveSessionBadge maps it to the
+      // "interrupted" badge and it is not a done event), so a cancelled turn
+      // never increments completed turns while active state still clears.
+      case "session.execution.interrupted":
+        return { state: "error", event: "StopFailure" };
 
       case "session.execution.failed":
       case "session.error":
@@ -2903,7 +3014,9 @@ export function createOpencodeFamilyPluginV2(config) {
     const terminal = !!body && body.event === "SessionEnd";
     const metadata = isV2MetadataSnapshot({ body });
     const replaceable = !terminal && !metadata && !!body
-      && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"].includes(body.event);
+      // Tool lifecycle events are recap's tool-call signal (and parallel
+      // tools repeat the same working state), so they never coalesce.
+      && ["UserPromptSubmit", "PreCompact"].includes(body.event);
     const snapshot = makeV2Snapshot(body, `STATE ${body.event}→${body.state}${metadata ? " meta" : ""}`);
     let queue = _statePostQueueBySession.get(sessionId);
     if (!queue) {
@@ -2933,7 +3046,7 @@ export function createOpencodeFamilyPluginV2(config) {
         debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=metadata-fields`);
         return snapshot.completion;
       }
-      if (replaceable && last && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"]
+      if (replaceable && last && ["UserPromptSubmit", "PreCompact"]
         .includes(last.body && last.body.event) && !(last.body && last.body.metadata_only === true)) {
         settleV2Snapshot(last);
         queue.pending[queue.pending.length - 1] = snapshot;
@@ -2955,8 +3068,10 @@ export function createOpencodeFamilyPluginV2(config) {
     return snapshot.completion;
   }
 
-  function sendStateV2(state, eventName, sessionId, cwd) {
-    if (!state || !eventName) return;
+  const V2_TOOL_LIFECYCLE_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+
+  function sendStateV2(state, eventName, sessionId, cwd, identity = null) {
+    if (!state || !eventName) return undefined;
     const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
     const body = {
       state,
@@ -2968,11 +3083,30 @@ export function createOpencodeFamilyPluginV2(config) {
     const title = _sessionTitleById.get(clawdSessionId);
     if (title) body.session_title = title;
     if (cwd) body.cwd = cwd;
+    // v1 parity: child sessions stay out of the HUD and their completion is a
+    // SessionEnd, not a root Stop.
+    if (_sessionParentById.has(clawdSessionId)) body.headless = true;
+
     const lastState = _lastStatePerSession.get(clawdSessionId) || null;
-    if (body.state === lastState) return;
+    if (V2_TOOL_LIFECYCLE_EVENTS.has(eventName)) {
+      // Tool lifecycle events bypass the same-state dedup (parallel tools
+      // repeat "working") but deliver once per (call, phase) identity — the
+      // recap tool-call counter reads these POSTs.
+      if (identity) {
+        const key = `${clawdSessionId}\0${identity}`;
+        if (_toolEventSeen.has(key)) return undefined;
+        _toolEventSeen.add(key);
+        if (_toolEventSeen.size > TOOL_EVENT_SEEN_LIMIT) {
+          const oldest = _toolEventSeen.values().next().value;
+          if (oldest) _toolEventSeen.delete(oldest);
+        }
+      }
+    } else if (body.state === lastState) {
+      return undefined;
+    }
     debugLog(`SEND ${lastState || "null"} → ${body.state} event=${body.event} session=${clawdSessionId}`);
     _lastStatePerSession.set(clawdSessionId, body.state);
-    postStateToClawdV2(body);
+    return postStateToClawdV2(body);
   }
 
   function sendMetadataV2(sessionId, fields) {
@@ -3000,6 +3134,104 @@ export function createOpencodeFamilyPluginV2(config) {
     return normalized;
   }
 
+  // Recovered-session identity gate. The first event a session emits after a
+  // service restart can be a tool call or a turn end, and the answer to "is
+  // this a child session?" only arrives asynchronously from ctx.session.get.
+  // Reporting it immediately as a root lifecycle is the bug: a child's Stop
+  // would notify completion and its tool calls would enter recap. The gate
+  // therefore owns the session's mapped lifecycle/tool events from the moment
+  // hydration starts until its queue (including events appended while draining)
+  // is fully delivered:
+  //   - while hydration is pending, events accumulate in the gate queue;
+  //   - once identity settles (success, failure, timeout, live session.created)
+  //     the queue drains one event at a time, awaiting each delivery, so a late
+  //     terminal cannot coalesce an event that has not been dispatched yet;
+  //   - events arriving mid-drain append to the same queue and keep arrival
+  //     order; only an empty queue (and a settled lookup) closes the gate.
+  // Metadata (title, context usage) never depends on the parent map and keeps
+  // flowing immediately. The gate is per session (one hung lookup cannot hold
+  // another session back), hard-capped, and fail-open: a failed, timed-out or
+  // unavailable lookup drains the staged events as root instead of wedging.
+  function dispatchV2MappedEvent(sessionId, mapped, cwd) {
+    const child = _sessionParentById.has(sessionId);
+    // v1 parity: a child session's turn end is a SessionEnd, never a root Stop,
+    // and its reports stay headless (sendStateV2 reads the parent map).
+    if (child && mapped.event === "Stop") {
+      return sendStateV2("sleeping", "SessionEnd", sessionId, cwd);
+    }
+    return sendStateV2(mapped.state, mapped.event, sessionId, cwd, mapped.identity);
+  }
+
+  function invalidateV2Hydration(sessionId) {
+    // Deleting the token makes any in-flight continuation observe a mismatch
+    // and bail before touching identity maps or draining its queue.
+    _hydrationAttemptBySession.delete(sessionId);
+  }
+
+  function dropV2IdentityRecovery() {
+    // Reload/dispose must be atomic: invalidate in-flight lookups, stop any
+    // drain (the generation guard does that), discard the queues, and reset
+    // every pending hydration state — including sessions whose lookup started
+    // from an ignored/metadata-only event and never staged anything. done /
+    // known / failed are kept, so identity already learned survives.
+    _identityRecoveryGeneration += 1;
+    for (const [sessionId, state] of _hydrationState) {
+      if (state === "pending") _hydrationState.delete(sessionId);
+    }
+    _hydrationAttemptBySession.clear();
+    _pendingIdentityBySession.clear();
+    _identityDrainingBySession.clear();
+  }
+
+  // Serial per-session drain: dispatch one staged event, await its delivery,
+  // then take the next (including events appended while waiting). A terminal
+  // is therefore never dispatched ahead of an earlier staged event, so
+  // postStateToClawdV2's terminal coalescing cannot swallow it.
+  async function drainIdentityGate(sessionId) {
+    const queue = _pendingIdentityBySession.get(sessionId);
+    if (!queue || _identityDrainingBySession.has(sessionId)) return;
+    _identityDrainingBySession.set(sessionId, queue);
+    const generation = _identityRecoveryGeneration;
+    try {
+      while (true) {
+        if (generation !== _identityRecoveryGeneration) return;
+        const record = queue.shift();
+        if (!record) break;
+        try {
+          const cwd = record.envelopeCwd || _sessionCwdById.get(sessionId) || null;
+          const completion = dispatchV2MappedEvent(sessionId, record.mapped, cwd);
+          if (completion && typeof completion.then === "function") await completion;
+        } catch (err) {
+          debugLog(`IDENTITY-GATE replay failed session=${sessionId}: ${err && err.message}`);
+        }
+      }
+    } finally {
+      if (_identityDrainingBySession.get(sessionId) === queue) {
+        _identityDrainingBySession.delete(sessionId);
+      }
+      // Close the gate only when this drain is still current, its queue is
+      // empty and the lookup is no longer pending; otherwise leave it open so
+      // appended events keep arriving through the same ordered door.
+      if (generation === _identityRecoveryGeneration
+        && _pendingIdentityBySession.get(sessionId) === queue
+        && queue.length === 0
+        && _hydrationState.get(sessionId) !== "pending") {
+        _pendingIdentityBySession.delete(sessionId);
+      }
+    }
+  }
+
+  // Append a mapped lifecycle/tool event to an open gate. The caller only
+  // reaches here while the gate exists; the cap is a hard backstop with an
+  // explicit drop-oldest overflow so the queue can never grow without bound.
+  function enqueueIdentityGateEvent(queue, sessionId, mapped, envelopeCwd) {
+    if (queue.length >= V2_IDENTITY_PENDING_MAX) {
+      const dropped = queue.shift();
+      debugLog(`IDENTITY-GATE overflow=dropped-old session=${sessionId} drop=${dropped.mapped.event}`);
+    }
+    queue.push({ mapped, envelopeCwd });
+  }
+
   function handleV2Event(envelope) {
     if (!envelope || typeof envelope.type !== "string") return;
     const type = envelope.type;
@@ -3019,17 +3251,47 @@ export function createOpencodeFamilyPluginV2(config) {
       : null;
     if (sessionId && envelopeCwd) _sessionCwdById.set(sessionId, envelopeCwd);
 
+    // Session identity side captures — no lifecycle is invented for them.
+    if (type === "session.created" && sessionId) {
+      const parentID = typeof data.parentID === "string" && data.parentID.trim()
+        ? normalizeSessionId(data.parentID)
+        : null;
+      if (parentID) _sessionParentById.set(sessionId, parentID);
+      if (data.model && typeof data.model === "object") {
+        _sessionModelById.set(sessionId, {
+          providerID: typeof data.model.providerID === "string" ? data.model.providerID : null,
+          modelID: typeof data.model.id === "string" ? data.model.id : null,
+        });
+      }
+      // A live creation carries the session identity; only sessions that
+      // predate this load need the ctx.session.get hydration below. It also
+      // supersedes any in-flight recovery lookup: invalidate the token so the
+      // late result cannot overwrite this live identity. The event itself is
+      // mapped (SessionStart) and enters the same gate in arrival order below;
+      // the gate settles and drains once this handler reaches its tail.
+      if (_hydrationState.get(sessionId) === "pending") invalidateV2Hydration(sessionId);
+      _hydrationState.set(sessionId, "known");
+    }
+
+    if (type === "session.step.started" && sessionId && data.model && typeof data.model === "object") {
+      _sessionModelById.set(sessionId, {
+        providerID: typeof data.model.providerID === "string" ? data.model.providerID : null,
+        modelID: typeof data.model.id === "string" ? data.model.id : null,
+      });
+    }
+
+    if (type === "session.step.ended" && sessionId) {
+      // Context usage is the step's own token accounting (context occupancy).
+      // session.usage.updated carries the session's cumulative billing totals
+      // and must never feed it (it pins any percentage at 100%).
+      reportV2ContextUsage(sessionId, data);
+    }
+
+    if (sessionId) ensureV2SessionHydration(rawSessionId);
+
     if (type === "session.renamed") {
       const titled = captureV2Title(sessionId, data.title);
       if (titled) sendMetadataV2(titled, { session_title: data.title });
-      return;
-    }
-
-    if (type === "session.usage.updated") {
-      const used = extractContextUsageUsed(data.tokens);
-      if (used != null && sessionId) {
-        sendMetadataV2(sessionId, { context_usage: used });
-      }
       return;
     }
 
@@ -3060,8 +3322,140 @@ export function createOpencodeFamilyPluginV2(config) {
       debugLog(`DROP ${type} event=${mapped.event} reason=no-session-id`);
       return;
     }
-    const cwd = envelopeCwd || _sessionCwdById.get(sessionId) || null;
-    sendStateV2(mapped.state, mapped.event, sessionId, cwd);
+    // While the identity gate is open (lookup pending or drain in progress),
+    // every mapped lifecycle/tool event enters the same ordered queue so it is
+    // classified with the resolved parent and cannot overtake an earlier event.
+    const gateQueue = _pendingIdentityBySession.get(sessionId);
+    if (gateQueue) {
+      enqueueIdentityGateEvent(gateQueue, sessionId, mapped, envelopeCwd);
+      // A settled gate may need a kick (hydration continuation also kicks it);
+      // while pending we wait for that continuation.
+      if (_hydrationState.get(sessionId) !== "pending") void drainIdentityGate(sessionId);
+      return;
+    }
+    dispatchV2MappedEvent(sessionId, mapped, envelopeCwd || _sessionCwdById.get(sessionId) || null);
+  }
+
+  // Context usage is the step's own token accounting (context occupancy).
+  // The model limit resolves from the ctx.model registry in the background:
+  // the sample ships immediately with what is known and is re-pushed once the
+  // limit lands, so nothing blocks the shared event consumption path and a
+  // first-observed sample does not keep a missing limit forever.
+  const _lastUsedBySession = new Map();
+
+  async function resolveV2ModelLimit(model) {
+    if (!model || !model.modelID) return null;
+    const key = `${model.providerID || ""}\u0000${model.modelID}`;
+    if (_modelLimitCache.has(key)) return _modelLimitCache.get(key);
+    let limit = null;
+    try {
+      const registry = _ctx && _ctx.model && typeof _ctx.model.list === "function" ? await _ctx.model.list() : null;
+      const models = Array.isArray(registry) ? registry : (registry && registry.data) || [];
+      const match = models.find((entry) => entry
+        && (entry.id === model.modelID || entry.modelID === model.modelID)
+        && (!model.providerID || entry.providerID === model.providerID));
+      if (match && match.limit && Number.isFinite(match.limit.context) && match.limit.context > 0) {
+        limit = match.limit.context;
+      }
+    } catch (err) {
+      debugLog(`CTX limit lookup failed: ${err && err.message}`);
+    }
+    // Misses are not cached: a later registry reload may resolve the model.
+    if (limit == null) return null;
+    _modelLimitCache.set(key, limit);
+    return limit;
+  }
+
+  function pushV2ContextUsage(sessionId) {
+    const used = _lastUsedBySession.get(sessionId);
+    if (used == null) return;
+    const model = _sessionModelById.get(sessionId) || null;
+    const cachedLimit = model ? _modelLimitCache.get(`${model.providerID || ""}\u0000${model.modelID}`) : null;
+    sendMetadataV2(sessionId, {
+      context_usage: { used, limit: cachedLimit == null ? null : cachedLimit, source: "opencode" },
+    });
+    if (model && cachedLimit == null) {
+      void resolveV2ModelLimit(model).then((limit) => {
+        if (limit != null) pushV2ContextUsage(sessionId);
+      });
+    }
+  }
+
+  function reportV2ContextUsage(sessionId, data) {
+    const used = extractContextUsageUsed(data && data.tokens);
+    if (used == null) return;
+    _lastUsedBySession.set(sessionId, used);
+    pushV2ContextUsage(sessionId);
+  }
+
+  // First-seen sessions (for example after a service restart) carry their
+  // identity in ctx.session.get, not in any event. Hydrate once per session
+  // in the background: bounded, off the shared consumption path, never
+  // retried after a failure, and it only fills maps — no lifecycle event is
+  // invented for the recovered session. The gate queue is opened here, before
+  // the lookup settles, so every event that arrives meanwhile (including
+  // ignored/metadata-only events that never stage) is owned by the gate; every
+  // terminal outcome (success, failure, timeout, invalidation) settles it.
+  function ensureV2SessionHydration(rawSessionId) {
+    const sessionId = normalizeSessionId(rawSessionId);
+    if (!sessionId || _hydrationState.has(sessionId)) return;
+    const sessionApi = _ctx && _ctx.session && typeof _ctx.session.get === "function" ? _ctx.session : null;
+    if (!sessionApi) {
+      _hydrationState.set(sessionId, "failed");
+      return;
+    }
+    _hydrationState.set(sessionId, "pending");
+    if (!_pendingIdentityBySession.has(sessionId)) _pendingIdentityBySession.set(sessionId, []);
+    const attempt = {};
+    _hydrationAttemptBySession.set(sessionId, attempt);
+    void (async () => {
+      let info;
+      try {
+        const timeout = new Promise((_, reject) => {
+          const timer = setTimeout(() => reject(new Error("hydration timeout")), HYDRATION_TIMEOUT_MS);
+          if (timer && typeof timer.unref === "function") timer.unref();
+        });
+        // The host API speaks raw session ids; only internal maps use the
+        // namespaced form.
+        info = await Promise.race([sessionApi.get({ sessionID: rawSessionId }), timeout]);
+      } catch (err) {
+        if (_hydrationAttemptBySession.get(sessionId) !== attempt) return;
+        _hydrationAttemptBySession.delete(sessionId);
+        _hydrationState.set(sessionId, "failed");
+        debugLog(`HYDRATE session=${sessionId} failed: ${err && err.message}`);
+        // Fail-open, bounded: drain the staged events as root rather than
+        // leaving them (or the session) wedged forever.
+        void drainIdentityGate(sessionId);
+        return;
+      }
+      // A live session.created, reload or dispose may have invalidated this
+      // lookup while it was in flight; never let it overwrite live identity.
+      if (_hydrationAttemptBySession.get(sessionId) !== attempt) return;
+      _hydrationAttemptBySession.delete(sessionId);
+      _hydrationState.set(sessionId, "done");
+      if (info && typeof info === "object") {
+        const parentID = typeof info.parentID === "string" && info.parentID.trim()
+          ? normalizeSessionId(info.parentID)
+          : null;
+        if (parentID) _sessionParentById.set(sessionId, parentID);
+        if (info.model && typeof info.model === "object" && !_sessionModelById.has(sessionId)) {
+          _sessionModelById.set(sessionId, {
+            providerID: typeof info.model.providerID === "string" ? info.model.providerID : null,
+            modelID: typeof info.model.id === "string" ? info.model.id : null,
+          });
+        }
+        const directory = info.location && typeof info.location.directory === "string"
+          && info.location.directory.trim()
+          ? info.location.directory
+          : null;
+        // The per-event envelope cwd is authoritative; only fill a gap.
+        if (directory && !_sessionCwdById.has(sessionId)) _sessionCwdById.set(sessionId, directory);
+        const titled = captureV2Title(sessionId, info.title);
+        if (titled) sendMetadataV2(titled, { session_title: info.title });
+        if (_lastUsedBySession.has(sessionId)) pushV2ContextUsage(sessionId);
+      }
+      void drainIdentityGate(sessionId);
+    })();
   }
 
   function rememberAlwaysAllow(sessionId, action) {
@@ -3223,6 +3617,7 @@ export function createOpencodeFamilyPluginV2(config) {
         return () => {};
       }
       resetDebugLog();
+      _ctx = ctx;
       const app = ctx && ctx.app && typeof ctx.app === "object" ? ctx.app : {};
       debugLog(`INIT v2 pid=${process.pid} app=${app.name || "?"}@${app.version || "?"} gate=${managedGate.mode}`);
 
@@ -3263,14 +3658,25 @@ export function createOpencodeFamilyPluginV2(config) {
           }
           debugLog("EVENT stream ended");
         })().catch((err) => {
-          debugLog(`EVENT stream error: ${err && err.message}`);
+          // Intentional disposal aborts the iterator; anything else is an
+          // unexpected subscription failure and must stay visible.
+          const aborted = controller.signal.aborted
+            || (err && (err.name === "AbortError" || err.code === "ABORT_ERR"));
+          if (aborted) {
+            debugLog("EVENT stream aborted by dispose");
+          } else {
+            debugLog(`EVENT stream error: ${err && err.message}`);
+          }
         });
         debugLog("EVENT subscription started");
       } else {
         debugLog("EVENT subscribe unavailable");
       }
 
-      definition._dispose = () => controller.abort();
+      definition._dispose = () => {
+        controller.abort();
+        dropV2IdentityRecovery();
+      };
       return () => {
         if (definition._dispose) {
           try { definition._dispose(); } catch {}
@@ -3300,6 +3706,10 @@ export function createOpencodeFamilyPluginV2(config) {
     postStateToClawdV2,
     sendStateV2,
     sendMetadataV2,
+    reportV2ContextUsage,
+    pushV2ContextUsage,
+    ensureV2SessionHydration,
+    resolveV2ModelLimit,
     rememberAlwaysAllow,
     captureV2Title,
     getPortCandidates,
@@ -3313,6 +3723,15 @@ export function createOpencodeFamilyPluginV2(config) {
     get _lastStatePerSession() { return _lastStatePerSession; },
     get _sessionTitleById() { return _sessionTitleById; },
     get _sessionCwdById() { return _sessionCwdById; },
+    get _sessionParentById() { return _sessionParentById; },
+    get _sessionModelById() { return _sessionModelById; },
+    get _lastUsedBySession() { return _lastUsedBySession; },
+    get _toolEventSeen() { return _toolEventSeen; },
+    get _hydrationState() { return _hydrationState; },
+    get _pendingIdentityBySession() { return _pendingIdentityBySession; },
+    get _hydrationAttemptBySession() { return _hydrationAttemptBySession; },
+    get _identityDrainingBySession() { return _identityDrainingBySession; },
+    get _identityPendingMax() { return V2_IDENTITY_PENDING_MAX; },
     get _alwaysAllowedBySessionAction() { return _alwaysAllowedBySessionAction; },
     get _statePostQueueBySession() { return _statePostQueueBySession; },
   };
