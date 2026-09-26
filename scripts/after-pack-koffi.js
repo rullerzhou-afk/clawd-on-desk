@@ -235,6 +235,12 @@ async function afterPack(context) {
     targetId: target.id,
     outputPath,
   });
+  if (target.runtimePlatform === "linux") {
+    require("./prepare-appimage-launcher").prepareAppImageLauncher({
+      ...context,
+      electronPlatformName: "linux",
+    });
+  }
   const log = context.packager && context.packager.info && context.packager.info.log;
   if (log && typeof log.info === "function") {
     log.info({ target: target.id, deletedBytes: report.summary.deletedBytes }, "pruned foreign Koffi native payloads");

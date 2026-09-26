@@ -4,6 +4,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
+const os = require("node:os");
+const { prepareAppImageLauncher } = require("../scripts/prepare-appimage-launcher");
 
 const {
   REVIEWED_PATH_EXPORTS,
@@ -156,4 +158,23 @@ test("Wayland smoke PR paths cover the hook closure by pattern instead of a drif
   }
   // A hand-enumerated hook file would silently miss a newly added dependency.
   assert.doesNotMatch(pathsBlock, /- hooks\/[^/*\s]+\.js/, "hook files must be covered by hooks/**");
+});
+
+
+test("packaged launcher keeps reviewed exports and hands off before mounted paths enter the environment", (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-apprun-stage-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const context = {
+    electronPlatformName: "linux", appOutDir: root,
+    packager: { config: { linux: {} }, executableName: "clawd-on-desk",
+      appInfo: { productName: "Clawd on Desk", productFilename: "Clawd on Desk" } },
+  };
+  prepareAppImageLauncher(context);
+  const content = fs.readFileSync(path.join(root, "AppRun"), "utf8");
+  validateAppRunContent(content);
+  assertAppearsBefore(content, "clawd-appimage-supervisor", "export LD_LIBRARY_PATH=", "protected AppRun");
+  assert.equal(fs.readFileSync(path.join(root, "clawd-appimage-launcher.sh"), "utf8"),
+    fs.readFileSync(path.join(ROOT, "build/appimage-launcher.sh"), "utf8"));
+  assert.equal(prepareAppImageLauncher({ electronPlatformName: "darwin" }), null);
+  assert.equal(prepareAppImageLauncher({ electronPlatformName: "win32" }), null);
 });
