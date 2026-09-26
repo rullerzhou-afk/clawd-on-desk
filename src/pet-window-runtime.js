@@ -154,6 +154,21 @@ function createPetWindowRuntime(options = {}) {
   const buildTrayMenu = options.buildTrayMenu || noop;
   const buildContextMenu = options.buildContextMenu || noop;
   const reapplyMacVisibility = options.reapplyMacVisibility || noop;
+
+  // #979: on macOS reapplyMacVisibility() keeps the pet on every Space, but
+  // nothing pinned the pet windows on Linux, so the pet disappeared as soon as
+  // the user switched workspace. On X11/XWayland, Electron's
+  // setVisibleOnAllWorkspaces() sets _NET_WM_STATE_STICKY, which is the
+  // missing piece. No options: visibleOnFullScreen / skipTransformProcessType
+  // are macOS-only. The try also covers a missing method, so neither that nor
+  // a throwing native call can break window setup.
+  function applyLinuxAllWorkspaces(win) {
+    if (!isLinux || !win) return;
+    try {
+      win.setVisibleOnAllWorkspaces(true);
+    } catch {}
+  }
+
   // #640: re-run the editing-overlap dodge whenever the hit geometry syncs —
   // the hitbox can change without the window moving (state switches between
   // hitboxes, theme reload), which changes the overlap answer.
@@ -2220,6 +2235,7 @@ function createPetWindowRuntime(options = {}) {
     renderWin.setFocusable(false);
 
     if (isLinux) {
+      applyLinuxAllWorkspaces(renderWin);
       renderWin.on("close", (event) => {
         if (!isQuitting()) {
           event.preventDefault();
@@ -2333,6 +2349,7 @@ function createPetWindowRuntime(options = {}) {
       const prepared = optionsArg.prepareActivation(hitWin);
       if (prepared === false && !windowsHitWindowFocusable) hitWin.setFocusable(true);
     }
+    applyLinuxAllWorkspaces(hitWin);
     hitWin.showInactive();
     keepOutOfTaskbar(hitWin);
     if (isWin) hitWin.setAlwaysOnTop(true, topmostLevel);
