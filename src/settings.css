@@ -87,6 +87,11 @@ html, body {
 .sidebar::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
 
 .sidebar-item {
+  width: 100%;
+  border: 0;
+  background: transparent;
+  font: inherit;
+  text-align: left;
   display: flex;
   align-items: center;
   gap: 10px;
@@ -268,7 +273,7 @@ html, body {
   border-radius: 9px;
   background: var(--bg);
 }
-.recap-period-button {
+.recap-period-tabs .recap-period-button {
   appearance: none;
   border: 0;
   border-radius: 7px;
@@ -282,7 +287,7 @@ html, body {
   transition: background 0.12s ease, color 0.12s ease;
 }
 .recap-period-button:hover { color: var(--text-primary); }
-.recap-period-button.active {
+.recap-period-tabs .recap-period-button.active {
   background: var(--panel-bg);
   color: var(--text-primary);
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
@@ -2040,7 +2045,8 @@ html, body {
   align-items: flex-start;
   text-align: left;
 }
-.settings-segmented-radio button:focus-visible {
+.settings-segmented-radio button:focus-visible,
+[role="tab"]:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 2px;
 }
@@ -2053,6 +2059,12 @@ html, body {
 }
 .settings-segmented-radio.pending {
   cursor: progress;
+}
+.settings-segmented-radio button[aria-disabled="true"] {
+  cursor: progress;
+}
+.settings-segmented-radio.disabled button {
+  cursor: not-allowed;
 }
 .bubble-placement-group {
   display: grid;
@@ -2349,6 +2361,9 @@ html, body {
 .codex-permission-mode-segmented button.active {
   background: transparent;
   box-shadow: none;
+}
+.codex-permission-mode-segmented button:focus-visible {
+  outline-offset: -2px;
 }
 @media (prefers-reduced-motion: reduce) {
   .codex-permission-mode-segmented::before {

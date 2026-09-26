@@ -20,6 +20,7 @@
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
   let codexHookHealthRequestSeq = 0;
+  const permissionModePending = new Set();
 
   function t(key) {
     return helpers.t(key);
@@ -48,7 +49,10 @@
     const categorized = categorizeAgentsForSections(agents);
     const subtab = resolveAgentsSubtab(categorized);
 
-    parent.appendChild(buildAgentSubtabRow(subtab, categorized));
+    const switcher = buildAgentSubtabRow(subtab, categorized);
+    parent.appendChild(switcher.row);
+    for (const panel of switcher.control.panels.values()) parent.appendChild(panel);
+    parent = switcher.control.panels.get(subtab);
 
     // Each banner lives in the subtab it acts on: "install what we detected"
     // is what the discover subtab is for, and "your integration outlived its
@@ -315,36 +319,32 @@
     const row = document.createElement("div");
     row.className = "agents-subtabs";
 
-    const group = document.createElement("div");
-    group.className = "segmented";
-    group.setAttribute("role", "tablist");
     const entries = [
       { key: "connected", label: t("agentsSubtabConnected"), count: 0 },
       // Counts what the user can act on right now, so the badge stays a
       // to-do marker: agents detected locally but not connected yet.
       { key: "discover", label: t("agentsSubtabDiscover"), count: categorized.recommended.length },
     ];
-    for (const entry of entries) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = entry.label;
-      btn.setAttribute("role", "tab");
-      btn.setAttribute("aria-selected", entry.key === current ? "true" : "false");
-      if (entry.key === current) btn.classList.add("active");
-      if (entry.count > 0) {
-        const badge = document.createElement("span");
-        badge.className = "agents-subtab-count";
-        badge.textContent = String(entry.count);
-        btn.appendChild(badge);
-      }
-      btn.addEventListener("click", () => {
-        if (runtime.agentsSubtab === entry.key) return;
-        runtime.agentsSubtab = entry.key;
+    const control = helpers.buildTabs({
+      id: "settings-agents",
+      ariaLabel: t("agentsTitle"),
+      value: current,
+      options: entries.map((entry) => ({ ...entry, value: entry.key })),
+      renderLabel(btn, entry) {
+        if (entry.count > 0) {
+          const badge = document.createElement("span");
+          badge.className = "agents-subtab-count";
+          badge.textContent = String(entry.count);
+          btn.appendChild(badge);
+        }
+      },
+      onChange(value) {
+        runtime.agentsSubtab = value;
         ops.requestRender({ content: true });
-      });
-      group.appendChild(btn);
-    }
-    row.appendChild(group);
+      },
+    });
+    helpers.registerMountedDisposable(control);
+    row.appendChild(control.element);
 
     // WSL rescan belongs to the connected subtab: it re-detects built-in
     // agents installed inside distros, and its results render as instance rows
@@ -353,7 +353,7 @@
       const wslScanControl = buildWslScanControl();
       if (wslScanControl) row.appendChild(wslScanControl);
     }
-    return row;
+    return { row, control };
   }
 
   function buildCustomToolsSection() {
@@ -1934,70 +1934,47 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const segmented = document.createElement("div");
-    segmented.className = "segmented codex-permission-mode-segmented";
-    segmented.setAttribute("role", "tablist");
-    const current = readers.readAgentPermissionMode(agent.id);
-    segmented.style.setProperty("--codex-permission-mode-active-index", String(getCodexPermissionModeIndex(current)));
-    for (const mode of CODEX_PERMISSION_MODE_OPTIONS) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.dataset.mode = mode.id;
-      btn.textContent = t(mode.labelKey);
-      btn.classList.toggle("active", current === mode.id);
-      btn.disabled = !!disabled;
-      btn.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        if (btn.disabled || btn.classList.contains("active")) return;
-        window.settingsAPI.command("setAgentPermissionMode", {
-          agentId: agent.id,
-          mode: mode.id,
-        }).then((result) => {
-          if (!result || result.status !== "ok") {
-            const msg = (result && result.message) || "unknown error";
-            ops.showToast(t("toastSaveFailed") + msg, { error: true });
-          }
-        }).catch((err) => {
+    const control = helpers.buildSegmentedRadio({
+      id: "codex-permission-mode",
+      ariaLabel: t("rowCodexPermissionMode"),
+      className: "codex-permission-mode-segmented",
+      value: readers.readAgentPermissionMode(agent.id),
+      disabled: !!disabled,
+      pending: permissionModePending.has(agent.id),
+      options: CODEX_PERMISSION_MODE_OPTIONS.map((mode) => ({
+        value: mode.id, label: t(mode.labelKey), dataset: { mode: mode.id },
+      })),
+      onValueSync(value, element) {
+        element.style.setProperty("--codex-permission-mode-active-index", String(getCodexPermissionModeIndex(value)));
+      },
+      async onChange(mode) {
+        if (permissionModePending.has(agent.id)) return false;
+        permissionModePending.add(agent.id);
+        try {
+          const result = await window.settingsAPI.command("setAgentPermissionMode", { agentId: agent.id, mode });
+          if (result && result.status === "ok") return true;
+          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+        } catch (err) {
           ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-        });
-      });
-      segmented.appendChild(btn);
-    }
-    ctrl.appendChild(segmented);
+        } finally {
+          permissionModePending.delete(agent.id);
+          state.mountedControls.agentPermissionModes.get(agent.id)?.control.setPending(false);
+        }
+        return false;
+      },
+    });
+    ctrl.appendChild(control.element);
     row.appendChild(ctrl);
     state.mountedControls.agentPermissionModes.set(agent.id, {
       row,
+      control,
       agentId: agent.id,
-      syncFromSnapshot: () => syncCodexPermissionModeRow(row, agent.id),
+      syncFromSnapshot() {
+        control.setValue(readers.readAgentPermissionMode(agent.id));
+        control.setDisabled(!readers.readAgentFlagValue(agent.id, "enabled"));
+      },
     });
     return row;
-  }
-
-  function syncCodexPermissionModeRow(row, agentId) {
-    const disabled = !readers.readAgentFlagValue(agentId, "enabled");
-    const current = readers.readAgentPermissionMode(agentId);
-    const segmented = row.querySelector(".codex-permission-mode-segmented");
-    const currentIndex = getCodexPermissionModeIndex(current);
-    const previousActive = segmented && [...segmented.querySelectorAll("button")]
-      .find((btn) => btn.classList.contains("active"));
-    const previousIndex = previousActive
-      ? getCodexPermissionModeIndex(previousActive.dataset.mode)
-      : currentIndex;
-    if (segmented) {
-      segmented.style.setProperty("--codex-permission-mode-active-index", String(previousIndex));
-    }
-    for (const btn of row.querySelectorAll("button")) {
-      btn.classList.toggle("active", btn.dataset.mode === current);
-      btn.disabled = !!disabled;
-    }
-    if (segmented && previousIndex !== currentIndex) {
-      requestAnimationFrame(() => {
-        segmented.getBoundingClientRect();
-        segmented.style.setProperty("--codex-permission-mode-active-index", String(currentIndex));
-      });
-    } else if (segmented) {
-      segmented.style.setProperty("--codex-permission-mode-active-index", String(currentIndex));
-    }
   }
 
   function getCodexPermissionModeIndex(mode) {

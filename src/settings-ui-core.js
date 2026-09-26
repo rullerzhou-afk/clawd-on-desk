@@ -599,6 +599,143 @@
     return control;
   }
 
+  // Selection controls own semantics and input; pages own rendering and commands.
+  function buildTabs(config = {}) {
+    if (!config.id || (!config.ariaLabel && !config.labelledBy)) {
+      throw new TypeError("Tabs require a stable id and accessible name");
+    }
+    const options = config.options || [];
+    const values = options.map((option) => String(option.value));
+    if (new Set(values).size !== values.length) throw new TypeError("Duplicate tab value");
+    let value = values.includes(String(config.value)) ? String(config.value) : (values[0] || "");
+    let focused = value;
+    let disabled = config.disabled === true;
+    let disposed = false;
+    const vertical = config.orientation === "vertical";
+    const element = document.createElement("div");
+    element.className = config.className || "segmented settings-tabs";
+    element.setAttribute("role", "tablist");
+    element.setAttribute("aria-orientation", vertical ? "vertical" : "horizontal");
+    if (config.labelledBy) element.setAttribute("aria-labelledby", config.labelledBy);
+    else element.setAttribute("aria-label", config.ariaLabel);
+    const panels = new Map();
+    const buttons = options.map((option, index) => {
+      const key = values[index];
+      const id = `${config.id}-${encodeURIComponent(key)}`;
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = config.buttonClassName || "";
+      button.id = `${id}-tab`;
+      button.dataset.value = key;
+      button.setAttribute("role", "tab");
+      button.setAttribute("aria-controls", `${id}-panel`);
+      button.setAttribute("data-settings-focus-key", `${id}-tab`);
+      button.setAttribute("data-settings-choice-group", config.id);
+      button.textContent = option.label;
+      if (typeof config.renderLabel === "function") config.renderLabel(button, option);
+      const panel = config.panels?.get(key) || document.createElement("div");
+      panel.id = `${id}-panel`;
+      panel.setAttribute("role", "tabpanel");
+      panel.setAttribute("aria-labelledby", button.id);
+      panel.tabIndex = 0;
+      panels.set(key, panel);
+      element.appendChild(button);
+      return button;
+    });
+    const available = () => buttons.filter((button, index) => !disabled && !options[index].disabled);
+    function sync() {
+      const enabled = available();
+      if (!enabled.some((button) => button.dataset.value === focused)) {
+        focused = (enabled.find((button) => button.dataset.value === value) || enabled[0])?.dataset.value || "";
+      }
+      buttons.forEach((button, index) => {
+        const selected = button.dataset.value === value;
+        button.disabled = disabled || options[index].disabled === true;
+        button.classList.toggle("disabled", button.disabled);
+        button.classList.toggle("active", selected);
+        button.setAttribute("aria-selected", String(selected));
+        button.tabIndex = !button.disabled && button.dataset.value === focused ? 0 : -1;
+        panels.get(button.dataset.value).hidden = !selected;
+      });
+    }
+    function focus(next = value) {
+      if (disposed) return;
+      const button = available().find((item) => item.dataset.value === String(next)) || available()[0];
+      if (!button) return;
+      focused = button.dataset.value;
+      sync();
+      button.focus({ preventScroll: true });
+    }
+    function activate(button) {
+      if (disposed || button.disabled || button.dataset.value === value) return;
+      const previous = value;
+      value = button.dataset.value;
+      focused = value;
+      sync();
+      if (typeof config.onChange === "function" && config.onChange(value) === false && !disposed) {
+        value = previous;
+        sync();
+      }
+    }
+    function onClick(event) {
+      event.stopPropagation();
+      if (disposed || event.currentTarget.disabled) return;
+      focus(event.currentTarget.dataset.value);
+      activate(event.currentTarget);
+    }
+    function onFocus(event) {
+      focused = event.currentTarget.dataset.value;
+      sync();
+    }
+    function onBlur(event) {
+      if (buttons.includes(event.relatedTarget)) return;
+      focused = value;
+      sync();
+    }
+    function onKeyDown(event) {
+      if (disposed || event.currentTarget.disabled) return;
+      const enabled = available();
+      const index = enabled.indexOf(event.currentTarget);
+      let target;
+      if (event.key === (vertical ? "ArrowDown" : "ArrowRight")) target = enabled[(index + 1) % enabled.length];
+      else if (event.key === (vertical ? "ArrowUp" : "ArrowLeft")) target = enabled[(index - 1 + enabled.length) % enabled.length];
+      else if (event.key === "Home") target = enabled[0];
+      else if (event.key === "End") target = enabled[enabled.length - 1];
+      else if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        if (!event.repeat) activate(event.currentTarget);
+        return;
+      } else return;
+      event.preventDefault();
+      if (target) focus(target.dataset.value);
+    }
+    const listeners = { click: onClick, keydown: onKeyDown, focus: onFocus, blur: onBlur };
+    for (const button of buttons) {
+      for (const [event, listener] of Object.entries(listeners)) button.addEventListener(event, listener);
+    }
+    sync();
+    return {
+      element, panels,
+      getValue: () => value,
+      setValue(next) {
+        if (disposed || !values.includes(String(next))) return false;
+        value = String(next);
+        if (!buttons.includes(document.activeElement)) focused = value;
+        sync();
+        return true;
+      },
+      setDisabled(next) { if (!disposed) { disabled = next === true; sync(); } },
+      focus,
+      dispose() {
+        if (disposed) return;
+        disposed = true;
+        for (const button of buttons) {
+          for (const [event, listener] of Object.entries(listeners)) button.removeEventListener(event, listener);
+        }
+      },
+    };
+  }
+
   function buildSegmentedRadio(config = {}) {
     const options = Array.isArray(config.options)
       ? config.options.filter((option) => option && option.value != null)
@@ -608,7 +745,10 @@
       ? String(config.value)
       : (values[0] || "");
     let disabled = config.disabled === true;
-    let pending = false;
+    let pending = config.pending === true;
+    let inFlight = false;
+    let operation = 0;
+    let version = 0;
     let disposed = false;
 
     const element = document.createElement("div");
@@ -616,13 +756,20 @@
       .filter(Boolean)
       .join(" ");
     element.setAttribute("role", "radiogroup");
-    if (config.ariaLabel) element.setAttribute("aria-label", config.ariaLabel);
+    if (config.labelledBy) element.setAttribute("aria-labelledby", config.labelledBy);
+    else if (config.ariaLabel) element.setAttribute("aria-label", config.ariaLabel);
+    else throw new TypeError("Segmented radio requires an accessible name");
 
     const buttons = options.map((option) => {
       const button = document.createElement("button");
       button.type = "button";
       button.setAttribute("role", "radio");
       button.dataset.value = String(option.value);
+      if (config.id) {
+        button.setAttribute("data-settings-focus-key", `${config.id}-${encodeURIComponent(option.value)}`);
+        button.setAttribute("data-settings-choice-group", config.id);
+      }
+      if (option.dataset) Object.assign(button.dataset, option.dataset);
 
       const label = document.createElement("span");
       label.className = "settings-segmented-radio-label";
@@ -640,73 +787,90 @@
     });
 
     function syncVisualState() {
-      element.classList.toggle("pending", pending);
+      const busy = pending || inFlight;
+      element.classList.toggle("pending", busy);
       element.classList.toggle("disabled", disabled);
-      element.setAttribute("aria-busy", pending ? "true" : "false");
-      for (const button of buttons) {
+      element.setAttribute("aria-busy", busy ? "true" : "false");
+      const entry = buttons.find((button, index) => button.dataset.value === currentValue && !options[index].disabled)
+        || buttons.find((button, index) => !options[index].disabled);
+      for (const [index, button] of buttons.entries()) {
         const selected = button.dataset.value === currentValue;
         button.classList.toggle("active", selected);
         button.setAttribute("aria-checked", selected ? "true" : "false");
-        button.tabIndex = selected ? 0 : -1;
-        button.disabled = disabled || pending;
+        button.tabIndex = !disabled && button === entry ? 0 : -1;
+        // Pending blocks activation without dropping keyboard focus.
+        button.disabled = disabled || options[index].disabled === true;
+        button.setAttribute("aria-disabled", String(button.disabled || busy));
       }
+      if (typeof config.onValueSync === "function") config.onValueSync(currentValue, element);
     }
 
-    async function selectValue(nextValue) {
+    function selectValue(nextValue) {
       const next = String(nextValue);
-      if (disposed || disabled || pending || !values.includes(next)) return false;
+      if (disposed || disabled || pending || inFlight || !values.includes(next)
+        || options[values.indexOf(next)].disabled) return false;
       if (next === currentValue) return true;
       const previous = currentValue;
+      const request = ++operation;
+      const revision = version;
       const focusTarget = buttons.includes(document.activeElement) ? document.activeElement : null;
       currentValue = next;
-      let accepted = true;
-      try {
-        if (typeof config.onChange === "function") {
-          const result = config.onChange(next);
-          pending = true;
-          syncVisualState();
-          accepted = (await Promise.resolve(result)) !== false;
-        } else {
-          pending = true;
-          syncVisualState();
-        }
-      } catch (_) {
-        accepted = false;
-      }
-      if (!accepted) currentValue = previous;
-      pending = false;
+      inFlight = true;
       syncVisualState();
-      if (focusTarget && focusTarget.isConnected !== false && typeof focusTarget.focus === "function") {
-        const active = document.activeElement;
-        if (!active || active === document.body || active === focusTarget || active.isConnected === false) {
-          try { focusTarget.focus({ preventScroll: true }); } catch (_) { focusTarget.focus(); }
+      function finish(accepted) {
+        if (disposed || request !== operation) return accepted;
+        if (!accepted && version === revision) currentValue = previous;
+        inFlight = false;
+        syncVisualState();
+        if (focusTarget && focusTarget.isConnected !== false && typeof focusTarget.focus === "function") {
+          const active = document.activeElement;
+          if (!active || active === document.body || active === focusTarget || active.isConnected === false) {
+            try { focusTarget.focus({ preventScroll: true }); } catch (_) { focusTarget.focus(); }
+          }
         }
+        return accepted;
       }
-      return accepted;
+      try {
+        const result = typeof config.onChange === "function" ? config.onChange(next) : true;
+        if (result && typeof result.then === "function") {
+          return Promise.resolve(result).then((value) => finish(value !== false), () => finish(false));
+        }
+        return finish(result !== false);
+      } catch (_) {
+        return finish(false);
+      }
     }
 
     function onClick(event) {
+      event.stopPropagation();
       const button = event && event.currentTarget;
       if (button) void selectValue(button.dataset.value);
     }
 
     function onKeyDown(event) {
-      if (disabled || pending || buttons.length === 0) return;
-      const currentIndex = Math.max(0, buttons.indexOf(event.currentTarget));
+      if (disposed || disabled || pending || inFlight || event.currentTarget.disabled) {
+        // Suppress Space's deferred native click even if the save finishes
+        // between keydown and keyup.
+        if (event.key === " " || event.key === "Enter") event.preventDefault();
+        return;
+      }
+      const enabled = buttons.filter((button) => !button.disabled);
+      if (!enabled.length) return;
+      const currentIndex = Math.max(0, enabled.indexOf(event.currentTarget));
       let nextIndex = currentIndex;
       if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-        nextIndex = (currentIndex + 1) % buttons.length;
+        nextIndex = (currentIndex + 1) % enabled.length;
       } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-        nextIndex = (currentIndex - 1 + buttons.length) % buttons.length;
+        nextIndex = (currentIndex - 1 + enabled.length) % enabled.length;
       } else if (event.key === "Home") {
         nextIndex = 0;
       } else if (event.key === "End") {
-        nextIndex = buttons.length - 1;
+        nextIndex = enabled.length - 1;
       } else if (event.key !== "Enter" && event.key !== " ") {
         return;
       }
       event.preventDefault();
-      const target = buttons[nextIndex];
+      const target = enabled[nextIndex];
       if (target && typeof target.focus === "function") target.focus();
       void selectValue(target.dataset.value);
     }
@@ -722,18 +886,27 @@
       getValue: () => currentValue,
       setValue(value) {
         const next = String(value);
-        if (!values.includes(next)) return false;
+        if (disposed || !values.includes(next)) return false;
+        version++;
         currentValue = next;
         syncVisualState();
         return true;
       },
       setDisabled(value) {
+        if (disposed) return;
         disabled = value === true;
+        syncVisualState();
+      },
+      setPending(value) {
+        if (disposed) return;
+        pending = value === true;
         syncVisualState();
       },
       dispose() {
         if (disposed) return;
         disposed = true;
+        operation++;
+        state.mountedControls.segmentedRadios.delete(control);
         for (const button of buttons) {
           button.removeEventListener("click", onClick);
           button.removeEventListener("keydown", onKeyDown);
@@ -1523,6 +1696,7 @@
     const focusKey = String(active.getAttribute("data-settings-focus-key") || "").trim();
     return {
       focusKey,
+      group: active.getAttribute("data-settings-choice-group") || "",
       fallbackKey: focusKey
         ? String(active.getAttribute("data-settings-focus-fallback-key") || "").trim()
         : "",
@@ -1557,27 +1731,15 @@
     modal = false,
     preserveScroll = false,
   } = {}) {
+    const focusState = getActiveSettingsFocusState();
     if (sidebar && typeof renderHooks.sidebar === "function") renderHooks.sidebar();
     if (content && typeof renderHooks.content === "function") {
-      const { focusKey, fallbackKey } = getActiveSettingsFocusState();
       const contentRoot = document.getElementById("content");
       const scrollTop = preserveScroll && contentRoot
         ? normalizePersistedScrollTop(Number(contentRoot.scrollTop))
         : null;
       const scrollTabId = state.activeTab;
       renderHooks.content();
-      if (focusKey) {
-        const currentContentRoot = document.getElementById("content");
-        const exactTarget = findSettingsFocusTarget(currentContentRoot, focusKey);
-        const restoreKey = exactTarget
-          && exactTarget.disabled !== true
-          && typeof exactTarget.focus === "function"
-          ? focusKey
-          : fallbackKey;
-        if (restoreKey) {
-          focusSettingsTarget(currentContentRoot, restoreKey, { onlyIfFocusLost: true });
-        }
-      }
       if (scrollTop !== null
         && document.getElementById("content") === contentRoot
         && state.activeTab === scrollTabId) {
@@ -1590,6 +1752,28 @@
       }
     }
     if (modal && typeof renderHooks.modal === "function") renderHooks.modal();
+    if ((sidebar || content) && focusState.focusKey) {
+      const roots = [document.getElementById("sidebar"), document.getElementById("content")].filter(Boolean);
+      for (const rootNode of roots) {
+        const exact = findSettingsFocusTarget(rootNode, focusState.focusKey);
+        if (exact && !exact.disabled) {
+          focusSettingsTarget(rootNode, focusState.focusKey, { onlyIfFocusLost: true });
+          return;
+        }
+      }
+      for (const rootNode of roots) {
+        const candidates = [];
+        const visit = (node) => {
+          if (node.getAttribute?.("data-settings-choice-group") === focusState.group && !node.disabled) candidates.push(node);
+          for (const child of node.children || []) visit(child);
+        };
+        if (focusState.group) visit(rootNode);
+        const target = candidates.find((node) => node.getAttribute("aria-selected") === "true"
+          || node.getAttribute("aria-checked") === "true") || candidates[0];
+        const key = target?.getAttribute("data-settings-focus-key") || focusState.fallbackKey;
+        if (key) focusSettingsTarget(rootNode, key, { onlyIfFocusLost: true });
+      }
+    }
   }
 
   function normalizePersistedScrollTop(value) {
@@ -2397,6 +2581,7 @@
     buildSection,
     buildSettingsSelect,
     buildSegmentedRadio,
+    buildTabs,
     buildCollapsibleGroup,
     attachSettingsDisclosure,
     registerMountedDisposable,

@@ -661,6 +661,15 @@ function loadSharedButtonHelpersForTest(document, settingsAPI = {}, getTranslate
   };
 }
 
+function loadSharedChoiceHelpersForTest(document) {
+  const core = loadSettingsCoreForTest({}, { document });
+  return {
+    buildTabs: core.helpers.buildTabs,
+    buildSegmentedRadio: core.helpers.buildSegmentedRadio,
+    registerMountedDisposable: core.helpers.registerMountedDisposable,
+  };
+}
+
 function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -695,6 +704,7 @@ function loadRecapTabForTest({ data, agentMetadata = [], queryRecap } = {}) {
     state: { activeTab: "recap", snapshot: { lang: "en", recapEnabled: true } },
     runtime: { agentMetadata },
     helpers: {
+      ...loadSharedChoiceHelpersForTest(document),
       t: (key) => strings[key] || key,
       buildSwitch: sharedControls.buildSwitch,
       buildSection: (title, rows) => {
@@ -1897,6 +1907,7 @@ function loadTelegramApprovalTabForTest({
     },
     runtime: {},
     helpers: {
+      ...loadSharedChoiceHelpersForTest(document),
       t: (key) => key,
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
@@ -1912,69 +1923,6 @@ function loadTelegramApprovalTabForTest({
         core.state.mountedControls.settingsSelects.add(control);
         return control;
       },
-      buildSegmentedRadio: (config) => {
-        const element = document.createElement("div");
-        element.className = `segmented settings-segmented-radio ${config.className || ""}`.trim();
-        element.setAttribute("role", "radiogroup");
-        element.setAttribute("aria-label", config.ariaLabel || "");
-        let currentValue = String(config.value);
-        const buttons = (config.options || []).map((option) => {
-          const button = document.createElement("button");
-          button.type = "button";
-          button.dataset.value = String(option.value);
-          button.setAttribute("role", "radio");
-          const label = document.createElement("span");
-          label.className = "settings-segmented-radio-label";
-          label.textContent = String(option.label);
-          button.appendChild(label);
-          if (option.description) {
-            const description = document.createElement("span");
-            description.className = "settings-segmented-radio-description";
-            description.textContent = String(option.description);
-            button.appendChild(description);
-          }
-          element.appendChild(button);
-          return button;
-        });
-        const sync = () => {
-          for (const button of buttons) {
-            const selected = button.dataset.value === currentValue;
-            button.classList.toggle("active", selected);
-            button.setAttribute("aria-checked", selected ? "true" : "false");
-            button.tabIndex = selected ? 0 : -1;
-            button.disabled = config.disabled === true;
-          }
-        };
-        for (const button of buttons) {
-          button.addEventListener("click", () => {
-            const previous = currentValue;
-            currentValue = button.dataset.value;
-            sync();
-            let result;
-            try {
-              result = typeof config.onChange === "function"
-                ? config.onChange(currentValue)
-                : true;
-            } catch (_) {
-              result = false;
-            }
-            if (result === false) {
-              currentValue = previous;
-              sync();
-              return;
-            }
-            Promise.resolve(result).then((accepted) => {
-              if (accepted === false) currentValue = previous;
-              sync();
-            });
-          });
-        }
-        sync();
-        return { element };
-      },
-      // Mirror the real buildCollapsibleGroup just enough that header content,
-      // title/summary, and children all end up in the DOM tree; collapsed
-      // behaviour is exercised by the real component's own tests.
       buildCollapsibleGroup: ({
         id,
         title = "",
@@ -2204,6 +2152,7 @@ function loadDiscordPresenceTabForTest({ snapshot, update } = {}) {
       activeTab: "discord-presence",
     },
     helpers: {
+      ...loadSharedChoiceHelpersForTest(document),
       t: (key) => key,
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
@@ -2401,6 +2350,7 @@ function loadAboutTabForTest({
     },
     runtime: { about: { infoCache: null, clickCount: 0, updateCheckSnapshot: { state: "idle" } } },
     helpers: {
+      ...loadSharedChoiceHelpersForTest(document),
       t: (key) => key,
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
@@ -2487,6 +2437,7 @@ function loadAnimOverridesTabForTest({
     state: { activeTab: "animOverrides", mountedControls: {} },
     runtime,
     helpers: {
+      ...loadSharedChoiceHelpersForTest(document),
       t: (key) => key,
       createDisclosureChevron: (className) => {
         const chevron = document.createElement("span");
@@ -5011,6 +4962,7 @@ describe("settings renderer browser environment", () => {
       ],
     }]);
     assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.updates)), []);
+    await new Promise((resolve) => setImmediate(resolve));
     const offButton = select.querySelectorAll("button").find((button) => button.dataset.value === "off");
     assert.equal(offButton.getAttribute("aria-checked"), "true");
 
@@ -8914,7 +8866,7 @@ describe("settings renderer browser environment", () => {
     acceptChanges = false;
     buttons[0].dispatchEvent(createKeyboardEventForTest("End"));
     assert.equal(control.element.getAttribute("aria-busy"), "true");
-    assert.equal(buttons[0].disabled, true);
+    assert.equal(buttons[0].getAttribute("aria-disabled"), "true");
     await Promise.resolve();
     await Promise.resolve();
     assert.equal(buttons[0].getAttribute("aria-checked"), "true");
@@ -8953,6 +8905,7 @@ describe("settings renderer browser environment", () => {
     const core = loadSettingsCoreForTest({}, { document });
     const control = core.helpers.buildSegmentedRadio({
       value: "off",
+      ariaLabel: "Automation",
       options: [{ value: "off", label: "Off" }, { value: "auto", label: "Auto" }],
       onChange: () => core.helpers.showSettingsConfirmModal({
         title: "Enable automation?",
@@ -8968,7 +8921,7 @@ describe("settings renderer browser environment", () => {
     source.focus();
     source.dispatchEvent({ type: "click" });
 
-    assert.equal(source.disabled, true);
+    assert.equal(source.getAttribute("aria-disabled"), "true");
     assert.notStrictEqual(document.activeElement, source);
     listeners.get("keydown")({ key: "Escape", preventDefault() {} });
     await Promise.resolve();
@@ -13940,10 +13893,9 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".agent-custom-tools-section"), null);
 
     // Each banner belongs to the subtab it acts on.
-    const cleanupIndex = harness.content.children
-      .findIndex((node) => node.classList.contains("agent-cleanup-hint-banner"));
-    assert.ok(cleanupIndex >= 0, "a cleanup hint should render for the missing local agent");
-    assert.ok(cleanupIndex > harness.content.children.indexOf(subtabs));
+    const connectedPanel = harness.content.children.find((node) => node.getAttribute("role") === "tabpanel");
+    assert.equal(connectedPanel.hidden, false);
+    assert.ok(connectedPanel.querySelector(".agent-cleanup-hint-banner"), "cleanup hint belongs to the connected panel");
     assert.strictEqual(harness.content.querySelector(".agent-install-hint-banner"), null);
 
     pills[1].dispatchEvent({ type: "click", bubbles: false });
@@ -14174,7 +14126,6 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes('agent.id !== "gemini-cli"'));
     assert.ok(!agentsSource.includes("Gemini CLI"));
     assert.ok(!agentsSource.includes("if (disabled || btn.classList.contains(\"active\")) return;"));
-    assert.ok(agentsSource.includes("if (btn.disabled || btn.classList.contains(\"active\")) return;"));
     assert.ok(!agentsSource.includes("codex-permission-mode-transitioning"));
   });
 
@@ -14350,8 +14301,8 @@ describe("settings renderer browser environment", () => {
     assert.ok(group.classList.contains("collapsed"));
     assert.deepStrictEqual(labelsFor(unavailable), ["Pi"]);
     assert.ok(
-      harness.content.children.indexOf(harness.content.querySelector(".agent-custom-tools-section"))
-      < harness.content.children.indexOf(unavailable)
+      unavailable.parentNode.children.indexOf(harness.content.querySelector(".agent-custom-tools-section"))
+      < unavailable.parentNode.children.indexOf(unavailable)
     );
   });
 
@@ -15246,7 +15197,7 @@ describe("settings renderer browser environment", () => {
       },
     });
 
-    assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "1");
+    assert.strictEqual(segmented.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
     harness.raf.flush();
     assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "0");
   });
@@ -18057,5 +18008,303 @@ describe("macOS platform detection (Settings shortcut labels)", () => {
     assert.strictEqual(isMac(""), false);
     assert.strictEqual(isMac(undefined), false);
     assert.strictEqual(isMac(null), false);
+  });
+});
+
+// A focused document model for real shared-controller and shell tests. Focus
+// events and attachment state matter here, unlike the layout-only harnesses.
+function createChoiceDocument() {
+  const body = new FakeElement("body");
+  const document = {
+    body, activeElement: body,
+    createElement(tag) {
+      const node = new FakeElement(tag);
+      node.focus = () => {
+        if (node.disabled || document.activeElement === node) return;
+        const previous = document.activeElement;
+        document.activeElement = node;
+        previous?.dispatchEvent({ type: "blur", relatedTarget: node, bubbles: false });
+        node.dispatchEvent({ type: "focus", relatedTarget: previous, bubbles: false });
+      };
+      return node;
+    },
+    getElementById(id) {
+      const visit = (node) => node.id === id ? node : node.children.map(visit).find(Boolean);
+      return visit(body) || null;
+    },
+  };
+  return document;
+}
+
+function mountChoice(document, control) {
+  document.body.appendChild(control.element);
+  for (const panel of control.panels?.values() || []) document.body.appendChild(panel);
+  return control.element.querySelectorAll("button");
+}
+
+const choiceOptions = () => [
+  { value: "a", label: "Alpha" },
+  { value: "b", label: "Beta", disabled: true },
+  { value: "c", label: "Gamma" },
+];
+const settleChoice = () => new Promise((resolve) => setImmediate(resolve));
+
+describe("Settings tabs and segmented choice contracts", () => {
+  for (const orientation of ["horizontal", "vertical"]) {
+    it(`uses manual activation, wrapping and disabled skipping for ${orientation} tabs`, () => {
+      const document = createChoiceDocument();
+      const core = loadSettingsCoreForTest({}, { document });
+      const changes = [];
+      const control = core.helpers.buildTabs({ id: "test-tabs", ariaLabel: "Views", value: "a",
+        orientation, options: choiceOptions(), onChange: (value) => changes.push(value) });
+      const [a, b, c] = mountChoice(document, control);
+      assert.equal(control.element.getAttribute("role"), "tablist");
+      assert.equal(control.element.getAttribute("aria-orientation"), orientation);
+      for (const button of [a, b, c]) {
+        const panel = document.getElementById(button.getAttribute("aria-controls"));
+        assert.ok(panel);
+        assert.equal(panel.getAttribute("aria-labelledby"), button.id);
+        assert.equal(panel.getAttribute("role"), "tabpanel");
+      }
+      a.focus();
+      a.dispatchEvent(createKeyboardEventForTest(orientation === "vertical" ? "ArrowDown" : "ArrowRight"));
+      assert.strictEqual(document.activeElement, c);
+      assert.equal(control.getValue(), "a");
+      assert.deepEqual(changes, []);
+      assert.equal(c.tabIndex, 0);
+      assert.equal(a.tabIndex, -1);
+      assert.equal(b.tabIndex, -1);
+      assert.equal(control.panels.get("a").hidden, false);
+      c.dispatchEvent(createKeyboardEventForTest("Enter"));
+      c.dispatchEvent({ type: "click" });
+      assert.deepEqual(changes, ["c"], "native click after Enter cannot activate twice");
+      assert.equal(c.getAttribute("aria-selected"), "true");
+      assert.equal(control.panels.get("a").hidden, true);
+      assert.equal(control.panels.get("c").hidden, false);
+      c.dispatchEvent(createKeyboardEventForTest(orientation === "vertical" ? "ArrowDown" : "ArrowRight"));
+      assert.strictEqual(document.activeElement, a);
+      a.dispatchEvent(createKeyboardEventForTest("End"));
+      assert.strictEqual(document.activeElement, c);
+      c.dispatchEvent(createKeyboardEventForTest("Home"));
+      assert.strictEqual(document.activeElement, a);
+      const perpendicular = createKeyboardEventForTest(orientation === "vertical" ? "ArrowRight" : "ArrowDown");
+      a.dispatchEvent(perpendicular);
+      assert.ok(!perpendicular.defaultPrevented);
+      const outside = document.createElement("input");
+      document.body.appendChild(outside);
+      outside.focus();
+      assert.equal(c.tabIndex, 0, "reentry targets the selected tab");
+      assert.equal(a.tabIndex, -1);
+      control.setValue("a");
+      assert.deepEqual(changes, ["c"], "snapshot updates never call onChange");
+      control.setDisabled(true);
+      assert.ok([a, b, c].every((button) => button.disabled && button.tabIndex === -1));
+      control.setDisabled(false);
+      assert.equal(a.tabIndex, 0);
+      control.dispose();
+      control.dispose();
+      c.click();
+      assert.deepEqual(changes, ["c"]);
+      assert.ok(Object.values(c.eventListeners).every((listeners) => listeners.length === 0));
+    });
+  }
+
+  it("requires accessible names and handles empty/all-disabled groups", () => {
+    const document = createChoiceDocument();
+    const core = loadSettingsCoreForTest({}, { document });
+    assert.throws(() => core.helpers.buildTabs({ id: "unnamed" }), /accessible name/);
+    assert.throws(() => core.helpers.buildSegmentedRadio({}), /accessible name/);
+    for (const options of [[], choiceOptions().map((option) => ({ ...option, disabled: true }))]) {
+      const control = core.helpers.buildTabs({ id: "empty", ariaLabel: "Empty", options });
+      const buttons = mountChoice(document, control);
+      control.focus();
+      assert.ok(buttons.every((button) => button.tabIndex === -1));
+      assert.strictEqual(document.activeElement, document.body);
+    }
+  });
+
+  it("keeps radio keyboard selection synchronous, skips disabled values and rolls back rejection", () => {
+    const document = createChoiceDocument();
+    const core = loadSettingsCoreForTest({}, { document });
+    let accept = true;
+    const control = core.helpers.buildSegmentedRadio({ id: "choice", ariaLabel: "Mode", value: "a",
+      options: choiceOptions(), onChange: () => accept });
+    const [a, b, c] = mountChoice(document, control);
+    a.focus();
+    a.dispatchEvent(createKeyboardEventForTest("ArrowRight"));
+    assert.strictEqual(document.activeElement, c);
+    assert.equal(control.getValue(), "c");
+    assert.equal(control.element.getAttribute("aria-busy"), "false");
+    assert.equal(c.getAttribute("aria-checked"), "true");
+    assert.equal(b.tabIndex, -1);
+    accept = false;
+    c.dispatchEvent(createKeyboardEventForTest("Home"));
+    assert.equal(control.getValue(), "c");
+    assert.equal(c.tabIndex, 0);
+    assert.equal(a.getAttribute("aria-checked"), "false");
+  });
+
+  for (const outcome of ["reject", "throw", "accept"]) {
+    it(`keeps authoritative snapshots and independent locks after async ${outcome}`, async () => {
+      const document = createChoiceDocument();
+      const core = loadSettingsCoreForTest({}, { document });
+      const deferred = createDeferred();
+      let calls = 0;
+      const control = core.helpers.buildSegmentedRadio({ id: "race", ariaLabel: "Mode", value: "a",
+        options: choiceOptions(), onChange: () => { calls++; return deferred.promise; } });
+      const [a, , c] = mountChoice(document, control);
+      c.focus();
+      c.click();
+      a.click();
+      c.dispatchEvent(createKeyboardEventForTest("Home"));
+      assert.equal(calls, 1);
+      assert.strictEqual(document.activeElement, c, "pending must not discard focus");
+      control.setValue("b");
+      control.setPending(true);
+      control.setDisabled(true);
+      if (outcome === "throw") deferred.reject(new Error("save failed"));
+      else deferred.resolve(outcome === "accept");
+      await settleChoice();
+      assert.equal(control.getValue(), "b", "an old result cannot overwrite a newer snapshot");
+      assert.equal(control.element.getAttribute("aria-busy"), "true");
+      control.setPending(false);
+      assert.equal(c.disabled, true, "clearing pending preserves business disabled");
+      control.setDisabled(false);
+      assert.equal(c.disabled, false);
+    });
+  }
+
+  it("locks before invoking a callback and makes disposal invalidate asynchronous completion", async () => {
+    const document = createChoiceDocument();
+    const core = loadSettingsCoreForTest({}, { document });
+    const deferred = createDeferred();
+    let calls = 0;
+    let buttons;
+    const control = core.helpers.buildSegmentedRadio({ ariaLabel: "Mode", value: "a", options: choiceOptions(),
+      onChange() { calls++; buttons[0].click(); return deferred.promise; } });
+    buttons = mountChoice(document, control);
+    buttons[2].focus();
+    buttons[2].click();
+    assert.equal(calls, 1);
+    control.dispose();
+    const before = control.element.getAttribute("aria-busy");
+    const outside = document.createElement("input");
+    document.body.appendChild(outside);
+    outside.focus();
+    deferred.resolve(false);
+    await settleChoice();
+    assert.equal(control.getValue(), "c");
+    assert.equal(control.element.getAttribute("aria-busy"), before, "disposed DOM must not be patched");
+    assert.strictEqual(document.activeElement, outside);
+    assert.equal(core.state.mountedControls.segmentedRadios.size, 0);
+  });
+
+  it("does not steal focus after an asynchronous save while still mounted", async () => {
+    const document = createChoiceDocument();
+    const core = loadSettingsCoreForTest({}, { document });
+    const deferred = createDeferred();
+    const control = core.helpers.buildSegmentedRadio({ ariaLabel: "Mode", value: "a", options: choiceOptions(),
+      onChange: () => deferred.promise });
+    const buttons = mountChoice(document, control);
+    buttons[2].focus();
+    buttons[2].click();
+    const outside = document.createElement("input");
+    document.body.appendChild(outside);
+    outside.focus();
+    deferred.resolve(false);
+    await settleChoice();
+    assert.strictEqual(document.activeElement, outside);
+    assert.equal(control.getValue(), "a");
+  });
+
+  it("restores focused-but-unselected tabs on sidebar and content replacement without stealing modal focus", () => {
+    const document = createChoiceDocument();
+    const sidebar = document.createElement("aside"); sidebar.id = "sidebar";
+    const content = document.createElement("main"); content.id = "content";
+    document.body.append(sidebar, content);
+    const core = loadSettingsCoreForTest({}, { document });
+    let control;
+    let options = choiceOptions();
+    let modalFocus = null;
+    const render = () => {
+      control?.dispose();
+      sidebar.innerHTML = "";
+      content.innerHTML = "";
+      control = core.helpers.buildTabs({ id: "navigation", ariaLabel: "Pages", value: "a", options });
+      sidebar.appendChild(control.element);
+      for (const panel of control.panels.values()) content.appendChild(panel);
+    };
+    core.ops.installRenderHooks({ sidebar: render, content: () => {}, modal: () => modalFocus?.focus() });
+    core.ops.requestRender({ sidebar: true, content: true });
+    control.focus("c");
+    core.ops.requestRender({ sidebar: true, content: true });
+    assert.equal(document.activeElement.dataset.value, "c");
+    assert.equal(document.activeElement.getAttribute("aria-selected"), "false");
+    assert.equal(document.activeElement.tabIndex, 0);
+    options = choiceOptions().filter((option) => option.value !== "c");
+    core.ops.requestRender({ sidebar: true, content: true });
+    assert.equal(document.activeElement.dataset.value, "a", "removed focus falls back to selected tab");
+    modalFocus = document.createElement("input");
+    document.body.appendChild(modalFocus);
+    core.ops.requestRender({ sidebar: true, content: true, modal: true });
+    assert.strictEqual(document.activeElement, modalFocus);
+  });
+
+  it("integrates the actual sidebar shell without coupling sidebar disposal to content refresh", () => {
+    const document = createChoiceDocument();
+    const sidebar = document.createElement("aside"); sidebar.id = "sidebar";
+    const content = document.createElement("main"); content.id = "content";
+    document.body.append(sidebar, content);
+    const core = loadSettingsCoreForTest({}, { document });
+    let exits = 0;
+    for (const id of ["general", "agents", "theme", "animOverrides", "shortcuts", "telegram-approval", "discord-presence", "remote-ssh", "recap", "about"]) {
+      core.tabs[id] = { render(panel) { const heading = document.createElement("h1"); heading.textContent = id; panel.appendChild(heading); },
+        onExit() { exits++; } };
+    }
+    const source = fs.readFileSync(SETTINGS_RENDERER, "utf8");
+    vm.runInNewContext(source.slice(0, source.indexOf("globalThis.ClawdSettingsTabGeneral.init(core);")), {
+      ClawdSettingsCore: core, document,
+      ClawdSettingsDoctorModal: { renderSidebarIndicator(parent) { parent.appendChild(document.createElement("button")); } },
+    });
+    core.ops.requestRender({ sidebar: true, content: true });
+    const group = sidebar.children[1];
+    assert.equal(group.getAttribute("role"), "tablist");
+    const [general, agents] = group.querySelectorAll("button");
+    general.focus();
+    general.dispatchEvent(createKeyboardEventForTest("ArrowDown"));
+    assert.strictEqual(document.activeElement, agents);
+    assert.equal(core.state.activeTab, "general");
+    assert.equal(exits, 0);
+    core.ops.requestRender({ content: true });
+    agents.dispatchEvent(createKeyboardEventForTest("Enter"));
+    assert.equal(core.state.activeTab, "agents");
+    assert.equal(exits, 1);
+    assert.equal(document.activeElement.dataset.value, "agents");
+    assert.equal(document.activeElement.getAttribute("aria-selected"), "true");
+    assert.equal(content.children.filter((panel) => !panel.hidden).length, 1);
+    assert.equal(content.children.find((panel) => !panel.hidden).textContent, "agents");
+    assert.equal(general.eventListeners.click.length, 0, "old sidebar listeners are removed");
+  });
+
+  it("preserves the Codex pending gate across full rerenders and recovers after failure", async () => {
+    const pending = createDeferred();
+    let calls = 0;
+    const harness = loadAgentsTabForTest({ snapshot: { agents: { codex: { enabled: true, permissionMode: "native" } } },
+      agentMetadata: [{ id: "codex", name: "Codex", capabilities: { permissionApproval: true } }],
+      collapsedGroups: { "agents:codex": false },
+      settingsAPI: { command() { calls++; return pending.promise; } } });
+    harness.core.ops.requestRender({ content: true });
+    let group = harness.content.querySelector(".codex-permission-mode-segmented");
+    group.querySelectorAll("button")[1].click();
+    assert.equal(calls, 1);
+    harness.core.ops.requestRender({ content: true });
+    group = harness.content.querySelector(".codex-permission-mode-segmented");
+    assert.equal(group.getAttribute("aria-busy"), "true");
+    group.querySelectorAll("button")[1].click();
+    assert.equal(calls, 1);
+    pending.resolve({ status: "error", message: "failed" });
+    await settleChoice();
+    assert.equal(group.getAttribute("aria-busy"), "false");
+    assert.equal(group.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
   });
 });

@@ -20,6 +20,7 @@
   let i18n = null;
   let readers = null;
   let mountedSubtabBody = null;
+  let mountedSubtabs = null;
 
   function t(key) {
     return helpers.t(key);
@@ -1159,11 +1160,15 @@
     subtitle.className = "subtitle";
     subtitle.textContent = t("animOverridesSubtitle");
     parent.appendChild(subtitle);
+    if (mountedSubtabs) mountedSubtabs.dispose();
     const switcher = buildSubtabSwitcher();
-    parent.appendChild(switcher);
-    const body = document.createElement("div");
-    body.className = "anim-override-subtab-body";
-    parent.appendChild(body);
+    mountedSubtabs = switcher.control;
+    parent.appendChild(switcher.wrap);
+    for (const panel of mountedSubtabs.panels.values()) {
+      panel.className = "anim-override-subtab-body";
+      parent.appendChild(panel);
+    }
+    const body = mountedSubtabs.panels.get(normalizeSubtab());
     renderSubtabBody(body);
     restoreSubtabScroll(document.getElementById("content"), normalizeSubtab());
   }
@@ -1171,9 +1176,6 @@
   function buildSubtabSwitcher() {
     const wrap = document.createElement("div");
     wrap.className = "anim-override-subtabs";
-    const group = document.createElement("div");
-    group.className = "segmented";
-    group.setAttribute("role", "tablist");
 
     const current = runtime.animOverridesSubtab === "sounds" ? "sounds"
       : runtime.animOverridesSubtab === "map" ? "map" : "animations";
@@ -1182,34 +1184,25 @@
       { key: "animations", label: t("animOverridesSubtabAnimations") },
       { key: "sounds", label: t("animOverridesSubtabSounds") },
     ];
-    for (const entry of entries) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = entry.label;
-      btn.dataset.animOverridesSubtab = entry.key;
-      if (entry.key === current) btn.classList.add("active");
-      btn.addEventListener("click", () => {
-        if (runtime.animOverridesSubtab === entry.key) return;
+    const control = helpers.buildTabs({
+      id: "settings-animations",
+      ariaLabel: t("animOverridesTitle"),
+      value: current,
+      options: entries.map((entry) => ({ value: entry.key, label: entry.label })),
+      renderLabel(button, option) { button.dataset.animOverridesSubtab = option.value; },
+      onChange(value) {
         const scroller = document.getElementById("content");
         const previousSubtab = normalizeSubtab();
         if (scroller) getSubtabScrollPositions()[previousSubtab] = scroller.scrollTop;
-        runtime.animOverridesSubtab = entry.key;
-        for (const candidate of group.querySelectorAll("button")) {
-          candidate.classList.toggle("active", candidate.dataset.animOverridesSubtab === entry.key);
-        }
+        runtime.animOverridesSubtab = value;
         clearSubtabControls();
-        renderSubtabBody(mountedSubtabBody);
-        restoreSubtabScroll(scroller, entry.key);
-        requestAnimationFrame(() => {
-          if (typeof btn.focus === "function") {
-            try { btn.focus({ preventScroll: true }); } catch (_) { btn.focus(); }
-          }
-        });
-      });
-      group.appendChild(btn);
-    }
-    wrap.appendChild(group);
-    return wrap;
+        if (mountedSubtabBody) mountedSubtabBody.innerHTML = "";
+        renderSubtabBody(control.panels.get(value));
+        restoreSubtabScroll(scroller, value);
+      },
+    });
+    wrap.appendChild(control.element);
+    return { wrap, control };
   }
 
   function getSoundOverrideLabel(slot) {
@@ -2300,6 +2293,8 @@
     const scroller = document.getElementById("content");
     if (scroller) getSubtabScrollPositions()[normalizeSubtab()] = scroller.scrollTop;
     mountedSubtabBody = null;
+    if (mountedSubtabs) mountedSubtabs.dispose();
+    mountedSubtabs = null;
     ops.closeAssetPicker();
   }
 

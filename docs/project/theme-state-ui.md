@@ -72,6 +72,49 @@ main 中的 displayed-visual projection 是文件、hitbox 和视觉来源的唯
 
 ## Settings Panel
 
+### Tabs and segmented choices
+
+Settings navigation uses `helpers.buildTabs({ id, ariaLabel | labelledBy, orientation,
+options, value, onChange })`. Options have `value`, `label`, and optional `disabled`;
+`renderLabel(button, option)` adds trusted icons or badges. The result exposes
+`element` (tablist), `panels` (a Map of stable panel shells), `getValue`, `setValue`,
+`setDisabled`, `focus`, and idempotent `dispose`. `setValue` never invokes `onChange`.
+Pages mount only their active panel's content and retain ownership of rendering,
+exit cleanup, drafts, persistence and scrolling. An existing `panels` Map may be
+passed when rebuilding only the sidebar, preserving the mounted page.
+
+Tabs use manual activation: arrows/Home/End move focus; Enter/Space/click activate.
+Horizontal tabs leave Up/Down available for scrolling; the vertical sidebar uses
+Up/Down. Disabled options are skipped. Focus and selection are separate; leaving
+the tablist resets its Tab entry to the selected available option. Each tab has a
+stable `aria-controls`/`aria-labelledby` panel relationship. Sidebar ownership is
+separate from content disposal; Animation Overrides owns its persistent subtab
+controller across local body refreshes and disposes it on full render/exit.
+
+Enumerated values use the existing `buildSegmentedRadio`: Codex permission mode,
+Feishu platform and ID type, Recap period, and the General/approval choices. Add a
+stable `id` for focus restoration and an accessible name (`ariaLabel` or
+`labelledBy`). Arrows select immediately. `onChange` may return synchronously or
+asynchronously; false/rejection rolls back unless a newer `setValue` snapshot has
+arrived. `setPending` and `setDisabled` are independent. Pending radios retain
+focus with `aria-disabled` and suppress activation; business-disabled options use
+native disabled. Disposal invalidates asynchronous completions. Pages retain
+cross-render command gates (including Codex permission mode); the primitive does
+not persist settings. `onValueSync(value, element)` can update the Codex pill's CSS
+position alongside checked state, including rollback and snapshot updates.
+
+`requestRender` captures stable focus keys before replacing sidebar or content and
+restores only lost focus after modal rendering. Removed/disabled choices fall back
+to the group's selected available option, then its first enabled option. It must
+not steal focus from an input or dialog opened by the interaction.
+
+The choice inventory test rejects handwritten tabs and segmented controls in
+Settings business modules. Theme Card's existing radio role, Asset Picker's
+listbox selection, and Recap row highlighting are deliberate specialized
+exceptions; they are not part of the segmented contract. Native QA should cover
+keyboard/Accessibility Tree, light/dark, zoom, language, reduced motion, failed
+saves and rerendered focus separately from browser-environment unit tests.
+
 Settings 是独立 `BrowserWindow`，采用 5 层结构：
 
 | 层 | 文件 | 职责 |
