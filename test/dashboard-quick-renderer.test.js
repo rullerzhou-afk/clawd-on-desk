@@ -215,6 +215,10 @@ async function renderer(options = {}) {
   sandbox.globalThis.document = document;
 
   const context = vm.createContext(sandbox);
+  vm.runInContext(
+    fs.readFileSync(path.join(__dirname, "..", "src", "language-picker.js"), "utf8"),
+    context
+  );
   vm.runInContext(RENDERER_SOURCE, context);
   await flush();
   await flush();

@@ -134,6 +134,10 @@ function loadDashboard({ sessions = [], history = [],
     context,
   );
   vm.runInContext(
+    fs.readFileSync(path.join(__dirname, "..", "src", "language-picker.js"), "utf8"),
+    context,
+  );
+  vm.runInContext(
     fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8"),
     context,
   );
