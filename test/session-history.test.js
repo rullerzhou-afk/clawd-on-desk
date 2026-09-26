@@ -263,6 +263,47 @@ describe("durable session history", () => {
       assert.equal(readOne().endedAt, null, "a resumed session is not an ended one");
     });
 
+    it("keeps a completed turn ended when Claude sends a trailing SubagentStop (#1060)", () => {
+      recordSessionHistoryFromStateBody(body(), writeOpts(T0));
+      recordSessionHistoryFromStateBody(
+        body({ event: "Stop", state: "attention" }),
+        writeOpts(T0 + 1000),
+      );
+      const ended = readOne();
+      assert.equal(ended.endedAt, T0 + 1000);
+
+      const trailing = recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStop", state: "working" }),
+        writeOpts(T0 + 4000),
+      );
+      assert.equal(trailing.written, false);
+      assert.equal(trailing.reason, "no-active-evidence");
+      assert.deepEqual(readOne(), ended);
+    });
+
+    it("never starts a history row from a SubagentStop alone (#1060)", () => {
+      const result = recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStop", state: "working" }),
+        writeOpts(T0),
+      );
+      assert.equal(result.reason, "no-active-evidence");
+      assert.equal(readOne(), null);
+    });
+
+    it("still settles juggling to working when a subagent stops mid-turn (#1060)", () => {
+      recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStart", state: "juggling" }),
+        writeOpts(T0),
+      );
+      recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStop", state: "working" }),
+        writeOpts(T0 + 1000),
+      );
+      const row = readOne();
+      assert.equal(row.lastState, "working");
+      assert.equal(row.endedAt, null);
+    });
+
     it("refuses headless runs, foreign agents, and remote filesystems", () => {
       const cases = [
         [body({ headless: true }), "headless"],

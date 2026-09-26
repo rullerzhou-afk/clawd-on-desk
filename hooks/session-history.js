@@ -376,6 +376,9 @@ function recordSessionHistoryFromStateBody(body, options = {}) {
     const existing = readHistoryFile(filePath);
     // An existing invalid row may belong to a future schema or another owner.
     if (!existing && fs.existsSync(filePath)) return { written: false, reason: "invalid-record" };
+    if (classified.requireActiveExisting === true && (!existing || existing.endedAt !== null)) {
+      return { written: false, reason: "no-active-evidence" };
+    }
     const observedAt = Number.isFinite(options.eventAt) && options.eventAt > 0
       ? options.eventAt
       : Date.now();

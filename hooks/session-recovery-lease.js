@@ -449,6 +449,12 @@ function classifyBody(body, options = {}) {
       preserveExistingEvidence: disposition.kind === "hold" && baseDisposition.kind !== "hold",
     };
   }
+  if (body.event === "SubagentStop") {
+    // A finishing subagent is not new work. Claude often sends one a few
+    // seconds after the parent's Stop (#1060), so it may only settle a turn
+    // that is still durably active, never reopen a closed or provisional one.
+    return { active: true, state: "working", terminal: false, requireActiveExisting: true };
+  }
   if (SUSTAINED_STATES.has(body.state)) return { active: true, state: body.state, terminal: false };
   if (TOMBSTONE_EVENTS.has(body.event) || body.state === "idle" || body.state === "sleeping") {
     return { active: false, state: null, terminal: body.event !== "SessionStart" };
@@ -486,6 +492,10 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
     }
     return { written: false, reason: "preserved-existing-evidence", filePath, record: existing };
   }
+  if (classified.requireActiveExisting === true) {
+    const existingPath = getLeaseFilePath(agentId, sessionId, { recoveryDir: getRecoveryDir(options) });
+    if (!existingPath || !fs.existsSync(existingPath)) return { written: false, reason: "no-active-evidence" };
+  }
   const dir = ensureRecoveryDir(options);
   const filePath = dir ? getLeaseFilePath(agentId, sessionId, { recoveryDir: dir }) : null;
   if (!filePath) return { written: false, reason: "path" };
@@ -501,6 +511,10 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
   if (!lock) return { written: false, reason: "locked" };
   try {
     const existing = readLeaseFile(filePath);
+    if (classified.requireActiveExisting === true
+      && (!existing || !existing.active || existing.validUntil !== null)) {
+      return { written: false, reason: "no-active-evidence" };
+    }
     const observedAt = Number.isFinite(options.eventAt) && options.eventAt > 0 ? options.eventAt : Date.now();
     // A half-millisecond terminal rank makes Stop/SessionEnd win ties between
     // async hook processes while still allowing same-tick SessionStart ->
