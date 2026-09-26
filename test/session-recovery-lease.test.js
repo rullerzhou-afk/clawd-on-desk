@@ -147,6 +147,63 @@ describe("durable session recovery leases", () => {
     assert.strictEqual(complete.record.validUntil, null);
   });
 
+  it("keeps a completed turn inactive when Claude sends a trailing SubagentStop (#1060)", () => {
+    const filePath = getLeaseFilePath("claude-code", "real-session-1", { recoveryDir });
+    updateRecoveryLeaseFromStateBody(body(), winOptions(1000));
+    updateRecoveryLeaseFromStateBody(body({ event: "Stop", state: "attention" }), winOptions(2000));
+    const bytesBefore = fs.readFileSync(filePath);
+
+    const trailing = updateRecoveryLeaseFromStateBody(body({
+      event: "SubagentStop",
+      state: "working",
+      subagent_lifecycle_source: "native",
+    }), winOptions(4000));
+    assert.deepStrictEqual(trailing, { written: false, reason: "no-active-evidence" });
+    assert.deepStrictEqual(fs.readFileSync(filePath), bytesBefore);
+    assert.strictEqual(readLeaseFile(filePath).active, false);
+  });
+
+  it("never creates a lease or recovery directory from a SubagentStop alone (#1060)", () => {
+    const missingDir = path.join(recoveryDir, "must-not-be-created");
+    const result = updateRecoveryLeaseFromStateBody(body({
+      event: "SubagentStop",
+      state: "working",
+    }), winOptions(1000, { recoveryDir: missingDir }));
+    assert.deepStrictEqual(result, { written: false, reason: "no-active-evidence" });
+    assert.strictEqual(fs.existsSync(missingDir), false);
+  });
+
+  it("still settles juggling to working when a subagent stops mid-turn (#1060)", () => {
+    updateRecoveryLeaseFromStateBody(body({ event: "SubagentStart", state: "juggling" }), winOptions(1000));
+    const settled = updateRecoveryLeaseFromStateBody(body({
+      event: "SubagentStop",
+      state: "working",
+    }), winOptions(2000));
+    assert.strictEqual(settled.written, true);
+    assert.strictEqual(settled.record.active, true);
+    assert.strictEqual(settled.record.state, "working");
+    assert.strictEqual(settled.record.eventAt, 2000);
+    assert.strictEqual(settled.record.validUntil, null);
+  });
+
+  it("does not turn a provisional debounce lease into a durable one on SubagentStop (#1060)", () => {
+    const provisional = updateRecoveryLeaseFromStateBody(body({
+      event: "Stop",
+      state: "attention",
+      background_tasks_count: 1,
+      assistant_last_output: "parent finished",
+    }), winOptions(1000));
+    assert.strictEqual(provisional.record.validUntil, 3000);
+    const bytesBefore = fs.readFileSync(provisional.filePath);
+
+    const trailing = updateRecoveryLeaseFromStateBody(body({
+      event: "SubagentStop",
+      state: "working",
+    }), winOptions(1500));
+    assert.deepStrictEqual(trailing, { written: false, reason: "no-active-evidence" });
+    assert.deepStrictEqual(fs.readFileSync(provisional.filePath), bytesBefore);
+  });
+
   it("does not create or refresh a durable lease when typed subagents alone upgrade Stop to hold (#952)", () => {
     const filePath = getLeaseFilePath("claude-code", "real-session-1", { recoveryDir });
     const withoutExisting = updateRecoveryLeaseFromStateBody(body({

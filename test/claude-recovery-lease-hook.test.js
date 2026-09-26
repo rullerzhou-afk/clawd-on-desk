@@ -74,6 +74,16 @@ describe("Claude hook recovery lease ordering", () => {
     assert.strictEqual(lease.state, null);
   });
 
+  it("keeps the Stop tombstone when a trailing SubagentStop arrives (#1060)", () => {
+    run("PreToolUse", { tool_name: "Bash" });
+    run("Stop");
+    const result = run("SubagentStop");
+    assert.strictEqual(result.status, 0, result.stderr);
+    const lease = readLeaseFile(getLeaseFilePath("claude-code", "offline-session", { recoveryDir }));
+    assert.strictEqual(lease.active, false);
+    assert.strictEqual(lease.state, null);
+  });
+
   it("persists history through the real offline hook without leaking the prompt or reply", () => {
     const historyDir = path.join(home, ".clawd", "session-history-v1");
     const file = getHistoryFilePath("claude-code", "offline-session", { historyDir });
