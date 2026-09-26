@@ -2,6 +2,7 @@
 //
 // Public seams only:
 //   - session/created, session/event, session/disposed for state
+//   - sessionProjections snapshot/onChanged for context occupancy
 //   - approval/request waterfall for ordinary tool approvals
 //
 // The plugin deliberately does not register or replace userQuestions. DSH's
@@ -66,12 +67,43 @@ export function statePayload(session, mapping, sequence = {}) {
     event: mapping.event,
     ...(mapping.toolName ? { tool_name: boundedText(mapping.toolName, 160) } : {}),
     ...(mapping.title ? { session_title: boundedText(mapping.title, TITLE_MAX) } : {}),
+    ...(mapping.contextUsage ? { context_usage: mapping.contextUsage } : {}),
     ...(Number.isSafeInteger(sequence.eventSeq) && sequence.eventSeq >= 0
       ? { event_seq: sequence.eventSeq }
       : {}),
     ...(Number.isSafeInteger(sequence.sessionSeq) && sequence.sessionSeq >= 0
       ? { session_seq: sequence.sessionSeq }
       : {}),
+  }
+}
+
+// DSH's own ContextMeter displays this projection as a reference occupancy.
+// The next-request estimate is preferred over the last provider sample.
+export function contextUsageFromPressure(pressure) {
+  if (!pressure || typeof pressure !== 'object') return null
+  const used = pressure.projectedTokens ?? pressure.pressureTokens
+  const limit = pressure.contextWindow
+  if (!Number.isFinite(used) || used < 0 || !Number.isFinite(limit) || limit <= 0) return null
+  return {
+    used,
+    limit,
+    percent: Math.max(0, Math.min(100, Math.round(used / limit * 100))),
+  }
+}
+
+export function metadataPayload(session, metadata = {}) {
+  const title = boundedText(metadata.title, TITLE_MAX)
+  const hasContextPressure = Object.hasOwn(metadata, 'contextPressure')
+  const contextUsage = contextUsageFromPressure(metadata.contextPressure)
+  if (!title && !hasContextPressure) return null
+  return {
+    agent_id: AGENT_ID,
+    hook_source: HOOK_SOURCE,
+    agent_pid: process.pid,
+    ...sessionFields(session),
+    metadata_only: true,
+    ...(title ? { session_title: title } : {}),
+    ...(hasContextPressure ? { context_usage: contextUsage } : {}),
   }
 }
 
@@ -128,6 +160,28 @@ export function createStateSender(signal, postStateImpl = postState) {
   const queues = new Map()
 
   function compact(queue, payload) {
+    if (payload.metadata_only) {
+      const last = queue[queue.length - 1]
+      if (last?.metadata_only) {
+        queue[queue.length - 1] = { ...last, ...payload }
+        return true
+      }
+      if (queue.length >= MAX_QUEUE_PER_SESSION) {
+        const lifecycleBoundary = queue.findLastIndex((item) =>
+          item.event === 'SessionStart' || item.event === 'SessionEnd')
+        const oldMetadata = queue.findLastIndex((item, index) =>
+          index > lifecycleBoundary && item.metadata_only)
+        if (oldMetadata !== -1) {
+          queue.push({ ...queue.splice(oldMetadata, 1)[0], ...payload })
+          return true
+        }
+        const replaceable = queue.findIndex((item) => !CRITICAL_EVENTS.has(item.event))
+        if (replaceable === -1) return false
+        queue.splice(replaceable, 1)
+        queue.push(payload)
+        return true
+      }
+    }
     if (queue.length < MAX_QUEUE_PER_SESSION) {
       queue.push(payload)
       return true
@@ -259,6 +313,7 @@ export function apply(ctx, config = {}) {
   ) return
   const generation = new AbortController()
   const sender = createStateSender(generation.signal)
+  let projectionRegistry = null
   const permissionTimeoutMs = Number.isFinite(config.permissionTimeoutMs)
     ? Math.max(1000, config.permissionTimeoutMs)
     : DEFAULT_PERMISSION_TIMEOUT_MS
@@ -274,13 +329,31 @@ export function apply(ctx, config = {}) {
   }
 
   ctx.on('session/created', safely((session) => {
+    let metadata = null
+    try {
+      metadata = projectionRegistry?.snapshot(session, ['title', 'contextPressure'])?.values
+    } catch {
+      // An optional projection must never veto DSH session creation.
+    }
+    const contextUsage = contextUsageFromPressure(metadata?.contextPressure)
     sender.enqueue(statePayload(session, {
       event: 'SessionStart',
       state: 'idle',
+      title: metadata?.title,
+      contextUsage,
     }, { sessionSeq: session?.seq }))
+    if (!contextUsage) {
+      // A resumed session may still have an old Clawd context value. Match
+      // DSH's ContextMeter, which hides occupancy without both operands.
+      sender.enqueue(metadataPayload(session, { contextPressure: metadata?.contextPressure }))
+    }
   }))
 
   ctx.on('session/event', safely((session, event) => {
+    if (event?.type === 'session/title') {
+      const titlePayload = metadataPayload(session, { title: event?.data?.title })
+      if (titlePayload) sender.enqueue(titlePayload)
+    }
     const mapping = mapSessionEvent(event)
     if (!mapping) return
     sender.enqueue(statePayload(session, mapping, { eventSeq: event?.seq }))
@@ -292,6 +365,21 @@ export function apply(ctx, config = {}) {
       state: 'sleeping',
     }, { sessionSeq: session?.seq }))
   }))
+
+  ctx.inject(['sessionProjections'], (projectionCtx) => {
+    const registry = projectionCtx?.sessionProjections
+    if (!registry || typeof registry.onChanged !== 'function') return
+    projectionRegistry = registry
+    const unsubscribe = registry.onChanged(safely((session, key, value) => {
+      if (key !== 'contextPressure') return
+      const payload = metadataPayload(session, { contextPressure: value })
+      if (payload) sender.enqueue(payload)
+    }))
+    projectionCtx.effect(() => () => {
+      if (typeof unsubscribe === 'function') unsubscribe()
+      if (projectionRegistry === registry) projectionRegistry = null
+    }, 'clawd projection detachment')
+  })
 
   ctx.inject(['approval'], (approvalCtx) => {
     if (!approvalCtx || typeof approvalCtx.on !== 'function') return

@@ -1546,9 +1546,17 @@ function updateSessionMetadata(sessionId, opts = {}) {
     ? normalizeTitle(opts.sessionTitle)
     : null;
   const incomingModel = typeof opts.model === "string" ? opts.model.trim() : "";
-  if (!incomingContextUsage && !incomingTitle && !incomingModel) return false;
+  const clearContextUsage = opts.clearContextUsage === true;
+  if (!incomingContextUsage && !clearContextUsage && !incomingTitle && !incomingModel) return false;
   let applied = false;
-  if (incomingContextUsage) {
+  if (clearContextUsage) {
+    if (session.contextUsage || session.contextUsageOrigin) {
+      session.contextUsage = null;
+      session.contextUsageOrigin = null;
+      session.metadataUpdatedAt = Date.now();
+      applied = true;
+    }
+  } else if (incomingContextUsage) {
     const resolved = resolveContextUsageUpdate(
       session,
       incomingContextUsage,

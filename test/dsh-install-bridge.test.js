@@ -654,7 +654,7 @@ test("npx-only hosts get an exact manual command and can later pass read-only ve
 });
 
 test("npx-only uninstall selects the exact contract recorded by each supported marker", async (t) => {
-  for (const version of ["0.1.1-rc.2", "0.1.0-rc.6"]) {
+  for (const version of ["0.1.5-rc.1", "0.1.1-rc.2", "0.1.0-rc.6"]) {
     const harness = makeHarness();
     const cli = makeOfficialCli(harness);
     t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
@@ -944,6 +944,50 @@ test("a DSH_HOME alias is frozen to one real target for namespace, CLI env, and 
     },
   }));
   assert.strictEqual(observedDshHome, canonicalRealpath(harness.dshHome));
+});
+
+test("an absent DSH_HOME beneath a symlink keeps one canonical namespace through first install", async (t) => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-absent-home-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const realParent = path.join(root, "real-parent");
+  const alias = path.join(root, "alias");
+  fs.mkdirSync(realParent);
+  fs.symlinkSync(realParent, alias, process.platform === "win32" ? "junction" : "dir");
+  const dshHome = path.join(alias, "new-dsh-home");
+  const canonicalDshHome = path.join(canonicalRealpath(realParent), "new-dsh-home");
+  const harness = {
+    root,
+    dshHome,
+    profileDir: path.join(dshHome, "profiles", "web"),
+    managedRoot: undefined,
+  };
+  const cli = makeOfficialCli(harness);
+  const options = installOptions(harness, cli, {
+    homeDir: root,
+    runDshCommand: async (args, operationOptions) => {
+      assert.strictEqual(operationOptions.env.DSH_HOME, canonicalDshHome);
+      return cli.runDshCommand(args);
+    },
+  });
+
+  assert.strictEqual(fs.existsSync(dshHome), false);
+  assert.strictEqual(dshInstallTest.resolveCanonicalDshHome(options), canonicalDshHome);
+  const managedRootBefore = resolveManagedRoot(options);
+  const hashInput = (process.platform === "win32" ? canonicalDshHome.toLowerCase() : canonicalDshHome)
+    .replace(/\\/g, "/");
+  const expectedNamespace = crypto.createHash("sha256").update(hashInput, "utf8").digest("hex");
+  assert.strictEqual(path.basename(managedRootBefore), expectedNamespace);
+
+  const result = await installDeepSeekHarnessBridge(options);
+  assert.strictEqual(result.status, "ok", JSON.stringify(result));
+  assert.strictEqual(result.health.status, "healthy");
+  assert.strictEqual(result.health.managedRoot, managedRootBefore);
+  assert.strictEqual(resolveManagedRoot(options), managedRootBefore);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync(options).status, "healthy");
+
+  const removed = await uninstallDeepSeekHarnessBridge(options);
+  assert.strictEqual(removed.status, "ok", JSON.stringify(removed));
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync(options).status, "absent");
 });
 
 test("a managed-root alias remains owned after package inspection resolves its real path", async (t) => {
@@ -1851,13 +1895,14 @@ test("newer managed generations win and same-version hash conflicts require expl
 test("the verified-version table resolves only listed exact versions", () => {
   assert.deepStrictEqual(
     DSH_VERSION_CONTRACTS.map((contract) => contract.version),
-    ["0.1.1-rc.2", "0.1.0-rc.6"],
+    ["0.1.5-rc.1", "0.1.1-rc.2", "0.1.0-rc.6"],
   );
+  assert.strictEqual(isSupportedDshVersion("0.1.5-rc.1"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.1-rc.2"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.0-rc.6"), true);
   assert.strictEqual(isSupportedDshVersion("0.1.0-rc.7"), false);
   assert.strictEqual(isSupportedDshVersion("0.2.0"), false);
-  assert.strictEqual(supportedDshRangeLabel(), "=0.1.1-rc.2 or =0.1.0-rc.6");
+  assert.strictEqual(supportedDshRangeLabel(), "=0.1.5-rc.1 or =0.1.1-rc.2 or =0.1.0-rc.6");
   const metadata = readJson(path.join(SOURCE_DIR, "package.json")).clawd;
   assert.strictEqual(metadata.supportedDshRange, DSH_VERSION_CONTRACTS[0].supportedDshRange);
   assert.strictEqual(metadata.verifiedDshArtifact, DSH_VERSION_CONTRACTS[0].verifiedDshArtifact);
@@ -1928,7 +1973,7 @@ test("rc.6 hosts install, repair, and uninstall under their own contract", async
   }).status, "absent");
 });
 
-test("rc.2 installs record the preferred contract in the marker", async (t) => {
+test("a default install records the table's preferred contract in the marker", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
@@ -1939,9 +1984,29 @@ test("rc.2 installs record the preferred contract in the marker", async (t) => {
     resolveCommandForInspection: false,
   });
   assert.strictEqual(health.status, "healthy");
-  assert.strictEqual(health.marker.installedDshVersion, "0.1.1-rc.2");
-  assert.strictEqual(health.marker.supportedDshRange, "=0.1.1-rc.2");
-  assert.strictEqual(health.marker.verifiedDshArtifact, "@deepseek-ai/dsh@0.1.1-rc.2");
+  // Assert the preference invariant, not a literal release: the default
+  // install path must record whichever contract the table lists first.
+  const preferred = DSH_VERSION_CONTRACTS[0];
+  assert.strictEqual(health.marker.installedDshVersion, preferred.version);
+  assert.strictEqual(health.marker.supportedDshRange, preferred.supportedDshRange);
+  assert.strictEqual(health.marker.verifiedDshArtifact, preferred.verifiedDshArtifact);
+});
+
+test("an rc.1 host installs under its own contract and records it", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  await installDeepSeekHarnessBridge(installOptions(harness, cli, { dshVersion: "0.1.5-rc.1" }));
+  const health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(health.status, "healthy");
+  assert.strictEqual(health.marker.installedDshVersion, "0.1.5-rc.1");
+  assert.strictEqual(health.marker.supportedDshRange, "=0.1.5-rc.1");
+  assert.strictEqual(health.marker.verifiedDshArtifact, "@deepseek-ai/dsh@0.1.5-rc.1");
+  assert.strictEqual(health.marker.verifiedDshArtifactIntegrity, DSH_VERSION_CONTRACTS[0].verifiedDshArtifactIntegrity);
 });
 
 test("an rc.6 generation migrates to rc.2 when the host is upgraded", async (t) => {
