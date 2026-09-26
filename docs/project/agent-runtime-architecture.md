@@ -487,6 +487,8 @@ DND remains an interaction/visual gate and does not stop recap or coverage. Susp
 
 Cursor Windows hooks 由 PowerShell 执行。`cursor-install.js` 用 `& "node" "cursor-hook.js"` 直连，避免额外 `cmd /s /c` 解析丢失含空格路径的引号。marker 识别同时支持旧明文命令和 PowerShell EncodedCommand；注册只更新 Clawd-owned entry，并把同事件重复的 owned entry 收敛到首条，保留首条其他设置及全部第三方 hooks。
 
+Cursor hook 的 stdin 等待由共享 reader 单独限时；800ms 状态发送 watchdog 在同步进程/标题信息收集结束后才启动，避免慢 Windows 快照耗尽发送预算。stdout 在发送完成、失败或 watchdog 到期时统一输出；Clawd 离线或发送失败仍保留 `beforeSubmitPrompt` 的 `{continue:true}`，不阻塞 Cursor 原生流程。
+
 `hooks/cursor-session-title.js` 只读标准 Cursor desktop profile 的 `User/globalStorage/state.vscdb`，按 conversation ID 查找 `composerHeaders`、旧 `ItemTable['composer.composerHeaders']` 或 `cursorDiskKV['composerData:<id>']` 中的 `name`。Windows 根目录来自 APPDATA，macOS 为 `~/Library/Application Support`，Linux 为 XDG_CONFIG_HOME 或 `~/.config`；自定义 `--user-data-dir` 不做扫描。单个 JSON record 最多读取 1 MiB，数据库缺失、损坏、锁定、未知 schema 或 SQLite 不可用都不阻塞状态 hook。`node:sqlite` 从 Node 22.13 / 23.4 起无需 flag；项目最低 Node 22.12 未开启实验模块时仍保留状态与 prompt fallback。
 
 Cursor 3.19.19 会把 stderr 非空标记为 Hook execution error，即使 exit 0 且 stdout 合法。helper 仅在同步加载 `node:sqlite` 期间过滤 Node 的固定 SQLite ExperimentalWarning，随后立即恢复 warning handler；不得全局关闭其他警告。
