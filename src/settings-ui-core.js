@@ -669,6 +669,7 @@
     function activate(button) {
       if (disposed || button.disabled || button.dataset.value === value) return;
       const previous = value;
+      if (typeof config.onBeforeChange === "function") config.onBeforeChange(button.dataset.value, previous);
       value = button.dataset.value;
       focused = value;
       sync();
@@ -1725,6 +1726,52 @@
     try { target.focus({ preventScroll: true }); } catch (_) { target.focus(); }
   }
 
+  // Page chrome belongs to the page; only the active body belongs to this host.
+  // Callers keep business state and async request fencing in their own modules.
+  function createSubpageHost({ disposeBody = () => {} } = {}) {
+    let mountedPanel = null;
+    let disposed = false;
+    let revision = 0;
+    return {
+      render(panel, renderBody, { scrollTop } = {}) {
+        if (disposed || !panel) return false;
+        const currentRevision = ++revision;
+        const focusState = getActiveSettingsFocusState();
+        const scroller = document.getElementById("content");
+        const savedScroll = scrollTop ?? scroller?.scrollTop;
+        if (mountedPanel) {
+          disposeBody();
+          mountedPanel.innerHTML = "";
+        }
+        mountedPanel = panel;
+        panel.innerHTML = "";
+        renderBody(panel);
+        if (focusState.focusKey) {
+          const exact = findSettingsFocusTarget(panel, focusState.focusKey);
+          const key = exact && !exact.disabled
+            ? focusState.focusKey : focusState.fallbackKey;
+          focusSettingsTarget(scroller || panel, key, { onlyIfFocusLost: true });
+        }
+        if (scroller && Number.isFinite(savedScroll)) {
+          scroller.scrollTop = savedScroll;
+          const appliedScroll = scroller.scrollTop;
+          requestAnimationFrame(() => {
+            if (disposed || revision !== currentRevision || !panel.isConnected
+              || document.getElementById("content") !== scroller) return;
+            // Do not undo scrolling that happened after this replacement.
+            if (scroller.scrollTop === appliedScroll) scroller.scrollTop = savedScroll;
+          });
+        }
+        return true;
+      },
+      dispose() {
+        disposed = true;
+        revision += 1;
+        mountedPanel = null;
+      },
+    };
+  }
+
   function requestRender({
     sidebar = false,
     content = false,
@@ -2582,6 +2629,7 @@
     buildSettingsSelect,
     buildSegmentedRadio,
     buildTabs,
+    createSubpageHost,
     buildCollapsibleGroup,
     attachSettingsDisclosure,
     registerMountedDisposable,

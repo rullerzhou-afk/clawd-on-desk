@@ -81,7 +81,97 @@ async function main() {
     assert.equal(await run("radioCalls"), 1, "Space pressed during pending cannot submit after completion");
     assert.equal(await run("radio.getValue()"), "b");
     assert.equal(await run('radio.element.getAttribute("aria-busy")'), "false");
+    await run(`${fs.readFileSync(path.join(src, "settings-tab-recap.js"), "utf8")}\nvoid 0;`);
+    await run(`
+      window.recapSample = { schemaVersion: 1, status: "ready", period: "today",
+        anchorDate: "2026-09-21", startDate: "2026-09-21", endDate: "2026-09-21",
+        currentLocalHour: 10, recordingStartedDate: "2026-09-21", recordingEnabled: true, days: [] };
+      window.recapRequests = {};
+      window.settingsAPI = { queryRecap(period) {
+        return period === "today" ? Promise.resolve(recapSample)
+          : new Promise(resolve => { recapRequests[period] = resolve; });
+      } };
+      ClawdSettingsCore.state.snapshot = { lang: "en", recapEnabled: true };
+      ClawdSettingsTabRecap.init(ClawdSettingsCore);
+      ClawdSettingsCore.ops.selectTab("recap");
+      void 0;
+    `);
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    await run(`
+      window.recapHeader = document.querySelector(".recap-page-header");
+      window.recapChart = document.querySelector(".recap-card");
+      window.recapHeight = recapChart.getBoundingClientRect().height;
+      window.periodButtons = [...document.querySelectorAll(".recap-period-button")];
+      periodButtons[0].focus();
+    `);
+    await key("Right");
+    assert.deepEqual(await run(`({ header: document.querySelector(".recap-page-header") === recapHeader,
+      chart: document.querySelector(".recap-card") === recapChart,
+      height: recapChart.getBoundingClientRect().height === recapHeight,
+      inert: document.querySelector(".recap-data-body").inert,
+      focus: document.activeElement === periodButtons[1] })`),
+    { header: true, chart: true, height: true, inert: true, focus: true });
+    await key("Right");
+    await run('recapRequests.month({ ...recapSample, period: "month" })');
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    await run('recapRequests.week({ ...recapSample, period: "week" })');
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    assert.deepEqual(await run(`({ header: document.querySelector(".recap-page-header") === recapHeader,
+      key: document.querySelector(".recap-grid").dataset.settingsFocusKey,
+      focus: document.activeElement === periodButtons[2],
+      inert: document.querySelector(".recap-data-body").inert })`),
+    { header: true, key: "recap-grid-month", focus: true, inert: false });
+    await run('periodButtons[3].click()');
+    await run('recapRequests.year({ ...recapSample, period: "year" })');
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    assert.match(await run(`document.getElementById(document.querySelector(".recap-grid").getAttribute("aria-activedescendant")).dataset.cellKey`), /2026-09-21/);
+    win.webContents.debugger.attach("1.3");
+    await win.webContents.debugger.sendCommand("Emulation.setFocusEmulationEnabled", { enabled: true });
+    await run('periodButtons[3].focus()');
+    await key("Tab");
+    assert.equal(await run('document.activeElement.classList.contains("recap-grid")'), true);
+    await key("Left");
+    await run("new Promise(resolve => setTimeout(resolve, 120))");
+    assert.deepEqual(await run(`({ gridOutline: getComputedStyle(document.activeElement).outlineStyle,
+      cellOutline: getComputedStyle(document.querySelector(".recap-cell-keyboard")).outlineStyle,
+      rounded: parseFloat(getComputedStyle(document.querySelector(".recap-cell-popover")).borderRadius) > 0,
+      nativeTitles: document.querySelectorAll(".recap-cell[title]").length })`),
+    { gridOutline: "none", cellOutline: "solid", rounded: true, nativeTitles: 0 });
+    const target = await run(`(() => { document.querySelector(".recap-cell-keyboard").scrollIntoView({ block: "center" });
+      const r = document.querySelector(".recap-cell-keyboard").getBoundingClientRect();
+      return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) }; })()`);
+    win.webContents.sendInputEvent({ type: "mouseDown", button: "left", clickCount: 1, ...target });
+    win.webContents.sendInputEvent({ type: "mouseUp", button: "left", clickCount: 1, ...target });
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    assert.equal(await run('getComputedStyle(document.querySelector(".recap-cell-keyboard")).outlineStyle'), "none");
+    win.webContents.debugger.detach();
+
+    // Browser layout really clamps scroll when a tall panel is hidden. Capture
+    // it before Tabs hide the outgoing panel; a fake DOM cannot prove this.
+    await run('ClawdSettingsCore.ops.selectTab("general")');
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    await run(`
+      const root = document.getElementById("content");
+      root.innerHTML = "";
+      window.subpageScroll = {};
+      window.subpageHost = ClawdSettingsCore.helpers.createSubpageHost();
+      const fill = (panel, value) => { panel.style.height = value === "tall" ? "2400px" : "20px"; };
+      window.subpageTabs = ClawdSettingsCore.helpers.buildTabs({ id: "native-subpage", ariaLabel: "Subpages",
+        value: "tall", options: [{ value: "tall", label: "Tall" }, { value: "short", label: "Short" }],
+        onBeforeChange(next, previous) { subpageScroll[previous] = root.scrollTop; },
+        onChange(value) { subpageHost.render(subpageTabs.panels.get(value), panel => fill(panel, value),
+          { scrollTop: subpageScroll[value] || 0 }); } });
+      root.appendChild(subpageTabs.element);
+      for (const panel of subpageTabs.panels.values()) root.appendChild(panel);
+      subpageHost.render(subpageTabs.panels.get("tall"), panel => fill(panel, "tall"));
+      root.scrollTop = 500;
+      subpageTabs.element.querySelectorAll("button")[1].click();
+      subpageTabs.element.querySelectorAll("button")[0].click();
+    `);
+    await run("new Promise(resolve => requestAnimationFrame(resolve))");
+    assert.equal(await run('document.getElementById("content").scrollTop'), 500);
     console.log("PASS: native arrows/Enter/Space/Tab, rerender focus, AX tabs/panels, radio locking and snapshot race");
+    console.log("PASS: Recap pending geometry, local commit, rapid-period race, keyboard focus and subpage scroll");
   } finally {
     if (!win.isDestroyed()) win.destroy();
   }

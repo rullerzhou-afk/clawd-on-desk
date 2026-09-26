@@ -6,6 +6,8 @@
   let coreRef = null;
   let helpers = null;
   let ops = null;
+  let mountedSubtabs = null;
+  let mountedHost = null;
 
   const view = {
     status: null,
@@ -686,10 +688,17 @@
 
     // Two subtabs (same pattern as the anim-overrides page): IM channels vs
     // the LAN approval bridge.
+    if (mountedSubtabs) mountedSubtabs.dispose();
+    if (mountedHost) mountedHost.dispose();
+    mountedHost = helpers.createSubpageHost({ disposeBody: () => ops.clearMountedControls() });
     const switcher = buildSubtabSwitcher();
+    mountedSubtabs = switcher.control;
     parent.appendChild(switcher.wrap);
     for (const panel of switcher.control.panels.values()) parent.appendChild(panel);
-    parent = switcher.control.panels.get(switcher.control.getValue());
+    mountedHost.render(switcher.control.panels.get(switcher.control.getValue()), renderSubtabBody);
+  }
+
+  function renderSubtabBody(parent) {
     if (coreRef.runtime.remoteApprovalSubtab === "lan") {
       parent.appendChild(buildMobileChannelCard());
       return;
@@ -717,10 +726,9 @@
       onChange(value) {
         if (value === "lan") leaveFeishuLookupUi();
         coreRef.runtime.remoteApprovalSubtab = value;
-        coreRef.ops.requestRender({ content: true });
+        mountedHost.render(control.panels.get(value), renderSubtabBody, { scrollTop: 0 });
       },
     });
-    helpers.registerMountedDisposable(control);
     wrap.appendChild(control.element);
     return { wrap, control };
   }
@@ -3239,7 +3247,13 @@
       render,
       refreshRuntimeStatus,
       patchInPlace,
-      onExit: leaveFeishuLookupUi,
+      onExit() {
+        leaveFeishuLookupUi();
+        if (mountedSubtabs) mountedSubtabs.dispose();
+        if (mountedHost) mountedHost.dispose();
+        mountedSubtabs = null;
+        mountedHost = null;
+      },
     };
   }
 

@@ -91,6 +91,30 @@ stable `aria-controls`/`aria-labelledby` panel relationship. Sidebar ownership i
 separate from content disposal; Animation Overrides owns its persistent subtab
 controller across local body refreshes and disposes it on full render/exit.
 
+Animation/Sound, Remote Approval and Recap share `helpers.createSubpageHost({
+disposeBody })`. Its `render(panel, renderBody, { scrollTop })` replaces only the
+active body, cleans up outgoing body controls, restores lost keyed focus, and
+preserves the current scroll position unless the page supplies another one.
+Pages dispose the host and their navigation controller on full render/exit;
+global content teardown still owns final mounted-control disposal. Navigation
+must remain outside body disposal. `dispose()` invalidates queued scroll work.
+Tabs offer `onBeforeChange(next, previous)` for capturing outgoing scroll before
+the previous panel is hidden; Animation/Sound uses it for per-subpage positions.
+Remote Approval retains its Channels-to-LAN credential/lookup cleanup.
+
+Recap periods remain radios. A period change captures the requested period and
+fences stale responses, retains the previous chart as inert/busy until new data
+arrives, then commits only the data body. A loading badge appears after 150 ms
+for slow queries; fast queries do not flash a placeholder. Query errors replace
+only the data body with retry UI. Background refreshes likewise leave page chrome
+and recording controls mounted; leaving the page invalidates outstanding queries
+and cancels loading/peek timers. No period preference or response cache is added.
+Recap grids initialize keyboard navigation at the current date/hour (falling back
+to the latest activity), and show a single cell focus ring only for keyboard
+focus. All non-placeholder cells share the same popover for pointer and keyboard
+inspection, including empty/unknown/future coverage states; native title tooltips
+are omitted. Blur, Escape and body disposal dismiss the popover.
+
 Enumerated values use the existing `buildSegmentedRadio`: Codex permission mode,
 Feishu platform and ID type, Recap period, and the General/approval choices. Add a
 stable `id` for focus restoration and an accessible name (`ariaLabel` or

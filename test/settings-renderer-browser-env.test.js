@@ -665,6 +665,8 @@ function loadSharedChoiceHelpersForTest(document) {
   const core = loadSettingsCoreForTest({}, { document });
   return {
     buildTabs: core.helpers.buildTabs,
+    createSubpageHost: core.helpers.createSubpageHost,
+    clearMountedControls: core.ops.clearMountedControls,
     buildSegmentedRadio: core.helpers.buildSegmentedRadio,
     registerMountedDisposable: core.helpers.registerMountedDisposable,
   };
@@ -2002,6 +2004,7 @@ function loadTelegramApprovalTabForTest({
     tabs: {},
   };
   coreRef = core;
+  core.ops.clearMountedControls = core.helpers.clearMountedControls;
   context.ClawdSettingsTabTelegramApproval.init(core);
   function render() {
     content.innerHTML = "";
@@ -2560,6 +2563,30 @@ function createAnimOverridesRuntime(card, overrides = {}) {
 }
 
 describe("settings renderer browser environment", () => {
+  it("keeps recap chrome and chart mounted while a period query is pending", async () => {
+    let finish;
+    const harness = loadRecapTabForTest({
+      queryRecap: (period) => period === "today" ? Promise.resolve(sampleRecapView())
+        : new Promise((resolve) => { finish = resolve; }),
+    });
+    await harness.settle();
+    const header = harness.content.querySelector(".recap-page-header");
+    const chart = harness.content.querySelector(".recap-card");
+    const renders = harness.renderRequests.length;
+    header.querySelectorAll(".recap-period-button")[1].click();
+    await harness.settle();
+    assert.strictEqual(harness.content.querySelector(".recap-page-header"), header,
+      "switching a period must not rebuild the page header");
+    assert.strictEqual(harness.content.querySelector(".recap-card"), chart,
+      "retain the chart geometry until replacement data is ready");
+    assert.strictEqual(harness.renderRequests.length, renders);
+    finish(sampleRecapView());
+    await harness.settle();
+    assert.strictEqual(harness.content.querySelector(".recap-page-header"), header);
+    assert.notStrictEqual(harness.content.querySelector(".recap-card"), chart);
+    assert.strictEqual(harness.content.querySelector(".recap-grid").getAttribute("data-settings-focus-key"), "recap-grid-week");
+  });
+
   it("defers recap recovery queries while the Settings document is hidden", async () => {
     let queryCount = 0;
     const harness = loadRecapTabForTest({
@@ -2582,6 +2609,136 @@ describe("settings renderer browser environment", () => {
     harness.core.tabs.recap.applyDataChanged();
     await harness.settle();
     assert.strictEqual(queryCount, 2);
+  });
+
+  it("keeps only the newest recap period result after rapid switches", async () => {
+    const requests = new Map();
+    const harness = loadRecapTabForTest({ queryRecap: (period) => {
+      if (period === "today") return Promise.resolve(sampleRecapView());
+      const deferred = createDeferred();
+      requests.set(period, deferred);
+      return deferred.promise;
+    } });
+    await harness.settle();
+    const choices = harness.content.querySelectorAll(".recap-period-button");
+    choices[1].click();
+    choices[2].click();
+    choices[3].click();
+    await harness.settle();
+    assert.deepStrictEqual([...requests.keys()], ["week", "month", "year"]);
+    assert.equal(harness.content.querySelector(".recap-data-body").inert, true);
+    requests.get("year").resolve(sampleRecapView());
+    await harness.settle();
+    const chart = harness.content.querySelector(".recap-card");
+    requests.get("month").reject(new Error("late failure"));
+    requests.get("week").resolve(sampleRecapView());
+    await harness.settle();
+    assert.strictEqual(harness.content.querySelector(".recap-card"), chart);
+    assert.equal(harness.content.querySelector(".recap-grid").getAttribute("data-settings-focus-key"), "recap-grid-year");
+    assert.equal(harness.content.querySelector(".recap-data-body").inert, false);
+    assert.equal(harness.content.querySelector(".recap-data-body").getAttribute("aria-busy"), "false");
+    assert.equal(choices[3].getAttribute("aria-checked"), "true");
+  });
+
+  it("starts each recap keyboard grid at the current date and shares empty-cell popovers", async () => {
+    for (const [index, period] of ["today", "week", "month", "year"].entries()) {
+      const harness = loadRecapTabForTest({ data: sampleRecapView() });
+      await harness.settle();
+      if (index) {
+        harness.content.querySelectorAll(".recap-period-button")[index].click();
+        await harness.settle();
+      }
+      const grid = harness.content.querySelector(".recap-grid");
+      const cells = grid.querySelectorAll(".recap-cell");
+      const current = cells.find((cell) => cell.id === grid.getAttribute("aria-activedescendant"));
+      assert.match(current.dataset.cellKey, /2026-08-29/, period);
+      assert.ok(cells.every((cell) => !cell.title), "native tooltips must not compete with the shared popover");
+      const empty = cells.find((cell) => cell.getAttribute("role") === "gridcell"
+        && !cell.classList.contains("recap-cell-activity"));
+      empty.dispatchEvent({ type: "mouseenter" });
+      await new Promise((resolve) => setTimeout(resolve, 110));
+      const popover = harness.content.querySelector(".recap-cell-popover");
+      assert.ok(popover, `${period} empty cells use the rounded popover`);
+      assert.equal(`${popover.querySelector("strong").textContent}: ${popover.querySelector(".recap-cell-popover-note").textContent}`,
+        empty.getAttribute("aria-label"), "date and status occupy separate lines without losing meaning");
+      if (period === "month") {
+        const today = grid.querySelectorAll(".recap-cell-current");
+        assert.equal(today.length, 1);
+        assert.match(today[0].dataset.cellKey, /2026-08-29/);
+        assert.equal(today[0].getAttribute("aria-current"), "date");
+      }
+      if (period === "week") {
+        assert.deepEqual(grid.querySelector(".recap-week-hours").children.map((node) => node.textContent).filter(Boolean),
+          ["00", "06", "12", "18"]);
+      }
+      empty.dispatchEvent({ type: "mouseleave" });
+      assert.equal(harness.content.querySelector(".recap-cell-popover"), null);
+      grid.dispatchEvent({ type: "keydown", key: "ArrowLeft", preventDefault() {} });
+      await new Promise((resolve) => setTimeout(resolve, 110));
+      assert.ok(harness.content.querySelector(".recap-cell-popover"), "keyboard uses the same popover");
+      grid.dispatchEvent({ type: "blur" });
+      assert.equal(harness.content.querySelector(".recap-cell-popover"), null);
+      harness.core.tabs.recap.onExit();
+    }
+  });
+
+  it("shows a local recap query failure and retries without replacing period controls", async () => {
+    let fail = true;
+    const harness = loadRecapTabForTest({ queryRecap: async (period) => {
+      if (period === "week" && fail) throw new Error("query failed");
+      return sampleRecapView();
+    } });
+    await harness.settle();
+    const header = harness.content.querySelector(".recap-page-header");
+    header.querySelectorAll(".recap-period-button")[1].click();
+    await harness.settle();
+    assert.ok(harness.content.querySelector(".recap-error"));
+    assert.equal(harness.content.querySelector(".recap-data-body").inert, false);
+    fail = false;
+    harness.content.querySelector(".recap-error button").click();
+    await harness.settle();
+    assert.strictEqual(harness.content.querySelector(".recap-page-header"), header);
+    assert.ok(harness.content.querySelector(".recap-card"));
+  });
+
+  it("ignores a recap query that completes after leaving the page", async () => {
+    const pending = createDeferred();
+    const harness = loadRecapTabForTest({ queryRecap: (period) => period === "today"
+      ? Promise.resolve(sampleRecapView()) : pending.promise });
+    await harness.settle();
+    harness.content.querySelectorAll(".recap-period-button")[1].click();
+    await harness.settle();
+    const chart = harness.content.querySelector(".recap-card");
+    harness.core.tabs.recap.onExit();
+    harness.core.state.activeTab = "general";
+    pending.resolve(sampleRecapView());
+    await harness.settle();
+    assert.strictEqual(harness.content.querySelector(".recap-card"), chart);
+    assert.equal(harness.renderRequests.length, 0);
+    harness.core.state.activeTab = "recap";
+    harness.content.innerHTML = "";
+    harness.core.tabs.recap.render(harness.content);
+    await harness.settle();
+    assert.equal(harness.content.querySelector(".recap-grid").getAttribute("data-settings-focus-key"), "recap-grid-week");
+  });
+
+  it("keeps Remote Approval chrome mounted while switching Channels and LAN", async () => {
+    const harness = loadTelegramApprovalTabForTest();
+    await Promise.resolve();
+    const heading = harness.content.children[0];
+    const tabs = harness.content.querySelector(".settings-tabs");
+    const choices = tabs.querySelectorAll("button");
+    const renders = harness.renderRequests.length;
+    choices[1].click();
+    assert.strictEqual(harness.content.children[0], heading);
+    assert.strictEqual(harness.content.querySelector(".settings-tabs"), tabs);
+    assert.equal(harness.core.runtime.remoteApprovalSubtab, "lan");
+    assert.equal(harness.renderRequests.length, renders);
+    choices[0].click();
+    assert.equal(harness.core.runtime.remoteApprovalSubtab, "channels");
+    assert.equal(choices[0].getAttribute("aria-selected"), "true");
+    assert.equal(harness.renderRequests.length, renders);
+    assert.strictEqual(harness.document.activeElement, choices[0]);
   });
 
   it("re-queries an unavailable recap page after the runtime recovery signal", async () => {
@@ -2766,7 +2923,7 @@ describe("settings renderer browser environment", () => {
     harness.core.tabs.recap.applyDataChanged();
     await harness.settle();
     assert.deepStrictEqual(focusKeys(), before);
-    assert.strictEqual(harness.renderRequests.at(-1).preserveScroll, true);
+    assert.strictEqual(harness.renderRequests.length, 0, "live data updates only the body");
   });
 
   it("keeps month and year placeholder cells out of the accessibility grid", async () => {
@@ -18050,6 +18207,46 @@ const choiceOptions = () => [
 const settleChoice = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("Settings tabs and segmented choice contracts", () => {
+  it("replaces only subpage bodies, restores lost focus and invalidates disposed scroll work", () => {
+    const document = createChoiceDocument();
+    const frames = [];
+    const core = loadSettingsCoreForTest({}, { document, requestAnimationFrame: (cb) => frames.push(cb) });
+    const scroller = document.createElement("main");
+    scroller.id = "content";
+    document.body.appendChild(scroller);
+    const fallback = document.createElement("button");
+    fallback.setAttribute("data-settings-focus-key", "period");
+    scroller.appendChild(fallback);
+    const panel = document.createElement("div");
+    scroller.appendChild(panel);
+    let cleanups = 0;
+    const host = core.helpers.createSubpageHost({ disposeBody: () => { cleanups++; } });
+    const renderInput = (body) => {
+      const input = document.createElement("input");
+      input.setAttribute("data-settings-focus-key", "draft");
+      input.setAttribute("data-settings-focus-fallback-key", "period");
+      body.appendChild(input);
+    };
+    host.render(panel, renderInput);
+    panel.children[0].focus();
+    scroller.scrollTop = 90;
+    host.render(panel, renderInput);
+    assert.equal(cleanups, 1);
+    assert.strictEqual(document.activeElement, panel.children[0]);
+    assert.equal(scroller.scrollTop, 90);
+    host.render(panel, () => {});
+    assert.strictEqual(document.activeElement, fallback);
+    const modal = document.createElement("button");
+    document.body.appendChild(modal);
+    host.render(panel, (body) => { renderInput(body); modal.focus(); });
+    assert.strictEqual(document.activeElement, modal, "a dialog keeps its focus");
+    host.dispose();
+    scroller.scrollTop = 20;
+    frames.forEach((frame) => frame());
+    assert.equal(scroller.scrollTop, 20);
+    assert.equal(host.render(panel, () => { throw new Error("disposed host rendered"); }), false);
+  });
+
   for (const orientation of ["horizontal", "vertical"]) {
     it(`uses manual activation, wrapping and disabled skipping for ${orientation} tabs`, () => {
       const document = createChoiceDocument();

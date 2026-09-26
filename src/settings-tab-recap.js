@@ -6,6 +6,21 @@
   let helpers = null;
   let ops = null;
   let renderSerial = 0;
+  let mountedHost = null;
+  let mountedBody = null;
+  let mountedLoading = null;
+  let loadingTimer = null;
+  let mountedInteraction = null;
+
+  function clearLoadingIndicator() {
+    if (loadingTimer !== null) clearTimeout(loadingTimer);
+    loadingTimer = null;
+  }
+
+  function clearInteraction() {
+    if (mountedInteraction) mountedInteraction.clearPeek();
+    mountedInteraction = null;
+  }
 
   const PERIODS = ["today", "week", "month", "year"];
   const KNOWN_AGENT_COLORS = Object.freeze({
@@ -27,7 +42,7 @@
     clearPending: false,
     hoverRowKey: null,
     lockedRowKey: null,
-    gridIndex: 0,
+    gridIndex: null,
   };
 
   function t(key) {
@@ -96,11 +111,12 @@
     if (view.status !== "idle") return;
     view.status = "loading";
     const requestSeq = ++view.requestSeq;
+    const period = view.period;
     Promise.resolve().then(() => {
       if (!window.settingsAPI || typeof window.settingsAPI.queryRecap !== "function") {
         throw new Error("recap API unavailable");
       }
-      return window.settingsAPI.queryRecap(view.period);
+      return window.settingsAPI.queryRecap(period);
     }).then((result) => {
       if (requestSeq !== view.requestSeq) return;
       if (!result || result.status !== "ready") {
@@ -110,13 +126,14 @@
         view.status = "ready";
         view.data = result;
       }
-      if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
+      refreshBody();
       refreshIfNeeded();
     }).catch(() => {
       if (requestSeq !== view.requestSeq) return;
       view.status = "error";
       view.data = null;
-      if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
+      refreshBody();
+      refreshIfNeeded();
     });
   }
 
@@ -147,7 +164,7 @@
         view.status = "ready";
         view.data = result;
         if (coreState.activeTab === "recap") {
-          ops.requestRender({ content: true, preserveScroll: true });
+          refreshBody();
         }
       }
     }).catch(() => {
@@ -167,16 +184,19 @@
   function resetInteraction() {
     view.hoverRowKey = null;
     view.lockedRowKey = null;
-    view.gridIndex = 0;
+    view.gridIndex = null;
   }
 
-  function reload() {
+  function reload({ retainContent = false } = {}) {
     view.requestSeq += 1;
     view.status = "idle";
     view.data = null;
     view.refreshQueued = false;
     resetInteraction();
-    if (coreState.activeTab === "recap") ops.requestRender({ content: true, preserveScroll: true });
+    if (coreState.activeTab === "recap") {
+      requestData();
+      refreshBody({ retainContent });
+    }
   }
 
   function agentName(agentId) {
@@ -508,8 +528,9 @@
       value: view.period,
       options: PERIODS.map((period) => ({ value: period, label: t(`recapPeriod_${period}`) })),
       onChange(period) {
+        clearInteraction();
         view.period = period;
-        reload();
+        reload({ retainContent: true });
       },
     });
     for (const button of control.element.querySelectorAll("button")) button.classList.add("recap-period-button");
@@ -658,6 +679,17 @@
     return text;
   }
 
+  function cellStatusLabel(cell) {
+    const keys = {
+      covered: "recapStatusCovered", partial: "recapStatusPartial",
+      uncovered: "recapStatusUncovered", future: "recapStatusFuture",
+      "not-started": "recapStatusNotStarted", gap: "recapStatusGap",
+    };
+    return cell.state === "activity"
+      ? replace(t("recapTooltipTotal"), { count: formatNumber(cell.total) })
+      : t(keys[cell.state]);
+  }
+
   function buildTimeline(data, summary, interaction) {
     const model = buildTimelineModel(data, view.period);
     const rowByKey = new Map(summary.rows.map((row) => [row.key, row]));
@@ -710,7 +742,6 @@
       element.setAttribute("aria-colindex", String(columnIndex));
       const label = cellAriaLabel(cell, rowByKey);
       element.setAttribute("aria-label", label);
-      element.title = label;
       if (view.period === "today") {
         element.dataset.barMaximum = String(todayBarMaximum);
         setTodayBarLevel(element, cell.total);
@@ -722,16 +753,21 @@
       if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
       if (cell.kind === "fold") element.classList.add("recap-cell-fold");
       if (cell.dayNumber && view.period === "month") {
+        if (cell.localDate === data.anchorDate) {
+          element.classList.add("recap-cell-current");
+          element.setAttribute("aria-current", "date");
+        }
         const dayNumber = document.createElement("span");
         dayNumber.className = "recap-day-number";
         dayNumber.textContent = formatNumber(cell.dayNumber);
         dayNumber.setAttribute("aria-hidden", "true");
         element.appendChild(dayNumber);
       }
-      if (cell.state === "activity" || cell.kind === "fold") {
-        element.addEventListener("mouseenter", () => interaction.showPeek(cell, element, rowByKey));
-        element.addEventListener("mouseleave", interaction.clearPeek);
-      }
+      element.addEventListener("mouseenter", () => interaction.showPeek(cell, element, rowByKey));
+      element.addEventListener("mouseleave", interaction.clearPeek);
+      element.addEventListener("mousedown", () => {
+        interaction.selectGridCell(cellElements.findIndex((entry) => entry.element === element), false);
+      });
       interaction.cellElements.set(cell.key, { cell, element });
       cellElements.push({ cell, element, rowIndex, columnIndex });
       parent.appendChild(element);
@@ -753,6 +789,15 @@
       }
       grid.appendChild(labels);
     } else if (view.period === "week") {
+      const hours = document.createElement("div");
+      hours.className = "recap-week-hours";
+      hours.setAttribute("aria-hidden", "true");
+      for (let hour = 0; hour < 24; hour += 1) {
+        const label = document.createElement("span");
+        label.textContent = hour % 6 === 0 ? formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false }) : "";
+        hours.appendChild(label);
+      }
+      grid.appendChild(hours);
       for (let dayIndex = 0; dayIndex < 7; dayIndex += 1) {
         const row = document.createElement("div");
         row.className = "recap-week-row";
@@ -802,7 +847,7 @@
         row.setAttribute("role", "row");
         const label = document.createElement("span");
         label.className = "recap-row-label";
-        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, { month: "narrow" });
+        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, { month: "short" });
         label.setAttribute("aria-hidden", "true");
         row.appendChild(label);
         const band = document.createElement("div");
@@ -821,9 +866,24 @@
     live.setAttribute("aria-atomic", "true");
     interaction.live = live;
     interaction.cellList = cellElements;
+    if (view.gridIndex === null) {
+      const current = cellElements.findIndex(({ cell }) => cell.localDate === data.anchorDate
+        && (cell.hour === null || cell.hour === data.currentLocalHour));
+      const recent = cellElements.findLastIndex(({ cell }) => cell.state === "activity");
+      view.gridIndex = current >= 0 ? current : Math.max(0, recent);
+    }
     view.gridIndex = Math.max(0, Math.min(view.gridIndex, cellElements.length - 1));
     interaction.selectGridCell(view.gridIndex, false);
-    grid.addEventListener("focus", () => interaction.selectGridCell(view.gridIndex, true));
+    grid.addEventListener("focus", () => {
+      const keyboard = typeof grid.matches !== "function" || grid.matches(":focus-visible");
+      grid.classList.toggle("recap-keyboard-mode", keyboard);
+      interaction.selectGridCell(view.gridIndex, keyboard);
+    });
+    grid.addEventListener("mousedown", () => grid.classList.remove("recap-keyboard-mode"));
+    grid.addEventListener("blur", () => {
+      grid.classList.remove("recap-keyboard-mode");
+      interaction.clearPeek();
+    });
     grid.addEventListener("keydown", (event) => {
       let next = view.gridIndex;
       if (event.key === "ArrowRight") next += 1;
@@ -858,6 +918,7 @@
       }
       else return;
       event.preventDefault();
+      grid.classList.add("recap-keyboard-mode");
       interaction.selectGridCell(Math.max(0, Math.min(next, cellElements.length - 1)), true);
     });
     section.appendChild(grid);
@@ -974,7 +1035,6 @@
       showPeek(cell, element, rowByKey) {
         this.clearPeek();
         const entries = cell.counts.slice().sort((left, right) => right.count - left.count);
-        if (entries.length === 0 && cell.kind !== "fold") return;
         this.peekElement = element;
         this.peekCell = cell;
         element.classList.add("recap-cell-peek");
@@ -999,8 +1059,12 @@
           popover.className = "recap-cell-popover";
           popover.setAttribute("aria-hidden", "true");
           const popTitle = document.createElement("strong");
-          popTitle.textContent = `${cellWhen(cell)} · ${replace(t("recapTooltipTotal"), { count: formatNumber(cell.total) })}`;
+          popTitle.textContent = cellWhen(cell);
           popover.appendChild(popTitle);
+          const status = document.createElement("p");
+          status.className = "recap-cell-popover-note";
+          status.textContent = cellStatusLabel(cell);
+          popover.appendChild(status);
           if (cell.kind === "fold") {
             const foldNote = document.createElement("p");
             foldNote.className = "recap-cell-popover-note";
@@ -1050,6 +1114,8 @@
         const current = this.cellList[view.gridIndex].element;
         if (this.grid) this.grid.setAttribute("aria-activedescendant", current.id);
         if (announce && this.live) this.live.textContent = current.getAttribute("aria-label") || "";
+        if (announce) this.showPeek(this.cellList[view.gridIndex].cell, current,
+          new Map(summary.rows.map((row) => [row.key, row])));
       },
     };
 
@@ -1063,6 +1129,7 @@
       interaction.clearPeek();
       interaction.applyHighlight();
     });
+    mountedInteraction = interaction;
     interaction.applyHighlight();
     return card;
   }
@@ -1169,6 +1236,10 @@
   }
 
   function render(parent) {
+    clearLoadingIndicator();
+    clearInteraction();
+    if (mountedHost) mountedHost.dispose();
+    mountedHost = helpers.createSubpageHost({ disposeBody: clearInteraction });
     const header = document.createElement("div");
     header.className = "recap-page-header";
     const title = document.createElement("h1");
@@ -1181,8 +1252,54 @@
     header.appendChild(buildPeriodChoice());
     parent.appendChild(header);
 
+    const dataRegion = document.createElement("div");
+    dataRegion.className = "recap-data-region";
+    mountedBody = document.createElement("div");
+    mountedBody.className = "recap-data-body";
+    mountedLoading = document.createElement("div");
+    mountedLoading.className = "recap-loading-status";
+    mountedLoading.setAttribute("role", "status");
+    mountedLoading.hidden = true;
+    dataRegion.appendChild(mountedBody);
+    dataRegion.appendChild(mountedLoading);
+    parent.appendChild(dataRegion);
+
     if (view.status === "idle") requestData();
     else refreshIfNeeded();
+    refreshBody();
+    parent.appendChild(buildRecordingControls());
+  }
+
+  function refreshBody({ retainContent = false } = {}) {
+    if (coreState.activeTab !== "recap" || !mountedHost || !mountedBody) return;
+    const pending = view.status === "loading" || view.status === "idle";
+    const retain = retainContent && pending && !!mountedBody.querySelector(".recap-card");
+    clearLoadingIndicator();
+    mountedBody.setAttribute("aria-busy", String(pending));
+    mountedBody.inert = retain;
+    mountedLoading.hidden = true;
+    mountedLoading.textContent = retain ? `${t(`recapPeriod_${view.period}`)} · ${t("recapLoading")}` : "";
+    if (retain) {
+      // Fast local queries should not flash a loading badge. Slow queries keep
+      // the previous chart's geometry, but its controls cannot act on old data.
+      loadingTimer = setTimeout(() => {
+        loadingTimer = null;
+        if (mountedLoading) mountedLoading.hidden = false;
+      }, 150);
+    }
+    if (!retain) mountedHost.render(mountedBody, renderDataBody);
+    // Recording state may change in the returned data without replacing controls.
+    const description = document.getElementById("recap-recording-description");
+    if (description) {
+      const paused = coreState.snapshot?.recapEnabled !== false && view.status === "ready"
+        && view.data?.recordingEnabled === false;
+      description.textContent = t(paused ? "recapRecordingPaused" : "recapRecordingDesc");
+      if (paused) description.setAttribute("role", "status");
+      else description.removeAttribute("role");
+    }
+  }
+
+  function renderDataBody(parent) {
     if (view.status === "loading" || view.status === "idle") {
       const loading = document.createElement("div");
       loading.className = "recap-state-card";
@@ -1202,11 +1319,10 @@
       retry.textContent = t("recapRetry");
       retry.setAttribute("data-settings-focus-key", `recap-retry-${view.period}`);
       retry.setAttribute("data-settings-focus-fallback-key", `recap-period-${view.period}`);
-      retry.addEventListener("click", reload);
+      retry.addEventListener("click", () => reload());
       error.appendChild(retry);
       parent.appendChild(error);
     }
-    parent.appendChild(buildRecordingControls());
   }
 
   function init(core) {
@@ -1222,6 +1338,16 @@
     core.tabs.recap = {
       render,
       applyDataChanged,
+      onExit() {
+        clearLoadingIndicator();
+        clearInteraction();
+        view.requestSeq += 1;
+        if (view.status === "loading") view.status = "idle";
+        if (mountedHost) mountedHost.dispose();
+        mountedHost = null;
+        mountedBody = null;
+        mountedLoading = null;
+      },
       patchInPlace(changes) {
         if (!changes || !Object.hasOwn(changes, "recapEnabled")) return false;
         reload();

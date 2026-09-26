@@ -21,6 +21,7 @@
   let readers = null;
   let mountedSubtabBody = null;
   let mountedSubtabs = null;
+  let mountedHost = null;
 
   function t(key) {
     return helpers.t(key);
@@ -1065,15 +1066,6 @@
     return value === "sounds" ? "sounds" : value === "map" ? "map" : "animations";
   }
 
-  function restoreSubtabScroll(scroller, subtab) {
-    if (!scroller) return;
-    const saved = Number(getSubtabScrollPositions()[subtab]);
-    requestAnimationFrame(() => {
-      if (state.activeTab !== "animOverrides" || normalizeSubtab() !== subtab) return;
-      scroller.scrollTop = Number.isFinite(saved) && saved > 0 ? saved : 0;
-    });
-  }
-
   function clearSubtabControls() {
     if (typeof ops.clearMountedControls === "function") {
       ops.clearMountedControls();
@@ -1116,9 +1108,9 @@
         if (state.activeTab !== "animOverrides" || mountedSubtabBody !== body) return;
         if (normalizeSubtab() !== subtab) return;
         if (runtime.animationOverridesData === null) return;
-        clearSubtabControls();
-        renderSubtabBody(body);
-        restoreSubtabScroll(document.getElementById("content"), subtab);
+        mountedHost.render(body, renderSubtabBody, {
+          scrollTop: getSubtabScrollPositions()[subtab] || 0,
+        });
       });
       return;
     }
@@ -1145,9 +1137,7 @@
     const scroller = document.getElementById("content");
     const subtab = normalizeSubtab();
     if (scroller) getSubtabScrollPositions()[subtab] = scroller.scrollTop;
-    clearSubtabControls();
-    renderSubtabBody(mountedSubtabBody);
-    restoreSubtabScroll(scroller, subtab);
+    mountedHost.render(mountedSubtabBody, renderSubtabBody);
     return true;
   }
 
@@ -1161,6 +1151,8 @@
     subtitle.textContent = t("animOverridesSubtitle");
     parent.appendChild(subtitle);
     if (mountedSubtabs) mountedSubtabs.dispose();
+    if (mountedHost) mountedHost.dispose();
+    mountedHost = helpers.createSubpageHost({ disposeBody: clearSubtabControls });
     const switcher = buildSubtabSwitcher();
     mountedSubtabs = switcher.control;
     parent.appendChild(switcher.wrap);
@@ -1169,8 +1161,9 @@
       parent.appendChild(panel);
     }
     const body = mountedSubtabs.panels.get(normalizeSubtab());
-    renderSubtabBody(body);
-    restoreSubtabScroll(document.getElementById("content"), normalizeSubtab());
+    mountedHost.render(body, renderSubtabBody, {
+      scrollTop: getSubtabScrollPositions()[normalizeSubtab()] || 0,
+    });
   }
 
   function buildSubtabSwitcher() {
@@ -1190,15 +1183,15 @@
       value: current,
       options: entries.map((entry) => ({ value: entry.key, label: entry.label })),
       renderLabel(button, option) { button.dataset.animOverridesSubtab = option.value; },
-      onChange(value) {
+      onBeforeChange(_value, previousSubtab) {
         const scroller = document.getElementById("content");
-        const previousSubtab = normalizeSubtab();
         if (scroller) getSubtabScrollPositions()[previousSubtab] = scroller.scrollTop;
+      },
+      onChange(value) {
         runtime.animOverridesSubtab = value;
-        clearSubtabControls();
-        if (mountedSubtabBody) mountedSubtabBody.innerHTML = "";
-        renderSubtabBody(control.panels.get(value));
-        restoreSubtabScroll(scroller, value);
+        mountedHost.render(control.panels.get(value), renderSubtabBody, {
+          scrollTop: getSubtabScrollPositions()[value] || 0,
+        });
       },
     });
     wrap.appendChild(control.element);
@@ -2295,6 +2288,8 @@
     mountedSubtabBody = null;
     if (mountedSubtabs) mountedSubtabs.dispose();
     mountedSubtabs = null;
+    if (mountedHost) mountedHost.dispose();
+    mountedHost = null;
     ops.closeAssetPicker();
   }
 
