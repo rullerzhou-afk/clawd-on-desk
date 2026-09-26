@@ -258,6 +258,7 @@ contextBridge.exposeInMainWorld("doctor", {
   testConnection: (durationMs) => ipcRenderer.invoke("doctor:test-connection", { durationMs }),
   openClawdLog: () => ipcRenderer.invoke("doctor:open-clawd-log"),
   codexHookHealth: () => ipcRenderer.invoke("doctor:codex-hook-health"),
+  claudeHookHealth: () => ipcRenderer.invoke("doctor:claude-hook-health"),
 });
 
 // ── Remote SSH (Phase 2) ──
