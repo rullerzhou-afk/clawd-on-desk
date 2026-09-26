@@ -95,8 +95,8 @@ describe("bubble wiring — badge is display-only", () => {
   it("badge never touches decide()/Allow/Deny semantics", () => {
     // the badge block must not call bubbleAPI.decide — display-only invariant
     const block = bubbleRenderer.slice(
-      bubbleRenderer.indexOf("Irreversible-action hint"),
-      bubbleRenderer.indexOf("Button labels"));
+      bubbleRenderer.indexOf("function renderIrreversibleBadge("),
+      bubbleRenderer.indexOf("function resetBubbleContent("));
     assert.ok(block.length > 0);
     assert.doesNotMatch(block, /bubbleAPI\.decide/);
   });

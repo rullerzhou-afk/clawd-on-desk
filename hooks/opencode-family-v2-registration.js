@@ -286,6 +286,38 @@ function v2ArrayEdits(text, plan) {
   return removeV2EntriesFromText(text, plan.remove.map((entry) => entry.index));
 }
 
+// Called only after removing the last proven-owned entry. An empty plugins
+// key still breaks older v1 hosts. Remove its syntax tokens, not its whole
+// property span: jsonc-parser's property deletion also eats user comments.
+function removeEmptyV2Key(text) {
+  const root = parseTree(text, [], PARSE_OPTIONS);
+  const arr = root && findNodeAtLocation(root, [V2_PLUGIN_KEY]);
+  if (!arr || arr.type !== "array" || arr.children.length) return text;
+  const prop = arr.parent;
+  const key = prop.children[0];
+  const colon = skipTriviaForward(text, key.offset + key.length);
+  const spans = [
+    [key.offset, key.offset + key.length],
+    [colon, colon + 1],
+    [arr.offset, arr.offset + 1],
+    [arr.offset + arr.length - 1, arr.offset + arr.length],
+  ];
+  const after = skipTriviaForward(text, arr.offset + arr.length);
+  if (text[after] === ",") {
+    spans.push([after, after + 1]);
+  } else {
+    const previous = root.children[root.children.indexOf(prop) - 1];
+    if (previous) {
+      const comma = skipTriviaForward(text, previous.offset + previous.length);
+      if (text[comma] === ",") spans.push([comma, comma + 1]);
+    }
+  }
+  for (const [start, end] of spans.sort((a, b) => b[0] - a[0])) {
+    text = text.slice(0, start) + text.slice(end);
+  }
+  return text;
+}
+
 // Append the whole `plugins` array to an object-root config that has none.
 function appendV2Key(text, canonicalV2Entry) {
   return applyEdits(text, modify(text, [V2_PLUGIN_KEY], [canonicalV2Entry], formattingFor(text)));
@@ -533,7 +565,10 @@ function applyV2Unregister({ cfg, configPath, candidates, makeContext, options =
       for (const entry of plan.failClosed) failClosedActive.push({ path: state.path, entry });
     }
     if (!plan.remove.length) continue;
-    const nextText = v2ArrayEdits(state.text, plan);
+    const sweptText = v2ArrayEdits(state.text, plan);
+    const nextText = plan.remove.length === state.tree[V2_PLUGIN_KEY].length
+      ? removeEmptyV2Key(sweptText)
+      : sweptText;
     writeTextAtomic(state.path, nextText, { mode: fileMode(state.path) });
     mutatedPaths.push(state.path);
     removed += plan.remove.length;

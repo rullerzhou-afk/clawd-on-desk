@@ -51,9 +51,9 @@ function parseOpencodeVersion(text) {
 
 // Some CLIs print the version on stderr or exit non-zero; a failed spawn must
 // not lose whatever it printed.
-function probeOutput(execFileImpl, command, args, timeoutMs) {
+function probeOutput(execFileImpl, command, args, timeoutMs, extraOptions = {}) {
   try {
-    return String(execFileImpl(command, args, { encoding: "utf8", timeout: timeoutMs, windowsHide: true }) || "");
+    return String(execFileImpl(command, args, { encoding: "utf8", timeout: timeoutMs, windowsHide: true, ...extraOptions }) || "");
   } catch (err) {
     const stdout = err && err.stdout ? String(err.stdout) : "";
     const stderr = err && err.stderr ? String(err.stderr) : "";
@@ -77,8 +77,18 @@ function probeVersionText(execFileImpl, platform) {
   const versionArgs = ["--version"];
   if (platform === "win32") {
     const whereOut = probeOutput(execFileImpl, "where", ["opencode"], LOCATE_TIMEOUT_MS);
-    const bin = firstNonEmptyLine(whereOut);
+    // npm also puts an extensionless POSIX shim on PATH. Windows cannot
+    // execFile it, and .cmd/.bat launchers require cmd.exe (EINVAL otherwise).
+    const bin = String(whereOut || "").split(/\r?\n/).map((line) => line.trim())
+      .find((line) => /\.(?:exe|com|cmd|bat)$/i.test(line));
     if (!bin) return "";
+    if (/\.(?:cmd|bat)$/i.test(bin)) {
+      // Do not interpolate paths that cmd would expand or reinterpret.
+      if (/["%\r\n]/.test(bin)) return "";
+      return probeOutput(execFileImpl, process.env.ComSpec || "cmd.exe",
+        ["/d", "/v:off", "/s", "/c", `""${bin}" --version"`], VERSION_PROBE_TIMEOUT_MS,
+        { windowsVerbatimArguments: true }) || "";
+    }
     return probeOutput(execFileImpl, bin, versionArgs, VERSION_PROBE_TIMEOUT_MS) || "";
   }
   const direct = probeOutput(execFileImpl, "opencode", versionArgs, VERSION_PROBE_TIMEOUT_MS);

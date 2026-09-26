@@ -211,9 +211,11 @@ function inspectManagedOpencode(descriptor, options = {}) {
   const v2Host = cfg.v2PluginDirName
     ? hostDetect.__test.normalizeHostDetection(options.v2Host) || hostDetect.detectOpencodeHost(options)
     : null;
+  const v2States = cfg.v2PluginDirName
+    ? v2Registry.readV2Candidates(cfg, descriptor.configPath)
+    : [];
   const assessV2 = () => {
     if (!cfg.v2PluginDirName) return null;
-    const v2States = v2Registry.readV2Candidates(cfg, descriptor.configPath);
     const v2Effective = v2Registry.__test.selectEffectiveV2(v2States);
     if (!v2Effective) {
       return { state: "missing", detail: "no opencode config exists for the plugins-key entry" };
@@ -268,7 +270,17 @@ function inspectManagedOpencode(descriptor, options = {}) {
     }
     return { state: "ok", detail: `${v2Effective.path} v2 plugins-key entry verified`, entries: entries.map((entry) => entry.rawEntry) };
   };
-  const v2Assessment = assessV2();
+  let v2Assessment = assessV2();
+  if (v2Host === "v1" && v2Assessment && v2Assessment.state === "missing") {
+    const remainingKeys = v2States.filter((state) => state.tree
+      && Object.prototype.hasOwnProperty.call(state.tree, v2Registry.V2_PLUGIN_KEY));
+    if (remainingKeys.length) {
+      v2Assessment = {
+        state: "needs-review",
+        detail: `${remainingKeys.map((state) => state.path).join(", ")} still declares the "plugins" key, which opencode <= 1.18.15 rejects even when empty; no Clawd entry proves ownership of this key, so review it manually`,
+      };
+    }
+  }
 
   // A corrupt/foreign/mismatched owner record means the managed core would go
   // inert; report it without any automatic Fix.

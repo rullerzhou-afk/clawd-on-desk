@@ -319,7 +319,7 @@ describe("opencode installer CLI entry (node hooks/opencode-install.js)", () => 
     // v2 `plugins` entry.
     assert.match(out2, /entries removed: 2/);
     assert.deepStrictEqual(readConfig(configPath).plugin, []);
-    assert.deepStrictEqual(readConfig(configPath).plugins, []);
+    assert.strictEqual(Object.hasOwn(readConfig(configPath), "plugins"), false);
   });
 
   it("skips politely when opencode is not installed (exit 0, no config created)", () => {

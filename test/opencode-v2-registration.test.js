@@ -173,12 +173,58 @@ describe("opencode v2 plugins-key registration", () => {
     );
 
     const cfg = readConfig(home);
-    assert.deepStrictEqual(
-      (cfg.plugins || []).filter((entry) => String(entry).includes("opencode-plugin-v2")),
-      [],
-      "v2 leftover swept"
-    );
+    assert.strictEqual(Object.hasOwn(cfg, "plugins"), false,
+      "old v1 rejects the key itself, including an empty array");
     assert.ok(Array.isArray(cfg.plugin) && cfg.plugin.length === 1, "v1 entry survives the sweep");
+  });
+
+  it("removes the last owned v2 key without consuming JSONC comments or adjacent fields", () => {
+    for (const position of ["first", "middle", "last"]) {
+      const home = makeHome();
+      registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
+      const before = readConfig(home);
+      const owned = JSON.stringify(before.plugins[0]);
+      const plugin = `"plugin": ${JSON.stringify(before.plugin)}`;
+      const v2 = `"plugins" /* key note */ : [ /* list note */ ${owned} /* entry note */ ]`;
+      const fields = position === "first" ? [v2, plugin, '"theme": "keep"']
+        : position === "middle" ? [plugin, v2, '"theme": "keep"']
+          : [plugin, '"theme": "keep"', v2];
+      const text = `{\n// before fields\n${fields.join(", // between fields\n")}\n// after fields\n}\n`;
+      fs.writeFileSync(configPath(home), text);
+
+      const result = registerOpencodePlugin({ silent: true, v2Host: "v1", ...managedRoots(home) });
+      assert.strictEqual(result.status, "ok", result.message);
+      const after = fs.readFileSync(configPath(home), "utf8");
+      const errors = [];
+      const parsed = require("jsonc-parser").parse(after, errors);
+      assert.deepStrictEqual(errors, [], after);
+      assert.strictEqual(Object.hasOwn(parsed, "plugins"), false, after);
+      assert.deepStrictEqual(parsed.plugin, before.plugin);
+      assert.strictEqual(parsed.theme, "keep");
+      for (const note of ["key note", "list note", "entry note", "before fields", "between fields", "after fields"]) {
+        assert.ok(after.includes(note), `${position}: lost ${note}`);
+      }
+    }
+  });
+
+  it("preserves foreign v2 entries and already-empty keys during a v1 sweep", () => {
+    const home = makeHome();
+    writeConfig(home, { plugins: ["third-party@latest"] });
+    registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
+    registerOpencodePlugin({ silent: true, v2Host: "v1", ...managedRoots(home) });
+    assert.deepStrictEqual(readConfig(home).plugins, ["third-party@latest"]);
+
+    writeConfig(home, { ...readConfig(home), plugins: [] });
+    registerOpencodePlugin({ silent: true, v2Host: "v1", ...managedRoots(home) });
+    assert.deepStrictEqual(readConfig(home).plugins, [], "an unowned empty key is not silently deleted");
+  });
+
+  it("uninstall removes the top-level key when its last owned v2 entry is removed", () => {
+    const home = makeHome();
+    registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
+    const result = unregisterOpencodePlugin({ silent: true, ...managedRoots(home) });
+    assert.strictEqual(result.status, "ok", result.message);
+    assert.strictEqual(Object.hasOwn(readConfig(home), "plugins"), false);
   });
 
   it("upstream #1045 review: an unknown host never touches the plugins key", () => {

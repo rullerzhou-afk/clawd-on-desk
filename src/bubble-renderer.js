@@ -1,4 +1,4 @@
-const { formatDetail, formatReminderReason, truncate, parseMcpToolName, detectIrreversible } = window.ClawdBubbleFormat;
+const { formatDetail, formatReminderReason, truncate, parseMcpToolName, detectIrreversible, shouldScanIrreversibleCommand } = window.ClawdBubbleFormat;
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const toolPillText = document.getElementById("toolPillText");
@@ -549,6 +549,39 @@ function revealCard() {
   card.classList.remove("hiding");
   card.classList.add("visible");
   scheduleBubbleHeightReport();
+}
+
+function renderIrreversibleBadge(data, isPlanReview = false) {
+  // Irreversible-action hint — display-only: routes the
+  // human's attention to destructive decisions. Allow/Deny semantics, the
+  // suggestion buttons, and the no-decision fallback are untouched. textContent only.
+  let hintInput = data.toolInput;
+  if (data.familyAgentId && shouldScanIrreversibleCommand(data.toolName)
+    && hintInput && typeof hintInput.resource === "string" && hintInput.resource
+    && !(typeof hintInput.command === "string" && hintInput.command)) {
+    hintInput = { ...hintInput, command: hintInput.resource };
+  }
+  const irreversible = detectIrreversible(data.toolName, hintInput);
+  // A held card's reason is decided in the main process, which scanned the
+  // accepted request before display-preview truncation; the hint above scans
+  // data.toolInput, which IS that truncated copy. When the destructive part of a
+  // long command sits past the preview cap the two disagree, and the hold is the
+  // one that is right -- so it drives the badge instead of being filtered by the
+  // local scan. Still display-only: nothing here decides Allow or Deny.
+  const reminderTag = typeof data.reminderTag === "string" && data.reminderTag
+    ? data.reminderTag
+    : null;
+  if ((reminderTag || irreversible) && !isPlanReview) {
+    irreversibleBadge.textContent = "\u26A0 " + (reminderTag
+      ? bubbleText(data.lang, "reminderHeldHint", { reason: formatReminderReason(reminderTag, data.lang) })
+      : bubbleText(data.lang, "irreversibleHint"));
+    irreversibleBadge.setAttribute("data-reason", reminderTag || irreversible.tag);
+    irreversibleBadge.style.display = "";
+  } else {
+    irreversibleBadge.textContent = "";
+    irreversibleBadge.style.display = "none";
+    irreversibleBadge.removeAttribute("data-reason");
+  }
 }
 
 function resetBubbleContent() {
@@ -1302,6 +1335,7 @@ function show(data) {
       try { detail = JSON.stringify(input); } catch { detail = "(n/a)"; }
     }
     commandBlock.textContent = truncate(detail, 200);
+    renderIrreversibleBadge(data);
 
     btnAllow.textContent = bubbleText(data.lang, "allow");
     btnDeny.textContent = bubbleText(data.lang, "deny");
@@ -1448,30 +1482,7 @@ function show(data) {
   // Command block (textContent only — never innerHTML)
   commandBlock.textContent = formatDetail(data.toolName, data.toolInput, { isAntigravity: !!data.isAntigravity });
 
-  // Irreversible-action hint — display-only (like the MCP relabel above): routes the
-  // human's attention to destructive decisions. Allow/Deny semantics, the
-  // suggestion buttons, and the no-decision fallback are untouched. textContent only.
-  const irreversible = detectIrreversible(data.toolName, data.toolInput);
-  // A held card's reason is decided in the main process, which scanned the
-  // accepted request before display-preview truncation; the hint above scans
-  // data.toolInput, which IS that truncated copy. When the destructive part of a
-  // long command sits past the preview cap the two disagree, and the hold is the
-  // one that is right -- so it drives the badge instead of being filtered by the
-  // local scan. Still display-only: nothing here decides Allow or Deny.
-  const reminderTag = typeof data.reminderTag === "string" && data.reminderTag
-    ? data.reminderTag
-    : null;
-  if ((reminderTag || irreversible) && !isPlanReview) {
-    irreversibleBadge.textContent = "\u26A0 " + (reminderTag
-      ? bubbleText(data.lang, "reminderHeldHint", { reason: formatReminderReason(reminderTag, data.lang) })
-      : bubbleText(data.lang, "irreversibleHint"));
-    irreversibleBadge.setAttribute("data-reason", reminderTag || irreversible.tag);
-    irreversibleBadge.style.display = "";
-  } else {
-    irreversibleBadge.textContent = "";
-    irreversibleBadge.style.display = "none";
-    irreversibleBadge.removeAttribute("data-reason");
-  }
+  renderIrreversibleBadge(data, isPlanReview);
 
   // Button labels
   btnAllow.textContent = isPlanReview ? bubbleText(data.lang, "approve") : bubbleText(data.lang, "allow");

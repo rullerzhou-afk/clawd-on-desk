@@ -115,6 +115,22 @@ describe("#1026 managed OpenCode Doctor", () => {
     assert.match(detail.detail, /not required/);
   });
 
+  it("requires manual review for retained v2 keys without owned entries on a v1 host", () => {
+    for (const plugins of [[], ["third-party@latest"], { package: "third-party" }]) {
+      const home = makeHome();
+      registerOpencodePlugin({ silent: true, v2Host: "v1", homeDir: home });
+      const cfgPath = path.join(home, ".config", "opencode", "opencode.json");
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      fs.writeFileSync(cfgPath, JSON.stringify({ ...cfg, plugins }));
+      const before = fs.readFileSync(cfgPath, "utf8");
+      const detail = runOne(managedDescriptor(home), "v1").details[0];
+      assert.strictEqual(detail.status, "needs-review");
+      assert.strictEqual(detail.fixAction, undefined);
+      assert.match(detail.detail, /rejects even when empty/);
+      assert.strictEqual(fs.readFileSync(cfgPath, "utf8"), before);
+    }
+  });
+
   it("issue #1045 review: an unknown host with a missing v2 key is ok too", () => {
     const home = makeHome();
     registerOpencodePlugin({ silent: true, v2Host: "v2", homeDir: home });
@@ -143,6 +159,7 @@ describe("#1026 managed OpenCode Doctor", () => {
     // Fix → syncOpencodePlugin → register under the detected v1 host.
     const repair = registerOpencodePlugin({ silent: true, v2Host: "v1", homeDir: home });
     assert.strictEqual(repair.status, "ok", repair.message);
+    assert.strictEqual(Object.hasOwn(JSON.parse(fs.readFileSync(cfgPath, "utf8")), "plugins"), false);
     const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
     const leftover = (cfg.plugins || []).filter((entry) => String(entry).includes("opencode-plugin-v2"));
     assert.deepStrictEqual(leftover, [], "v2 leftover swept");

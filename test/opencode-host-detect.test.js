@@ -94,6 +94,25 @@ describe("opencode host detection", () => {
     assert.deepStrictEqual(calls[1], ["C:\\tools\\opencode.exe", "--version"]);
   });
 
+  it("probes npm Windows launchers through cmd, skipping the POSIX shim", () => {
+    const bin = "C:\\Users\\Test User\\npm\\opencode.cmd";
+    const execFile = (command, args, options) => {
+      if (command === "where") return `C:\\Users\\Test User\\npm\\opencode\r\n${bin}\r\n`;
+      assert.strictEqual(command, process.env.ComSpec || "cmd.exe");
+      assert.deepStrictEqual(args, ["/d", "/v:off", "/s", "/c", `""${bin}" --version"`]);
+      assert.strictEqual(options.windowsVerbatimArguments, true);
+      return "opencode v2.0.15\n";
+    };
+    assert.strictEqual(detectOpencodeHost({ execFile, platform: "win32" }), "v2");
+  });
+
+  it("does not interpolate expandable Windows launcher paths", () => {
+    let calls = 0;
+    const execFile = () => { calls++; return "C:\\%UNTRUSTED%\\opencode.cmd\n"; };
+    assert.strictEqual(detectOpencodeHost({ execFile, platform: "win32" }), "unknown");
+    assert.strictEqual(calls, 1);
+  });
+
   it("probeVersionText returns unparseable output as-is and empty when nothing answers", () => {
     assert.strictEqual(
       __test.probeVersionText(failingExecFile(), "linux"),
