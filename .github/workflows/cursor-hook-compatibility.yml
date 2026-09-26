@@ -16,6 +16,7 @@ on:
       - "test/shared-process.test.js"
       - "test/helpers/spawned-hook.js"
       - "test/helpers/hook-post-recorder.js"
+      - "test/helpers/cursor-hook-delivery-probe.js"
   workflow_dispatch:
 
 permissions:
@@ -45,6 +46,7 @@ jobs:
       - name: Test Cursor hooks, title delivery, and dependency closure
         run: >-
           node --test
+          test/cursor-hook-delivery.test.js
           test/cursor-install.test.js
           test/cursor-session-title.test.js
           test/remote-deploy.test.js
