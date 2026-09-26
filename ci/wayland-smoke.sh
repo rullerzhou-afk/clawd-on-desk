@@ -6,6 +6,7 @@
 #   wayland-smoke.sh auto-xwayland <AppImage>
 #   wayland-smoke.sh native-wayland-contract <AppImage>
 #   wayland-smoke.sh appimage-claude-hooks <AppImage>
+#   wayland-smoke.sh appimage-wrapper-termination <AppImage>
 #
 # manual-x11 and auto-xwayland are full health checks: /state answers and an X
 # client window exists. native-wayland-contract deliberately checks only the
@@ -16,13 +17,15 @@
 # AppImage exits. weston --backend=headless has no real input seat or DRM
 # render node, so it is not a deterministic environment for full native-Wayland
 # Electron health.
+# appimage-wrapper-termination removes the owned FUSE wrappers before asking
+# the healthy browser to quit, and checks both the exit code and file cleanup.
 
 set -euo pipefail
 
-SCENARIO="${1:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks> <AppImage>}"
-APPIMAGE_ARG="${2:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks> <AppImage>}"
+SCENARIO="${1:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
+APPIMAGE_ARG="${2:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
 case "$SCENARIO" in
-  manual-x11 | auto-xwayland | native-wayland-contract | appimage-claude-hooks) ;;
+  manual-x11 | auto-xwayland | native-wayland-contract | appimage-claude-hooks | appimage-wrapper-termination) ;;
   *) printf 'Unknown scenario: %s\n' "$SCENARIO" >&2; exit 2 ;;
 esac
 
@@ -107,9 +110,13 @@ owned_pids() {
 }
 
 browser_pids() {
-  local want_flag="${1:-}" pid cmd
+  local want_flag="${1:-}" pid cmd exe
   while read -r pid; do
     [ -n "$pid" ] || continue
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    # AppImage's shell supervisor also carries the original arguments. It is
+    # not an Electron browser, even when it has --ozone-platform on its argv.
+    [ "${exe##*/}" = clawd-on-desk ] || continue
     cmd="$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline")" || continue
     case "$cmd" in *"--type="*) continue ;; esac
     if [ "$want_flag" = "x11" ]; then
@@ -140,9 +147,15 @@ proc_env_value() {
 }
 
 appimage_mount_dir() {
-  local mount pid
-  mount="$(proc_env_value APPDIR || true)"
-  if [ -n "$mount" ]; then printf '%s' "$mount"; return 0; fi
+  local mount pid line
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    line="$(tr '\0' '\n' 2>/dev/null <"/proc/$pid/environ" | grep -m1 '^APPDIR=' || true)"
+    mount="${line#APPDIR=}"
+    if [ -n "$mount" ] && mountpoint -q -- "$mount"; then
+      printf '%s' "$mount"; return 0
+    fi
+  done < <(owned_pids)
   while read -r pid; do
     [ -n "$pid" ] || continue
     mount="$(grep -m1 -oE '/tmp/\.mount_[^ /]+' "/proc/$pid/maps" 2>/dev/null || true)"
@@ -278,7 +291,7 @@ export ELECTRON_LOG_FILE="$ARTIFACT_DIR/electron-child.log"
 printf 'weston pid=%s, Xwayland display=%s\n' "$WESTON_PID" "$XDISPLAY"
 
 case "$SCENARIO" in
-  manual-x11)
+  manual-x11 | appimage-wrapper-termination)
     note "manual --ozone-platform=x11"
     launch_app "$APPIMAGE" --ozone-platform=x11
     poll 90 state_ok || fail "manual X11: state server from runtime.json never answered"
@@ -288,6 +301,20 @@ case "$SCENARIO" in
     grep -q "$RELAUNCH_MARK" "$ARTIFACT_DIR/app.log" &&
       fail "manual X11 triggered the automatic relaunch"
     ok "manual X11 boots healthy with an X client window and no relaunch"
+    if [ "$SCENARIO" = appimage-wrapper-termination ]; then
+      MOUNT_DIR="$(appimage_mount_dir)" || fail "could not locate the owned FUSE mount"
+      python3 "$(dirname "$0")/appimage-wrapper-shutdown.py" \
+        "$APPIMAGE" "$USER_DATA_DIR" "$RUNTIME_CONFIG" "$MOUNT_DIR" >"$ARTIFACT_DIR/wrapper-shutdown.json"
+      poll 15 no_owned_processes || fail "owned processes remained after wrapper-first shutdown"
+      wait "$APP_LAUNCH_PID" || fail "AppImage supervisor reported an abnormal main exit"
+      APP_LAUNCH_PID=""
+      python3 - "$ARTIFACT_DIR/wrapper-shutdown.json" <<'PY'
+import json, pathlib, sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert not pathlib.Path(result["runtimeDirectory"]).exists(), "private runtime files were not cleaned up"
+PY
+      ok "wrapper-first shutdown exits cleanly from regular backing files"
+    fi
     ;;
 
   auto-xwayland)

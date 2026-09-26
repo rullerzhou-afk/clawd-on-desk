@@ -146,7 +146,7 @@ function findSquashfsOffsets(artifactPath) {
   return offsets;
 }
 
-function extractWithUnsquashfs(artifactPath, tempDir) {
+function extractWithUnsquashfs(artifactPath, tempDir, filename) {
   const offsets = findSquashfsOffsets(artifactPath);
   const errors = [];
 
@@ -154,10 +154,10 @@ function extractWithUnsquashfs(artifactPath, tempDir) {
     const outputDir = path.join(tempDir, `unsquashfs-${offset}`);
     const result = spawnSync(
       "unsquashfs",
-      ["-o", String(offset), "-d", outputDir, artifactPath, "AppRun"],
+      ["-o", String(offset), "-d", outputDir, artifactPath, filename],
       { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
     );
-    const appRunPath = path.join(outputDir, "AppRun");
+    const appRunPath = path.join(outputDir, filename);
     if (result.status === 0 && fs.existsSync(appRunPath)) {
       return {
         content: fs.readFileSync(appRunPath, "utf8"),
@@ -173,15 +173,15 @@ function extractWithUnsquashfs(artifactPath, tempDir) {
   );
 }
 
-function extractAppRun(artifactPath) {
+function extractAppRun(artifactPath, filename = "AppRun") {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-apprun-"));
   try {
     const runtimeResult = spawnSync(
       artifactPath,
-      ["--appimage-extract", "AppRun"],
+      ["--appimage-extract", filename],
       { cwd: tempDir, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
     );
-    const runtimeExtractedPath = path.join(tempDir, "squashfs-root", "AppRun");
+    const runtimeExtractedPath = path.join(tempDir, "squashfs-root", filename);
     if (runtimeResult.status === 0 && fs.existsSync(runtimeExtractedPath)) {
       return {
         content: fs.readFileSync(runtimeExtractedPath, "utf8"),
@@ -190,7 +190,7 @@ function extractAppRun(artifactPath) {
     }
 
     try {
-      return extractWithUnsquashfs(artifactPath, tempDir);
+      return extractWithUnsquashfs(artifactPath, tempDir, filename);
     } catch (fallbackError) {
       const runtimeError = runtimeResult.error
         ? runtimeResult.error.message
@@ -234,13 +234,23 @@ function verifyArtifact(artifactPath) {
 
   const extracted = extractAppRun(resolvedArtifact);
   const exports = validateAppRunContent(extracted.content);
+  if (!extracted.content.includes('# Clawd AppImage lifetime guard (#1048).') ||
+      !extracted.content.includes('exec /bin/bash -c "$clawd_launcher" clawd-appimage-supervisor')) {
+    throw new Error("Final AppImage is missing the Clawd runtime lifetime guard");
+  }
+  const launcher = extractAppRun(resolvedArtifact, "clawd-appimage-launcher.sh");
+  const expectedLauncher = fs.readFileSync(path.join(__dirname, "../build/appimage-launcher.sh"), "utf8");
+  if (launcher.content !== expectedLauncher) {
+    throw new Error("Final AppImage supervisor differs from the reviewed source");
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifact: resolvedArtifact,
     artifactSha256: sha256File(resolvedArtifact),
     appRunSha256: sha256Text(extracted.content),
     extractionMethod: extracted.method,
     reviewedPathExports: exports,
+    runtimeSupervisorSha256: sha256Text(launcher.content),
   };
 }
 

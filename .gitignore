@@ -137,6 +137,7 @@ scripts/manual/*
 !scripts/run-packaged-koffi-smoke.js
 !scripts/verify-updater-metadata.js
 !scripts/verify-appimage-apprun.js
+!scripts/prepare-appimage-launcher.js
 !scripts/verify-winget-arch-contract.js
 !scripts/verify-winget-generated-manifest.js
 !scripts/submit-winget-manifest.js
