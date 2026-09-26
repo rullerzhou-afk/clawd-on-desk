@@ -1,0 +1,121 @@
+name: "🔌 Agent / 集成问题（中文）"
+description: "报告 AI Agent、Hook、权限、Session、焦点、WSL 或 Remote SSH 集成问题"
+title: "[Integration] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        此表单用于报告集成相关问题，例如状态未更新、Hook 安装失败、权限弹窗异常、Session 身份错误、焦点问题，以及 WSL / Remote SSH 场景中的异常。
+
+        请勿提交 API Key、Token、凭据、私密 Prompt 或未经脱敏的个人路径。
+
+  - type: input
+    id: integration
+    attributes:
+      label: "Agent 或集成"
+      description: "例如：Codex CLI、Claude Code、Cursor、OpenCode 或 Gemini CLI。"
+      placeholder: "Codex CLI"
+    validations:
+      required: true
+
+  - type: input
+    id: integration-version
+    attributes:
+      label: "Agent / 集成版本"
+      description: "请尽量填写准确版本；如果无法确认，请填写 unknown。"
+      placeholder: "准确版本或 unknown"
+    validations:
+      required: true
+
+  - type: input
+    id: clawd-version
+    attributes:
+      label: "Clawd on Desk 版本"
+      description: "请填写已安装的版本；如果从源码运行，请填写 commit SHA。"
+      placeholder: "版本号或 commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: "操作系统与架构"
+      placeholder: "Windows 11 24H2 x64 / macOS 15 arm64 / Ubuntu 24.04 x64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: environment
+    attributes:
+      label: "运行环境"
+      options:
+        - "本机 / Native"
+        - "WSL"
+        - "Remote SSH"
+        - "其他"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: capability
+    attributes:
+      label: "受影响的能力"
+      multiple: true
+      options:
+        - "Hook 安装或清理"
+        - "状态 / 动画跟踪"
+        - "权限 / 审批"
+        - "Session 身份或生命周期"
+        - "通知 / 完成状态"
+        - "终端或编辑器焦点"
+        - "其他"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: "发生了什么？"
+      description: "请描述实际观察到的集成行为；如有明确报错，请附上原始错误文本。"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "复现步骤"
+      description: "请包含相关配置状态、安装/启用步骤，以及能够稳定复现问题的最短流程。"
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "预期行为"
+      description: "可选。如果预期结果并不明显，请说明正常情况下应该发生什么。"
+
+  - type: input
+    id: last-known-working
+    attributes:
+      label: "最后一个正常工作的版本"
+      description: "可选。如果这是回归问题，请填写最后一个正常工作的 Clawd 或集成版本。"
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: "已脱敏日志或其他上下文"
+      description: "可附上相关 Hook / Runtime 日志、截图或诊断信息，并移除敏感信息和个人数据。"
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "提交前确认"
+      options:
+        - label: "我已经搜索过现有 Issue，没有发现相同的集成问题。"
+          required: true

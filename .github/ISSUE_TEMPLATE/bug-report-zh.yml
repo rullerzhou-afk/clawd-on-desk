@@ -1,0 +1,88 @@
+name: "🐛 Bug 报告（中文）"
+description: "报告 Clawd on Desk 中可复现的问题"
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢你报告问题。提交前请先搜索现有 Issue，确认没有相同问题。
+
+        请勿提交 Token、凭据、私密 Prompt 或其他敏感信息；日志和截图中的敏感内容请先脱敏。
+
+  - type: input
+    id: clawd-version
+    attributes:
+      label: "Clawd on Desk 版本"
+      description: "请填写已安装的版本；如果从源码运行，请填写 commit SHA。"
+      placeholder: "版本号或 commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: "操作系统与架构"
+      description: "请尽量包含操作系统版本和 CPU 架构。"
+      placeholder: "Windows 11 24H2 x64 / macOS 15 arm64 / Ubuntu 24.04 x64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: run-mode
+    attributes:
+      label: "安装 / 运行方式"
+      options:
+        - "正式打包版本"
+        - "从源码运行"
+        - "其他"
+        - "不确定"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: "发生了什么？"
+      description: "请描述实际观察到的行为；如有明确报错，请附上原始错误文本。"
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "复现步骤"
+      description: "请提供能够稳定复现问题的最短步骤，并说明问题是否偶发。"
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "预期行为"
+      description: "可选。如果预期结果并不明显，请说明正常情况下应该发生什么。"
+
+  - type: input
+    id: last-known-working
+    attributes:
+      label: "最后一个正常工作的版本"
+      description: "可选。如果这是回归问题，请填写最后一个正常工作的 Clawd 版本或 commit。"
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: "日志、截图或其他上下文"
+      description: "可附上已脱敏的日志或截图。需要搜索的错误信息优先粘贴为文本。"
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "提交前确认"
+      options:
+        - label: "我已经搜索过现有 Issue，没有发现相同问题。"
+          required: true

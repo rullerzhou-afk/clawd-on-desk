@@ -1,0 +1,53 @@
+name: "🎁 Feature request (English)"
+description: "Propose a new capability or improvement for Clawd on Desk"
+title: "[Feature] "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before proposing a feature, please search existing issues and add a 👍 reaction to an existing request when one already covers the same need.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: "Problem or use case"
+      description: "Describe the user problem, limitation, or workflow this request would improve."
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: "Proposed behavior"
+      description: "Describe the desired behavior or outcome. Focus on the contract rather than a specific implementation when possible."
+    validations:
+      required: true
+
+  - type: input
+    id: area
+    attributes:
+      label: "Affected area"
+      description: "Optional: Settings, Dashboard, permissions, a specific agent integration, themes, updater, etc."
+      placeholder: "Settings / Codex integration / updater"
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: "Alternatives or workarounds"
+      description: "What do you do today, and why is it insufficient?"
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: "Additional context or scope boundaries"
+      description: "Include relevant compatibility constraints, non-goals, examples, or screenshots."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Pre-submission check"
+      options:
+        - label: "I searched existing issues for a similar request."
+          required: true
