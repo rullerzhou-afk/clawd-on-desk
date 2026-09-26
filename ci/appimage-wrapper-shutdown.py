@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 
-image, user_data, runtime_file, mount_dir = sys.argv[1:]
+image, user_data, runtime_file, mount_dir, supervisor_pid = sys.argv[1:]
 image = str(Path(image).resolve())
 marker = "--user-data-dir=" + user_data
 runtime = json.loads(Path(runtime_file).read_text())
@@ -20,7 +20,8 @@ def inspect(pid):
     try:
         args = [a.decode() for a in (proc / "cmdline").read_bytes().split(b"\0") if a]
         fields = (proc / "stat").read_text().rsplit(") ", 1)[1].split()
-        return {"pid": int(pid), "args": args, "exe": os.readlink(proc / "exe"), "start": fields[19]}
+        return {"pid": int(pid), "ppid": int(fields[1]), "args": args,
+                "exe": os.readlink(proc / "exe"), "start": fields[19]}
     except (OSError, ValueError):
         return None
 
@@ -48,6 +49,11 @@ try:
     main = inspect(runtime["ownerPid"])
     assert main and Path(main["exe"]).name == "clawd-on-desk"
     assert "/clawd-appimage." in main["exe"], "main still runs from the FUSE payload"
+    supervisor = inspect(supervisor_pid)
+    assert supervisor and Path(supervisor["exe"]).name == "bash", "launch PID is not the Bash supervisor"
+    assert "clawd-appimage-supervisor" in supervisor["args"], "launch PID is not the lifetime guard"
+    assert main["ppid"] == supervisor["pid"], "supervisor is not the browser's parent"
+    fds.append(open_owned(supervisor))
     main_fd = open_owned(main)
     fds.append(main_fd)
     wrappers = []
@@ -79,7 +85,9 @@ try:
     poll = select.poll()
     poll.register(main_fd, select.POLLIN)
     assert poll.poll(15000), "main did not finish shutdown"
-    print(json.dumps({"mainPid": main["pid"], "wrapperPids": [p["pid"] for p, _ in wrappers],
+    print(json.dumps({"mainPid": main["pid"], "supervisorPid": supervisor["pid"],
+                      "supervisorExecutable": supervisor["exe"],
+                      "wrapperPids": [p["pid"] for p, _ in wrappers],
                       "backingExecutable": main["exe"], "runtimeDirectory": str(Path(main["exe"]).parent.parent),
                       "originalMount": mount_dir, "exitSeconds": time.monotonic() - started}))
 finally:

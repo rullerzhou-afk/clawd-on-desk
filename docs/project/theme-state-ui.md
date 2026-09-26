@@ -4,7 +4,7 @@ This document holds the state machine, theme system, UI runtime, and platform ca
 
 ## Linux AppImage Runtime Lifetime
 
-AppImage 的 FUSE wrapper 被提前终止时，Electron 仍可能在退出清理中读取挂载内的代码页，触发 SIGBUS（#1048）。Linux `afterPack` 用 `scripts/prepare-appimage-launcher.js` 在生成的 AppRun 路径导出之前接入 `build/appimage-launcher.sh`：仅 FUSE 启动先复制到本次独占、权限 0700 的 `$TMPDIR/clawd-appimage.XXXXXXXX/app`（未设置 TMPDIR 时用 `/tmp`），再启动 Electron。每次启动都需要一份解包大小的可执行临时空间；复制失败不会启动半成品。
+AppImage 的 FUSE wrapper 被提前终止时，Electron 仍可能在退出清理中读取挂载内的代码页，触发 SIGBUS（#1048）。Linux `afterPack` 用 `scripts/prepare-appimage-launcher.js` 在生成的 AppRun 路径导出之前接入 `build/appimage-launcher.sh`：仅 FUSE 启动先复制到本次独占、权限 0700 的 `$TMPDIR/clawd-appimage.XXXXXXXX/app`（未设置 TMPDIR 时用 `/tmp`），再启动 Electron。每次启动都需要一份解包大小的可执行临时空间，tmpfs 上会占用内存；复制失败不会启动半成品。空间不足或临时目录挂载为 `noexec` 时，可把 TMPDIR 指向其他可写、可执行的非 FUSE 目录，或手动解包运行。
 
 监督进程使用系统 Bash 和内存中的脚本，保留原始 `APPIMAGE`、参数、HOME、cwd 和 TMPDIR，只把 APPDIR 切到普通文件目录。主进程和同组子进程退出后删除本次目录；尚有子进程时最多等待 5 秒，再保留文件供系统临时目录策略处理。强杀监督进程可能留下该目录。自动 XWayland 重启与并发启动各用自己的目录；手动解包运行不再复制，deb、源码、macOS 和 Windows 的启动路径不变。
 

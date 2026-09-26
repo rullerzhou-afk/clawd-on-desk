@@ -48,7 +48,9 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" \
   "$XDG_RUNTIME_DIR" "$USER_DATA_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-WAYLAND_SOCKET="wayland-smoke-${SCENARIO}-$$"
+# XDG_RUNTIME_DIR already isolates each invocation. Repeating the scenario in
+# the socket name can exceed Linux's 108-byte sockaddr_un.sun_path limit.
+WAYLAND_SOCKET="wayland-smoke"
 WESTON_PID=""
 APP_LAUNCH_PID=""
 XDISPLAY=""
@@ -304,7 +306,7 @@ case "$SCENARIO" in
     if [ "$SCENARIO" = appimage-wrapper-termination ]; then
       MOUNT_DIR="$(appimage_mount_dir)" || fail "could not locate the owned FUSE mount"
       python3 "$(dirname "$0")/appimage-wrapper-shutdown.py" \
-        "$APPIMAGE" "$USER_DATA_DIR" "$RUNTIME_CONFIG" "$MOUNT_DIR" >"$ARTIFACT_DIR/wrapper-shutdown.json"
+        "$APPIMAGE" "$USER_DATA_DIR" "$RUNTIME_CONFIG" "$MOUNT_DIR" "$APP_LAUNCH_PID" >"$ARTIFACT_DIR/wrapper-shutdown.json"
       poll 15 no_owned_processes || fail "owned processes remained after wrapper-first shutdown"
       wait "$APP_LAUNCH_PID" || fail "AppImage supervisor reported an abnormal main exit"
       APP_LAUNCH_PID=""
