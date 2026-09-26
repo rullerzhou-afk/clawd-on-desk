@@ -2976,6 +2976,24 @@ const _serverCtx = {
   dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,
   permLog,
+  // #898: the settings watcher pauses Claude hook auto-repair when settings.json
+  // shrinks suspiciously (a third-party overwrite). The server already dedups to
+  // once per persisting shrink via its shrinkNotified flag; surface that pause
+  // as an active Windows tray balloon so the user knows repair is on hold without
+  // opening Doctor — mirroring fireCodexHookNudge's balloon.
+  notifySuspiciousShrink: () => {
+    try {
+      if (process.platform !== "win32") return;
+      const tray = _menu && typeof _menu.getTray === "function" ? _menu.getTray() : null;
+      trayBalloonOwner.show(tray, {
+        iconType: "warning",
+        title: translate("claudeHookGuardNudgeTitle"),
+        content: translate("claudeHookGuardNudgeBody"),
+      });
+    } catch (err) {
+      console.warn("Clawd: Claude hook guard balloon failed:", err && err.message);
+    }
+  },
 };
 const _server = require("./server")(_serverCtx);
 const { startHttpServer, getHookServerPort } = _server;

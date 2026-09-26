@@ -430,6 +430,33 @@ describe("createClaudeSettingsWatcher — suspicious shrink guard", () => {
     assert.strictEqual(watcher.getHealthStatus().status, "healthy");
     watcher.stop();
   });
+
+  it("notifies only once while the shrink persists across periodic patrols (#898)", async () => {
+    const notifyCalls = [];
+    const { watcher, clock, syncCalls, getWatcher, setSettingsRaw } = makeWatcher({
+      initialSettingsRaw: JSON.stringify(richHealthySettingsObject()),
+      notifySuspiciousShrink: (before, after) => notifyCalls.push({ before, after }),
+    });
+    watcher.start();
+    await clock.advance(0); // seeds trusted baseline from the healthy fixture
+
+    setSettingsRaw(JSON.stringify({ skipDangerousModePermissionPrompt: true }));
+    getWatcher().emitChange("settings.json");
+    await clock.advance(1000);
+
+    assert.strictEqual(watcher.getHealthStatus().status, "guarded");
+    assert.strictEqual(notifyCalls.length, 1, "first shrink detection notifies");
+
+    // The file stays shrunk; subsequent periodic health patrols keep finding the
+    // same guarded condition but must not re-pop the balloon every cycle.
+    await clock.advance(5 * 60 * 1000);
+    await clock.advance(5 * 60 * 1000);
+
+    assert.strictEqual(watcher.getHealthStatus().status, "guarded");
+    assert.deepStrictEqual(syncCalls, [], "auto-repair stays paused while guarded");
+    assert.strictEqual(notifyCalls.length, 1, "persisting shrink must not re-notify on later patrols");
+    watcher.stop();
+  });
 });
 
 describe("createClaudeSettingsWatcher — retry backoff and manual-fix-required", () => {
