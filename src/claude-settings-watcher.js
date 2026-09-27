@@ -267,6 +267,12 @@ function createClaudeSettingsWatcher(ctx = {}) {
   let unreadableStreak = 0;
   let sourceMissingLogged = false;
   let shrinkNotified = false;
+  // #874: memoized host-Node resolution for classifying env-indirected hooks as
+  // migratable. Resolved at most once per lifecycle (both a found path and null
+  // are cached) so the periodic read-only health loop never repeats an expensive
+  // or subprocess-spawning Node discovery. Reset by start()/stop().
+  let trustedNodeResolved = false;
+  let trustedNodeCandidate = null;
   // { signature, attempts, manualFixRequired } for the currently tracked
   // automatically-repairable issue set, or null when nothing is being retried.
   let repairState = null;
@@ -330,6 +336,26 @@ function createClaudeSettingsWatcher(ctx = {}) {
     }
   }
 
+  // Lazily resolve a host absolute Node once per lifecycle. Only inspect's
+  // env-indirected-hook branch calls this, so a config with no env hooks never
+  // triggers resolution at all. The default resolver forces skipShellProbe so
+  // even the first call stays subprocess-free; the result (including null) is
+  // memoized so subsequent periodic patrols do no work.
+  function getTrustedNodeCandidate() {
+    if (trustedNodeResolved) return trustedNodeCandidate;
+    trustedNodeResolved = true;
+    trustedNodeCandidate = null;
+    try {
+      if (typeof ctx.resolveTrustedNodeBin === "function") {
+        const resolved = ctx.resolveTrustedNodeBin(resolverOptions);
+        trustedNodeCandidate = typeof resolved === "string" && resolved ? resolved : null;
+      }
+    } catch {
+      trustedNodeCandidate = null;
+    }
+    return trustedNodeCandidate;
+  }
+
   function buildReport(raw) {
     const port = typeof ctx.getHookServerPort === "function" ? ctx.getHookServerPort() : null;
     const common = {
@@ -338,6 +364,7 @@ function createClaudeSettingsWatcher(ctx = {}) {
       coreEvents,
       platform,
       fs: fsApi,
+      resolveTrustedNodeCandidate: getTrustedNodeCandidate,
     };
     if (hasExplicitPaths) {
       // A one-sided injection must fall back to the real getter for the other
@@ -670,6 +697,8 @@ function createClaudeSettingsWatcher(ctx = {}) {
     unreadableStreak = 0;
     sourceMissingLogged = false;
     shrinkNotified = false;
+    trustedNodeResolved = false;
+    trustedNodeCandidate = null;
     repairState = null;
     healthStatus = initialHealthStatus(nowFn);
     if (!settingsWatcher) return false;

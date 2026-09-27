@@ -14,6 +14,7 @@ const {
   readRuntimePort,
   ROUTING_NONCE_HEADER,
   writeRuntimeConfig,
+  resolveNodeBin,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
 const {
@@ -863,6 +864,13 @@ const claudeSettingsWatcher = createClaudeSettingsWatcher({
   getHookServerPort,
   syncClawdHooks,
   notifySuspiciousShrink,
+  // #874: spawn-free host-Node resolver for classifying an env-indirected hook
+  // as migratable when settings.env.CLAWD_NODE_BIN is missing/bare/stale. The
+  // watcher memoizes the result; skipShellProbe keeps the periodic health loop
+  // from ever launching a subprocess. The actual absolute value is re-resolved
+  // and written by the installer during repair, not taken from here.
+  resolveTrustedNodeBin: (resolverOptions) =>
+    resolveNodeBin({ ...(resolverOptions || {}), skipShellProbe: true }),
 });
 
 // Richer runtime status (healthy/repairing/degraded/manual-fix-required/

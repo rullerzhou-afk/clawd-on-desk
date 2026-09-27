@@ -403,6 +403,78 @@ describe("inspectClaudeHookHealth", () => {
     assert.strictEqual(getClaudeHookDegradedDiagnostic(report).reason, "env-hook-node-unresolved");
   });
 
+  it("migrates an env hook when host resolver finds Node despite no usable env evidence (#874)", () => {
+    const hostNode = "/opt/homebrew/bin/node";
+    const raw = JSON.stringify(buildEnvOwnedSettings({ nodeBin: "node" }));
+    let calls = 0;
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      platform: "darwin",
+      // The env-evidenced "node" is not on disk; only the injected host Node is.
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode]),
+      resolveTrustedNodeCandidate: () => { calls++; return hostNode; },
+    }));
+
+    assert.strictEqual(report.repairable, true);
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-migratable"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), "v1:env-state-hook");
+    assert.ok(calls >= 1, "resolver must be consulted for an env hook lacking usable env Node");
+  });
+
+  it("stays unresolved when the host resolver also finds no usable Node (#874)", () => {
+    const raw = JSON.stringify(buildEnvOwnedSettings({ nodeBin: "node" }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      platform: "darwin",
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH]),
+      resolveTrustedNodeCandidate: () => null,
+    }));
+
+    assert.strictEqual(report.repairable, false);
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-migratable"));
+    assert.strictEqual(buildClaudeRepairSignature(report.issues), null);
+    assert.strictEqual(getClaudeHookDegradedDiagnostic(report).reason, "env-hook-node-unresolved");
+  });
+
+  it("ignores an injected Node the fs cannot confirm exists (#874)", () => {
+    const raw = JSON.stringify(buildEnvOwnedSettings({ nodeBin: "node" }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      platform: "darwin",
+      // Injected path is NOT present on the (fake) filesystem — must be rejected.
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH]),
+      resolveTrustedNodeCandidate: () => "/phantom/bin/node",
+    }));
+
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-migratable"));
+  });
+
+  it("never consults the host resolver when there is no env-indirected hook to migrate (#874)", () => {
+    const raw = JSON.stringify(buildHealthySettings());
+    let calls = 0;
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      resolveTrustedNodeCandidate: () => { calls++; return "/opt/homebrew/bin/node"; },
+    }));
+
+    assert.strictEqual(report.status, "healthy");
+    assert.strictEqual(calls, 0, "a spawn-capable resolver must not run for non-env configs");
+  });
+
+  it("keeps ownership-unverified env indirection non-automatic even when host Node exists (#874)", () => {
+    const hostNode = "/opt/homebrew/bin/node";
+    // includeHookPathEnv:false => CLAWD_HOOK_PATH is not proven Clawd-owned.
+    const raw = JSON.stringify(buildEnvOwnedSettings({ includeHookPathEnv: false }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      platform: "darwin",
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode]),
+      resolveTrustedNodeCandidate: () => hostNode,
+    }));
+
+    assert.ok(report.issues.some((issue) => issue.code === "env-indirection-unverified"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-migratable"));
+    assert.strictEqual(report.repairable, false);
+  });
+
   it("reports recognizable but unverified env indirection without treating it as missing managed hooks (#852)", () => {
     const raw = JSON.stringify(buildEnvOwnedSettings({ includeHookPathEnv: false }));
     const report = inspectClaudeHookHealth(raw, baseOptions({ platform: "darwin" }));
