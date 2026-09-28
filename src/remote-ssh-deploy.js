@@ -102,6 +102,7 @@ const HOOK_FILES = [
   "codex-remote-monitor.js",
   "codex-session-index.js",
   "codex-subagent-fields.js",
+  "codex-internal-worker.js",
   "copilot-hook.js",
   "copilot-install.js",
   "hermes-install.js",

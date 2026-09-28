@@ -942,6 +942,240 @@ describe("Codex official hook", () => {
     assert.strictEqual(result.posted, true);
   });
 
+  describe("issue #1073: internal memory consolidation worker", () => {
+    const EVENTS = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop"];
+
+    async function withMemoriesHome(fn) {
+      const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), "codex-memories-"));
+      try {
+        return await fn(codexHome);
+      } finally {
+        fs.rmSync(codexHome, { recursive: true, force: true });
+      }
+    }
+
+    function workerPayload(event, codexHome, extra = {}) {
+      return {
+        hook_event_name: event,
+        session_id: "s1",
+        cwd: path.join(codexHome, "memories"),
+        ...extra,
+      };
+    }
+
+    const WINDOWS_CODEX_HOME = "C:\\Users\\Tester\\.codex";
+
+    async function expectDropped(event, options, extraPayload = {}) {
+      const calls = {
+        posts: 0,
+        autoStarts: 0,
+        gates: 0,
+        resolves: 0,
+        identities: 0,
+        processChains: 0,
+      };
+      const probe = (name) => () => {
+        calls[name] += 1;
+        throw new Error(`${name} must not run for a worker event`);
+      };
+      const result = await runCodexHook({
+        hook_event_name: event,
+        session_id: "s1",
+        ...extraPayload,
+      }, {
+        resolveWslDistro: () => null,
+        readCodexAutoStartGate: probe("gates"),
+        resolvePid: probe("resolves"),
+        readRuntimeIdentity: probe("identities"),
+        readWindowsProcessChainHookContext: probe("processChains"),
+        postState() {
+          calls.posts += 1;
+        },
+        postPermission() {
+          throw new Error("permission path must not run for state events");
+        },
+        async runAutoStart() {
+          calls.autoStarts += 1;
+        },
+        ...options,
+      });
+
+      assert.deepStrictEqual(result, { body: null, posted: false, stdout: "" });
+      assert.deepStrictEqual(calls, {
+        posts: 0,
+        autoStarts: 0,
+        gates: 0,
+        resolves: 0,
+        identities: 0,
+        processChains: 0,
+      });
+    }
+
+    for (const event of EVENTS) {
+      it(`drops a ${event} win32 worker event without touching any downstream path`, async () => {
+        await expectDropped(event, {
+          env: { CODEX_HOME: WINDOWS_CODEX_HOME },
+          platform: "win32",
+        }, {
+          cwd: `${WINDOWS_CODEX_HOME}\\memories`,
+        });
+      });
+    }
+
+    for (const event of EVENTS) {
+      it(`drops a ${event} worker event on the host platform without touching any downstream path`, async () => {
+        await withMemoriesHome(async (codexHome) => {
+          await expectDropped(event, { env: { CODEX_HOME: codexHome } }, {
+            cwd: path.join(codexHome, "memories"),
+          });
+        });
+      });
+    }
+
+    it("passes the platform option through to the worker detector", async () => {
+      await expectDropped("PreToolUse", {
+        env: { CODEX_HOME: WINDOWS_CODEX_HOME },
+        platform: "win32",
+      }, {
+        cwd: "c:/users/tester/.CODEX/memories",
+      });
+    });
+
+    it("does not resolve a relative CODEX_HOME against the hook process cwd", async () => {
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "codex-memories-cwd-"));
+      const memoriesDir = path.join(base, "proj", "memories");
+      fs.mkdirSync(memoriesDir, { recursive: true });
+      const originalCwd = process.cwd();
+      process.chdir(memoriesDir);
+      try {
+        let posts = 0;
+        const result = await runCodexHook({
+          hook_event_name: "PreToolUse",
+          session_id: "s1",
+          cwd: process.cwd(),
+        }, {
+          env: { CODEX_HOME: ".." },
+          resolvePid: mockResolve,
+          postState(_body, _options, callback) {
+            posts += 1;
+            callback(true, 23333);
+          },
+          async runAutoStart() { throw new Error("unexpected auto-start"); },
+        });
+
+        assert.strictEqual(posts, 1, "an ordinary project directory must still post");
+        assert.strictEqual(result.posted, true);
+      } finally {
+        process.chdir(originalCwd);
+        fs.rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it("still posts for a real session under a CODEX_HOME containing a parent segment", async () => {
+      const base = fs.mkdtempSync(path.join(os.tmpdir(), "codex-memories-dotdot-"));
+      const target = path.join(base, "target");
+      const sub = path.join(target, "sub");
+      const link = path.join(base, "link");
+      const memoriesDir = path.join(base, "memories");
+      fs.mkdirSync(sub, { recursive: true });
+      fs.mkdirSync(memoriesDir, { recursive: true });
+      fs.symlinkSync(sub, link, process.platform === "win32" ? "junction" : "dir");
+      try {
+        let posts = 0;
+        const result = await runCodexHook({
+          hook_event_name: "PreToolUse",
+          session_id: "s1",
+          cwd: memoriesDir,
+        }, {
+          env: { CODEX_HOME: `${link}${path.sep}..` },
+          resolvePid: mockResolve,
+          postState(_body, _options, callback) {
+            posts += 1;
+            callback(true, 23333);
+          },
+          async runAutoStart() { throw new Error("unexpected auto-start"); },
+        });
+
+        assert.strictEqual(posts, 1, "a real session must still post");
+        assert.strictEqual(result.posted, true);
+      } finally {
+        fs.rmSync(base, { recursive: true, force: true });
+      }
+    });
+
+    it("still posts the same events when cwd is an ordinary project directory", async () => {
+      await withMemoriesHome(async (codexHome) => {
+        for (const event of EVENTS) {
+          let posts = 0;
+          const result = await runCodexHook({
+            hook_event_name: event,
+            session_id: "s1",
+            cwd: path.join(codexHome, "project"),
+          }, {
+            env: { CODEX_HOME: codexHome },
+            resolvePid: mockResolve,
+            postState(_body, _options, callback) {
+              posts += 1;
+              callback(true, 23333);
+            },
+            async runAutoStart() { throw new Error("unexpected auto-start"); },
+          });
+
+          assert.strictEqual(posts, 1, `${event} must still post`);
+          assert.strictEqual(result.posted, true);
+        }
+      });
+    });
+
+    it("still posts worker-cwd events when a transcript_path is present", async () => {
+      await withMemoriesHome(async (codexHome) => {
+        let posts = 0;
+        const result = await runCodexHook(workerPayload("PreToolUse", codexHome, {
+          transcript_path: "/tmp/rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl",
+        }), {
+          env: { CODEX_HOME: codexHome },
+          resolvePid: mockResolve,
+          postState(_body, _options, callback) {
+            posts += 1;
+            callback(true, 23333);
+          },
+          async runAutoStart() { throw new Error("unexpected auto-start"); },
+        });
+
+        assert.strictEqual(posts, 1);
+        assert.strictEqual(result.posted, true);
+      });
+    });
+
+    it("still routes a worker-directory PermissionRequest through the permission path", async () => {
+      await withMemoriesHome(async (codexHome) => {
+        let permissions = 0;
+        const result = await runCodexHook({
+          hook_event_name: "PermissionRequest",
+          session_id: "s1",
+          cwd: path.join(codexHome, "memories"),
+          tool_name: "Bash",
+          tool_input: { command: "npm test" },
+        }, {
+          env: { CODEX_HOME: codexHome },
+          resolvePid: mockResolve,
+          postPermission(_body, _requestOptions, callback) {
+            permissions += 1;
+            callback(true, 23333, JSON.stringify({
+              hookSpecificOutput: {
+                hookEventName: "PermissionRequest",
+                decision: { behavior: "allow" },
+              },
+            }));
+          },
+        });
+
+        assert.strictEqual(permissions, 1, "permission requests must not be silently dropped");
+        assert.strictEqual(result.posted, true);
+      });
+    });
+  });
+
   describe("startClawdAndWait", () => {
     it("spawns the production helper and cleans up after exit", async () => {
       const child = new EventEmitter();
