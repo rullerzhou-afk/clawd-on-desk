@@ -323,6 +323,7 @@ describe("issue #1073: Codex internal memory worker detection", () => {
     const payload = { cwd: "/resolved/codex/memories" };
     const options = {
       env: { CODEX_HOME: "/link/codex" },
+      platform: "linux",
       realpath(value) {
         if (value === "/link/codex/memories") return "/resolved/codex/memories";
         throw new Error("ENOENT");
