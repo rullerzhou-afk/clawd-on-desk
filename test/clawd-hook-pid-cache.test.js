@@ -51,6 +51,24 @@ afterEach(() => {
 describe("buildStateBody adapter → shared resolver context (#634)", () => {
   const { buildStateBody } = require("../hooks/clawd-hook.js");
 
+  it("selects the design visual only for an explicit /design expansion", () => {
+    const resolve = () => ({ stablePid: null, terminalPid: null, snapshotOk: false });
+    const design = buildStateBody("UserPromptExpansion", {
+      session_id: "design-session", cwd: CWD, expansion_type: "slash_command", command_name: "design",
+    }, resolve);
+    assert.strictEqual(design.state, "thinking");
+    assert.strictEqual(design.display_svg, "claude-design");
+    assert.strictEqual(buildStateBody("UserPromptExpansion", {
+      session_id: "other-session", cwd: CWD, expansion_type: "slash_command", command_name: "review",
+    }, resolve), null);
+    assert.strictEqual(buildStateBody("UserPromptExpansion", {
+      session_id: "ordinary-session", cwd: CWD, expansion_type: "skill", command_name: "design",
+    }, resolve), null);
+    assert.strictEqual(buildStateBody("UserPromptSubmit", {
+      session_id: "new-turn", cwd: CWD, prompt: "Now explain the code",
+    }, resolve).display_svg, null);
+  });
+
   // Captures every resolver context and returns a preset metadata object.
   function capture(returns = emptyMeta()) {
     const calls = [];

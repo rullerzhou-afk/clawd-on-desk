@@ -155,6 +155,21 @@ function validateTheme(cfg) {
     }
   }
 
+  if (cfg.completionVisualMap !== undefined) {
+    if (!isPlainObject(cfg.completionVisualMap)) {
+      errors.push("completionVisualMap must be an object when present");
+    } else {
+      for (const [hint, file] of Object.entries(cfg.completionVisualMap)) {
+        if (!isPlainObject(cfg.displayHintMap) || typeof cfg.displayHintMap[hint] !== "string") {
+          errors.push(`completionVisualMap.${hint} must refer to a displayHintMap key`);
+        }
+        if (typeof file !== "string" || !SAFE_THEME_ASSET_BASENAME.test(file)) {
+          errors.push(`completionVisualMap.${hint} must be a safe asset basename`);
+        }
+      }
+    }
+  }
+
   if (cfg.updateBubbleAnchorBox !== undefined) {
     const box = cfg.updateBubbleAnchorBox;
     if (
@@ -594,6 +609,11 @@ function projectThemeVisualUsages(cfg) {
   for (const [hint, file] of Object.entries((cfg && cfg.displayHintMap) || {})) {
     if (typeof file === "string") {
       addVisualUsage(usages, `display-hint:${hint}`, file, `displayHintMap.${hint}`);
+    }
+  }
+  for (const [hint, file] of Object.entries((cfg && cfg.completionVisualMap) || {})) {
+    if (typeof file === "string") {
+      addVisualUsage(usages, `completion-hint:${hint}`, file, `completionVisualMap.${hint}`);
     }
   }
   if (
@@ -1606,6 +1626,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // displayHintMap
   theme.displayHintMap = raw.displayHintMap || {};
+  theme.completionVisualMap = raw.completionVisualMap || {};
 
   // sounds
   theme.sounds = { ...DEFAULT_SOUNDS, ...(raw.sounds || {}) };
@@ -1665,6 +1686,9 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   }
   if (theme.displayHintMap) {
     for (const [k, v] of Object.entries(theme.displayHintMap)) theme.displayHintMap[k] = bn(v);
+  }
+  if (theme.completionVisualMap) {
+    for (const [k, v] of Object.entries(theme.completionVisualMap)) theme.completionVisualMap[k] = bn(v);
   }
   if (theme.workingTiers) {
     for (const t of theme.workingTiers) { if (t.file) t.file = bn(t.file); }

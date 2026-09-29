@@ -105,6 +105,11 @@ const {
 
 // Session display hints — validated against theme.displayHintMap keys
 let DISPLAY_HINT_MAP = {};
+let COMPLETION_VISUAL_MAP = {};
+
+function completionVisualForHint(hint) {
+  return typeof hint === "string" ? (COMPLETION_VISUAL_MAP[hint] || null) : null;
+}
 
 // ── Session tracking ──
 const sessions = new Map();
@@ -140,7 +145,7 @@ const COMPLETION_HOUSEKEEPING_EVENTS = new Set([
 // from a background helper (#1060), so it must not veto a completion that has
 // already reached its quiet window.
 const COMPLETION_CANCEL_EVENTS = new Set([
-  "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+  "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PostToolUse", "PostToolUseFailure",
   "SubagentStart", "PreCompact", "PostCompact",
   "PermissionRequest", "CodexUserInputRequest", "Elicitation", "StopFailure", "ApiError", "SessionEnd",
 ]);
@@ -534,6 +539,7 @@ function refreshTheme() {
   COLLAPSE_DURATION = theme.timings.collapseDuration || 0;
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
   DISPLAY_HINT_MAP = theme.displayHintMap || {};
+  COMPLETION_VISUAL_MAP = theme.completionVisualMap || {};
   hitboxRuntime = createHitboxRuntime(theme);
   HIT_BOXES = hitboxRuntime.hitBoxes;
   FILE_HIT_BOXES = hitboxRuntime.fileHitBoxes;
@@ -1853,6 +1859,9 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
       && completionPayload.truncated === true
     );
   }
+  const completionVisual = session.agentId === "claude-code"
+    ? completionVisualForHint(session.displayHint)
+    : null;
   session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
   // The stored session settles idle, but this Stop consumed the completion
   // attention cue. Record that distinction so a later duplicate Stop is
@@ -1889,7 +1898,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   // from ANOTHER session (e.g. an error) — it must win. We must NOT clear the
   // global pending queue here; pendingTimer/pendingState are process-wide, not
   // per-session, so clearing them would swallow another session's visual.
-  setState("attention");
+  setState("attention", completionVisual);
   return true;
 }
 
@@ -2332,6 +2341,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     && state === "attention"
     && srcAgentId === "claude-code"
     && !normalizedSubagentId;
+  const completionVisual = isClaudeMainStop
+    ? completionVisualForHint(existing && existing.displayHint)
+    : null;
   const typedSubagentSnapshotKnown = Object.prototype.hasOwnProperty.call(
     opts,
     "backgroundSubagentsCount",
@@ -2929,7 +2941,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       setState(displayState, getSvgOverride(displayState));
       return;
     }
-    setState(state);
+    setState(state, state === "attention" && event === "Stop" ? completionVisual : null);
     return;
   }
 

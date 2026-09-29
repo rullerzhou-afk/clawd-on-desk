@@ -19,7 +19,7 @@ const VARIANT_ALLOWED_KEYS = new Set([
   "workingTiers", "jugglingTiers", "idleAnimations", "idleVisualOptions",
   "wideHitboxFiles", "sleepingHitboxFiles",
   "hitBoxes", "fileHitBoxes", "timings", "transitions",
-  "objectScale", "displayHintMap",
+  "objectScale", "displayHintMap", "completionVisualMap",
 ]);
 
 // Fields that replace wholesale instead of deep-merge. Arrays always replace;
@@ -27,7 +27,7 @@ const VARIANT_ALLOWED_KEYS = new Set([
 const VARIANT_REPLACE_FIELDS = new Set([
   "workingTiers", "jugglingTiers", "idleAnimations", "idleVisualOptions",
   "wideHitboxFiles", "sleepingHitboxFiles",
-  "displayHintMap",
+  "displayHintMap", "completionVisualMap",
 ]);
 
 function resolveVariant(raw, requestedVariant) {

@@ -83,6 +83,42 @@ describe("display_svg session hints (updateSession path)", () => {
     api.updateSession("c1", "thinking", "AfterAgentThought", baseOpts({ displayHint: "clawd-working-thinking.svg" }));
     assert.strictEqual(api.getSvgOverride("thinking"), "clawd-working-thinking.svg");
   });
+
+  it("shows painting for /design and heart eyes at its Claude Stop", async () => {
+    const previousDebounce = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "0";
+    try {
+      const claude = baseOpts({ agentId: "claude-code" });
+      api.updateSession("design", "thinking", "UserPromptExpansion", { ...claude, displayHint: "claude-design" });
+      assert.strictEqual(api.getSvgOverride("thinking"), "clawd-designing.svg");
+      api.updateSession("design", "working", "PreToolUse", claude);
+      assert.strictEqual(api.getSvgOverride("working"), "clawd-designing.svg");
+      api.updateSession("design", "attention", "Stop", claude);
+      await new Promise((resolve) => setTimeout(resolve, 1050));
+      assert.strictEqual(api.getCurrentSvg(), "clawd-heart-eyes.svg");
+    } finally {
+      if (previousDebounce === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+      else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = previousDebounce;
+    }
+  });
+
+  it("keeps painting during the completion hold, then shows heart eyes", async () => {
+    const previousDebounce = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "1000";
+    try {
+      const claude = baseOpts({ agentId: "claude-code" });
+      api.updateSession("design-held", "thinking", "UserPromptExpansion", {
+        ...claude, displayHint: "claude-design",
+      });
+      api.updateSession("design-held", "attention", "Stop", claude);
+      assert.strictEqual(api.getCurrentSvg(), "clawd-designing.svg");
+      await new Promise((resolve) => setTimeout(resolve, 2150));
+      assert.strictEqual(api.getCurrentSvg(), "clawd-heart-eyes.svg");
+    } finally {
+      if (previousDebounce === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+      else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = previousDebounce;
+    }
+  });
 });
 
 // #509: user-selected default idle visual flows through state.js
