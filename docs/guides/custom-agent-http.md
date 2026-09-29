@@ -143,7 +143,11 @@ curl --fail-with-body -X POST "http://127.0.0.1:${PORT}/state" \
 
 Recent accepted state activity is shown on the custom agent card for the current Clawd run and is available to Doctor. It is intentionally in memory only and resets when Clawd restarts.
 
-## 6. Permission boundary
+## 6. Remote agents via ntfy
+
+For agents that can only reach the network, see the [ntfy bridge](ntfy-bridge.md).
+
+## 7. Permission boundary
 
 Do not POST custom agent requests to `/permission`. Registered custom agents receive HTTP 204 with no approval decision, and removed or forged custom IDs are rejected the same way. Clawd never returns Claude Code's `hookSpecificOutput` protocol for custom agents.
 
