@@ -77,7 +77,7 @@ after(() => {
   fs.rmSync(TMP_HOME, { recursive: true, force: true });
 });
 
-async function initInstance(params, { sdk, plugin: existingPlugin, directory = "/tmp/proj" } = {}) {
+async function initInstance(params, { sdk, plugin: existingPlugin, directory = "/tmp/proj", serverUrl = "http://127.0.0.1:1/" } = {}) {
   const captured = { fetch: null, hostname: null, port: null, requestedPort: null };
   globalThis.Bun = {
     serve(opts) {
@@ -90,7 +90,7 @@ async function initInstance(params, { sdk, plugin: existingPlugin, directory = "
   };
   const sdkCalls = [];
   const ctx = {
-    serverUrl: "http://127.0.0.1:1/",
+    serverUrl,
     directory,
     client: {
       _client: {
@@ -299,6 +299,40 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
       body: { reply: "once" },
       headers: { "Content-Type": "application/json" },
     });
+  });
+
+  it("replies over loopback when the host hands out a wildcard listen address", async () => {
+    for (const [serverUrl, baseUrl] of [
+      ["http://0.0.0.0:4096/", "http://127.0.0.1:4096"],
+      ["http://[::]:4096/", "http://[::1]:4096"],
+    ]) {
+      const oc = await initInstance(OC, { serverUrl });
+      await emitPermission(oc, "per_wild");
+      const res = await oc.captured.fetch(
+        bridgeRequest(oc.plugin, { token: oc.plugin.__test._bridgeTokenHex, body: { request_id: "per_wild", reply: "once" } })
+      );
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(oc.sdkCalls[0].baseUrl, baseUrl);
+    }
+  });
+
+  it("leaves non-wildcard server URLs untouched", async () => {
+    const oc = await initInstance(OC, { serverUrl: "http://192.168.1.5:4096/" });
+    await emitPermission(oc, "per_lan");
+    await oc.captured.fetch(
+      bridgeRequest(oc.plugin, { token: oc.plugin.__test._bridgeTokenHex, body: { request_id: "per_lan", reply: "once" } })
+    );
+    assert.strictEqual("baseUrl" in oc.sdkCalls[0], false);
+  });
+
+  it("reports the real SDK error body instead of [object Object]", async () => {
+    const oc = await initInstance(OC, { sdk: { error: { name: "PermissionNotFoundError" } } });
+    await emitPermission(oc, "per_err");
+    const res = await oc.captured.fetch(
+      bridgeRequest(oc.plugin, { token: oc.plugin.__test._bridgeTokenHex, body: { request_id: "per_err", reply: "once" } })
+    );
+    assert.strictEqual(res.status, 502);
+    assert.match((await res.json()).error, /PermissionNotFoundError/);
   });
 
   it("binds an interleaved reply to the directory instance that emitted it", async () => {

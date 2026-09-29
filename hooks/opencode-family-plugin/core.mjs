@@ -28,7 +28,9 @@
 // Phase 2 bridge (permission replies):
 //   The host TUI does NOT bind an external HTTP listener (verified via
 //   Phase 2 Spike — ctx.serverUrl is a phantom URL, ctx.client.fetch is
-//   bound to Server.Default().fetch() in-process). So Clawd cannot call
+//   bound to Server.Default().fetch() in-process). Under `opencode web|serve`
+//   the client instead makes real HTTP calls to the listen address, which is
+//   why wildcard hosts are rewritten to loopback before replying. So Clawd cannot call
 //   the host's REST API directly from outside the Bun process. Instead we
 //   start a tiny loopback bridge here: Clawd POSTs decisions to the
 //   bridge, and the bridge calls ctx.client._client.post() — the same
@@ -220,6 +222,33 @@ function normalizeServerUrl(raw) {
   if (!raw) return "";
   const s = String(raw);
   return s.endsWith("/") ? s : s + "/";
+}
+
+// `opencode web|serve --hostname 0.0.0.0` (or `::`) hands plugins a listen
+// address as serverUrl. That is valid for binding but not as a destination:
+// Windows refuses to connect to it and proxies cannot deliver it back. Return
+// a loopback base URL for wildcard hosts, or "" when the URL needs no rewrite.
+export function loopbackBaseUrlForWildcard(raw) {
+  if (!raw) return "";
+  let url;
+  try { url = new URL(String(raw)); } catch { return ""; }
+  const host = url.hostname.replace(/^\[|\]$/g, "");
+  if (host === "0.0.0.0") url.hostname = "127.0.0.1";
+  else if (host === "::") url.hostname = "[::1]";
+  else return "";
+  return url.toString().replace(/\/$/, "");
+}
+
+// SDK errors arrive as parsed bodies (objects), strings, or empty values.
+// String() on an object yields "[object Object]", which hides the real cause.
+export function describeSdkError(error, response) {
+  let text = "";
+  if (typeof error === "string") text = error;
+  else if (error && typeof error === "object") {
+    try { text = JSON.stringify(error); } catch { text = ""; }
+  }
+  const status = response && response.status ? `HTTP ${response.status}` : "";
+  return [status, text].filter(Boolean).join(" ") || "unknown error";
 }
 
 // #830 context usage: opencode's message.updated events carry the session
@@ -2087,6 +2116,7 @@ export function createOpencodeFamilyPlugin(config) {
     _permissionTargetByRequestId.set(requestId, {
       client: instance.client,
       directory: sessionDirectory || instance.directory,
+      serverUrl: instance.serverUrl,
       sessionId,
     });
     // A permission can remain pending forever if the user closes its native
@@ -2222,18 +2252,22 @@ export function createOpencodeFamilyPlugin(config) {
       // The directory is intentionally explicit even though the originating
       // client also carries x-opencode-directory: this pins workspace routing
       // to the permission's owning Instance across multi-directory warmup.
-      const result = await target.client._client.post({
+      const postOptions = {
         url: `/permission/${encodeURIComponent(requestId)}/reply`,
         query: target.directory ? { directory: target.directory } : undefined,
         body: { reply },
         headers: { "Content-Type": "application/json" },
-      });
+      };
+      // Web/serve mode turns this call into real HTTP to the listen address.
+      const loopbackBaseUrl = loopbackBaseUrlForWildcard(target.serverUrl);
+      if (loopbackBaseUrl) postOptions.baseUrl = loopbackBaseUrl;
+      const result = await target.client._client.post(postOptions);
       // HeyApi returns { data, error, request, response } by default. `error`
       // is only set on non-2xx responses; successful reply just has `data`.
       const hasError = result && result.error != null;
       debugLog(`BRIDGE reply done requestId=${requestId} hasError=${hasError}`);
       if (hasError) {
-        return new Response(JSON.stringify({ ok: false, error: String(result.error) }), {
+        return new Response(JSON.stringify({ ok: false, error: describeSdkError(result.error, result.response) }), {
           status: 502,
           headers: { "Content-Type": "application/json" },
         });
