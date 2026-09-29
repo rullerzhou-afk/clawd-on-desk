@@ -107,14 +107,55 @@ original authorship remain in Settings About and every README variant.
 
 ### Validation Status
 
-Before this release-preparation pass, two independent full-release reviews
-reported no P0/P1 issues. After the fixes, a macOS real-machine `npm test` run
-reported 11,523 tests and 0 failures. PR #1079 also received real-machine
-checks for Windows Chinese-path host detection under code page 936, OpenCode
-v2.0.18 bubble withdrawal after interruption, a Codex Pet upgrade from v1.1.0,
-and remote monitor replay using real Desktop rollouts.
+Before tagging, two independent full-release reviews of `v1.1.0..main`
+reported no P0/P1 issues; their fixes landed in #1079. The release commit
+passed the full test suite on macOS (11,523 tests, 0 failures), CI on Windows,
+macOS and Linux, and the packaged-artifact audits for all five targets.
 
-Packaged draft-asset smoke against the
-[v1.2.0 checklist](../project/release-process.md) and the complete Remote SSH
-real-machine path remain **NOT TESTED**. Update this section with those results
-before publishing; source tests and replay checks do not replace them.
+Checked on real hardware with the v1.2.0 draft assets:
+
+- **Windows 11 x64** (Chinese locale, code page 936): the draft installer
+  silently upgraded an existing per-machine v1.1.0 install. `clawd-prefs.json`
+  was unchanged (266 keys), and the app launched with the pet visible and no
+  error dialog. Checked by hand: Settings About shows v1.2.0 with the new
+  contributors; fullscreen auto-hide and the fullscreen overlay; the saved
+  position across two cold starts; eye tracking after lock, sleep and resume;
+  dragging a folder onto the pet opens a terminal; right-click New Session;
+  and a real agent session with its completion animation and no PowerShell
+  flash. Real OpenCode 1.18.31 sessions reached Clawd with their state events
+  and a permission bubble, including one started from a Chinese-named
+  directory.
+- **macOS arm64** (the draft DMG, installed to Applications): the bundled app
+  passed `codesign --verify --deep --strict`, `spctl` (accepted, Notarized
+  Developer ID) and `stapler validate`; its payload holds one darwin-arm64
+  Koffi addon, no retired Telegram sidecar and no official-theme media.
+  Settings About shows v1.2.0 with every contributor; the first click reaches
+  Settings and Dashboard while Clawd is in the background; menu-bar and Dock
+  visibility persist across a restart; approving with the permission shortcut
+  does not return focus to the terminal; and a real Claude Code session drives
+  the pet through to the completion animation. Dock pinning kept the pet on
+  screen with the Dock on the left or right, with and without auto-hide, and
+  at the bottom without auto-hide.
+- **In-app update, macOS arm64** (after publication): the signed v1.1.0
+  build updated itself to v1.2.0 both with Restart Now and with Later
+  followed by quit and reopen. The updated app passed `codesign` and
+  Gatekeeper (Notarized Developer ID), and its code signature matches the
+  v1.2.0 DMG build.
+- **Earlier real-machine checks for #1079**: OpenCode host detection under a
+  Chinese Windows path, OpenCode v2.0.18 bubble withdrawal after an
+  interruption, a Codex Pet upgrade from v1.1.0, and remote monitor replay
+  using real Codex Desktop rollouts.
+
+**Not tested**:
+- On the packaged Windows build: OpenCode 2.x; manual Allow, Deny and Always
+  decisions in OpenCode bubbles; the Claude hook-health badge and tray notice
+  after hooks are displaced; and WSL session PID handling.
+- On the packaged macOS build: the IME candidate window in bubbles, Ghostty
+  cross-Space focus, and Dock pinning at the bottom with auto-hide. The code
+  behind these did not change in this release.
+- The macOS x64 build on real hardware; it was verified by CI only.
+- The in-app update on Windows and on macOS x64.
+- Linux packages on real Linux hardware.
+- The complete Remote SSH path.
+- Other long-standing checklist items not listed above were not re-run for
+  this release.
