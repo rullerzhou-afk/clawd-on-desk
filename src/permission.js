@@ -2534,13 +2534,14 @@ function showPermissionBubble(permEntry) {
       permissionBubbleWindows.delete(bub);
       const idx = pendingPermissions.indexOf(permEntry);
       if (idx !== -1) {
-        // Qwen + Copilot + ZCode + DSH can hand no-decision back to their native
-        // flow. Hermes has no native permission UI, so its opt-in plugin gate
-        // treats this as a retryable block. In every case we avoid fabricating a
-        // user denial. CC/CodeBuddy still get an explicit deny for this
-        // user-close action.
+        // Codex + Qwen + Copilot + ZCode + DSH can hand no-decision back to
+        // their native flow. Hermes has no native permission UI, so its opt-in
+        // plugin gate treats this as a retryable block. In every case we avoid
+        // fabricating a user denial. CC/CodeBuddy still get an explicit deny for
+        // this user-close action.
         const behavior = (
-          permEntry.isQwenCode
+          permEntry.isCodex
+          || permEntry.isQwenCode
           || permEntry.isCopilotCli
           || permEntry.isHermes
           || permEntry.isZcode

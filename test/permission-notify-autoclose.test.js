@@ -615,7 +615,7 @@ describe("Kimi passive cue rebuild after dismissal (gate-ledger joint lifecycle)
   });
 });
 
-describe("interactive permission bubble fatal fallback", () => {
+describe("interactive permission bubble lifecycle", () => {
   afterEach(() => {
     mock.timers.reset();
     delete require.cache[PERMISSION_MODULE_PATH];
@@ -625,13 +625,24 @@ describe("interactive permission bubble fatal fallback", () => {
     tempLogPaths.clear();
   });
 
-  function makeBlockingEntry() {
+  function makeBlockingEntry({ agentId = "claude-code" } = {}) {
     const response = {
       writableEnded: false,
+      writableFinished: false,
       destroyed: false,
       destroyCalls: 0,
+      statusCode: null,
+      body: "",
+      replyCount: 0,
       on() {},
       removeListener() {},
+      writeHead(statusCode) { this.statusCode = statusCode; },
+      end(body) {
+        this.body += body || "";
+        this.replyCount += 1;
+        this.writableEnded = true;
+        this.writableFinished = true;
+      },
       destroy() {
         this.destroyCalls += 1;
         this.destroyed = true;
@@ -643,21 +654,116 @@ describe("interactive permission bubble fatal fallback", () => {
         res: response,
         abortHandler() {},
         suggestions: [],
-        sessionId: "claude-fatal-bubble",
+        sessionId: `${agentId}-lifecycle-bubble`,
         bubble: null,
         hideTimer: null,
         toolName: "Bash",
         toolInput: { command: "npm test" },
         createdAt: Date.now(),
-        agentId: "claude-code",
+        agentId,
+        isCodex: agentId === "codex",
         interaction: classifyPermissionInteraction({
-          agentId: "claude-code",
+          agentId,
           eventKind: "permission",
           toolName: "Bash",
         }),
       },
     };
   }
+
+  it("closing a Codex window returns no-decision once and cancels its mirrored approval", () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const harness = createPermissionHarness();
+    const { entry, response } = makeBlockingEntry({ agentId: "codex" });
+    const sibling = makeBlockingEntry({ agentId: "codex" });
+    const controller = new AbortController();
+    const outcomes = [];
+    entry.remoteApprovalAbortControllers = [controller];
+    entry.remoteApprovalRequests = [{
+      name: "test-remote",
+      signal: controller.signal,
+      client: {
+        resolveApprovalExternally(signal, outcome) {
+          assert.strictEqual(signal, controller.signal);
+          outcomes.push(outcome.decision);
+          return true;
+        },
+      },
+    }];
+    harness.api.pendingPermissions.push(entry, sibling.entry);
+    harness.api.showPermissionBubble(entry);
+    harness.api.showPermissionBubble(sibling.entry);
+
+    const bubble = entry.bubble;
+    bubble.destroy();
+
+    assert.strictEqual(response.statusCode, 204);
+    assert.strictEqual(response.body, "");
+    assert.strictEqual(response.replyCount, 1);
+    assert.deepStrictEqual(harness.api.pendingPermissions, [sibling.entry]);
+    assert.strictEqual(sibling.response.writableEnded, false);
+    assert.strictEqual(sibling.entry.bubble.destroyed, false);
+    assert.strictEqual(controller.signal.aborted, true);
+    assert.deepStrictEqual(outcomes, ["no-decision"]);
+
+    bubble._closedHandler();
+    harness.api.resolvePermissionEntry(entry, "allow");
+    harness.api.resolvePermissionEntry(entry, "deny");
+    assert.strictEqual(response.replyCount, 1);
+    assert.deepStrictEqual(outcomes, ["no-decision"]);
+    harness.api.cleanup();
+  });
+
+  for (const behavior of ["allow", "deny"]) {
+    it(`closing an already ${behavior}-resolved Codex window sends no second decision`, () => {
+      mock.timers.enable({ apis: ["setTimeout"] });
+      const harness = createPermissionHarness();
+      const { entry, response } = makeBlockingEntry({ agentId: "codex" });
+      harness.api.pendingPermissions.push(entry);
+      harness.api.showPermissionBubble(entry);
+      const bubble = entry.bubble;
+
+      harness.api.resolvePermissionEntry(entry, behavior);
+      bubble.destroy();
+      bubble._closedHandler();
+
+      assert.strictEqual(response.statusCode, 200);
+      assert.strictEqual(JSON.parse(response.body).hookSpecificOutput.decision.behavior, behavior);
+      assert.strictEqual(response.replyCount, 1);
+      assert.strictEqual(harness.api.pendingPermissions.length, 0);
+    });
+  }
+
+  it("application cleanup releases a Codex approval without a second decision on window close", () => {
+    mock.timers.enable({ apis: ["setTimeout"] });
+    const harness = createPermissionHarness();
+    const { entry, response } = makeBlockingEntry({ agentId: "codex" });
+    harness.api.pendingPermissions.push(entry);
+    harness.api.showPermissionBubble(entry);
+    const bubble = entry.bubble;
+
+    harness.api.cleanup();
+    bubble._closedHandler();
+
+    assert.strictEqual(response.statusCode, 204);
+    assert.strictEqual(response.body, "");
+    assert.strictEqual(response.replyCount, 1);
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+  });
+
+  it("closing a pending Claude window retains its explicit user-close deny", () => {
+    const harness = createPermissionHarness();
+    const { entry, response } = makeBlockingEntry();
+    harness.api.pendingPermissions.push(entry);
+    harness.api.showPermissionBubble(entry);
+
+    entry.bubble.destroy();
+
+    assert.strictEqual(response.statusCode, 200);
+    assert.strictEqual(JSON.parse(response.body).hookSpecificOutput.decision.behavior, "deny");
+    assert.strictEqual(response.replyCount, 1);
+    assert.strictEqual(harness.api.pendingPermissions.length, 0);
+  });
 
   it("does not announce when BrowserWindow construction fails", () => {
     const harness = createPermissionHarness({ loadBehavior: "constructor-throw" });
