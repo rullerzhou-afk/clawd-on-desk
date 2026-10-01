@@ -161,9 +161,11 @@ function findUsableEnvNodeCandidate(settings, validateOptions, resolveTrustedNod
   }
   // #874: when env evidence names no usable Node (CLAWD_NODE_BIN missing, bare
   // `node`, or stale) but the host's normal resolver can still find a usable
-  // absolute Node, treat the hook as migratable rather than stuck. The resolved
-  // path is only used to CLASSIFY migratable here — it is never serialized; the
-  // installer re-resolves and writes the absolute value during the actual repair.
+  // Node, treat the hook as migratable rather than stuck. The resolved path is
+  // only used to CLASSIFY migratable here — it is never serialized; the installer
+  // re-resolves and writes the absolute value during the actual repair. Require
+  // an absolute path so this verdict matches what the installer can migrate: a
+  // relative/bare value cannot canonicalize the env command (hooks/install.js).
   if (typeof resolveTrustedNodeCandidate === "function") {
     let trusted = null;
     try {
@@ -171,9 +173,21 @@ function findUsableEnvNodeCandidate(settings, validateOptions, resolveTrustedNod
     } catch {
       trusted = null;
     }
-    if (isUsable(trusted)) return trusted;
+    if (isAbsoluteNodePath(trusted, platform) && isUsable(trusted)) return trusted;
   }
   return null;
+}
+
+// Platform-aware absolute-path test. On Windows a usable Node is either a
+// drive-letter path (C:\…, C:/…) or a UNC share (\\host\share); everything else
+// (bare `node`, `./node`, a relative fragment) cannot be migrated into a hook
+// command, so it must not count as a migratable candidate.
+function isAbsoluteNodePath(candidate, platform) {
+  if (typeof candidate !== "string" || !candidate) return false;
+  if (platform === "win32") {
+    return /^[a-zA-Z]:[\\/]/.test(candidate) || /^\\\\/.test(candidate);
+  }
+  return candidate.startsWith("/");
 }
 
 function pushIssue(issues, issue) {
@@ -283,7 +297,8 @@ function inspectEventCommands(commands, event, marker, expectedScriptPath, valid
  * @param {() => (string|null)} [options.resolveTrustedNodeCandidate] — returns a
  *   host-resolved absolute Node path (or null) used ONLY to classify an
  *   env-indirected hook as migratable when env evidence names no usable Node.
- *   Must be cheap/spawn-free per call; the caller is responsible for memoizing.
+ *   This getter must be synchronous and spawn-free — it only reads a value the
+ *   caller resolved out-of-band (see claude-settings-watcher's cached candidate).
  */
 function inspectClaudeHookHealth(rawSettings, options = {}) {
   const platform = options.platform || process.platform;
@@ -371,10 +386,10 @@ function inspectClaudeHookHealth(rawSettings, options = {}) {
   let managedCoreEventCount = 0;
   const missingEvents = [];
   let hasUnverifiedEnvIndirection = false;
-  // Resolved lazily and memoized: only an actual ownership-proven env-indirected
-  // hook (the branch below) needs to know whether a usable Node exists, and the
-  // injected resolver may spawn a subprocess. A config with no env hook must
-  // never trigger host-Node resolution.
+  // Resolved lazily and memoized within this inspection: only an actual
+  // ownership-proven env-indirected hook (the branch below) needs to consult the
+  // injected trusted-Node getter, and memoizing keeps that getter to one call per
+  // inspection. A config with no env hook never reads it at all.
   let envNodeCandidateResolved = false;
   let envNodeCandidate = null;
   const getUsableEnvNodeCandidate = () => {

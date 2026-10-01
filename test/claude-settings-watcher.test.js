@@ -671,14 +671,14 @@ describe("createClaudeSettingsWatcher — env-indirected Clawd hooks (#852)", ()
     watcher.stop();
   });
 
-  it("migrates an env hook when a host Node resolver is injected, scheduling one repair (#874)", async () => {
+  it("migrates an env hook when the async host Node resolver finds one (#874)", async () => {
     const hostNode = "C:/nodejs/node.exe";
     let resolverCalls = 0;
     let setSettingsRaw;
     const harness = makeWatcher({
       initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
       existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode],
-      resolveTrustedNodeBin: () => { resolverCalls++; return hostNode; },
+      resolveTrustedNodeBin: async () => { resolverCalls++; return hostNode; },
       syncClawdHooksImpl() {
         harness.syncCalls.push({ source: "test-repair", automatic: true });
         // The installer would fold the env hook into a literal absolute-node
@@ -695,28 +695,83 @@ describe("createClaudeSettingsWatcher — env-indirected Clawd hooks (#852)", ()
     assert.strictEqual(harness.syncCalls.length, 1, "exactly one repair should be scheduled");
     assert.strictEqual(status.status, "healthy");
     assert.strictEqual(status.issueSignature, null);
-    assert.ok(resolverCalls >= 1, "host Node resolver must be consulted for the unresolved env hook");
+    assert.strictEqual(resolverCalls, 1, "a found Node is cached — resolve once, not every patrol");
     harness.watcher.stop();
   });
 
-  it("stays degraded and resolves host Node at most once across patrols when none is found (#874)", async () => {
+  it("retries the host resolver each patrol while none is found, never caching null (#874)", async () => {
     let resolverCalls = 0;
     const { watcher, clock, syncCalls } = makeWatcher({
       initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
-      resolveTrustedNodeBin: () => { resolverCalls++; return null; },
+      resolveTrustedNodeBin: async () => { resolverCalls++; return null; },
     });
     watcher.start();
-    await clock.advance(0);
-    await clock.advance(5 * 60 * 1000);
-    await clock.advance(5 * 60 * 1000);
+    await clock.advance(0);                 // startup patrol
+    await clock.advance(5 * 60 * 1000);     // periodic patrol 2
+    await clock.advance(5 * 60 * 1000);     // periodic patrol 3
 
     const status = watcher.getHealthStatus();
     assert.deepStrictEqual(syncCalls, [], "no repair when no usable Node exists");
     assert.strictEqual(status.status, "degraded");
     assert.strictEqual(status.degradedReason, "env-hook-node-unresolved");
     assert.strictEqual(status.attempt, 0, "attempts must not increment for a non-automatic diagnostic");
-    assert.strictEqual(resolverCalls, 1, "host Node resolution must be memoized, not repeated each patrol");
+    assert.strictEqual(resolverCalls, 3, "null is not cached — one bounded retry per patrol, not a lifetime stall");
     watcher.stop();
+  });
+
+  it("schedules an immediate re-check when the host Node appears later (#874)", async () => {
+    const hostNode = "C:/nodejs/node.exe";
+    let setSettingsRaw;
+    let node = null; // not resolvable yet
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode],
+      resolveTrustedNodeBin: async () => node,
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    setSettingsRaw = harness.setSettingsRaw;
+    harness.watcher.start();
+    await harness.clock.advance(0);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "degraded");
+    assert.deepStrictEqual(harness.syncCalls, []);
+
+    // Node becomes resolvable; the next patrol resolves it and null->value
+    // schedules an immediate re-check that migrates without a full interval wait.
+    node = hostNode;
+    await harness.clock.advance(5 * 60 * 1000);
+
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    assert.strictEqual(harness.syncCalls.length, 1);
+    harness.watcher.stop();
+  });
+
+  it("discards a host Node resolved after the lifecycle changed (#874)", async () => {
+    const hostNode = "C:/nodejs/node.exe";
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode],
+      resolveTrustedNodeBin: async () => { await gate; return hostNode; },
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        return { status: "ok" };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0); // kicks the (still pending) resolution
+    harness.watcher.stop();         // lifecycle token bumps before it settles
+    release(hostNode);
+    await harness.clock.advance(0);
+
+    // The stale result must be dropped: no repair, nothing carried into a new
+    // lifecycle.
+    assert.deepStrictEqual(harness.syncCalls, []);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "stopped");
   });
 
   it("keeps the post-repair verification branch degraded when only an unresolved env diagnostic remains", async () => {

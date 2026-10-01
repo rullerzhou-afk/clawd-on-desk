@@ -1166,22 +1166,18 @@ function resolveWindowsNodeBinSync(options = {}) {
   if (execHit) return execHit;
 
   // 2. where.exe node — iterate every line; first line passing validation wins.
-  //    Skipped when the caller only wants a spawn-free probe (e.g. the periodic
-  //    Claude hook health loop, which must never launch a subprocess).
-  if (!options.skipShellProbe) {
-    try {
-      const execFileSync = options.execFileSync || require("child_process").execFileSync;
-      const out = execFileSync(windowsWhereExePath(options), ["node"], {
-        encoding: "utf8",
-        timeout: 2000,
-        windowsHide: true,
-      });
-      for (const line of String(out || "").split(/\r?\n/)) {
-        const hit = checkAccess(validateWindowsNodeCandidate(line));
-        if (hit) return hit;
-      }
-    } catch {}
-  }
+  try {
+    const execFileSync = options.execFileSync || require("child_process").execFileSync;
+    const out = execFileSync(windowsWhereExePath(options), ["node"], {
+      encoding: "utf8",
+      timeout: 2000,
+      windowsHide: true,
+    });
+    for (const line of String(out || "").split(/\r?\n/)) {
+      const hit = checkAccess(validateWindowsNodeCandidate(line));
+      if (hit) return hit;
+    }
+  } catch {}
 
   // 3. Common install locations.
   for (const probe of getWindowsCommonNodePaths(options)) {
@@ -1288,27 +1284,23 @@ function resolveNodeBin(options = {}) {
   }
 
   // Strategy 2: Login + interactive shell (sources both .zprofile AND .zshrc/.bashrc,
-  // needed because nvm/fnm initialize in rc files, not profile files).
-  // Skipped when the caller only wants a spawn-free probe (e.g. the periodic
-  // Claude hook health loop, which must never launch a subprocess).
-  if (!options.skipShellProbe) {
-    const execFileSync = options.execFileSync || require("child_process").execFileSync;
-    for (const shell of getShellCandidates(options)) {
-      try {
-        const raw = execFileSync(shell, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"], {
-          encoding: "utf8",
-          timeout: 5000,
-          windowsHide: true,
-        });
-        // Interactive shells may produce extra output (Oh My Zsh, Powerlevel10k, etc.)
-        // before `command -v node`. Take the last line that looks like an absolute path.
-        const resolved = extractAbsolutePathFromShellOutput(raw);
-        if (resolved) {
-          access(resolved, fs.constants.X_OK);
-          return resolved;
-        }
-      } catch {}
-    }
+  // needed because nvm/fnm initialize in rc files, not profile files)
+  const execFileSync = options.execFileSync || require("child_process").execFileSync;
+  for (const shell of getShellCandidates(options)) {
+    try {
+      const raw = execFileSync(shell, ["-lic", "command -v node 2>/dev/null; which node 2>/dev/null; true"], {
+        encoding: "utf8",
+        timeout: 5000,
+        windowsHide: true,
+      });
+      // Interactive shells may produce extra output (Oh My Zsh, Powerlevel10k, etc.)
+      // before `command -v node`. Take the last line that looks like an absolute path.
+      const resolved = extractAbsolutePathFromShellOutput(raw);
+      if (resolved) {
+        access(resolved, fs.constants.X_OK);
+        return resolved;
+      }
+    } catch {}
   }
 
   // Detection failed — return null so callers can preserve existing config

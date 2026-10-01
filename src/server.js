@@ -14,7 +14,7 @@ const {
   readRuntimePort,
   ROUTING_NONCE_HEADER,
   writeRuntimeConfig,
-  resolveNodeBin,
+  resolveNodeBinAsync,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
 const {
@@ -864,13 +864,16 @@ const claudeSettingsWatcher = createClaudeSettingsWatcher({
   getHookServerPort,
   syncClawdHooks,
   notifySuspiciousShrink,
-  // #874: spawn-free host-Node resolver for classifying an env-indirected hook
-  // as migratable when settings.env.CLAWD_NODE_BIN is missing/bare/stale. The
-  // watcher memoizes the result; skipShellProbe keeps the periodic health loop
-  // from ever launching a subprocess. The actual absolute value is re-resolved
-  // and written by the installer during repair, not taken from here.
+  // #874: full host-Node resolver for classifying an env-indirected hook as
+  // migratable when settings.env.CLAWD_NODE_BIN is missing/bare/stale. This is
+  // the same async resolver the installer uses, so the watcher's migratable
+  // verdict matches what a repair can actually write. Running it off the health
+  // path (async, never execFileSync on the Electron main thread) keeps the
+  // periodic inspection spawn-free. ctx.resolveNodeBinAsyncImpl is a test seam.
   resolveTrustedNodeBin: (resolverOptions) =>
-    resolveNodeBin({ ...(resolverOptions || {}), skipShellProbe: true }),
+    (typeof ctx.resolveNodeBinAsyncImpl === "function" ? ctx.resolveNodeBinAsyncImpl : resolveNodeBinAsync)(
+      { ...(resolverOptions || {}) }
+    ),
 });
 
 // Richer runtime status (healthy/repairing/degraded/manual-fix-required/

@@ -418,7 +418,7 @@ describe("inspectClaudeHookHealth", () => {
     assert.ok(report.issues.some((issue) => issue.code === "env-hook-migratable"));
     assert.ok(!report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
     assert.strictEqual(buildClaudeRepairSignature(report.issues), "v1:env-state-hook");
-    assert.ok(calls >= 1, "resolver must be consulted for an env hook lacking usable env Node");
+    assert.strictEqual(calls, 1, "resolver must be consulted exactly once per inspection (memoized)");
   });
 
   it("stays unresolved when the host resolver also finds no usable Node (#874)", () => {
@@ -443,6 +443,19 @@ describe("inspectClaudeHookHealth", () => {
       // Injected path is NOT present on the (fake) filesystem — must be rejected.
       fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH]),
       resolveTrustedNodeCandidate: () => "/phantom/bin/node",
+    }));
+
+    assert.ok(report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
+    assert.ok(!report.issues.some((issue) => issue.code === "env-hook-migratable"));
+  });
+
+  it("rejects a non-absolute injected Node even if the fs claims it exists (#874)", () => {
+    const relativeNode = "node"; // installer cannot canonicalize a bare/relative value
+    const raw = JSON.stringify(buildEnvOwnedSettings({ nodeBin: "node" }));
+    const report = inspectClaudeHookHealth(raw, baseOptions({
+      platform: "darwin",
+      fs: makeFakeFs([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, relativeNode]),
+      resolveTrustedNodeCandidate: () => relativeNode,
     }));
 
     assert.ok(report.issues.some((issue) => issue.code === "env-hook-node-unresolved"));
