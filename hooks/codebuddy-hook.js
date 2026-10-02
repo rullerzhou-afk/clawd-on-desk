@@ -68,6 +68,15 @@ function stdoutForEvent(hookName) {
 // or the process tree walk hangs. Without this CodeBuddy would see empty stdout
 // which is invalid JSON and logs an error on every hook invocation.
 const SAFETY_TIMEOUT_MS = 800;
+// Once stdout has been answered, the 800ms guard above has served its purpose.
+// The fire-and-forget POST to Clawd still needs the process alive to leave the
+// socket: on Windows the synchronous process-tree snapshot alone takes ~1.5s,
+// so an overdue safety timer firing right after the walk would process.exit()
+// before the POST completed and the session state would never reach Clawd
+// (same failure class as the WorkBuddy hook fix). After answering stdout we
+// re-arm a generous backstop whose only job is to reap a truly hung process;
+// the POST's own 100ms timeout settles the normal path in well under that.
+const POST_EXIT_BACKSTOP_MS = 5000;
 let _wrote = false;
 let _exited = false;
 let safetyTimer = null;
@@ -79,6 +88,10 @@ function writeStdoutOnce(outLine) {
   if (_wrote) return;
   _wrote = true;
   process.stdout.write(outLine + "\n");
+  if (!_exited && safetyTimer) {
+    clearTimeout(safetyTimer);
+    safetyTimer = setTimeout(() => finish(outLine), POST_EXIT_BACKSTOP_MS);
+  }
 }
 
 function finish(outLine) {
@@ -103,6 +116,14 @@ readStdinJson()
     }
 
     const { state, event } = mapped;
+
+    // Answer CodeBuddy before the process-tree walk: the walk is synchronous
+    // and can take ~1.5s on Windows, which would otherwise delay the
+    // PreToolUse gate decision on a cold cache. The POST below still runs to
+    // completion afterwards — writeStdoutOnce re-arms the exit backstop for
+    // exactly that — so no state is lost by answering early.
+    writeStdoutOnce(outLine);
+
     const remote = !!process.env.CLAWD_REMOTE;
     if (!remote && process.platform === "win32") {
       runtimeContext = readWindowsProcessChainHookContext("codebuddy");
@@ -151,11 +172,9 @@ readStdinJson()
       applyOrcaPaneKey(body);
     }
 
-    // Answer CodeBuddy immediately so it never sees empty stdout, but don't
-    // exit yet — the fire-and-forget POST below still needs to leave the
-    // process, so we exit in its callback (with the safety timer as backstop).
-    writeStdoutOnce(outLine);
-
+    // Stdout was already answered above; don't exit yet — the
+    // fire-and-forget POST below still needs to leave the process, so we
+    // exit in its callback (with the re-armed backstop timer as last resort).
     const postOptions = { timeoutMs: 100 };
     if (serverProcessChainEnabled) {
       postOptions.preferredPort = runtimeObservation.port;
