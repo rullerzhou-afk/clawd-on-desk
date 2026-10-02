@@ -774,6 +774,50 @@ describe("createClaudeSettingsWatcher — env-indirected Clawd hooks (#852)", ()
     assert.strictEqual(harness.watcher.getHealthStatus().status, "stopped");
   });
 
+  it("invalidates a stale cached Node when the env hook reappears, converging without a restart (#874)", async () => {
+    const nodeA = "C:/nodeA/node.exe";
+    const nodeB = "C:/nodeB/node.exe";
+    let node = nodeA;
+    let resolverCalls = 0;
+    let setSettingsRaw;
+    let addExisting;
+    let removeExisting;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeA],
+      resolveTrustedNodeBin: async () => { resolverCalls++; return node; },
+      syncClawdHooksImpl() {
+        harness.syncCalls.push("repair");
+        setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    ({ setSettingsRaw, addExisting, removeExisting } = harness);
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    // First migration resolves and caches Node A.
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    assert.strictEqual(harness.syncCalls.length, 1);
+    assert.strictEqual(resolverCalls, 1);
+
+    // A Node manager upgrade removes A and exposes B, then an external tool
+    // rewrites the strictly-owned hooks back to env form.
+    removeExisting(nodeA);
+    addExisting(nodeB);
+    node = nodeB;
+    setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    // The now-unusable cached A must not block discovery of B — converge without
+    // waiting for a restart.
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    assert.strictEqual(harness.syncCalls.length, 2);
+    assert.strictEqual(resolverCalls, 2, "stale cached Node A must be cleared so B is resolved");
+    harness.watcher.stop();
+  });
+
   it("keeps the post-repair verification branch degraded when only an unresolved env diagnostic remains", async () => {
     let setSettingsRaw;
     const harness = makeWatcher({

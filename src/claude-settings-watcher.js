@@ -567,7 +567,14 @@ function createClaudeSettingsWatcher(ctx = {}) {
       // #874: an env hook blocked only on Node resolution — try to resolve a host
       // Node out-of-band. On success the resolver schedules an immediate re-check,
       // which reclassifies the hook as migratable and lets the installer migrate it.
+      // Reaching this diagnostic means the inspection just rejected whatever was
+      // cached (null, or a path that is no longer usable after a Node upgrade /
+      // manager switch), so drop the stale candidate first — otherwise its truthy
+      // value would keep kickTrustedNodeResolution() from re-resolving the Node
+      // that is actually available now, stalling until a restart. A healthy config
+      // never reaches here, so a usable cached value is preserved.
       if (diagnostic && diagnostic.reason === "env-hook-node-unresolved") {
+        trustedNodeCandidate = null;
         kickTrustedNodeResolution();
       }
       updateHealthStatus({
