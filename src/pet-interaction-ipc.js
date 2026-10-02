@@ -27,6 +27,7 @@ function registerPetInteractionIpc(options = {}) {
   const sendToRenderer = requiredDependency(options.sendToRenderer, "sendToRenderer");
   const requestDragReaction = options.requestDragReaction || null;
   const requestClickReaction = options.requestClickReaction || null;
+  const refreshIdleVisualAfterDrag = options.refreshIdleVisualAfterDrag || (() => {});
   const recoverVisiblePetAfterRendererLoad = requiredDependency(
     options.recoverVisiblePetAfterRendererLoad,
     "recoverVisiblePetAfterRendererLoad"
@@ -157,6 +158,7 @@ function registerPetInteractionIpc(options = {}) {
           syncHitWin();
           syncDisplayedVisualGeometry();
           repositionFloatingBubbles();
+          refreshIdleVisualAfterDrag();
         }
       }
     } finally {

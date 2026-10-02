@@ -14,6 +14,7 @@ const {
   readRuntimePort,
   ROUTING_NONCE_HEADER,
   writeRuntimeConfig,
+  resolveNodeBinAsync,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
 const {
@@ -863,6 +864,16 @@ const claudeSettingsWatcher = createClaudeSettingsWatcher({
   getHookServerPort,
   syncClawdHooks,
   notifySuspiciousShrink,
+  // #874: full host-Node resolver for classifying an env-indirected hook as
+  // migratable when settings.env.CLAWD_NODE_BIN is missing/bare/stale. This is
+  // the same async resolver the installer uses, so the watcher's migratable
+  // verdict matches what a repair can actually write. Running it off the health
+  // path (async, never execFileSync on the Electron main thread) keeps the
+  // periodic inspection spawn-free. ctx.resolveNodeBinAsyncImpl is a test seam.
+  resolveTrustedNodeBin: (resolverOptions) =>
+    (typeof ctx.resolveNodeBinAsyncImpl === "function" ? ctx.resolveNodeBinAsyncImpl : resolveNodeBinAsync)(
+      { ...(resolverOptions || {}) }
+    ),
 });
 
 // Richer runtime status (healthy/repairing/degraded/manual-fix-required/

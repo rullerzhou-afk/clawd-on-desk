@@ -1082,6 +1082,85 @@ describe("roam pauses during IME editing (#640)", () => {
   });
 });
 
+describe("roam pauses during settings size preview", () => {
+  beforeEach(() => {
+    mock.method(Math, "random", () => 0.9);
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("does not start a pending walk when preview becomes active before its timer fires", () => {
+    let preview = false;
+    const ctx = makeCtx({ isSizePreviewActive: () => preview });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    preview = true;
+    mock.timers.tick(8000);
+
+    assert.deepEqual(ctx._stateLog, []);
+    assert.deepEqual(ctx._appliedBounds, []);
+  });
+
+  it("cancels an active walk on the next frame and restores idle", () => {
+    let preview = false;
+    const ctx = makeCtx({ isSizePreviewActive: () => preview });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.equal(ctx.getCurrentState(), "roam");
+    const writes = ctx._appliedBounds.length;
+
+    preview = true;
+    mock.timers.tick(16);
+    assert.equal(ctx.getCurrentState(), "idle");
+    assert.equal(roam.isRoamAnimating(), false);
+    mock.timers.tick(100);
+    assert.equal(ctx._appliedBounds.length, writes);
+  });
+
+  it("waits the full first delay after a held tick and reads the then-current size", () => {
+    let preview = false;
+    let currentSize = 120;
+    const ctx = makeCtx({
+      isSizePreviewActive: () => preview,
+      getEffectiveCurrentPixelSize: () => ({ width: currentSize, height: currentSize }),
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    roam.cancelRoam();
+    roam.tick(); // consumed phase would ordinarily restart after 4 seconds
+    preview = true;
+    roam.tick();
+    mock.timers.tick(4000);
+    preview = false;
+    currentSize = 180;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.equal(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.equal(ctx.getCurrentState(), "roam");
+    assert.equal(ctx._appliedBounds.at(-1).width, 180);
+  });
+
+  it("keeps the existing timer behavior when no preview predicate is wired", () => {
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.equal(ctx.getCurrentState(), "roam");
+    assert.ok(ctx._appliedBounds.length > 0);
+  });
+});
+
 describe("roam axis-constrained mode (#686)", () => {
   beforeEach(() => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });

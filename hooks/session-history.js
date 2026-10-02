@@ -304,7 +304,10 @@ function pruneHistoryFiles(dir, options = {}) {
     if (!lock) return false;
     try {
       const current = readHistoryFile(entry.filePath);
-      if (!current || current.lastEventAt !== entry.record.lastEventAt) return false;
+      // Any concurrent write must abort this deletion, not just one that moves
+      // lastEventAt: a SubagentStop settle rewrites state while keeping the
+      // original timestamp (#1060 follow-up).
+      if (!current || JSON.stringify(current) !== JSON.stringify(entry.record)) return false;
       fs.unlinkSync(entry.filePath);
       return true;
     } catch {
@@ -376,27 +379,46 @@ function recordSessionHistoryFromStateBody(body, options = {}) {
     const existing = readHistoryFile(filePath);
     // An existing invalid row may belong to a future schema or another owner.
     if (!existing && fs.existsSync(filePath)) return { written: false, reason: "invalid-record" };
+    if (classified.requireActiveExisting === true && (!existing || existing.endedAt !== null)) {
+      return { written: false, reason: "no-active-evidence" };
+    }
     const observedAt = Number.isFinite(options.eventAt) && options.eventAt > 0
       ? options.eventAt
       : Date.now();
+    // A debounce Stop is a completed turn in history even though the lease
+    // keeps it active and provisional. Fold that into the active/terminal this
+    // write uses so the merge below matches a normal event.
+    const completedTurn = classified.provisionalCompletion === true;
+    const active = classified.active && !completedTurn;
+    const terminal = classified.terminal || completedTurn;
     // Same tie-break as the lease: a terminal hook wins over same-tick work.
-    const eventAt = observedAt + (classified.terminal ? 0.5 : 0);
+    const eventAt = observedAt + (terminal ? 0.5 : 0);
     if (existing && existing.lastEventAt > eventAt) {
       return { written: false, reason: "older-event" };
+    }
+    // A SubagentStop is closing evidence, not new activity, so it may only
+    // settle a row that was tracking concurrency. Thinking/working/empty rows
+    // stay byte-for-byte, matching the live state machine's "subagent-stop keep".
+    if (classified.subagentStop === true && existing.lastState !== "juggling") {
+      return { written: false, reason: "nothing-to-settle" };
     }
 
     const cwd = normalizeCwd(body.cwd) || (existing && existing.cwd) || "";
     const title = body._sessionTitleFromPrompt === true
       ? (existing && existing.title) || null
       : normalizeTitle(body.session_title) || (existing && existing.title) || null;
-    const lastState = classified.active && SUSTAINED_STATES.has(classified.state)
+    const lastState = active && SUSTAINED_STATES.has(classified.state)
       ? classified.state
       : (existing && existing.lastState) || null;
     // A session that goes quiet and then receives another prompt is live
     // again, so an earlier terminal event must not stick.
-    const endedAt = classified.active
+    const endedAt = active
       ? null
-      : (classified.terminal ? observedAt : (existing && existing.endedAt) || null);
+      : (terminal ? observedAt : (existing && existing.endedAt) || null);
+    // Settling keeps the existing clock; only a genuinely new event may move it.
+    const lastEventAt = classified.subagentStop === true && existing
+      ? existing.lastEventAt
+      : eventAt;
 
     if (existing) {
       const identityUnchanged = existing.cwd === cwd
@@ -421,7 +443,7 @@ function recordSessionHistoryFromStateBody(body, options = {}) {
       title,
       lastState,
       firstSeenAt: existing ? existing.firstSeenAt : eventAt,
-      lastEventAt: eventAt,
+      lastEventAt,
       endedAt,
       // In production sample wall clock and uptime together, after any hook
       // buffering/lock wait. Fixtures may supply a paired event clock.

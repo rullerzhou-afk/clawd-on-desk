@@ -1048,10 +1048,12 @@ function createSettingsAnimationOverridesMain(options = {}) {
         "mini-enter-sleep",
         "mini-crabwalk",
         "mini-peek",
+        "mini-peek-hold",
         "mini-working",
         "mini-alert",
         "mini-happy",
         "mini-sleep",
+        "mini-sleep-peek",
       ]) {
         const card = buildStateCard(stateKey, stateKey, themeOverrideMap, {
           sectionId: "mini",

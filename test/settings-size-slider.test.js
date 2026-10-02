@@ -5,9 +5,18 @@ const assert = require("node:assert");
 
 const {
   createSizeSliderController,
+  formatSizeKey,
   getSizeSliderAnchorPx,
   SIZE_SLIDER_THUMB_DIAMETER,
 } = require("../src/settings-size-slider");
+
+it("formats slider positions as clamped proportional size keys", () => {
+  assert.strictEqual(formatSizeKey(70), "P:21");
+  assert.strictEqual(formatSizeKey(71), "P:21.3");
+  assert.strictEqual(formatSizeKey(100), "P:30");
+  assert.strictEqual(formatSizeKey(0), "P:0.3");
+  assert.strictEqual(formatSizeKey(101), "P:30");
+});
 
 describe("settings size slider controller", () => {
   it("previews during drag and commits only once when drag-end signals race", async () => {

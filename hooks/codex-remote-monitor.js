@@ -133,11 +133,15 @@ function recoverySnapshotStatus(before, after) {
   return "stable";
 }
 
-function emitRecoveredPendingUserInputs(entry, options = {}) {
+function emitRecoveredPendingUserInputs(entry, filePath, options = {}) {
   if (!entry || entry.isSubagent) return;
+  if (hasNewerSiblingRollout(filePath, entry.sessionId.slice("codex:".length))) {
+    entry.pendingUserInputs.clear();
+    return;
+  }
   const postStateFn = typeof options.postState === "function" ? options.postState : postState;
   for (const request of entry.pendingUserInputs.values()) {
-    postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+    sendTrackedState(entry, postStateFn, "notification", "CodexUserInputRequest", entry.cwd, false, {
       codexUserInput: request,
     });
   }
@@ -262,11 +266,32 @@ function buildPostStateBody(sessionId, state, event, cwd, isSubagent, host, extr
 
 function postState(sessionId, state, event, cwd, isSubagent, extra = null) {
   const body = buildPostStateBody(sessionId, state, event, cwd, isSubagent, undefined, extra);
-  postStateToRunningServer(
-    body,
-    { timeoutMs: 100, preferredPort, remote: true },
-    (ok) => deliveryWatchdog.record(ok)
-  );
+  return new Promise((resolve) => {
+    postStateToRunningServer(
+      body,
+      { timeoutMs: 100, preferredPort, remote: true },
+      (ok) => {
+        deliveryWatchdog.record(ok);
+        resolve(ok);
+      }
+    );
+  });
+}
+
+function sendTrackedState(entry, postStateFn, state, event, cwd, isSubagent, extra = null) {
+  const delivery = postStateFn(entry.sessionId, state, event, cwd, isSubagent, extra);
+  if (delivery && typeof delivery.then === "function") {
+    entry.deliveryPending = (entry.deliveryPending || 0) + 1;
+    Promise.resolve(delivery).then((ok) => {
+      if (ok === true) entry.reported = true;
+      entry.deliveryPending -= 1;
+    }, () => {
+      entry.deliveryPending -= 1;
+    });
+  } else if (delivery !== false) {
+    // Synchronous test transports treat a non-false return as delivery.
+    entry.reported = true;
+  }
 }
 
 // Subscription quota is telemetry, not lifecycle: it goes out as a
@@ -352,7 +377,7 @@ function processLine(line, entry, options = {}) {
       entry.lastState = "notification";
       if (!entry.isSubagent && !entry.initializing) {
         setSessionStale(entry.sessionId, false);
-        postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+        sendTrackedState(entry, postStateFn, "notification", "CodexUserInputRequest", entry.cwd, false, {
           codexUserInput: userInputRecord,
         });
       }
@@ -364,7 +389,7 @@ function processLine(line, entry, options = {}) {
     entry.lastState = "idle";
     if (!entry.isSubagent && !entry.initializing) {
       setSessionStale(entry.sessionId, false);
-      postStateFn(entry.sessionId, "idle", "CodexUserInputResolved", entry.cwd, false, {
+      sendTrackedState(entry, postStateFn, "idle", "CodexUserInputResolved", entry.cwd, false, {
         codexUserInput: userInputRecord,
       });
     }
@@ -444,7 +469,7 @@ function processLine(line, entry, options = {}) {
     entry.pendingUserInputs.clear();
     if (!entry.isSubagent && !entry.initializing) {
       for (const callId of abandonedCallIds) {
-        postStateFn(entry.sessionId, "idle", "CodexUserInputResolved", entry.cwd, false, {
+        sendTrackedState(entry, postStateFn, "idle", "CodexUserInputResolved", entry.cwd, false, {
           codexUserInput: { phase: "resolved", callId },
         });
       }
@@ -466,7 +491,7 @@ function processLine(line, entry, options = {}) {
       assistantLastOutputTruncated: entry.assistantLastOutputTruncated === true,
     }
     : null;
-  postStateFn(entry.sessionId, finalState, key, entry.cwd, entry.isSubagent, extra);
+  sendTrackedState(entry, postStateFn, finalState, key, entry.cwd, entry.isSubagent, extra);
 }
 
 // Cheap, standalone pass over an otherwise-ignored file's own
@@ -709,7 +734,7 @@ function recoverStalePendingUserInputEntry(filePath, fileName, options = {}) {
     stale: false,
   };
 
-  if (options.deferEmit !== true) emitRecoveredPendingUserInputs(entry, options);
+  if (options.deferEmit !== true) emitRecoveredPendingUserInputs(entry, filePath, options);
   return entry;
 }
 
@@ -752,6 +777,7 @@ function pollFile(filePath, fileName, options = {}) {
         stat.size > 0
         && stat.mtimeMs < monitorStartedAtMs - BACKFILL_GRACE_MS,
       stale: false,
+      reported: false,
     };
     if (!admitRemoteReplay(filePath, fileName, entry, stat)) {
       return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
@@ -1002,6 +1028,30 @@ function scheduleRemotePostBaselineReadBackoff(entry, options = {}) {
   return true;
 }
 
+// Rollout timestamps are the durable turn order. mtime is unsuitable here:
+// Desktop may touch an older rollout after a newer turn has completed. Check
+// files on disk too, since bounded polling may not have attached the newer
+// sibling yet. If discovery is uncertain, skip the speculative restore.
+function hasNewerSiblingRollout(filePath, sessionId) {
+  const name = path.basename(filePath);
+  const stamp = name.match(/^rollout-(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d)-/);
+  if (!stamp) return true;
+  const dirs = new Set([path.dirname(filePath), ...getSessionDirs()]);
+  for (const dir of dirs) {
+    let names;
+    try { names = fs.readdirSync(dir); } catch (err) {
+      if (err && err.code === "ENOENT") continue;
+      return true;
+    }
+    for (const sibling of names) {
+      if (path.join(dir, sibling) === filePath || extractSessionId(sibling) !== sessionId) continue;
+      const siblingStamp = sibling.match(/^rollout-(\d{4}-\d\d-\d\dT\d\d-\d\d-\d\d)-/);
+      if (!siblingStamp || siblingStamp[1] >= stamp[1]) return true;
+    }
+  }
+  return false;
+}
+
 function finalizeRemoteReplay(filePath, entry, options = {}) {
   if (!entry || !entry.initializing) {
     replayWork.delete(filePath);
@@ -1020,10 +1070,13 @@ function finalizeRemoteReplay(filePath, entry, options = {}) {
   const hasRootPendingInput = !entry.isSubagent
     && entry.pendingUserInputs instanceof Map
     && entry.pendingUserInputs.size > 0;
+  const superseded = (hasRootPendingInput || (wasBackfilling && SUSTAINED_ACTIVE_STATES.has(entry.lastState)))
+    && hasNewerSiblingRollout(filePath, entry.sessionId.slice("codex:".length));
+  if (superseded && hasRootPendingInput) entry.pendingUserInputs.clear();
   if (!entry.isSubagent && entry.pendingUserInputs instanceof Map) {
     for (const request of entry.pendingUserInputs.values()) {
       setSessionStale(entry.sessionId, false);
-      postStateFn(entry.sessionId, "notification", "CodexUserInputRequest", entry.cwd, false, {
+      sendTrackedState(entry, postStateFn, "notification", "CodexUserInputRequest", entry.cwd, false, {
         codexUserInput: request,
       });
     }
@@ -1032,10 +1085,12 @@ function finalizeRemoteReplay(filePath, entry, options = {}) {
     wasBackfilling
     && !hasRootPendingInput
     && SUSTAINED_ACTIVE_STATES.has(entry.lastState)
+    && !superseded
   ) {
     setSessionStale(entry.sessionId, false);
-    postStateFn(
-      entry.sessionId,
+    sendTrackedState(
+      entry,
+      postStateFn,
       entry.lastState,
       entry.lastStateEvent || "session_meta",
       entry.cwd,
@@ -1063,7 +1118,12 @@ function cleanStaleFiles(options = {}) {
     // A bounded initial replay can span minutes. Until every sibling reaches
     // its snapshot EOF, the session's real current state is unknown.
     if (entries.some((entry) => entry.initializing)) continue;
+    if (entries.some((entry) => entry.deliveryPending > 0)) continue;
     if (entries.some((entry) => entry.stale)) continue;
+    if (!entries.some((entry) => entry.reported)) {
+      setSessionStale(sessionId, true);
+      continue;
+    }
     let latest = entries[0];
     for (const entry of entries.slice(1)) {
       if (entry.lastEventTime > latest.lastEventTime) latest = entry;
@@ -1120,7 +1180,7 @@ function runRecoverySweep(candidates, options = {}) {
     if (snapshotStatus === "missing" || snapshotStatus === "changed") continue;
     if (recovered) {
       tracked.set(candidate.filePath, recovered);
-      emitRecoveredPendingUserInputs(recovered, options);
+      emitRecoveredPendingUserInputs(recovered, candidate.filePath, options);
     }
   }
 }
@@ -1286,7 +1346,7 @@ function runReadyRemoteRecovery(context) {
     }
     if (recovered) {
       tracked.set(candidate.filePath, recovered);
-      emitRecoveredPendingUserInputs(recovered, recoveryOptions);
+      emitRecoveredPendingUserInputs(recovered, candidate.filePath, recoveryOptions);
     } else if (snapshotStatus === "grew") {
       pausedForAttempts = true;
       continue;

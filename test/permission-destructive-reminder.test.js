@@ -25,7 +25,9 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
+const os = require("node:os");
 const path = require("node:path");
 
 const {
@@ -622,28 +624,20 @@ describe("destructive reminder — shell context decides whether a word is a com
     );
   });
 
-  it("KNOWN MISS: a heredoc body is read as command positions", () => {
-    // A heredoc body is DATA, so `rm -rf` inside one is text being written to a
-    // file. This splitter reports it as a command anyway. The class is
-    // pre-existing -- `;` produced the same false hold before a lone `&` was
-    // added to the separator set -- and the direction is a false HOLD, which
-    // costs a human glance rather than an unreviewed deletion.
-    //
-    // A skip was written and REVERTED. It traded this cheap failure for three
-    // expensive ones, all measured: a `;` on the opener's own line was
-    // swallowed, `<<E'OF'` parsed the delimiter as `E`, and `$((1<<2))` read an
-    // arithmetic left-shift as a heredoc opener -- each hiding a command the
-    // shell runs. These lanes pin the current behaviour so that a future skip
-    // has to come back through them.
+  it("KNOWN FALSE HOLD: a heredoc body outside a commit or PR message is read as shell", () => {
+    // A heredoc body is DATA to `cat`, but only one message shape is
+    // recognised (see the next tests). Every other heredoc keeps the old,
+    // conservative reading, which errs toward a false HOLD.
     for (const command of [
       "cat <<'EOF'\necho safe & rm -rf ./data\nEOF",
       "cat <<'EOF'\necho safe; rm -rf /\nEOF",
+      "cat <<EOF\nit's fine\nEOF",
     ]) {
       const verdict = evaluatePermissionReminder("Bash", { command });
       assert.equal(verdict && verdict.hold, true, command);
     }
-    // The three inputs the reverted skip got wrong. They are ordinary shell and
-    // the shell really does run the delete, so they must hold.
+    // The three inputs an earlier, reverted skip got wrong. They are ordinary
+    // shell and the shell really does run the delete, so they must hold.
     for (const command of [
       "cat <<'EOF' ; rm -rf ./data",
       "cat <<E'OF'\nharmless\nEOF\nrm -rf ./data\nE",
@@ -654,6 +648,437 @@ describe("destructive reminder — shell context decides whether a word is a com
         { hold: true, tag: "file-delete" },
         command
       );
+    }
+  });
+
+  it("a commit or PR message heredoc is data", () => {
+    // Quoted delimiter: nothing in the body expands or runs.
+    for (const command of [
+      "git commit -m \"$(cat <<'EOF'\nrm -rf /\ngit push --force\nEOF\n)\"",
+      "git commit -m \"$(cat <<'EOF'\n$(rm -rf /)\nEOF\n)\"",
+    ]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command }), null, command);
+    }
+  });
+
+  it("a message heredoc gets the same verdict as the same quoted -m message", () => {
+    // Message text was never scanned in a quoted -m value; the heredoc form now
+    // matches it instead of being held by accident.
+    for (const [heredoc, plain] of [
+      [
+        "git commit -m \"$(cat <<'EOF'\nrm -rf ./victim\nEOF\n)\"",
+        "git commit -m \"rm -rf ./victim\"",
+      ],
+      [
+        "git merge --no-verify -m \"$(cat <<'EOF'\nrm -rf ./victim\nEOF\n)\" topic",
+        "git merge --no-verify -m \"rm -rf ./victim\" topic",
+      ],
+    ]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command: plain }), null, plain);
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command: heredoc }),
+        evaluatePermissionReminder("Bash", { command: plain }),
+        heredoc
+      );
+    }
+  });
+
+  it("shell around a message heredoc is still read as shell", () => {
+    for (const command of [
+      "git commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && rm -rf /",
+      "git commit -m \"$(cat <<'EOF'\nit's\nEOF\n)\"\nrm -rf /",
+      "git commit -m \"$(cat <<'EOF'\nbody\n  EOF\nEOF\n)\"; rm -rf /",
+      "rm -rf / && git commit -m \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+    ]) {
+      const verdict = evaluatePermissionReminder("Bash", { command });
+      assert.equal(verdict && verdict.hold, true, command);
+    }
+  });
+
+  it("a heredoc body that can run is still scanned", () => {
+    for (const command of [
+      // Fed to an interpreter.
+      "bash <<'EOF'\nrm -rf ~\nEOF",
+      "sh -s <<'EOF'\nrm -rf ~\nEOF",
+      "sudo bash <<'EOF'\nrm -rf /\nEOF",
+      // The output reaches a shell.
+      "cat <<'EOF' | sh\nrm -rf /\nEOF",
+      "{ echo; cat <<'EOF'\nrm -rf /\nEOF\n} | sh",
+      "bash -c \"$(cat <<'EOF'\nrm -rf /\nEOF\n)\"",
+      "eval \"$(cat <<'EOF'\nrm -rf /\nEOF\n)\"",
+      "$(cat <<'EOF'\nrm -rf /\nEOF\n)",
+      "git log -1 --format=\"$(cat <<'EOF'\nrm -rf /\nEOF\n)\" | sh",
+      "git commit -m \"$(cat <<'EOF'\nrm -rf /\nEOF\n)\" | sh",
+      "{ git commit -m \"$(cat <<'EOF'\nrm -rf /\nEOF\n)\"; } | sh",
+      // Not a message: a `!` alias, a configured alias, or a `-c` value that
+      // git runs as a command.
+      "git -c alias.x='!sh -c \"$1\" -' x \"$(cat <<'EOF'\nrm -rf src\nEOF\n)\"",
+      "git -c core.sshCommand=\"$(cat <<'EOF'\nsh -c 'rm -rf src'\nEOF\n)\" ls-remote git@github.com:owner/repo.git",
+      "git x \"$(cat <<'EOF'\nrm -rf src\nEOF\n)\"",
+      "git -c core.hooksPath=h commit -m \"$(cat <<'EOF'\nrm -rf src\nEOF\n)\"",
+      "gh api repos/o/r -f body=\"$(cat <<'EOF'\nrm -rf src\nEOF\n)\"",
+      // Writes a file. A git hook runs during the very commit.
+      "git commit -m \"$(tee .git/hooks/prepare-commit-msg <<EOF\n#!/bin/sh\nrm -rf ./victim\nEOF\n)\"",
+      "git commit -m \"$(tee .git/hooks/post-commit <<EOF\n#!/bin/sh\nrm -rf ./victim\nEOF\n)\"",
+      "mkdir -p .git/hooks && : > .git/hooks/pre-merge-commit && chmod +x .git/hooks/pre-merge-commit && git merge -m \"$(tee .git/hooks/pre-merge-commit <<EOF\n#!/bin/sh\nrm -rf ./victim\nEOF\n)\" topic",
+      "git commit -m \"$(cat > x <<'EOF'\nrm -rf ./victim\nEOF\n)\"",
+      "cat <<'EOF' > .git/hooks/pre-commit\n#!/bin/sh\nrm -rf ./victim\nEOF",
+      "cat > x.sh <<'EOF'\nrm -rf ./victim\nEOF\nbash x.sh",
+      "cat > x.sh <<'EOF'\nrm -rf ./victim\nEOF\n./x.sh",
+      "tee x.sh <<'EOF'\nrm -rf ./victim\nEOF\nsudo bash x.sh",
+      // An unquoted delimiter expands `$( … )` in the body.
+      "git commit -m \"$(cat <<EOF\nit's $(rm -rf /)\nEOF\n)\"",
+    ]) {
+      const verdict = evaluatePermissionReminder("Bash", { command });
+      assert.equal(verdict && verdict.hold, true, command);
+    }
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: "ssh h <<EOF\ngit push --force\nEOF" }),
+      { hold: true, tag: "force-push" }
+    );
+  });
+
+  it("a message heredoc the scan cannot place is read the old way", () => {
+    for (const command of [
+      "git commit -m \"$(cat <<'EOF'\nunterminated\nrm -rf /",
+      "git commit -m \"$(cat <<'EOF'\nit's\nEOF)\"\nrm -rf /",
+      "echo ${x//<<EOF/y}\nrm -rf /\nEOF",
+      "echo $[1<<2 ]\nrm -rf /\n2",
+      "for ((i=0;i<<2;i++)); do :; done\nrm -rf /\n2",
+      "cat <<'X'\nit's\nX\ngit commit -m \"$(cat <<'EOF'\nmsg\nEOF\n)\" && rm -rf /",
+    ]) {
+      const verdict = evaluatePermissionReminder("Bash", { command });
+      assert.equal(verdict && verdict.hold, true, command);
+    }
+  });
+
+  // bash 3.2 (macOS /bin/bash and /bin/sh) joins a heredoc body line that ends
+  // in a backslash to the next one even when the delimiter is quoted, so `E\`
+  // and `OF` end the heredoc and the lines after it run. zsh and bash 5 keep
+  // them as text. Which line ends the body depends on the shell, so a message
+  // with such a line is read the old way.
+  const messageWithBody = (body) => "git commit -m \"$(cat <<'EOF'\n" + body + "\nEOF\n)\"";
+  const BACKSLASH_BODIES = [
+    "E\\\nOF\nrm -rf ./victim",      // the reported case
+    "EO\\\nF\nrm -rf ./victim",      // joined at another point
+    "EOF\\\n\nrm -rf ./victim",      // the delimiter text itself ends in one
+    "x\\\nEOF\nrm -rf ./victim",     // last line before the delimiter: bash 3.2 reads past it, bash 5 does not
+    "E\\\\\nOF\nrm -rf ./victim",    // two backslashes stay literal in the shells tried, but the count is not trusted
+  ];
+
+  it("a message body line ending in a backslash is read the old way", () => {
+    for (const body of BACKSLASH_BODIES) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command: messageWithBody(body) }),
+        { hold: true, tag: "file-delete" },
+        body
+      );
+    }
+    // A backslash anywhere else in a line is still message text.
+    for (const body of ["fix: don't break (#123)", "path C:\\temp\\new is fine"]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command: messageWithBody(body) }), null, body);
+    }
+  });
+
+  // The same commands in a real shell, with `git` and `rm` replaced by
+  // functions so nothing is committed or removed.
+  const SHELL_FAKES = "git() { :; }\nrm() { printf 'rm-ran\\n' >&2; }\n";
+  const shellRunsRm = (shell, command, cwd, env) => {
+    const result = spawnSync(shell, ["-c", SHELL_FAKES + command], {
+      cwd,
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ...env },
+      timeout: 10000,
+    });
+    // A shell that failed to start or timed out says nothing about whether the
+    // command runs; fail loudly instead of reading it as "did not run".
+    if (result.error) throw result.error;
+    if (result.signal) throw new Error(`${shell} was killed by ${result.signal}`);
+    return (result.stderr || "").includes("rm-ran");
+  };
+  const POSIX_SHELLS = process.platform === "win32"
+    ? []
+    : ["/bin/bash", "/bin/sh", "/bin/zsh", "/bin/dash"].filter((shell) => fs.existsSync(shell));
+  const BASH3_SHELLS = POSIX_SHELLS.filter((shell) => {
+    const result = spawnSync(shell, ["-c", "printf %s \"$BASH_VERSION\""], { encoding: "utf8", timeout: 10000 });
+    return result.status === 0 && /^3\./.test(result.stdout);
+  });
+
+  it("bash 3.2 runs what follows a joined delimiter, and the reminder holds it", {
+    skip: BASH3_SHELLS.length ? false : "needs bash 3.x at /bin/bash or /bin/sh (macOS)",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    try {
+      const joined = messageWithBody(BACKSLASH_BODIES[0]);
+      const plain = messageWithBody("fix: don't break (#123)\nrm -rf ./victim");
+      for (const shell of BASH3_SHELLS) {
+        assert.equal(shellRunsRm(shell, joined, cwd), true, `${shell} ends the heredoc at E\\ + OF`);
+        // Control: without the backslash the rm line stays message text.
+        assert.equal(shellRunsRm(shell, plain, cwd), false, shell);
+      }
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command: joined }), { hold: true, tag: "file-delete" });
+      assert.equal(evaluatePermissionReminder("Bash", { command: plain }), null);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("whenever a shell here runs the rm in a backslash body, the reminder holds it", {
+    skip: BASH3_SHELLS.length
+      ? false
+      : "needs bash 3.x: bash 5, zsh and dash keep these bodies as text, so nothing would be checked",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    try {
+      const fired = new Set();
+      for (const body of BACKSLASH_BODIES) {
+        const command = messageWithBody(body);
+        const verdict = evaluatePermissionReminder("Bash", { command });
+        for (const shell of POSIX_SHELLS) {
+          if (!shellRunsRm(shell, command, cwd)) continue;
+          fired.add(shell + "|" + body);
+          assert.equal(verdict && verdict.hold, true, `${shell}: ${body}`);
+        }
+      }
+      // An empty run would pass without checking anything: bash 3.x is known
+      // to run the reported body, so at least that pair must have been checked.
+      for (const shell of BASH3_SHELLS) {
+        assert.ok(fired.has(shell + "|" + BACKSLASH_BODIES[0]), `${shell} did not run the reported body`);
+      }
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // Inside the double quotes, an expansion around the heredoc can evaluate its
+  // output again: `$[ … ]` and `$(( … ))` are arithmetic, `${a[ … ]}` is a
+  // subscript, and in zsh so is `$name[ … ]`. Arithmetic evaluates a subscript
+  // in the text it is given, so `a[$(rm …)]` in the body runs.
+  const messageAround = (open, close, body) =>
+    "git commit -m \"" + open + "$(cat <<'EOF'\n" + body + "\nEOF\n)" + close + "\"";
+  // Caught by the `$ … [` check in skipDouble().
+  const SUBSCRIPT_WRAPPERS = [
+    ["$[", "]"],         // bash, sh, zsh (reported)
+    ["$[ 1 + ", " ]"],
+    ["x $[", "] y"],
+    ["$a[", "]"],        // zsh subscripts from here down
+    ["$PWD[", "]"],
+    ["$#a[", "]"],
+    ["$+a[", "]"],
+    ["$=a[", "]"],
+    ["$@[", "]"],
+    ["$$[", "]"],
+    ["$" + "v".repeat(80) + "[", "]"], // a long name
+    ["$日本語[", "]"],   // zsh in a UTF-8 locale: a name is not only ASCII
+    ["$변수[", "]"],
+    ["$é[", "]"],
+  ];
+  // These gave up before that check existed: substitution() gives up on a
+  // `$(( … ))` that contains `<<`, and skipParam() on a `${ … }` that contains
+  // `$`. Kept here so a change to either is measured against the same shells.
+  const ALREADY_GIVEN_UP_WRAPPERS = [
+    ["$((", "))"],
+    ["${a[", "]}"],
+  ];
+  // zsh only evaluates a subscript of a variable that is set, hence PATH.
+  const SUBSCRIPT_BODIES = ["a[$(rm -rf ./victim)]", "a[`rm -rf ./victim`]", "PATH[$(rm -rf ./victim)]"];
+  const UTF8_ENV = { LANG: "en_US.UTF-8", LC_ALL: "en_US.UTF-8" };
+  // zsh falls back to single bytes when the locale is missing; check that `é`
+  // is one character before relying on a multibyte name.
+  const ZSH_UTF8 = POSIX_SHELLS.includes("/bin/zsh") && (() => {
+    const result = spawnSync("/bin/zsh", ["-c", "print -r -- ${#${:-é}}"], {
+      encoding: "utf8",
+      env: { PATH: process.env.PATH, ...UTF8_ENV },
+      timeout: 10000,
+    });
+    return result.status === 0 && result.stdout.trim() === "1";
+  })();
+
+  it("a message heredoc inside arithmetic or a subscript is read the old way", () => {
+    for (const [open, close] of SUBSCRIPT_WRAPPERS) {
+      for (const body of SUBSCRIPT_BODIES) {
+        const command = messageAround(open, close, body);
+        assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag: "file-delete" }, command);
+      }
+    }
+    for (const command of [
+      "git commit --message=\"$[$(cat <<'EOF'\na[$(rm -rf ./victim)]\nEOF\n)]\"",
+      "gh pr create --title t --body \"$[$(cat <<'EOF'\na[$(rm -rf ./victim)]\nEOF\n)]\"",
+      "git commit -m ''\"$[$(cat <<'EOF'\na[$(rm -rf ./victim)]\nEOF\n)]\"",
+    ]) {
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag: "file-delete" }, command);
+    }
+    // The same text as a plain message body is still message text.
+    for (const body of [...SUBSCRIPT_BODIES, "fix: don't break (#123)", "日本語 [note] é"]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command: messageWithBody(body) }), null, body);
+    }
+  });
+
+  it("a backslash-newline inside the quoted message word is read the old way", () => {
+    // The shell removes it inside double quotes, so these are `$PWD[` again.
+    for (const open of ["$PWD\\\n[", "$PW\\\nD[", "$\\\nPWD["]) {
+      for (const body of SUBSCRIPT_BODIES) {
+        const command = messageAround(open, "]", body);
+        assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag: "file-delete" }, command);
+      }
+    }
+    // A backslash-newline elsewhere in the command does not matter.
+    assert.equal(evaluatePermissionReminder("Bash", { command: "git add a \\\n  b && " + messageWithBody("fix: x") }), null);
+  });
+
+  it("a message heredoc inside $(( )) or ${ } was already read the old way", () => {
+    for (const [open, close] of ALREADY_GIVEN_UP_WRAPPERS) {
+      for (const body of SUBSCRIPT_BODIES) {
+        const command = messageAround(open, close, body);
+        assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag: "file-delete" }, command);
+      }
+    }
+  });
+
+  it("bash runs a heredoc's output inside $[ ], and the reminder holds it", {
+    skip: BASH3_SHELLS.length ? false : "needs bash 3.x at /bin/bash or /bin/sh (macOS)",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    try {
+      // The reported command.
+      const reported = messageAround("$[", "]", "a[$(rm -rf ./victim)]");
+      for (const shell of BASH3_SHELLS) {
+        assert.equal(shellRunsRm(shell, reported, cwd), true, `${shell} evaluates a[$(rm …)] inside $[ ]`);
+        // Control: the same body as a plain message is not run.
+        assert.equal(shellRunsRm(shell, messageWithBody("a[$(rm -rf ./victim)]"), cwd), false, shell);
+      }
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command: reported }), { hold: true, tag: "file-delete" });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("zsh runs a heredoc's output inside $name[ ], and the reminder holds it", {
+    skip: POSIX_SHELLS.includes("/bin/zsh") ? false : "needs /bin/zsh",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    try {
+      const subscript = messageAround("$PWD[", "]", "PATH[$(rm -rf ./victim)]");
+      assert.equal(shellRunsRm("/bin/zsh", subscript, cwd), true, "zsh evaluates PATH[$(rm …)] inside $PWD[ ]");
+      assert.equal(shellRunsRm("/bin/zsh", messageWithBody("PATH[$(rm -rf ./victim)]"), cwd), false, "control");
+      assert.deepEqual(evaluatePermissionReminder("Bash", { command: subscript }), { hold: true, tag: "file-delete" });
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  // A `$( … )` at the top level is unquoted, so the shell word-splits and then
+  // globs its output. Under zsh's GLOB_SUBST that glob is a second evaluation:
+  // `*(e: … :)` runs the qualifier's code. The message-heredoc preprocessor may
+  // only treat the body as data when the substitution sits inside double
+  // quotes; unquoted it must read the command the old way and scan the body.
+  const UNQUOTED_MESSAGE_HEREDOC =
+    "git commit -m $(cat <<'EOF'\n*(e:\nrm -rf ./victim\n:)\nEOF\n)";
+  const QUOTED_MESSAGE_HEREDOC =
+    "git commit -m \"$(cat <<'EOF'\n*(e:\nrm -rf ./victim\n:)\nEOF\n)\"";
+
+  it("an unquoted message heredoc is scanned, not cut as message text", () => {
+    assert.deepEqual(
+      evaluatePermissionReminder("Bash", { command: UNQUOTED_MESSAGE_HEREDOC }),
+      { hold: true, tag: "file-delete" }
+    );
+    // Control: the same substitution inside double quotes is ordinary message
+    // text, so its dangerous-looking words are not a command.
+    assert.equal(evaluatePermissionReminder("Bash", { command: QUOTED_MESSAGE_HEREDOC }), null);
+    // And an unquoted message with nothing destructive stays silent: the fix
+    // reads the command the old way, it does not hold every unquoted heredoc.
+    assert.equal(
+      evaluatePermissionReminder("Bash", { command: "git commit -m $(cat <<'EOF'\nfix: harmless\nEOF\n)" }),
+      null
+    );
+  });
+
+  it("zsh GLOB_SUBST runs an unquoted message heredoc's output, and the reminder holds it", {
+    skip: POSIX_SHELLS.includes("/bin/zsh") ? false : "needs /bin/zsh",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    // `e` runs once per glob match, so the pattern needs a file to match.
+    fs.writeFileSync(path.join(cwd, "seed.txt"), "");
+    const zshRunsRm = (command) => {
+      const script = SHELL_FAKES + "setopt GLOB_SUBST; IFS=''\n" + command;
+      const result = spawnSync("/bin/zsh", ["-f", "-c", script], {
+        cwd,
+        encoding: "utf8",
+        env: { PATH: "/usr/bin:/bin" },
+        timeout: 10000,
+      });
+      if (result.error) throw result.error;
+      if (result.signal) throw new Error(`/bin/zsh was killed by ${result.signal}`);
+      assert.equal(result.status, 0, `/bin/zsh failed: ${result.stderr}`);
+      return (result.stderr || "").includes("rm-ran");
+    };
+    try {
+      // Positive: the shell really runs the glob qualifier's code. The control
+      // below keeps this pair from passing vacuously if zsh never runs it.
+      assert.equal(zshRunsRm(UNQUOTED_MESSAGE_HEREDOC), true, "GLOB_SUBST evaluates an unquoted substitution's glob qualifier");
+      assert.equal(zshRunsRm(QUOTED_MESSAGE_HEREDOC), false, "double quotes keep the same bytes as data");
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command: UNQUOTED_MESSAGE_HEREDOC }),
+        { hold: true, tag: "file-delete" }
+      );
+      assert.equal(evaluatePermissionReminder("Bash", { command: QUOTED_MESSAGE_HEREDOC }), null);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("zsh in a UTF-8 locale runs a heredoc's output inside a non-ASCII $name[ ], and the reminder holds it", {
+    skip: ZSH_UTF8 ? false : "needs /bin/zsh with a working en_US.UTF-8 locale",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    try {
+      for (const name of ["日本語", "변수", "é"]) {
+        const command = messageAround("$" + name + "[", "]", "PATH[$(rm -rf ./victim)]");
+        assert.equal(shellRunsRm("/bin/zsh", command, cwd, UTF8_ENV), true, `zsh evaluates $${name}[ ] in UTF-8`);
+        // Control: in the C locale the same bytes are not a name.
+        assert.equal(shellRunsRm("/bin/zsh", command, cwd, { LANG: "C", LC_ALL: "C" }), false, `zsh, C locale: ${name}`);
+        assert.deepEqual(evaluatePermissionReminder("Bash", { command }), { hold: true, tag: "file-delete" }, name);
+      }
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("whenever a shell here runs the rm in arithmetic or a subscript, the reminder holds it", {
+    skip: BASH3_SHELLS.length || POSIX_SHELLS.includes("/bin/zsh")
+      ? false
+      : "needs bash 3.x or zsh: no other shell here is known to run these forms, so nothing would be checked",
+  }, () => {
+    const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-heredoc-"));
+    // Only zsh reads a name differently by locale; the others run once.
+    const envsFor = (shell) => (shell === "/bin/zsh" ? [["default", {}], ["utf8", UTF8_ENV]] : [["default", {}]]);
+    try {
+      const fired = new Set();
+      for (const [open, close] of [...SUBSCRIPT_WRAPPERS, ...ALREADY_GIVEN_UP_WRAPPERS]) {
+        for (const body of SUBSCRIPT_BODIES) {
+          const command = messageAround(open, close, body);
+          const verdict = evaluatePermissionReminder("Bash", { command });
+          for (const shell of POSIX_SHELLS) {
+            for (const [envName, env] of envsFor(shell)) {
+              if (!shellRunsRm(shell, command, cwd, env)) continue;
+              fired.add([shell, envName, open, body].join("|"));
+              assert.equal(verdict && verdict.hold, true, `${shell} (${envName}): ${command}`);
+            }
+          }
+        }
+      }
+      // An empty run would pass without checking anything. These pairs are
+      // known to run the rm, so each one present must have been checked.
+      const expected = [];
+      for (const shell of BASH3_SHELLS) expected.push([shell, "default", "$[", SUBSCRIPT_BODIES[0]]);
+      if (POSIX_SHELLS.includes("/bin/zsh")) expected.push(["/bin/zsh", "default", "$PWD[", SUBSCRIPT_BODIES[2]]);
+      if (ZSH_UTF8) expected.push(["/bin/zsh", "utf8", "$日本語[", SUBSCRIPT_BODIES[2]]);
+      for (const pair of expected) {
+        assert.ok(fired.has(pair.join("|")), `expected ${pair[0]} (${pair[1]}) to run the rm in ${pair[2]} … ]`);
+      }
+      assert.ok(fired.size >= expected.length, `checked ${fired.size} runs`);
+    } finally {
+      fs.rmSync(cwd, { recursive: true, force: true });
     }
   });
 
@@ -880,12 +1305,44 @@ describe("destructive reminder — known misses at the inspection budget", () =>
     );
   });
 
-  it("KNOWN FALSE HOLD: heredoc bodies are not parsed as data", () => {
+  it("a commit or PR message heredoc is not a scan error", () => {
+    // v1.2.0 known limitation: an odd apostrophe, `(#N)`, or a lone backtick or
+    // double quote in the body held these as scan-error.
+    for (const command of [
+      "git commit -m \"$(cat <<'EOF'\nfix: don't break (#123)\nEOF\n)\"",
+      "git commit -m \"$(cat <<'EOF'\nsee (#1021) and `x \"\nEOF\n)\" && git push",
+      "git commit -am \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+      "git commit --message=\"$(cat <<'EOF'\nit's\nEOF\n)\"",
+      "git tag -a v1 -m \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+      "gh pr create --title t --body \"$(cat <<'EOF'\nCloses (#42) — it's fine\nEOF\n)\"",
+      "gh pr comment 1 -b \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+      "gh release create v1 --notes \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+    ]) {
+      assert.equal(evaluatePermissionReminder("Bash", { command }), null, command);
+    }
+    // The rest of the request is still read: the message does not excuse it.
     assert.deepEqual(
-      evaluatePermissionReminder("Bash", { command: "cat <<EOF\nit's fine\nEOF" }),
-      { hold: true, tag: SCAN_ERROR_TAG },
-      "heredoc parsing remains outside this repair's shell-scanner scope"
+      evaluatePermissionReminder("Bash", {
+        command: "git commit -m \"$(cat <<'EOF'\nfix: don't break (#123)\nEOF\n)\" && git push --force",
+      }),
+      { hold: true, tag: "force-push" }
     );
+  });
+
+  it("KNOWN FALSE HOLD: a heredoc outside the recognised message shape is still read as shell", () => {
+    for (const command of [
+      "cat <<'EOF' > notes.md\nIt's done\nEOF",
+      "git commit -F - <<'EOF'\nit's\nEOF",
+      "MSG=\"$(cat <<'EOF'\nit's\nEOF\n)\"",
+      "git -C repo commit -m \"$(cat <<'EOF'\nit's\nEOF\n)\"",
+      "git commit -m \"$(cat <<EOF\nit's\nEOF\n)\"",
+    ]) {
+      assert.deepEqual(
+        evaluatePermissionReminder("Bash", { command }),
+        { hold: true, tag: SCAN_ERROR_TAG },
+        command
+      );
+    }
   });
 
   it("KNOWN MISS: a destructive command past the scan cap is not reached", () => {

@@ -105,6 +105,11 @@ const {
 
 // Session display hints — validated against theme.displayHintMap keys
 let DISPLAY_HINT_MAP = {};
+let COMPLETION_VISUAL_MAP = {};
+
+function completionVisualForHint(hint) {
+  return typeof hint === "string" ? (COMPLETION_VISUAL_MAP[hint] || null) : null;
+}
 
 // ── Session tracking ──
 const sessions = new Map();
@@ -135,9 +140,13 @@ const COMPLETION_HOUSEKEEPING_EVENTS = new Set([
 ]);
 // #406: forward progress for a session cancels its pending (debounced)
 // completion — these events all mean the agent loop is still running.
+// SubagentStop is deliberately absent: a finishing subagent is closing
+// evidence, not parent progress, and Claude sends one 1.5-15s after the Stop
+// from a background helper (#1060), so it must not veto a completion that has
+// already reached its quiet window.
 const COMPLETION_CANCEL_EVENTS = new Set([
-  "UserPromptSubmit", "PreToolUse", "PostToolUse", "PostToolUseFailure",
-  "SubagentStart", "SubagentStop", "PreCompact", "PostCompact",
+  "UserPromptSubmit", "UserPromptExpansion", "PreToolUse", "PostToolUse", "PostToolUseFailure",
+  "SubagentStart", "PreCompact", "PostCompact",
   "PermissionRequest", "CodexUserInputRequest", "Elicitation", "StopFailure", "ApiError", "SessionEnd",
 ]);
 const CLAUDE_ELICITATION_COMPLETION_PROBE_DELAY_MS = 2000;
@@ -530,6 +539,7 @@ function refreshTheme() {
   COLLAPSE_DURATION = theme.timings.collapseDuration || 0;
   SLEEP_MODE = theme.sleepSequence && theme.sleepSequence.mode === "direct" ? "direct" : "full";
   DISPLAY_HINT_MAP = theme.displayHintMap || {};
+  COMPLETION_VISUAL_MAP = theme.completionVisualMap || {};
   hitboxRuntime = createHitboxRuntime(theme);
   HIT_BOXES = hitboxRuntime.hitBoxes;
   FILE_HIT_BOXES = hitboxRuntime.fileHitBoxes;
@@ -560,7 +570,7 @@ function scheduleAutoReturn(state) {
         if (state === "mini-peek") {
           // Peek animation done — stay peeked but show idle (don't re-trigger peek)
           ctx.miniPeeked = true;
-          applyState("mini-idle");
+          applyState(hasOwnVisualFiles("mini-peek-hold") ? "mini-peek-hold" : "mini-idle");
         } else {
           ctx.miniPeekIn();
           applyState("mini-peek");
@@ -851,7 +861,7 @@ function applyState(state, svgOverride, options = {}) {
       autoReturnTimer = null;
       applyResolvedDisplayState();
     }, WAKE_DURATION);
-  } else if (AUTO_RETURN_MS[state]) {
+  } else if (state !== "mini-peek-hold" && state !== "mini-sleep-peek" && AUTO_RETURN_MS[state]) {
     scheduleAutoReturn(state);
   }
 }
@@ -1541,14 +1551,32 @@ function updateSessionMetadata(sessionId, opts = {}) {
     debugSession(`metadata-only drop sid=${id} reason=no-session`);
     return false;
   }
+  // Some metadata channels bypass the lifecycle sequence fence, so they must
+  // prove they only annotate their own agent's session. Without this, a
+  // metadata-only POST could rewrite the title/usage of a session that another
+  // agent happened to create with a colliding raw id. Absent means the legacy
+  // "annotate whatever exists" behavior (opencode-family, statusline, ...).
+  const expectedAgentId = typeof opts.expectedAgentId === "string" ? opts.expectedAgentId : null;
+  if (expectedAgentId && session.agentId !== expectedAgentId) {
+    debugSession(`metadata-only drop sid=${id} reason=agent-mismatch expected=${expectedAgentId} actual=${session.agentId}`);
+    return false;
+  }
   const incomingContextUsage = normalizeContextUsage(opts.contextUsage);
   const incomingTitle = typeof opts.sessionTitle === "string"
     ? normalizeTitle(opts.sessionTitle)
     : null;
   const incomingModel = typeof opts.model === "string" ? opts.model.trim() : "";
-  if (!incomingContextUsage && !incomingTitle && !incomingModel) return false;
+  const clearContextUsage = opts.clearContextUsage === true;
+  if (!incomingContextUsage && !clearContextUsage && !incomingTitle && !incomingModel) return false;
   let applied = false;
-  if (incomingContextUsage) {
+  if (clearContextUsage) {
+    if (session.contextUsage || session.contextUsageOrigin) {
+      session.contextUsage = null;
+      session.contextUsageOrigin = null;
+      session.metadataUpdatedAt = Date.now();
+      applied = true;
+    }
+  } else if (incomingContextUsage) {
     const resolved = resolveContextUsageUpdate(
       session,
       incomingContextUsage,
@@ -1831,6 +1859,9 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
       && completionPayload.truncated === true
     );
   }
+  const completionVisual = session.agentId === "claude-code"
+    ? completionVisualForHint(session.displayHint)
+    : null;
   session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
   // The stored session settles idle, but this Stop consumed the completion
   // attention cue. Record that distinction so a later duplicate Stop is
@@ -1867,7 +1898,7 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   // from ANOTHER session (e.g. an error) — it must win. We must NOT clear the
   // global pending queue here; pendingTimer/pendingState are process-wide, not
   // per-session, so clearing them would swallow another session's visual.
-  setState("attention");
+  setState("attention", completionVisual);
   return true;
 }
 
@@ -1938,7 +1969,9 @@ function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
 // first prompt line. The first title that reaches the server wins — a title
 // whose POST fails is not permanently claimed, and follow-up prompts never
 // overwrite the first one (matching Trae's constant session title).
-const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode"]);
+// MiniMax Code carries no session title in its hook payload either, so its
+// prompt-derived titles follow the same first-wins rule.
+const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode", "minimax"]);
 
 function resolveIncomingSessionTitle(existing, agentId, incomingTitle) {
   const normalized = normalizeTitle(incomingTitle);
@@ -2308,6 +2341,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     && state === "attention"
     && srcAgentId === "claude-code"
     && !normalizedSubagentId;
+  const completionVisual = isClaudeMainStop
+    ? completionVisualForHint(existing && existing.displayHint)
+    : null;
   const typedSubagentSnapshotKnown = Object.prototype.hasOwnProperty.call(
     opts,
     "backgroundSubagentsCount",
@@ -2644,6 +2680,17 @@ function updateSession(sessionId, state, event, opts = {}) {
     return;
   }
 
+  // A completion-mapped hint (such as /design) belongs to the parent
+  // turn. Temporary cues may settle the session idle without ending that turn.
+  // Keep explicit null, terminal events and ordinary per-tool hints clearing.
+  const continuationDisplayHint = srcAgentId === "claude-code"
+    && !normalizedSubagentId
+    && completionVisualForHint(existing && existing.displayHint)
+    && (["PostToolUseFailure", "Notification", "Elicitation", "PreCompact", "WorktreeCreate"].includes(event)
+      || (event === "SessionStart" && sessionStartSource === "compact"))
+    ? pickDisplayHint("working", existing, displayHint)
+    : null;
+
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);
     cancelCodexExitProbe(sessionId, "SessionEnd");
@@ -2700,7 +2747,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         resumeState: (existing && existing.resumeState) || null,
       });
     } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
+      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: continuationDisplayHint, ...base, resumeState: null });
     }
   } else if (ONESHOT_STATES.has(state)) {
     if (hasSubagentHoldEvidence(subagentTracker)) {
@@ -2723,7 +2770,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       Object.assign(existing, base);
       existing.state = "idle";
       existing.updatedAt = Date.now();
-      existing.displayHint = null;
+      existing.displayHint = continuationDisplayHint;
       existing.resumeState = null;
     } else {
       sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
@@ -2757,7 +2804,9 @@ function updateSession(sessionId, state, event, opts = {}) {
         resumeState: (existing && existing.resumeState) || null,
       });
     } else {
-      const dh = pickDisplayHint(state, existing, displayHint);
+      const dh = state === "idle"
+        ? continuationDisplayHint
+        : pickDisplayHint(state, existing, displayHint);
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
     }
   }
@@ -2905,7 +2954,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       setState(displayState, getSvgOverride(displayState));
       return;
     }
-    setState(state);
+    setState(state, state === "attention" && event === "Stop" ? completionVisual : null);
     return;
   }
 
@@ -3536,6 +3585,7 @@ function enableDoNotDisturb() {
   // consumers still receive the accepted turn boundary.
   stopWakePoll();
   if (ctx.miniMode) {
+    if (typeof ctx.cancelPendingMiniPeek === "function") ctx.cancelPendingMiniPeek(true);
     applyState("mini-sleep");
   } else {
     applyDndSleepState();

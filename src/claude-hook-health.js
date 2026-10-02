@@ -142,20 +142,52 @@ function findManagedStateCommandRecords(settings, eventName) {
   return { managed, unverified };
 }
 
-function findUsableEnvNodeCandidate(settings, validateOptions) {
+function findUsableEnvNodeCandidate(settings, validateOptions, resolveTrustedNodeCandidate) {
   const fsImpl = validateOptions.fs || nodeFs;
   const platform = validateOptions.platform || process.platform;
-  for (const candidate of findManagedClaudeEnvNodeBinCandidates(settings)) {
+  const isUsable = (candidate) => {
+    if (typeof candidate !== "string" || !candidate) return false;
     try {
-      if (platform === "win32") {
-        if (fsImpl.existsSync(candidate)) return candidate;
-        continue;
-      }
+      if (platform === "win32") return fsImpl.existsSync(candidate);
       fsImpl.accessSync(candidate, nodeFs.constants.X_OK);
-      return candidate;
-    } catch {}
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  // First prefer a Node the env-owned commands/settings already evidence.
+  for (const candidate of findManagedClaudeEnvNodeBinCandidates(settings)) {
+    if (isUsable(candidate)) return candidate;
+  }
+  // #874: when env evidence names no usable Node (CLAWD_NODE_BIN missing, bare
+  // `node`, or stale) but the host's normal resolver can still find a usable
+  // Node, treat the hook as migratable rather than stuck. The resolved path is
+  // only used to CLASSIFY migratable here — it is never serialized; the installer
+  // re-resolves and writes the absolute value during the actual repair. Require
+  // an absolute path so this verdict matches what the installer can migrate: a
+  // relative/bare value cannot canonicalize the env command (hooks/install.js).
+  if (typeof resolveTrustedNodeCandidate === "function") {
+    let trusted = null;
+    try {
+      trusted = resolveTrustedNodeCandidate();
+    } catch {
+      trusted = null;
+    }
+    if (isAbsoluteNodePath(trusted, platform) && isUsable(trusted)) return trusted;
   }
   return null;
+}
+
+// Platform-aware absolute-path test. On Windows a usable Node is either a
+// drive-letter path (C:\…, C:/…) or a UNC share (\\host\share); everything else
+// (bare `node`, `./node`, a relative fragment) cannot be migrated into a hook
+// command, so it must not count as a migratable candidate.
+function isAbsoluteNodePath(candidate, platform) {
+  if (typeof candidate !== "string" || !candidate) return false;
+  if (platform === "win32") {
+    return /^[a-zA-Z]:[\\/]/.test(candidate) || /^\\\\/.test(candidate);
+  }
+  return candidate.startsWith("/");
 }
 
 function pushIssue(issues, issue) {
@@ -262,6 +294,11 @@ function inspectEventCommands(commands, event, marker, expectedScriptPath, valid
  * @param {string[]} [options.coreEvents]
  * @param {string} [options.platform]
  * @param {object} [options.fs] — injected fs (existsSync at minimum)
+ * @param {() => (string|null)} [options.resolveTrustedNodeCandidate] — returns a
+ *   host-resolved absolute Node path (or null) used ONLY to classify an
+ *   env-indirected hook as migratable when env evidence names no usable Node.
+ *   This getter must be synchronous and spawn-free — it only reads a value the
+ *   caller resolved out-of-band (see claude-settings-watcher's cached candidate).
  */
 function inspectClaudeHookHealth(rawSettings, options = {}) {
   const platform = options.platform || process.platform;
@@ -349,7 +386,23 @@ function inspectClaudeHookHealth(rawSettings, options = {}) {
   let managedCoreEventCount = 0;
   const missingEvents = [];
   let hasUnverifiedEnvIndirection = false;
-  const usableEnvNodeCandidate = findUsableEnvNodeCandidate(parsed, validateOptions);
+  // Resolved lazily and memoized within this inspection: only an actual
+  // ownership-proven env-indirected hook (the branch below) needs to consult the
+  // injected trusted-Node getter, and memoizing keeps that getter to one call per
+  // inspection. A config with no env hook never reads it at all.
+  let envNodeCandidateResolved = false;
+  let envNodeCandidate = null;
+  const getUsableEnvNodeCandidate = () => {
+    if (!envNodeCandidateResolved) {
+      envNodeCandidateResolved = true;
+      envNodeCandidate = findUsableEnvNodeCandidate(
+        parsed,
+        validateOptions,
+        options.resolveTrustedNodeCandidate
+      );
+    }
+    return envNodeCandidate;
+  };
 
   for (const event of coreEvents) {
     const records = findManagedStateCommandRecords(parsed, event);
@@ -391,7 +444,7 @@ function inspectClaudeHookHealth(rawSettings, options = {}) {
         );
         continue;
       }
-      const migratable = !!usableEnvNodeCandidate;
+      const migratable = !!getUsableEnvNodeCandidate();
       pushIssue(issues, {
         code: migratable ? "env-hook-migratable" : "env-hook-node-unresolved",
         event,

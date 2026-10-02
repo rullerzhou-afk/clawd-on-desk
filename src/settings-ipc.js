@@ -288,6 +288,7 @@ function registerSettingsIpc(options = {}) {
     || (() => ({ status: "error", message: "text scale preview unavailable" }));
   const getTextScaleContext = options.getTextScaleContext
     || (() => ({ percent: 100 }));
+  const getSizeContext = options.getSizeContext || (() => null);
   const getAllAgents = requiredDependency(options.getAllAgents, "getAllAgents");
   const detectAgentInstallations = options.detectAgentInstallations || defaultDetectAgentInstallations;
   const getHookServerPort = options.getHookServerPort || (() => null);
@@ -581,6 +582,7 @@ function registerSettingsIpc(options = {}) {
   // the slider asks main for the committed value of the display the settings
   // window currently sits on.
   handle("settings:get-text-scale-context", () => getTextScaleContext());
+  handle("settings:get-size-context", () => getSizeContext());
   handle("settings:get-preview-sound-url", () => {
     try { return themeLoader.getPreviewSoundUrl(); }
     catch { return null; }

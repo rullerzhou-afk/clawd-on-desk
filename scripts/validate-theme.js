@@ -36,6 +36,7 @@ const {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   isPlainObject,
   hasNonEmptyArray,
@@ -309,7 +310,14 @@ const assetsDir = assetsOverride ? path.resolve(assetsOverride) : path.join(reso
 const assetsDirExists = fs.existsSync(assetsDir);
 check(assetsDirExists, `assets/ directory exists`);
 
-const referencedFiles = new Set(themeSchema.collectRequiredAssetFiles(raw));
+// Selectable-only idle visuals are optional at runtime. Check them below as
+// warnings, not as missing required visual assets.
+const referencedFiles = new Set(themeSchema.collectRequiredAssetFiles({
+  ...raw, idleVisualOptions: undefined,
+}));
+const idleVisualOptions = Object.prototype.hasOwnProperty.call(raw, "idleVisualOptions")
+  ? themeSchema.normalizeIdleVisualOptions(raw.idleVisualOptions, (message) => warn(false, message))
+  : [];
 let missingCount = 0;
 let presentCount = 0;
 
@@ -328,6 +336,14 @@ if (assetsDirExists) {
     console.log(`  ${PASS} All ${presentCount} referenced assets exist`);
   } else {
     console.log(`  ${FAIL} ${missingCount}/${referencedFiles.size} assets missing`);
+  }
+
+  for (const entry of idleVisualOptions) {
+    const file = entry.file;
+    let exists = false;
+    try { exists = fs.statSync(path.join(assetsDir, file)).isFile(); } catch {}
+    if (exists) referencedFiles.add(file);
+    else warn(false, `idleVisualOptions entry dropped: missing asset ${file}`);
   }
 
   // Check for orphan files (in assets/ but not referenced)
@@ -443,6 +459,14 @@ if (isPlainObject(raw.miniMode) && raw.miniMode.supported !== false) {
     check(
       raw.miniMode.states && Array.isArray(raw.miniMode.states[s]) && raw.miniMode.states[s].length > 0,
       `miniMode.supported=true requires miniMode.states.${s}`
+    );
+  }
+  for (const s of MINI_OPTIONAL_PEEK_STATES) {
+    if (!Object.prototype.hasOwnProperty.call(raw.miniMode.states || {}, s)) continue;
+    check(
+      Array.isArray(raw.miniMode.states[s]) && raw.miniMode.states[s].length > 0
+        && raw.miniMode.states[s].every((file) => typeof file === "string" && !!file),
+      `miniMode.states.${s} is a non-empty file array when declared`
     );
   }
 }
@@ -610,7 +634,15 @@ if (raw.variants !== undefined) {
 
       // Rule 3: asset existence (format-agnostic: svg/apng/gif)
       const variantAssets = collectVariantAssetFiles(variantSpec);
+      const variantIdleOptions = Object.prototype.hasOwnProperty.call(variantSpec, "idleVisualOptions")
+        ? themeSchema.normalizeIdleVisualOptions(variantSpec.idleVisualOptions, (message) => warn(false, `variant "${variantId}": ${message}`))
+        : [];
       if (assetsDirExists) {
+        for (const entry of variantIdleOptions) {
+          let exists = false;
+          try { exists = fs.statSync(path.join(assetsDir, entry.file)).isFile(); } catch {}
+          if (!exists) warn(false, `variant "${variantId}" idleVisualOptions entry dropped: missing asset ${entry.file}`);
+        }
         for (const file of variantAssets) {
           const basename = path.basename(file);
           const filePath = path.join(assetsDir, basename);

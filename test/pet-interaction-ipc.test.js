@@ -58,6 +58,7 @@ function createHarness(overrides = {}) {
     getCurrentState: () => state.currentState,
     getCurrentSvg: () => state.currentSvg,
     sendToRenderer: (...args) => calls.push(["sendToRenderer", ...args]),
+    refreshIdleVisualAfterDrag: overrides.refreshIdleVisualAfterDrag,
     settleVisual: (event, payload) => calls.push(["settleVisual", event.sender, payload]),
     recoverVisiblePetAfterRendererLoad: (event) => calls.push(["recoverVisiblePetAfterRendererLoad", event.sender]),
     setDragLocked: (value) => calls.push(["setDragLocked", value]),
@@ -343,6 +344,36 @@ test("pet interaction IPC skips drag-end clamp when mini snap starts", () => {
     ["clearDragSnapshot"],
     ["syncImeEditingPetDodge"],
   ]);
+});
+
+test("drag end refreshes the idle visual only after the final bounds are applied", () => {
+  let calls;
+  const harness = createHarness({
+    refreshIdleVisualAfterDrag: () => calls.push(["refreshIdleVisualAfterDrag"]),
+  });
+  calls = harness.calls;
+  harness.ipcMain.send("drag-lock", false);
+  assert.ok(!calls.some(([name]) => name === "refreshIdleVisualAfterDrag"));
+  harness.ipcMain.send("drag-end");
+  const refreshIndex = calls.findIndex(([name]) => name === "refreshIdleVisualAfterDrag");
+  assert.ok(refreshIndex > calls.findIndex(([name]) => name === "applyPetWindowBounds"));
+  assert.strictEqual(calls.filter(([name]) => name === "refreshIdleVisualAfterDrag").length, 1);
+});
+
+test("drag end does not refresh an idle visual during mini entry or without a window", () => {
+  for (const state of [{ miniMode: true }, { miniTransitioning: true }, { hasPetWindow: false }]) {
+    let refreshed = false;
+    const harness = createHarness({ state, refreshIdleVisualAfterDrag: () => { refreshed = true; } });
+    harness.ipcMain.send("drag-end");
+    assert.strictEqual(refreshed, false);
+  }
+  let refreshed = false;
+  const harness = createHarness({
+    checkMiniModeSnap: ({ state }) => { state.miniMode = true; },
+    refreshIdleVisualAfterDrag: () => { refreshed = true; },
+  });
+  harness.ipcMain.send("drag-end");
+  assert.strictEqual(refreshed, false);
 });
 
 test("pet interaction IPC does not persist when drag-end has no clamped bounds", () => {

@@ -106,6 +106,22 @@ describe("PR-history asset audit analysis", () => {
     for (const finding of report.findings) assert.strictEqual(finding.rule, "hash-sage-asset-in-history");
   });
 
+  it("fails any themes/whale-chan blob unconditionally", () => {
+    const report = audit.analyzePrHistoryAssets({
+      blobs: [
+        { path: "themes/whale-chan/theme.json", oid: "2".repeat(40), bytes: 10 },
+        { path: "themes/whale-chan/assets/whale-chan-idle.apng", oid: "3".repeat(40), bytes: 10 * 1024 * 1024 },
+      ],
+      policy: POLICY,
+      allowlist: [{ path: "themes/whale-chan/theme.json", oid: "2".repeat(40), bytes: 10, owner: "theme-runtime", reason: "nope" }],
+    });
+    assert.strictEqual(report.findings.length, 2);
+    for (const finding of report.findings) {
+      assert.strictEqual(finding.rule, "whale-chan-asset-in-history");
+      assert.strictEqual(finding.message, "themes/whale-chan/** must never appear in PR-reachable history");
+    }
+  });
+
   it("validates the base SHA strictly", () => {
     assert.strictEqual(audit.validateBaseSha("a".repeat(40)), "a".repeat(40));
     for (const bad of ["", "zz".repeat(20), "A".repeat(40), "a".repeat(39), null]) {

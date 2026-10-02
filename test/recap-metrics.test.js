@@ -100,10 +100,15 @@ describe("recap metric policies", () => {
     }), ["activity"]);
   });
 
-  it("does not claim per-tool support for compacted OpenCode-family streams", () => {
+  it("counts every OpenCode-family tool call now that tool events always reach /state", () => {
     for (const agentId of ["opencode", "mimocode"]) {
-      assert.strictEqual(AGENT_METRIC_POLICIES[agentId].toolCallEvents, null);
-      assert.deepStrictEqual(mapRecapMetrics({ agentId, event: "PreToolUse" }), ["activity"]);
+      assert.deepStrictEqual(AGENT_METRIC_POLICIES[agentId].toolCallEvents, ["PreToolUse"]);
+      assert.deepStrictEqual(mapRecapMetrics({ agentId, event: "PreToolUse" }), ["activity", "tool-call"]);
+      assert.deepStrictEqual(mapRecapMetrics({ agentId, event: "PostToolUse" }), ["activity"]);
+      assert.deepStrictEqual(mapRecapMetrics({ agentId, event: "Stop", completionAccepted: true }), [
+        "activity",
+        "turn-complete",
+      ]);
     }
   });
 

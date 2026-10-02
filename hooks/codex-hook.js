@@ -36,6 +36,7 @@ const {
   extractLastAssistantTextFromTranscript,
 } = require("./codex-assistant-output");
 const { readCodexThreadName } = require("./codex-session-index");
+const { isCodexMemoryWorkerPayload } = require("./codex-internal-worker");
 const {
   CODEX_DEFAULT_SESSION_ID,
   isCodexCliOriginator,
@@ -725,6 +726,19 @@ async function runCodexHook(payload, options = {}) {
         windowsProcessChain,
       });
     });
+  }
+
+  // Codex memory consolidation runs as an internal, ephemeral thread whose
+  // cwd is <CODEX_HOME>/memories(_v2). It has no transcript and upstream
+  // (openai/codex#40587) stops forwarding its Stop to user hooks, so a state
+  // event from it would open a "memories" ghost session that never ends. The
+  // payload carries no thread/session source, so cwd plus an empty transcript
+  // is the only identity available. Drop these state events entirely — no
+  // POST, no auto-start gate, no cold start. PermissionRequest is handled
+  // above and is deliberately not filtered: the worker's approval policy is
+  // Never, and a permission request must never be silently swallowed here.
+  if (isCodexMemoryWorkerPayload(payload, { env, platform })) {
+    return { body: null, posted: false, stdout: "" };
   }
 
   const postState = options.postState || postStateToRunningServer;

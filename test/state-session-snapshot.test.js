@@ -14,6 +14,7 @@ const {
   buildSessionSnapshot,
   getActiveSessionAliasKeys,
   sessionSnapshotSignature,
+  shouldAutoClearDetachedSession,
   sessionDisplayFolder,
   sessionDisplayTitle,
   normalizeTitle,
@@ -731,6 +732,16 @@ describe("state-session-snapshot builder", () => {
     });
   });
 
+  it("gives prompt expansion the translated user-prompt label", () => {
+    const entry = buildSessionSnapshotEntry("design", session("thinking", {
+      agentId: "claude-code",
+      recentEvents: [{ event: "UserPromptExpansion", state: "thinking", at: 1234 }],
+    }), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    assert.deepStrictEqual(entry.lastEvent, {
+      labelKey: "eventLabelUserPromptSubmit", rawEvent: "UserPromptExpansion", at: 1234,
+    });
+  });
+
   it("exposes focus target metadata for terminal and Codex Desktop sessions", () => {
     const rawCodexSessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
     const scopedCodexSessionId = makeSessionKey({
@@ -1273,5 +1284,48 @@ describe("state-session-snapshot builder", () => {
 
     assert.strictEqual(nova.sessions[0].agentName, "Nova AI");
     assert.notStrictEqual(sessionSnapshotSignature(nova), sessionSnapshotSignature(renamed));
+  });
+});
+
+describe("shouldAutoClearDetachedSession WSL guard", () => {
+  it("never probes a WSL session and keeps it visible even with an ended badge", () => {
+    for (const marker of [{ wslDistro: "Ubuntu" }, { host: "wsl:Ubuntu" }]) {
+      let probes = 0;
+      const hidden = shouldAutoClearDetachedSession(
+        {
+          state: "idle",
+          headless: false,
+          pidReachable: true,
+          sourcePid: 20,
+          ...marker,
+        },
+        "done",
+        {
+          sessionHudCleanupDetached: true,
+          isProcessAlive: () => { probes += 1; return false; },
+        }
+      );
+      assert.strictEqual(hidden, false);
+      assert.strictEqual(probes, 0);
+    }
+  });
+
+  it("still clears a local detached-ended session whose source is gone", () => {
+    let probes = 0;
+    const hidden = shouldAutoClearDetachedSession(
+      {
+        state: "idle",
+        headless: false,
+        pidReachable: true,
+        sourcePid: 20,
+      },
+      "done",
+      {
+        sessionHudCleanupDetached: true,
+        isProcessAlive: () => { probes += 1; return false; },
+      }
+    );
+    assert.strictEqual(hidden, true);
+    assert.strictEqual(probes, 1);
   });
 });

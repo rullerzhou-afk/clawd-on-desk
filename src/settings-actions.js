@@ -217,6 +217,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "qoderwork",
   "traecode",
   "qwenwork",
+  "minimax",
 ]);
 
 // ── updateRegistry ──
@@ -545,7 +546,17 @@ const updateRegistry = {
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
-  keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
+  keepSizeAcrossDisplays: {
+    validate: requireBoolean("keepSizeAcrossDisplays"),
+    effect(value, deps = {}) {
+      // Rebase size before this toggle commits, while the frozen pixels are
+      // still available to keep the slider and window in sync.
+      if (value === false && typeof deps.rebaseSizeToRealizedPixels === "function") {
+        deps.rebaseSizeToRealizedPixels();
+      }
+      return { status: "ok" };
+    },
+  },
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),

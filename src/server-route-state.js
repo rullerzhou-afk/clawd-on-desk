@@ -18,7 +18,7 @@ const {
   buildShadowComparison,
   processMetadataForState,
 } = require("./server-windows-process-metadata");
-const { stripRemoteProcessMetadata } = require("./remote-process-metadata");
+const { isWslSourced, stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
@@ -250,10 +250,14 @@ function handleStatePost(req, res, options) {
       const rawWtHwnd = normalizeHwndString(data.wt_hwnd ?? data.wtHwnd);
       const cwd = typeof data.cwd === "string" ? data.cwd : "";
       const rawAgentPid = data.agent_pid ?? data.claude_pid ?? data.cursor_pid;
+      // A WSL hook reports Linux PIDs that alias unrelated processes on this
+      // Windows host, so they are stripped exactly like Remote SSH metadata.
+      // `orcaPaneKey`, `cwd` and `host` are untouched by design — see
+      // remote-process-metadata.js.
+      const wslSourced = isWslSourced({ wslDistro: data.wsl_distro, host: data.host });
       // Stripped at the parse boundary rather than at the updateSession call so
       // that no downstream consumer (legacy metadata, the Windows chain gate,
-      // the codex user-input bubble) has to remember the rule. `orcaPaneKey`,
-      // `cwd` and `host` are untouched by design — see remote-process-metadata.js.
+      // the codex user-input bubble) has to remember the rule.
       const {
         sourcePid: source_pid,
         wtHwnd,
@@ -270,7 +274,15 @@ function handleStatePost(req, res, options) {
         editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,
         tmuxSocket: normalizeTmuxSocket(data.tmux_socket),
         tmuxClient: normalizeTmuxClient(data.tmux_client),
-      }, remoteProfile);
+      }, remoteProfile, wslSourced);
+      // Intentional exception to the WSL PID strip: per-session automation
+      // eligibility only strips Remote SSH, never WSL, to preserve the pre-fix
+      // user-visible automation. Its trust therefore ends on session timeout,
+      // not process exit (known gap, tracked).
+      const automationAgentPid = stripRemoteProcessMetadata(
+        { agentPid: Number.isFinite(rawAgentPid) && rawAgentPid > 0 ? Math.floor(rawAgentPid) : null },
+        remoteProfile
+      ).agentPid;
       const orcaPaneKey = normalizeOrcaPaneKey(data.orca_pane_key);
       const agentId = agentIdentity.agentId;
       const hasExplicitPermissionLifecycleSession = hasExplicitPermissionLifecycleSessionIdentity(
@@ -292,7 +304,7 @@ function handleStatePost(req, res, options) {
         hookSource: data.hook_source,
         codexOriginator: data.codex_originator,
         codexSource: data.codex_source,
-        agentPid,
+        agentPid: automationAgentPid,
       });
       const reportedSubagentId = agentId === "claude-code"
         ? normalizeSubagentMetadata(data.subagent_id, MAX_SUBAGENT_ID_LENGTH)
@@ -456,6 +468,11 @@ function handleStatePost(req, res, options) {
       // around the full updateSession lifecycle machine.
       const metadataOnly = data.metadata_only === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      const clearDshContextUsage = metadataOnly
+        && agentId === "deepseek-harness"
+        && hookSource === "dsh-plugin"
+        && Object.hasOwn(data, "context_usage")
+        && data.context_usage === null;
       // #406 completion-gate inputs from the Claude Stop hook. Counts / boolean
       // only — the hook never forwards task command or description text.
       const backgroundTasksCount = Number.isFinite(data.background_tasks_count)
@@ -478,7 +495,19 @@ function handleStatePost(req, res, options) {
         res.end();
         return;
       }
-      if (agentId === "deepseek-harness") {
+      if (agentId === "deepseek-harness" && metadataOnly && (
+        hookSource !== "dsh-plugin"
+        || !sessionIdentity.rawSessionId.startsWith("deepseek-harness:")
+      )) {
+        recordRequestHookEvent.droppedUnsupported();
+        res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
+        res.end();
+        return;
+      }
+      // Projection updates are not lifecycle events and may share an upstream
+      // seq with a mapped turn/tool event. Only the lifecycle path advances the
+      // DSH fence; metadata_only can annotate an existing session below.
+      if (agentId === "deepseek-harness" && !metadataOnly) {
         const sequenceResult = dshStateSequenceFence
           && typeof dshStateSequenceFence.accept === "function"
           ? dshStateSequenceFence.accept({
@@ -605,12 +634,20 @@ function handleStatePost(req, res, options) {
             metaUpdate.contextUsage = contextUsage;
             metaUpdate.contextUsageOrigin = resolveMetadataContextUsageOrigin(agentId, contextUsage);
           }
+          if (clearDshContextUsage) metaUpdate.clearContextUsage = true;
           if (model && localClaudeStatuslineMetadataAllowed) metaUpdate.model = model;
           // OpenCode title changes ride the same metadata-only channel (the
           // placeholder → real title swap arrives on session.updated, which
           // maps to no Clawd state). Not gated on the Claude telemetry flag —
           // it's not Claude statusline data.
           if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
+          // DSH metadata bypasses the lifecycle sequence fence, so it must
+          // only ever annotate DSH's own session. Pass the expected owner so
+          // updateSessionMetadata drops a colliding raw id owned by another
+          // agent instead of silently rewriting its title/usage.
+          if (agentId === "deepseek-harness" && Object.keys(metaUpdate).length > 0) {
+            metaUpdate.expectedAgentId = "deepseek-harness";
+          }
           if (Object.keys(metaUpdate).length > 0) {
             metadataAccepted = ctx.updateSessionMetadata(session_id || "default", metaUpdate) === true;
           }
@@ -865,7 +902,7 @@ function handleStatePost(req, res, options) {
         const pendingForSource = () => pendingForSessionAgent().filter(
           (perm) => (perm.subagentId || null) === subagentId
         );
-        // Native-fallback adapters (qwen-code, zcode, deepseek-harness) answer
+        // Native-fallback adapters (codex, qwen-code, zcode, deepseek-harness) answer
         // their hook with "{}"/no-decision when Clawd has no real user
         // decision, and the agent falls back to its own permission UI. For
         // them, a /state lifecycle sweep must NEVER fabricate a deny — the
@@ -873,7 +910,7 @@ function handleStatePost(req, res, options) {
         // keep the explicit deny: their hook transport treats the missing
         // answer as a denial of that tool call.
         const stateSweepBehaviorFor = (perm) => (
-          perm.isQwenCode || perm.isZcode || perm.isDsh ? "no-decision" : "deny"
+          perm.isCodex || perm.isQwenCode || perm.isZcode || perm.isDsh ? "no-decision" : "deny"
         );
         const resolveOnlyUnambiguous = (candidates, behaviorFor, message) => {
           if (candidates.length !== 1) {

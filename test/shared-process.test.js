@@ -7,6 +7,7 @@ const { PassThrough } = require("node:stream");
 const {
   getPlatformConfig,
   createPidResolver,
+  DEFAULT_AGENT_CMDLINE_NAMES,
   readStdinJsonDetailed,
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
@@ -228,6 +229,144 @@ describe("createPidResolver() — POSIX non-Node command-line probe", () => {
     } finally {
       cleanup();
     }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// createPidResolver() — default command-line process names
+// ═════════════════════════════════════════════════════════════════════════════
+
+// On Linux, current Node is not "node" to `ps -o comm=` unless it set
+// process.title: 23.8+ names its main thread "MainThread" (25.5+
+// "node-MainThread"), and Linux reports the main thread's name as the process
+// name. With only node/node.exe in the default, no adapter relying on it ever
+// ran its command-line check there (seen on Linux CI in PR #1049).
+describe("createPidResolver() — default command-line process names", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  it("lists every name of a node process that never set process.title, in lowercase", () => {
+    for (const name of ["node", "node.exe", "mainthread", "node-mainthread"]) {
+      assert.ok(DEFAULT_AGENT_CMDLINE_NAMES.includes(name), name);
+    }
+    for (const name of DEFAULT_AGENT_CMDLINE_NAMES) {
+      assert.strictEqual(name, name.toLowerCase(), `${name} can never match a lowercased basename`);
+    }
+    assert.ok(Object.isFrozen(DEFAULT_AGENT_CMDLINE_NAMES), "adapters spread it; none may change it");
+  });
+
+  // What Linux `ps -o comm=` prints for such a process: Node <= 23.7, 23.8–25.4,
+  // and >= 25.5.
+  for (const comm of ["node", "MainThread", "node-MainThread"]) {
+    it(`runs the command-line check for a Linux node process listed as ${comm}`, () => {
+      let commandProbes = 0;
+      const { mod, cleanup } = loadSharedProcessWithMock({
+        execFileSyncMock: (command, args) => {
+          const invocation = `${command} ${args.join(" ")}`;
+          if (invocation === "ps -o ppid= -p 700") return "1\n";
+          if (invocation === "ps -o comm= -p 700") return `${comm}\n`;
+          if (invocation === "ps -o command= -p 700") {
+            commandProbes++;
+            return "node /usr/lib/node_modules/@example/agent-cli/cli.js\n";
+          }
+          const err = new Error(`unexpected command: ${invocation}`);
+          err.code = "ENOENT";
+          throw err;
+        },
+        platform: "linux",
+      });
+      try {
+        const result = mod.createPidResolver({
+          ...LIVE_GATE,
+          platformConfig: mod.getPlatformConfig(),
+          startPid: 700,
+          agentCmdlineCheck: (cmdline) => cmdline.includes("@example/agent-cli"),
+        })();
+        assert.strictEqual(result.agentPid, 700);
+        assert.strictEqual(commandProbes, 1);
+      } finally {
+        cleanup();
+      }
+    });
+  }
+
+  // The same through the real `ps` and the Node running this suite, so Linux
+  // CI notices if Node renames its main thread again. The probe runs as a
+  // short `node <marker>.js`, keeping the marker near the front of
+  // `ps -o command=`, and without COLUMNS, which procps otherwise applies as
+  // the width of piped output.
+  it("finds a real node process that never set process.title by its command line", {
+    skip: process.platform === "win32",
+  }, () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const { spawnSync } = require("node:child_process");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cmdline-"));
+    const probe = `clawd-cmdline-probe-${process.pid}.js`;
+    fs.writeFileSync(path.join(dir, probe), [
+      `const sp = require(${JSON.stringify(path.join(__dirname, "..", "hooks", "shared-process.js"))});`,
+      "const { agentPid } = sp.createPidResolver({",
+      "  platformConfig: sp.getPlatformConfig(),",
+      "  startPid: process.pid,",
+      "  maxDepth: 1,",
+      `  agentCmdlineCheck: (cmdline) => cmdline.includes(${JSON.stringify(probe)}),`,
+      "})();",
+      "const comm = require(\"node:child_process\")",
+      "  .execFileSync(\"ps\", [\"-o\", \"comm=\", \"-p\", String(process.pid)], { encoding: \"utf8\" }).trim();",
+      "process.stdout.write(JSON.stringify({ pid: process.pid, agentPid, comm }));",
+    ].join("\n"));
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS; // a --title there would rename the process
+    delete env.COLUMNS;
+    try {
+      const child = spawnSync(process.execPath, [probe], { cwd: dir, encoding: "utf8", env, timeout: 10000 });
+      assert.strictEqual(child.status, 0, child.stderr);
+      const { pid, agentPid, comm } = JSON.parse(child.stdout);
+      assert.strictEqual(agentPid, pid,
+        `ps lists this node process as ${JSON.stringify(comm)}, which DEFAULT_AGENT_CMDLINE_NAMES lacks`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Passing agentCmdlineNames replaces the default, so an adapter that only
+  // means to add a name must spread the default back in; a hand-written or
+  // trimmed node list silently goes stale again on Linux. This is a text
+  // check, not a parser, so it accepts one shape and reports everything else:
+  // `agentCmdlineNames: new Set([..., ...DEFAULT_AGENT_CMDLINE_NAMES])`, where
+  // the brackets hold only plain string literals and the spread itself (one
+  // line or several, no comments). A shorthand property, a variable, or any
+  // other mention not in that shape (one in a comment included) is reported,
+  // not guessed at; deliberately disguised keys (a computed property name) are
+  // beyond a text check. The one exception is a probe deliberately scoped to a
+  // non-Node host process.
+  it("keeps every adapter that passes agentCmdlineNames on the shared node names", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const hooksDir = path.join(__dirname, "..", "hooks");
+    // WorkBuddy's check only matches its bundled macOS Electron task runner.
+    const scopedToNonNodeHost = new Set(["workbuddy-hook.js"]);
+    // The bracket contents: anything but "]" or a comment opener.
+    const setLiteral = /^agentCmdlineNames\s*:\s*new Set\(\[((?:(?!\/[/*])[^\]])*)\]\)/;
+    const stringLiteral = /^(?:"[^"\\\n]*"|'[^'\\\n]*')$/;
+    const spread = "...DEFAULT_AGENT_CMDLINE_NAMES";
+    const spreadsDefault = (contents) => {
+      const elements = contents.split(",").map((element) => element.trim());
+      if (elements[elements.length - 1] === "") elements.pop(); // trailing comma
+      return elements.includes(spread)
+        && elements.every((element) => element === spread || stringLiteral.test(element));
+    };
+    const stale = [];
+    for (const file of fs.readdirSync(hooksDir).sort()) {
+      if (!file.endsWith(".js") || file === "shared-process.js" || scopedToNonNodeHost.has(file)) continue;
+      const src = fs.readFileSync(path.join(hooksDir, file), "utf8");
+      for (const { index } of src.matchAll(/\bagentCmdlineNames\b/g)) {
+        const rest = src.slice(index);
+        const set = setLiteral.exec(rest);
+        if (!set || !spreadsDefault(set[1])) stale.push(`${file}: ${rest.split("\n", 1)[0].trim()}`);
+      }
+    }
+    assert.deepStrictEqual(stale, []);
   });
 });
 

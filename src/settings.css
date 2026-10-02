@@ -1362,6 +1362,15 @@ html, body {
 .bubble-policy-warning {
   color: var(--accent);
 }
+.size-readout.over-max {
+  color: var(--accent);
+}
+.size-over-max-hint {
+  color: var(--accent);
+}
+.size-over-max-hint[hidden] {
+  display: none;
+}
 .bubble-policy-controls {
   display: inline-flex;
   align-items: center;
@@ -5300,6 +5309,12 @@ html, body {
 .theme-official-offline-note {
   margin: 4px 0 12px;
   color: var(--text-secondary, #8a8a8a);
+}
+/* One wrapper per official card row so progress patches can rebuild just that
+   row. contents keeps the children participating in the footer's flex layout
+   exactly as if they had been appended directly. */
+.theme-official-controls {
+  display: contents;
 }
 .theme-official-note {
   flex: 0 0 100%;

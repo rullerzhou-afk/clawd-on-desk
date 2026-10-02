@@ -1,4 +1,4 @@
-const { formatDetail, formatReminderReason, truncate, parseMcpToolName, detectIrreversible } = window.ClawdBubbleFormat;
+const { formatDetail, formatReminderReason, truncate, parseMcpToolName, detectIrreversible, shouldScanIrreversibleCommand } = window.ClawdBubbleFormat;
 const card = document.getElementById("card");
 const toolPill = document.getElementById("toolPill");
 const toolPillText = document.getElementById("toolPillText");
@@ -88,6 +88,7 @@ const BUBBLE_STRINGS = {
     deny: "Deny",
     alwaysAllowBlanket: "Always Allow (blanket)",
     alwaysAllowBlanketTitle: "Warning: {agent}'s 'always' rule auto-approves every subsequent tool call of the same category in this session (including rm and similar destructive commands). The rule lives only in memory — restart {agent} to revoke.",
+    alwaysAllowBlanketTitleV2: "Warning: {agent}'s 'always' rule auto-approves every subsequent tool call of the same category in this session (including rm and similar destructive commands). The rule is kept in {agent}'s background service, so closing or restarting the {agent} terminal does not revoke it; it lasts until that background service restarts.",
     needsInput: "Needs Input",
     goToTerminal: "Go to Terminal",
     submitAnswer: "Submit Answer",
@@ -139,6 +140,7 @@ const BUBBLE_STRINGS = {
     deny: "\u62D2\u7EDD",
     alwaysAllowBlanket: "\u59CB\u7EC8\u5141\u8BB8\uFF08\u901A\u914D\uFF09",
     alwaysAllowBlanketTitle: "\u8B66\u544A\uFF1A{agent} \u7684 always \u89C4\u5219\u4F1A\u8BA9\u672C\u6B21 session \u5185\u4E0B\u4E00\u6B21\u6240\u6709\u540C\u7C7B\u5DE5\u5177\u8C03\u7528\u81EA\u52A8\u653E\u884C\uFF08\u5305\u62EC rm \u7B49\u5371\u9669\u547D\u4EE4\uFF09\u3002\u8BE5\u89C4\u5219\u53EA\u5728\u5185\u5B58\u4E2D\uFF0C\u91CD\u542F {agent} \u5373\u6062\u590D\u3002",
+    alwaysAllowBlanketTitleV2: "\u8B66\u544A\uFF1A{agent} \u7684 always \u89C4\u5219\u4F1A\u8BA9\u672C\u6B21 session \u5185\u4E4B\u540E\u6240\u6709\u540C\u7C7B\u5DE5\u5177\u8C03\u7528\u81EA\u52A8\u653E\u884C\uFF08\u5305\u62EC rm \u7B49\u5371\u9669\u547D\u4EE4\uFF09\u3002\u8BE5\u89C4\u5219\u4FDD\u5B58\u5728 {agent} \u7684\u540E\u53F0\u670D\u52A1\u4E2D\uFF0C\u5173\u95ED\u6216\u91CD\u5F00 {agent} \u7EC8\u7AEF\u4E0D\u4F1A\u64A4\u9500\uFF0C\u8981\u7B49\u540E\u53F0\u670D\u52A1\u91CD\u542F\u624D\u4F1A\u6E05\u9664\u3002",
     needsInput: "\u9700\u8981\u8F93\u5165",
     goToTerminal: "\u524D\u5F80\u7EC8\u7AEF",
     submitAnswer: "\u63D0\u4EA4\u56DE\u7B54",
@@ -190,6 +192,7 @@ const BUBBLE_STRINGS = {
     deny: "拒絕",
     alwaysAllowBlanket: "一律允許（全部）",
     alwaysAllowBlanketTitle: "警告：{agent} 的 'always' 規則會自動允許本次工作階段中後續所有同類工具呼叫（包含 rm 等破壞性命令）。此規則只儲存在記憶體中，重新啟動 {agent} 即可取消此規則。",
+    alwaysAllowBlanketTitleV2: "警告：{agent} 的 'always' 規則會自動允許本次工作階段中後續所有同類工具呼叫（包含 rm 等破壞性命令）。此規則儲存在 {agent} 的背景服務中，關閉或重新開啟 {agent} 終端不會取消，必須等到背景服務重新啟動才會清除。",
     needsInput: "需要回應",
     goToTerminal: "跳至終端機",
     submitAnswer: "送出答案",
@@ -241,6 +244,7 @@ const BUBBLE_STRINGS = {
     deny: "\uAC70\uBD80",
     alwaysAllowBlanket: "\uD56D\uC0C1 \uD5C8\uC6A9 (\uC804\uCCB4)",
     alwaysAllowBlanketTitle: "\uACBD\uACE0: {agent}\uC758 'always' \uADDC\uCE59\uC740 \uC774 \uC138\uC158\uC5D0\uC11C \uAC19\uC740 \uC885\uB958\uC758 \uC774\uD6C4 \uBAA8\uB4E0 \uB3C4\uAD6C \uD638\uCD9C\uC744 \uC790\uB3D9 \uC2B9\uC778\uD569\uB2C8\uB2E4. (rm \uAC19\uC740 \uD30C\uAD34\uC801 \uBA85\uB839 \uD3EC\uD568) \uC774 \uADDC\uCE59\uC740 \uBA54\uBAA8\uB9AC\uC5D0\uB9CC \uB0A8\uC73C\uBA70, {agent}\uB97C \uC7AC\uC2DC\uC791\uD558\uBA74 \uD574\uC81C\uB429\uB2C8\uB2E4.",
+    alwaysAllowBlanketTitleV2: "\uACBD\uACE0: {agent}\uC758 'always' \uADDC\uCE59\uC740 \uC774 \uC138\uC158\uC5D0\uC11C \uAC19\uC740 \uC885\uB958\uC758 \uC774\uD6C4 \uBAA8\uB4E0 \uB3C4\uAD6C \uD638\uCD9C\uC744 \uC790\uB3D9 \uC2B9\uC778\uD569\uB2C8\uB2E4(rm \uAC19\uC740 \uD30C\uAD34\uC801 \uBA85\uB839 \uD3EC\uD568). \uC774 \uADDC\uCE59\uC740 {agent}\uC758 \uBC31\uADF8\uB77C\uC6B4\uB4DC \uC11C\uBE44\uC2A4\uC5D0 \uC800\uC7A5\uB418\uBBC0\uB85C {agent} \uD130\uBBF8\uB110\uC744 \uB2EB\uAC70\uB098 \uB2E4\uC2DC \uC2DC\uC791\uD574\uB3C4 \uD574\uC81C\uB418\uC9C0 \uC54A\uC73C\uBA70, \uD574\uB2F9 \uBC31\uADF8\uB77C\uC6B4\uB4DC \uC11C\uBE44\uC2A4\uAC00 \uC7AC\uC2DC\uC791\uB418\uC5B4\uC57C \uC0AC\uB77C\uC9D1\uB2C8\uB2E4.",
     needsInput: "\uC785\uB825 \uD544\uC694",
     goToTerminal: "\uD130\uBBF8\uB110\uB85C \uC774\uB3D9",
     submitAnswer: "\uB2F5\uBCC0 \uC81C\uCD9C",
@@ -292,6 +296,7 @@ const BUBBLE_STRINGS = {
     deny: "拒否",
     alwaysAllowBlanket: "常に許可（包括）",
     alwaysAllowBlanketTitle: "警告: {agent} の 'always' ルールは、このセッション内で同じ種類の以後すべてのツール呼び出しを自動承認します（rm などの破壊的なコマンドを含む）。このルールはメモリ上だけに保存され、{agent} を再起動すると解除されます。",
+    alwaysAllowBlanketTitleV2: "警告: {agent} の 'always' ルールは、このセッション内で同じ種類の以後すべてのツール呼び出しを自動承認します（rm などの破壊的なコマンドを含む）。このルールは {agent} のバックグラウンドサービスに保存されるため、{agent} ターミナルを閉じたり再起動したりしても解除されず、バックグラウンドサービスが再起動するまで残ります。",
     needsInput: "入力が必要",
     goToTerminal: "ターミナルへ移動",
     submitAnswer: "回答を送信",
@@ -343,6 +348,7 @@ const BUBBLE_STRINGS = {
     deny: "Negar",
     alwaysAllowBlanket: "Sempre permitir (irrestrito)",
     alwaysAllowBlanketTitle: "Aviso: a regra 'sempre' do {agent} aprova automaticamente todas as chamadas seguintes de ferramenta da mesma categoria nesta sessão (incluindo rm e outros comandos destrutivos). A regra vive só na memória — reinicie o {agent} para revogá-la.",
+    alwaysAllowBlanketTitleV2: "Aviso: a regra 'sempre' do {agent} aprova automaticamente todas as chamadas seguintes de ferramenta da mesma categoria nesta sessão (incluindo rm e outros comandos destrutivos). A regra fica no serviço em segundo plano do {agent}, portanto fechar ou reiniciar o terminal do {agent} não a revoga; ela permanece até o serviço em segundo plano reiniciar.",
     needsInput: "Precisa de resposta",
     goToTerminal: "Ir para o terminal",
     submitAnswer: "Enviar resposta",
@@ -394,6 +400,7 @@ const BUBBLE_STRINGS = {
     deny: "Denegar",
     alwaysAllowBlanket: "Permitir siempre (sin restricciones)",
     alwaysAllowBlanketTitle: "Advertencia: la regla 'siempre' de {agent} aprueba automáticamente todas las llamadas posteriores a herramientas de la misma categoría durante esta sesión (incluidos rm y otros comandos destructivos). La regla solo se guarda en memoria; reinicia {agent} para revocarla.",
+    alwaysAllowBlanketTitleV2: "Advertencia: la regla 'siempre' de {agent} aprueba automáticamente todas las llamadas posteriores a herramientas de la misma categoría durante esta sesión (incluidos rm y otros comandos destructivos). La regla se guarda en el servicio en segundo plano de {agent}, así que cerrar o reiniciar la terminal de {agent} no la revoca; permanece hasta que ese servicio en segundo plano se reinicie.",
     needsInput: "Necesita una respuesta",
     goToTerminal: "Ir a la terminal",
     submitAnswer: "Enviar respuesta",
@@ -549,6 +556,43 @@ function revealCard() {
   card.classList.remove("hiding");
   card.classList.add("visible");
   scheduleBubbleHeightReport();
+}
+
+function renderIrreversibleBadge(data, isPlanReview = false) {
+  // Irreversible-action hint — display-only: routes the
+  // human's attention to destructive decisions. Allow/Deny semantics, the
+  // suggestion buttons, and the no-decision fallback are untouched. textContent only.
+  let hintInput = data.toolInput;
+  if (data.familyAgentId && shouldScanIrreversibleCommand(data.toolName)
+    && hintInput && !(typeof hintInput.command === "string" && hintInput.command)) {
+    if (typeof hintInput.resource === "string" && hintInput.resource) {
+      hintInput = { ...hintInput, command: hintInput.resource };
+    } else if (Array.isArray(hintInput.resources) && hintInput.resources.length > 0
+      && hintInput.resources.every((resource) => typeof resource === "string")) {
+      hintInput = { ...hintInput, command: hintInput.resources.join("\n") };
+    }
+  }
+  const irreversible = detectIrreversible(data.toolName, hintInput);
+  // A held card's reason is decided in the main process, which scanned the
+  // accepted request before display-preview truncation; the hint above scans
+  // data.toolInput, which IS that truncated copy. When the destructive part of a
+  // long command sits past the preview cap the two disagree, and the hold is the
+  // one that is right -- so it drives the badge instead of being filtered by the
+  // local scan. Still display-only: nothing here decides Allow or Deny.
+  const reminderTag = typeof data.reminderTag === "string" && data.reminderTag
+    ? data.reminderTag
+    : null;
+  if ((reminderTag || irreversible) && !isPlanReview) {
+    irreversibleBadge.textContent = "\u26A0 " + (reminderTag
+      ? bubbleText(data.lang, "reminderHeldHint", { reason: formatReminderReason(reminderTag, data.lang) })
+      : bubbleText(data.lang, "irreversibleHint"));
+    irreversibleBadge.setAttribute("data-reason", reminderTag || irreversible.tag);
+    irreversibleBadge.style.display = "";
+  } else {
+    irreversibleBadge.textContent = "";
+    irreversibleBadge.style.display = "none";
+    irreversibleBadge.removeAttribute("data-reason");
+  }
 }
 
 function resetBubbleContent() {
@@ -1302,6 +1346,7 @@ function show(data) {
       try { detail = JSON.stringify(input); } catch { detail = "(n/a)"; }
     }
     commandBlock.textContent = truncate(detail, 200);
+    renderIrreversibleBadge(data);
 
     btnAllow.textContent = bubbleText(data.lang, "allow");
     btnDeny.textContent = bubbleText(data.lang, "deny");
@@ -1324,7 +1369,13 @@ function show(data) {
       const btn = document.createElement("button");
       btn.className = "btn-suggestion";
       btn.textContent = bubbleText(data.lang, "alwaysAllowBlanket");
-      btn.title = bubbleText(data.lang, "alwaysAllowBlanketTitle", { agent: agentName });
+      // v2 keeps the rule in the host's background service, so its tooltip
+      // must not promise that restarting the terminal revokes it.
+      btn.title = bubbleText(
+        data.lang,
+        data.familyV2 ? "alwaysAllowBlanketTitleV2" : "alwaysAllowBlanketTitle",
+        { agent: agentName }
+      );
       btn.addEventListener("click", () => {
         disableAll();
         window.bubbleAPI.decide("family-always");
@@ -1448,30 +1499,7 @@ function show(data) {
   // Command block (textContent only — never innerHTML)
   commandBlock.textContent = formatDetail(data.toolName, data.toolInput, { isAntigravity: !!data.isAntigravity });
 
-  // Irreversible-action hint — display-only (like the MCP relabel above): routes the
-  // human's attention to destructive decisions. Allow/Deny semantics, the
-  // suggestion buttons, and the no-decision fallback are untouched. textContent only.
-  const irreversible = detectIrreversible(data.toolName, data.toolInput);
-  // A held card's reason is decided in the main process, which scanned the
-  // accepted request before display-preview truncation; the hint above scans
-  // data.toolInput, which IS that truncated copy. When the destructive part of a
-  // long command sits past the preview cap the two disagree, and the hold is the
-  // one that is right -- so it drives the badge instead of being filtered by the
-  // local scan. Still display-only: nothing here decides Allow or Deny.
-  const reminderTag = typeof data.reminderTag === "string" && data.reminderTag
-    ? data.reminderTag
-    : null;
-  if ((reminderTag || irreversible) && !isPlanReview) {
-    irreversibleBadge.textContent = "\u26A0 " + (reminderTag
-      ? bubbleText(data.lang, "reminderHeldHint", { reason: formatReminderReason(reminderTag, data.lang) })
-      : bubbleText(data.lang, "irreversibleHint"));
-    irreversibleBadge.setAttribute("data-reason", reminderTag || irreversible.tag);
-    irreversibleBadge.style.display = "";
-  } else {
-    irreversibleBadge.textContent = "";
-    irreversibleBadge.style.display = "none";
-    irreversibleBadge.removeAttribute("data-reason");
-  }
+  renderIrreversibleBadge(data, isPlanReview);
 
   // Button labels
   btnAllow.textContent = isPlanReview ? bubbleText(data.lang, "approve") : bubbleText(data.lang, "allow");

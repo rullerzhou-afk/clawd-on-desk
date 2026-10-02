@@ -393,18 +393,9 @@
       // so nothing after it is a command position. Without this, splitting on a
       // lone '&' invented one: `echo safe # & rm -rf x` runs only echo, and the
       // matcher reported a file-delete the shell never reaches.
-      // KNOWN MISS, and a deliberate one: a heredoc body is DATA, so separators
-      // inside it are not command positions and this splitter reports them as if
-      // they were. `;` already did that before a lone `&` was added here, so the
-      // class is pre-existing and `&` widens it. The direction is a false HOLD —
-      // a human glance, not an unreviewed deletion.
-      //
-      // An attempt to skip heredoc bodies was written and REVERTED: it turned a
-      // cheap failure into three expensive ones — a `;` on the opener's own line
-      // was swallowed, `<<E'OF'` parsed the delimiter as `E`, and `$((1<<2))`
-      // read an arithmetic left-shift as a heredoc opener. Each hid a command the
-      // shell runs. Doing this correctly needs real parsing, not a scan, and that
-      // is a bigger change than this one should carry.
+      // This splitter still reads a heredoc body as shell. One recognised
+      // message shape is taken out before it runs (messageHeredocView below);
+      // every other body reaches it unchanged, which errs toward a false HOLD.
       if (ch === "#" && atWordStart) {
         const nl = cmd.indexOf("\n", i);
         if (nl === -1) break;
@@ -712,6 +703,241 @@
     return { bodies: completed.map((entry) => entry.body), incomplete };
   }
 
+  // A commit or pull-request message written with a heredoc. This is the shape
+  // Claude Code uses for its own commits and pull requests:
+  //
+  //   git commit -m "$(cat <<'EOF'
+  //   fix: don't break (#123)
+  //   EOF
+  //   )"
+  //
+  // The splitter above reads that body as shell: the apostrophe opens a quote
+  // that never closes and `(#123)` opens a paren whose `)` sits behind a
+  // comment, so the request was held as scan-error.
+  //
+  // This is still a scanner, not a parser. It recognises one narrow shape and
+  // takes that body out before the splitter runs; everything else falls back
+  // to the old reading. The shape is a `$( … )` whose whole content is a bare
+  // `cat <<'DELIM'` -- a quoted delimiter, so nothing in the body expands, and
+  // no arguments or redirection, so nothing is written -- used as the message
+  // of a known git or gh subcommand (HEREDOC_MESSAGE_SLOT) that is not piped.
+  // Any other heredoc, a group or subshell, a shell keyword, or quoting the
+  // scan does not follow returns the command unchanged.
+  const HEREDOC_MESSAGE_SLOT = {
+    git: {
+      commit: { flags: ["-m", "-am", "--message"], inline: ["--message="] },
+      tag: { flags: ["-m", "--message"], inline: ["--message="] },
+      merge: { flags: ["-m", "--message"], inline: ["--message="] },
+    },
+    gh: {
+      pr: { verbs: ["create", "edit", "comment"], flags: ["-b", "--body", "-t", "--title"], inline: ["--body=", "--title="] },
+      issue: { verbs: ["create", "edit", "comment"], flags: ["-b", "--body", "-t", "--title"], inline: ["--body=", "--title="] },
+      release: { verbs: ["create", "edit"], flags: ["-n", "--notes", "-t", "--title"], inline: ["--notes=", "--title="] },
+    },
+  };
+  const MESSAGE_HEREDOC = /^\$\(cat[ \t]+<<[ \t]*'([A-Za-z0-9_.-]+)'[ \t]*\n/;
+  const MESSAGE_HEREDOC_GIVE_UP = new Set([
+    "{", "}", "!", "if", "then", "else", "elif", "fi", "while", "until", "for", "do", "done",
+    "case", "esac", "select", "function", "coproc", "time",
+  ]);
+
+  // The subcommand must be the word right after `git`/`gh`: a global option
+  // before it (`-c`, `-C`) or an unlisted subcommand, which may be an alias,
+  // is not a message slot. `words` are the finished words of the command,
+  // `current` the unquoted text of the word the substitution starts in.
+  function isHeredocMessageSlot(words, current) {
+    const bare = (index) => (words[index] && !words[index].quoted ? words[index].value : null);
+    const has = (object, key) => key !== null && Object.prototype.hasOwnProperty.call(object, key);
+    const program = has(HEREDOC_MESSAGE_SLOT, bare(0)) ? HEREDOC_MESSAGE_SLOT[bare(0)] : null;
+    const slot = program && has(program, bare(1)) ? program[bare(1)] : null;
+    if (!slot) return false;
+    if (slot.verbs && !slot.verbs.includes(bare(2))) return false;
+    if (current) return slot.inline.includes(current);
+    const last = words.length - 1;
+    return last >= (slot.verbs ? 3 : 2) && slot.flags.includes(bare(last));
+  }
+
+  function messageHeredocView(cmd) {
+    if (typeof cmd !== "string" || cmd.indexOf("<<") === -1) return cmd;
+    try {
+      return messageHeredocViewStrict(cmd);
+    } catch (_e) {
+      return cmd;
+    }
+  }
+
+  function messageHeredocViewStrict(cmd) {
+    const giveUp = () => { throw new Error("heredoc layout not recognised"); };
+    const cuts = [];
+    let pending = [];
+    let words = [];
+    let word = "";
+    let inWord = false;
+    let quoted = false;
+
+    function endWord() {
+      if (!inWord) return;
+      if (!quoted && !words.length && MESSAGE_HEREDOC_GIVE_UP.has(word)) giveUp();
+      words.push({ value: word, quoted });
+      word = "";
+      inWord = false;
+      quoted = false;
+    }
+
+    // A piped command's output may be run, so its message is not data.
+    function endCommand(piped) {
+      endWord();
+      if (!piped) cuts.push(...pending);
+      pending = [];
+      words = [];
+    }
+
+    // `i` is on `$(`; returns the index just past the substitution.
+    // `doubleQuoted` says whether the `$(` sits directly inside double quotes.
+    // Only there is the substitution's output unconditionally data: at the top
+    // level an unquoted `$( … )` is field-split and globbed, and zsh's
+    // GLOB_SUBST can run the expanded text as a glob qualifier. Cut the body
+    // only inside double quotes; otherwise give up and read the command the old
+    // way, which scans the body.
+    function substitution(i, doubleQuoted) {
+      const opener = MESSAGE_HEREDOC.exec(cmd.slice(i, i + 256));
+      if (!opener) {
+        const end = dollarSubstitutionEnd(cmd, i);
+        if (cmd.slice(i, end).includes("<<")) giveUp();
+        return end + 1;
+      }
+      const bodyStart = i + opener[0].length;
+      let pos = bodyStart;
+      for (;;) {
+        const nl = cmd.indexOf("\n", pos);
+        if (nl === -1) giveUp();
+        const line = cmd.slice(pos, nl);
+        pos = nl + 1;
+        if (line === opener[1]) break;
+        // bash 3.2 (macOS /bin/bash and /bin/sh) joins a body line that ends in
+        // a backslash to the next one even under a quoted delimiter, so `E\`
+        // then `OF` ends the heredoc early and the lines after it run. zsh and
+        // bash 5 keep it literal. Where the body ends depends on the shell, so
+        // read the command the old way. Any trailing backslash gives up, without
+        // counting them: the cost is a false hold, not a missed one.
+        if (line.endsWith("\\")) giveUp();
+      }
+      const close = /^[ \t\n]*\)/.exec(cmd.slice(pos));
+      if (!close) giveUp();
+      if (isHeredocMessageSlot(words, word)) {
+        if (doubleQuoted !== true) giveUp();
+        pending.push({ start: bodyStart, end: pos });
+      }
+      return pos + close[0].length;
+    }
+
+    function skipBacktick(i) {
+      const end = backtickEnd(cmd, i);
+      if (cmd.slice(i, end).includes("<<")) giveUp();
+      return end + 1;
+    }
+
+    function skipParam(i) {
+      const end = cmd.indexOf("}", i);
+      if (end === -1 || /['"`$<{(\n]/.test(cmd.slice(i + 2, end))) giveUp();
+      return end + 1;
+    }
+
+    // Inside double quotes a heredoc's output is still text, unless the
+    // expansion around it evaluates that text again. `$[ … ]` is arithmetic in
+    // bash and zsh, and in zsh `$name[ … ]` (also `$#name[`, `$@[`, `$$[` and
+    // so on) is a subscript evaluated the same way, so `a[$(rm …)]` in the body
+    // runs. Give up on any `$` that reaches a `[` with no separator in between,
+    // as the top level already does for `$[`. A name is not limited to ASCII:
+    // in a UTF-8 locale zsh also reads `$日本語[` or `$é[` as a subscript, so
+    // anything that is not whitespace, a quote, `$`, `\`, a brace, a paren or a
+    // bracket counts as part of the name. A `$` inside the run is tested on its
+    // own, which covers `$$[`. `$(( … ))` and `${ … }` give up in
+    // substitution() and skipParam().
+    const EVALUATED_SUBSCRIPT = /\$[^\s"'`$\\{}()[\]]*\[/y;
+    const evaluatedSubscriptAt = (i) => {
+      EVALUATED_SUBSCRIPT.lastIndex = i;
+      return EVALUATED_SUBSCRIPT.test(cmd);
+    };
+
+    function skipDouble(i) {
+      for (i++; i < cmd.length;) {
+        const ch = cmd[i];
+        // Inside double quotes the shell drops a backslash-newline, so
+        // `"$PWD\<newline>[` is `$PWD[` to zsh. Rather than rejoin the lines
+        // for the checks below, give up, as for a body line ending in `\`.
+        if (ch === "\\" && cmd[i + 1] === "\n") giveUp();
+        if (ch === "\\") i += 2;
+        else if (ch === '"') return i + 1;
+        else if (ch === "`") i = skipBacktick(i);
+        else if (ch === "$" && cmd[i + 1] === "(") i = substitution(i, true);
+        else if (ch === "$" && cmd[i + 1] === "{") i = skipParam(i);
+        else if (ch === "$" && evaluatedSubscriptAt(i)) giveUp();
+        else i++;
+      }
+      return giveUp();
+    }
+
+    for (let i = 0; i < cmd.length;) {
+      const ch = cmd[i];
+      const next = cmd[i + 1];
+      if (ch === "\\" && next === "\n") { i += 2; continue; }
+      if (ch === "\\" || ch === "'" || ch === '"' || ch === "`" || ch === "$") {
+        inWord = true;
+        quoted = true;
+        if (ch === "\\") i += 2;
+        else if (ch === "'") {
+          const end = cmd.indexOf("'", i + 1);
+          if (end === -1) giveUp();
+          i = end + 1;
+        } else if (ch === '"') i = skipDouble(i);
+        else if (ch === "`") i = skipBacktick(i);
+        else if (next === "(") i = substitution(i);
+        else if (next === "{") i = skipParam(i);
+        else if (next === "'" || next === "[") giveUp();
+        else i++;
+        continue;
+      }
+      if (ch === "#" && !inWord) {
+        const nl = cmd.indexOf("\n", i);
+        i = nl === -1 ? cmd.length : nl;
+        continue;
+      }
+      if (ch === " " || ch === "\t") { endWord(); i++; continue; }
+      if (ch === "\n" || ch === ";") { endCommand(false); i++; continue; }
+      if (ch === "&" && next !== ">") { endCommand(false); i += next === "&" ? 2 : 1; continue; }
+      if (ch === "|") {
+        endCommand(next !== "|");
+        i += next === "|" || next === "&" ? 2 : 1;
+        continue;
+      }
+      if (ch === "<" || ch === ">" || ch === "&") {
+        endWord();
+        if (next === "(") giveUp();
+        if (ch === "<" && next === "<") {
+          if (cmd[i + 2] !== "<") giveUp();
+          i += 3;
+          continue;
+        }
+        i += ">&|".includes(next || "x") ? 2 : 1;
+        continue;
+      }
+      if (ch === "(" || ch === ")") giveUp();
+      inWord = true;
+      word += ch;
+      i++;
+    }
+    endCommand(false);
+
+    let out = "";
+    let last = 0;
+    for (const cut of cuts) {
+      out += cmd.slice(last, cut.start);
+      last = cut.end;
+    }
+    return last === 0 ? cmd : out + cmd.slice(last);
+  }
+
   function segmentCommands(cmd, depth) {
     const out = [];
     let incomplete = false;
@@ -818,7 +1044,7 @@
         cmd = cmd.slice(0, SCAN_MAX);
         truncated = true;
       }
-      const scan = segmentCommands(cmd);
+      const scan = segmentCommands(messageHeredocView(cmd));
       truncated = truncated || scan.truncated;
       for (const seg of scan.segments) {
         for (const p of IRREVERSIBLE_PATTERNS) {

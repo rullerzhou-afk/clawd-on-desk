@@ -3,7 +3,7 @@
 const defaultFs = require("fs");
 const defaultPath = require("path");
 const { pathToFileURL: defaultPathToFileURL } = require("url");
-const { hasDedicatedRoamVisual } = require("./mirrored-files");
+const { hasDedicatedRoamVisual, getRightSideMirrorFiles } = require("./mirrored-files");
 
 function createThemeContext(theme, options = {}) {
   const fs = options.fs || defaultFs;
@@ -76,6 +76,7 @@ function createThemeContext(theme, options = {}) {
       glyphFlips: theme.miniMode ? theme.miniMode.glyphFlips : {},
       miniFlipAssets: theme.miniMode ? !!theme.miniMode.flipAssets : false,
       roamFlipAssets: !!theme.roamFlipAssets,
+      rightSideMirrorFiles: getRightSideMirrorFiles(theme),
       dragSvg: theme.reactions && theme.reactions.drag ? theme.reactions.drag.file : null,
       dragSvgs: theme.reactions && theme.reactions.drag ? {
         left: theme.reactions.drag.fileLeft || null,

@@ -17,6 +17,7 @@ function buildSettingsAgentOrderExports() {
     "qoderwork",
     "traecode",
     "qwenwork",
+    "minimax",
   ];
 
   const NON_COLLAPSIBLE_AGENT_PRIORITY = [

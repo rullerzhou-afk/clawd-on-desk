@@ -728,6 +728,8 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(themeJson.states.working[0], "codex-pet-running-loop.svg");
     assert.strictEqual(themeJson.states.notification[0], "codex-pet-waiting-loop.svg");
     assert.strictEqual(themeJson.states.error[0], "codex-pet-failed-loop.svg");
+    assert.strictEqual(themeJson.states.juggling[0], "codex-pet-waving-loop.svg");
+    assert.strictEqual(themeJson.jugglingTiers[0].file, "codex-pet-waving-loop.svg");
     assert.deepStrictEqual(themeJson.hitBoxes.default, { x: 0, y: 0, w: 192, h: 208 });
     assert.strictEqual(themeJson.reactions.drag.file, "codex-pet-running-loop.svg");
     assert.strictEqual(themeJson.reactions.drag.fileLeft, adapter.DIRECTIONAL_DRAG_WRAPPER);
@@ -751,6 +753,41 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
       left: adapter.DIRECTIONAL_DRAG_WRAPPER,
       right: adapter.DIRECTIONAL_DRAG_WRAPPER,
     });
+  });
+
+  it("gives juggling a pose of its own, and moves the tier with it", () => {
+    const root = makeTempDir();
+    const packageDir = copyFixturePackage(path.join(root, "pets"));
+    const validation = adapter.validateCodexPetPackage(packageDir);
+    const materialized = adapter.materializeCodexPetTheme(
+      validation.packageInfo,
+      path.join(root, "userData", "themes")
+    );
+    const themeJson = readJson(path.join(materialized.themeDir, "theme.json"));
+
+    // The defect: juggling rendered the same file as working, so "several
+    // subagents" and "a tool is running" were the same picture.
+    assert.notStrictEqual(
+      themeJson.states.juggling[0],
+      themeJson.states.working[0],
+      "juggling must not resolve to the working file"
+    );
+
+    // getJugglingSvg() reads jugglingTiers first and only falls back to the
+    // state file; juggling means at least one live subagent, so a minSessions:1
+    // tier always wins. Changing one site without the other is a no-op, and this
+    // assertion is what says so.
+    assert.strictEqual(themeJson.jugglingTiers[0].minSessions, 1);
+    assert.strictEqual(themeJson.jugglingTiers[0].file, themeJson.states.juggling[0]);
+    assert.notStrictEqual(themeJson.jugglingTiers[0].file, themeJson.workingTiers[0].file);
+
+    // The waving row is drawn by every pack; before this it was reachable only
+    // through the double-click reaction, and from no state at all.
+    const statesUsingWavingLoop = Object.entries(themeJson.states)
+      .filter(([, files]) => Array.isArray(files) && files.includes("codex-pet-waving-loop.svg"))
+      .map(([state]) => state);
+    assert.deepStrictEqual(statesUsingWavingLoop, ["juggling"]);
+    assert.deepStrictEqual(themeJson.reactions.double.files, ["codex-pet-waving-once.svg"]);
   });
 
   it("does not overwrite unmanaged theme IDs and keeps managed suffixes stable", () => {
@@ -862,7 +899,7 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(fs.existsSync(wrapperPath), true);
   });
 
-  it("upgrades a suffixed v5 managed theme to v6 without reallocating its id", () => {
+  it("upgrades a suffixed v5 managed theme to v7 without reallocating its id", () => {
     const root = makeTempDir();
     const petsDir = path.join(root, "pets");
     copyFixturePackage(petsDir, "tiny-atlas-png");
@@ -888,13 +925,38 @@ describe("codex-pet-adapter wrapper generation and materialization", () => {
     assert.strictEqual(upgraded.updated, 1);
     assert.strictEqual(upgraded.themes[0].themeId, themeId);
     assert.strictEqual(fs.readFileSync(path.join(unmanagedDir, "theme.json"), "utf8"), "{\"name\":\"User Theme\"}\n");
-    assert.strictEqual(readJson(markerPath).adapterVersion, 6);
+    assert.strictEqual(readJson(markerPath).adapterVersion, 7);
     assert.strictEqual(fs.existsSync(path.join(assetsDir, adapter.DIRECTIONAL_DRAG_WRAPPER)), true);
     assert.strictEqual(fs.existsSync(path.join(assetsDir, "codex-pet-running-left-loop.svg")), false);
     assert.strictEqual(fs.existsSync(path.join(assetsDir, "codex-pet-running-right-loop.svg")), false);
     const themeJson = readJson(path.join(themeDir, "theme.json"));
     assert.strictEqual(themeJson.reactions.drag.fileLeft, adapter.DIRECTIONAL_DRAG_WRAPPER);
     assert.strictEqual(themeJson.reactions.drag.fileRight, adapter.DIRECTIONAL_DRAG_WRAPPER);
+  });
+
+  it("PR #1022 follow-up: upgrades a v6 pet to the waving juggling pose", () => {
+    const root = makeTempDir();
+    const petsDir = path.join(root, "pets");
+    copyFixturePackage(petsDir, "tiny-atlas-png");
+    const userDataDir = path.join(root, "userData");
+    const first = adapter.syncCodexPetThemes({ codexPetsDir: petsDir, userDataDir });
+    const themeDir = path.join(userDataDir, "themes", first.themes[0].themeId);
+    const markerPath = path.join(themeDir, adapter.MARKER_FILENAME);
+    const themePath = path.join(themeDir, "theme.json");
+    const marker = readJson(markerPath);
+    marker.adapterVersion = 6;
+    writeJson(markerPath, marker);
+    const theme = readJson(themePath);
+    theme.states.juggling = ["codex-pet-running-loop.svg"];
+    theme.jugglingTiers[0].file = "codex-pet-running-loop.svg";
+    writeJson(themePath, theme);
+
+    const upgraded = adapter.syncCodexPetThemes({ codexPetsDir: petsDir, userDataDir });
+    assert.strictEqual(upgraded.updated, 1);
+    assert.strictEqual(readJson(markerPath).adapterVersion, 7);
+    const refreshed = readJson(themePath);
+    assert.strictEqual(refreshed.states.juggling[0], "codex-pet-waving-loop.svg");
+    assert.strictEqual(refreshed.jugglingTiers[0].file, "codex-pet-waving-loop.svg");
   });
 
   it("caches PNG unused-cell validation for unchanged startup syncs", () => {

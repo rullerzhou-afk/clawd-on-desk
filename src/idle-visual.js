@@ -11,9 +11,12 @@ function listIdleVisualOptions(theme) {
   const poolFiles = Array.isArray(theme.idleAnimations)
     ? theme.idleAnimations.map((entry) => entry && entry.file)
     : [];
+  const selectableFiles = Array.isArray(theme.idleVisualOptions)
+    ? theme.idleVisualOptions.map((entry) => entry && entry.file)
+    : [];
   const options = [];
   const seen = new Set();
-  for (const file of [...idleFiles, ...poolFiles]) {
+  for (const file of [...idleFiles, ...poolFiles, ...selectableFiles]) {
     if (typeof file !== "string" || !file || seen.has(file)) continue;
     seen.add(file);
     options.push({ file, isThemeDefault: file === idleFiles[0] });

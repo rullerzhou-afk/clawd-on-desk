@@ -824,6 +824,118 @@ describe("server-route-permission POST", () => {
     });
   });
 
+  it("strips WSL permission process metadata without changing Codex automation eligibility", async () => {
+    const sessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      source_pid: 456,
+      agent_pid: 456,
+      pid_chain: [789, 456, -1],
+      editor: "cursor",
+      tmux_socket: "/tmp/tmux-1000/work",
+      tmux_client: "/dev/pts/7",
+      orca_pane_key: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/repo",
+      wsl_distro: "Ubuntu",
+      host: "wsl:Ubuntu",
+      platform: "cli",
+      model: "gpt-5.4",
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+      hook_source: "codex-official",
+    }));
+
+    const opts = res.ctx.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid ?? null, null);
+    assert.strictEqual(opts.agentPid ?? null, null);
+    assert.strictEqual(opts.pidChain ?? null, null);
+    assert.strictEqual(opts.editor ?? null, null);
+    assert.strictEqual(opts.tmuxSocket ?? null, null);
+    assert.strictEqual(opts.tmuxClient ?? null, null);
+    assert.strictEqual(opts.orcaPaneKey, "8ce1fff7-tab:9813824b-leaf");
+    assert.strictEqual(opts.cwd, "/repo");
+    assert.strictEqual(opts.host, "wsl:Ubuntu");
+    assert.deepStrictEqual(opts.sessionAutomationIdentity, {
+      eligible: true,
+      reason: "eligible",
+    });
+
+    assert.ok(res.ctx.pendingPermissions[0], "the WSL request must produce a permission entry");
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.sourcePid ?? null, null);
+    assert.strictEqual(entry.agentPid ?? null, null);
+    assert.strictEqual(entry.pidChain ?? null, null);
+    assert.deepStrictEqual(entry.sessionAutomationIdentity, {
+      eligible: true,
+      reason: "eligible",
+    });
+  });
+
+  it("keeps a WSL Codex interactive subagent eligible for global auto-approval", async () => {
+    const sessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca778";
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+      source_pid: 456,
+      agent_pid: 456,
+      pid_chain: [789, 456, -1],
+      wsl_distro: "Ubuntu",
+      host: "wsl:Ubuntu",
+    }));
+
+    assert.ok(res.ctx.pendingPermissions[0], "the WSL subagent request must produce a permission entry");
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.codexInteractiveSubagent, true);
+    assert.deepStrictEqual(entry.sessionAutomationIdentity, {
+      eligible: true,
+      reason: "eligible",
+    });
+    assert.strictEqual(entry.sourcePid ?? null, null);
+    assert.strictEqual(entry.agentPid ?? null, null);
+    assert.strictEqual(entry.pidChain ?? null, null);
+  });
+
+  it("strips WSL process metadata for the qwen-code permission builder", async () => {
+    const res = await callPermissionPost(JSON.stringify({
+      agent_id: "qwen-code",
+      session_id: "qwen-code:wsl-session",
+      tool_name: "Bash",
+      tool_input: { command: "ls" },
+      source_pid: 111,
+      agent_pid: 222,
+      pid_chain: [333, 222, -1],
+      tmux_socket: "/tmp/tmux-1000/work",
+      tmux_client: "/dev/pts/7",
+      orca_pane_key: "8ce1fff7-tab:9813824b-leaf",
+      cwd: "/repo",
+      wsl_distro: "Ubuntu",
+    }));
+
+    const opts = res.ctx.calls.updateSession[0][3];
+    assert.strictEqual(opts.sourcePid ?? null, null);
+    assert.strictEqual(opts.agentPid ?? null, null);
+    assert.strictEqual(opts.pidChain ?? null, null);
+    assert.strictEqual(opts.tmuxSocket ?? null, null);
+    assert.strictEqual(opts.tmuxClient ?? null, null);
+    assert.strictEqual(opts.orcaPaneKey, "8ce1fff7-tab:9813824b-leaf");
+    assert.strictEqual(opts.cwd, "/repo");
+
+    assert.ok(res.ctx.pendingPermissions[0], "the WSL request must produce a permission entry");
+    const entry = res.ctx.pendingPermissions[0];
+    assert.strictEqual(entry.sourcePid ?? null, null);
+    assert.strictEqual(entry.agentPid ?? null, null);
+    assert.strictEqual(entry.pidChain ?? null, null);
+  });
+
   it("strips Hermes permission process metadata on the profile-bound ingress", async () => {
     const sessionId = "hermes:01HQABCD";
     const body = JSON.stringify({

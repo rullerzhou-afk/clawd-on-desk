@@ -441,12 +441,29 @@ function classifyBody(body, options = {}) {
       state: "working",
       validForMs: disposition.kind === "debounce" ? disposition.debounceMs : 0,
       terminal: false,
+      // A debounce Stop (background tasks plus a final reply) is a completed
+      // turn: the live state machine closes it after the quiet window and the
+      // lease stays provisional. History records it as ended.
+      provisionalCompletion: disposition.kind === "debounce",
       // A typed background-subagent snapshot is live evidence for this process,
       // but a Stop hook must not turn that one observation into an unbounded
       // startup-recovery lease. Preserve a lease written by earlier sustained
       // lifecycle traffic byte-for-byte; create or refresh nothing when the
       // typed count is the only reason this Stop became a hard hold.
       preserveExistingEvidence: disposition.kind === "hold" && baseDisposition.kind !== "hold",
+    };
+  }
+  if (body.event === "SubagentStop") {
+    // A finishing subagent is not new work. Claude often sends one a few
+    // seconds after the parent's Stop (#1060), so it may only settle a turn
+    // that is still durably active, never reopen a closed or provisional one.
+    // It keeps the activity clock and leaves a thinking/working lease untouched.
+    return {
+      active: true,
+      state: "working",
+      terminal: false,
+      requireActiveExisting: true,
+      subagentStop: true,
     };
   }
   if (SUSTAINED_STATES.has(body.state)) return { active: true, state: body.state, terminal: false };
@@ -486,6 +503,10 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
     }
     return { written: false, reason: "preserved-existing-evidence", filePath, record: existing };
   }
+  if (classified.requireActiveExisting === true) {
+    const existingPath = getLeaseFilePath(agentId, sessionId, { recoveryDir: getRecoveryDir(options) });
+    if (!existingPath || !fs.existsSync(existingPath)) return { written: false, reason: "no-active-evidence" };
+  }
   const dir = ensureRecoveryDir(options);
   const filePath = dir ? getLeaseFilePath(agentId, sessionId, { recoveryDir: dir }) : null;
   if (!filePath) return { written: false, reason: "path" };
@@ -501,12 +522,24 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
   if (!lock) return { written: false, reason: "locked" };
   try {
     const existing = readLeaseFile(filePath);
+    if (classified.requireActiveExisting === true
+      && (!existing || !existing.active || existing.validUntil !== null)) {
+      return { written: false, reason: "no-active-evidence" };
+    }
     const observedAt = Number.isFinite(options.eventAt) && options.eventAt > 0 ? options.eventAt : Date.now();
     // A half-millisecond terminal rank makes Stop/SessionEnd win ties between
     // async hook processes while still allowing same-tick SessionStart ->
     // UserPromptSubmit to become active.
     const eventAt = observedAt + (classified.terminal ? 0.5 : 0);
     if (existing && existing.eventAt > eventAt) return { written: false, reason: "older-event" };
+    // A SubagentStop is closing evidence, not new activity, so it may only
+    // settle a turn that was tracking concurrency. Thinking/working rows stay
+    // byte-for-byte, matching the live state machine's "subagent-stop keep".
+    if (classified.subagentStop === true && existing.state !== "juggling") {
+      return { written: false, reason: "nothing-to-settle" };
+    }
+    // Settling keeps the existing clock; only a genuinely new event may move it.
+    const recordEventAt = classified.subagentStop === true ? existing.eventAt : eventAt;
     const pid = isPositivePid(body.agent_pid)
       ? Math.floor(body.agent_pid)
       : (existing && existing.pid) || null;
@@ -547,8 +580,8 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
       sessionId,
       active: classified.active,
       state: classified.state,
-      eventAt,
-      validUntil: classified.validForMs > 0 ? eventAt + classified.validForMs : null,
+      eventAt: recordEventAt,
+      validUntil: classified.validForMs > 0 ? recordEventAt + classified.validForMs : null,
       pid,
       sourcePid,
       processStartIdentity: processStartIdentity || null,
@@ -564,7 +597,9 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
     // Every deletion path locks and re-reads, so pruning after release remains
     // safe if another hook updates the record concurrently.
     releaseLeaseLock(lock);
-    pruneRecoveryLeaseFiles(dir, { now: eventAt, skipFilePath: filePath });
+    // Prune on this observation's clock; a settled record may retain an older
+    // eventAt than the write itself.
+    pruneRecoveryLeaseFiles(dir, { now: observedAt, skipFilePath: filePath });
     return { written: true, filePath, record };
   } catch {
     return { written: false, reason: "write-failed" };

@@ -217,6 +217,168 @@ describe("server-route-state POST", () => {
     assert.deepStrictEqual(late.calls.updateSession, []);
   });
 
+  it("accepts DSH projection metadata without consuming a lifecycle event sequence", async () => {
+    const fence = createDshStateSequenceFence();
+    const metadataCalls = [];
+    const common = {
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: "deepseek-harness:projected",
+    };
+    const post = (body) => callStatePost(JSON.stringify({ ...common, ...body }), {
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
+      options: { dshStateSequenceFence: fence },
+    });
+    const started = await post({ event: "SessionStart", state: "idle", session_seq: 0 });
+    const metadata = await post({
+      metadata_only: true,
+      session_title: "Fix DSH integration",
+      context_usage: { used: 78, limit: 100, percent: 78 },
+    });
+    const event = await post({ event: "UserPromptSubmit", state: "thinking", event_seq: 0 });
+    assert.strictEqual(started.statusCode, 200);
+    assert.strictEqual(metadata.statusCode, 204);
+    assert.strictEqual(metadata.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+    assert.strictEqual(metadata.calls.updateSession.length, 0);
+    assert.deepStrictEqual(metadataCalls[0][1], {
+      sessionTitle: "Fix DSH integration",
+      contextUsage: { used: 78, limit: 100, percent: 78 },
+      contextUsageOrigin: null,
+      expectedAgentId: "deepseek-harness",
+    });
+    assert.strictEqual(event.statusCode, 200);
+    assert.strictEqual(fence.snapshot(common.session_id).lastEventSeq, 0);
+  });
+
+  it("rejects DSH projection metadata outside the plugin's canonical session namespace", async () => {
+    const metadataCalls = [];
+    const post = (body) => callStatePost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      metadata_only: true,
+      session_title: "Invalid",
+      ...body,
+    }), {
+      ctx: { updateSessionMetadata: acceptedMetadataSpy(metadataCalls) },
+      options: { dshStateSequenceFence: createDshStateSequenceFence() },
+    });
+    const foreignSource = await post({ hook_source: "external", session_id: "deepseek-harness:s1" });
+    const wrongNamespace = await post({ hook_source: "dsh-plugin", session_id: "codex:s1" });
+    assert.strictEqual(foreignSource.statusCode, 204);
+    assert.strictEqual(wrongNamespace.statusCode, 204);
+    assert.deepStrictEqual(metadataCalls, []);
+  });
+
+  it("DSH projection metadata annotates an existing session without creating a ghost or extending activity", async () => {
+    const api = makeMetadataStateRuntime();
+    const rawId = "deepseek-harness:observed";
+    const sessionId = localSessionKey(rawId);
+    const post = (fields = {}) => callStatePost(JSON.stringify({
+      agent_id: "deepseek-harness",
+      hook_source: "dsh-plugin",
+      session_id: rawId,
+      metadata_only: true,
+      session_title: "DSH task",
+      context_usage: { used: 78, limit: 100, percent: 78 },
+      ...fields,
+    }), {
+      ctx: { updateSessionMetadata: api.updateSessionMetadata },
+      options: { dshStateSequenceFence: createDshStateSequenceFence() },
+    });
+    try {
+      const unknown = await post();
+      assert.strictEqual(unknown.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
+      assert.strictEqual(api.sessions.size, 0);
+
+      api.updateSession(sessionId, "idle", "SessionStart", {
+        agentId: "deepseek-harness", profileId: "local", rawSessionId: rawId,
+      });
+      const before = api.sessions.get(sessionId).updatedAt;
+      const accepted = await post();
+      const session = api.sessions.get(sessionId);
+      assert.strictEqual(accepted.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      assert.strictEqual(session.sessionTitle, "DSH task");
+      assert.deepStrictEqual(session.contextUsage, { used: 78, limit: 100, percent: 78 });
+      assert.strictEqual(session.updatedAt, before);
+      assert.strictEqual(session.state, "idle");
+
+      const unavailable = await post({ session_title: undefined, context_usage: null });
+      assert.strictEqual(unavailable.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      assert.strictEqual(session.contextUsage, null);
+      assert.strictEqual(session.updatedAt, before);
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("drops DSH projection metadata when the raw id belongs to another agent's session", async () => {
+    const api = makeMetadataStateRuntime();
+    const rawId = "deepseek-harness:collision";
+    const sessionId = localSessionKey(rawId);
+    const post = (body, ctx = { updateSessionMetadata: api.updateSessionMetadata }) => callStatePost(
+      JSON.stringify({
+        agent_id: "deepseek-harness",
+        hook_source: "dsh-plugin",
+        session_id: rawId,
+        metadata_only: true,
+        ...body,
+      }),
+      {
+        ctx,
+        options: { dshStateSequenceFence: createDshStateSequenceFence() },
+      },
+    );
+    try {
+      // A different agent owns a session whose raw id happens to start with
+      // DSH's namespace. DSH metadata must not be able to annotate it.
+      api.updateSession(sessionId, "working", "PreToolUse", {
+        agentId: "codex",
+        profileId: "local",
+        rawSessionId: rawId,
+      });
+      api.updateSessionMetadata(sessionId, {
+        sessionTitle: "codex owns this",
+        contextUsage: { used: 1, limit: 10, percent: 10 },
+      });
+      const collision = api.sessions.get(sessionId);
+      const beforeTitle = collision.sessionTitle;
+      const beforeUsage = collision.contextUsage;
+      const rejected = await post({
+        session_title: "DSH takeover",
+        context_usage: { used: 78, limit: 100, percent: 78 },
+      });
+      assert.strictEqual(rejected.statusCode, 204);
+      assert.strictEqual(rejected.headers[CLAWD_METADATA_ACCEPTED_HEADER], undefined);
+      assert.strictEqual(collision.sessionTitle, beforeTitle);
+      assert.deepStrictEqual(collision.contextUsage, beforeUsage);
+
+      // DSH's own session on the same namespace is still annotated.
+      const dshRaw = "deepseek-harness:own";
+      const dshKey = localSessionKey(dshRaw);
+      api.updateSession(dshKey, "idle", "SessionStart", {
+        agentId: "deepseek-harness",
+        profileId: "local",
+        rawSessionId: dshRaw,
+      });
+      const accepted = await callStatePost(JSON.stringify({
+        agent_id: "deepseek-harness",
+        hook_source: "dsh-plugin",
+        session_id: dshRaw,
+        metadata_only: true,
+        session_title: "DSH own",
+        context_usage: { used: 78, limit: 100, percent: 78 },
+      }), {
+        ctx: { updateSessionMetadata: api.updateSessionMetadata },
+        options: { dshStateSequenceFence: createDshStateSequenceFence() },
+      });
+      assert.strictEqual(accepted.headers[CLAWD_METADATA_ACCEPTED_HEADER], "1");
+      const dshSession = api.sessions.get(dshKey);
+      assert.strictEqual(dshSession.sessionTitle, "DSH own");
+      assert.deepStrictEqual(dshSession.contextUsage, { used: 78, limit: 100, percent: 78 });
+    } finally {
+      api.cleanup();
+    }
+  });
+
   it("fails DSH state closed when its sequence fence or required watermark is unavailable", async () => {
     const body = {
       agent_id: "deepseek-harness",
@@ -847,6 +1009,133 @@ describe("server-route-state POST", () => {
     const local = await callStatePost(body);
     assert.strictEqual(local.calls.userInputShown[0].sourcePid, 4242);
     assert.strictEqual(local.calls.userInputShown[0].agentPid, 4243);
+  });
+
+  it("strips WSL process metadata from state updates in both marker forms", async () => {
+    const base = {
+      state: "working",
+      session_id: "sid-wsl",
+      event: "PreToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      source_pid: 4242,
+      agent_pid: 4243,
+      pid_chain: [1, 4242, 4243],
+      editor: "cursor",
+      tmux_socket: "/tmp/tmux-1000/work",
+      tmux_client: "/dev/pts/7",
+      orca_pane_key: "tab-9:leaf-3",
+      cwd: "/home/user/repo",
+      wt_hwnd: "123456",
+    };
+    const processFields = (res) => {
+      const opts = res.calls.updateSession[0][3];
+      return {
+        sourcePid: opts.sourcePid,
+        agentPid: opts.agentPid,
+        pidChain: opts.pidChain,
+        editor: opts.editor,
+        tmuxSocket: opts.tmuxSocket,
+        tmuxClient: opts.tmuxClient,
+        orcaPaneKey: opts.orcaPaneKey,
+        cwd: opts.cwd,
+        wtHwnd: opts.wtHwnd,
+      };
+    };
+    const strippedFields = {
+      sourcePid: null,
+      agentPid: null,
+      pidChain: null,
+      editor: null,
+      tmuxSocket: null,
+      tmuxClient: null,
+      // Untouched by the gate: opaque labels, not handles on a local process.
+      orcaPaneKey: "tab-9:leaf-3",
+      cwd: "/home/user/repo",
+      wtHwnd: null,
+    };
+
+    const byDistro = await callStatePost(JSON.stringify({ ...base, wsl_distro: "Ubuntu" }));
+    assert.strictEqual(byDistro.statusCode, 200);
+    assert.deepStrictEqual(processFields(byDistro), strippedFields);
+    assert.strictEqual(byDistro.calls.updateSession[0][3].wslDistro, "Ubuntu");
+    assert.strictEqual(byDistro.calls.updateSession[0][3].host, null);
+
+    const byHost = await callStatePost(JSON.stringify({ ...base, host: "wsl:Ubuntu" }));
+    assert.strictEqual(byHost.statusCode, 200);
+    assert.deepStrictEqual(processFields(byHost), strippedFields);
+    assert.strictEqual(byHost.calls.updateSession[0][3].host, "wsl:Ubuntu");
+    assert.strictEqual(byHost.calls.updateSession[0][3].wslDistro, null);
+
+    // Regression: a local request without a WSL marker stays bit-for-bit unchanged.
+    const local = await callStatePost(JSON.stringify(base));
+    assert.strictEqual(local.statusCode, 200);
+    assert.deepStrictEqual(processFields(local), {
+      sourcePid: 4242,
+      agentPid: 4243,
+      pidChain: [1, 4242, 4243],
+      editor: "cursor",
+      tmuxSocket: "/tmp/tmux-1000/work",
+      tmuxClient: "/dev/pts/7",
+      orcaPaneKey: "tab-9:leaf-3",
+      cwd: "/home/user/repo",
+      wtHwnd: "123456",
+    });
+  });
+
+  it("keeps WSL PIDs out of the Codex user-input bubble too", async () => {
+    const body = JSON.stringify({
+      state: "notification",
+      session_id: "codex:wsl-pid",
+      event: "CodexUserInputRequest",
+      agent_id: "codex",
+      source_pid: 4242,
+      agent_pid: 4243,
+      cwd: "/home/user/repo",
+      wsl_distro: "Ubuntu",
+      codex_user_input: {
+        phase: "request",
+        call_id: "call_wsl_pid",
+        questions: [{
+          id: "scope",
+          header: "Scope",
+          question: "Which scope?",
+          options: [{ label: "Focused", description: "One module" }],
+        }],
+      },
+    });
+
+    const res = await callStatePost(body);
+    assert.strictEqual(res.calls.userInputShown[0].sourcePid, null);
+    assert.strictEqual(res.calls.userInputShown[0].agentPid, null);
+    assert.strictEqual(res.calls.userInputShown[0].cwd, "/home/user/repo");
+  });
+
+  it("keeps WSL markers from changing Codex per-session automation eligibility", async () => {
+    const sessionId = "codex:019f9c87-23a9-7d03-a7ac-c11e3270c3b8";
+    const body = {
+      state: "working",
+      session_id: sessionId,
+      event: "PreToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      agent_pid: 777,
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+      wsl_distro: "Ubuntu",
+      host: "wsl:Ubuntu",
+    };
+
+    const wsl = await callStatePost(JSON.stringify(body));
+    const opts = wsl.calls.updateSession[0][3];
+    assert.deepStrictEqual(
+      opts.sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+    // The automation identity path and the session process metadata path are
+    // deliberately separate: the WSL PID is stripped from the session but not
+    // from the automation eligibility input.
+    assert.strictEqual(opts.agentPid, null);
   });
 
   it("drops archived local Codex lifecycle and passive user-input while keeping quota (#655)", async () => {

@@ -351,6 +351,7 @@ const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
   UserPromptSubmit: "thinking",
+  UserPromptExpansion: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
   PostToolUseFailure: "error",
@@ -371,8 +372,9 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
-// #634: maps a Claude hook event to a shared-resolver cache lifecycle. Only the
-// three boundary events are special; every other state event is an ordinary
+// #634: maps a Claude hook event to a shared-resolver cache lifecycle.
+// SessionStart, both prompt events and SessionEnd are special; every other
+// state event is an ordinary
 // `event` (cache hit = zero spawn, miss = one fresh). Stop is deliberately NOT
 // end — it is turn completion, and dropping the cache on it would force a
 // re-resolve (flash) on the next event. SessionEnd with source=clear still maps
@@ -380,6 +382,7 @@ const EVENT_TO_STATE = {
 const EVENT_TO_LIFECYCLE = {
   SessionStart: "start",
   UserPromptSubmit: "prompt",
+  UserPromptExpansion: "prompt",
   SessionEnd: "end",
 };
 
@@ -586,6 +589,11 @@ function applyResolvedFields(body, resolved, event) {
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
+  // UserPromptExpansion includes structured command metadata. Only an explicit
+  // user-typed /design should select the design visual.
+  if (event === "UserPromptExpansion" && !(
+    payload.expansion_type === "slash_command" && payload.command_name === "design"
+  )) return null;
 
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
@@ -607,6 +615,12 @@ function buildStateBody(event, payload, resolve) {
   const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
+  if (event === "UserPromptExpansion") body.display_svg = "claude-design";
+  if (
+    event === "UserPromptSubmit"
+    && typeof payload.prompt === "string"
+    && !/^\s*\/design(?:\s|$)/.test(payload.prompt)
+  ) body.display_svg = null;
   if (syntheticSubagentStart) {
     body.subagent_lifecycle_source = "synthetic-tool";
   } else if (event === "SubagentStart" || event === "SubagentStop") {

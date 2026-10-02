@@ -172,13 +172,33 @@ describe("updateRegistry pure-data validators", () => {
       "miniMode", "openAtLoginHydrated", "soundMuted", "bubbleFollowPet",
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
-      "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
+      "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
       "quotaMergeSources", "freeRoam", "roamConstrainAxis",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
       assert.strictEqual(updateRegistry[key]("yes", deps).status, "error", `${key}("yes")`);
     }
+  });
+
+  it("keepSizeAcrossDisplays validates booleans through its object-form entry", () => {
+    const entry = updateRegistry.keepSizeAcrossDisplays;
+    assert.strictEqual(typeof entry, "object");
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate(false).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+  });
+
+  it("keepSizeAcrossDisplays rebases once only when turning off", () => {
+    const entry = updateRegistry.keepSizeAcrossDisplays;
+    let calls = 0;
+    const deps = { rebaseSizeToRealizedPixels: () => { calls += 1; } };
+    assert.deepStrictEqual(entry.effect(false, deps), { status: "ok" });
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(entry.effect(true, deps), { status: "ok" });
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(entry.effect(false, {}), { status: "ok" });
+    assert.deepStrictEqual(entry.effect(false), { status: "ok" });
   });
 
   it("accepts only supported quota ring display modes", () => {
@@ -2871,6 +2891,18 @@ describe("setIdleVisual command", () => {
     );
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /not an idle visual/);
+  });
+
+  it("accepts a selectable-only idle visual through the existing setting command", () => {
+    const theme = {
+      ...activeTheme,
+      idleVisualOptions: [{ file: "pool.apng" }],
+    };
+    const result = commandRegistry.setIdleVisual(
+      { themeId: "clawd", file: "pool.apng" },
+      makeDeps({ getActiveTheme: () => theme })
+    );
+    assert.deepStrictEqual(result, { status: "ok", commit: { idleVisual: { clawd: "pool.apng" } } });
   });
 
   it("commits the merged map for a valid pool file, preserving other themes", () => {

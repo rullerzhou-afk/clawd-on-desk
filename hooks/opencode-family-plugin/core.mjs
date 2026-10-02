@@ -26,20 +26,33 @@
 //     runtime.json, then fall back to a full SERVER_PORTS scan
 //
 // Phase 2 bridge (permission replies):
-//   The host TUI does NOT bind an external HTTP listener (verified via
-//   Phase 2 Spike — ctx.serverUrl is a phantom URL, ctx.client.fetch is
-//   bound to Server.Default().fetch() in-process). So Clawd cannot call
-//   the host's REST API directly from outside the Bun process. Instead we
-//   start a tiny loopback bridge here: Clawd POSTs decisions to the
-//   bridge, and the bridge calls ctx.client._client.post() — the same
-//   in-process Hono router that `opencode serve` would expose externally.
-//   CLI/TUI uses Bun.serve(); Desktop's Electron utilityProcess runs the
-//   sidecar under Node, so it uses node:http with the same Web Request handler.
-//   A random 32-byte hex token gates the bridge endpoint since localhost
-//   TCP is visible to any process on the machine. Permission POSTs never send
-//   that token to a scanned/cached responder: they require the live, owner-only
-//   runtime.json target. This is a same-OS-user trust boundary, not isolation
-//   from another malicious process already running as the same user.
+//   Default TUI: the host does NOT bind an external HTTP listener (verified via
+//   Phase 2 Spike — ctx.serverUrl is a phantom URL, ctx.client.fetch is bound
+//   to Server.Default().fetch() in-process), so calls back to the host never
+//   leave the Bun process. Under `opencode serve` / `opencode web` (including
+//   `--hostname 0.0.0.0`) Server.url is the real listening address instead, so
+//   ctx.client becomes an ordinary HTTP client and every call back to the host
+//   is a real request routed by the host process's Bun fetch — which honors
+//   HTTP_PROXY / NO_PROXY and does NOT auto-bypass the proxy for 127.0.0.1,
+//   localhost or 0.0.0.0. A user NO_PROXY that lists only localhost/127.0.0.1
+//   therefore hands requests to a wildcard listen address to a proxy that may
+//   not be able to route them back to this machine; resolveLoopbackBaseUrl()
+//   rewrites the wildcard host to loopback per call (0.0.0.0 → 127.0.0.1,
+//   [::] → [::1]) so replies take the same 127.0.0.1 path the plugin's own
+//   Clawd POSTs use.
+//   Clawd cannot call the host's REST API directly from outside the process in
+//   either mode: the default TUI binds no listener Clawd could reach, and under
+//   `serve` / `web` Clawd neither knows the listen address nor holds the server
+//   password. So both modes go through a tiny loopback bridge started here:
+//   Clawd POSTs decisions to the bridge, and the bridge calls
+//   ctx.client._client.post() — the same router that `opencode serve` exposes
+//   externally. CLI/TUI uses Bun.serve(); Desktop's Electron utilityProcess runs
+//   the sidecar under Node, so it uses node:http with the same Web Request
+//   handler. A random 32-byte hex token gates the bridge endpoint since
+//   localhost TCP is visible to any process on the machine. Permission POSTs
+//   never send that token to a scanned/cached responder: they require the live,
+//   owner-only runtime.json target. This is a same-OS-user trust boundary, not
+//   isolation from another malicious process already running as the same user.
 
 import { readFileSync, writeFileSync, mkdirSync, lstatSync, statSync, realpathSync, promises as fsp } from "fs";
 import { homedir, platform } from "os";
@@ -110,6 +123,54 @@ export function orcaPaneKeyFromEnv(env = process.env) {
   if (!paneKey || paneKey.length > 256 || !/^[\w-]+:[\w-]+$/.test(paneKey)) return null;
   return paneKey;
 }
+
+// Runtime-port readers are shared verbatim by the v1 event-hook runtime and the
+// v2 service runtime (createOpencodeFamilyPluginV2 below). They live at module
+// scope so the strict permission-target checks cannot drift between the two
+// runtimes. Any change here must keep satisfying the
+// opencode-family-core.test.js owner-only / live-owner fail-closed matrix.
+export function readRuntimePort() {
+  try {
+    const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+    const port = Number(raw && raw.port);
+    if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
+  } catch {}
+  return null;
+}
+
+// Permission payloads contain the one-time reverse-bridge bearer token (v1)
+// and an awaited blocking decision (v2). A full port scan is acceptable for
+// state telemetry, but must never disclose either to an arbitrary listener
+// which merely copies Clawd's static response header. Pin permission delivery
+// to the runtime identity written by a live Clawd process, and require
+// owner-only bytes on POSIX.
+export function readPermissionRuntimePort() {
+  try {
+    const stats = lstatSync(RUNTIME_CONFIG_PATH);
+    if (!stats.isFile() || stats.isSymbolicLink()) return null;
+    if (platform() !== "win32") {
+      if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return null;
+      if ((stats.mode & 0o077) !== 0) return null;
+    }
+
+    const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
+    const port = Number(raw && raw.port);
+    const ownerPid = raw && raw.ownerPid;
+    if (raw?.app !== CLAWD_SERVER_ID) return null;
+    if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
+    if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
+    try {
+      process.kill(ownerPid, 0);
+    } catch (err) {
+      // EPERM still proves that a process owns the PID; ESRCH/unknown does
+      // not prove the runtime writer is alive, so fail closed.
+      if (!err || err.code !== "EPERM") return null;
+    }
+    return port;
+  } catch {}
+  return null;
+}
+
 
 // Process tree walk config — mirrors hooks/clawd-hook.js exactly, minus the
 // Claude-specific detection. See docs/plans/plan-opencode-integration.md Phase 4.
@@ -220,6 +281,50 @@ function normalizeServerUrl(raw) {
   if (!raw) return "";
   const s = String(raw);
   return s.endsWith("/") ? s : s + "/";
+}
+
+// Read ctx.client's configured baseUrl, or null when the client/config is
+// unavailable or malformed. Never throws at the host — a missing configuration
+// is treated exactly like "leave the client alone".
+function readClientBaseUrl(client) {
+  try {
+    const config = client && client._client && typeof client._client.getConfig === "function"
+      ? client._client.getConfig()
+      : null;
+    return config && typeof config.baseUrl === "string" && config.baseUrl ? config.baseUrl : null;
+  } catch {
+    return null;
+  }
+}
+
+// #1065: under `opencode serve` / `opencode web` the host hands the plugin a
+// real HTTP client whose baseUrl is the *listening* address. Connecting to a
+// wildcard (0.0.0.0 / [::]) can reach the local machine directly, but it is a
+// listen address, not a destination: when the host process sets HTTP_PROXY, Bun
+// routes such requests through the proxy, and neither wildcard is auto-bypassed
+// by a NO_PROXY that only lists localhost/127.0.0.1 — and the proxy may not be
+// able to route the request back here. The plugin already POSTs to Clawd over
+// 127.0.0.1, so a wildcard baseUrl is rewritten to loopback per call to take
+// the same path. Every other host (including the TUI's in-process placeholder
+// `localhost`) is left untouched.
+// A concrete LAN bind (e.g. `--hostname 192.168.1.5`) is deliberately NOT
+// rewritten: the server may not be listening on loopback, so a proxied host
+// must add that address to NO_PROXY itself.
+// Returns the per-call baseUrl override, or null when no rewrite is needed.
+export function resolveLoopbackBaseUrl(client) {
+  const configured = readClientBaseUrl(client);
+  if (!configured) return null;
+  let url;
+  try { url = new URL(configured); } catch { return null; }
+  let host;
+  if (url.hostname === "0.0.0.0") host = "127.0.0.1";
+  else if (url.hostname === "[::]") host = "[::1]";
+  else return null;
+  url.hostname = host;
+  const rewritten = url.toString();
+  // HeyApi joins the baseUrl and the route path directly, so drop any trailing
+  // slash (the same normalization mergeConfigs applies) to avoid `//permission`.
+  return rewritten.endsWith("/") ? rewritten.slice(0, -1) : rewritten;
 }
 
 // #830 context usage: opencode's message.updated events carry the session
@@ -507,6 +612,14 @@ export function createOpencodeFamilyPlugin(config) {
   // cannot cancel a live promise, so tails remove themselves only after
   // settlement and only when their identity is still current.
   const _permissionPostTailByRequestId = new Map();
+  // OpenCode V2 loads one plugin instance per location and fans every event
+  // out to all of them, so the same permission.asked arrives once per
+  // instance. A request must produce exactly ONE Clawd bubble: the first
+  // delivery owns it and later duplicates are dropped. Completion delivery
+  // stays untouched — a duplicate permission.replied is an idempotent cleanup
+  // delivery by contract (see opencode-family-bridge.test.js).
+  const _permissionAskedSeen = new Set();
+  const PERMISSION_SEEN_LIMIT = 256;
   // Reverse bridge state. Set by startBridge() at plugin init. Clawd receives
   // _bridgeUrl + _bridgeToken with every /permission forward and POSTs back.
   let _bridgeUrl = "";
@@ -562,47 +675,6 @@ export function createOpencodeFamilyPlugin(config) {
       };
       check();
     });
-  }
-
-  function readRuntimePort() {
-    try {
-      const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-      const port = Number(raw && raw.port);
-      if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
-    } catch {}
-    return null;
-  }
-
-  // Permission payloads contain the one-time reverse-bridge bearer token. A
-  // full port scan is acceptable for state telemetry, but must never disclose
-  // that token to an arbitrary listener which merely copies Clawd's static
-  // response header. Pin permission delivery to the runtime identity written
-  // by a live Clawd process, and require owner-only bytes on POSIX.
-  function readPermissionRuntimePort() {
-    try {
-      const stats = lstatSync(RUNTIME_CONFIG_PATH);
-      if (!stats.isFile() || stats.isSymbolicLink()) return null;
-      if (platform() !== "win32") {
-        if (typeof process.getuid === "function" && stats.uid !== process.getuid()) return null;
-        if ((stats.mode & 0o077) !== 0) return null;
-      }
-
-      const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-      const port = Number(raw && raw.port);
-      const ownerPid = raw && raw.ownerPid;
-      if (raw?.app !== CLAWD_SERVER_ID) return null;
-      if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
-      if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
-      try {
-        process.kill(ownerPid, 0);
-      } catch (err) {
-        // EPERM still proves that a process owns the PID; ESRCH/unknown does
-        // not prove the runtime writer is alive, so fail closed.
-        if (!err || err.code !== "EPERM") return null;
-      }
-      return port;
-    } catch {}
-    return null;
   }
 
   // Ordered: cached → runtime.json → full scan. Only touches runtime.json when
@@ -1205,9 +1277,12 @@ export function createOpencodeFamilyPlugin(config) {
 
   function isReplaceableStateSnapshot(snapshot) {
     const body = snapshot && snapshot.body;
+    // Replaceable = visual-only repeats a newer snapshot can supersede. Tool
+    // lifecycle events are deliberately absent: coalescing them would silently
+    // drop tool calls that recap counts (see TOOL_LIFECYCLE_EVENTS).
     return !!body
       && body.metadata_only !== true
-      && ["UserPromptSubmit", "PreToolUse", "PostToolUse", "PreCompact"].includes(body.event);
+      && ["UserPromptSubmit", "PreCompact"].includes(body.event);
   }
 
   function isMetadataStateSnapshot(snapshot) {
@@ -1468,14 +1543,45 @@ export function createOpencodeFamilyPlugin(config) {
   // Clawd uses PascalCase event names matching Claude Code's hook vocabulary so
   // state.js transition rules (e.g. SubagentStop → working whitelist) are
   // reusable across agents.
-  function sendState(state, eventName, sessionId) {
+  const TOOL_LIFECYCLE_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+
+  // Bounded memory of delivered tool lifecycle identities. Plugin instances
+  // (and plugin reloads) share this closure state, so exactly one POST per
+  // (call, phase) reaches /state no matter how many of them observe the
+  // event — recap counts tool calls from these POSTs.
+  const _toolEventSeen = new Set();
+  const TOOL_EVENT_SEEN_LIMIT = 512;
+
+  function toolEventIdentity(part, phase) {
+    return part && typeof part.id === "string" && part.id ? `${part.id}\0${phase}` : null;
+  }
+
+  function rememberToolEventKey(key) {
+    _toolEventSeen.add(key);
+    if (_toolEventSeen.size > TOOL_EVENT_SEEN_LIMIT) {
+      const oldest = _toolEventSeen.values().next().value;
+      if (oldest) _toolEventSeen.delete(oldest);
+    }
+  }
+
+  function sendState(state, eventName, sessionId, identity = null) {
     const body = buildStateBody(state, eventName, sessionId);
     if (!body) return;
 
     const lastState = _lastStatePerSession.get(body.session_id) || null;
 
     // Per-session dedup: skip only if the SAME session repeats the SAME state.
-    if (body.state === lastState) {
+    // Tool lifecycle events are data, not visuals — recap counts tool calls
+    // from them (src/recap-metrics.js) and parallel tools repeat the same
+    // working state — so they bypass the state dedup but are delivered once
+    // per (call, phase) identity instead.
+    if (TOOL_LIFECYCLE_EVENTS.has(body.event)) {
+      if (identity) {
+        const key = `${body.session_id}\0${identity}`;
+        if (_toolEventSeen.has(key)) return;
+        rememberToolEventKey(key);
+      }
+    } else if (body.state === lastState) {
       return;
     }
 
@@ -1516,9 +1622,9 @@ export function createOpencodeFamilyPlugin(config) {
           // pending → running → completed fires back-to-back; dedup absorbs the
           // repeat so only the first transition actually POSTs.
           const status = part.state && part.state.status;
-          if (status === "running") return { state: "working", event: "PreToolUse" };
-          if (status === "completed") return { state: "working", event: "PostToolUse" };
-          if (status === "error") return { state: "error", event: "PostToolUseFailure" };
+          if (status === "running") return { state: "working", event: "PreToolUse", identity: toolEventIdentity(part, "running") };
+          if (status === "completed") return { state: "working", event: "PostToolUse", identity: toolEventIdentity(part, "completed") };
+          if (status === "error") return { state: "error", event: "PostToolUseFailure", identity: toolEventIdentity(part, "error") };
           return null;
         }
 
@@ -1713,7 +1819,12 @@ export function createOpencodeFamilyPlugin(config) {
     });
     let limit = null;
     try {
-      const providers = normalizeProviderListResult(await client.provider.list());
+      const loopbackBaseUrl = resolveLoopbackBaseUrl(client);
+      const providers = normalizeProviderListResult(
+        loopbackBaseUrl
+          ? await client.provider.list({ baseUrl: loopbackBaseUrl })
+          : await client.provider.list()
+      );
       if (Array.isArray(providers)) {
         const provider = (providerID && providers.find((p) => p && p.id === providerID)) || null;
         const models = provider && provider.models;
@@ -1992,10 +2103,14 @@ export function createOpencodeFamilyPlugin(config) {
       && state.liveRevision === liveRevision;
     const id = rawId.startsWith(sessionIdPrefix) ? rawId.slice(sessionIdPrefix.length) : rawId;
     state.nextHydrationAt = Date.now() + CONTEXT_HISTORY_RETRY_MS;
+    // #1065: when the host listens on a wildcard address, per-call baseUrl keeps
+    // the history read on loopback (see resolveLoopbackBaseUrl).
+    const loopbackBaseUrl = resolveLoopbackBaseUrl(instance.client);
     // Defer SDK entry until after the current event enqueues its lifecycle
     // POST. Hydrated metadata must never race ahead of that session creation.
     state.hydration = readContextHistory(instance, (signal) => current()
       ? instance.client.session.messages({
+        ...(loopbackBaseUrl ? { baseUrl: loopbackBaseUrl } : {}),
         path: { id },
         query: { directory: instance.directory, limit: CONTEXT_HISTORY_LIMIT },
         signal,
@@ -2038,8 +2153,11 @@ export function createOpencodeFamilyPlugin(config) {
       || typeof instance.client?.session?.messages !== "function") return;
     const revision = instance.lifecycleRevision;
     const current = () => !instance.disposed && instance.lifecycleRevision === revision;
+    // #1065: keep the bootstrap read on loopback for wildcard listen addresses.
+    const loopbackBaseUrl = resolveLoopbackBaseUrl(instance.client);
     try {
       const result = await readContextHistory(instance, (signal) => instance.client.session.list({
+        ...(loopbackBaseUrl ? { baseUrl: loopbackBaseUrl } : {}),
         query: { directory: instance.directory, limit: CONTEXT_BOOTSTRAP_LIMIT, roots: true }, signal,
       }));
       if (!current()) return;
@@ -2071,6 +2189,17 @@ export function createOpencodeFamilyPlugin(config) {
   // _lastSeenSessionId → _rootSessionId fallback.
   // Phase 1 dedup/state machine logic does not run for permission events — they
   // ride a parallel channel and never translate to a Clawd state transition.
+  // Bound the duplicate-ask memory without deleting history: entries only
+  // matter while a request is pending or shortly after it was resolved, so
+  // dropping the oldest past the cap cannot resurrect a bubble.
+  function rememberPermissionEvent(seen, requestId) {
+    seen.add(requestId);
+    if (seen.size > PERMISSION_SEEN_LIMIT) {
+      const oldest = seen.values().next().value;
+      if (oldest) seen.delete(oldest);
+    }
+  }
+
   function handlePermissionAsked(event, instance) {
     const p = (event && event.properties) || {};
     const requestId = p.id;
@@ -2078,6 +2207,11 @@ export function createOpencodeFamilyPlugin(config) {
       debugLog(`PERM skip: no request id in permission.asked`);
       return;
     }
+    if (_permissionAskedSeen.has(requestId)) {
+      debugLog(`PERM skip duplicate ask req=${boundedPermissionRequestId(requestId)}`);
+      return;
+    }
+    rememberPermissionEvent(_permissionAskedSeen, requestId);
     const sessionId = resolveSessionId(
       getEventSessionId(event),
       _lastSeenSessionId || _rootSessionId
@@ -2187,10 +2321,151 @@ export function createOpencodeFamilyPlugin(config) {
     try { return timingSafeEqual(candidate, _bridgeTokenBuf); } catch { return false; }
   }
 
+  // #1065: turn the SDK's non-2xx `error` payload into a single-line, bounded
+  // diagnostic. HeyApi sets `error` to the parsed body ({} for an empty body, an
+  // object for JSON, a string for text), so the old `String(error)` degraded to
+  // `[object Object]` and hid the real failure. Known string fields are redacted
+  // on a best-effort basis, unrecognized objects expose only their key names,
+  // and the bridge token is redacted verbatim. Percent-encoded credentials are
+  // not decoded, so encoded secrets are not recognized.
+  function boundedBridgeError(value) {
+    const clean = String(value)
+      .replace(/[\u0000-\u001F\u007F-\u009F]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return clean.length > 300 ? `${clean.slice(0, 299)}…` : clean;
+  }
+
+  // Read a property that may be a throwing getter without ever surfacing the
+  // throw. undefined means "not readable".
+  function safeRead(target, key) {
+    try {
+      return target == null ? undefined : target[key];
+    } catch {
+      return undefined;
+    }
+  }
+
+  function safeErrorString(target, key) {
+    const value = safeRead(target, key);
+    if (value == null) return "";
+    try {
+      return typeof value === "string" ? value : String(value);
+    } catch {
+      return "";
+    }
+  }
+
+  // #1065: upstream hosts and proxies can echo credentials, query strings or
+  // userinfo, and Doctor uploads these logs without redaction, so strip them
+  // before the text is logged or returned. The bridge token is never sent
+  // upstream, but it is redacted too as defense in depth. Header keys may be
+  // written with JSON/escaped quotes, so the separator tolerates quotes and
+  // backslashes before `:` / `=`.
+  function redactBridgeErrorText(value) {
+    let text = String(value);
+    if (_bridgeTokenHex) text = text.split(_bridgeTokenHex).join("[redacted]");
+    text = text.replace(
+      /\b(authorization|proxy-authorization|cookie|set-cookie)\b(["'\\]*\s*[:=]\s*)[^\r\n]*/gi,
+      "$1$2[redacted]"
+    );
+    text = text.replace(/\b(Basic|Bearer|Digest)\s+[A-Za-z0-9._~+/=-]{8,}/gi, "$1 [redacted]");
+    text = text.replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1[redacted]@");
+    text = text.replace(/\?[^\s"'<>#]*=[^\s"'<>#]*/g, "?[redacted]");
+    return text;
+  }
+
+  // #1065: bound before redacting so pathological inputs (many "?" without "=",
+  // many "a." without "://") cannot drive the redaction regexes quadratic on the
+  // host's event loop. Only the first 1024 chars are considered; when the input
+  // is longer, the truncated tail segment (the trailing run with no whitespace)
+  // is dropped so a secret split by the cut cannot be partially recognized, and
+  // a trailing " [truncated]" marker records that the source was cut. The
+  // remaining text is redacted and then capped at 300 chars for output.
+  function normalizeBridgeText(value) {
+    const raw = String(value);
+    if (raw.length > 1024) {
+      const bounded = raw.slice(0, 1024).replace(/\S*$/, "");
+      return boundedBridgeError(`${redactBridgeErrorText(bounded)} [truncated]`);
+    }
+    return boundedBridgeError(redactBridgeErrorText(raw));
+  }
+
+  // #1065: a field name, stripped of control characters and capped at 40 chars.
+  function boundedErrorKey(key) {
+    const clean = String(key)
+      .replace(/[\u0000-\u001F\u007F-\u009F]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    return clean.length > 40 ? `${clean.slice(0, 39)}…` : clean;
+  }
+
+  function bridgeErrorDetail(error) {
+    if (typeof error === "string") return error;
+    if (error && typeof error === "object") {
+      const data = safeRead(error, "data");
+      const dataMessage = data && typeof data === "object" ? safeRead(data, "message") : undefined;
+      if (typeof dataMessage === "string" && dataMessage) return dataMessage;
+      const message = safeRead(error, "message");
+      if (typeof message === "string" && message) return message;
+      const tag = safeRead(error, "_tag");
+      if (typeof tag === "string" && tag) return tag;
+      const name = safeRead(error, "name");
+      if (typeof name === "string" && name) return name;
+      // An unrecognized object can hold arbitrary values under arbitrary keys,
+      // and redaction regexes cannot recognize every spelling, so expose only
+      // the key names (bounded) and never the values.
+      let keys;
+      try {
+        keys = Object.keys(error);
+      } catch {
+        return "unserializable error body";
+      }
+      if (keys.length === 0) return "";
+      return `unrecognized error body (keys: ${keys.slice(0, 5).map(boundedErrorKey).join(", ")})`;
+    }
+    return error == null ? "" : String(error);
+  }
+
+  function describeBridgeError(error, status, statusText) {
+    const numericStatus = Number.isFinite(status) ? status : 0;
+    try {
+      const prefix = `HTTP ${numericStatus}${statusText ? ` ${statusText}` : ""}`;
+      const detail = bridgeErrorDetail(error);
+      const message = detail && detail.trim() ? detail : "empty response body";
+      return normalizeBridgeText(`${prefix}: ${message}`);
+    } catch {
+      return `HTTP ${numericStatus}: unreadable error body`;
+    }
+  }
+
+  // #1065: the transport itself failed (DNS, connection refused, socket reset).
+  // Keep the thrown name/code so permission-debug.log shows a connection-layer
+  // failure rather than an upstream error response.
+  function describeBridgeThrow(err) {
+    try {
+      const parts = ["request failed:"];
+      const name = safeRead(err, "name");
+      const code = safeRead(err, "code");
+      const message = safeRead(err, "message");
+      if (name) parts.push(String(name));
+      if (code) parts.push(String(code));
+      if (message) parts.push(String(message));
+      return normalizeBridgeText(parts.join(" "));
+    } catch {
+      return "request failed: unreadable error";
+    }
+  }
+
   // Handle POST /reply from Clawd. Reads { request_id, reply } and forwards to
-  // the host's in-process Hono router via ctx.client._client.post(). Return
+  // the host via ctx.client._client.post(). The default TUI forwards in-process;
+  // `serve` / `web` make this a real HTTP request to the host's listening
+  // address, subject to the host process's HTTP_PROXY / NO_PROXY, so a wildcard
+  // baseUrl is rewritten to loopback per call (resolveLoopbackBaseUrl). Return
   // 200 on success (the host's own route returned 2xx), 4xx on auth/shape
-  // errors, 502 if the upstream call itself throws.
+  // errors, 502 when the upstream call returns an error or throws — the error
+  // body carries { ok:false, status, error } with the upstream status and a
+  // readable message.
   async function handleBridgeRequest(req) {
     const url = new URL(req.url);
     if (req.method !== "POST" || url.pathname !== "/reply") {
@@ -2217,6 +2492,21 @@ export function createOpencodeFamilyPlugin(config) {
     }
 
     debugLog(`BRIDGE → ${AGENT_ID} permission reply requestId=${requestId} reply=${reply}`);
+    // #1065: log only the target origin (no path/query) so a wildcard→loopback
+    // rewrite is visible without leaking the full URL. On rewrite, include the
+    // original origin so the log cannot be mistaken for a real localhost target.
+    const configuredBaseUrl = readClientBaseUrl(target.client);
+    const loopbackBaseUrl = resolveLoopbackBaseUrl(target.client);
+    const targetOrigin = loopbackBaseUrl || configuredBaseUrl;
+    if (targetOrigin) {
+      try {
+        const origin = new URL(targetOrigin).origin;
+        const configuredOrigin = loopbackBaseUrl && configuredBaseUrl
+          ? new URL(configuredBaseUrl).origin
+          : null;
+        debugLog(`BRIDGE reply target=${origin}${configuredOrigin ? ` (rewritten from ${configuredOrigin})` : ""}`);
+      } catch { /* malformed config keeps the reply path */ }
+    }
     try {
       // HeyApi v1's raw client accepts the v2 route plus an explicit query.
       // The directory is intentionally explicit even though the originating
@@ -2224,16 +2514,24 @@ export function createOpencodeFamilyPlugin(config) {
       // to the permission's owning Instance across multi-directory warmup.
       const result = await target.client._client.post({
         url: `/permission/${encodeURIComponent(requestId)}/reply`,
+        ...(loopbackBaseUrl ? { baseUrl: loopbackBaseUrl } : {}),
         query: target.directory ? { directory: target.directory } : undefined,
         body: { reply },
         headers: { "Content-Type": "application/json" },
       });
       // HeyApi returns { data, error, request, response } by default. `error`
       // is only set on non-2xx responses; successful reply just has `data`.
+      const status = result && result.response && Number.isFinite(result.response.status)
+        ? result.response.status
+        : 0;
+      const statusText = result && result.response && typeof result.response.statusText === "string"
+        ? result.response.statusText
+        : "";
       const hasError = result && result.error != null;
-      debugLog(`BRIDGE reply done requestId=${requestId} hasError=${hasError}`);
+      const errorText = hasError ? describeBridgeError(result.error, status, statusText) : "";
+      debugLog(`BRIDGE reply done requestId=${requestId} status=${status} hasError=${hasError}${hasError ? ` error=${errorText}` : ""}`);
       if (hasError) {
-        return new Response(JSON.stringify({ ok: false, error: String(result.error) }), {
+        return new Response(JSON.stringify({ ok: false, status, error: errorText }), {
           status: 502,
           headers: { "Content-Type": "application/json" },
         });
@@ -2244,8 +2542,9 @@ export function createOpencodeFamilyPlugin(config) {
         headers: { "Content-Type": "application/json" },
       });
     } catch (err) {
-      debugLog(`BRIDGE reply THROW requestId=${requestId} msg=${err && err.message}`);
-      return new Response(JSON.stringify({ ok: false, error: String(err && err.message) }), {
+      const throwText = describeBridgeThrow(err);
+      debugLog(`BRIDGE reply THROW requestId=${requestId} status=0 error=${throwText}`);
+      return new Response(JSON.stringify({ ok: false, status: 0, error: throwText }), {
         status: 502,
         headers: { "Content-Type": "application/json" },
       });
@@ -2328,7 +2627,7 @@ export function createOpencodeFamilyPlugin(config) {
       const response = await handleBridgeRequest(new Request(requestUrl, init));
       await writeNodeBridgeResponse(res, response);
     } catch (err) {
-      debugLog(`BRIDGE node request THROW: ${err && err.message}`);
+      debugLog(`BRIDGE node request THROW: ${normalizeBridgeText(safeErrorString(err, "message"))}`);
       if (!res.headersSent && !res.destroyed) {
         res.statusCode = 500;
         res.end("internal error");
@@ -2576,7 +2875,7 @@ export function createOpencodeFamilyPlugin(config) {
           );
 
           debugLog(`MAP ${event.type} → state=${mapped.state} event=${mapped.event}`);
-          sendState(mapped.state, mapped.event, sessionId);
+          sendState(mapped.state, mapped.event, sessionId, mapped.identity);
           // Unified cleanup happens only after postStateToClawd synchronously
           // snapshots the final SessionEnd body. This preserves cwd, title and
           // child/headless ownership while the queued network delivery waits.
@@ -2595,4 +2894,1230 @@ export function createOpencodeFamilyPlugin(config) {
   Object.defineProperty(plugin, "__test", { value: __testInternals });
 
   return plugin;
+}
+
+// ============================================================================
+// opencode v2 runtime (OpenCode 2.x, npm @opencode/cli)
+// ============================================================================
+// OpenCode v2 (2026-09 GA) is a different plugin generation: the loader only
+// accepts a default-exported definition `{ id, setup(ctx) }` (a bare function
+// export fails the schema with "Expected object at [\"default\"]" — verified on
+// 2.0.15, see docs/investigations/opencode-v2-e1-evidence.md), events arrive
+// over `ctx.event.subscribe()` instead of the v1 `event` hook, and the plugin
+// runs inside a long-lived shared background service rather than the TUI
+// process. Evidence-verified deltas that shape this runtime:
+//
+//   - Permission has a native evaluate hook: `ctx.permission.hook("evaluate")`
+//     runs for allow/ask rules, its callback may await external work, and it
+//     decides by mutating `event.effect`. That replaces the v1 reverse bridge
+//     entirely: on an `ask` we block on a long POST to Clawd's /permission and
+//     the decision comes back as the HTTP response body
+//     ({ decision: "allow" | "always" | "deny" }). 204 / timeout / any error
+//     leave `effect` untouched, so the host falls back to its native prompt.
+//   - Configured `allow` rules also invoke the hook — we must return WITHOUT
+//     touching the effect so Clawd never downgrades a host-approved action.
+//   - The service process tree is not the user's terminal (ppid=1 daemon), so
+//     every process-derived field (source_pid, pid_chain, editor, tmux, orca)
+//     is intentionally omitted — fail-closed omission instead of wrong values.
+//     Terminal focus degrades for v2 sessions (known limitation).
+//   - Per-event cwd comes from the event envelope `location.directory`; titles
+//     arrive via `session.renamed`; context usage comes from each
+//     `session.step.ended` (the step's own tokens = context occupancy), with
+//     the model limit resolved from the ctx.model registry in the background.
+//     `session.usage.updated` is the session's cumulative billing total and
+//     must never feed context usage.
+//   - "Always allow" has no host persistence API (permission domain exposes
+//     only get/hook/list/reply), so an `always` decision records an in-memory
+//     per-session action rule inside the service. It covers the session's
+//     lifetime and dies with the service — documented degradation.
+//   - Unknown event types are ignored (fail-closed): the v1-era event vocabulary
+//     must never be assumed to fire on v2.
+//
+// Registration: v2 hosts read the `plugins` config key (they also tolerate the
+// legacy `plugin` key, where the v1 function entry merely logs a load warning).
+// The installer therefore keeps the v1 entry under `plugin` and registers this
+// entry directory under `plugins`; the two host generations never interfere
+// (verified both directions on 1.18.32 and 2.0.15).
+const V2_PERMISSION_BLOCKING_TIMEOUT_MS = 590 * 1000;
+// /permission bodies carry raw tool resources (shell commands, file paths).
+// Same fail-closed budget as the zcode hook: over budget → skip the POST and
+// leave the effect untouched so the native prompt takes over.
+const V2_PERMISSION_MAX_BODY_BYTES = 512 * 1024;
+const V2_STATE_POST_MAX_PENDING = 32;
+const V2_ALWAYS_ALLOW_MAX_ENTRIES = 128;
+// Upper bound on awaiting a host hook registration's dispose(). Upstream
+// opencode v2.0.15 register/dispose are Effect.runPromise calls expected to
+// settle immediately; 2s is generous for a slow service while still bounding
+// plugin unload. A timeout only logs — the local teardown already happened.
+const V2_REGISTRATION_DISPOSE_TIMEOUT_MS = 2000;
+
+/**
+ * Create the opencode v2 plugin definition for a specific agent.
+ *
+ * Identity params MUST stay aligned with agents/opencode-family.js and the v1
+ * entry (drift-lock tests). `markerPluginDirName` is the directory name of the
+ * owner record's activeSourceMarker — the v2 entry shares the v1 generation and
+ * its owner.json, whose marker still points at the v1 entry directory.
+ *
+ * @param {object} config
+ * @param {string} config.agentId             e.g. "opencode"
+ * @param {string} config.hookSource          e.g. "opencode-plugin-v2"
+ * @param {string} config.logFileName         e.g. "opencode-plugin-v2.log"
+ * @param {string} config.sessionIdPrefix     e.g. "opencode:"
+ * @param {string} config.pluginId            stable v2 loader id, e.g. "clawd-on-desk-opencode"
+ * @param {string} config.markerPluginDirName e.g. "opencode-plugin"
+ * @returns {object} `{ id, setup }` — the definition form v2's loader requires
+ */
+export function createOpencodeFamilyPluginV2(config) {
+  const {
+    agentId, hookSource, logFileName, sessionIdPrefix, pluginId, markerPluginDirName,
+  } = config || {};
+  for (const [key, value] of Object.entries({
+    agentId, hookSource, logFileName, sessionIdPrefix, pluginId, markerPluginDirName,
+  })) {
+    if (typeof value !== "string" || !value) {
+      throw new Error(`createOpencodeFamilyPluginV2: ${key} is required`);
+    }
+  }
+
+  const AGENT_ID = agentId;
+  const HOOK_SOURCE = hookSource;
+  const DEBUG_LOG_PATH = join(CLAWD_DIR, logFileName);
+  const { DEFAULT_SESSION_ID, normalizeSessionId } = createSessionIdHelpers(sessionIdPrefix);
+
+  // Per-definition runtime state. The v2 service loads this module once; a host
+  // reload() re-runs setup, so every map here must stay consistent with the
+  // single-subscription invariant enforced below.
+  let _cachedPort = null;
+  const _lastStatePerSession = new Map();
+  const _statePostQueueBySession = new Map();
+  const _sessionTitleById = new Map();
+  const _sessionCwdById = new Map();
+  // "Always allow" decisions: key `${sessionId}\u0000${action}`. Insertion-
+  // ordered; the oldest entry is evicted at the cap.
+  const _alwaysAllowedBySessionAction = new Map();
+  const _blockingPermissionsBySession = new Map();
+
+  function abortV2BlockingPermissions(sessionId) {
+    const pending = _blockingPermissionsBySession.get(sessionId);
+    if (!pending) return;
+    _blockingPermissionsBySession.delete(sessionId);
+    for (const item of pending) {
+      item.snapshot.cancelled = true;
+      item.controller.abort();
+    }
+  }
+  let _reqCounter = 0;
+  let _permissionReqCounter = 0;
+
+  // Child-session classification (parent map) and per-session model, both
+  // seeded from session.created / session.step.started and — for sessions
+  // that predate this plugin load — from a bounded identity hydration.
+  const _sessionParentById = new Map();
+  const _sessionModelById = new Map();
+  // Tool lifecycle identity dedup: recap counts tool calls from these POSTs,
+  // parallel tools repeat the same working state, and every module copy
+  // observes the same events — each (call, phase) is delivered exactly once.
+  const _toolEventSeen = new Set();
+  const TOOL_EVENT_SEEN_LIMIT = 512;
+  // Model -> context limit lookups (ctx.model registry), cached per model.
+  const _modelLimitCache = new Map();
+  // Identity hydration is best-effort, bounded, and never retried after a
+  // failure so one unreachable session cannot stall or hammer the service.
+  const _hydrationState = new Map();
+  const HYDRATION_TIMEOUT_MS = 3000;
+  // Token per in-flight hydration attempt. A live session.created (or a
+  // reload/dispose) deletes the token, so a late ctx.session.get result can
+  // never overwrite identity that already arrived on the event stream.
+  const _hydrationAttemptBySession = new Map();
+  // Per-session identity gate queue: mapped lifecycle/tool events staged while
+  // a recovered session's parent classification is unknown or still draining.
+  // The queue exists for the whole gate lifetime (even while empty), so any
+  // event arrives through the same ordered door until the gate closes.
+  const _pendingIdentityBySession = new Map();
+  // sessionId -> the queue array currently being drained (single-drain guard).
+  const _identityDrainingBySession = new Map();
+  const V2_IDENTITY_PENDING_MAX = 64;
+  // Bumped on reload/dispose so an in-flight gate drain stops immediately.
+  let _identityRecoveryGeneration = 0;
+  let _ctx = null;
+
+  const _debugBuffer = [];
+  let _debugFlushing = false;
+  function debugLog(msg) {
+    _debugBuffer.push(`[${new Date().toISOString()}] ${msg}\n`);
+    scheduleDebugFlush();
+  }
+  function scheduleDebugFlush() {
+    if (_debugFlushing || _debugBuffer.length === 0) return;
+    _debugFlushing = true;
+    setImmediate(async () => {
+      const chunk = _debugBuffer.join("");
+      _debugBuffer.length = 0;
+      try {
+        await fsp.appendFile(DEBUG_LOG_PATH, chunk, "utf8");
+      } catch {}
+      _debugFlushing = false;
+      if (_debugBuffer.length > 0) scheduleDebugFlush();
+    });
+  }
+  function resetDebugLog() {
+    try {
+      mkdirSync(CLAWD_DIR, { recursive: true });
+      writeFileSync(DEBUG_LOG_PATH, "", "utf8");
+    } catch {}
+  }
+  function flushDebugLog() {
+    return new Promise((resolve) => {
+      const check = () => {
+        if (!_debugFlushing && _debugBuffer.length === 0) {
+          resolve();
+          return;
+        }
+        setImmediate(check);
+      };
+      check();
+    });
+  }
+
+  // Ordered: cached → runtime.json → full scan (same bargain as v1).
+  function getPortCandidates() {
+    const ordered = [];
+    const seen = new Set();
+    const add = (p) => {
+      if (p && !seen.has(p) && SERVER_PORTS.includes(p)) {
+        seen.add(p);
+        ordered.push(p);
+      }
+    };
+    add(_cachedPort);
+    if (_cachedPort == null) add(readRuntimePort());
+    SERVER_PORTS.forEach(add);
+    return ordered;
+  }
+
+  function getPermissionPortCandidates() {
+    const port = readPermissionRuntimePort();
+    return port ? [port] : [];
+  }
+
+  // Stable per-(call, phase) identity for tool lifecycle dedup. Null when the
+  // host event carries no call id — such events fall back to permissive
+  // sending rather than risking a dropped tool report.
+  function toolEventIdentity(data, phase) {
+    return data && typeof data.id === "string" && data.id ? `${data.id}\0${phase}` : null;
+  }
+
+  // Translate a v2 event (type + data) into a Clawd (state, eventName) pair,
+  // or null when Clawd should ignore it. Pure so tests can lock the mapping
+  // against the evidence table in docs/investigations/opencode-v2-e1-evidence.md.
+  function translateV2Event(type, data) {
+    if (typeof type !== "string") return null;
+    switch (type) {
+      case "session.created":
+        return { state: "idle", event: "SessionStart" };
+
+      case "session.status": {
+        // Defensive: documented v2 vocabulary (session.idle is deprecated in
+        // favor of status.type). Shape not yet observed on a real stream; any
+        // mismatch falls through to null and is ignored.
+        const statusType = data && data.status && data.status.type;
+        if (statusType === "idle") return { state: "attention", event: "Stop" };
+        if (statusType === "busy") return { state: "thinking", event: "UserPromptSubmit" };
+        return null;
+      }
+
+      case "session.step.started":
+      case "session.reasoning.started":
+      case "session.text.started":
+        return { state: "thinking", event: "UserPromptSubmit" };
+
+      case "session.tool.called":
+        return { state: "working", event: "PreToolUse", identity: toolEventIdentity(data, "running") };
+
+      case "session.tool.success":
+        return { state: "working", event: "PostToolUse", identity: toolEventIdentity(data, "completed") };
+
+      // v2.0.15's contract names this `session.tool.failed`; accept the older
+      // `session.tool.error` spelling too so either host shape maps.
+      case "session.tool.failed":
+      case "session.tool.error":
+        return { state: "error", event: "PostToolUseFailure", identity: toolEventIdentity(data, "error") };
+
+      case "session.step.ended":
+        // Per-step teardown only ends the turn when the model stopped on its
+        // own; "tool-calls" steps continue into the next step.
+        return data && data.finish === "stop"
+          ? { state: "attention", event: "Stop" }
+          : null;
+
+      case "session.execution.succeeded":
+        return { state: "attention", event: "Stop" };
+
+      // Interruption ends the turn WITHOUT completing it: StopFailure is the
+      // vocabulary's cancellation terminal (deriveSessionBadge maps it to the
+      // "interrupted" badge and it is not a done event), so a cancelled turn
+      // never increments completed turns while active state still clears.
+      case "session.execution.interrupted":
+        return { state: "error", event: "StopFailure" };
+
+      case "session.execution.failed":
+      case "session.error":
+        return { state: "error", event: "StopFailure" };
+
+      case "session.deleted":
+        return { state: "sleeping", event: "SessionEnd" };
+
+      default:
+        return null;
+    }
+  }
+
+  function snapshotV2Post(body, logTag) {
+    const outbound = { ...(body || {}) };
+    // The plugin runs inside the shared background service (ppid=1 on macOS):
+    // the process tree belongs to the service, not to the user's terminal, so
+    // source_pid / pid_chain / editor / tmux / orca are omitted rather than
+    // reporting values that would focus the wrong window. agent_pid stays —
+    // it truthfully identifies the opencode service process.
+    outbound.agent_pid = process.pid;
+    return {
+      body: outbound,
+      payload: JSON.stringify(outbound),
+      logTag,
+      reqId: ++_reqCounter,
+    };
+  }
+
+  async function deliverV2StatePost(snapshot) {
+    const candidates = getPortCandidates();
+    for (const port of candidates) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), POST_TIMEOUT_MS);
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}${STATE_PATH}`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: snapshot.payload,
+          signal: controller.signal,
+        });
+        const header = res.headers.get(CLAWD_SERVER_HEADER);
+        if (header === CLAWD_SERVER_ID) {
+          _cachedPort = port;
+          try { await res.text(); } catch {}
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} OK port=${port}`);
+          return true;
+        }
+      } catch (err) {
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} port=${port} ERR ${err && err.name}/${err && err.message}`);
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    _cachedPort = null;
+    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} EXHAUSTED all candidates failed`);
+    return false;
+  }
+
+  // Compacted v1-parity per-session FIFO: serialized delivery, latest-lifecycle
+  // coalescing, terminal beats queued work, hard pending cap.
+  function isV2MetadataSnapshot(snapshot) {
+    return !!(snapshot && snapshot.body && snapshot.body.metadata_only === true);
+  }
+
+  function settleV2Snapshot(snapshot) {
+    if (snapshot && snapshot.settle) snapshot.settle();
+  }
+
+  function makeV2Snapshot(body, logTag) {
+    const snapshot = snapshotV2Post(body, logTag);
+    snapshot.completion = new Promise((resolve) => { snapshot.settle = resolve; });
+    return snapshot;
+  }
+
+  async function drainV2StateQueue(sessionId, queue) {
+    while (queue.pending.length > 0 || queue.active) {
+      if (queue.active) {
+        await queue.active.done;
+        continue;
+      }
+      const snapshot = queue.pending.shift();
+      queue.active = snapshot;
+      try {
+        const ok = await deliverV2StatePost(snapshot);
+        snapshot.ok = ok;
+      } catch (err) {
+        snapshot.ok = false;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} UNCAUGHT ${err && err.message}`);
+      } finally {
+        queue.active = null;
+        settleV2Snapshot(snapshot);
+      }
+    }
+    if (_statePostQueueBySession.get(sessionId) === queue) {
+      _statePostQueueBySession.delete(sessionId);
+    }
+  }
+
+  function postStateToClawdV2(body) {
+    const sessionId = normalizeSessionId(body && body.session_id) || DEFAULT_SESSION_ID;
+    const terminal = !!body && body.event === "SessionEnd";
+    const metadata = isV2MetadataSnapshot({ body });
+    const replaceable = !terminal && !metadata && !!body
+      // Tool lifecycle events are recap's tool-call signal (and parallel
+      // tools repeat the same working state), so they never coalesce.
+      && ["UserPromptSubmit", "PreCompact"].includes(body.event);
+    const snapshot = makeV2Snapshot(body, `STATE ${body.event}→${body.state}${metadata ? " meta" : ""}`);
+    let queue = _statePostQueueBySession.get(sessionId);
+    if (!queue) {
+      queue = { pending: [], active: null, draining: false };
+      _statePostQueueBySession.set(sessionId, queue);
+    }
+
+    const activeTerminal = !!(queue.active && queue.active.body && queue.active.body.event === "SessionEnd");
+    const queuedTerminal = queue.pending.some((entry) => entry.body && entry.body.event === "SessionEnd");
+    if (!terminal && (activeTerminal || queuedTerminal)) {
+      settleV2Snapshot(snapshot);
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} dropped=after-terminal`);
+      return snapshot.completion;
+    }
+
+    if (terminal) {
+      for (const pending of queue.pending.splice(0)) settleV2Snapshot(pending);
+      queue.pending.push(snapshot);
+      debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=terminal`);
+    } else {
+      const last = queue.pending.at(-1);
+      if (metadata && last && isV2MetadataSnapshot(last)) {
+        // Merge so a title push and a context-usage push never lose fields.
+        Object.assign(last.body, snapshot.body);
+        last.payload = JSON.stringify(last.body);
+        settleV2Snapshot(snapshot);
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=metadata-fields`);
+        return snapshot.completion;
+      }
+      if (replaceable && last && ["UserPromptSubmit", "PreCompact"]
+        .includes(last.body && last.body.event) && !(last.body && last.body.metadata_only === true)) {
+        settleV2Snapshot(last);
+        queue.pending[queue.pending.length - 1] = snapshot;
+        debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} coalesced=latest-state`);
+      } else {
+        if (queue.pending.length >= V2_STATE_POST_MAX_PENDING) {
+          const [dropped] = queue.pending.splice(0, 1);
+          settleV2Snapshot(dropped);
+          debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} overflow=dropped-old req=${dropped.reqId}`);
+        }
+        queue.pending.push(snapshot);
+      }
+    }
+
+    if (!queue.draining) {
+      queue.draining = true;
+      void drainV2StateQueue(sessionId, queue).finally(() => { queue.draining = false; });
+    }
+    return snapshot.completion;
+  }
+
+  const V2_TOOL_LIFECYCLE_EVENTS = new Set(["PreToolUse", "PostToolUse", "PostToolUseFailure"]);
+
+  function sendStateV2(state, eventName, sessionId, cwd, identity = null) {
+    if (!state || !eventName) return undefined;
+    const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
+    const body = {
+      state,
+      session_id: clawdSessionId,
+      event: eventName,
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+    };
+    const title = _sessionTitleById.get(clawdSessionId);
+    if (title) body.session_title = title;
+    if (cwd) body.cwd = cwd;
+    // v1 parity: child sessions stay out of the HUD and their completion is a
+    // SessionEnd, not a root Stop.
+    if (_sessionParentById.has(clawdSessionId)) body.headless = true;
+
+    const lastState = _lastStatePerSession.get(clawdSessionId) || null;
+    if (V2_TOOL_LIFECYCLE_EVENTS.has(eventName)) {
+      // Tool lifecycle events bypass the same-state dedup (parallel tools
+      // repeat "working") but deliver once per (call, phase) identity — the
+      // recap tool-call counter reads these POSTs.
+      if (identity) {
+        const key = `${clawdSessionId}\0${identity}`;
+        if (_toolEventSeen.has(key)) return undefined;
+        _toolEventSeen.add(key);
+        if (_toolEventSeen.size > TOOL_EVENT_SEEN_LIMIT) {
+          const oldest = _toolEventSeen.values().next().value;
+          if (oldest) _toolEventSeen.delete(oldest);
+        }
+      }
+    } else if (body.state === lastState) {
+      return undefined;
+    }
+    debugLog(`SEND ${lastState || "null"} → ${body.state} event=${body.event} session=${clawdSessionId}`);
+    _lastStatePerSession.set(clawdSessionId, body.state);
+    return postStateToClawdV2(body);
+  }
+
+  function sendMetadataV2(sessionId, fields) {
+    const clawdSessionId = normalizeSessionId(sessionId);
+    if (!clawdSessionId) return;
+    const body = {
+      state: "idle",
+      session_id: clawdSessionId,
+      event: "SessionUpdate",
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      metadata_only: true,
+      ...fields,
+    };
+    postStateToClawdV2(body);
+  }
+
+  function captureV2Title(sessionId, title) {
+    const normalized = normalizeSessionId(sessionId);
+    if (!normalized || typeof title !== "string" || !title.trim()) return null;
+    const prev = _sessionTitleById.get(normalized);
+    if (prev === title) return null;
+    _sessionTitleById.set(normalized, title);
+    debugLog(`SESSION_TITLE session=${normalized} changed=true len=${title.length}`);
+    return normalized;
+  }
+
+  // Recovered-session identity gate. The first event a session emits after a
+  // service restart can be a tool call or a turn end, and the answer to "is
+  // this a child session?" only arrives asynchronously from ctx.session.get.
+  // Reporting it immediately as a root lifecycle is the bug: a child's Stop
+  // would notify completion and its tool calls would enter recap. The gate
+  // therefore owns the session's mapped lifecycle/tool events from the moment
+  // hydration starts until its queue (including events appended while draining)
+  // is fully delivered:
+  //   - while hydration is pending, events accumulate in the gate queue;
+  //   - once identity settles (success, failure, timeout, live session.created)
+  //     the queue drains one event at a time, awaiting each delivery, so a late
+  //     terminal cannot coalesce an event that has not been dispatched yet;
+  //   - events arriving mid-drain append to the same queue and keep arrival
+  //     order; only an empty queue (and a settled lookup) closes the gate.
+  // Metadata (title, context usage) never depends on the parent map and keeps
+  // flowing immediately. The gate is per session (one hung lookup cannot hold
+  // another session back), hard-capped, and fail-open: a failed, timed-out or
+  // unavailable lookup drains the staged events as root instead of wedging.
+  function dispatchV2MappedEvent(sessionId, mapped, cwd) {
+    const child = _sessionParentById.has(sessionId);
+    // v1 parity: a child session's turn end is a SessionEnd, never a root Stop,
+    // and its reports stay headless (sendStateV2 reads the parent map).
+    if (child && mapped.event === "Stop") {
+      return sendStateV2("sleeping", "SessionEnd", sessionId, cwd);
+    }
+    return sendStateV2(mapped.state, mapped.event, sessionId, cwd, mapped.identity);
+  }
+
+  function invalidateV2Hydration(sessionId) {
+    // Deleting the token makes any in-flight continuation observe a mismatch
+    // and bail before touching identity maps or draining its queue.
+    _hydrationAttemptBySession.delete(sessionId);
+  }
+
+  function dropV2IdentityRecovery() {
+    // Reload/dispose must be atomic: invalidate in-flight lookups, stop any
+    // drain (the generation guard does that), discard the queues, and reset
+    // every pending hydration state — including sessions whose lookup started
+    // from an ignored/metadata-only event and never staged anything. done /
+    // known / failed are kept, so identity already learned survives.
+    _identityRecoveryGeneration += 1;
+    for (const [sessionId, state] of _hydrationState) {
+      if (state === "pending") _hydrationState.delete(sessionId);
+    }
+    _hydrationAttemptBySession.clear();
+    _pendingIdentityBySession.clear();
+    _identityDrainingBySession.clear();
+  }
+
+  // Serial per-session drain: dispatch one staged event, await its delivery,
+  // then take the next (including events appended while waiting). A terminal
+  // is therefore never dispatched ahead of an earlier staged event, so
+  // postStateToClawdV2's terminal coalescing cannot swallow it.
+  async function drainIdentityGate(sessionId) {
+    const queue = _pendingIdentityBySession.get(sessionId);
+    if (!queue || _identityDrainingBySession.has(sessionId)) return;
+    _identityDrainingBySession.set(sessionId, queue);
+    const generation = _identityRecoveryGeneration;
+    try {
+      while (true) {
+        if (generation !== _identityRecoveryGeneration) return;
+        const record = queue.shift();
+        if (!record) break;
+        try {
+          const cwd = record.envelopeCwd || _sessionCwdById.get(sessionId) || null;
+          const completion = dispatchV2MappedEvent(sessionId, record.mapped, cwd);
+          if (completion && typeof completion.then === "function") await completion;
+        } catch (err) {
+          debugLog(`IDENTITY-GATE replay failed session=${sessionId}: ${err && err.message}`);
+        }
+      }
+    } finally {
+      if (_identityDrainingBySession.get(sessionId) === queue) {
+        _identityDrainingBySession.delete(sessionId);
+      }
+      // Close the gate only when this drain is still current, its queue is
+      // empty and the lookup is no longer pending; otherwise leave it open so
+      // appended events keep arriving through the same ordered door.
+      if (generation === _identityRecoveryGeneration
+        && _pendingIdentityBySession.get(sessionId) === queue
+        && queue.length === 0
+        && _hydrationState.get(sessionId) !== "pending") {
+        _pendingIdentityBySession.delete(sessionId);
+      }
+    }
+  }
+
+  // Append a mapped lifecycle/tool event to an open gate. The caller only
+  // reaches here while the gate exists; the cap is a hard backstop with an
+  // explicit drop-oldest overflow so the queue can never grow without bound.
+  function enqueueIdentityGateEvent(queue, sessionId, mapped, envelopeCwd) {
+    if (queue.length >= V2_IDENTITY_PENDING_MAX) {
+      const dropped = queue.shift();
+      debugLog(`IDENTITY-GATE overflow=dropped-old session=${sessionId} drop=${dropped.mapped.event}`);
+    }
+    queue.push({ mapped, envelopeCwd });
+  }
+
+  function handleV2Event(envelope) {
+    if (!envelope || typeof envelope.type !== "string") return;
+    const type = envelope.type;
+    const data = envelope.data && typeof envelope.data === "object" ? envelope.data : {};
+    const rawSessionId = typeof data.sessionID === "string" && data.sessionID
+      ? data.sessionID
+      : (envelope.durable && typeof envelope.durable.aggregateID === "string"
+        ? envelope.durable.aggregateID
+        : "");
+    const sessionId = normalizeSessionId(rawSessionId) || null;
+    if (sessionId && ["session.execution.interrupted", "session.execution.failed",
+      "session.execution.succeeded", "session.deleted"].includes(type)) {
+      abortV2BlockingPermissions(sessionId);
+    }
+
+    // Per-event cwd from the envelope location (authoritative for v2 —
+    // ctx.location is the service-level directory, never a session cwd).
+    const envelopeCwd = envelope.location && typeof envelope.location.directory === "string"
+      && envelope.location.directory.trim()
+      ? envelope.location.directory
+      : null;
+    if (sessionId && envelopeCwd) _sessionCwdById.set(sessionId, envelopeCwd);
+
+    // Session identity side captures — no lifecycle is invented for them.
+    if (type === "session.created" && sessionId) {
+      const parentID = typeof data.parentID === "string" && data.parentID.trim()
+        ? normalizeSessionId(data.parentID)
+        : null;
+      if (parentID) _sessionParentById.set(sessionId, parentID);
+      if (data.model && typeof data.model === "object") {
+        _sessionModelById.set(sessionId, {
+          providerID: typeof data.model.providerID === "string" ? data.model.providerID : null,
+          modelID: typeof data.model.id === "string" ? data.model.id : null,
+        });
+      }
+      // A live creation carries the session identity; only sessions that
+      // predate this load need the ctx.session.get hydration below. It also
+      // supersedes any in-flight recovery lookup: invalidate the token so the
+      // late result cannot overwrite this live identity. The event itself is
+      // mapped (SessionStart) and enters the same gate in arrival order below;
+      // the gate settles and drains once this handler reaches its tail.
+      if (_hydrationState.get(sessionId) === "pending") invalidateV2Hydration(sessionId);
+      _hydrationState.set(sessionId, "known");
+    }
+
+    if (type === "session.step.started" && sessionId && data.model && typeof data.model === "object") {
+      _sessionModelById.set(sessionId, {
+        providerID: typeof data.model.providerID === "string" ? data.model.providerID : null,
+        modelID: typeof data.model.id === "string" ? data.model.id : null,
+      });
+    }
+
+    if (type === "session.step.ended" && sessionId) {
+      // Context usage is the step's own token accounting (context occupancy).
+      // session.usage.updated carries the session's cumulative billing totals
+      // and must never feed it (it pins any percentage at 100%).
+      reportV2ContextUsage(sessionId, data);
+    }
+
+    if (sessionId) ensureV2SessionHydration(rawSessionId);
+
+    if (type === "session.renamed") {
+      const titled = captureV2Title(sessionId, data.title);
+      if (titled) sendMetadataV2(titled, { session_title: data.title });
+      return;
+    }
+
+    // Defensive capture: if a future minor reintroduces session-info payloads
+    // (info.directory / info.title on created/updated), honor them like v1 did.
+    const info = data.info && typeof data.info === "object" ? data.info : null;
+    if (info && sessionId) {
+      if (typeof info.title === "string" && info.title.trim()) {
+        const titled = captureV2Title(sessionId, info.title);
+        if (titled) sendMetadataV2(titled, { session_title: info.title });
+      }
+      if (typeof info.directory === "string" && info.directory.trim() && !envelopeCwd) {
+        _sessionCwdById.set(sessionId, info.directory);
+      }
+    }
+
+    const mapped = translateV2Event(type, data);
+    if (!mapped) {
+      // Log ignored session.* events only — low-frequency and diagnostic; the
+      // streaming text/reasoning delta events never reach translateV2Event's
+      // mapped path but still hit this branch, so gate the log on frequency.
+      if (type.startsWith("session.") && !type.endsWith(".delta")) {
+        debugLog(`IGNORE ${type}`);
+      }
+      return;
+    }
+    if (!sessionId) {
+      debugLog(`DROP ${type} event=${mapped.event} reason=no-session-id`);
+      return;
+    }
+    // While the identity gate is open (lookup pending or drain in progress),
+    // every mapped lifecycle/tool event enters the same ordered queue so it is
+    // classified with the resolved parent and cannot overtake an earlier event.
+    const gateQueue = _pendingIdentityBySession.get(sessionId);
+    if (gateQueue) {
+      enqueueIdentityGateEvent(gateQueue, sessionId, mapped, envelopeCwd);
+      // A settled gate may need a kick (hydration continuation also kicks it);
+      // while pending we wait for that continuation.
+      if (_hydrationState.get(sessionId) !== "pending") void drainIdentityGate(sessionId);
+      return;
+    }
+    dispatchV2MappedEvent(sessionId, mapped, envelopeCwd || _sessionCwdById.get(sessionId) || null);
+  }
+
+  // Context usage is the step's own token accounting (context occupancy).
+  // The model limit resolves from the ctx.model registry in the background:
+  // the sample ships immediately with what is known and is re-pushed once the
+  // limit lands, so nothing blocks the shared event consumption path and a
+  // first-observed sample does not keep a missing limit forever.
+  const _lastUsedBySession = new Map();
+
+  async function resolveV2ModelLimit(model) {
+    if (!model || !model.modelID) return null;
+    const key = `${model.providerID || ""}\u0000${model.modelID}`;
+    if (_modelLimitCache.has(key)) return _modelLimitCache.get(key);
+    let limit = null;
+    try {
+      const registry = _ctx && _ctx.model && typeof _ctx.model.list === "function" ? await _ctx.model.list() : null;
+      const models = Array.isArray(registry) ? registry : (registry && registry.data) || [];
+      const match = models.find((entry) => entry
+        && (entry.id === model.modelID || entry.modelID === model.modelID)
+        && (!model.providerID || entry.providerID === model.providerID));
+      if (match && match.limit && Number.isFinite(match.limit.context) && match.limit.context > 0) {
+        limit = match.limit.context;
+      }
+    } catch (err) {
+      debugLog(`CTX limit lookup failed: ${err && err.message}`);
+    }
+    // Misses are not cached: a later registry reload may resolve the model.
+    if (limit == null) return null;
+    _modelLimitCache.set(key, limit);
+    return limit;
+  }
+
+  function pushV2ContextUsage(sessionId) {
+    const used = _lastUsedBySession.get(sessionId);
+    if (used == null) return;
+    const model = _sessionModelById.get(sessionId) || null;
+    const cachedLimit = model ? _modelLimitCache.get(`${model.providerID || ""}\u0000${model.modelID}`) : null;
+    sendMetadataV2(sessionId, {
+      context_usage: { used, limit: cachedLimit == null ? null : cachedLimit, source: "opencode" },
+    });
+    if (model && cachedLimit == null) {
+      void resolveV2ModelLimit(model).then((limit) => {
+        if (limit != null) pushV2ContextUsage(sessionId);
+      });
+    }
+  }
+
+  function reportV2ContextUsage(sessionId, data) {
+    const used = extractContextUsageUsed(data && data.tokens);
+    if (used == null) return;
+    _lastUsedBySession.set(sessionId, used);
+    pushV2ContextUsage(sessionId);
+  }
+
+  // First-seen sessions (for example after a service restart) carry their
+  // identity in ctx.session.get, not in any event. Hydrate once per session
+  // in the background: bounded, off the shared consumption path, never
+  // retried after a failure, and it only fills maps — no lifecycle event is
+  // invented for the recovered session. The gate queue is opened here, before
+  // the lookup settles, so every event that arrives meanwhile (including
+  // ignored/metadata-only events that never stage) is owned by the gate; every
+  // terminal outcome (success, failure, timeout, invalidation) settles it.
+  function ensureV2SessionHydration(rawSessionId) {
+    const sessionId = normalizeSessionId(rawSessionId);
+    if (!sessionId || _hydrationState.has(sessionId)) return;
+    const sessionApi = _ctx && _ctx.session && typeof _ctx.session.get === "function" ? _ctx.session : null;
+    if (!sessionApi) {
+      _hydrationState.set(sessionId, "failed");
+      return;
+    }
+    _hydrationState.set(sessionId, "pending");
+    if (!_pendingIdentityBySession.has(sessionId)) _pendingIdentityBySession.set(sessionId, []);
+    const attempt = {};
+    _hydrationAttemptBySession.set(sessionId, attempt);
+    void (async () => {
+      let info;
+      try {
+        const timeout = new Promise((_, reject) => {
+          const timer = setTimeout(() => reject(new Error("hydration timeout")), HYDRATION_TIMEOUT_MS);
+          if (timer && typeof timer.unref === "function") timer.unref();
+        });
+        // The host API speaks raw session ids; only internal maps use the
+        // namespaced form.
+        info = await Promise.race([sessionApi.get({ sessionID: rawSessionId }), timeout]);
+      } catch (err) {
+        if (_hydrationAttemptBySession.get(sessionId) !== attempt) return;
+        _hydrationAttemptBySession.delete(sessionId);
+        _hydrationState.set(sessionId, "failed");
+        debugLog(`HYDRATE session=${sessionId} failed: ${err && err.message}`);
+        // Fail-open, bounded: drain the staged events as root rather than
+        // leaving them (or the session) wedged forever.
+        void drainIdentityGate(sessionId);
+        return;
+      }
+      // A live session.created, reload or dispose may have invalidated this
+      // lookup while it was in flight; never let it overwrite live identity.
+      if (_hydrationAttemptBySession.get(sessionId) !== attempt) return;
+      _hydrationAttemptBySession.delete(sessionId);
+      _hydrationState.set(sessionId, "done");
+      if (info && typeof info === "object") {
+        const parentID = typeof info.parentID === "string" && info.parentID.trim()
+          ? normalizeSessionId(info.parentID)
+          : null;
+        if (parentID) _sessionParentById.set(sessionId, parentID);
+        if (info.model && typeof info.model === "object" && !_sessionModelById.has(sessionId)) {
+          _sessionModelById.set(sessionId, {
+            providerID: typeof info.model.providerID === "string" ? info.model.providerID : null,
+            modelID: typeof info.model.id === "string" ? info.model.id : null,
+          });
+        }
+        const directory = info.location && typeof info.location.directory === "string"
+          && info.location.directory.trim()
+          ? info.location.directory
+          : null;
+        // The per-event envelope cwd is authoritative; only fill a gap.
+        if (directory && !_sessionCwdById.has(sessionId)) _sessionCwdById.set(sessionId, directory);
+        const titled = captureV2Title(sessionId, info.title);
+        if (titled) sendMetadataV2(titled, { session_title: info.title });
+        if (_lastUsedBySession.has(sessionId)) pushV2ContextUsage(sessionId);
+      }
+      void drainIdentityGate(sessionId);
+    })();
+  }
+
+  function rememberAlwaysAllow(sessionId, action) {
+    const normalized = normalizeSessionId(sessionId);
+    if (!normalized || typeof action !== "string" || !action) return;
+    const key = `${normalized}\u0000${action}`;
+    _alwaysAllowedBySessionAction.delete(key);
+    _alwaysAllowedBySessionAction.set(key, true);
+    while (_alwaysAllowedBySessionAction.size > V2_ALWAYS_ALLOW_MAX_ENTRIES) {
+      const oldest = _alwaysAllowedBySessionAction.keys().next().value;
+      if (oldest == null) break;
+      _alwaysAllowedBySessionAction.delete(oldest);
+    }
+  }
+
+  // Forward every resource verbatim (objects as JSON strings). The whole-body
+  // byte budget checked by the caller is the ONLY truncation boundary: an
+  // "allow" decides the whole ask, so a silently dropped or clipped resource
+  // would approve something the user never saw.
+  function normalizeV2Resources(value) {
+    const resources = Array.isArray(value) ? value : [];
+    return resources.map((item) => (typeof item === "string" ? item
+      : (item && typeof item === "object" ? JSON.stringify(item) : String(item))));
+  }
+
+  function buildV2PermissionBody(event, requestId) {
+    const sessionId = normalizeSessionId(typeof event.sessionID === "string" ? event.sessionID : "")
+      || DEFAULT_SESSION_ID;
+    const action = typeof event.action === "string" && event.action ? event.action : "unknown";
+    const forwardedResources = normalizeV2Resources(event.resources);
+    const body = {
+      agent_id: AGENT_ID,
+      hook_source: HOOK_SOURCE,
+      tool_name: action,
+      tool_input: forwardedResources.length === 1
+        ? { resource: forwardedResources[0] }
+        : { resources: forwardedResources },
+      // v2 has no host-side pattern persistence; the single always-candidate is
+      // the action itself and resolves to a session-scoped in-plugin rule.
+      patterns: [],
+      always: [action],
+      session_id: sessionId,
+      request_id: requestId,
+    };
+    // Best-effort cwd learned from the event envelope (location.directory) —
+    // improves the bubble's session folder; omitted when unknown.
+    const cwd = _sessionCwdById.get(sessionId);
+    if (cwd) body.cwd = cwd;
+    const metadata = event.metadata;
+    if (metadata && typeof metadata === "object" && !Array.isArray(metadata)) {
+      body.permission_metadata = metadata;
+    }
+    return body;
+  }
+
+  // Decision contract with Clawd's v2 blocking adapter (server-route-permission
+  // opencode-v2 branch): 200 + identity header + JSON { decision, message? }
+  // resolves the await; every other status (including 204), identity mismatch,
+  // unparseable body, timeout and transport error all mean "no decision" and
+  // leave the effect untouched.
+  async function deliverV2BlockingPermission(snapshot) {
+    const candidates = getPermissionPortCandidates();
+    for (const port of candidates) {
+      if (snapshot.cancelled) return { decision: null };
+      const controller = new AbortController();
+      const sessionId = snapshot.body.session_id;
+      let pending = _blockingPermissionsBySession.get(sessionId);
+      if (!pending) {
+        pending = new Set();
+        _blockingPermissionsBySession.set(sessionId, pending);
+      }
+      const item = { controller, snapshot };
+      pending.add(item);
+      const timer = setTimeout(() => controller.abort(), V2_PERMISSION_BLOCKING_TIMEOUT_MS);
+      try {
+        const res = await fetch(`http://127.0.0.1:${port}/permission`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: snapshot.payload,
+          signal: controller.signal,
+        });
+        const header = res.headers.get(CLAWD_SERVER_HEADER);
+        if (header !== CLAWD_SERVER_ID) {
+          debugLog(`PERM[${snapshot.reqId}] port=${port} identity-mismatch header=${header}`);
+          continue;
+        }
+        if (res.status === 204) {
+          try { await res.text(); } catch {}
+          return { decision: null };
+        }
+        const text = await res.text();
+        // Only a 200 carries Clawd's decision. A 403/500 body that happens to
+        // contain a valid JSON decision must never be honoured — drain it and
+        // treat it as no-decision so the native prompt takes over.
+        if (res.status !== 200) {
+          debugLog(`PERM[${snapshot.reqId}] port=${port} status=${res.status} no-decision`);
+          return { decision: null };
+        }
+        let parsed = null;
+        try { parsed = JSON.parse(text); } catch {}
+        const decision = parsed && typeof parsed.decision === "string" ? parsed.decision : null;
+        if (decision !== "allow" && decision !== "always" && decision !== "deny") {
+          debugLog(`PERM[${snapshot.reqId}] port=${port} unsupported-decision`);
+          return { decision: null };
+        }
+        return {
+          decision,
+          message: parsed && typeof parsed.message === "string" ? parsed.message : "",
+        };
+      } catch (err) {
+        debugLog(`PERM[${snapshot.reqId}] port=${port} ERR ${err && err.name}/${err && err.message}`);
+      } finally {
+        clearTimeout(timer);
+        pending.delete(item);
+        if (pending.size === 0 && _blockingPermissionsBySession.get(sessionId) === pending) {
+          _blockingPermissionsBySession.delete(sessionId);
+        }
+      }
+    }
+    return { decision: null };
+  }
+
+  // evaluate-hook callback. Runs for host-configured allow AND ask effects;
+  // configured deny is final and never reaches the hook (upstream docs). Any
+  // failure path leaves `event.effect` untouched so the native prompt wins —
+  // this hook must never throw into the host.
+  async function handleV2PermissionEvaluate(event) {
+    if (!event || typeof event !== "object") return;
+    if (event.effect !== "ask") return;
+
+    const sessionId = normalizeSessionId(typeof event.sessionID === "string" ? event.sessionID : "");
+    const action = typeof event.action === "string" && event.action ? event.action : "unknown";
+    const alwaysKey = `${sessionId}\u0000${action}`;
+    if (_alwaysAllowedBySessionAction.has(alwaysKey)) {
+      event.effect = "allow";
+      debugLog(`PERM always-hit session=${sessionId || "(default)"} action=${action}`);
+      return;
+    }
+
+    const toolCallId = event.source && typeof event.source.id === "string" && event.source.id
+      ? event.source.id
+      : `req${++_permissionReqCounter}`;
+    // `request_id` stays tool-call-scoped: E1/E2 evidence shows one tool call
+    // can raise SEVERAL distinct asks (external_directory + edit) that all share
+    // source.id and this request_id, so it is NOT an ask identity. Every ask is
+    // forwarded independently — residual hooks are removed by disposing their
+    // registration (see setup), never by collapsing content here.
+    const requestId = `v2:${toolCallId}`;
+    const body = buildV2PermissionBody(event, requestId);
+    const payload = JSON.stringify(body);
+    if (Buffer.byteLength(payload, "utf8") > V2_PERMISSION_MAX_BODY_BYTES) {
+      debugLog(`PERM skip action=${action} reason=body-over-budget bytes=${Buffer.byteLength(payload, "utf8")}`);
+      return;
+    }
+
+    const snapshot = {
+      body,
+      payload,
+      reqId: ++_reqCounter,
+      logTag: `PERM action=${action} req=${requestId}`,
+    };
+    debugLog(`PERM forward action=${action} session=${sessionId || "(default)"} req=${requestId}`);
+    const outcome = await deliverV2BlockingPermission(snapshot);
+    if (snapshot.cancelled) return;
+    if (outcome.decision === "allow") {
+      event.effect = "allow";
+      debugLog(`PERM resolved allow req=${requestId}`);
+    } else if (outcome.decision === "always") {
+      rememberAlwaysAllow(sessionId, action);
+      event.effect = "allow";
+      debugLog(`PERM resolved always req=${requestId}`);
+    } else if (outcome.decision === "deny") {
+      event.effect = "deny";
+      if (outcome.message) event.message = outcome.message;
+      debugLog(`PERM resolved deny req=${requestId}`);
+    } else {
+      debugLog(`PERM no-decision → native prompt req=${requestId}`);
+    }
+  }
+
+  // Plugin definition (the object form v2's loader requires). setup runs when
+  // the service loads the plugin and returns its cleanup function.
+  const definition = {
+    id: pluginId,
+    async setup(ctx) {
+      // #1026 orphan inert gate — before every side effect, exactly like v1.
+      const managedGate = evaluateManagedLayoutGate(import.meta.url, {
+        agentId: AGENT_ID,
+        pluginDirName: markerPluginDirName,
+      });
+      if (managedGate.mode === "inert") {
+        return () => {};
+      }
+      resetDebugLog();
+      _ctx = ctx;
+      const app = ctx && ctx.app && typeof ctx.app === "object" ? ctx.app : {};
+      debugLog(`INIT v2 pid=${process.pid} app=${app.name || "?"}@${app.version || "?"} gate=${managedGate.mode}`);
+
+      // Reload idempotency: a host reload() re-runs setup. Tear down the
+      // previous generation so exactly one event loop and one evaluate hook stay
+      // live. The teardown is captured locally (not read off the shared field at
+      // call time) so a later, superseded cleanup cannot touch this generation.
+      const controller = new AbortController();
+      const instance = { disposed: false, registration: null };
+      const disposeRegistration = (registration) => {
+        if (!registration) return undefined;
+        if (typeof registration === "function") return registration();
+        if (typeof registration.dispose === "function") return registration.dispose();
+        return undefined;
+      };
+      // Bounded wrapper: a host whose registration.dispose() hangs must not
+      // wedge reload or plugin unload. The bound only logs; local teardown has
+      // already run by the time this is called.
+      const disposeRegistrationBounded = (registration) => {
+        let pending;
+        try {
+          pending = disposeRegistration(registration);
+        } catch (err) {
+          debugLog(`EVALUATE dispose-failed: ${err && err.message}`);
+          return Promise.resolve();
+        }
+        if (!pending || typeof pending.then !== "function") return Promise.resolve(pending);
+        return new Promise((resolve) => {
+          let settled = false;
+          const timer = setTimeout(() => {
+            if (settled) return;
+            settled = true;
+            debugLog(`EVALUATE dispose-timeout ms=${V2_REGISTRATION_DISPOSE_TIMEOUT_MS}`);
+            resolve();
+          }, V2_REGISTRATION_DISPOSE_TIMEOUT_MS);
+          if (timer && typeof timer.unref === "function") timer.unref();
+          pending.then(
+            () => { if (settled) return; settled = true; clearTimeout(timer); resolve(); },
+            (err) => {
+              if (settled) return;
+              settled = true;
+              clearTimeout(timer);
+              debugLog(`EVALUATE dispose-failed: ${err && err.message}`);
+              resolve();
+            },
+          );
+        });
+      };
+      // Local teardown is SYNCHRONOUS and runs BEFORE the (possibly slow)
+      // registration dispose: a superseded generation must not clear the next
+      // instance's identity-recovery state when its dispose finally resolves.
+      const disposeThisInstance = () => {
+        instance.disposed = true;
+        for (const sessionId of _blockingPermissionsBySession.keys()) abortV2BlockingPermissions(sessionId);
+        controller.abort();
+        dropV2IdentityRecovery();
+        const registration = instance.registration;
+        instance.registration = null;
+        return disposeRegistrationBounded(registration);
+      };
+
+      // Publish THIS instance's dispose BEFORE any await. A reload that starts
+      // while we are still setting up can then retire us, and the registration
+      // is disposed the moment it resolves instead of leaving a live hook.
+      const previousDispose = definition._dispose;
+      definition._dispose = disposeThisInstance;
+      if (previousDispose) {
+        try {
+          const pending = previousDispose();
+          // NEVER await the previous generation's registration dispose: a slow
+          // or hung host dispose must not delay this generation's subscription.
+          // Its own promise is already bounded and never rejects.
+          if (pending && typeof pending.catch === "function") pending.catch(() => {});
+        } catch {}
+      }
+      if (instance.disposed) {
+        return async () => {};
+      }
+
+      // Event subscription FIRST — state reporting must never wait on the
+      // permission-hook registration (a host that never resolves hook() would
+      // otherwise leave Clawd blind to all v2 events).
+      if (ctx && ctx.event && typeof ctx.event.subscribe === "function") {
+        void (async () => {
+          for await (const envelope of ctx.event.subscribe({ signal: controller.signal })) {
+            try {
+              handleV2Event(envelope);
+            } catch (err) {
+              debugLog(`ERROR in v2 event handler: ${err && err.message}`);
+            }
+          }
+          debugLog("EVENT stream ended");
+        })().catch((err) => {
+          // Intentional disposal aborts the iterator; anything else is an
+          // unexpected subscription failure and must stay visible.
+          const aborted = controller.signal.aborted
+            || (err && (err.name === "AbortError" || err.code === "ABORT_ERR"));
+          if (aborted) {
+            debugLog("EVENT stream aborted by dispose");
+          } else {
+            debugLog(`EVENT stream error: ${err && err.message}`);
+          }
+        });
+        debugLog("EVENT subscription started");
+      } else {
+        debugLog("EVENT subscribe unavailable");
+      }
+
+      // Hook registration is DETACHED: setup never blocks on it. opencode
+      // upstream v2.0.15 (packages/plugin/src/promise/registration.ts) returns
+      // Promise<Registration>; a synchronous function / { dispose() } object is
+      // tolerated too.
+      if (ctx && ctx.permission && typeof ctx.permission.hook === "function") {
+        let registrationPromise;
+        try {
+          registrationPromise = ctx.permission.hook("evaluate", (event) => {
+            // opencode upstream v2.0.15 (packages/core/src/plugin/hooks.ts)
+            // trigger() calls every still-registered callback in sequence with
+            // the SAME mutable event, and our own registration.dispose() is
+            // async — so during a reload window the retired generation's
+            // callback can still fire. It must do nothing: otherwise it would
+            // forward an ask the current generation then forwards again.
+            if (instance.disposed) return;
+            // Never throw into the host: a rejected evaluate callback must not
+            // wedge the permission pipeline.
+            return handleV2PermissionEvaluate(event).catch((err) => {
+              debugLog(`PERM hook error: ${err && err.message}`);
+            });
+          });
+        } catch (err) {
+          debugLog(`EVALUATE register-failed: ${err && err.message}`);
+          registrationPromise = null;
+        }
+        if (registrationPromise) {
+          Promise.resolve(registrationPromise).then((registration) => {
+            if (instance.disposed) {
+              // Retired while the registration was in flight: dispose it now.
+              return disposeRegistrationBounded(registration);
+            }
+            instance.registration = registration || null;
+            debugLog("EVALUATE hook registered");
+            return undefined;
+          }, (err) => {
+            // A rejected registration must not fail setup or leak an unhandled
+            // rejection; event handling continues without a live hook.
+            debugLog(`EVALUATE register-failed: ${err && err.message}`);
+          });
+        }
+      } else {
+        debugLog("EVALUATE unavailable: no ctx.permission.hook");
+      }
+
+      return async () => {
+        // Only dispose if this cleanup's generation is still the active one. A
+        // cleanup that fires after a newer setup replaced it must leave the new
+        // subscription and identity-recovery state completely untouched.
+        if (definition._dispose !== disposeThisInstance) return;
+        definition._dispose = null;
+        try { await disposeThisInstance(); } catch {}
+      };
+    },
+  };
+
+  const __testInternalsV2 = {
+    buildStateBody: (state, eventName, sessionId) => {
+      const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
+      const body = {
+        state, session_id: clawdSessionId, event: eventName,
+        agent_id: AGENT_ID, hook_source: HOOK_SOURCE,
+      };
+      const title = _sessionTitleById.get(clawdSessionId);
+      if (title) body.session_title = title;
+      return body;
+    },
+    translateV2Event,
+    handleV2Event,
+    handleV2PermissionEvaluate,
+    buildV2PermissionBody,
+    deliverV2BlockingPermission,
+    deliverV2StatePost: (snapshot) => deliverV2StatePost(snapshot),
+    postStateToClawdV2,
+    sendStateV2,
+    sendMetadataV2,
+    reportV2ContextUsage,
+    pushV2ContextUsage,
+    ensureV2SessionHydration,
+    resolveV2ModelLimit,
+    rememberAlwaysAllow,
+    captureV2Title,
+    getPortCandidates,
+    getPermissionPortCandidates,
+    readRuntimePort,
+    readPermissionRuntimePort,
+    flushDebugLog,
+    get _debugLogPath() { return DEBUG_LOG_PATH; },
+    get _cachedPort() { return _cachedPort; },
+    set _cachedPort(v) { _cachedPort = v; },
+    get _lastStatePerSession() { return _lastStatePerSession; },
+    get _sessionTitleById() { return _sessionTitleById; },
+    get _sessionCwdById() { return _sessionCwdById; },
+    get _sessionParentById() { return _sessionParentById; },
+    get _sessionModelById() { return _sessionModelById; },
+    get _lastUsedBySession() { return _lastUsedBySession; },
+    get _toolEventSeen() { return _toolEventSeen; },
+    get _hydrationState() { return _hydrationState; },
+    get _pendingIdentityBySession() { return _pendingIdentityBySession; },
+    get _hydrationAttemptBySession() { return _hydrationAttemptBySession; },
+    get _identityDrainingBySession() { return _identityDrainingBySession; },
+    get _identityPendingMax() { return V2_IDENTITY_PENDING_MAX; },
+    get _alwaysAllowedBySessionAction() { return _alwaysAllowedBySessionAction; },
+    get _statePostQueueBySession() { return _statePostQueueBySession; },
+  };
+  Object.defineProperty(definition, "__test", { value: __testInternalsV2 });
+
+  return definition;
 }

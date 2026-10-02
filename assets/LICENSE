@@ -23,6 +23,10 @@ Code-native fallback artwork:
   tools/generate-grok-fallback-icon.js and are dedicated to the public domain
   under CC0-1.0 by the Clawd project. They are not the xAI/Grok logo.
 
+Fluent Emoji palette and brush in assets/svg/clawd-designing.svg:
+  Copyright (c) Microsoft Corporation. Licensed under the MIT License.
+  See NOTICE.md for the source files and license text.
+
 Except for assets that carry their own explicit license stated in this file
 above (for example the CC0-1.0 files listed under "Code-native fallback
 artwork:"), you may NOT copy, modify, distribute, or use any artwork from this

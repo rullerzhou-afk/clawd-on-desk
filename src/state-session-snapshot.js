@@ -9,6 +9,7 @@ const {
   isSupersededLocalCodexProcessSession,
 } = require("./state-session-dedupe");
 const { readCodexThreadName } = require("../hooks/codex-session-index");
+const { isWslSourced } = require("./remote-process-metadata");
 
 // ── Session source derivation ────────────────────────────────────────
 
@@ -41,6 +42,7 @@ const EVENT_LABEL_KEYS = {
   SessionStart: "eventLabelSessionStart",
   SessionEnd: "eventLabelSessionEnd",
   UserPromptSubmit: "eventLabelUserPromptSubmit",
+  UserPromptExpansion: "eventLabelUserPromptSubmit",
   PreToolUse: "eventLabelPreToolUse",
   PostToolUse: "eventLabelPostToolUse",
   PostToolUseFailure: "eventLabelPostToolUseFailure",
@@ -154,6 +156,9 @@ function isEndedSessionBadge(badge) {
 function shouldAutoClearDetachedSession(session, badge, options = {}) {
   if (options.sessionHudCleanupDetached !== true) return false;
   if (!session || session.headless || session.state !== "idle" || session.agentPid) return false;
+  // A WSL session's sourcePid is a Linux PID that can alias a live process on
+  // the Windows host. Never probe it (or hide the session) on that basis.
+  if (isWslSourced({ wslDistro: session.wslDistro, host: session.host })) return false;
   if (!session.pidReachable || !session.sourcePid) return false;
   if (!isEndedSessionBadge(badge)) return false;
   const isProcessAlive = typeof options.isProcessAlive === "function"

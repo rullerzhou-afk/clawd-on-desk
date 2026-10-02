@@ -33,7 +33,19 @@ jobs:
       - run: npm ci
       - name: Run full suite
         if: runner.os != 'Linux'
+        env:
+          CLAWD_TEST_REPORT_FILE: ${{ runner.temp }}/node-test-report.tap
         run: npm test
       - name: Run full suite with a Linux display
         if: runner.os == 'Linux'
+        env:
+          CLAWD_TEST_REPORT_FILE: ${{ runner.temp }}/node-test-report.tap
         run: xvfb-run -a npm test
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-test-report-${{ matrix.os }}
+          path: ${{ runner.temp }}/node-test-report.tap
+          retention-days: 14
+          if-no-files-found: ignore

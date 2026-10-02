@@ -27,6 +27,7 @@ const qwenwork = require("./qwenwork");
 const workbuddy = require("./workbuddy");
 const traecode = require("./traecode");
 const grokBuild = require("./grok-build");
+const minimax = require("./minimax");
 
 const AGENTS = [
   claudeCode,
@@ -55,6 +56,7 @@ const AGENTS = [
   workbuddy,
   traecode,
   grokBuild,
+  minimax,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
 

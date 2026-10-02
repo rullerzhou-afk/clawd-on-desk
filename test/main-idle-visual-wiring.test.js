@@ -86,6 +86,7 @@ describe("main default idle visual wiring", () => {
       "registerPermissionIpc({"
     );
     assert.ok(registration.includes("setAccessoryMirror: setAccessoryMirrored,"));
+    assert.ok(registration.includes("refreshIdleVisualAfterDrag,"));
   });
 
   it("accepts visual settlement only from the live renderer main frame", () => {

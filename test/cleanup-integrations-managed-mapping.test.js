@@ -58,7 +58,7 @@ describe("#1026 r1 cleanupIntegrations structured-result mapping", () => {
   it("keeps the success case: registration removed leaves no active entry", async () => {
     const home = tmp("clawd-cleanup-map-ok-");
     fs.mkdirSync(path.join(home, ".config", "opencode"), { recursive: true });
-    registerOpencodePlugin({ silent: true, homeDir: home });
+    registerOpencodePlugin({ silent: true, v2Host: "v2", homeDir: home });
 
     const result = await cleanupIntegrations({ homeDir: home, silent: true });
     const agent = opencodeAgent(result);

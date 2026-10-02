@@ -26,7 +26,7 @@ A Clawd theme is a folder whose top level contains `theme.json`. The folder name
 
 4. Open `Settings...` -> `Theme` and select the theme. If Clawd was already open and the theme does not appear, restart Clawd.
 
-Avoid using a folder id that matches a built-in theme (`clawd`, `calico`, or `cloudling`) or an official downloadable theme id (`hash-sage`). Built-in themes take priority over user themes with the same id, and an official id is reserved for the downloadable official theme manager. Importing a theme with a reserved id is rejected.
+Avoid using a folder id that matches a built-in theme (`clawd`, `calico`, or `cloudling`) or an official downloadable theme id (`hash-sage` or `whale-chan`). Built-in themes take priority over user themes with the same id, and an official id is reserved for the downloadable official theme manager. Importing a theme with a reserved id is rejected.
 
 ## Create A New Theme
 
@@ -259,6 +259,7 @@ The existing schema fields are the only runtime truth. They already act as the t
 | `rendering.objectChannelFiles` | Optional SVG basename list for files that specifically require document-backed runtime control. Listed files are required assets; external SVGs remain sanitized. |
 | `miniMode.supported` | Enables mini mode for this theme. When `false`, Mini Mode is gated off in the menu/tray and edge-snap path. |
 | `idleAnimations` | Optional idle random pool. Omit or leave empty to keep idle on `states.idle[0]`. |
+| `idleVisualOptions` | Optional selectable-only files for the Default idle visual picker. These files do not enter either idle random pool. |
 | `idleEasterEggs` | Optional conditional idle pool. Each entry runs only for an exact selected head + mouth accessory pair and is subject to its own probability and cooldown. |
 | `reactions` | Optional click/drag reaction block. Omit it to disable click and drag reactions entirely. |
 | `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
@@ -416,6 +417,20 @@ Random animations played during idle periods:
 
 Omit `idleAnimations` or use an empty array if you want idle to stay on `states.idle[0]` with no random pool.
 
+To offer a visual only in Settings → Default idle visual, declare `idleVisualOptions` as an array of objects with a `file` basename:
+
+```json
+"idleVisualOptions": [
+  { "file": "idle-pool.apng" }
+]
+```
+
+The picker lists every `states.idle` file, then `idleAnimations`, then `idleVisualOptions`, without duplicates. `states.idle[0]` stays the theme default. Files in `idleVisualOptions` never enter the random `idleAnimations` pool or the random `states.idle` choice; they appear while resting only after a user selects one. Invalid entries and missing assets are dropped with a loader warning. Variants may replace this whole array to offer their own choices.
+
+If an animation's effect reaches out to the right of the pet (bubbles, sparks, a thrown object), set `"mirrorOnRightSide": true` on its entry. The pet window may overhang the right screen edge, so while the pet sits on the right half of its display the animation plays mirrored and the effect stays on screen. Draw such art reaching right; give it a `mirroredFiles` variant if it carries legible glyphs.
+
+This also applies when the animation is selected as the default idle visual; its direction updates when a drag ends, even without a drag reaction. The follow-idle file (`states.idle[0]`) is never mirrored, so cursor tracking keeps its direction. The flag is ignored for entries whose file or mirrored variant is that follow-idle file.
+
 ### Conditional Idle Easter Eggs
 
 `idleEasterEggs` declares rare idle visuals that belong to one exact head + mouth accessory combination. It does not add another user-selectable idle option:
@@ -492,6 +507,27 @@ Mini mode hides the character at the screen edge. Set `"supported": false` or om
 If `miniMode.supported` is `true`, the validator expects all 8 mini states shown above. `mini-idle` only needs to be SVG when `mini-idle` is listed in `eyeTracking.states`.
 
 `mini-working` is optional. If you provide `miniMode.states["mini-working"]`, Clawd can show a compact working animation while the pet is in mini mode. If you omit it, working/thinking/juggling events do not break mini mode; Clawd keeps the current mini visual.
+
+Two more mini states are optional:
+
+- `mini-peek-hold` plays in a loop after `mini-peek` reaches its `miniMode.timings.autoReturn["mini-peek"]` time while the pointer is still over the pet. Without it, Clawd shows `mini-idle` as before. Leaving the pet returns to `mini-idle` and slides the window home.
+- `mini-sleep-peek` plays while hovering over a sleeping mini pet. Without it, the window still slides but `mini-sleep` remains visible. Leaving returns to `mini-sleep`; turning off Do Not Disturb slides home and shows `mini-idle`.
+
+The hover slide can also be tuned without changing the entry or resting position. `miniMode.offsetRatio` above controls how far the pet hides at rest; the following `peek.offsetRatio` controls the extra distance it slides on hover:
+
+```json
+"miniMode": {
+  "peek": { "offsetRatio": 0.0806, "delayMs": 375, "durationMs": 125 },
+  "sleepPeek": { "offsetRatio": 0.0806, "delayMs": 0, "durationMs": 750 },
+  "states": {
+    "mini-peek-hold": ["mini-peek-hold.svg"],
+    "mini-sleep-peek": ["mini-sleep-peek.svg"]
+  },
+  "timings": { "autoReturn": { "mini-peek": 1292 } }
+}
+```
+
+`offsetRatio` moves `Math.round(current window width × offsetRatio)` pixels; omit it for 25px. `delayMs` is the wait after hover before the window starts sliding (default 0ms). `durationMs` sets both the outward and return slide (default 200ms); easing remains `t × (2 − t)`. Each omitted `sleepPeek` field inherits the matching `peek` field, then the default. Valid ranges are `offsetRatio` 0–0.5, `delayMs` 0–5000, and `durationMs` 16–5000. Invalid fields are ignored with a loader warning. A pointer that leaves during the delay cancels the pending slide. All fields and both states are opt-in; themes that omit them keep the existing hover behavior.
 
 `mirroredFiles` (top level) is optional. Clawd mirrors some visuals: every mini visual against the left screen edge, and a dedicated `roam` visual while the walk heads left (including the pre-entry crabwalk toward the left edge). Raster art with legible text or glyphs (a scroll, a talisman, code symbols) reads backwards once mirrored. Map each such file to a variant whose glyphs are pre-mirrored; whenever Clawd draws that file mirrored it shows the variant instead, and the mirror turns its text the right way round:
 
@@ -599,12 +635,29 @@ If two themes have very different visible body heights even though the window si
 - `contentBox` — the visible body area in viewBox units, not the whole exported canvas. Settings also frames the theme card thumbnail with it: measured against the preview file's own `fileViewBoxes` entry when that file has a valid one and the content box fits inside it, and against the root `viewBox` otherwise
 - `centerX` — the horizontal anchor inside the viewBox
 - `baselineY` — the standing baseline inside the viewBox
-- `visibleHeightRatio` — how tall the visible body should be relative to the window height
+- `visibleHeightRatio` — the height of `contentBox` as a fraction of the window height (default `0.58`). See [Character Size](#character-size) for how to pick it
 - `baselineBottomRatio` — distance from the baseline to the bottom of the window
 
 Mini mode still uses the existing `objectScale` + per-file offsets, so this is mainly for normal mode alignment.
 
 The theme card's preview file is the optional top-level `preview` when you declare one, and `states.idle[0]` otherwise; a variant card uses the variant's own `preview` (or its first `idleAnimations` file) when that asset exists, and is framed by that file. Point `preview` at a file whose canvas contains `contentBox` — a file drawn on a smaller canvas makes the card fall back to the root `viewBox`.
+
+### Character Size
+
+The size slider sets the window size, not the character size. How much of that window the character fills is up to the theme, so two themes can look very different at the same slider position. To match the built-in themes:
+
+- Make `contentBox` hug the idle pose: measure the pose's visible bounding box in viewBox units. Transparent canvas margins are not part of the body.
+- Aim for that bounding box to have `sqrt(width × height)` at about 36% of the window's side length. Clawd, Calico and Cloudling all sit within a few percent of that.
+- With a tight `contentBox`, that works out to `visibleHeightRatio ≈ 0.36 × sqrt(contentBox.height / contentBox.width)`:
+
+  | Tight `contentBox`, height : width | `visibleHeightRatio` |
+  |---|---|
+  | wide, 1 : 1.5 | about 0.29 |
+  | square, 1 : 1 | about 0.36 |
+  | standing figure, 1.5 : 1 | about 0.44 |
+
+- Do not copy `0.58` from the example above onto a tight `contentBox`. Clawd's own `contentBox` is about twice as tall as its body, which is why its ratio is that large. With a box that hugs the body, `0.58` makes the character clearly too large: about 1.6 times the built-in size for a square pose, and close to twice for a wide one.
+- The formula is a starting point. Check the result next to Clawd at the same slider position and nudge the ratio until the two appear about the same size. Every normal-mode state scales with this ratio. Once the pet is in mini mode, the ratio no longer applies.
 
 ## Asset Guidelines
 

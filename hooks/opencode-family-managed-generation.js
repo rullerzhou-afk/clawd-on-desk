@@ -7,7 +7,8 @@
 //   Program Files. opencode 1.18.31 silently skips plugin dirs it cannot read
 //   there. The fix is not to copy files once, but to maintain a single,
 //   content-addressed, verified generation under the target home and register
-//   THAT. Content addressing keeps the four-file bundle from tearing across
+//   THAT. Content addressing keeps the bundle (four files, plus the opencode
+//   v2 entry file) from tearing across
 //   versions; the target owner record lets the plugin itself detect orphaned
 //   generations after Clawd is deleted and go inert.
 //
@@ -22,6 +23,7 @@
 //         <agentId>-plugin/package.json
 //         opencode-family-plugin/core.mjs
 //         opencode-family-plugin/session-ids.mjs
+//         [<agentId>-plugin-v2/index.mjs]   ← opencode only, issue #1039
 //
 // SAFETY INVARIANTS (from the v3 plan):
 //   - Source is read-only: nothing here ever mutates or chmods the source
@@ -233,13 +235,19 @@ function generationDir(target, bundleHash) {
 // Bundle / manifest
 // ---------------------------------------------------------------------------
 
-function bundleRelPaths(pluginDirName) {
-  return [
+function bundleRelPaths(pluginDirName, v2PluginDirName) {
+  const rels = [
     `${pluginDirName}/index.mjs`,
     `${pluginDirName}/package.json`,
     `${SHARED_PLUGIN_DIR}/core.mjs`,
     `${SHARED_PLUGIN_DIR}/session-ids.mjs`,
   ];
+  // OpenCode 2.x entry (issue #1039): a single extra file — the v2 loader
+  // resolves a directory specifier to its index.mjs without needing a
+  // package.json (verified on 2.0.15). Members without a v2 entry (MiMo)
+  // keep the four-file bundle.
+  if (v2PluginDirName) rels.push(`${v2PluginDirName}/index.mjs`);
+  return rels;
 }
 
 // Source root is the hooks/ directory that contains both <plugin>/ and
@@ -248,7 +256,7 @@ function readSourceBundle(cfg, sourcePluginDir, fsImpl) {
   const fsy = fsImpl || fs;
   const sourceRoot = path.dirname(sourcePluginDir);
   const files = [];
-  for (const rel of bundleRelPaths(cfg.pluginDirName)) {
+  for (const rel of bundleRelPaths(cfg.pluginDirName, cfg.v2PluginDirName)) {
     const abs = path.join(sourceRoot, ...rel.split("/"));
     let bytes;
     try {
@@ -317,7 +325,7 @@ function readJsonSafe(fsImpl, filePath) {
 // single inspector used by install, uninstall, Doctor and the classifier.
 function inspectGeneration(genDir, cfg, agentId, options = {}) {
   const fsImpl = options.fs || fs;
-  const rels = bundleRelPaths(cfg.pluginDirName);
+  const rels = bundleRelPaths(cfg.pluginDirName, cfg.v2PluginDirName);
   const dirName = path.basename(genDir);
 
   // A committed generation directory is content-addressed: its name MUST be
@@ -344,18 +352,28 @@ function inspectGeneration(genDir, cfg, agentId, options = {}) {
   if (!manifest.files || typeof manifest.files !== "object" || Array.isArray(manifest.files)) {
     return { ok: false, reason: "manifest-files-missing" };
   }
-  // Exactly the fixed four paths — no extra, no missing.
+  // Exactly the contract paths — no extra, no missing. The pre-#1039 four-file
+  // set remains a valid historical generation shape (owned-stale): registered
+  // targets written by older Clawd versions must keep classifying as
+  // owned-managed-stale so register can migrate them; anything else is a
+  // tampered/incoherent manifest and fails closed.
   const manifestKeys = Object.keys(manifest.files).sort();
   const expectedKeys = [...rels].sort();
-  if (manifestKeys.length !== expectedKeys.length || manifestKeys.some((key, i) => key !== expectedKeys[i])) {
+  const legacyKeys = cfg.v2PluginDirName
+    ? [...bundleRelPaths(cfg.pluginDirName, null)].sort()
+    : expectedKeys;
+  const matchesSet = (keys) => manifestKeys.length === keys.length
+    && manifestKeys.every((key, i) => key === keys[i]);
+  if (!matchesSet(expectedKeys) && !matchesSet(legacyKeys)) {
     return { ok: false, reason: "manifest-file-set-mismatch" };
   }
+  const relsToVerify = matchesSet(expectedKeys) ? rels : bundleRelPaths(cfg.pluginDirName, null);
 
   const byRel = new Map();
   for (const file of (options.files || [])) byRel.set(file.rel, file.bytes);
 
   const diskFiles = [];
-  for (const rel of rels) {
+  for (const rel of relsToVerify) {
     const entry = manifest.files[rel];
     if (!entry || typeof entry.sha256 !== "string" || !Number.isInteger(entry.bytes)) {
       return { ok: false, reason: "manifest-file-entry-missing", rel };
@@ -406,7 +424,7 @@ function bundleBytesMatch(pluginDir, cfg, sourceFiles, fsImpl) {
   const fsy = fsImpl || fs;
   const root = path.dirname(pluginDir);
   const byRel = new Map(sourceFiles.map((file) => [file.rel, file.bytes]));
-  for (const rel of bundleRelPaths(cfg.pluginDirName)) {
+  for (const rel of bundleRelPaths(cfg.pluginDirName, cfg.v2PluginDirName)) {
     const expected = byRel.get(rel);
     if (!expected) return false;
     const abs = path.join(root, ...rel.split("/"));

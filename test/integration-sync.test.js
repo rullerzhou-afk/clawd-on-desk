@@ -89,6 +89,7 @@ function makeRuntime(overrides = {}) {
     syncQoderWorkHooksImpl: () => calls.push({ name: "qoderwork" }),
     syncTraeCodeHooksImpl: () => calls.push({ name: "traecode" }),
     syncQwenWorkHooksImpl: () => calls.push({ name: "qwenwork" }),
+    syncMinimaxHooksImpl: () => calls.push({ name: "minimax" }),
     ...ctxOverrides,
   }, calls);
   const runtime = createIntegrationSyncRuntime({
@@ -319,6 +320,7 @@ describe("integration sync runtime", () => {
       "qoderwork",
       "traecode",
       "qwenwork",
+      "minimax",
     ]);
   });
 
@@ -355,6 +357,7 @@ describe("integration sync runtime", () => {
       "qoderwork",
       "traecode",
       "qwenwork",
+      "minimax",
     ]);
   });
 

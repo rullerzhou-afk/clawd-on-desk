@@ -6,6 +6,7 @@ const codexPetImporter = require("./codex-pet-importer");
 const { MARKER_FILENAME: OFFICIAL_THEME_MARKER_FILENAME } = require("./official-theme-installer");
 const {
   collectRequiredAssetFiles,
+  filterIdleVisualOptionsByAsset,
   mergeDefaults,
   validateTheme,
 } = require("./theme-schema");
@@ -14,7 +15,7 @@ const MAX_THEME_ZIP_BYTES = 80 * 1024 * 1024;
 const MAX_THEME_ZIP_ENTRY_BYTES = 40 * 1024 * 1024;
 const MAX_THEME_UNZIPPED_BYTES = 160 * 1024 * 1024;
 const MAX_THEME_JSON_BYTES = 512 * 1024;
-const RESERVED_THEME_IDS = new Set(["clawd", "calico", "cloudling", "hash-sage", "template"]);
+const RESERVED_THEME_IDS = new Set(["clawd", "calico", "cloudling", "hash-sage", "whale-chan", "template"]);
 
 function isPathInsideDir(pathModule, rootDir, targetPath) {
   const root = pathModule.resolve(rootDir);
@@ -146,6 +147,9 @@ function validateExtractedTheme({ fs, path, stagingDir, themeId }) {
   if (errors.length > 0) throw new Error(`theme.json validation failed: ${errors.join("; ")}`);
 
   const effective = mergeDefaults(raw, themeId, false);
+  filterIdleVisualOptionsByAsset(effective, (filename) => {
+    try { return fs.statSync(path.join(stagingDir, "assets", filename)).isFile(); } catch { return false; }
+  });
   const missingAssets = collectRequiredAssetFiles(effective)
     .filter((filename) => !fs.existsSync(path.join(stagingDir, "assets", filename)));
   if (missingAssets.length > 0) {

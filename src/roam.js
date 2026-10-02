@@ -12,6 +12,8 @@
 //   • Each animation step re-checks isRoamAllowed() so a state change to working /
 //     notification / permission cancels the roam immediately — no "pet drifting while
 //     working" regression.
+//   • Settings size preview holds roaming so anchored walk frames cannot
+//     overwrite the size currently chosen by the slider.
 //   • The first roam after entering idle uses ROAM_IDLE_DELAY_MS (8s); subsequent
 //     roams use ROAM_BETWEEN_DELAY_MS (4s).
 //   • When the state changes away from idle/roam (detected in tick or step),
@@ -76,6 +78,11 @@ module.exports = function initRoam(ctx) {
     if (state !== "idle" && state !== "roam") return false;
     if (ctx.miniTransitioning) return false;
     if (hasPermissionBubbleHold()) return false;
+    if (
+      typeof ctx.isSizePreviewActive === "function" &&
+      ctx.isSizePreviewActive()
+    )
+      return false;
     // #640: while the user is typing into a bubble's text field (macOS IME
     // editing), the pet must hold still — a wandering pet either drags the
     // bubble along (followPet anchoring) or walks over the box being typed

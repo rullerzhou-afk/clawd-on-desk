@@ -80,6 +80,103 @@ describe("quota ring display mode persistence", () => {
   });
 });
 
+describe("keep-size toggle rebase ordering", () => {
+  function makeSeededController(injectedDeps = {}) {
+    const prefsPath = makeTempPath();
+    prefs.save(prefsPath, {
+      ...prefs.getDefaults(),
+      keepSizeAcrossDisplays: true,
+      size: "P:10.5",
+    });
+    return {
+      ctrl: createSettingsController({ prefsPath, updates: updateRegistry, injectedDeps }),
+      prefsPath,
+    };
+  }
+
+  it("commits and broadcasts the rebased size before the disabled toggle", () => {
+    let ctrl;
+    let calls = 0;
+    const seeded = makeSeededController({
+      rebaseSizeToRealizedPixels: () => {
+        calls += 1;
+        assert.deepStrictEqual(ctrl.applyUpdate("size", "P:21"), { status: "ok" });
+      },
+    });
+    ctrl = seeded.ctrl;
+    const broadcasts = [];
+    ctrl.subscribe(({ changes, snapshot }) => {
+      broadcasts.push({ changes, size: snapshot.size, keepSizeAcrossDisplays: snapshot.keepSizeAcrossDisplays });
+    });
+
+    assert.deepStrictEqual(ctrl.applyUpdate("keepSizeAcrossDisplays", false), { status: "ok" });
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(broadcasts, [
+      { changes: { size: "P:21" }, size: "P:21", keepSizeAcrossDisplays: true },
+      { changes: { keepSizeAcrossDisplays: false }, size: "P:21", keepSizeAcrossDisplays: false },
+    ]);
+    assert.strictEqual(ctrl.get("size"), "P:21");
+    assert.strictEqual(ctrl.get("keepSizeAcrossDisplays"), false);
+    const saved = prefs.load(seeded.prefsPath).snapshot;
+    assert.strictEqual(saved.size, "P:21");
+    assert.strictEqual(saved.keepSizeAcrossDisplays, false);
+  });
+
+  it("leaves the toggle unchanged and unpersisted when rebasing throws", () => {
+    const { ctrl, prefsPath } = makeSeededController({
+      rebaseSizeToRealizedPixels: () => { throw new Error("rebase failed"); },
+    });
+    const originalFile = fs.readFileSync(prefsPath, "utf8");
+    const broadcasts = [];
+    ctrl.subscribe(({ changes }) => broadcasts.push(changes));
+
+    const result = ctrl.applyUpdate("keepSizeAcrossDisplays", false);
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /rebase failed/);
+    assert.strictEqual(ctrl.get("keepSizeAcrossDisplays"), true);
+    assert.strictEqual(ctrl.get("size"), "P:10.5");
+    assert.strictEqual(fs.readFileSync(prefsPath, "utf8"), originalFile);
+    assert.deepStrictEqual(broadcasts, []);
+  });
+
+  it("skips rebasing for an unchanged or enabled toggle", () => {
+    let calls = 0;
+    const { ctrl } = makeSeededController({
+      rebaseSizeToRealizedPixels: () => { calls += 1; },
+    });
+    assert.deepStrictEqual(ctrl.applyUpdate("keepSizeAcrossDisplays", true), { status: "ok", noop: true });
+    assert.strictEqual(calls, 0);
+    assert.deepStrictEqual(ctrl.applyUpdate("keepSizeAcrossDisplays", false), { status: "ok" });
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(ctrl.applyUpdate("keepSizeAcrossDisplays", true), { status: "ok" });
+    assert.strictEqual(calls, 1);
+  });
+
+  it("hydrates the toggle without running the rebase effect", () => {
+    let calls = 0;
+    const { ctrl } = makeSeededController({
+      rebaseSizeToRealizedPixels: () => { calls += 1; },
+    });
+    assert.deepStrictEqual(ctrl.hydrate({ keepSizeAcrossDisplays: false }), { status: "ok" });
+    assert.strictEqual(calls, 0);
+    assert.strictEqual(ctrl.get("keepSizeAcrossDisplays"), false);
+    assert.strictEqual(ctrl.get("size"), "P:10.5");
+  });
+
+  it("rejects the effect-bearing toggle through applyBulk", () => {
+    let calls = 0;
+    const { ctrl } = makeSeededController({
+      rebaseSizeToRealizedPixels: () => { calls += 1; },
+    });
+    const result = ctrl.applyBulk({ keepSizeAcrossDisplays: false });
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /effect-bearing keys cannot be updated via applyBulk/);
+    assert.strictEqual(calls, 0);
+    assert.strictEqual(ctrl.get("keepSizeAcrossDisplays"), true);
+    assert.strictEqual(ctrl.get("size"), "P:10.5");
+  });
+});
+
 describe("Kimi quota collection opt-in", () => {
   it("persists only through its command path", async () => {
     const prefsPath = makeTempPath();

@@ -263,4 +263,37 @@ describe("opencode-family Node reverse bridge", () => {
       clawdResponseRecognized = false;
     }
   });
+
+  it("returns a structured 502 when the host SDK throws an unreadable error", async (t) => {
+    const plugin = createOpencodeFamilyPlugin(OC);
+    const hooks = await plugin({
+      serverUrl: "http://127.0.0.1:1/",
+      directory: "/tmp/node-throw",
+      client: {
+        _client: {
+          post: () => {
+            const bomb = {};
+            Object.defineProperty(bomb, "message", { get() { throw new Error("getter bomb"); } });
+            throw bomb;
+          },
+        },
+      },
+    });
+    t.after(() => plugin.__test.closeBridgeForTest());
+    await hooks.event({
+      event: {
+        type: "permission.asked",
+        properties: { id: "per_node_throw", sessionID: "ses_node", permission: "bash", metadata: { command: "pwd" } },
+      },
+    });
+    const response = await requestBridge(plugin.__test._bridgeUrl, {
+      token: plugin.__test._bridgeTokenHex,
+      body: { request_id: "per_node_throw", reply: "once" },
+    });
+    assert.strictEqual(response.status, 502);
+    const body = JSON.parse(response.body);
+    assert.strictEqual(body.ok, false);
+    assert.strictEqual(body.status, 0);
+    assert.strictEqual(typeof body.error, "string");
+  });
 });

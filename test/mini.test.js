@@ -115,6 +115,194 @@ function makeCtx(theme, stateLog, initialX = 160) {
   };
 }
 
+describe("theme mini peek motion", () => {
+  let loader;
+  const display = { bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } };
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    loader = loadMiniWithElectron({ getAllDisplays: () => [display] });
+  });
+
+  afterEach(() => {
+    loader.restore();
+    mock.timers.reset();
+  });
+
+  function ready(theme, { sleep = false, edge = "right" } = {}) {
+    const states = [];
+    const ctx = makeCtx(theme, states);
+    ctx.doNotDisturb = sleep;
+    ctx.mouseOverPet = true;
+    const mini = loader.initMini(ctx);
+    const rest = mini.restoreFromPrefs({ x: 700, y: 180, miniEdge: edge }, { width: 120, height: 120 });
+    ctx.win.setBounds(rest);
+    ctx.currentState = sleep ? "mini-sleep" : "mini-idle";
+    return { mini, ctx, states, restX: rest.x };
+  }
+
+  it("keeps the undeclared theme at 25px, no delay, and 200ms in both directions", () => {
+    const { mini, ctx, restX } = ready(cloneTheme(_defaultTheme));
+    assert.equal(mini.getMiniPeekOffset(), 25);
+    mini.miniPeekIn();
+    assert.equal(mini.getIsAnimating(), true);
+    mock.timers.tick(224);
+    assert.equal(ctx.getBoundsSnapshot().x, restX - 25);
+    mini.miniPeekOut();
+    mock.timers.tick(224);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    mini.cleanup();
+
+    const sleeping = ready(cloneTheme(_defaultTheme), { sleep: true });
+    assert.equal(sleeping.mini.getMiniPeekOffset(), 25);
+    sleeping.mini.miniPeekIn("sleep");
+    assert.equal(sleeping.mini.getIsAnimating(), true);
+    mock.timers.tick(224);
+    assert.equal(sleeping.ctx.getBoundsSnapshot().x, sleeping.restX - 25);
+    sleeping.mini.miniPeekOut();
+    mock.timers.tick(224);
+    assert.equal(sleeping.ctx.getBoundsSnapshot().x, sleeping.restX);
+    sleeping.mini.cleanup();
+  });
+
+  it("uses the current window width, delay, and duration for the awake peek", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { offsetRatio: 0.1, delayMs: 375, durationMs: 125 };
+    const { mini, ctx, restX } = ready(theme);
+    assert.equal(mini.getMiniPeekOffset(), 12);
+    mini.miniPeekIn();
+    ctx.currentState = "mini-peek";
+    mock.timers.tick(374);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    assert.equal(ctx.getApplyBoundsCallLog().length, 0);
+    mock.timers.tick(1);
+    assert.equal(mini.getIsAnimating(), true);
+    mock.timers.tick(144);
+    assert.equal(ctx.getBoundsSnapshot().x, restX - 12);
+    mini.miniPeekOut();
+    mock.timers.tick(144);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    ctx.win.setBounds({ ...ctx.getBoundsSnapshot(), width: 200 });
+    assert.equal(mini.getMiniPeekOffset(), 20);
+    mini.cleanup();
+  });
+
+  it("slides toward the screen on the left edge using the configured ratio", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { offsetRatio: 0.1 };
+    const { mini, ctx, restX } = ready(theme, { edge: "left" });
+    mini.miniPeekIn();
+    mock.timers.tick(224);
+    assert.equal(ctx.getBoundsSnapshot().x, restX + 12);
+    mini.cleanup();
+  });
+
+  it("inherits omitted sleepPeek fields from peek and uses the sleep duration on return", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { offsetRatio: 0.1, delayMs: 80, durationMs: 100 };
+    theme.miniMode.sleepPeek = { durationMs: 750 };
+    const { mini, ctx, restX } = ready(theme, { sleep: true });
+    mini.miniPeekIn("sleep");
+    ctx.currentState = "mini-sleep-peek";
+    mock.timers.tick(79);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    mock.timers.tick(1);
+    mock.timers.tick(768);
+    assert.equal(ctx.getBoundsSnapshot().x, restX - 12);
+    mini.miniPeekOut();
+    mock.timers.tick(208);
+    assert.notEqual(ctx.getBoundsSnapshot().x, restX, "sleep return must not use the awake 100ms duration");
+    mock.timers.tick(560);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    mini.cleanup();
+  });
+
+  it("cancels a delayed peek on leave before any window write", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { delayMs: 400 };
+    const { mini, ctx, restX } = ready(theme);
+    mini.miniPeekIn();
+    ctx.currentState = "mini-peek";
+    ctx.mouseOverPet = false;
+    mini.miniPeekOut();
+    ctx.applyState("mini-idle");
+    mock.timers.tick(800);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    assert.equal(ctx.getApplyBoundsCallLog().length, 0);
+    mini.cleanup();
+  });
+
+  it("rechecks the actual cursor at delay expiry before moving", () => {
+    loader.restore();
+    let cursor = { x: 700, y: 200 };
+    loader = loadMiniWithElectron({
+      getAllDisplays: () => [display],
+      getCursorScreenPoint: () => cursor,
+    });
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { delayMs: 400 };
+    const { mini, ctx, restX } = ready(theme);
+    ctx.getHitRectScreen = () => ({ left: 650, right: 800, top: 150, bottom: 300 });
+    mini.miniPeekIn();
+    ctx.currentState = "mini-peek";
+    cursor = { x: 100, y: 200 };
+    mock.timers.tick(800);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    assert.equal(ctx.currentState, "mini-idle");
+    assert.equal(ctx.getApplyBoundsCallLog().length, 0);
+    mini.cleanup();
+  });
+
+  it("returns from a partly completed slide with the configured duration", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { offsetRatio: 0.2, durationMs: 400 };
+    const { mini, ctx, restX } = ready(theme);
+    mini.miniPeekIn();
+    mock.timers.tick(160);
+    assert.ok(ctx.getBoundsSnapshot().x < restX && ctx.getBoundsSnapshot().x > restX - 24);
+    mini.miniPeekOut();
+    mock.timers.tick(416);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    mini.cleanup();
+  });
+
+  it("drops delayed timers on menu, drag, transition, topology, and theme reset", () => {
+    for (const [stop, resetsState] of [
+      [(mini) => mini.cancelPendingMiniPeek(true), true],
+      [(mini) => mini.cancelMiniTransition(), true],
+      [(mini) => mini.handleDisplayChange(), true],
+      [(mini) => mini.refreshTheme(), true],
+      [(mini) => mini.cleanup(), false],
+    ]) {
+      const theme = cloneTheme(_defaultTheme);
+      theme.miniMode.peek = { delayMs: 400 };
+      const { mini, ctx, restX } = ready(theme);
+      mini.miniPeekIn();
+      ctx.currentState = "mini-peek";
+      stop(mini);
+      mock.timers.tick(800);
+      assert.equal(ctx.getBoundsSnapshot().x, restX);
+      if (resetsState) assert.notEqual(ctx.currentState, "mini-peek");
+      mini.cleanup();
+    }
+  });
+
+  it("does not run a delayed peek after exiting mini mode", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.peek = { delayMs: 400 };
+    const { mini, ctx } = ready(theme);
+    mini.miniPeekIn();
+    ctx.currentState = "mini-peek";
+    mini.exitMiniMode();
+    mock.timers.tick(450);
+    const afterExit = ctx.getBoundsSnapshot().x;
+    mock.timers.tick(800);
+    assert.equal(mini.getMiniMode(), false);
+    assert.equal(ctx.getBoundsSnapshot().x, afterExit);
+    mini.cleanup();
+  });
+});
+
 describe("mini mode entry timing", () => {
   let loader;
 

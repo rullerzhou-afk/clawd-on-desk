@@ -267,6 +267,16 @@ function createClaudeSettingsWatcher(ctx = {}) {
   let unreadableStreak = 0;
   let sourceMissingLogged = false;
   let shrinkNotified = false;
+  // #874: host-Node resolution for classifying env-indirected hooks as migratable
+  // when the env evidence names no usable Node. The periodic health inspection
+  // stays synchronous and spawn-free — it only READS trustedNodeCandidate. The
+  // actual resolution runs out-of-band via resolveTrustedNodeBin (an async, full
+  // host resolver, the same one the installer uses), kicked only when an env hook
+  // is blocked on Node. trustedNodeResolving is a single-flight guard; a found
+  // value is cached, but a null result is NOT, so a Node that appears later is
+  // retried on the next patrol. Reset by start()/stop().
+  let trustedNodeCandidate = null;
+  let trustedNodeResolving = false;
   // { signature, attempts, manualFixRequired } for the currently tracked
   // automatically-repairable issue set, or null when nothing is being retried.
   let repairState = null;
@@ -330,6 +340,37 @@ function createClaudeSettingsWatcher(ctx = {}) {
     }
   }
 
+  // Kick a single out-of-band host-Node resolution when an env hook is blocked on
+  // Node. The patrol stays synchronous — this runs the async resolver (the same
+  // full resolver the installer uses) off the health-check path, so it never
+  // blocks on a subprocess. Single-flight; a found value is cached and triggers an
+  // immediate re-check (so migration happens without waiting for the next patrol);
+  // a null result is not cached, so the next patrol retries. A lifecycle change
+  // during resolution discards the result.
+  function kickTrustedNodeResolution() {
+    if (trustedNodeCandidate) return;
+    if (trustedNodeResolving) return;
+    if (typeof ctx.resolveTrustedNodeBin !== "function") return;
+    trustedNodeResolving = true;
+    const tokenAtStart = lifecycleToken;
+    Promise.resolve()
+      .then(() => ctx.resolveTrustedNodeBin(resolverOptions))
+      .then((resolved) => {
+        if (tokenAtStart !== lifecycleToken) return;
+        const value = typeof resolved === "string" && resolved ? resolved : null;
+        if (value && !trustedNodeCandidate) {
+          trustedNodeCandidate = value;
+          // null -> value: re-run the health check now so the env hook migrates
+          // this cycle instead of waiting up to one patrol interval.
+          scheduleHealthCheck(0, "trusted-node-resolved");
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (tokenAtStart === lifecycleToken) trustedNodeResolving = false;
+      });
+  }
+
   function buildReport(raw) {
     const port = typeof ctx.getHookServerPort === "function" ? ctx.getHookServerPort() : null;
     const common = {
@@ -338,6 +379,7 @@ function createClaudeSettingsWatcher(ctx = {}) {
       coreEvents,
       platform,
       fs: fsApi,
+      resolveTrustedNodeCandidate: () => trustedNodeCandidate,
     };
     if (hasExplicitPaths) {
       // A one-sided injection must fall back to the real getter for the other
@@ -522,6 +564,19 @@ function createClaudeSettingsWatcher(ctx = {}) {
       // incorrectly reporting healthy or advancing lastSuccessAt.
       const diagnostic = getClaudeHookDegradedDiagnostic(report);
       if (!diagnostic) updateTrustedSnapshot(raw, report);
+      // #874: an env hook blocked only on Node resolution — try to resolve a host
+      // Node out-of-band. On success the resolver schedules an immediate re-check,
+      // which reclassifies the hook as migratable and lets the installer migrate it.
+      // Reaching this diagnostic means the inspection just rejected whatever was
+      // cached (null, or a path that is no longer usable after a Node upgrade /
+      // manager switch), so drop the stale candidate first — otherwise its truthy
+      // value would keep kickTrustedNodeResolution() from re-resolving the Node
+      // that is actually available now, stalling until a restart. A healthy config
+      // never reaches here, so a usable cached value is preserved.
+      if (diagnostic && diagnostic.reason === "env-hook-node-unresolved") {
+        trustedNodeCandidate = null;
+        kickTrustedNodeResolution();
+      }
       updateHealthStatus({
         status: diagnostic ? "degraded" : "healthy",
         degradedReason: diagnostic ? diagnostic.reason : null,
@@ -670,6 +725,8 @@ function createClaudeSettingsWatcher(ctx = {}) {
     unreadableStreak = 0;
     sourceMissingLogged = false;
     shrinkNotified = false;
+    trustedNodeCandidate = null;
+    trustedNodeResolving = false;
     repairState = null;
     healthStatus = initialHealthStatus(nowFn);
     if (!settingsWatcher) return false;
@@ -683,6 +740,8 @@ function createClaudeSettingsWatcher(ctx = {}) {
   function start() {
     if (settingsWatcher) return false;
     lifecycleToken++;
+    trustedNodeCandidate = null;
+    trustedNodeResolving = false;
     const settingsDir = getClaudeSettingsDir();
     const settingsPath = getClaudeSettingsPath();
 

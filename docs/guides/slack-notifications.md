@@ -192,25 +192,43 @@ failure, which Clawd logs and does not retry.
 
 ## Delivery behaviour
 
-Automatic notifications are queued and delivered one at a time, so a burst of
-finished sessions and permission requests does not open several sockets at once.
-The explicit **Send test** action is immediate and does not enter this queue.
+Automatic notifications run on two independent serial lanes: one for completion
+notifications (done and error) and one for permission heads-ups. Each lane sends
+one request at a time, so at most two automatic notifications are ever in flight.
+Keeping the lanes apart means a permission that needs you now is never stuck
+behind a backlog of finished sessions, and it is no longer cancelled just because
+you answered at the desk while it was still queued behind completions. The
+explicit **Send test** action is immediate, does not enter either lane, and can
+therefore be a third request in flight alongside the two automatic lanes.
 
-- A rate-limited (429) send honours Slack's `Retry-After`; network, timeout,
-  5xx, and Slack API transient failures (`internal_error`,
-  `service_unavailable`, `fatal_error`, `request_timeout`) retry with capped
-  exponential backoff.
+- A rate-limited (429) send honours Slack's `Retry-After` (each wait is capped
+  at 30 seconds); network, timeout, 5xx, and Slack API transient failures
+  (`internal_error`, `service_unavailable`, `fatal_error`, `request_timeout`)
+  retry with capped exponential backoff. `Retry-After` is honoured per lane: a
+  429 on one lane does not delay the other.
 - Permanent failures — a revoked webhook (404) or a rejected token (401/403) —
   are not retried.
-- Both the queue length and the retry count are bounded. If Slack is unreachable
-  long enough for the queue to fill, the oldest notification is dropped and the
-  drop is logged.
-- Disabling Slack, changing its credential/channel/transport, or changing any
-  notification option cancels already queued automatic work from the previous
-  configuration. This prevents an old destination, event policy, or formatted
-  payload (including assistant output) from crossing into the new policy. The
-  explicit **Send test** action is unaffected. Cancelled queue items are
-  settled and are not replayed under the new configuration.
+- Queue length is bounded per lane: when a lane is full the oldest pending
+  notification in that lane is dropped and the drop is logged, so a full
+  completion lane cannot push out a waiting permission (or the reverse). The
+  retry count is per notification, not per lane.
+- Settings changes invalidate queued messages in only two cases: the
+  destination changed — a different webhook, bot token, channel or transport —
+  or *Include assistant output* was turned off and the queued message actually
+  carries that output. Cancelled items are settled, logged, and not replayed.
+  Turning Slack itself off, or turning one notification type off, does not
+  invalidate anything up front: those messages are stopped when their turn
+  comes, because every send re-checks the switches. Every other change —
+  including turning *Include assistant output* back on — leaves the backlog
+  alone. The explicit **Send test** action is unaffected.
+- One deliberate blind spot: because a queued message only re-checks the
+  switches when its turn comes, turning Slack off and back on again before then
+  leaves the configuration byte-for-byte identical, so those queued messages are
+  delivered normally. That window can cover the message's whole retry wait, or
+  the time an earlier message on the same lane is in flight or waiting to retry.
+  Distinguishing it from an ordinary settings change needs a change counter that
+  would also throw away real backlogs on every click, so the backlog is kept
+  instead.
 - Nothing here blocks the desktop pet; a failed notification never propagates
   into the event path.
 

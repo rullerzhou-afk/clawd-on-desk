@@ -449,6 +449,10 @@ module.exports = function initDashboard(ctx) {
       maximizable: true,
       skipTaskbar: false,
       alwaysOnTop: false,
+      // macOS: the pet app mostly lives in the background, so the first click
+      // on the inactive Dashboard window must reach the page instead of only
+      // activating the window — same treatment the permission prompts get.
+      ...(platform === "darwin" ? { acceptFirstMouse: true } : {}),
       title: typeof ctx.t === "function" ? ctx.t("dashboardWindowTitle") : "Sessions",
       backgroundColor: getDashboardBackgroundColor(),
       webPreferences: {

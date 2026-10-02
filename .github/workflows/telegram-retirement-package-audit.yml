@@ -33,11 +33,14 @@ on:
       - "src/settings.css"
       - "agents/traecode.js"
       - "hooks/traecode-*"
+      - "agents/minimax.js"
+      - "hooks/minimax-*"
       - "src/state-stale-cleanup.js"
       - "src/state.js"
       - "src/integration-sync.js"
       - "src/doctor-detectors/agent-descriptors.js"
       - "test/traecode-*.test.js"
+      - "test/minimax-*.test.js"
       - "test/recap*.test.js"
       - "test/fixtures/recap-private-permissions-*.js"
       - "test/state-stale-cleanup.test.js"
@@ -122,6 +125,18 @@ jobs:
             test/traecode-install.test.js \
             test/registry.test.js \
             test/state-stale-cleanup.test.js \
+            test/integration-sync.test.js \
+            test/doctor-agent-descriptors.test.js \
+            test/doctor-agent-integrations.test.js \
+            test/server-hook-management.test.js \
+            test/settings-renderer-browser-env.test.js \
+            test/hook-adapter-offline-contract.test.js
+      - name: Run MiniMax Code integration tests
+        run: |
+          node --test \
+            test/minimax-hook.test.js \
+            test/minimax-install.test.js \
+            test/registry.test.js \
             test/integration-sync.test.js \
             test/doctor-agent-descriptors.test.js \
             test/doctor-agent-integrations.test.js \

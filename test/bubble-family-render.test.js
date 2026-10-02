@@ -136,6 +136,32 @@ function familyPayload(overrides = {}) {
 }
 
 describe("bubble-renderer family branch (executed)", () => {
+  it("explains a held v2 resource request without badging benign cards", () => {
+    const r = makeRenderer();
+    const input = { resource: "rm -rf ./test-fixture" };
+    r.show(familyPayload({ toolName: "shell", toolInput: input, reminderTag: "file-delete" }));
+    assert.strictEqual(r.el("irreversibleBadge").style.display, "");
+    assert.strictEqual(r.el("irreversibleBadge").getAttribute("data-reason"), "file-delete");
+    assert.ok(r.el("irreversibleBadge").textContent.includes(bubbleFormat.formatReminderReason("file-delete", "en")));
+    assert.strictEqual(input.command, undefined, "display must not mutate the stored resource payload");
+    const benign = makeRenderer();
+    benign.show(familyPayload({ toolName: "shell", toolInput: { resource: "npm test" }, reminderTag: null }));
+    assert.strictEqual(benign.el("irreversibleBadge").style.display, "none");
+    assert.strictEqual(benign.el("irreversibleBadge").getAttribute("data-reason"), null);
+  });
+
+  it("shows the display-only destructive hint for v1 and v2 when automation is off", () => {
+    for (const toolInput of [{ command: "rm -rf ./test-fixture" }, { resource: "rm -rf ./test-fixture" }]) {
+      const r = makeRenderer();
+      r.show(familyPayload({ toolName: "shell", toolInput, reminderTag: null }));
+      assert.strictEqual(r.el("irreversibleBadge").style.display, "");
+      assert.strictEqual(r.el("irreversibleBadge").getAttribute("data-reason"), "file-delete");
+    }
+    const r = makeRenderer();
+    r.show(familyPayload({ toolName: "read", toolInput: { resource: "rm -rf ./test-fixture" } }));
+    assert.strictEqual(r.el("irreversibleBadge").style.display, "none");
+  });
+
   it("renders the PascalCased pill and the command as the FINAL detail text", () => {
     const r = makeRenderer();
     r.show(familyPayload());

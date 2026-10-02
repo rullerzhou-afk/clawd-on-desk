@@ -218,6 +218,12 @@ function getPointerBridgeKey() {
   return `${state}|${ctx.currentSvg || ""}`;
 }
 
+function hasMiniState(state) {
+  const files = ctx.theme && ctx.theme.miniMode && ctx.theme.miniMode.states
+    && ctx.theme.miniMode.states[state];
+  return Array.isArray(files) && !!files[0];
+}
+
 function pointerBridgePayloadChanged(key, payload) {
   if (key !== lastPointerBridgeKey || !lastPointerBridgePayload) return true;
   return payload.inside !== lastPointerBridgePayload.inside
@@ -327,20 +333,25 @@ function runMainTickOnce() {
     }
 
     // ── Mini mode peek hover ──
+    if (ctx.miniMode && (ctx.miniTransitioning || ctx.dragLocked || ctx.menuOpen)
+      && typeof ctx.cancelPendingMiniPeek === "function") ctx.cancelPendingMiniPeek(true);
     if (ctx.miniMode && !ctx.miniTransitioning && !ctx.dragLocked && !ctx.menuOpen) {
       const canPeek = ctx.currentState === "mini-idle" || ctx.currentState === "mini-peek"
-        || ctx.currentState === "mini-sleep";
+        || ctx.currentState === "mini-peek-hold" || ctx.currentState === "mini-sleep"
+        || ctx.currentState === "mini-sleep-peek";
       if (!ctx.isAnimating && canPeek) {
         if (ctx.mouseOverPet && ctx.currentState === "mini-sleep" && !ctx.miniSleepPeeked) {
-          ctx.miniPeekIn();
+          ctx.miniPeekIn("sleep");
           ctx.miniSleepPeeked = true;
-        } else if (!ctx.mouseOverPet && ctx.currentState === "mini-sleep" && ctx.miniSleepPeeked) {
+          if (hasMiniState("mini-sleep-peek")) ctx.applyState("mini-sleep-peek");
+        } else if (!ctx.mouseOverPet && (ctx.currentState === "mini-sleep" || ctx.currentState === "mini-sleep-peek") && ctx.miniSleepPeeked) {
           ctx.miniPeekOut();
           ctx.miniSleepPeeked = false;
-        } else if (ctx.mouseOverPet && ctx.currentState !== "mini-peek" && ctx.currentState !== "mini-sleep" && !ctx.miniPeeked) {
-          ctx.miniPeekIn();
+          if (ctx.currentState === "mini-sleep-peek") ctx.applyState("mini-sleep");
+        } else if (ctx.mouseOverPet && ctx.currentState === "mini-idle" && !ctx.miniPeeked) {
+          ctx.miniPeekIn("peek");
           ctx.applyState("mini-peek");
-        } else if (!ctx.mouseOverPet && (ctx.currentState === "mini-peek" || ctx.miniPeeked)) {
+        } else if (!ctx.mouseOverPet && (ctx.currentState === "mini-peek" || ctx.currentState === "mini-peek-hold" || ctx.miniPeeked)) {
           ctx.miniPeekOut();
           ctx.miniPeeked = false;
           if (ctx.currentState !== "mini-idle") ctx.applyState("mini-idle");

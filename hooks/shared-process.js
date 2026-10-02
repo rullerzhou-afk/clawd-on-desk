@@ -200,9 +200,22 @@ function getPlatformConfig(options) {
 //   platformConfig       — result of getPlatformConfig()
 //   agentNames           — { win: Set, mac: Set, linux?: Set }  (linux falls back to mac)
 //   agentCmdlineCheck    — (cmdline: string) => boolean  (optional command-line probe)
-//   agentCmdlineNames    — Set<string> (optional; defaults to node/node.exe)
+//   agentCmdlineNames    — Set<string> (optional; replaces DEFAULT_AGENT_CMDLINE_NAMES)
 //   startPid             — number (default process.ppid)
 //   maxDepth             — number (default 8)
+
+// The process names whose command line agentCmdlineCheck is run against when
+// the caller passes no agentCmdlineNames: every name a node process that never
+// set process.title is listed under.
+//   node, node.exe   — the executable's name (macOS, Windows, Linux Node <= 23.7)
+//   mainthread       — Linux, Node 23.8–25.4 (so all of 24.x): Node names its
+//                      main thread "MainThread" (nodejs/node#56416), and Linux
+//                      reports the main thread's name as the process name
+//   node-mainthread  — Linux, Node >= 25.5: renamed "node-MainThread"
+//                      (nodejs/node#61307; 15 characters, so never truncated)
+// Lowercase, because the walk compares lowercased basenames. An adapter that
+// passes its own agentCmdlineNames to add names must spread these back in.
+const DEFAULT_AGENT_CMDLINE_NAMES = Object.freeze(["node", "node.exe", "mainthread", "node-mainthread"]);
 
 function normalizeHwndString(value) {
   if (value === null || value === undefined) return null;
@@ -538,7 +551,7 @@ function createPidResolver(options) {
   const agentCmdlineCheck = options.agentCmdlineCheck || null;
   const agentCmdlineNames = options.agentCmdlineNames instanceof Set
     ? options.agentCmdlineNames
-    : new Set(["node.exe", "node"]);
+    : new Set(DEFAULT_AGENT_CMDLINE_NAMES);
 
   // #681 seams. Injected so tests never read the real ~/.clawd/runtime.json and
   // never depend on whether the developer's Clawd happens to be running.
@@ -1085,6 +1098,7 @@ function buildElectronLaunchConfig(projectDir, options = {}) {
 module.exports = {
   getPlatformConfig,
   createPidResolver,
+  DEFAULT_AGENT_CMDLINE_NAMES,
   readStdinJson,
   readStdinJsonDetailed,
   DEFAULT_STDIN_READ_TIMEOUT_MS,

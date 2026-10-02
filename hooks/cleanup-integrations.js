@@ -32,6 +32,11 @@ const { unregisterQwenWorkHooks } = require("./qwenwork-install");
 const { unregisterWorkBuddyHooks } = require("./workbuddy-install");
 const { unregisterGrokHooks, resolveGrokConfigPath, resolveGrokHome } = require("./grok-install");
 const { unregisterTraeCodeHooks } = require("./traecode-install");
+const {
+  PLUGIN_DIR_NAME,
+  resolveMinimaxDataDir,
+  unregisterMinimaxPlugin,
+} = require("./minimax-install");
 const { unregisterDeepSeekHarness } = require("./dsh-install");
 
 const CODEX_MARKERS = ["codex-hook.js", "codex-debug-hook.js"];
@@ -63,6 +68,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "workbuddy",
   "grok-build",
   "traecode",
+  "minimax",
 ]);
 
 const AGENT_DISPLAY_NAMES = Object.freeze({
@@ -92,6 +98,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   qoderwork: "QoderWork",
   traecode: "TraeCode",
   qwenwork: "QwenWork",
+  minimax: "MiniMax Code",
 });
 
 function normalizeHomeDir(value) {
@@ -175,6 +182,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
     || path.join(openClawStateDir, "openclaw.json");
   const hermesHome = options.hermesHome
     || resolveHermesHome({ homeDir, env, platform: options.platform || process.platform });
+  const minimaxDataDir = resolveMinimaxDataDir(homeDir, env);
 
   return {
     homeDir,
@@ -326,6 +334,16 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         hooksPath: path.join(homeDir, ".trae-cn", "hooks.json"),
       },
+      minimax: {
+        ...common,
+        // Same resolution the installer used — MINIMAX_DATA_DIR →
+        // MAVIS_DATA_DIR → ~/.minimax — so uninstalling from Settings or
+        // About cleanup always finds the directory install wrote, even when
+        // a custom data dir is configured. dataDir is where staging and removal
+        // directories go (beside `plugins/`, which MiniMax scans in full).
+        dataDir: minimaxDataDir,
+        pluginRoot: path.join(minimaxDataDir, "plugins", PLUGIN_DIR_NAME),
+      },
     },
   };
 }
@@ -391,6 +409,7 @@ const AGENT_CLEANERS = Object.freeze({
   workbuddy: unregisterWorkBuddyHooks,
   "grok-build": unregisterGrokHooks,
   traecode: unregisterTraeCodeHooks,
+  minimax: unregisterMinimaxPlugin,
 });
 
 function removedCountFromResult(result) {

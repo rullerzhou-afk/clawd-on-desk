@@ -26,6 +26,9 @@ let miniSnap = null;  // { y, width, height } — canonical rect to prevent DPI 
 let lastMiniWorkArea = null;  // workArea of the display the mini pet is on
 let miniTransitionTimer = null;
 let peekAnimTimer = null;
+let peekDelayTimer = null;
+let pendingPeekMode = null;
+let activePeekMode = null;
 let isAnimating = false;
 // Issue #690 plan §4.5 point 4.5-4: set when a display/workArea topology
 // change lands while mini is transitioning (pet-window-runtime.js's
@@ -41,6 +44,7 @@ function syncSessionHudVisibility() {
 }
 
 function refreshTheme() {
+  cancelPendingMiniPeek(true);
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 }
 
@@ -49,6 +53,7 @@ function themeSupportsMini() {
 }
 
 function notifyTopologyChangedDuringTransition() {
+  cancelPendingMiniPeek(true);
   pendingTopologyMaterialize = true;
 }
 
@@ -329,13 +334,96 @@ function calcMiniX(wa, size) {
 // consumeTopologyForMiniPeekIn() (not the plain consumeTopologyForMiniRest()
 // miniPeekOut() below still uses) — see that function's own comment for
 // why landing at the bare resting position would be wrong here.
-function miniPeekIn() {
-  const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
-  animateWindowX(currentMiniX + offset, 200, () => finalizeMiniProtectionExit(consumeTopologyForMiniPeekIn));
+function getPeekMotion(mode) {
+  const mini = ctx.theme && ctx.theme.miniMode || {};
+  const awake = mini.peek || {};
+  const sleep = mode === "sleep" ? mini.sleepPeek || {} : {};
+  return {
+    offsetRatio: sleep.offsetRatio ?? awake.offsetRatio,
+    delayMs: sleep.delayMs ?? awake.delayMs ?? 0,
+    durationMs: sleep.durationMs ?? awake.durationMs ?? 200,
+  };
+}
+
+function getMiniPeekOffset(mode = activePeekMode || (ctx.doNotDisturb ? "sleep" : "peek")) {
+  const ratio = getPeekMotion(mode).offsetRatio;
+  if (ratio === undefined) return PEEK_OFFSET;
+  const bounds = ctx.getPetWindowBounds();
+  return Math.round(bounds.width * ratio);
+}
+
+function cancelPendingMiniPeek(resetState = false) {
+  if (!peekDelayTimer) return false;
+  clearTimeout(peekDelayTimer);
+  peekDelayTimer = null;
+  const mode = pendingPeekMode;
+  pendingPeekMode = null;
+  activePeekMode = null;
+  if (resetState) resetCancelledPeekState(mode);
+  return true;
+}
+
+function resetCancelledPeekState(mode) {
+  if (mode === "sleep") {
+    miniSleepPeeked = false;
+    if (ctx.currentState === "mini-sleep-peek") ctx.applyState("mini-sleep");
+  } else {
+    miniPeeked = false;
+    if (ctx.currentState === "mini-peek" || ctx.currentState === "mini-peek-hold") {
+      ctx.applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
+    }
+  }
+}
+
+function startMiniPeekSlide(mode) {
+  const distance = getMiniPeekOffset(mode);
+  const offset = miniEdge === "left" ? distance : -distance;
+  animateWindowX(currentMiniX + offset, getPeekMotion(mode).durationMs,
+    () => finalizeMiniProtectionExit(consumeTopologyForMiniPeekIn));
+}
+
+function isPeekHoverCurrent() {
+  if (!ctx.mouseOverPet) return false;
+  if (typeof ctx.getHitRectScreen !== "function" || typeof screen.getCursorScreenPoint !== "function") return true;
+  const hit = ctx.getHitRectScreen(ctx.getPetWindowBounds());
+  const cursor = screen.getCursorScreenPoint();
+  return !!hit && !!cursor && cursor.x >= hit.left && cursor.x <= hit.right
+    && cursor.y >= hit.top && cursor.y <= hit.bottom;
+}
+
+function miniPeekIn(mode = "peek") {
+  cancelPendingMiniPeek();
+  activePeekMode = mode;
+  const delayMs = getPeekMotion(mode).delayMs;
+  if (delayMs === 0) {
+    startMiniPeekSlide(mode);
+    return;
+  }
+  pendingPeekMode = mode;
+  peekDelayTimer = setTimeout(() => {
+    peekDelayTimer = null;
+    pendingPeekMode = null;
+    const validState = mode === "sleep"
+      ? (ctx.currentState === "mini-sleep" || ctx.currentState === "mini-sleep-peek")
+      : (ctx.currentState === "mini-peek" || ctx.currentState === "mini-peek-hold" || ctx.currentState === "mini-idle");
+    if (!miniMode || miniTransitioning || ctx.dragLocked || ctx.menuOpen || !isPeekHoverCurrent()
+      || !validState || ctx.doNotDisturb !== (mode === "sleep") || !ctx.win || ctx.win.isDestroyed()) {
+      activePeekMode = null;
+      resetCancelledPeekState(mode);
+      return;
+    }
+    startMiniPeekSlide(mode);
+  }, delayMs);
 }
 
 function miniPeekOut() {
-  animateWindowX(currentMiniX, 200, () => finalizeMiniProtectionExit(consumeTopologyForMiniRest));
+  const mode = activePeekMode || (miniSleepPeeked ? "sleep" : "peek");
+  cancelPendingMiniPeek();
+  activePeekMode = mode;
+  animateWindowX(currentMiniX, getPeekMotion(mode).durationMs, () => {
+    if (activePeekMode === mode) activePeekMode = null;
+    finalizeMiniProtectionExit(consumeTopologyForMiniRest);
+  });
 }
 
 function getMiniStateFile(state) {
@@ -381,7 +469,8 @@ function consumeTopologyForMiniRest() {
 function consumeTopologyForMiniPeekIn() {
   handleDisplayChange();
   if (!miniMode) return;
-  const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
+  const distance = getMiniPeekOffset();
+  const offset = miniEdge === "left" ? distance : -distance;
   ctx.applyPetWindowBounds(
     { x: currentMiniX + offset, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height },
     { workArea: lastMiniWorkArea }
@@ -437,6 +526,7 @@ function finishMiniEntry(delayMs) {
 }
 
 function cancelMiniTransition() {
+  cancelPendingMiniPeek(true);
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
   finalizeMiniProtectionExit(consumeTopologyForMiniRest);
@@ -480,6 +570,7 @@ function checkMiniModeSnap() {
 function enterMiniMode(wa, viaMenu, edge) {
   if (!themeSupportsMini()) return;
   if (miniMode && !viaMenu) return;
+  cancelPendingMiniPeek(true);
   // §4.5 point 2: read ctx.getPetWindowBounds() exactly ONCE as `start` — the
   // single logical-bounds source of truth for everything below (preMini,
   // miniSnap.y, the seam/topology yMid, and both animation targets). X offset
@@ -681,6 +772,7 @@ function exitMiniMode() {
 
 function enterMiniViaMenu() {
   if (!themeSupportsMini()) return;
+  cancelPendingMiniPeek(true);
   // §4.5 point 2: same single logical-bounds read as enterMiniMode() — see
   // its comment above for why a second ctx.win.getBounds() must not appear.
   const start = ctx.getPetWindowBounds();
@@ -777,6 +869,7 @@ function getContainedSeam() {
 }
 
 function handleDisplayChange() {
+  cancelPendingMiniPeek(true);
   if (!ctx.win || ctx.win.isDestroyed()) return;
   if (!miniMode) return;
   const size = _getSize();
@@ -803,6 +896,7 @@ function handleDisplayChange() {
 }
 
 function handleResize(sizeKey) {
+  cancelPendingMiniPeek(true);
   if (!miniMode) return false;
   const { y: curY } = ctx.getPetWindowBounds();
   const wa = lastMiniWorkArea || ctx.getNearestWorkArea(currentMiniX, curY);
@@ -866,6 +960,7 @@ function getMiniSnap() { return miniSnap; }
 // (still-referenced-by-closures) instance, permanently wedging
 // runReconcile()'s protection-period check.
 function cleanup() {
+  cancelPendingMiniPeek();
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
   finalizeMiniProtectionExit();
@@ -873,7 +968,7 @@ function cleanup() {
 
 return {
   enterMiniMode, exitMiniMode, enterMiniViaMenu,
-  miniPeekIn, miniPeekOut, checkMiniModeSnap, cancelMiniTransition,
+  miniPeekIn, miniPeekOut, cancelPendingMiniPeek, getMiniPeekOffset, checkMiniModeSnap, cancelMiniTransition,
   animateWindowX, animateWindowParabola,
   refreshTheme,
   syncContainedClip, getContainedSeam,

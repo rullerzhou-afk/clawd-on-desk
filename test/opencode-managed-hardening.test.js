@@ -409,6 +409,10 @@ describe("#1026 r1 inspectGeneration strictness", () => {
     fs.writeFileSync(path.join(pluginDir, "package.json"), "{}\n");
     fs.writeFileSync(path.join(familyDir, "core.mjs"), "export const c = 1;\n");
     fs.writeFileSync(path.join(familyDir, "session-ids.mjs"), "export const s = 1;\n");
+    // opencode v2 entry — part of the bundle (issue #1039).
+    const v2Dir = path.join(srcRoot, "hooks", OPENCODE_CFG.v2PluginDirName);
+    fs.mkdirSync(v2Dir, { recursive: true });
+    fs.writeFileSync(path.join(v2Dir, "index.mjs"), "export default { id: 'x', setup: async () => () => {} };\n");
     const materialized = mg.materializeGeneration(target, OPENCODE_CFG, pluginDir, { fs, platform: process.platform });
     assert.strictEqual(materialized.ok, true, materialized.message);
     return materialized.generationDir;
@@ -514,6 +518,10 @@ describe("#1026 r2 generation rename retry delay", () => {
     fs.writeFileSync(path.join(pluginDir, "package.json"), "{}\n");
     fs.writeFileSync(path.join(familyDir, "core.mjs"), "export const c = 1;\n");
     fs.writeFileSync(path.join(familyDir, "session-ids.mjs"), "export const s = 1;\n");
+    // opencode v2 entry — part of the bundle (issue #1039).
+    const v2Dir = path.join(srcRoot, "hooks", OPENCODE_CFG.v2PluginDirName);
+    fs.mkdirSync(v2Dir, { recursive: true });
+    fs.writeFileSync(path.join(v2Dir, "index.mjs"), "export default { id: 'x', setup: async () => () => {} };\n");
     return pluginDir;
   }
 

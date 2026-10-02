@@ -378,6 +378,26 @@ describe("opencode-family registry", () => {
     }
   });
 
+  it("every v2 entry's logFileName is in the doctor's default log allowlist", () => {
+    // The v2 entry is a separate module with its own log file; the v1-only
+    // loop above cannot see it. Read the literal from the entry instead of
+    // repeating it here so the registry and entry stay coupled.
+    // eslint-disable-next-line global-require
+    const { DEFAULT_LOG_BASENAMES } = require("../src/doctor-logs");
+    for (const [agentId, cfg] of Object.entries(OPENCODE_FAMILY)) {
+      if (!cfg.v2PluginDirName) continue;
+      const entryPath = path.join(HOOKS_DIR, cfg.v2PluginDirName, "index.mjs");
+      assert.ok(fs.existsSync(entryPath), `${agentId} v2 entry missing: ${entryPath}`);
+      const source = fs.readFileSync(entryPath, "utf8");
+      const match = source.match(/logFileName:\s*"([^"]+)"/);
+      assert.ok(match, `${entryPath} must set logFileName as a string literal`);
+      assert.ok(
+        DEFAULT_LOG_BASENAMES.includes(match[1]),
+        `${agentId} v2: ${match[1]} missing from doctor-logs DEFAULT_LOG_BASENAMES`
+      );
+    }
+  });
+
   it("every member's plugin entry literals match the registry (no drift)", async () => {
     // The Bun-side entries cannot require this CJS registry, so they repeat
     // the four identity params as literals — this test is the drift lock
