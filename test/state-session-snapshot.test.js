@@ -732,6 +732,16 @@ describe("state-session-snapshot builder", () => {
     });
   });
 
+  it("gives prompt expansion the translated user-prompt label", () => {
+    const entry = buildSessionSnapshotEntry("design", session("thinking", {
+      agentId: "claude-code",
+      recentEvents: [{ event: "UserPromptExpansion", state: "thinking", at: 1234 }],
+    }), { statePriority: STATE_PRIORITY, getAgentIconUrl: () => null });
+    assert.deepStrictEqual(entry.lastEvent, {
+      labelKey: "eventLabelUserPromptSubmit", rawEvent: "UserPromptExpansion", at: 1234,
+    });
+  });
+
   it("exposes focus target metadata for terminal and Codex Desktop sessions", () => {
     const rawCodexSessionId = "codex:019e115a-4df2-7ed0-b90e-8e6345aca777";
     const scopedCodexSessionId = makeSessionKey({

@@ -42,6 +42,7 @@ const EVENT_LABEL_KEYS = {
   SessionStart: "eventLabelSessionStart",
   SessionEnd: "eventLabelSessionEnd",
   UserPromptSubmit: "eventLabelUserPromptSubmit",
+  UserPromptExpansion: "eventLabelUserPromptSubmit",
   PreToolUse: "eventLabelPreToolUse",
   PostToolUse: "eventLabelPostToolUse",
   PostToolUseFailure: "eventLabelPostToolUseFailure",

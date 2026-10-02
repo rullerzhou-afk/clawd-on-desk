@@ -69,6 +69,14 @@ describe("buildStateBody adapter → shared resolver context (#634)", () => {
     }, resolve).display_svg, null);
   });
 
+  it("does not send a clearing hint for a /design UserPromptSubmit", () => {
+    const resolve = () => ({ stablePid: null, terminalPid: null, snapshotOk: false });
+    const submit = buildStateBody("UserPromptSubmit", {
+      session_id: "design-session", cwd: CWD, prompt: "/design a tiny demo",
+    }, resolve);
+    assert.strictEqual(Object.hasOwn(submit, "display_svg"), false);
+  });
+
   // Captures every resolver context and returns a preset metadata object.
   function capture(returns = emptyMeta()) {
     const calls = [];
@@ -80,10 +88,11 @@ describe("buildStateBody adapter → shared resolver context (#634)", () => {
     return { stablePid: null, terminalPid: null, snapshotOk: false, agentPid: null, agentCommandLine: "", detectedEditor: null, pidChain: [], foregroundWtHwnd: null, tmuxSocket: null, tmuxClient: null, cacheSource: "none" };
   }
 
-  it("maps SessionStart→start, UserPromptSubmit→prompt, SessionEnd→end, everything else→event", () => {
+  it("maps session and prompt boundaries to their cache lifecycles", () => {
     for (const [event, lifecycle] of [
       ["SessionStart", "start"],
       ["UserPromptSubmit", "prompt"],
+      ["UserPromptExpansion", "prompt"],
       ["SessionEnd", "end"],
       ["PreToolUse", "event"],
       ["PostToolUse", "event"],
@@ -92,7 +101,7 @@ describe("buildStateBody adapter → shared resolver context (#634)", () => {
       ["SubagentStop", "event"],
     ]) {
       const r = capture();
-      buildStateBody(event, { session_id: "s", cwd: CWD }, r);
+      buildStateBody(event, { session_id: "s", cwd: CWD, expansion_type: "slash_command", command_name: "design" }, r);
       assert.strictEqual(r.calls.length, 1, `${event} calls the resolver once`);
       assert.strictEqual(r.calls[0].lifecycle, lifecycle, `${event} → ${lifecycle}`);
     }
@@ -334,6 +343,26 @@ describe("clawd-hook end-to-end with the real resolver — Windows", () => {
     assert.ok(!("agent_pid" in body));
     assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD), null, "a prompt miss must never write a v2");
   });
+
+  for (const cached of [false, true]) {
+    it(`UserPromptExpansion ${cached ? "HIT" : "MISS"}: uses the zero-spawn prompt boundary`, () => {
+      const sid = freshSid();
+      if (cached) pidCache.writePidCacheV2(NS, sid, CWD, liveSubset());
+      const { body, spawns } = run("UserPromptExpansion", {
+        session_id: sid, cwd: CWD, expansion_type: "slash_command", command_name: "design",
+      });
+      assert.strictEqual(spawns, 0);
+      assert.strictEqual(body.display_svg, "claude-design");
+      if (cached) {
+        assert.strictEqual(body.source_pid, process.pid);
+        assert.strictEqual(body.agent_pid, process.pid);
+      } else {
+        assert.ok(!("source_pid" in body));
+        assert.ok(!("agent_pid" in body));
+        assert.strictEqual(pidCache.readPidCacheV2(NS, sid, CWD), null);
+      }
+    });
+  }
 
   it("UserPromptSubmit MISS with a dead cached PID: still zero spawn (no fallback)", () => {
     const sid = freshSid();

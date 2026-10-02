@@ -372,8 +372,9 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
-// #634: maps a Claude hook event to a shared-resolver cache lifecycle. Only the
-// three boundary events are special; every other state event is an ordinary
+// #634: maps a Claude hook event to a shared-resolver cache lifecycle.
+// SessionStart, both prompt events and SessionEnd are special; every other
+// state event is an ordinary
 // `event` (cache hit = zero spawn, miss = one fresh). Stop is deliberately NOT
 // end — it is turn completion, and dropping the cache on it would force a
 // re-resolve (flash) on the next event. SessionEnd with source=clear still maps
@@ -381,6 +382,7 @@ const EVENT_TO_STATE = {
 const EVENT_TO_LIFECYCLE = {
   SessionStart: "start",
   UserPromptSubmit: "prompt",
+  UserPromptExpansion: "prompt",
   SessionEnd: "end",
 };
 

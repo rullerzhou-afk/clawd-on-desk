@@ -2680,6 +2680,17 @@ function updateSession(sessionId, state, event, opts = {}) {
     return;
   }
 
+  // A completion-mapped hint (such as /design) belongs to the parent
+  // turn. Temporary cues may settle the session idle without ending that turn.
+  // Keep explicit null, terminal events and ordinary per-tool hints clearing.
+  const continuationDisplayHint = srcAgentId === "claude-code"
+    && !normalizedSubagentId
+    && completionVisualForHint(existing && existing.displayHint)
+    && (["PostToolUseFailure", "Notification", "Elicitation", "PreCompact", "WorktreeCreate"].includes(event)
+      || (event === "SessionStart" && sessionStartSource === "compact"))
+    ? pickDisplayHint("working", existing, displayHint)
+    : null;
+
   if (event === "SessionEnd") {
     const endingSession = sessions.get(sessionId);
     cancelCodexExitProbe(sessionId, "SessionEnd");
@@ -2736,7 +2747,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         resumeState: (existing && existing.resumeState) || null,
       });
     } else {
-      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
+      sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: continuationDisplayHint, ...base, resumeState: null });
     }
   } else if (ONESHOT_STATES.has(state)) {
     if (hasSubagentHoldEvidence(subagentTracker)) {
@@ -2759,7 +2770,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       Object.assign(existing, base);
       existing.state = "idle";
       existing.updatedAt = Date.now();
-      existing.displayHint = null;
+      existing.displayHint = continuationDisplayHint;
       existing.resumeState = null;
     } else {
       sessions.set(sessionId, { state: "idle", updatedAt: Date.now(), displayHint: null, ...base, resumeState: null });
@@ -2793,7 +2804,9 @@ function updateSession(sessionId, state, event, opts = {}) {
         resumeState: (existing && existing.resumeState) || null,
       });
     } else {
-      const dh = pickDisplayHint(state, existing, displayHint);
+      const dh = state === "idle"
+        ? continuationDisplayHint
+        : pickDisplayHint(state, existing, displayHint);
       sessions.set(sessionId, { state, updatedAt: Date.now(), displayHint: dh, ...base, resumeState: null });
     }
   }
