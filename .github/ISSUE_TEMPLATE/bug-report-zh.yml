@@ -1,5 +1,5 @@
 name: "🐛 Bug 报告（中文）"
-description: "报告 Clawd on Desk 中可复现的问题"
+description: "报告 Clawd on Desk 的问题"
 title: "[Bug] "
 labels:
   - bug
@@ -7,15 +7,15 @@ body:
   - type: markdown
     attributes:
       value: |
-        感谢你报告问题。提交前请先搜索现有 Issue，确认没有相同问题。
+        感谢你报告问题。提交前请先搜索现有 Issue。
 
-        请勿提交 Token、凭据、私密 Prompt 或其他敏感信息；日志和截图中的敏感内容请先脱敏。
+        请勿提交 Token、凭据、私密 Prompt、个人路径或其他敏感信息；日志和截图中的敏感内容请先脱敏。
 
   - type: input
     id: clawd-version
     attributes:
       label: "Clawd on Desk 版本"
-      description: "请填写已安装的版本；如果从源码运行，请填写 commit SHA。"
+      description: "可在 设置 → 关于 中查看已安装的版本；如果从源码运行，请填写 commit SHA。无法确认时可填写 unknown。"
       placeholder: "版本号或 commit SHA"
     validations:
       required: true
@@ -84,5 +84,5 @@ body:
     attributes:
       label: "提交前确认"
       options:
-        - label: "我已经搜索过现有 Issue，没有发现相同问题。"
+        - label: "我已在现有 Issue 中搜索过相同问题。"
           required: true

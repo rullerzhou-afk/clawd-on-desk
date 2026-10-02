@@ -33,7 +33,7 @@ body:
     id: clawd-version
     attributes:
       label: "Clawd on Desk version"
-      description: "Provide the installed version, or the commit SHA when running from source."
+      description: "Find the installed version in Settings → About, or use the commit SHA when running from source. If you cannot determine it, enter unknown."
       placeholder: "Version or commit SHA"
     validations:
       required: true

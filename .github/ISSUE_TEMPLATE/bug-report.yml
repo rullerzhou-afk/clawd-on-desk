@@ -1,5 +1,5 @@
 name: "🐛 Bug report (English)"
-description: "Report a reproducible problem with Clawd on Desk"
+description: "Report a problem with Clawd on Desk"
 title: "[Bug] "
 labels:
   - bug
@@ -9,13 +9,13 @@ body:
       value: |
         Thanks for reporting a problem. Please search existing issues before filing a new one.
 
-        Do not include tokens, credentials, private prompts, or other secrets. Redact sensitive values from logs and screenshots.
+        Do not include tokens, credentials, private prompts, personal paths, or other sensitive information. Redact sensitive content from logs and screenshots.
 
   - type: input
     id: clawd-version
     attributes:
       label: "Clawd on Desk version"
-      description: "Provide the installed version, or the commit SHA when running from source."
+      description: "Find the installed version in Settings → About, or use the commit SHA when running from source. If you cannot determine it, enter unknown."
       placeholder: "Version or commit SHA"
     validations:
       required: true
