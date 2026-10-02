@@ -86,7 +86,7 @@ body:
     id: steps
     attributes:
       label: "Steps to reproduce"
-      description: "Include relevant setup state, install/enable steps, and the smallest reliable sequence."
+      description: "Include relevant setup state, install/enable steps, and the shortest steps you know. If it is intermittent or cannot be reproduced reliably, describe what happened just before it and how often it occurs."
       placeholder: |
         1. ...
         2. ...

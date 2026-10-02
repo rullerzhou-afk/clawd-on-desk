@@ -1,6 +1,11 @@
 <!--
 Please write in English or Chinese. / 请使用英文或中文填写。
 
+Redact tokens, credentials, private prompts, and personal data from examples,
+logs, screenshots, and recordings before sharing.
+
+分享示例、日志、截图或录屏前，请先移除 Token、凭据、私密 Prompt 和个人数据。
+
 Keep the default sections concise. Draft or specialized PRs may adapt the
 structure when it improves review clarity, while preserving equivalent coverage
 of the change, validation, and scope.

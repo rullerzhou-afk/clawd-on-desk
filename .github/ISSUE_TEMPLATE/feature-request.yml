@@ -9,6 +9,8 @@ body:
       value: |
         Before proposing a feature, please search existing issues and add a 👍 reaction to an existing request when one already covers the same need.
 
+        Do not include tokens, credentials, private prompts, or personal data. Redact sensitive content from examples, logs, and screenshots.
+
   - type: textarea
     id: problem
     attributes:

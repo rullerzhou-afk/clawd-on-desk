@@ -53,7 +53,7 @@ body:
     id: steps
     attributes:
       label: "复现步骤"
-      description: "请提供能够稳定复现问题的最短步骤，并说明问题是否偶发。"
+      description: "请提供你已知的最短步骤。如果问题偶发或无法稳定复现，请描述问题发生前的操作及出现频率。"
       placeholder: |
         1. ...
         2. ...

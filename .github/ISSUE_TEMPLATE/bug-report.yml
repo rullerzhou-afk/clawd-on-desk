@@ -53,7 +53,7 @@ body:
     id: steps
     attributes:
       label: "Steps to reproduce"
-      description: "Provide the smallest reliable sequence that reproduces the problem. Mention whether it is intermittent."
+      description: "Provide the shortest steps you know. If the problem is intermittent or you cannot reproduce it reliably, describe what happened just before it and how often it occurs."
       placeholder: |
         1. ...
         2. ...

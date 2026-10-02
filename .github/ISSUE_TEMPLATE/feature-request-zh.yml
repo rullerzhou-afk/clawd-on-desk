@@ -9,6 +9,8 @@ body:
       value: |
         提交功能建议前，请先搜索现有 Issue；如果已经有相同需求，请优先为现有 Issue 添加 👍。
 
+        请勿提交 Token、凭据、私密 Prompt 或个人数据；示例、日志和截图中的敏感内容请先脱敏。
+
   - type: textarea
     id: problem
     attributes:
