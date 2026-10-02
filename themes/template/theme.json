@@ -22,7 +22,7 @@
   },
 
   "layout": {
-    "_comment": "Optional but recommended when your visible character height differs a lot from the raw viewBox. contentBox is the character's visible body area in viewBox units.",
+    "_comment": "Optional but recommended when your visible character height differs a lot from the raw viewBox. contentBox is the character's visible body area in viewBox units. These values suit Clawd's loose contentBox; if yours hugs the body, pick visibleHeightRatio from 'Character Size' in docs/guides/guide-theme-creation.md.",
     "contentBox": { "x": -4, "y": -3, "width": 23, "height": 20 },
     "centerX": 7.5,
     "baselineY": 17,

@@ -29,6 +29,8 @@ Clawd also has a conditional Outlaw idle easter egg: while both the Western cowb
 | 60s mouse idle | sleeping | Sleep | <img src="../../assets/gif/clawd-sleeping.gif" width="160"> | <img src="../../assets/gif/calico-sleeping.gif" width="130"> | <img src="../../assets/gif/cloudling-sleeping.gif" width="140"> |
 | SessionEnd | remove session; idle if no live sessions | No sleep transition | | | |
 
+In the Clawd theme, a direct Claude Code `/design` command selects the painting visual through `UserPromptExpansion`. The accepted main-session `Stop` selects heart eyes; this marks a completed turn, not successful publication. Temporary tool failures, notifications and automatic compaction keep the design hint for resumed work, while terminal failures, session end and the next ordinary prompt clear it. Both poses retain the selected head accessory and temporarily hide the mouth accessory, which returns on supported ordinary poses. Other themes use their normal state visuals.
+
 ## Kimi Code CLI (Kimi-CLI) Hook Events
 
 Kimi Code CLI (Kimi-CLI) now uses hook-only integration (`~/.kimi/config.toml`), and maps these 13 hook events to shared Clawd states:
@@ -181,3 +183,29 @@ Hash Sage (哈希仙人) is **not** bundled with Clawd. It is an optional offici
 | mini enter-sleep / sleep (DND) | 闭眼入场 / 贴墙睡眠呼吸 |
 
 Re-downloading after an uninstall is a lossy upgrade: it clears this theme's customizations and Clawd-managed sound overrides.
+
+## Whale-chan (optional official theme)
+
+Whale-chan (鲸鱼娘) is **not** bundled with Clawd either. It is an optional official theme downloaded on demand from the same `rullerzhou-afk/clawd-themes` repository (Settings → Theme → Official themes) and requires Clawd 1.2.0. Once installed it runs as an external animated-image theme (animated WebP since theme 1.0.1) with the same logical states, effects baked into each animation, and no cursor eye tracking:
+
+| State | Whale-chan animation |
+|---|---|
+| idle | 陪你发一会儿呆 — standing breath |
+| idle random pool (after 20 s without mouse movement) | 大家一起来合奏 — conducts, the music ring fades in and out, then crossfades back to idle |
+| Default idle visual choice (Settings → Default idle visual) | 泡在泳池里偷个懒 — offered through `idleVisualOptions`, never picked at random |
+| thinking | 认真想一想 |
+| working (1 session) | 今天也在努力呀 |
+| working (2 sessions) / juggling (subagents) | 发现电饭煲啦 — the magic rice cooker |
+| working (3+ sessions) | 撑着小伞去踩水 — umbrella in the rain |
+| attention | 任务完成啦！ |
+| notification | 有件事要你确认哦 |
+| error | 报错也要被接住 |
+| sweeping / carrying | 把尾巴擦得亮晶晶 / 泡在泳池里偷个懒 |
+| yawning → dozing → collapsing → sleeping → waking | 慢慢钻进纸箱里 → 在纸箱里轻轻呼吸 → 从纸箱飘进云朵 → 睡在软绵绵的云上 → 睡饱啦，回来陪你 |
+| DND sleep transition | 乘着云朵进入深睡 |
+| roam, mini crab-walk | 搭上鲸鱼巴士去兜风 (drawn heading right, mirrored when heading left) |
+| drag / click reactions | 被拎起来也要晃一晃 / 戳我干嘛，哼！ |
+| mini enter / idle | 从屏幕边探出头来 / 趴在屏幕边陪着你 |
+| mini hover peek | 撑起身子看看你, then holds the pose while the pointer stays (`mini-peek-hold`) |
+| mini working / alert / task complete | 认真干饭中 / 叮！有事找你 / 砰！做完啦 |
+| mini enter-sleep / sleep (DND) / hover while asleep | 闭着眼也来陪你 / 趴在屏幕边睡着了 / 睡着也撑起身子 (`mini-sleep-peek`) |

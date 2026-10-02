@@ -93,17 +93,16 @@ function resolveStateAndEvent(payload, hookName) {
   return HOOK_TO_STATE[hookName] || null;
 }
 
-// Safety timeout: guarantee valid JSON on stdout within 1s even if stdin never
-// arrives or the process tree walk hangs. Without this Cursor would see empty
-// stdout which is invalid JSON and logs an error on every hook invocation.
-const SAFETY_TIMEOUT_MS = 800;
+// readStdinJson bounds input waiting separately. Start the delivery watchdog
+// only after synchronous metadata work: a slow Windows process snapshot can
+// exceed 800ms, leaving an earlier timer ready to exit before HTTP gets a turn.
+const DELIVERY_TIMEOUT_MS = 800;
 let _wrote = false;
 let _exited = false;
-let safetyTimer = null;
+let deliveryTimer = null;
+let outLine = "{}";
 
-// Write the stdout response exactly once. Kept separate from process exit so the
-// hook can answer Cursor immediately yet still let the fire-and-forget POST to
-// Clawd leave the process before it exits.
+// Respond once, after delivery completes/fails or its watchdog expires.
 function writeStdoutOnce(outLine) {
   if (_wrote) return;
   _wrote = true;
@@ -114,18 +113,16 @@ function finish(outLine) {
   writeStdoutOnce(outLine);
   if (_exited) return;
   _exited = true;
-  if (safetyTimer) clearTimeout(safetyTimer);
+  if (deliveryTimer) clearTimeout(deliveryTimer);
   process.exit(0);
 }
-
-safetyTimer = setTimeout(() => finish("{}"), SAFETY_TIMEOUT_MS);
 
 readStdinJson()
   .then((payload) => {
     const argvOverride = process.argv[2] === CURSOR_HOOK_SENTINEL ? process.argv[3] : process.argv[2];
     const hookNameResolved = argvOverride || (payload && payload.hook_event_name) || "";
     const mapped = resolveStateAndEvent(payload, hookNameResolved);
-    const outLine = stdoutForCursorHook(hookNameResolved);
+    outLine = stdoutForCursorHook(hookNameResolved);
 
     if (!mapped) {
       finish(outLine);
@@ -192,11 +189,6 @@ readStdinJson()
       applyOrcaPaneKey(body);
     }
 
-    // Answer Cursor immediately so it never sees empty/malformed stdout, but
-    // don't exit yet — the fire-and-forget POST below still needs to leave the
-    // process, so we exit in its callback (with the safety timer as backstop).
-    writeStdoutOnce(outLine);
-
     const postOptions = { timeoutMs: 100 };
     if (serverProcessChainEnabled) {
       postOptions.preferredPort = runtimeObservation.port;
@@ -208,8 +200,9 @@ readStdinJson()
         legacyCacheSource: pidMetadata.cacheSource || "none",
       };
     }
+    deliveryTimer = setTimeout(() => finish(outLine), DELIVERY_TIMEOUT_MS);
     postStateToRunningServer(JSON.stringify(body), postOptions, () => {
       finish(outLine);
     });
   })
-  .catch(() => finish("{}"));
+  .catch(() => finish(outLine));

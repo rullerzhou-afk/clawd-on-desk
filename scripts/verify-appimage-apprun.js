@@ -146,7 +146,7 @@ function findSquashfsOffsets(artifactPath) {
   return offsets;
 }
 
-function extractWithUnsquashfs(artifactPath, tempDir) {
+function extractWithUnsquashfs(artifactPath, tempDir, filename) {
   const offsets = findSquashfsOffsets(artifactPath);
   const errors = [];
 
@@ -154,10 +154,10 @@ function extractWithUnsquashfs(artifactPath, tempDir) {
     const outputDir = path.join(tempDir, `unsquashfs-${offset}`);
     const result = spawnSync(
       "unsquashfs",
-      ["-o", String(offset), "-d", outputDir, artifactPath, "AppRun"],
+      ["-o", String(offset), "-d", outputDir, artifactPath, filename],
       { encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
     );
-    const appRunPath = path.join(outputDir, "AppRun");
+    const appRunPath = path.join(outputDir, filename);
     if (result.status === 0 && fs.existsSync(appRunPath)) {
       return {
         content: fs.readFileSync(appRunPath, "utf8"),
@@ -173,15 +173,15 @@ function extractWithUnsquashfs(artifactPath, tempDir) {
   );
 }
 
-function extractAppRun(artifactPath) {
+function extractAppRun(artifactPath, filename = "AppRun") {
   const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-apprun-"));
   try {
     const runtimeResult = spawnSync(
       artifactPath,
-      ["--appimage-extract", "AppRun"],
+      ["--appimage-extract", filename],
       { cwd: tempDir, encoding: "utf8", maxBuffer: 4 * 1024 * 1024 }
     );
-    const runtimeExtractedPath = path.join(tempDir, "squashfs-root", "AppRun");
+    const runtimeExtractedPath = path.join(tempDir, "squashfs-root", filename);
     if (runtimeResult.status === 0 && fs.existsSync(runtimeExtractedPath)) {
       return {
         content: fs.readFileSync(runtimeExtractedPath, "utf8"),
@@ -190,7 +190,7 @@ function extractAppRun(artifactPath) {
     }
 
     try {
-      return extractWithUnsquashfs(artifactPath, tempDir);
+      return extractWithUnsquashfs(artifactPath, tempDir, filename);
     } catch (fallbackError) {
       const runtimeError = runtimeResult.error
         ? runtimeResult.error.message
@@ -234,13 +234,31 @@ function verifyArtifact(artifactPath) {
 
   const extracted = extractAppRun(resolvedArtifact);
   const exports = validateAppRunContent(extracted.content);
+  // Loaded lazily: prepare-appimage-launcher.js requires this module at load
+  // time, so a top-level require here would create a cycle.
+  const { PREFIX } = require("./prepare-appimage-launcher");
+  const guardIndex = extracted.content.indexOf(PREFIX);
+  if (guardIndex === -1) {
+    throw new Error("Final AppImage is missing the reviewed Clawd runtime lifetime guard");
+  }
+  const guardLine = extracted.content.slice(0, guardIndex).split(/\r?\n/).length;
+  const firstExportLine = Math.min(...Object.values(exports).map((entry) => entry.line));
+  if (guardLine >= firstExportLine) {
+    throw new Error("Final AppImage runs the Clawd runtime lifetime guard after its reviewed path exports");
+  }
+  const launcher = extractAppRun(resolvedArtifact, "clawd-appimage-launcher.sh");
+  const expectedLauncher = fs.readFileSync(path.join(__dirname, "../build/appimage-launcher.sh"), "utf8");
+  if (launcher.content !== expectedLauncher) {
+    throw new Error("Final AppImage supervisor differs from the reviewed source");
+  }
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     artifact: resolvedArtifact,
     artifactSha256: sha256File(resolvedArtifact),
     appRunSha256: sha256Text(extracted.content),
     extractionMethod: extracted.method,
     reviewedPathExports: exports,
+    runtimeSupervisorSha256: sha256Text(launcher.content),
   };
 }
 
@@ -257,6 +275,16 @@ function main(argv) {
   process.stdout.write(output);
 }
 
+// Assigned before running main() so a lazy require from verifyArtifact() sees
+// the real exports instead of an empty object.
+module.exports = {
+  REVIEWED_PATH_EXPORTS,
+  evaluateReviewedRightHandSide,
+  parseTopLevelExports,
+  validateAppRunContent,
+  verifyArtifact,
+};
+
 if (require.main === module) {
   try {
     main(process.argv.slice(2));
@@ -265,11 +293,3 @@ if (require.main === module) {
     process.exitCode = 1;
   }
 }
-
-module.exports = {
-  REVIEWED_PATH_EXPORTS,
-  evaluateReviewedRightHandSide,
-  parseTopLevelExports,
-  validateAppRunContent,
-  verifyArtifact,
-};

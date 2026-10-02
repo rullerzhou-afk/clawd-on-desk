@@ -314,6 +314,21 @@ test("getRendererConfig reports hasRoamVisual only for a dedicated roam binding"
   }
 });
 
+test("getRendererConfig lists idle animations that mirror on the right side", () => {
+  const fixture = makeRoot();
+  try {
+    const ctx = createThemeContext(makeTheme({
+      idleAnimations: [
+        { file: "look.svg", duration: 5000 },
+        { file: "bubble.svg", duration: 5000, mirrorOnRightSide: true },
+      ],
+    }), fixture);
+    assert.deepStrictEqual(ctx.getRendererConfig().rightSideMirrorFiles, ["bubble.svg"]);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
 test("getRendererConfig passes roamFlipAssets through for left-facing roam art", () => {
   const fixture = makeRoot();
   try {

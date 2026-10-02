@@ -263,6 +263,168 @@ describe("durable session history", () => {
       assert.equal(readOne().endedAt, null, "a resumed session is not an ended one");
     });
 
+    it("keeps a completed turn ended when Claude sends a trailing SubagentStop (#1060)", () => {
+      recordSessionHistoryFromStateBody(body(), writeOpts(T0));
+      recordSessionHistoryFromStateBody(
+        body({ event: "Stop", state: "attention" }),
+        writeOpts(T0 + 1000),
+      );
+      const ended = readOne();
+      assert.equal(ended.endedAt, T0 + 1000);
+
+      const trailing = recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStop", state: "working" }),
+        writeOpts(T0 + 4000),
+      );
+      assert.equal(trailing.written, false);
+      assert.equal(trailing.reason, "no-active-evidence");
+      assert.deepEqual(readOne(), ended);
+    });
+
+    it("never starts a history row from a SubagentStop alone (#1060)", () => {
+      const result = recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStop", state: "working" }),
+        writeOpts(T0),
+      );
+      assert.equal(result.reason, "no-active-evidence");
+      assert.equal(readOne(), null);
+    });
+
+    it("still settles juggling to working when a subagent stops mid-turn (#1060)", () => {
+      recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStart", state: "juggling" }),
+        writeOpts(T0),
+      );
+      recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStop", state: "working" }),
+        writeOpts(T0 + 1000),
+      );
+      const row = readOne();
+      assert.equal(row.lastState, "working");
+      assert.equal(row.endedAt, null);
+      // A SubagentStop only settles the turn; it never advances the clock
+      // (#1060 follow-up).
+      assert.equal(row.lastEventAt, T0);
+    });
+
+    it("does not let a trailing SubagentStop advance the history clock (#1060 follow-up)", () => {
+      const cases = [
+        { sessionId: "history-thinking", start: { event: "UserPromptSubmit", state: "thinking" }, stopAt: T0 + 1000 },
+        { sessionId: "history-juggling", start: { event: "SubagentStart", state: "juggling" }, stopAt: T0 + 1000 },
+        { sessionId: "history-refresh-passed", start: { event: "PreToolUse", state: "working" }, stopAt: T0 + 40_000 },
+      ];
+      for (const { sessionId, start, stopAt } of cases) {
+        recordSessionHistoryFromStateBody(
+          body({ session_id: sessionId, ...start }),
+          writeOpts(T0),
+        );
+        // The SubagentStop hook process wins the write race, but Stop is the
+        // newer event; a settled row must not make Stop look stale.
+        recordSessionHistoryFromStateBody(
+          body({ session_id: sessionId, event: "SubagentStop", state: "working" }),
+          writeOpts(stopAt + 1700),
+        );
+        const stop = recordSessionHistoryFromStateBody(
+          body({ session_id: sessionId, event: "Stop", state: "attention" }),
+          writeOpts(stopAt),
+        );
+        assert.equal(stop.written, true, sessionId);
+        const row = readOne(sessionId);
+        assert.equal(row.endedAt, stopAt, sessionId);
+        assert.equal(row.lastEventAt, stopAt + 0.5, sessionId);
+      }
+    });
+
+    it("only settles a juggling history row on a trailing SubagentStop (#1060 follow-up)", () => {
+      const sessionId = "history-settle-only-juggling";
+      recordSessionHistoryFromStateBody(
+        body({ session_id: sessionId, event: "Stop", state: "attention" }),
+        writeOpts(T0),
+      );
+      recordSessionHistoryFromStateBody(
+        body({ session_id: sessionId, event: "UserPromptSubmit", state: "thinking" }),
+        writeOpts(T0 + 1000),
+      );
+      const filePath = getHistoryFilePath("claude-code", sessionId, { historyDir });
+      const bytesBefore = fs.readFileSync(filePath);
+
+      const trailing = recordSessionHistoryFromStateBody(
+        body({ session_id: sessionId, event: "SubagentStop", state: "working" }),
+        writeOpts(T0 + 2000),
+      );
+      assert.deepEqual(trailing, { written: false, reason: "nothing-to-settle" });
+      assert.deepEqual(fs.readFileSync(filePath), bytesBefore);
+      assert.equal(readOne(sessionId).lastState, "thinking");
+
+      const startOnly = "history-session-start-only";
+      recordSessionHistoryFromStateBody(
+        body({ session_id: startOnly, event: "SessionStart", state: "sleeping" }),
+        writeOpts(T0),
+      );
+      const startPath = getHistoryFilePath("claude-code", startOnly, { historyDir });
+      assert.equal(readHistoryFile(startPath).lastState, null);
+      const startBytes = fs.readFileSync(startPath);
+      const settledStart = recordSessionHistoryFromStateBody(
+        body({ session_id: startOnly, event: "SubagentStop", state: "working" }),
+        writeOpts(T0 + 1000),
+      );
+      assert.deepEqual(settledStart, { written: false, reason: "nothing-to-settle" });
+      assert.deepEqual(fs.readFileSync(startPath), startBytes);
+    });
+
+    it("records a debounce Stop as the end of the turn (#1060 follow-up)", () => {
+      recordSessionHistoryFromStateBody(
+        body({ event: "PreToolUse", state: "working" }),
+        writeOpts(T0),
+      );
+      recordSessionHistoryFromStateBody(
+        body({
+          event: "Stop",
+          state: "attention",
+          background_tasks_count: 1,
+          assistant_last_output: "finished",
+        }),
+        writeOpts(T0 + 1000),
+      );
+      const ended = readOne();
+      assert.equal(ended.endedAt, T0 + 1000);
+      assert.equal(ended.lastState, "working");
+      assert.equal(ended.lastEventAt, T0 + 1000.5);
+
+      const rows = loadSessionHistory(readOpts(BOOT_B + 60_000, BOOT_B));
+      assert.equal(rows[0].interrupted, false);
+
+      recordSessionHistoryFromStateBody(
+        body({ event: "PreToolUse", state: "working" }),
+        writeOpts(T0 + 2000),
+      );
+      assert.equal(readOne().endedAt, null, "later real activity resumes the conversation");
+    });
+
+    it("never treats a held Stop as an ended turn (#1060 follow-up)", () => {
+      const holds = [
+        { stop_hook_active: true },
+        { session_crons_count: 1 },
+        { background_tasks_count: 1 },
+        { background_tasks_count: 1, background_subagents_count: 1, assistant_last_output: "parent finished" },
+      ];
+      holds.forEach((fields, index) => {
+        const sessionId = `history-hold-${index}`;
+        recordSessionHistoryFromStateBody(
+          body({ session_id: sessionId, event: "PreToolUse", state: "working" }),
+          writeOpts(T0 + index * 1000),
+        );
+        recordSessionHistoryFromStateBody(
+          body({ session_id: sessionId, event: "Stop", state: "attention", ...fields }),
+          writeOpts(T0 + 500 + index * 1000),
+        );
+        assert.equal(readOne(sessionId).endedAt, null, sessionId);
+      });
+      const rows = loadSessionHistory(readOpts(BOOT_B + 60_000, BOOT_B));
+      assert.equal(rows.length, holds.length);
+      assert.equal(rows.every((row) => row.interrupted === true), true);
+    });
+
     it("refuses headless runs, foreign agents, and remote filesystems", () => {
       const cases = [
         [body({ headless: true }), "headless"],
@@ -425,6 +587,34 @@ describe("durable session history", () => {
       });
       pruneHistoryFiles(historyDir, { now: later });
       assert.equal(readOne().lastEventAt, later);
+    });
+
+    it("preserves a juggling row settled mid-prune by a trailing SubagentStop (#1060 follow-up)", (t) => {
+      recordSessionHistoryFromStateBody(
+        body({ event: "SubagentStart", state: "juggling" }),
+        writeOpts(T0),
+      );
+      const file = getHistoryFilePath("claude-code", "session-alpha", { historyDir });
+      const later = T0 + MAX_HISTORY_AGE_MS + 1;
+      const mkdir = fs.mkdirSync;
+      let settled = false;
+      t.mock.method(fs, "mkdirSync", (dir, ...args) => {
+        if (!settled && String(dir).startsWith(file + ".lock.pending-")) {
+          settled = true;
+          // Settles juggling -> working without moving lastEventAt, so a
+          // lastEventAt-only re-read would still delete this live row.
+          recordSessionHistoryFromStateBody(
+            body({ event: "SubagentStop", state: "working" }),
+            writeOpts(later),
+          );
+        }
+        return mkdir(dir, ...args);
+      });
+      pruneHistoryFiles(historyDir, { now: later });
+      assert.equal(settled, true);
+      assert.ok(fs.existsSync(file), "a concurrently settled row must survive pruning");
+      assert.equal(readOne().lastState, "working");
+      assert.equal(readOne().lastEventAt, T0);
     });
 
     it("preserves foreign schema rows on write and during count pruning", () => {

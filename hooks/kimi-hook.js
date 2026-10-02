@@ -6,7 +6,7 @@
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
-const { KIMI_PROCESS_NAMES: kimiProcessNames } = require("./kimi-process-names");
+const { KIMI_PROCESS_NAMES: kimiProcessNames, isKimiAgentCommandLine } = require("./kimi-process-names");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
@@ -538,6 +538,22 @@ function buildStateBody(event, payload, resolve) {
   return body;
 }
 
+// How the pid resolver recognizes the Kimi process: the names from
+// kimi-process-names.js, plus the package-directory check for a node-named
+// process. Exported so the wiring is checked on every platform, not only where
+// the real-process tests can run.
+function buildResolverOptions(platformConfig) {
+  return {
+    agentNames: {
+      mac: new Set(kimiProcessNames.mac || []),
+      linux: new Set(kimiProcessNames.linux || []),
+      win: new Set(kimiProcessNames.win || []),
+    },
+    agentCmdlineCheck: isKimiAgentCommandLine,
+    platformConfig,
+  };
+}
+
 function main() {
   const parsedArgv = parseHookArgv(process.argv.slice(2));
   if (parsedArgv.mode) setArgvPermissionMode(parsedArgv.mode);
@@ -546,17 +562,7 @@ function main() {
   }
   const eventFromArgv = parsedArgv.event;
 
-  const config = getPlatformConfig();
-  const agentNames = {
-    mac: new Set(kimiProcessNames.mac || []),
-    linux: new Set(kimiProcessNames.linux || []),
-    win: new Set(kimiProcessNames.win || []),
-  };
-  const resolve = createPidResolver({
-    agentNames,
-    agentCmdlineCheck: (cmd) => cmd.includes("kimi") || cmd.includes("kimi-cli"),
-    platformConfig: config,
-  });
+  const resolve = createPidResolver(buildResolverOptions(getPlatformConfig()));
 
   readStdinJson().then((payload) => {
     // Kimi CLI passes event via stdin JSON (not argv), so resolve it here.
@@ -592,6 +598,7 @@ function main() {
 if (require.main === module) main();
 module.exports = {
   buildStateBody,
+  buildResolverOptions,
   extractPermissionToolInput,
   readToolCallId,
   isGatedPostEvent,

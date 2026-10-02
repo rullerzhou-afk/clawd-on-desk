@@ -131,6 +131,15 @@
     officialThemeCatalogVersion: null,
     officialThemeOperation: null,
     officialThemePendingThemeId: null,
+    // Bumped every time an operation end is observed, and mirrored onto a list
+    // read that actually replaced the official list. When the two differ, the
+    // cached per-card progress snapshots predate the observed end and must not
+    // be trusted as "an install is still running".
+    officialThemeEndCount: 0,
+    officialThemeListEndCount: 0,
+    // De-dupes the post-operation list refresh so the two back-to-back idle
+    // events share one read and one completion render.
+    officialThemeEndRefresh: null,
     codexPetsRefreshPending: false,
     codexPetZipImportPending: false,
     userThemeZipImportPending: false,
@@ -1868,14 +1877,18 @@
       return Promise.resolve(runtime.officialThemeList);
     }
     const previous = Array.isArray(runtime.officialThemeList) ? runtime.officialThemeList : [];
+    const endCountAtRequest = runtime.officialThemeEndCount;
     const officialThemePromise = window.settingsAPI.listOfficialThemes().then((result) => {
       const themes = result && Array.isArray(result.themes) ? result.themes : [];
-      runtime.officialThemeList = themes.length === 0 && previous.length > 0 && !(result && result.status === "ok")
-        ? previous
-        : themes;
+      const keepPrevious = themes.length === 0 && previous.length > 0 && !(result && result.status === "ok");
+      runtime.officialThemeList = keepPrevious ? previous : themes;
       runtime.officialThemeCatalogStatus = (result && result.catalogStatus) || "offline";
       runtime.officialThemeCatalogVersion = result ? result.catalogVersion : null;
       runtime.officialThemeListFetched = true;
+      // Only a real replacement proves the returned snapshots are newer than the
+      // operation end observed while this read was in flight. Keeping the old
+      // list (or catching below) leaves the cached snapshots untrusted.
+      if (!keepPrevious) runtime.officialThemeListEndCount = endCountAtRequest;
       return runtime.officialThemeList;
     }).catch((err) => {
       console.warn("settings: listOfficialThemes failed", err);
@@ -2071,12 +2084,88 @@
     if (state.activeTab === "shortcuts") requestRender({ content: true });
   }
 
+  // A cached per-card progress snapshot can only be read as "still installing"
+  // until an operation end has been observed. A list read that replaced the
+  // official list after that end proves the snapshot is fresh (or gone); a read
+  // that merely kept the old list, or failed, does not.
+  function officialProgressSnapshotsTrusted() {
+    return runtime.officialThemeEndCount === runtime.officialThemeListEndCount;
+  }
+
+  // Post-operation refresh. The list read that is already in flight may have
+  // started before the operation ended, so it can still return a live-download
+  // snapshot; wait for the in-flight local/official reads to settle, then issue
+  // a genuinely new read. The read itself and its single completion render are
+  // shared by the duplicate idle the main process broadcasts.
+  function refreshThemesAfterOfficialOperation() {
+    if (runtime.officialThemeEndRefresh) return runtime.officialThemeEndRefresh;
+    const inFlight = [runtime.themeListPromise, runtime.officialThemePromise].filter(Boolean);
+    const refresh = Promise.allSettled(inFlight)
+      .then(() => {
+        // fetchThemes() resolves on the local scan, but the terminal state lives
+        // in the official catalog read it kicks off beside it. Wait for both so
+        // the completion render sees the post-operation list.
+        const local = fetchThemes();
+        const official = runtime.officialThemePromise;
+        const pending = official ? [local, official] : [local];
+        return Promise.allSettled(pending);
+      })
+      .then(() => {
+        // Clear before the completion render so buttons settle on the fresh
+        // list instead of still reading this refresh as an in-flight install.
+        if (runtime.officialThemeEndRefresh === refresh) runtime.officialThemeEndRefresh = null;
+        if (state.activeTab === "theme") requestRender({ content: true, preserveScroll: true });
+      })
+      .finally(() => {
+        if (runtime.officialThemeEndRefresh === refresh) runtime.officialThemeEndRefresh = null;
+      });
+    runtime.officialThemeEndRefresh = refresh;
+    return refresh;
+  }
+
   // main owns the single official-theme operation; the renderer only mirrors
   // its phase so a Settings reload can never restart or lose a live download.
   function applyOfficialThemeProgress(progress) {
     if (!progress || typeof progress !== "object") return;
+    const previousOperation = runtime.officialThemeOperation;
     runtime.officialThemeOperation = progress.phase && progress.phase !== "idle" ? progress : null;
-    if (state.activeTab === "theme") requestRender({ content: true, preserveScroll: true });
+    // A Settings reload mid-download loses the install promise that would
+    // otherwise refresh the list in its .finally, so the card can stay parked on
+    // a stale per-card progress snapshot after the operation ends. Observing the
+    // end marks cached snapshots untrusted and, when no in-page install owns the
+    // refresh, schedules one. The two back-to-back idle events share that
+    // refresh, and the second one no longer looks like another end.
+    const hasSnapshot = Array.isArray(runtime.officialThemeList)
+      && runtime.officialThemeList.some((theme) => theme && theme.officialThemeProgress);
+    const operationEnded = runtime.officialThemeOperation === null
+      && (
+        previousOperation !== null
+        || (officialProgressSnapshotsTrusted() && hasSnapshot)
+        // A Settings page that opened after the last progress event has no
+        // mirror and no snapshot yet, but an official read still in flight may
+        // carry a pre-idle snapshot. Treat the idle as an observed end so that
+        // read's stale snapshot is invalidated and a fresh read is scheduled.
+        // An in-flight end refresh already owns that fresh read, so its own
+        // read must not count as another end.
+        || (runtime.officialThemePromise && !runtime.officialThemeEndRefresh)
+      );
+    if (operationEnded) {
+      runtime.officialThemeEndCount += 1;
+      if (!runtime.officialThemePendingThemeId) refreshThemesAfterOfficialOperation();
+    }
+    if (state.activeTab !== "theme") return;
+    // Progress events arrive many times per download. A full content render
+    // would tear down and rebuild every theme card each time, which drops the
+    // CSS hover highlight on whatever card the cursor is over (and the
+    // scroll-into-place flicker that comes with it). Let the tab update just
+    // its progress rows when it can; fall back to the full render otherwise.
+    const activeTab = tabs[state.activeTab];
+    if (activeTab
+      && typeof activeTab.patchOfficialThemeProgress === "function"
+      && activeTab.patchOfficialThemeProgress()) {
+      return;
+    }
+    requestRender({ content: true, preserveScroll: true });
   }
 
   function clearTransientStateForChanges(changes) {
@@ -2448,6 +2537,8 @@
     handleShortcutRecordKey,
     applyShortcutFailures,
     applyOfficialThemeProgress,
+    officialProgressSnapshotsTrusted,
+    refreshThemesAfterOfficialOperation,
     fetchAgentInstallationHints,
     fetchThemes,
     fetchOfficialThemes,

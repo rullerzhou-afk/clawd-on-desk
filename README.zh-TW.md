@@ -28,9 +28,9 @@
 
 Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。發起一個長任務，起身做點別的，等螃蟹告訴你任務完成了再回來。
 
-你提問時牠思考，工具執行時牠打字，子代理在跑時牠會戴耳機律動或三球雜耍，審查權限時牠彈卡片，任務完成時牠慶祝，你離開時牠睡覺。內建三套主題：**Clawd**（像素螃蟹）、**Calico**（三花貓）和 **Cloudling**（雲寶），支援自訂主題，也支援匯入 Codex Pet 動畫套件；另外可從 設定 → 主題 下載可選官方主題 **Hash Sage**（哈希仙人）。
+你提問時牠思考，工具執行時牠打字，子代理在跑時牠會戴耳機律動或三球雜耍，審查權限時牠彈卡片，任務完成時牠慶祝，你離開時牠睡覺。內建三套主題：**Clawd**（像素螃蟹）、**Calico**（三花貓）和 **Cloudling**（雲寶），支援自訂主題，也支援匯入 Codex Pet 動畫套件；另外可從 設定 → 主題 下載可選官方主題 **Hash Sage**（哈希仙人）和 **Whale-chan**（鯨魚娘）。
 
-> 支援 Windows 11、macOS 和 Ubuntu/Linux。Windows 發布版本提供獨立的 x64 和 ARM64 安裝檔。從原始碼執行需要 Node.js。支援 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千問辦公）**、**Reasonix CLI** 與 **DeepSeek Harness**。
+> 支援 Windows 11、macOS 和 Ubuntu/Linux。Windows 發布版本提供獨立的 x64 和 ARM64 安裝檔。從原始碼執行需要 Node.js。支援 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Grok Build**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千問辦公）**、**Reasonix CLI**、**DeepSeek Harness**、**TraeCode (Trae CN)** 與 **MiniMax Code**。
 
 ## 功能特色
 
@@ -45,6 +45,7 @@ Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。�
 - **CodeBuddy** — 以 Claude Code 相容的 command hook + HTTP 權限 hook 整合，設定寫入 `~/.codebuddy/settings.json`（Clawd 啟動時自動註冊，或執行 `node hooks/codebuddy-install.js`）
 - **自訂 HTTP Agent** — 在 Settings 註冊其他本機應用，再由應用或 adapter 主動向 Clawd 的動態 `/state` 位址上報事件；註冊不會安裝 hook，v1 僅同步狀態，權限決定留在應用自己的介面。詳見[自訂 HTTP Agent 指南](docs/guides/custom-agent-http.md)
 - **WorkBuddy** — 可選 Claude Code 相容 command hook，當前使用 `~/.workbuddy-ai/settings.json`，舊版使用 `~/.workbuddy/settings.json`（從 Settings → Agents 安裝，或執行 `node hooks/workbuddy-install.js`）；僅同步狀態與通知，權限仍由 WorkBuddy 原生 GUI 處理
+- **Grok Build** — 可選 Claude Code 相容 command hook，寫入 `~/.grok/hooks/clawd-on-desk.json`（從 Settings → Agents 安裝，或執行 `node hooks/grok-install.js`）。僅同步狀態與通知；Grok 沒有阻塞式 `PermissionRequest` hook，Allow / Deny 仍由 Grok TUI 處理。
 - **Kiro CLI** — command hooks 注入到 `~/.kiro/agents/` 下的自訂 agent 設定，並自動建立 `clawd` agent；Clawd 每次啟動都會從內建的 `kiro_default` 重新同步它，盡量和預設 agent 保持一致。macOS 與 Windows 上狀態動效已驗證可用；需要時可用 `kiro-cli --agent clawd` 或在工作階段內執行 `/agent swap clawd` 啟用 hooks（Clawd 啟動時自動註冊，或執行 `npm run install:kiro-hooks`）
 - **Kimi Code CLI（Kimi-CLI）** — 在 `~/.kimi/config.toml` 的 `[[hooks]]` 條目設定 command hooks（Clawd 啟動時自動註冊，或執行 `npm run install:kimi-hooks`）
 - **Qwen Code** — 在 `~/.qwen/settings.json` 設定 command hooks（Clawd 啟動時自動註冊，或執行 `npm run install:qwen-hooks`）；支援狀態追蹤和 Qwen `PermissionRequest` 桌面權限對話框
@@ -57,6 +58,7 @@ Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。�
 - **Qoder** — 在 `~/.qoder/settings.json` 設定 command hooks（`~/.qoder/` 目錄已存在時 Clawd 啟動會自動註冊，或執行 `npm run install:qoder-hooks`）；**僅同步狀態**：Phase 1 只驅動動畫，權限請求僅以通知方式觀察，Clawd 不顯示權限對話框也不代答，所有 Allow / Deny 都在 Qoder 自己的權限流程完成
 - **QwenWork（千問辦公）** — 在 `~/.QwenWorkCN/settings.json` 設定 hook-only / state-only command hooks（從 Settings → Agents 安裝，或執行 `npm run install:qwenwork-hooks`，解除安裝用 `npm run uninstall:qwenwork-hooks`）；目前只支援 macOS / Windows 桌面版——[qwenwork.cn/download](https://qwenwork.cn/download) 沒有 Linux 版，因此也不提供 WSL Pair。Phase 1 驅動動畫與 Session HUD；`PermissionRequest` / `PermissionDenied` 僅作觀察並對應到 `working`，hook stdout 恆為 `{}`，Clawd 不產生 allow/deny，權限唯一決策者是 QwenWork 自己的流程。沒有 startup recovery：桌面主程序長駐，不代表正在執行任務
 - **DeepSeek Harness** — 實驗性的 web-profile-only 整合，透過 Clawd 管理的 DSH 行程內 plugin 運作。公開 session 事件會依 session 順序驅動 Clawd 狀態，公開的阻塞式 `approval/request` 可顯示 Allow Once / Deny 氣泡；無決定時一律回到 DSH 原生 web answerer。`ask_user_question` 完全留在 DSH 原生 provider，Clawd 從不讀取 DSH projection 儲存內容。詳見 [DeepSeek Harness 指南](docs/guides/dsh-setup.md)
+- **TraeCode (Trae CN)** — 實驗性、僅狀態同步的 hook 整合，寫入 `~/.trae-cn/hooks.json`（從 Settings → Agents 安裝，或執行 `npm run install:traecode-hooks`；解除安裝用 `npm run uninstall:traecode-hooks`）。須在 Trae 手動開啟 hooks（**Settings → Hooks → Enable**，執行模式選 **Sandbox**；見 [Trae 官方 hooks 文件](https://docs.trae.cn/ide/automate-actions-with-hooks)）。首版僅支援 Trae 中國版；Clawd 從第一則提問推導會話標題，不接管權限，也沒有 `SessionEnd`，關閉的會話由桌面端閒置逾時清理。
 - **多 Agent 並存** — 多個 Agent 可以同時跑，Clawd 會獨立追蹤每個工作階段
 
 ### 動畫與互動
@@ -360,6 +362,11 @@ Clawd on Desk 是社群驅動的專案。歡迎提 Bug、提需求、提 PR —�
 <a href="https://github.com/mantertius"><img src="https://github.com/mantertius.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/VonSdite"><img src="https://github.com/VonSdite.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/sunnyswag"><img src="https://github.com/sunnyswag.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/hanzhe-one"><img src="https://github.com/hanzhe-one.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/52mzd"><img src="https://github.com/52mzd.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/gzx19990101"><img src="https://github.com/gzx19990101.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/ypjn"><img src="https://github.com/ypjn.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/jin-codes"><img src="https://github.com/jin-codes.png" width="50" style="border-radius:50%" /></a>
 
 ## 致謝
 
@@ -375,4 +382,5 @@ Clawd on Desk 是社群驅動的專案。歡迎提 Bug、提需求、提 PR —�
 - **Clawd** 角色設計屬於 [Anthropic](https://www.anthropic.com)。本專案為非官方粉絲作品，與 Anthropic 沒有官方關聯。
 - **三花貓** 素材由 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 創作，保留所有權利。
 - **Cloudling（雲寶）** 素材由 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 創作，保留所有權利。雲寶的視覺方向包含對 OpenAI Codex logo 的致敬；Codex 與 OpenAI 相關標誌仍歸 OpenAI 所有，本專案與 OpenAI 沒有官方關聯，也未獲 OpenAI 背書。
+- **Whale-chan（鯨魚娘）** 由 [`rullerzhou-afk/clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) 作為可選官方主題獨立發佈。原始角色設計、設定與素材權利歸原作者；主題依 [Neko3000/deepseek-whalechan](https://github.com/Neko3000/deepseek-whalechan) 署名 ZipZipPipe 與上善無形。鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 新作的動畫與特效採用 CC BY-NC-SA 4.0，完整條款見主題包。本主題是非官方、非商業同人作品，與 DeepSeek 無關，亦未獲授權或背書；不適用本專案 AGPL-3.0 原始碼授權。
 - **第三方畫師作品**：著作權歸各自作者所有。

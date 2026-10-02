@@ -13,6 +13,7 @@ const {
   probeTranscript,
   loadResumableSessionHistory,
   resolveResumeTarget,
+  clearTitleExtractionCache,
 } = require("../src/session-history-loader");
 const {
   LEGACY_HISTORY_VERSION,
@@ -31,6 +32,7 @@ describe("session history loader", () => {
   const BOOT_B = T0 + 600_000;
 
   beforeEach(() => {
+    clearTitleExtractionCache();
     root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-history-loader-"));
     historyDir = path.join(root, "history");
     claudeProjectsDir = path.join(root, "claude-projects");
@@ -62,6 +64,16 @@ describe("session history loader", () => {
     const dir = path.join(claudeProjectsDir, encodeClaudeProjectDir(cwd));
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), '{"type":"user"}\n');
+  }
+
+  // A transcript whose lines the test controls, for title extraction cases.
+  function writeTranscriptLines(sessionId, entries, cwd = projectCwd) {
+    const dir = path.join(claudeProjectsDir, encodeClaudeProjectDir(cwd));
+    fs.mkdirSync(dir, { recursive: true });
+    const body = entries
+      .map((entry) => (typeof entry === "string" ? entry : JSON.stringify(entry)))
+      .join("\n");
+    fs.writeFileSync(path.join(dir, `${sessionId}.jsonl`), body ? `${body}\n` : "");
   }
 
   function loadOpts(extra = {}) {
@@ -151,7 +163,7 @@ describe("session history loader", () => {
           { kind: "default", configDir: null }, loadOpts()),
         false,
       );
-      // No project dir at all -> unknown, never a claim.
+      // No project dir at all, and no sibling holds the id -> unknown.
       assert.equal(
         probeTranscript("claude-code", "anything", path.join(root, "elsewhere"),
           { kind: "default", configDir: null }, loadOpts()),
@@ -161,6 +173,107 @@ describe("session history loader", () => {
       assert.equal(probeTranscript(
         "codex", "x", projectCwd, { kind: "default", configDir: null }, loadOpts(),
       ), null);
+    });
+
+    it("locates a transcript under a sibling project directory when the recorded cwd maps to none", () => {
+      writeTranscript("has-transcript", path.join(root, "worktree"));
+      // `claude --resume <id>` looks the id up across project directories, so
+      // a worktree record must read as present even though its recorded cwd
+      // has no directory of its own.
+      assert.equal(
+        probeTranscript("claude-code", "has-transcript", path.join(root, "old-checkout"),
+          { kind: "default", configDir: null }, loadOpts()),
+        true,
+      );
+      // Nothing anywhere holds this id — still "unknown", never "gone".
+      assert.equal(
+        probeTranscript("claude-code", "not-anywhere", path.join(root, "old-checkout"),
+          { kind: "default", configDir: null }, loadOpts()),
+        null,
+      );
+    });
+
+    it("looks across project directories when the recorded cwd's own directory exists but holds no transcript", () => {
+      // The #1072 worktree shape: the recorded cwd is a checkout that other
+      // sessions used (its project directory exists), while this session's
+      // transcript lives under the worktree's directory. The ENOENT branch
+      // must still find it.
+      writeTranscript("placeholder", projectCwd); // gives projectCwd its own directory
+      writeTranscript("wt-session", path.join(root, "worktree"));
+      assert.equal(
+        probeTranscript("claude-code", "wt-session", projectCwd,
+          { kind: "default", configDir: null }, loadOpts()),
+        true,
+      );
+      // Project directory present, transcript absent from it, and the
+      // completed cross-directory scan found the id nowhere — that is now a
+      // confident no, not an unknown.
+      assert.equal(
+        probeTranscript("claude-code", "gone-session", projectCwd,
+          { kind: "default", configDir: null }, loadOpts()),
+        false,
+      );
+    });
+
+    it("keeps an unreadable projects root or subdirectory at unknown, never missing", (t) => {
+      writeTranscript("placeholder", projectCwd); // the ENOENT branch needs the dir to exist
+      // The projects root cannot be listed: the scan cannot even run.
+      const readdir = fs.readdirSync;
+      t.mock.method(fs, "readdirSync", (dir, ...args) => {
+        if (path.resolve(String(dir)) === path.resolve(claudeProjectsDir)) {
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        }
+        return readdir(dir, ...args);
+      });
+      assert.equal(
+        probeTranscript("claude-code", "gone-session", projectCwd,
+          { kind: "default", configDir: null }, loadOpts()),
+        null,
+      );
+      // One subdirectory cannot be listed: the scan ran but is incomplete, so
+      // a miss still cannot claim absence. The directory must exist first, or
+      // it never enters the scan at all.
+      const subdir = path.join(claudeProjectsDir, encodeClaudeProjectDir(path.join(root, "worktree")));
+      writeTranscript("unrelated", path.join(root, "worktree"));
+      t.mock.restoreAll();
+      t.mock.method(fs, "readdirSync", (dir, ...args) => {
+        if (path.resolve(String(dir)) === path.resolve(subdir)) {
+          throw Object.assign(new Error("denied"), { code: "EACCES" });
+        }
+        return readdir(dir, ...args);
+      });
+      assert.equal(
+        probeTranscript("claude-code", "gone-session", projectCwd,
+          { kind: "default", configDir: null }, loadOpts()),
+        null,
+      );
+    });
+
+    it("shares one directory listing per directory, however many records miss", (t) => {
+      // Every miss used to re-walk every project directory's file names
+      // (records × directories). With the shared file-name index a load
+      // costs one readdir of the projects root plus one per subdirectory —
+      // assert the structure, not milliseconds.
+      writeTranscript("unrelated-a", path.join(root, "worktree"));
+      writeTranscript("unrelated-b", path.join(root, "other-project"));
+      for (let i = 0; i < 5; i++) {
+        record(`daemon-${i}`, T0 - i, BOOT_A, { cwd: path.join(root, "ghost-checkout") });
+      }
+      const readdir = fs.readdirSync;
+      let projectReaddirs = 0;
+      t.mock.method(fs, "readdirSync", (dir, ...args) => {
+        const resolved = path.resolve(String(dir));
+        if (resolved === path.resolve(claudeProjectsDir)
+          || resolved.startsWith(`${path.resolve(claudeProjectsDir)}${path.sep}`)) {
+          projectReaddirs += 1;
+        }
+        return readdir(dir, ...args);
+      });
+      const rows = loadResumableSessionHistory(loadOpts());
+      assert.equal(rows.length, 5);
+      assert.ok(rows.every((row) => row.group === "other"));
+      // projects root + worktree + other-project, once each for five misses.
+      assert.equal(projectReaddirs, 3);
     });
   });
 
@@ -185,6 +298,8 @@ describe("session history loader", () => {
         const customRow = rows.find((row) => row.historyKey === customRecord.record.historyKey);
         assert.equal(defaultRow.transcriptPresent, true);
         assert.equal(customRow.transcriptPresent, false);
+        assert.equal(defaultRow.group, "confirmed");
+        assert.equal(customRow.group, "other");
         assert.notEqual(defaultRow.historyKey, customRow.historyKey);
         assert.equal(Object.prototype.hasOwnProperty.call(defaultRow, "profile"), false);
         assert.equal(JSON.stringify(rows).includes(customConfigDir), false);
@@ -224,22 +339,25 @@ describe("session history loader", () => {
       assert.equal(row.sessionId, "legacy-session");
       assert.equal(row.resumeDisabledReason, "profile-unverified");
       assert.equal(row.transcriptPresent, null);
+      assert.equal(row.group, "other");
       assert.match(row.historyKey, /^[a-f0-9]{32}$/);
       assert.equal(resolveResumeTarget("claude-code", row.historyKey, loadOpts()), null);
     });
 
-    it("offers interrupted rows first and flags a missing transcript", () => {
+    it("puts resumable rows ahead and keeps a flagged missing transcript behind them", () => {
       record("interrupted-one", T0);
       record("ended-one", T0 + 1000, BOOT_A, { event: "SessionEnd", state: "idle" });
       writeTranscript("ended-one");
 
       const rows = loadResumableSessionHistory(loadOpts());
-      assert.deepEqual(rows.map((r) => r.sessionId), ["interrupted-one", "ended-one"]);
-      assert.equal(rows[0].interrupted, true);
-      assert.equal(rows[0].transcriptPresent, false, "no transcript was written for it");
-      assert.equal(rows[1].interrupted, false);
-      assert.equal(rows[1].transcriptPresent, true);
-      assert.equal(rows[0].cwd, projectCwd);
+      assert.deepEqual(rows.map((r) => r.sessionId), ["ended-one", "interrupted-one"]);
+      assert.equal(rows[0].interrupted, false);
+      assert.equal(rows[0].transcriptPresent, true);
+      assert.equal(rows[0].group, "confirmed");
+      assert.equal(rows[1].interrupted, true);
+      assert.equal(rows[1].transcriptPresent, false, "no transcript was written for it");
+      assert.equal(rows[1].group, "other");
+      assert.equal(rows[1].cwd, projectCwd);
     });
 
     it("still offers a row whose transcript state is unknown", () => {
@@ -248,6 +366,7 @@ describe("session history loader", () => {
       const rows = loadResumableSessionHistory(loadOpts());
       assert.equal(rows.length, 1);
       assert.equal(rows[0].transcriptPresent, null);
+      assert.equal(rows[0].group, "other");
     });
 
     it("hides sessions that are already live on screen", () => {
@@ -258,22 +377,238 @@ describe("session history loader", () => {
         activeRawSessionIds: new Set(["running-now"]),
       }));
       assert.deepEqual(rows.map((r) => r.sessionId), ["finished"]);
+      assert.equal(rows[0].group, "other");
     });
 
     it("honours the row limit after the active filter", () => {
-      for (let i = 0; i < 5; i++) record(`s-${i}`, T0 + i * 1000);
+      for (let i = 0; i < 5; i++) {
+        record(`s-${i}`, T0 + i * 1000);
+        writeTranscript(`s-${i}`);
+      }
       const rows = loadResumableSessionHistory(loadOpts({
         limit: 2,
         activeRawSessionIds: new Set(["s-4"]),
       }));
       assert.equal(rows.length, 2);
       assert.ok(!rows.some((r) => r.sessionId === "s-4"));
+      assert.ok(rows.every((r) => r.group === "confirmed"), "the limit caps the visible list only");
+    });
+
+    it("keeps a resumable row visible when unresumable records rank newer", () => {
+      // Thirty recency-ranked records without transcripts would fill the
+      // whole visible list under a first-N read; grouping must keep the one
+      // older resumable session on it instead.
+      for (let i = 0; i < 30; i++) record(`ghost-${i}`, T0 - 1000 + i);
+      record("real", T0 - 100_000);
+      writeTranscript("real");
+
+      const rows = loadResumableSessionHistory(loadOpts());
+      assert.equal(rows[0].sessionId, "real");
+      assert.equal(rows[0].group, "confirmed");
+      assert.equal(rows.filter((r) => r.group === "other").length, 30);
+      assert.ok(rows.filter((r) => r.group === "confirmed").length <= 25);
+    });
+
+    it("finds a transcript under another project directory when the recorded cwd has none", () => {
+      // The cwd must exist for the row to lead the list (resolveResumeTarget
+      // would refuse it otherwise), so build it before recording.
+      fs.mkdirSync(path.join(root, "old-checkout"));
+      record("moved", T0, BOOT_A, { cwd: path.join(root, "old-checkout") });
+      writeTranscript("moved", path.join(root, "worktree"));
+
+      const rows = loadResumableSessionHistory(loadOpts());
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].sessionId, "moved");
+      assert.equal(rows[0].transcriptPresent, true);
+      assert.equal(rows[0].group, "confirmed");
+      assert.equal(resolveResumeTarget("claude-code", rows[0].historyKey, loadOpts()).cwd,
+        path.join(root, "old-checkout"));
+    });
+
+    it("folds a cross-directory hit whose recorded cwd has vanished", () => {
+      // Transcript found elsewhere, but the checkout is gone: a resume would
+      // fail, so the row must not lead the list — still offered, still
+      // clickable, folded away.
+      record("moved", T0, BOOT_A, { cwd: path.join(root, "old-checkout") });
+      writeTranscript("moved", path.join(root, "worktree"));
+
+      const rows = loadResumableSessionHistory(loadOpts());
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].transcriptPresent, true);
+      assert.equal(rows[0].group, "other");
+      assert.equal(rows[0].resumeDisabledReason, null);
+      assert.equal(resolveResumeTarget("claude-code", rows[0].historyKey, loadOpts()), null);
+    });
+
+    it("keeps an unknown verdict for a record no directory holds at all", () => {
+      // A daemon-born record whose cwd never mapped to a project directory:
+      // the cross-directory scan runs and misses, so the row folds away as
+      // "other" without the probe ever claiming the transcript is gone.
+      record("daemon-born", T0, BOOT_A, { cwd: "/" });
+      writeTranscript("unrelated", path.join(root, "some-project"));
+
+      const rows = loadResumableSessionHistory(loadOpts());
+      assert.equal(rows.length, 1);
+      assert.equal(rows[0].transcriptPresent, null);
+      assert.equal(rows[0].group, "other");
     });
 
     it("never returns prompts or responses", () => {
       record("s", T0, BOOT_A, { assistant_last_output: "secret", prompt: "secret" });
       const [row] = loadResumableSessionHistory(loadOpts());
       assert.ok(!JSON.stringify(row).includes("secret"));
+    });
+
+    it("names a session from its first prompt when no title was recorded", () => {
+      record("titled", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("titled", [
+        { type: "last-prompt", leafUuid: "leaf" },
+        { type: "attachment", attachment: { path: "notes.txt" } },
+        { type: "user", message: { role: "user", content: "Fix the theme loader crash" } },
+        { type: "assistant", message: { role: "assistant", content: "On it" } },
+      ]);
+
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, "Fix the theme loader crash");
+    });
+
+    it("skips metadata rows and falls back to the slash command that started the session", () => {
+      record("cmd", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("cmd", [
+        { type: "user", isMeta: true, message: { role: "user", content: "meta noise" } },
+        { type: "user", message: { role: "user", content: "<command-message>specrune-init</command-message>" } },
+        { type: "user", message: { role: "user", content: [{ type: "tool_result", content: "x" }] } },
+      ]);
+
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, "/specrune-init");
+    });
+
+    it("keeps reading when the transcript head is one huge record", () => {
+      record("big", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("big", [
+        JSON.stringify({ type: "attachment", data: "x".repeat(20 * 1024) }),
+        { type: "user", message: { role: "user", content: "After the big line" } },
+      ]);
+
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, "After the big line");
+    });
+
+    it("never overrides a recorded title, nor names rows it cannot confirm", () => {
+      record("named", T0, BOOT_A, { session_title: "Recorded title" });
+      writeTranscriptLines("named", [
+        { type: "user", message: { role: "user", content: "From transcript" } },
+      ]);
+      // An empty transcript file probes as false — nothing to name.
+      record("gone", T0 + 1000, BOOT_A, { session_title: "" });
+      writeTranscriptLines("gone", []);
+
+      const rows = loadResumableSessionHistory(loadOpts());
+      const named = rows.find((row) => row.sessionId === "named");
+      const gone = rows.find((row) => row.sessionId === "gone");
+      assert.equal(named.title, "Recorded title");
+      assert.equal(gone.title, null);
+    });
+
+    it("gives no title when the opening prompt is secret-shaped, even if a later prompt is plain", () => {
+      record("secret", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("secret", [
+        { type: "user", message: { role: "user", content: "deploy with token ghp_abcdefghijklmnopqrstuvwxyz0123456789" } },
+        { type: "user", message: { role: "user", content: "a perfectly normal follow-up" } },
+      ]);
+      // The opening line decides; a secret in it means "no safe name", so the
+      // extraction must not fall through to the next prompt.
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, null);
+    });
+
+    it("titles a multi-line prompt from its first line even when a later line holds a key", () => {
+      record("multi", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("multi", [
+        { type: "user", message: { role: "user", content: "please deploy this\nAWS key AKIAABCDEFGHIJKLMNOP" } },
+      ]);
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, "please deploy this");
+    });
+
+    it("survives null entries and null content parts without dropping any row", () => {
+      record("null-part", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("null-part", [
+        "null",
+        { type: "user", message: { role: "user", content: [null, { type: "text", text: "kept the list alive" }] } },
+      ]);
+      record("healthy", T0 + 1000, BOOT_A, { session_title: "" });
+      writeTranscriptLines("healthy", [
+        { type: "user", message: { role: "user", content: "second row intact" } },
+      ]);
+
+      const rows = loadResumableSessionHistory(loadOpts());
+      assert.equal(rows.length, 2);
+      assert.equal(rows.find((row) => row.sessionId === "null-part").title, "kept the list alive");
+      assert.equal(rows.find((row) => row.sessionId === "healthy").title, "second row intact");
+    });
+
+    it("names a prompt that merely mentions tool_result", () => {
+      record("asks", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("asks", [
+        { type: "user", message: { role: "user", content: "why does tool_result come back empty?" } },
+      ]);
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, "why does tool_result come back empty?");
+    });
+
+    it("keeps the slash command found before a record that overruns the 1MiB cap", () => {
+      record("big-cmd", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("big-cmd", [
+        { type: "user", message: { role: "user", content: "<command-message>specrune-init</command-message>" } },
+        JSON.stringify({ type: "attachment", data: "x".repeat(1100 * 1024) }),
+      ]);
+      const [row] = loadResumableSessionHistory(loadOpts());
+      assert.equal(row.title, "/specrune-init");
+    });
+
+    it("extracts once per unchanged transcript and again after it changes", (t) => {
+      record("cached", T0, BOOT_A, { session_title: "" });
+      writeTranscriptLines("cached", [
+        { type: "user", message: { role: "user", content: "Original opening line" } },
+      ]);
+      record("unnamed", T0 + 1000, BOOT_A, { session_title: "" });
+      writeTranscriptLines("unnamed", [
+        { type: "user", message: { role: "user", content: [{ type: "tool_result", content: "x" }] } },
+      ]);
+      const transcriptPath = (id) => path.join(
+        claudeProjectsDir, encodeClaudeProjectDir(projectCwd), `${id}.jsonl`,
+      );
+      const first = loadResumableSessionHistory(loadOpts());
+      assert.equal(first.find((row) => row.sessionId === "cached").title, "Original opening line");
+      assert.equal(first.find((row) => row.sessionId === "unnamed").title, null);
+
+      // A second load over the same unchanged files — titled or not — must
+      // not open a single transcript again.
+      const realOpen = fs.openSync;
+      let opens = 0;
+      t.mock.method(fs, "openSync", (file, ...args) => {
+        if (String(file) === transcriptPath("cached") || String(file) === transcriptPath("unnamed")) {
+          opens += 1;
+        }
+        return realOpen(file, ...args);
+      });
+      const second = loadResumableSessionHistory(loadOpts());
+      assert.equal(second.find((row) => row.sessionId === "cached").title, "Original opening line");
+      assert.equal(second.find((row) => row.sessionId === "unnamed").title, null);
+      assert.equal(opens, 0);
+
+      // The file changed (content and mtime both) — extract again.
+      const later = new Date(Date.now() + 10_000);
+      fs.utimesSync(transcriptPath("cached"), later, later);
+      writeTranscriptLines("cached", [
+        { type: "user", message: { role: "user", content: "A different opening line" } },
+      ]);
+      fs.utimesSync(transcriptPath("cached"), later, later);
+      const third = loadResumableSessionHistory(loadOpts());
+      assert.equal(third.find((row) => row.sessionId === "cached").title, "A different opening line");
+      assert.ok(opens > 0);
     });
   });
 

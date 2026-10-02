@@ -2213,17 +2213,72 @@
       `</div>`;
     row.querySelector(".row-label").textContent = t("rowSize");
     row.querySelector(".row-desc").textContent = t("rowSizeDesc");
+    const warning = document.createElement("span");
+    warning.className = "row-desc size-over-max-hint";
+    warning.textContent = t("rowSizeOverMaxHint");
+    warning.hidden = true;
+    row.querySelector(".row-text").appendChild(warning);
 
     const control = row.querySelector(".size-control");
     const slider = row.querySelector(".size-slider");
     const readout = row.querySelector(".size-readout");
     readout.title = t("rowSizeResetTitle");
 
+    let context = null;
+    let requestId = 0;
+    let disposed = false;
+    let interactionBusy = false;
+    let refreshAfterInteraction = false;
+
+    function readDisplayedUi() {
+      return context && !context.synced ? context.ui : readers.readSizeUiFromSnapshot();
+    }
+
+    function requestContext() {
+      if (disposed || !window.settingsAPI || typeof window.settingsAPI.getSizeContext !== "function") return;
+      if (interactionBusy) {
+        ++requestId;
+        refreshAfterInteraction = true;
+        return;
+      }
+      const id = ++requestId;
+      Promise.resolve().then(() => window.settingsAPI.getSizeContext()).then((result) => {
+        if (disposed || id !== requestId) return;
+        if (interactionBusy) {
+          refreshAfterInteraction = true;
+          return;
+        }
+        if (!result || !Number.isInteger(result.ui)
+          || result.ui < helpers.SIZE_UI_MIN || result.ui > helpers.SIZE_UI_MAX
+          || typeof result.synced !== "boolean" || typeof result.overMax !== "boolean"
+          || (result.overMax && (result.synced || result.ui !== helpers.SIZE_UI_MAX))) {
+          context = null;
+          controller.syncFromSnapshot();
+          return;
+        }
+        context = result;
+        controller.syncFromSnapshot();
+      }).catch(() => {
+        if (disposed || id !== requestId || interactionBusy) return;
+        context = null;
+        controller.syncFromSnapshot();
+      });
+    }
+
+    function invalidateContext() {
+      ++requestId;
+      context = null;
+    }
+
     function applyLocalValue(ui) {
       const pct = helpers.sizeUiToPct(ui);
       slider.value = String(ui);
       slider.style.setProperty("--volume-fill", `${pct}%`);
-      readout.textContent = `${ui}%`;
+      const overMax = !interactionBusy && context && !context.synced
+        && context.overMax && ui === context.ui;
+      readout.textContent = overMax ? "100%+" : `${ui}%`;
+      readout.classList.toggle("over-max", !!overMax);
+      warning.hidden = !overMax;
     }
 
     function setDragging(nextDragging, pending = state.transientUiState.size.pending) {
@@ -2231,13 +2286,14 @@
       control.classList.toggle("pending", !!pending);
     }
 
-    const initial =
-      state.transientUiState.size.draftUi === null ? readers.readSizeUiFromSnapshot() : state.transientUiState.size.draftUi;
+    const initial = (state.transientUiState.size.dragging || state.transientUiState.size.pending)
+      && state.transientUiState.size.draftUi !== null
+      ? state.transientUiState.size.draftUi : readers.readSizeUiFromSnapshot();
     applyLocalValue(initial);
     setDragging(state.transientUiState.size.dragging, state.transientUiState.size.pending);
 
     const controller = helpers.createSizeSliderController({
-      readSnapshotUi: readers.readSizeUiFromSnapshot,
+      readSnapshotUi: readDisplayedUi,
       settingsAPI: window.settingsAPI,
       onLocalValue: (ui) => {
         state.transientUiState.size.draftUi = ui;
@@ -2246,33 +2302,64 @@
       onDraggingChange: (dragging, pending) => {
         state.transientUiState.size.dragging = dragging;
         state.transientUiState.size.pending = pending;
+        const wasInteractionBusy = interactionBusy;
+        interactionBusy = !!(dragging || pending);
         setDragging(dragging, pending);
+        if (!interactionBusy && (wasInteractionBusy || refreshAfterInteraction)) {
+          refreshAfterInteraction = false;
+          requestContext();
+        }
       },
       onError: (message) => {
         state.transientUiState.size.draftUi = null;
         applyLocalValue(readers.readSizeUiFromSnapshot());
+        requestContext();
         if (message) ops.showToast(t("toastSaveFailed") + message, { error: true });
       },
     });
 
     state.mountedControls.size = {
       row,
-      syncFromSnapshot: (options) => controller.syncFromSnapshot(options),
-      dispose: () => controller.dispose(),
+      syncFromSnapshot: (options) => {
+        invalidateContext();
+        controller.syncFromSnapshot(options);
+        requestContext();
+      },
+      dispose: () => {
+        disposed = true;
+        ++requestId;
+        if (typeof unsubscribeContextChanged === "function") unsubscribeContextChanged();
+        window.removeEventListener("focus", onFocus);
+        return controller.dispose();
+      },
     };
     controller.syncFromSnapshot();
 
-    slider.addEventListener("pointerdown", () => { void controller.pointerDown(); });
+    const onFocus = () => requestContext();
+    window.addEventListener("focus", onFocus);
+    const unsubscribeContextChanged = window.settingsAPI
+      && typeof window.settingsAPI.onSizeContextChanged === "function"
+      ? window.settingsAPI.onSizeContextChanged(requestContext) : null;
+    requestContext();
+
+    slider.addEventListener("pointerdown", () => {
+      invalidateContext();
+      applyLocalValue(Number(slider.value));
+      void controller.pointerDown();
+    });
     slider.addEventListener("pointerup", () => { void controller.pointerUp(); });
     slider.addEventListener("pointercancel", () => { void controller.pointerCancel(); });
     slider.addEventListener("blur", () => { void controller.blur(); });
     slider.addEventListener("input", () => {
+      invalidateContext();
       void controller.input(Number(slider.value));
     });
     slider.addEventListener("change", () => {
+      invalidateContext();
       void controller.change(Number(slider.value));
     });
     readout.addEventListener("click", () => {
+      invalidateContext();
       void controller.change(SIZE_UI_DEFAULT);
     });
 
@@ -2361,7 +2448,8 @@
     const keys = changes ? Object.keys(changes) : [];
     if (keys.length === 0) return false;
     if (!keys.every((key) => GENERAL_IN_PLACE_KEYS.has(key))) return false;
-    if (keys.includes("size") && !ops.syncMountedSizeControl({ fromBroadcast: true })) return false;
+    if ((keys.includes("size") || keys.includes("keepSizeAcrossDisplays"))
+      && !ops.syncMountedSizeControl({ fromBroadcast: true })) return false;
     if (keys.includes("textScale") || keys.includes("textScaleByDisplay")) {
       const tc = state.mountedControls.textScale;
       if (!tc || !document.body.contains(tc.row)) return false;

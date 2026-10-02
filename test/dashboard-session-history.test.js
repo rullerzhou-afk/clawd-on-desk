@@ -227,6 +227,7 @@ describe("dashboard session history section", () => {
     const meta = textOf(byClass(app.root, "session-history-meta")[0]);
     assert.ok(meta.includes(i18n.en.dashboardHistoryInterrupted), meta);
     assert.ok(meta.includes("thunderstone"), "the folder basename orients the user");
+    assert.ok(meta.includes("abc-123"), "the short session id keeps rows distinguishable");
     assert.ok(!meta.includes("/Users/me"), "the full path is not pasted into the row");
 
     const button = byClass(app.root, "session-history-resume")[0];
@@ -254,7 +255,11 @@ describe("dashboard session history section", () => {
     const app = loadDashboard({ history: [historyRow({
       resumeDisabledReason: "profile-unverified",
       transcriptPresent: null,
+      group: "other",
     })] });
+    await flush();
+
+    await byClass(app.root, "session-history-toggle")[0].dispatch("click");
     await flush();
 
     const button = byClass(app.root, "session-history-resume")[0];
@@ -282,7 +287,14 @@ describe("dashboard session history section", () => {
   });
 
   it("flags a confidently missing transcript but still offers resume", async () => {
-    const app = loadDashboard({ history: [historyRow({ transcriptPresent: false })] });
+    const app = loadDashboard({ history: [historyRow({
+      transcriptPresent: false, group: "other",
+    })] });
+    await flush();
+
+    // The row lives in the collapsed group; expanding it must keep the same
+    // hint-not-block shape the visible list always had.
+    await byClass(app.root, "session-history-toggle")[0].dispatch("click");
     await flush();
 
     const meta = textOf(byClass(app.root, "session-history-meta")[0]);
@@ -290,8 +302,50 @@ describe("dashboard session history section", () => {
     assert.equal(byClass(app.root, "session-history-resume")[0].disabled, false);
   });
 
+  it("collapses unconfirmed rows behind a counted toggle", async () => {
+    const app = loadDashboard({
+      history: [
+        historyRow(),
+        historyRow({
+          sessionId: "ghost-1", historyKey: "b".repeat(32),
+          transcriptPresent: false, group: "other",
+        }),
+        historyRow({
+          sessionId: "ghost-2", historyKey: "c".repeat(32),
+          transcriptPresent: null, group: "other",
+        }),
+      ],
+    });
+    await flush();
+
+    assert.equal(byClass(app.root, "session-history-card").length, 1,
+      "only the confirmed row is visible up front");
+    const toggle = byClass(app.root, "session-history-toggle")[0];
+    assert.equal(toggle.textContent, i18n.en.dashboardHistoryShowOther.replace("{n}", 2));
+    assert.equal(toggle.attributes["aria-expanded"], "false");
+
+    await toggle.dispatch("click");
+    await flush();
+    assert.equal(byClass(app.root, "session-history-card").length, 3);
+    assert.equal(byClass(app.root, "session-history-toggle")[0].attributes["aria-expanded"], "true");
+    assert.equal(
+      byClass(app.root, "session-history-toggle")[0].textContent,
+      i18n.en.dashboardHistoryHideOther,
+    );
+
+    await byClass(app.root, "session-history-toggle")[0].dispatch("click");
+    await flush();
+    assert.equal(byClass(app.root, "session-history-card").length, 1,
+      "collapsing again must not drop the confirmed row");
+  });
+
   it("says nothing when the probe could not tell", async () => {
-    const app = loadDashboard({ history: [historyRow({ transcriptPresent: null })] });
+    const app = loadDashboard({ history: [historyRow({
+      transcriptPresent: null, group: "other",
+    })] });
+    await flush();
+
+    await byClass(app.root, "session-history-toggle")[0].dispatch("click");
     await flush();
 
     const meta = textOf(byClass(app.root, "session-history-meta")[0]);

@@ -88,6 +88,10 @@ const ADAPTERS = [
   // session_id is required so the resolver cache context is non-default and
   // the vacuity guard sees the one PowerShell snapshot when Clawd is alive.
   { name: "traecode-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
+  // MiniMax Code is state-only via its local plugin: every event emits {}.
+  // session_id is required so the vacuity guard sees the one snapshot spawn
+  // when Clawd is alive.
+  { name: "minimax-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
 let hookHarness;
@@ -167,7 +171,7 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 17, "traecode-hook.js and qwenwork-hook.js joined the createPidResolver consumers");
+    assert.strictEqual(consumers.length, 18, "traecode-hook.js, qwenwork-hook.js and minimax-hook.js joined the createPidResolver consumers");
   });
 });
 

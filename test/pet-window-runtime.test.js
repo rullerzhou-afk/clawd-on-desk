@@ -3715,6 +3715,21 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
     assert.equal(preview.inspector.calls.length, 0);
   });
 
+  for (const platform of ["win32", "darwin"]) {
+    it(`reports the settings size preview protection period on ${platform}`, () => {
+      const h = createRuntime({
+        isWin: platform === "win32",
+        isMac: platform === "darwin",
+        isLinux: false,
+      });
+      assert.equal(h.runtime.isSettingsSizePreviewActive(), false);
+      h.runtime.beginSettingsSizePreviewProtection();
+      assert.equal(h.runtime.isSettingsSizePreviewActive(), true);
+      h.runtime.endSettingsSizePreviewProtection();
+      assert.equal(h.runtime.isSettingsSizePreviewActive(), false);
+    });
+  }
+
   it("recoverIfCloaked backs off exponentially after a failed recovery and resets on success", () => {
     let clock = 1_000_000;
     const inspector = makeCloakInspector({ flag: 1, uncloakClears: false });

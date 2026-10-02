@@ -3,8 +3,9 @@
 const { isAccessoryMirrored } = require("./pet-accessory-mirror");
 
 // Clawd draws some visuals mirrored: every mini visual against the left screen
-// edge (#pet-facing-stage) and a dedicated roam visual while the walk heads
-// left (#pet-asset-direction-stage); pet-accessory-mirror.js owns that rule.
+// edge (#pet-facing-stage), a dedicated roam visual while the walk heads left
+// and an opted-in idle animation while the pet sits on the right half of its
+// display (#pet-asset-direction-stage); pet-accessory-mirror.js owns that rule.
 // Raster art with legible glyphs (a scroll, a talisman, code symbols) reads
 // backwards once mirrored, so a theme can map such a file to a variant whose
 // glyphs are pre-mirrored; the runtime mirror turns them the right way round:
@@ -24,7 +25,31 @@ function hasDedicatedRoamVisual(theme) {
     && !(states.roam.length === 1 && Array.isArray(states.idle) && states.roam[0] === states.idle[0]));
 }
 
-function isVisualMirrored(theme, state, { miniMode = false, miniEdge = "right", roamHeadingLeft = false } = {}) {
+function getRightSideMirrorFiles(theme) {
+  const entries = theme && Array.isArray(theme.idleAnimations) ? theme.idleAnimations : [];
+  const followFile = theme && theme.states && Array.isArray(theme.states.idle) ? theme.states.idle[0] : null;
+  const files = [];
+  for (const entry of entries) {
+    if (!entry || entry.mirrorOnRightSide !== true || typeof entry.file !== "string") continue;
+    const variant = resolveMirroredFile(theme, entry.file, true);
+    // The follow sprite keeps screen-space eye tracking, even when a theme
+    // also lists it in the random pool or uses it as a mirrored variant.
+    if (entry.file === followFile || variant === followFile) continue;
+    files.push(entry.file);
+    // The renderer only sees the file actually on screen, which may be the
+    // pre-mirrored variant.
+    if (variant !== entry.file) files.push(variant);
+  }
+  return files;
+}
+
+function isVisualMirrored(theme, state, {
+  miniMode = false,
+  miniEdge = "right",
+  roamHeadingLeft = false,
+  file = null,
+  petOnRightSide = false,
+} = {}) {
   // The pre-entry walk toward the edge already carries that edge's mirror.
   const preEntryCrabwalk = !miniMode && state === "mini-crabwalk";
   return isAccessoryMirrored(state, {
@@ -35,6 +60,9 @@ function isVisualMirrored(theme, state, { miniMode = false, miniEdge = "right", 
     miniFlipAssets: !!(theme && theme.miniMode && theme.miniMode.flipAssets),
     inMiniMode: miniMode,
     miniPreEntryMode: preEntryCrabwalk,
+    file,
+    petOnRightSide,
+    rightSideMirrorFiles: getRightSideMirrorFiles(theme),
   });
 }
 
@@ -46,4 +74,4 @@ function resolveMirroredFile(theme, file, mirrored) {
   return typeof variant === "string" && variant ? variant : file;
 }
 
-module.exports = { hasDedicatedRoamVisual, isVisualMirrored, resolveMirroredFile };
+module.exports = { hasDedicatedRoamVisual, getRightSideMirrorFiles, isVisualMirrored, resolveMirroredFile };

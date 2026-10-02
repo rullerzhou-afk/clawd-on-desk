@@ -12,10 +12,11 @@ const {
 module.exports = {
   id: "kimi-cli",
   name: "Kimi Code",
-  // kimi / kimi.exe match the legacy CLI and Kimi Code's native
-  // (install-script) build. The npm build of Kimi Code runs under node and is
-  // caught by command-line matching in the hook's pid resolver and the
-  // startup-recovery process scan, not by these names.
+  // On macOS/Linux Kimi Code retitles itself kimi-code (cut to fit its launch
+  // command; see hooks/kimi-process-names.js), native and npm builds alike.
+  // On Windows the native build is kimi.exe, while the npm build stays
+  // node.exe and is caught by command-line matching in the hook's pid resolver
+  // and the startup-recovery process scan, not by these names.
   processNames: KIMI_PROCESS_NAMES,
   startupRecoveryProcessNames: KIMI_STARTUP_RECOVERY_PROCESS_NAMES,
   eventSource: "hook",

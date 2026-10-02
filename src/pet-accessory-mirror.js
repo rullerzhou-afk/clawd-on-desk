@@ -31,6 +31,15 @@
     if (state === "roam") {
       return !!context.hasRoamVisual && (!!context.roamHeadingLeft !== !!context.roamFlipAssets);
     }
+    // Idle animations whose effect reaches out to the right (bubbles, sparks)
+    // would play into the off-screen overhang at the right edge; the theme
+    // opts them in with idleAnimations[].mirrorOnRightSide.
+    if (state === "idle") {
+      return !!context.petOnRightSide
+        && typeof context.file === "string"
+        && Array.isArray(context.rightSideMirrorFiles)
+        && context.rightSideMirrorFiles.includes(context.file);
+    }
     // Only mini-family visuals mirror with flipAssets. mini-mode-change can
     // land while a transitional visual (idle, drag reaction) is still on
     // screen — those keep their orientation until the mini swap happens.

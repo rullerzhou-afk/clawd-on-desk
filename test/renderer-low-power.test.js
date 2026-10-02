@@ -3036,6 +3036,39 @@ describe("renderer glyph flip compensation", () => {
     }
   });
 
+  it("updates idle orientation and accessory facing when the same resting file crosses sides", () => {
+    const harness = createRendererHarness({ themeConfig: { rightSideMirrorFiles: ["bubble.svg"] } });
+    harness.electronHandlers.onPetScreenSide(false);
+    harness.electronHandlers.onStateChange("idle", "bubble.svg");
+    harness.api.pendingNext.listeners.get("load")();
+    const displayed = harness.api.clawdEl;
+    harness.electronHandlers.onPetScreenSide(true);
+    harness.electronHandlers.onStateChange("idle", "bubble.svg");
+    assert.strictEqual(harness.api.pendingNext, null);
+    assert.strictEqual(harness.api.clawdEl, displayed);
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
+    const report = () => harness.electronCalls.filter((call) => call.name === "reportAccessoryMirror").at(-1).args[0];
+    assert.strictEqual(report(), true);
+    harness.electronHandlers.onPetScreenSide(false);
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+    assert.strictEqual(report(), false);
+  });
+
+  it("keeps idle glyph variants mirrored when side arrives during an image load", () => {
+    const harness = createRendererHarness({
+      themeConfig: { rightSideMirrorFiles: ["bubble.svg", "bubble-left.svg"] },
+    });
+    harness.electronHandlers.onStateChange("idle", "bubble-left.svg");
+    const pending = harness.api.pendingNext;
+    harness.electronHandlers.onPetScreenSide(true);
+    pending.listeners.get("load")();
+    assert.strictEqual(harness.api.currentDisplayedSvg, "bubble-left.svg");
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "-1 1");
+    harness.electronHandlers.onStateChange("idle", "current.svg");
+    harness.api.pendingNext.listeners.get("load")();
+    assert.strictEqual(harness.assetDirectionStage.style.scale, "none");
+  });
+
   it("tells main which way the accessory ended up facing", () => {
     // Main sizes the native hit window from this. Without the report it keeps
     // its startup default of "upright" forever and the hat is drawn on one

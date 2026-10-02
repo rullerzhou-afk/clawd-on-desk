@@ -66,6 +66,12 @@
             }
           }
         },
+        "clawd-designing.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+        },
+        "clawd-heart-eyes.svg": {
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
+        },
         "clawd-idle-look.svg": {
           "staticFrame": {
             "cx": 7.5,
@@ -674,6 +680,12 @@
         "clawd-happy.svg": {
           "visibility": "hidden"
         },
+        "clawd-designing.svg": {
+          "visibility": "hidden"
+        },
+        "clawd-heart-eyes.svg": {
+          "visibility": "hidden"
+        },
         "clawd-idle-look.svg": {
           "staticFrame": {
             "cx": 14,
@@ -1170,7 +1182,8 @@
     },
     {
       "file": "clawd-idle-bubble.svg",
-      "duration": 13500
+      "duration": 13500,
+      "mirrorOnRightSide": true
     },
     {
       "file": "clawd-idle-reading.svg",
@@ -1190,6 +1203,7 @@
     }
   ],
   "displayHintMap": {
+    "claude-design": "clawd-designing.svg",
     "clawd-working-building.svg": "clawd-working-building.svg",
     "clawd-working-typing.svg": "clawd-working-typing.svg",
     "clawd-headphones-groove.svg": "clawd-headphones-groove.svg",
@@ -1199,6 +1213,9 @@
     "clawd-idle-bubble.svg": "clawd-idle-bubble.svg",
     "clawd-working-debugger.svg": "clawd-working-debugger.svg",
     "clawd-working-thinking.svg": "clawd-working-thinking.svg"
+  },
+  "completionVisualMap": {
+    "claude-design": "clawd-heart-eyes.svg"
   },
   "updateVisuals": {
     "checking": "clawd-working-debugger.svg"

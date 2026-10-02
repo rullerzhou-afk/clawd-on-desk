@@ -30,6 +30,56 @@ function validThemeJson(overrides = {}) {
 }
 
 describe("theme schema validation", () => {
+  it("keeps absent idleVisualOptions absent and drops malformed authored entries", () => {
+    const plain = schema.mergeDefaults(validThemeJson());
+    assert.strictEqual(Object.hasOwn(plain, "idleVisualOptions"), false);
+    const warn = mock.method(console, "warn", () => {});
+    const raw = validThemeJson({ idleVisualOptions: [
+      { file: "pool.apng" }, {}, { file: 12 }, { file: "../escape.svg" }, null,
+    ] });
+    const theme = schema.mergeDefaults(raw);
+    assert.deepStrictEqual(theme.idleVisualOptions, [{ file: "pool.apng" }]);
+    assert.strictEqual(warn.mock.calls.length, 4);
+    assert.ok(warn.mock.calls.every((call) => /\[theme-loader\] idleVisualOptions\[\d+\] dropped/.test(call.arguments[0])));
+    assert.strictEqual(schema.deriveIdleMode(raw), schema.deriveIdleMode(validThemeJson()));
+    assert.strictEqual(schema.collectRequiredAssetFiles(plain).includes("pool.apng"), false);
+    assert.strictEqual(schema.collectRequiredAssetFiles(theme).includes("pool.apng"), true);
+  });
+
+  it("keeps mini peek motion opt-in and drops invalid fields with warnings", () => {
+    const plain = schema.mergeDefaults(validThemeJson({ miniMode: { supported: true, states: {} } }));
+    assert.equal(Object.hasOwn(plain.miniMode, "peek"), false);
+    assert.equal(Object.hasOwn(plain.miniMode, "sleepPeek"), false);
+
+    const warn = mock.method(console, "warn", () => {});
+    const theme = schema.mergeDefaults(validThemeJson({
+      miniMode: {
+        supported: true, states: {},
+        peek: { offsetRatio: 0.0806, delayMs: 375, durationMs: 125 },
+        sleepPeek: { offsetRatio: 0.7, delayMs: "0", durationMs: 750 },
+      },
+    }));
+    assert.deepStrictEqual(theme.miniMode.peek, { offsetRatio: 0.0806, delayMs: 375, durationMs: 125 });
+    assert.deepStrictEqual(theme.miniMode.sleepPeek, { durationMs: 750 });
+    assert.equal(warn.mock.calls.length, 2);
+    assert.match(warn.mock.calls[0].arguments[0], /miniMode\.sleepPeek\.offsetRatio dropped/);
+    assert.match(warn.mock.calls[1].arguments[0], /miniMode\.sleepPeek\.delayMs dropped/);
+  });
+
+  it("accepts optional mini peek visuals only as declared file arrays", () => {
+    const states = Object.fromEntries(schema.MINI_REQUIRED_STATES.map((state) => [state, [`${state}.svg`]]));
+    const base = validThemeJson({ miniMode: { supported: true, states } });
+    assert.deepStrictEqual(schema.validateTheme(base), []);
+    assert.deepStrictEqual(schema.validateTheme(validThemeJson({ miniMode: {
+      supported: true,
+      states: { ...states, "mini-peek-hold": ["hold.svg"], "mini-sleep-peek": ["sleep-peek.svg"] },
+    } })), []);
+    const invalid = schema.validateTheme(validThemeJson({ miniMode: {
+      supported: true, states: { ...states, "mini-peek-hold": [] },
+    } }));
+    assert.ok(invalid.some((error) => error.includes("miniMode.states.mini-peek-hold")));
+  });
+
   it("validates schema, rendering, and update bubble anchor shape", () => {
     const errors = schema.validateTheme({
       schemaVersion: 2,
@@ -113,6 +163,22 @@ describe("theme schema validation", () => {
       assert.ok(
         errors.some((error) => error.includes("roamFlipAssets must be a boolean")),
         `expected a roamFlipAssets error for ${JSON.stringify(bad)}`
+      );
+    }
+  });
+
+  it("rejects a non-boolean idleAnimations[].mirrorOnRightSide", () => {
+    const withFlag = (mirrorOnRightSide) => validThemeJson({
+      idleAnimations: [{ file: "idle.svg", duration: 5000, mirrorOnRightSide }],
+    });
+    assert.deepStrictEqual(schema.validateTheme(withFlag(true)), []);
+    assert.deepStrictEqual(schema.validateTheme(withFlag(false)), []);
+
+    for (const bad of ["true", 1, {}]) {
+      const errors = schema.validateTheme(withFlag(bad));
+      assert.ok(
+        errors.some((error) => error.includes("idleAnimations[0].mirrorOnRightSide must be a boolean")),
+        `expected a mirrorOnRightSide error for ${JSON.stringify(bad)}`
       );
     }
   });

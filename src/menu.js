@@ -589,12 +589,20 @@ module.exports = function initMenu(ctx) {
   }
 
   function resizeWindow(sizeKey, options = {}) {
+    // Some size commits have no preview protection (for example the displayed
+    // percentage reset), so stop any walk before it can restore its old size.
+    if (typeof ctx.cancelRoam === "function") ctx.cancelRoam();
     const mode = options.mode || (options.persist === false ? "preview" : "commit");
     const persist = mode !== "preview";
     // Setter routes through controller.applyUpdate("size", ...) — subscriber
     // rebuilds menus on commit. We still need to physically resize the
     // window and capture the new bounds at the end.
-    if (persist) ctx.currentSize = sizeKey;
+    if (persist) {
+      ctx.currentSize = sizeKey;
+      // A same-value update is a controller noop, but the preview may already
+      // have resized the window on a different display.
+      if (typeof ctx.resetKeepSizeFrozen === "function") ctx.resetKeepSizeFrozen();
+    }
     const size = (typeof ctx.getPixelSizeFor === "function")
       ? ctx.getPixelSizeFor(sizeKey)
       : (SIZES[sizeKey] || ctx.getCurrentPixelSize());

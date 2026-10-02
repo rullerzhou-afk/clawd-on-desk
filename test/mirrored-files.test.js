@@ -3,7 +3,12 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { hasDedicatedRoamVisual, isVisualMirrored, resolveMirroredFile } = require("../src/mirrored-files");
+const {
+  hasDedicatedRoamVisual,
+  getRightSideMirrorFiles,
+  isVisualMirrored,
+  resolveMirroredFile,
+} = require("../src/mirrored-files");
 
 const theme = {
   states: { idle: ["idle.apng"], roam: ["roam.apng"] },
@@ -11,12 +16,67 @@ const theme = {
   mirroredFiles: { "mini-happy.apng": "mini-happy-left.apng", "roam.apng": "roam-left.apng" },
 };
 
+describe("getRightSideMirrorFiles", () => {
+  it("keeps follow-idle and its variant out of the mirror pool", () => {
+    const withFollow = {
+      states: { idle: ["idle.svg"] },
+      mirroredFiles: { "idle.svg": "idle-left.svg", "bubble.svg": "bubble-left.svg" },
+      idleAnimations: [
+        { file: "idle.svg", duration: 5000, mirrorOnRightSide: true },
+        { file: "bubble.svg", duration: 5000, mirrorOnRightSide: true },
+      ],
+    };
+    assert.deepStrictEqual(getRightSideMirrorFiles(withFollow), ["bubble.svg", "bubble-left.svg"]);
+    assert.strictEqual(isVisualMirrored(withFollow, "idle", { file: "idle.svg", petOnRightSide: true }), false);
+    assert.strictEqual(isVisualMirrored(withFollow, "idle", { file: "idle-left.svg", petOnRightSide: true }), false);
+    assert.strictEqual(isVisualMirrored(withFollow, "idle", { file: "bubble.svg", petOnRightSide: true }), true);
+  });
+
+  it("ignores an opt-in entry whose mirrored variant is follow-idle", () => {
+    const withFollowVariant = {
+      states: { idle: ["idle.svg"] },
+      mirroredFiles: { "bubble.svg": "idle.svg" },
+      idleAnimations: [{ file: "bubble.svg", duration: 5000, mirrorOnRightSide: true }],
+    };
+    assert.deepStrictEqual(getRightSideMirrorFiles(withFollowVariant), []);
+    assert.strictEqual(isVisualMirrored(withFollowVariant, "idle", { file: "bubble.svg", petOnRightSide: true }), false);
+  });
+
+  it("lists opted-in idle animations plus their pre-mirrored variants", () => {
+    const withVariants = {
+      mirroredFiles: { "bubble.apng": "bubble-left.apng" },
+      idleAnimations: [
+        { file: "look.apng", duration: 5000 },
+        { file: "bubble.apng", duration: 5000, mirrorOnRightSide: true },
+        { file: "sparks.apng", duration: 5000, mirrorOnRightSide: true },
+        null,
+      ],
+    };
+    assert.deepStrictEqual(getRightSideMirrorFiles(withVariants), ["bubble.apng", "bubble-left.apng", "sparks.apng"]);
+    assert.deepStrictEqual(getRightSideMirrorFiles({}), []);
+    assert.deepStrictEqual(getRightSideMirrorFiles(null), []);
+  });
+});
+
 describe("isVisualMirrored", () => {
   it("mirrors mini visuals only against the left edge", () => {
     assert.strictEqual(isVisualMirrored(theme, "mini-happy", { miniMode: true, miniEdge: "left" }), true);
     assert.strictEqual(isVisualMirrored(theme, "mini-happy", { miniMode: true, miniEdge: "right" }), false);
     assert.strictEqual(isVisualMirrored(theme, "idle", { miniMode: false, miniEdge: "left" }), false);
     assert.strictEqual(isVisualMirrored(theme, "mini-happy"), false);
+  });
+
+  it("mirrors an opted-in idle animation only on the right half of the display", () => {
+    const bubbleTheme = {
+      ...theme,
+      idleAnimations: [
+        { file: "look.apng", duration: 5000 },
+        { file: "bubble.apng", duration: 5000, mirrorOnRightSide: true },
+      ],
+    };
+    assert.strictEqual(isVisualMirrored(bubbleTheme, "idle", { file: "bubble.apng", petOnRightSide: true }), true);
+    assert.strictEqual(isVisualMirrored(bubbleTheme, "idle", { file: "bubble.apng", petOnRightSide: false }), false);
+    assert.strictEqual(isVisualMirrored(bubbleTheme, "idle", { file: "look.apng", petOnRightSide: true }), false);
   });
 
   it("mirrors the pre-entry crabwalk toward the left edge before mini mode starts", () => {

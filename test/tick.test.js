@@ -5,6 +5,7 @@ const assert = require("node:assert");
 const path = require("node:path");
 
 const themeLoader = require("../src/theme-loader");
+const { resolveIdleVisualChoice } = require("../src/idle-visual");
 themeLoader.init(path.join(__dirname, "..", "src"));
 const _defaultTheme = themeLoader.loadTheme("clawd");
 
@@ -81,6 +82,89 @@ function makeCtx(theme, statesSeen) {
     miniPeekOut() {},
   };
 }
+
+describe("optional mini hover visuals", () => {
+  let loader;
+  let tickApi;
+  let cursor;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    cursor = { x: 40, y: 40 };
+    loader = loadTickWithScreen(() => ({ ...cursor }));
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    loader.restore();
+    mock.timers.reset();
+  });
+
+  function start(theme, state, peeked = false) {
+    const states = [];
+    const slides = [];
+    const ctx = makeCtx(theme, states);
+    ctx.miniMode = true;
+    ctx.currentState = state;
+    ctx.miniPeeked = peeked;
+    ctx.miniSleepPeeked = peeked && state.startsWith("mini-sleep");
+    ctx.miniPeekIn = (mode) => slides.push(["in", mode]);
+    ctx.miniPeekOut = () => slides.push(["out"]);
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(1);
+    return { ctx, states, slides };
+  }
+
+  it("keeps sleep art unchanged for a theme without mini-sleep-peek", () => {
+    const { ctx, states, slides } = start(cloneTheme(_defaultTheme), "mini-sleep");
+    assert.deepStrictEqual(slides, [["in", "sleep"]]);
+    assert.deepStrictEqual(states, []);
+    cursor.x = 200;
+    mock.timers.tick(60);
+    assert.deepStrictEqual(slides, [["in", "sleep"], ["out"]]);
+    assert.equal(ctx.currentState, "mini-sleep");
+  });
+
+  it("shows mini-sleep-peek only when declared, then restores mini-sleep", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.states["mini-sleep-peek"] = ["sleep-peek.svg"];
+    const { ctx, states, slides } = start(theme, "mini-sleep");
+    assert.deepStrictEqual(slides, [["in", "sleep"]]);
+    assert.deepStrictEqual(states, ["mini-sleep-peek"]);
+    cursor.x = 200;
+    mock.timers.tick(60);
+    assert.equal(ctx.currentState, "mini-sleep");
+    assert.deepStrictEqual(states, ["mini-sleep-peek", "mini-sleep"]);
+  });
+
+  it("does not replay mini-peek while held, and leaves to mini-idle", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.states["mini-peek-hold"] = ["peek-hold.svg"];
+    const { ctx, states, slides } = start(theme, "mini-peek-hold", true);
+    assert.deepStrictEqual(slides, []);
+    cursor.x = 200;
+    mock.timers.tick(60);
+    assert.deepStrictEqual(slides, [["out"]]);
+    assert.deepStrictEqual(states, ["mini-idle"]);
+    assert.equal(ctx.miniPeeked, false);
+  });
+
+  it("cancels a pending slide when menu, drag, or mini transition blocks hover", () => {
+    for (const blocker of ["menuOpen", "dragLocked", "miniTransitioning"]) {
+      const theme = cloneTheme(_defaultTheme);
+      const { ctx, slides } = start(theme, "mini-idle");
+      let cancelled = 0;
+      ctx.cancelPendingMiniPeek = () => { cancelled++; };
+      ctx[blocker] = true;
+      mock.timers.tick(60);
+      assert.equal(cancelled, 1, blocker);
+      assert.deepStrictEqual(slides, [["in", "peek"]]);
+      tickApi.cleanup();
+      tickApi = null;
+    }
+  });
+});
 
 describe("tick sleepSequence mode", () => {
   let cursor;
@@ -857,6 +941,43 @@ describe("tick default idle visual", () => {
     theme.idleAnimations = idleAnimations;
     return theme;
   }
+
+  for (const roll of [0, 0.49, 0.99]) {
+    it(`never randomly plays a selectable-only visual at roll ${roll}`, () => {
+      const theme = makeIdleTheme([
+        { file: "clawd-idle-look.svg", duration: 500 },
+        { file: "clawd-idle-bubble.svg", duration: 500 },
+      ]);
+      theme.idleVisualOptions = [{ file: "pool.apng" }];
+      ctx = makeIdleVisualCtx(theme, resolveIdleVisualChoice(theme, { clawd: "pool.apng" }));
+      ctx.random = () => roll;
+      tickApi = loader.initTick(ctx);
+      tickApi.startMainTick();
+
+      for (let i = 0; i < 20 && idleStateChanges().length === 0; i++) mock.timers.tick(50);
+      assert.ok(idleStateChanges().length > 0);
+      assert.ok(["clawd-idle-look.svg", "clawd-idle-bubble.svg"].includes(idleStateChanges()[0][2]));
+      mock.timers.tick(500);
+      assert.strictEqual(idleStateChanges().at(-1)[2], "pool.apng");
+    });
+  }
+
+  it("excludes a selected option even when its file also occurs in idleAnimations", () => {
+    const theme = makeIdleTheme([
+      { file: "pool.apng", duration: 500 },
+      { file: "clawd-idle-look.svg", duration: 500 },
+    ]);
+    theme.idleVisualOptions = [{ file: "pool.apng" }];
+    ctx = makeIdleVisualCtx(theme, resolveIdleVisualChoice(theme, { clawd: "pool.apng" }));
+    ctx.random = () => 0;
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+
+    for (let i = 0; i < 20 && idleStateChanges().length === 0; i++) mock.timers.tick(50);
+    assert.strictEqual(idleStateChanges()[0][2], "clawd-idle-look.svg");
+    mock.timers.tick(500);
+    assert.strictEqual(idleStateChanges().at(-1)[2], "pool.apng");
+  });
 
   it("pool play returns to the user-selected idle visual", () => {
     const theme = makeIdleTheme([{ file: "clawd-idle-look.svg", duration: 500 }]);

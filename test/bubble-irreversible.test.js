@@ -2,6 +2,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 
 const { detectIrreversible, formatReminderReason } = require("../src/bubble-format");
 const { SUPPORTED_LANGS } = require("../src/i18n");
@@ -74,6 +75,23 @@ describe("detectIrreversible — ordinary commands stay quiet (precision over re
 });
 
 describe("bubble wiring — badge is display-only", () => {
+  it("issue #1039 follow-up: multi-resource shell commands show the warning badge", () => {
+    const format = require("../src/bubble-format");
+    const block = bubbleRenderer.slice(
+      bubbleRenderer.indexOf("function renderIrreversibleBadge("),
+      bubbleRenderer.indexOf("function resetBubbleContent("));
+    const badge = { style: {}, textContent: "", setAttribute(k, v) { this[k] = v; }, removeAttribute(k) { delete this[k]; } };
+    const render = vm.runInNewContext(`${block}; renderIrreversibleBadge`, {
+      irreversibleBadge: badge,
+      detectIrreversible: format.detectIrreversible,
+      shouldScanIrreversibleCommand: format.shouldScanIrreversibleCommand,
+      bubbleText: () => "warning",
+      formatReminderReason: format.formatReminderReason,
+    });
+    render({ toolName: "shell", familyAgentId: "opencode", toolInput: { resources: ["cd /repo", "rm -rf /repo/src"] }, lang: "en" });
+    assert.strictEqual(badge.style.display, "");
+    assert.strictEqual(badge["data-reason"], "file-delete");
+  });
   it("renderer defines localized hint for every supported bubble locale", () => {
     const count = (bubbleRenderer.match(/irreversibleHint:/g) || []).length;
     assert.strictEqual(count, SUPPORTED_LANGS.length);
@@ -95,8 +113,8 @@ describe("bubble wiring — badge is display-only", () => {
   it("badge never touches decide()/Allow/Deny semantics", () => {
     // the badge block must not call bubbleAPI.decide — display-only invariant
     const block = bubbleRenderer.slice(
-      bubbleRenderer.indexOf("Irreversible-action hint"),
-      bubbleRenderer.indexOf("Button labels"));
+      bubbleRenderer.indexOf("function renderIrreversibleBadge("),
+      bubbleRenderer.indexOf("function resetBubbleContent("));
     assert.ok(block.length > 0);
     assert.doesNotMatch(block, /bubbleAPI\.decide/);
   });
@@ -226,6 +244,11 @@ describe("detectIrreversible — input robustness (attacker-influenced string)",
   it("destructive prefix within the cap is still caught on huge input", () => {
     const huge = "rm -rf / --no-preserve-root " + "x".repeat(1000000);
     const r = detectIrreversible("Bash", { command: huge });
+    assert.ok(r && r.tag === "file-delete");
+  });
+  it("a commit message heredoc is not a command, one fed to a shell is", () => {
+    assert.strictEqual(detectIrreversible("Bash", { command: "git commit -m \"$(cat <<'EOF'\nrm -rf /\nEOF\n)\"" }), null);
+    const r = detectIrreversible("Bash", { command: "bash <<'EOF'\nrm -rf /\nEOF" });
     assert.ok(r && r.tag === "file-delete");
   });
 });

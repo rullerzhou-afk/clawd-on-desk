@@ -28,6 +28,7 @@ const {
 } = require("./server-config");
 const {
   createPidResolver,
+  DEFAULT_AGENT_CMDLINE_NAMES,
   readStdinJsonDetailed,
   getPlatformConfig,
   applyOrcaPaneKey,
@@ -205,8 +206,9 @@ function getZcodePidResolverOptions(platformConfig) {
     },
     agentCmdlineCheck: isZcodeAgentCommandLine,
     // POSIX ps normalizes /Applications/ZCode.app/Contents/MacOS/ZCode to
-    // "zcode". Keep node fallbacks for unpacked/dev launches.
-    agentCmdlineNames: new Set(["zcode", "zcode.exe", "node.exe", "node"]),
+    // "zcode". Keep the shared node fallbacks (including Node's Linux
+    // main-thread names) for unpacked/dev launches.
+    agentCmdlineNames: new Set(["zcode", "zcode.exe", ...DEFAULT_AGENT_CMDLINE_NAMES]),
     platformConfig,
   };
 }

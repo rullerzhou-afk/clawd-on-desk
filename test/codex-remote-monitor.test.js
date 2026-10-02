@@ -573,6 +573,135 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     ]);
   });
 
+  it("PR #1032 follow-up: never restores an old working turn after a newer completed turn", () => {
+    for (const newestFirst of [false, true]) {
+      const startedAtMs = Date.now();
+      __test.resetMonitorStateForTests({ startedAtMs });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-backfill-completed-"));
+      tmpDirs.push(dir);
+      const oldPath = writeBackfillRollout(dir, DESKTOP_TURN_ROLLOUT_NAME, [META, STARTED, FUNC], startedAtMs);
+      const newPath = writeBackfillRollout(dir, DESKTOP_SECOND_TURN_ROLLOUT_NAME, [META, STARTED, FUNC, COMPLETE], startedAtMs);
+      const s = spy();
+      const order = newestFirst
+        ? [[newPath, DESKTOP_SECOND_TURN_ROLLOUT_NAME], [oldPath, DESKTOP_TURN_ROLLOUT_NAME]]
+        : [[oldPath, DESKTOP_TURN_ROLLOUT_NAME], [newPath, DESKTOP_SECOND_TURN_ROLLOUT_NAME]];
+      for (const [filePath, name] of order) __test.pollFile(filePath, name, { postState: s.postState });
+      assert.deepStrictEqual(s.posted, [], `newestFirst=${newestFirst}`);
+    }
+  });
+
+  it("PR #1032 follow-up: an old pending question stays silent after a newer completed turn", () => {
+    const request = { type: "response_item", payload: {
+      type: "function_call", name: "request_user_input", call_id: "call_old_question",
+      arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+    } };
+    for (const newestFirst of [false, true]) {
+      const startedAtMs = Date.now();
+      __test.resetMonitorStateForTests({ startedAtMs });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-old-question-"));
+      tmpDirs.push(dir);
+      const oldPath = writeBackfillRollout(dir, DESKTOP_TURN_ROLLOUT_NAME, [META, STARTED, request], startedAtMs);
+      const newPath = writeBackfillRollout(dir, DESKTOP_SECOND_TURN_ROLLOUT_NAME, [META, STARTED, FUNC, COMPLETE], startedAtMs);
+      const s = spy();
+      const order = newestFirst
+        ? [[newPath, DESKTOP_SECOND_TURN_ROLLOUT_NAME], [oldPath, DESKTOP_TURN_ROLLOUT_NAME]]
+        : [[oldPath, DESKTOP_TURN_ROLLOUT_NAME], [newPath, DESKTOP_SECOND_TURN_ROLLOUT_NAME]];
+      for (const [filePath, name] of order) __test.pollFile(filePath, name, { postState: s.postState });
+      assert.deepStrictEqual(s.posted, [], `newestFirst=${newestFirst}`);
+      assert.strictEqual(__test.tracked.get(oldPath).pendingUserInputs.size, 0);
+    }
+  });
+
+  it("PR #1032 follow-up: startup question recovery ignores an older Desktop turn", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-recovery-question-"));
+    tmpDirs.push(dir);
+    const request = { type: "response_item", payload: {
+      type: "function_call", name: "request_user_input", call_id: "call_recovery_old",
+      arguments: JSON.stringify({ questions: [{ id: "q", header: "Choice", question: "Pick one", options: [] }] }),
+    } };
+    const oldPath = writeBackfillRollout(dir, DESKTOP_TURN_ROLLOUT_NAME, [META, STARTED, request], Date.now() - 3 * 60_000);
+    writeBackfillRollout(dir, DESKTOP_SECOND_TURN_ROLLOUT_NAME, [META, STARTED, COMPLETE], Date.now());
+    const s = spy();
+    const recovered = __test.recoverStalePendingUserInputEntry(oldPath, DESKTOP_TURN_ROLLOUT_NAME, { postState: s.postState });
+    assert.ok(recovered);
+    assert.deepStrictEqual(s.posted, []);
+    assert.strictEqual(recovered.pendingUserInputs.size, 0);
+  });
+
+  it("PR #1032 follow-up: a failed delivery cannot authorize a later sleeping post", () => {
+    const filePath = track([META, STARTED]);
+    const posted = [];
+    __test.pollFile(filePath, path.basename(filePath), { postState: () => false });
+    __test.cleanStaleFiles({ postState: (...args) => posted.push(args), now: () => Date.now() + __test.STALE_MS + 1 });
+    assert.deepStrictEqual(posted, []);
+  });
+
+  it("PR #1032 follow-up: stale cleanup waits for an asynchronous delivery acknowledgement", async () => {
+    const filePath = track([META, STARTED]);
+    const acknowledgements = [];
+    const postState = () => new Promise((resolve) => acknowledgements.push(resolve));
+    __test.pollFile(filePath, path.basename(filePath), { postState });
+    const entry = __test.tracked.get(filePath);
+    const now = Date.now() + __test.STALE_MS + 1;
+    const stalePosts = [];
+    __test.cleanStaleFiles({ postState: (...args) => stalePosts.push(args), now: () => now });
+    assert.strictEqual(entry.stale, false, "an in-flight delivery is not a silent replay");
+    assert.deepStrictEqual(stalePosts, []);
+    for (const acknowledge of acknowledgements) acknowledge(true);
+    await Promise.resolve();
+    assert.strictEqual(entry.reported, true);
+    __test.cleanStaleFiles({ postState: (...args) => stalePosts.push(args), now: () => now });
+    assert.strictEqual(stalePosts.length, 1);
+    assert.strictEqual(stalePosts[0][2], "stale-cleanup");
+  });
+
+  it("PR #1032 follow-up: failed asynchronous delivery stays invisible after stale cleanup", async () => {
+    const filePath = track([META, STARTED]);
+    const acknowledgements = [];
+    __test.pollFile(filePath, path.basename(filePath), {
+      postState: () => new Promise((resolve) => acknowledgements.push(resolve)),
+    });
+    const now = Date.now() + __test.STALE_MS + 1;
+    const stalePosts = [];
+    __test.cleanStaleFiles({ postState: (...args) => stalePosts.push(args), now: () => now });
+    assert.strictEqual(__test.tracked.get(filePath).stale, false);
+    for (const acknowledge of acknowledgements) acknowledge(false);
+    await Promise.resolve();
+    __test.cleanStaleFiles({ postState: (...args) => stalePosts.push(args), now: () => now });
+    assert.deepStrictEqual(stalePosts, []);
+    assert.strictEqual(__test.tracked.get(filePath).stale, true);
+  });
+
+  it("PR #1032 follow-up: silent completed backfill never creates a stale-cleanup session", () => {
+    const startedAtMs = Date.now();
+    __test.resetMonitorStateForTests({ startedAtMs });
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-remote-backfill-stale-"));
+    tmpDirs.push(dir);
+    const filePath = writeBackfillRollout(dir, DESKTOP_TURN_ROLLOUT_NAME, [META, STARTED, FUNC, COMPLETE], startedAtMs);
+    const s = spy();
+    __test.pollFile(filePath, DESKTOP_TURN_ROLLOUT_NAME, { postState: s.postState });
+    __test.cleanStaleFiles({ postState: s.postState, now: () => Date.now() + __test.STALE_MS + 1 });
+    assert.deepStrictEqual(s.posted, []);
+
+    appendLines(filePath, [STARTED]);
+    __test.pollFile(filePath, DESKTOP_TURN_ROLLOUT_NAME, { postState: s.postState });
+    assert.strictEqual(s.posted.at(-1).state, "thinking");
+    __test.cleanStaleFiles({ postState: s.postState, now: () => Date.now() + __test.STALE_MS + 1 });
+    assert.strictEqual(s.posted.at(-1).event, "stale-cleanup");
+  });
+
+  it("PR #1032 follow-up: drops old-timestamp lines from a fresh-mtime rollout", () => {
+    const startedAtMs = Date.now();
+    __test.resetMonitorStateForTests({ startedAtMs });
+    const filePath = track([META, {
+      ...FUNC,
+      timestamp: new Date(startedAtMs - 60_000).toISOString(),
+    }]);
+    const s = spy();
+    __test.pollFile(filePath, path.basename(filePath), { postState: s.postState });
+    assert.deepStrictEqual(s.posted.filter((post) => post.state === "working"), []);
+  });
+
   it("restores one sustained state from a pre-existing active rollout", () => {
     const startedAtMs = Date.now();
     __test.resetMonitorStateForTests({ startedAtMs });

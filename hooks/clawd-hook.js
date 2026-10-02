@@ -230,11 +230,33 @@ function assistantTextFromEntry(entry) {
   return normalizeAssistantOutputText(assistantTextPartsFromContent(content).join("\n\n"));
 }
 
+function assistantEntryHasToolUse(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const message = entry.message && typeof entry.message === "object" ? entry.message : null;
+  const content = message && Object.prototype.hasOwnProperty.call(message, "content")
+    ? message.content
+    : entry.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => (
+    block
+    && typeof block === "object"
+    && (block.type === "tool_use" || block.type === "server_tool_use")
+  ));
+}
+
+// options.rejectToolUse — treat the newest matching assistant entry as a
+// completion predicate, not just a text source. A text-plus-tool-use preamble
+// (e.g. Claude narrates then calls Edit) still carries text, but the turn is
+// not over: the corresponding PreToolUse may not have reached state.js yet.
+// Callers that only fire once a turn has genuinely ended (the Stop-time
+// extractor) leave this off; the mid-turn completion probe turns it on so it
+// reschedules instead of synthesizing a premature completion (#908 review).
 function extractLastAssistantTextFromEntries(entries, sessionId, options = {}) {
   if (!Array.isArray(entries) || !entries.length) return null;
   const maxLen = Number.isInteger(options.maxLen) && options.maxLen > 0
     ? options.maxLen
     : ASSISTANT_OUTPUT_MAX;
+  const rejectToolUse = options.rejectToolUse === true;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (!entry || typeof entry !== "object") continue;
@@ -243,6 +265,10 @@ function extractLastAssistantTextFromEntries(entries, sessionId, options = {}) {
     if (entry.isApiErrorMessage === true) continue;
     if (!assistantEntryMatchesSession(entry, sessionId)) continue;
     if (assistantEntryLooksSubagent(entry)) continue;
+    // The newest in-session assistant entry decides the turn. If it still
+    // carries a tool_use block the turn is mid-flight — fail closed rather
+    // than fall back to an older, already-superseded text entry.
+    if (rejectToolUse && assistantEntryHasToolUse(entry)) return null;
     const text = assistantTextFromEntry(entry);
     if (!text) continue;
     return clampAssistantOutputText(text, maxLen);
@@ -325,6 +351,7 @@ const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
   UserPromptSubmit: "thinking",
+  UserPromptExpansion: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
   PostToolUseFailure: "error",
@@ -345,8 +372,9 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
-// #634: maps a Claude hook event to a shared-resolver cache lifecycle. Only the
-// three boundary events are special; every other state event is an ordinary
+// #634: maps a Claude hook event to a shared-resolver cache lifecycle.
+// SessionStart, both prompt events and SessionEnd are special; every other
+// state event is an ordinary
 // `event` (cache hit = zero spawn, miss = one fresh). Stop is deliberately NOT
 // end — it is turn completion, and dropping the cache on it would force a
 // re-resolve (flash) on the next event. SessionEnd with source=clear still maps
@@ -354,6 +382,7 @@ const EVENT_TO_STATE = {
 const EVENT_TO_LIFECYCLE = {
   SessionStart: "start",
   UserPromptSubmit: "prompt",
+  UserPromptExpansion: "prompt",
   SessionEnd: "end",
 };
 
@@ -560,6 +589,11 @@ function applyResolvedFields(body, resolved, event) {
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
+  // UserPromptExpansion includes structured command metadata. Only an explicit
+  // user-typed /design should select the design visual.
+  if (event === "UserPromptExpansion" && !(
+    payload.expansion_type === "slash_command" && payload.command_name === "design"
+  )) return null;
 
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
@@ -581,6 +615,12 @@ function buildStateBody(event, payload, resolve) {
   const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
+  if (event === "UserPromptExpansion") body.display_svg = "claude-design";
+  if (
+    event === "UserPromptSubmit"
+    && typeof payload.prompt === "string"
+    && !/^\s*\/design(?:\s|$)/.test(payload.prompt)
+  ) body.display_svg = null;
   if (syntheticSubagentStart) {
     body.subagent_lifecycle_source = "synthetic-tool";
   } else if (event === "SubagentStart" || event === "SubagentStop") {

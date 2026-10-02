@@ -225,6 +225,7 @@ function createHarness(overrides = {}) {
     getSettingsWindow: () => settingsWindow,
     getActiveTheme: () => activeTheme,
     getLang: overrides.getLang || (() => "en"),
+    getSizeContext: overrides.getSizeContext,
     roamFenceSettings,
     roamFencePicker,
     settingsSizePreviewSession,
@@ -263,6 +264,12 @@ function createHarness(overrides = {}) {
   });
   return { ipcMain, runtime, calls, activeTheme, settingsWindow };
 }
+
+test("settings IPC returns the current pet size slider context", async () => {
+  const expected = { ui: 70, overMax: false, synced: false };
+  const { ipcMain } = createHarness({ getSizeContext: () => expected });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:get-size-context"), expected);
+});
 
 test("Kimi quota IPC is trusted-window-only and bypasses generic settings commands", async () => {
   const runtimeCalls = [];

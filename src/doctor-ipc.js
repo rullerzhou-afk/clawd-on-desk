@@ -2,6 +2,7 @@ const os = require("os");
 const path = require("path");
 const { runDoctorChecks } = require("./doctor");
 const { getCodexHookHealth } = require("./codex-hook-health");
+const { classifyClaudeHookHealthStatus } = require("./claude-hook-health-badge");
 const { formatDiagnosticReport, redactDoctorResult } = require("./doctor-report");
 const { createConnectionTestDeduper, runConnectionTest } = require("./doctor-hook-activity");
 const { openClawdLog } = require("./doctor-logs");
@@ -135,6 +136,24 @@ function registerDoctorIpc({
       reasonKey: verdict.reasonKey,
       status: verdict.status,
       fixAction: verdict.fixAction,
+    };
+  });
+
+  // Claude counterpart of the Codex badge probe. Reuses the live health the
+  // claude-settings-watcher supervisor already maintains (via the server) so
+  // the badge, Doctor, and auto-repair all read one status. Returns a
+  // render-safe subset — no raw fs paths, which stay main-side.
+  ipcMain.handle("doctor:claude-hook-health", () => {
+    const healthStatus = server && typeof server.getClaudeHookHealthStatus === "function"
+      ? server.getClaudeHookHealthStatus()
+      : null;
+    const verdict = classifyClaudeHookHealthStatus(healthStatus);
+    return {
+      available: verdict.available,
+      healthy: verdict.healthy,
+      signature: verdict.signature,
+      reasonKey: verdict.reasonKey,
+      status: verdict.status,
     };
   });
 

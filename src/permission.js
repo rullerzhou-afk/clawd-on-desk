@@ -2534,13 +2534,14 @@ function showPermissionBubble(permEntry) {
       permissionBubbleWindows.delete(bub);
       const idx = pendingPermissions.indexOf(permEntry);
       if (idx !== -1) {
-        // Qwen + Copilot + ZCode + DSH can hand no-decision back to their native
-        // flow. Hermes has no native permission UI, so its opt-in plugin gate
-        // treats this as a retryable block. In every case we avoid fabricating a
-        // user denial. CC/CodeBuddy still get an explicit deny for this
-        // user-close action.
+        // Codex + Qwen + Copilot + ZCode + DSH can hand no-decision back to
+        // their native flow. Hermes has no native permission UI, so its opt-in
+        // plugin gate treats this as a retryable block. In every case we avoid
+        // fabricating a user denial. CC/CodeBuddy still get an explicit deny for
+        // this user-close action.
         const behavior = (
-          permEntry.isQwenCode
+          permEntry.isCodex
+          || permEntry.isQwenCode
           || permEntry.isCopilotCli
           || permEntry.isHermes
           || permEntry.isZcode
@@ -2807,6 +2808,10 @@ function buildPermissionBubblePayload(permEntry) {
     familyDisplayName: isOpencodeFamilyEntry(permEntry)
       ? ((getFamilyConfig(permEntry.agentId) || {}).displayName || permEntry.agentId)
       : null,
+    // v2 family entries keep their "always" rule inside the host's background
+    // service (plugin memory), not the CLI process, so the blanket-always
+    // tooltip must not tell the user a terminal restart revokes it.
+    familyV2: permEntry.isOpencodeV2 === true,
     isAntigravity: permEntry.isAntigravity || false,
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
@@ -3858,6 +3863,20 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   // (Bun.serve or node:http on a random localhost port). The plugin then calls
   // the host's in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
   // response to complete on this connection.
+  if (permEntry.isOpencodeV2) {
+    // opencode v2 (issue #1039): the plugin's evaluate hook is BLOCKING on
+    // this very HTTP response — the decision is the response body. 204 keeps
+    // the effect untouched so the native ask UI takes over.
+    if (behavior === "no-decision") {
+      sendOpencodeV2NoDecisionResponse(res, message || "no-decision");
+      return;
+    }
+    const decision = behavior === "deny"
+      ? "deny"
+      : (permEntry.familyAlwaysPicked ? "always" : "allow");
+    sendOpencodeV2Response(res, decision, message);
+    return;
+  }
   if (isOpencodeFamilyEntry(permEntry)) {
     // Autoclose: silent drop — same DND semantics. The host falls back to its
     // built-in terminal or Desktop prompt so the user can answer natively.
@@ -4021,12 +4040,16 @@ function permLog(msg) {
   rotatedAppend(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-// Fire-and-forget POST to the family plugin's reverse bridge. The plugin runs
-// inside the host and does NOT expose the host's own permission route
-// externally — TUI mode has no TCP listener at all (see Phase 2 Spike in
-// docs/plans/plan-opencode-integration.md). Instead the plugin starts a tiny
+// Fire-and-forget POST to the family plugin's reverse bridge. The default TUI
+// has no TCP listener at all (see Phase 2 Spike in
+// docs/plans/plan-opencode-integration.md), so the plugin starts a tiny
 // Bun.serve (CLI/TUI) or node:http (Desktop) listener on a random port and
-// forwards our decision to the host's in-process Hono router via ctx.client._client.post().
+// forwards our decision to the host's router. Under `opencode serve` / `web`
+// the host does listen, but ctx.client targets that listening address; a
+// wildcard address (0.0.0.0 / [::]) is a listen address rather than a
+// destination, and the host process's Bun fetch would hand it to HTTP_PROXY, so
+// the plugin rewrites those hosts to loopback per call (#1065). This side always
+// talks to the plugin's own 127.0.0.1 bridge.
 //
 // Shape: POST http://127.0.0.1:<plugin-port>/reply
 //   Authorization: Bearer <hex token>
@@ -4138,6 +4161,27 @@ function sendCodexPermissionResponse(res, decisionOrBehavior, message) {
 
 function sendQwenCodeNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "qwen-code");
+}
+
+// opencode v2 (issue #1039): the plugin's evaluate hook awaits this response.
+// 200 + JSON { decision: "allow" | "always" | "deny", message? } resolves the
+// await; 204 means "no decision" and leaves the hook's effect untouched so the
+// native prompt wins. Any non-2xx/identity-less answer is treated the same by
+// the plugin.
+function sendOpencodeV2Response(res, decision, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(message ? { decision, message } : { decision });
+  permLog(`opencode-v2 response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
+function sendOpencodeV2NoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "opencode-v2");
 }
 
 function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
@@ -5092,6 +5136,10 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isQwenCode) {
     sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isOpencodeV2) {
+    // v2 blocks on this connection: release the await explicitly instead of
+    // relying on socket close (same contract as codex/qwen above).
+    sendOpencodeV2NoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isZcode) {
     sendZcodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isCopilotCli) {
@@ -5370,6 +5418,8 @@ return {
   dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,
   replyOpencodeFamilyPermission,
+  sendOpencodeV2Response,
+  sendOpencodeV2NoDecisionResponse,
   // Exposed for the payload↔renderer contract test (plan §3.5/§9): the
   // builder closes over ctx, so it can only be reached through an instance.
   buildPermissionBubblePayload,

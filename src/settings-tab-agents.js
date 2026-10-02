@@ -20,6 +20,7 @@
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
   let codexHookHealthRequestSeq = 0;
+  let claudeHookHealthRequestSeq = 0;
 
   function t(key) {
     return helpers.t(key);
@@ -296,6 +297,12 @@
       ? (hints && Array.isArray(hints.customAgents) ? hints.customAgents : [])
       : (hints && Array.isArray(hints.agents) ? hints.agents : []);
     return entries.find((entry) => entry && entry.agentId === agentId) || null;
+  }
+
+  function getCustomAgentUnavailableLabelKey(hint) {
+    if (hint && hint.reason === "not-executable") return "customToolDetectionNotExecutable";
+    if (hint && hint.reason === "not-file") return "customToolDetectionNotFile";
+    return "customToolDetectionMissing";
   }
 
   function buildAgentRows(agents) {
@@ -1068,7 +1075,7 @@
           if (customHint && customHint.detectedInstalled === false) {
             const missingBadge = document.createElement("span");
             missingBadge.className = "agent-badge custom-missing";
-            missingBadge.textContent = t("customToolDetectionMissing");
+            missingBadge.textContent = t(getCustomAgentUnavailableLabelKey(customHint));
             badges.appendChild(missingBadge);
           }
         } else {
@@ -1091,6 +1098,14 @@
           const hint = document.createElement("div");
           hint.className = "row-desc agent-traecode-hint";
           hint.textContent = t("traecodeEnableHint");
+          text.appendChild(hint);
+        }
+        // MiniMax Code has the same manual-enable gap: the plugin directory
+        // is on disk but the app decides whether hooks fire.
+        if (!agent.custom && agent.id === "minimax" && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-minimax-hint";
+          hint.textContent = t("minimaxEnableHint");
           text.appendChild(hint);
         }
       },
@@ -2001,6 +2016,7 @@
     badge.classList.toggle("not-installed", !installed);
     badge.textContent = t(installed ? "agentIntegrationInstalled" : "agentIntegrationNotInstalled");
     if (agentId === "codex") annotateCodexHookHealth(badge, installed);
+    if (agentId === "claude-code") annotateClaudeHookHealth(badge, installed);
   }
 
   // Codex approval awareness now depends ENTIRELY on the official PermissionRequest
@@ -2024,6 +2040,31 @@
       if (!readers.readAgentIntegrationInstalled("codex")) return;
       badge.classList.add("hook-warning");
       badge.textContent = t("agentCodexHookNeedsAttention");
+      if (health.reasonKey) badge.title = t(health.reasonKey);
+    }).catch(() => {});
+  }
+
+  // Claude counterpart of annotateCodexHookHealth. When the managed hook is no
+  // longer being kept healthy (auto-repair exhausted, paused by the suspicious-
+  // shrink guard, or the source script is missing), the prefs "Installed" flag
+  // is stale — Claude isn't actually driving the pet. Overlay the same amber
+  // warning, sourced from the live watcher status the Doctor reads, with the
+  // specific reason in the tooltip. Async + best-effort: an unavailable or
+  // healthy probe keeps the badge's base "Installed" state.
+  function annotateClaudeHookHealth(badge, installed) {
+    if (!badge) return;
+    const seq = String(++claudeHookHealthRequestSeq);
+    if (badge.dataset) badge.dataset.claudeHookHealthSeq = seq;
+    badge.classList.remove("hook-warning");
+    badge.removeAttribute("title");
+    if (!installed || !window.doctor || typeof window.doctor.claudeHookHealth !== "function") return;
+    window.doctor.claudeHookHealth().then((health) => {
+      if (badge.isConnected === false) return;
+      if (badge.dataset && badge.dataset.claudeHookHealthSeq !== seq) return;
+      if (!health || health.healthy || !health.signature) return;
+      if (!readers.readAgentIntegrationInstalled("claude-code")) return;
+      badge.classList.add("hook-warning");
+      badge.textContent = t("agentClaudeHookNeedsAttention");
       if (health.reasonKey) badge.title = t(health.reasonKey);
     }).catch(() => {});
   }

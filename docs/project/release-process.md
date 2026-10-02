@@ -5,7 +5,10 @@ Use this flow when preparing a Clawd app release.
 ## Before Tagging
 
 1. Update `package.json` to the release version.
-2. Add `docs/releases/release-vX.Y.Z.md`.
+2. Add `docs/releases/release-vX.Y.Z.md` and a matching `!` allowlist line in
+   `.gitignore` (for example `!docs/releases/release-v1.2.0.md`). Without the
+   allowlist, `git add` silently skips the note and CI's `validate-release`
+   skips all three platform builds.
 3. Run the local tests that match the change scope. For full release prep, run:
 
 ```bash
@@ -14,10 +17,10 @@ npm test
 npm run audit:assets
 ```
 
-Official downloadable themes (for example Hash Sage) ship as versioned GitHub
+Official downloadable themes (for example Hash Sage and Whale-chan) ship as versioned GitHub
 Release assets in the separate `rullerzhou-afk/clawd-themes` repository, never
 inside Clawd. Before tagging, confirm the packaged resources still contain no
-`themes/hash-sage/**` payload and that `npm run audit:assets` reports the
+`themes/hash-sage/**` or `themes/whale-chan/**` payload and that `npm run audit:assets` reports the
 tracked-tree budget within policy. On a pull request, the
 `audit:pr-history-assets` gate additionally proves no large official-theme
 media entered the PR's reachable history.
@@ -70,7 +73,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v1.1.0 Draft Smoke Checklist
+### v1.2.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -83,7 +86,7 @@ Before launching:
 - On macOS, download each DMG through a browser so it carries quarantine
   metadata. Confirm it opens without a Privacy & Security override, then verify
   the copied app with `spctl` and `stapler` as documented in the signing guide.
-- Confirm the packaged app shows `1.1.0` metadata.
+- Confirm the packaged app shows `1.2.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
   and `app.asar.unpacked/themes`.
@@ -94,7 +97,7 @@ Before launching:
 - Download the native-package, Koffi prune/smoke, and updater metadata manifests.
   Confirm the target has one matching `koffi.node`, no foreign native payload,
   and no unreviewed exception. Confirm each updater metadata `version` and every
-  listed artifact filename identify `1.1.0`.
+  listed artifact filename identify `1.2.0`.
 - For migration smoke, install v0.16.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
 - For legacy Feishu/Lark migration smoke, enable remote approval in v0.15.0 with saved
@@ -126,9 +129,9 @@ Required all-platform checks:
   an active task alive. Upgrade a profile with a long generic working timeout
   and no Codex-specific value: preserve its previous effective Codex duration.
 
-- Upgrade install over v1.0.0, launch, pet appears, no error dialog. Existing
+- Upgrade install over v1.1.0, launch, pet appears, no error dialog. Existing
   agent installation/enabled flags and user theme/animation choices remain intact.
-- Settings -> About shows `v1.1.0`, sourced from `app.getVersion()`.
+- Settings -> About shows `v1.2.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
@@ -137,7 +140,7 @@ Required all-platform checks:
   macOS installs default to pet + menu-bar accessory with no Dock tile.
 - Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include every v1.1.0 contributor named in the
+- Settings -> About contributors include every v1.2.0 contributor named in the
   release note while preserving all previous contributors.
 - Make `clawd-prefs.json` temporarily unreadable and launch once. Confirm the
   startup warning and Doctor critical item both explain that agent events and
@@ -193,10 +196,29 @@ Required all-platform checks:
   confirm state + Notification events arrive without Clawd taking over approval.
 - Install MiMo Code into a commented/trailing-comma JSONC config, exercise
   Allow/Always/Deny and DND fallback, then uninstall and confirm user config is preserved.
+- Install, enable inside MiniMax (`mcode plugin enable clawd-state@local` or the
+  plugin panel), and uninstall MiniMax Code. Confirm state events arrive, no
+  Clawd permission bubble appears, and unrelated plugins remain intact.
+- OpenCode 2.x packaged acceptance: verify dual-key registration, live state
+  flow idle→thinking→working→attention, and a blocking bubble round-trip for
+  Allow, Deny, same-session Always, and auto-tools. Interrupt a session with a
+  pending approval: its bubble must withdraw. Exercise a compound shell command
+  such as `a && b` and confirm destructive-operation reminders and warning
+  badges inspect each command. Check the `opencode web` / `serve --hostname
+  0.0.0.0` reply path reaches the host through loopback. A missing Clawd
+  endpoint must leave the decision in OpenCode's native UI. This extends the
+  macOS source/real-machine v2.0.15 checks from 2026-09-24; the packaged asset
+  still needs its own spot check.
+- Host version controls OpenCode registration: confirmed v2 writes `plugins`,
+  confirmed v1 removes only Clawd-owned v2 entries, and unknown leaves
+  `plugins` untouched. Verify `CLAWD_OPENCODE_HOST` recovers from failed host
+  detection, then remove the override. For OpenCode 2.x, run
+  `opencode service restart` after updating the plugin; a new session alone
+  may retain the old shared service. For OpenCode 1.x, restart opencode.
 - Windows packaged opencode acceptance (#1026, requires a real opencode 1.18.31):
   install the Program Files Clawd package, confirm the opencode config points at
   `%USERPROFILE%\.clawd\integrations\...\generations\<hash>\opencode-plugin` (never
-  `app.asar.unpacked`), and that the managed four-file generation bytes/hash match the
+  `app.asar.unpacked`), and that the managed five-file generation bytes/hash match the
   packaged source with no deny-write ACL. Start a real opencode session and confirm
   exactly one Clawd state stream and one permission request per interaction (no double
   load from a duplicate entry). Restart Clawd twice and confirm startup sync is
@@ -241,6 +263,24 @@ Required all-platform checks:
 - Install the DeepSeek Harness bridge with its managed root reached through a
   filesystem symlink. Confirm install and Doctor both report the verified
   generation as healthy; foreign same-name packages must still fail closed.
+  Check 0.1.5-rc.1 and rc.3 session titles and context usage when available.
+- Turn on the destructive-operation reminder, then exercise recognized
+  destructive commands under auto-tools and unattended: each must pause for a
+  person instead of auto-allowing. Turn it off and confirm normal policy
+  resumes. Include a `git commit -m "$(cat <<'EOF' ... EOF)"` whose body has an
+  odd quote count or `(#N)` and confirm it is not held; then a plain
+  `cat <<EOF` heredoc with the same body, and confirm the documented
+  conservative hold and the Settings explanation.
+- Queue Slack notifications while its sender is busy; confirm none are lost
+  and a permission alert can use its separate lane.
+- End a Claude turn and deliver a trailing `SubagentStop`; completion animation
+  and notification must remain. Restart Clawd with an idle Claude session and
+  reboot after a normally ended turn, including one with background work;
+  neither may return as working or interrupted.
+- Run a Codex memory consolidation and confirm no `memories` worker card appears
+  in HUD or Dashboard.
+- On an existing imported Codex Pet, upgrade from v1.1.0 and confirm its
+  juggling pose refreshes once without losing the imported theme.
 - Enable Discord Rich Presence without animation mirroring, then opt into the
   animation mirror. Confirm coarse status text remains stable, supported Clawd
   animations use the repository-hosted GIFs, and disabling the option returns
@@ -258,10 +298,18 @@ Recommended all-platform checks:
   triggers; repeat on Calico/Cloudling and confirm no unsupported-state glitch.
 - Low-power idle mode: verify sleeping/Cloudling static sleep behavior and that
   the HUD can be reclaimed/reopened without a blank surface.
+- Download, install, select, and uninstall Whale-chan from Settings -> Theme;
+  confirm the theme is absent from packaged resources and its license/credit
+  remains available from the separately downloaded theme package.
+- Opt into mini peek hold and sleep peek and confirm each appears at the
+  intended state boundary. Check selectable-only idle visuals appear only
+  after selection. On the built-in Clawd theme, play its idle bubble on both
+  halves of the screen and confirm it mirrors on the right; repeat with an
+  opted-in custom idle animation.
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv1.1.0`.
+- Update labels never show a duplicated prefix such as `vv1.2.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -270,6 +318,19 @@ Recommended all-platform checks:
 
 Windows checks:
 
+- Required: run real packaged OpenCode 1.18.31 and 2.x sessions. Verify v1
+  `plugin` and v2 `plugins` registration, one state stream and one permission
+  request per interaction, Allow/Deny/Always decisions, interruption cleanup,
+  compound-command warnings, and uninstall preservation. Include a host path
+  with non-ASCII characters under code page 936 and confirm detection; for 2.x,
+  also run `opencode service restart`. Record the exact 2.x version and any
+  packaging differences from the macOS v2.0.15 source check.
+- Required: displace Claude's managed hooks as CC Switch can, then observe the
+  Agents attention badge and reason for paused repair, repeated repair failure,
+  or a missing script. Confirm the one-time tray notice on repair pause and a
+  healthy badge after a verified repair.
+- Required: run a WSL agent session and confirm its PID is not probed on the
+  Windows host or aliased to an unrelated local process.
 - Required: enable fullscreen auto-hide, enter a fullscreen application, and
   send a new permission request. Local surfaces stay hidden; leaving fullscreen
   restores only requests still pending. Manual Hide pet keeps its separate
@@ -294,8 +355,8 @@ Windows checks:
 
 macOS checks:
 
-- Required when macOS hardware is available: manually install the signed v1.1.0
-  DMG over v1.0.0 once, preserving app data. Validate a signed A→B updater pair
+- Required when macOS hardware is available: manually install the signed v1.2.0
+  DMG over v1.1.0 once, preserving app data. Validate a signed A→B updater pair
   from an update-capable build on each available architecture, including
   Restart Now and Later/quit/reopen; record exact versions and asset hashes.
   A source run or a mocked updater does not complete this gate.
@@ -311,6 +372,12 @@ macOS checks:
 - Required when macOS hardware is available: while editing text in a permission
   or elicitation bubble, the pet drops behind the input surface and the IME
   candidate window remains visible; ending edit restores stationary behavior.
+- Required when macOS hardware is available: put Clawd in the background, then
+  click Settings and Dashboard once each. The first click must reach the page.
+- Required when macOS hardware is available: restart Remote SSH monitoring
+  during a Codex Desktop thread and replay real turn-split rollouts. Confirm
+  one card per thread, no invented idle row, and no finished turn revived as
+  working. Record whether the full SSH deploy/tunnel/approval path was tested.
 - Recommended: jumping back to a session restores a minimized terminal window.
 - Recommended: dragging a folder onto the pet does not open a terminal and does
   not crash. This is intentionally disabled on macOS.
@@ -525,6 +592,11 @@ explicitly; do not replace it with a mutable major-version tag.
 - Confirm `prepare` passed both `verify:winget-arch` and
   `verify:winget-manifest`. The uploaded `winget-generated-manifest` artifact is
   the normalized, validated four-file tree plus its evidence report.
+- Before either manual or automatic submission, synchronize the submitting
+  `winget-pkgs` fork with upstream `master` (for example,
+  `gh api -X POST repos/<fork>/merge-upstream -f branch=master`). A shallow
+  checkout of a stale fork cannot push the submission branch when upstream has
+  moved ahead.
 - If automatic submission is disabled, open a one-version PR from that exact
   artifact. If it is enabled, confirm the `submit` job reports either the new PR
   URL or an intentional `already-published` / `open-pull-request` skip.

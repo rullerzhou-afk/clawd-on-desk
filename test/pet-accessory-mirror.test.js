@@ -33,6 +33,17 @@ test("a theme whose roam art faces left inverts the roam mirror", () => {
   assert.equal(shouldFlipAssetDirection("roam", { ...base, roamHeadingLeft: false }), true);
 });
 
+test("opted-in idle animations mirror while the pet sits on the right half", () => {
+  const ctx = { rightSideMirrorFiles: ["bubble.svg"], file: "bubble.svg" };
+  assert.equal(shouldFlipAssetDirection("idle", { ...ctx, petOnRightSide: true }), true);
+  assert.equal(shouldFlipAssetDirection("idle", { ...ctx, petOnRightSide: false }), false);
+  // The plain idle visual tracks the cursor and must never mirror.
+  assert.equal(shouldFlipAssetDirection("idle", { ...ctx, file: "idle.svg", petOnRightSide: true }), false);
+  // The side only matters for the idle state that plays the animation.
+  assert.equal(shouldFlipAssetDirection("working", { ...ctx, petOnRightSide: true }), false);
+  assert.equal(shouldFlipAssetDirection("idle", { file: "bubble.svg", petOnRightSide: true }), false);
+});
+
 test("a theme without a dedicated roam visual never mirrors while roaming", () => {
   const noRoamVisual = { hasRoamVisual: false, roamFlipAssets: false, roamHeadingLeft: true };
   assert.equal(shouldFlipAssetDirection("roam", noRoamVisual), false);

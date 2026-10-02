@@ -1,5 +1,6 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const { spawnSync } = require("node:child_process");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
@@ -1132,5 +1133,231 @@ describe("Kimi hook argv permission-mode flag", () => {
         "immediate"
       );
     });
+  });
+});
+
+describe("Kimi hook agent process detection", () => {
+  const {
+    KIMI_PROCESS_NAMES,
+    KIMI_STARTUP_RECOVERY_PROCESS_NAMES,
+    isKimiAgentCommandLine,
+  } = require("../hooks/kimi-process-names");
+  const { buildResolverOptions } = require("../hooks/kimi-hook");
+  const { runSpawnedHook } = require("./helpers/spawned-hook");
+  const HOOK_PATH = path.resolve(__dirname, "..", "hooks", "kimi-hook.js");
+
+  // Kimi Code sets process.title = "kimi-code", and libuv cuts the title to the
+  // length of the original argv: on the 0.42.0 macOS build `kimi` was listed as
+  // "kimi", `kimi -c` as "kimi-co", `kimi --yolo` as "kimi-code".
+  const TITLE_CUTS = ["kimi", "kimi-", "kimi-c", "kimi-co", "kimi-cod", "kimi-code"];
+
+  it("gives the resolver every cut of the kimi-code title, in lowercase", () => {
+    for (const [platform, names] of Object.entries(KIMI_PROCESS_NAMES)) {
+      for (const name of names) {
+        assert.strictEqual(name, name.toLowerCase(), `${platform}: ${name} can never match`);
+      }
+    }
+    for (const platform of ["mac", "linux"]) {
+      for (const cut of TITLE_CUTS) {
+        assert.ok(KIMI_PROCESS_NAMES[platform].includes(cut), `${platform} misses ${cut}`);
+      }
+    }
+    assert.ok(KIMI_PROCESS_NAMES.mac.includes("kimi code"), "the desktop app must be recognizable on macOS");
+    assert.deepStrictEqual(KIMI_PROCESS_NAMES.win, ["kimi.exe"]);
+  });
+
+  it("gives startup recovery the CLI's names only, not the always-running desktop app", () => {
+    // The desktop app stays in the tray after its windows close; like the other
+    // desktop apps it must not count as active work when Clawd starts.
+    for (const platform of ["mac", "linux"]) {
+      assert.deepStrictEqual([...KIMI_STARTUP_RECOVERY_PROCESS_NAMES[platform]], TITLE_CUTS, platform);
+    }
+    assert.deepStrictEqual(KIMI_STARTUP_RECOVERY_PROCESS_NAMES.win, ["kimi.exe"]);
+  });
+
+  it("wires the resolver to the resolver names and the package-directory check", () => {
+    const options = buildResolverOptions({});
+    for (const platform of ["mac", "linux", "win"]) {
+      assert.deepStrictEqual([...options.agentNames[platform]], [...KIMI_PROCESS_NAMES[platform]], platform);
+    }
+    assert.strictEqual(options.agentCmdlineCheck, isKimiAgentCommandLine);
+    // No list of its own: node-named processes are checked under the shared
+    // default names, which cover Linux's MainThread naming.
+    assert.ok(!("agentCmdlineNames" in options));
+  });
+
+  it("recognizes a node-hosted Kimi Code by its package directory and nothing merely similar", () => {
+    const matches = [
+      String.raw`"C:\Program Files\nodejs\node.exe"  "C:\Users\me\AppData\Roaming\npm\node_modules\@moonshot-ai\kimi-code\dist\main.mjs"`,
+      String.raw`"C:\Program Files\nodejs\node.exe" C:\Users\me\AppData\Roaming\npm/node_modules/@moonshot-ai/kimi-code/dist/main.mjs --yolo`,
+      String.raw`C:\Users\Me\AppData\Roaming\npm\node_modules\@Moonshot-AI\Kimi-Code\dist\main.mjs`,
+      "node /usr/local/lib/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
+      "node /Users/me/Library/pnpm/global/5/.pnpm/@moonshot-ai+kimi-code@0.42.0/node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
+      "node /Users/me/.npm/_npx/1a2b3c/node_modules/@moonshot-ai/kimi-code/dist/main.mjs -c",
+      String.raw`C:\PROGRA~1\nodejs\node.exe  "C:\Users\me\APPDAT~1\Roaming\npm\node_modules\@moonshot-ai\kimi-code\bin\kimi"`,
+    ];
+    const misses = [
+      "node server.js --label kimi",
+      "node /Users/me/projects/kimi/server.js",
+      "node /Users/me/projects/kimi-code/server.js",
+      "node /Users/me/kimi-notes/relay.js",
+      "node /Users/me/src/kimi-cli/main.js",
+      "node /work/node_modules/@moonshot-ai/kimi-code-sdk/dist/index.js",
+      "node /Users/me/.kimi-code/plugins/demo/index.js",
+      "",
+      undefined,
+    ];
+    for (const cmd of matches) assert.strictEqual(isKimiAgentCommandLine(cmd), true, cmd);
+    for (const cmd of misses) assert.strictEqual(isKimiAgentCommandLine(cmd), false, String(cmd));
+  });
+
+  // Real processes, the way Kimi Code runs a hook: the agent process spawns the
+  // hook command through a shell (spawn(command, { shell: true })). Each hop is
+  // a small node script that can retitle itself, records its own pid, and
+  // forwards stdin plus the harness's HTTP recorder (execArgv) to the next hop.
+  // The recorder is preloaded in every hop and dumps its own empty recording on
+  // exit, so each hop copies the next hop's recording back last.
+  function hopSource({ title, pidFile, next, esm }) {
+    return [
+      title ? `process.title = ${JSON.stringify(title)};` : "",
+      esm ? "import fs from \"node:fs\";" : "const fs = require(\"node:fs\");",
+      esm ? "import { spawnSync } from \"node:child_process\";" : "const { spawnSync } = require(\"node:child_process\");",
+      `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));`,
+      "const out = process.env.CLAWD_POST_OUT;",
+      "const nextOut = `${out}.next.json`;",
+      "const command = [process.execPath, ...process.execArgv, "
+        + `${JSON.stringify(next)}].map((arg) => JSON.stringify(arg)).join(" ");`,
+      "const child = spawnSync(command, {",
+      "  shell: true,",
+      "  input: fs.readFileSync(0),",
+      "  stdio: [\"pipe\", \"inherit\", \"inherit\"],",
+      "  env: { ...process.env, CLAWD_POST_OUT: nextOut },",
+      "});",
+      "process.on(\"exit\", () => { try { fs.copyFileSync(nextOut, out); } catch {} });",
+      "process.exit(child.status == null ? 1 : child.status);",
+    ].join("\n");
+  }
+
+  // Runs the real hook under a stand-in Kimi process (optionally started by an
+  // outer node wrapper) and returns the POSTed body plus the stand-ins' pids.
+  function runUnderKimiProcess({ title, entry = "bin/kimi", wrapper = null }) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kimi-agent-"));
+    const launcher = path.join(dir, entry);
+    const launcherPidFile = path.join(dir, "launcher.pid");
+    const wrapperScript = wrapper ? path.join(dir, wrapper) : null;
+    const wrapperPidFile = path.join(dir, "wrapper.pid");
+    fs.mkdirSync(path.dirname(launcher), { recursive: true });
+    fs.writeFileSync(launcher, hopSource({
+      title,
+      pidFile: launcherPidFile,
+      next: HOOK_PATH,
+      esm: launcher.endsWith(".mjs"),
+    }), "utf8");
+    if (wrapperScript) {
+      fs.mkdirSync(path.dirname(wrapperScript), { recursive: true });
+      fs.writeFileSync(wrapperScript, hopSource({ title: null, pidFile: wrapperPidFile, next: launcher }), "utf8");
+    }
+    try {
+      const result = runSpawnedHook({
+        script: wrapperScript || launcher,
+        payload: {
+          session_id: `sess-agent-pid-${title || "npm"}`,
+          cwd: "/tmp/project",
+          hook_event_name: "UserPromptSubmit",
+          prompt: "hi",
+        },
+        httpContract: "expect-attempt",
+        // procps applies an exported COLUMNS to piped `ps` output, which would
+        // cut the command line the resolver reads.
+        env: { CLAWD_POST_RECORDER_SUCCEED: "1", COLUMNS: undefined },
+      });
+      assert.strictEqual(result.status, 0, result.stderr);
+      const post = result.attempts.find((attempt) => attempt.kind === "request" && typeof attempt.body === "string");
+      assert.ok(post, `expected a recorded POST; attempts=${JSON.stringify(result.attempts)}`);
+      return {
+        body: JSON.parse(post.body),
+        launcherPid: Number(fs.readFileSync(launcherPidFile, "utf8")),
+        wrapperPid: wrapperScript ? Number(fs.readFileSync(wrapperPidFile, "utf8")) : null,
+      };
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  }
+
+  // Without an agent pid Clawd cannot retire the session when Kimi Code dies
+  // without SessionEnd (closed terminal, kill, crash).
+  it("reports the retitled Kimi Code CLI as the agent pid, whatever its title was cut to", {
+    skip: process.platform === "win32",
+  }, () => {
+    for (const title of TITLE_CUTS) {
+      const { body, launcherPid } = runUnderKimiProcess({ title });
+      assert.strictEqual(body.agent_pid, launcherPid, `${title}: ${JSON.stringify(body)}`);
+      assert.strictEqual(body.kimi_pid, launcherPid, `${title}: ${JSON.stringify(body)}`);
+    }
+  });
+
+  it("reports the Kimi Code desktop app's main process as the agent pid", {
+    skip: process.platform !== "darwin",
+  }, () => {
+    // ps lists the app as ".../Kimi Code.app/Contents/MacOS/Kimi Code"; the
+    // resolver compares the lowercased basename.
+    const { body, launcherPid } = runUnderKimiProcess({ title: "Kimi Code" });
+    assert.strictEqual(body.agent_pid, launcherPid, JSON.stringify(body));
+  });
+
+  it("reports a node-named Kimi Code (npm build) as the agent pid by its package directory", {
+    skip: process.platform === "win32",
+  }, () => {
+    // The shape the npm build keeps on Windows, where the title does not rename
+    // the process: node.exe running @moonshot-ai/kimi-code/dist/main.mjs.
+    const { body, launcherPid } = runUnderKimiProcess({
+      title: null,
+      entry: "node_modules/@moonshot-ai/kimi-code/dist/main.mjs",
+    });
+    assert.strictEqual(body.agent_pid, launcherPid, JSON.stringify(body));
+  });
+
+  // The resolver walks up from the hook's parent, bounded to eight hops, and
+  // takes the nearest match. Walking ppid from process.pid lists exactly the
+  // ancestors that already existed before this test began, so a process the
+  // test itself spawned can never be among them.
+  function testRunnerAncestors() {
+    const ancestors = new Set();
+    let pid = process.pid;
+    while (pid > 1) {
+      const stdout = spawnSync("ps", ["-o", "ppid=", "-p", String(pid)], { encoding: "utf8" }).stdout;
+      const ppid = Number.parseInt(stdout, 10);
+      if (!Number.isInteger(ppid) || ppid <= 0 || ppid === pid || ancestors.has(ppid)) break;
+      ancestors.add(ppid);
+      pid = ppid;
+    }
+    return ancestors;
+  }
+
+  // What the old includes("kimi") check got wrong: when Kimi itself goes
+  // unrecognized (here it runs under another name, which ps shows as "k"), the
+  // walk continues past it, and a node ancestor whose command line merely
+  // mentions kimi became the agent. That process can exit while the session
+  // lives on, so reporting no pid is right. Running this suite inside Kimi Code
+  // is different: the real Kimi is then a pre-existing ancestor of the test
+  // process and legitimately wins the walk, so only the test's own stand-ins
+  // must never be reported.
+  it("does not take a node ancestor that merely mentions kimi for the agent", {
+    skip: process.platform === "win32",
+  }, () => {
+    const { body, launcherPid, wrapperPid } = runUnderKimiProcess({
+      title: "k",
+      wrapper: "kimi-notes/relay.js",
+    });
+    assert.notStrictEqual(body.agent_pid, wrapperPid, "the unrelated node ancestor was taken for Kimi");
+    assert.notStrictEqual(body.agent_pid, launcherPid, "the retitled launcher was taken for Kimi");
+    if (body.agent_pid != null) {
+      const ancestors = testRunnerAncestors();
+      assert.ok(
+        ancestors.has(body.agent_pid),
+        `agent_pid was neither absent nor a pre-existing ancestor: ${JSON.stringify(body)}; `
+          + `ancestors=${JSON.stringify([...ancestors])}`,
+      );
+    }
   });
 });

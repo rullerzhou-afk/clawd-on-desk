@@ -74,6 +74,15 @@ describe("theme variant resolution", () => {
 });
 
 describe("theme variant patching", () => {
+  it("replaces selectable-only idle options for a variant", () => {
+    const raw = baseTheme({ idleVisualOptions: [{ file: "base.apng" }] });
+    const patched = applyVariantPatch(raw, {
+      idleVisualOptions: [{ file: "variant.apng" }],
+    }, "demo", "chill");
+    assert.deepStrictEqual(patched.idleVisualOptions, [{ file: "variant.apng" }]);
+    assert.deepStrictEqual(raw.idleVisualOptions, [{ file: "base.apng" }]);
+  });
+
   it("applies allow-listed variant fields with replace and deep-merge semantics", () => {
     const warn = mock.method(console, "warn", () => {});
     const raw = baseTheme({

@@ -21,9 +21,9 @@
 //   - an early-added blob that a later commit deletes (unreachable from HEAD,
 //     but still present in the intermediate commit).
 //
-// Any occurrence of `themes/hash-sage/**` fails unconditionally — the
-// Hash Sage art is distributed as a downloadable official theme, never in this
-// repo. Other newly changed binary media above the shared
+// Any occurrence of `themes/hash-sage/**` or `themes/whale-chan/**` fails
+// unconditionally — official theme art (Hash Sage, Whale-chan) is distributed
+// as a downloadable official theme, never in this repo. Other newly changed binary media above the shared
 // `largeTrackedBinaryMediaBytes` threshold fails unless it matches an exact,
 // reviewed allowlist entry (path + OID + bytes + owner + reason).
 
@@ -37,6 +37,11 @@ const BASE_SHA_ENV = "PR_BASE_SHA";
 const HEAD_SHA_ENV = "PR_HEAD_SHA";
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const HASH_SAGE_ASSET_PREFIX = "themes/hash-sage/";
+const WHALE_CHAN_ASSET_PREFIX = "themes/whale-chan/";
+const OFFICIAL_THEME_ASSET_RULES = [
+  { prefix: HASH_SAGE_ASSET_PREFIX, rule: "hash-sage-asset-in-history" },
+  { prefix: WHALE_CHAN_ASSET_PREFIX, rule: "whale-chan-asset-in-history" },
+];
 const DEFAULT_HEAD = "HEAD";
 
 function normalizePath(value) {
@@ -304,13 +309,14 @@ function analyzePrHistoryAssets({ blobs, allowlist = [], policy, owners } = {}) 
   findings.push(...allowResult.findings);
 
   for (const blob of blobs) {
-    if (blob.path.startsWith(HASH_SAGE_ASSET_PREFIX)) {
+    const official = OFFICIAL_THEME_ASSET_RULES.find((entry) => blob.path.startsWith(entry.prefix));
+    if (official) {
       findings.push({
         level: "error",
-        rule: "hash-sage-asset-in-history",
+        rule: official.rule,
         path: blob.path,
         oid: blob.oid,
-        message: "themes/hash-sage/** must never appear in PR-reachable history",
+        message: `${official.prefix}** must never appear in PR-reachable history`,
       });
       continue;
     }
@@ -434,6 +440,7 @@ module.exports = {
   BASE_SHA_ENV,
   HEAD_SHA_ENV,
   HASH_SAGE_ASSET_PREFIX,
+  WHALE_CHAN_ASSET_PREFIX,
   analyzePrHistoryAssets,
   collectBlobs,
   collectIntroducedBlobs,

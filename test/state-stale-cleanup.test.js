@@ -982,4 +982,85 @@ describe("state stale cleanup decisions", () => {
     });
     assert.deepStrictEqual(result, { action: "delete", reason: "agent-exit" });
   });
+
+  // ── WSL sessions never probe the Windows host with Linux PIDs ──
+
+  it("never probes WSL session PIDs and retires them only by idle age", () => {
+    const now = 2_000_000;
+    const wsl = {
+      agentId: "claude-code",
+      wslDistro: "Ubuntu",
+      host: "wsl:Ubuntu",
+      agentPid: 10,
+      sourcePid: 20,
+    };
+
+    const fresh = decision(session({ ...wsl, state: "idle", updatedAt: now }), {
+      now,
+      alivePids: new Set([10, 20]),
+    });
+    assert.deepStrictEqual(fresh.result, { action: null });
+    assert.deepStrictEqual(fresh.calls, []);
+
+    const working = decision(session({
+      ...wsl,
+      state: "working",
+      updatedAt: now - WORKING_STALE_MS - 1,
+    }), {
+      now,
+      alivePids: new Set([10, 20]),
+    });
+    assert.deepStrictEqual(working.result, {
+      action: "idle",
+      reason: "working-timeout",
+      updateTimestamp: true,
+    });
+    assert.deepStrictEqual(working.calls, []);
+
+    const stale = decision(session({
+      ...wsl,
+      state: "idle",
+      updatedAt: now - SESSION_STALE_MS - 1,
+    }), {
+      now,
+      alivePids: new Set([10, 20]),
+    });
+    assert.deepStrictEqual(stale.result, { action: "delete", reason: "unreachable" });
+    assert.deepStrictEqual(stale.calls, []);
+  });
+
+  it("recognizes a WSL session from either the wslDistro or the wsl: host marker", () => {
+    const now = 2_000_000;
+    for (const marker of [{ wslDistro: "Ubuntu" }, { host: "wsl:Ubuntu" }]) {
+      const { result, calls } = decision(session({
+        state: "idle",
+        agentId: "kimi-cli",
+        agentPid: 10,
+        sourcePid: 20,
+        updatedAt: now - SESSION_STALE_MS - 1,
+        ...marker,
+      }), { now, alivePids: new Set([10]) });
+      assert.deepStrictEqual(result, { action: "delete", reason: "unreachable" });
+      assert.deepStrictEqual(calls, []);
+    }
+  });
+
+  it("keeps a WSL session of any age when sessionStaleMs is disabled", () => {
+    const now = 2_000_000;
+    const { result, calls } = decision(session({
+      state: "idle",
+      agentId: "claude-code",
+      wslDistro: "Ubuntu",
+      host: "wsl:Ubuntu",
+      agentPid: 10,
+      sourcePid: 20,
+      updatedAt: now - 86_400_000,
+    }), {
+      now,
+      staleConfig: { sessionStaleMs: 0 },
+      alivePids: new Set([10, 20]),
+    });
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(calls, []);
+  });
 });

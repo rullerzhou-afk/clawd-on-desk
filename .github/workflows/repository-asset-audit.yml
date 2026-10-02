@@ -25,7 +25,7 @@ jobs:
       - run: npm install
       - name: Test Claude installer CLI and WSL documentation
         run: node --test test/install.test.js test/install-dependency-cli.test.js test/remote-deploy.test.js
-      - name: Test audit, macOS icon contracts, and spawned-hook isolation
+      - name: Test repository contracts, macOS icon contracts, and spawned-hook isolation
         run: >-
           node --test
           test/assert-no-retired-telegram-sidecar.test.js
@@ -35,6 +35,7 @@ jobs:
           test/main-mac-dock-icon.test.js
           test/menu-hide-pet.test.js
           test/package-build-config.test.js
+          test/contribution-template-parity.test.js
           test/state-agent-icons.test.js
           test/tray-flash-icon.test.js
           test/preload-settings.test.js

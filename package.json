@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -67,6 +67,8 @@
     "uninstall:workbuddy-hooks": "node hooks/workbuddy-install.js --uninstall",
     "install:grok-hooks": "node hooks/grok-install.js",
     "uninstall:grok-hooks": "node hooks/grok-install.js --uninstall",
+    "install:minimax-hooks": "node hooks/minimax-install.js",
+    "uninstall:minimax-hooks": "node hooks/minimax-install.js --uninstall",
     "install:dsh": "node hooks/dsh-install.js",
     "uninstall:dsh": "node hooks/dsh-install.js --uninstall",
     "cleanup:integrations": "node hooks/cleanup-integrations.js --apply",

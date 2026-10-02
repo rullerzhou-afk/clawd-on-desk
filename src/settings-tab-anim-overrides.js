@@ -902,9 +902,11 @@
       case "mini-enter-sleep": return "Mini enter sleep";
       case "mini-crabwalk": return "Mini crabwalk";
       case "mini-peek": return "Mini peek";
+      case "mini-peek-hold": return "Mini peek hold";
       case "mini-alert": return "Mini alert";
       case "mini-happy": return "Mini happy";
       case "mini-sleep": return "Mini sleep";
+      case "mini-sleep-peek": return "Mini sleep peek";
       case "dragReaction": return t("animReactionDrag");
       case "clickLeftReaction": return t("animReactionClickLeft");
       case "clickRightReaction": return t("animReactionClickRight");
@@ -942,7 +944,7 @@
   }
 
   // #509: default idle visual picker — which look the pet rests in while
-  // idle. Options come from the active theme (states.idle + idleAnimations);
+  // idle. Options come from states.idle, idleAnimations, and idleVisualOptions;
   // selection applies live, so the pet itself is the preview.
   function buildIdleVisualPickerRow() {
     const info = runtime.animationOverridesData && runtime.animationOverridesData.idleDefaultVisual;

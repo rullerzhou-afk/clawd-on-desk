@@ -263,6 +263,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncMinimaxHooks() {
+    try {
+      if (typeof ctx.syncMinimaxHooksImpl === "function") return ctx.syncMinimaxHooksImpl();
+      const { installMinimaxPlugin } = require("../hooks/minimax-install.js");
+      const result = installMinimaxPlugin({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced MiniMax Code plugin (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "MiniMax Code", "minimax-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync MiniMax Code plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync MiniMax Code plugin" };
+    }
+  }
+
   function syncKiroHooks() {
     try {
       if (typeof ctx.syncKiroHooksImpl === "function") return ctx.syncKiroHooksImpl();
@@ -677,6 +692,7 @@ function createIntegrationSyncRuntime(options = {}) {
     qoderwork: syncQoderWorkHooks,
     traecode: syncTraeCodeHooks,
     qwenwork: syncQwenWorkHooks,
+    minimax: syncMinimaxHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -828,6 +844,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncReasonixHooks,
     syncQoderWorkHooks,
     syncTraeCodeHooks,
+    syncMinimaxHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

@@ -285,6 +285,7 @@ describe("state agent icons", () => {
       "hermes",
       "kiro-cli",
       "mimocode",
+      "minimax",
       "openclaw",
       "opencode",
       "pi",

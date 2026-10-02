@@ -30,7 +30,9 @@ class FakeBrowserWindow {
     this.webContents = {
       isDestroyed: () => false,
       onceCallbacks: new Map(),
+      onCallbacks: new Map(),
       once: (event, cb) => this.webContents.onceCallbacks.set(event, cb),
+      on: (event, cb) => this.webContents.onCallbacks.set(event, cb),
       send: (channel, payload) => this.calls.push(["send", channel, payload]),
     };
     FakeBrowserWindow.instances.push(this);
@@ -130,12 +132,14 @@ class FakeBrowserWindow {
     if (listener) listener();
   }
 
-  emitWebContents(eventName) {
+  emitWebContents(eventName, ...args) {
     const cb = this.webContents.onceCallbacks.get(eventName);
     if (cb) {
       this.webContents.onceCallbacks.delete(eventName);
-      cb();
+      cb(...args);
     }
+    const listener = this.webContents.onCallbacks.get(eventName);
+    if (listener) listener(...args);
   }
 }
 
@@ -204,6 +208,69 @@ function createRuntime(options = {}) {
   return { runtime, listeners, timers: fakeTimers.timers };
 }
 
+test("Settings renderer crash invokes the reset callback", () => {
+  let resets = 0;
+  const { runtime } = createRuntime({ runtime: { onRendererReset: () => { resets += 1; } } });
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  win.emitWebContents("render-process-gone");
+
+  assert.strictEqual(resets, 1);
+});
+
+test("only a main-frame document navigation resets the Settings preview", () => {
+  let resets = 0;
+  const { runtime } = createRuntime({ runtime: { onRendererReset: () => { resets += 1; } } });
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+
+  win.emitWebContents("did-start-navigation", {}, "file:///settings.html#general", true, true);
+  win.emitWebContents("did-start-navigation", {}, "file:///child.html", false, false);
+  assert.strictEqual(resets, 0);
+  win.emitWebContents("did-start-navigation", {}, "file:///settings.html", false, true);
+  assert.strictEqual(resets, 1);
+});
+
+test("events from a closed or superseded Settings window cannot reset the current page", () => {
+  let resets = 0;
+  const { runtime } = createRuntime({ runtime: { onRendererReset: () => { resets += 1; } } });
+  runtime.open();
+  const oldWindow = FakeBrowserWindow.instances[0];
+  oldWindow.emit("closed");
+  oldWindow.emitWebContents("render-process-gone");
+  oldWindow.emitWebContents("did-start-navigation", {}, "file:///settings.html", false, true);
+  assert.strictEqual(resets, 0);
+
+  runtime.open();
+  const newWindow = FakeBrowserWindow.instances[1];
+  oldWindow.emitWebContents("render-process-gone");
+  oldWindow.emitWebContents("did-start-navigation", {}, "file:///settings.html", false, true);
+  assert.strictEqual(resets, 0);
+  newWindow.emitWebContents("render-process-gone");
+  assert.strictEqual(resets, 1);
+});
+
+test("Settings renderer reset events are optional when no callback is wired", () => {
+  const { runtime } = createRuntime();
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  assert.doesNotThrow(() => win.emitWebContents("render-process-gone"));
+  assert.doesNotThrow(() => win.emitWebContents(
+    "did-start-navigation", {}, "file:///settings.html", false, true));
+});
+
+test("Settings window accepts a webContents stub without on", () => {
+  class OnceOnlyBrowserWindow extends FakeBrowserWindow {
+    constructor(options) {
+      super(options);
+      delete this.webContents.on;
+    }
+  }
+  const { runtime } = createRuntime({ runtime: { BrowserWindow: OnceOnlyBrowserWindow } });
+  assert.doesNotThrow(() => runtime.open());
+});
+
 test("settings window runtime creates the Settings BrowserWindow with taskbar identity", () => {
   const events = [];
   let runtime;
@@ -230,6 +297,8 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   assert.strictEqual(win.options.backgroundColor, "#1c1c1f");
   assert.strictEqual(win.options.webPreferences.preload, "C:\\app\\src\\preload-settings.js");
   assert.strictEqual(win.options.webPreferences.nodeIntegration, false);
+  assert.strictEqual(win.options.acceptFirstMouse, undefined,
+    "non-macOS windows never set acceptFirstMouse");
   assert.strictEqual(win.options.webPreferences.contextIsolation, true);
   assert.deepStrictEqual(win.options.webPreferences.additionalArguments, [
     "--discord-default-app-id-present=0",
@@ -258,6 +327,17 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   win.emit("closed");
   assert.deepStrictEqual(events, ["before-create", "before-closed", "after-closed-null"]);
   assert.strictEqual(runtime.getWindow(), null);
+});
+
+test("macOS settings window passes acceptFirstMouse so the first click reaches the page", () => {
+  let runtime;
+  ({ runtime } = createRuntime({ runtime: { platform: "darwin", isWin: false } }));
+
+  runtime.open();
+  assert.strictEqual(FakeBrowserWindow.instances.length, 1);
+  const win = FakeBrowserWindow.instances[0];
+  assert.strictEqual(win.options.acceptFirstMouse, true,
+    "the pet app lives in the background; the first click must not be eaten by window activation");
 });
 
 test("settings window uses and refreshes the localized title", () => {
@@ -874,4 +954,24 @@ test("applyTextScaleToWindow pokes the slider context even when zoom injection i
 
   runtime.applyTextScaleToWindow();
   assert.deepStrictEqual(sends, ["settings:text-scale-context-changed"]);
+});
+
+test("notifySizeContextChanged sends only to a live Settings webContents", () => {
+  const { runtime } = createRuntime();
+  assert.doesNotThrow(() => runtime.notifySizeContextChanged());
+
+  runtime.open();
+  const win = FakeBrowserWindow.instances[0];
+  const sends = [];
+  win.webContents.send = (channel) => sends.push(channel);
+  runtime.notifySizeContextChanged();
+  assert.deepStrictEqual(sends, ["settings:size-context-changed"]);
+
+  win.webContents.isDestroyed = () => true;
+  assert.doesNotThrow(() => runtime.notifySizeContextChanged());
+  assert.deepStrictEqual(sends, ["settings:size-context-changed"]);
+
+  win.emit("closed");
+  assert.doesNotThrow(() => runtime.notifySizeContextChanged());
+  assert.deepStrictEqual(sends, ["settings:size-context-changed"]);
 });

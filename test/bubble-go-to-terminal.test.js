@@ -125,6 +125,7 @@ function createHarness(options = {}) {
         truncate: (value) => String(value),
         parseMcpToolName: () => null,
         detectIrreversible: () => null,
+        shouldScanIrreversibleCommand: () => false,
       },
       bubbleAPI,
       innerWidth: options.innerWidth || 480,

@@ -47,6 +47,13 @@ describe("isZcodeAgentCommandLine", () => {
     assert.ok(!options.agentCmdlineCheck("/Applications/ZCode.app/Contents/MacOS/ZCode"));
   });
 
+  it("still checks unpacked/dev node launches under every name ps lists node by", () => {
+    // Including Node's Linux main-thread names (MainThread / node-MainThread).
+    const { DEFAULT_AGENT_CMDLINE_NAMES } = require("../hooks/shared-process");
+    const names = getZcodePidResolverOptions({}).agentCmdlineNames;
+    for (const name of DEFAULT_AGENT_CMDLINE_NAMES) assert.ok(names.has(name), name);
+  });
+
   it("does NOT match the bare ZCode desktop shell without zcode.cjs", () => {
     // The always-running desktop app must not be credited as a live agent.
     assert.ok(!isZcodeAgentCommandLine("/Applications/ZCode.app/Contents/MacOS/ZCode"));

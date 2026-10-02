@@ -2509,6 +2509,10 @@ function createPetWindowRuntime(options = {}) {
     applyHitInputState();
   }
 
+  function isSettingsSizePreviewActive() {
+    return settingsSizePreviewSyncFrozen;
+  }
+
   function endSettingsSizePreviewProtection() {
     settingsSizePreviewSyncFrozen = false;
     // §4.3.10's protection-period release point. Called BEFORE the
@@ -2711,6 +2715,7 @@ function createPetWindowRuntime(options = {}) {
     moveWindowForDrag,
     resolveStartupPlacement,
     beginSettingsSizePreviewProtection,
+    isSettingsSizePreviewActive,
     endSettingsSizePreviewProtection,
     syncFloatingWindowsAfterPetBoundsChange,
     handleDisplayMetricsChanged,

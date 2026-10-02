@@ -22,6 +22,47 @@ const { readJsonFile, writeJsonAtomic, writeJsonAtomicWithBackup, asarUnpackedPa
 const { getFamilyConfig } = require("../agents/opencode-family");
 const managedGeneration = require("./opencode-family-managed-generation");
 const entryOwnership = require("./opencode-family-entry-ownership");
+const hostDetect = require("./opencode-host-detect");
+
+// opencode v2 `plugins`-key registrar (issue #1039). Lazily required like the
+// jsonc editor: hooks/json-utils.js + this module stay dep-free for remote
+// deployment, and non-v2 members (MiMo) never load it.
+function getV2Registrar() {
+  // eslint-disable-next-line global-require
+  return require("./opencode-family-v2-registration");
+}
+
+function familyHasV2Entry(cfg) {
+  return typeof cfg.v2PluginDirName === "string" && !!cfg.v2PluginDirName;
+}
+
+// Read the v2 `plugins` candidates without throwing. A duplicate top-level
+// `plugins` key (or a parse/read failure) is ambiguous input: register and
+// uninstall must abort BEFORE their first write (Settings/startup show the
+// error), while a v1-host sweep may only warn and skip the v2 cleanup. The
+// v1 `plugin` key keeps its existing behavior (jsonc.readCandidates throws).
+function readV2CandidatesSafe(cfg, configPath) {
+  try {
+    return { ok: true, states: getV2Registrar().readV2Candidates(cfg, configPath) };
+  } catch (err) {
+    return { ok: false, error: err };
+  }
+}
+
+function v2ReadErrorMessage(err) {
+  return err && err.message ? err.message : "opencode config has an ambiguous \"plugins\" key";
+}
+
+// Upstream PR #1045 review: opencode <= 1.18.15 rejects unknown top-level
+// config keys, so the v2 `plugins` write must follow the detected host, not a
+// static registry flag. Explicit options.v2Host ("v1" | "v2" | "unknown")
+// wins — tests and remote callers pin it — otherwise the real binary is
+// probed once per register call.
+function resolveV2Host(options) {
+  const explicit = hostDetect.__test.normalizeHostDetection(options.v2Host);
+  if (explicit) return explicit;
+  return hostDetect.detectOpencodeHost(options);
+}
 
 function normalizePluginEntry(value) {
   return String(value || "").replace(/\\/g, "/");
@@ -132,6 +173,12 @@ function makeFamilyInstaller(agentId) {
     if (created) console.log(`  Created ${cfg.configFileName}`);
     if (added) console.log(`  Registered: ${pluginDir}`);
     if (skipped) console.log(`  Already registered: ${pluginDir}`);
+    // opencode v2 (issue #1039): plugins run in the shared background service,
+    // so a newly materialized generation needs a service restart (or a fresh
+    // `opencode` run, which starts one) to be picked up.
+    if (familyHasV2Entry(cfg) && added && !options.pluginDir) {
+      console.log(`  opencode v2: restart the opencode service (or start a new opencode session) to load the updated plugin`);
+    }
   }
 
   // Does this owner record already claim THIS live source?
@@ -369,6 +416,33 @@ function makeFamilyInstaller(agentId) {
       ? toEntryPath(options.pluginDir)
       : toEntryPath(resolveManagedPluginDir(target, bundleHash));
 
+    // v2 `plugins`-key entry (issue #1039): same generation, sibling entry dir.
+    // Managed-register only — the pluginDir override path (test-only) keeps the
+    // single-entry v1 contract. The write follows the detected host (upstream
+    // PR #1045 review — opencode <= 1.18.15 rejects unknown top-level keys):
+    //   "register" — v2 host detected: write/verify the entry (previous behavior)
+    //   "sweep"    — v1 host detected: never write; sweep proven-owned
+    //                leftovers so a v2→v1 downgrade self-heals on the next sync
+    //   "skip"     — host unknown (probe failed): never touch the key
+    const v2Mode = (() => {
+      if (isOverride || !familyHasV2Entry(cfg)) return "skip";
+      // This is the dep-free low-level primitive: it NEVER probes the host.
+      // An absent options.v2Host conservatively maps to "skip" (key left
+      // untouched); the register() wrapper is the only production caller that
+      // runs the real detection and passes the verdict in.
+      const v2Host = hostDetect.__test.normalizeHostDetection(options.v2Host);
+      return v2Host === "v2" ? "register" : v2Host === "v1" ? "sweep" : "skip";
+    })();
+    let expectedCanonicalV2Dir = null;
+    let canonicalV2Entry = null;
+    if (v2Mode !== "skip") {
+      const genDir = managedGeneration.generationDir(target, bundleHash);
+      expectedCanonicalV2Dir = managedGeneration.canonicalizeTargetPath(
+        path.join(genDir, cfg.v2PluginDirName), platform, fsImpl,
+      );
+      canonicalV2Entry = toEntryPath(path.join(genDir, cfg.v2PluginDirName));
+    }
+
     let ownerRecord = null;
     const ownerOptions = { platform, pluginDirName: cfg.pluginDirName };
     const readOwner = () => {
@@ -408,15 +482,15 @@ function makeFamilyInstaller(agentId) {
     }
     if (ownerConflict) return ownerConflict;
 
+    const expectedGeneration = () => {
+      if (isOverride) return { ok: true };
+      if (!bundleHash) return { ok: false, reason: "generation-missing" };
+      const genDir = managedGeneration.generationDir(target, bundleHash);
+      if (!fsImpl.existsSync(genDir)) return { ok: false, reason: "generation-missing" };
+      const inspected = managedGeneration.inspectGeneration(genDir, cfg, agentId, { fs: fsImpl, files: sourceFiles || undefined });
+      return inspected.ok ? { ok: true } : { ok: false, reason: inspected.reason };
+    };
     const makeContext = () => {
-      const expectedGeneration = () => {
-        if (isOverride) return { ok: true };
-        if (!bundleHash) return { ok: false, reason: "generation-missing" };
-        const genDir = managedGeneration.generationDir(target, bundleHash);
-        if (!fsImpl.existsSync(genDir)) return { ok: false, reason: "generation-missing" };
-        const inspected = managedGeneration.inspectGeneration(genDir, cfg, agentId, { fs: fsImpl, files: sourceFiles || undefined });
-        return inspected.ok ? { ok: true } : { ok: false, reason: inspected.reason };
-      };
       return getJsoncEditor().buildManagedContext({
         cfg,
         target,
@@ -429,19 +503,66 @@ function makeFamilyInstaller(agentId) {
         managedBoundary: !isOverride,
       });
     };
+    const makeV2Context = v2Mode !== "skip"
+      ? () => getV2Registrar().buildV2ManagedContext({
+        cfg,
+        target,
+        expectedCanonicalDir: expectedCanonicalV2Dir,
+        // Sweep classification never re-verifies the generation (same
+        // contract as unregisterManaged): a leftover entry from an older
+        // bundle must stay removable even if the current generation moved.
+        expectedGeneration: v2Mode === "register" ? expectedGeneration : () => ({ ok: true }),
+        sourceFiles,
+        ownerRecord,
+        fsImpl,
+        platform,
+        managedBoundary: !isOverride,
+      })
+      : null;
+    const v2Warnings = (v2Pre) => (v2Pre && Array.isArray(v2Pre.warnings) ? v2Pre.warnings : []);
 
-    // Read-only pre-scan.
+    // Read-only pre-scan. The v2 candidates are read up front too, so an
+    // ambiguous `plugins` key aborts register with ZERO config change instead
+    // of throwing after the v1 key was already half-written.
     let candidates = jsonc.readCandidates(cfg, configPath);
-    const pre = jsonc.inspectManagedRegister({ cfg, configPath, candidates, makeContext, canonicalEntry });
-    if (pre.needsReview) {
+    const v2Read = v2Mode !== "skip" ? readV2CandidatesSafe(cfg, configPath) : null;
+    if (v2Read && !v2Read.ok && v2Mode === "register") {
       return {
         status: "error",
-        reason: pre.needsReview.reason,
-        message: `opencode plugin entry needs manual review (${pre.needsReview.reason})`,
+        reason: "config-corrupt",
+        message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(v2Read.error)}`,
         configPath,
         pluginDir: canonicalEntry,
-        details: pre.needsReview.details || [],
-        warnings: pre.warnings,
+        warnings: [],
+      };
+    }
+    const v2Candidates = v2Read && v2Read.ok ? v2Read.states : null;
+    const v2ReadWarning = v2Read && !v2Read.ok
+      ? `v2 plugins-key leftover sweep skipped: ${v2ReadErrorMessage(v2Read.error)}`
+      : null;
+    const pre = jsonc.inspectManagedRegister({ cfg, configPath, candidates, makeContext, canonicalEntry });
+    const v2Pre = v2Mode === "register"
+      ? getV2Registrar().inspectV2Register({ cfg, configPath, candidates: v2Candidates, makeContext: makeV2Context, canonicalV2Entry })
+      : null;
+    const v2SweepPre = v2Mode === "sweep" && v2Candidates
+      ? getV2Registrar().inspectV2Unregister({ candidates: v2Candidates, makeContext: makeV2Context })
+      : null;
+    const v2NeedsMutation = v2Pre
+      ? v2Pre.needsMutation
+      : (v2SweepPre ? v2SweepPre.hasRemovable : false);
+    const preNeedsMutation = pre.needsMutation || v2NeedsMutation;
+    const preWarnings = [...pre.warnings, ...v2Warnings(v2Pre), ...v2Warnings(v2SweepPre)];
+    if (v2ReadWarning) preWarnings.push(v2ReadWarning);
+    if (pre.needsReview || (v2Pre && v2Pre.needsReview)) {
+      const review = pre.needsReview || v2Pre.needsReview;
+      return {
+        status: "error",
+        reason: review.reason,
+        message: `opencode plugin entry needs manual review (${review.reason})`,
+        configPath,
+        pluginDir: canonicalEntry,
+        details: review.details || [],
+        warnings: preWarnings,
       };
     }
 
@@ -449,7 +570,7 @@ function makeFamilyInstaller(agentId) {
     // source whose marker is no longer live still needs a (takeover) write.
     const ownerNeedsMutation = !isOverride
       && !ownerClaimsSource(ownerState, sourceRoot, fsImpl, platform);
-    if (!pre.needsMutation && !ownerNeedsMutation) {
+    if (!preNeedsMutation && !ownerNeedsMutation) {
       logRegister(options, pre.effective ? pre.effective.path : configPath, canonicalEntry, false, false, true);
       return {
         status: "ok",
@@ -462,7 +583,7 @@ function makeFamilyInstaller(agentId) {
         activeEntryRemaining: true,
         managedFilesRemoved: false,
         residualPaths: [],
-        warnings: pre.warnings,
+        warnings: preWarnings,
         mutatedPaths: [],
       };
     }
@@ -494,6 +615,24 @@ function makeFamilyInstaller(agentId) {
     return withTargetLock(target, lockResult.lock, fsImpl, () => {
       // Re-read inside the lock; never reuse the pre-lock conclusion.
       candidates = jsonc.readCandidates(cfg, configPath);
+      // Same zero-mutation guard as the lock-free pre-scan, re-proved after
+      // waiting for the lock (register only; a v1-host sweep downgrades this to
+      // a warning and skips its own cleanup).
+      const lockedV2Read = v2Mode !== "skip" ? readV2CandidatesSafe(cfg, configPath) : null;
+      if (lockedV2Read && !lockedV2Read.ok && v2Mode === "register") {
+        return {
+          status: "error",
+          reason: "config-corrupt",
+          message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(lockedV2Read.error)}`,
+          configPath,
+          pluginDir: canonicalEntry,
+          warnings: [],
+        };
+      }
+      const lockedV2Candidates = lockedV2Read && lockedV2Read.ok ? lockedV2Read.states : null;
+      const lockedV2ReadWarning = lockedV2Read && !lockedV2Read.ok
+        ? `v2 plugins-key leftover sweep skipped: ${v2ReadErrorMessage(lockedV2Read.error)}`
+        : null;
       const lockedOwner = readOwner();
       ownerRecord = (lockedOwner.state === "owned" || lockedOwner.state === "released") ? lockedOwner.record : null;
       if (lockedOwner.state === "foreign" || lockedOwner.state === "mismatch" || lockedOwner.state === "corrupt") {
@@ -520,15 +659,28 @@ function makeFamilyInstaller(agentId) {
         }
       }
       const lockedPre = jsonc.inspectManagedRegister({ cfg, configPath, candidates, makeContext, canonicalEntry });
-      if (lockedPre.needsReview) {
+      const lockedV2Pre = v2Mode === "register"
+        ? getV2Registrar().inspectV2Register({ cfg, configPath, candidates: lockedV2Candidates, makeContext: makeV2Context, canonicalV2Entry })
+        : null;
+      const lockedV2SweepPre = v2Mode === "sweep" && lockedV2Candidates
+        ? getV2Registrar().inspectV2Unregister({ candidates: lockedV2Candidates, makeContext: makeV2Context })
+        : null;
+      const lockedV2NeedsMutation = lockedV2Pre
+        ? lockedV2Pre.needsMutation
+        : (lockedV2SweepPre ? lockedV2SweepPre.hasRemovable : false);
+      const lockedNeedsMutation = lockedPre.needsMutation || lockedV2NeedsMutation;
+      const lockedWarnings = [...lockedPre.warnings, ...v2Warnings(lockedV2Pre), ...v2Warnings(lockedV2SweepPre)];
+      if (lockedV2ReadWarning) lockedWarnings.push(lockedV2ReadWarning);
+      if (lockedPre.needsReview || (lockedV2Pre && lockedV2Pre.needsReview)) {
+        const review = lockedPre.needsReview || lockedV2Pre.needsReview;
         return {
           status: "error",
-          reason: lockedPre.needsReview.reason,
-          message: `opencode plugin entry needs manual review (${lockedPre.needsReview.reason})`,
+          reason: review.reason,
+          message: `opencode plugin entry needs manual review (${review.reason})`,
           configPath,
           pluginDir: canonicalEntry,
-          details: lockedPre.needsReview.details || [],
-          warnings: lockedPre.warnings,
+          details: review.details || [],
+          warnings: lockedWarnings,
         };
       }
 
@@ -537,7 +689,7 @@ function makeFamilyInstaller(agentId) {
       // (no materialize, no owner.updatedAt rewrite, no config write).
       const lockedOwnerNeedsMutation = !isOverride
         && !ownerClaimsSource(lockedOwner, sourceRoot, fsImpl, platform);
-      if (!lockedPre.needsMutation && !lockedOwnerNeedsMutation) {
+      if (!lockedNeedsMutation && !lockedOwnerNeedsMutation) {
         logRegister(options, lockedPre.effective ? lockedPre.effective.path : configPath, canonicalEntry, false, false, true);
         return {
           status: "ok",
@@ -547,14 +699,14 @@ function makeFamilyInstaller(agentId) {
           configPath: lockedPre.effective ? lockedPre.effective.path : configPath,
           pluginDir: canonicalEntry,
           ownerUpdated: false,
-          warnings: lockedPre.warnings,
+          warnings: lockedWarnings,
           mutatedPaths: [],
         };
       }
 
       const recoveryWarnings = [];
       const recoveryResidualPaths = [];
-      if (!isOverride && lockedPre.needsMutation && fsImpl.existsSync(managedGeneration.generationDir(target, bundleHash))) {
+      if (!isOverride && lockedNeedsMutation && fsImpl.existsSync(managedGeneration.generationDir(target, bundleHash))) {
         const genDir = managedGeneration.generationDir(target, bundleHash);
         const inspected = managedGeneration.inspectGeneration(genDir, cfg, agentId, {
           fs: fsImpl,
@@ -592,6 +744,10 @@ function makeFamilyInstaller(agentId) {
         }
       }
 
+      // Materialize/claim only for a real v1-key or owner mutation. A v2-only
+      // mutation (register-mode key rewrite, or sweep of leftover entries)
+      // targets the already-verified current generation — re-materializing or
+      // re-claiming ownership for it would be a spurious write.
       if (!isOverride && lockedPre.needsMutation) {
         const materialized = managedGeneration.materializeGeneration(target, cfg, sourcePluginDir, {
           fs: fsImpl,
@@ -639,7 +795,7 @@ function makeFamilyInstaller(agentId) {
             pluginDir: canonicalEntry,
             mutatedPaths: apply.mutatedPaths || [],
             residualPaths: recoveryResidualPaths,
-            warnings: [...recoveryWarnings, ...(lockedPre.warnings || []), ...(apply.warnings || [])],
+            warnings: [...recoveryWarnings, ...lockedWarnings, ...(apply.warnings || [])],
           };
         }
         const verify = jsonc.verifyManagedRegisterPostcondition({
@@ -657,19 +813,130 @@ function makeFamilyInstaller(agentId) {
             pluginDir: canonicalEntry,
             mutatedPaths: apply.mutatedPaths,
             residualPaths: recoveryResidualPaths,
-            warnings: [...recoveryWarnings, ...(lockedPre.warnings || []), ...(apply.warnings || [])],
+            warnings: [...recoveryWarnings, ...lockedWarnings, ...(apply.warnings || [])],
           };
         }
       }
-      const warnings = [...recoveryWarnings, ...(lockedPre.warnings || []), ...(apply.warnings || [])];
-      const effectivePath = apply.mutatedPaths.length
-        ? apply.mutatedPaths[apply.mutatedPaths.length - 1]
+
+      // v2 `plugins` key runs after the v1 key write (which may have created
+      // the default config file) and re-reads the candidates itself — the v1
+      // apply may have mutated the same files moments ago inside this lock.
+      // lockedV2Pre is therefore only a heuristic here: when the v1 apply
+      // created the config, the pre-apply v2 scan saw no file at all, so the
+      // apply must also run whenever the v1 key mutated (applyV2Register
+      // no-ops on an already-converged config).
+      let v2Apply = { status: "ok", added: false, created: false, mutatedPaths: [], warnings: [] };
+      if (v2Mode === "register" && (lockedPre.needsMutation || lockedV2Pre.needsMutation)) {
+        // Re-read after the v1 write (it may have created/mutated the file).
+        // The lock-held guard above already proved the key unambiguous, so a
+        // throw here would mean a concurrent writer; surface it rather than
+        // guessing.
+        const freshV2 = readV2CandidatesSafe(cfg, configPath);
+        if (!freshV2.ok) {
+          return {
+            status: "error",
+            reason: "config-corrupt",
+            message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(freshV2.error)}`,
+            configPath,
+            pluginDir: canonicalEntry,
+            mutatedPaths: apply.mutatedPaths,
+            residualPaths: recoveryResidualPaths,
+            warnings: [...recoveryWarnings, ...lockedWarnings],
+          };
+        }
+        v2Apply = getV2Registrar().applyV2Register({
+          cfg,
+          configPath,
+          candidates: freshV2.states,
+          makeContext: makeV2Context,
+          canonicalV2Entry,
+          options,
+        });
+        if (v2Apply.status !== "ok") {
+          return {
+            status: "error",
+            reason: v2Apply.reason,
+            message: v2Apply.message,
+            configPath,
+            pluginDir: canonicalEntry,
+            mutatedPaths: [...apply.mutatedPaths, ...v2Apply.mutatedPaths],
+            residualPaths: recoveryResidualPaths,
+            warnings: [...recoveryWarnings, ...lockedWarnings, ...(apply.warnings || []), ...(v2Apply.warnings || [])],
+          };
+        }
+        const v2Verify = getV2Registrar().verifyV2RegisterPostcondition({
+          cfg,
+          configPath,
+          makeContext: makeV2Context,
+        });
+        if (!v2Verify.ok) {
+          return {
+            status: "error",
+            reason: "postcondition-failed",
+            message: `v2 plugins-key postcondition not met after write: ${v2Verify.reason}`,
+            configPath,
+            pluginDir: canonicalEntry,
+            mutatedPaths: [...apply.mutatedPaths, ...v2Apply.mutatedPaths],
+            residualPaths: recoveryResidualPaths,
+            warnings: [...recoveryWarnings, ...lockedWarnings, ...(apply.warnings || []), ...(v2Apply.warnings || [])],
+          };
+        }
+      }
+
+      // Sweep mode (v1 host detected): remove any proven-owned v2 leftovers so
+      // a v2→v1 downgrade stops poisoning the config. Best-effort by contract —
+      // a sweep failure (fail-closed entry, unconfirmable legacy-missing
+      // candidate) must never fail the v1 registration, only warn.
+      let v2SweepApply = null;
+      if (v2Mode === "sweep" && lockedV2Candidates) {
+        // Re-read after the v1 write; a failure here (should be impossible
+        // after the lock-held guard) only skips the sweep with a warning.
+        const freshV2 = readV2CandidatesSafe(cfg, configPath);
+        if (freshV2.ok) {
+          v2SweepApply = getV2Registrar().applyV2Unregister({
+            cfg,
+            configPath,
+            candidates: freshV2.states,
+            makeContext: makeV2Context,
+            options,
+          });
+        } else {
+          lockedWarnings.push(`v2 plugins-key leftover sweep skipped: ${v2ReadErrorMessage(freshV2.error)}`);
+        }
+      }
+      const v2SweepWarnings = (v2SweepResult) => {
+        if (!v2SweepResult) return [];
+        const out = [];
+        if (v2SweepResult.removed > 0) {
+          out.push(`swept ${v2SweepResult.removed} leftover v2 plugins-key entr${v2SweepResult.removed === 1 ? "y" : "ies"} (no opencode v2 host detected)`);
+        }
+        if (v2SweepResult.error) {
+          out.push(`v2 plugins-key leftover sweep failed: ${v2SweepResult.error.reason}`);
+        } else if (v2SweepResult.activeEntryRemaining) {
+          out.push("v2 plugins-key leftover sweep retained a fail-closed entry; manual review required");
+        }
+        return out;
+      };
+      const warnings = [
+        ...recoveryWarnings,
+        ...lockedWarnings,
+        ...(apply.warnings || []),
+        ...(v2Apply.warnings || []),
+        ...v2SweepWarnings(v2SweepApply),
+      ];
+      const allMutatedPaths = [
+        ...apply.mutatedPaths,
+        ...v2Apply.mutatedPaths,
+        ...((v2SweepApply && v2SweepApply.mutatedPaths) || []),
+      ];
+      const effectivePath = allMutatedPaths.length
+        ? allMutatedPaths[allMutatedPaths.length - 1]
         : (lockedPre.effective ? lockedPre.effective.path : configPath);
       logRegister(options, effectivePath, canonicalEntry, apply.created, apply.added, false);
       return {
         status: "ok",
-        added: apply.added,
-        skipped: !lockedPre.needsMutation && !ownerUpdated,
+        added: apply.added || v2Apply.added,
+        skipped: !lockedNeedsMutation && !ownerUpdated,
         created: apply.created,
         configPath: effectivePath,
         pluginDir: canonicalEntry,
@@ -679,7 +946,7 @@ function makeFamilyInstaller(agentId) {
         managedFilesRemoved: false,
         residualPaths: recoveryResidualPaths,
         warnings,
-        mutatedPaths: apply.mutatedPaths,
+        mutatedPaths: allMutatedPaths,
       };
     });
   }
@@ -770,28 +1037,68 @@ function makeFamilyInstaller(agentId) {
       managedBoundary: !isOverride && !rootUnknown,
     });
 
+    const v2Enabled = familyHasV2Entry(cfg);
+    let expectedCanonicalV2Dir = null;
+    if (v2Enabled && expectedCanonicalDir) {
+      expectedCanonicalV2Dir = managedGeneration.canonicalizeTargetPath(
+        path.join(path.dirname(expectedCanonicalDir), cfg.v2PluginDirName), platform, fsImpl,
+      );
+    }
+    const makeV2Context = v2Enabled
+      ? () => getV2Registrar().buildV2ManagedContext({
+        cfg,
+        target,
+        expectedCanonicalDir: expectedCanonicalV2Dir,
+        expectedGeneration: () => ({ ok: true }),
+        sourceFiles,
+        ownerRecord,
+        fsImpl,
+        platform,
+        managedBoundary: !isOverride && !rootUnknown,
+      })
+      : null;
+
     let candidates = jsonc.readCandidates(cfg, configPath);
+    // An unreadable/ambiguous v2 `plugins` key must abort uninstall before any
+    // write; a byte-level sweep of a config we cannot fully understand could
+    // corrupt the user's file.
+    const v2Read = v2Enabled ? readV2CandidatesSafe(cfg, configPath) : null;
+    if (v2Read && !v2Read.ok) {
+      return configCorruptResult({
+        configPath,
+        pluginDir: expectedCanonicalDir ? toEntryPath(expectedCanonicalDir) : toEntryPath(sourcePluginDir),
+        message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(v2Read.error)}`,
+      });
+    }
+    const v2Candidates = v2Read ? v2Read.states : null;
     // Read-only scan derives `registrationRemoved` from the effective config.
     const scan = jsonc.inspectManagedUnregister({ candidates, makeContext });
+    const v2Scan = v2Enabled
+      ? getV2Registrar().inspectV2Unregister({ candidates: v2Candidates, makeContext: makeV2Context })
+      : null;
+    const scanHasRemovable = scan.hasRemovable || (v2Scan ? v2Scan.hasRemovable : false);
+    const scanActiveRemaining = scan.activeEntryRemaining || (v2Scan ? v2Scan.activeEntryRemaining : false);
+    const scanWarnings = [...scan.warnings, ...(v2Scan ? v2Scan.warnings : [])];
+    const scanFailClosedActive = [...scan.failClosedActive, ...(v2Scan ? v2Scan.failClosedActive.map((item) => ({ ...item, v2Key: true })) : [])];
 
     if (rootUnknown) {
       // configPath-only (e.g. Windows NSIS cleanup): sweep the config without
       // ever resolving or touching a managed root / lock.
       return unregisterConfigSweepOnly({
-        jsonc, cfg, agentId, configPath, makeContext, options, fsImpl,
+        jsonc, cfg, agentId, configPath, makeContext, makeV2Context, options, fsImpl,
         warning: "managed-root-unknown: configPath-only unregister skipped managed-file cleanup",
       });
     }
     const targetRootExists = cleanupAllowed && fsImpl.existsSync(target.targetRoot);
-    if (!scan.hasRemovable && !targetRootExists) {
-      if (scan.activeEntryRemaining) {
+    if (!scanHasRemovable && !targetRootExists) {
+      if (scanActiveRemaining) {
         return failClosedUnregisterResult({
           agentId,
           configPath: scan.effective ? scan.effective.path : configPath,
           pluginDir: expectedCanonicalDir ? toEntryPath(expectedCanonicalDir) : toEntryPath(sourcePluginDir),
           reason: "active-entry-remaining",
-          failClosedActive: scan.failClosedActive,
-          warnings: scan.warnings,
+          failClosedActive: scanFailClosedActive,
+          warnings: scanWarnings,
         });
       }
       return {
@@ -806,7 +1113,7 @@ function makeFamilyInstaller(agentId) {
         activeEntryRemaining: false,
         managedFilesRemoved: false,
         residualPaths: [],
-        warnings: scan.warnings,
+        warnings: scanWarnings,
         mutatedPaths: [],
       };
     }
@@ -821,7 +1128,7 @@ function makeFamilyInstaller(agentId) {
         // configPath-only callers (Windows NSIS cleanup) must not fail just
         // because we cannot locate a managed root.
         return unregisterConfigSweepOnly({
-          jsonc, cfg, agentId, configPath, makeContext, options, fsImpl,
+          jsonc, cfg, agentId, configPath, makeContext, makeV2Context, options, fsImpl,
           warning: "managed-root-unknown: configPath-only unregister skipped managed-file cleanup",
         });
       }
@@ -842,6 +1149,16 @@ function makeFamilyInstaller(agentId) {
 
     return withTargetLock(target, lockResult.lock, fsImpl, () => {
       candidates = jsonc.readCandidates(cfg, configPath);
+      // Re-prove the v2 key is parseable/unambiguous AFTER the lock and BEFORE
+      // the first write; the pre-lock verdict is advisory only.
+      const lockedV2Read = v2Enabled ? readV2CandidatesSafe(cfg, configPath) : null;
+      if (lockedV2Read && !lockedV2Read.ok) {
+        return configCorruptResult({
+          configPath,
+          pluginDir: expectedCanonicalDir ? toEntryPath(expectedCanonicalDir) : toEntryPath(sourcePluginDir),
+          message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(lockedV2Read.error)}`,
+        });
+      }
       const lockedOwner = (cleanupAllowed)
         ? managedGeneration.readOwnerRecord(target, agentId, fsImpl, ownerOptions)
         : { state: "unmanaged", record: null };
@@ -850,29 +1167,53 @@ function makeFamilyInstaller(agentId) {
       ownerRecord = (lockedOwner.state === "owned" || lockedOwner.state === "released") ? lockedOwner.record : null;
 
       const apply = jsonc.applyManagedUnregister({ cfg, configPath, candidates, makeContext, options });
-      const warnings = [...(scan.warnings || []), ...(apply.warnings || [])];
+      let v2Apply = { removed: 0, changed: false, mutatedPaths: [], warnings: [], activeEntryRemaining: false, effectivePath: configPath, failClosedActive: [], error: null };
+      if (v2Enabled) {
+        // Re-read after the v1 sweep: the v1 write may have shifted offsets in
+        // the same file. The lock-held guard already proved the key parseable.
+        const freshV2 = readV2CandidatesSafe(cfg, configPath);
+        if (!freshV2.ok) {
+          return configCorruptResult({
+            configPath,
+            pluginDir: expectedCanonicalDir ? toEntryPath(expectedCanonicalDir) : toEntryPath(sourcePluginDir),
+            message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(freshV2.error)}`,
+            mutatedPaths: apply.mutatedPaths,
+          });
+        }
+        v2Apply = getV2Registrar().applyV2Unregister({
+          cfg,
+          configPath,
+          candidates: freshV2.states,
+          makeContext: makeV2Context,
+          options,
+        });
+      }
+      const warnings = [...scanWarnings, ...(apply.warnings || []), ...(v2Apply.warnings || [])];
       let managedFilesRemoved = false;
       const residualPaths = [];
       let ownerReleased = false;
+      const combinedActiveRemaining = apply.activeEntryRemaining !== false
+        ? apply.activeEntryRemaining
+        : v2Apply.activeEntryRemaining;
 
       // An active fail-closed entry (modified/corrupt/unknown) or an
       // unconfirmable legacy-missing candidate must never be reported as a
       // removed registration.
-      if (apply.error || apply.activeEntryRemaining !== false) {
+      if (apply.error || v2Apply.error || combinedActiveRemaining !== false) {
         return failClosedUnregisterResult({
           agentId,
-          configPath: apply.effectivePath || configPath,
+          configPath: apply.effectivePath || v2Apply.effectivePath || configPath,
           pluginDir: expectedCanonicalDir ? toEntryPath(expectedCanonicalDir) : toEntryPath(sourcePluginDir),
-          reason: (apply.error && apply.error.reason) || "active-entry-remaining",
-          failClosedActive: apply.failClosedActive,
+          reason: (apply.error && apply.error.reason) || (v2Apply.error && v2Apply.error.reason) || "active-entry-remaining",
+          failClosedActive: [...apply.failClosedActive, ...v2Apply.failClosedActive.map((item) => ({ ...item, v2Key: true }))],
           warnings,
           removed: apply.removed,
           changed: apply.changed,
-          mutatedPaths: apply.mutatedPaths,
+          mutatedPaths: [...apply.mutatedPaths, ...v2Apply.mutatedPaths],
         });
       }
 
-      if (cleanupAllowed && apply.activeEntryRemaining === false) {
+      if (cleanupAllowed && combinedActiveRemaining === false) {
         const cleanup = cleanupManagedGenerations({ cfg, target, fsImpl, platform });
         managedFilesRemoved = cleanup.removed > 0;
         residualPaths.push(...cleanup.residual);
@@ -896,56 +1237,94 @@ function makeFamilyInstaller(agentId) {
         warnings.push("managed-root-unknown: configPath-only unregister skipped managed-file cleanup");
       } else if (!cleanupAllowed) {
         warnings.push("managed-root-unknown: pluginDir override skipped managed-file cleanup");
-      } else if (apply.activeEntryRemaining) {
+      } else if (combinedActiveRemaining) {
         warnings.push("managed generations retained because an active Clawd entry remains");
       }
 
+      const allRemoved = apply.removed + v2Apply.removed;
+      const allChanged = apply.changed || v2Apply.changed;
+      const allMutatedPaths = [...apply.mutatedPaths, ...v2Apply.mutatedPaths];
       const result = {
         status: "ok",
-        removed: apply.removed,
-        changed: apply.changed,
-        skipped: !apply.changed,
+        removed: allRemoved,
+        changed: allChanged,
+        skipped: !allChanged,
         created: false,
-        configPath: apply.effectivePath || configPath,
+        configPath: apply.effectivePath || v2Apply.effectivePath || configPath,
         pluginDir: expectedCanonicalDir ? toEntryPath(expectedCanonicalDir) : toEntryPath(sourcePluginDir),
-        registrationRemoved: apply.activeEntryRemaining === false,
-        activeEntryRemaining: apply.activeEntryRemaining,
+        registrationRemoved: combinedActiveRemaining === false,
+        activeEntryRemaining: combinedActiveRemaining,
         managedFilesRemoved,
         residualPaths,
         warnings,
-        mutatedPaths: apply.mutatedPaths,
+        mutatedPaths: allMutatedPaths,
         ownerReleased,
       };
-      if (!options.silent) console.log(`Clawd ${agentId} plugin entries removed: ${apply.removed}`);
+      if (!options.silent) console.log(`Clawd ${agentId} plugin entries removed: ${allRemoved}`);
       return result;
     });
   }
 
   // configPath-only unregister: sweep the config, never touch a managed root.
-  function unregisterConfigSweepOnly({ jsonc, cfg, agentId, configPath, makeContext, options, fsImpl, warning }) {
+  function unregisterConfigSweepOnly({ jsonc, cfg, agentId, configPath, makeContext, makeV2Context, options, fsImpl, warning }) {
+    const v2Enabled = familyHasV2Entry(cfg) && typeof makeV2Context === "function";
     const candidates = jsonc.readCandidates(cfg, configPath);
+    // Abort before the v1 sweep if the v2 key is ambiguous/unreadable; never
+    // report a removed registration from a config we cannot fully understand.
+    const v2Read = v2Enabled ? readV2CandidatesSafe(cfg, configPath) : null;
+    if (v2Read && !v2Read.ok) {
+      return configCorruptResult({
+        configPath,
+        pluginDir: "",
+        message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(v2Read.error)}`,
+      });
+    }
     const scan = jsonc.inspectManagedUnregister({ candidates, makeContext });
     const apply = jsonc.applyManagedUnregister({ cfg, configPath, candidates, makeContext, options });
-    const warnings = [...(scan.warnings || []), ...(apply.warnings || [])];
+    let v2Apply = { removed: 0, changed: false, mutatedPaths: [], warnings: [], activeEntryRemaining: false, effectivePath: configPath, failClosedActive: [], error: null };
+    if (v2Enabled) {
+      const freshV2 = readV2CandidatesSafe(cfg, configPath);
+      if (!freshV2.ok) {
+        return configCorruptResult({
+          configPath,
+          pluginDir: "",
+          message: `refusing to edit ${configPath}: ${v2ReadErrorMessage(freshV2.error)}`,
+          mutatedPaths: apply.mutatedPaths,
+        });
+      }
+      v2Apply = getV2Registrar().applyV2Unregister({
+        cfg,
+        configPath,
+        candidates: freshV2.states,
+        makeContext: makeV2Context,
+        options,
+      });
+    }
+    const warnings = [...(scan.warnings || []), ...(apply.warnings || []), ...(v2Apply.warnings || [])];
     if (warning) warnings.push(warning);
-    if (apply.error || apply.activeEntryRemaining !== false) {
+    const combinedActiveRemaining = apply.activeEntryRemaining !== false
+      ? apply.activeEntryRemaining
+      : v2Apply.activeEntryRemaining;
+    if (apply.error || v2Apply.error || combinedActiveRemaining !== false) {
       return failClosedUnregisterResult({
         agentId,
         configPath: apply.effectivePath || configPath,
         pluginDir: "",
-        reason: (apply.error && apply.error.reason) || "active-entry-remaining",
-        failClosedActive: apply.failClosedActive,
+        reason: (apply.error && apply.error.reason) || (v2Apply.error && v2Apply.error.reason) || "active-entry-remaining",
+        failClosedActive: [...apply.failClosedActive, ...v2Apply.failClosedActive.map((item) => ({ ...item, v2Key: true }))],
         warnings,
         removed: apply.removed,
         changed: apply.changed,
-        mutatedPaths: apply.mutatedPaths,
+        mutatedPaths: [...apply.mutatedPaths, ...v2Apply.mutatedPaths],
       });
     }
+    const allRemoved = apply.removed + v2Apply.removed;
+    const allChanged = apply.changed || v2Apply.changed;
     const result = {
       status: "ok",
-      removed: apply.removed,
-      changed: apply.changed,
-      skipped: !apply.changed,
+      removed: allRemoved,
+      changed: allChanged,
+      skipped: !allChanged,
       created: false,
       configPath: apply.effectivePath || configPath,
       pluginDir: "",
@@ -954,18 +1333,45 @@ function makeFamilyInstaller(agentId) {
       managedFilesRemoved: false,
       residualPaths: [],
       warnings,
-      mutatedPaths: apply.mutatedPaths,
+      mutatedPaths: [...apply.mutatedPaths, ...v2Apply.mutatedPaths],
     };
-    if (!options.silent) console.log(`Clawd ${agentId} plugin entries removed: ${apply.removed}`);
+    if (!options.silent) console.log(`Clawd ${agentId} plugin entries removed: ${allRemoved}`);
     return result;
   }
 
-  // Exact, machine-usable remediation for a fail-closed active entry.
+  // Uninstall aborted because a config could not be parsed/edited safely
+  // (e.g. duplicate top-level "plugins" keys). Zero config mutation; the
+  // registration is explicitly NOT reported removed.
+  function configCorruptResult({ configPath, pluginDir, message, warnings = [], mutatedPaths = [] }) {
+    return {
+      status: "error",
+      reason: "config-corrupt",
+      message,
+      removed: 0,
+      changed: false,
+      skipped: true,
+      created: false,
+      configPath,
+      pluginDir,
+      registrationRemoved: false,
+      activeEntryRemaining: null,
+      managedFilesRemoved: false,
+      residualPaths: [],
+      warnings,
+      mutatedPaths,
+    };
+  }
+
+  // Exact, machine-usable remediation for a fail-closed active entry. v2
+  // `plugins`-key entries get their own remediation text (the key differs).
   function failClosedUnregisterResult({ agentId, configPath, pluginDir, reason, failClosedActive = [], warnings = [], removed = 0, changed = false, mutatedPaths = [] }) {
-    const details = (failClosedActive || []).map(({ path: entryPath, entry }) => ({
+    const v2Registrar = familyHasV2Entry(cfg) ? getV2Registrar() : null;
+    const details = (failClosedActive || []).map(({ path: entryPath, entry, v2Key }) => ({
       category: entry.category,
       reason: entry.reason || null,
-      remediation: entryOwnership.describeRemediation(entry, entryPath),
+      remediation: v2Key && v2Registrar
+        ? v2Registrar.describeV2Remediation(entry, entryPath)
+        : entryOwnership.describeRemediation(entry, entryPath),
     }));
     const first = details[0];
     const manual = first ? ` Manual fix: ${first.remediation.configPath} plugin[${first.remediation.index}] = ${first.remediation.literal}.` : "";
@@ -1054,7 +1460,16 @@ function makeFamilyInstaller(agentId) {
    * @returns {object}
    */
   function register(options = {}) {
-    if (cfg.managedMaterialization === true) return registerManaged(options);
+    if (cfg.managedMaterialization === true) {
+      const prepared = { ...options };
+      // Upstream PR #1045 review: the v2 `plugins` write follows the detected
+      // host (opencode <= 1.18.15 rejects unknown top-level keys). Tests pin
+      // options.v2Host directly; production probes the real binary here.
+      if (familyHasV2Entry(cfg) && !prepared.pluginDir) {
+        prepared.v2Host = resolveV2Host(prepared);
+      }
+      return registerManaged(prepared);
+    }
 
     // options.homeDir mirrors unregister() (see below). Without it a caller
     // that passes a sandbox home — tests, cleanup planning — silently writes

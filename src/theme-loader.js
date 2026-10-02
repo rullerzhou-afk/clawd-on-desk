@@ -17,6 +17,7 @@ const {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   validateTheme,
   mergeDefaults,
@@ -37,6 +38,7 @@ const {
   resolveEffectiveAccessoryAttachments: _resolveEffectiveAccessoryAttachments,
   resolveEffectiveMouthAccessoryAttachments: _resolveEffectiveMouthAccessoryAttachments,
   collectRequiredAssetFiles: _collectRequiredAssetFiles,
+  filterIdleVisualOptionsByAsset: _filterIdleVisualOptionsByAsset,
   basenameOnly: _basenameOnly,
 } = require("./theme-schema");
 const {
@@ -196,13 +198,19 @@ function loadTheme(themeId, opts = {}) {
   // overrides may replace a described file, but must not disable the theme-wide
   // customization capability merely by making that authored descriptor stale
   // in the effective visual projection.
-  const authoredAccessorySupported = _deriveAccessoryCapability(afterVariant);
-  const authoredMouthAccessorySupported = _deriveMouthAccessoryCapability(afterVariant);
   const patchedRaw = userOverrides ? _applyUserOverridesPatch(afterVariant, userOverrides) : afterVariant;
 
   // Merge defaults for optional fields
   const theme = mergeDefaults(patchedRaw, themeId, isBuiltin);
   theme._themeDir = themeDir;
+  _filterIdleVisualOptionsByAsset(theme, (file) => {
+    try { return fs.statSync(_resolveAssetPath(theme, file)).isFile(); } catch { return false; }
+  });
+  const authoredVisuals = Object.prototype.hasOwnProperty.call(afterVariant, "idleVisualOptions")
+    ? { ...afterVariant, idleVisualOptions: theme.idleVisualOptions }
+    : afterVariant;
+  const authoredAccessorySupported = _deriveAccessoryCapability(authoredVisuals);
+  const authoredMouthAccessorySupported = _deriveMouthAccessoryCapability(authoredVisuals);
   theme._variantId = resolvedId;
   theme._userOverrides = userOverrides;
   theme._bindingBase = _buildBaseBindingMetadata(afterVariant);
@@ -224,10 +232,10 @@ function loadTheme(themeId, opts = {}) {
   theme._capabilities.accessories = authoredAccessorySupported;
   theme._capabilities.mouthAccessories = authoredMouthAccessorySupported;
   theme.customization.accessories = authoredAccessorySupported
-    ? _resolveEffectiveAccessoryAttachments(afterVariant, theme)
+    ? _resolveEffectiveAccessoryAttachments(authoredVisuals, theme)
     : null;
   theme.customization.mouthAccessories = authoredMouthAccessorySupported
-    ? _resolveEffectiveMouthAccessoryAttachments(afterVariant, theme)
+    ? _resolveEffectiveMouthAccessoryAttachments(authoredVisuals, theme)
     : null;
 
   // For external themes: sanitize SVGs + resolve asset paths
@@ -455,6 +463,9 @@ function validateThemeShape(themeId, opts = {}) {
   effective._themeDir = themeDir;
   effective._variantId = resolvedId;
   effective._assetsDir = isBuiltin ? assetsSvgDir : _externalAssetsSourceDir(themeDir);
+  _filterIdleVisualOptionsByAsset(effective, (file) => {
+    try { return fs.statSync(_resolveAssetPath(effective, file)).isFile(); } catch { return false; }
+  });
 
   const effectiveErrors = validateTheme(patched);
   const resourceErrors = _validateRequiredAssets(effective);
@@ -546,6 +557,7 @@ module.exports = {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   isPlainObject: _isPlainObject,
   hasNonEmptyArray: _hasNonEmptyArray,

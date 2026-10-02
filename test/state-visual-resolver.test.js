@@ -66,6 +66,20 @@ describe("state-visual-resolver bindings", () => {
     assert.strictEqual(hasOwnVisualFiles({ working: { files: ["a.svg"] } }, "working"), true);
     assert.strictEqual(hasOwnVisualFiles({ working: { files: [] } }, "working"), false);
   });
+
+  it("never samples selectable-only idle files from states.idle", () => {
+    const theme = {
+      states: { idle: ["idle-a.svg", "idle-b.svg"] },
+      idleVisualOptions: [{ file: "pool.apng" }],
+    };
+    const bindings = buildStateBindings(theme);
+    for (const roll of [0, 0.49, 0.99]) {
+      assert.ok(["idle-a.svg", "idle-b.svg"].includes(resolveVisualBinding("idle", bindings, {
+        pickStateFile: (files) => pickStateFile(files, () => roll),
+      })));
+    }
+    assert.deepStrictEqual(bindings.idle.files, ["idle-a.svg", "idle-b.svg"]);
+  });
 });
 
 describe("state-visual-resolver SVG overrides", () => {

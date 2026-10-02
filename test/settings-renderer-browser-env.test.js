@@ -1070,12 +1070,14 @@ function loadGeneralLanguageRowForTest({
 function loadGeneralTabForTest({
   snapshot,
   settingsAPI = {},
+  sizeSliderExports = null,
   platform = "Win32",
   requestAnimationFrame = (cb) => {
     cb();
     return 1;
   },
 } = {}) {
+  const windowListeners = new Map();
   const body = new FakeElement("body");
   const content = new FakeElement("main");
   content.id = "content";
@@ -1102,8 +1104,11 @@ function loadGeneralTabForTest({
     getComputedStyle: () => ({
       getPropertyValue: () => "",
     }),
-    addEventListener: () => {},
-    removeEventListener: () => {},
+    addEventListener: (type, cb) => {
+      if (!windowListeners.has(type)) windowListeners.set(type, new Set());
+      windowListeners.get(type).add(cb);
+    },
+    removeEventListener: (type, cb) => windowListeners.get(type)?.delete(cb),
     window: null,
     globalThis: null,
     settingsAPI: {
@@ -1113,7 +1118,7 @@ function loadGeneralTabForTest({
       openDashboard: () => {},
       ...settingsAPI,
     },
-    ClawdSettingsSizeSlider: {
+    ClawdSettingsSizeSlider: sizeSliderExports || {
       SIZE_UI_MIN: 1,
       SIZE_UI_MAX: 100,
       SIZE_TICK_VALUES: [25, 50, 75, 100],
@@ -1171,6 +1176,10 @@ function loadGeneralTabForTest({
       const meta = core.state.mountedControls.generalSwitches.get(key);
       return meta ? meta.element : null;
     },
+    dispatchWindowEvent: (type) => {
+      for (const cb of windowListeners.get(type) || []) cb();
+    },
+    getWindowListenerCount: (type) => windowListeners.get(type)?.size || 0,
   };
 }
 
@@ -1596,6 +1605,8 @@ function loadAgentsTabForTest({
           customToolManualAdd: "Choose AI installation folder",
           customToolNotRecognized: "No launchable application found",
           customToolDetectionMissing: "Path missing",
+          customToolDetectionNotExecutable: "Not executable",
+          customToolDetectionNotFile: "Not a file",
           agentInstanceScanWsl: "Scan WSL",
           agentInstanceScanWslDesc: "Rescan WSL distros",
           customToolRescan: "Rescan",
@@ -1619,6 +1630,7 @@ function loadAgentsTabForTest({
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
           badgePermissionBubble: "Permission bubble",
           traecodeEnableHint: "Enable hooks in Trae before they fire.",
+          minimaxEnableHint: "Enable the Clawd plugin in MiniMax Code before hooks fire.",
           eventSourceHook: "Hook",
           eventSourceLogPoll: "Log poll",
           eventSourcePlugin: "Plugin",
@@ -8522,6 +8534,365 @@ describe("settings renderer browser environment", () => {
     assert.ok(/\.size-control\.pending \.volume-slider\s*\{[\s\S]*cursor:\s*ew-resize;/.test(css));
   });
 
+  it("shows the effective current-display size and refreshes it on context and focus changes", async () => {
+    let context = { ui: 70, overMax: false, synced: false };
+    let notify;
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve(context),
+        onSizeContextChanged: (cb) => { notify = cb; return () => { notify = null; }; },
+      },
+    });
+    harness.renderContent();
+    const slider = harness.content.querySelector(".size-slider");
+    const readout = harness.content.querySelector(".size-readout");
+    assert.strictEqual(slider.value, "35");
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(slider.value, "70");
+    assert.strictEqual(readout.textContent, "70%");
+    context = { ui: 35, overMax: false, synced: true };
+    notify();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(slider.value, "35");
+    context = { ui: 72, overMax: false, synced: false };
+    harness.dispatchWindowEvent("focus");
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(slider.value, "72");
+  });
+
+  it("shows the over-limit warning only until a size drag starts", async () => {
+    const previewCalls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve({ ui: 100, overMax: true, synced: false }),
+        beginSizePreview: async () => ({ status: "ok" }),
+        previewSize: async (key) => { previewCalls.push(key); return { status: "ok" }; },
+        endSizePreview: async () => ({ status: "ok" }),
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    const readout = harness.content.querySelector(".size-readout");
+    const hint = harness.content.querySelector(".size-over-max-hint");
+    assert.strictEqual(slider.value, "100");
+    assert.strictEqual(readout.textContent, "100%+");
+    assert.strictEqual(hint.hidden, false);
+    assert.strictEqual(hint.classList.contains("bubble-policy-warning"), false);
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.size-over-max-hint\s*\{\s*color:\s*var\(--accent\);/);
+    assert.match(css, /\.size-over-max-hint\[hidden\]\s*\{\s*display:\s*none;/);
+    assert.match(css, /\.size-readout\.over-max\s*\{\s*color:\s*var\(--accent\);/);
+    slider.dispatchEvent({ type: "pointerdown", bubbles: false });
+    assert.strictEqual(readout.textContent, "100%");
+    assert.strictEqual(hint.hidden, true);
+    slider.value = "99";
+    slider.dispatchEvent({ type: "input", bubbles: false });
+    assert.strictEqual(readout.textContent, "99%");
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.deepStrictEqual(previewCalls, ["P:29.7"]);
+  });
+
+  it("restores an over-limit context after pressing and releasing the size thumb without input", async () => {
+    let contextCalls = 0;
+    const commits = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => {
+          contextCalls++;
+          return Promise.resolve({ ui: 100, overMax: true, synced: false });
+        },
+        beginSizePreview: async () => ({ status: "ok" }),
+        endSizePreview: async (key) => { commits.push(key); return { status: "ok" }; },
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    const readout = harness.content.querySelector(".size-readout");
+    const hint = harness.content.querySelector(".size-over-max-hint");
+    assert.strictEqual(readout.textContent, "100%+");
+    assert.strictEqual(contextCalls, 1);
+    slider.dispatchEvent({ type: "pointerdown", bubbles: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(readout.textContent, "100%");
+    assert.strictEqual(hint.hidden, true);
+    slider.dispatchEvent({ type: "pointerup", bubbles: false });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    assert.deepStrictEqual(commits, [null]);
+    assert.strictEqual(contextCalls, 2);
+    assert.strictEqual(slider.value, "100");
+    assert.strictEqual(readout.textContent, "100%+");
+    assert.strictEqual(hint.hidden, false);
+    assert.strictEqual(harness.core.state.snapshot.size, "P:10.5");
+  });
+
+  it("rechecks an unsynced size context after no-input pointer, cancel, and blur endings", async () => {
+    for (const ending of ["pointerup", "pointercancel", "blur"]) {
+      let contextCalls = 0;
+      const harness = loadGeneralTabForTest({
+        snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+        sizeSliderExports: require("../src/settings-size-slider"),
+        settingsAPI: {
+          getSizeContext: () => {
+            contextCalls++;
+            return Promise.resolve({ ui: 70, overMax: false, synced: false });
+          },
+          beginSizePreview: async () => ({ status: "ok" }),
+          endSizePreview: async () => ({ status: "ok" }),
+        },
+      });
+      harness.renderContent();
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      const slider = harness.content.querySelector(".size-slider");
+      assert.strictEqual(slider.value, "70", ending);
+      slider.dispatchEvent({ type: "pointerdown", bubbles: false });
+      for (let i = 0; i < 8; i++) await Promise.resolve();
+      slider.dispatchEvent({ type: ending, bubbles: false });
+      for (let i = 0; i < 12; i++) await Promise.resolve();
+      assert.strictEqual(contextCalls, 2, ending);
+      assert.strictEqual(slider.value, "70", ending);
+      assert.strictEqual(harness.content.querySelector(".size-readout").textContent, "70%", ending);
+    }
+  });
+
+  it("keeps a live size draft while late context replies and notifications arrive", async () => {
+    const late = createDeferred();
+    const end = createDeferred();
+    let calls = 0;
+    let notify;
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => ++calls === 1
+          ? Promise.resolve({ ui: 70, overMax: false, synced: false }) : late.promise,
+        onSizeContextChanged: (cb) => { notify = cb; return () => {}; },
+        beginSizePreview: async () => ({ status: "ok" }),
+        previewSize: async () => ({ status: "ok" }),
+        endSizePreview: () => end.promise,
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    notify();
+    await Promise.resolve();
+    slider.dispatchEvent({ type: "pointerdown", bubbles: false });
+    slider.value = "71";
+    slider.dispatchEvent({ type: "input", bubbles: false });
+    notify();
+    late.resolve({ ui: 80, overMax: false, synced: false });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(slider.value, "71");
+    assert.strictEqual(harness.content.querySelector(".size-readout").textContent, "71%");
+    assert.strictEqual(calls, 2, "notification during drag must defer the IPC request");
+    slider.dispatchEvent({ type: "pointerup", bubbles: false });
+    notify();
+    assert.strictEqual(slider.value, "71");
+    assert.strictEqual(calls, 2, "notification during commit must defer the IPC request");
+    end.resolve({ status: "ok" });
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(calls, 3, "the settled interaction must query the latest context");
+  });
+
+  it("drops stale context before a committed size broadcast paints the new tick", async () => {
+    const stale = createDeferred();
+    const fresh = createDeferred();
+    let calls = 0;
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => {
+          calls++;
+          return calls === 1 ? Promise.resolve({ ui: 70, overMax: false, synced: false })
+            : calls === 2 ? stale.promise : fresh.promise;
+        },
+        onSizeContextChanged: (cb) => { return () => {}; },
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    assert.strictEqual(slider.value, "70");
+    harness.dispatchWindowEvent("focus");
+    await Promise.resolve();
+    harness.core.state.snapshot.size = "P:21.3";
+    assert.strictEqual(harness.core.tabs.general.patchInPlace({ size: "P:21.3" }), true);
+    assert.strictEqual(slider.value, "71");
+    stale.resolve({ ui: 70, overMax: false, synced: false });
+    await Promise.resolve(); await Promise.resolve();
+    assert.strictEqual(slider.value, "71");
+    fresh.resolve({ ui: 71, overMax: false, synced: true });
+    await Promise.resolve(); await Promise.resolve();
+    assert.strictEqual(slider.value, "71");
+    harness.core.state.snapshot.keepSizeAcrossDisplays = false;
+    assert.strictEqual(harness.core.tabs.general.patchInPlace({ keepSizeAcrossDisplays: false }), true);
+    assert.strictEqual(slider.value, "71");
+  });
+
+  it("refreshes the mounted size row when keep size across displays changes", async () => {
+    let contextCalls = 0;
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5", keepSizeAcrossDisplays: true }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve({
+          ui: ++contextCalls === 1 ? 70 : 60,
+          overMax: false,
+          synced: false,
+        }),
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    assert.strictEqual(slider.value, "70");
+    assert.strictEqual(contextCalls, 1);
+
+    harness.core.state.snapshot.keepSizeAcrossDisplays = false;
+    assert.strictEqual(harness.core.tabs.general.patchInPlace({ keepSizeAcrossDisplays: false }), true);
+    assert.strictEqual(harness.content.querySelector(".size-slider"), slider);
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(contextCalls, 2);
+    assert.strictEqual(slider.value, "60");
+    assert.strictEqual(harness.content.querySelector(".size-readout").textContent, "60%");
+  });
+
+  it("keeps the submitted tick through a successful save and a full Settings redraw", async () => {
+    let saved = false;
+    const calls = [];
+    let harness;
+    harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve(saved
+          ? { ui: 71, overMax: false, synced: true }
+          : { ui: 70, overMax: false, synced: false }),
+        beginSizePreview: async () => { calls.push("begin"); return { status: "ok" }; },
+        previewSize: async (key) => { calls.push(key); return { status: "ok" }; },
+        endSizePreview: async (key) => {
+          calls.push(key);
+          saved = true;
+          harness.core.state.snapshot.size = key;
+          harness.core.tabs.general.patchInPlace({ size: key });
+          return { status: "ok" };
+        },
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    assert.strictEqual(slider.value, "70");
+    slider.dispatchEvent({ type: "pointerdown", bubbles: false });
+    slider.value = "71";
+    slider.dispatchEvent({ type: "input", bubbles: false });
+    slider.dispatchEvent({ type: "pointerup", bubbles: false });
+    for (let i = 0; i < 12; i++) await Promise.resolve();
+    assert.deepStrictEqual(calls, ["begin", "P:21.3", "P:21.3"]);
+    assert.strictEqual(slider.value, "71");
+    assert.strictEqual(harness.content.querySelector(".size-readout").textContent, "71%");
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(harness.content.querySelector(".size-slider").value, "71");
+  });
+
+  it("keeps the size readout reset action on the existing preview commit IPC", async () => {
+    const calls = [];
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve({ ui: 70, overMax: false, synced: false }),
+        endSizePreview: async (key) => { calls.push(key); return { status: "ok" }; },
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    harness.content.querySelector(".size-readout").click();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.deepStrictEqual(calls, ["P:9"]);
+    assert.strictEqual(harness.content.querySelector(".size-slider").value, "30");
+  });
+
+  it("restores the effective tick after a failed size commit", async () => {
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve({ ui: 70, overMax: false, synced: false }),
+        beginSizePreview: async () => ({ status: "ok" }),
+        previewSize: async () => ({ status: "ok" }),
+        endSizePreview: async () => ({ status: "error", message: "save failed" }),
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    slider.dispatchEvent({ type: "pointerdown", bubbles: false });
+    slider.value = "71";
+    slider.dispatchEvent({ type: "input", bubbles: false });
+    slider.dispatchEvent({ type: "pointerup", bubbles: false });
+    for (let i = 0; i < 16; i++) await Promise.resolve();
+    assert.strictEqual(slider.value, "70");
+    assert.strictEqual(harness.content.querySelector(".size-readout").textContent, "70%");
+  });
+
+  it("falls back to the snapshot when context is unavailable and unsubscribes on disposal", async () => {
+    let notify;
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.reject(new Error("unavailable")),
+        onSizeContextChanged: (cb) => { notify = cb; return () => { notify = null; }; },
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(harness.content.querySelector(".size-slider").value, "35");
+    assert.strictEqual(harness.getWindowListenerCount("focus"), 1);
+    harness.core.state.mountedControls.size.dispose();
+    assert.strictEqual(notify, null);
+    assert.strictEqual(harness.getWindowListenerCount("focus"), 0);
+    const missing = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+    });
+    missing.renderContent();
+    assert.strictEqual(missing.content.querySelector(".size-slider").value, "35");
+  });
+
+  it("uses the snapshot when a later size context is malformed", async () => {
+    let result = { ui: 70, overMax: false, synced: false };
+    let notify;
+    const harness = loadGeneralTabForTest({
+      snapshot: makeGeneralSnapshot({ size: "P:10.5" }),
+      sizeSliderExports: require("../src/settings-size-slider"),
+      settingsAPI: {
+        getSizeContext: () => Promise.resolve(result),
+        onSizeContextChanged: (cb) => { notify = cb; return () => {}; },
+      },
+    });
+    harness.renderContent();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    const slider = harness.content.querySelector(".size-slider");
+    assert.strictEqual(slider.value, "70");
+    result = { ui: "100", overMax: true, synced: false };
+    notify();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
+    assert.strictEqual(slider.value, "35");
+    assert.strictEqual(harness.content.querySelector(".size-readout").textContent, "35%");
+  });
+
   it("compensates every viewport unit for the injected text zoom", () => {
     // vh/vw resolve against the UNZOOMED window (verified by probe: a 100vh
     // box renders S× the window height under the injected root zoom), so any
@@ -11848,6 +12219,38 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".agent-traecode-hint"), null);
   });
 
+  it("shows the MiniMax enable hint on the card when the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { minimax: { integrationInstalled: true, enabled: true } },
+      },
+      agentMetadata: [
+        { id: "minimax", name: "MiniMax Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    const hint = harness.content.querySelector(".agent-minimax-hint");
+    assert.ok(hint, "MiniMax hint should render on the installed card");
+    assert.match(collectText(hint), /MiniMax Code/);
+  });
+
+  it("omits the MiniMax enable hint until the integration is installed", () => {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { minimax: { integrationInstalled: false, enabled: false } },
+      },
+      agentMetadata: [
+        { id: "minimax", name: "MiniMax Code", eventSource: "hook", capabilities: {} },
+      ],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+
+    assert.strictEqual(harness.content.querySelector(".agent-minimax-hint"), null);
+  });
+
   it("keeps Start with Codex independent and commits through the preference API", async () => {
     const updates = [];
     const harness = loadAgentsTabForTest({
@@ -13685,15 +14088,20 @@ describe("settings renderer browser environment", () => {
 
     // Losing the executable no longer moves the agent out of Connected, so the
     // row itself has to report it.
-    harness.core.runtime.agentInstallationHints = {
-      checkedAt: 2,
-      agents: [],
-      customAgents: [{ agentId: id, detectedInstalled: false, confidence: "high" }],
-      customTools: [],
-      skippedAgentIds: [],
+    const showUnavailableReason = (reason, checkedAt) => {
+      harness.core.runtime.agentInstallationHints = {
+        checkedAt,
+        agents: [],
+        customAgents: [{ agentId: id, detectedInstalled: false, confidence: "low", reason }],
+        customTools: [],
+        skippedAgentIds: [],
+      };
+      harness.core.ops.requestRender({ content: true });
+      harness.raf.flush();
+      return harness.content.querySelector(".agent-section-connected .custom-missing");
     };
-    harness.core.ops.requestRender({ content: true });
-    harness.raf.flush();
+
+    const missing = showUnavailableReason("not-found", 2);
 
     const stillConnected = harness.content.querySelector(".agent-section-connected");
     assert.deepStrictEqual(
@@ -13701,9 +14109,10 @@ describe("settings renderer browser environment", () => {
       ["Nova AI", "QoderWork"],
       "a vanished executable must not evict the agent from Connected"
     );
-    const missing = stillConnected.querySelector(".custom-missing");
     assert.ok(missing, "the row reports the missing executable");
     assert.strictEqual(missing.textContent, "Path missing");
+    assert.strictEqual(showUnavailableReason("not-executable", 3).textContent, "Not executable");
+    assert.strictEqual(showUnavailableReason("not-file", 4).textContent, "Not a file");
   });
 
   it("renders Custom AI detection under one manual folder picker", () => {

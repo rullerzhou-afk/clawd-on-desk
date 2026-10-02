@@ -58,6 +58,24 @@ afterEach(() => {
 });
 
 describe("validate-theme.js CLI (real process, spawnSync)", () => {
+  it("checks optional idle visual files and warns without invalidating the theme", () => {
+    const dir = mkTempThemeDir();
+    const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+    raw.idleVisualOptions = [{ file: "pool.apng" }, { file: "missing.apng" }, {}, { file: 23 }];
+    raw.variantsSchemaVersion = 0;
+    raw.variants = { lounge: { idleVisualOptions: [{ file: "variant-missing.apng" }] } };
+    fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+    fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+    fs.writeFileSync(path.join(dir, "assets", "pool.apng"), "image", "utf8");
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /idleVisualOptions entry dropped: missing asset missing\.apng/);
+    assert.match(result.stdout, /idleVisualOptions\[2\] dropped/);
+    assert.match(result.stdout, /idleVisualOptions\[3\] dropped/);
+    assert.match(result.stdout, /variant "lounge" idleVisualOptions entry dropped: missing asset variant-missing\.apng/);
+    assert.match(result.stdout, /Passed.*warning\(s\)/);
+  });
+
   // ── Usage errors: the command itself is wrong ──
 
   it("no theme directory given", () => {

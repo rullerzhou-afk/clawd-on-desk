@@ -375,9 +375,9 @@ describe("opencode-family per-session /state FIFO", () => {
 
     for (let sequence = 1; sequence <= 100; sequence += 1) {
       plugin.__test.postStateToClawd({
-        state: sequence % 2 ? "working" : "thinking",
+        state: sequence % 2 ? "sweeping" : "thinking",
         session_id: "opencode:ses_coalesce",
-        event: sequence % 2 ? "PreToolUse" : "UserPromptSubmit",
+        event: sequence % 2 ? "PreCompact" : "UserPromptSubmit",
         sequence,
         agent_id: "opencode",
         hook_source: "opencode-plugin",
@@ -392,6 +392,51 @@ describe("opencode-family per-session /state FIFO", () => {
     await waitForQueueEmpty(plugin);
 
     assert.deepStrictEqual(calls.map((call) => call.body.sequence), [0, 100]);
+    assert.strictEqual(plugin.__test._statePostQueueBySession.size, 0);
+  });
+
+  it("delivers every tool lifecycle event behind a slow in-flight delivery", async () => {
+    const plugin = createOpencodeFamilyPlugin(CONFIG);
+    await plugin(createContext(path.join(TMP_HOME, "tool-events")));
+    const calls = [];
+    const firstGate = deferred();
+
+    fetchImpl = async (url, opts) => {
+      const call = parseFetchCall(url, opts);
+      calls.push(call);
+      if (call.body.event === "UserPromptSubmit" && call.body.sequence === 0) {
+        await firstGate.promise;
+      }
+      return clawdResponse(call.body);
+    };
+
+    plugin.__test.postStateToClawd({
+      state: "thinking",
+      session_id: "opencode:ses_tools",
+      event: "UserPromptSubmit",
+      sequence: 0,
+      agent_id: "opencode",
+      hook_source: "opencode-plugin",
+    });
+    await waitFor(() => calls.length === 1, "first state never began");
+
+    // Parallel tools repeat the same working state. Every tool lifecycle
+    // event is recap's tool-call signal, so none of them may be coalesced
+    // away or skipped by the same-state dedup.
+    for (let sequence = 1; sequence <= 6; sequence += 1) {
+      plugin.__test.postStateToClawd({
+        state: "working",
+        session_id: "opencode:ses_tools",
+        event: sequence % 2 ? "PreToolUse" : "PostToolUse",
+        sequence,
+        agent_id: "opencode",
+        hook_source: "opencode-plugin",
+      });
+    }
+
+    firstGate.resolve();
+    await waitForQueueEmpty(plugin);
+    assert.deepStrictEqual(calls.map((call) => call.body.sequence), [0, 1, 2, 3, 4, 5, 6]);
     assert.strictEqual(plugin.__test._statePostQueueBySession.size, 0);
   });
 

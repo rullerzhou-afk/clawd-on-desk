@@ -15,6 +15,7 @@ const { createTranslator } = require("../src/i18n");
 const { makeSessionKey, resolveSessionIdentity } = require("../src/session-key");
 const { isSessionInProgress } = require("../src/state-session-snapshot");
 const { countLiveSubagents } = require("../src/state-visual-resolver");
+const { resolveIdleVisualChoice } = require("../src/idle-visual");
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,59 @@ function makePidKill(alivePids) {
 function cloneTheme(theme) {
   return JSON.parse(JSON.stringify(theme));
 }
+
+describe("optional mini peek states", () => {
+  let api;
+
+  beforeEach(() => mock.timers.enable({ apis: ["setTimeout", "Date"] }));
+  afterEach(() => {
+    if (api) api.cleanup();
+    mock.timers.reset();
+    api = null;
+  });
+
+  it("returns mini-peek to mini-idle for an undeclared hold state", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.autoReturn["mini-peek"] = 80;
+    const ctx = makeCtx({ theme, miniMode: true, mouseOverPet: true });
+    api = require("../src/state")(ctx);
+    api.applyState("mini-peek");
+    mock.timers.tick(80);
+    assert.equal(api.getCurrentState(), "mini-idle");
+    assert.equal(ctx.miniPeeked, true);
+  });
+
+  it("returns mini-peek to the declared hold without replaying the peek", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.states["mini-peek-hold"] = ["hold.svg"];
+    theme.timings.autoReturn["mini-peek"] = 80;
+    theme.timings.autoReturn["mini-peek-hold"] = 40;
+    let slides = 0;
+    const ctx = makeCtx({ theme, miniMode: true, mouseOverPet: true, miniPeekIn: () => { slides++; } });
+    api = require("../src/state")(ctx);
+    api.applyState("mini-peek");
+    mock.timers.tick(80);
+    assert.equal(api.getCurrentState(), "mini-peek-hold");
+    assert.equal(ctx.miniPeeked, true);
+    assert.equal(slides, 0);
+    mock.timers.tick(80);
+    assert.equal(api.getCurrentState(), "mini-peek-hold", "hold stays looping even if a timing is declared");
+  });
+
+  it("turning DND off from mini-sleep-peek slides home and restores mini-idle", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.miniMode.states["mini-sleep-peek"] = ["sleep-peek.svg"];
+    let outs = 0;
+    const ctx = makeCtx({ theme, miniMode: true, doNotDisturb: true,
+      miniSleepPeeked: true, miniPeekOut: () => { outs++; } });
+    api = require("../src/state")(ctx);
+    api.applyState("mini-sleep-peek");
+    api.disableDoNotDisturb();
+    assert.equal(outs, 1);
+    assert.equal(ctx.miniSleepPeeked, false);
+    assert.equal(api.getCurrentState(), "mini-idle");
+  });
+});
 
 /** Shorthand for updateSession with named params */
 function update(api, o = {}) {
@@ -1417,6 +1471,19 @@ describe("cleanStaleSessions()", () => {
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.size, 0);
     assert.deepStrictEqual(changes[changes.length - 1], ["idle", "clawd-idle-reading.svg"]);
+  });
+
+  it("rests on a selected selectable-only file through the normal userIdle path", () => {
+    const theme = cloneTheme(_defaultTheme);
+    theme.idleVisualOptions = [{ file: "pool.apng" }];
+    const changes = [];
+    api = require("../src/state")(makeCtx({
+      theme,
+      getIdleVisualChoice: () => resolveIdleVisualChoice(theme, { clawd: "pool.apng" }),
+      sendToRenderer: (ev, ...args) => { if (ev === "state-change") changes.push(args); },
+    }));
+    api.applyState("idle");
+    assert.deepStrictEqual(changes.at(-1), ["idle", "pool.apng"]);
   });
 
   it("agentPid alive + sourcePid dead + stale idle → retain", () => {
@@ -3160,6 +3227,14 @@ describe("updateSession()", () => {
     // An empty candidate must never clear the sticky first title either.
     update(api, { id: "s1", state: "working", event: "PreToolUse", agentId: "traecode", sessionTitle: "" });
     assert.strictEqual(api.sessions.get("s1").sessionTitle, "第一个问题");
+  });
+
+  it("keeps the FIRST title for minimax sessions (same prompt-derived rule as traecode)", () => {
+    update(api, { id: "s3", state: "thinking", event: "UserPromptSubmit", agentId: "minimax", sessionTitle: "first prompt" });
+    assert.strictEqual(api.sessions.get("s3").sessionTitle, "first prompt");
+
+    update(api, { id: "s3", state: "thinking", event: "UserPromptSubmit", agentId: "minimax", sessionTitle: "second prompt" });
+    assert.strictEqual(api.sessions.get("s3").sessionTitle, "first prompt");
   });
 
   it("lets the latest title win for non-traecode agents (unchanged behaviour)", () => {
@@ -5239,6 +5314,59 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
   });
 
+  it("debounce: a trailing background-assistant SubagentStop does not cancel completion (#1060 follow-up)", () => {
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    assert.strictEqual(api.sessions.get("s1").state, "working", "held during the window");
+    mock.timers.tick(500);
+    // A background helper (suggestions etc.) reports in after the Stop with no
+    // matching SubagentStart; it must not veto the pending completion.
+    update(api, {
+      id: "s1",
+      event: "SubagentStop",
+      subagentId: "suggestion-child",
+      subagentType: "Explore",
+    });
+    mock.timers.tick(500);
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.ok(soundsPlayed.includes("complete"), "the quiet window still completes");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+  });
+
+  it("debounce: a trailing SubagentStop does not cancel a bg-final-text Stop (#1060 follow-up)", () => {
+    update(api, {
+      id: "s1",
+      state: "attention",
+      event: "Stop",
+      backgroundTasksCount: 1,
+      assistantLastOutput: "Done.",
+    });
+    mock.timers.tick(500);
+    update(api, {
+      id: "s1",
+      event: "SubagentStop",
+      subagentId: "suggestion-child",
+      subagentType: "Explore",
+    });
+    mock.timers.tick(500);
+    assert.strictEqual(api.sessions.get("s1").state, "idle");
+    assert.ok(soundsPlayed.includes("complete"), "the bg-final-text window still completes");
+    assert.strictEqual(api.deriveSessionBadge(api.sessions.get("s1")), "done");
+  });
+
+  it("debounce: a SubagentStart still cancels a pending completion (#1060 follow-up)", () => {
+    update(api, { id: "s1", state: "attention", event: "Stop" });
+    mock.timers.tick(500);
+    update(api, {
+      id: "s1",
+      state: "juggling",
+      event: "SubagentStart",
+      subagentId: "child-a",
+    });
+    mock.timers.tick(2000);
+    assert.strictEqual(api.sessions.get("s1").state, "juggling");
+    assert.ok(!soundsPlayed.includes("complete"), "real forward progress still cancels completion");
+  });
+
   it("debounce: dismissSession cancels a pending completion before same-id lease restore", () => {
     const rawSessionId = "debounce-dismiss-restore";
     const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
@@ -5621,6 +5749,50 @@ describe("Stop completion gate (#406)", () => {
     assert.strictEqual(api.deriveSessionBadge(session), "done");
   });
 
+  it("Claude transcript probe survives a trailing background-assistant SubagentStop (#1060 follow-up)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-subagent-stop";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: sessionId,
+      state: "working",
+      event: "PostToolUse",
+      rawSessionId,
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+
+    mock.timers.tick(1000);
+    // The trailing helper reports in before the transcript gains a final reply;
+    // it must not kill the probe that is still waiting for that reply.
+    update(api, {
+      id: sessionId,
+      rawSessionId,
+      event: "SubagentStop",
+      subagentId: "suggestion-child",
+      subagentType: "Explore",
+    });
+    assert.strictEqual(api.sessions.get(sessionId).state, "working");
+
+    fs.appendFileSync(transcript, JSON.stringify({
+      type: "assistant",
+      message: { content: "Final answer after the trailing subagent stop." },
+    }) + "\n");
+    mock.timers.tick(1000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.assistantLastOutput, "Final answer after the trailing subagent stop.");
+    assert.ok(soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
   it("Claude transcript completion cannot promote through a typed background-subagent hold (#952)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
     const transcript = path.join(dir, "transcript.jsonl");
@@ -5657,15 +5829,52 @@ describe("Stop completion gate (#406)", () => {
     assert.ok(!soundsPlayed.includes("complete"));
   });
 
-  it("Claude transcript fallback documents raw transcript sessionId mismatch", () => {
+  it("Claude transcript fallback promotes on raw transcript sessionId (#908)", () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
     const transcript = path.join(dir, "transcript.jsonl");
     const rawSessionId = "claude-probe-raw-mismatch";
     const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    assert.notStrictEqual(sessionId, rawSessionId, "canonical key must differ from raw id for this guard");
     fs.writeFileSync(transcript, [
       JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
       JSON.stringify({ type: "user", sessionId: rawSessionId, message: { content: [{ type: "tool_result", content: "Allow" }] } }),
       JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: "Final answer from raw transcript." } }),
+    ].join("\n") + "\n");
+
+    update(api, {
+      id: sessionId,
+      state: "working",
+      event: "PostToolUse",
+      rawSessionId,
+      toolName: "AskUserQuestion",
+      transcriptPath: transcript,
+    });
+    mock.timers.tick(10000);
+
+    const session = api.sessions.get(sessionId);
+    assert.strictEqual(session.state, "idle");
+    assert.strictEqual(session.assistantLastOutput, "Final answer from raw transcript.");
+    assert.strictEqual(api.getCurrentState(), "attention");
+    assert.ok(soundsPlayed.includes("complete"));
+    assert.strictEqual(api.deriveSessionBadge(session), "done");
+  });
+
+  it("Claude transcript probe does not complete on a text-plus-tool-use preamble (#908 review)", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-stop-fallback-"));
+    const transcript = path.join(dir, "transcript.jsonl");
+    const rawSessionId = "claude-probe-tool-preamble";
+    const sessionId = resolveSessionIdentity(rawSessionId, "local").sessionId;
+    // Newest assistant entry narrates *and* calls a tool: the turn is still
+    // running and its PreToolUse has not reached state.js yet. The preamble
+    // text must not be mistaken for a finished turn — the probe must keep
+    // working, not synthesize a completion (and fire sound/notification/recap).
+    fs.writeFileSync(transcript, [
+      JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [{ type: "tool_use", name: "AskUserQuestion" }] } }),
+      JSON.stringify({ type: "user", sessionId: rawSessionId, message: { content: [{ type: "tool_result", content: "Allow" }] } }),
+      JSON.stringify({ type: "assistant", sessionId: rawSessionId, message: { content: [
+        { type: "text", text: "Let me apply that edit." },
+        { type: "tool_use", name: "Edit" },
+      ] } }),
     ].join("\n") + "\n");
 
     update(api, {

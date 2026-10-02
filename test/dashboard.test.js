@@ -270,6 +270,8 @@ describe("dashboard window", () => {
     });
     assert.strictEqual(getCreatedWindow().opts.parent, undefined);
     assert.strictEqual(getCreatedWindow().opts.modal, undefined);
+    assert.strictEqual(getCreatedWindow().opts.acceptFirstMouse, true,
+      "macOS: the pet app lives in the background, the first click must reach the page");
   });
 
   it("anchors dashboard windows opened from settings to the settings window bounds", () => {
@@ -662,6 +664,8 @@ describe("dashboard window", () => {
     assert.strictEqual(getCreatedView(), null);
     assert.ok(win.webContents, "Linux keeps the BrowserWindow page");
     assert.strictEqual(dashboard.getWebContents(), win.webContents);
+    assert.strictEqual(win.opts.acceptFirstMouse, undefined,
+      "non-macOS windows never set acceptFirstMouse");
     win.emitReadyToShow();
     assert.strictEqual(win.visible, true);
 

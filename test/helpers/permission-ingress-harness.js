@@ -7,7 +7,9 @@ const initPermission = require("../../src/permission");
 
 // Real HTTP routing and permission ownership, with no startup integration sync,
 // runtime-file writes, remote clients, agent execution, or user preferences.
-async function createPermissionIngressHarness({ render = false } = {}) {
+// `ctxOverrides` lets a single harness instance flip gate inputs (DND,
+// agent-enabled, bubble policy) that the server snapshots at construction.
+async function createPermissionIngressHarness({ render = false, ctxOverrides = {} } = {}) {
   const shown = [];
   const updates = [];
   const logs = [];
@@ -33,6 +35,7 @@ async function createPermissionIngressHarness({ render = false } = {}) {
     updateSession: (...args) => updates.push(args),
     permLog: (message) => logs.push(message),
     debugLog: (message) => debugLogs.push(message),
+    ...ctxOverrides,
   };
   const permission = initPermission(ctx);
   for (const key of ["pendingPermissions", "PASSTHROUGH_TOOLS", "addPendingPermission",

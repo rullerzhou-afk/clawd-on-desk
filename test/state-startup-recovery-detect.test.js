@@ -160,6 +160,13 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     assert.match(seenCommand, /pi-coding-agent/);
     assert.match(seenCommand, /pgrep -x 'qodercli'/);
     assert.match(seenCommand, /pgrep -x 'qoder-cli'/);
+    // Kimi Code retitles itself kimi-code, cut to the length of its launch
+    // command (`kimi -c` is listed as kimi-co). Its desktop app stays running
+    // in the tray, so like the other desktop apps it is not active work.
+    for (const name of ["kimi", "kimi-", "kimi-c", "kimi-co", "kimi-cod", "kimi-code"]) {
+      assert.ok(seenCommand.includes(`pgrep -x '${name}'`), `missing pgrep -x '${name}'`);
+    }
+    assert.doesNotMatch(seenCommand, /pgrep -x '[Kk]imi [Cc]ode'/);
     assert.doesNotMatch(seenCommand, /pgrep -x 'pi'/);
     assert.doesNotMatch(seenCommand, /pgrep -x '[Cc]ursor'/);
     assert.doesNotMatch(seenCommand, /pgrep -x 'QoderWork'/);

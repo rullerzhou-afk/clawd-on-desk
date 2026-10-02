@@ -115,6 +115,15 @@ function deriveSessionTitle(hookName, payload) {
 // or the process tree walk hangs. Without this WorkBuddy would see empty stdout
 // which is invalid JSON and logs an error on every hook invocation.
 const SAFETY_TIMEOUT_MS = 800;
+// Once stdout has been answered, the 800ms guard above has served its purpose.
+// The fire-and-forget POST to Clawd still needs the process alive to leave the
+// socket: on Windows the synchronous process-tree snapshot alone takes ~1.5s,
+// so an overdue safety timer firing right after the walk would process.exit()
+// before the POST completed and the session state would never reach Clawd
+// (pet never reacts even though hooks fire). After answering stdout we re-arm
+// a generous backstop whose only job is to reap a truly hung process; the
+// POST's own 100ms timeout settles the normal path in well under that.
+const POST_EXIT_BACKSTOP_MS = 5000;
 let _wrote = false;
 let _exited = false;
 let safetyTimer = null;
@@ -126,6 +135,10 @@ function writeStdoutOnce(outLine) {
   if (_wrote) return;
   _wrote = true;
   process.stdout.write(outLine + "\n");
+  if (!_exited && safetyTimer) {
+    clearTimeout(safetyTimer);
+    safetyTimer = setTimeout(() => finish(outLine), POST_EXIT_BACKSTOP_MS);
+  }
 }
 
 function finish(outLine) {
@@ -166,6 +179,13 @@ function run() {
         return;
       }
 
+      // Answer WorkBuddy before the process-tree walk: the walk is synchronous
+      // and takes ~1.5s on Windows, which would otherwise delay the gate
+      // response on every event. The POST below still runs to completion
+      // afterwards — writeStdoutOnce re-arms the exit backstop for exactly
+      // that — so no state is lost by answering early.
+      writeStdoutOnce(outLine);
+
       if (hookName === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
 
       const cwd = (payload && payload.cwd) || "";
@@ -192,11 +212,9 @@ function run() {
         applyOrcaPaneKey(body);
       }
 
-      // Answer WorkBuddy immediately so it never sees empty stdout, but don't
-      // exit yet — the fire-and-forget POST below still needs to leave the
-      // process, so we exit in its callback (with the safety timer as backstop).
-      writeStdoutOnce(outLine);
-
+      // Stdout was already answered above; don't exit yet — the
+      // fire-and-forget POST below still needs to leave the process, so we
+      // exit in its callback (with the re-armed backstop timer as last resort).
       postStateToRunningServer(JSON.stringify(body), { timeoutMs: 100 }, () => {
         finish(outLine);
       });

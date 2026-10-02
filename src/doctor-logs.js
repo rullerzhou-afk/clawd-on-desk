@@ -11,6 +11,7 @@ const DEFAULT_LOG_BASENAMES = Object.freeze([
   "update-debug.log",
   "gemini-debug.log",
   "opencode-plugin.log",
+  "opencode-plugin-v2.log",
   "mimocode-plugin.log",
 ]);
 

@@ -1,10 +1,11 @@
-const { describe, it, afterEach } = require("node:test");
+const { describe, it, afterEach, mock } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
 const themeLoader = require("../src/theme-loader");
+const { collectRequiredAssetFiles } = require("../src/theme-schema");
 const { checkThemeHealth } = require("../src/doctor-detectors/theme-health");
 
 const tempDirs = [];
@@ -77,12 +78,54 @@ function assetMap(files = REQUIRED_FILES) {
 }
 
 afterEach(() => {
+  mock.restoreAll();
   while (tempDirs.length) {
     fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
   }
 });
 
 describe("validateThemeShape", () => {
+  it("drops missing selectable-only assets without failing load or shape validation", () => {
+    makeFixture({
+      builtinThemes: [{ id: "clawd", json: validThemeJson({ name: "Clawd" }) }],
+      userThemes: [{
+        id: "selectable",
+        json: validThemeJson({ idleVisualOptions: [
+          { file: "pool.apng" }, { file: "missing.apng" }, { file: 12 }, {},
+        ] }),
+        assets: { ...assetMap(), "pool.apng": "image" },
+      }],
+    });
+    const warning = mock.method(console, "warn", () => {});
+    assert.strictEqual(themeLoader.validateThemeShape("selectable").ok, true);
+    const theme = themeLoader.loadTheme("selectable", { strict: true });
+    assert.deepStrictEqual(theme.idleVisualOptions, [{ file: "pool.apng" }]);
+    assert.ok(collectRequiredAssetFiles(theme).includes("pool.apng"));
+    assert.ok(!collectRequiredAssetFiles(theme).includes("missing.apng"));
+    assert.ok(warning.mock.calls.some((call) => /missing asset missing\.apng/.test(call.arguments[0])));
+    assert.ok(warning.mock.calls.some((call) => /file must be a safe basename/.test(call.arguments[0])));
+  });
+
+  it("loads a variant's replacement selectable-only options", () => {
+    makeFixture({
+      builtinThemes: [{ id: "clawd", json: validThemeJson({ name: "Clawd" }) }],
+      userThemes: [{
+        id: "variant-options",
+        json: validThemeJson({
+          idleVisualOptions: [{ file: "base.apng" }],
+          variants: { lounge: { idleVisualOptions: [{ file: "lounge.apng" }] } },
+        }),
+        assets: { ...assetMap(), "base.apng": "base", "lounge.apng": "lounge" },
+      }],
+    });
+    const base = themeLoader.loadTheme("variant-options", { strict: true });
+    const lounge = themeLoader.loadTheme("variant-options", { strict: true, variant: "lounge" });
+    assert.deepStrictEqual(base.idleVisualOptions, [{ file: "base.apng" }]);
+    assert.deepStrictEqual(lounge.idleVisualOptions, [{ file: "lounge.apng" }]);
+    assert.strictEqual(themeLoader.validateThemeShape("variant-options", { variant: "lounge" }).ok, true);
+  });
+
+
   it("validates a built-in theme using central clawd assets without activating a theme", () => {
     makeFixture({
       builtinThemes: [

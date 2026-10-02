@@ -52,6 +52,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "qoderwork",
   "traecode",
   "qwenwork",
+  "minimax",
 ]);
 
 const INSTALLABLE_AGENT_IDS = new Set([
@@ -81,6 +82,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "qoderwork",
   "traecode",
   "qwenwork",
+  "minimax",
 ]);
 const SETTABLE_AGENT_FLAGS = AGENT_FLAGS.filter((flag) => flag !== "integrationInstalled");
 const CUSTOM_DISCOVERY_AGENT_IDS = new Set([...INSTALLABLE_AGENT_IDS, "custom"]);
@@ -405,15 +407,35 @@ function setAgentCustomPermissionUrl(payload, deps = {}) {
   const current = snapshot.agents && snapshot.agents[payload.agentId];
   const currentValue = normalizeOptionalHttpUrl(current && current.customPermissionUrl);
   if (currentValue === value) return { status: "ok", noop: true };
+  const commit = buildAgentCommit(snapshot, payload.agentId, { customPermissionUrl: value });
+  const finishSync = (result) => {
+    if (
+      result === false
+      || (result && typeof result === "object" && (result.status === "error" || result.status === "skipped"))
+    ) {
+      return {
+        status: "error",
+        message: (result && (result.message || result.reason)) || "Failed to sync custom permission URL",
+      };
+    }
+    return { status: "ok", commit };
+  };
   try {
     if (
       isAgentIntegrationInstalled(snapshot, payload.agentId)
       && typeof deps.syncIntegrationForAgent === "function"
     ) {
-      deps.syncIntegrationForAgent(
+      const syncResult = deps.syncIntegrationForAgent(
         payload.agentId,
         buildAgentIntegrationOptionsWithPatch(snapshot, payload.agentId, { customPermissionUrl: value })
       );
+      if (syncResult && typeof syncResult.then === "function") {
+        return syncResult.then(finishSync, (err) => ({
+          status: "error",
+          message: `setAgentCustomPermissionUrl side effect threw: ${err && err.message}`,
+        }));
+      }
+      return finishSync(syncResult);
     }
   } catch (err) {
     return {
@@ -421,10 +443,7 @@ function setAgentCustomPermissionUrl(payload, deps = {}) {
       message: `setAgentCustomPermissionUrl side effect threw: ${err && err.message}`,
     };
   }
-  return {
-    status: "ok",
-    commit: buildAgentCommit(snapshot, payload.agentId, { customPermissionUrl: value }),
-  };
+  return { status: "ok", commit };
 }
 
 function setAgentCustomDiscoveryPaths(payload, deps = {}) {

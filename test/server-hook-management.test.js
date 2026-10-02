@@ -172,12 +172,17 @@ function makeFakeClock(initialNow = 0) {
 }
 
 function makeServer(overrides = {}) {
+  const { existingPaths: extraExistingPaths, initialSettingsRaw, ...ctxOverrides } = overrides;
   const httpFactory = makeFakeHttpFactory();
   const timers = makeFakeClock();
   const syncCalls = [];
   let lastWatcher = null;
-  const existingPaths = new Set([EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH]);
-  let settingsRaw = JSON.stringify({
+  const existingPaths = new Set([
+    EXPECTED_HOOK_SCRIPT_PATH,
+    EXPECTED_AUTO_START_SCRIPT_PATH,
+    ...(Array.isArray(extraExistingPaths) ? extraExistingPaths : []),
+  ]);
+  let settingsRaw = initialSettingsRaw !== undefined ? initialSettingsRaw : JSON.stringify({
     hooks: {
       Stop: [
         {
@@ -253,7 +258,8 @@ function makeServer(overrides = {}) {
     syncQoderWorkHooksImpl: () => syncCalls.push("qoderwork"),
     syncTraeCodeHooksImpl: () => syncCalls.push("traecode"),
     syncQwenWorkHooksImpl: () => syncCalls.push("qwenwork"),
-    ...overrides,
+    syncMinimaxHooksImpl: () => syncCalls.push("minimax"),
+    ...ctxOverrides,
   }, syncCalls);
 
   return {
@@ -301,7 +307,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
     assert.ok(getWatcher(), "watcher should start when management is enabled");
   });
 
@@ -318,7 +324,7 @@ describe("server Claude hook management", () => {
 
       api.startHttpServer();
 
-      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
+      assert.deepStrictEqual(syncCalls, ["claude", "gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
       assert.ok(getWatcher(), "watcher should start when management is enabled");
       assert.strictEqual(warnings.some((line) => /Hermes/i.test(line)), false);
     } finally {
@@ -333,7 +339,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -345,7 +351,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["claude", "copilot", "codebuddy", "workbuddy", "grok-build", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "mimocode", "omp", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
+    assert.deepStrictEqual(syncCalls, ["claude", "copilot", "codebuddy", "workbuddy", "grok-build", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "mimocode", "omp", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
     assert.ok(getWatcher(), "Claude watcher should still start when Claude is enabled");
   });
 
@@ -356,7 +362,7 @@ describe("server Claude hook management", () => {
 
     api.startHttpServer();
 
-    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
+    assert.deepStrictEqual(syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
     assert.strictEqual(getWatcher(), null);
   });
 
@@ -547,6 +553,44 @@ describe("server Claude hook management", () => {
     assert.ok(Array.isArray(status.issues));
   });
 
+  it("wires the host-Node resolver so an env hook blocked on Node migrates (#874)", async () => {
+    // Covers the src/server.js resolveTrustedNodeBin wiring: without it the
+    // watcher gets no host resolver, the env hook stays env-hook-node-unresolved,
+    // and this test fails. The injected resolveNodeBinAsyncImpl stands in for the
+    // real resolveNodeBinAsync (which server-config.test.js covers directly).
+    const hostNode = "C:/nodejs/node.exe";
+    const envUnresolved = JSON.stringify({
+      env: { CLAWD_NODE_BIN: "node", CLAWD_HOOK_PATH: EXPECTED_HOOK_SCRIPT_PATH },
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" Stop', timeout: 5 }] }],
+        PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }] }],
+      },
+    });
+    const healthy = JSON.stringify({
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: `node "${EXPECTED_HOOK_SCRIPT_PATH}" Stop` }] }],
+        PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: "http://127.0.0.1:23333/permission", timeout: 600 }] }],
+      },
+    });
+    let srv;
+    srv = makeServer({
+      coreEvents: ["Stop"],
+      initialSettingsRaw: envUnresolved,
+      existingPaths: [hostNode],
+      resolveNodeBinAsyncImpl: async () => hostNode,
+      syncClawdHooksImpl: () => {
+        srv.syncCalls.push("claude");
+        srv.setSettingsRaw(healthy);
+      },
+    });
+
+    srv.api.startClaudeSettingsWatcher();
+    await srv.timers.advance(0);
+
+    assert.strictEqual(srv.api.getClaudeHookHealthStatus().status, "healthy");
+    assert.ok(srv.syncCalls.includes("claude"), "the watcher must migrate the env hook via the wired resolver");
+  });
+
   it("disconnect-style restart does not reinstall Claude hooks when management stays disabled", () => {
     const first = makeServer({ manageClaudeHooksAutomatically: false });
     first.api.startHttpServer();
@@ -555,8 +599,8 @@ describe("server Claude hook management", () => {
     const second = makeServer({ manageClaudeHooksAutomatically: false });
     second.api.startHttpServer();
 
-    assert.deepStrictEqual(first.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
-    assert.deepStrictEqual(second.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork"]);
+    assert.deepStrictEqual(first.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
+    assert.deepStrictEqual(second.syncCalls, ["gemini", "antigravity", "cursor", "copilot", "codebuddy", "workbuddy", "grok-build", "kiro", "kimi", "qwen", "zcode", "codewhale", "codex", "deepseek-harness", "opencode", "mimocode", "pi", "omp", "openclaw", "hermes", "qoder", "reasonix", "qoderwork", "traecode", "qwenwork", "minimax"]);
   });
 
   it("repairIntegrationForAgent uses the Codex official hook repair path", () => {

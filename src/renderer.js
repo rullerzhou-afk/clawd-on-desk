@@ -170,6 +170,7 @@ function initWithConfig(cfg) {
   _miniFlipAssets = !!tc.miniFlipAssets;
   _hasRoamVisual = !!tc.hasRoamVisual;
   _roamFlipAssets = !!tc.roamFlipAssets;
+  _rightSideMirrorFiles = Array.isArray(tc.rightSideMirrorFiles) ? tc.rightSideMirrorFiles : [];
 
   applyObjectScaleStyle(clawdEl, getObjectSvgName(clawdEl), null);
   applyObjectScaleStyle(pendingNext, getObjectSvgName(pendingNext), null);
@@ -522,6 +523,8 @@ let _miniFlipAssets = false; // theme's mini assets drawn in reverse direction
 let _hasRoamVisual = false;  // theme binds a dedicated roam visual (≠ idle)
 let _roamFlipAssets = false; // theme's roam visual is drawn facing left, not right
 let _roamHeadingLeft = false; // current walk direction; roam visuals are drawn facing right
+let _rightSideMirrorFiles = []; // idle animations mirrored while the pet sits on the right half
+let _petOnRightSide = false;
 let _inMiniMode = false;
 let _miniPreEntryMode = false;
 let _viewportOffsetY = 0;
@@ -567,6 +570,9 @@ function miniFlipContext() {
     hasRoamVisual: _hasRoamVisual,
     roamHeadingLeft: _roamHeadingLeft,
     roamFlipAssets: _roamFlipAssets,
+    file: currentDisplayedSvg,
+    petOnRightSide: _petOnRightSide,
+    rightSideMirrorFiles: _rightSideMirrorFiles,
     miniFlipAssets: _miniFlipAssets,
     inMiniMode: _inMiniMode,
     miniPreEntryMode: _miniPreEntryMode,
@@ -2862,6 +2868,13 @@ if (window.electronAPI && typeof window.electronAPI.onRoamHeading === "function"
     // without a swap, and if this message lands after the state-change (IPC
     // order across channels is not contractual) the flip captured at IMG
     // creation is stale — refresh both the on-screen and the pending element.
+    applyMiniFlip(clawdEl, currentState);
+  });
+}
+
+if (window.electronAPI && typeof window.electronAPI.onPetScreenSide === "function") {
+  window.electronAPI.onPetScreenSide((onRight) => {
+    _petOnRightSide = !!onRight;
     applyMiniFlip(clawdEl, currentState);
   });
 }

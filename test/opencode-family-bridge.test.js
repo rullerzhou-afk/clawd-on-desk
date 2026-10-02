@@ -97,8 +97,21 @@ async function initInstance(params, { sdk, plugin: existingPlugin, directory = "
         post: async (args) => {
           sdkCalls.push(args);
           if (sdk && typeof sdk.onPost === "function") await sdk.onPost(args);
-          if (sdk && sdk.throw) throw new Error(sdk.throw);
-          if (sdk && sdk.error) return { error: sdk.error };
+          if (sdk && sdk.throw) {
+            const error = new Error(sdk.throw);
+            if (sdk.throwName) error.name = sdk.throwName;
+            if (sdk.throwCode) error.code = sdk.throwCode;
+            throw error;
+          }
+          if (sdk && sdk.error) {
+            return {
+              error: sdk.error,
+              response: {
+                status: sdk.errorStatus === undefined ? 502 : sdk.errorStatus,
+                statusText: sdk.errorStatusText || "",
+              },
+            };
+          }
           return { data: {} };
         },
       },
@@ -351,13 +364,19 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
   });
 
   it("maps SDK error results and throws to 502", async () => {
-    const withErr = await initInstance(OC, { sdk: { error: "route exploded" } });
+    const withErr = await initInstance(OC, {
+      sdk: { error: "route exploded", errorStatus: 502, errorStatusText: "Bad Gateway" },
+    });
     await emitPermission(withErr, "per_e");
     const res1 = await withErr.captured.fetch(
       bridgeRequest(withErr.plugin, { token: withErr.plugin.__test._bridgeTokenHex, body: { request_id: "per_e", reply: "reject" } })
     );
     assert.strictEqual(res1.status, 502);
-    assert.deepStrictEqual(await res1.json(), { ok: false, error: "route exploded" });
+    assert.deepStrictEqual(await res1.json(), {
+      ok: false,
+      status: 502,
+      error: "HTTP 502 Bad Gateway: route exploded",
+    });
 
     const withThrow = await initInstance(OC, { sdk: { throw: "socket gone" } });
     await emitPermission(withThrow, "per_t");
@@ -365,7 +384,30 @@ describe("opencode-family reverse bridge (plugin side, real handler)", () => {
       bridgeRequest(withThrow.plugin, { token: withThrow.plugin.__test._bridgeTokenHex, body: { request_id: "per_t", reply: "always" } })
     );
     assert.strictEqual(res2.status, 502);
-    assert.deepStrictEqual(await res2.json(), { ok: false, error: "socket gone" });
+    assert.deepStrictEqual(await res2.json(), {
+      ok: false,
+      status: 0,
+      error: "request failed: Error socket gone",
+    });
+  });
+
+  it("reports the thrown error name and code on the transport failure path", async () => {
+    const withThrow = await initInstance(OC, {
+      sdk: { throw: "fetch failed", throwName: "TypeError", throwCode: "ECONNREFUSED" },
+    });
+    await emitPermission(withThrow, "per_throw_code");
+    const res = await withThrow.captured.fetch(
+      bridgeRequest(withThrow.plugin, {
+        token: withThrow.plugin.__test._bridgeTokenHex,
+        body: { request_id: "per_throw_code", reply: "once" },
+      })
+    );
+    assert.strictEqual(res.status, 502);
+    assert.deepStrictEqual(await res.json(), {
+      ok: false,
+      status: 0,
+      error: "request failed: TypeError ECONNREFUSED fetch failed",
+    });
   });
 });
 
@@ -664,6 +706,65 @@ describe("opencode-family permission completion lifecycle", () => {
       await Promise.all(requestIds.map((requestId) => settlePermissionTail(instance.plugin, requestId)));
       assert.strictEqual(instance.plugin.__test._permissionTargetByRequestId.size, 0);
       assert.strictEqual(instance.plugin.__test._permissionPostTailByRequestId.size, 0);
+    } finally {
+      clawdResponseRecognized = false;
+    }
+  });
+});
+
+describe("opencode-family permission fan-out (one bubble per request)", () => {
+  // OpenCode V2 loads one plugin instance per location and delivers every
+  // event to all of them. Before the per-request dedup, each instance posted
+  // its own /permission forward and the user saw N identical bubbles.
+  it("posts exactly one bubble when every instance receives the same permission.asked", async () => {
+    clawdResponseRecognized = true;
+    fetchBehavior = null;
+    try {
+      const plugin = createOpencodeFamilyPlugin(OC);
+      const a = await initInstance(OC, { plugin, directory: "C:\\project-a" });
+      const b = await initInstance(OC, { plugin, directory: "C:\\project-b" });
+      fetchCalls.length = 0;
+
+      await emitPermission(a, "per_fanout", "ses_fanout");
+      await emitPermission(b, "per_fanout", "ses_fanout");
+      await settlePermissionTail(plugin, "per_fanout");
+
+      const bubbles = fetchCalls.filter((call) => (
+        call.url.endsWith("/permission") && call.body && call.body.request_id === "per_fanout"
+      ));
+      assert.strictEqual(bubbles.length, 1, "duplicate permission.asked deliveries must not spawn a second bubble");
+    } finally {
+      clawdResponseRecognized = false;
+    }
+  });
+
+  it("still forwards duplicate completions as idempotent cleanup deliveries", async () => {
+    clawdResponseRecognized = true;
+    fetchBehavior = null;
+    try {
+      const plugin = createOpencodeFamilyPlugin(OC);
+      const a = await initInstance(OC, { plugin, directory: "C:\\project-a" });
+      const b = await initInstance(OC, { plugin, directory: "C:\\project-b" });
+      await emitPermission(a, "per_fanout_reply", "ses_fanout_reply");
+      await settlePermissionTail(plugin, "per_fanout_reply");
+      fetchCalls.length = 0;
+
+      await emitPermissionReplied(a, {
+        sessionID: "ses_fanout_reply",
+        requestID: "per_fanout_reply",
+        reply: "once",
+      });
+      await emitPermissionReplied(b, {
+        sessionID: "ses_fanout_reply",
+        requestID: "per_fanout_reply",
+        reply: "once",
+      });
+      await settlePermissionTail(plugin, "per_fanout_reply");
+
+      const dismissals = fetchCalls.filter((call) => (
+        call.body && call.body.permission_event === "replied" && call.body.request_id === "per_fanout_reply"
+      ));
+      assert.strictEqual(dismissals.length, 2, "completion delivery is idempotent by contract, not deduped");
     } finally {
       clawdResponseRecognized = false;
     }

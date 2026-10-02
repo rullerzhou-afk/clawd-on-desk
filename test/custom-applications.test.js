@@ -6,7 +6,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 
-const { identifyCustomApplication, normalizeCustomApplications } = require("../src/custom-applications");
+const { identifyCustomApplication, isLaunchable, normalizeCustomApplications } = require("../src/custom-applications");
 
 function tempDir() {
   return fs.mkdtempSync(path.join(os.tmpdir(), "clawd-custom-ai-"));
@@ -51,6 +51,30 @@ test("requires a real executable inside a macOS app bundle", () => {
   fs.chmodSync(executable, 0o755);
   const application = identifyCustomApplication(appDir, { platform: "darwin" });
   assert.strictEqual(application.executablePath, executable);
+});
+
+test("does not register a non-executable POSIX extensionless file", { skip: process.platform === "win32" }, () => {
+  const dir = tempDir();
+  const executable = path.join(dir, "nova");
+  fs.writeFileSync(executable, "");
+  fs.chmodSync(executable, 0o644);
+  assert.strictEqual(identifyCustomApplication(executable, { platform: "linux" }), null);
+  fs.chmodSync(executable, 0o755);
+  assert.strictEqual(identifyCustomApplication(executable, { platform: "linux" }).executablePath, executable);
+});
+
+test("requires effective X_OK even when POSIX mode bits are executable", { skip: process.platform === "win32" }, () => {
+  const dir = tempDir();
+  const executable = path.join(dir, "nova");
+  fs.writeFileSync(executable, "");
+  fs.chmodSync(executable, 0o755);
+  const stat = fs.statSync(executable);
+  const deniedFs = {
+    ...fs,
+    accessSync() { throw new Error("execution denied"); },
+  };
+  assert.strictEqual(isLaunchable(executable, stat, "linux", path, deniedFs), false);
+  assert.strictEqual(identifyCustomApplication(executable, { platform: "linux", fs: deniedFs }), null);
 });
 
 test("normalizes, deduplicates, and rejects malformed custom application records", () => {

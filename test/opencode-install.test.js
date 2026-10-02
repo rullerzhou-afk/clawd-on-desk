@@ -154,14 +154,16 @@ describe("opencode plugin installer", () => {
   });
 
   it("skips silently when ~/.config/opencode/ does not exist (no configPath override)", () => {
-    // Use a non-existent home dir by overriding HOME temporarily
+    // Use a non-existent home dir by overriding HOME temporarily. The host
+    // verdict is pinned: a real `opencode --version` probe would itself create
+    // ~/.config/opencode and defeat the skip premise (upstream #1045 review).
     const fakeHome = path.join(os.tmpdir(), `clawd-opencode-no-config-${Date.now()}`);
     const prevHome = process.env.HOME;
     const prevUserProfile = process.env.USERPROFILE;
     process.env.HOME = fakeHome;
     process.env.USERPROFILE = fakeHome;
     try {
-      const result = registerOpencodePlugin({ silent: true });
+      const result = registerOpencodePlugin({ silent: true, opencodeHostDetection: "unknown" });
       assert.strictEqual(result.skipped, true);
       assert.strictEqual(result.added, false);
       assert.strictEqual(result.reason, "opencode-not-found");
@@ -282,10 +284,10 @@ describe("opencode installer unregister", () => {
 describe("opencode installer CLI entry (node hooks/opencode-install.js)", () => {
   const SCRIPT = path.join(__dirname, "..", "hooks", "opencode-install.js");
 
-  function runCli(args, homeDir) {
+  function runCli(args, homeDir, envOverrides = {}) {
     return execFileSync(process.execPath, [SCRIPT, ...args], {
       encoding: "utf8",
-      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir },
+      env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, ...envOverrides },
     });
   }
 
@@ -296,7 +298,9 @@ describe("opencode installer CLI entry (node hooks/opencode-install.js)", () => 
     fs.mkdirSync(configDir, { recursive: true });
     const configPath = path.join(configDir, "opencode.json");
 
-    const out = runCli([], home);
+    // The dual-key contract below needs a v2 verdict in the CLI child; pin it
+    // so CI machines without an opencode binary stay deterministic.
+    const out = runCli([], home, { CLAWD_OPENCODE_HOST: "v2" });
     assert.match(out, /Registered: /);
     const registered = readConfig(configPath).plugin;
     assert.strictEqual(registered.length, 1);
@@ -311,15 +315,20 @@ describe("opencode installer CLI entry (node hooks/opencode-install.js)", () => 
     assert.ok(fs.existsSync(path.join(registered[0].replace(/\//g, path.sep))), "generation plugin dir must exist");
 
     const out2 = runCli(["--uninstall"], home);
-    assert.match(out2, /entries removed: 1/);
+    // #1039: both generation entries are swept — the v1 `plugin` entry and the
+    // v2 `plugins` entry.
+    assert.match(out2, /entries removed: 2/);
     assert.deepStrictEqual(readConfig(configPath).plugin, []);
+    assert.strictEqual(Object.hasOwn(readConfig(configPath), "plugins"), false);
   });
 
   it("skips politely when opencode is not installed (exit 0, no config created)", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-opencode-cli-"));
     tempDirs.push(home);
 
-    const out = runCli([], home);
+    // Pin "unknown" so the child skips the probe: probing a real opencode
+    // creates ~/.config/opencode as a side effect and would defeat the skip.
+    const out = runCli([], home, { CLAWD_OPENCODE_HOST: "unknown" });
     assert.match(out, /not found — skipping opencode plugin registration/);
     assert.strictEqual(fs.existsSync(path.join(home, ".config", "opencode", "opencode.json")), false);
   });

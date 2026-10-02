@@ -74,6 +74,37 @@ test("settings preload exposes the three roam area operations", async () => {
   ]);
 });
 
+test("settings preload queries the current size context on its dedicated IPC channel", async () => {
+  const { exposed, invokes } = loadPreload();
+  await exposed.get("settingsAPI").getSizeContext();
+  assert.deepStrictEqual(invokes, [["settings:get-size-context"]]);
+});
+
+test("settings preload forwards size context changes and unsubscribes each listener exactly", () => {
+  const { exposed, ipcHandlers } = loadPreload();
+  const settingsAPI = exposed.get("settingsAPI");
+  const forward = ipcHandlers.get("settings:size-context-changed");
+  assert.equal(typeof forward, "function");
+
+  const received = [];
+  const unsubscribeA = settingsAPI.onSizeContextChanged(() => received.push("a"));
+  const unsubscribeB = settingsAPI.onSizeContextChanged(() => received.push("b"));
+  assert.equal(typeof unsubscribeA, "function");
+  assert.equal(typeof unsubscribeB, "function");
+  const invalidUnsubscribe = settingsAPI.onSizeContextChanged(null);
+  assert.equal(typeof invalidUnsubscribe, "function");
+  assert.doesNotThrow(() => invalidUnsubscribe());
+
+  forward({});
+  assert.deepStrictEqual(received, ["a", "b"]);
+  unsubscribeA();
+  forward({});
+  assert.deepStrictEqual(received, ["a", "b", "b"]);
+  unsubscribeB();
+  forward({});
+  assert.deepStrictEqual(received, ["a", "b", "b"]);
+});
+
 test("settings preload exposes dedicated Kimi quota operations", async () => {
   const { exposed, invokes } = loadPreload();
   const settingsAPI = exposed.get("settingsAPI");

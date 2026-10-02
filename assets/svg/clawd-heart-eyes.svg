@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .open-eyes { animation: eyes-open 3s infinite step-end; }
+      .closed-eyes { opacity: 0; animation: eyes-closed 3s infinite step-end; }
+      @keyframes eyes-open {
+        0%, 91%, 100% { opacity: 1; }
+        92%, 97% { opacity: 0; }
+      }
+      @keyframes eyes-closed {
+        0%, 91%, 100% { opacity: 0; }
+        92%, 97% { opacity: 1; }
+      }
+    </style>
+  </defs>
+
+  <rect x="3" y="15" width="9" height="1" fill="#000000" opacity="0.45"/>
+  <g fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+    <rect id="torso" x="2" y="6" width="11" height="7"/>
+    <rect x="0" y="9" width="2" height="2"/>
+    <rect x="13" y="9" width="2" height="2"/>
+  </g>
+  <g class="open-eyes" fill="#FF365C">
+    <path transform="translate(4.5 0) scale(1.15 1) translate(-4.5 0)" d="M3.5 7h0.75v0.75H3.5zM4.75 7h0.75v0.75h-0.75zM3.5 7.75h2v0.75h-2zM3.875 8.5h1.25v0.75h-1.25zM4.25 9.25h0.5v0.5h-0.5z"/>
+    <path transform="translate(10.5 0) scale(1.15 1) translate(-10.5 0)" d="M9.5 7h0.75v0.75H9.5zM10.75 7h0.75v0.75h-0.75zM9.5 7.75h2v0.75h-2zM9.875 8.5h1.25v0.75h-1.25zM10.25 9.25h0.5v0.5h-0.5z"/>
+  </g>
+  <g class="closed-eyes" fill="#FF365C">
+    <rect x="3.5" y="8.5" width="2" height="0.5"/>
+    <rect x="9.5" y="8.5" width="2" height="0.5"/>
+  </g>
+</svg>

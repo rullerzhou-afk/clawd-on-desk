@@ -62,4 +62,61 @@ describe("settings size preview session", () => {
       "end",
     ]);
   });
+
+  it("clears partial protection after begin fails and can begin again", async () => {
+    const startError = new Error("partial start failed");
+    let attempts = 0;
+    let protectedExternally = false;
+    let stopCalls = 0;
+    const session = createSettingsSizePreviewSession({
+      beginProtection: () => {
+        protectedExternally = true;
+        if (++attempts === 1) throw startError;
+      },
+      endProtection: () => {
+        stopCalls += 1;
+        protectedExternally = false;
+      },
+    });
+
+    await assert.rejects(session.begin(), (error) => error === startError);
+    assert.strictEqual(protectedExternally, false);
+    assert.strictEqual(stopCalls, 1);
+    assert.deepStrictEqual(await session.cleanup(), { status: "ok", noop: true });
+    assert.strictEqual(stopCalls, 1);
+
+    assert.deepStrictEqual(await session.begin(), { status: "ok" });
+    assert.strictEqual(protectedExternally, true);
+    await session.end();
+    assert.strictEqual(protectedExternally, false);
+    assert.strictEqual(stopCalls, 2);
+  });
+
+  it("preserves the begin error when partial-protection cleanup also fails", async () => {
+    const startError = new Error("start failed");
+    const stopError = new Error("stop failed");
+    let stopCalls = 0;
+    const session = createSettingsSizePreviewSession({
+      beginProtection: () => { throw startError; },
+      endProtection: () => { stopCalls += 1; throw stopError; },
+    });
+
+    await assert.rejects(session.begin(), (error) => error === startError);
+    assert.strictEqual(stopCalls, 1);
+  });
+
+  it("cleanup releases a successful preview without a renderer end request", async () => {
+    let protectedExternally = false;
+    let stopCalls = 0;
+    const session = createSettingsSizePreviewSession({
+      beginProtection: () => { protectedExternally = true; },
+      endProtection: () => { stopCalls += 1; protectedExternally = false; },
+    });
+
+    await session.begin();
+    assert.strictEqual(protectedExternally, true);
+    await session.cleanup();
+    assert.strictEqual(protectedExternally, false);
+    assert.strictEqual(stopCalls, 1);
+  });
 });

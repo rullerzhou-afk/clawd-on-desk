@@ -428,6 +428,12 @@ const SCHEMA = {
       // TraeCode is state-only: hook protocol is Claude Code-compatible but it
       // has no PermissionRequest event, so permission bubbles default off.
       "traecode": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // MiniMax Code is state-only via a Clawd-owned local plugin under
+      // ~/.minimax/plugins/clawd-state. PermissionRequest is not registered
+      // (the plugin-hook runner's 1–10s timeout budget makes blocking approval
+      // impossible) and there is no Notification event, so both flags default
+      // off.
+      "minimax": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
       "kiro-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "kimi-cli": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       "qwen-code": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },

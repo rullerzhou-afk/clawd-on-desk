@@ -20,10 +20,14 @@ on:
     paths:
       - src/linux-ozone.js
       - ci/wayland-smoke.sh
+      - ci/appimage-wrapper-shutdown.py
       - .github/workflows/wayland-smoke.yml
       - package.json
       - package-lock.json
       - scripts/verify-appimage-apprun.js
+      - scripts/prepare-appimage-launcher.js
+      - scripts/after-pack-koffi.js
+      - build/appimage-launcher.sh
       - test/fixtures/appimage-apprun/**
       # AppImage Claude/Codex hook persistence (#1027): the packaged smoke is
       # the only place that exercises a real FUSE mount -> persistent generation
@@ -63,6 +67,7 @@ jobs:
           npm ci
           node --test test/linux-ozone.test.js
           node --test test/appimage-apprun.test.js
+          node --test test/appimage-launcher.test.js
 
       - name: Build the AppImage from this ref
         run: |
@@ -96,6 +101,7 @@ jobs:
         scenario:
           - manual-x11
           - auto-xwayland
+          - appimage-wrapper-termination
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -6,6 +6,7 @@
 #   wayland-smoke.sh auto-xwayland <AppImage>
 #   wayland-smoke.sh native-wayland-contract <AppImage>
 #   wayland-smoke.sh appimage-claude-hooks <AppImage>
+#   wayland-smoke.sh appimage-wrapper-termination <AppImage>
 #
 # manual-x11 and auto-xwayland are full health checks: /state answers and an X
 # client window exists. native-wayland-contract deliberately checks only the
@@ -16,13 +17,15 @@
 # AppImage exits. weston --backend=headless has no real input seat or DRM
 # render node, so it is not a deterministic environment for full native-Wayland
 # Electron health.
+# appimage-wrapper-termination removes the owned FUSE wrappers before asking
+# the healthy browser to quit, and checks both the exit code and file cleanup.
 
 set -euo pipefail
 
-SCENARIO="${1:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks> <AppImage>}"
-APPIMAGE_ARG="${2:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks> <AppImage>}"
+SCENARIO="${1:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
+APPIMAGE_ARG="${2:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
 case "$SCENARIO" in
-  manual-x11 | auto-xwayland | native-wayland-contract | appimage-claude-hooks) ;;
+  manual-x11 | auto-xwayland | native-wayland-contract | appimage-claude-hooks | appimage-wrapper-termination) ;;
   *) printf 'Unknown scenario: %s\n' "$SCENARIO" >&2; exit 2 ;;
 esac
 
@@ -45,7 +48,9 @@ mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME" \
   "$XDG_RUNTIME_DIR" "$USER_DATA_DIR"
 chmod 700 "$XDG_RUNTIME_DIR"
 
-WAYLAND_SOCKET="wayland-smoke-${SCENARIO}-$$"
+# XDG_RUNTIME_DIR already isolates each invocation. Repeating the scenario in
+# the socket name can exceed Linux's 108-byte sockaddr_un.sun_path limit.
+WAYLAND_SOCKET="wayland-smoke"
 WESTON_PID=""
 APP_LAUNCH_PID=""
 XDISPLAY=""
@@ -107,9 +112,13 @@ owned_pids() {
 }
 
 browser_pids() {
-  local want_flag="${1:-}" pid cmd
+  local want_flag="${1:-}" pid cmd exe
   while read -r pid; do
     [ -n "$pid" ] || continue
+    exe="$(readlink "/proc/$pid/exe" 2>/dev/null || true)"
+    # AppImage's shell supervisor also carries the original arguments. It is
+    # not an Electron browser, even when it has --ozone-platform on its argv.
+    [ "${exe##*/}" = clawd-on-desk ] || continue
     cmd="$(tr '\0' ' ' 2>/dev/null <"/proc/$pid/cmdline")" || continue
     case "$cmd" in *"--type="*) continue ;; esac
     if [ "$want_flag" = "x11" ]; then
@@ -140,9 +149,15 @@ proc_env_value() {
 }
 
 appimage_mount_dir() {
-  local mount pid
-  mount="$(proc_env_value APPDIR || true)"
-  if [ -n "$mount" ]; then printf '%s' "$mount"; return 0; fi
+  local mount pid line
+  while read -r pid; do
+    [ -n "$pid" ] || continue
+    line="$(tr '\0' '\n' 2>/dev/null <"/proc/$pid/environ" | grep -m1 '^APPDIR=' || true)"
+    mount="${line#APPDIR=}"
+    if [ -n "$mount" ] && mountpoint -q -- "$mount"; then
+      printf '%s' "$mount"; return 0
+    fi
+  done < <(owned_pids)
   while read -r pid; do
     [ -n "$pid" ] || continue
     mount="$(grep -m1 -oE '/tmp/\.mount_[^ /]+' "/proc/$pid/maps" 2>/dev/null || true)"
@@ -278,7 +293,7 @@ export ELECTRON_LOG_FILE="$ARTIFACT_DIR/electron-child.log"
 printf 'weston pid=%s, Xwayland display=%s\n' "$WESTON_PID" "$XDISPLAY"
 
 case "$SCENARIO" in
-  manual-x11)
+  manual-x11 | appimage-wrapper-termination)
     note "manual --ozone-platform=x11"
     launch_app "$APPIMAGE" --ozone-platform=x11
     poll 90 state_ok || fail "manual X11: state server from runtime.json never answered"
@@ -288,6 +303,20 @@ case "$SCENARIO" in
     grep -q "$RELAUNCH_MARK" "$ARTIFACT_DIR/app.log" &&
       fail "manual X11 triggered the automatic relaunch"
     ok "manual X11 boots healthy with an X client window and no relaunch"
+    if [ "$SCENARIO" = appimage-wrapper-termination ]; then
+      MOUNT_DIR="$(appimage_mount_dir)" || fail "could not locate the owned FUSE mount"
+      python3 "$(dirname "$0")/appimage-wrapper-shutdown.py" \
+        "$APPIMAGE" "$USER_DATA_DIR" "$RUNTIME_CONFIG" "$MOUNT_DIR" "$APP_LAUNCH_PID" >"$ARTIFACT_DIR/wrapper-shutdown.json"
+      poll 15 no_owned_processes || fail "owned processes remained after wrapper-first shutdown"
+      wait "$APP_LAUNCH_PID" || fail "AppImage supervisor reported an abnormal main exit"
+      APP_LAUNCH_PID=""
+      python3 - "$ARTIFACT_DIR/wrapper-shutdown.json" <<'PY'
+import json, pathlib, sys
+result = json.loads(pathlib.Path(sys.argv[1]).read_text())
+assert not pathlib.Path(result["runtimeDirectory"]).exists(), "private runtime files were not cleaned up"
+PY
+      ok "wrapper-first shutdown exits cleanly from regular backing files"
+    fi
     ;;
 
   auto-xwayland)
@@ -352,8 +381,8 @@ case "$SCENARIO" in
   appimage-claude-hooks)
     note "packaged Claude hooks must persist outside the FUSE mount"
     # Deterministic Claude Code version so the versioned hooks (PreCompact /
-    # PostCompact / StopFailure) are always registered: exactly 14 managed
-    # state commands under default prefs.
+    # PostCompact / StopFailure / UserPromptExpansion) are always registered:
+    # exactly 15 managed state commands under default prefs.
     CLAUDE_FIXTURE_BIN="$ISOLATION_ROOT/claude-fixture-bin"
     mkdir -p "$CLAUDE_FIXTURE_BIN"
     printf '#!/bin/sh\nprintf "2.1.274 (Claude Code)\\n"\n' >"$CLAUDE_FIXTURE_BIN/claude"
@@ -387,7 +416,7 @@ const CORE = [
   "PostToolUseFailure", "Stop", "SubagentStart", "SubagentStop", "Notification",
   "Elicitation",
 ];
-const VERSIONED = ["PreCompact", "PostCompact", "StopFailure"];
+const VERSIONED = ["PreCompact", "PostCompact", "StopFailure", "UserPromptExpansion"];
 const EXPECTED = new Set([...CORE, ...VERSIONED]);
 const fail = (message) => { process.stderr.write(`smoke: ${message}\n`); process.exit(1); };
 let settings;
@@ -408,7 +437,7 @@ for (const [event, entries] of Object.entries(hooks)) {
 }
 const events = [...new Set(commands.map((c) => c.event))].sort();
 const expectedEvents = [...EXPECTED].sort();
-if (commands.length !== 14) fail(`expected exactly 14 managed state commands, got ${commands.length}: ${events.join(", ")}`);
+if (commands.length !== EXPECTED.size) fail(`expected exactly ${EXPECTED.size} managed state commands, got ${commands.length}: ${events.join(", ")}`);
 if (JSON.stringify(events) !== JSON.stringify(expectedEvents)) {
   fail(`managed state event set drifted: ${events.join(", ")}`);
 }
@@ -443,7 +472,7 @@ NODE
     then
       fail "appimage-claude-hooks: settings inspection failed"
     fi
-    ok "exactly the 14 core+versioned commands share one persistent generation"
+    ok "exactly the 15 core+versioned commands share one persistent generation"
 
     kill_owned_processes
     poll 15 server_ports_clear || fail "Clawd state port remained occupied after teardown"

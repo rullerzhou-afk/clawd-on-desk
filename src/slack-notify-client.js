@@ -23,6 +23,7 @@ const {
   buildCompletionMessage,
   buildPermissionMessage,
   buildTestMessage,
+  prepareAssistantOutput,
 } = require("./slack-message-format");
 
 const DONE_BADGES = new Set(["done", "interrupted"]);
@@ -102,8 +103,12 @@ function classifySlackApiError(error) {
 
 // Queue entries retain only an opaque digest, never the bearer credential.
 // The selected credential is still part of the identity, so an out-of-band
-// env-file edit cannot make a retry cross into another webhook/channel even if
-// the main-process config revision did not change.
+// env-file edit -- one that bypasses Settings and bumps nothing -- cannot make
+// a retry cross into another webhook/channel. The digest only sees the final
+// value, so a destination changed away and back before a retry looks unchanged;
+// that is part of the documented blind window. A monotonic config revision was
+// rejected because it also cancelled real backlogs on every unrelated settings
+// click.
 function destinationSignature(transport, config, secrets) {
   if (transport === "webhook") {
     return crypto.createHash("sha256")
@@ -150,7 +155,6 @@ function scrubCredentials(body, secrets) {
 function createSlackNotifyClient({
   getConfig = () => settings.cloneDefaultSlackNotify(),
   getSecrets = () => ({ webhookUrl: "", botToken: "" }),
-  getConfigRevision = () => 0,
   getLang = () => "en",
   log = () => {},
   fetchImpl = null,
@@ -170,12 +174,24 @@ function createSlackNotifyClient({
   // snapshot, and must not be recorded as sent if delivery then fails.
   const lastNotified = new Map(); // session id -> last settled dedupe key
   const inFlightKeys = new Set();
-  const queue = [];
+  // Two serial lanes: completions (done/error) and permission heads-ups. A
+  // permission says "come back to your desk"; a completion is history and is
+  // equally true three minutes late. Sharing one head-of-line put the
+  // latency-critical message behind the least urgent one -- measured hundreds
+  // of seconds behind two rate-limited completions, and cancelled outright once
+  // the user gave up waiting and answered at the desk. Each lane owns its
+  // pending array, active item, drain promise and Retry-After, so automatic
+  // notifications are bounded at two in-flight requests. Send Test bypasses the
+  // lanes entirely, so a manual diagnostic adds a third.
+  const completionLane = { queue: [], active: null, draining: null };
+  const permissionLane = { queue: [], active: null, draining: null };
   const queueCapacity = Number.isFinite(maxQueue) ? Math.max(1, Math.floor(maxQueue)) : DEFAULT_MAX_QUEUE;
   const attemptLimit = Number.isFinite(maxAttempts) ? Math.max(1, Math.floor(maxAttempts)) : DEFAULT_MAX_ATTEMPTS;
-  let activeItem = null;
-  let draining = null;
   let primed = false;
+
+  function laneFor(kind) {
+    return kind === "permission" ? permissionLane : completionLane;
+  }
 
   function safeLog(level, message, meta) {
     try { log(level, message, meta); } catch {}
@@ -199,10 +215,6 @@ function createSlackNotifyClient({
     } catch { return "en"; }
   }
 
-  function readConfigRevision() {
-    try { return getConfigRevision(); } catch { return 0; }
-  }
-
   function readDeliveryContext() {
     const config = readConfig();
     const secrets = readSecrets();
@@ -211,7 +223,6 @@ function createSlackNotifyClient({
       config,
       secrets,
       state,
-      configRevision: readConfigRevision(),
       destinationKey: destinationSignature(state.transport, config, secrets),
     };
   }
@@ -423,7 +434,7 @@ function createSlackNotifyClient({
     try { item.resolve(result); } catch {}
   }
 
-  function enqueueAutomatic({ kind, id = "", key = "", message, context, isStillRelevant = null }) {
+  function enqueueAutomatic({ kind, id = "", key = "", message, context, isStillRelevant = null, carriesOutput = false }) {
     if (key && inFlightKeys.has(key)) {
       return Promise.resolve({ ok: false, errorClass: "duplicate" });
     }
@@ -437,20 +448,31 @@ function createSlackNotifyClient({
       key,
       message,
       attempts: 0,
-      configRevision: delivery.configRevision,
       destinationKey: delivery.destinationKey,
+      // Whether the built body actually carries assistant output -- read from
+      // the message, not from outputMode. Any completion for which
+      // prepareAssistantOutput returns null (for example an agent that reports
+      // no final message) renders identically either way, so deriving this from
+      // the config cancelled bodies with nothing to protect. An interrupted or
+      // errored completion can still carry output, and then it does count.
+      // Permission bodies never carry output.
+      carriesOutput: carriesOutput === true,
       isStillRelevant: typeof isStillRelevant === "function" ? isStillRelevant : null,
       resolve: resolveItem,
       settled: false,
     };
     if (key) inFlightKeys.add(key);
 
-    // `maxQueue` is a strict total capacity: active + pending. The active item
-    // can no longer be removed, so overflow drops only the oldest pending item.
+    // `maxQueue` is a per-lane capacity: active + pending, counted separately
+    // for completions and permissions, so the effective system bound is twice
+    // maxQueue. Per-lane counting stops a completion burst from squeezing out a
+    // permission heads-up (and vice versa). The active item can no longer be
+    // removed, so overflow drops only the oldest pending item in that lane.
     // With capacity=1 there is no pending slot and the incoming item is the
     // only safe drop candidate.
-    if (queue.length + (activeItem ? 1 : 0) >= queueCapacity) {
-      const dropped = queue.shift();
+    const lane = laneFor(kind);
+    if (lane.queue.length + (lane.active ? 1 : 0) >= queueCapacity) {
+      const dropped = lane.queue.shift();
       if (dropped) {
         settle(dropped, "dropped (queue full)", { ok: false, errorClass: "queue-full" }, {
           maxQueue: queueCapacity,
@@ -463,51 +485,57 @@ function createSlackNotifyClient({
       }
     }
 
-    queue.push(item);
-    startDrain();
+    lane.queue.push(item);
+    startLaneDrain(lane);
     return promise;
   }
 
-  function enqueueCompletion(id, key, message, interrupted, context) {
+  function enqueueCompletion(id, key, message, interrupted, context, carriesOutput) {
     return enqueueAutomatic({
       kind: interrupted ? "completion-error" : "completion-done",
       id,
       key,
       message,
       context,
+      carriesOutput,
     });
   }
 
-  // One drain loop at a time, so a burst of completions becomes a sequence of
+  // One drain loop per lane, so a burst within a lane becomes a sequence of
   // requests rather than a simultaneous fan-out that invites rate limiting.
-  function startDrain() {
-    if (draining) return draining;
-    draining = drainQueue()
+  // Across the two lanes at most two automatic notifications are in flight;
+  // Send Test is a direct diagnostic and does not enter a lane.
+  function startLaneDrain(lane) {
+    const running = lane.draining;
+    if (running) return running;
+    const started = drainLane(lane)
       .catch((err) => {
-        // drainQueue owns all expected failures. This is only a final guard so
-        // a future formatter/queue change cannot create an unhandled rejection
-        // on the fire-and-forget snapshot path.
-        if (activeItem && !activeItem.settled) {
-          settle(activeItem, "not delivered (queue failure)", {
+        // drainLane owns all expected failures. This is only a final guard so a
+        // future formatter/queue change cannot create an unhandled rejection on
+        // the fire-and-forget snapshot path.
+        const active = lane.active;
+        if (active && !active.settled) {
+          settle(active, "not delivered (queue failure)", {
             ok: false,
             errorClass: "queue-failed",
           }, { error: err && err.message });
         }
       })
       .finally(() => {
-        activeItem = null;
-        draining = null;
+        lane.active = null;
+        lane.draining = null;
         // A Promise resolved by settle() can enqueue from its continuation while
         // this drain is completing. Pick that work up instead of stranding it.
-        if (queue.length) startDrain();
+        if (lane.queue.length) startLaneDrain(lane);
       });
-    return draining;
+    lane.draining = started;
+    return started;
   }
 
-  async function drainQueue() {
-    while (queue.length) {
-      activeItem = queue.shift();
-      const item = activeItem;
+  async function drainLane(lane) {
+    while (lane.queue.length) {
+      lane.active = lane.queue.shift();
+      const item = lane.active;
       while (item && !item.settled) {
         if (item.isStillRelevant) {
           let relevant = false;
@@ -518,11 +546,40 @@ function createSlackNotifyClient({
           }
         }
         const delivery = readDeliveryContext();
-        if (
-          delivery.configRevision !== item.configRevision
-          || delivery.destinationKey !== item.destinationKey
-        ) {
-          settle(item, "cancelled (configuration changed)", { ok: false, errorClass: "stale-config" });
+        // Only a change that would *misdeliver* this already-formatted body
+        // invalidates it:
+        //   - a different destination, which destinationKey detects straight
+        //     from the credential values, so it also catches a secret-file edit
+        //     that bypasses Settings and never bumps anything. A destination
+        //     changed away and back before this check looks unchanged -- that is
+        //     the blind window described below.
+        //   - a narrowing of outputMode, because a body formatted with
+        //     includeOutput carries assistant output the user has just asked
+        //     Slack to stop receiving. Widening is a pure loss and must not
+        //     cancel.
+        // Every other slackNotify field is re-evaluated per item by
+        // automaticGateAllows below, so an unrelated toggle must not discard the
+        // backlog -- a revision compare threw away the whole queue on one
+        // settings click, and all of it when the user re-pasted an identical
+        // webhook while Slack was rate-limiting.
+        //
+        // Deliberate blind window, from review: a monotonic config revision also
+        // caught a generation *cycle* -- the master switch flipped off and back
+        // on again before the queued item was looked at, which leaves the config
+        // byte-identical and so is invisible here. A queued item only reads this
+        // gate when its turn comes and before each of its own attempts, so the
+        // off window can cover its whole backoff, or the entire time an earlier
+        // item on the lane is in flight or waiting to retry. Those items are
+        // delivered rather than cancelled. The alternative is the over-broad
+        // compare above, which destroys real backlogs on an ordinary click.
+        // There is no signal that separates the two, so this is a choice.
+        const narrowedOutput = item.carriesOutput === true && delivery.config.outputMode !== "full";
+        if (delivery.destinationKey !== item.destinationKey) {
+          settle(item, "cancelled (destination changed)", { ok: false, errorClass: "stale-config" });
+          break;
+        }
+        if (narrowedOutput) {
+          settle(item, "cancelled (assistant output disabled)", { ok: false, errorClass: "stale-config" });
           break;
         }
         if (!automaticGateAllows(item, delivery.config)) {
@@ -570,15 +627,21 @@ function createSlackNotifyClient({
           }, { error: err && err.message });
         }
       }
-      activeItem = null;
+      lane.active = null;
     }
   }
 
-  // Test/inspection seam: resolves once the queue has settled.
+  // Test/inspection seam: resolves once BOTH lanes have settled. Each loop
+  // iteration awaits something, so a lane enqueued by a settle continuation is
+  // picked up rather than spinning.
   async function drained() {
-    while (draining || activeItem || queue.length) {
-      if (!draining && queue.length) startDrain();
-      const current = draining;
+    while (
+      completionLane.draining || completionLane.active || completionLane.queue.length
+      || permissionLane.draining || permissionLane.active || permissionLane.queue.length
+    ) {
+      if (!completionLane.draining && completionLane.queue.length) startLaneDrain(completionLane);
+      if (!permissionLane.draining && permissionLane.queue.length) startLaneDrain(permissionLane);
+      const current = completionLane.draining || permissionLane.draining;
       if (current) await current;
     }
   }
@@ -633,7 +696,8 @@ function createSlackNotifyClient({
     }
 
     for (const id of Array.from(lastNotified.keys())) {
-      if (!seenIds.has(id) && !queue.some((item) => item.id === id)) lastNotified.delete(id);
+      // Only the completion lane carries session ids; permission items have none.
+      if (!seenIds.has(id) && !completionLane.queue.some((item) => item.id === id)) lastNotified.delete(id);
     }
 
     primed = true;
@@ -644,14 +708,20 @@ function createSlackNotifyClient({
     const includeOutput = config.outputMode === "full";
     for (const entry of toSend) {
       let message = null;
+      let carriesOutput = false;
       try {
         message = buildCompletionMessage(entry, { lang, includeOutput });
+        // Ask the formatter, not the switch: buildCompletionMessage only
+        // appends the output section when prepareAssistantOutput returns
+        // something. Computed in the same try, so a throw either way skips the
+        // entry exactly as a formatting failure does.
+        carriesOutput = includeOutput && !!prepareAssistantOutput(entry);
       } catch (err) {
         safeLog("warn", "slack completion format threw", { id: entry.id, error: err && err.message });
         continue;
       }
       if (!message) continue;
-      enqueueCompletion(entry.id, dedupeKey(entry), message, entry.badge === "interrupted", delivery);
+      enqueueCompletion(entry.id, dedupeKey(entry), message, entry.badge === "interrupted", delivery, carriesOutput);
     }
   }
 

@@ -117,6 +117,13 @@ describe("opencode-family bubble payload", () => {
     assert.strictEqual(payload.familyDisplayName, null);
     assert.deepStrictEqual(payload.familyAlways, []);
     assert.deepStrictEqual(payload.familyPatterns, []);
+    assert.strictEqual(payload.familyV2, false);
+  });
+
+  it("flags the opencode v2 entry so the renderer picks the background-service tooltip", () => {
+    assert.strictEqual(buildPayload({ agentId: "opencode", isOpencodeV2: true }).familyV2, true);
+    assert.strictEqual(buildPayload({ agentId: "opencode" }).familyV2, false);
+    assert.strictEqual(buildPayload({ agentId: "mimocode" }).familyV2, false);
   });
 });
 
@@ -156,7 +163,8 @@ describe("bubble-renderer family contract (static)", () => {
     const branch = familyBranch();
     assert.match(branch, /Array\.isArray\(data\.familyAlways\) && data\.familyAlways\.length > 0/);
     assert.match(branch, /const agentName = data\.familyDisplayName \|\| data\.familyAgentId;/);
-    assert.match(branch, /bubbleText\(data\.lang, "alwaysAllowBlanketTitle", \{ agent: agentName \}\)/);
+    assert.match(branch, /data\.familyV2 \? "alwaysAllowBlanketTitleV2" : "alwaysAllowBlanketTitle"/);
+    assert.match(branch, /\{ agent: agentName \}/);
     assert.match(branch, /window\.bubbleAPI\.decide\("family-always"\)/);
   });
 
@@ -166,14 +174,20 @@ describe("bubble-renderer family contract (static)", () => {
     }
   });
 
-  it("blanket-always tooltip is {agent}-templated (twice) in every language, no hardcoded product name", () => {
-    const lines = source.split("\n").filter((l) => l.includes("alwaysAllowBlanketTitle:"));
-    assert.strictEqual(lines.length, SUPPORTED_LANGS.length,
-      `expected the tooltip in exactly ${SUPPORTED_LANGS.length} supported languages`);
-    for (const line of lines) {
-      const occurrences = line.split("{agent}").length - 1;
-      assert.strictEqual(occurrences, 2, `tooltip must use {agent} twice: ${line.trim().slice(0, 60)}…`);
-      assert.strictEqual(/opencode/i.test(line), false, "tooltip must not hardcode a product name");
+  it("blanket-always tooltips are {agent}-templated in every language, no hardcoded product name", () => {
+    // The v1 tooltip promises a terminal restart revokes the rule; the v2 one
+    // (kept in the host background service) must not. Both need a translation
+    // in every supported language.
+    for (const [key, expectedCount] of [["alwaysAllowBlanketTitle", 2], ["alwaysAllowBlanketTitleV2", 3]]) {
+      const lines = source.split("\n").filter((l) => l.includes(`${key}:`));
+      assert.strictEqual(lines.length, SUPPORTED_LANGS.length,
+        `${key} must exist in exactly ${SUPPORTED_LANGS.length} supported languages`);
+      for (const line of lines) {
+        const occurrences = line.split("{agent}").length - 1;
+        assert.strictEqual(occurrences, expectedCount,
+          `${key} must use {agent} ${expectedCount} times: ${line.trim().slice(0, 60)}…`);
+        assert.strictEqual(/opencode/i.test(line), false, `${key} must not hardcode a product name`);
+      }
     }
   });
 

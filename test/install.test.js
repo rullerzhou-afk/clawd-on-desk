@@ -734,6 +734,17 @@ describe("Hook installer version compatibility", () => {
     assert.strictEqual(result.version, "2.1.78");
   });
 
+  it("registers design expansion on Claude Code 2.1.265 and newer", () => {
+    const settingsPath = makeTempSettings({});
+    registerHooks({
+      silent: true,
+      settingsPath,
+      claudeVersionInfo: { version: "2.1.265", source: "test", status: "known" },
+    });
+    const settings = readSettings(settingsPath);
+    assert.strictEqual(getClawdCommands(settings, "UserPromptExpansion").length, 1);
+  });
+
   it("never claims either model-switch hook", () => {
     // PreModelSwitch blocks the switch on a missed answer; PostModelSwitch
     // displaces the Done badge and the last-event row. Both stay unclaimed.

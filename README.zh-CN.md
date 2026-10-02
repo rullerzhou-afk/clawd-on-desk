@@ -28,9 +28,9 @@
 
 Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发起一个长任务，起身去做点别的，等螃蟹告诉你任务完成了再回来。
 
-你提问时它思考，工具运行时它打字，子代理工作时它会戴耳机律动或三球杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。内置三套主题：**Clawd**（像素螃蟹）、**Calico**（三花猫）和 **Cloudling**（云宝），支持自定义主题，也支持导入 Codex Pet 动画包；另外可从 设置 → 主题 下载可选官方主题 **Hash Sage**（哈希仙人）。
+你提问时它思考，工具运行时它打字，子代理工作时它会戴耳机律动或三球杂耍，审批权限时它弹卡片，任务完成时它庆祝，你离开时它睡觉。内置三套主题：**Clawd**（像素螃蟹）、**Calico**（三花猫）和 **Cloudling**（云宝），支持自定义主题，也支持导入 Codex Pet 动画包；另外可从 设置 → 主题 下载可选官方主题 **Hash Sage**（哈希仙人）和 **Whale-chan**（鲸鱼娘）。
 
-> 支持 Windows 11、macOS 和 Ubuntu/Linux。Windows 发布包提供独立的 x64 和 ARM64 安装包。源码运行需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Grok Build**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI** 与 **DeepSeek Harness**。
+> 支持 Windows 11、macOS 和 Ubuntu/Linux。Windows 发布包提供独立的 x64 和 ARM64 安装包。源码运行需要 Node.js。支持 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Grok Build**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI**、**DeepSeek Harness**、**TraeCode (Trae CN)** 与 **MiniMax Code**。
 
 ## 功能特性
 
@@ -61,6 +61,7 @@ Clawd 住在你的桌面上，实时感知 AI 编程助手正在做什么。发�
 - **QoderWork** — 可选 state-only command hooks，写入 `~/.qoderwork/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qoderwork-hooks`）；Phase 1 驱动动画与 Session HUD，权限事件作为正常工作流静默观察（不闪通知），Clawd 不弹权限气泡也不代答，所有 Allow / Deny 都在 QoderWork 自己的权限流程里完成
 - **QwenWork（千问办公）** — 可选 hook-only / state-only command hooks，写入 `~/.QwenWorkCN/settings.json`（从 Settings → Agents 安装，或执行 `npm run install:qwenwork-hooks`，卸载用 `npm run uninstall:qwenwork-hooks`）；当前只支持 macOS / Windows 桌面端——[qwenwork.cn/download](https://qwenwork.cn/download) 没有 Linux 客户端，因此也不提供 WSL Pair。Phase 1 驱动动画与 Session HUD；`PermissionRequest` / `PermissionDenied` 仅作观察并映射为 `working`，hook stdout 恒为 `{}`，Clawd 不产生 allow/deny，权限唯一决策者是 QwenWork 原生流程。无 startup recovery：桌面主进程是长驻进程，不代表正在跑任务
 - **DeepSeek Harness** — 实验性的 web-profile-only 集成，通过 Clawd 管理的 DSH 进程内插件工作。公开 session 事件按 session 顺序驱动 Clawd 状态，公开的阻塞式 `approval/request` 可显示 Allow Once / Deny 气泡；无决定时始终回到 DSH 原生 web answerer。`ask_user_question` 完全留在 DSH 原生 provider，Clawd 从不读取 DSH projection 存储。详见 [DeepSeek Harness 指南](docs/guides/dsh-setup.md)
+- **TraeCode (Trae CN)** — 实验性、仅状态同步的 hook 集成，写入 `~/.trae-cn/hooks.json`（从 Settings → Agents 安装，或执行 `npm run install:traecode-hooks`；卸载用 `npm run uninstall:traecode-hooks`）。需在 Trae 中手动开启 hooks（**Settings → Hooks → Enable**，运行模式选 **Sandbox**；见 [Trae 官方 hooks 文档](https://docs.trae.cn/ide/automate-actions-with-hooks)）。首版仅支持 Trae 中国版；Clawd 从首条提问推导会话标题，不接管权限，也没有 `SessionEnd`，关闭的会话由桌面端空闲超时清理。
 - **多 Agent 共存** — 多个 Agent 可同时运行，Clawd 独立追踪每个会话
 
 ### 动画与交互
@@ -180,7 +181,7 @@ npm install
 npm start
 ```
 
-**Claude Code**、**Codex CLI** 会自动注册 hooks，开箱即用。**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI**、**DeepSeek Harness** 需要先在 **Settings → Agents** 安装对应集成；安装且启用后，Clawd 才会在启动时继续同步。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
+**Claude Code**、**Codex CLI** 会自动注册 hooks，开箱即用。**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Kiro CLI**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千问办公）**、**Reasonix CLI**、**DeepSeek Harness**、**TraeCode (Trae CN)**、**MiniMax Code** 需要先在 **Settings → Agents** 安装对应集成；安装且启用后，Clawd 才会在启动时继续同步。也涵盖远程 SSH、WSL 及平台说明（macOS / Linux）：**[docs/guides/setup-guide.zh-CN.md](docs/guides/setup-guide.zh-CN.md)**
 
 想在远程服务器上跑 Claude Code / Codex CLI / Copilot CLI / Hermes Agent 并把状态和权限气泡转发到本地 Clawd？请使用应用内 **Settings → 远程 SSH → 部署 / 修复 Hook**。完整步骤、共享服务器隔离边界、Doctor 边界和 FAQ 见：**[docs/guides/guide-remote-ssh.zh-CN.md](docs/guides/guide-remote-ssh.zh-CN.md)**
 
@@ -361,6 +362,11 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 <a href="https://github.com/mantertius"><img src="https://github.com/mantertius.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/VonSdite"><img src="https://github.com/VonSdite.png" width="50" style="border-radius:50%" /></a>
 <a href="https://github.com/sunnyswag"><img src="https://github.com/sunnyswag.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/hanzhe-one"><img src="https://github.com/hanzhe-one.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/52mzd"><img src="https://github.com/52mzd.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/gzx19990101"><img src="https://github.com/gzx19990101.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/ypjn"><img src="https://github.com/ypjn.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/jin-codes"><img src="https://github.com/jin-codes.png" width="50" style="border-radius:50%" /></a>
 
 ## 致谢
 
@@ -377,4 +383,5 @@ Clawd on Desk 是一个社区驱动的项目。欢迎提 Bug、提需求、提 P
 - **三花猫** 素材由 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 创作，保留所有权利。
 - **Cloudling（云宝）** 素材由 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 创作，保留所有权利。云宝的视觉方向包含对 OpenAI Codex logo 的致敬；Codex / OpenAI 相关标识仍归 OpenAI 所有，本项目与 OpenAI 无官方关联，也未获 OpenAI 背书。
 - **Hash Sage（哈希仙人）** 以可选官方主题的形式由 [`rullerzhou-afk/clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) 独立分发，素材版权归 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 所有；许可证与完整署名见主题包内文件。它不适用本项目 AGPL-3.0 源码许可。
+- **Whale-chan（鲸鱼娘）** 以可选官方主题的形式由 [`rullerzhou-afk/clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) 独立分发。原始角色形象、设定与上游素材的权利归各自原作者所有，本主题署名上游项目 [Neko3000/deepseek-whalechan](https://github.com/Neko3000/deepseek-whalechan) 所列的 ZipZipPipe 与上善无形；鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) 新作的动画与特效采用 CC BY-NC-SA 4.0，完整条款见主题包内文件。本主题是非官方、非商业同人作品，与 DeepSeek 无关联，也未获其授权或背书；它不适用本项目 AGPL-3.0 源码许可。
 - **第三方画师作品**：版权归各自作者所有。
