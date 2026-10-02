@@ -136,6 +136,62 @@ describe("agent-runtime-main", () => {
     );
   });
 
+  it("lets a live compaction item reach a session with recent official hooks", () => {
+    const CodexLogMonitor = require("../agents/codex-log-monitor");
+    const codexConfig = require("../agents/codex");
+    class ManualCodexLogMonitor extends CodexLogMonitor {
+      start() {} // Exercise the production parser without a background poller.
+    }
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-codex-compaction-runtime-"));
+    const fileName = "rollout-2026-03-25T15-10-51-019d23d4-f1a9-7633-b9c7-758327137228.jsonl";
+    const filePath = path.join(dir, fileName);
+    const sessionId = localSessionKey("codex:019d23d4-f1a9-7633-b9c7-758327137228");
+    const turnId = "turn-compaction";
+    const updates = [];
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => ManualCodexLogMonitor,
+      loadCodexAgent: () => ({
+        ...codexConfig,
+        logConfig: { ...codexConfig.logConfig, sessionDir: dir },
+      }),
+      updateSession: (...args) => updates.push(args),
+    });
+    try {
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+        agentId: "codex", hookSource: "codex-official", turnId,
+      });
+      runtime.updateSessionFromServer(sessionId, "working", "PreToolUse", {
+        agentId: "codex", hookSource: "codex-official", turnId,
+      });
+      updates.length = 0;
+      const monitor = runtime.startCodexLogMonitor();
+      monitor._findCodexWriterPid = () => null;
+      fs.writeFileSync(filePath, [
+        { type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+        { type: "response_item", payload: { type: "function_call", name: "shell_command" } },
+      ].map((record) => JSON.stringify(record)).join("\n") + "\n");
+      monitor._pollFile(filePath, fileName);
+      assert.deepStrictEqual(updates, [], "covered hook events must still be suppressed");
+
+      fs.appendFileSync(filePath, JSON.stringify({
+        type: "event_msg",
+        payload: {
+          type: "item_completed", turn_id: turnId,
+          item: { type: "ContextCompaction", id: "compaction-1" },
+        },
+      }) + "\n");
+      monitor._pollFile(filePath, fileName);
+      assert.strictEqual(updates.length, 1);
+      assert.deepStrictEqual(updates[0].slice(0, 3), [
+        sessionId, "sweeping", "event_msg:context_compacted",
+      ]);
+      assert.strictEqual(updates[0][3].recapDedupeId, turnId);
+    } finally {
+      runtime.cleanup();
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("records privacy-safe local cross-channel turn identity diagnostics", () => {
     const instances = [];
     const debugLines = [];

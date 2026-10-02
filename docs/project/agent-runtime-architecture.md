@@ -34,6 +34,12 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
+Codex 压缩完成同时兼容旧 `event_msg:context_compacted` 与新版
+`event_msg:item_completed`（`payload.item.type === "ContextCompaction"`）。本地与
+Remote SSH monitor 共用 `hooks/codex-log-event.js`，把后者归一化到旧事件键，沿用
+`sweeping` 映射、timestamp/backfill 保护与 hook 仲裁；它不是 turn completion，也不清理
+待回答问题。`compacted` 检查点、`response_item:compaction` 与其他 item 事件不作为实时压缩信号。
+
 Local Codex archive lifecycle (#655)：Codex 归档会把该 thread 的 rollout 从
 `sessions/` 移入扁平的 `<CODEX_HOME>/archived_sessions/`（文件名不变，`codex archive` /
 `unarchive` 已验证于 0.154.0）。`src/codex-archive-tracker.js` 由

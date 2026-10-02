@@ -29,6 +29,7 @@ const {
   isFreshCodexQuotaTimestamp,
 } = require("../hooks/codex-rate-limits");
 const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
+const { getCodexLogEventKey } = require("../hooks/codex-log-event");
 const { normalizeCodexTurnId } = require("../src/codex-turn-id");
 
 const MAX_TRACKED_FILES = 50;
@@ -1591,11 +1592,7 @@ class CodexLogMonitor {
 
     const type = obj.type;
     const payload = obj.payload;
-    const subtype =
-      payload && typeof payload === "object" ? payload.type || "" : "";
-
-    // Build lookup key
-    const key = subtype ? type + ":" + subtype : type;
+    const key = getCodexLogEventKey(type, payload);
 
     // Turn identity is file-order bookkeeping, not a live callback. Apply it
     // before both replay guards so an old task_started seeds the active ID and

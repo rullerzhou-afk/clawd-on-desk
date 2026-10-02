@@ -97,6 +97,7 @@ const HOOK_FILES = [
   "codex-originator.js",
   "codex-assistant-output.js",
   "codex-user-input.js",
+  "codex-log-event.js",
   "codex-install.js",
   "codex-install-utils.js",
   "codex-remote-monitor.js",

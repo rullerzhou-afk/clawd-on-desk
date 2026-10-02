@@ -30,6 +30,7 @@ const {
   CODEX_SPARK_QUOTA_PROVIDER,
 } = require("./codex-rate-limits");
 const { parseCodexUserInputRecord } = require("./codex-user-input");
+const { getCodexLogEventKey } = require("./codex-log-event");
 
 // ── Inline config from agents/codex.js (zero-dependency requirement) ──
 
@@ -337,9 +338,7 @@ function processLine(line, entry, options = {}) {
 
   const type = obj.type;
   const payload = obj.payload;
-  const subtype =
-    payload && typeof payload === "object" ? payload.type || "" : "";
-  const key = subtype ? type + ":" + subtype : type;
+  const key = getCodexLogEventKey(type, payload);
 
   // Extract CWD from session_meta
   if (type === "session_meta" && payload) {

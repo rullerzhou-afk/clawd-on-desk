@@ -702,6 +702,95 @@ describe("Codex remote monitor — stale-cleanup re-read dedup", () => {
     assert.deepStrictEqual(s.posted.filter((post) => post.state === "working"), []);
   });
 
+  for (const [format, payload] of Object.entries({
+    legacy: { type: "context_compacted" },
+    "item-completed": { type: "item_completed", item: { type: "ContextCompaction", id: "compaction-1" } },
+  })) {
+    it(`posts live ${format} compaction without resolving a pending question`, () => {
+      __test.resetMonitorStateForTests();
+      const filePath = track([META, STARTED, FUNC]);
+      const s = spy();
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.strictEqual(s.posted.at(-1).state, "working");
+      const entry = __test.tracked.get(filePath);
+      entry.pendingUserInputs.set("call_question", { callId: "call_question" });
+      s.posted.length = 0;
+
+      appendLines(filePath, [{ type: "event_msg", payload }]);
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.deepStrictEqual(s.posted, [{
+        sessionId: entry.sessionId, state: "sweeping", event: "event_msg:context_compacted",
+      }]);
+      assert.strictEqual(entry.pendingUserInputs.has("call_question"), true);
+
+      appendLines(filePath, [COMPLETE]);
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.strictEqual(s.posted.at(-1).state, "attention");
+      assert.strictEqual(s.posted.at(-1).event, "event_msg:task_complete");
+      assert.strictEqual(entry.pendingUserInputs.size, 0);
+      assert.strictEqual(s.posted.filter((post) => post.event === "CodexUserInputResolved").length, 1);
+    });
+
+    it(`does not post ${format} compaction with an old timestamp in a fresh rollout`, () => {
+      const startedAtMs = Date.now();
+      __test.resetMonitorStateForTests({ startedAtMs });
+      const filePath = track([{
+        type: "event_msg", payload,
+        timestamp: new Date(startedAtMs - 60_000).toISOString(),
+      }]);
+      const s = spy();
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.deepStrictEqual(s.posted, []);
+
+      appendLines(filePath, [{ type: "event_msg", payload }]);
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.deepStrictEqual(s.posted.map(({ state, event }) => ({ state, event })), [
+        { state: "sweeping", event: "event_msg:context_compacted" },
+      ]);
+    });
+
+    it(`backfills ${format} compaction silently, then posts a live append`, () => {
+      const startedAtMs = Date.now();
+      __test.resetMonitorStateForTests({ startedAtMs });
+      const filePath = track([META, STARTED, FUNC, { type: "event_msg", payload }]);
+      const oldTime = new Date(startedAtMs - __test.BACKFILL_GRACE_MS - 1000);
+      fs.utimesSync(filePath, oldTime, oldTime);
+      const s = spy();
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.deepStrictEqual(s.posted, [], "history must not restore working or replay sweeping");
+
+      appendLines(filePath, [{ type: "event_msg", payload }]);
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.deepStrictEqual(s.posted.map(({ state, event }) => ({ state, event })), [
+        { state: "sweeping", event: "event_msg:context_compacted" },
+      ]);
+    });
+  }
+
+  it("does not post checkpoints or unrelated item events as live compaction", () => {
+    __test.resetMonitorStateForTests();
+    const filePath = track([META, STARTED, FUNC]);
+    const s = spy();
+    __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+    assert.strictEqual(s.posted.at(-1).state, "working");
+    s.posted.length = 0;
+
+    for (const record of [
+      { type: "compacted", payload: {} },
+      { type: "response_item", payload: { type: "compaction" } },
+      { type: "event_msg", payload: { type: "item_started", item: { type: "ContextCompaction" } } },
+      { type: "response_item", payload: { type: "item_completed", item: { type: "ContextCompaction" } } },
+      { type: "event_msg", payload: { type: "item_completed", item: { type: "AgentMessage" } } },
+      { type: "event_msg", payload: { type: "item_completed", item: null } },
+      { type: "event_msg", payload: { type: "item_completed" } },
+    ]) {
+      appendLines(filePath, [record]);
+      __test.pollFile(filePath, ROLLOUT_NAME, { postState: s.postState });
+      assert.deepStrictEqual(s.posted, [], JSON.stringify(record));
+      assert.strictEqual(__test.tracked.get(filePath).lastState, "working");
+    }
+  });
+
   it("restores one sustained state from a pre-existing active rollout", () => {
     const startedAtMs = Date.now();
     __test.resetMonitorStateForTests({ startedAtMs });
