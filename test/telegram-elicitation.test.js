@@ -400,7 +400,7 @@ test("requestElicitation's back button re-renders the previous question without 
   server.enqueueOk("answerCallbackQuery", true);
   server.enqueue("editMessageText", (edit) => {
     assert.match(edit.text, /Question 2\/2/);
-    backData = edit.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":b1")).callback_data;
+    backData = edit.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.endsWith(":b1")).callback_data;
     return { ok: true, result: { message_id: 701 } };
   });
   server.enqueue("getUpdates", () => ({
@@ -452,7 +452,7 @@ test("requestElicitation requires Confirm and preserves the server-normalized mu
   server.enqueue("sendMessage", (msg) => {
     optionAButtonText = msg.reply_markup.inline_keyboard[0][0].text;
     optionAData = msg.reply_markup.inline_keyboard[0][0].callback_data;
-    confirmData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":c0")).callback_data;
+    confirmData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.endsWith(":c0")).callback_data;
     return { ok: true, result: { message_id: 801, chat: { id: 123 } } };
   });
   server.enqueue("getUpdates", () => ({
@@ -498,14 +498,17 @@ test("requestElicitation requires Confirm and preserves the server-normalized mu
   await runner.stop();
 });
 
-test("requestElicitation answers the active question from a text reply after tapping Other", async () => {
+test("requestElicitation answers the active question from a text reply after tapping Other", async (t) => {
+  // A request id starting with x0 must not make option A look like Other.
+  t.mock.method(Math, "random", () => parseInt("x012345678", 36) / 36 ** 10);
   const server = createFakeTelegramServer();
   let releaseFirstPoll;
   let otherData = "";
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (msg) => {
-    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":x0")).callback_data;
+    assert.match(msg.reply_markup.inline_keyboard[0][0].callback_data, /^cq:x0/);
+    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.endsWith(":x0")).callback_data;
     return { ok: true, result: { message_id: "901", chat: { id: 123 } } };
   });
   server.enqueue("getUpdates", () => ({
@@ -524,6 +527,7 @@ test("requestElicitation answers the active question from a text reply after tap
   server.enqueueOk("editMessageText", { message_id: 901 });
 
   const runner = makeRunner(server);
+  t.after(() => runner.stop());
   await runner.start();
   await tick();
   const decisionPromise = runner.requestElicitation(singleQuestionPayload());
@@ -551,7 +555,7 @@ test("requestElicitation's Cancel button returns from the Other prompt to the op
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (msg) => {
-    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":x0")).callback_data;
+    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.endsWith(":x0")).callback_data;
     return { ok: true, result: { message_id: 950, chat: { id: 123 } } };
   });
   server.enqueue("getUpdates", () => ({
@@ -561,7 +565,7 @@ test("requestElicitation's Cancel button returns from the Other prompt to the op
   server.enqueueOk("answerCallbackQuery", true);
   server.enqueue("editMessageText", (edit) => {
     assert.match(edit.text, /reply to this message/i);
-    cancelData = edit.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":z0")).callback_data;
+    cancelData = edit.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.endsWith(":z0")).callback_data;
     return { ok: true, result: { message_id: 950 } };
   });
   server.enqueue("getUpdates", () => ({
@@ -604,7 +608,7 @@ test("requestElicitation still answers an Other reply that looks like a slash co
 
   server.enqueue("getUpdates", () => new Promise((resolve) => { releaseFirstPoll = resolve; }));
   server.enqueue("sendMessage", (msg) => {
-    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.includes(":x0")).callback_data;
+    otherData = msg.reply_markup.inline_keyboard.flat().find((btn) => btn.callback_data.endsWith(":x0")).callback_data;
     return { ok: true, result: { message_id: 902, chat: { id: 123 } } };
   });
   server.enqueue("getUpdates", () => ({
