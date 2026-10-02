@@ -568,6 +568,14 @@ h1 {
   line-height: 1.35;
 }
 
+.session-automation-picker .language-picker-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.session-automation-picker .language-picker-option.selected:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
 .session-history-hint {
   margin: -2px 2px 8px;
   color: var(--muted);
