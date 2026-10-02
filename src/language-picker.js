@@ -451,7 +451,9 @@
 
     function reflow() {
       if (disposed) return;
-      if (!usesViewportPlacement) ensureVisible();
+      // A list of Dashboard pickers must not reveal every closed control on
+      // resize. Tutorial's single picker retains its existing reveal behavior.
+      if (!usesViewportPlacement && (isOpen || config.revealWhenClosed !== false)) ensureVisible();
       if (isOpen) positionMenu();
     }
 

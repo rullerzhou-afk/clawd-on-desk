@@ -489,6 +489,11 @@ function handleQuickKeydown(event) {
     && (macInputHome || (!isEditingBusy() && !isEditableElement(event.target)))) {
     noteScrollIntent();
   }
+  // The open listbox owns its keys before the page's numeric/cancel mode.
+  if (hasOpenSessionAutomationPicker(event.target)) {
+    cancelPendingActivation();
+    return;
+  }
   if (!quick.active) {
     // A refused replacement leaves the borrowed editor intact. Once editing
     // is over Esc/Tab may close that shell, but digits never auto-arm again.
@@ -1518,15 +1523,11 @@ function automationActionState(key) {
 }
 
 function sessionAutomationUnavailableText(session) {
-  const reason = session && session.sessionAutomationDisabledReason;
-  if (
-    session
-    && session.agentId === "codex"
-    && (
-      reason === "unsupported-codex-originator"
-      || reason === "unsupported-codex-session-source"
-    )
-  ) {
+  // Display-only identity check, matching hooks/codex-originator.js. An
+  // unsupported source/originator reason alone does not identify Desktop.
+  const originator = String(session && session.codexOriginator || "").trim().toLowerCase();
+  if (session && session.agentId === "codex"
+    && (originator === "codex desktop" || originator === "codex_work_desktop")) {
     return t("sessionAutomationUnavailableCodexDesktop");
   }
   return t("sessionAutomationUnavailable");
@@ -1534,6 +1535,10 @@ function sessionAutomationUnavailableText(session) {
 
 function appendSessionAutomation(container, session) {
   if (!container || !session) return;
+  // Explain Codex's unavailable per-session settings, but do not imply that
+  // state-only/manual-only agents inherit Clawd permission automation.
+  if (session.canConfigureSessionAutomation !== true
+    && !session.sessionAutomationGrantId && session.agentId !== "codex") return;
   const row = document.createElement("div");
   row.className = "session-automation-row";
   const label = createText("span", "session-automation-label", t("sessionAutomationLabel"));
@@ -1545,11 +1550,11 @@ function appendSessionAutomation(container, session) {
     const readonlyValue = createText(
       "span",
       "session-automation-readonly",
-      t("sessionAutomationFollowGlobal")
+      t("sessionAutomationUnavailableValue")
     );
     readonlyValue.setAttribute(
       "aria-label",
-      `${t("sessionAutomationLabel")}: ${t("sessionAutomationFollowGlobal")}`
+      `${t("sessionAutomationLabel")}: ${t("sessionAutomationUnavailableValue")}`
     );
     const unavailable = createText(
       "span",
@@ -1587,6 +1592,7 @@ function appendSessionAutomation(container, session) {
     options: pickerValues.map(([value, labelText]) => ({ value, label: labelText })),
     lockWhilePending: true,
     pending: actionState.pending === true,
+    revealWhenClosed: false,
     onChange: async (nextValue) => {
       if (!window.dashboardAPI) return false;
       sessionAutomationActionState.set(key, {
@@ -1628,6 +1634,7 @@ function appendSessionAutomation(container, session) {
       return true;
     },
   });
+  picker.element.setAttribute("data-session-automation-key", key);
   sessionAutomationPickers.push(picker);
   if (!canConfigure) picker.element.title = unavailableText;
   row.appendChild(label);
@@ -1778,7 +1785,7 @@ function appendSessionAutomationOrphans(fragment) {
   fragment.appendChild(section);
 }
 
-function hasOpenSessionAutomationPicker() {
+function hasOpenSessionAutomationPicker(target = document.activeElement) {
   return sessionAutomationPickers.some((picker) => {
     const element = picker && picker.element;
     return !!(
@@ -1786,8 +1793,23 @@ function hasOpenSessionAutomationPicker() {
       && element.classList
       && element.classList.contains("open")
       && contentEl.contains(element)
+      && element.contains(target)
     );
   });
+}
+
+function sessionAutomationFocusKey() {
+  const focused = sessionAutomationPickers.find((picker) =>
+    picker.element.contains(document.activeElement));
+  return focused ? focused.element.getAttribute("data-session-automation-key") : null;
+}
+
+function restoreSessionAutomationFocus(key) {
+  if (!key) return;
+  const picker = sessionAutomationPickers.find((candidate) =>
+    candidate.element.getAttribute("data-session-automation-key") === key);
+  const trigger = picker && picker.element.querySelector(".language-picker-trigger");
+  if (trigger) trigger.focus({ preventScroll: true });
 }
 
 function disposeSessionAutomationPickers() {
@@ -2150,6 +2172,7 @@ function render(options = {}) {
   // Replacing an open picker closes its menu, but focus alone must not block an
   // authoritative snapshot that carries a newly created automation grant.
   if ((activeEdit || hasOpenSessionAutomationPicker()) && !options.force) return;
+  const automationFocusKey = sessionAutomationFocusKey();
   disposeSessionAutomationPickers();
   const sessions = Array.isArray(snapshot.sessions) ? snapshot.sessions : [];
   const count = sessions.length;
@@ -2196,6 +2219,7 @@ function render(options = {}) {
   appendSessionHistory(fragment, now);
 
   contentEl.replaceChildren(fragment);
+  restoreSessionAutomationFocus(automationFocusKey);
 }
 
 async function init() {

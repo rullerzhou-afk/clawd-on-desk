@@ -1713,7 +1713,7 @@ describe("dashboard window", () => {
     const rendererSource = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
     const dashboardHtml = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard.html"), "utf8");
 
-    assert.match(rendererSource, /function hasOpenSessionAutomationPicker\(\)/);
+    assert.match(rendererSource, /function hasOpenSessionAutomationPicker\(/);
     assert.match(rendererSource, /element\.classList\.contains\("open"\)/);
     assert.match(rendererSource, /disposeSessionAutomationPickers\(\);/);
     assert.match(

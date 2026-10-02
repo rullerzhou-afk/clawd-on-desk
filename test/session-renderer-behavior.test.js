@@ -49,6 +49,11 @@ class FakeElement {
   }
   appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
   replaceChildren(...children) {
+    const document = this.ownerDocument;
+    if (document && document.activeElement !== this && this.contains(document.activeElement)) {
+      document.activeElement = document.body;
+    }
+    for (const child of this.children) child.parentNode = null;
     this.children = children;
     for (const child of children) child.parentNode = this;
   }
@@ -80,18 +85,22 @@ class FakeElement {
     return null;
   }
   replaceWith() {}
-  focus() {}
+  focus() { if (this.ownerDocument) this.ownerDocument.activeElement = this; }
   select() {}
 }
 
 function createDocument(ids) {
   const elements = new Map(ids.map((id) => [id, new FakeElement("div")]));
-  return {
+  const document = {
     title: "",
     activeElement: null,
     body: new FakeElement("body"),
     documentElement: { clientHeight: 0 },
-    createElement: (tag) => new FakeElement(tag),
+    createElement: (tag) => {
+      const element = new FakeElement(tag);
+      element.ownerDocument = document;
+      return element;
+    },
     createTextNode: (text) => ({ textContent: String(text), children: [] }),
     createDocumentFragment: () => new FakeElement("fragment"),
     getElementById: (id) => elements.get(id) || null,
@@ -101,6 +110,9 @@ function createDocument(ids) {
     removeEventListener: () => {},
     elements,
   };
+  document.body.ownerDocument = document;
+  for (const element of elements.values()) element.ownerDocument = document;
+  return document;
 }
 
 function descendants(root) {
@@ -142,7 +154,8 @@ function translations() {
     sessionAutomationFollowGlobal: "Follow global",
     sessionAutomationAsk: "Always ask",
     sessionAutomationAutoTools: "Auto-allow tools",
-    sessionAutomationUnavailable: "Unavailable",
+    sessionAutomationUnavailableValue: "Unavailable",
+    sessionAutomationUnavailable: "Per-session settings unavailable.",
     sessionAutomationUnavailableCodexDesktop: "Codex Desktop does not support per-session permission settings yet.",
     sessionAutomationChangeFailed: "Could not update session automation.",
     sessionAutomationOrphansTitle: "Ended or hidden sessions",
@@ -470,6 +483,7 @@ test("Dashboard session automation sends only sessionId/mode and exact grantId",
     sessionAutomationGrantId: "grant-current",
   });
   const inactiveIneligible = session("inactive", {
+    agentId: "codex",
     canConfigureSessionAutomation: false,
     sessionAutomationMode: "inherit",
   });
@@ -528,6 +542,7 @@ test("Dashboard refreshes a closed focused automation picker before an immediate
 
   const refreshedPicker = byClass(harness.root, "session-automation-picker")[0];
   const refreshedTrigger = byClass(refreshedPicker, "language-picker-trigger")[0];
+  assert.strictEqual(harness.document.activeElement, refreshedTrigger, "snapshot refresh retains focus on the current control");
   const inheritOption = byClass(refreshedPicker, "language-picker-option")
     .find((option) => option.textContent === "Follow global");
   await refreshedTrigger.dispatch("click");
@@ -548,18 +563,79 @@ test("Dashboard renders unsupported Codex Desktop automation as an explained rea
       sessionAutomationMode: null,
       sessionAutomationGrantId: null,
       sessionAutomationDisabledReason: "unsupported-codex-originator",
+      codexOriginator: "codex_work_desktop",
     }),
   ]);
 
   assert.strictEqual(byClass(root, "session-automation-picker").length, 0);
   assert.strictEqual(
     byClass(root, "session-automation-readonly")[0].textContent,
-    "Follow global"
+    "Unavailable"
   );
   assert.strictEqual(
     byClass(root, "session-automation-unavailable")[0].textContent,
     "Codex Desktop does not support per-session permission settings yet."
   );
+});
+
+test("Dashboard preserves a closed picker focus across ticks without reviving removed sessions", async () => {
+  const configured = session("focused", { canConfigureSessionAutomation: true });
+  const harness = await loadDashboard([configured]);
+  let trigger = byClass(harness.root, "language-picker-trigger")[0];
+  trigger.focus();
+  for (let i = 0; i < 2; i++) {
+    harness.tickRender();
+    const next = byClass(harness.root, "language-picker-trigger")[0];
+    assert.notStrictEqual(next, trigger);
+    assert.strictEqual(harness.document.activeElement, next);
+    trigger = next;
+  }
+  harness.pushSnapshot({ sessions: [], groups: [] });
+  assert.strictEqual(byClass(harness.root, "session-automation-picker").length, 0);
+  assert.strictEqual(harness.document.activeElement, harness.document.body, "a removed session cannot regain focus");
+});
+
+test("Dashboard releases the menu refresh guard after keyboard focus moves outside", async () => {
+  const configured = session("menu", { canConfigureSessionAutomation: true, canFocus: true });
+  const harness = await loadDashboard([configured]);
+  const picker = byClass(harness.root, "session-automation-picker")[0];
+  await byClass(picker, "language-picker-trigger")[0].dispatch("click");
+  assert.strictEqual(picker.classList.contains("open"), true);
+  harness.tickRender();
+  assert.strictEqual(byClass(harness.root, "session-automation-picker")[0], picker);
+  const outside = byClass(harness.root, "actions")[0].children[0];
+  outside.focus();
+  const newer = session("new", { agentId: "codex" });
+  harness.pushSnapshot({ sessions: [configured, newer], groups: [{ host: "", ids: [configured.id, newer.id] }] });
+  assert.strictEqual(byClass(harness.root, "card").length, 2);
+  assert.strictEqual(picker.classList.contains("open"), false);
+});
+
+test("Dashboard hides unsupported non-Codex rows while retaining exact grant revocation", async () => {
+  const sessions = ["pi", "qoder", "zcode", "deepseek-harness", "claude-code"].map((agentId) =>
+    session(agentId, { agentId, canConfigureSessionAutomation: false }));
+  const harness = await loadDashboard(sessions);
+  assert.strictEqual(byClass(harness.root, "session-automation-row").length, 0);
+  const retained = session("retained", { agentId: "pi", canConfigureSessionAutomation: false,
+    sessionAutomationMode: "auto-tools", sessionAutomationGrantId: "retained-grant" });
+  harness.pushSnapshot({ sessions: [retained], groups: [{ host: "", ids: [retained.id] }] });
+  const picker = byClass(harness.root, "session-automation-picker")[0];
+  await byClass(picker, "language-picker-option").find(option => option.textContent === "Follow global").dispatch("click");
+  await flush();
+  assert.deepStrictEqual(JSON.parse(JSON.stringify(harness.automationCalls)), [["clear", { grantId: "retained-grant" }]]);
+});
+
+test("Dashboard labels only known Desktop originators as Codex Desktop", async () => {
+  const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
+  for (const originator of ["codex desktop", " CODEX_WORK_DESKTOP ", "codex_vscode", "codex-exec", "unknown", null]) {
+    const harness = await loadDashboard([session("unsupported", { agentId: "codex",
+      canConfigureSessionAutomation: false, codexOriginator: originator,
+      sessionAutomationDisabledReason: "unsupported-codex-session-source" })]);
+    assert.strictEqual(byClass(harness.root, "session-automation-unavailable")[0].textContent,
+      isCodexDesktopOriginator(originator)
+        ? translations().sessionAutomationUnavailableCodexDesktop
+        : translations().sessionAutomationUnavailable);
+  }
 });
 
 test("Dashboard renders and revokes an orphan grant by exact grantId", async () => {
@@ -583,7 +659,7 @@ test("Dashboard renders and revokes an orphan grant by exact grantId", async () 
 });
 
 test("Dashboard keeps session automation failure feedback visible after rerender", async () => {
-  const { root } = await loadDashboard([
+  const { root, tickRender } = await loadDashboard([
     session("configurable", {
       canConfigureSessionAutomation: true,
       sessionAutomationMode: "inherit",
@@ -595,7 +671,10 @@ test("Dashboard keeps session automation failure feedback visible after rerender
   await autoToolsOption.dispatch("click");
   await flush();
 
-  assert.strictEqual(byClass(picker, "language-picker-value")[0].textContent, "Follow global");
+  tickRender();
+  const refreshedPicker = byClass(root, "session-automation-picker")[0];
+  assert.notStrictEqual(refreshedPicker, picker);
+  assert.strictEqual(byClass(refreshedPicker, "language-picker-value")[0].textContent, "Follow global");
   assert.strictEqual(
     byClass(root, "session-automation-feedback")[0].textContent,
     "Could not update session automation."

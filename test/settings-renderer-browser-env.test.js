@@ -787,6 +787,7 @@ function loadSharedLanguagePickerForTest({
   transitionDelay = "0s",
   lockWhilePending = false,
   viewportPlacement = null,
+  revealWhenClosed,
   innerWidth = 1000,
   textZoom = 1,
 } = {}) {
@@ -880,6 +881,7 @@ function loadSharedLanguagePickerForTest({
     onChange,
     lockWhilePending,
     viewportPlacement,
+    revealWhenClosed,
   });
   boundary.appendChild(control.element);
 
@@ -10078,6 +10080,26 @@ describe("settings renderer browser environment", () => {
         lastOption.bottom <= layout.boundaryBottom,
         `${layout.scale}: last option stays inside the body`,
       );
+    }
+  });
+
+  it("can preserve a closed Dashboard picker's scroll without changing tutorial reveal defaults", () => {
+    for (const revealWhenClosed of [false, undefined]) {
+      const harness = loadSharedLanguagePickerForTest({ revealWhenClosed });
+      harness.boundary.getBoundingClientRect = () => ({ top: 50, bottom: 300 });
+      harness.trigger.getBoundingClientRect = () => ({
+        top: 500 - harness.boundary.scrollTop, bottom: 526 - harness.boundary.scrollTop,
+      });
+      harness.dispatchWindowEvent("resize");
+      harness.flushAnimationFrames();
+      if (revealWhenClosed === false) assert.strictEqual(harness.boundary.scrollTop, 0);
+      else assert.ok(harness.boundary.scrollTop > 0);
+      harness.boundary.scrollTop = 0;
+      harness.trigger.dispatchEvent({ type: "click" });
+      harness.dispatchWindowEvent("resize");
+      harness.flushAnimationFrames();
+      assert.ok(harness.boundary.scrollTop > 0, "open menus still reveal their trigger");
+      harness.control.dispose();
     }
   });
 

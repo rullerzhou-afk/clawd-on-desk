@@ -73,11 +73,15 @@ class Element {
     this.classList.items = new Set(String(value || "").split(/\s+/).filter(Boolean));
   }
   setAttribute(name, value) { this.attributes[name] = value; }
+  getAttribute(name) { return this.attributes[name] ?? null; }
+  querySelector(selector) {
+    return selector.startsWith(".") ? this.descendants().find(el => el.classList?.contains(selector.slice(1))) || null : null;
+  }
   appendChild(child) { this.children.push(child); return child; }
   replaceChildren(child) { this.children = child ? [...child.children] : []; }
   addEventListener(name, fn) { this.listeners.set(name, fn); }
   removeEventListener(name) { this.listeners.delete(name); }
-  contains() { return true; }
+  contains(target) { return target === this || this.descendants().includes(target); }
   focus() {}
   select() {}
   // Depth-first walk used by the assertions below.
@@ -142,7 +146,11 @@ async function renderer(options = {}) {
       if (!elements.has(id)) elements.set(id, new Element());
       return elements.get(id);
     },
-    addEventListener: (name, fn) => documentListeners.set(name, fn),
+    // key() invokes the capture phase; picker target/bubble behavior is driven
+    // separately. New picker listeners must not replace the page capture owner.
+    addEventListener: (name, fn, capture) => {
+      if (capture || !documentListeners.has(name)) documentListeners.set(name, fn);
+    },
     contains: () => true,
   };
 
@@ -1125,4 +1133,33 @@ test("a submitted jump reports submitted, never confirmed", async () => {
 
   assert.equal(r.banner().textContent, i18n.en.dashboardQuickSelectSubmitted);
   assert.deepEqual(r.calls.ack, []);
+});
+
+test("open automation menus own Escape and digits in captured and empty quick rounds", async () => {
+  for (const entries of [twoEntries, []]) {
+    const r = await renderer({ modelFocus: true, entries, snapshot: {
+      sessions: [session("s1", { canConfigureSessionAutomation: true })],
+      groups: [{ host: "local", ids: ["s1"] }],
+    } });
+    await r.intent(1);
+    const picker = r.content().descendants().find(el => el.classList?.contains("session-automation-picker"));
+    const trigger = picker.querySelector(".language-picker-trigger");
+    trigger.listeners.get("click")();
+    assert.equal(picker.classList.contains("open"), true);
+    const option = r.document.activeElement;
+    const digit = await r.key("keydown", "1");
+    assert.equal(digit.prevented, false);
+    await r.key("keyup", "1");
+    await r.runTimers();
+    assert.deepEqual(r.calls.activate, []);
+    const escape = await r.key("keydown", "Escape");
+    assert.equal(escape.prevented, false);
+    assert.equal(escape.propagationStopped, false);
+    assert.deepEqual(r.calls.dismiss, []);
+    option.listeners.get("keydown")(escape);
+    assert.equal(picker.classList.contains("open"), false);
+    assert.equal(r.document.activeElement, trigger);
+    await r.key("keydown", "Escape");
+    assert.deepEqual(r.calls.dismiss, [{ revision: 1 }], "a second Escape still cancels the page round");
+  }
 });
