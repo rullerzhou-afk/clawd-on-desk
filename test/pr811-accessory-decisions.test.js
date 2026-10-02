@@ -38,6 +38,8 @@ const HIDDEN_MOUTH_FILES = Object.freeze([
   "clawd-working-sweeping.svg",
   "clawd-error.svg",
   "clawd-happy.svg",
+  "clawd-designing.svg",
+  "clawd-heart-eyes.svg",
   "clawd-working-building.svg",
   "clawd-idle-bubble.svg",
   "clawd-working-debugger.svg",
@@ -67,7 +69,7 @@ const OPTIONAL_LIBRARY_FILES = Object.freeze([
   "clawd-working-wizard.svg",
 ]);
 
-test("PR #811 mouth policy covers the approved 36 stock sprites exactly", () => {
+test("mouth policy covers the approved 38 stock sprites exactly", () => {
   const theme = themeLoader.loadTheme("clawd", { strict: true });
   const files = theme.customization.mouthAccessories.files;
   const stockFiles = Object.fromEntries(
@@ -81,7 +83,7 @@ test("PR #811 mouth policy covers the approved 36 stock sprites exactly", () => 
     new Set(Object.keys(stockFiles)),
     new Set([...VISIBLE_MOUTH_FILES, ...HIDDEN_MOUTH_FILES])
   );
-  assert.strictEqual(Object.keys(stockFiles).length, 36);
+  assert.strictEqual(Object.keys(stockFiles).length, 38);
   assert.deepStrictEqual(files["clawd-outlaw-bender.svg"], { visibility: "hidden" });
   assert.deepStrictEqual(
     files["clawd-working-typing-boss.svg"],

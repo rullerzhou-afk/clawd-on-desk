@@ -352,8 +352,8 @@ case "$SCENARIO" in
   appimage-claude-hooks)
     note "packaged Claude hooks must persist outside the FUSE mount"
     # Deterministic Claude Code version so the versioned hooks (PreCompact /
-    # PostCompact / StopFailure) are always registered: exactly 14 managed
-    # state commands under default prefs.
+    # PostCompact / StopFailure / UserPromptExpansion) are always registered:
+    # exactly 15 managed state commands under default prefs.
     CLAUDE_FIXTURE_BIN="$ISOLATION_ROOT/claude-fixture-bin"
     mkdir -p "$CLAUDE_FIXTURE_BIN"
     printf '#!/bin/sh\nprintf "2.1.274 (Claude Code)\\n"\n' >"$CLAUDE_FIXTURE_BIN/claude"
@@ -387,7 +387,7 @@ const CORE = [
   "PostToolUseFailure", "Stop", "SubagentStart", "SubagentStop", "Notification",
   "Elicitation",
 ];
-const VERSIONED = ["PreCompact", "PostCompact", "StopFailure"];
+const VERSIONED = ["PreCompact", "PostCompact", "StopFailure", "UserPromptExpansion"];
 const EXPECTED = new Set([...CORE, ...VERSIONED]);
 const fail = (message) => { process.stderr.write(`smoke: ${message}\n`); process.exit(1); };
 let settings;
@@ -408,7 +408,7 @@ for (const [event, entries] of Object.entries(hooks)) {
 }
 const events = [...new Set(commands.map((c) => c.event))].sort();
 const expectedEvents = [...EXPECTED].sort();
-if (commands.length !== 14) fail(`expected exactly 14 managed state commands, got ${commands.length}: ${events.join(", ")}`);
+if (commands.length !== EXPECTED.size) fail(`expected exactly ${EXPECTED.size} managed state commands, got ${commands.length}: ${events.join(", ")}`);
 if (JSON.stringify(events) !== JSON.stringify(expectedEvents)) {
   fail(`managed state event set drifted: ${events.join(", ")}`);
 }
@@ -443,7 +443,7 @@ NODE
     then
       fail "appimage-claude-hooks: settings inspection failed"
     fi
-    ok "exactly the 14 core+versioned commands share one persistent generation"
+    ok "exactly the 15 core+versioned commands share one persistent generation"
 
     kill_owned_processes
     poll 15 server_ports_clear || fail "Clawd state port remained occupied after teardown"

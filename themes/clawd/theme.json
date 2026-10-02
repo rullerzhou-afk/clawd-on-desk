@@ -67,18 +67,10 @@
           }
         },
         "clawd-designing.svg": {
-          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
-          "followTarget": {
-            "id": "torso",
-            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
-          }
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
         },
         "clawd-heart-eyes.svg": {
-          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 },
-          "followTarget": {
-            "id": "torso",
-            "frame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
-          }
+          "staticFrame": { "cx": 7.5, "baseY": 6.5, "width": 16 }
         },
         "clawd-idle-look.svg": {
           "staticFrame": {
