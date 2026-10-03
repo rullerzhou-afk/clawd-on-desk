@@ -7,6 +7,7 @@ const path = require("path");
 const { execFileSync } = require("child_process");
 const { writeJsonAtomic } = require("./json-utils");
 const { getClaudeStopDisposition } = require("./claude-stop-disposition");
+const { readPidCacheV2 } = require("./pid-cache");
 
 const LEASE_VERSION = 1;
 const LEASE_DIR_NAME = "session-recovery-v1";
@@ -317,6 +318,21 @@ function getProcessStartIdentity(pid, options = {}) {
   return null;
 }
 
+function keepsWindowsCacheIdentity(record, options = {}) {
+  if ((options.platform || process.platform) !== "win32") return false;
+  if (!record || record.active || !record.pid || !record.sourcePid) return false;
+  if (!/^win32:[1-9]\d*$/.test(record.processStartIdentity || "")
+    || !/^win32:[1-9]\d*$/.test(record.sourceProcessStartIdentity || "")) return false;
+  const cached = readPidCacheV2(record.agentId, record.sessionId, record.cwd);
+  // Cache-hit hooks have no start identity of their own. Keep this private
+  // evidence for exactly the same live, interactive cache instead of expiring
+  // it while that cache can still serve another turn. This never activates an
+  // inactive record; startup still verifies current process start identities.
+  return !!cached && !cached.headless
+    && cached.agentPid === record.pid && cached.stablePid === record.sourcePid
+    && processAlive(record.pid, options) && processAlive(record.sourcePid, options);
+}
+
 function pruneRecoveryLeaseFiles(dir, options = {}) {
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const skipFilePath = typeof options.skipFilePath === "string"
@@ -350,18 +366,21 @@ function pruneRecoveryLeaseFiles(dir, options = {}) {
   }
 
   for (const entry of entries) {
-    if (entry.record && !entry.record.active && now - entry.record.eventAt > TOMBSTONE_RETENTION_MS) {
+    if (entry.record && !entry.record.active && now - entry.record.eventAt > TOMBSTONE_RETENTION_MS
+      && !keepsWindowsCacheIdentity(entry.record, options)) {
       entry.deleted = deleteInactiveIf(
         entry,
-        (current) => now - current.eventAt > TOMBSTONE_RETENTION_MS,
+        (current) => now - current.eventAt > TOMBSTONE_RETENTION_MS
+          && !keepsWindowsCacheIdentity(current, options),
       );
     }
   }
   let remaining = entries.filter((entry) => !entry.deleted);
   if (remaining.length > MAX_LEASE_FILES) {
-    const removable = remaining
-      .filter((entry) => entry.record && !entry.record.active)
-      .sort((a, b) => a.record.eventAt - b.record.eventAt);
+    const removable = remaining.filter((entry) => entry.record && !entry.record.active);
+    for (const entry of removable) entry.keepsCacheIdentity = keepsWindowsCacheIdentity(entry.record, options);
+    removable.sort((a, b) => Number(a.keepsCacheIdentity) - Number(b.keepsCacheIdentity)
+      || a.record.eventAt - b.record.eventAt);
     for (const entry of removable) {
       if (remaining.length <= MAX_LEASE_FILES) break;
       if (deleteInactiveIf(entry, () => true)) {
@@ -619,7 +638,7 @@ function loadActiveRecoveryLeases(options = {}) {
     return [];
   }
   cleanupOrphanedLeaseLocks(dir, options);
-  const names = pruneRecoveryLeaseFiles(dir, { now: options.now });
+  const names = pruneRecoveryLeaseFiles(dir, options);
   const now = Number.isFinite(options.now) ? options.now : Date.now();
   const maxAgeMs = Number.isFinite(options.maxAgeMs) && options.maxAgeMs > 0
     ? options.maxAgeMs

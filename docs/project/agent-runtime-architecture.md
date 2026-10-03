@@ -436,6 +436,7 @@ WSL 状态同步（本机 loopback，但 PID 属于 Linux VM）：
 
 ## Local Claude Session History
 
+- Windows 的 inactive recovery lease 在相同的交互式 v2 PID cache 仍存在、PID 匹配且两个进程仍存活时保留启动身份，供下一轮 cache-hit hook 重用；不会刷新时间或当作活动会话恢复。缓存丢失 / 不匹配、进程退出或缺失 Windows 启动身份时仍按 10 分钟清理；100 文件预算优先清理不再承载缓存身份的 inactive 记录，必要时仍可淘汰最旧的 inactive 记录。恢复活动行时继续独立校验当前进程启动身份，不以缓存存活代替 PID 复用校验。
 - `hooks/session-history.js` 保存独立的本机会话索引，不能放宽 `session-recovery-lease.js` 的进程存活条件。lease 用于恢复仍在运行的状态，history 用于在进程退出或重启后找到可手动继续的旧会话；历史行本身不是 live session，不进入状态机、HUD、recap 或权限自动化。
 - Claude command hook 在 POST 前 best-effort 写入 `~/.clawd/session-history-v1/`，Clawd 离线也能记录。只覆盖本机交互式 Claude Code；remote、WSL、headless 和其他 agent 不写。保存 session ID、cwd、显式标题、状态和时间，不保存 prompt 派生标题、回复或工具内容；它是索引，不是 transcript 备份。目录 / 文件权限为 0700 / 0600（POSIX）。
 - 有效记录按 30 天 / 200 条清理，Dashboard 主列表最多展示 25 条已确认（transcript 在且 cwd 现存）的行，未确认可恢复的行进默认收起的折叠组。每条记录复用 lease 的跨进程锁，锁内读取、合并并原子替换；同毫秒 terminal 事件优先。清理非阻塞拿锁并重读，跳过正在写入或已更新的行；无效 / foreign / future-schema 文件保留且不计入有效记录预算。主进程只回收 PID 明确已不存在的历史锁，未知 owner / 探测错误不能接管。
