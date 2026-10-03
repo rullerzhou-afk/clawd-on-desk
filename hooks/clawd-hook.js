@@ -12,6 +12,7 @@ const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPa
 const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
 const { recordSessionHistoryFromStateBody } = require("./session-history");
 const { normalizeModelId } = require("./claude-rate-limits");
+const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./claude-tool-batch");
 // #634: the pid cache + lifecycle orchestration is owned by the shared resolver
 // now (hooks/shared-process.js); this adapter no longer touches pid-cache,
 // processAlive, or isWin directly.
@@ -354,6 +355,7 @@ const EVENT_TO_STATE = {
   UserPromptExpansion: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
+  PostToolBatch: "thinking",
   PostToolUseFailure: "error",
   Stop: "attention",
   StopFailure: "error",
@@ -589,6 +591,17 @@ function applyResolvedFields(body, resolved, event) {
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
+  const promptId = normalizeClaudePhaseId(payload.prompt_id);
+  if (event === "PostToolBatch") {
+    const toolUseIds = extractClaudeBatchToolUseIds(payload.tool_calls);
+    // A child batch cannot describe its parent's model phase. This minimal
+    // event deliberately avoids transcript reads and process-resolution work.
+    if (!promptId || !toolUseIds || !normalizeClaudePhaseId(payload.session_id)
+      || (payload.agent_id && payload.agent_id !== "claude-code")
+      || resolveReportingAgentId(payload) !== "claude-code") return null;
+    return { state, event, agent_id: "claude-code", session_id: payload.session_id,
+      prompt_id: promptId, tool_use_ids: toolUseIds };
+  }
   // UserPromptExpansion includes structured command metadata. Only an explicit
   // user-typed /design should select the design visual.
   if (event === "UserPromptExpansion" && !(
@@ -615,6 +628,7 @@ function buildStateBody(event, payload, resolve) {
   const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
+  if (promptId) body.prompt_id = promptId;
   if (event === "UserPromptExpansion") body.display_svg = "claude-design";
   if (
     event === "UserPromptSubmit"

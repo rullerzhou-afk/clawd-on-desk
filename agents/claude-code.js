@@ -14,6 +14,7 @@ module.exports = {
     UserPromptSubmit: "thinking",
     PreToolUse: "working",
     PostToolUse: "working",
+    PostToolBatch: "thinking",
     PostToolUseFailure: "error",
     Stop: "attention",
     StopFailure: "error",

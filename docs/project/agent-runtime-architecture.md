@@ -2,6 +2,17 @@
 
 This document holds the deeper runtime and integration notes that were previously in the root `AGENTS.md`.
 
+Claude's live tool/model phase additionally uses `PostToolBatch` on the conservative
+2.1.280+ baseline. The hook sends only bounded tool IDs and `prompt_id`, omitting
+inputs, responses and process probes. `src/claude-tool-phase.js` keeps a bounded
+in-memory main-session ledger; `/state` observes it before permission cleanup and
+passes its internal decision to `state.js` without consuming the event twice.
+Direct state callers use the same arbiter before completion timers, recap and
+session mutation. Missing correlation keeps the legacy mapping. A batch cannot
+replace pending approvals or live subagent cues, and its recovery/history
+classification is intentionally empty so a delayed phase hint never reopens a
+durable record. This does not add durable fencing to existing Pre/Post writers.
+
 ## Data Flow
 
 ```text

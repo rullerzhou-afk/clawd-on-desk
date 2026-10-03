@@ -74,6 +74,23 @@ describe("Claude hook recovery lease ordering", () => {
     assert.strictEqual(lease.state, null);
   });
 
+  it("does not change the Stop tombstone or ended history for a late offline batch", () => {
+    run("PreToolUse", { tool_name: "Read" });
+    run("Stop");
+    const leaseFile = getLeaseFilePath("claude-code", "offline-session", { recoveryDir });
+    const historyFile = getHistoryFilePath("claude-code", "offline-session", {
+      historyDir: path.join(home, ".clawd", "session-history-v1"),
+    });
+    const beforeLease = fs.readFileSync(leaseFile, "utf8");
+    const beforeHistory = fs.readFileSync(historyFile, "utf8");
+    const result = run("PostToolBatch", { prompt_id: "prompt-1",
+      tool_calls: [{ tool_use_id: "tool-1", tool_response: "private response" }] });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(result.stdout, "");
+    assert.equal(fs.readFileSync(leaseFile, "utf8"), beforeLease);
+    assert.equal(fs.readFileSync(historyFile, "utf8"), beforeHistory);
+  });
+
   it("keeps the Stop tombstone and history ending when a trailing SubagentStop arrives (#1060)", () => {
     const historyFile = getHistoryFilePath("claude-code", "offline-session", {
       historyDir: path.join(home, ".clawd", "session-history-v1"),

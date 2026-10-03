@@ -31,6 +31,8 @@ Clawd also has a conditional Outlaw idle easter egg: while both the Western cowb
 
 In the Clawd theme, a direct Claude Code `/design` command selects the painting visual through `UserPromptExpansion`. The accepted main-session `Stop` selects heart eyes; this marks a completed turn, not successful publication. Temporary tool failures, notifications and automatic compaction keep the design hint for resumed work, while terminal failures, session end and the next ordinary prompt clear it. Both poses retain the selected head accessory and temporarily hide the mouth accessory, which returns on supported ordinary poses. Other themes use their normal state visuals.
 
+Claude Code 2.1.280+ additionally registers `PostToolBatch`. An accepted main-session batch returns to `thinking` before the next model request, without marking the turn complete. It requires the current `prompt_id` and the exact bounded tool identities observed for that prompt; missing/ambiguous identity, pending approvals, child batches, headless sessions and delayed old callbacks do not produce this phase change. Live subagent cues retain their priority. Per-tool events keep the shared mapping above, and older/unknown Claude versions keep the existing behavior. The phase event does not change persisted recovery leases or session history. The 2.1.280 gate is a conservative verified baseline, not a claim about the first release supporting the event. See [Claude's hook contract](https://code.claude.com/docs/en/hooks#posttoolbatch).
+
 ## Kimi Code CLI (Kimi-CLI) Hook Events
 
 Kimi Code CLI (Kimi-CLI) now uses hook-only integration (`~/.kimi/config.toml`), and maps these 13 hook events to shared Clawd states:

@@ -40,6 +40,28 @@ const mockResolve = () => ({
 });
 
 describe("buildStateBody", () => {
+  it("reports a parent tool batch as a minimal phase event without tool content or process probing", () => {
+    const body = buildStateBody("PostToolBatch", {
+      session_id: "batch-session", prompt_id: "prompt-1", cwd: "/private/project",
+      transcript_path: "/private/transcript", tool_calls: [{
+        tool_name: "Read", tool_use_id: "tool-1", tool_input: { secret: "input" },
+        tool_response: "private response",
+      }],
+    }, () => { throw new Error("a phase event must not probe processes"); });
+    assert.deepStrictEqual(body, { state: "thinking", event: "PostToolBatch", agent_id: "claude-code",
+      session_id: "batch-session", prompt_id: "prompt-1", tool_use_ids: ["tool-1"] });
+  });
+
+  it("drops batches with no prompt correlation, invalid tool identities, or child provenance", () => {
+    const payload = { session_id: "batch-session", prompt_id: "prompt-1",
+      tool_calls: [{ tool_use_id: "tool-1" }] };
+    for (const extra of [{ prompt_id: null }, { agent_id: "child-1" }, { tool_calls: [] },
+      { tool_calls: [{ tool_use_id: "tool-1" }, { tool_use_id: "tool-1" }] },
+      { tool_calls: [{ tool_use_id: "x".repeat(129) }] }]) {
+      assert.equal(buildStateBody("PostToolBatch", { ...payload, ...extra }, mockResolve), null);
+    }
+    assert.equal(buildStateBody("PreToolUse", { ...payload, tool_name: "Read" }, mockResolve).prompt_id, "prompt-1");
+  });
   it("returns null for unknown events", () => {
     assert.strictEqual(buildStateBody("UnknownEvent", {}, mockResolve), null);
   });

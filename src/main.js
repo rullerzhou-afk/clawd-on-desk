@@ -2979,6 +2979,7 @@ const _serverCtx = {
   codexSubagentClassifier: agentRuntime.getCodexSubagentClassifier(),
   setState,
   updateSession: agentRuntime.updateSessionFromServer,
+  observeClaudeToolPhase: _state.observeClaudeToolPhase,
   updateSessionMetadata: agentRuntime.updateSessionMetadataFromServer,
   shouldSuppressCodexArchive: (rawSessionId, opts) =>
     agentRuntime.shouldSuppressCodexArchive(rawSessionId, opts),

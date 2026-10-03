@@ -420,6 +420,9 @@ function cleanupOrphanedLeaseLocks(dir, options = {}) {
 
 function classifyBody(body, options = {}) {
   if (!body || typeof body !== "object") return null;
+  // The receiver alone correlates this phase with accepted live tool calls.
+  // A delayed async batch must not reopen a lease or an ended history row.
+  if (body.event === "PostToolBatch") return null;
   if (body.headless === true) return { active: false, state: null, terminal: false };
   if (body.event === "Stop") {
     const stopOptions = {

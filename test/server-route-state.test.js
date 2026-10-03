@@ -190,6 +190,69 @@ describe("server-route-state health", () => {
 });
 
 describe("server-route-state POST", () => {
+  it("does not consume Claude phase evidence for disabled, metadata-only or invalid-state requests", async () => {
+    const base = { agent_id: "claude-code", session_id: "batch-session", state: "thinking",
+      event: "UserPromptSubmit", prompt_id: "prompt-1" };
+    for (const [body, disabled] of [[base, true], [{ ...base, metadata_only: true }, false],
+      [{ ...base, state: "unknown-state" }, false]]) {
+      let observed = 0;
+      await callStatePost(JSON.stringify(body), { ctx: {
+        isAgentEnabled: () => !disabled,
+        observeClaudeToolPhase: () => { observed++; return { accept: true }; },
+      } });
+      assert.equal(observed, 0);
+    }
+  });
+  it("passes only validated Claude prompt and batch identities to the state arbiter", async () => {
+    const res = await callStatePost(JSON.stringify({ agent_id: "claude-code", session_id: "batch-session",
+      state: "thinking", event: "PostToolBatch", prompt_id: "prompt-1", tool_use_ids: ["tool-1"] }));
+    assert.equal(res.statusCode, 200);
+    assert.equal(res.calls.updateSession.length, 1);
+    assert.equal(res.calls.updateSession[0][3].claudePromptId, "prompt-1");
+    assert.deepStrictEqual(res.calls.updateSession[0][3].batchToolUseIds, ["tool-1"]);
+    assert.equal(res.calls.resolved.length, 0);
+  });
+
+  it("drops malformed, foreign, child, and decorative batch events before state mutation", async () => {
+    const base = { agent_id: "claude-code", session_id: "batch-session", state: "thinking",
+      event: "PostToolBatch", prompt_id: "prompt-1", tool_use_ids: ["tool-1"] };
+    for (const extra of [{ prompt_id: null }, { tool_use_ids: [] }, { tool_use_ids: ["tool-1", "tool-1"] },
+      { agent_id: "codex" }, { subagent_id: "child-1" }, { svg: "x.svg" }, { state: "working" }]) {
+      const res = await callStatePost(JSON.stringify({ ...base, ...extra }));
+      assert.equal(res.statusCode, 204, JSON.stringify(extra));
+      assert.equal(res.calls.updateSession.length, 0);
+      assert.equal(res.calls.setState.length, 0);
+      assert.equal(res.calls.resolved.length, 0);
+    }
+  });
+
+  it("keeps an outstanding Claude permission when the batch phase arrives", async () => {
+    const pending = makePlanPermission("batch-session");
+    const res = await callStatePost(JSON.stringify({ agent_id: "claude-code", session_id: "batch-session",
+      state: "thinking", event: "PostToolBatch", prompt_id: "prompt-1", tool_use_ids: ["tool-1"] }),
+    { ctx: { pendingPermissions: [pending] } });
+    assert.equal(res.statusCode, 204);
+    assert.equal(res.calls.updateSession.length, 0);
+    assert.equal(res.calls.resolved.length, 0);
+  });
+
+  it("rejects an old Claude Stop before it can sweep a newer prompt's permission", async () => {
+    const api = makeMetadataStateRuntime();
+    const sid = localSessionKey("batch-session");
+    try {
+      api.updateSession(sid, "thinking", "UserPromptSubmit", { agentId: "claude-code", claudePromptId: "old-prompt" });
+      api.updateSession(sid, "thinking", "UserPromptSubmit", { agentId: "claude-code", claudePromptId: "new-prompt" });
+      const pending = makePlanPermission("batch-session");
+      const res = await callStatePost(JSON.stringify({ agent_id: "claude-code", session_id: "batch-session",
+        state: "attention", event: "Stop", prompt_id: "old-prompt" }), { ctx: {
+          pendingPermissions: [pending], observeClaudeToolPhase: api.observeClaudeToolPhase,
+          updateSession: api.updateSession,
+        } });
+      assert.equal(res.statusCode, 204);
+      assert.equal(res.calls.resolved.length, 0);
+      assert.equal(api.sessions.get(sid).state, "thinking");
+    } finally { api.cleanup(); }
+  });
   it("enforces DSH upstream sequence order across created, event, and disposed callbacks", async () => {
     const fence = createDshStateSequenceFence();
     const post = (event, state, sequence = {}) => callStatePost(JSON.stringify({

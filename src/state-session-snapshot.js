@@ -39,6 +39,7 @@ function deriveSourceInfo(host) {
 }
 
 const EVENT_LABEL_KEYS = {
+  PostToolBatch: "eventLabelPostToolBatch",
   SessionStart: "eventLabelSessionStart",
   SessionEnd: "eventLabelSessionEnd",
   UserPromptSubmit: "eventLabelUserPromptSubmit",

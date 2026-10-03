@@ -86,6 +86,7 @@ const HOOK_FILES = [
   "quota-bucket.js",
   "state-payload-size.js",
   "claude-stop-disposition.js",
+  "claude-tool-batch.js",
   "session-recovery-lease.js",
   "session-history.js",
   "claude-session-id.js",

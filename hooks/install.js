@@ -96,6 +96,8 @@ const VERSIONED_HOOKS = [
   { event: "StopFailure", minVersion: "2.1.78" },
   // /design is a built-in skill in Claude Code 2.1.265+.
   { event: "UserPromptExpansion", minVersion: "2.1.265" },
+  // Conservative supported baseline, not the first release of this event.
+  { event: "PostToolBatch", minVersion: "2.1.280" },
 ];
 
 const CLAUDE_VERSION_PATTERN = /(\d+\.\d+\.\d+)/;

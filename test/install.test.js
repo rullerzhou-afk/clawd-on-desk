@@ -56,6 +56,31 @@ delete process.env.WSL_DISTRO_NAME;
 
 const tempDirs = [];
 
+describe("Claude batch phase version gate", () => {
+  for (const register of [registerHooks, registerHooksAsync]) {
+    it(`${register.name} installs the batch hook only at the supported baseline`, async () => {
+      for (const version of ["2.1.279", "2.1.280", null]) {
+        const settingsPath = makeTempSettings({});
+        await register({ silent: true, settingsPath, claudeVersionInfo: {
+          version, source: "test", status: version ? "known" : "unknown",
+        } });
+        assert.equal(getClawdCommands(readSettings(settingsPath), "PostToolBatch").length,
+          version === "2.1.280" ? 1 : 0);
+      }
+    });
+  }
+
+  it("removes only an owned batch hook on downgrade and preserves foreign hooks", () => {
+    const foreign = { hooks: [{ type: "command", command: 'node "/foreign/batch.js"' }] };
+    const settingsPath = makeTempSettings({ hooks: { PostToolBatch: [foreign] } });
+    registerHooks({ silent: true, settingsPath,
+      claudeVersionInfo: { version: "2.1.280", source: "test", status: "known" } });
+    registerHooks({ silent: true, settingsPath,
+      claudeVersionInfo: { version: "2.1.279", source: "test", status: "known" } });
+    assert.deepStrictEqual(readSettings(settingsPath).hooks.PostToolBatch, [foreign]);
+  });
+});
+
 function secureRemoteIdentity(overrides = {}) {
   return {
     ok: true,

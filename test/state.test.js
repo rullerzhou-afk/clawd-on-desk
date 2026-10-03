@@ -69,6 +69,83 @@ function cloneTheme(theme) {
   return JSON.parse(JSON.stringify(theme));
 }
 
+describe("Claude correlated batch phase", () => {
+  let api;
+  let ctx;
+  beforeEach(() => { ctx = makeCtx(); api = require("../src/state")(ctx); });
+  afterEach(() => api.cleanup());
+  const sid = "batch-session";
+  function event(name, state, extra = {}) {
+    return api.updateSession(sid, state, name, { agentId: "claude-code", claudePromptId: "prompt-1", ...extra });
+  }
+
+  it("waits for a whole parallel batch then ignores its late per-tool callbacks", () => {
+    event("UserPromptSubmit", "thinking");
+    event("PreToolUse", "working", { toolUseId: "tool-a" });
+    event("PreToolUse", "working", { toolUseId: "tool-b" });
+    event("PostToolUse", "working", { toolUseId: "tool-a" });
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a"] }), false);
+    assert.equal(api.sessions.get(sid).state, "working");
+    event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a", "tool-b"] });
+    assert.equal(api.sessions.get(sid).state, "thinking");
+    const before = JSON.stringify(api.buildSessionSnapshot());
+    assert.equal(event("PostToolUse", "working", { toolUseId: "tool-b" }), false);
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a", "tool-b"] }), false);
+    assert.equal(JSON.stringify(api.buildSessionSnapshot()), before);
+  });
+
+  it("rejects old-prompt batches, tool tails and Stop without disturbing a newer tool", () => {
+    event("UserPromptSubmit", "thinking");
+    event("PreToolUse", "working", { toolUseId: "old-tool" });
+    event("UserPromptSubmit", "thinking", { claudePromptId: "prompt-2" });
+    event("PreToolUse", "working", { claudePromptId: "prompt-2", toolUseId: "new-tool" });
+    const before = JSON.stringify(api.buildSessionSnapshot());
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["old-tool"] }), false);
+    assert.equal(event("PostToolUse", "working", { toolUseId: "old-tool" }), false);
+    assert.equal(event("Stop", "attention"), false);
+    assert.equal(JSON.stringify(api.buildSessionSnapshot()), before);
+  });
+
+  it("does not resurrect a completed turn or create an unobserved session", () => {
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a"] }), false);
+    assert.equal(api.sessions.size, 0);
+    event("UserPromptSubmit", "thinking");
+    event("PreToolUse", "working", { toolUseId: "tool-a" });
+    event("Stop", "attention");
+    const before = JSON.stringify(api.buildSessionSnapshot());
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a"] }), false);
+    assert.equal(JSON.stringify(api.buildSessionSnapshot()), before);
+  });
+
+  it("keeps pending approvals and confirmed subagents visible", () => {
+    event("UserPromptSubmit", "thinking");
+    event("PreToolUse", "working", { toolUseId: "tool-a" });
+    ctx.pendingPermissions.push({ sessionId: sid, agentId: "claude-code", res: {} });
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a"] }), false);
+    ctx.pendingPermissions.length = 0;
+    event("SubagentStart", "juggling", { subagentId: "child-a", subagentLifecycleSource: "native" });
+    event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a"] });
+    assert.equal(api.sessions.get(sid).state, "juggling");
+    assert.equal(api.sessions.get(sid).subagentTracker.confirmedIds.size, 1);
+  });
+
+  it("keeps legacy working when prompt identity is absent and never treats a batch as completion", () => {
+    const sounds = [];
+    ctx.playSound = (...args) => sounds.push(args);
+    event("UserPromptSubmit", "thinking", { claudePromptId: null });
+    event("PreToolUse", "working", { claudePromptId: null, toolUseId: "tool-a" });
+    assert.equal(event("PostToolBatch", "thinking", { batchToolUseIds: ["tool-a"] }), false);
+    assert.equal(api.sessions.get(sid).state, "working");
+    event("UserPromptSubmit", "thinking", { claudePromptId: "prompt-2" });
+    event("PreToolUse", "working", { claudePromptId: "prompt-2", toolUseId: "tool-b" });
+    event("PostToolUseFailure", "error", { claudePromptId: "prompt-2", toolUseId: "tool-b" });
+    event("PostToolBatch", "thinking", { claudePromptId: "prompt-2", batchToolUseIds: ["tool-b"] });
+    assert.equal(api.sessions.get(sid).state, "thinking");
+    assert.notEqual(api.sessions.get(sid).requiresCompletionAck, true, "a batch does not create a completed-turn acknowledgement");
+    assert.ok(!sounds.some((args) => args.includes("happy")));
+  });
+});
+
 describe("optional mini peek states", () => {
   let api;
 
