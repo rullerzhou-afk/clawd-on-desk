@@ -26,6 +26,7 @@ docs/**
 !docs/guides/recap.md
 !docs/guides/setup-guide.md
 !docs/guides/slack-notifications.md
+!docs/guides/ntfy-bridge.md
 !docs/guides/setup-guide.zh-CN.md
 !docs/guides/guide-remote-ssh.md
 !docs/guides/roam-fence.md
@@ -124,6 +125,7 @@ scripts/manual/*
 !scripts/windows-process-chain-observer.ps1
 !scripts/validate-theme.js
 !scripts/create-theme.js
+!scripts/ntfy-bridge.js
 !scripts/export-agent-icons.js
 !scripts/verify-electron-install.js
 !scripts/audit-repository-assets.js
