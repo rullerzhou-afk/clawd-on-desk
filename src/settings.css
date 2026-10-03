@@ -260,6 +260,20 @@ html, body {
   gap: 0 16px;
   margin-bottom: 20px;
 }
+.recap-data-region { position: relative; }
+.recap-loading-status {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  font-size: 12px;
+  pointer-events: none;
+}
 .recap-page-header h1,
 .recap-page-header .subtitle { grid-column: 1; }
 .recap-page-header .subtitle { margin-bottom: 0; }
@@ -293,8 +307,7 @@ html, body {
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08);
 }
 .recap-period-button:focus-visible,
-.recap-agent-row:focus-visible,
-.recap-grid:focus-visible {
+.recap-agent-row:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--accent) 70%, transparent);
   outline-offset: 2px;
 }
@@ -463,6 +476,7 @@ html, body {
 .recap-grid {
   min-width: 0;
   border-radius: 6px;
+  outline: none;
 }
 .recap-band {
   display: flex;
@@ -494,6 +508,13 @@ html, body {
 .recap-cell-future,
 .recap-cell-not-started,
 .recap-cell-blank { background: transparent; }
+.recap-grid:not(.recap-grid-today) .recap-cell-not-started {
+  border: 1px dashed color-mix(in srgb, var(--border) 80%, transparent);
+}
+.recap-grid:not(.recap-grid-today) .recap-cell-future {
+  border: 1px solid color-mix(in srgb, var(--border) 55%, transparent);
+}
+.recap-cell-future .recap-day-number { color: var(--text-tertiary); }
 .recap-today-band {
   height: 80px;
   align-items: stretch;
@@ -593,10 +614,15 @@ html, body {
 .recap-grid-dim .recap-cell-hit,
 .recap-grid-dim .recap-cell-peek { opacity: 1; }
 .recap-grid-dim .recap-cell-hit { border: 0; }
-.recap-grid:focus .recap-cell-keyboard {
-  outline: 2px solid var(--text-primary);
-  outline-offset: 2px;
+.recap-grid.recap-keyboard-mode:focus-visible .recap-cell-keyboard {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+  box-shadow: 0 0 0 3px var(--panel-bg);
+  opacity: 1;
   z-index: 4;
+}
+@media (forced-colors: active) {
+  .recap-grid.recap-keyboard-mode:focus-visible .recap-cell-keyboard { outline-color: Highlight; }
 }
 .recap-hour-labels {
   display: flex;
@@ -632,25 +658,49 @@ html, body {
 .recap-month-weekdays {
   margin-bottom: 5px;
   text-align: center;
+  font-size: 10px;
 }
 .recap-month-row { margin-bottom: 4px; }
 .recap-month-row:last-child { margin-bottom: 0; }
+.recap-week-hours {
+  display: grid;
+  grid-template-columns: repeat(24, minmax(0, 1fr));
+  gap: 2px;
+  margin: 0 0 5px 28px;
+  color: var(--text-tertiary);
+  font-size: 10px;
+  line-height: 16px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
 .recap-month-grid .recap-cell { border-radius: 10%; }
 .recap-day-number {
   position: absolute;
   top: 8%;
   right: 9%;
   z-index: 2;
-  color: var(--text-tertiary);
-  font-size: 8px;
-  line-height: 1;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+}
+.recap-cell-activity .recap-day-number { color: var(--text-primary); }
+.recap-cell-current .recap-day-number::after {
+  content: "";
+  display: block;
+  width: 4px;
+  height: 4px;
+  margin: 3px auto 0;
+  border-radius: 50%;
+  background: currentColor;
 }
 .recap-year-row { gap: 2px; }
 .recap-year-row .recap-row-label {
-  width: 24px;
+  width: 32px;
   flex: 0 0 auto;
   overflow: hidden;
   text-align: right;
+  font-size: 10px;
 }
 .recap-year-row .recap-band { gap: 1.5px; }
 .recap-year-row .recap-cell { border-radius: 20%; }
@@ -670,13 +720,14 @@ html, body {
   z-index: 20;
   min-width: 150px;
   max-width: min(260px, 100%);
-  padding: 8px 10px;
+  padding: 10px 12px;
   border: 1px solid var(--border);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--panel-bg);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.10);
   color: var(--text-primary);
-  font-size: 10.5px;
+  font-size: 12px;
+  line-height: 16px;
   opacity: 0;
   pointer-events: none;
   transform: translateY(3px);
@@ -689,14 +740,16 @@ html, body {
 .recap-cell-popover > strong {
   display: block;
   margin-bottom: 5px;
-  color: var(--text-secondary);
-  font-size: 9.5px;
+  color: var(--text-primary);
+  font-size: 12px;
+  font-weight: 600;
 }
 .recap-cell-popover-note {
   margin: -1px 0 7px;
   color: var(--text-secondary);
   line-height: 1.35;
 }
+.recap-cell-popover-note:last-child { margin-bottom: 0; }
 .recap-cell-popover > div {
   display: flex;
   align-items: center;
