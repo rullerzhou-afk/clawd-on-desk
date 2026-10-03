@@ -24,6 +24,7 @@ docs/**
 !docs/guides/known-limitations.md
 !docs/guides/known-limitations.zh-CN.md
 !docs/guides/recap.md
+!docs/guides/productivity.md
 !docs/guides/setup-guide.md
 !docs/guides/slack-notifications.md
 !docs/guides/setup-guide.zh-CN.md

@@ -89,6 +89,10 @@ const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
+const { registerProductivityIpc } = require("./productivity-ipc");
+const { createProductivityRuntime } = require("./productivity-runtime");
+const { createProjectBookmarkLauncher } = require("./project-bookmarks");
+const { createQuotaNotificationPresenter } = require("./quota-notifications");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { createRecapRuntime } = require("./recap-runtime");
 const { createKimiQuotaClient } = require("./kimi-quota-client");
@@ -1320,6 +1324,7 @@ function getEffectiveCurrentPixelSize(overrideWa) {
 }
 let contextMenu;
 let doNotDisturb = false;
+let productivityRuntime = null;
 let isQuitting = false;
 let quitCleanupStarted = false;
 let appQuitDrainStarted = false;
@@ -1476,6 +1481,7 @@ let macHideController = null; // macOS app-hidden ↔ pet visibility bridge (#41
 // activate/unhide won't falsely restore, and if the app is OS-hidden, unhide it
 // first to avoid a "window shown but app still hidden" limbo.
 function prepManualPetVisibility() {
+  productivityRuntime?.noteManualChange("hidden");
   if (macHideController) macHideController.noteManualChange();
   if (isMac && petWindowRuntime.isPetHidden() && typeof app.isHidden === "function" && app.isHidden()) {
     try { app.show(); } catch (_) {}
@@ -2380,6 +2386,7 @@ const _stateCtx = {
   buildTrayMenu: () => buildTrayMenu(),
   debugLog: (msg) => sessionLog(msg),
   broadcastSessionSnapshot: (snapshot) => {
+    productivityRuntime?.observeQuota();
     reconcilePowerSaveBlocker();
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
@@ -2506,10 +2513,26 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
   }
 });
 const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride,
-        enableDoNotDisturb, disableDoNotDisturb, startStaleCleanup, stopStaleCleanup,
+        enableDoNotDisturb: enableDoNotDisturbState, disableDoNotDisturb: disableDoNotDisturbState,
+        startStaleCleanup, stopStaleCleanup,
         startWakePoll, stopWakePoll, detectRunningAgentProcesses,
         startStartupRecovery: _startStartupRecovery } = _state;
 const sessions = _state.sessions;
+
+function enableDoNotDisturb() {
+  productivityRuntime?.noteManualChange("dnd");
+  return enableDoNotDisturbState();
+}
+function disableDoNotDisturb() {
+  productivityRuntime?.noteManualChange("dnd");
+  const result = disableDoNotDisturbState();
+  productivityRuntime?.observeQuota();
+  return result;
+}
+
+function showQuotaAlert(event) {
+  return quotaNotifications.show(event);
+}
 
 async function showSessionAutomationWarning(entry) {
   const parent = selectSessionAutomationDialogParent({
@@ -4981,6 +5004,23 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
   },
 });
 
+const quotaNotifications = createQuotaNotificationPresenter({
+  Notification, platform: process.platform, trayBalloonOwner, getTray: () => _menu.getTray(),
+  isSuppressed: () => doNotDisturb || isQuitting || !app.isReady(),
+  isMuted: () => soundMuted, getLang: () => lang, openSettings: () => settingsWindowRuntime.open(),
+});
+const productivityIpcRuntime = registerProductivityIpc({
+  ipcMain, settingsController: _settingsController, getSettingsWindow, dialog,
+  launcher: createProjectBookmarkLauncher({ shell }),
+  testNotification: () => quotaNotifications.test(),
+});
+productivityRuntime = createProductivityRuntime({
+  settingsController: _settingsController, state: _state, petWindowRuntime,
+  getDoNotDisturb: () => doNotDisturb, notifyQuota: showQuotaAlert,
+  historyPath: path.join(app.getPath("userData"), "quota-alert-history.json"),
+  powerMonitor, logWarn: (message) => console.warn(message),
+});
+
 const settingsIpcRuntime = registerSettingsIpc({
   ipcMain,
   app,
@@ -5951,6 +5991,7 @@ if (!gotTheLock) {
 
     // Register persistent global shortcuts from the validated prefs snapshot.
     shortcutRuntime.registerPersistentShortcutsFromSettings();
+    productivityRuntime.start();
 
     // Construct log monitors. We always instantiate them so toggling the
     // agent on/off later can call start()/stop() without paying the require
@@ -5980,6 +6021,7 @@ if (!gotTheLock) {
   });
 
   app.on("before-quit", (event) => {
+    productivityIpcRuntime.dispose();
     isQuitting = true;
     if (!appQuitDrainReady) {
       event.preventDefault();
@@ -5994,6 +6036,8 @@ if (!gotTheLock) {
     }
     if (quitCleanupStarted) return;
     quitCleanupStarted = true;
+    productivityRuntime?.dispose();
+    quotaNotifications.dispose();
     // Cancel any live official-theme download and drop this round's `.part`.
     if (officialThemeMain) {
       try { officialThemeMain.cancelInstall(); } catch {}

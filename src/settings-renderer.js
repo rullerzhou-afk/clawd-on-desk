@@ -7,6 +7,7 @@ const core = globalThis.ClawdSettingsCore;
 // system fonts and didn't dark-mode well.
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
+  { id: "productivity", labelKey: "sidebarProductivity", available: true },
   { id: "agents", labelKey: "sidebarAgents", available: true },
   { id: "theme", labelKey: "sidebarTheme", available: true },
   { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
@@ -42,14 +43,28 @@ function renderSidebar() {
     if (tab.id === core.state.activeTab) item.classList.add("active");
     // Icon HTML is trusted (it comes from our own settings-icons.js
     // module, not user input), so we drop it in as-is.
+    const label = tab.id === "productivity" && globalThis.ClawdProductivityI18n
+      ? globalThis.ClawdProductivityI18n.getProductivityStrings(core.readers.getLang()).sidebarProductivity
+      : core.helpers.t(tab.labelKey);
     item.innerHTML =
       `<span class="sidebar-item-icon">${getTabIcon(tab.id)}</span>` +
-      `<span class="sidebar-item-label">${core.helpers.escapeHtml(core.helpers.t(tab.labelKey))}</span>` +
+      `<span class="sidebar-item-label">${core.helpers.escapeHtml(label)}</span>` +
       (tab.available ? "" : `<span class="sidebar-item-soon">${core.helpers.escapeHtml(core.helpers.t("sidebarSoon"))}</span>`);
     if (tab.available) {
       item.addEventListener("click", () => {
         core.ops.selectTab(tab.id);
       });
+      if (tab.id === "productivity") {
+        item.id = "settings-productivity-navigation";
+        item.tabIndex = 0;
+        item.setAttribute("role", "button");
+        if (tab.id === core.state.activeTab) item.setAttribute("aria-current", "page");
+        item.addEventListener("keydown", (event) => {
+          if (event.key !== "Enter" && event.key !== " ") return;
+          event.preventDefault();
+          core.ops.selectTab(tab.id);
+        });
+      }
     }
     sidebar.appendChild(item);
   }
@@ -84,6 +99,7 @@ core.ops.installRenderHooks({
 });
 
 globalThis.ClawdSettingsTabGeneral.init(core);
+if (globalThis.ClawdSettingsTabProductivity) globalThis.ClawdSettingsTabProductivity.init(core);
 globalThis.ClawdSettingsTabAgents.init(core);
 globalThis.ClawdSettingsTabTheme.init(core);
 // Not a top-level tab anymore — it provides the "on / off" subtab that

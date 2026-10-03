@@ -4009,6 +4009,19 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
 });
 
 describe("manual show intent hook (#935 override latch)", () => {
+  it("scheduled restore preserves fullscreen suppression and never claims manual Show intent", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setPetHidden(true, { manual: false });
+    h.runtime.setFullscreenAutoHidden(true);
+    h.renderWin.calls.length = 0;
+    h.runtime.setPetHidden(false, { manual: false });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    assert.deepEqual(notes, []);
+    assert.ok(!h.renderWin.calls.some((c) => c[0] === "showInactive"));
+  });
   it("setPetHidden(false) reports intent even when it is a visible no-op", () => {
     const notes = [];
     const h = createRuntime({ noteManualPetShow: () => notes.push("show") });

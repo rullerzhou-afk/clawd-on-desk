@@ -15,6 +15,11 @@
 // ids fall back to `placeholder`.
 
 const ICONS = {
+  // timer
+  productivity:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<circle cx="12" cy="13" r="8"/><path d="M9 2h6M12 5V2M12 9v4l3 2M18 5l2 2"/>' +
+    '</svg>',
   // gear
   general:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +

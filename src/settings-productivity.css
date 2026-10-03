@@ -1,0 +1,20 @@
+.sidebar-item#settings-productivity-navigation:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.productivity-tab .prod-panel { display: flex; flex-direction: column; align-items: stretch; gap: 14px; min-width: 0; }
+.productivity-tab .prod-panel > .settings-button { align-self: flex-start; }
+.productivity-tab .prod-panel p { margin: 0; line-height: 1.6; }
+.productivity-tab .prod-field { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.productivity-tab .prod-check, .productivity-tab .prod-day { display: flex; align-items: center; gap: 8px; }
+.productivity-tab input[type="checkbox"] { accent-color: var(--accent); flex-shrink: 0; width: 16px; height: 16px; }
+.productivity-tab .prod-input { width: 100%; min-width: 0; padding: 9px 10px; border: 1px solid var(--border); border-radius: 7px; background: var(--panel-bg); color: var(--text-primary); font: inherit; user-select: text; color-scheme: light dark; }
+.productivity-tab .prod-input:focus-visible, .productivity-tab input[type="checkbox"]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.productivity-tab .prod-days { display: flex; flex-wrap: wrap; gap: 12px; margin: 0; padding: 8px 0 0; border: 0; }
+.productivity-tab .prod-time-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.productivity-tab .prod-editor { display: flex; flex-direction: column; gap: 14px; padding: 14px; border: 1px solid var(--border); border-radius: 8px; }
+.productivity-tab .prod-project-list, .productivity-tab .prod-editor-host { width: 100%; min-width: 0; }
+.productivity-tab .prod-project { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 14px 0; border-top: 1px solid var(--row-border); }
+.productivity-tab .prod-project-info { flex: 1 1 180px; min-width: 0; }
+.productivity-tab .prod-project-info .row-label { display: block; overflow-wrap: anywhere; }
+.productivity-tab .prod-path { overflow-wrap: anywhere; user-select: text; }
+.productivity-tab .prod-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.productivity-tab .prod-empty { padding-top: 8px; }
+@media (max-width: 600px) { .productivity-tab .prod-time-grid { grid-template-columns: 1fr; } .productivity-tab .prod-actions { width: 100%; } }
