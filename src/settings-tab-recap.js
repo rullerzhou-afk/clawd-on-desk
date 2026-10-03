@@ -500,27 +500,20 @@
     return { period, cells, columns, rows, startDate };
   }
 
-  function buildPeriodTabs() {
-    const group = document.createElement("div");
-    group.className = "recap-period-tabs";
-    group.setAttribute("role", "group");
-    group.setAttribute("aria-label", t("recapPeriodLabel"));
-    for (const period of PERIODS) {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "recap-period-button";
-      button.setAttribute("data-settings-focus-key", `recap-period-${period}`);
-      button.textContent = t(`recapPeriod_${period}`);
-      button.classList.toggle("active", view.period === period);
-      button.setAttribute("aria-pressed", view.period === period ? "true" : "false");
-      button.addEventListener("click", () => {
-        if (view.period === period) return;
+  function buildPeriodChoice() {
+    const control = helpers.buildSegmentedRadio({
+      id: "recap-period",
+      ariaLabel: t("recapPeriodLabel"),
+      className: "recap-period-tabs",
+      value: view.period,
+      options: PERIODS.map((period) => ({ value: period, label: t(`recapPeriod_${period}`) })),
+      onChange(period) {
         view.period = period;
         reload();
-      });
-      group.appendChild(button);
-    }
-    return group;
+      },
+    });
+    for (const button of control.element.querySelectorAll("button")) button.classList.add("recap-period-button");
+    return control.element;
   }
 
   function metricText(value, partial = false) {
@@ -1185,7 +1178,7 @@
     subtitle.textContent = t("recapSubtitle");
     header.appendChild(title);
     header.appendChild(subtitle);
-    header.appendChild(buildPeriodTabs());
+    header.appendChild(buildPeriodChoice());
     parent.appendChild(header);
 
     if (view.status === "idle") requestData();
