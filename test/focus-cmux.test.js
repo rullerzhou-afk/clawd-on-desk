@@ -55,7 +55,7 @@ describe("cmux panel focus (macOS)", () => {
   it("should call cmux focus-panel with matched panel UUID", (t, done) => {
     const panelId = "18AA1EB5-3055-445C-B780-60C88B21341B";
     const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: "ws-uuid-1",
+      workspaceId: "ws-uuid-1",
       panels: [{ id: panelId, ttyName: "ttys007", type: "terminal" }]
     }]);
     const origHome = process.env.HOME;
@@ -111,7 +111,7 @@ describe("cmux panel focus (macOS)", () => {
     const panelId = "18AA1EB5-3055-445C-B780-60C88B21341B";
     const workspaceId = "ws-uuid-1";
     const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: workspaceId,
+      workspaceId,
       panels: [{ id: panelId, ttyName: "ttys007", type: "terminal" }]
     }]);
     const origHome = process.env.HOME;
@@ -164,7 +164,7 @@ describe("cmux panel focus (macOS)", () => {
     const panel2Id = "panel-id-2";
     const matchedTty = "ttys003";
     const { tmpDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: "ws-split",
+      workspaceId: "ws-split",
       panels: [
         { id: panel1Id, ttyName: "ttys001", type: "terminal" },
         { id: panel2Id, ttyName: matchedTty, type: "terminal" }
@@ -216,7 +216,7 @@ describe("cmux panel focus (macOS)", () => {
   it("should search later cmux session files when the newest file has no matching TTY", (t, done) => {
     const panelId = "panel-in-older-session";
     const { tmpDir, cmuxDir, cleanup: cleanupFile } = writeMockSessionFile([{
-      id: "newer-wrong-workspace",
+      workspaceId: "newer-wrong-workspace",
       panels: [{ id: "wrong-panel", ttyName: "ttys001", type: "terminal" }]
     }], "newer");
     const olderSessionPath = path.join(cmuxDir, "session-older.json");
@@ -225,7 +225,7 @@ describe("cmux panel focus (macOS)", () => {
         tabManager: {
           selectedWorkspaceIndex: 0,
           workspaces: [{
-            id: "older-matched-workspace",
+            workspaceId: "older-matched-workspace",
             panels: [{ id: panelId, ttyName: "ttys007", type: "terminal" }]
           }]
         }

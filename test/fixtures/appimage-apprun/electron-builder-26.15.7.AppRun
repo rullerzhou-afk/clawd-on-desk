@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -e
+
+THIS="$0"
+args=("$@")
+
+if [ -z "$APPDIR" ] ; then
+  path="$(dirname "$(readlink -f "${THIS}")")"
+  APPDIR="$path"
+fi
+
+export PATH="${APPDIR}:${APPDIR}/usr/sbin${PATH:+:${PATH}}"
+export XDG_DATA_DIRS="${APPDIR}/usr/share/${XDG_DATA_DIRS:+:${XDG_DATA_DIRS}}:/usr/share/gnome:/usr/local/share/:/usr/share/"
+export LD_LIBRARY_PATH="${APPDIR}/usr/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
+export GSETTINGS_SCHEMA_DIR="${APPDIR}/usr/share/glib-2.0/schemas${GSETTINGS_SCHEMA_DIR:+:${GSETTINGS_SCHEMA_DIR}}"
+
+error()
+{
+  if [ -x /usr/bin/zenity ] ; then
+    LD_LIBRARY_PATH="" zenity --error --text "${1}" 2>/dev/null
+  elif [ -x /usr/bin/kdialog ] ; then
+    LD_LIBRARY_PATH="" kdialog --msgbox "${1}" 2>/dev/null
+  elif [ -x /usr/bin/Xdialog ] ; then
+    LD_LIBRARY_PATH="" Xdialog --msgbox "${1}" 2>/dev/null
+  fi
+}
+
+yesno()
+{
+  if [ -x /usr/bin/zenity ] ; then
+    LD_LIBRARY_PATH="" zenity --question --text "$TEXT" 2>/dev/null || exit 0
+  fi
+}

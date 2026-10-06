@@ -185,7 +185,7 @@
   </g>
 
   <g class="body-nod">
-    <g class="breathe">
+    <g id="accessory-anchor" class="breathe">
 
       <!-- 腿 + torso -->
       <g fill="#DE886D">

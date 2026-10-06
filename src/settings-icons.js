@@ -59,6 +59,13 @@ const ICONS = {
     '<path d="M22 2 15 22l-4-9-9-4 20-7Z"/>' +
     '</svg>',
 
+  // gamepad (Discord presence)
+  "discord-presence":
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M6 11h4M8 9v4M15 12h.01M18 10h.01"/>' +
+    '<path d="M17.32 5H6.68a4 4 0 0 0-3.98 3.59C2.6 9.42 2 14.46 2 16a3 3 0 0 0 3 3c1 0 1.5-.5 2-1l1.41-1.41A2 2 0 0 1 9.83 16h4.34a2 2 0 0 1 1.42.59L17 18c.5.5 1 1 2 1a3 3 0 0 0 3-3c0-1.54-.6-6.58-.68-7.26A4 4 0 0 0 17.32 5Z"/>' +
+    '</svg>',
+
   // plug
   "remote-ssh":
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
@@ -67,11 +74,14 @@ const ICONS = {
     '<path d="M12 16v6"/>' +
     '</svg>',
 
-  // smartphone
-  mobile:
+  // paw print (local activity footprints)
+  recap:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
-    '<rect x="5" y="2" width="14" height="20" rx="2"/>' +
-    '<path d="M12 18h.01"/>' +
+    '<path d="M8 16.2c0-2.3 1.8-4.2 4-4.2s4 1.9 4 4.2c0 2.2-1.5 3.4-4 3.4s-4-1.2-4-3.4Z"/>' +
+    '<circle cx="6.4" cy="10.2" r="1.7"/>' +
+    '<circle cx="9.6" cy="6.6" r="1.7"/>' +
+    '<circle cx="14.4" cy="6.6" r="1.7"/>' +
+    '<circle cx="17.6" cy="10.2" r="1.7"/>' +
     '</svg>',
 
   // info circle

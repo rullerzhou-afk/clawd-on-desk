@@ -16,6 +16,7 @@ const {
   normalizeClaudeSessionId,
   quoteCmdExecutablePath,
   quoteForPowerShell,
+  buildClaudeLaunchEnv,
   launchClaudeSession,
   findClaudeCmd,
 } = require("../src/launch-claude");
@@ -417,6 +418,23 @@ describe("buildTerminalCandidates - macOS", () => {
     const script = cands[0].args[1];
     assert.ok(!script.includes("cd -- "), script);
   });
+
+  it("pins the recorded default or custom Claude profile in Terminal.app", () => {
+    const defaultScript = buildTerminalCandidates(
+      "/usr/local/bin/claude", ["--resume", "sid"], "darwin", "/tmp/work",
+      { kind: "default", configDir: null },
+    )[0].args[1];
+    assert.ok(defaultScript.includes("env -u CLAUDE_CONFIG_DIR "), defaultScript);
+
+    const customScript = buildTerminalCandidates(
+      "/usr/local/bin/claude", ["--resume", "sid"], "darwin", "/tmp/work",
+      { kind: "custom", configDir: "/tmp/claude profile" },
+    )[0].args[1];
+    assert.ok(
+      customScript.includes("env CLAUDE_CONFIG_DIR='/tmp/claude profile' "),
+      customScript,
+    );
+  });
 });
 
 describe("buildShellTerminalCandidates (#459)", () => {
@@ -585,6 +603,45 @@ describe("buildTerminalCandidates - Linux", () => {
     // The only unquoted `;` in the whole payload is the trailing keep-open one.
     assert.ok(payload.endsWith("; exec bash"));
   });
+
+  it("pins the recorded custom Claude profile in the inner shell", () => {
+    const cands = buildTerminalCandidates(
+      "/usr/bin/claude", ["--resume", "sid"], "linux", "/tmp/work",
+      { kind: "custom", configDir: "/tmp/profile with spaces" },
+    );
+    const payload = cands[0].args[cands[0].args.length - 1];
+    assert.ok(payload.startsWith("env CLAUDE_CONFIG_DIR='/tmp/profile with spaces' "), payload);
+  });
+});
+
+describe("buildClaudeLaunchEnv", () => {
+  it("removes inherited CLAUDE_CONFIG_DIR for a recorded default profile", () => {
+    const base = {
+      PATH: "/bin",
+      CLAUDE_CONFIG_DIR: "/wrong/profile",
+      Claude_Config_Dir: "/wrong/case-variant",
+    };
+    const env = buildClaudeLaunchEnv({ kind: "default", configDir: null }, base);
+    assert.deepStrictEqual(env, { PATH: "/bin" });
+    assert.strictEqual(base.CLAUDE_CONFIG_DIR, "/wrong/profile", "must not mutate the caller's env");
+  });
+
+  it("sets the exact recorded directory for a custom profile", () => {
+    const customConfigDir = path.resolve(os.tmpdir(), "claude-custom");
+    const env = buildClaudeLaunchEnv(
+      { kind: "custom", configDir: customConfigDir },
+      { PATH: "/bin", Claude_Config_Dir: "/wrong/profile" },
+    );
+    assert.strictEqual(env.CLAUDE_CONFIG_DIR, customConfigDir);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(env, "Claude_Config_Dir"), false);
+  });
+
+  it("rejects malformed profile provenance", () => {
+    assert.throws(
+      () => buildClaudeLaunchEnv({ kind: "custom", configDir: "relative/path" }, {}),
+      /invalid Claude profile/,
+    );
+  });
 });
 
 describe("launchClaudeSession - terminal fallback", () => {
@@ -647,6 +704,66 @@ describe("launchClaudeSession - terminal fallback", () => {
       launchClaudeSession("resume", undefined, 'sid" & calc & "x', deps),
       /Invalid Claude session ID/,
     );
+    assert.deepStrictEqual(attempted, []);
+  });
+
+  it("passes a profile-pinned environment to every terminal candidate", async () => {
+    const customConfigDir = path.resolve(os.tmpdir(), "profiles", "work");
+    const attempted = [];
+    const deps = {
+      platform: () => "win32",
+      findClaudeCmd: async () => WIN_PATH,
+      tryLaunch: async (bin, args, opts) => {
+        attempted.push({ bin, args, opts });
+        return { ok: bin === "cmd.exe", error: new Error("missing") };
+      },
+    };
+    const result = await launchClaudeSession(
+      "resume", "C:\\work", "sid_1", deps,
+      { kind: "custom", configDir: customConfigDir },
+    );
+    assert.deepStrictEqual(result, { ok: true, terminal: "cmd.exe" });
+    assert.deepStrictEqual(attempted.map((item) => item.bin), ["wt.exe", "cmd.exe"]);
+    for (const item of attempted) {
+      assert.strictEqual(item.opts.env.CLAUDE_CONFIG_DIR, customConfigDir);
+    }
+    assert.deepStrictEqual(attempted[0].args.slice(0, 4), [
+      "--", "powershell.exe", "-NoExit", "-EncodedCommand",
+    ]);
+    const wtCommand = Buffer.from(attempted[0].args[4], "base64").toString("utf16le");
+    assert.ok(
+      wtCommand.startsWith(`$env:CLAUDE_CONFIG_DIR = ${quoteForPowerShell(customConfigDir)}; & `),
+      wtCommand,
+    );
+  });
+
+  it("unsets an inherited profile inside a reused Windows Terminal tab", () => {
+    const wt = buildTerminalCandidates(
+      WIN_PATH, ["--resume", "sid_1"], "win32", "C:\\work",
+      { kind: "default", configDir: null },
+    )[0];
+    assert.deepStrictEqual(wt.args.slice(0, 4), [
+      "--", "powershell.exe", "-NoExit", "-EncodedCommand",
+    ]);
+    const wtCommand = Buffer.from(wt.args[4], "base64").toString("utf16le");
+    assert.ok(
+      wtCommand.startsWith("Remove-Item -LiteralPath 'Env:CLAUDE_CONFIG_DIR' -ErrorAction SilentlyContinue; & "),
+      wtCommand,
+    );
+  });
+
+  it("rejects an invalid profile before trying a terminal", async () => {
+    const { attempted, deps } = makeDeps({
+      plat: "linux", okBins: ["xterm"], findResult: "/usr/bin/claude",
+    });
+    const result = await launchClaudeSession(
+      "resume", "/tmp/work", "sid_1", deps,
+      { kind: "custom", configDir: "relative/profile" },
+    );
+    assert.deepStrictEqual(result, {
+      ok: false,
+      message: "launchClaudeSession: invalid Claude profile",
+    });
     assert.deepStrictEqual(attempted, []);
   });
 });

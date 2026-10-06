@@ -138,18 +138,12 @@
     });
   }
 
-  function renderMobileTab(container, core) {
-    runtime = core.runtime;
-    helpers = core.helpers;
-    state = core.state;
-
+  // Body of the "Mobile Web" channel card inside the Remote Approval tab
+  // (the card frame — header, status badge, collapse — is built by
+  // settings-tab-telegram-approval.js next to the other channels).
+  function renderChannelBody(container) {
     const section = document.createElement("div");
     section.className = "settings-tab-section";
-
-    // Title & description
-    const title = document.createElement("h3");
-    title.textContent = t("mobileTitle") || "Mobile / PWA";
-    section.appendChild(title);
 
     const desc = document.createElement("p");
     desc.className = "settings-tab-desc";
@@ -186,8 +180,10 @@
   function init(core) {
     runtime = core.runtime;
     helpers = core.helpers;
-    core.tabs["mobile"] = { render: renderMobileTab };
+    state = core.state;
+    // No standalone tab registration: mobile renders as a channel card body
+    // inside the Remote Approval tab.
   }
 
-  root.ClawdSettingsTabMobile = { init };
+  root.ClawdSettingsTabMobile = { init, renderChannelBody };
 })(globalThis);

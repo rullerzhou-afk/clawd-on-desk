@@ -170,4 +170,81 @@ describe("update bubble follow-pet positioning", () => {
 
     assert.deepStrictEqual(bounds, { x: 190, y: 418, width: 340, height: 150 });
   });
+
+  it("honors left and right follow preferences before the automatic below lane", () => {
+    const common = {
+      bubbleFollowPet: true,
+      width: 340,
+      edgeMargin: 8,
+      gap: 6,
+      height: 150,
+      reservedHeight: 0,
+      workArea: { x: 0, y: 0, width: 1400, height: 900 },
+      petBounds: { x: 600, y: 260, width: 160, height: 160 },
+      anchorRect: { left: 620, top: 290, right: 740, bottom: 390 },
+    };
+    assert.strictEqual(updateBubble.__test.computeUpdateBubbleBounds({
+      ...common,
+      followPreference: "left",
+    }).x, 274);
+    assert.strictEqual(updateBubble.__test.computeUpdateBubbleBounds({
+      ...common,
+      followPreference: "right",
+    }).x, 746);
+  });
+
+  it("uses real permission bounds to continue down the same below-pet lane", () => {
+    const bounds = updateBubble.__test.computeUpdateBubbleBounds({
+      bubbleFollowPet: true,
+      width: 340,
+      edgeMargin: 8,
+      gap: 6,
+      height: 150,
+      reservedHeight: 0,
+      workArea: { x: 0, y: 0, width: 1200, height: 900 },
+      petBounds: { x: 500, y: 60, width: 120, height: 120 },
+      anchorRect: { left: 520, top: 88, right: 600, bottom: 168 },
+      avoidRects: [{ x: 390, y: 174, width: 340, height: 150 }],
+    });
+    assert.deepStrictEqual(bounds, { x: 390, y: 330, width: 340, height: 150 });
+  });
+
+  it("anchors fixed update bubbles at all four selected corners", () => {
+    const expected = {
+      "top-left": { x: 8, y: 8, width: 340, height: 150 },
+      "top-right": { x: 852, y: 8, width: 340, height: 150 },
+      "bottom-left": { x: 8, y: 642, width: 340, height: 150 },
+      "bottom-right": { x: 852, y: 642, width: 340, height: 150 },
+    };
+    for (const [fixedCorner, value] of Object.entries(expected)) {
+      assert.deepStrictEqual(updateBubble.__test.computeUpdateBubbleBounds({
+        bubbleFollowPet: false,
+        fixedCorner,
+        width: 340,
+        edgeMargin: 8,
+        gap: 6,
+        height: 150,
+        reservedHeight: 0,
+        workArea: { x: 0, y: 0, width: 1200, height: 800 },
+      }), value);
+    }
+  });
+
+  it("slides along a fixed edge to avoid permission and HUD rectangles", () => {
+    const bounds = updateBubble.__test.computeUpdateBubbleBounds({
+      bubbleFollowPet: false,
+      fixedCorner: "bottom-right",
+      width: 340,
+      edgeMargin: 8,
+      gap: 6,
+      height: 150,
+      reservedHeight: 0,
+      workArea: { x: 0, y: 0, width: 1200, height: 800 },
+      avoidRects: [
+        { x: 852, y: 642, width: 340, height: 150 },
+        { x: 852, y: 560, width: 340, height: 60 },
+      ],
+    });
+    assert.deepStrictEqual(bounds, { x: 852, y: 404, width: 340, height: 150 });
+  });
 });

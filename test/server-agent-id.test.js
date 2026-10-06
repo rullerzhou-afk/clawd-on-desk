@@ -6,6 +6,9 @@ const assert = require("node:assert");
 const {
   DEFAULT_HOOK_AGENT_ID,
   KNOWN_HOOK_AGENT_IDS,
+  MAX_SUBAGENT_ID_LENGTH,
+  MAX_SUBAGENT_TYPE_LENGTH,
+  normalizeSubagentMetadata,
   resolveHookAgentId,
 } = require("../src/server-agent-id");
 
@@ -50,11 +53,80 @@ describe("resolveHookAgentId", () => {
     );
   });
 
+  it("accepts only currently registered custom agent ids", () => {
+    const id = "custom-nova-ai-0123456789ab";
+    assert.deepStrictEqual(resolveHookAgentId({ agent_id: id }, { customAgentIds: [id] }), {
+      agentId: id,
+      source: "custom",
+      defaulted: false,
+    });
+    assert.deepStrictEqual(resolveHookAgentId({ agent_id: id }), {
+      agentId: null,
+      source: "rejected-custom",
+      rejected: true,
+      rawAgentId: id,
+    });
+    assert.strictEqual(resolveHookAgentId({ agent_id: "custom-forged-0123456789ab" }, {
+      customAgentIds: [id],
+    }).source, "rejected-custom");
+  });
+
+  it("rejects malformed custom namespace ids before hook_source fallback", () => {
+    const resolved = resolveHookAgentId({
+      agent_id: "custom-BROKEN",
+      hook_source: "copilot-hook",
+    });
+    assert.deepStrictEqual(resolved, {
+      agentId: null,
+      source: "rejected-custom",
+      rejected: true,
+      rawAgentId: "custom-BROKEN",
+    });
+  });
+
+  it("rejects ASCII case variants of the reserved custom namespace", () => {
+    for (const agentId of ["CUSTOM-nova-ai-0123456789ab", "Custom-BROKEN"]) {
+      const resolved = resolveHookAgentId({ agent_id: agentId, hook_source: "copilot-hook" });
+      assert.strictEqual(resolved.rejected, true);
+      assert.strictEqual(resolved.source, "rejected-custom");
+      assert.strictEqual(resolved.rawAgentId, agentId);
+    }
+  });
+
+  it("truncates overlong rejected custom ids for diagnostics", () => {
+    const resolved = resolveHookAgentId({ agent_id: `custom-${"x".repeat(200)}` });
+    assert.strictEqual(resolved.rejected, true);
+    assert.strictEqual(resolved.rawAgentId.length, 80);
+    assert.ok(resolved.rawAgentId.startsWith("custom-"));
+  });
+
   it("classifies a subagent marker without agent_type", () => {
     const resolved = resolveHookAgentId({ agent_id: SUBAGENT_UUID });
     assert.strictEqual(resolved.source, "subagent");
     assert.strictEqual(resolved.subagentId, SUBAGENT_UUID);
     assert.strictEqual(resolved.subagentType, null);
+  });
+
+  it("uses the shared bounded normalizer for subagent ids and types", () => {
+    assert.strictEqual(normalizeSubagentMetadata(` ${SUBAGENT_UUID} `, MAX_SUBAGENT_ID_LENGTH), SUBAGENT_UUID);
+    assert.strictEqual(normalizeSubagentMetadata("reviewer", MAX_SUBAGENT_TYPE_LENGTH), "reviewer");
+    assert.strictEqual(normalizeSubagentMetadata(`x${"\n"}y`, MAX_SUBAGENT_ID_LENGTH), null);
+    assert.strictEqual(normalizeSubagentMetadata("x".repeat(MAX_SUBAGENT_ID_LENGTH + 1), MAX_SUBAGENT_ID_LENGTH), null);
+
+    const overlong = "x".repeat(MAX_SUBAGENT_ID_LENGTH + 1);
+    assert.deepStrictEqual(resolveHookAgentId({ agent_id: overlong }), {
+      agentId: null,
+      source: "rejected-subagent",
+      rejected: true,
+      rawAgentId: overlong.slice(0, 80),
+    });
+
+    const invalidType = resolveHookAgentId({
+      agent_id: SUBAGENT_UUID,
+      agent_type: "x".repeat(MAX_SUBAGENT_TYPE_LENGTH + 1),
+    });
+    assert.strictEqual(invalidType.source, "subagent");
+    assert.strictEqual(invalidType.subagentType, null);
   });
 
   it("prefers hook_source routing over an unknown agent_id", () => {

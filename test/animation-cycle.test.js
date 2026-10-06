@@ -8,6 +8,8 @@ const path = require("node:path");
 
 const {
   CYCLE_STATUS,
+  PROBE_CACHE_LIMIT,
+  __test: animationCycleTest,
   probeAssetCycle,
   probeSvgCycle,
   probeGifCycle,
@@ -184,6 +186,83 @@ describe("animation-cycle raster probes", () => {
       status: CYCLE_STATUS.EXACT,
       source: "apng",
     });
+  });
+
+  it("sums fractional APNG delays before rounding", () => {
+    const apng = buildApngBuffer(Array.from({ length: 12 }, () => ({ num: 1, den: 12 })));
+    assert.deepStrictEqual(probeApngCycle(apng), {
+      ms: 1000,
+      status: CYCLE_STATUS.EXACT,
+      source: "apng",
+    });
+  });
+
+  it("treats a zero APNG denominator as an exact hundredth of a second", () => {
+    const apng = buildApngBuffer([{ num: 5, den: 0 }, { num: 5, den: 0 }]);
+    assert.deepStrictEqual(probeApngCycle(apng), {
+      ms: 100,
+      status: CYCLE_STATUS.EXACT,
+      source: "apng",
+    });
+  });
+
+  it("keeps a zero APNG numerator estimated", () => {
+    const apng = buildApngBuffer([{ num: 0, den: 100 }]);
+    assert.deepStrictEqual(probeApngCycle(apng), {
+      ms: 10,
+      status: CYCLE_STATUS.ESTIMATED,
+      source: "apng",
+    });
+  });
+});
+
+describe("probeAssetCycle cache", () => {
+  it("stays full by evicting one entry instead of dropping the whole table", () => {
+    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "anim-cycle-cache-"));
+    const stamp = new Date(1_000_000);
+    try {
+      // Well past the limit: with one-entry eviction the cache sits exactly at
+      // it, while clearing the table would leave a nearly empty cache and make
+      // the next preview click re-read a multi-megabyte APNG.
+      for (let i = 0; i < PROBE_CACHE_LIMIT + 60; i++) {
+        const filler = path.join(tempDir, `filler-${i}.gif`);
+        fs.writeFileSync(filler, buildGifBuffer([(i % 40) + 1]));
+        probeAssetCycle(filler);
+      }
+      assert.strictEqual(animationCycleTest.getProbeCacheSize(), PROBE_CACHE_LIMIT);
+
+      // Two entries whose content changes under a pinned path/size/mtime, so a
+      // cache hit still reports the first probe and a miss reports the second.
+      const older = path.join(tempDir, "older.gif");
+      const newer = path.join(tempDir, "newer.gif");
+      for (const file of [older, newer]) {
+        fs.writeFileSync(file, buildGifBuffer([10]));
+        fs.utimesSync(file, stamp, stamp);
+        assert.strictEqual(probeAssetCycle(file).ms, 100);
+        fs.writeFileSync(file, buildGifBuffer([20]));
+        fs.utimesSync(file, stamp, stamp);
+      }
+      assert.strictEqual(probeAssetCycle(older).ms, 100);
+      assert.strictEqual(probeAssetCycle(newer).ms, 100);
+
+      // Push exactly the rest of the cache out: both survive as the newest two.
+      for (let i = 0; i < PROBE_CACHE_LIMIT - 2; i++) {
+        const filler = path.join(tempDir, `tail-${i}.gif`);
+        fs.writeFileSync(filler, buildGifBuffer([(i % 40) + 1]));
+        probeAssetCycle(filler);
+      }
+      assert.strictEqual(probeAssetCycle(older).ms, 100);
+      assert.strictEqual(probeAssetCycle(newer).ms, 100);
+
+      // One more insert evicts the oldest of the two, and only that one.
+      const last = path.join(tempDir, "last.gif");
+      fs.writeFileSync(last, buildGifBuffer([30]));
+      probeAssetCycle(last);
+      assert.strictEqual(probeAssetCycle(newer).ms, 100, "a newer entry stays cached");
+      assert.strictEqual(probeAssetCycle(older).ms, 200, "the oldest entry is the one evicted");
+    } finally {
+      fs.rmSync(tempDir, { recursive: true, force: true });
+    }
   });
 });
 

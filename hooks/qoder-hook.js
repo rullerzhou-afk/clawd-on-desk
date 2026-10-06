@@ -9,9 +9,11 @@
 // Qoder's native permission flow stays in control.
 
 const crypto = require("crypto");
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
+const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F\u061C\u200E-\u200F\u202A-\u202E\u2066-\u2069]+/g;
+const SESSION_TITLE_MAX = 80;
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
@@ -46,6 +48,19 @@ const NO_DECISION_OUTPUT = "{}";
 function normalizeSessionId(value) {
   const raw = value != null && value !== "" ? String(value) : "default";
   return raw.startsWith("qoder:") ? raw : `qoder:${raw}`;
+}
+
+function normalizeSessionTitle(value) {
+  if (typeof value !== "string") return null;
+  const collapsed = value
+    .replace(SESSION_TITLE_CONTROL_RE, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!collapsed) return null;
+  const characters = Array.from(collapsed);
+  return characters.length > SESSION_TITLE_MAX
+    ? `${characters.slice(0, SESSION_TITLE_MAX - 1).join("")}\u2026`
+    : collapsed;
 }
 
 function normalizeToolUseId(value) {
@@ -120,6 +135,9 @@ function shouldResolvePid(hookName, env = process.env) {
 }
 
 function applyLocalProcessFields(body, pidMeta) {
+  // Before the pidMeta gate: the pane key comes from the environment, so it has
+  // to survive the events where shouldResolvePid skips the process snapshot.
+  applyOrcaPaneKey(body);
   if (!pidMeta || typeof pidMeta !== "object") return;
   if (Number.isFinite(pidMeta.stablePid) && pidMeta.stablePid > 0) body.source_pid = Math.floor(pidMeta.stablePid);
   if (pidMeta.detectedEditor) body.editor = pidMeta.detectedEditor;
@@ -136,6 +154,32 @@ const TOOL_METADATA_EVENTS = new Set([
   "PermissionRequest",
   "PermissionDenied",
 ]);
+
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion); SessionEnd IS a true session end
+// (registered by qoder-install.js) and drops the cache. cacheable keys off the
+// RAW session id — normalizeSessionId prefixes, so its "qoder:default"
+// fallback would defeat the #583 same-key guard — and rejects a literal
+// "default" id for the same reason.
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
+function pidCacheContext(hookName, payload) {
+  const raw = payload && payload.session_id != null && payload.session_id !== ""
+    ? String(payload.session_id)
+    : "";
+  const cwd = payload && typeof payload.cwd === "string" ? payload.cwd : "";
+  return {
+    namespace: "qoder",
+    sessionId: normalizeSessionId(payload && payload.session_id),
+    cacheCwd: cwd,
+    lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+    cacheable: !!raw && raw !== "default" && !!cwd,
+  };
+}
 
 function maybeAddToolMetadata(body, payload) {
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
@@ -157,6 +201,9 @@ function buildStateBody(hookName, payload, options = {}) {
     event: mapped.event,
     agent_id: "qoder",
   };
+  if (hookName === "PermissionRequest" || hookName === "PermissionDenied") {
+    body.recap_boundary = "permission";
+  }
 
   if (payload && typeof payload.cwd === "string" && payload.cwd) body.cwd = payload.cwd;
   if (payload && typeof payload.model === "string" && payload.model) body.model = payload.model;
@@ -166,13 +213,21 @@ function buildStateBody(hookName, payload, options = {}) {
   if (payload && typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
   }
+  const sessionTitle = normalizeSessionTitle(payload && payload.session_title)
+    || normalizeSessionTitle(payload && payload.sessionTitle)
+    || normalizeSessionTitle(payload && payload.session_name)
+    || normalizeSessionTitle(payload && payload.sessionName);
+  if (sessionTitle) body.session_title = sessionTitle;
   if (payload && TOOL_METADATA_EVENTS.has(hookName)) {
     maybeAddToolMetadata(body, payload);
   }
 
   if (options.remote) {
     body.host = options.host || readHostPrefix();
+    applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
+    applyWslSourceFields(body);
     applyLocalProcessFields(body, options.pidMeta);
   }
 
@@ -187,7 +242,7 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
     pidMeta: shouldResolvePid(hookName, env)
-      ? (deps.resolvePid ? deps.resolvePid() : undefined)
+      ? (deps.resolvePid ? deps.resolvePid(pidCacheContext(hookName, payload)) : undefined)
       : undefined,
   });
 
@@ -235,6 +290,7 @@ module.exports = {
   normalizeSessionId,
   normalizeToolMatchValue,
   buildToolInputFingerprint,
+  normalizeSessionTitle,
   isQoderAgentCommandLine,
   resolveHookName,
   shouldResolvePid,

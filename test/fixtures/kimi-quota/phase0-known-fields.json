@@ -1,0 +1,21 @@
+{
+  "usage": {
+    "remaining": "100",
+    "limit": "100",
+    "resetTime": "2026-08-21T01:20:19.901916Z"
+  },
+  "limits": [
+    {
+      "window": {
+        "duration": 300,
+        "timeUnit": "TIME_UNIT_MINUTE"
+      },
+      "detail": {
+        "remaining": "100",
+        "limit": "100",
+        "resetTime": "2026-08-14T16:20:19.901916Z"
+      }
+    }
+  ],
+  "totalQuota": {}
+}

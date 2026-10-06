@@ -129,8 +129,8 @@ describe("formatDiagnosticReport", () => {
     assert.match(detail, /broken=custom\.json/);
     assert.match(detail, /corrupt=bad\.json/);
     assert.match(detail, /no-marker=1/);
-    assert.match(detail, /opencode issue: directory-missing/);
-    assert.match(detail, /opencode entry:/);
+    assert.match(detail, /plugin issue: directory-missing/);
+    assert.match(detail, /plugin entry:/);
   });
 
   it("formats Gemini supplementary diagnostics into visible detail text", () => {
@@ -214,7 +214,7 @@ describe("formatDiagnosticReport", () => {
     assert.match(report, /permission bubbles disabled/);
     assert.match(report, /hooks=uncertain/);
     assert.match(report, /valid=clawd\.json/);
-    assert.match(report, /opencode issue: directory-missing/);
+    assert.match(report, /plugin issue: directory-missing/);
     assert.match(report, /\[APP\]\/hooks\/opencode-plugin/);
     assert.match(report, /## Connection Test/);
     assert.match(report, /HTTP works but events were dropped/);
@@ -248,5 +248,29 @@ describe("formatDiagnosticReport", () => {
     assert.match(report, /## Connection Test/);
     assert.match(report, /\| codex \| file-mtime \| 2 \|/);
     assert.doesNotMatch(report, /Fallback file activity also observed/);
+  });
+
+  it("reports pending Codex hook review without claiming HTTP was blocked", () => {
+    const report = formatDiagnosticReport({
+      generatedAt: "2026-08-11T00:00:00.000Z",
+      overall: { status: "warning", issueCount: 1 },
+      checks: [],
+      connectionTest: {
+        status: "hooks-need-review",
+        level: "warning",
+        detail: "Codex activity was detected. Run /hooks in Codex CLI, then test again.",
+        events: [],
+        fileActivity: [{
+          agentId: "codex",
+          source: "file-mtime",
+          count: 1,
+        }],
+      },
+    });
+
+    assert.match(report, /HOOKS-NEED-REVIEW/);
+    assert.match(report, /\/hooks/);
+    assert.match(report, /\| codex \| file-mtime \| 1 \|/);
+    assert.doesNotMatch(report, /HTTP-BLOCKED|Firewall, EDR|proxy interception is likely/);
   });
 });

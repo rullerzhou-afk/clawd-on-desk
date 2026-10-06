@@ -14,6 +14,9 @@ module.exports = {
   // state to it, so state is driven entirely by the hook bridge (host-tagged,
   // like a remote source) rather than by PID resolution.
   processNames: { win: [], mac: [], linux: [] },
+  // The gateway is a background service with no recoverable GUI/CLI process,
+  // so (like cursor-agent) it declares no startup-recovery process names.
+  startupRecoveryProcessNames: { win: [], mac: [], linux: [] },
   eventSource: "hook",
   // PascalCase event names — matches KiroCrew's chat lifecycle hook system.
   eventMap: {

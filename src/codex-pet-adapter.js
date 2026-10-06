@@ -6,21 +6,39 @@ const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 
-const ADAPTER_VERSION = 3;
+const ADAPTER_VERSION = 7;
 const MARKER_FILENAME = ".clawd-codex-pet.json";
 const THEME_ID_PREFIX = "codex-pet-";
-const PNG_ALPHA_VALIDATION_SCHEMA_VERSION = 1;
+const DIRECTIONAL_DRAG_WRAPPER = "codex-pet-drag-directional-loop.svg";
+const PNG_ALPHA_VALIDATION_SCHEMA_VERSION = 2;
 const MAX_DISPLAY_NAME_LENGTH = 100;
 const MAX_DESCRIPTION_LENGTH = 500;
 
-const ATLAS = {
-  width: 1536,
-  height: 1872,
-  columns: 8,
-  rows: 9,
-  frameWidth: 192,
-  frameHeight: 208,
-};
+const DEFAULT_SPRITE_VERSION_NUMBER = 1;
+const ATLAS_BY_SPRITE_VERSION = Object.freeze({
+  1: Object.freeze({
+    spriteVersionNumber: 1,
+    width: 1536,
+    height: 1872,
+    columns: 8,
+    rows: 9,
+    frameWidth: 192,
+    frameHeight: 208,
+  }),
+  2: Object.freeze({
+    spriteVersionNumber: 2,
+    width: 1536,
+    height: 2288,
+    columns: 8,
+    rows: 11,
+    frameWidth: 192,
+    frameHeight: 208,
+  }),
+});
+
+// Keep the historical export as the V1/default atlas for callers that do not
+// need version-aware behavior.
+const ATLAS = ATLAS_BY_SPRITE_VERSION[DEFAULT_SPRITE_VERSION_NUMBER];
 
 // Mirrored from codex-pets-react/src/lib/atlas.ts at plan time on 2026-05-05.
 // Upstream timing changes require manual review before this table is bumped.
@@ -39,22 +57,48 @@ const ATLAS_ROWS = [
 const ROWS_BY_KEY = new Map(ATLAS_ROWS.map((row) => [row.key, row]));
 
 const WRAPPER_SPECS = [
-  { filename: "codex-pet-idle-loop.svg", rowKey: "idle", mode: "loop" },
-  { filename: "codex-pet-idle-static.svg", rowKey: "idle", mode: "static" },
-  { filename: "codex-pet-running-right-loop.svg", rowKey: "running-right", mode: "loop" },
-  { filename: "codex-pet-running-left-loop.svg", rowKey: "running-left", mode: "loop" },
-  { filename: "codex-pet-waving-loop.svg", rowKey: "waving", mode: "loop" },
-  { filename: "codex-pet-waving-once.svg", rowKey: "waving", mode: "once" },
-  { filename: "codex-pet-jumping-loop.svg", rowKey: "jumping", mode: "loop" },
-  { filename: "codex-pet-jumping-once.svg", rowKey: "jumping", mode: "once" },
-  { filename: "codex-pet-failed-loop.svg", rowKey: "failed", mode: "loop" },
-  { filename: "codex-pet-waiting-loop.svg", rowKey: "waiting", mode: "loop" },
-  { filename: "codex-pet-running-loop.svg", rowKey: "running", mode: "loop" },
-  { filename: "codex-pet-review-loop.svg", rowKey: "review", mode: "loop" },
+  { filename: "codex-pet-idle-loop.svg", visual: "idle-loop", rowKey: "idle", mode: "loop" },
+  { filename: "codex-pet-idle-static.svg", visual: "idle-static", rowKey: "idle", mode: "static" },
+  { filename: "codex-pet-waving-loop.svg", visual: "waving-loop", rowKey: "waving", mode: "loop" },
+  { filename: "codex-pet-waving-once.svg", visual: "waving-once", rowKey: "waving", mode: "once" },
+  { filename: "codex-pet-jumping-loop.svg", visual: "jumping-loop", rowKey: "jumping", mode: "loop" },
+  { filename: "codex-pet-jumping-once.svg", visual: "jumping-once", rowKey: "jumping", mode: "once" },
+  { filename: "codex-pet-failed-loop.svg", visual: "failed-loop", rowKey: "failed", mode: "loop" },
+  { filename: "codex-pet-waiting-loop.svg", visual: "waiting-loop", rowKey: "waiting", mode: "loop" },
+  { filename: "codex-pet-running-loop.svg", visual: "running-loop", rowKey: "running", mode: "loop" },
+  { filename: "codex-pet-review-loop.svg", visual: "review-loop", rowKey: "review", mode: "loop" },
 ];
+
+const DIRECTIONAL_DRAG_SPEC = Object.freeze({
+  filename: DIRECTIONAL_DRAG_WRAPPER,
+  visual: "drag-directional",
+  rowKey: "running-right",
+  mode: "loop",
+});
+const UNIVERSAL_VISUAL_SPECS = Object.freeze([
+  ...WRAPPER_SPECS.map((spec) => Object.freeze({ ...spec })),
+  DIRECTIONAL_DRAG_SPEC,
+]);
 
 function getDefaultCodexPetsDir(homeDir = os.homedir()) {
   return path.join(homeDir, ".codex", "pets");
+}
+
+function resolveSpriteVersion(manifest) {
+  const raw = manifest && typeof manifest === "object"
+    ? manifest.spriteVersionNumber
+    : undefined;
+  const spriteVersionNumber = raw === undefined ? DEFAULT_SPRITE_VERSION_NUMBER : raw;
+  const atlas = ATLAS_BY_SPRITE_VERSION[spriteVersionNumber] || null;
+  if (!Number.isInteger(spriteVersionNumber) || !atlas) {
+    return {
+      ok: false,
+      error: "pet.json spriteVersionNumber must be 1 or 2",
+      spriteVersionNumber: null,
+      atlas: null,
+    };
+  }
+  return { ok: true, spriteVersionNumber, atlas };
 }
 
 function scanCodexPetPackages(rootDir, options = {}) {
@@ -89,7 +133,12 @@ function validateCodexPetPackage(packageDir, options = {}) {
     errors.push("missing pet.json");
   } else {
     try {
-      manifest = JSON.parse(fs.readFileSync(petJsonPath, "utf8"));
+      const parsed = JSON.parse(fs.readFileSync(petJsonPath, "utf8"));
+      if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+        errors.push("pet.json must be a JSON object");
+      } else {
+        manifest = parsed;
+      }
     } catch (error) {
       errors.push(`invalid pet.json: ${error.message}`);
     }
@@ -107,9 +156,11 @@ function validateCodexPetPackage(packageDir, options = {}) {
     MAX_DESCRIPTION_LENGTH
   );
   const spritesheetPath = typeof manifest?.spritesheetPath === "string" ? manifest.spritesheetPath.trim() : "";
+  const spriteVersion = resolveSpriteVersion(manifest);
 
   if (manifest && !id) errors.push("pet.json id must be a non-empty string");
   if (manifest && !spritesheetPath) errors.push("pet.json spritesheetPath must be a non-empty string");
+  if (manifest && !spriteVersion.ok) errors.push(spriteVersion.error);
 
   let normalizedSpritesheetPath = null;
   let spritesheetAbsPath = null;
@@ -132,10 +183,13 @@ function validateCodexPetPackage(packageDir, options = {}) {
         errors.push(`spritesheet not found: ${normalizedSpritesheetPath}`);
       } else if (ext === ".png" || ext === ".webp") {
         const inspected = inspectSpritesheet(spritesheetAbsPath, ext, {
+          atlas: spriteVersion.atlas,
           pngAlphaValidationCache: getPngAlphaValidationCache(options.managedMarker, {
             packageDir: resolvedPackageDir,
             spritesheetPath: normalizedSpritesheetPath,
             spritesheetStat,
+            spriteVersionNumber: spriteVersion.spriteVersionNumber,
+            atlas: spriteVersion.atlas,
           }),
         });
         imageInfo = inspected.info;
@@ -145,8 +199,15 @@ function validateCodexPetPackage(packageDir, options = {}) {
     }
   }
 
-  if (imageInfo && (imageInfo.width !== ATLAS.width || imageInfo.height !== ATLAS.height)) {
-    errors.push(`spritesheet must be ${ATLAS.width}x${ATLAS.height}, got ${imageInfo.width}x${imageInfo.height}`);
+  if (
+    imageInfo
+    && spriteVersion.atlas
+    && (imageInfo.width !== spriteVersion.atlas.width || imageInfo.height !== spriteVersion.atlas.height)
+  ) {
+    errors.push(
+      `spritesheet for spriteVersionNumber ${spriteVersion.spriteVersionNumber} must be `
+      + `${spriteVersion.atlas.width}x${spriteVersion.atlas.height}, got ${imageInfo.width}x${imageInfo.height}`
+    );
   }
   if (imageInfo && imageInfo.hasAlpha !== true) {
     errors.push("spritesheet must include an alpha channel");
@@ -167,6 +228,8 @@ function validateCodexPetPackage(packageDir, options = {}) {
     petJsonSize: petJsonStat.size,
     spritesheetMtimeMs: spritesheetStat.mtimeMs,
     spritesheetSize: spritesheetStat.size,
+    spriteVersionNumber: spriteVersion.spriteVersionNumber,
+    atlas: spriteVersion.atlas,
     image: imageInfo,
     manifest,
   } : null;
@@ -218,13 +281,21 @@ function materializeCodexPetTheme(packageInfo, userThemesDir, options = {}) {
 
   fs.copyFileSync(packageInfo.spritesheetAbsPath, path.join(assetsDir, packageInfo.spritesheetAssetName));
   for (const spec of WRAPPER_SPECS) {
-    const svg = generateWrapperSvg({
-      rowKey: spec.rowKey,
-      mode: spec.mode,
+    const svg = generateUniversalWrapperSvg({
+      initialFilename: spec.filename,
       spritesheetHref: packageInfo.spritesheetAssetName,
+      atlas: packageInfo.atlas || ATLAS,
     });
     fs.writeFileSync(path.join(assetsDir, spec.filename), svg, "utf8");
   }
+  fs.writeFileSync(
+    path.join(assetsDir, DIRECTIONAL_DRAG_WRAPPER),
+    generateDirectionalDragWrapperSvg({
+      spritesheetHref: packageInfo.spritesheetAssetName,
+      atlas: packageInfo.atlas || ATLAS,
+    }),
+    "utf8"
+  );
 
   const themeJson = buildThemeJson(packageInfo, themeId);
   fs.writeFileSync(path.join(themeDir, "theme.json"), `${JSON.stringify(themeJson, null, 2)}\n`, "utf8");
@@ -281,11 +352,15 @@ function syncCodexPetThemes(options = {}) {
 }
 
 function isMaterializedThemeUnchanged(marker, packageInfo, themeId, themeDir) {
+  const atlas = packageInfo.atlas || ATLAS;
   if (!marker || marker.inProgress === true) return false;
   if (marker.adapterVersion !== ADAPTER_VERSION) return false;
   if (marker.generatedThemeId !== themeId) return false;
   if (!samePath(marker.sourcePackagePath, packageInfo.packageDir)) return false;
   if (marker.sourcePetId !== packageInfo.id) return false;
+  if (marker.sourceSpriteVersionNumber !== packageInfo.spriteVersionNumber) return false;
+  if (marker.sourceAtlasColumns !== atlas.columns) return false;
+  if (marker.sourceAtlasRows !== atlas.rows) return false;
   if (marker.sourcePetJsonMtimeMs !== packageInfo.petJsonMtimeMs) return false;
   if (marker.sourcePetJsonSize !== packageInfo.petJsonSize) return false;
   if (marker.sourceSpritesheetPath !== packageInfo.spritesheetPath) return false;
@@ -307,6 +382,7 @@ function isMaterializedThemeUnchanged(marker, packageInfo, themeId, themeDir) {
   for (const spec of WRAPPER_SPECS) {
     if (!isRegularFile(path.join(assetsDir, spec.filename))) return false;
   }
+  if (!isRegularFile(path.join(assetsDir, DIRECTIONAL_DRAG_WRAPPER))) return false;
   return true;
 }
 
@@ -319,15 +395,16 @@ function isRegularFile(filePath) {
 }
 
 function buildThemeJson(packageInfo, themeId) {
+  const atlas = packageInfo.atlas || ATLAS;
   return {
     schemaVersion: 1,
     name: packageInfo.displayName || packageInfo.id,
     version: String(packageInfo.manifest.version || "1.0.0"),
     description: packageInfo.description,
     preview: "codex-pet-idle-loop.svg",
-    viewBox: { x: 0, y: 0, width: ATLAS.frameWidth, height: ATLAS.frameHeight },
+    viewBox: { x: 0, y: 0, width: atlas.frameWidth, height: atlas.frameHeight },
     layout: {
-      contentBox: { x: 0, y: 0, width: ATLAS.frameWidth, height: ATLAS.frameHeight },
+      contentBox: { x: 0, y: 0, width: atlas.frameWidth, height: atlas.frameHeight },
     },
     source: {
       type: "codex-pet",
@@ -335,6 +412,7 @@ function buildThemeJson(packageInfo, themeId) {
       displayName: packageInfo.displayName,
       packagePath: packageInfo.packageDir,
       spritesheetPath: packageInfo.spritesheetPath,
+      spriteVersionNumber: packageInfo.spriteVersionNumber || DEFAULT_SPRITE_VERSION_NUMBER,
       adapterVersion: ADAPTER_VERSION,
     },
     eyeTracking: {
@@ -348,7 +426,13 @@ function buildThemeJson(packageInfo, themeId) {
       idle: ["codex-pet-idle-loop.svg"],
       thinking: ["codex-pet-review-loop.svg"],
       working: ["codex-pet-running-loop.svg"],
-      juggling: ["codex-pet-running-loop.svg"],
+      // Imported packs draw a `waving` row, and until now nothing reached it: the
+      // only consumer was the double-click reaction, which uses `waving-once`.
+      // Meanwhile `juggling` rendered the same file as `working`, so "several
+      // subagents are running" looked identical to "a tool is running". Every
+      // built-in theme gives juggling a pose of its own (clawd headphones-groove,
+      // calico working-juggling, cloudling juggling); this path was the exception.
+      juggling: ["codex-pet-waving-loop.svg"],
       sweeping: ["codex-pet-running-loop.svg"],
       carrying: ["codex-pet-running-loop.svg"],
       notification: ["codex-pet-waiting-loop.svg"],
@@ -363,18 +447,22 @@ function buildThemeJson(packageInfo, themeId) {
       { minSessions: 1, file: "codex-pet-running-loop.svg" },
     ],
     jugglingTiers: [
-      { minSessions: 1, file: "codex-pet-running-loop.svg" },
+      // Must move together with states.juggling above: getJugglingSvg() consults
+      // the tier list first and only falls back to the state file, and juggling
+      // means at least one live subagent, so a minSessions:1 tier always wins.
+      // Changing one without the other is a no-op.
+      { minSessions: 1, file: "codex-pet-waving-loop.svg" },
     ],
     hitBoxes: {
-      default: { x: 0, y: 0, w: ATLAS.frameWidth, h: ATLAS.frameHeight },
-      sleeping: { x: 0, y: 0, w: ATLAS.frameWidth, h: ATLAS.frameHeight },
-      wide: { x: 0, y: 0, w: ATLAS.frameWidth, h: ATLAS.frameHeight },
+      default: { x: 0, y: 0, w: atlas.frameWidth, h: atlas.frameHeight },
+      sleeping: { x: 0, y: 0, w: atlas.frameWidth, h: atlas.frameHeight },
+      wide: { x: 0, y: 0, w: atlas.frameWidth, h: atlas.frameHeight },
     },
     reactions: {
       drag: {
         file: "codex-pet-running-loop.svg",
-        fileLeft: "codex-pet-running-left-loop.svg",
-        fileRight: "codex-pet-running-right-loop.svg",
+        fileLeft: DIRECTIONAL_DRAG_WRAPPER,
+        fileRight: DIRECTIONAL_DRAG_WRAPPER,
       },
       clickLeft: { file: "codex-pet-jumping-once.svg", duration: 840 },
       clickRight: { file: "codex-pet-jumping-once.svg", duration: 840 },
@@ -387,6 +475,7 @@ function buildThemeJson(packageInfo, themeId) {
 }
 
 function buildMarker(packageInfo, themeId, options = {}) {
+  const atlas = packageInfo.atlas || ATLAS;
   const marker = {
     managedBy: "clawd",
     kind: "codex-pet-theme",
@@ -394,6 +483,9 @@ function buildMarker(packageInfo, themeId, options = {}) {
     adapterVersion: ADAPTER_VERSION,
     generatedThemeId: themeId,
     sourcePetId: packageInfo.id,
+    sourceSpriteVersionNumber: packageInfo.spriteVersionNumber || DEFAULT_SPRITE_VERSION_NUMBER,
+    sourceAtlasColumns: atlas.columns,
+    sourceAtlasRows: atlas.rows,
     sourcePackagePath: packageInfo.packageDir,
     sourcePetJsonMtimeMs: packageInfo.petJsonMtimeMs,
     sourcePetJsonSize: packageInfo.petJsonSize,
@@ -407,7 +499,7 @@ function buildMarker(packageInfo, themeId, options = {}) {
   return marker;
 }
 
-function generateWrapperSvg({ rowKey, mode, spritesheetHref }) {
+function generateWrapperSvg({ rowKey, mode, spritesheetHref, atlas = ATLAS }) {
   const row = ROWS_BY_KEY.get(rowKey);
   if (!row) throw new Error(`unknown Codex Pet atlas row: ${rowKey}`);
   if (mode !== "loop" && mode !== "once" && mode !== "static") {
@@ -415,7 +507,7 @@ function generateWrapperSvg({ rowKey, mode, spritesheetHref }) {
   }
 
   const escapedHref = escapeXmlAttr(spritesheetHref);
-  const rowOffsetY = row.row * ATLAS.frameHeight;
+  const rowOffsetY = row.row * atlas.frameHeight;
   const animationName = `codex-pet-row-${row.key}-${mode}`;
   const initialTransform = formatTranslate(0, rowOffsetY);
   let style;
@@ -431,7 +523,7 @@ function generateWrapperSvg({ rowKey, mode, spritesheetHref }) {
     ].join("\n");
   } else {
     const totalMs = row.durations.reduce((sum, duration) => sum + duration, 0);
-    const frames = buildKeyframes(row, animationName);
+    const frames = buildKeyframes(row, animationName, atlas);
     style = [
       frames,
       ".atlas {",
@@ -449,36 +541,165 @@ function generateWrapperSvg({ rowKey, mode, spritesheetHref }) {
 
   return [
     `<!-- Generated by Clawd codex-pet-adapter v${ADAPTER_VERSION}: ${row.key} ${mode}. -->`,
-    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${ATLAS.frameWidth} ${ATLAS.frameHeight}" width="${ATLAS.frameWidth}" height="${ATLAS.frameHeight}">`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${atlas.frameWidth} ${atlas.frameHeight}" width="${atlas.frameWidth}" height="${atlas.frameHeight}">`,
     "  <defs>",
     "    <clipPath id=\"codex-pet-frame\">",
-    `      <rect x="0" y="0" width="${ATLAS.frameWidth}" height="${ATLAS.frameHeight}"/>`,
+    `      <rect x="0" y="0" width="${atlas.frameWidth}" height="${atlas.frameHeight}"/>`,
     "    </clipPath>",
     "  </defs>",
     "  <style>",
     indent(style, 4),
     "  </style>",
     "  <g clip-path=\"url(#codex-pet-frame)\">",
-    `    <image class="atlas" href="${escapedHref}" width="${ATLAS.width}" height="${ATLAS.height}" preserveAspectRatio="none"/>`,
+    `    <image class="atlas" href="${escapedHref}" width="${atlas.width}" height="${atlas.height}" preserveAspectRatio="none"/>`,
     "  </g>",
     "</svg>",
     "",
   ].join("\n");
 }
 
-function buildKeyframes(row, animationName) {
+function assertDirectionalTimingParity(leftRow, rightRow) {
+  const leftDurations = leftRow && leftRow.durations;
+  const rightDurations = rightRow && rightRow.durations;
+  if (!Array.isArray(leftDurations) || !Array.isArray(rightDurations)) {
+    throw new Error("Codex Pet directional drag rows must define frame durations");
+  }
+  if (
+    leftDurations.length !== rightDurations.length
+    || leftDurations.some((duration, index) => duration !== rightDurations[index])
+  ) {
+    throw new Error("Codex Pet directional drag rows must use identical frame durations");
+  }
+  return true;
+}
+
+function getUniversalVisualSpec(filename) {
+  return UNIVERSAL_VISUAL_SPECS.find((spec) => spec.filename === filename) || null;
+}
+
+function buildUniversalVisualStyle(initialSpec, atlas) {
+  const initialRow = ROWS_BY_KEY.get(initialSpec.rowKey);
+  const lines = [
+    ".visual-row {",
+    `  transform: ${formatTranslate(0, initialRow.row * atlas.frameHeight)};`,
+    "}",
+    ".atlas {",
+    "  transform-box: fill-box;",
+    "  transform-origin: 0 0;",
+    "  transform: translate(0px, 0px);",
+    "  animation-name: none;",
+    "  animation-timing-function: step-end;",
+    "  image-rendering: auto;",
+    "}",
+  ];
+
+  for (const spec of UNIVERSAL_VISUAL_SPECS) {
+    const row = ROWS_BY_KEY.get(spec.rowKey);
+    const animationName = `codex-pet-visual-${spec.visual}`;
+    const rowOffsetY = row.row * atlas.frameHeight;
+    lines.push(
+      `[data-clawd-codex-pet-visual=${spec.visual}] .visual-row {`,
+      `  transform: ${formatTranslate(0, rowOffsetY)};`,
+      "}"
+    );
+    if (spec.mode === "static") {
+      lines.push(
+        `[data-clawd-codex-pet-visual=${spec.visual}] .atlas {`,
+        "  animation-name: none;",
+        "}"
+      );
+      continue;
+    }
+    const totalMs = row.durations.reduce((sum, duration) => sum + duration, 0);
+    lines.push(
+      buildHorizontalKeyframes(row.durations, animationName, atlas),
+      `[data-clawd-codex-pet-visual=${spec.visual}] .atlas {`,
+      `  animation-name: ${animationName};`,
+      `  animation-duration: ${totalMs}ms;`,
+      `  animation-iteration-count: ${spec.mode === "loop" ? "infinite" : "1"};`,
+      `  animation-fill-mode: ${spec.mode === "loop" ? "none" : "forwards"};`,
+      "}"
+    );
+  }
+
+  const leftRow = ROWS_BY_KEY.get("running-left");
+  lines.push(
+    "[data-clawd-codex-pet-visual=drag-directional][data-clawd-drag-direction=left] .visual-row {",
+    `  transform: ${formatTranslate(0, leftRow.row * atlas.frameHeight)};`,
+    "}"
+  );
+  return lines.join("\n");
+}
+
+function generateUniversalWrapperSvg({ initialFilename, spritesheetHref, atlas = ATLAS }) {
+  const initialSpec = getUniversalVisualSpec(initialFilename);
+  if (!initialSpec) throw new Error(`unknown Codex Pet wrapper file: ${initialFilename}`);
+  assertDirectionalTimingParity(
+    ROWS_BY_KEY.get("running-left"),
+    ROWS_BY_KEY.get("running-right")
+  );
+
+  const escapedHref = escapeXmlAttr(spritesheetHref);
+  const initialRow = ROWS_BY_KEY.get(initialSpec.rowKey);
+  const initialOffsetY = initialRow.row * atlas.frameHeight;
+  const style = buildUniversalVisualStyle(initialSpec, atlas);
+
+  return [
+    `<!-- Generated by Clawd codex-pet-adapter v${ADAPTER_VERSION}: universal visual bridge (${initialSpec.visual}). -->`,
+    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${atlas.frameWidth} ${atlas.frameHeight}" width="${atlas.frameWidth}" height="${atlas.frameHeight}" data-clawd-codex-pet-visuals="v1" data-clawd-codex-pet-visual="${initialSpec.visual}" data-clawd-drag-directional="v1" data-clawd-drag-direction="right">`,
+    "  <defs>",
+    "    <clipPath id=\"codex-pet-frame\">",
+    `      <rect x="0" y="0" width="${atlas.frameWidth}" height="${atlas.frameHeight}"/>`,
+    "    </clipPath>",
+    "  </defs>",
+    "  <style>",
+    indent(style, 4),
+    "  </style>",
+    "  <g clip-path=\"url(#codex-pet-frame)\">",
+    `    <g class="visual-row" transform="translate(0,-${initialOffsetY})">`,
+    `      <image class="atlas" transform="translate(0,0)" href="${escapedHref}" width="${atlas.width}" height="${atlas.height}" preserveAspectRatio="none"/>`,
+    "    </g>",
+    "  </g>",
+    "</svg>",
+    "",
+  ].join("\n");
+}
+
+function generateDirectionalDragWrapperSvg({ spritesheetHref, atlas = ATLAS }) {
+  return generateUniversalWrapperSvg({
+    initialFilename: DIRECTIONAL_DRAG_WRAPPER,
+    spritesheetHref,
+    atlas,
+  });
+}
+
+function buildKeyframes(row, animationName, atlas = ATLAS) {
   let elapsed = 0;
   const totalMs = row.durations.reduce((sum, duration) => sum + duration, 0);
   const lines = [`@keyframes ${animationName} {`];
   row.durations.forEach((duration, column) => {
     const pct = formatPercent((elapsed / totalMs) * 100);
-    const x = column * ATLAS.frameWidth;
-    const y = row.row * ATLAS.frameHeight;
+    const x = column * atlas.frameWidth;
+    const y = row.row * atlas.frameHeight;
     lines.push(`  ${pct}% { transform: ${formatTranslate(x, y)}; }`);
     elapsed += duration;
   });
   const finalColumn = row.durations.length - 1;
-  lines.push(`  100% { transform: ${formatTranslate(finalColumn * ATLAS.frameWidth, row.row * ATLAS.frameHeight)}; }`);
+  lines.push(`  100% { transform: ${formatTranslate(finalColumn * atlas.frameWidth, row.row * atlas.frameHeight)}; }`);
+  lines.push("}");
+  return lines.join("\n");
+}
+
+function buildHorizontalKeyframes(durations, animationName, atlas = ATLAS) {
+  let elapsed = 0;
+  const totalMs = durations.reduce((sum, duration) => sum + duration, 0);
+  const lines = [`@keyframes ${animationName} {`];
+  durations.forEach((duration, column) => {
+    const pct = formatPercent((elapsed / totalMs) * 100);
+    lines.push(`  ${pct}% { transform: ${formatTranslate(column * atlas.frameWidth, 0)}; }`);
+    elapsed += duration;
+  });
+  lines.push(`  100% { transform: ${formatTranslate((durations.length - 1) * atlas.frameWidth, 0)}; }`);
   lines.push("}");
   return lines.join("\n");
 }
@@ -531,14 +752,15 @@ function inspectPngSpritesheet(filePath, options = {}) {
 
   const errors = [];
   const warnings = [];
-  if (info.width === ATLAS.width && info.height === ATLAS.height) {
+  const atlas = options.atlas || null;
+  if (atlas && info.width === atlas.width && info.height === atlas.height) {
     if (info.bitDepth !== 8 || info.colorType !== 6 || info.interlace !== 0) {
       warnings.push("PNG transparency validation only supports non-interlaced 8-bit RGBA atlases");
-    } else if (isUsablePngAlphaValidationCache(options.pngAlphaValidationCache)) {
+    } else if (isUsablePngAlphaValidationCache(options.pngAlphaValidationCache, atlas.spriteVersionNumber, atlas)) {
       info.checkedUnusedTransparency = true;
       info.checkedUnusedTransparencyCached = true;
     } else {
-      const alphaErrors = validatePngAtlasAlpha(idatChunks, info);
+      const alphaErrors = validatePngAtlasAlpha(idatChunks, info, atlas);
       errors.push(...alphaErrors);
       info.checkedUnusedTransparency = alphaErrors.length === 0;
     }
@@ -546,17 +768,23 @@ function inspectPngSpritesheet(filePath, options = {}) {
   return { info, errors, warnings };
 }
 
-function validatePngAtlasAlpha(idatChunks, info) {
-  const inflated = zlib.inflateSync(Buffer.concat(idatChunks));
+function validatePngAtlasAlpha(idatChunks, info, atlas) {
   const bytesPerPixel = 4;
   const stride = info.width * bytesPerPixel;
   const expectedLength = info.height * (1 + stride);
+  const inflated = zlib.inflateSync(Buffer.concat(idatChunks), {
+    maxOutputLength: expectedLength,
+  });
   if (inflated.length < expectedLength) return ["PNG image data is shorter than expected"];
 
   let previous = Buffer.alloc(stride);
   let current = Buffer.alloc(stride);
+  // V2 preserves the nine action rows and appends two fully populated rows
+  // containing the 16 clockwise gaze directions. Clawd does not consume those
+  // gaze frames yet, so their pixels are permitted but the rows may be empty.
   const usedColumnsByRow = ATLAS_ROWS.map((row) => row.durations.length);
-  const usedVisible = new Array(ATLAS.rows).fill(false);
+  while (usedColumnsByRow.length < atlas.rows) usedColumnsByRow.push(atlas.columns);
+  const usedVisible = new Array(atlas.rows).fill(false);
 
   for (let y = 0; y < info.height; y += 1) {
     const rowStart = y * (1 + stride);
@@ -564,10 +792,10 @@ function validatePngAtlasAlpha(idatChunks, info) {
     const scanline = inflated.subarray(rowStart + 1, rowStart + 1 + stride);
     unfilterPngScanline(filter, scanline, previous, current, bytesPerPixel);
 
-    const atlasRow = Math.floor(y / ATLAS.frameHeight);
+    const atlasRow = Math.floor(y / atlas.frameHeight);
     const usedColumns = usedColumnsByRow[atlasRow];
     for (let x = 0; x < info.width; x += 1) {
-      const column = Math.floor(x / ATLAS.frameWidth);
+      const column = Math.floor(x / atlas.frameWidth);
       const alpha = current[x * 4 + 3];
       if (column < usedColumns) {
         if (alpha !== 0) usedVisible[atlasRow] = true;
@@ -581,7 +809,7 @@ function validatePngAtlasAlpha(idatChunks, info) {
     current = temp;
   }
 
-  const emptyRow = usedVisible.findIndex((visible) => !visible);
+  const emptyRow = usedVisible.slice(0, ATLAS_ROWS.length).findIndex((visible) => !visible);
   if (emptyRow >= 0) return [`atlas row ${emptyRow} has no visible pixels in active cells`];
   return [];
 }
@@ -611,13 +839,17 @@ function findManagedMarkerForPackage(markersByPackagePath, packageDir) {
   return markersByPackagePath.get(pathKey(packageDir)) || null;
 }
 
-function getPngAlphaValidationCache(marker, { packageDir, spritesheetPath, spritesheetStat }) {
-  if (!marker || !spritesheetStat) return null;
+function getPngAlphaValidationCache(
+  marker,
+  { packageDir, spritesheetPath, spritesheetStat, spriteVersionNumber, atlas }
+) {
+  if (!marker || !spritesheetStat || !atlas) return null;
   if (!samePath(marker.sourcePackagePath, packageDir)) return null;
+  if (marker.sourceSpriteVersionNumber !== spriteVersionNumber) return null;
   if (marker.sourceSpritesheetPath !== spritesheetPath) return null;
   if (marker.sourceSpritesheetMtimeMs !== spritesheetStat.mtimeMs) return null;
   if (marker.sourceSpritesheetSize !== spritesheetStat.size) return null;
-  if (!isUsablePngAlphaValidationCache(marker.sourcePngAlphaValidation)) return null;
+  if (!isUsablePngAlphaValidationCache(marker.sourcePngAlphaValidation, spriteVersionNumber, atlas)) return null;
   if (marker.sourcePngAlphaValidation.spritesheetMtimeMs !== spritesheetStat.mtimeMs) return null;
   if (marker.sourcePngAlphaValidation.spritesheetSize !== spritesheetStat.size) return null;
   return marker.sourcePngAlphaValidation;
@@ -627,6 +859,9 @@ function buildPngAlphaValidationCache(packageInfo) {
   if (!requiresPngAlphaValidationCache(packageInfo)) return null;
   return {
     schemaVersion: PNG_ALPHA_VALIDATION_SCHEMA_VERSION,
+    spriteVersionNumber: packageInfo.spriteVersionNumber,
+    atlasWidth: packageInfo.atlas.width,
+    atlasHeight: packageInfo.atlas.height,
     spritesheetMtimeMs: packageInfo.spritesheetMtimeMs,
     spritesheetSize: packageInfo.spritesheetSize,
     checkedUnusedTransparency: true,
@@ -646,16 +881,20 @@ function isPngAlphaValidationCacheFresh(marker, packageInfo) {
   if (!marker || !packageInfo) return false;
   const cache = marker.sourcePngAlphaValidation;
   return !!(
-    isUsablePngAlphaValidationCache(cache)
+    isUsablePngAlphaValidationCache(cache, packageInfo.spriteVersionNumber, packageInfo.atlas)
     && cache.spritesheetMtimeMs === packageInfo.spritesheetMtimeMs
     && cache.spritesheetSize === packageInfo.spritesheetSize
   );
 }
 
-function isUsablePngAlphaValidationCache(cache) {
+function isUsablePngAlphaValidationCache(cache, spriteVersionNumber, atlas) {
   return !!(
     cache
     && cache.schemaVersion === PNG_ALPHA_VALIDATION_SCHEMA_VERSION
+    && cache.spriteVersionNumber === spriteVersionNumber
+    && atlas
+    && cache.atlasWidth === atlas.width
+    && cache.atlasHeight === atlas.height
     && cache.checkedUnusedTransparency === true
     && Number.isFinite(cache.spritesheetMtimeMs)
     && Number.isFinite(cache.spritesheetSize)
@@ -971,17 +1210,25 @@ module.exports = {
   ADAPTER_VERSION,
   MAX_DISPLAY_NAME_LENGTH,
   MAX_DESCRIPTION_LENGTH,
+  DEFAULT_SPRITE_VERSION_NUMBER,
   ATLAS,
+  ATLAS_BY_SPRITE_VERSION,
   ATLAS_ROWS,
   WRAPPER_SPECS,
+  DIRECTIONAL_DRAG_SPEC,
+  DIRECTIONAL_DRAG_WRAPPER,
   MARKER_FILENAME,
   getDefaultCodexPetsDir,
+  resolveSpriteVersion,
   scanCodexPetPackages,
   validateCodexPetPackage,
   materializeCodexPetTheme,
   syncCodexPetThemes,
   buildThemeJson,
   generateWrapperSvg,
+  generateUniversalWrapperSvg,
+  generateDirectionalDragWrapperSvg,
+  assertDirectionalTimingParity,
   derivePetSlug,
   resolveManagedThemeId,
   readManagedMarker,

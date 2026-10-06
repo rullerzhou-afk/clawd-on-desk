@@ -3,7 +3,31 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName } = require("../src/bubble-format");
+const { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName } = require("../src/bubble-format");
+const { SUPPORTED_LANGS } = require("../src/i18n");
+
+describe("bubble-format reminder reason labels", () => {
+  it("turns stable diagnostic tags into readable text in every supported locale", () => {
+    for (const lang of SUPPORTED_LANGS) {
+      const label = formatReminderReason("force-push", lang);
+      assert.ok(label);
+      assert.notStrictEqual(label, "force-push");
+    }
+  });
+
+  it("never leaks an unknown future tag into user-visible text", () => {
+    assert.strictEqual(formatReminderReason("future-internal-tag", "en"), "destructive action");
+    assert.strictEqual(formatReminderReason("future-internal-tag", "zh"), "破坏性操作");
+    assert.strictEqual(formatReminderReason("force-push", "unsupported"), "force push");
+  });
+
+  it("treats inherited object names as unknown tags and languages", () => {
+    for (const tag of ["constructor", "__proto__", "toString"]) {
+      assert.strictEqual(formatReminderReason(tag, "en"), "destructive action");
+    }
+    assert.strictEqual(formatReminderReason("force-push", "constructor"), "force push");
+  });
+});
 
 describe("bubble-format truncate", () => {
   it("returns input unchanged when within max", () => {
@@ -37,6 +61,30 @@ describe("bubble-format formatDetail builtin tools", () => {
     assert.strictEqual(formatDetail("Bash", { command: "npm test" }), "npm test");
   });
 
+  it("uses explicit full-text fields in detail mode", () => {
+    const command = `echo ${"x".repeat(300)}`;
+    const plan = `Plan\n${"step\n".repeat(80)}END_MARKER`;
+    assert.strictEqual(
+      formatDetail("Bash", { description: "short preview", command }, { mode: "detail" }),
+      command
+    );
+    assert.strictEqual(
+      formatDetail("ExitPlanMode", { note: "wrong first string", plan }, { mode: "detail" }),
+      plan
+    );
+    assert.strictEqual(
+      formatDetail("ExitPlanMode", { note: "wrong first string", plan }),
+      truncate(plan, 120)
+    );
+  });
+
+  it("uses readable JSON for unknown tools in detail mode", () => {
+    assert.strictEqual(
+      formatDetail("mcp__server__tool", { first: "a", nested: { second: "b" } }, { mode: "detail" }),
+      '{\n  "first": "a",\n  "nested": {\n    "second": "b"\n  }\n}'
+    );
+  });
+
   it("formats Edit/Write/Read file_path", () => {
     assert.strictEqual(formatDetail("Edit", { file_path: "/repo/app.js" }), "/repo/app.js");
     assert.strictEqual(formatDetail("Write", { file_path: "/repo/out.txt" }), "/repo/out.txt");
@@ -51,6 +99,22 @@ describe("bubble-format formatDetail builtin tools", () => {
   it("returns empty string for invalid input", () => {
     assert.strictEqual(formatDetail("Bash", null), "");
     assert.strictEqual(formatDetail("Bash", undefined), "");
+  });
+
+  it("coerces non-string tool-input fields instead of crashing (M9)", () => {
+    // Truthy non-string command/file_path/pattern used to reach String.slice
+    // and throw, taking down the whole bubble render (and the irreversible
+    // badge with it). They must now fall through safely.
+    assert.doesNotThrow(() => formatDetail("Bash", { command: 12345 }));
+    assert.doesNotThrow(() => formatDetail("Edit", { file_path: { nested: true } }));
+    assert.doesNotThrow(() => formatDetail("Write", { file_path: true }));
+    assert.doesNotThrow(() => formatDetail("Glob", { pattern: 999 }));
+    assert.doesNotThrow(() => formatDetail("Grep", { pattern: ["a", "b"] }));
+    // A non-string primary field falls through to the generic string search.
+    assert.strictEqual(formatDetail("Bash", { command: 5, note: "hi there" }), "hi there");
+    // truncate itself coerces, so no caller can crash it.
+    assert.strictEqual(truncate(12345, 120), "12345");
+    assert.strictEqual(truncate(null, 120), "");
   });
 });
 

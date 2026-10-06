@@ -4,6 +4,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
+const vm = require("vm");
 
 const SRC_DIR = path.join(__dirname, "..", "src");
 const { SUPPORTED_LANGS } = require("../src/i18n");
@@ -48,11 +49,27 @@ test("settings-i18n.js: all language packs include remote-ssh keys", () => {
     "remoteSshDeploy",
     "remoteSshFieldHost",
     "remoteSshFieldRemoteForwardPort",
+    "remoteSshFieldRemoteForwardPortHint",
+    "remoteSshFieldTransportMode",
+    "remoteSshTransportModeAuto",
+    "remoteSshTransportModeSerialized",
+    "remoteSshTransportModeHint",
+    "remoteSshTransportModeDisconnectHint",
     "remoteSshStatus_idle",
     "remoteSshStatus_connecting",
     "remoteSshStatus_connected",
     "remoteSshStatus_failed",
     "remoteSshStep_install-copilot",
+    "remoteSshStep_hermes-files",
+    "remoteSshStep_install-hermes",
+    "remoteSshErrForwardRetrying",
+    "remoteSshErrForwardFailed",
+    "remoteSshErrSecureIdentityMissing",
+    "remoteSshErrDeploymentRequired",
+    "remoteSshErrIsolatedInactive",
+    "remoteSshForceRevokeOld",
+    "remoteSshForceRevokeAll",
+    "remoteSshForceRevokeSecondConfirm",
   ];
   // Each key should appear at least once per language pack.
   for (const key of REQUIRED_KEYS) {
@@ -74,10 +91,17 @@ test("settings-i18n.js: sidebarRemoteSsh defined in every supported language", (
     SUPPORTED_LANGS.length,
     `expected ${SUPPORTED_LANGS.length} sidebarRemoteSsh defs; got ${matches.length}`
   );
-  // No two should be the same (sanity: ensures actual translation, not copy-paste).
-  const values = matches.map((m) => m.match(/"([^"]+)"/)[1]);
-  const unique = new Set(values);
-  assert.equal(unique.size, SUPPORTED_LANGS.length, `expected ${SUPPORTED_LANGS.length} distinct translations; got ${[...unique]}`);
+  const context = {};
+  context.globalThis = context;
+  vm.runInNewContext(code, context, { filename: "settings-i18n.js" });
+  const strings = context.ClawdSettingsI18n.STRINGS;
+  for (const lang of SUPPORTED_LANGS) {
+    assert.equal(typeof strings[lang].sidebarRemoteSsh, "string", `${lang} should define sidebarRemoteSsh`);
+    assert.ok(strings[lang].sidebarRemoteSsh.trim(), `${lang} sidebarRemoteSsh should be non-empty`);
+    if (lang !== "en") {
+      assert.notEqual(strings[lang].sidebarRemoteSsh, strings.en.sidebarRemoteSsh, `${lang} should not fall back to English`);
+    }
+  }
 });
 
 // ── Smoke: the tab module exports a render that doesn't blow up at top-level eval ──
@@ -141,7 +165,13 @@ test("settings.css defines remote-ssh-* layout rules used by the tab", () => {
     "remote-ssh-field",
     "remote-ssh-field-label",
     "remote-ssh-field-hint",
-    "remote-ssh-field-check",
+    "remote-ssh-port-select",
+    "remote-ssh-option-cards",
+    "remote-ssh-option-card",
+    "remote-ssh-option-card-text",
+    "remote-ssh-option-card-label",
+    "remote-ssh-option-card-desc",
+    "remote-ssh-option-card-switch",
     "remote-ssh-form-actions",
     "remote-ssh-hooks-row",
     "remote-ssh-hooks-label",
@@ -162,6 +192,48 @@ test("settings-tab-remote-ssh.js translates runtime status hints before raw mess
   assert.match(code, /status\.hint/);
   assert.match(code, /translated\s*!==\s*status\.hint/);
   assert.match(code, /msg\.title\s*=\s*status\.message/);
+});
+
+test("settings-tab-remote-ssh.js blocks unstamped Connect and handles the IPC deployment gate", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8");
+  assert.match(code, /function\s+hasDeploymentStamp\s*\(\s*profile\s*\)/);
+  assert.match(code, /profile\.lastDeployedAt/);
+  assert.match(code, /const\s+deploymentReady\s*=\s*hasDeploymentStamp\(profile\)/);
+  assert.match(code, /disabled:\s*!disconnectAvailable\s*&&\s*\(!deploymentReady\s*\|\|\s*transportOperationActive\)/);
+  assert.match(code, /result\.reason\s*===\s*"deployment_required"/);
+  assert.match(code, /result\.hint\s*\|\|\s*"remoteSshErrDeploymentRequired"/);
+  const readinessBody = code.match(/function\s+hasDeploymentStamp\s*\([^)]*\)\s*\{([\s\S]*?)\n\s*\}/);
+  assert.ok(readinessBody);
+  assert.doesNotMatch(readinessBody[1], /nonce|identity|remoteHome/i,
+    "renderer pre-gate must use only the non-sensitive deployment stamp");
+});
+
+test("settings-tab-remote-ssh.js keeps Disconnect available while a managed operation intends to reconnect", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8");
+  assert.match(code, /transportOperationActive/);
+  assert.match(code, /status\.transportDesiredConnected\s*===\s*true/);
+  assert.match(code, /transportOperationActive\s*&&\s*status\.transportDesiredConnected/);
+  assert.match(code, /requestProfileDisconnect\(profile\.id\)/);
+  assert.match(code, /disabled:\s*!disconnectAvailable\s*&&\s*\(!deploymentReady\s*\|\|\s*transportOperationActive\)/);
+  assert.match(code, /else if \(transportOperationActive\)[\s\S]*connectBtn\.title\s*=\s*statusMessageText\(status\)/);
+});
+
+test("settings-i18n.js distinguishes recovery, final port failure, and deployment identity in English and Chinese", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8");
+  assert.match(code, /remoteSshErrForwardRetrying:\s*"The previous tunnel may still be releasing/);
+  assert.match(code, /remoteSshErrForwardFailed:\s*"Remote port unavailable\.[^"]*Deploy \/ Repair Hooks/);
+  assert.match(code, /remoteSshErrSecureIdentityMissing:\s*"Clawd's secure Remote SSH deployment identity[^"]*not SSH key authentication/);
+  assert.match(code, /remoteSshErrDeploymentRequired:\s*"This target is not ready to connect\.[^"]*Deploy \/ Repair Hooks/);
+  assert.match(code, /remoteSshErrForwardRetrying:\s*"上一个隧道可能仍在释放远端端口/);
+  assert.match(code, /remoteSshErrSecureIdentityMissing:\s*"Clawd 的安全 Remote SSH 部署身份[^"]*不是 SSH 私钥认证失败/);
+});
+
+test("settings-tab-remote-ssh.js exposes force revoke only through the dedicated IPC with two confirmations", () => {
+  const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8");
+  assert.match(code, /window\.remoteSsh\.forceRevoke\(profile\.id,\s*mode,\s*true\)/);
+  assert.match(code, /confirm\(t\(firstConfirmKey\)\)/);
+  assert.match(code, /confirm\(t\("remoteSshForceRevokeSecondConfirm"\)\)/);
+  assert.doesNotMatch(code, /callCommand\("remoteSsh\.forceRevoke"/);
 });
 
 test("settings-i18n.js: codexHookReviewReminder defined in every supported language (B2 followup)", () => {

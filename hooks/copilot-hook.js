@@ -23,8 +23,9 @@ const {
   postStateToRunningServer,
   postPermissionToRunningServer,
   readHostPrefix,
+  applyWslSourceFields,
 } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // PERMISSION_HTTP_TIMEOUT_MS is the internal Clawd /permission HTTP timeout.
 // It MUST stay strictly below `permissionRequest` hook `timeoutSec * 1000` so
@@ -162,6 +163,26 @@ const EVENT_TO_STATE = {
   preCompact: "sweeping",
 };
 
+// #634: lifecycle for the shared resolver's cross-process pid cache, keyed on
+// Copilot's camelCase hook names. agentStop is deliberately NOT "end" (turn
+// completion — dropping the cache there would force a snapshot flash on the
+// next tool event).
+const EVENT_TO_LIFECYCLE = {
+  sessionStart: "start",
+  userPromptSubmitted: "prompt",
+  sessionEnd: "end",
+};
+
+function pidCacheContext(event, sessionId, cwd) {
+  return {
+    namespace: "copilot-cli",
+    sessionId,
+    cacheCwd: cwd,
+    lifecycle: EVENT_TO_LIFECYCLE[event] || "event",
+    cacheable: sessionId !== "default" && !!cwd,
+  };
+}
+
 // Hook-side caps for permission payload. `src/server-route-permission.js`
 // rejects bodies >512KB *before* it can route by agent_id, so an
 // unbounded payload (e.g. an `edit` tool's full git-style diff for a
@@ -285,13 +306,20 @@ function buildPermissionBody(payload, resolve, options = {}) {
   if (process.env.CLAWD_REMOTE) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
+    applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else if (typeof resolve === "function") {
-    const { stablePid, agentPid, pidChain, tmuxSocket, tmuxClient } = resolve();
+    const { stablePid, agentPid, pidChain, tmuxSocket, tmuxClient } =
+      resolve(pidCacheContext("permissionRequest", sessionId, cwd));
     if (stablePid) body.source_pid = stablePid;
     if (agentPid) body.agent_pid = agentPid;
     if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    applyOrcaPaneKey(body);
+    applyWslSourceFields(body);
+  } else {
+    applyWslSourceFields(body);
   }
 
   return body;
@@ -371,14 +399,19 @@ function buildStateBody(event, payload, resolve, options = {}) {
   if (process.env.CLAWD_REMOTE) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
+    applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body);
   } else {
-    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+    applyWslSourceFields(body);
+    const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } =
+      resolve(pidCacheContext(event, sessionId, cwd));
     body.source_pid = stablePid;
     if (detectedEditor) body.editor = detectedEditor;
     if (agentPid) body.agent_pid = agentPid;
     if (pidChain.length) body.pid_chain = pidChain;
     if (tmuxSocket) body.tmux_socket = tmuxSocket;
     if (tmuxClient) body.tmux_client = tmuxClient;
+    applyOrcaPaneKey(body);
   }
 
   return body;

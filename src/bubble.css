@@ -27,6 +27,9 @@
   --sug-hover-border: #d1d5db;
   --sug-hover-color: #374151;
   --sug-arrow: #9ca3af;
+  --irreversible-color: #8a5a00;
+  --irreversible-bg: rgba(255, 176, 32, 0.14);
+  --irreversible-border: rgba(255, 176, 32, 0.45);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -54,6 +57,9 @@
     --sug-hover-border: rgba(255, 255, 255, 0.15);
     --sug-hover-color: #e4e4e7;
     --sug-arrow: #d4d4d8;
+    --irreversible-color: #ffca5f;
+    --irreversible-bg: rgba(255, 176, 32, 0.16);
+    --irreversible-border: rgba(255, 176, 32, 0.5);
   }
 }
 
@@ -84,6 +90,27 @@ body { padding: 6px; }
   transition: opacity 0.35s var(--ease-spring), transform 0.4s var(--ease-spring);
   overflow: hidden;
 }
+.card.expanded {
+  /* Root CSS zoom leaves vh tied to the unzoomed BrowserWindow. Divide by the
+     injected text scale so the painted card still fits the actual window. */
+  height: calc(100vh / var(--clawd-text-zoom, 1) - 12px);
+  min-height: 0;
+}
+.card.measuring {
+  height: auto;
+  max-height: none;
+}
+.card.expanded.measuring {
+  height: auto;
+  max-height: none;
+}
+.card.expanded > :not(.detail-scroll) {
+  flex-shrink: 0;
+}
+.card.measuring .detail-scroll {
+  flex: none;
+  overflow: visible;
+}
 
 .card.visible {
   opacity: 1;
@@ -93,23 +120,67 @@ body { padding: 6px; }
   opacity: 0;
   transform: translateX(60px);
 }
+.card.codex-user-input-focus-card { cursor: pointer; }
+.card.codex-user-input-focus-card:hover {
+  border-color: var(--sug-hover-border);
+}
+.card.codex-user-input-focus-card:focus-visible {
+  outline: 2px solid var(--sug-hover-border);
+  outline-offset: -2px;
+}
 
 /* ── Header ── */
 .header {
   display: flex;
-  flex-direction: column;
+  flex-direction: row;
   align-items: flex-start;
+  justify-content: space-between;
   gap: 4px;
   width: 100%;
   min-width: 0;
   margin-bottom: 0;
 }
+.header-copy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  min-width: 0;
+}
+.collapse-button {
+  display: none;
+  flex: 0 0 auto;
+  min-width: 42px;
+  height: 26px;
+  margin: -4px -6px 0 8px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--cmd-color);
+  background: transparent;
+  padding: 0 7px;
+  font: 600 11px/1 inherit;
+  cursor: pointer;
+}
+.collapse-button:hover { background: var(--sug-hover-bg); }
+.card.expanded .collapse-button { display: block; }
 .header-title {
   font-size: 13px;
   font-weight: 600;
   color: var(--header-color);
   letter-spacing: 0.02em;
   white-space: nowrap;
+}
+
+/* ── Irreversible-action hint (display-only badge) ── */
+.irreversible-badge {
+  margin: 2px 12px 0;
+  padding: 3px 8px;
+  border-radius: 6px;
+  font-size: 11px;
+  line-height: 1.3;
+  color: var(--irreversible-color);
+  background: var(--irreversible-bg);
+  border: 1px solid var(--irreversible-border);
 }
 
 /* ── Tool pill ── */
@@ -173,7 +244,41 @@ body { padding: 6px; }
 }
 .session-tag.visible { display: block; }
 
-/* ── Command block ── */
+/* ── Compact preview / expanded detail ── */
+.compact-block {
+  display: -webkit-box;
+  padding: 10px 12px;
+  background: var(--cmd-bg);
+  border: 1px solid var(--cmd-border);
+  border-radius: 10px;
+  font-family: "SF Mono", "ui-monospace", "Cascadia Code", "Fira Code", monospace;
+  font-size: 12px;
+  color: var(--cmd-color);
+  line-height: 1.5;
+  overflow: hidden;
+  word-break: break-word;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  box-shadow: var(--cmd-shadow);
+}
+.card.expanded .compact-block { display: none !important; }
+
+.detail-scroll {
+  display: none;
+  flex: 1 1 auto;
+  min-height: 0;
+  flex-direction: column;
+  gap: 8px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 2px;
+}
+.card.expanded .detail-scroll { display: flex; }
+.detail-scroll::-webkit-scrollbar { width: 6px; }
+.detail-scroll::-webkit-scrollbar-track { background: transparent; }
+.detail-scroll::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
+.detail-scroll::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+
 .command-block {
   padding: 12px;
   background: var(--cmd-bg);
@@ -183,22 +288,47 @@ body { padding: 6px; }
   font-size: 12px;
   color: var(--cmd-color);
   line-height: 1.5;
-  max-height: 80px;
-  overflow-y: auto;
-  word-break: break-all;
+  max-height: none;
+  overflow: visible;
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: anywhere;
   box-shadow: var(--cmd-shadow);
 }
-.command-block::-webkit-scrollbar { width: 6px; }
-.command-block::-webkit-scrollbar-track { background: transparent; }
-.command-block::-webkit-scrollbar-thumb { background: var(--scroll-thumb); border-radius: 3px; }
-.command-block::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+.detail-truncation {
+  display: none;
+  font-size: 11px;
+  line-height: 1.35;
+  color: var(--irreversible-color);
+}
+.card.expanded .detail-truncation.visible { display: block; }
+
+.btn-expand {
+  display: none;
+  width: 100%;
+  padding: 7px 12px;
+  border-radius: 8px;
+  border: 1px solid var(--sug-border);
+  color: var(--sug-hover-color);
+  background: var(--sug-bg);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.btn-expand.visible { display: block; }
+.btn-expand:hover { background: var(--sug-hover-bg); border-color: var(--sug-hover-border); }
+.card.expanded .btn-expand { display: none !important; }
 
 /* ── Elicitation form ── */
 .elicitation-form {
   display: none;
+  /* The outer detail scroller owns overflow. Keep the form at its intrinsic
+     height so its children cannot paint through the following progress row. */
+  flex: 0 0 auto;
   flex-direction: column;
   gap: 10px;
-  min-height: 0;
 }
 .elicitation-form.visible { display: flex; }
 .card.elicitation-scrollable .elicitation-form {
@@ -226,6 +356,7 @@ body { padding: 6px; }
   opacity: 0.8;
   text-align: center;
   font-family: "SF Mono", "ui-monospace", "Cascadia Code", "Fira Code", monospace;
+  padding: 4px 0;
 }
 .elicitation-progress.visible { display: block; }
 
@@ -319,6 +450,13 @@ body { padding: 6px; }
   }
 }
 
+/* Codex request_user_input preview — the options are a read-only echo of
+   what's on screen in Codex's own terminal, not a picker. Override the base
+   .option-item's pointer cursor so it doesn't look clickable. */
+.option-item-readonly {
+  cursor: default;
+}
+
 .option-item input {
   margin-top: 2px;
   accent-color: #d97757;
@@ -341,6 +479,13 @@ body { padding: 6px; }
   font-size: 11px;
   line-height: 1.35;
   color: var(--cmd-color);
+}
+
+.question-text,
+.option-item-description {
+  white-space: pre-wrap;
+  word-break: normal;
+  overflow-wrap: anywhere;
 }
 
 .option-item-other { align-items: center; }
@@ -373,6 +518,13 @@ body { padding: 6px; }
   display: flex;
   gap: 8px;
 }
+.footer-secondary {
+  display: none;
+  flex: 0 0 auto;
+  flex-direction: column;
+  gap: 6px;
+}
+.footer-secondary.visible { display: flex; }
 .btn {
   flex: 1;
   padding: 7px 0;
@@ -456,6 +608,13 @@ body { padding: 6px; }
 
 .btn-suggestion:active:not(:disabled) { transform: scale(0.98); }
 .btn-suggestion:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.session-trust-error {
+  color: var(--deny-color);
+  font-size: 11px;
+  line-height: 1.35;
+  padding: 2px 4px;
+}
 
 /* ── Plan feedback form ── */
 .plan-feedback-form {

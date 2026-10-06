@@ -5,21 +5,23 @@
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:; media-src 'self' file:">
 <title>Clawd Settings</title>
 <link rel="stylesheet" href="settings.css">
+<link rel="stylesheet" href="language-picker.css">
 </head>
 <body>
 <div class="app">
   <nav class="sidebar" id="sidebar"></nav>
-  <main class="content" id="content"></main>
+  <main class="content" id="content" data-language-picker-boundary></main>
 </div>
 <div class="toast-stack" id="toastStack"></div>
 <div id="modalRoot"></div>
 <script src="shortcut-actions.js"></script>
+<script src="language-picker.js"></script>
 <script src="settings-size-slider.js"></script>
 <script src="settings-i18n.js"></script>
+<script src="feishu-approval-recipient.js"></script>
 <script src="settings-anim-overrides-merge.js"></script>
 <script src="settings-ui-core.js"></script>
 <script src="settings-agent-order.js"></script>
-<script src="settings-hardware-buddy-panel.js"></script>
 <script src="settings-tab-general.js"></script>
 <script src="settings-tab-agents.js"></script>
 <script src="settings-tab-theme.js"></script>
@@ -27,6 +29,8 @@
 <script src="settings-tab-anim-overrides.js"></script>
 <script src="settings-tab-shortcuts.js"></script>
 <script src="settings-tab-telegram-approval.js"></script>
+<script src="settings-tab-discord-presence.js"></script>
+<script src="settings-tab-recap.js"></script>
 <script src="settings-tab-about.js"></script>
 <script src="settings-tab-remote-ssh.js"></script>
 <script src="settings-tab-mobile.js"></script>

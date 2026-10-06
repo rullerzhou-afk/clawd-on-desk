@@ -5,6 +5,7 @@ module.exports = {
   id: "antigravity-cli",
   name: "Antigravity CLI",
   processNames: { win: ["agy.exe"], mac: ["agy"], linux: ["agy"] },
+  startupRecoveryProcessNames: { win: ["agy.exe"], mac: ["agy"], linux: ["agy"] },
   eventSource: "hook",
   // PreToolUse intentionally omitted: agy owns permission via its native menu,
   // triggered by the LLM's proactive ask_permission tool calls.

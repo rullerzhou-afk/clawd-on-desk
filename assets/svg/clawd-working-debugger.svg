@@ -199,7 +199,7 @@
     </g>
 
     <!-- Upper Body (breathing) -->
-    <g class="breathe">
+    <g id="accessory-anchor" class="breathe">
       <!-- Torso -->
       <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
 

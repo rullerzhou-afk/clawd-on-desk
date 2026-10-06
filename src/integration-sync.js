@@ -75,18 +75,57 @@ function createIntegrationSyncRuntime(options = {}) {
   const shouldSyncAgentIntegration = typeof options.shouldSyncAgentIntegration === "function"
     ? options.shouldSyncAgentIntegration
     : isAgentEnabled;
+  const getAgentIntegrationOptions = typeof options.getAgentIntegrationOptions === "function"
+    ? options.getAgentIntegrationOptions
+    : (() => ({}));
   const startClaudeSettingsWatcher = options.startClaudeSettingsWatcher;
   const stopClaudeSettingsWatcher = options.stopClaudeSettingsWatcher;
+  const platform = options.platform || process.platform;
+  // Desktop discovery is a static cache on Windows; warm it once at startup so
+  // the installation detector and Doctor can see the desktop app. This runs
+  // even when DSH is not enabled, because those surfaces exist to help users
+  // who have not enabled anything yet.
+  const preheatDshDesktopDiscovery = typeof options.preheatDshDesktopDiscovery === "function"
+    ? options.preheatDshDesktopDiscovery
+    : async () => {
+      if (platform !== "win32") return;
+      const { refreshDshDesktopDiscovery } = require("../hooks/dsh-install.js");
+      await refreshDshDesktopDiscovery({});
+    };
 
-  function syncClawdHooks() {
+  function readAgentIntegrationOptions(agentId) {
+    try {
+      const result = getAgentIntegrationOptions(agentId);
+      return result && typeof result === "object" ? result : {};
+    } catch (err) {
+      console.warn(`Clawd: failed to read ${agentId} integration options:`, err && err.message);
+      return {};
+    }
+  }
+
+  function syncClawdHooks(options = {}) {
+    const source = typeof options.source === "string" ? options.source : null;
+    const automatic = options.automatic !== false;
     try {
       if (typeof ctx.syncClawdHooksImpl === "function") {
         return ctx.syncClawdHooksImpl({
           autoStart: ctx.autoStartWithClaude,
           port: getHookServerPort(),
+          source,
+          automatic,
         });
       }
-      const { registerHooks } = require("../hooks/install.js");
+      const {
+        registerHooks,
+        registerClaudeStatusline,
+        unregisterClaudeStatusline,
+      } = require("../hooks/install.js");
+      // This branch is a best-effort fallback used only when no server-owned
+      // syncClawdHooksImpl is wired (production always wires the operation
+      // queue). It does NOT go through preflightClaudeRuntime, so it does not
+      // promise the queue's preflight-before-mutation atomicity: registerHooks
+      // can commit settings before a statusline failure is surfaced below.
+      // Keep the queue path for anything that needs atomic Settings Install.
       const { added, updated, removed } = registerHooks({
         silent: true,
         autoStart: ctx.autoStartWithClaude,
@@ -94,6 +133,30 @@ function createIntegrationSyncRuntime(options = {}) {
       });
       if (added > 0 || updated > 0 || removed > 0) {
         console.log(`Clawd: synced hooks (added ${added}, updated ${updated}, removed ${removed})`);
+      }
+      // Statusline registration is best-effort and reported separately: it only
+      // takes the slot when empty/already ours (never overwrites a user's own
+      // statusline), so a skip here is expected and must not affect the
+      // hooks-sync status returned below.
+      try {
+        if (ctx.claudeQuotaCollectionEnabled === true) {
+          const statuslineResult = registerClaudeStatusline({ silent: true });
+          if (statuslineResult && statuslineResult.error) {
+            // Best-effort: a statusline failure must not fail the hooks-sync
+            // result, but it must be visible rather than silently reported as
+            // a successful install.
+            console.warn(
+              "Clawd: failed to sync Claude Code statusline:",
+              statuslineResult.error.message || statuslineResult.error.reason
+            );
+          } else if (statuslineResult.changed) {
+            console.log("Clawd: registered Claude Code statusline (rate limit quota)");
+          }
+        } else {
+          unregisterClaudeStatusline({ backup: true, silent: true });
+        }
+      } catch (statuslineErr) {
+        console.warn("Clawd: failed to sync Claude Code statusline:", statuslineErr.message);
       }
       return { status: "ok", added, updated, removed };
     } catch (err) {
@@ -120,10 +183,22 @@ function createIntegrationSyncRuntime(options = {}) {
   function syncAntigravityHooks() {
     try {
       if (typeof ctx.syncAntigravityHooksImpl === "function") return ctx.syncAntigravityHooksImpl();
-      const { registerAntigravityHooks } = require("../hooks/antigravity-install.js");
+      const { registerAntigravityHooks, registerAntigravityStatusline } = require("../hooks/antigravity-install.js");
       const result = registerAntigravityHooks({ silent: true });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced Antigravity hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      // Statusline registration is best-effort and reported separately: it only
+      // takes the slot when empty/already ours (never overwrites a user's own
+      // statusline), so a skip here is expected and must not affect the
+      // hooks-sync status returned below.
+      try {
+        const statuslineResult = registerAntigravityStatusline({ silent: true });
+        if (statuslineResult.changed) {
+          console.log("Clawd: registered Antigravity statusline (context usage)");
+        }
+      } catch (statuslineErr) {
+        console.warn("Clawd: failed to sync Antigravity statusline:", statuslineErr.message);
       }
       return normalizeInstalledFlagResult(result, "Antigravity CLI", "antigravity-not-installed");
     } catch (err) {
@@ -132,11 +207,15 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncCodeBuddyHooks() {
+  function syncCodeBuddyHooks(options = {}) {
     try {
-      if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl();
+      const permissionTarget = options.permissionTarget && typeof options.permissionTarget === "object"
+        ? options.permissionTarget
+        : { mode: "local" };
+      const syncOptions = { ...options, permissionTarget };
+      if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl(syncOptions);
       const { registerCodeBuddyHooks } = require("../hooks/codebuddy-install.js");
-      const result = registerCodeBuddyHooks({ silent: true });
+      const result = registerCodeBuddyHooks({ silent: true, permissionTarget });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced CodeBuddy hooks (added ${result.added}, updated ${result.updated})`);
       }
@@ -144,6 +223,70 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync CodeBuddy hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync CodeBuddy hooks" };
+    }
+  }
+
+  function syncWorkBuddyHooks() {
+    try {
+      if (typeof ctx.syncWorkBuddyHooksImpl === "function") return ctx.syncWorkBuddyHooksImpl();
+      const { registerWorkBuddyHooks } = require("../hooks/workbuddy-install.js");
+      const result = registerWorkBuddyHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced WorkBuddy hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      for (const warning of result.warnings || []) console.warn(`Clawd: ${warning}`);
+      return normalizeCountSyncResult(result, "WorkBuddy", "workbuddy-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync WorkBuddy hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync WorkBuddy hooks" };
+    }
+  }
+
+  function syncGrokBuildHooks() {
+    try {
+      if (typeof ctx.syncGrokBuildHooksImpl === "function") return ctx.syncGrokBuildHooksImpl();
+      const { registerGrokHooks } = require("../hooks/grok-install.js");
+      const result = registerGrokHooks({ silent: true });
+      if (result && result.status === "skipped") {
+        return { status: "skipped", reason: "grok-not-installed" };
+      }
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced Grok Build hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "Grok Build", "grok-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync Grok Build hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Grok Build hooks" };
+    }
+  }
+
+  function syncTraeCodeHooks() {
+    try {
+      if (typeof ctx.syncTraeCodeHooksImpl === "function") return ctx.syncTraeCodeHooksImpl();
+      const { registerTraeCodeHooks } = require("../hooks/traecode-install.js");
+      const result = registerTraeCodeHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced TraeCode hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "TraeCode", "traecode-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync TraeCode hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync TraeCode hooks" };
+    }
+  }
+
+  function syncMinimaxHooks() {
+    try {
+      if (typeof ctx.syncMinimaxHooksImpl === "function") return ctx.syncMinimaxHooksImpl();
+      const { installMinimaxPlugin } = require("../hooks/minimax-install.js");
+      const result = installMinimaxPlugin({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced MiniMax Code plugin (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "MiniMax Code", "minimax-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync MiniMax Code plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync MiniMax Code plugin" };
     }
   }
 
@@ -207,6 +350,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncZcodeHooks() {
+    try {
+      if (typeof ctx.syncZcodeHooksImpl === "function") return ctx.syncZcodeHooksImpl();
+      const { registerZcodeHooks } = require("../hooks/zcode-install.js");
+      const result = registerZcodeHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced ZCode hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "ZCode", "zcode-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync ZCode hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync ZCode hooks" };
+    }
+  }
+
   function syncCodexHooks() {
     try {
       if (typeof ctx.syncCodexHooksImpl === "function") return ctx.syncCodexHooksImpl();
@@ -262,9 +420,9 @@ function createIntegrationSyncRuntime(options = {}) {
 
   function syncCursorHooks() {
     try {
-      if (typeof ctx.syncCursorHooksImpl === "function") return ctx.syncCursorHooksImpl();
-      const { registerCursorHooks } = require("../hooks/cursor-install.js");
-      const result = registerCursorHooks({ silent: true });
+      const result = typeof ctx.syncCursorHooksImpl === "function"
+        ? ctx.syncCursorHooksImpl()
+        : require("../hooks/cursor-install.js").registerCursorHooks({ silent: true });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced Cursor hooks (added ${result.added}, updated ${result.updated})`);
       }
@@ -290,21 +448,72 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncOpencodePlugin() {
+  async function syncDeepSeekHarnessPlugin(options = {}) {
     try {
-      if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl();
+      const operation = options.operation
+        || (options.source === "settings-agent-install"
+          ? "install"
+          : (options.automatic === false ? "explicit-repair" : "startup-sync"));
+      const normalizedOptions = { ...options, silent: true, operation };
+      if (typeof ctx.syncDeepSeekHarnessPluginImpl === "function") {
+        return await ctx.syncDeepSeekHarnessPluginImpl(normalizedOptions);
+      }
+      const { syncDeepSeekHarnessIntegration } = require("../hooks/dsh-install.js");
+      return await syncDeepSeekHarnessIntegration(normalizedOptions);
+    } catch (err) {
+      console.warn("Clawd: failed to sync DeepSeek Harness plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync DeepSeek Harness plugin" };
+    }
+  }
+
+  function repairDeepSeekHarnessPlugin(options = {}) {
+    return syncDeepSeekHarnessPlugin({ ...options, operation: "explicit-repair", automatic: false });
+  }
+
+  function syncOpencodePlugin(options = {}) {
+    try {
+      // #1026: homeDir/configPath/managedRoot/pluginDir/source/automatic must
+      // reach the real installer (and any injected test impl), or alternate
+      // homes and startup-vs-interactive lock semantics are lost here.
+      const normalizedOptions = { ...options, silent: true };
+      if (typeof ctx.syncOpencodePluginImpl === "function") return ctx.syncOpencodePluginImpl(normalizedOptions);
       const { registerOpencodePlugin } = require("../hooks/opencode-install.js");
-      const result = registerOpencodePlugin({ silent: true });
+      const result = registerOpencodePlugin(normalizedOptions);
       if (result.added || result.created) {
         console.log(`Clawd: synced opencode plugin (added=${result.added}, created=${result.created})`);
       }
       if (result && result.reason === "opencode-not-found") {
         return asSkipped(result, "opencode-not-found", "opencode is not installed; skipped plugin sync");
       }
+      if (result && result.status === "skipped") {
+        return asSkipped(result, result.reason || "opencode-skipped", result.message || "opencode plugin sync skipped");
+      }
+      if (result && result.status === "error") {
+        return { ...result, message: result.message || "Failed to sync opencode plugin" };
+      }
       return asOk(result);
     } catch (err) {
       console.warn("Clawd: failed to sync opencode plugin:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync opencode plugin" };
+    }
+  }
+
+  function syncMimocodePlugin(options = {}) {
+    try {
+      const normalizedOptions = { ...options, silent: true };
+      if (typeof ctx.syncMimocodePluginImpl === "function") return ctx.syncMimocodePluginImpl(normalizedOptions);
+      const { registerMimocodePlugin } = require("../hooks/mimocode-install.js");
+      const result = registerMimocodePlugin(normalizedOptions);
+      if (result.added || result.created) {
+        console.log(`Clawd: synced mimocode plugin (added=${result.added}, created=${result.created})`);
+      }
+      if (result && result.reason === "mimocode-not-found") {
+        return asSkipped(result, "mimocode-not-found", "mimocode is not installed; skipped plugin sync");
+      }
+      return asOk(result);
+    } catch (err) {
+      console.warn("Clawd: failed to sync mimocode plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync mimocode plugin" };
     }
   }
 
@@ -320,6 +529,30 @@ function createIntegrationSyncRuntime(options = {}) {
     } catch (err) {
       console.warn("Clawd: failed to sync Pi extension:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync Pi extension" };
+    }
+  }
+
+  function syncOmpExtension() {
+    try {
+      if (typeof ctx.syncOmpExtensionImpl === "function") return ctx.syncOmpExtensionImpl();
+      const { registerOmpExtension } = require("../hooks/omp-install.js");
+      const result = registerOmpExtension({ silent: true });
+      if (result.installed && result.updated) {
+        console.log("Clawd: synced OMP extension");
+      }
+      // The community bridge owns the same events; leaving it in place is a
+      // deliberate skip, not a failure.
+      if (result && result.reason === "standalone-bridge-present") {
+        return asSkipped(
+          result,
+          "standalone-bridge-present",
+          "clawd-on-desk-omp.ts already bridges OMP; skipped extension sync"
+        );
+      }
+      return normalizeInstalledFlagResult(result, "OMP", "omp-not-found");
+    } catch (err) {
+      console.warn("Clawd: failed to sync OMP extension:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync OMP extension" };
     }
   }
 
@@ -430,54 +663,133 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncQoderWorkHooks() {
+    try {
+      if (typeof ctx.syncQoderWorkHooksImpl === "function") return ctx.syncQoderWorkHooksImpl();
+      const { registerQoderWorkHooks } = require("../hooks/qoderwork-install.js");
+      const result = registerQoderWorkHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced QoderWork hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "QoderWork", "qoderwork-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync QoderWork hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync QoderWork hooks" };
+    }
+  }
+
+  function syncQwenWorkHooks() {
+    try {
+      if (typeof ctx.syncQwenWorkHooksImpl === "function") return ctx.syncQwenWorkHooksImpl();
+      const { registerQwenWorkHooks } = require("../hooks/qwenwork-install.js");
+      const result = registerQwenWorkHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced QwenWork hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "QwenWork", "qwenwork-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync QwenWork hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync QwenWork hooks" };
+    }
+  }
+
   const AGENT_INTEGRATION_SYNCERS = Object.freeze({
     "gemini-cli": syncGeminiHooks,
     "antigravity-cli": syncAntigravityHooks,
     "cursor-agent": syncCursorHooks,
     "copilot-cli": syncCopilotHooks,
     codebuddy: syncCodeBuddyHooks,
+    workbuddy: syncWorkBuddyHooks,
+    "grok-build": syncGrokBuildHooks,
     "kiro-cli": syncKiroHooks,
     kirocrew: syncKiroCrewHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
+    zcode: syncZcodeHooks,
     codewhale: syncCodewhaleHooks,
     codex: syncCodexHooks,
+    "deepseek-harness": syncDeepSeekHarnessPlugin,
     opencode: syncOpencodePlugin,
+    mimocode: syncMimocodePlugin,
     pi: syncPiExtension,
+    omp: syncOmpExtension,
     openclaw: syncOpenClawPlugin,
     hermes: syncHermesPlugin,
     qoder: syncQoderHooks,
     reasonix: syncReasonixHooks,
+    qoderwork: syncQoderWorkHooks,
+    traecode: syncTraeCodeHooks,
+    qwenwork: syncQwenWorkHooks,
+    minimax: syncMinimaxHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
     ...AGENT_INTEGRATION_SYNCERS,
     codex: repairCodexHooks,
+    "deepseek-harness": repairDeepSeekHarnessPlugin,
     openclaw: repairOpenClawPlugin,
   });
 
-  function syncIntegrationForAgent(agentId) {
+  function isClaudeSyncErrorResult(result) {
+    return !!(result && typeof result === "object" && result.status === "error");
+  }
+
+  function syncIntegrationForAgent(agentId, options = {}) {
     if (agentId === "claude-code") {
       if (!shouldManageClaudeHooks()) return false;
-      const result = syncClawdHooks();
-      startClaudeSettingsWatcher();
+      const result = syncClawdHooks(options);
+      // Claude watcher baseline seeding reads settings.json, so it must not run
+      // until this sync has actually settled — an in-flight (queued) async sync
+      // must not be mistaken for a completed one. Synchronous/test-injected
+      // seams (no .then) keep the prior immediate-start behavior.
+      //
+      // The watcher only starts when the sync actually succeeded: Settings
+      // Agent Install/Enable call this path with the agent's installed/enabled
+      // state still contingent on THIS result — starting the watcher on
+      // failure would leave it running for an agent prefs still show as
+      // disabled/uninstalled. (Doctor Fix's repairIntegrationForAgent()
+      // below starts the watcher unconditionally instead, since by the time
+      // it runs, enabled is already an established precondition independent
+      // of this particular repair's outcome.)
+      if (result && typeof result === "object" && typeof result.then === "function") {
+        return result.then((resolved) => {
+          if (!isClaudeSyncErrorResult(resolved)) startClaudeSettingsWatcher();
+          return resolved;
+        });
+      }
+      if (!isClaudeSyncErrorResult(result)) startClaudeSettingsWatcher();
       return result && typeof result === "object" ? result : true;
     }
     const sync = AGENT_INTEGRATION_SYNCERS[agentId];
     if (typeof sync !== "function") return false;
-    const result = sync();
+    const result = sync(options);
     return result && typeof result === "object" ? result : true;
   }
 
   function repairIntegrationForAgent(agentId, options = {}) {
     if (agentId === "claude-code") {
-      return syncIntegrationForAgent(agentId);
+      // Doctor Fix only runs once claude-code is already confirmed installed
+      // and enabled (checked by the caller before invoking repair) — that
+      // state does not depend on this repair's outcome, so the watcher
+      // belongs running regardless of whether this specific attempt verifies
+      // healthy. start() is idempotent, so this is a no-op if it's already up.
+      const result = syncIntegrationForAgent(agentId, { source: "doctor", automatic: false });
+      if (result && typeof result === "object" && typeof result.then === "function") {
+        return result.then((resolved) => {
+          startClaudeSettingsWatcher();
+          return resolved;
+        });
+      }
+      startClaudeSettingsWatcher();
+      return result;
     }
     const repair = AGENT_INTEGRATION_REPAIRERS[agentId];
     if (typeof repair !== "function") return false;
     const result = repair(options);
-    if (result && typeof result === "object" && typeof result.status === "string") return result;
-    return true;
+    // Async installers are themselves structured results in flight. Returning
+    // true here used to let Settings/Doctor commit success before DSH's
+    // plugin mutation and post-verification had even settled.
+    return result && typeof result === "object" ? result : true;
   }
 
   function stopIntegrationForAgent(agentId) {
@@ -520,12 +832,28 @@ function createIntegrationSyncRuntime(options = {}) {
   }
 
   function syncEnabledStartupIntegrations() {
-    if (shouldManageClaudeHooks() && shouldSyncAgentIntegration("claude-code")) {
-      syncClawdHooks();
-      startClaudeSettingsWatcher();
+    // Fire-and-forget: the sync loop must not wait on a PowerShell read. The
+    // platform gate is here so non-Windows hosts never start one.
+    if (platform === "win32") {
+      Promise.resolve()
+        .then(() => preheatDshDesktopDiscovery())
+        .catch((err) => console.warn(
+          "Clawd: DeepSeek Harness desktop discovery preheat failed:",
+          err && err.message ? err.message : err
+        ));
     }
+    if (shouldManageClaudeHooks() && shouldSyncAgentIntegration("claude-code")) {
+      const result = syncClawdHooks({ source: "startup", automatic: true });
+      if (result && typeof result === "object" && typeof result.then === "function") {
+        result.then(() => startClaudeSettingsWatcher());
+      } else {
+        startClaudeSettingsWatcher();
+      }
+    }
+    // Other agents' syncs are independent files and run in parallel — they do
+    // not wait for Claude's (possibly queued/async) sync to settle.
     for (const [agentId, sync] of Object.entries(AGENT_INTEGRATION_SYNCERS)) {
-      if (shouldSyncAgentIntegration(agentId)) sync();
+      if (shouldSyncAgentIntegration(agentId)) sync(readAgentIntegrationOptions(agentId));
     }
   }
 
@@ -536,17 +864,25 @@ function createIntegrationSyncRuntime(options = {}) {
     syncCursorHooks,
     syncCopilotHooks,
     syncCodeBuddyHooks,
+    syncWorkBuddyHooks,
     syncKiroHooks,
     syncKimiHooks,
     syncQwenHooks,
+    syncZcodeHooks,
     syncCodewhaleHooks,
     syncCodexHooks,
+    syncDeepSeekHarnessPlugin,
     syncOpencodePlugin,
+    syncMimocodePlugin,
     syncPiExtension,
+    syncOmpExtension,
     syncOpenClawPlugin,
     syncHermesPlugin,
     syncQoderHooks,
     syncReasonixHooks,
+    syncQoderWorkHooks,
+    syncTraeCodeHooks,
+    syncMinimaxHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

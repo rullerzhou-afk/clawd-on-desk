@@ -1,0 +1,252 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* ═══ 14s story: idle 挥手 → 抓书 + 戴眼镜 → 读 (眼镜下滑+推回) → 书+眼镜同步退场
+         在 clawd-idle-reading.svg 基础上加:
+         1. 圆框眼镜 (跟书同步 fade in/out + 读书慢下滑 + 推回过冲)
+         2. 双手 L 阴影 (clip 到 torso, 跟手 transform 同步, opacity 窗口对齐读书阶段)
+         3. z-order 重排: 手阴影 → 眼睛 → 眼镜 → 书 → 手
+         所有 wrapper 合并成单一 breathe 以方便理解 (原文件 3 个 breathe 效果等价) */
+
+      /* ── Independent loops ── */
+
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      .blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 5s infinite;
+      }
+      @keyframes blink {
+        0%, 6%, 100% { transform: scaleY(1); }
+        3% { transform: scaleY(0.1); }
+      }
+
+      .shadow {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-breathe 3.2s infinite ease-in-out;
+      }
+      @keyframes shadow-breathe {
+        0%, 100% { transform: scaleX(1); opacity: 0.5; }
+        50% { transform: scaleX(1.03); opacity: 0.47; }
+      }
+
+      /* ── Main 14s story ── */
+
+      .body-nod {
+        animation: body-nod 14s infinite ease-in-out;
+      }
+      @keyframes body-nod {
+        0%, 36%, 44%, 54%, 62%, 100% { transform: translateY(0); }
+        40% { transform: translateY(0.4px); }
+        58% { transform: translateY(0.4px); }
+      }
+
+      .arm-l {
+        transform-origin: 2px 10px;
+        animation: arm-l-anim 14s infinite ease-in-out;
+      }
+      @keyframes arm-l-anim {
+        0%        { transform: translate(0, 0) rotate(0deg); }
+        2.5%      { transform: translate(-0.5px, 0) rotate(25deg); }
+        5%        { transform: translate(0.3px, 0) rotate(-20deg); }
+        7.5%      { transform: translate(-0.5px, 0) rotate(22deg); }
+        10%       { transform: translate(0, 0) rotate(0deg); }
+        18%       { transform: translate(-1px, -1px) rotate(15deg); }
+        26%       { transform: translate(2px, 0) rotate(-5deg); }
+        76%       { transform: translate(2px, 0) rotate(-5deg); }
+        84%       { transform: translate(1px, 2px) rotate(0deg); }
+        92%       { transform: translate(0, 0) rotate(0deg); }
+        100%      { transform: translate(0, 0) rotate(0deg); }
+      }
+
+      .arm-r {
+        animation: arm-r-anim 14s infinite ease-in-out;
+      }
+      @keyframes arm-r-anim {
+        0%, 22%   { transform: translate(0, 0); }
+        28%, 76%  { transform: translate(-1px, 0); }
+        84%, 100% { transform: translate(0, 0); }
+      }
+
+      .book {
+        opacity: 0;
+        transform-origin: 7px 11.5px;
+        animation: book-anim 14s infinite ease-in-out;
+      }
+      @keyframes book-anim {
+        0%, 12%   { opacity: 0; transform: translate(-5px, -2px) scaleX(0.5); }
+        18%       { opacity: 1; transform: translate(-5px, -2px) scaleX(0.5); }
+        26%       { opacity: 1; transform: translate(0, 0) scaleX(1); }
+        76%       { opacity: 1; transform: translate(0, 0) scaleX(1); }
+        84%       { opacity: 0; transform: translate(0, 4px) scaleX(0.8); }
+        100%      { opacity: 0; transform: translate(0, 4px) scaleX(0.8); }
+      }
+
+      .eyes-read {
+        animation: eyes-read 14s infinite ease-in-out;
+      }
+      @keyframes eyes-read {
+        0%, 22%   { transform: translate(0, 0); }
+        30%       { transform: translate(0, 0.5px); }
+        46%       { transform: translate(-0.3px, 0.5px); }
+        60%       { transform: translate(0.3px, 0.5px); }
+        70%       { transform: translate(0, 0.5px); }
+        80%, 100% { transform: translate(0, 0); }
+      }
+
+      /* ── NEW: 圆框眼镜
+         - 0-12% 不可见 (idle 阶段, 还没戴)
+         - 12-18% fade in + 从额头位置 0.5px 上方滑到鼻梁 (跟书出场同步)
+         - 18-72% 戴好读书, 慢慢下滑 0.3px (读累了往鼻头下溜)
+         - 72-78% 推回 -0.1px 过冲 (顺手把眼镜推上去, 配合书要滑下的节点)
+         - 78-84% 稳住到 0
+         - 84-92% fade out + 滑回额头位置 (跟书退场同步) */
+      .glasses {
+        animation: glasses-anim 14s infinite ease-in-out;
+      }
+      @keyframes glasses-anim {
+        0%, 12%   { opacity: 0; transform: translateY(-0.5px); }
+        18%       { opacity: 1; transform: translateY(0); }
+        30%       { opacity: 1; transform: translateY(0); }
+        72%       { opacity: 1; transform: translateY(0.3px); }
+        78%       { opacity: 1; transform: translateY(-0.1px); }
+        84%       { opacity: 1; transform: translateY(0); }
+        92%       { opacity: 0; transform: translateY(-0.5px); }
+        100%      { opacity: 0; transform: translateY(-0.5px); }
+      }
+
+      /* ── NEW: 手阴影 opacity 窗口 (避免 idle 大挥时阴影闪烁)
+         - 左手 22% fade in (手快抓到书时), 84% fade out (随书下滑时)
+         - 右手 26% fade in (右手 nudge 进 torso 前), 84% fade out */
+      .shadow-l-fade {
+        animation: shadow-l-fade 14s infinite ease-in-out;
+      }
+      @keyframes shadow-l-fade {
+        0%, 20%   { opacity: 0; }
+        26%, 78%  { opacity: 1; }
+        84%, 100% { opacity: 0; }
+      }
+      .shadow-r-fade {
+        animation: shadow-r-fade 14s infinite ease-in-out;
+      }
+      @keyframes shadow-r-fade {
+        0%, 24%   { opacity: 0; }
+        30%, 78%  { opacity: 1; }
+        84%, 100% { opacity: 0; }
+      }
+
+      /* ── Thought particles ── */
+      .reading-fx {
+        animation: reading-fx-vis 14s infinite;
+      }
+      @keyframes reading-fx-vis {
+        0%, 27%   { opacity: 0; }
+        32%, 75%  { opacity: 1; }
+        78%, 100% { opacity: 0; }
+      }
+
+      .thought-bit {
+        opacity: 0;
+        animation: float-thought 2.5s infinite linear;
+      }
+      .t1 { animation-delay: 0s; }
+      .t2 { animation-delay: -0.7s; }
+      .t3 { animation-delay: -1.4s; }
+      .t4 { animation-delay: -2.1s; }
+
+      @keyframes float-thought {
+        0%   { transform: translateY(0); opacity: 0; }
+        10%  { opacity: 0.6; }
+        100% { transform: translateY(-12px); opacity: 0; }
+      }
+    </style>
+
+    <clipPath id="inside-torso">
+      <rect x="2" y="6" width="11" height="7"/>
+    </clipPath>
+  </defs>
+
+  <!-- Ground shadow -->
+  <rect class="shadow" x="3" y="15" width="9" height="1" fill="#000"/>
+
+  <!-- Thought particles -->
+  <g class="reading-fx">
+    <rect class="thought-bit t1" x="2"  y="4" width="2" height="2" fill="#40C4FF"/>
+    <rect class="thought-bit t2" x="8"  y="3" width="1.5" height="1.5" fill="#B388FF"/>
+    <rect class="thought-bit t3" x="12" y="5" width="2" height="2" fill="#40C4FF"/>
+    <rect class="thought-bit t4" x="5"  y="3" width="1.5" height="1.5" fill="#69F0AE"/>
+  </g>
+
+  <g class="body-nod">
+    <g class="breathe">
+
+      <!-- 腿 + torso -->
+      <g fill="#DE886D">
+        <rect x="3" y="11" width="1" height="4"/>
+        <rect x="5" y="11" width="1" height="4"/>
+        <rect x="9" y="11" width="1" height="4"/>
+        <rect x="11" y="11" width="1" height="4"/>
+      </g>
+      <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+      <!-- 手阴影 (clip 到 torso, opacity 窗口 + 跟手 transform 同步) -->
+      <g clip-path="url(#inside-torso)" fill="#A85A3A">
+        <g class="shadow-l-fade">
+          <g class="arm-l">
+            <rect x="0" y="9" width="2.4" height="2.4"/>
+          </g>
+        </g>
+        <g class="shadow-r-fade">
+          <g class="arm-r">
+            <rect x="12.6" y="9" width="2.4" height="2.4"/>
+          </g>
+        </g>
+      </g>
+
+      <!-- 眼睛 (跟 eyes-read 漂移 + blink 眨眼) -->
+      <g class="eyes-read">
+        <g class="blink" fill="#000">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+      </g>
+
+      <!-- 圆框眼镜 (不嵌 eyes-read/blink, 镜片固定眼球转) -->
+      <g class="glasses" shape-rendering="auto">
+        <g fill="none" stroke="#6B2522" stroke-width="0.56" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="4.415" cy="9" r="2.03"/>
+          <circle cx="10.585" cy="9" r="2.03"/>
+          <path d="M6.445 8.85 C7.036 8.35 7.964 8.35 8.555 8.85"/>
+          <path d="M2.426 8.45 C2.127 8.37 1.893 8.35 1.716 8.35"/>
+          <path d="M12.574 8.45 C12.873 8.37 13.107 8.35 13.284 8.35"/>
+        </g>
+      </g>
+
+      <!-- 书 (在脸之上, 手之下) -->
+      <g class="book">
+        <rect x="3" y="10" width="8" height="4" fill="#4A90D9"/>
+        <rect x="7" y="10" width="1" height="4" fill="#2E6AB0"/>
+        <rect x="3.9" y="9.7" width="6.5" height="0.3" fill="#FFFDE7"/>
+        <rect x="10.5" y="10.5" width="0.5" height="3" fill="#FFFDE7"/>
+        <rect x="4.5" y="10.5" width="5" height="1.5" fill="#E3F2FD" opacity="0.5"/>
+        <rect x="5" y="10.8" width="3" height="0.5" fill="#2E6AB0"/>
+        <rect x="5.5" y="11.5" width="2" height="0.3" fill="#2E6AB0" opacity="0.6"/>
+        <rect x="6" y="12.5" width="2" height="0.5" fill="#E3F2FD" opacity="0.4"/>
+      </g>
+
+      <!-- 双手 (最上层) -->
+      <g fill="#DE886D">
+        <g class="arm-l"><rect x="0" y="9" width="2" height="2"/></g>
+        <g class="arm-r"><rect x="13" y="9" width="2" height="2"/></g>
+      </g>
+
+    </g>
+  </g>
+</svg>

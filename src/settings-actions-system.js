@@ -4,6 +4,9 @@ const { isAgentEnabled } = require("./agent-gate");
 const { requireBoolean } = require("./settings-validators");
 
 const CLAUDE_HOOKS_LOCK_KEY = "claude-hooks";
+// The preference and Codex install/enable commands all publish the same
+// durable gate, so they must serialize through one lock domain.
+const CODEX_AUTO_START_LOCK_KEY = "agentIntegration";
 
 // autoStartWithClaude: writes/removes a SessionStart hook in
 // ~/.claude/settings.json via hooks/install.js. Failure to write the file must
@@ -21,14 +24,57 @@ const autoStartWithClaude = {
         message: "autoStartWithClaude effect requires installAutoStart/uninstallAutoStart deps",
       };
     }
+    // installAutoStart/uninstallAutoStart go through the server-owned Claude
+    // hook operation queue and return a Promise. Wrap in Promise.resolve() so
+    // a synchronous (e.g. test-injected) dep still works, then only commit
+    // once the queue result actually confirms success — never on the Promise
+    // object itself.
     try {
-      if (value) deps.installAutoStart();
-      else deps.uninstallAutoStart();
-      return { status: "ok" };
+      const action = value ? deps.installAutoStart() : deps.uninstallAutoStart();
+      return Promise.resolve(action)
+        .then((result) => {
+          if (result && typeof result === "object" && result.status === "error") {
+            return { status: "error", message: result.message || "autoStartWithClaude: operation failed" };
+          }
+          return { status: "ok" };
+        })
+        .catch((err) => ({
+          status: "error",
+          message: `autoStartWithClaude: ${err && err.message}`,
+        }));
     } catch (err) {
       return {
         status: "error",
         message: `autoStartWithClaude: ${err && err.message}`,
+      };
+    }
+  },
+};
+
+// autoStartWithCodex controls a durable gate read by the retained official
+// Codex hook while Clawd is offline. Every toggle first publishes false. The
+// main-process post-commit subscriber publishes the effective true value only
+// after prefs persistence succeeds, so a failed commit can never leave a newly
+// enabled cold-launch permission behind.
+const autoStartWithCodex = {
+  lockKey: CODEX_AUTO_START_LOCK_KEY,
+  validate: requireBoolean("autoStartWithCodex"),
+  effect(_value, deps) {
+    if (!deps || typeof deps.writeCodexAutoStartGate !== "function") {
+      return {
+        status: "error",
+        message: "autoStartWithCodex effect requires writeCodexAutoStartGate dep",
+      };
+    }
+    try {
+      if (deps.writeCodexAutoStartGate(false) !== true) {
+        return { status: "error", message: "autoStartWithCodex: failed to persist fail-closed gate" };
+      }
+      return { status: "ok" };
+    } catch (err) {
+      return {
+        status: "error",
+        message: `autoStartWithCodex: ${err && err.message}`,
       };
     }
   },
@@ -65,7 +111,13 @@ const manageClaudeHooksAutomatically = {
     }
     return Promise.resolve()
       .then(() => deps.syncClaudeHooksNow())
-      .then(() => {
+      .then((result) => {
+        // The queue never rejects on failure — it resolves { status: "error" }
+        // — so success must be read from the resolved value, not inferred
+        // from the Promise settling without throwing.
+        if (result && typeof result === "object" && result.status === "error") {
+          return { status: "error", message: result.message || "manageClaudeHooksAutomatically: sync failed" };
+        }
         deps.startClaudeSettingsWatcher();
         return { status: "ok" };
       })
@@ -107,7 +159,10 @@ async function installHooks(_payload, deps) {
     };
   }
   try {
-    await deps.syncClaudeHooksNow();
+    const result = await deps.syncClaudeHooksNow();
+    if (result && typeof result === "object" && result.status === "error") {
+      return { status: "error", message: result.message || "installHooks: sync failed" };
+    }
     return { status: "ok" };
   } catch (err) {
     return { status: "error", message: `installHooks: ${err && err.message}` };
@@ -129,7 +184,13 @@ async function uninstallHooks(_payload, deps) {
   const shouldRestoreWatcher = !!(deps.snapshot && deps.snapshot.manageClaudeHooksAutomatically);
   try {
     deps.stopClaudeSettingsWatcher();
-    await deps.uninstallClaudeHooksNow();
+    const result = await deps.uninstallClaudeHooksNow();
+    if (result && typeof result === "object" && result.status === "error") {
+      if (shouldRestoreWatcher && typeof deps.startClaudeSettingsWatcher === "function") {
+        try { deps.startClaudeSettingsWatcher(); } catch {}
+      }
+      return { status: "error", message: result.message || "uninstallHooks: operation failed" };
+    }
     return { status: "ok", commit: { manageClaudeHooksAutomatically: false } };
   } catch (err) {
     if (shouldRestoreWatcher && typeof deps.startClaudeSettingsWatcher === "function") {
@@ -217,6 +278,7 @@ uninstallHooks.lockKey = CLAUDE_HOOKS_LOCK_KEY;
 
 module.exports = {
   autoStartWithClaude,
+  autoStartWithCodex,
   createRepairDoctorIssue,
   installHooks,
   manageClaudeHooksAutomatically,

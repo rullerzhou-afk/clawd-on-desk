@@ -4,6 +4,108 @@
   "author": "stlabslogo",
   "version": "0.2.0",
   "description": "Built-in Cloudling theme using trusted scripted SVG object-channel assets",
+  "customization": {
+    "petTint": true,
+    "accessories": {
+      "default": {
+        "staticFrame": {
+          "cx": 12,
+          "baseY": 4,
+          "width": 16
+        }
+      },
+      "mini": {
+        "staticFrame": {
+          "cx": 12,
+          "baseY": 5,
+          "width": 14
+        }
+      },
+      "files": {
+        "cloudling-idle.svg": {
+          "staticFrame": {
+            "cx": 12,
+            "baseY": 4,
+            "width": 16
+          },
+          "followTarget": {
+            "id": "cloud-group",
+            "frame": {
+              "cx": 12,
+              "baseY": 4,
+              "width": 16
+            }
+          }
+        },
+        "cloudling-typing.svg": {
+          "staticFrame": {
+            "cx": 12,
+            "baseY": 4,
+            "width": 16
+          },
+          "followTarget": {
+            "id": "eye-group",
+            "frame": {
+              "cx": 12,
+              "baseY": 4,
+              "width": 16
+            }
+          }
+        },
+        "cloudling-mini-idle.svg": {
+          "staticFrame": {
+            "cx": 12,
+            "baseY": 5,
+            "width": 14
+          },
+          "followTarget": {
+            "id": "breath-js",
+            "frame": {
+              "cx": 12,
+              "baseY": 5,
+              "width": 14
+            }
+          }
+        },
+        "cloudling-mini-crabwalk.svg": {
+          "staticFrame": {
+            "cx": 12,
+            "baseY": 4,
+            "width": 14
+          },
+          "followTarget": {
+            "id": "body-layer",
+            "frame": {
+              "cx": 12,
+              "baseY": 4,
+              "width": 14
+            }
+          }
+        },
+        "cloudling-idle-to-sleeping.svg": {
+          "visibility": "hidden"
+        },
+        "cloudling-dozing-to-sleeping.svg": {
+          "visibility": "hidden"
+        },
+        "cloudling-sleeping.svg": {
+          "visibility": "hidden"
+        },
+        "cloudling-sleeping-static.png": {
+          "visibility": "hidden"
+        },
+        "cloudling-sleeping-to-idle.svg": {
+          "visibility": "hidden"
+        },
+        "cloudling-mini-enter-sleep.svg": {
+          "visibility": "hidden"
+        },
+        "cloudling-mini-sleep.svg": {
+          "visibility": "hidden"
+        }
+      }
+    }
+  },
   "viewBox": {
     "x": -32,
     "y": -24,
@@ -33,7 +135,7 @@
     },
     "centerX": 12,
     "baselineY": 24,
-    "visibleHeightRatio": 0.58,
+    "visibleHeightRatio": 0.41,
     "baselineBottomRatio": 0.05
   },
   "trustedRuntime": {
@@ -103,6 +205,9 @@
   "states": {
     "idle": [
       "cloudling-idle.svg"
+    ],
+    "roam": [
+      "cloudling-mini-crabwalk.svg"
     ],
     "yawning": [
       "cloudling-idle-to-dozing.svg"

@@ -12,6 +12,7 @@ const {
   CODEX_HOOK_EVENTS,
   buildCodexHookCommand,
   registerCodexCommandHooks,
+  removeStableCodexHookLauncher,
   unregisterCodexCommandHooks,
 } = require("./codex-install-utils");
 
@@ -29,15 +30,27 @@ function registerCodexHooks(options = {}) {
     scriptName: MARKER,
     events: CODEX_OFFICIAL_HOOK_EVENTS,
     label: "Codex official hooks",
+    // Codex trusts the resolved command shape. POSIX keeps a stable wrapper;
+    // Windows uses a direct PowerShell call-operator command because Defender
+    // flags the former inline data-sidecar dispatcher. In-place app upgrades
+    // keep the direct path stable, while a real Node/hook path change requires
+    // a fresh Codex /hooks review.
+    stableLauncher: options.remote !== true && options.stableLauncher !== false,
   });
 }
 
 function unregisterCodexHooks(options = {}) {
-  return unregisterCodexCommandHooks({
+  const result = unregisterCodexCommandHooks({
     ...options,
     marker: MARKER,
     events: CODEX_OFFICIAL_HOOK_EVENTS,
   });
+  const stableLauncher = removeStableCodexHookLauncher(options);
+  return {
+    ...result,
+    changed: result.changed === true || stableLauncher.changed,
+    stableLauncher,
+  };
 }
 
 module.exports = {

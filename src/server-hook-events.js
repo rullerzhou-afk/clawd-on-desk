@@ -1,17 +1,29 @@
 "use strict";
 
-const { resolveHookAgentId } = require("./server-agent-id");
+const { MAX_REJECTED_AGENT_ID_LENGTH } = require("./server-agent-id");
 
 const HOOK_EVENT_RING_SIZE_PER_AGENT = 50;
+const REJECTED_CUSTOM_AGENT_ID = "rejected-custom";
 const HOOK_EVENT_OUTCOMES = new Set([
   "accepted",
   "dropped-by-disabled",
   "dropped-by-dnd",
+  "dropped-invalid-agent",
+  "dropped-unsupported",
 ]);
 const HOOK_EVENT_ROUTES = new Set(["state", "permission"]);
 
-function normalizeHookEventAgentId(data) {
-  return resolveHookAgentId(data).agentId;
+function normalizeHookEventIdentity(identity) {
+  if (identity && identity.rejected === true) {
+    return {
+      agentId: REJECTED_CUSTOM_AGENT_ID,
+      rawAgentId: typeof identity.rawAgentId === "string"
+        ? identity.rawAgentId.slice(0, MAX_REJECTED_AGENT_ID_LENGTH)
+        : undefined,
+    };
+  }
+  if (!identity || typeof identity.agentId !== "string" || !identity.agentId) return null;
+  return { agentId: identity.agentId };
 }
 
 function normalizeHookEventType(data, route) {
@@ -21,10 +33,12 @@ function normalizeHookEventType(data, route) {
     : null;
 }
 
-function recordHookEventInBuffer(buffer, data, route, outcome, options = {}) {
+function recordHookEventInBuffer(buffer, identity, data, route, outcome, options = {}) {
   try {
     if (!buffer || !HOOK_EVENT_ROUTES.has(route) || !HOOK_EVENT_OUTCOMES.has(outcome)) return null;
-    const agentId = normalizeHookEventAgentId(data);
+    const normalizedIdentity = normalizeHookEventIdentity(identity);
+    if (!normalizedIdentity) return null;
+    const { agentId, rawAgentId } = normalizedIdentity;
     const timestamp = typeof options.now === "function" ? options.now() : Date.now();
     const event = {
       timestamp,
@@ -32,6 +46,7 @@ function recordHookEventInBuffer(buffer, data, route, outcome, options = {}) {
       eventType: normalizeHookEventType(data, route),
       route,
       outcome,
+      ...(rawAgentId ? { rawAgentId } : {}),
     };
     const ringSize = Number.isInteger(options.ringSize) && options.ringSize > 0
       ? options.ringSize
@@ -58,7 +73,7 @@ function getRecentHookEventsFromBuffer(buffer, options = {}) {
     .sort((a, b) => a.timestamp - b.timestamp);
 }
 
-function createSingleRequestHookEventRecorder(recordFn, data, defaultRoute) {
+function createSingleRequestHookEventRecorder(recordFn, identity, data, defaultRoute) {
   let recorded = false;
   function record(route, outcome) {
     const routeToUse = route || defaultRoute;
@@ -72,13 +87,15 @@ function createSingleRequestHookEventRecorder(recordFn, data, defaultRoute) {
       return null;
     }
     recorded = true;
-    return recordFn(data, routeToUse, outcome);
+    return recordFn(identity, data, routeToUse, outcome);
   }
   return {
     record,
     accepted: (route) => record(route, "accepted"),
     droppedByDisabled: (route) => record(route, "dropped-by-disabled"),
     droppedByDnd: (route) => record(route, "dropped-by-dnd"),
+    droppedInvalidAgent: (route) => record(route, "dropped-invalid-agent"),
+    droppedUnsupported: (route) => record(route, "dropped-unsupported"),
     acceptedUnlessDnd: (dropForDnd, route) => (
       dropForDnd ? record(route, "dropped-by-dnd") : record(route, "accepted")
     ),
@@ -87,6 +104,7 @@ function createSingleRequestHookEventRecorder(recordFn, data, defaultRoute) {
 
 module.exports = {
   HOOK_EVENT_RING_SIZE_PER_AGENT,
+  REJECTED_CUSTOM_AGENT_ID,
   createSingleRequestHookEventRecorder,
   recordHookEventInBuffer,
   getRecentHookEventsFromBuffer,

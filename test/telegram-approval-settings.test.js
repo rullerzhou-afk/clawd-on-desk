@@ -127,18 +127,10 @@ test("readiness blocks enabled Telegram approval until ids and token are configu
   }, { tokenConfigured: false }).reason, "missing-token");
 });
 
-test("buildBridgeConfigToml writes sidecar config without bot token fields", () => {
-  const toml = settings.buildBridgeConfigToml({
-    enabled: true,
-    allowedTgUserId: "123456789",
-    targetSessionKey: "telegram:987654321",
-    botToken: "123:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi",
-  });
-  assert.match(toml, /enabled = true/);
-  assert.match(toml, /allowed_tg_user_id = "123456789"/);
-  assert.match(toml, /target_session_key = "telegram:987654321"/);
-  assert.doesNotMatch(toml, /bot_token/i);
-  assert.doesNotMatch(toml, /ABCDEFGHIJKLMNOPQRSTUVWXYZ/);
+test("retired bridge TOML helpers are not exported", () => {
+  assert.equal(settings.defaultBridgeConfigPath, undefined);
+  assert.equal(settings.buildBridgeConfigToml, undefined);
+  assert.equal(settings.writeBridgeConfigFile, undefined);
 });
 
 test("writeTokenEnvFile validates and stores token outside prefs", () => {
@@ -270,11 +262,11 @@ test("invariant: Clawd source never reads process.env.CLAWD_TG_BOT_TOKEN", () =>
   //
   // Note: the literal string "CLAWD_TG_BOT_TOKEN" is allowed to appear in
   // src/telegram-approval-settings.js (it writes that key into the env-file
-  // content for the sidecar to read) and in src/telegram-approval-sidecar.js
+  // content for the native token store to read)
   // (handshake constants and child env stripping). What's forbidden is
   // process.env access to that specific name in Clawd's own code.
   const srcDir = path.join(__dirname, "..", "src");
-  // Cover main.js plus every src/telegram-*.js (sidecar, settings, the new
+  // Cover main.js plus every remaining src/telegram-*.js (settings and native
   // native-client / owner-manager / migration-state / token-store added in
   // the v0.9.0 spike) so future Telegram modules can't silently regress this
   // invariant.

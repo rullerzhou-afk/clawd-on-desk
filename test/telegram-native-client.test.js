@@ -83,6 +83,101 @@ test("getUpdates advances offset to lastUpdate.update_id + 1", async () => {
   assert.equal(client.offset, 201);
 });
 
+test("getUpdates preserves offset when the same bot restarts with a new signal", async () => {
+  const { client, server } = makeClient();
+  const firstPoll = new AbortController();
+  const restartedPoll = new AbortController();
+  server.enqueueOk("getUpdates", [{ update_id: 40 }]);
+  server.enqueueOk("getUpdates", []);
+
+  await client.getUpdates({ signal: firstPoll.signal });
+  firstPoll.abort();
+  await client.getUpdates({ signal: restartedPoll.signal });
+
+  assert.equal(client.offset, 41);
+  assert.equal(server.calls[1].payload.offset, 41);
+});
+
+test("getUpdates does not commit a late response after its poll signal aborts", async () => {
+  let releaseStalePoll;
+  const calls = [];
+  const client = new TelegramNativeClient({
+    tokenStore: fakeTokenStore(),
+    transport: async ({ method, payload, signal }) => {
+      calls.push({ method, payload, signal });
+      if (calls.length === 1) return { ok: true, result: [{ update_id: 9 }] };
+      if (calls.length === 2) {
+        return new Promise((resolve) => { releaseStalePoll = resolve; });
+      }
+      return { ok: true, result: [] };
+    },
+  });
+  const oldPoll = new AbortController();
+  await client.getUpdates({ signal: oldPoll.signal });
+  const staleRequest = client.getUpdates({ signal: oldPoll.signal });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  oldPoll.abort();
+  releaseStalePoll({ ok: true, result: [{ update_id: 500 }] });
+  await staleRequest;
+  assert.equal(client.offset, 10);
+
+  const restartedPoll = new AbortController();
+  await client.getUpdates({ signal: restartedPoll.signal });
+  assert.equal(calls[2].payload.offset, 10);
+});
+
+test("resetOffset isolates a replacement bot from a late old-token response", async () => {
+  let activeToken = `${VALID_TOKEN}a`;
+  let releaseOldPoll;
+  const calls = [];
+  const tokenStore = {
+    async getToken() { return activeToken; },
+    async hasToken() { return !!activeToken; },
+  };
+  const transport = async ({ method, payload, signal }) => {
+    calls.push({ method, payload, signal, token: activeToken });
+    if (calls.length === 1) {
+      return { ok: true, result: [{ update_id: 99 }] };
+    }
+    if (calls.length === 2) {
+      // Deliberately ignore signal.abort() to reproduce a non-cooperative
+      // transport completing after stop -> token change -> restart.
+      return new Promise((resolve) => { releaseOldPoll = resolve; });
+    }
+    if (calls.length === 3) {
+      return { ok: true, result: [{ update_id: 4 }] };
+    }
+    return { ok: true, result: [] };
+  };
+  const client = new TelegramNativeClient({ tokenStore, transport });
+  const oldPoll = new AbortController();
+  await client.getUpdates({ signal: oldPoll.signal });
+  const staleRequest = client.getUpdates({ signal: oldPoll.signal });
+  await Promise.resolve();
+  await Promise.resolve();
+
+  oldPoll.abort();
+  activeToken = `${VALID_TOKEN}b`;
+  client.resetOffset();
+  const replacementPoll = new AbortController();
+  await client.getUpdates({ signal: replacementPoll.signal });
+
+  assert.equal(calls[0].payload.offset, 0);
+  assert.equal(calls[1].payload.offset, 100);
+  assert.equal(calls[2].payload.offset, 0, "replacement bot must not inherit the old bot offset");
+  assert.notEqual(calls[1].token, calls[2].token);
+  assert.equal(client.offset, 5);
+
+  releaseOldPoll({ ok: true, result: [{ update_id: 900 }] });
+  await staleRequest;
+  assert.equal(client.offset, 5, "late old-bot response must not raise the replacement offset");
+
+  await client.getUpdates({ signal: replacementPoll.signal });
+  assert.equal(calls[3].payload.offset, 5, "replacement poll lifecycle keeps its own progression");
+});
+
 test("Missing token throws TOKEN_MISSING (does not call transport)", async () => {
   const server = createFakeTelegramServer();
   const client = new TelegramNativeClient({
@@ -238,6 +333,38 @@ test("Pre-aborted signal: transport refuses immediately, no call recorded", asyn
   const err = await client.getUpdates({ signal: ac.signal }).catch((e) => e);
   assert.equal(err.name, "AbortError");
   assert.equal(server.calls.length, 0);
+});
+
+test("abort during token lookup prevents the stale request from entering transport", async () => {
+  let releaseTokenLookup;
+  let tokenLookupStarted;
+  const lookupStarted = new Promise((resolve) => { tokenLookupStarted = resolve; });
+  const transportCalls = [];
+  const client = new TelegramNativeClient({
+    tokenStore: {
+      async getToken() { return VALID_TOKEN; },
+      async hasToken() {
+        tokenLookupStarted();
+        return new Promise((resolve) => { releaseTokenLookup = resolve; });
+      },
+    },
+    transport: async (request) => {
+      transportCalls.push(request);
+      return { ok: true, result: { message_id: 1 } };
+    },
+  });
+  const controller = new AbortController();
+  const pending = client.sendMessage(
+    { chat_id: 1, text: "stale" },
+    { signal: controller.signal },
+  );
+
+  await lookupStarted;
+  controller.abort();
+  releaseTokenLookup(true);
+
+  await assert.rejects(pending, (err) => err && err.name === "AbortError");
+  assert.deepEqual(transportCalls, []);
 });
 
 test("Wrong-user callback flow: client surfaces both updates; handler filters", async () => {

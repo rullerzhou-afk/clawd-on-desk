@@ -1,6 +1,11 @@
 "use strict";
 
+const { getEntryDisplaySessionTag } = require("./state-session-snapshot");
+
 const telegramApprovalSettings = require("./telegram-approval-settings");
+const {
+  normalizeTelegramVerificationFailure,
+} = require("./telegram-verification-failure");
 
 const DEFAULT_STATUS_SESSION_LIMIT = 5;
 const STATUS_TEXT_MAX = 3600;
@@ -38,7 +43,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "complete",
       incomplete: "incomplete",
     },
-    transport: { native: "native", legacy: "legacy", off: "off" },
+    transport: { native: "native", off: "off" },
     health: {
       off: "off",
       failed: "failed",
@@ -63,7 +68,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "last hook",
       updated: "updated",
     },
-    error: { scope: "scope", code: "code", event: "event" },
+    error: { scope: "scope", code: "code", event: "event", outcome: "outcome" },
     completionOutputMode: { off: "off", full: "full answer" },
     completionInactiveSuffix: " (inactive until native is running)",
     truncated: "... truncated",
@@ -100,7 +105,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "完整",
       incomplete: "未完成",
     },
-    transport: { native: "原生", legacy: "旧版", off: "关闭" },
+    transport: { native: "原生", off: "关闭" },
     health: {
       off: "关闭",
       failed: "失败",
@@ -125,7 +130,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "最近 hook",
       updated: "更新于",
     },
-    error: { scope: "范围", code: "代码", event: "事件" },
+    error: { scope: "范围", code: "代码", event: "事件", outcome: "结果" },
     completionOutputMode: { off: "关闭", full: "完整回答" },
     completionInactiveSuffix: "（原生运行后生效）",
     truncated: "... 已截断",
@@ -162,7 +167,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "完整",
       incomplete: "未完成",
     },
-    transport: { native: "原生", legacy: "舊版", off: "關閉" },
+    transport: { native: "原生", off: "關閉" },
     health: {
       off: "關閉",
       failed: "失敗",
@@ -187,7 +192,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "最近 hook",
       updated: "更新於",
     },
-    error: { scope: "範圍", code: "代碼", event: "事件" },
+    error: { scope: "範圍", code: "代碼", event: "事件", outcome: "結果" },
     completionOutputMode: { off: "關閉", full: "完整回答" },
     completionInactiveSuffix: "（原生執行後生效）",
     truncated: "... 已截斷",
@@ -224,7 +229,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "완료",
       incomplete: "미완료",
     },
-    transport: { native: "네이티브", legacy: "레거시", off: "꺼짐" },
+    transport: { native: "네이티브", off: "꺼짐" },
     health: {
       off: "꺼짐",
       failed: "실패",
@@ -249,7 +254,7 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "최근 hook",
       updated: "업데이트",
     },
-    error: { scope: "범위", code: "코드", event: "이벤트" },
+    error: { scope: "범위", code: "코드", event: "이벤트", outcome: "결과" },
     completionOutputMode: { off: "꺼짐", full: "전체 답변" },
     completionInactiveSuffix: " (네이티브 실행 후 활성)",
     truncated: "... 잘림",
@@ -286,7 +291,7 @@ const STATUS_LOCALES = Object.freeze({
       complete: "完了",
       incomplete: "未完了",
     },
-    transport: { native: "ネイティブ", legacy: "レガシー", off: "オフ" },
+    transport: { native: "ネイティブ", off: "オフ" },
     health: {
       off: "オフ",
       failed: "失敗",
@@ -311,18 +316,141 @@ const STATUS_LOCALES = Object.freeze({
       lastHook: "直近 hook",
       updated: "更新",
     },
-    error: { scope: "範囲", code: "コード", event: "イベント" },
+    error: { scope: "範囲", code: "コード", event: "イベント", outcome: "結果" },
     completionOutputMode: { off: "オフ", full: "全文" },
     completionInactiveSuffix: "（ネイティブ実行後に有効）",
     truncated: "... 省略",
+  },
+  "pt-BR": {
+    title: "Status do Telegram no Clawd",
+    labels: {
+      transport: "Transporte",
+      health: "Saúde",
+      nativePolling: "Polling nativo",
+      approval: "Aprovação",
+      completionNotifications: "Notificações de conclusão",
+      completionOutput: "saída",
+      completionBare: "fallback simples",
+      token: "Token",
+      config: "Configuração",
+      pendingApprovals: "Aprovações pendentes",
+      nativeApprovalCards: "Cards de aprovação nativos",
+      lastError: "Último erro",
+      sessions: "Sessões",
+      latestSession: "Sessão mais recente",
+    },
+    words: {
+      none: "nenhum",
+      unknown: "desconhecido",
+      on: "ligado",
+      off: "desligado",
+      running: "em execução",
+      stopped: "parado",
+      available: "disponível",
+      unavailable: "indisponível",
+      stored: "guardado",
+      missing: "ausente",
+      complete: "completa",
+      incomplete: "incompleta",
+    },
+    transport: { native: "nativo", off: "desligado" },
+    health: {
+      off: "desligado",
+      failed: "falhou",
+      "setup-needed": "precisa de configuração",
+      testing: "testando",
+      healthy: "saudável",
+      inactive: "inativo",
+      starting: "iniciando",
+      unknown: "desconhecido",
+    },
+    age: {
+      unknown: "desconhecido",
+      now: "agora",
+      sec: "há {n}s",
+      min: "há {n}min",
+      hour: "há {n}h",
+      day: "há {n}d",
+    },
+    session: {
+      state: "estado",
+      badge: "marcador",
+      lastHook: "último hook",
+      updated: "atualizada",
+    },
+    error: { scope: "escopo", code: "código", event: "evento", outcome: "resultado" },
+    completionOutputMode: { off: "desligada", full: "resposta completa" },
+    completionInactiveSuffix: " (inativo até o nativo estar rodando)",
+    truncated: "... truncado",
+  },
+  es: {
+    title: "Estado de Telegram en Clawd",
+    labels: {
+      transport: "Transporte",
+      health: "Estado",
+      nativePolling: "Sondeo nativo",
+      approval: "Aprobación",
+      completionNotifications: "Notificaciones de finalización",
+      completionOutput: "salida",
+      completionBare: "respaldo básico",
+      token: "Token",
+      config: "Configuración",
+      pendingApprovals: "Aprobaciones pendientes",
+      nativeApprovalCards: "Tarjetas de aprobación nativas",
+      lastError: "Último error",
+      sessions: "Sesiones",
+      latestSession: "Sesión más reciente",
+    },
+    words: {
+      none: "ninguno",
+      unknown: "desconocido",
+      on: "activado",
+      off: "desactivado",
+      running: "en ejecución",
+      stopped: "detenido",
+      available: "disponible",
+      unavailable: "no disponible",
+      stored: "guardado",
+      missing: "ausente",
+      complete: "completa",
+      incomplete: "incompleta",
+    },
+    transport: { native: "nativo", off: "desactivado" },
+    health: {
+      off: "desactivado",
+      failed: "falló",
+      "setup-needed": "requiere configuración",
+      testing: "probando",
+      healthy: "correcto",
+      inactive: "inactivo",
+      starting: "iniciando",
+      unknown: "desconocido",
+    },
+    age: {
+      unknown: "desconocido",
+      now: "ahora",
+      sec: "hace {n} s",
+      min: "hace {n} min",
+      hour: "hace {n} h",
+      day: "hace {n} d",
+    },
+    session: {
+      state: "estado",
+      badge: "insignia",
+      lastHook: "último hook",
+      updated: "actualizada",
+    },
+    error: { scope: "ámbito", code: "código", event: "evento", outcome: "resultado" },
+    completionOutputMode: { off: "desactivada", full: "respuesta completa" },
+    completionInactiveSuffix: " (inactivo hasta que el modo nativo esté en ejecución)",
+    truncated: "... truncado",
   },
 });
 
 function isNativeTelegramApprovalSelected(snapshot) {
   if (!snapshot || typeof snapshot !== "object") return false;
   return snapshot.state === "NATIVE_ACTIVE"
-    || snapshot.state === "TESTING_NATIVE"
-    || snapshot.transport === "native";
+    || snapshot.state === "TESTING_NATIVE";
 }
 
 function buildNativeTelegramApprovalStatus({ config, token, migrationSnapshot, nativePolling }) {
@@ -373,7 +501,6 @@ function buildNativeTelegramApprovalStatus({ config, token, migrationSnapshot, n
 function buildTelegramApprovalStatus({
   config,
   token,
-  sidecarStatus,
   migrationSnapshot,
   nativePolling,
 }) {
@@ -385,38 +512,29 @@ function buildTelegramApprovalStatus({
   });
   if (nativeStatus) return nativeStatus;
 
-  const ready = telegramApprovalSettings.readiness(config, token);
-  const legacyStatus = sidecarStatus || { status: "stopped" };
-  // Reverse-divergence guard: once the controller knows the legacy sidecar
-  // failed, keep the badge "failed" even if the live sidecar handle has since
-  // gone "stopped" or been torn down (which would otherwise read as "ready").
-  // Only the failure overlay is honoured — "running" must still come from the
-  // live sidecar status, never from a stale runtime-status snapshot.
-  const runtimeStatus = migrationSnapshot && migrationSnapshot.runtimeStatus;
-  // Only overlay while legacy is the *current* owner. A stale legacy failure
-  // (e.g. user disabled or switched after a failure) must not keep the badge
-  // red; the controller also reconciles runtimeStatus on those transitions.
-  if (migrationSnapshot && migrationSnapshot.state === "LEGACY_ACTIVE"
-    && runtimeStatus && runtimeStatus.transport === "legacy" && runtimeStatus.status === "failed") {
-    return {
-      ...legacyStatus,
-      status: "failed",
-      transport: "legacy",
-      enabled: config && config.enabled === true,
-      configured: ready.ready === true,
-      reason: runtimeStatus.reason || legacyStatus.reason || "failed",
-      message: runtimeStatus.message || legacyStatus.message || ready.message || "",
-      tokenStored: token && token.tokenStored === true,
-    };
-  }
+  const ready = telegramApprovalSettings.readiness({ ...config, enabled: true }, token);
+  const migrationState = migrationSnapshot && migrationSnapshot.state
+    ? migrationSnapshot.state
+    : "IDLE";
+  const required = migrationState === "NATIVE_MIGRATION_REQUIRED";
+  const lastTestResult = migrationSnapshot && migrationSnapshot.lastTestResult;
+  const failure = normalizeTelegramVerificationFailure(lastTestResult);
   return {
-    ...legacyStatus,
-    transport: "legacy",
-    enabled: config && config.enabled === true,
+    status: failure ? "failed" : "stopped",
+    transport: "off",
+    native: false,
+    enabled: false,
     configured: ready.ready === true,
-    reason: ready.reason || "",
-    message: legacyStatus.message || ready.message || "",
+    reason: failure
+      ? "native-verification-failed"
+      : (required ? "native-migration-required" : (ready.reason || "disabled")),
+    message: ready.message || "",
+    errorCode: failure ? failure.errorCode : "",
+    failureOutcome: failure ? failure.outcome : "",
     tokenStored: token && token.tokenStored === true,
+    nativePolling: false,
+    migrationState,
+    lastTestResult: lastTestResult || null,
   };
 }
 
@@ -441,12 +559,8 @@ function sanitizeStatusText(value, maxLen = 160) {
 function normalizeTransport({ approvalStatus, migrationSnapshot, config } = {}) {
   const snap = migrationSnapshot && typeof migrationSnapshot === "object" ? migrationSnapshot : {};
   const state = typeof snap.state === "string" ? snap.state : "";
-  const transport = typeof snap.transport === "string" ? snap.transport : "";
-  if (state === "NATIVE_ACTIVE" || state === "TESTING_NATIVE" || transport === "native") return "native";
-  if (state === "LEGACY_ACTIVE" || state === "SWITCHING_TO_LEGACY" || transport === "legacy") return "legacy";
-  if (transport === "off" || state === "IDLE") return "off";
+  if (state === "NATIVE_ACTIVE" || state === "TESTING_NATIVE") return "native";
   if (approvalStatus && approvalStatus.transport === "native") return "native";
-  if (approvalStatus && approvalStatus.transport === "legacy" && config && config.enabled === true) return "legacy";
   return "off";
 }
 
@@ -486,20 +600,11 @@ function normalizeLastError({ approvalStatus, migrationSnapshot, nativeRunnerSta
       message: sanitizeStatusText(snap.lastError.message || "", 160),
     };
   }
-  const runtimeStatus = snap.runtimeStatus && typeof snap.runtimeStatus === "object"
-    ? snap.runtimeStatus
-    : null;
-  if (runtimeStatus && runtimeStatus.status === "failed") {
-    return {
-      source: sanitizeStatusText(runtimeStatus.transport || "runtime", 32),
-      code: sanitizeStatusText(runtimeStatus.reason || "failed", 64),
-      message: sanitizeStatusText(runtimeStatus.message || "", 160),
-    };
-  }
   if (approvalStatus && approvalStatus.status === "failed") {
     return {
       source: "approval",
-      code: sanitizeStatusText(approvalStatus.reason || "failed", 64),
+      code: sanitizeStatusText(approvalStatus.errorCode || approvalStatus.reason || "failed", 64),
+      outcome: sanitizeStatusText(approvalStatus.failureOutcome || "", 64),
       message: sanitizeStatusText(approvalStatus.message || "", 160),
     };
   }
@@ -548,10 +653,8 @@ function formatAge(seconds, locale = STATUS_LOCALES.en) {
   return formatTemplate(age.day || STATUS_LOCALES.en.age.day, { n: Math.floor(hours / 24) });
 }
 
-function shortId(id) {
-  const s = sanitizeStatusText(id, 32);
-  if (!s) return "";
-  return s.length > 8 ? s.slice(0, 8) : s;
+function shortId(entry) {
+  return sanitizeStatusText(getEntryDisplaySessionTag(entry), 32) || "";
 }
 
 function summarizeSession(entry, now) {
@@ -560,7 +663,7 @@ function summarizeSession(entry, now) {
     ? entry.lastEvent
     : null;
   return {
-    id: shortId(entry.id),
+    id: shortId(entry),
     agentId: sanitizeStatusText(entry.agentId || "unknown", 48) || "unknown",
     state: sanitizeStatusText(entry.state || "idle", 32) || "idle",
     badge: sanitizeStatusText(entry.badge || "idle", 32) || "idle",
@@ -593,21 +696,14 @@ function summarizeSessions(sessionSnapshot, { now, all = false, limit = DEFAULT_
 }
 
 function buildHealth({ transport, approvalStatus, migrationSnapshot, nativePolling, configured } = {}) {
-  const status = approvalStatus && approvalStatus.status ? approvalStatus.status : "stopped";
-  const runtimeStatus = migrationSnapshot && migrationSnapshot.runtimeStatus
-    ? migrationSnapshot.runtimeStatus
-    : null;
   const state = migrationSnapshot && migrationSnapshot.state ? migrationSnapshot.state : "";
+  if (approvalStatus && approvalStatus.status === "failed") return "failed";
   if (transport === "off") return "off";
-  if (runtimeStatus && runtimeStatus.status === "failed") return "failed";
   if (!configured) return "setup-needed";
   if (transport === "native") {
     if (state === "TESTING_NATIVE") return "testing";
     return nativePolling ? "healthy" : "inactive";
   }
-  if (status === "running") return "healthy";
-  if (status === "starting") return "starting";
-  if (status === "failed") return "failed";
   return "inactive";
 }
 
@@ -648,9 +744,7 @@ function buildTelegramStatusDiagnostic({
     nativePolling: polling,
     configured,
   });
-  const approvalAvailable = transport === "native"
-    ? (health === "healthy")
-    : (transport === "legacy" && health === "healthy");
+  const approvalAvailable = transport === "native" && health === "healthy";
   const pendingCount = Number.isFinite(pendingApprovalCount)
     ? Math.max(0, Math.floor(pendingApprovalCount))
     : 0;
@@ -702,6 +796,7 @@ function formatLastError(error, locale = STATUS_LOCALES.en) {
     error.scope ? `${errorLabels.scope || "scope"}=${error.scope}` : null,
     error.code ? `${errorLabels.code || "code"}=${error.code}` : null,
     error.eventType ? `${errorLabels.event || "event"}=${error.eventType}` : null,
+    error.outcome ? `${errorLabels.outcome || "outcome"}=${error.outcome}` : null,
     error.message || null,
   ].filter(Boolean);
   return parts.join(" ");

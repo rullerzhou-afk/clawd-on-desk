@@ -106,7 +106,7 @@
   <rect id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
 
   <g id="master-group">
-    <g class="body-squash">
+    <g id="accessory-anchor" class="body-squash">
       <g fill="#DE886D">
         <rect x="2" y="6" width="11" height="7"/>
         <rect class="arm-left-down" x="0" y="9" width="2" height="2"/>

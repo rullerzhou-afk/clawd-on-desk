@@ -3,13 +3,16 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { spawnSync } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const {
   HOOK_GROUP_ID,
   MARKER,
+  STATUSLINE_MARKER,
   ANTIGRAVITY_HOOK_EVENTS,
   registerAntigravityHooks,
   unregisterAntigravityHooks,
+  registerAntigravityStatusline,
+  unregisterAntigravityStatusline,
   __test,
 } = require("../hooks/antigravity-install");
 
@@ -50,6 +53,63 @@ function runWindowsHookCommand(command, options = {}) {
     encoding: "utf8",
     timeout: options.timeout,
   });
+}
+
+// #568 repro helper: run a wrapper command while stdin stays open — written
+// to or not, but never closed — the way the Antigravity IDE hook runner
+// behaves. Resolves once the child has exited AND its stdout pipe has closed:
+// exit alone is not enough, because a leaked watchdog orphan holding the
+// wrapper's stdout keeps the pipe open past exit and stalls any hook runner
+// that waits for EOF instead of process exit. Kills the child as a backstop.
+function runWithOpenStdin(bin, args, { write, killAfterMs = 15000 } = {}) {
+  return new Promise((resolve) => {
+    const started = Date.now();
+    const child = spawn(bin, args, { stdio: ["pipe", "pipe", "pipe"] });
+    let stdout = "";
+    let timedOut = false;
+    let exited = false;
+    let exitCode = null;
+    let elapsedMs = null;
+    let stdoutClosed = false;
+    let stdoutCloseElapsedMs = null;
+    const settle = () => {
+      if (!exited || !stdoutClosed) return;
+      clearTimeout(killer);
+      resolve({ code: exitCode, stdout, timedOut, elapsedMs, stdoutCloseElapsedMs });
+    };
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stdin.on("error", () => {});
+    // 'close' fires only after every writer of the pipe is gone, orphans included.
+    child.stdout.on("close", () => {
+      stdoutClosed = true;
+      stdoutCloseElapsedMs = Date.now() - started;
+      settle();
+    });
+    child.on("exit", (code) => {
+      exited = true;
+      exitCode = code;
+      elapsedMs = Date.now() - started;
+      settle();
+    });
+    const killer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+      child.stdout.destroy();
+    }, killAfterMs);
+    if (write) child.stdin.write(write);
+  });
+}
+
+function writeEchoHook(dirPrefix) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), dirPrefix));
+  tempDirs.push(tmpDir);
+  const scriptPath = path.join(tmpDir, "antigravity-hook.js");
+  fs.writeFileSync(
+    scriptPath,
+    'let s="";process.stdin.on("data",(c)=>s+=c);process.stdin.on("end",()=>process.stdout.write(JSON.stringify({got:s})+"\\n"));',
+    "utf8"
+  );
+  return scriptPath;
 }
 
 afterEach(() => {
@@ -366,6 +426,80 @@ describe("Antigravity hook installer", () => {
     assert.ok(Date.now() - started < 4000, "wrapper should not wait for the child timer");
   });
 
+  it("guards the POSIX stdin read with its own watchdog (#568)", () => {
+    const command = __test.buildAntigravityHookCommand(
+      "/usr/local/bin/node",
+      "/x/antigravity-hook.js",
+      "PreInvocation",
+      { platform: "linux" }
+    );
+
+    // Background lists get /dev/null as stdin in non-interactive shells, so
+    // the real stdin must be handed to the background cat through fd 3.
+    assert.ok(command.includes("{ cat <&3 > \"$in_file\" 2>/dev/null & pid=$!; } 3<&0"));
+    assert.ok(command.includes("( sleep 2; kill \"$pid\" 2>/dev/null ) > /dev/null 2>&1"));
+    assert.ok(command.includes("( sleep 6; kill \"$pid\" 2>/dev/null ) > /dev/null 2>&1"));
+    // A watchdog subshell without the redirect leaks an orphaned sleep that
+    // holds our stdout open past exit and stalls EOF-waiting hook runners.
+    assert.ok(!command.includes(") & watchdog="), "every watchdog subshell must detach from our stdout/stderr");
+    assert.ok(!command.includes("cat > \"$in_file\""), "stdin must not be read in the foreground");
+  });
+
+  it("keeps the stdin + child watchdog budget under the outer hook timeout (#568)", () => {
+    const outerTimeoutSeconds = __test.buildAntigravityHooks(() => "x")[HOOK_GROUP_ID].PreInvocation[0].timeout;
+    const stdinSeconds = __test.normalizeStdinTimeoutSeconds();
+    const childSeconds = __test.normalizeFailOpenTimeoutSeconds();
+
+    // Measured: 2s+7s peaked at 9.5-9.7s with a hung child on a warm machine,
+    // so one second of headroom is not enough for a PowerShell cold start.
+    assert.ok(
+      stdinSeconds + childSeconds <= outerTimeoutSeconds - 2,
+      `stdin (${stdinSeconds}s) + child (${childSeconds}s) watchdogs need >=2s headroom under the ${outerTimeoutSeconds}s hook timeout for shell cold starts and the fallback line`
+    );
+  });
+
+  it("does not stall when the hook runner never closes stdin (#568)", posixOnly, async () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-openstdin-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "linux", stdinTimeoutSeconds: 1 }
+    );
+
+    // No write and no close, like the Antigravity IDE hook runner. (spawnSync
+    // without `input` closes stdin immediately, so it cannot model this.)
+    const result = await runWithOpenStdin("/bin/sh", ["-c", command]);
+
+    assert.strictEqual(result.timedOut, false, "wrapper must exit on its own");
+    assert.strictEqual(result.code, 0);
+    assert.deepStrictEqual(JSON.parse(result.stdout), { got: "" });
+    assert.ok(result.elapsedMs >= 900, "wrapper must actually sit out the stdin watchdog");
+    assert.ok(result.elapsedMs < 6000, "stdin watchdog must cut the blocked read");
+    assert.ok(result.stdoutCloseElapsedMs < 6000, "no watchdog orphan may hold our stdout past exit");
+  });
+
+  it("delivers a payload that arrives without a stdin close (#568)", posixOnly, async () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-nocdata-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "linux", stdinTimeoutSeconds: 1 }
+    );
+
+    const result = await runWithOpenStdin("/bin/sh", ["-c", command], {
+      write: JSON.stringify({ conversationId: "c1" }),
+    });
+
+    assert.strictEqual(result.timedOut, false, "wrapper must exit on its own");
+    assert.strictEqual(result.code, 0);
+    assert.deepStrictEqual(JSON.parse(result.stdout), { got: JSON.stringify({ conversationId: "c1" }) });
+    assert.ok(result.elapsedMs >= 900, "wrapper must actually sit out the stdin watchdog");
+    assert.ok(result.elapsedMs < 6000, "stdin watchdog must cut the blocked read");
+    assert.ok(result.stdoutCloseElapsedMs < 6000, "no watchdog orphan may hold our stdout past exit");
+  });
+
   it("fail-opens Windows hook commands when Node cannot start", windowsOnly, () => {
     const command = __test.buildAntigravityHookCommand(
       "C:/definitely/missing/node.exe",
@@ -439,6 +573,76 @@ describe("Antigravity hook installer", () => {
     assert.ok(Date.now() - started < 4000, "wrapper should not wait for the child timer");
   });
 
+  it("does not stall on Windows when the hook runner never closes stdin (#568)", windowsOnly, async () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-winopenstdin-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32", stdinTimeoutSeconds: 1 }
+    );
+    const idx = command.indexOf(" -NoProfile");
+    assert.notStrictEqual(idx, -1, "expected PowerShell command");
+
+    const result = await runWithOpenStdin(command.slice(0, idx), command.slice(idx + 1).split(/\s+/));
+
+    assert.strictEqual(result.timedOut, false, "wrapper must exit on its own");
+    assert.strictEqual(result.code, 0);
+    // The async stdin read times out without EOF, so the hook sees "" and
+    // fails open on an empty payload.
+    assert.deepStrictEqual(JSON.parse(result.stdout), { got: "" });
+    assert.ok(result.elapsedMs >= 900, "wrapper must actually sit out the stdin timeout");
+    assert.ok(result.elapsedMs < 10000, "stdin timeout must cut the blocked read");
+    assert.ok(result.stdoutCloseElapsedMs < 10000, "stdout must reach EOF promptly after exit");
+  });
+
+  it("delivers the stdin payload BOM-free under a CP-65001 console (#638)", windowsOnly, () => {
+    const scriptPath = writeEchoHook("clawd-antigravity-winbom-");
+    const command = __test.buildAntigravityHookCommand(
+      process.execPath,
+      scriptPath,
+      "PreInvocation",
+      { platform: "win32" }
+    );
+    // CJK in the payload also pins the encoding half of #638: the old
+    // Console.InputEncoding writer would mojibake non-ASCII under an ANSI
+    // console, the raw UTF-8 write must round-trip it byte-exact.
+    const payload = JSON.stringify({ session_id: "bom-check", cwd: "D:\\动画工作台" });
+    // chcp mutates the SHARED console codepage, and node --test runs test
+    // files concurrently on that console. When the console already sits at
+    // 65001 (systems with UTF-8 as the system codepage - increasingly the
+    // default) skip the mutation entirely: the BOM branch is exercised with
+    // zero cross-test pollution. Only legacy-ANSI consoles pay the (restore-
+    // bounded) mutation window; a spawnSync timeout still runs the finally,
+    // so only a hard kill of the test process itself skips the restore.
+    // (An isolated console via detached/windowsHide is not an option: it
+    // breaks stdio piping for this very test.)
+    const before = spawnSync("cmd.exe", ["/d", "/s", "/c", "chcp"], { encoding: "utf8" });
+    const cpMatch = (before.stdout || "").match(/\d+/);
+    assert.strictEqual(before.status, 0, "must be able to query the console codepage");
+    assert.ok(cpMatch, "must be able to parse the console codepage for restore");
+    const alreadyUtf8 = cpMatch && cpMatch[0] === "65001";
+    try {
+      // && (not &): if forcing 65001 fails, the wrapper must NOT run - under
+      // the original ANSI codepage this test would silently pass without ever
+      // exercising the BOM branch.
+      const result = spawnSync(
+        "cmd.exe",
+        ["/d", "/s", "/c", alreadyUtf8 ? command : `chcp 65001>nul && ${command}`],
+        { input: payload, encoding: "utf8", timeout: 30000 }
+      );
+      assert.strictEqual(result.status, 0);
+      const parsed = JSON.parse(result.stdout);
+      // Pre-#638 the .NET StandardInput writer flushed a UTF-8 BOM preamble
+      // under CP 65001, so the hook saw "﻿" + payload (or a lone BOM on
+      // the empty watchdog path).
+      assert.strictEqual(parsed.got.charCodeAt(0) === 0xFEFF, false, "hook stdin must not carry a BOM");
+      assert.deepStrictEqual(parsed, { got: payload });
+    } finally {
+      if (cpMatch && !alreadyUtf8) spawnSync("cmd.exe", ["/d", "/s", "/c", `chcp ${cpMatch[0]}`], { encoding: "utf8" });
+    }
+  });
+
   it("builds Windows PowerShell bridge commands with fail-open fallback", () => {
     const command = __test.buildAntigravityHookCommand(
       "C:\\Program Files\\nodejs\\node.exe",
@@ -453,7 +657,29 @@ describe("Antigravity hook installer", () => {
     assert.ok(decoded.includes("$psi = New-Object System.Diagnostics.ProcessStartInfo"));
     assert.ok(decoded.includes("$psi.FileName = 'C:\\Program Files\\nodejs\\node.exe'"));
     assert.ok(decoded.includes("$psi.Arguments = 'D:/clawd/hooks/antigravity-hook.js PreToolUse'"));
-    assert.ok(decoded.includes("if ($proc.WaitForExit(8000))"));
+    assert.ok(decoded.includes("if ($proc.WaitForExit(6000))"));
+    // #568: [Console]::In.ReadToEnd() blocks forever when the runner never
+    // closes stdin; the raw-stream reader honors the Wait() timeout.
+    assert.ok(decoded.includes("New-Object System.IO.StreamReader([Console]::OpenStandardInput())"));
+    assert.ok(decoded.includes("$stdinTask.Wait(2000)"));
+    assert.ok(!decoded.includes("[Console]::In.ReadToEnd()"));
+    // #638: Console.InputEncoding must be swapped to BOM-less UTF-8 BEFORE
+    // Start() — .NET Framework creates the StandardInput writer eagerly there
+    // and AutoFlush pushes the encoding preamble into the pipe at once — and
+    // stdin must be written as raw UTF-8 bytes, not through that writer.
+    assert.ok(decoded.includes("[Console]::InputEncoding = New-Object System.Text.UTF8Encoding($false)"));
+    assert.ok(decoded.indexOf("UTF8Encoding($false)") < decoded.indexOf("$proc.Start()"), "encoding pre-set must precede Start()");
+    // The swap must stay gated on the current encoding carrying a preamble and
+    // must NOT save/restore console state: gated, SetConsoleCP only ever
+    // receives the codepage the console already has, so concurrent wrappers
+    // cannot race and a hard-killed wrapper leaves no residue.
+    assert.ok(decoded.includes("if ([Console]::InputEncoding.GetPreamble().Length -gt 0)"));
+    assert.ok(!decoded.includes("$origInputEncoding"), "no console-state save/restore — the gated swap never changes the console CP");
+    // #638 read side: the hook's UTF-8 stdout must be decoded process-locally,
+    // not with the console-global OutputEncoding.
+    assert.ok(decoded.includes("$psi.StandardOutputEncoding = New-Object System.Text.UTF8Encoding($false)"));
+    assert.ok(decoded.includes("[System.Text.Encoding]::UTF8.GetBytes($stdinText)"));
+    assert.ok(!decoded.includes("$proc.StandardInput.Write"));
     assert.ok(decoded.includes("ConvertFrom-Json -ErrorAction Stop"));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{\"decision\":\"ask\"}' )"));
     assert.ok(decoded.endsWith("exit 0"));
@@ -579,5 +805,139 @@ describe("Antigravity hook installer", () => {
     assert.deepStrictEqual(result, { installed: true, removed: 0, changed: false, configPath });
     assert.deepStrictEqual(readJson(configPath), original);
     assert.deepStrictEqual(listCleanupBackups(configPath), []);
+  });
+});
+
+function makeTempStatuslineHome({ withSettings = true } = {}) {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-antigravity-statusline-home-"));
+  tempDirs.push(home);
+  if (withSettings) fs.mkdirSync(path.join(home, ".gemini", "antigravity-cli"), { recursive: true });
+  return home;
+}
+
+describe("Antigravity statusline installer", () => {
+  it("registers the statusline command when settings.json has none", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, platform: "darwin", nodeBin: "/usr/local/bin/node" });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    assert.strictEqual(result.installed, true);
+    assert.strictEqual(result.changed, true);
+    assert.strictEqual(result.skippedExisting, false);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.statusLine.enabled, true);
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+    assert.ok(settings.statusLine.command.includes("/usr/local/bin/node"));
+  });
+
+  it("is idempotent on second run", () => {
+    const homeDir = makeTempStatuslineHome();
+    registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.changed, false);
+  });
+
+  // Unlike hook commands (pinned to cmd via EncodedCommand), the statusline
+  // runner's shell is not pinned down, so the command must parse under
+  // Git Bash, PowerShell, AND cmd: command token unquoted, no `&` prefix.
+  it("win32: writes a shell-portable command (bare node) when the node path has spaces", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    registerAntigravityStatusline({
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\Program Files\\nodejs\\node.exe",
+    });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const command = readJson(settingsPath).statusLine.command;
+    assert.ok(!command.startsWith("& "), command);
+    assert.ok(!command.startsWith('"'), command);
+    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("win32: keeps a space-free absolute node path, unquoted with forward slashes", () => {
+    const homeDir = makeTempStatuslineHome();
+
+    registerAntigravityStatusline({
+      silent: true,
+      homeDir,
+      platform: "win32",
+      nodeBin: "C:\\nvm\\v20.11.0\\node.exe",
+    });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const command = readJson(settingsPath).statusLine.command;
+    assert.ok(command.startsWith('C:/nvm/v20.11.0/node.exe "'), command);
+  });
+
+  it("skips when Antigravity CLI settings directory is absent", () => {
+    const homeDir = makeTempStatuslineHome({ withSettings: false });
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.installed, false);
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".gemini", "antigravity-cli", "settings.json")), false);
+  });
+
+  it("never overwrites a pre-existing third-party statusline", () => {
+    const homeDir = makeTempStatuslineHome();
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({
+      statusLine: { type: "", command: "/opt/homebrew/bin/my-custom-statusline.sh", enabled: true },
+    }));
+
+    const result = registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    assert.strictEqual(result.skippedExisting, true);
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.statusLine.command, "/opt/homebrew/bin/my-custom-statusline.sh");
+  });
+
+  it("preserves other settings.json keys", () => {
+    const homeDir = makeTempStatuslineHome();
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    fs.writeFileSync(settingsPath, JSON.stringify({ model: "Gemini 3.1 Pro (High)", trustedWorkspaces: ["/x"] }));
+
+    registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    const settings = readJson(settingsPath);
+    assert.strictEqual(settings.model, "Gemini 3.1 Pro (High)");
+    assert.deepStrictEqual(settings.trustedWorkspaces, ["/x"]);
+    assert.ok(settings.statusLine.command.includes(STATUSLINE_MARKER));
+  });
+
+  it("unregister removes only a Clawd-owned statusline", () => {
+    const homeDir = makeTempStatuslineHome();
+    registerAntigravityStatusline({ silent: true, homeDir, nodeBin: "/usr/local/bin/node" });
+
+    const result = unregisterAntigravityStatusline({ silent: true, homeDir, backup: true });
+
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    assert.deepStrictEqual(result, {
+      installed: true,
+      removed: 1,
+      changed: true,
+      settingsPath,
+      backupPath: result.backupPath,
+    });
+    assert.strictEqual(readJson(settingsPath).statusLine, undefined);
+  });
+
+  it("unregister leaves a third-party statusline untouched", () => {
+    const homeDir = makeTempStatuslineHome();
+    const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
+    const original = { statusLine: { type: "", command: "/opt/homebrew/bin/my-custom-statusline.sh", enabled: true } };
+    fs.writeFileSync(settingsPath, JSON.stringify(original));
+
+    const result = unregisterAntigravityStatusline({ silent: true, homeDir });
+
+    assert.deepStrictEqual(result, { installed: true, removed: 0, changed: false, settingsPath });
+    assert.deepStrictEqual(readJson(settingsPath), original);
   });
 });

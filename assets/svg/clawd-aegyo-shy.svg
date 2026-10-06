@@ -200,7 +200,7 @@
     <rect x="11" y="13" width="1" height="2"/>
   </g>
 
-  <g class="body-bashful">
+  <g id="accessory-anchor" class="body-bashful">
     <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
 
     <g clip-path="url(#inside-torso)" class="arm-shadow-fade">

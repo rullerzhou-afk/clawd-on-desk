@@ -1,8 +1,13 @@
 "use strict";
 
+const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
+const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
+
 function isCodexMonitorMetadataOnlyEvent(event, extra) {
+  if (event === "session_index:title") return true;
   return event === "event_msg:token_count"
-    && !!(extra && typeof extra === "object" && extra.contextUsage);
+    && !!(extra && typeof extra === "object"
+      && (extra.contextUsage || extra.codexQuota || extra.codexSparkQuota));
 }
 
 function normalizeContextUsage(value) {
@@ -22,7 +27,10 @@ function normalizeContextUsage(value) {
   return out;
 }
 
-function buildCodexMonitorUpdateOptions(extra, options = {}) {
+// Session metadata and account quota deliberately have separate builders.
+// This makes it structurally impossible for any updateSession caller (including
+// passive user-input paths) to spread account quota into session options.
+function buildCodexMonitorSessionOptions(extra, options = {}) {
   const input = extra && typeof extra === "object" ? extra : {};
   const out = {
     cwd: input.cwd,
@@ -32,15 +40,46 @@ function buildCodexMonitorUpdateOptions(extra, options = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "sourcePid")) out.sourcePid = input.sourcePid;
   if (Object.prototype.hasOwnProperty.call(input, "agentPid")) out.agentPid = input.agentPid;
   if (Object.prototype.hasOwnProperty.call(input, "pidChain")) out.pidChain = input.pidChain;
+  if (Object.prototype.hasOwnProperty.call(input, "transcriptPath")) out.transcriptPath = input.transcriptPath;
   if (Object.prototype.hasOwnProperty.call(input, "codexOriginator")) out.codexOriginator = input.codexOriginator;
   if (Object.prototype.hasOwnProperty.call(input, "codexSource")) out.codexSource = input.codexSource;
+  if (options.includeRecap === true) {
+    const hasTrustedRecapTime = Number.isSafeInteger(input.recapOccurredAt) && input.recapOccurredAt >= 0;
+    if (hasTrustedRecapTime) out.recapOccurredAt = input.recapOccurredAt;
+    if (typeof input.recapDedupeId === "string" && input.recapDedupeId) {
+      out.recapDedupeId = input.recapDedupeId;
+    }
+    if (typeof input.toolUseId === "string" && input.toolUseId) out.toolUseId = input.toolUseId;
+    if (input.headless === true) out.recapIsSubagent = true;
+    if (!hasTrustedRecapTime || input.syntheticBackfill === true) out.recapSuppressed = true;
+  }
   const contextUsage = normalizeContextUsage(input.contextUsage);
   if (contextUsage) out.contextUsage = contextUsage;
+  // Completion output is extracted by the JSONL monitor from the final
+  // assistant message. Keep it on the lifecycle callback so the state store
+  // and Telegram/Slack completion consumers receive the same answer as the
+  // official hook path. It is present only on terminal events, so ordinary
+  // monitor updates keep the existing payload shape.
+  if (typeof input.assistantLastOutput === "string" && input.assistantLastOutput.trim()) {
+    out.assistantLastOutput = input.assistantLastOutput;
+    out.assistantLastOutputTruncated = input.assistantLastOutputTruncated === true;
+  }
   if (options.includeHeadless) out.headless = input.headless === true;
   return out;
 }
 
+function normalizeCodexMonitorAccountQuotas(extra) {
+  const input = extra && typeof extra === "object" ? extra : {};
+  const out = {};
+  const codexQuota = normalizeQuotaGroup(input.codexQuota, CODEX_QUOTA_FIELDS);
+  if (codexQuota) out.codexQuota = codexQuota;
+  const codexSparkQuota = normalizeQuotaGroup(input.codexSparkQuota, CODEX_QUOTA_FIELDS);
+  if (codexSparkQuota) out.codexSparkQuota = codexSparkQuota;
+  return Object.keys(out).length ? out : null;
+}
+
 module.exports = {
-  buildCodexMonitorUpdateOptions,
+  buildCodexMonitorSessionOptions,
+  normalizeCodexMonitorAccountQuotas,
   isCodexMonitorMetadataOnlyEvent,
 };

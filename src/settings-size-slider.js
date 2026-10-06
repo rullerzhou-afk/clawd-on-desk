@@ -220,6 +220,7 @@ return {
   uiSizeToPrefs,
   prefsSizeToUi,
   clampSizeUi,
+  formatSizeKey,
   sizeUiToPct,
   getSizeSliderAnchorPx,
   createSizeSliderController,

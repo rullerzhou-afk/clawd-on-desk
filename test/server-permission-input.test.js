@@ -3,8 +3,12 @@ const assert = require("node:assert");
 
 const {
   truncateDeep,
+  DETAIL_TEXT_MAX_BYTES,
+  clampUtf8Text,
+  preparePermissionDetail,
   normalizePermissionSuggestions,
   normalizeElicitationToolInput,
+  prepareElicitationToolInput,
   normalizeHookToolUseId,
   normalizeCodexPermissionToolInput,
   normalizeToolMatchValue,
@@ -43,8 +47,8 @@ describe("permission input normalization", () => {
     ]);
   });
 
-  it("caps elicitation questions/options and truncates displayed copy", () => {
-    const normalized = normalizeElicitationToolInput({
+  it("refuses oversized elicitation instead of showing a partial choice set", () => {
+    const prepared = prepareElicitationToolInput({
       mode: "prompt",
       questions: Array.from({ length: 7 }, (_, questionIndex) => ({
         header: `Header ${questionIndex} ${"h".repeat(80)}`,
@@ -56,12 +60,145 @@ describe("permission input normalization", () => {
       })),
     });
 
-    assert.strictEqual(normalized.questions.length, 5);
-    assert.strictEqual(normalized.questions[0].options.length, 5);
-    assert.strictEqual(normalized.questions[0].header.endsWith("…"), true);
-    assert.strictEqual(normalized.questions[0].question.endsWith("…"), true);
-    assert.strictEqual(normalized.questions[0].options[0].label.length, 80);
-    assert.strictEqual(normalized.questions[0].options[0].description.length, 160);
+    assert.strictEqual(prepared.canAnswer, false);
+    assert.strictEqual(prepared.reason, "too-many-questions");
+    assert.deepStrictEqual(prepared.displayInput, { questions: [] });
+  });
+
+  it("keeps exact wire answer keys separate from bounded display copy", () => {
+    const rawQuestion = `  ${"q".repeat(260)}  `;
+    const rawInput = {
+      mode: "prompt",
+      questions: [{
+        header: `Header ${"h".repeat(80)}`,
+        question: rawQuestion,
+        options: [{
+          label: "Option A",
+          description: `Description ${"d".repeat(200)}`,
+        }],
+      }],
+    };
+    const prepared = prepareElicitationToolInput(rawInput);
+
+    assert.strictEqual(prepared.canAnswer, true);
+    assert.strictEqual(prepared.wireInput, rawInput);
+    assert.strictEqual(prepared.displayInput.questions[0].id, "0");
+    assert.strictEqual(prepared.displayInput.questions[0].question.length, 240);
+    assert.strictEqual(prepared.displayInput.questions[0].question.endsWith("…"), true);
+    assert.notStrictEqual(prepared.displayInput.questions[0].question, rawQuestion);
+    assert.strictEqual(prepared.displayInput.questions[0].options[0].label, "Option A");
+    assert.strictEqual(prepared.displayInput.questions[0].options[0].description.length, 160);
+    assert.strictEqual(prepared.detailDisplayInput.questions[0].question, rawQuestion.trim());
+    assert.strictEqual(
+      prepared.detailDisplayInput.questions[0].options[0].description,
+      rawInput.questions[0].options[0].description
+    );
+    assert.strictEqual(prepared.detailDisplayInput.questions[0].detailTruncated, false);
+    assert.deepStrictEqual(normalizeElicitationToolInput(rawInput), prepared.displayInput);
+  });
+
+  it("marks an Ask detail when the expanded question itself exceeds its local budget", () => {
+    const prepared = prepareElicitationToolInput({
+      questions: [{
+        question: "q".repeat(140 * 1024),
+        header: "Long prompt",
+        options: [{ label: "Continue", description: "Proceed" }],
+      }],
+    });
+    assert.strictEqual(prepared.canAnswer, true);
+    assert.strictEqual(prepared.detailTruncated, true);
+    assert.strictEqual(prepared.detailDisplayInput.questions[0].detailTruncated, true);
+  });
+
+  it("keeps preview truncation separate from the bounded local detail text", () => {
+    const command = `${"x".repeat(2000)}END_MARKER`;
+    const rawInput = { command };
+    const preview = truncateDeep(rawInput);
+    const detail = preparePermissionDetail("Bash", rawInput);
+
+    assert.strictEqual(preview.command.endsWith("…"), true);
+    assert.strictEqual(preview.command.includes("END_MARKER"), false);
+    assert.strictEqual(detail.detailText, command);
+    assert.strictEqual(detail.detailText.endsWith("END_MARKER"), true);
+    assert.strictEqual(detail.detailTruncated, false);
+  });
+
+  it("marks truncation only when the selected detail text exceeds the byte budget", () => {
+    const selected = preparePermissionDetail("Bash", {
+      command: "echo complete",
+      unrelated: "x".repeat(DETAIL_TEXT_MAX_BYTES + 100),
+    });
+    assert.strictEqual(selected.detailText, "echo complete");
+    assert.strictEqual(selected.detailTruncated, false);
+
+    const oversized = preparePermissionDetail("Bash", {
+      command: "猫".repeat(DETAIL_TEXT_MAX_BYTES),
+    });
+    assert.strictEqual(oversized.detailTruncated, true);
+    assert.ok(Buffer.byteLength(oversized.detailText, "utf8") <= DETAIL_TEXT_MAX_BYTES);
+    assert.strictEqual(oversized.detailText.endsWith("…"), true);
+  });
+
+  it("bounds structural depth and key counts only for an unknown tool's displayed JSON", () => {
+    const manyKeys = Object.fromEntries(
+      Array.from({ length: 80 }, (_, index) => [`key-${index}`, index])
+    );
+    const unknown = preparePermissionDetail("custom_tool", { manyKeys });
+    assert.strictEqual(unknown.detailTruncated, true);
+    assert.strictEqual(Object.keys(JSON.parse(unknown.detailText).manyKeys).length, 64);
+
+    const known = preparePermissionDetail("Bash", {
+      command: "echo complete",
+      manyKeys,
+    });
+    assert.strictEqual(known.detailText, "echo complete");
+    assert.strictEqual(known.detailTruncated, false);
+  });
+
+  it("clamps UTF-8 text without splitting a surrogate pair", () => {
+    const bounded = clampUtf8Text("abc😀def", 8);
+    assert.strictEqual(bounded.truncated, true);
+    assert.strictEqual(bounded.text.includes("�"), false);
+    assert.ok(Buffer.byteLength(bounded.text, "utf8") <= 8);
+  });
+
+  it("refuses duplicate raw answer keys because indexed answers cannot map unambiguously", () => {
+    const prepared = prepareElicitationToolInput({
+      questions: [
+        { question: "same", options: [] },
+        { question: "same", options: [] },
+      ],
+    });
+
+    assert.strictEqual(prepared.canAnswer, false);
+    assert.strictEqual(prepared.reason, "duplicate-answer-key");
+  });
+
+  it("falls back when option display normalization would corrupt the answer value", () => {
+    for (const [label, reason] of [
+      ["", "missing-option-label"],
+      [" padded ", "unsafe-option-label-preview"],
+      ["x".repeat(81), "unsafe-option-label-preview"],
+    ]) {
+      const prepared = prepareElicitationToolInput({
+        questions: [{ question: "Pick", options: [{ label }] }],
+      });
+      assert.strictEqual(prepared.canAnswer, false, label);
+      assert.strictEqual(prepared.reason, reason, label);
+    }
+  });
+
+  it("falls back when distinct wire questions collapse to the same display text", () => {
+    const common = "q".repeat(240);
+    const prepared = prepareElicitationToolInput({
+      questions: [
+        { question: `${common}a`, options: [] },
+        { question: `${common}b`, options: [] },
+      ],
+    });
+
+    assert.strictEqual(prepared.canAnswer, false);
+    assert.strictEqual(prepared.reason, "duplicate-display-question");
   });
 
   it("normalizes hook tool_use_id values", () => {

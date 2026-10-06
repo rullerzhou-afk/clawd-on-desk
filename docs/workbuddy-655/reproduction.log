@@ -1,0 +1,13 @@
+# Source: %APPDATA%\\clawd-on-desk\\session-debug.log
+# Session: workbuddy-ui-smoke-f582c2c9f6541ec7b5e9ba94561a0bf19
+# Important: this was an injected local smoke session, not a user-typed turn.
+# No raw WorkBuddy payload/reason field was captured.
+
+[2026-09-13T12:43:26.082+08:00] event sid=s1.bG9jYWw.d29ya2J1ZGR5LXVpLXNtb2tlLWY1ODJjMmM5ZjY1NDRlYzdiNWU5YmE5NDY1YTBiZjE5 state=thinking ... -> incoming=working/PreToolUse ... agent=workbuddy ...
+[2026-09-13T12:43:26.621+08:00] event sid=s1.bG9jYWw.d29ya2J1ZGR5LXVpLXNtb2tlLWY1ODJjMmM5ZjY1NDRlYzdiNWU5YmE5NDY1YTBiZjE5 state=working ... -> incoming=attention/Stop ... agent=workbuddy ...
+[2026-09-13T12:43:27.142+08:00] event sid=s1.bG9jYWw.d29ya2J1ZGR5LXVpLXNtb2tlLWY1ODJjMmM5ZjY1NDRlYzdiNWU5YmE5NDY1YTBiZjE5 state=idle ... -> incoming=sleeping/SessionEnd ... agent=workbuddy ...
+[2026-09-13T12:43:27.143+08:00] session-end delete sid=s1.bG9jYWw.d29ya2J1ZGR5LXVpLXNtb2tlLWY1ODJjMmM5ZjY1NDRlYzdiNWU5YmE5NDY1YTBiZjE5 state=idle ... agent=workbuddy ...
+
+Interpretation: the hook event reaches Clawd, then the current state layer
+deletes the session on root SessionEnd. The smoke does not establish whether a
+real WorkBuddy SessionEnd means runner exit, user close, or archive/delete.

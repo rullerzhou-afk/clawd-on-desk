@@ -1,6 +1,7 @@
 "use strict";
 
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
+const { getSubagentVisualCount } = require("./subagent-lifecycle");
 
 function buildStateBindings(nextTheme) {
   const bindings = {};
@@ -100,6 +101,24 @@ function countActiveSessionsByStates(sessions, states) {
   return count;
 }
 
+// #862: the juggling tier keys off how many subagents are live, not how many
+// sessions sit in `juggling` — one session can host several at once, and
+// counting sessions left that case stuck on the 1-subagent asset forever.
+// A tracker distinguishes trusted child ids from bounded anonymous/recovery
+// floors. Sessions created by older callers without a tracker retain the old
+// one-session floor for backward compatibility.
+function countLiveSubagents(sessions) {
+  let count = 0;
+  for (const [, session] of normalizeSessionsIterable(sessions)) {
+    if (session.headless || session.state !== "juggling") continue;
+    const live = session.subagentTracker
+      ? getSubagentVisualCount(session)
+      : 1;
+    count += live;
+  }
+  return count;
+}
+
 function selectTieredStateFile(tiers, count, fallbackFile) {
   if (tiers) {
     for (const tier of tiers) {
@@ -123,10 +142,7 @@ function getWorkingSvg(options = {}) {
 }
 
 function getJugglingSvg(options = {}) {
-  const count = countActiveSessionsByStates(
-    options.sessions,
-    new Set(["juggling"])
-  );
+  const count = countLiveSubagents(options.sessions);
   const stateSvgs = options.stateSvgs;
   return selectTieredStateFile(
     options.theme && options.theme.jugglingTiers,
@@ -154,7 +170,8 @@ function getSvgOverride(state, options = {}) {
   if (options.updateVisualState && state === options.updateVisualState && options.updateVisualSvgOverride) {
     return options.updateVisualSvgOverride;
   }
-  if (state === "idle") return options.idleFollowSvg;
+  // #509: a user-selected default idle visual wins over the follow sprite.
+  if (state === "idle") return options.idleDefaultVisual || options.idleFollowSvg;
   if (state === "working") {
     const hinted = getWinningSessionDisplayHint(options.sessions, "working", options.displayHintMap);
     if (hinted) return hinted;
@@ -180,6 +197,7 @@ module.exports = {
   hasOwnVisualFiles,
   resolveVisualBinding,
   countActiveSessionsByStates,
+  countLiveSubagents,
   selectTieredStateFile,
   getWorkingSvg,
   getJugglingSvg,

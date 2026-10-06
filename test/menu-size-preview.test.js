@@ -97,6 +97,7 @@ describe("menu resizeWindow preview mode", () => {
 
     return {
       menu: initMenu(ctx),
+      ctx,
       get currentSizeWrites() { return currentSizeWrites; },
       get currentSizeValue() { return currentSizeValue; },
       get sizeArg() { return sizeArg; },
@@ -136,5 +137,37 @@ describe("menu resizeWindow preview mode", () => {
     assert.strictEqual(harness.hitSyncCalls, 1);
     assert.strictEqual(harness.bubbleCalls, 1);
     assert.strictEqual(harness.flushCalls, 1);
+  });
+
+  it("cancels roaming before window bounds are written in preview and commit modes", () => {
+    const harness = buildCtx();
+    const calls = [];
+    harness.ctx.cancelRoam = () => calls.push("cancel");
+    harness.ctx.applyPetWindowBounds = () => calls.push("bounds");
+
+    harness.menu.resizeWindow("P:12", { mode: "preview" });
+    harness.menu.resizeWindow("P:12");
+
+    assert.deepStrictEqual(calls, ["cancel", "bounds", "cancel", "bounds"]);
+  });
+
+  it("resets the frozen size before flushing even when the committed key is unchanged", () => {
+    const harness = buildCtx();
+    const calls = [];
+    harness.ctx.resetKeepSizeFrozen = () => calls.push("reset");
+    harness.ctx.flushRuntimeStateToPrefs = () => calls.push("flush");
+
+    harness.menu.resizeWindow("P:12", { mode: "preview" });
+    assert.deepStrictEqual(calls, []);
+    harness.menu.resizeWindow("P:15");
+    assert.deepStrictEqual(calls, ["reset", "flush"]);
+    harness.menu.resizeWindow("P:12");
+    assert.deepStrictEqual(calls, ["reset", "flush", "reset", "flush"]);
+  });
+
+  it("accepts a context without optional roam and frozen-size callbacks", () => {
+    const harness = buildCtx();
+    assert.doesNotThrow(() => harness.menu.resizeWindow("P:12", { mode: "preview" }));
+    assert.doesNotThrow(() => harness.menu.resizeWindow("P:12"));
   });
 });

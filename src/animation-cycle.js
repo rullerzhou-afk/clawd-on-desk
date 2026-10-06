@@ -497,12 +497,13 @@ function probeApngCycle(buffer) {
     if (type === "fcTL" && length >= 26) {
       const delayNum = buffer.readUInt16BE(dataStart + 20);
       let delayDen = buffer.readUInt16BE(dataStart + 22);
-      if (delayDen === 0) {
-        delayDen = 100;
-        estimated = true;
-      }
+      // APNG spec: a zero denominator means exactly 1/100 s, so such a delay is
+      // still exact. Only a zero numerator is the browser-dependent guess.
+      if (delayDen === 0) delayDen = 100;
+      // Keep fractional delays and round the sum once; rounding each 1/12 s
+      // frame would drop 1/3 ms per frame and under-report long clips.
       const delayMs = delayNum > 0
-        ? Math.round((delayNum * 1000) / delayDen)
+        ? (delayNum * 1000) / delayDen
         : DEFAULT_ZERO_DELAY_MS;
       if (delayNum <= 0) estimated = true;
       frameDurations.push(delayMs);
@@ -513,7 +514,7 @@ function probeApngCycle(buffer) {
   }
 
   if (!isApng || !frameDurations.length) return buildUnavailableResult("apng");
-  const totalMs = frameDurations.reduce((sum, value) => sum + value, 0);
+  const totalMs = Math.round(frameDurations.reduce((sum, value) => sum + value, 0));
   if (!totalMs) return buildUnavailableResult("apng");
   return {
     ms: totalMs,
@@ -549,15 +550,21 @@ function probeAssetCycle(absPath) {
     result = buildUnavailableResult(ext ? ext.slice(1) : "file");
   }
 
-  if (probeCache.size >= PROBE_CACHE_LIMIT) probeCache.clear();
+  if (probeCache.size >= PROBE_CACHE_LIMIT) {
+    // Evict the oldest entry instead of the whole cache: a clear() would make
+    // the next preview click re-read a multi-megabyte APNG on the main thread.
+    probeCache.delete(probeCache.keys().next().value);
+  }
   probeCache.set(cacheKey, result);
   return cloneResult(result);
 }
 
 module.exports = {
   CYCLE_STATUS,
+  PROBE_CACHE_LIMIT,
   probeAssetCycle,
   probeSvgCycle,
   probeGifCycle,
   probeApngCycle,
+  __test: { getProbeCacheSize: () => probeCache.size },
 };

@@ -38,8 +38,9 @@ const QODER_HOOK_EVENTS = [
 function isClawdHookCommand(command) {
   if (typeof command !== "string") return false;
   if (command.includes(MARKER)) return true;
-  // Windows commands are wrapped as PowerShell -EncodedCommand, so the marker
-  // lives inside the base64 blob — decode before matching.
+  // Legacy Windows installs (< #597 fix) wrapped the command as PowerShell
+  // -EncodedCommand, so the marker lives inside the base64 blob — decode
+  // before matching so upgrades replace those entries in place.
   const decoded = decodeWindowsEncodedCommand(command);
   return !!(decoded && decoded.includes(MARKER));
 }
@@ -51,15 +52,18 @@ function buildQoderHookEntry(command) {
   };
 }
 
-// Qoder shares Qwen Code / Antigravity's Windows launcher hazard: the command
-// can be re-parsed by cmd.exe, which strips quotes off any node path with a
-// space. Wrap as PowerShell -EncodedCommand on Windows until a real Qoder
-// Windows run proves the plain `& "node" ...` form survives its launcher.
+// Qoder CLI executes command hooks through a POSIX shell on Windows (Git
+// Bash — verified against a real qodercli 1.0.38 run for issue #597, where
+// the previous PowerShell -EncodedCommand form died with
+// `/usr/bin/bash: C:WINDOWSSystem32...powershell.exe: command not found`:
+// bash eats unquoted backslashes, so no hook event ever reached Clawd).
+// The portable form (unquoted forward-slash node token + double-quoted
+// args) parses under bash and cmd alike.
 function buildQoderHookCommand(nodeBin, hookScript, event, options = {}) {
   return formatNodeHookCommand(nodeBin, hookScript, {
     ...options,
     args: [event],
-    windowsWrapper: "encoded",
+    windowsWrapper: "portable",
   });
 }
 

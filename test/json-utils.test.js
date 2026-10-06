@@ -3,7 +3,37 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
+const { asarUnpackedPath, buildPortableStatuslineCommand, extractExistingNodeBin, extractExistingNodeBinFromCommands, formatNodeHookCommand, writeJsonAtomicAsync, createBackup, writeJsonAtomicWithBackup, writeJsonAtomicWithBackupAsync, pruneOldBackups, pruneOldBackupsAsync, DEFAULT_BACKUP_KEEP } = require("../hooks/json-utils");
+
+// Hook command format depends on real-environment WSL signals; clear them so
+// assertions stay deterministic when the suite itself runs inside WSL.
+delete process.env.CLAWD_WSL_DISTRO;
+delete process.env.WSL_DISTRO_NAME;
+
+describe("asarUnpackedPath", () => {
+  it("rewrites an app.asar path segment to app.asar.unpacked", () => {
+    assert.strictEqual(
+      asarUnpackedPath("/Applications/Clawd.app/Contents/Resources/app.asar/hooks/clawd-hook.js"),
+      "/Applications/Clawd.app/Contents/Resources/app.asar.unpacked/hooks/clawd-hook.js"
+    );
+    assert.strictEqual(
+      asarUnpackedPath("C:/Program Files/Clawd on Desk/resources/app.asar/hooks/clawd-hook.js"),
+      "C:/Program Files/Clawd on Desk/resources/app.asar.unpacked/hooks/clawd-hook.js"
+    );
+  });
+
+  it("is a no-op for source-tree paths with no app.asar segment", () => {
+    const sourcePath = "/home/dev/clawd-on-desk/hooks/clawd-hook.js";
+    assert.strictEqual(asarUnpackedPath(sourcePath), sourcePath);
+  });
+
+  it("only rewrites the first app.asar/ occurrence", () => {
+    assert.strictEqual(
+      asarUnpackedPath("/a/app.asar/nested/app.asar/hooks/clawd-hook.js"),
+      "/a/app.asar.unpacked/nested/app.asar/hooks/clawd-hook.js"
+    );
+  });
+});
 
 describe("extractExistingNodeBin", () => {
   it("extracts node path from flat command format", () => {
@@ -138,6 +168,19 @@ describe("extractExistingNodeBinFromCommands", () => {
     assert.strictEqual(extractExistingNodeBinFromCommands(commands, "kimi-hook.js"), null);
   });
 
+  it("extracts an unquoted absolute first token (portable Windows hook form)", () => {
+    const commands = ['C:/nvm/v20.11.0/node.exe "D:/app/hooks/qoder-hook.js" "Stop"'];
+    assert.strictEqual(
+      extractExistingNodeBinFromCommands(commands, "qoder-hook.js"),
+      "C:/nvm/v20.11.0/node.exe"
+    );
+  });
+
+  it("does not treat a bare-node portable command as an absolute path", () => {
+    const commands = ['node "D:/app/hooks/qoder-hook.js" "Stop"'];
+    assert.strictEqual(extractExistingNodeBinFromCommands(commands, "qoder-hook.js"), null);
+  });
+
   it("walks past commands that begin with the marker itself", () => {
     const commands = [
       '"/path/to/kimi-hook.js"',
@@ -163,8 +206,33 @@ describe("formatNodeHookCommand", () => {
     assert.strictEqual(
       formatNodeHookCommand("/usr/local/bin/node", "/app/hooks/codex-debug-hook.js", {
         platform: "linux",
+        wslDistro: null,
       }),
       '"/usr/local/bin/node" "/app/hooks/codex-debug-hook.js"'
+    );
+  });
+
+  it("formats WSL commands as plain (unquoted) node + script", () => {
+    // Quoted-without-shell breaks naive-split hook runners on WSL — the
+    // quotes become part of the executable name (silent hook failure).
+    assert.strictEqual(
+      formatNodeHookCommand("/usr/bin/node", "/home/u/.claude/hooks/gemini-hook.js", {
+        platform: "linux",
+        wslDistro: "Ubuntu",
+        args: ["Stop"],
+      }),
+      "/usr/bin/node /home/u/.claude/hooks/gemini-hook.js Stop"
+    );
+  });
+
+  it("ignores wslDistro on win32 — Windows wrappers keep their quoting", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("C:\\nodejs\\node.exe", "D:/app/hooks/kiro-hook.js", {
+        platform: "win32",
+        windowsWrapper: "powershell",
+        wslDistro: "Ubuntu",
+      }),
+      '& "C:\\nodejs\\node.exe" "D:/app/hooks/kiro-hook.js"'
     );
   });
 
@@ -185,6 +253,99 @@ describe("formatNodeHookCommand", () => {
         windowsWrapper: "cmd",
       }),
       'cmd /d /s /c ""C:\\Program Files\\nodejs\\node.exe" "D:/app/hooks/codex-debug-hook.js""'
+    );
+  });
+
+  // windowsWrapper:"portable" targets launchers that run command hooks
+  // through a POSIX shell on Windows (Qoder CLI → Git Bash, #597): unquoted
+  // forward-slash interpreter token, double-quoted args, zero backslashes.
+  it("formats the portable Windows form with bare node when the path has spaces", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("C:\\Program Files\\nodejs\\node.exe", "D:\\app\\hooks\\qoder-hook.js", {
+        platform: "win32",
+        windowsWrapper: "portable",
+        args: ["PermissionRequest"],
+      }),
+      'node "D:/app/hooks/qoder-hook.js" "PermissionRequest"'
+    );
+  });
+
+  it("formats the portable Windows form with an unquoted forward-slash node path", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("C:\\nvm\\v20.11.0\\node.exe", "D:/app/hooks/qoder-hook.js", {
+        platform: "win32",
+        windowsWrapper: "portable",
+        args: ["Stop"],
+      }),
+      'C:/nvm/v20.11.0/node.exe "D:/app/hooks/qoder-hook.js" "Stop"'
+    );
+  });
+
+  it("ignores the portable wrapper on POSIX", () => {
+    assert.strictEqual(
+      formatNodeHookCommand("/usr/local/bin/node", "/app/hooks/qoder-hook.js", {
+        platform: "linux",
+        windowsWrapper: "portable",
+        args: ["Stop"],
+      }),
+      '"/usr/local/bin/node" "/app/hooks/qoder-hook.js" "Stop"'
+    );
+  });
+});
+
+// statusLine settings have no `shell` field, so unlike hook commands the
+// string must parse under Git Bash AND PowerShell (Claude Code picks per
+// machine) and ideally cmd (Antigravity). The load-bearing property: the
+// command token is never quoted and never prefixed with `&`.
+describe("buildPortableStatuslineCommand", () => {
+  it("falls back to bare node when the node path contains spaces (default Program Files install)", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("C:\\Program Files\\nodejs\\node.exe", "D:/app/hooks/claude-statusline.js", {
+        platform: "win32",
+      }),
+      'node "D:/app/hooks/claude-statusline.js"'
+    );
+  });
+
+  it("uses an unquoted forward-slash absolute path when it needs no quoting (nvm/portable installs)", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("C:\\nvm\\v20.11.0\\node.exe", "D:/app/hooks/claude-statusline.js", {
+        platform: "win32",
+      }),
+      'C:/nvm/v20.11.0/node.exe "D:/app/hooks/claude-statusline.js"'
+    );
+  });
+
+  it("keeps the script path double-quoted with forward slashes", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("node", "C:\\Users\\My Name\\app\\hooks\\claude-statusline.js", {
+        platform: "win32",
+      }),
+      'node "C:/Users/My Name/app/hooks/claude-statusline.js"'
+    );
+  });
+
+  it("falls back to bare node for null nodeBin and for paths with shell-special characters", () => {
+    for (const nodeBin of [null, "", "C:\\tools (x86)\\node.exe", "C:\\nvm&stuff\\node.exe", "C:\\it's\\node.exe"]) {
+      const command = buildPortableStatuslineCommand(nodeBin, "D:/app/hooks/claude-statusline.js", { platform: "win32" });
+      assert.strictEqual(command, 'node "D:/app/hooks/claude-statusline.js"', `nodeBin=${JSON.stringify(nodeBin)}`);
+    }
+  });
+
+  it("never emits a PowerShell call operator or a quoted command token on win32", () => {
+    for (const nodeBin of ["C:\\Program Files\\nodejs\\node.exe", "C:\\nvm\\node.exe", null]) {
+      const command = buildPortableStatuslineCommand(nodeBin, "D:/app/hooks/claude-statusline.js", { platform: "win32" });
+      assert.ok(!command.startsWith("& "), command);
+      assert.ok(!command.startsWith('"'), command);
+    }
+  });
+
+  it("formats POSIX commands as quoted node + script", () => {
+    assert.strictEqual(
+      buildPortableStatuslineCommand("/usr/local/bin/node", "/app/hooks/claude-statusline.js", {
+        platform: "darwin",
+      }),
+      '"/usr/local/bin/node" "/app/hooks/claude-statusline.js"'
     );
   });
 });

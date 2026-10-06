@@ -253,7 +253,7 @@
       </g>
     </g>
 
-    <g class="once torso-shift">
+    <g id="accessory-anchor" class="once torso-shift">
       <rect class="once scale-top-left torso-shape" x="2" y="6" width="11" height="7" fill="#DE886D"/>
     </g>
 

@@ -78,7 +78,7 @@
   </g>
 
   <!-- Animated Upper Body -->
-  <g class="body-react">
+  <g id="accessory-anchor" class="body-react">
     <g fill="#DE886D">
       <rect x="2" y="6" width="11" height="7"/>
       <!-- Left arm: base position matches idle-follow (0,9), CSS animates raise+return -->

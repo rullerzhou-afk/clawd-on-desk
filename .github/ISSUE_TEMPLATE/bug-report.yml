@@ -1,0 +1,88 @@
+name: "🐛 Bug report (English)"
+description: "Report a problem with Clawd on Desk"
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Please search existing issues before filing a new one.
+
+        Do not include tokens, credentials, private prompts, personal paths, or other sensitive information. Redact sensitive content from logs and screenshots.
+
+  - type: input
+    id: clawd-version
+    attributes:
+      label: "Clawd on Desk version"
+      description: "Find the installed version in Settings → About, or use the commit SHA when running from source. If you cannot determine it, enter unknown."
+      placeholder: "Version or commit SHA"
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: "Operating system and architecture"
+      description: "Include the OS version and architecture when known."
+      placeholder: "Windows 11 24H2 x64 / macOS 15 arm64 / Ubuntu 24.04 x64"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: run-mode
+    attributes:
+      label: "Installation / run mode"
+      options:
+        - "Packaged release"
+        - "From source"
+        - "Other"
+        - "Not sure"
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: "What happened?"
+      description: "Describe the observed behavior and include exact error text when available."
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: "Steps to reproduce"
+      description: "Provide the shortest steps you know. If the problem is intermittent or you cannot reproduce it reliably, describe what happened just before it and how often it occurs."
+      placeholder: |
+        1. ...
+        2. ...
+        3. ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: "Expected behavior"
+      description: "Optional. Describe what should have happened instead when it is not obvious."
+
+  - type: input
+    id: last-known-working
+    attributes:
+      label: "Last known working version"
+      description: "Optional. If this is a regression, provide the last Clawd version or commit where it worked."
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: "Logs, screenshots, or additional context"
+      description: "Paste sanitized logs or attach screenshots when useful. Prefer text for errors that need to be searched."
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: "Pre-submission check"
+      options:
+        - label: "I searched existing issues for the same problem."
+          required: true

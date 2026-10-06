@@ -1,10 +1,5 @@
 "use strict";
 
-// Auto-pilot (autoApproveAllPermissions) quick toggle in the pet context menu
-// and tray menu. Enabling must go through a native confirm dialog and only
-// commit on confirm; disabling is immediate. The checkbox reflects the
-// committed ctx value.
-
 const assert = require("node:assert");
 const Module = require("node:module");
 const { describe, it } = require("node:test");
@@ -25,10 +20,8 @@ function loadMenuWithElectron(fakeElectron) {
   }
 }
 
-function makeFakeElectron(messageBoxResponse) {
-  const dialogCalls = [];
+function makeFakeElectron() {
   return {
-    _dialogCalls: dialogCalls,
     app: { quit() {}, setActivationPolicy() {}, dock: { show() {}, hide() {} } },
     BrowserWindow: function BrowserWindow() {},
     Menu: { buildFromTemplate(template) { return { template }; } },
@@ -39,23 +32,12 @@ function makeFakeElectron(messageBoxResponse) {
       getCursorScreenPoint: () => ({ x: 0, y: 0 }),
       getDisplayNearestPoint: () => ({ id: 1 }),
     },
-    dialog: {
-      // Electron's showMessageBox is overloaded: (options) or (parent, options).
-      // The auto-pilot confirm must be parentless (standalone, screen-centered)
-      // so it doesn't render as a sheet on the tiny pet window — so normalize
-      // both shapes and record whether a parent window was passed.
-      showMessageBox(arg1, arg2) {
-        const hasParent = arg2 !== undefined;
-        const parent = hasParent ? arg1 : undefined;
-        const opts = hasParent ? arg2 : arg1;
-        dialogCalls.push({ parent, opts });
-        return Promise.resolve({ response: messageBoxResponse });
-      },
-    },
   };
 }
 
 function makeCtx(overrides = {}) {
+  const confirmationCalls = [];
+  const errorCalls = [];
   return {
     win: { isDestroyed: () => false },
     sessions: new Map(),
@@ -68,12 +50,16 @@ function makeCtx(overrides = {}) {
     bubbleFollowPet: false,
     hideBubbles: false,
     soundMuted: false,
-    autoApproveAllPermissions: false,
+    permissionAutomationMode: "off",
+    permissionAutomationAutoToolsWarningDismissed: false,
+    permissionAutomationUnattendedWarningDismissed: false,
     menuOpen: false,
     tray: null,
     contextMenuOwner: null,
     contextMenu: null,
     isQuitting: false,
+    confirmationCalls,
+    errorCalls,
     getMiniMode: () => false,
     getMiniTransitioning: () => false,
     getDisableMiniMode: () => false,
@@ -97,117 +83,223 @@ function makeCtx(overrides = {}) {
     reapplyMacVisibility() {},
     clampToScreenVisual: (x, y) => ({ x, y }),
     rebuildAllMenus() {},
+    isPermissionAutomationWarningDismissed(mode) {
+      if (mode === "auto-tools") return this.permissionAutomationAutoToolsWarningDismissed;
+      if (mode === "unattended") return this.permissionAutomationUnattendedWarningDismissed;
+      return false;
+    },
+    async confirmPermissionAutomation(payload) {
+      confirmationCalls.push(payload);
+      return { confirmed: true, suppressFutureConfirmation: false };
+    },
+    async showPermissionAutomationError(payload) {
+      errorCalls.push(payload);
+    },
+    async setPermissionAutomationMode(mode, options = {}) {
+      this.permissionAutomationMode = mode;
+      if (options.suppressFutureConfirmation === true && mode === "auto-tools") {
+        this.permissionAutomationAutoToolsWarningDismissed = true;
+      }
+      if (options.suppressFutureConfirmation === true && mode === "unattended") {
+        this.permissionAutomationUnattendedWarningDismissed = true;
+      }
+      return { status: "ok" };
+    },
     newSessionWithFolder() {},
     newSessionInCurrentDir() {},
     ...overrides,
   };
 }
 
-function findAutoApproveItem(template) {
-  return template.find((item) => item && item.label === "Auto-approve all requests");
+function findPermissionAutomationItem(template) {
+  return template.find((item) => item && typeof item.label === "string"
+    && item.label.startsWith("Permission handling:"));
 }
 
-describe("auto-pilot menu toggle", () => {
-  it("appears as an unchecked checkbox in the context menu when off", () => {
-    const menu = loadMenuWithElectron(makeFakeElectron(0));
-    const ctx = makeCtx({ autoApproveAllPermissions: false });
+function findModeItem(item, label) {
+  return item.submenu.find((entry) => entry.label === label);
+}
+
+function flushPromises() {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+describe("permission automation menu", () => {
+  it("shows three radio choices and reflects the committed mode", () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const ctx = makeCtx({ permissionAutomationMode: "unattended" });
     const m = menu(ctx);
     m.buildContextMenu();
-    const item = findAutoApproveItem(ctx.contextMenu.template);
-    assert.ok(item, "auto-pilot item present in context menu");
-    assert.strictEqual(item.type, "checkbox");
-    assert.strictEqual(item.checked, false);
+    const item = findPermissionAutomationItem(ctx.contextMenu.template);
+    assert.ok(item);
+    assert.strictEqual(item.submenu.length, 3);
+    assert.ok(item.submenu.every((entry) => entry.type === "radio"));
+    assert.strictEqual(findModeItem(item, "Auto-approve").checked, true);
   });
 
-  it("reflects checked state when already enabled", () => {
-    const menu = loadMenuWithElectron(makeFakeElectron(0));
-    const ctx = makeCtx({ autoApproveAllPermissions: true });
-    const m = menu(ctx);
-    m.buildContextMenu();
-    const item = findAutoApproveItem(ctx.contextMenu.template);
-    assert.strictEqual(item.checked, true);
-  });
-
-  it("disables immediately without a confirm dialog", () => {
-    const fake = makeFakeElectron(0);
-    const menu = loadMenuWithElectron(fake);
-    let setValue = "untouched";
-    const ctx = makeCtx();
-    // Define the accessor on the final object: a spread in makeCtx would
-    // flatten get/set into a plain value and the setter would never run.
-    Object.defineProperty(ctx, "autoApproveAllPermissions", {
-      configurable: true,
-      get() { return true; },
-      set(v) { setValue = v; },
+  it("turns automation off immediately without confirmation", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const calls = [];
+    const ctx = makeCtx({
+      permissionAutomationMode: "unattended",
+      async setPermissionAutomationMode(mode, options) {
+        calls.push({ mode, options });
+        return { status: "ok" };
+      },
     });
     const m = menu(ctx);
     m.buildContextMenu();
-    const item = findAutoApproveItem(ctx.contextMenu.template);
-    // Electron flips the visual to unchecked before click fires.
-    item.checked = false;
-    item.click(item);
-    assert.strictEqual(setValue, false, "disable commits immediately");
-    assert.strictEqual(fake._dialogCalls.length, 0, "no confirm dialog on disable");
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Ask every time").click();
+    await flushPromises();
+    assert.deepStrictEqual(ctx.confirmationCalls, []);
+    assert.deepStrictEqual(calls, [{ mode: "off", options: { confirmed: false } }]);
   });
 
-  it("enabling shows a confirm dialog and commits only when confirmed", async () => {
-    const fake = makeFakeElectron(0); // 0 = Enable button
-    const menu = loadMenuWithElectron(fake);
-    let committed = false;
-    const ctx = makeCtx();
-    // Reflect the commit back through the getter so the internal
-    // rebuildAllMenus() re-renders the checkbox as checked.
-    Object.defineProperty(ctx, "autoApproveAllPermissions", {
-      configurable: true,
-      get() { return committed; },
-      set(v) { committed = v; },
+  it("passes localized auto-tools copy to the shared confirmation window", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const calls = [];
+    const ctx = makeCtx({
+      async setPermissionAutomationMode(mode, options) {
+        calls.push({ mode, options });
+        return { status: "ok" };
+      },
     });
     const m = menu(ctx);
     m.buildContextMenu();
-    const item = findAutoApproveItem(ctx.contextMenu.template);
-    item.checked = true; // Electron's optimistic flip
-    item.click(item);
-    // Reverted pending confirmation.
-    assert.strictEqual(item.checked, false, "check reverted until confirmed");
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(fake._dialogCalls.length, 1, "confirm dialog shown");
-    assert.strictEqual(fake._dialogCalls[0].opts.type, "warning");
-    assert.strictEqual(fake._dialogCalls[0].parent, undefined, "dialog is parentless (screen-centered, not a sheet on the pet)");
-    assert.strictEqual(committed, true, "committed true after confirm");
-    // menu.js's internal rebuildAllMenus() re-renders the context menu, so the
-    // freshly built item reflects the committed value.
-    const rebuiltItem = findAutoApproveItem(ctx.contextMenu.template);
-    assert.strictEqual(rebuiltItem.checked, true, "checkbox reflects enabled state after rebuild");
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Question prompts only").click();
+    await flushPromises();
+    assert.strictEqual(ctx.confirmationCalls.length, 1);
+    assert.strictEqual(ctx.confirmationCalls[0].mode, "auto-tools");
+    assert.match(ctx.confirmationCalls[0].title, /tool requests/i);
+    assert.match(ctx.confirmationCalls[0].checkboxLabel, /understand the risks/i);
+    assert.deepStrictEqual(calls, [{
+      mode: "auto-tools",
+      options: { confirmed: true, suppressFutureConfirmation: false },
+    }]);
   });
 
-  it("enabling does NOT commit when the user cancels", async () => {
-    const fake = makeFakeElectron(1); // 1 = Cancel button
-    const menu = loadMenuWithElectron(fake);
-    let committed = "untouched";
-    const ctx = makeCtx();
-    Object.defineProperty(ctx, "autoApproveAllPermissions", {
-      configurable: true,
-      get() { return false; },
-      set(v) { committed = v; },
+  it("uses the stronger unattended warning", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const ctx = makeCtx({ permissionAutomationMode: "auto-tools" });
+    const m = menu(ctx);
+    m.buildContextMenu();
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Auto-approve").click();
+    await flushPromises();
+    assert.strictEqual(ctx.confirmationCalls[0].mode, "unattended");
+    assert.match(ctx.confirmationCalls[0].title, /tools and decisions/i);
+  });
+
+  it("fails closed when confirmation is cancelled", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const calls = [];
+    const ctx = makeCtx({
+      async confirmPermissionAutomation(payload) {
+        this.confirmationCalls.push(payload);
+        return { confirmed: false, suppressFutureConfirmation: true };
+      },
+      async setPermissionAutomationMode(mode) {
+        calls.push(mode);
+        return { status: "ok" };
+      },
     });
     const m = menu(ctx);
     m.buildContextMenu();
-    const item = findAutoApproveItem(ctx.contextMenu.template);
-    item.checked = true;
-    item.click(item);
-    await new Promise((r) => setTimeout(r, 0));
-    assert.strictEqual(fake._dialogCalls.length, 1, "confirm dialog shown");
-    assert.strictEqual(committed, "untouched", "nothing committed on cancel");
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Auto-approve").click();
+    await flushPromises();
+    assert.deepStrictEqual(calls, []);
   });
 
-  it("is present in the tray menu too", () => {
-    const menu = loadMenuWithElectron(makeFakeElectron(0));
+  it("persists do-not-show-again only after explicit confirmation", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const calls = [];
+    const ctx = makeCtx({
+      async confirmPermissionAutomation(payload) {
+        this.confirmationCalls.push(payload);
+        return { confirmed: true, suppressFutureConfirmation: true };
+      },
+      async setPermissionAutomationMode(mode, options) {
+        calls.push({ mode, options });
+        return { status: "ok" };
+      },
+    });
+    const m = menu(ctx);
+    m.buildContextMenu();
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Question prompts only").click();
+    await flushPromises();
+    assert.deepStrictEqual(calls, [{
+      mode: "auto-tools",
+      options: { confirmed: true, suppressFutureConfirmation: true },
+    }]);
+  });
+
+  it("skips only the warning dismissed for the matching mode", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const calls = [];
+    const ctx = makeCtx({
+      permissionAutomationAutoToolsWarningDismissed: true,
+      async setPermissionAutomationMode(mode, options) {
+        calls.push({ mode, options });
+        this.permissionAutomationMode = mode;
+        return { status: "ok" };
+      },
+    });
+    const m = menu(ctx);
+    m.buildContextMenu();
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Question prompts only").click();
+    await flushPromises();
+    assert.deepStrictEqual(ctx.confirmationCalls, []);
+    assert.deepStrictEqual(calls, [{ mode: "auto-tools", options: { confirmed: false } }]);
+
+    m.buildContextMenu();
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Auto-approve").click();
+    await flushPromises();
+    assert.strictEqual(ctx.confirmationCalls.length, 1);
+    assert.strictEqual(ctx.confirmationCalls[0].mode, "unattended");
+  });
+
+  it("uses the styled error window when persistence fails", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const ctx = makeCtx({
+      async setPermissionAutomationMode() {
+        return { status: "error", message: "disk full" };
+      },
+    });
+    const m = menu(ctx);
+    m.buildContextMenu();
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Question prompts only").click();
+    await flushPromises();
+    await flushPromises();
+    assert.strictEqual(ctx.errorCalls.length, 1);
+    assert.strictEqual(ctx.errorCalls[0].detail, "disk full");
+  });
+
+  it("uses the styled error window when turning automation off rejects", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
+    const ctx = makeCtx({
+      permissionAutomationMode: "auto-tools",
+      async setPermissionAutomationMode() {
+        throw new Error("read only");
+      },
+    });
+    const m = menu(ctx);
+    m.buildContextMenu();
+    findModeItem(findPermissionAutomationItem(ctx.contextMenu.template), "Ask every time").click();
+    await flushPromises();
+    await flushPromises();
+    assert.strictEqual(ctx.errorCalls.length, 1);
+    assert.strictEqual(ctx.errorCalls[0].detail, "read only");
+  });
+
+  it("uses the same confirmation flow in the tray menu", async () => {
+    const menu = loadMenuWithElectron(makeFakeElectron());
     let trayTemplate = null;
     const ctx = makeCtx({
-      tray: { setContextMenu(menuObj) { trayTemplate = menuObj.template; } },
+      tray: { setContextMenu(menuObject) { trayTemplate = menuObject.template; } },
     });
     const m = menu(ctx);
     m.buildTrayMenu();
-    assert.ok(findAutoApproveItem(trayTemplate), "auto-pilot item present in tray menu");
+    findModeItem(findPermissionAutomationItem(trayTemplate), "Question prompts only").click();
+    await flushPromises();
+    assert.strictEqual(ctx.confirmationCalls.length, 1);
   });
 });

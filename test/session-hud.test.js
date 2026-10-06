@@ -13,6 +13,7 @@ const {
   computeHudOuterWidth,
   evaluateBaseEligible,
   evaluateShouldShow,
+  countQuotaCoins,
   pointInExpandedRect,
   computeAutoHideHotZone,
   pointInHotZone,
@@ -355,6 +356,78 @@ describe("session HUD layout", () => {
     assert.strictEqual(computeHudHeight(0), constants.HUD_ROW_HEIGHT);
     assert.strictEqual(computeHudHeight(-1), constants.HUD_ROW_HEIGHT);
   });
+
+  it("counts one quota coin per (source, provider) with drawable buckets", () => {
+    // The HUD no longer carries a quota strip; quota lives in the pet-attached
+    // ring window. countQuotaCoins drives HUD eligibility and ring sizing.
+    const future = Date.now() + 3600000;
+    const past = Date.now() - 60000;
+    const snapshot = {
+      sessions: [],
+      accountQuota: [
+        { host: "pi", claudeQuota: { group: { claudeWeekly: { usedPercent: 41, resetAt: future } }, updatedAt: 1 } },
+        { host: "expired", codexQuota: { group: { codexFiveHour: { usedPercent: 9, resetAt: past, expired: true } }, updatedAt: 1 } },
+      ],
+    };
+    // Expired buckets still draw a dimmed reset coin, so they count.
+    assert.strictEqual(countQuotaCoins(snapshot, true), 2);
+    assert.strictEqual(countQuotaCoins(snapshot, false), 0, "hudShowQuota off hides the ring");
+  });
+
+  it("counts Antigravity third-party-only buckets for ring eligibility", () => {
+    const snapshot = {
+      sessions: [],
+      accountQuota: [{
+        host: "remote",
+        antigravityQuota: {
+          group: { thirdPartyWeekly: { usedPercent: 52, resetAt: Date.now() + 3600000 } },
+          updatedAt: 1,
+        },
+      }],
+    };
+    assert.strictEqual(countQuotaCoins(snapshot, true), 1);
+    assert.strictEqual(evaluateBaseEligible({ snapshot, showQuota: true }), true);
+  });
+
+  it("does not make the Orbit eligible for Dashboard-only Spark quota", () => {
+    const snapshot = {
+      sessions: [],
+      accountQuota: [{
+        codexSparkQuota: {
+          group: {
+            codexWeekly: {
+              usedPercent: 7,
+              resetAt: Date.now() + 3600000,
+            },
+          },
+          updatedAt: 1,
+        },
+      }],
+    };
+    assert.strictEqual(countQuotaCoins(snapshot, true), 0);
+    assert.strictEqual(evaluateBaseEligible({ snapshot, showQuota: true }), false);
+  });
+
+  it("the quota ring is base-eligible independently of the Session HUD master", () => {
+    const quotaOnly = {
+      sessions: [],
+      accountQuota: [
+        { host: "pi", claudeQuota: { group: { claudeWeekly: { usedPercent: 41, resetAt: Date.now() + 3600000 } }, updatedAt: 1 } },
+      ],
+    };
+    // Quota alone reveals the ring — even with the Session HUD turned OFF
+    // (check a remote's quota before starting any work there).
+    assert.strictEqual(evaluateBaseEligible({ snapshot: quotaOnly, sessionHudEnabled: true, showQuota: true }), true);
+    assert.strictEqual(evaluateBaseEligible({ snapshot: quotaOnly, sessionHudEnabled: false, showQuota: true }), true);
+    // Quota switch off → no ring.
+    assert.strictEqual(evaluateBaseEligible({ snapshot: quotaOnly, sessionHudEnabled: true, showQuota: false }), false);
+    // Sessions with the HUD master off and no quota → nothing to show; the HUD
+    // still respects its own master.
+    const sessionsOnly = { sessions: [mkSession("a")], accountQuota: [] };
+    assert.strictEqual(evaluateBaseEligible({ snapshot: sessionsOnly, sessionHudEnabled: false, showQuota: true }), false);
+    assert.strictEqual(evaluateBaseEligible({ snapshot: sessionsOnly, sessionHudEnabled: true, showQuota: true }), true);
+    assert.strictEqual(evaluateBaseEligible({ snapshot: { sessions: [], accountQuota: [] }, sessionHudEnabled: true, showQuota: true }), false);
+  });
 });
 
 describe("session HUD auto-hide helpers", () => {
@@ -566,31 +639,78 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
       "module return must expose revealFromPet/handlePinnedChanged/clearReveal");
   });
 
+  it("exposes a ring-only reposition path for post-bubble avoidance", () => {
+    assert.match(src, /function repositionQuotaRing\(\)/);
+    assert.match(src, /repositionSessionHud,\s*\n\s*repositionQuotaRing,/);
+  });
+
   it("snapshot to renderer no longer includes hudAutoHide", () => {
     assert.ok(!/hudAutoHide:/.test(src),
       "session-hud must not send hudAutoHide in snapshot");
   });
 
-  it("destroys hidden HUD windows (low power idle mode) to release renderer memory", () => {
+  it("sends only the supported quota display modes to the ring renderer", () => {
+    assert.match(
+      src,
+      /displayMode:\s*ctx\.quotaRingDisplayMode === "remaining" \? "remaining" : "used"/
+    );
+  });
+
+  it("wires the persisted quota display mode through main's runtime mirror", () => {
+    const mainSrc = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.match(mainSrc, /let quotaRingDisplayMode = _settingsController\.get\("quotaRingDisplayMode"\)/);
+    assert.match(mainSrc, /get quotaRingDisplayMode\(\) \{ return quotaRingDisplayMode; \}/);
+    assert.match(mainSrc, /quotaRingDisplayMode: \(v\) => \{ quotaRingDisplayMode = v; \}/);
+  });
+
+  it("does not create or manage a quota hover-card window", () => {
+    assert.doesNotMatch(src, /quotaTooltip|quota-tooltip|preload-quota-tooltip/);
+  });
+
+  it("feeds visible permission and update bubble bounds into Orbit avoidance", () => {
+    const collectFn = src.match(/function collectRingAvoidRects\([\s\S]*?\n  \}/);
+    assert.ok(collectFn, "collectRingAvoidRects function missing");
+    assert.match(collectFn[0], /ctx\.getPermissionBubbleBounds\(\)/);
+    assert.match(collectFn[0], /ctx\.getUpdateBubbleWindow\(\)/);
+    assert.match(
+      src,
+      /computeRingBounds\([\s\S]{0,160}collectRingAvoidRects\(/,
+      "visible Orbit placement must use all floating-surface avoid rects"
+    );
+  });
+
+  it("destroys hidden HUD and quota-ring windows independently in low power idle mode", () => {
     assert.ok(
       /const\s+HIDDEN_WINDOW_DESTROY_MS\s*=\s*30000/.test(src),
       "session-hud should define a hidden-window destroy delay"
     );
     assert.ok(
-      /function scheduleHiddenDestroy\(\)\s*\{[\s\S]*?if\s*\(!ctx\.lowPowerIdleMode\)\s*return;/.test(src),
+      /function scheduleHiddenDestroy\(kind\)\s*\{[\s\S]*?if\s*\(!ctx\.lowPowerIdleMode\)\s*return;/.test(src),
       "hidden-window destroy must be gated behind low power idle mode"
     );
     assert.ok(
-      /function scheduleHiddenDestroy\(\)\s*\{[\s\S]*?hudWindow\.destroy\(\)/.test(src),
-      "hidden HUD cleanup must eventually destroy the BrowserWindow"
+      /const hiddenDestroyTimers = \{ hud: null, ring: null \}/.test(src),
+      "HUD and ring must not cancel each other's hidden cleanup"
     );
     assert.ok(
-      /function hideSessionHud\(\)\s*\{[\s\S]*?scheduleHiddenDestroy\(\)/.test(src),
+      /function scheduleHiddenDestroy\(kind\)\s*\{[\s\S]*?current\.destroy\(\)/.test(src),
+      "hidden cleanup must eventually destroy the selected BrowserWindow"
+    );
+    assert.ok(
+      /function hideSessionHud\(\)\s*\{[\s\S]*?scheduleHiddenDestroy\("hud"\)/.test(src),
       "hiding the HUD should schedule hidden-window cleanup"
     );
     assert.ok(
-      /function showSessionHud\(win\)\s*\{[\s\S]*?cancelHiddenDestroy\(\)/.test(src),
+      /function hideQuotaRing\(\)\s*\{[\s\S]*?scheduleHiddenDestroy\("ring"\)/.test(src),
+      "hiding a ring-only UI should schedule its own renderer cleanup"
+    );
+    assert.ok(
+      /function showSessionHud\(win\)\s*\{[\s\S]*?cancelHiddenDestroy\("hud"\)/.test(src),
       "showing the HUD should cancel hidden-window cleanup"
+    );
+    assert.ok(
+      /function showQuotaRing\(win\)\s*\{[\s\S]*?cancelHiddenDestroy\("ring"\)/.test(src),
+      "showing the ring should cancel only the ring cleanup"
     );
   });
 });

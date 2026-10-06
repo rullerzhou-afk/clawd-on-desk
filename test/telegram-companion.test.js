@@ -6,11 +6,19 @@ const test = require("node:test");
 const {
   createTelegramCompanion,
   formatNotification,
+  formatTelegramNotificationMessage,
 } = require("../src/telegram-companion");
+const { createTelegramDirectSend } = require("../src/telegram-direct-send");
 
 function tick() {
   // Flush the fire-and-forget microtask chain in onSnapshot.
   return new Promise((resolve) => setImmediate(resolve));
+}
+
+function sentText(value) {
+  return value && typeof value === "object" && typeof value.plainText === "string"
+    ? value.plainText
+    : String(value || "");
 }
 
 function doneEntry(overrides = {}) {
@@ -38,7 +46,7 @@ function makeClient() {
   };
 }
 
-function makeCompanion({ enabled = true, client, getLang, getCompletionOutputMode, getNotifyOnComplete } = {}) {
+function makeCompanion({ enabled = true, client, getLang, getCompletionOutputMode, getNotifyOnComplete, formatText } = {}) {
   const sink = client || makeClient();
   const comp = createTelegramCompanion({
     getClient: () => sink.client,
@@ -46,6 +54,7 @@ function makeCompanion({ enabled = true, client, getLang, getCompletionOutputMod
     getLang,
     getCompletionOutputMode,
     getNotifyOnComplete,
+    formatText,
   });
   return { comp, sent: sink.sent };
 }
@@ -84,8 +93,9 @@ test("factory sends assistant output only when full output is explicit", async (
   });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /Assistant output:/);
-  assert.match(sent[0], /Implemented the fix/);
+  assert.match(sentText(sent[0]), /Assistant output:/);
+  assert.match(sentText(sent[0]), /Implemented the fix/);
+  assert.match(sent[0].html, /<b>Assistant output:<\/b>/);
 });
 
 test("notifies a fresh completion after priming", async () => {
@@ -94,8 +104,8 @@ test("notifies a fresh completion after priming", async () => {
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /fix the bug/);
-  assert.match(sent[0], /done/);
+  assert.match(sentText(sent[0]), /fix the bug/);
+  assert.match(sentText(sent[0]), /done/);
 });
 
 test("registers completion notification message ids after successful sends", async () => {
@@ -125,6 +135,216 @@ test("registers completion notification message ids after successful sends", asy
 
   assert.equal(sink.sent.length, 1);
   assert.deepEqual(registrations, [{ messageId: 4242, sessionId: "sess-for-map" }]);
+});
+
+test("includes the configured chat id with completion mapping callbacks", async () => {
+  const registrations = [];
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => ({ ok: true, messageId: 4243, chatId: "-1001234567890" }),
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    onNotificationSent: (payload) => registrations.push(payload),
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-chat-map" })] });
+  await tick();
+
+  assert.deepEqual(registrations, [{
+    entry: doneEntry({ id: "sess-chat-map" }),
+    messageId: 4243,
+    chatId: "-1001234567890",
+  }]);
+});
+
+test("captures notification context before an asynchronous send resolves", async () => {
+  let generation = 7;
+  let resolveSend;
+  const registrations = [];
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: () => new Promise((resolve) => { resolveSend = resolve; }),
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: (entry) => ({ generation, sessionId: entry.id }),
+    isNotificationRouteCurrent: (context) => context.generation === generation,
+    onNotificationSent: (payload) => registrations.push(payload),
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-context" })] });
+  await tick();
+  generation = 8;
+  resolveSend({ ok: true, messageId: 4244, chatId: "123" });
+  await tick();
+
+  assert.deepEqual(registrations, [{
+    entry: doneEntry({ id: "sess-context" }),
+    messageId: 4244,
+    chatId: "123",
+    notificationContext: { generation: 7, sessionId: "sess-context" },
+  }]);
+});
+
+test("drops a queued notification when its route changes before send", async () => {
+  let generation = 7;
+  let sendCount = 0;
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: () => {
+        sendCount += 1;
+        return Promise.resolve({ ok: true, messageId: 4245, chatId: "123" });
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: (entry) => ({ generation, sessionId: entry.id }),
+    isNotificationRouteCurrent: (context) => context.generation === generation,
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-queued-context" })] });
+  // The send is intentionally still queued in the companion microtask. A
+  // recipient/token reconciliation completes in this gap; the old completion
+  // must be dropped instead of being sent to the replacement recipient.
+  generation = 8;
+  await tick();
+  assert.equal(sendCount, 0);
+});
+
+test("keeps completion notifications when the direct-send toggle is off", async () => {
+  let sendCount = 0;
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => {
+        sendCount += 1;
+        return { ok: true, messageId: 4246 };
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: (entry) => ({ generation: 1, sessionId: entry.id }),
+    // A context checker represents route identity only; it must not inherit
+    // the unrelated Direct Send feature toggle.
+    isNotificationRouteCurrent: () => true,
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-direct-off" })] });
+  await tick();
+  assert.equal(sendCount, 1);
+});
+
+test("drops a queued completion when the Direct Send notification route is invalidated", async () => {
+  const direct = createTelegramDirectSend({
+    getRouteGeneration: () => 11,
+    getSessionSnapshot: () => ({ sessions: [] }),
+  });
+  let sendCount = 0;
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => {
+        sendCount += 1;
+        return { ok: true, messageId: 4247, chatId: "456" };
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: direct.createCompletionNotificationContext,
+    isNotificationRouteCurrent: direct.isCompletionNotificationRouteCurrent,
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-old-recipient" })] });
+  // Recipient/token invalidation is synchronous; controller reconciliation may
+  // not have restarted the native poller yet, so the Direct Send route epoch is
+  // the pre-network fence for this queued microtask.
+  direct.invalidateMappings();
+  await tick();
+
+  assert.equal(sendCount, 0);
+});
+
+test("mapping-only invalidation keeps a queued completion but rejects its old reply mapping", async () => {
+  const direct = createTelegramDirectSend({
+    getRouteGeneration: () => 12,
+    getSessionSnapshot: () => ({ sessions: [] }),
+  });
+  let sendCount = 0;
+  const registrationResults = [];
+  const comp = createTelegramCompanion({
+    getClient: () => ({
+      sendNotification: async () => {
+        sendCount += 1;
+        return { ok: true, messageId: 4248, chatId: "123" };
+      },
+    }),
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    getNotificationContext: direct.createCompletionNotificationContext,
+    isNotificationRouteCurrent: direct.isCompletionNotificationRouteCurrent,
+    onNotificationSent: ({ entry, messageId, chatId, notificationContext }) => {
+      registrationResults.push(direct.registerCompletionNotification({
+        messageId,
+        chatId,
+        sessionId: entry.id,
+        notificationContext,
+      }));
+    },
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({ id: "sess-toggle-only" })] });
+  direct.invalidateMappings({ notificationRouteChanged: false });
+  await tick();
+
+  assert.equal(sendCount, 1);
+  assert.deepEqual(registrationResults, [false]);
+  assert.equal(direct._mappings.size, 0);
+});
+
+test("keeps concurrent notification registrations paired when sends resolve out of order", async () => {
+  const pending = [];
+  const registrations = [];
+  const client = {
+    sendNotification: (text) => new Promise((resolve) => {
+      pending.push({ text, resolve });
+    }),
+  };
+  const comp = createTelegramCompanion({
+    getClient: () => client,
+    isEnabled: () => true,
+    getNotifyOnComplete: () => true,
+    onNotificationSent: ({ messageId, entry }) => {
+      registrations.push({ messageId, sessionId: entry && entry.id });
+    },
+  });
+
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({
+    sessions: [
+      doneEntry({ id: "sess-first", displayTitle: "first task" }),
+      doneEntry({ id: "sess-second", displayTitle: "second task" }),
+    ],
+  });
+  await tick();
+
+  assert.equal(pending.length, 2);
+  assert.match(pending[0].text.plainText, /first task/);
+  assert.match(pending[1].text.plainText, /second task/);
+
+  pending[1].resolve({ ok: true, messageId: 2002 });
+  await tick();
+  pending[0].resolve({ ok: true, messageId: 1001 });
+  await tick();
+
+  assert.deepEqual(registrations, [
+    { messageId: 2002, sessionId: "sess-second" },
+    { messageId: 1001, sessionId: "sess-first" },
+  ]);
 });
 
 test("does not register direct-send mapping when notification delivery fails", async () => {
@@ -195,12 +415,27 @@ test("notifies each completing session with identity fields", async () => {
   });
   await tick();
   assert.equal(sent.length, 2);
-  const joined = sent.join("\n---\n");
+  const joined = sent.map(sentText).join("\n---\n");
   assert.match(joined, /task A/);
   assert.match(joined, /projA/);
   assert.match(joined, /task B/);
   assert.match(joined, /projB/); // Windows cwd basename
   assert.match(joined, /laptop/); // host
+});
+
+test("completion respects an explicitly hidden snapshot displayFolder", async () => {
+  const opaque = "mqgw60jiigjsjcid";
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({
+    id: "qwenwork:hidden",
+    agentId: "qwenwork",
+    cwd: `/Users/me/.QwenWorkCN/workspace/${opaque}`,
+    displayFolder: "",
+  })] });
+  await tick();
+  assert.equal(sent.length, 1);
+  assert.ok(!JSON.stringify(sent[0]).includes(opaque));
 });
 
 test("ignores non-completion badges and events", async () => {
@@ -218,6 +453,18 @@ test("ignores non-completion badges and events", async () => {
   assert.deepEqual(sent, []);
 });
 
+test("does not notify for headless subagent completions", async () => {
+  const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry({
+    id: "codex-subagent-replay",
+    headless: true,
+    lastEvent: { rawEvent: "event_msg:task_complete", at: 42 },
+  })] });
+  await tick();
+  assert.deepEqual(sent, []);
+});
+
 test("interrupted badge uses the warning marker", async () => {
   const { comp, sent } = makeCompanion({ getNotifyOnComplete: () => true });
   comp.onSnapshot({ sessions: [] });
@@ -226,7 +473,7 @@ test("interrupted badge uses the warning marker", async () => {
   });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /interrupted/);
+  assert.match(sentText(sent[0]), /interrupted/);
 });
 
 test("completion notification follows the current Clawd language", async () => {
@@ -236,14 +483,14 @@ test("completion notification follows the current Clawd language", async () => {
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /已完成/);
-  assert.doesNotMatch(sent[0], /\(done\)/);
+  assert.match(sentText(sent[0]), /已完成/);
+  assert.doesNotMatch(sentText(sent[0]), /\(done\)/);
 
   lang = "ja";
   comp.onSnapshot({ sessions: [doneEntry({ lastEvent: { rawEvent: "Stop", at: 2000 } })] });
   await tick();
   assert.equal(sent.length, 2);
-  assert.match(sent[1], /完了/);
+  assert.match(sentText(sent[1]), /完了/);
 });
 
 test("output mode off keeps the R1a bare notification", async () => {
@@ -255,8 +502,8 @@ test("output mode off keeps the R1a bare notification", async () => {
   comp.onSnapshot({ sessions: [doneEntry({ assistantLastOutput: "assistant text" })] });
   await tick();
   assert.equal(sent.length, 1);
-  assert.doesNotMatch(sent[0], /assistant text/);
-  assert.doesNotMatch(sent[0], /Assistant output/);
+  assert.doesNotMatch(sentText(sent[0]), /assistant text/);
+  assert.doesNotMatch(sentText(sent[0]), /Assistant output/);
 });
 
 test("full output mode appends redacted assistant text", async () => {
@@ -271,11 +518,11 @@ test("full output mode appends redacted assistant text", async () => {
   });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /Assistant output \(truncated\):/);
-  assert.match(sent[0], /TAIL/);
-  assert.match(sent[0], /secret=<redacted>/);
-  assert.doesNotMatch(sent[0], /sk-1234567890abcdef/);
-  assert.doesNotMatch(sent[0], /Last output/);
+  assert.match(sentText(sent[0]), /Assistant output \(truncated\):/);
+  assert.match(sentText(sent[0]), /TAIL/);
+  assert.match(sentText(sent[0]), /secret=<redacted>/);
+  assert.doesNotMatch(sentText(sent[0]), /sk-1234567890abcdef/);
+  assert.doesNotMatch(sentText(sent[0]), /Last output/);
 });
 
 test("full output mode with bare ping disabled skips completions with no assistant text", async () => {
@@ -296,8 +543,8 @@ test("full output mode with bare ping disabled skips completions with no assista
   });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /Assistant output:/);
-  assert.match(sent[0], /Implemented the fix/);
+  assert.match(sentText(sent[0]), /Assistant output:/);
+  assert.match(sentText(sent[0]), /Implemented the fix/);
 });
 
 test("output mode off with bare ping disabled sends no completion message", async () => {
@@ -321,9 +568,9 @@ test("legacy tail output mode is treated as full output", async () => {
   });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /Assistant output:/);
-  assert.match(sent[0], /Implemented the fix/);
-  assert.doesNotMatch(sent[0], /Last output/);
+  assert.match(sentText(sent[0]), /Assistant output:/);
+  assert.match(sentText(sent[0]), /Implemented the fix/);
+  assert.doesNotMatch(sentText(sent[0]), /Last output/);
 });
 
 test("full output mode appends assistant text and marks extractor truncation", async () => {
@@ -339,9 +586,9 @@ test("full output mode appends assistant text and marks extractor truncation", a
   });
   await tick();
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /Assistant output \(truncated\):/);
-  assert.match(sent[0], /Implemented X/);
-  assert.match(sent[0], /Tests pass/);
+  assert.match(sentText(sent[0]), /Assistant output \(truncated\):/);
+  assert.match(sentText(sent[0]), /Implemented X/);
+  assert.match(sentText(sent[0]), /Tests pass/);
 });
 
 test("full output mode with bare ping enabled degrades to R1a when no assistant text is available", async () => {
@@ -353,7 +600,7 @@ test("full output mode with bare ping enabled degrades to R1a when no assistant 
   comp.onSnapshot({ sessions: [doneEntry()] });
   await tick();
   assert.equal(sent.length, 1);
-  assert.doesNotMatch(sent[0], /Assistant output/);
+  assert.doesNotMatch(sentText(sent[0]), /Assistant output/);
 });
 
 test("forgets sessions that drop out of the snapshot", async () => {
@@ -363,10 +610,156 @@ test("forgets sessions that drop out of the snapshot", async () => {
   assert.equal(comp._lastNotified.size, 0);
 });
 
-test("formatNotification falls back to short id when title missing", () => {
+test("formatNotification falls back to the session label and uses the display tag when title missing", () => {
   const text = formatNotification({
-    id: "sess-zzzzzz9", badge: "done", lastEvent: { rawEvent: "Stop", at: 1 },
+    id: "s1.bG9jYWw.c2Vzcy16enp6eno5",
+    displaySessionTag: "deadbeef00",
+    badge: "done",
+    lastEvent: { rawEvent: "Stop", at: 1 },
   });
-  assert.match(text, /sess-z/);
-  assert.match(text, /#sess-z/);
+  assert.match(text, /session/);
+  assert.match(text, /#deadbeef00/);
+  assert.doesNotMatch(text, /s1\.bG9jYWw/);
+  assert.doesNotMatch(text, /sess-z/);
+});
+
+test("formatted completion falls back to the session label and display tag when title missing", () => {
+  const message = formatTelegramNotificationMessage({
+    id: "s1.bG9jYWw.c2Vzcy16enp6eno5",
+    displaySessionTag: "deadbeef00",
+    badge: "done",
+    lastEvent: { rawEvent: "Stop", at: 1 },
+  });
+  assert.match(message.plainText, /session/);
+  assert.match(message.plainText, /#deadbeef00/);
+  assert.doesNotMatch(message.plainText, /s1\.bG9jYWw/);
+  assert.doesNotMatch(message.plainText, /sess-z/);
+});
+
+test("formatted completion parses only Assistant output and escapes metadata", () => {
+  const message = formatTelegramNotificationMessage(doneEntry({
+    displayTitle: "<b>title</b> @username",
+    agentId: "agent<script>",
+    cwd: "/tmp/folder<a>",
+    assistantLastOutput: "**safe bold** <redacted:token>",
+  }), {
+    completionOutputMode: "full",
+    includeBare: true,
+    lang: "en",
+  });
+
+  assert.match(message.html, /<b>&lt;b&gt;title&lt;\/b&gt; ＠username<\/b>/);
+  assert.match(message.html, /agent&lt;script&gt;/);
+  assert.match(message.html, /folder&lt;a&gt;/);
+  assert.match(message.html, /<b>safe bold<\/b> &lt;redacted:token&gt;/);
+  assert.equal((message.html.match(/<a\b/g) || []).length, 0);
+  assert.ok(message.htmlVisibleLength <= 3600);
+  assert.ok(message.plainVisibleLength <= 3600);
+});
+
+test("formatted completion preserves the Assistant output budget and truncation state when composed", () => {
+  const horizontalRules = "---\n\n".repeat(180);
+  const source = horizontalRules + "word ".repeat(400).slice(0, 2599 - horizontalRules.length);
+  assert.equal(source.length, 2599, "fixture must stay below the pre-Markdown 2600 limit");
+
+  const message = formatTelegramNotificationMessage(doneEntry({
+    assistantLastOutput: source,
+  }), {
+    completionOutputMode: "full",
+    includeBare: true,
+    lang: "en",
+  });
+
+  const label = "Assistant output (truncated):\n";
+  const outputStart = message.plainText.indexOf(label);
+  assert.notEqual(outputStart, -1);
+  const renderedOutput = message.plainText.slice(outputStart + label.length);
+  assert.ok(renderedOutput.length <= 2600, "composed output must retain its inner budget");
+  assert.match(renderedOutput, /\n\.\.\. truncated$/);
+  assert.equal(message.truncated, true);
+  assert.ok(message.budgetLength <= 3600);
+});
+
+test("custom completion formatter keeps the legacy plain string contract", async () => {
+  const { comp, sent } = makeCompanion({
+    getNotifyOnComplete: () => true,
+    formatText: () => "<b>legacy wire</b>",
+  });
+  comp.onSnapshot({ sessions: [] });
+  comp.onSnapshot({ sessions: [doneEntry()] });
+  await tick();
+
+  assert.deepEqual(sent, ["<b>legacy wire</b>"]);
+});
+
+test("completion notifications use the snapshot display tag, not raw or canonical prefixes", () => {
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
+
+  function entryFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId);
+    return buildSessionSnapshotEntry(identity.sessionId, {
+      rawSessionId: identity.rawSessionId,
+      agentId: "claude-code",
+      state: "idle",
+      cwd: null,
+      sessionTitle: "Known task",
+      recentEvents: [{ event: "Stop", state: "idle", at: Date.now() }],
+    });
+  }
+
+  const a = entryFor("11111111-2222-3333-4444-555555555555");
+  const b = entryFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+
+  assert.ok(a.id.startsWith("s1."), "fixture must use a real namespaced key");
+  const textA = sentText(formatNotification(a));
+  const richA = formatTelegramNotificationMessage(a);
+  const tagA = textA.match(/#([0-9a-f]{10})/);
+  const tagB = sentText(formatNotification(b)).match(/#([0-9a-f]{10})/);
+  assert.ok(tagA && tagB, "both notifications carry a session tag");
+  assert.equal(tagA[1], a.displaySessionTag);
+  assert.equal(tagA[1], "a0a040910c");
+  assert.notEqual(tagA[1], tagB[1], "two sessions must not render the same tag");
+  assert.ok(!tagA[1].startsWith("s1."), `tag must not be the key envelope: ${tagA[1]}`);
+  assert.ok(!a.rawSessionId.startsWith(tagA[1]), "tag must not be a raw id prefix");
+  assert.doesNotMatch(textA, /111111|s1\.bG9jYWw/);
+  assert.doesNotMatch(richA.plainText, /111111|s1\.bG9jYWw/);
+});
+
+test("completion notification tags still distinguish sessions without rawSessionId", () => {
+  const { resolveSessionIdentity } = require("../src/session-key");
+  const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
+
+  function tagFor(rawSessionId) {
+    const identity = resolveSessionIdentity(rawSessionId, "local");
+    const entry = buildSessionSnapshotEntry(identity.sessionId, {
+      agentId: "codex",
+      state: "idle",
+      cwd: null,
+      recentEvents: [{ event: "Stop", state: "idle", at: Date.now() }],
+    }); // deliberately no rawSessionId
+    assert.equal(entry.rawSessionId, identity.sessionId, "fixture must exercise the fallback");
+    return sentText(formatNotification(entry)).match(/#([0-9a-f]{10})/)[1];
+  }
+
+  const a = tagFor("11111111-2222-3333-4444-555555555555");
+  const b = tagFor("99999999-8888-7777-6666-aaaaaaaaaaaa");
+  assert.notEqual(a, b, "two sessions must not render the same tag");
+  assert.ok(!a.startsWith("s1."), `tag must not be the key envelope: ${a}`);
+  assert.equal(a, "a0a040910c");
+});
+
+test("completion formatter prefers an explicit snapshot display tag", () => {
+  const entry = doneEntry({
+    id: "s1.bG9jYWw.MTExMTExMTEtMjIyMi0zMzMzLTQ0NDQtNTU1NTU1NTU1NTU1",
+    rawSessionId: "11111111-2222-3333-4444-555555555555",
+    displaySessionTag: "deadbeef00",
+  });
+
+  const text = sentText(formatNotification(entry));
+  const rich = formatTelegramNotificationMessage(entry);
+  assert.match(text, /#deadbeef00/);
+  assert.match(rich.plainText, /#deadbeef00/);
+  assert.doesNotMatch(text, /#a0a040910c|111111|s1\.bG9jYWw/);
+  assert.doesNotMatch(rich.plainText, /#a0a040910c|111111|s1\.bG9jYWw/);
 });

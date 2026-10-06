@@ -71,7 +71,7 @@
   <rect class="shadow-lift" x="3" y="15" width="9" height="1" fill="#000000"/>
 
   <!-- Swaying body -->
-  <g class="body-sway">
+  <g id="accessory-anchor" class="body-sway">
     <!-- Dangling legs -->
     <g fill="#DE886D">
       <rect class="leg-dangle-1" x="3" y="13" width="1" height="2"/>

@@ -2,6 +2,7 @@
 // Extracted from main.js L315-331, L2700-2911
 
 const { screen } = require("electron");
+const { resolveHorizontalEdgeContext } = require("./display-edge");
 
 module.exports = function initMini(ctx) {
 
@@ -25,17 +26,25 @@ let miniSnap = null;  // { y, width, height } — canonical rect to prevent DPI 
 let lastMiniWorkArea = null;  // workArea of the display the mini pet is on
 let miniTransitionTimer = null;
 let peekAnimTimer = null;
+let peekDelayTimer = null;
+let pendingPeekMode = null;
+let activePeekMode = null;
 let isAnimating = false;
+// Issue #690 plan §4.5 point 4.5-4: set when a display/workArea topology
+// change lands while mini is transitioning (pet-window-runtime.js's
+// handleDisplayMetricsChanged() hands it off here instead of silently
+// dropping it). Consumed exactly once, at whichever of mini's three
+// transition-end points (cancelMiniTransition(), finishMiniEntry()'s settle,
+// exitMiniMode()'s parabola onDone) comes next, for a final re-materialize
+// against the now-current topology.
+let pendingTopologyMaterialize = false;
 
 function syncSessionHudVisibility() {
   if (typeof ctx.syncSessionHudVisibility === "function") ctx.syncSessionHudVisibility();
 }
 
-function repositionSessionHud() {
-  if (typeof ctx.repositionSessionHud === "function") ctx.repositionSessionHud();
-}
-
 function refreshTheme() {
+  cancelPendingMiniPeek(true);
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
 }
 
@@ -43,26 +52,116 @@ function themeSupportsMini() {
   return !!(ctx.theme && ctx.theme.miniMode && ctx.theme.miniMode.supported !== false);
 }
 
+function notifyTopologyChangedDuringTransition() {
+  cancelPendingMiniPeek(true);
+  pendingTopologyMaterialize = true;
+}
+
+// §4.5 point 3: mini's per-frame Y clamp, factored out of what used to be
+// two independent inline copies of the same formula (handleDisplayChange /
+// handleResize) — restoreFromPrefs() turned out to carry a third, so this is
+// now the single shared definition all three (plus applyMiniFrameBounds
+// below) call into.
+function clampY(y, wa, height) {
+  return Math.max(wa.y, Math.min(y, wa.y + wa.height - height));
+}
+
+// Resolves the shared display topology ONCE for a mini transition (entry
+// animation, crabwalk, exit parabola, peek, or a one-shot display/resize
+// reflow) — never per animation frame (plan §4.5 point 4.5-4 / §12.8's
+// screen.getAllDisplays() ≤ 1 budget). `edge` is display-edge.js's dual-sided
+// context, reusable both for seamBoundaryFromEdge() below and as
+// applyMiniFrameBounds()'s materialize-time edgeContext.
+function resolveMiniTopology(wa, yMid) {
+  const displays = screen.getAllDisplays();
+  const edge = resolveHorizontalEdgeContext({ displays, workArea: wa, yMid });
+  return { displays, edge };
+}
+
+// Pure projection from an already-resolved topology — no getAllDisplays()
+// call of its own. See seamBoundary() below for the one-shot convenience
+// wrapper still used by call sites that don't already have a cached
+// topology at hand.
+function seamBoundaryFromEdge(edgeContext, edge) {
+  const side = edge === "right" ? edgeContext.right : edgeContext.left;
+  return side.hasAdjacentDisplay ? side.physicalBoundary : null;
+}
+
+// When the mini pet at `wa`/`yMid` sits at an internal seam in `edge`
+// direction, returns the seam X — the local display's *bounds* edge, which
+// is the physical boundary the neighbouring monitor begins at (and the same
+// place a single-display mini gets physically cut off by the screen edge).
+// Returns null at an outer screen edge (single display, or no neighbour at
+// the pet's vertical band). Delegates the actual topology judgment to the
+// shared src/display-edge.js helper so mini's internal-seam clip and the
+// Linux edge-virtualization materializer can't disagree about which edges
+// are seams — see docs/plans/plan-issue-690-gnome-mini-edge-snap.md §4.1.
+// One-shot convenience wrapper (its own single getAllDisplays() call) for
+// callers that don't already have a cached topology — every remaining call
+// site here (handleDisplayChange/handleResize/restoreFromPrefs) runs once
+// per event, never per animation frame.
+function seamBoundary(wa, yMid, edge) {
+  const { edge: edgeContext } = resolveMiniTopology(wa, yMid);
+  return seamBoundaryFromEdge(edgeContext, edge);
+}
+
 // ── Window animation ──
-// Mini animations run on **real** Electron bounds (not virtual). enterMiniMode
-// calls ctx.setViewportOffsetY(0) before starting animation, so real === virtual
-// throughout the mini lifecycle. Skipping applyPetWindowBounds here avoids the
-// per-frame materialize → IPC → renderer CSS re-apply round-trip that was
-// stalling the main thread during mini entry.
-function animateWindowX(targetX, durationMs, onDone) {
+// Per §4.5, every mini animation frame writes through applyMiniFrameBounds()
+// (X-only, assertNoYOffset) instead of a raw native bounds/position write.
+// Y offset stays pinned at 0 for mini's whole lifecycle (enterMiniMode()/
+// enterMiniViaMenu() call ctx.setViewportOffsetY(0) once on the way in); X
+// offset is NOT reset — see §4.5 point 2 — so logical and physical X can
+// legitimately diverge throughout mini's lifetime, with the renderer's
+// composite-only translate (§4.4) making up the visual difference.
+//
+// [historical] 4ba1cd0 found that wiring mini's per-frame writes into
+// applyPetWindowBounds() the naive way (re-resolving workArea/edge context on
+// every frame) caused a materialize → IPC → renderer per-asset restyle storm
+// that stalled the main thread during mini entry — it was never a shipped
+// "fixed" state, just a dead end during development. The fix isn't avoiding
+// applyPetWindowBounds — it's resolving the animation's workArea/edge
+// topology exactly ONCE (resolveMiniTopology/animCtx, threaded through every
+// frame below) and using assertNoYOffset so the write only ever touches the
+// composite-only X path (§4.4), never reopening Y layout.
+function applyMiniFrameBounds(logicalX, snap, animCtx) {
+  // The parabola's up-to-40px arc peak must be clamped back into the
+  // workArea before it ever reaches applyPetWindowBounds() — this makes
+  // assertNoYOffset's own guard a pure backstop that should never actually
+  // fire in normal operation (see pet-window-runtime.js's
+  // applyPetWindowBounds() for what happens if it somehow does: log once,
+  // refuse to forward a Y IPC, never reopen the Y layout hot path).
+  const y = clampY(snap.y, animCtx.workArea, snap.height);
+  return ctx.applyPetWindowBounds(
+    { x: logicalX, y, width: snap.width, height: snap.height },
+    { workArea: animCtx.workArea, edgeContext: animCtx.edge, assertNoYOffset: true }
+  );
+}
+
+// Fallback topology resolution for animation call sites that don't already
+// have one in hand (miniPeekIn/miniPeekOut — short, standalone animations
+// run while already parked in mini mode). Prefers the workArea mini is
+// already anchored to over re-deriving it.
+function resolveMiniAnimCtx(bounds) {
+  const wa = lastMiniWorkArea || ctx.getNearestWorkArea(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+  const topology = resolveMiniTopology(wa, bounds.y + bounds.height / 2);
+  return { workArea: wa, edge: topology.edge };
+}
+
+function animateWindowX(targetX, durationMs, onDone, animCtx) {
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
-  const bounds = ctx.win.getBounds();
-  const startX = bounds.x;
+  const start = ctx.getPetWindowBounds();
+  const startX = start.x;
   if (startX === targetX) {
     isAnimating = false;
     if (onDone) onDone();
     return;
   }
   isAnimating = true;
+  const resolvedAnimCtx = animCtx || resolveMiniAnimCtx(start);
   const startTime = Date.now();
-  const snapY = miniSnap ? miniSnap.y : bounds.y;
-  const snapW = miniSnap ? miniSnap.width : bounds.width;
-  const snapH = miniSnap ? miniSnap.height : bounds.height;
+  const snapY = miniSnap ? miniSnap.y : start.y;
+  const snapW = miniSnap ? miniSnap.width : start.width;
+  const snapH = miniSnap ? miniSnap.height : start.height;
   let frameCount = 0;
   const step = () => {
     if (!ctx.win || ctx.win.isDestroyed()) {
@@ -81,7 +180,7 @@ function animateWindowX(targetX, durationMs, onDone) {
       return;
     }
     try {
-      ctx.win.setBounds({ x, y: snapY, width: snapW, height: snapH });
+      applyMiniFrameBounds(x, { y: snapY, width: snapW, height: snapH }, resolvedAnimCtx);
     } catch {
       peekAnimTimer = null;
       isAnimating = false;
@@ -89,7 +188,15 @@ function animateWindowX(targetX, durationMs, onDone) {
       return;
     }
     ctx.syncHitWin();
-    repositionSessionHud();
+    // PR #751 Codex review #12 (rework batch B-8, non-blocking): no
+    // repositionSessionHud() call here — applyMiniFrameBounds() above
+    // already went through ctx.applyPetWindowBounds(), whose own tail end
+    // (pet-window-runtime.js's applyPetWindowBounds()) unconditionally calls
+    // repositionSessionHud() for this exact frame already. Calling it again
+    // here was a genuine duplicate (same underlying function, both wired to
+    // it in src/main.js), not a distinct concern — the runtime's own
+    // tail-end call is the single source of truth for every write, mini's
+    // per-frame or otherwise.
     syncContainedClip();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
@@ -104,16 +211,18 @@ function animateWindowX(targetX, durationMs, onDone) {
   step();
 }
 
-function animateWindowParabola(targetX, targetY, durationMs, onDone) {
+function animateWindowParabola(targetX, targetY, durationMs, onDone, animCtx) {
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
-  const bounds = ctx.win.getBounds();
-  const startX = bounds.x, startY = bounds.y;
+  const start = ctx.getPetWindowBounds();
+  const startX = start.x, startY = start.y;
   if (startX === targetX && startY === targetY) {
     isAnimating = false;
     if (onDone) onDone();
     return;
   }
   isAnimating = true;
+  const resolvedAnimCtx = animCtx || resolveMiniAnimCtx(start);
+  const snapW = start.width, snapH = start.height;
   const startTime = Date.now();
   let frameCount = 0;
   const step = () => {
@@ -135,7 +244,7 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
       return;
     }
     try {
-      ctx.win.setPosition(x, y);
+      applyMiniFrameBounds(x, { y, width: snapW, height: snapH }, resolvedAnimCtx);
     } catch {
       peekAnimTimer = null;
       isAnimating = false;
@@ -143,7 +252,15 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
       return;
     }
     ctx.syncHitWin();
-    repositionSessionHud();
+    // PR #751 Codex review #12 (rework batch B-8, non-blocking): no
+    // repositionSessionHud() call here — applyMiniFrameBounds() above
+    // already went through ctx.applyPetWindowBounds(), whose own tail end
+    // (pet-window-runtime.js's applyPetWindowBounds()) unconditionally calls
+    // repositionSessionHud() for this exact frame already. Calling it again
+    // here was a genuine duplicate (same underlying function, both wired to
+    // it in src/main.js), not a distinct concern — the runtime's own
+    // tail-end call is the single source of truth for every write, mini's
+    // per-frame or otherwise.
     syncContainedClip();
     // Throttle bubble reposition to every 3rd frame (~20fps) — visually identical, less overhead
     if (ctx.bubbleFollowPet && ctx.pendingPermissions.length && (++frameCount % 3 === 0 || t >= 1)) ctx.repositionBubbles();
@@ -156,33 +273,6 @@ function animateWindowParabola(targetX, targetY, durationMs, onDone) {
     }
   };
   step();
-}
-
-// When the mini pet at `wa`/`yMid` sits at an internal seam in `edge`
-// direction, returns the seam X — the local display's *bounds* edge, which
-// is the physical boundary the neighbouring monitor begins at (and the same
-// place a single-display mini gets physically cut off by the screen edge).
-// Returns null at an outer screen edge (single display, or no neighbour at
-// the pet's vertical band). The 4px tolerance absorbs OS-side rounding.
-function seamBoundary(wa, yMid, edge) {
-  const displays = screen.getAllDisplays();
-  const cx = wa.x + wa.width / 2;
-  const cy = wa.y + wa.height / 2;
-  const local = displays.find((d) =>
-    cx >= d.workArea.x && cx <= d.workArea.x + d.workArea.width &&
-    cy >= d.workArea.y && cy <= d.workArea.y + d.workArea.height);
-  const lb = local ? local.bounds : wa;
-  const seam = edge === "right" ? lb.x + lb.width : lb.x;
-  const overlapsY = (d) => {
-    if (!Number.isFinite(yMid)) return false;
-    return yMid >= d.bounds.y && yMid <= d.bounds.y + d.bounds.height;
-  };
-  const hasNeighbour = displays.some((d) => {
-    if (d === local || !overlapsY(d)) return false;
-    const dEdge = edge === "right" ? d.bounds.x : d.bounds.x + d.bounds.width;
-    return Math.abs(dEdge - seam) <= 4;
-  });
-  return hasNeighbour ? seam : null;
 }
 
 // Multi-monitor seam state: when the mini pet sits at an internal seam, the
@@ -201,6 +291,12 @@ function syncContainedClip() {
     ctx.sendToRenderer("mini-clip", null);
     return;
   }
+  // §4.5 point 5: one of the few places mini.js still reads the *physical*
+  // window rect on purpose — the clip fraction is a real BrowserWindow's
+  // pixel intersection with the neighbouring monitor's physical edge, not a
+  // logical-bounds quantity. Reading ctx.getPetWindowBounds() here would clip
+  // against where the pet logically wants to be rather than where the
+  // renderer's onscreen pixels actually straddle the seam.
   const bounds = ctx.win.getBounds();
   if (!bounds.width) return;
   const fraction = (containedBoundary - bounds.x) / bounds.width;
@@ -216,13 +312,118 @@ function calcMiniX(wa, size) {
   return wa.x + wa.width - Math.round(size.width * (1 - MINI_OFFSET_RATIO));
 }
 
-function miniPeekIn() {
-  const offset = miniEdge === "left" ? PEEK_OFFSET : -PEEK_OFFSET;
-  animateWindowX(currentMiniX + offset, 200);
+// PR #751 Codex review #8 (rework batch B-1): peek in/out sets isAnimating
+// (via animateWindowX) for ~200ms, one of runReconcile()'s four protection
+// conditions — but never passed an onDone before, so nothing ever called
+// releaseReconcileProtection() once the peek settled. A native geometry
+// event landing during that 200ms window would mark reconcile dirty and
+// then sit unrequeued indefinitely, since animateWindowX's own internal
+// isAnimating=false doesn't itself trigger a re-check.
+//
+// PR #751 second-review C-5 (Codex B5): passes a topology-consuming
+// callback as onConsumeTopology (was bare finalizeMiniProtectionExit, which
+// only clears pendingTopologyMaterialize without EVER acting on it — see
+// finalizeMiniProtectionExit()'s own comment). pet-window-runtime.js's
+// handleDisplayAdded/Removed/MetricsChanged now also defer during a peek
+// (isMiniAnimating() is part of their own defer condition, alongside
+// getMiniTransitioning()), so a topology change landing mid-peek sets
+// pendingTopologyMaterialize exactly like a full transition would — the
+// peek's own exit point must actually consume it, not just drop the flag.
+//
+// PR #751 second-review C-5b: miniPeekIn() specifically uses
+// consumeTopologyForMiniPeekIn() (not the plain consumeTopologyForMiniRest()
+// miniPeekOut() below still uses) — see that function's own comment for
+// why landing at the bare resting position would be wrong here.
+function getPeekMotion(mode) {
+  const mini = ctx.theme && ctx.theme.miniMode || {};
+  const awake = mini.peek || {};
+  const sleep = mode === "sleep" ? mini.sleepPeek || {} : {};
+  return {
+    offsetRatio: sleep.offsetRatio ?? awake.offsetRatio,
+    delayMs: sleep.delayMs ?? awake.delayMs ?? 0,
+    durationMs: sleep.durationMs ?? awake.durationMs ?? 200,
+  };
+}
+
+function getMiniPeekOffset(mode = activePeekMode || (ctx.doNotDisturb ? "sleep" : "peek")) {
+  const ratio = getPeekMotion(mode).offsetRatio;
+  if (ratio === undefined) return PEEK_OFFSET;
+  const bounds = ctx.getPetWindowBounds();
+  return Math.round(bounds.width * ratio);
+}
+
+function cancelPendingMiniPeek(resetState = false) {
+  if (!peekDelayTimer) return false;
+  clearTimeout(peekDelayTimer);
+  peekDelayTimer = null;
+  const mode = pendingPeekMode;
+  pendingPeekMode = null;
+  activePeekMode = null;
+  if (resetState) resetCancelledPeekState(mode);
+  return true;
+}
+
+function resetCancelledPeekState(mode) {
+  if (mode === "sleep") {
+    miniSleepPeeked = false;
+    if (ctx.currentState === "mini-sleep-peek") ctx.applyState("mini-sleep");
+  } else {
+    miniPeeked = false;
+    if (ctx.currentState === "mini-peek" || ctx.currentState === "mini-peek-hold") {
+      ctx.applyState(ctx.doNotDisturb ? "mini-sleep" : "mini-idle");
+    }
+  }
+}
+
+function startMiniPeekSlide(mode) {
+  const distance = getMiniPeekOffset(mode);
+  const offset = miniEdge === "left" ? distance : -distance;
+  animateWindowX(currentMiniX + offset, getPeekMotion(mode).durationMs,
+    () => finalizeMiniProtectionExit(consumeTopologyForMiniPeekIn));
+}
+
+function isPeekHoverCurrent() {
+  if (!ctx.mouseOverPet) return false;
+  if (typeof ctx.getHitRectScreen !== "function" || typeof screen.getCursorScreenPoint !== "function") return true;
+  const hit = ctx.getHitRectScreen(ctx.getPetWindowBounds());
+  const cursor = screen.getCursorScreenPoint();
+  return !!hit && !!cursor && cursor.x >= hit.left && cursor.x <= hit.right
+    && cursor.y >= hit.top && cursor.y <= hit.bottom;
+}
+
+function miniPeekIn(mode = "peek") {
+  cancelPendingMiniPeek();
+  activePeekMode = mode;
+  const delayMs = getPeekMotion(mode).delayMs;
+  if (delayMs === 0) {
+    startMiniPeekSlide(mode);
+    return;
+  }
+  pendingPeekMode = mode;
+  peekDelayTimer = setTimeout(() => {
+    peekDelayTimer = null;
+    pendingPeekMode = null;
+    const validState = mode === "sleep"
+      ? (ctx.currentState === "mini-sleep" || ctx.currentState === "mini-sleep-peek")
+      : (ctx.currentState === "mini-peek" || ctx.currentState === "mini-peek-hold" || ctx.currentState === "mini-idle");
+    if (!miniMode || miniTransitioning || ctx.dragLocked || ctx.menuOpen || !isPeekHoverCurrent()
+      || !validState || ctx.doNotDisturb !== (mode === "sleep") || !ctx.win || ctx.win.isDestroyed()) {
+      activePeekMode = null;
+      resetCancelledPeekState(mode);
+      return;
+    }
+    startMiniPeekSlide(mode);
+  }, delayMs);
 }
 
 function miniPeekOut() {
-  animateWindowX(currentMiniX, 200);
+  const mode = activePeekMode || (miniSleepPeeked ? "sleep" : "peek");
+  cancelPendingMiniPeek();
+  activePeekMode = mode;
+  animateWindowX(currentMiniX, getPeekMotion(mode).durationMs, () => {
+    if (activePeekMode === mode) activePeekMode = null;
+    finalizeMiniProtectionExit(consumeTopologyForMiniRest);
+  });
 }
 
 function getMiniStateFile(state) {
@@ -244,21 +445,91 @@ function getMiniRestState() {
   return ctx.doNotDisturb ? "mini-sleep" : "mini-idle";
 }
 
+// §4.5 point 4.5-4 default topology consumption: mini mode is still active,
+// so handleDisplayChange()'s own workArea/currentMiniX/clampedY
+// re-resolution is the correct target, not a bespoke duplicate of it.
+function consumeTopologyForMiniRest() {
+  if (miniMode) handleDisplayChange();
+}
+
+// PR #751 second-review C-5b (coordinator refinement after C-5): a topology
+// change consumed at miniPeekIn()'s own exit must NOT land at the plain
+// resting position consumeTopologyForMiniRest() (handleDisplayChange()
+// alone) produces — that would silently un-peek, splitting the
+// isAnimating-driven "peeked" state from the actual on-screen position for
+// a full cycle (self-heals on the next peek/peek-out, but hit input and the
+// visual sprite sit PEEK_OFFSET px off from where they're supposed to be in
+// the meantime). Reuses miniPeekIn()'s own existing target expression
+// (currentMiniX + offset) verbatim — same offset sign/source as the peek-in
+// path itself, no new formula — applied AFTER handleDisplayChange() has
+// already recomputed currentMiniX (the resting X) against the NEW topology.
+// miniPeekOut()'s own exit deliberately keeps using consumeTopologyForMiniRest()
+// unchanged: landing at the resting position IS correct there (a peek-out
+// is already headed back to rest).
+function consumeTopologyForMiniPeekIn() {
+  handleDisplayChange();
+  if (!miniMode) return;
+  const distance = getMiniPeekOffset();
+  const offset = miniEdge === "left" ? distance : -distance;
+  ctx.applyPetWindowBounds(
+    { x: currentMiniX + offset, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height },
+    { workArea: lastMiniWorkArea }
+  );
+  ctx.syncHitWin();
+}
+
+// PR #751 Codex review #8 (rework batch B-1, P0): the single convergence
+// point for every path that ends mini's "transitioning or animating" window
+// — clears miniTransitioning/isAnimating, releases the reconcile protection
+// period (§4.3.10), and consumes any pending topology materialize via
+// `onConsumeTopology` (omit it to just discard the flag with no action —
+// correct only for cleanup() below, a teardown path with nothing left to
+// re-anchor. PR #751 second-review C-5/C-5b: peek in/out below used to also
+// omit it, silently discarding a topology change deferred mid-peek instead
+// of ever re-anchoring against it — both now pass an explicit consumer:
+// miniPeekOut() uses the same consumeTopologyForMiniRest() every other
+// caller here does, and miniPeekIn() uses its own
+// consumeTopologyForMiniPeekIn(), since landing at the bare resting
+// position would silently un-peek there). Every animation-end/cancel/
+// exception path converges here: finishMiniEntry()'s settle,
+// cancelMiniTransition(), exitMiniMode()'s parabola onDone,
+// miniPeekIn()/miniPeekOut()'s onDone, and cleanup().
+//
+// cleanup() is the P0 fix this batch is about: theme-runtime.js's reload
+// path calls mini's cleanup() to tear it down, which used to only clear the
+// two timers — leaving miniTransitioning stuck true forever if reload landed
+// mid-transition (a fresh mini.js instance is about to be constructed after
+// reload anyway, but THIS instance's stuck flag was still what
+// runReconcile()'s protection-period check read via getMiniTransitioning()
+// for however long the old instance's closures stayed reachable), which
+// would permanently wedge every future reconcile into "mark dirty, never
+// actually check" since nothing was left to call
+// releaseReconcileProtection().
+function finalizeMiniProtectionExit(onConsumeTopology) {
+  miniTransitioning = false;
+  isAnimating = false;
+  if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
+  if (pendingTopologyMaterialize) {
+    pendingTopologyMaterialize = false;
+    if (typeof onConsumeTopology === "function") onConsumeTopology();
+  }
+}
+
 function finishMiniEntry(delayMs) {
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   const settleMs = Number.isFinite(delayMs) && delayMs >= 0 ? delayMs : MINI_ENTER_FALLBACK_MS;
   miniTransitionTimer = setTimeout(() => {
     miniTransitionTimer = null;
-    miniTransitioning = false;
+    finalizeMiniProtectionExit(consumeTopologyForMiniRest);
     ctx.applyState(getMiniRestState());
   }, settleMs);
 }
 
 function cancelMiniTransition() {
-  miniTransitioning = false;
+  cancelPendingMiniPeek(true);
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
-  isAnimating = false;
+  finalizeMiniProtectionExit(consumeTopologyForMiniRest);
 }
 
 function _getSize() {
@@ -299,16 +570,21 @@ function checkMiniModeSnap() {
 function enterMiniMode(wa, viaMenu, edge) {
   if (!themeSupportsMini()) return;
   if (miniMode && !viaMenu) return;
+  cancelPendingMiniPeek(true);
+  // §4.5 point 2: read ctx.getPetWindowBounds() exactly ONCE as `start` — the
+  // single logical-bounds source of truth for everything below (preMini,
+  // miniSnap.y, the seam/topology yMid, and both animation targets). X offset
+  // is already folded into start.x; it must not be re-read via a raw
+  // ctx.win.getBounds() anywhere in this function.
+  const start = ctx.getPetWindowBounds();
   // preMini 存 virtual — 退出 mini 时能复原贴顶位置
-  const virtualBounds = ctx.getPetWindowBounds();
   if (!viaMenu) {
-    preMiniX = virtualBounds.x;
-    preMiniY = virtualBounds.y;
+    preMiniX = start.x;
+    preMiniY = start.y;
   }
-  // 清零 viewport offset — mini 全程用 real 坐标,避免每帧 materialize + IPC 风暴
+  // 清零 viewport offset(Y)— mini 全程 Y offset 恒为 0;X offset 不清零
+  // (§4.5 point 2),全程只走 §4.4 的 composite-only 路径,见 applyMiniFrameBounds
   if (typeof ctx.setViewportOffsetY === "function") ctx.setViewportOffsetY(0);
-  // 之后 real === virtual,用 real API 读取当前 y 作为 mini 起点
-  const bounds = ctx.win.getBounds();
   miniMode = true;
   miniSleepPeeked = false;
   miniPeeked = false;
@@ -316,12 +592,19 @@ function enterMiniMode(wa, viaMenu, edge) {
   const size = _getSize();
   currentMiniX = calcMiniX(wa, size);
   lastMiniWorkArea = wa;
-  miniSnap = { y: bounds.y, width: size.width, height: size.height };
+  miniSnap = { y: start.y, width: size.width, height: size.height };
+
+  // Single topology resolution for this whole transition (§4.5 point 4.5-4 /
+  // §12.8): reused below for the seam clip, the entry animation's every
+  // frame via animCtx, and (via topology.displays) the viaMenu jump-target
+  // scan further down — never re-resolved per frame.
+  const topology = resolveMiniTopology(wa, start.y + size.height / 2);
+  containedBoundary = seamBoundaryFromEdge(topology.edge, miniEdge);
+  const animCtx = { workArea: wa, edge: topology.edge };
 
   // Multi-monitor seam detection — when active, the renderer clips the half
   // of the window that crosses the seam so the neighbouring display stays
   // clean while the local display still shows the natural half-body peek.
-  containedBoundary = seamBoundary(wa, bounds.y + size.height / 2, miniEdge);
   syncContainedClip();
 
   ctx.stopWakePoll();
@@ -343,23 +626,36 @@ function enterMiniMode(wa, viaMenu, edge) {
       // so the parabola never crosses onto the neighbouring display.
       jumpTarget = currentMiniX;
     } else {
-      const displays = screen.getAllDisplays();
-      if (miniEdge === "right") {
-        let maxRight = 0;
-        for (const d of displays) maxRight = Math.max(maxRight, d.bounds.x + d.bounds.width);
-        jumpTarget = maxRight;
-      } else {
-        let minLeft = Infinity;
-        for (const d of displays) minLeft = Math.min(minLeft, d.bounds.x);
-        jumpTarget = minLeft - size.width;
+      let maxRight = 0;
+      let minLeft = Infinity;
+      for (const d of topology.displays) {
+        maxRight = Math.max(maxRight, d.bounds.x + d.bounds.width);
+        minLeft = Math.min(minLeft, d.bounds.x);
       }
+      // Coordinator-directed fix: a literal fully-off-screen jump target
+      // (window's near edge exactly flush with the outer screen boundary)
+      // materializes to |offsetX| === width on Linux — I2's offset legal
+      // domain is the OPEN interval (-width, +width) (pet-window-runtime.js's
+      // guardOffsetXLegalDomain: `Math.abs(offsetX) < width`), so that exact
+      // value trips the backstop mid-jump: offset gets slammed to 0 and
+      // logical bounds reset to the clamped physical position. That is not
+      // a harmless log — it's a visible flash of the character snapping
+      // onto the physical screen edge (translate reset to 0) for one frame,
+      // before the later preload/settle frame corrects it. Shrinking the
+      // target by 1px keeps |offsetX| at width-1 (203 shows 202, 1920 shows
+      // 1919 for this fixture's numbers) — inside the open interval, so the
+      // guard never fires — while leaving only 1 of ~200px onscreen, visually
+      // indistinguishable from fully off-screen. This is a mini.js-side
+      // workaround for I2's open-interval boundary, not a change to I2
+      // itself or a mini-specific exemption carved into the guard.
+      jumpTarget = miniEdge === "right" ? maxRight - 1 : minLeft - size.width + 1;
     }
-    animateWindowParabola(jumpTarget, bounds.y, JUMP_DURATION, () => {
+    animateWindowParabola(jumpTarget, start.y, JUMP_DURATION, () => {
       const enterDurationMs = getMiniEnterDurationMs(enterSvgState);
       ctx.applyState(enterSvgState);
       if (MINI_ENTER_PRELOAD_MS <= 0) {
-        miniSnap = { y: bounds.y, width: size.width, height: size.height };
-        ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
+        miniSnap = { y: start.y, width: size.width, height: size.height };
+        applyMiniFrameBounds(currentMiniX, miniSnap, animCtx);
         ctx.syncHitWin();
         syncSessionHudVisibility();
         syncContainedClip();
@@ -367,15 +663,15 @@ function enterMiniMode(wa, viaMenu, edge) {
         return;
       }
       miniTransitionTimer = setTimeout(() => {
-        miniSnap = { y: bounds.y, width: size.width, height: size.height };
-        ctx.win.setBounds({ x: currentMiniX, y: miniSnap.y, width: miniSnap.width, height: miniSnap.height });
+        miniSnap = { y: start.y, width: size.width, height: size.height };
+        applyMiniFrameBounds(currentMiniX, miniSnap, animCtx);
         miniTransitionTimer = null;
         ctx.syncHitWin();
         syncSessionHudVisibility();
         syncContainedClip();
         finishMiniEntry(enterDurationMs);
       }, MINI_ENTER_PRELOAD_MS);
-    });
+    }, animCtx);
   } else {
     // Drag path: slide the window into place first, then play mini-enter.
     // Running the 100ms window slide concurrently with the ~960ms in-SVG
@@ -387,8 +683,35 @@ function enterMiniMode(wa, viaMenu, edge) {
     animateWindowX(currentMiniX, 100, () => {
       ctx.applyState(enterSvgState);
       finishMiniEntry(getMiniEnterDurationMs(enterSvgState));
-    });
+    }, animCtx);
   }
+}
+
+// Shared by exitMiniMode()'s initial animation target AND its
+// pendingTopologyMaterialize re-materialize (§4.5 point 4.5-4) — both need
+// "where should the pet rest once back in normal mode", the second time
+// against whatever topology is current at that later moment.
+function resolveExitRestingBounds() {
+  const size = _getSize();
+  const visualState = ctx.doNotDisturb ? "idle" : ctx.resolveDisplayState();
+  const visualFile = visualState ? ctx.getSvgOverride(visualState) : null;
+  const restoreWorkArea = getAttachedMiniWorkArea();
+  const clamped = ctx.clampToScreenVisual(preMiniX, preMiniY, size.width, size.height, {
+    state: visualState,
+    file: visualFile,
+    workArea: restoreWorkArea,
+  });
+  const wa = restoreWorkArea || ctx.getNearestWorkArea(clamped.x + size.width / 2, clamped.y + size.height / 2);
+  const mEdge = Math.round(size.width * 0.25);
+  // Prevent right-edge re-snap
+  if (clamped.x >= wa.x + wa.width - size.width + mEdge - SNAP_TOLERANCE) {
+    clamped.x = wa.x + wa.width - size.width + mEdge - 100;
+  }
+  // Prevent left-edge re-snap
+  if (clamped.x <= wa.x - mEdge + SNAP_TOLERANCE) {
+    clamped.x = wa.x - mEdge + SNAP_TOLERANCE + 100;
+  }
+  return { clamped, wa, size };
 }
 
 function exitMiniMode() {
@@ -403,28 +726,26 @@ function exitMiniMode() {
   miniSleepPeeked = false;
   miniPeeked = false;
 
-  const size = _getSize();
-  const visualState = ctx.doNotDisturb ? "idle" : ctx.resolveDisplayState();
-  const visualFile = visualState ? ctx.getSvgOverride(visualState) : null;
-  const clamped = ctx.clampToScreenVisual(preMiniX, preMiniY, size.width, size.height, {
-    state: visualState,
-    file: visualFile,
-  });
-  const wa = ctx.getNearestWorkArea(clamped.x + size.width / 2, clamped.y + size.height / 2);
-  const mEdge = Math.round(size.width * 0.25);
-  // Prevent right-edge re-snap
-  if (clamped.x >= wa.x + wa.width - size.width + mEdge - SNAP_TOLERANCE) {
-    clamped.x = wa.x + wa.width - size.width + mEdge - 100;
-  }
-  // Prevent left-edge re-snap
-  if (clamped.x <= wa.x - mEdge + SNAP_TOLERANCE) {
-    clamped.x = wa.x - mEdge + SNAP_TOLERANCE + 100;
-  }
+  const { clamped, wa, size } = resolveExitRestingBounds();
+  const topology = resolveMiniTopology(wa, clamped.y + size.height / 2);
+  const animCtx = { workArea: wa, edge: topology.edge };
 
   animateWindowParabola(clamped.x, clamped.y, JUMP_DURATION, () => {
     miniMode = false;
-    miniTransitioning = false;
     containedBoundary = null;
+    // Topology changed again mid-exit-animation: `clamped` above may now be
+    // stale (it was resolved before/at animation start). Mini mode has
+    // already ended by this point (miniMode=false just above), so re-resolve
+    // the normal (non-mini) resting position fresh — not
+    // consumeTopologyForMiniRest()/handleDisplayChange(), which is mini-
+    // mode-specific — and materialize once more against current topology.
+    finalizeMiniProtectionExit(() => {
+      const fresh = resolveExitRestingBounds();
+      ctx.applyPetWindowBounds(
+        { x: fresh.clamped.x, y: fresh.clamped.y, width: fresh.size.width, height: fresh.size.height },
+        { workArea: fresh.wa }
+      );
+    });
     ctx.sendToRenderer("mini-clip", null);
     ctx.sendToRenderer("mini-mode-change", false);
     ctx.sendToHitWin("hit-state-sync", { miniMode: false });
@@ -446,23 +767,25 @@ function exitMiniMode() {
     if (typeof ctx.notifyUpdaterSilentExit === "function") {
       try { ctx.notifyUpdaterSilentExit(); } catch {}
     }
-  });
+  }, animCtx);
 }
 
 function enterMiniViaMenu() {
   if (!themeSupportsMini()) return;
+  cancelPendingMiniPeek(true);
+  // §4.5 point 2: same single logical-bounds read as enterMiniMode() — see
+  // its comment above for why a second ctx.win.getBounds() must not appear.
+  const start = ctx.getPetWindowBounds();
   // preMini 存 virtual — 退出 mini 时能复原贴顶位置
-  const virtualBounds = ctx.getPetWindowBounds();
-  preMiniX = virtualBounds.x;
-  preMiniY = virtualBounds.y;
-  // 清零 viewport offset — 和 enterMiniMode 对称
+  preMiniX = start.x;
+  preMiniY = start.y;
+  // 清零 viewport offset(Y)— 和 enterMiniMode 对称;X offset 不清零,理由同上
   if (typeof ctx.setViewportOffsetY === "function") ctx.setViewportOffsetY(0);
-  const bounds = ctx.win.getBounds();
   const size = _getSize();
-  const wa = ctx.getNearestWorkArea(bounds.x + size.width / 2, bounds.y + size.height / 2);
+  const wa = ctx.getNearestWorkArea(start.x + size.width / 2, start.y + size.height / 2);
 
   // Auto-detect nearest edge
-  const centerX = bounds.x + size.width / 2;
+  const centerX = start.x + size.width / 2;
   const waMid = wa.x + wa.width / 2;
   const edge = centerX <= waMid ? "left" : "right";
   miniEdge = edge;
@@ -478,7 +801,12 @@ function enterMiniViaMenu() {
 
   ctx.applyState("mini-crabwalk");
 
-  const adjacent = seamBoundary(wa, bounds.y + size.height / 2, edge) != null;
+  // Single topology resolution for the crabwalk phase (§4.5 point 4.5-4) —
+  // enterMiniMode(), scheduled below, resolves its own separately when it
+  // actually starts the mini handoff moments later.
+  const topology = resolveMiniTopology(wa, start.y + size.height / 2);
+  const adjacent = seamBoundaryFromEdge(topology.edge, edge) != null;
+  const animCtx = { workArea: wa, edge: topology.edge };
   let edgeX;
   if (edge === "right") {
     edgeX = adjacent
@@ -487,9 +815,9 @@ function enterMiniViaMenu() {
   } else {
     edgeX = adjacent ? wa.x : wa.x - Math.round(size.width * 0.25);
   }
-  const walkDist = Math.abs(bounds.x - edgeX);
+  const walkDist = Math.abs(start.x - edgeX);
   const walkDuration = walkDist / CRABWALK_SPEED;
-  animateWindowX(edgeX, walkDuration);
+  animateWindowX(edgeX, walkDuration, null, animCtx);
 
   miniTransitionTimer = setTimeout(() => {
     enterMiniMode(wa, true, edge);
@@ -498,6 +826,38 @@ function enterMiniViaMenu() {
 
 function refreshContainedBoundary(wa, yMid) {
   containedBoundary = seamBoundary(wa, yMid, miniEdge);
+}
+
+function isValidWorkArea(wa) {
+  return !!(
+    wa
+    && Number.isFinite(wa.x)
+    && Number.isFinite(wa.y)
+    && Number.isFinite(wa.width)
+    && wa.width > 0
+    && Number.isFinite(wa.height)
+    && wa.height > 0
+  );
+}
+
+function sameWorkArea(a, b) {
+  return !!(
+    isValidWorkArea(a)
+    && isValidWorkArea(b)
+    && a.x === b.x
+    && a.y === b.y
+    && a.width === b.width
+    && a.height === b.height
+  );
+}
+
+function getAttachedMiniWorkArea() {
+  if (!isValidWorkArea(lastMiniWorkArea)) return null;
+  const displays = screen.getAllDisplays();
+  if (!Array.isArray(displays) || displays.length === 0) return null;
+  return displays.some((d) => d && sameWorkArea(d.workArea, lastMiniWorkArea))
+    ? lastMiniWorkArea
+    : null;
 }
 
 // Internal-seam state for the hit (input) window. When non-null the hit
@@ -509,35 +869,46 @@ function getContainedSeam() {
 }
 
 function handleDisplayChange() {
+  cancelPendingMiniPeek(true);
   if (!ctx.win || ctx.win.isDestroyed()) return;
   if (!miniMode) return;
   const size = _getSize();
-  // mini 期间 offset 恒为 0,real === virtual,直接读 real
-  const bounds = ctx.win.getBounds();
-  const snapY = miniSnap ? miniSnap.y : bounds.y;
+  // Y offset 恒为 0,X offset 允许非零且只走 composite 路径 — 读逻辑 bounds
+  // (已含 X offset),不读物理 ctx.win.getBounds()
+  const start = ctx.getPetWindowBounds();
+  const snapY = miniSnap ? miniSnap.y : start.y;
   const wa = ctx.getNearestWorkArea(currentMiniX + size.width / 2, snapY + size.height / 2);
   lastMiniWorkArea = wa;
   currentMiniX = calcMiniX(wa, size);
-  // mini 的 y 必须在工作区内(real 坐标),加回两端 clamp
-  const clampedY = Math.max(wa.y, Math.min(snapY, wa.y + wa.height - size.height));
+  // mini 的 y 必须在工作区内(逻辑坐标),加回两端 clamp
+  const clampedY = clampY(snapY, wa, size.height);
   miniSnap = { y: clampedY, width: size.width, height: size.height };
-  ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
+  ctx.applyPetWindowBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height }, { workArea: wa });
+  // §4.5 point 5 / §12.9: this write can be an offset-only change (physical
+  // rect unchanged, only the logical/offset split shifted), which produces
+  // no native move event — sync hit explicitly rather than relying on an
+  // async reconcile that may never fire (I6: "offset change is also a
+  // window move").
+  ctx.syncHitWin();
   refreshContainedBoundary(wa, clampedY + size.height / 2);
   syncContainedClip();
   syncSessionHudVisibility();
 }
 
 function handleResize(sizeKey) {
+  cancelPendingMiniPeek(true);
   if (!miniMode) return false;
-  const { y: curY } = ctx.win.getBounds();
+  const { y: curY } = ctx.getPetWindowBounds();
   const wa = lastMiniWorkArea || ctx.getNearestWorkArea(currentMiniX, curY);
   const size = (typeof ctx.getPixelSizeFor === "function")
     ? ctx.getPixelSizeFor(sizeKey, wa)
     : ctx.SIZES[sizeKey];
   currentMiniX = calcMiniX(wa, size);
-  const clampedY = Math.max(wa.y, Math.min(curY, wa.y + wa.height - size.height));
+  const clampedY = clampY(curY, wa, size.height);
   miniSnap = { y: clampedY, width: size.width, height: size.height };
-  ctx.win.setBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height });
+  ctx.applyPetWindowBounds({ x: currentMiniX, y: clampedY, width: size.width, height: size.height }, { workArea: wa });
+  // See handleDisplayChange() above — same offset-only-write hit sync gap.
+  ctx.syncHitWin();
   refreshContainedBoundary(wa, clampedY + size.height / 2);
   syncContainedClip();
   syncSessionHudVisibility();
@@ -551,8 +922,9 @@ function restoreFromPrefs(prefs, size) {
   const wa = ctx.getNearestWorkArea(prefs.x + size.width / 2, prefs.y + size.height / 2);
   lastMiniWorkArea = wa;
   currentMiniX = calcMiniX(wa, size);
-  // 启动恢复 mini 时 y 必须在工作区内(保证 offset = 0,符合 mini 语义)
-  const startY = Math.max(wa.y, Math.min(prefs.y, wa.y + wa.height - size.height));
+  // 启动恢复 mini 时 y 必须在工作区内(保证 Y offset = 0,符合 mini 语义;
+  // X offset 允许非零,由调用方后续首次 applyPetWindowBounds 决定)
+  const startY = clampY(prefs.y, wa, size.height);
   miniSnap = { y: startY, width: size.width, height: size.height };
   miniMode = true;
   miniTransitioning = false;
@@ -578,18 +950,30 @@ function getPreMiniY() { return preMiniY; }
 function getCurrentMiniX() { return currentMiniX; }
 function getMiniSnap() { return miniSnap; }
 
+// PR #751 Codex review #8 (rework batch B-1, P0): theme-runtime.js's reload
+// path tears mini.js down via this — a fresh instance is constructed right
+// after, so there is nothing meaningful left to re-anchor here (no
+// onConsumeTopology callback: any pending topology materialize is simply
+// discarded, not acted on). What must not be skipped is
+// finalizeMiniProtectionExit() itself: without it, a reload landing
+// mid-transition used to leave miniTransitioning stuck true forever on this
+// (still-referenced-by-closures) instance, permanently wedging
+// runReconcile()'s protection-period check.
 function cleanup() {
+  cancelPendingMiniPeek();
   if (miniTransitionTimer) { clearTimeout(miniTransitionTimer); miniTransitionTimer = null; }
   if (peekAnimTimer) { clearTimeout(peekAnimTimer); peekAnimTimer = null; }
+  finalizeMiniProtectionExit();
 }
 
 return {
   enterMiniMode, exitMiniMode, enterMiniViaMenu,
-  miniPeekIn, miniPeekOut, checkMiniModeSnap, cancelMiniTransition,
+  miniPeekIn, miniPeekOut, cancelPendingMiniPeek, getMiniPeekOffset, checkMiniModeSnap, cancelMiniTransition,
   animateWindowX, animateWindowParabola,
   refreshTheme,
   syncContainedClip, getContainedSeam,
   handleDisplayChange, handleResize, restoreFromPrefs,
+  notifyTopologyChangedDuringTransition,
   getMiniMode, getMiniEdge, getMiniTransitioning, getMiniSleepPeeked, setMiniSleepPeeked, getMiniPeeked, setMiniPeeked,
   getIsAnimating, getPreMiniX, getPreMiniY, getCurrentMiniX, getMiniSnap,
   get MINI_OFFSET_RATIO() { return MINI_OFFSET_RATIO; },

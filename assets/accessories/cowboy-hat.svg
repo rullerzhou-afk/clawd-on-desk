@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Cowboy hat — pixel art (16x7 grid, 1px cells) rendered on the accessory layer. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 7" shape-rendering="crispEdges" width="16" height="7">
+  <g fill="#a86a3a">
+    <rect x="5" y="0" width="2" height="1"/>
+    <rect x="9" y="0" width="2" height="1"/>
+    <rect x="5" y="1" width="6" height="1"/>
+    <rect x="5" y="2" width="6" height="1"/>
+    <rect x="4" y="3" width="8" height="1"/>
+  </g>
+  <g fill="#8a5630">
+    <rect x="10" y="1" width="1" height="1"/>
+    <rect x="10" y="2" width="1" height="1"/>
+    <rect x="11" y="3" width="1" height="1"/>
+  </g>
+  <rect x="4" y="4" width="8" height="1" fill="#4a3018"/>
+  <rect x="7" y="4" width="2" height="1" fill="#e0b34a"/>
+  <rect x="0" y="5" width="16" height="1" fill="#a86a3a"/>
+  <rect x="2" y="6" width="12" height="1" fill="#8a5630"/>
+</svg>

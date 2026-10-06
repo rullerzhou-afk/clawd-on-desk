@@ -110,6 +110,10 @@ function findPluginPathIndex(paths, pluginDir) {
   return -1;
 }
 
+function isManagedPluginPath(value, pluginDir = resolvePluginDir()) {
+  return findPluginPathIndex([value], pluginDir) === 0;
+}
+
 function installViaCli(options = {}) {
   const spawnSync = options.spawnSync || childProcess.spawnSync;
   const command = options.openclawCommand || "openclaw";
@@ -360,6 +364,7 @@ module.exports = {
   ensureOpenClawConfigLinked,
   hasIncludeDirective,
   hasOpenClawCommand,
+  isManagedPluginPath,
   registerOpenClawPlugin,
   resolveOpenClawPaths,
   resolvePluginDir,

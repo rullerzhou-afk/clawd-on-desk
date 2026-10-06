@@ -202,7 +202,7 @@ function getWindowsProcessSnapshot(): Map<number, WinProcessRecord> {
     const raw = childProcess.execFileSync(
       "powershell.exe",
       [
-        "-NoProfile", "-NonInteractive", "-Command",
+        "-NoProfile", "-NonInteractive", "-WindowStyle", "Hidden", "-Command",
         "Get-CimInstance Win32_Process | Select-Object ProcessId, ParentProcessId, Name | ConvertTo-Json -Compress",
       ],
       { encoding: "utf8", timeout: 3000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }

@@ -111,7 +111,7 @@
   <rect class="shadow-walk" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
 
   <g transform="rotate(-2, 7.5, 15)">
-  <g class="body-walk">
+  <g id="accessory-anchor" class="body-walk">
     <!-- Backpack -->
     <g class="pack-swing">
       <rect x="13" y="7" width="4" height="6" fill="#5C9CE6"/>

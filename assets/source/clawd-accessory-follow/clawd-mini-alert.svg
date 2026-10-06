@@ -1,0 +1,129 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .breathe-anim {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      .arm-alert {
+        transform-origin: 2px 9px;
+        animation: alert-arm 4s infinite ease-in-out;
+      }
+
+      /* Normal rect eyes: visible first, hidden after blink */
+      .eyes-rect {
+        transform-origin: 7.5px 9px; /* eye vertical center for blink */
+        animation: rect-vis 4s infinite step-end, rect-move 4s infinite ease-in-out;
+      }
+
+      /* xmark squint eyes: hidden first, visible after switch */
+      .eyes-xmark {
+        visibility: hidden;
+        animation: xmark-vis 4s infinite step-end;
+      }
+
+      .alert-pop {
+        animation: alert-flash 4s infinite ease-in-out;
+        opacity: 0;
+      }
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes alert-arm {
+        0%, 49% { transform: rotate(0deg); }
+        51% { transform: rotate(20deg); }
+        60% { transform: rotate(-8deg); }
+        64% { transform: rotate(20deg); }
+        68% { transform: rotate(-8deg); }
+        72% { transform: rotate(20deg); }
+        76% { transform: rotate(-8deg); }
+        80% { transform: rotate(20deg); }
+        84% { transform: rotate(-8deg); }
+        88% { transform: rotate(20deg); }
+        92%, 100% { transform: rotate(0deg); }
+      }
+
+      /* Rect eyes: center, wait for exclamation, slowly look left, back, pause, blink, switch */
+      @keyframes rect-move {
+        0%, 16% { transform: translate(0, 0) scaleY(1); }
+        22%, 28% { transform: translate(-2px, 0) scaleY(1); }
+        34% { transform: translate(0, 0) scaleY(1); }
+        36% { transform: translate(0, 0) scaleY(0.1); }
+        37%, 39% { transform: translate(0, 0) scaleY(1); }
+        41% { transform: translate(0, 0) scaleY(0.1); }
+        42%, 100% { transform: translate(0, 0) scaleY(1); }
+      }
+
+      /* Rect eyes visibility: visible → hidden at 22%, back at 91% */
+      @keyframes rect-vis {
+        0% { visibility: visible; }
+        42% { visibility: hidden; }
+        91% { visibility: visible; }
+      }
+
+      /* xmark eyes visibility: hidden at start, visible at 42%, hidden at 89% */
+      @keyframes xmark-vis {
+        0% { visibility: hidden; }
+        42% { visibility: visible; }
+        89% { visibility: hidden; }
+      }
+
+      @keyframes alert-flash {
+        0%, 8% { opacity: 0; transform: scale(0.5); }
+        12% { opacity: 1; transform: translate(0, -4px) scale(1.2); }
+        20%, 70% { opacity: 1; transform: translate(0, -4px) scale(1); }
+        85%, 100% { opacity: 0; transform: translate(0, -6px) scale(0.8); }
+      }
+    </style>
+  </defs>
+
+  <!-- Entire character leaning -->
+  <g transform="rotate(-12, 7.5, 15)">
+
+    <!-- Legs -->
+    <g fill="#DE886D">
+      <rect x="3" y="11" width="1" height="4"/>
+      <rect x="5" y="11" width="1" height="4"/>
+      <rect x="9" y="11" width="1" height="4"/>
+      <rect x="11" y="11" width="1" height="4"/>
+    </g>
+
+    <g id="body-js">
+      <g class="breathe-anim">
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- Left Arm — still then shake -->
+        <g class="arm-alert">
+          <rect x="-1.5" y="9" width="4.5" height="2" fill="#DE886D"/>
+        </g>
+
+        <!-- Right Arm -->
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+
+        <!-- Phase 1: Normal rect eyes (look left at exclamation, then blink away) -->
+        <g class="eyes-rect" fill="#000000">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+
+        <!-- Phase 2: >< squint eyes (appear after blink) -->
+        <g class="eyes-xmark" fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="4,8 5.5,9 4,10"/>
+          <polyline points="11,8 9.5,9 11,10"/>
+        </g>
+      </g>
+    </g>
+
+  </g>
+
+  <!-- Exclamation mark (outside rotation = stays vertical) -->
+  <g class="alert-pop" fill="#FF3D00">
+    <rect x="-8" y="5" width="2" height="4"/>
+    <rect x="-8" y="10" width="2" height="2"/>
+  </g>
+</svg>

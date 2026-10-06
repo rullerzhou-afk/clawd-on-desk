@@ -5,6 +5,12 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
 
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
+
 function loadFocusWithMock(options = {}) {
   const cpKey = require.resolve("child_process");
   const focusKey = require.resolve("../src/focus");
@@ -59,7 +65,98 @@ function loadFocusWithMock(options = {}) {
   };
 }
 
+function editorFocusHarness() {
+  const writes = [];
+  const stdout = new EventEmitter();
+  stdout.setEncoding = () => {};
+  stdout.unref = () => {};
+  const loaded = loadFocusWithMock({
+    spawn: () => ({
+      pid: 9994,
+      stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+      stdout, on() {}, unref() {}, kill() {},
+    }),
+  });
+  const focus = loaded.initFocus({ focusLog: () => {} });
+  focus.initFocusHelper();
+  writes.length = 0;
+  return {
+    focus,
+    finishRaise(reason) {
+      assert.equal(writes.length, 1, "navigation must dispatch the Windows helper");
+      const token = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      assert.ok(writes[0].includes(`$reason = '${reason}'`));
+      // The native helper can report foreground equality; Node must still
+      // reject that as proof of an active composer/terminal input.
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ ${JSON.stringify({
+        token, reason, targetHwnd: "101", foregroundHwnd: "101", confirmed: true, status: "confirmed",
+      })}\n`);
+    },
+    cleanup() { focus.cleanup(); loaded.cleanup(); },
+  };
+}
+
 describe("Windows terminal focus", () => {
+  for (const cwd of ["D:\\repo", null]) {
+    const reason = `editor-parent-pid-window${cwd ? "" : "-no-title"}`;
+    for (const requestSource of ["hud", "dashboard"]) {
+      it(`${requestSource} dispatches ${reason} but does not confirm a chat`, async () => {
+        const harness = editorFocusHarness();
+        try {
+          const pending = harness.focus.focusTerminalWindow({
+            sourcePid: 1234, cwd, sessionId: "cursor-session", agentId: "cursor-agent", requestSource,
+          });
+          harness.finishRaise(reason);
+          const result = await pending;
+          assert.equal(result.reason, reason);
+          assert.equal(result.targetHwnd, "101");
+          assert.equal(result.foregroundHwnd, "101");
+          assert.equal(result.confirmed, false);
+          assert.equal(result.status, "unconfirmed");
+        } finally {
+          harness.cleanup();
+        }
+      });
+    }
+
+    it(`Direct Send copies fallback after ${reason} without invoking paste`, async () => {
+      const { createTelegramDirectSend, createClipboardFallbackDeliveryAdapter } = require("../src/telegram-direct-send");
+      const harness = editorFocusHarness();
+      const focusEntered = deferred();
+      const copied = [];
+      const delivered = [];
+      const entry = { id: "cursor-session", agentId: "cursor-agent", sourcePid: 1234, state: "idle", badge: "done" };
+      try {
+        const direct = createTelegramDirectSend({
+          isEnabled: () => true,
+          getSessionSnapshot: () => ({ sessions: [entry] }),
+          focusSession: (sessionId, options) => {
+            assert.equal(sessionId, entry.id);
+            assert.equal(options.requestSource, "telegram-direct-send");
+            focusEntered.resolve();
+            return harness.focus.focusTerminalWindow({ ...entry, sessionId, cwd, requestSource: options.requestSource });
+          },
+          deliveryAdapter: () => { delivered.push("paste"); return { status: "pasted", delivered: true }; },
+          fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard: { writeText: (text) => copied.push(text) } }),
+          osPlatform: "win32",
+        });
+        assert.equal(direct.registerCompletionNotification({ messageId: 806, sessionId: entry.id }), true);
+        const pending = direct.handleTextMessage({ text: "continue", replyToMessageId: 806 });
+        await focusEntered.promise;
+        harness.finishRaise(reason);
+        const result = await pending;
+        assert.equal(result.status, "fallback_copied");
+        assert.equal(result.focusResult.confirmed, false);
+        assert.equal(result.focusResult.reason, reason);
+        assert.equal(direct._deliveries.get(result.deliveryId).errorClass, "focus_unconfirmed");
+        assert.deepEqual(copied, ["continue"]);
+        assert.deepEqual(delivered, []);
+      } finally {
+        harness.cleanup();
+      }
+    });
+  }
+
   it("does not generate the blind first-WindowsTerminal fallback", () => {
     const { initFocus, cleanup } = loadFocusWithMock();
     try {
@@ -324,6 +421,273 @@ describe("Windows terminal focus", () => {
         { reason: "parent-direct", targetHwnd: null, foregroundHwnd: "8008" },
         { hwnd: null }
       ), false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("enables the Orca gate in the generated script when the request carries a pane key", () => {
+    const writes = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      spawn: () => ({
+        pid: 9998,
+        stdin: {
+          writable: true,
+          write: (chunk) => writes.push(String(chunk)),
+          on() {},
+        },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      focus.focusTerminalWindow({
+        sourcePid: 1111,
+        cwd: "D:\\repo-a",
+        sessionId: "session-orca",
+        agentId: "claude-code",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      });
+      // orcaHosted is makeFocusCmd's 7th positional argument, and both array
+      // arguments are in scope at the call site — drop one and the gate silently
+      // becomes $false, re-opening the window cache and the incidental wt_hwnd
+      // that this branch exists to outrank, with the wrong window reported as a
+      // confirmed focus.
+      assert.match(writes.join(""), /\$orcaHosted = \$true/);
+
+      writes.length = 0;
+      focus.focusTerminalWindow({
+        sourcePid: 2222,
+        cwd: "D:\\repo-b",
+        sessionId: "session-plain",
+        agentId: "claude-code",
+      });
+      assert.match(writes.join(""), /\$orcaHosted = \$false/);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("raises and switches an Orca-managed SSH pane without a local source PID", async () => {
+    const calls = [];
+    const writes = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      execFile: (cmd, args, opts, cb) => {
+        if (typeof opts === "function") cb = opts;
+        calls.push({ cmd, args: [...(args || [])] });
+        const joined = (args || []).join(" ");
+        if (joined.startsWith("terminal list")) {
+          return cb(null, JSON.stringify({
+            ok: true,
+            result: { terminals: [{ handle: "term_remote", tabId: "tab-remote", leafId: "leaf-remote" }] },
+          }), "");
+        }
+        if (joined.startsWith("terminal switch")) return cb(null, JSON.stringify({ ok: true }), "");
+        return cb(null, "", "");
+      },
+      spawn: () => ({
+        pid: 9996,
+        stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+      focus.focusTerminalWindow({
+        cwd: "/remote/worktree",
+        sessionId: "remote:session-orca-win",
+        agentId: "codex",
+        orcaPaneKey: "tab-remote:leaf-remote",
+      });
+      await new Promise((resolve) => setTimeout(resolve, focus.__test.ORCA_PANE_FOCUS_DELAY_MS + 250));
+
+      assert.match(writes.join(""), /\$orcaHosted = \$true/);
+      assert.match(writes.join(""), /\$focusCacheSourcePid = \[int64\]0/);
+      assert.equal(calls.filter((c) => c.args.join(" ").startsWith("terminal switch")).length, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reaches the Orca pane switch from the Windows focus dispatch", async () => {
+    const calls = [];
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const { initFocus, cleanup } = loadFocusWithMock({
+      execFile: (cmd, args, opts, cb) => {
+        if (typeof opts === "function") cb = opts;
+        calls.push({ cmd, args: [...(args || [])] });
+        const joined = (args || []).join(" ");
+        if (joined.startsWith("terminal list")) {
+          return cb(null, JSON.stringify({
+            ok: true,
+            result: { terminals: [{ handle: "term_live", tabId: "8ce1fff7-tab", leafId: "9813824b-leaf" }] },
+          }), "");
+        }
+        if (joined.startsWith("terminal switch")) return cb(null, JSON.stringify({ ok: true }), "");
+        return cb(null, "", "");
+      },
+      spawn: () => ({
+        pid: 9997,
+        stdin: { writable: true, write() {}, on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: "D:\\Repos\\Apps\\clawd-on-desk",
+        sessionId: "session-orca-switch",
+        agentId: "claude-code",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+      });
+      // The switch sits behind a timer, so this has to wait it out. Asserting only
+      // the generated script text leaves the Windows dispatch line free to be
+      // deleted with the whole suite still green: the window would rise and the tab
+      // would never change.
+      await new Promise((r) => setTimeout(r, focus.__test.ORCA_PANE_FOCUS_DELAY_MS + 250));
+
+      const switches = calls.filter((c) => c.args.join(" ").startsWith("terminal switch"));
+      assert.equal(switches.length, 1);
+      assert.deepEqual(switches[0].args, ["terminal", "switch", "--terminal", "term_live", "--json"]);
+      // Windows raises inside the generated script, so Node must spawn no raise.
+      assert.deepEqual(
+        calls.filter((c) => ["/usr/bin/open", "wmctrl", "xdotool"].includes(c.cmd)),
+        []
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("holds the focus result until the Orca pane switch has answered", async () => {
+    // Telegram Direct Send acts on this promise. Resolving it on the raise alone
+    // let it press Ctrl+V while the switch was still in flight, so the reply landed
+    // in whichever pane was previously active and was still reported as delivered.
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    let releaseSwitch = null;
+    const writes = [];
+    const { initFocus, cleanup } = loadFocusWithMock({
+      execFile: (cmd, args, opts, cb) => {
+        if (typeof opts === "function") cb = opts;
+        const joined = (args || []).join(" ");
+        if (joined.startsWith("terminal list")) {
+          return cb(null, JSON.stringify({
+            ok: true,
+            result: { terminals: [{ handle: "term_live", tabId: "8ce1fff7-tab", leafId: "9813824b-leaf" }] },
+          }), "");
+        }
+        // Held open so the raise can be confirmed first — the exact ordering the
+        // race depends on.
+        if (joined.startsWith("terminal switch")) {
+          releaseSwitch = () => cb(null, JSON.stringify({ ok: true }), "");
+          return;
+        }
+        return cb(null, "", "");
+      },
+      spawn: () => ({
+        pid: 9996,
+        stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      const pending = focus.focusTerminalWindow({
+        sourcePid: 3333,
+        cwd: "D:\\Repos\\Apps\\clawd-on-desk",
+        sessionId: "session-orca-gate",
+        agentId: "claude-code",
+        orcaPaneKey: "8ce1fff7-tab:9813824b-leaf",
+        requestSource: "telegram-direct-send",
+      });
+      const token = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ {"token":"${token}","reason":"orca-window","targetHwnd":"787468","foregroundHwnd":"787468","confirmed":true,"status":"confirmed"}\n`);
+
+      let settledEarly = false;
+      pending.then(() => { settledEarly = true; });
+      await new Promise((r) => setTimeout(r, focus.__test.ORCA_PANE_FOCUS_DELAY_MS + 150));
+      assert.equal(settledEarly, false, "the raise alone must not settle the focus result");
+
+      assert.ok(releaseSwitch, "the pane switch should have been dispatched");
+      releaseSwitch();
+      const result = await pending;
+      assert.equal(result.confirmed, true);
+      assert.deepEqual(result.orcaPane, { ok: true, match: "exact", reason: "orca-pane-switched" });
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not make non-Orca sessions wait on a pane switch", async () => {
+    const stdout = new EventEmitter();
+    stdout.setEncoding = () => {};
+    stdout.unref = () => {};
+    const writes = [];
+    const { initFocus, cleanup } = loadFocusWithMock({
+      spawn: () => ({
+        pid: 9995,
+        stdin: { writable: true, write: (chunk) => writes.push(String(chunk)), on() {} },
+        stdout,
+        on() {},
+        unref() {},
+        kill() {},
+      }),
+    });
+
+    try {
+      const focus = initFocus({ focusLog: () => {} });
+      focus.initFocusHelper();
+      writes.length = 0;
+
+      const pending = focus.focusTerminalWindow({
+        sourcePid: 4444,
+        cwd: "D:\\Repos\\Apps\\clawd-on-desk",
+        sessionId: "session-plain",
+        agentId: "claude-code",
+        requestSource: "telegram-direct-send",
+      });
+      const token = writes[0].match(/\$focusToken = '([^']+)'/)[1];
+      stdout.emit("data", `__CLAWD_FOCUS_RESULT__ {"token":"${token}","reason":"parent-direct","targetHwnd":"111","foregroundHwnd":"111","confirmed":true,"status":"confirmed"}\n`);
+
+      const result = await pending;
+      assert.equal(result.confirmed, true);
+      assert.equal(result.orcaPane, undefined);
     } finally {
       cleanup();
     }

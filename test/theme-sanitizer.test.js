@@ -36,6 +36,49 @@ test("sanitizeSvg strips unsafe script, href, and CSS URL surfaces", () => {
   assert.ok(sanitized.includes("background:url(nested/sheet.png)"));
 });
 
+test("sanitizeSvg removes SMIL that mutates dynamic URL, event, or style surfaces", () => {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg">',
+    '  <a id="target"><rect width="1" height="1"/></a>',
+    '  <set href="#target" attributeName="href" to="javascript:alert(1)"/>',
+    '  <animate attributeName="fill" values="#fff;url(https://bad.example/fill)"/>',
+    '  <set attributeName="onload" to="steal()"/>',
+    '  <animate attributeName="opacity" values="0;1" dur="1s"/>',
+    '</svg>',
+  ].join("");
+
+  const sanitized = sanitizeSvg(svg);
+  assert.ok(!sanitized.includes('attributeName="href"'));
+  assert.ok(!sanitized.includes("bad.example"));
+  assert.ok(!sanitized.includes('attributeName="onload"'));
+  assert.ok(sanitized.includes('attributeName="opacity"'));
+});
+
+test("sanitizeSvg rejects namespace-prefixed SMIL and obfuscated dynamic URLs", () => {
+  const svg = [
+    '<svg xmlns="http://www.w3.org/2000/svg" xmlns:s="http://www.w3.org/2000/svg" xmlns:x="http://www.w3.org/1999/xlink">',
+    '  <a id="target"><rect width="1" height="1"/></a>',
+    '  <image x:href="https://bad.example/static.png"/>',
+    '  <s:animate attributeName="href" values="#target;javascript:alert(1)"/>',
+    '  <s:animate attributeName="x:href" values="#target;https://bad.example/aliased"/>',
+    '  <animate attributeName="fill" values="#fff;url(h\\74tps://bad.example/escaped)"/>',
+    '  <animate attributeName="fill" values="#fff;url(h/**/ttps://bad.example/commented)"/>',
+    '  <animate attributeName="fill" values="#fff;url(h\\9 ttps://bad.example/tab)"/>',
+    '  <animate attributeName="fill" values="#fff;url(h\\a ttps://bad.example/newline)"/>',
+    '  <animate attributeName="fill" values="#fff;url(h\\d ttps://bad.example/carriage-return)"/>',
+    '  <s:set attributeName="fill" to="url(javascr\\9 ipt:alert(1))"/>',
+    '  <s:animate attributeName="opacity" values="0;1" dur="1s"/>',
+    '</svg>',
+  ].join("");
+
+  const sanitized = sanitizeSvg(svg);
+  assert.ok(!sanitized.includes('attributeName="href"'));
+  assert.ok(!sanitized.includes('attributeName="x:href"'));
+  assert.ok(!sanitized.includes('x:href="https:'));
+  assert.ok(!sanitized.includes("bad.example"));
+  assert.ok(sanitized.includes('s:animate attributeName="opacity"'));
+});
+
 test("collectSafeRasterRefs collects only safe relative png and webp dependencies", () => {
   const sourceAssetsDir = path.join(__dirname, "fixtures", "theme-assets");
   const svg = [

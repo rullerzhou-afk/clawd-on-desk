@@ -194,7 +194,7 @@
 
   <!-- Layer 1: Body -->
   <g class="body-bounce">
-    <g class="breathe">
+    <g id="accessory-anchor" class="breathe">
       <g fill="#DE886D">
         <rect x="3" y="13" width="1" height="2"/>
         <rect x="5" y="13" width="1" height="2"/>

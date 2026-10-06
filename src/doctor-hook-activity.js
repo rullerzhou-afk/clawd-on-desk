@@ -125,8 +125,9 @@ function scanFileMtimeActivity(options = {}) {
   ].filter(Boolean);
 }
 
-function eventSummary(events) {
-  const agents = uniqueSorted(events.map((event) => event.agentId));
+function eventSummary(events, resolveAgentDisplayName) {
+  const resolve = typeof resolveAgentDisplayName === "function" ? resolveAgentDisplayName : (agentId) => agentId;
+  const agents = uniqueSorted(events.map((event) => resolve(event.agentId)));
   const outcomes = uniqueSorted(events.map((event) => event.outcome));
   return { agents, outcomes };
 }
@@ -138,7 +139,7 @@ function evaluateConnectionTest(input = {}) {
   const dropped = events.filter((event) => event && typeof event.outcome === "string" && event.outcome.startsWith("dropped-"));
 
   if (accepted.length) {
-    const summary = eventSummary(accepted);
+    const summary = eventSummary(accepted, input.resolveAgentDisplayName);
     return {
       status: "http-verified",
       level: null,
@@ -147,11 +148,23 @@ function evaluateConnectionTest(input = {}) {
   }
 
   if (dropped.length) {
-    const summary = eventSummary(dropped);
+    const summary = eventSummary(dropped, input.resolveAgentDisplayName);
     return {
       status: "http-dropped",
       level: "warning",
       detail: `HTTP works but events were dropped (${summary.outcomes.join(", ")}${summary.agents.length ? `: ${summary.agents.join(", ")}` : ""}).`,
+    };
+  }
+
+  const codexActivity = fileActivity.some((entry) => entry && entry.agentId === "codex");
+  const codexHookHealth = input.codexHookHealth && typeof input.codexHookHealth === "object"
+    ? input.codexHookHealth
+    : null;
+  if (codexActivity && codexHookHealth && codexHookHealth.signature === "needs-review") {
+    return {
+      status: "hooks-need-review",
+      level: "warning",
+      detail: "Codex activity was detected, but Clawd cannot evaluate the HTTP path because its Codex hooks still need review. Run /hooks in Codex CLI, review the Clawd hooks, then run this test again. This result does not rule out a separate firewall or proxy issue.",
     };
   }
 
@@ -184,7 +197,20 @@ async function runConnectionTest(options = {}) {
   const fileActivity = Array.isArray(options.fileActivity)
     ? options.fileActivity
     : scanFileMtimeActivity({ ...options, since: startedAt });
-  const evaluated = evaluateConnectionTest({ events, fileActivity });
+  let codexHookHealth = options.codexHookHealth;
+  if (typeof options.getCodexHookHealth === "function") {
+    try {
+      codexHookHealth = options.getCodexHookHealth();
+    } catch {
+      codexHookHealth = null;
+    }
+  }
+  const evaluated = evaluateConnectionTest({
+    events,
+    fileActivity,
+    codexHookHealth,
+    resolveAgentDisplayName: options.resolveAgentDisplayName,
+  });
   return {
     id: "hook-event-waterline",
     startedAt: new Date(startedAt).toISOString(),

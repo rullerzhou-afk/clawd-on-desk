@@ -1,6 +1,7 @@
 "use strict";
 
-const CODEX_THREAD_SESSION_ID_RE = /^codex:([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+const { CODEX_THREAD_ID_RE, getCodexThreadId } = require("./codex-thread-id");
+const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
 
 function normalizeString(value) {
   return typeof value === "string" ? value.trim() : "";
@@ -11,31 +12,61 @@ function normalizeOsPlatform(options) {
   return normalizeString(options.osPlatform || options.focusHostPlatform).toLowerCase();
 }
 
-function getCodexThreadId(entry) {
-  if (!entry || entry.agentId !== "codex") return null;
-  const originator = normalizeString(entry.codexOriginator || entry.originator).toLowerCase();
-  if (originator !== "codex desktop") return null;
-  const match = normalizeString(entry.id).match(CODEX_THREAD_SESSION_ID_RE);
-  return match ? match[1] : null;
+function getCodexThreadUrl(entry) {
+  const originator = entry && (entry.codexOriginator || entry.originator);
+  if (!isCodexDesktopOriginator(originator)) return null;
+  const threadId = getCodexThreadId(entry);
+  // `codex queue --thread` accepts exact saved names, but the Desktop deep-link
+  // contract is only established for UUIDs. Keep focus narrower than delivery
+  // instead of assuming queue selectors are also valid URL route parameters.
+  return threadId && CODEX_THREAD_ID_RE.test(threadId)
+    ? `codex://threads/${threadId}`
+    : null;
 }
 
-function getCodexThreadUrl(entry) {
-  const threadId = getCodexThreadId(entry);
-  return threadId ? `codex://threads/${threadId}` : null;
+// A DSH session is the desktop carrier only when the bridge said so (state or
+// approval). This checks identity alone; whether the host can open the app is
+// decided by getDshDesktopFocusUrl below.
+function isDshDesktopSession(entry) {
+  return !!entry
+    && entry.agentId === "deepseek-harness"
+    && entry.dshCarrier === "desktop";
+}
+
+function getDshDesktopFocusUrl(entry, options) {
+  if (!isDshDesktopSession(entry)) return null;
+  const osPlatform = normalizeOsPlatform(options);
+  return osPlatform === "darwin" || osPlatform === "win32" ? "dsh://open" : null;
+}
+
+function hasSupportedOrcaPaneTarget(entry, options = {}) {
+  const paneKey = normalizeString(entry && entry.orcaPaneKey);
+  if (!paneKey || paneKey.length > 256) return false;
+  if (!/^[\w-]+:[\w-]+$/.test(paneKey)) return false;
+  const osPlatform = normalizeOsPlatform(options);
+  return osPlatform === "darwin" || osPlatform === "win32";
 }
 
 function getSessionFocusTarget(entry, options = {}) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
-  if (entry.host || entry.platform === "webui") return { canFocus: false, type: null, url: null };
+  if (entry.platform === "webui") return { canFocus: false, type: null, url: null };
+
+  // Orca forwards its local pane identity into managed SSH PTYs. That key can
+  // target the local Orca UI without treating the remote process PID as local.
+  // Keep the exception narrow: supported host OS, strict pane-key shape, and
+  // terminal focus only. Every other remote session remains unfocusable.
+  const hasOrcaPaneTarget = hasSupportedOrcaPaneTarget(entry, options);
+  if (entry.host && !hasOrcaPaneTarget) return { canFocus: false, type: null, url: null };
+  if (hasOrcaPaneTarget) return { canFocus: true, type: "terminal", url: null };
 
   const codexThreadUrl = getCodexThreadUrl(entry);
   if (codexThreadUrl) {
-    if (normalizeOsPlatform(options) === "win32") {
-      return entry.sourcePid
-        ? { canFocus: true, type: "terminal", url: null }
-        : { canFocus: false, type: null, url: null };
-    }
     return { canFocus: true, type: "codex-thread", url: codexThreadUrl };
+  }
+
+  const dshDesktopUrl = getDshDesktopFocusUrl(entry, options);
+  if (dshDesktopUrl) {
+    return { canFocus: true, type: "dsh-desktop", url: dshDesktopUrl };
   }
 
   if (entry.sourcePid) {
@@ -43,6 +74,40 @@ function getSessionFocusTarget(entry, options = {}) {
   }
 
   return { canFocus: false, type: null, url: null };
+}
+
+// A Codex Desktop deep link can select the application window, but the OS
+// foreground check cannot prove which of its conversations owns the composer.
+// Direct Send must therefore keep Desktop out of the paste path even when the
+// session still carries a sourcePid. Navigation callers continue to use the
+// regular target above and can open the thread URL normally.
+function getDirectSendFocusTarget(entry, options = {}) {
+  const isCodexDesktop = !!entry
+    && entry.agentId === "codex"
+    && isCodexDesktopOriginator(entry.codexOriginator || entry.originator);
+  if (isCodexDesktop) {
+    return {
+      canFocus: false,
+      type: "codex-thread",
+      url: getCodexThreadUrl(entry),
+      reason: "codex_desktop_requires_manual_paste",
+    };
+  }
+
+  // The desktop app window can be opened, but the OS foreground check cannot
+  // prove which conversation owns the composer, and the app is not a terminal
+  // that accepts injected text. Direct Send must therefore stay off this target.
+  if (isDshDesktopSession(entry)) {
+    return {
+      canFocus: false,
+      type: "dsh-desktop",
+      url: "dsh://open",
+      reason: "dsh_desktop_requires_manual_paste",
+    };
+  }
+
+  const target = getSessionFocusTarget(entry, options);
+  return target;
 }
 
 function isFocusableLocalHudSession(entry, options = {}) {
@@ -64,7 +129,9 @@ function getFocusableLocalHudSessionIds(snapshot, options = {}) {
 module.exports = {
   getCodexThreadId,
   getCodexThreadUrl,
+  getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  isDshDesktopSession,
   isFocusableLocalHudSession,
 };

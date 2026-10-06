@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Western cowboy hat — Anthony + Oscar's PR #811 pixel design. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-1 1 17 5" shape-rendering="crispEdges" width="17" height="5">
+  <g fill="#A5682A">
+    <rect x="-1" y="4" width="1" height="1"/>
+    <rect x="15" y="4" width="1" height="1"/>
+    <rect x="0" y="5" width="15" height="1"/>
+    <rect x="3" y="2" width="9" height="3"/>
+    <rect x="3" y="1" width="3" height="1"/>
+    <rect x="9" y="1" width="3" height="1"/>
+  </g>
+  <rect x="3" y="4" width="9" height="1" fill="#6B3E1D"/>
+</svg>

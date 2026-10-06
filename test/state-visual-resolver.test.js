@@ -66,6 +66,20 @@ describe("state-visual-resolver bindings", () => {
     assert.strictEqual(hasOwnVisualFiles({ working: { files: ["a.svg"] } }, "working"), true);
     assert.strictEqual(hasOwnVisualFiles({ working: { files: [] } }, "working"), false);
   });
+
+  it("never samples selectable-only idle files from states.idle", () => {
+    const theme = {
+      states: { idle: ["idle-a.svg", "idle-b.svg"] },
+      idleVisualOptions: [{ file: "pool.apng" }],
+    };
+    const bindings = buildStateBindings(theme);
+    for (const roll of [0, 0.49, 0.99]) {
+      assert.ok(["idle-a.svg", "idle-b.svg"].includes(resolveVisualBinding("idle", bindings, {
+        pickStateFile: (files) => pickStateFile(files, () => roll),
+      })));
+    }
+    assert.deepStrictEqual(bindings.idle.files, ["idle-a.svg", "idle-b.svg"]);
+  });
 });
 
 describe("state-visual-resolver SVG overrides", () => {
@@ -129,5 +143,26 @@ describe("state-visual-resolver SVG overrides", () => {
     assert.strictEqual(getSvgOverride("working", options), "working-three.svg");
     assert.strictEqual(getSvgOverride("juggling", options), "conducting.svg");
     assert.strictEqual(getSvgOverride("error", options), null);
+  });
+
+  // #509: user-selected default idle visual
+  it("idle prefers idleDefaultVisual over idleFollowSvg when provided", () => {
+    const base = { idleFollowSvg: "idle-follow.svg" };
+    assert.strictEqual(
+      getSvgOverride("idle", { ...base, idleDefaultVisual: "idle-reading.svg" }),
+      "idle-reading.svg"
+    );
+    assert.strictEqual(getSvgOverride("idle", { ...base, idleDefaultVisual: null }), "idle-follow.svg");
+    assert.strictEqual(getSvgOverride("idle", base), "idle-follow.svg");
+  });
+
+  it("update visual override still wins over idleDefaultVisual for its state", () => {
+    const options = {
+      updateVisualState: "idle",
+      updateVisualSvgOverride: "update-idle.svg",
+      idleFollowSvg: "idle-follow.svg",
+      idleDefaultVisual: "idle-reading.svg",
+    };
+    assert.strictEqual(getSvgOverride("idle", options), "update-idle.svg");
   });
 });

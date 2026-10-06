@@ -9,6 +9,8 @@ module.exports = {
     mac: ["Cursor"],
     linux: ["cursor", "Cursor"],
   },
+  // An open IDE is not evidence that Cursor Agent is mid-turn.
+  startupRecoveryProcessNames: { win: [], mac: [], linux: [] },
   eventSource: "hook",
   eventMap: {
     sessionStart: "idle",

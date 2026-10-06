@@ -5,6 +5,7 @@ module.exports = {
   id: "claude-code",
   name: "Claude Code",
   processNames: { win: ["claude.exe"], mac: ["claude"], linux: ["claude"] },
+  startupRecoveryProcessNames: { win: ["claude.exe"], mac: ["claude"], linux: ["claude"] },
   eventSource: "hook",
   // PascalCase event names — matches Claude Code hook system
   eventMap: {

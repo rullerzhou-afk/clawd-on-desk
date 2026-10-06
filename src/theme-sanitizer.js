@@ -10,7 +10,7 @@ const DANGEROUS_ATTR_RE = /^on/i;
 const DANGEROUS_HREF_RE = /^\s*javascript\s*:/i;
 const EXTERNAL_RESOURCE_RE = /^\s*(?:\/\/|(https?|data|file|ftp)\s*:)/i;
 const PATH_TRAVERSAL_RE = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
-const HREF_ATTRS = new Set(["href", "xlink:href", "src", "action", "formaction"]);
+const HREF_ATTRS = new Set(["href", "src", "action", "formaction"]);
 const SVG_URL_ATTRS = new Set([
   "style",
   "fill",
@@ -25,6 +25,70 @@ const SVG_URL_ATTRS = new Set([
 ]);
 const WINDOWS_ABSOLUTE_PATH_RE = /^[a-zA-Z]:[\\/]/;
 const ROOT_ABSOLUTE_PATH_RE = /^[\\/](?![\\/])/;
+const ANIMATION_TAGS = new Set(["animate", "animatetransform", "animatemotion", "set"]);
+const DYNAMIC_VALUE_ATTRS = ["from", "to", "by", "values"];
+const DYNAMIC_JAVASCRIPT_RE = /javascript\s*:/i;
+
+function xmlLocalName(name) {
+  const qualified = typeof name === "string" ? name.toLowerCase() : "";
+  const separator = qualified.lastIndexOf(":");
+  return separator >= 0 ? qualified.slice(separator + 1) : qualified;
+}
+
+function normalizeCssSecurityText(value) {
+  if (typeof value !== "string" || !value) return value || "";
+  const withoutComments = value.replace(/\/\*[\s\S]*?\*\//g, "");
+  const decodedEscapes = withoutComments.replace(
+    /\\([0-9a-f]{1,6})(?:\r\n|[\t\n\f\r ])?|\\([^\n\f\r])/gi,
+    (_match, hex, escaped) => {
+      if (hex) {
+        const codePoint = Number.parseInt(hex, 16);
+        if (!Number.isFinite(codePoint) || codePoint === 0 || codePoint > 0x10ffff) return "\uFFFD";
+        return String.fromCodePoint(codePoint);
+      }
+      return escaped || "";
+    }
+  );
+  // URL parsers discard ASCII tab/newline/CR inside schemes. Remove them from
+  // the security-only comparison too so CSS escapes such as `h\\9 ttps:` and
+  // `javascr\\a ipt:` cannot reconstruct an external or script URL later.
+  return decodedEscapes.replace(/[\t\n\r]/g, "");
+}
+
+function getAttributeCaseInsensitive(attribs, wanted) {
+  if (!attribs || typeof attribs !== "object") return undefined;
+  const key = Object.keys(attribs).find((candidate) => candidate.toLowerCase() === wanted);
+  return key === undefined ? undefined : attribs[key];
+}
+
+function hasUnsafeDynamicAnimation(node) {
+  if (!node || !node.attribs) return false;
+  const rawAnimatedAttribute = getAttributeCaseInsensitive(node.attribs, "attributename");
+  const animatedAttribute = typeof rawAnimatedAttribute === "string"
+    ? xmlLocalName(rawAnimatedAttribute.trim())
+    : "";
+  if (
+    DANGEROUS_ATTR_RE.test(animatedAttribute)
+    || HREF_ATTRS.has(animatedAttribute)
+    || animatedAttribute === "style"
+  ) return true;
+
+  for (const key of DYNAMIC_VALUE_ATTRS) {
+    const value = getAttributeCaseInsensitive(node.attribs, key);
+    if (typeof value !== "string") continue;
+    const decoded = decodeResourceTarget(value);
+    const normalizedCss = normalizeCssSecurityText(value);
+    const decodedNormalizedCss = decodeResourceTarget(normalizedCss);
+    if (
+      DYNAMIC_JAVASCRIPT_RE.test(value)
+      || DYNAMIC_JAVASCRIPT_RE.test(decoded)
+      || DYNAMIC_JAVASCRIPT_RE.test(normalizedCss)
+      || DYNAMIC_JAVASCRIPT_RE.test(decodedNormalizedCss)
+      || containsUnsafeCssUrl(normalizedCss)
+    ) return true;
+  }
+  return false;
+}
 
 function sanitizeSvg(svgContent) {
   const { parseDocument } = require("htmlparser2");
@@ -49,8 +113,8 @@ function collectSafeRasterRefs(svgContent, sourceAssetsDir) {
     if (!node) return;
     if (node.attribs) {
       for (const [rawKey, value] of Object.entries(node.attribs)) {
-        const key = rawKey.toLowerCase();
-        if (key === "href" || key === "xlink:href") {
+        const key = xmlLocalName(rawKey);
+        if (key === "href") {
           const ref = normalizeRasterReference(value, sourceAssetsDir);
           if (ref) out.set(ref.destRel, ref);
         }
@@ -188,14 +252,22 @@ function sanitizeNode(node) {
     const child = node.children[i];
 
     if (child.type === "tag" || child.type === "script" || child.type === "style") {
-      const tagName = (child.name || "").toLowerCase();
+      const tagName = xmlLocalName(child.name);
       if (DANGEROUS_TAGS.has(tagName)) {
+        node.children.splice(i, 1);
+        continue;
+      }
+      // SMIL can mutate attributes after the static markup has been sanitized.
+      // Reject animations that target URL/event/style surfaces or smuggle an
+      // unsafe URL through from/to/by/values; otherwise a safe initial href can
+      // become executable only after the document-backed SVG starts running.
+      if (ANIMATION_TAGS.has(tagName) && hasUnsafeDynamicAnimation(child)) {
         node.children.splice(i, 1);
         continue;
       }
     }
 
-    if (child.type === "style" || (child.type === "tag" && (child.name || "").toLowerCase() === "style")) {
+    if (child.type === "style" || (child.type === "tag" && xmlLocalName(child.name) === "style")) {
       if (child.children) {
         for (const textNode of child.children) {
           if (textNode.type === "text" && textNode.data) {
@@ -208,20 +280,21 @@ function sanitizeNode(node) {
     if (child.attribs) {
       const keys = Object.keys(child.attribs);
       for (const key of keys) {
-        if (DANGEROUS_ATTR_RE.test(key)) {
+        const localKey = xmlLocalName(key);
+        if (DANGEROUS_ATTR_RE.test(localKey)) {
           delete child.attribs[key];
           continue;
         }
-        if (HREF_ATTRS.has(key.toLowerCase())) {
+        if (HREF_ATTRS.has(localKey)) {
           const val = child.attribs[key];
           if (isUnsafeHrefTarget(val)) {
             delete child.attribs[key];
             continue;
           }
         }
-        if (SVG_URL_ATTRS.has(key.toLowerCase())) {
+        if (SVG_URL_ATTRS.has(localKey)) {
           const val = child.attribs[key];
-          if (key.toLowerCase() === "style") {
+          if (localKey === "style") {
             const sanitized = sanitizeCssUrls(val);
             if (!sanitized || !sanitized.trim()) delete child.attribs[key];
             else child.attribs[key] = sanitized;

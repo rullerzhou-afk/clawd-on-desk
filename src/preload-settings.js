@@ -4,12 +4,21 @@
 //
 // Surface: window.settingsAPI
 //
+//   discordDefaultAppIdPresent          boolean — a default Discord App ID is
+//                                       hardcoded (maintainer-shipped)
 //   getSnapshot()                       Promise<snapshot>
+//   getPetTintOptions()                 Promise<Array<{id, labelKey}>>
+//   getPetAccessoryOptions()            Promise<Array<{id, labelKey}>>
+//   getPetMouthAccessoryOptions()       Promise<Array<{id, labelKey}>>
 //   update(key, value)                  Promise<{ status, message? }>
 //   command(action, payload)            Promise<{ status, message? }>
 //   listAgents()                        Promise<Array<{id, name, ...}>>
 //   onChanged(cb)                       cb({ changes, snapshot? }) — fires for
 //                                       every settings-changed broadcast
+//   onAgentActivity(cb)                 cb({ agentId, timestamp, eventType }) —
+//                                       accepted custom /state activity only
+//   onRecapChanged(cb)                  cb() — coalesced signal that the local
+//                                       Footprints aggregate changed
 //   onAnimationPreviewPosterReady(cb)   cb({ themeId, filename, previewImageUrl,
 //                                       previewPosterCacheKey }) — incremental
 //                                       animation override preview poster
@@ -22,13 +31,29 @@
 
 const { contextBridge, ipcRenderer } = require("electron");
 
+// A sandboxed preload (Electron's default since 20) may only require "electron"
+// plus a few Node builtins — never an app module. The "is a default Discord App
+// ID baked in?" flag is therefore injected by value from main, via
+// webPreferences.additionalArguments, and read off process.argv here.
+const DISCORD_DEFAULT_APP_ID_FLAG = "--discord-default-app-id-present=";
+const discordDefaultAppIdArg = process.argv.find((a) => a.startsWith(DISCORD_DEFAULT_APP_ID_FLAG));
+const discordDefaultAppIdPresent =
+  !!discordDefaultAppIdArg && discordDefaultAppIdArg.slice(DISCORD_DEFAULT_APP_ID_FLAG.length) === "1";
+
 const listeners = new Set();
 const shortcutFailureListeners = new Set();
 const shortcutRecordKeyListeners = new Set();
 const remoteSshStatusListeners = new Set();
 const remoteSshProgressListeners = new Set();
-const hardwareBuddyStatusListeners = new Set();
+const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
+const sizeContextListeners = new Set();
+const agentActivityListeners = new Set();
+const recapChangedListeners = new Set();
+const updateCheckStatusListeners = new Set();
+const requestedTabListeners = new Set();
+const officialThemeProgressListeners = new Set();
+let pendingRequestedTab = null;
 ipcRenderer.on("settings-changed", (_event, payload) => {
   for (const cb of listeners) {
     try { cb(payload); } catch (err) { console.warn("settings onChanged listener threw:", err); }
@@ -54,9 +79,9 @@ ipcRenderer.on("remoteSsh:progress", (_event, payload) => {
     try { cb(payload); } catch (err) { console.warn("remoteSsh progress listener threw:", err); }
   }
 });
-ipcRenderer.on("hardwareBuddy:status-changed", (_event, payload) => {
-  for (const cb of hardwareBuddyStatusListeners) {
-    try { cb(payload); } catch (err) { console.warn("hardwareBuddy status listener threw:", err); }
+ipcRenderer.on("remoteApproval:status-changed", (_event, payload) => {
+  for (const cb of remoteApprovalStatusListeners) {
+    try { cb(payload); } catch (err) { console.warn("remote approval status listener threw:", err); }
   }
 });
 // Fired by the settings-window runtime whenever the window's effective text
@@ -67,9 +92,70 @@ ipcRenderer.on("settings:text-scale-context-changed", () => {
     try { cb(); } catch (err) { console.warn("text scale context listener threw:", err); }
   }
 });
+ipcRenderer.on("settings:size-context-changed", () => {
+  for (const cb of sizeContextListeners) {
+    try { cb(); } catch (err) { console.warn("size context listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:agent-activity", (_event, payload) => {
+  for (const cb of agentActivityListeners) {
+    try { cb(payload); } catch (err) { console.warn("agent activity listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:recap-changed", () => {
+  for (const cb of recapChangedListeners) {
+    try { cb(); } catch (err) { console.warn("recap changed listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:update-check-status", (_event, payload) => {
+  for (const cb of updateCheckStatusListeners) {
+    try { cb(payload); } catch (err) { console.warn("update check status listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:select-tab", (_event, tab) => {
+  if (typeof tab !== "string") return;
+  pendingRequestedTab = tab;
+  for (const cb of requestedTabListeners) {
+    try { cb(tab); } catch (err) { console.warn("settings requested-tab listener threw:", err); }
+  }
+});
+ipcRenderer.on("officialTheme:progress", (_event, payload) => {
+  for (const cb of officialThemeProgressListeners) {
+    try { cb(payload); } catch (err) { console.warn("official theme progress listener threw:", err); }
+  }
+});
 
 contextBridge.exposeInMainWorld("settingsAPI", {
+  // Capability flag: true when a default Discord App ID is hardcoded (maintainer-
+  // shipped), so the presence enable switch can be ready without a user-saved App ID.
+  discordDefaultAppIdPresent,
   getSnapshot: () => ipcRenderer.invoke("settings:get-snapshot"),
+  queryRecap: (period) => ipcRenderer.invoke("settings:recap-query", period),
+  clearRecap: () => ipcRenderer.invoke("settings:recap-clear"),
+  consumeRequestedTab: () => {
+    const tab = pendingRequestedTab;
+    pendingRequestedTab = null;
+    return tab;
+  },
+  onRequestedTab: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    requestedTabListeners.add(cb);
+    return () => requestedTabListeners.delete(cb);
+  },
+  getQuotaSourceCount: () => ipcRenderer.invoke("settings:get-quota-source-count"),
+  getQuotaRingProviders: () => ipcRenderer.invoke("settings:get-quota-ring-providers"),
+  getKimiQuotaStatus: () => ipcRenderer.invoke("settings:kimi-quota-status"),
+  connectKimiQuota: (apiKey) => ipcRenderer.invoke("settings:kimi-quota-connect", { apiKey }),
+  refreshKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-refresh"),
+  reconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-reconnect"),
+  disconnectKimiQuota: () => ipcRenderer.invoke("settings:kimi-quota-disconnect"),
+  forgetKimiQuotaCredential: () => ipcRenderer.invoke("settings:kimi-quota-forget"),
+  getPetTintOptions: () => ipcRenderer.invoke("settings:get-pet-tint-options"),
+  getPetAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-accessory-options"),
+  getPetMouthAccessoryOptions: () => ipcRenderer.invoke("settings:get-pet-mouth-accessory-options"),
+  getRoamFence: () => ipcRenderer.invoke("settings:get-roam-fence"),
+  selectRoamFence: () => ipcRenderer.invoke("settings:select-roam-fence"),
+  clearRoamFence: () => ipcRenderer.invoke("settings:clear-roam-fence"),
   getShortcutFailures: () => ipcRenderer.invoke("settings:getShortcutFailures"),
   getAnimationOverridesData: () => ipcRenderer.invoke("settings:get-animation-overrides-data"),
   openThemeAssetsDir: () => ipcRenderer.invoke("settings:open-theme-assets-dir"),
@@ -84,6 +170,12 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   previewTextScale: (value) => ipcRenderer.invoke("settings:preview-text-scale", value),
   endTextScalePreview: () => ipcRenderer.invoke("settings:end-text-scale-preview"),
   getTextScaleContext: () => ipcRenderer.invoke("settings:get-text-scale-context"),
+  getSizeContext: () => ipcRenderer.invoke("settings:get-size-context"),
+  onSizeContextChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    sizeContextListeners.add(cb);
+    return () => sizeContextListeners.delete(cb);
+  },
   onTextScaleContextChanged: (cb) => {
     if (typeof cb !== "function") return () => {};
     textScaleContextListeners.add(cb);
@@ -98,16 +190,28 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   command: (action, payload) => ipcRenderer.invoke("settings:command", { action, payload }),
   openDashboard: () => ipcRenderer.send("settings:open-dashboard"),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
-  detectAgentInstallations: () => ipcRenderer.invoke("settings:detect-agent-installations"),
+  pickAgentDiscoveryPath: (kind) => ipcRenderer.invoke("settings:pick-agent-discovery-path", { kind }),
+  detectAgentInstallations: (opts) => ipcRenderer.invoke("settings:detect-agent-installations", opts),
+  getDshNotices: () => ipcRenderer.invoke("settings:dsh-notices"),
+  acknowledgeDshNotice: (profile, id) => ipcRenderer.invoke("settings:dsh-notice-ack", { profile, id }),
   getAboutInfo: () => ipcRenderer.invoke("settings:get-about-info"),
   checkForUpdates: () => ipcRenderer.invoke("settings:check-for-updates"),
+  clearUpdateError: () => ipcRenderer.invoke("settings:clear-update-error"),
+  copyUpdateError: (copyText) => ipcRenderer.invoke("settings:copy-update-error", copyText),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
-  getHardwareBuddyStatus: () => ipcRenderer.invoke("settings:get-hardware-buddy-status"),
-  testHardwareBuddyApproval: () => ipcRenderer.invoke("settings:test-hardware-buddy-approval"),
-  getQuickCommandPresets: () => ipcRenderer.invoke("settings:get-quick-command-presets"),
-  sendQuickCommand: (payload) => ipcRenderer.invoke("settings:send-quick-command", payload),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
+  listOfficialThemes: () => ipcRenderer.invoke("settings:list-official-themes"),
+  installOfficialTheme: (themeId) => ipcRenderer.invoke("settings:install-official-theme", themeId),
+  cancelOfficialThemeInstall: () => ipcRenderer.invoke("settings:cancel-official-theme-install"),
+  uninstallOfficialTheme: (themeId) => ipcRenderer.invoke("settings:uninstall-official-theme", themeId),
+  confirmUninstallOfficialTheme: (themeId) =>
+    ipcRenderer.invoke("settings:confirm-uninstall-official-theme", themeId),
+  onOfficialThemeProgress: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    officialThemeProgressListeners.add(cb);
+    return () => officialThemeProgressListeners.delete(cb);
+  },
   openUserThemesDir: () => ipcRenderer.invoke("settings:open-user-themes-dir"),
   importUserThemeZip: () => ipcRenderer.invoke("settings:import-user-theme-zip"),
   refreshCodexPets: () => ipcRenderer.invoke("settings:refresh-codex-pets"),
@@ -121,6 +225,16 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   resetMobileAccess: () => ipcRenderer.invoke("settings:reset-mobile-access"),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
+  },
+  onAgentActivity: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    agentActivityListeners.add(cb);
+    return () => agentActivityListeners.delete(cb);
+  },
+  onRecapChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    recapChangedListeners.add(cb);
+    return () => recapChangedListeners.delete(cb);
   },
   onAnimationPreviewPosterReady: (cb) => {
     if (typeof cb !== "function") return () => {};
@@ -140,10 +254,15 @@ contextBridge.exposeInMainWorld("settingsAPI", {
     shortcutRecordKeyListeners.add(cb);
     return () => shortcutRecordKeyListeners.delete(cb);
   },
-  onHardwareBuddyStatusChanged: (cb) => {
+  onRemoteApprovalStatusChanged: (cb) => {
     if (typeof cb !== "function") return () => {};
-    hardwareBuddyStatusListeners.add(cb);
-    return () => hardwareBuddyStatusListeners.delete(cb);
+    remoteApprovalStatusListeners.add(cb);
+    return () => remoteApprovalStatusListeners.delete(cb);
+  },
+  onUpdateCheckStatus: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    updateCheckStatusListeners.add(cb);
+    return () => updateCheckStatusListeners.delete(cb);
   },
 });
 
@@ -153,6 +272,7 @@ contextBridge.exposeInMainWorld("doctor", {
   testConnection: (durationMs) => ipcRenderer.invoke("doctor:test-connection", { durationMs }),
   openClawdLog: () => ipcRenderer.invoke("doctor:open-clawd-log"),
   codexHookHealth: () => ipcRenderer.invoke("doctor:codex-hook-health"),
+  claudeHookHealth: () => ipcRenderer.invoke("doctor:claude-hook-health"),
 });
 
 // ── Remote SSH (Phase 2) ──
@@ -161,9 +281,9 @@ contextBridge.exposeInMainWorld("doctor", {
 //
 //   listStatuses()                 Promise<{ status, statuses: Array<state> }>
 //   status(profileId)              Promise<{ status, state }>
-//   connect(profileId)             Promise<{ status, state? }>
+//   connect(profileId)             Promise<{ status, state?, reason?, hint?, detail? }>
 //   disconnect(profileId)          Promise<{ status, state? }>
-//   deploy(profileId)              Promise<{ status, message?, step? }>
+//   deploy(profileId, options?)    Promise<{ status, message?, step? }>
 //   authenticate(profileId)        Promise<{ status, terminal?, message? }>
 //   openTerminal(profileId)        Promise<{ status, terminal?, message? }>
 //   onStatusChanged(cb)            cb({ profileId, status, ... })
@@ -177,7 +297,19 @@ contextBridge.exposeInMainWorld("remoteSsh", {
   status: (profileId) => ipcRenderer.invoke("remoteSsh:status", profileId),
   connect: (profileId) => ipcRenderer.invoke("remoteSsh:connect", profileId),
   disconnect: (profileId) => ipcRenderer.invoke("remoteSsh:disconnect", profileId),
-  deploy: (profileId) => ipcRenderer.invoke("remoteSsh:deploy", profileId),
+  cleanup: (profileId) => ipcRenderer.invoke("remoteSsh:cleanup", profileId),
+  deploy: (profileId, options = {}) => ipcRenderer.invoke("remoteSsh:deploy", {
+    profileId,
+    legacyMigrationConfirmed: options.legacyMigrationConfirmed === true,
+  }),
+  setRuntimeMode: (profileId, runtimeMode, confirmed) => ipcRenderer.invoke(
+    "remoteSsh:set-runtime-mode",
+    { profileId, runtimeMode, confirmed: confirmed === true }
+  ),
+  forceRevoke: (profileId, mode, confirmed) => ipcRenderer.invoke(
+    "remoteSsh:force-revoke",
+    { profileId, mode, confirmed: confirmed === true }
+  ),
   authenticate: (profileId) => ipcRenderer.invoke("remoteSsh:authenticate", profileId),
   openTerminal: (profileId) => ipcRenderer.invoke("remoteSsh:open-terminal", profileId),
   onStatusChanged: (cb) => {

@@ -5,19 +5,57 @@ Use this flow when preparing a Clawd app release.
 ## Before Tagging
 
 1. Update `package.json` to the release version.
-2. Add `docs/releases/release-vX.Y.Z.md`.
+2. Add `docs/releases/release-vX.Y.Z.md` and a matching `!` allowlist line in
+   `.gitignore` (for example `!docs/releases/release-v1.2.0.md`). Without the
+   allowlist, `git add` silently skips the note and CI's `validate-release`
+   skips all three platform builds.
 3. Run the local tests that match the change scope. For full release prep, run:
 
 ```bash
+npm run verify:release
 npm test
-node scripts/verify-sidecar-binaries.js prebuild:all
+npm run audit:assets
 ```
+
+Official downloadable themes (for example Hash Sage and Whale-chan) ship as versioned GitHub
+Release assets in the separate `rullerzhou-afk/clawd-themes` repository, never
+inside Clawd. Before tagging, refresh the bundled catalog snapshot with
+`npm run update:official-theme-snapshot` and commit the diff if the snapshot
+changed. Confirm the packaged resources still contain no
+`themes/hash-sage/**` or `themes/whale-chan/**` payload and that `npm run audit:assets` reports the
+tracked-tree budget within policy. On a pull request, the
+`audit:pr-history-assets` gate additionally proves no large official-theme
+media entered the PR's reachable history.
 
 4. Run the `Build & Release` workflow manually on `main`.
 
-Manual workflow dispatch builds Windows, macOS, and Linux artifacts, fetches the
-pinned `cc-connect-clawd` sidecar release, verifies source-pinned checksums, and
-uploads build artifacts. It does not publish a GitHub Release.
+For macOS Developer ID certificate creation, App Store Connect Team API key
+setup, local verification, and the exact GitHub Actions secret names, follow
+[`docs/guides/release-signing.md`](../guides/release-signing.md). Never commit a
+`.p12`, `.p8`, certificate password, or decoded secret file.
+
+Manual workflow dispatch builds Windows, macOS, and Linux artifacts, checks
+each unpacked resources tree for retired Telegram sidecar binaries/source, and
+gates every package on its target-native Koffi payload, a packaged positive-call
+smoke, and updater metadata matching both the generated artifacts and the exact
+`package.json` release version. It then uploads
+the installers plus JSON evidence manifests. It does not publish a GitHub
+Release.
+
+When all five macOS signing secrets are configured, the manual workflow produces
+Developer ID signed and notarized apps, then mounts both generated DMGs and
+verifies the exact app bundle each DMG contains. With none of the secrets
+configured, a manual run explicitly retains the ad-hoc validation path. A
+partial secret set always fails. A `v*` tag build fails closed unless the full
+secret set is available, so an official draft cannot silently contain an ad-hoc
+macOS build.
+
+Each staged application must contain exactly one physical Koffi native addon at
+`app.asar.unpacked/node_modules/koffi/build/koffi/<target-triplet>/koffi.node`.
+The native inventory audit must reject every foreign-architecture binary except
+the exact electron-builder-managed Windows `resources/elevate.exe` ia32 helper.
+Do not rewrite `app.asar` from `afterPack`: electron-builder records ASAR
+integrity before that hook, so Koffi cleanup is physical-file pruning only.
 
 ## Draft Release
 
@@ -37,7 +75,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v0.11.0 Draft Smoke Checklist
+### v1.2.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`. Windows
 required items are the primary publish gate. If macOS or Linux hardware is not
@@ -47,14 +85,26 @@ notes.
 Before launching:
 
 - Download the draft release asset for the platform being tested.
-- Confirm the packaged app shows `0.11.0` metadata.
+- On macOS, download each DMG through a browser so it carries quarantine
+  metadata. Confirm it opens without a Privacy & Security override, then verify
+  the copied app with `spctl` and `stapler` as documented in the signing guide.
+- Confirm the packaged app shows `1.2.0` metadata.
 - Confirm packaged resources include `app.asar.unpacked/hooks`,
   `app.asar.unpacked/agents`, `app.asar.unpacked/extensions`,
-  `app.asar.unpacked/themes`, and `sidecars/cc-connect-clawd`.
+  and `app.asar.unpacked/themes`.
+- Confirm the retirement assertion passes and neither
+  `sidecars/cc-connect-clawd` nor any `cc-connect-clawd(.exe)` exists.
 - Confirm Windows artifacts are architecture-specific x64 / ARM64 installers,
   not a universal NSIS installer.
-- For migration smoke, install v0.10.0 first and save a copy of the old
+- Download the native-package, Koffi prune/smoke, and updater metadata manifests.
+  Confirm the target has one matching `koffi.node`, no foreign native payload,
+  and no unreviewed exception. Confirm each updater metadata `version` and every
+  listed artifact filename identify `1.2.0`.
+- For migration smoke, install v0.16.0 first and save a copy of the old
   `clawd-prefs.json` before upgrading.
+- For legacy Feishu/Lark migration smoke, enable remote approval in v0.15.0 with saved
+  App credentials and an approver before upgrading. Keep the old
+  `feishu-approval.env` alongside the prefs copy.
 - For Reasonix smoke, prepare a machine with Reasonix initialized so
   `<Reasonix home>/` exists (`%APPDATA%\reasonix` on Windows,
   `~/.reasonix` on macOS/Linux). A skipped install because Reasonix is missing
@@ -65,47 +115,210 @@ Before launching:
 Required all-platform checks:
 
 - Fresh install, launch, pet appears, no error dialog.
-- Upgrade install over v0.10.0, launch, pet appears, no error dialog. This path
-  exercises prefs v11 to v12 migration.
-- Settings -> About shows `v0.11.0`, sourced from `app.getVersion()`.
+- Footprints is enabled by default. Confirm Today/Week/Month/Year show local
+  accepted activity and coverage, preserve unsupported metrics as a dash, and
+  add no content or raw identifiers to storage. Turn recording off/on and clear
+  during a pending completion: old counts must not reappear, while the normal
+  completion animation still works. Recovered/locked preferences must visibly
+  report recording paused until an explicit, permitted Settings action resumes it.
+- Move the system timezone west after recording, then inspect Today/Week.
+  Recorded activity and coverage at the frozen local hour remain visible.
+- With enough permission requests to overflow a small display, exercise queue
+  loading/ACK failure and native window clamping. Allow/Deny shortcuts must not
+  decide a partly clipped or hidden target; normal safe cards remain usable.
+- End Codex turn A, then let its delayed question/output reach the JSONL monitor.
+  It must not revive A or extend turn B. Real current-turn questions still keep
+  an active task alive. Upgrade a profile with a long generic working timeout
+  and no Codex-specific value: preserve its previous effective Codex duration.
+
+- Upgrade install over v1.1.0, launch, pet appears, no error dialog. Existing
+  agent installation/enabled flags and user theme/animation choices remain intact.
+- Settings -> About shows `v1.2.0`, sourced from `app.getVersion()`.
 - First-run tutorial opens once for a fresh profile; Finish, Skip, and OS close
   each persist `tutorialSeen=true` and do not reopen on restart.
 - Upgrade profile with no `tutorialSeen` sees the tutorial once; an already-seen
   profile does not reopen it.
 - Existing macOS users keep their previous Dock setting after upgrade; fresh
   macOS installs default to pet + menu-bar accessory with no Dock tile.
-- Settings -> General / Agents / Animation & Sound render correctly in all five
+- Settings -> General / Agents / Animation & Sound render correctly in all supported
   languages, including sidebar SVG icons and the folded Animation Map subtab.
-- Settings -> About contributors include the seven v0.11.0 first-time
-  contributors: `zhaoxv210`, `serenNan`, `IatomicreactorI`, `quantai1314`,
-  `Git-creat7`, `undownding`, and `chrono-meta`.
+- Settings -> About contributors include every v1.2.0 contributor named in the
+  release note while preserving all previous contributors.
+- Make `clawd-prefs.json` temporarily unreadable and launch once. Confirm the
+  startup warning and Doctor critical item both explain that agent events and
+  approvals are paused; restore access and restart before continuing.
+- Replace `clawd-prefs.json` with truncated JSON and launch once. Confirm the
+  original bytes are retained in `clawd-prefs.json.bak`, startup and Doctor say
+  the recovered defaults are non-authoritative for this launch, and every agent
+  event/permission/sync gate stays closed until Settings are reviewed and Clawd
+  is restarted.
+- Repeat with a path collision that prevents `clawd-prefs.json.bak` from being
+  created. Confirm the primary file remains byte-for-byte unchanged, Settings
+  writes stay locked, and startup/Doctor report backup failure without claiming
+  that a backup exists.
 - Reinstall one existing hook-based agent, such as Codex, and confirm the
   packaged hook script can `require()` its dependencies.
 - Run one real Claude Code or Codex session and confirm the pet reacts to state
   changes and still plays completion happy on Stop.
+- Confirm a completed turn uses the distinct default completion sound rather
+  than the ordinary confirmation cue.
+- Run one real OpenCode session through a title rename, tool activity, and
+  SessionEnd. HUD/Dashboard must show the bounded title, retain causal ordering,
+  and remove the session without replaying a stale state after a slow endpoint.
+- Stop Clawd while OpenCode is running, trigger a permission request, and confirm
+  the plugin leaves the decision in OpenCode's native UI without POSTing its
+  reverse-bridge credentials to another listener in the Clawd port range.
+- Restart Clawd during an active Claude session, then let the real hook resume
+  and end it. Dashboard/HUD must keep one canonical session throughout and
+  remove it cleanly on SessionEnd, with no duplicate or ghost recovery row.
+- Exercise manual accessories on normal, interrupt, sleep, idle, reaction, and
+  mini animations. Animation Map overrides must keep the wardrobe available;
+  a frame without safe geometry hides only that frame's accessory. Toggle the
+  holiday option and confirm it temporarily overrides, then restores, the
+  saved manual accessory.
+- Exercise Ask every time, Question prompts only, and Auto-approve at both the
+  global and live-session scopes. Confirmation gates must appear where required,
+  and the unattended runtime elevation must downgrade after restart.
+- Feed Claude and Codex quota data from local plus Remote SSH sources. Confirm
+  per-source values appear in Dashboard and the configurable pet Orbit ring,
+  merge-across-machines can be turned both on and off, and an occupied third-party
+  Claude statusline is preserved unless explicit chaining is enabled.
 - Trigger a long CJK Claude or Codex completion and confirm the Stop event reaches
   Clawd without a 413 and the happy animation is not dropped.
 - Codex official hook health: disable hooks / leave hooks unreviewed, confirm
   Agents badge or startup nudge reports attention, then repair/review and
   confirm it returns healthy.
+- Claude hook health: delete one managed hook script and atomically replace
+  `settings.json`; confirm the watcher/periodic audit repairs supported damage,
+  while a still-missing declared core event is never reported as a successful Fix.
+- Register two custom HTTP agents and send the same raw `session_id` from both;
+  confirm Dashboard keeps separate sessions, then disable/delete one and confirm
+  the other remains intact. Forged/stale `custom-` ids must be rejected.
+- Install WorkBuddy against the current `~/.workbuddy-ai/settings.json` path and
+  confirm state + Notification events arrive without Clawd taking over approval.
+- Install MiMo Code into a commented/trailing-comma JSONC config, exercise
+  Allow/Always/Deny and DND fallback, then uninstall and confirm user config is preserved.
+- Install, enable inside MiniMax (`mcode plugin enable clawd-state@local` or the
+  plugin panel), and uninstall MiniMax Code. Confirm state events arrive, no
+  Clawd permission bubble appears, and unrelated plugins remain intact.
+- OpenCode 2.x packaged acceptance: verify dual-key registration, live state
+  flow idle→thinking→working→attention, and a blocking bubble round-trip for
+  Allow, Deny, same-session Always, and auto-tools. Interrupt a session with a
+  pending approval: its bubble must withdraw. Exercise a compound shell command
+  such as `a && b` and confirm destructive-operation reminders and warning
+  badges inspect each command. Check the `opencode web` / `serve --hostname
+  0.0.0.0` reply path reaches the host through loopback. A missing Clawd
+  endpoint must leave the decision in OpenCode's native UI. This extends the
+  macOS source/real-machine v2.0.15 checks from 2026-09-24; the packaged asset
+  still needs its own spot check.
+- Host version controls OpenCode registration: confirmed v2 writes `plugins`,
+  confirmed v1 removes only Clawd-owned v2 entries, and unknown leaves
+  `plugins` untouched. Verify `CLAWD_OPENCODE_HOST` recovers from failed host
+  detection, then remove the override. For OpenCode 2.x, run
+  `opencode service restart` after updating the plugin; a new session alone
+  may retain the old shared service. For OpenCode 1.x, restart opencode.
+- Windows packaged opencode acceptance (#1026, requires a real opencode 1.18.31):
+  install the Program Files Clawd package, confirm the opencode config points at
+  `%USERPROFILE%\.clawd\integrations\...\generations\<hash>\opencode-plugin` (never
+  `app.asar.unpacked`), and that the managed five-file generation bytes/hash match the
+  packaged source with no deny-write ACL. Start a real opencode session and confirm
+  exactly one Clawd state stream and one permission request per interaction (no double
+  load from a duplicate entry). Restart Clawd twice and confirm startup sync is
+  idempotent. Repair a single legacy/missing legacy entry and confirm in-place
+  migration with the source untouched; arrange a modified Clawd-like copy and confirm
+  Install/Repair fail closed with Doctor needs-review and no Fix. Uninstall and confirm
+  proven-owned entries are gone, Settings shows uninstalled/disabled, third-party
+  plugin/tuple/options are unchanged, and residual generation files (if any) no longer
+  emit events after Clawd is removed. Source-level tests do not satisfy this item.
 - Settings -> Agents -> Install Reasonix succeeds on Windows when paths contain
   spaces, and the written command uses the EncodedCommand path when needed.
+- Install TraeCode on Windows with Node under `C:\Program Files`, enable the
+  hooks in Trae CN using Sandbox mode, and confirm all six event types exit 0;
+  then uninstall and confirm all six encoded managed entries are removed.
+- Set `REASONIX_HOME` to an unresolved variable and confirm install/sync fails
+  closed without writing `settings.json` into the launch directory.
+- Install ZCode and confirm lifecycle events plus a real `PermissionRequest`
+  reach Clawd. Exercise manual Allow and Deny, then confirm no-decision falls
+  back to ZCode's native permission flow and permission automation stays
+  unavailable. From an Orca pane, jump back to the session and confirm the
+  validated pane key focuses the correct pane locally and over managed Remote SSH.
+- Install QwenWork on Windows or macOS and confirm lifecycle state reaches Clawd,
+  `PermissionRequest` / `PermissionDenied` remain observation-only, and uninstall
+  removes only Clawd-managed hook entries.
 - Remote SSH profile with connect-on-launch connects after startup; repeat with
   local port 23333 occupied so the server binds a later port and the tunnel still
   targets the real bound port.
+- Upgrade a Remote SSH target that still has the legacy Codex monitor PID file;
+  deploy/cleanup must complete without shell `bad substitution`. Confirm
+  revoke-all invalidates both current and previous routing nonces, and a normal
+  edit of a profile-isolated profile preserves its runtime mode/key/layout.
+- Upgrade a profile that used the retired Telegram sidecar. Confirm the one-time
+  startup reminder points to Settings -> Remote Approval, saved token/recipient
+  values remain, and approval plus completion notifications stay disabled until
+  a real native verification callback succeeds. Failure/timeout must not restart
+  the retired sidecar.
+- Upgrade the prepared legacy v0.15.0 Feishu/Lark profile. Confirm the legacy setup
+  remains fail-closed, a one-time startup warning points to Remote Approval,
+  and Doctor reports the binding problem. Re-save the selected platform and
+  App ID/App Secret, then re-save the approver; restart and confirm the client
+  becomes ready without another warning.
+- Install the DeepSeek Harness bridge with its managed root reached through a
+  filesystem symlink. Confirm install and Doctor both report the verified
+  generation as healthy; foreign same-name packages must still fail closed.
+  Check 0.1.5-rc.1 and rc.3 session titles and context usage when available.
+- Exercise the DeepSeek Harness desktop app once on macOS and once on Windows:
+  install when both carriers are present and confirm the "installed in desktop"
+  notice; confirm Doctor shows one row with both sides; run a real desktop-app
+  session and take one Allow and one Deny; after a plugin update (generation
+  change), confirm the "restart desktop" notice appears, a desktop restart keeps
+  sessions working, and the notice clears only after the user clicks "Got it";
+  with DND on, confirm the desktop app shows its own approval dialog.
+- Turn on the destructive-operation reminder, then exercise recognized
+  destructive commands under auto-tools and unattended: each must pause for a
+  person instead of auto-allowing. Turn it off and confirm normal policy
+  resumes. Include a `git commit -m "$(cat <<'EOF' ... EOF)"` whose body has an
+  odd quote count or `(#N)` and confirm it is not held; then a plain
+  `cat <<EOF` heredoc with the same body, and confirm the documented
+  conservative hold and the Settings explanation.
+- Queue Slack notifications while its sender is busy; confirm none are lost
+  and a permission alert can use its separate lane.
+- End a Claude turn and deliver a trailing `SubagentStop`; completion animation
+  and notification must remain. Restart Clawd with an idle Claude session and
+  reboot after a normally ended turn, including one with background work;
+  neither may return as working or interrupted.
+- Run a Codex memory consolidation and confirm no `memories` worker card appears
+  in HUD or Dashboard.
+- On an existing imported Codex Pet, upgrade from v1.1.0 and confirm its
+  juggling pose refreshes once without losing the imported theme.
+- Enable Discord Rich Presence without animation mirroring, then opt into the
+  animation mirror. Confirm coarse status text remains stable, supported Clawd
+  animations use the repository-hosted GIFs, and disabling the option returns
+  to state-based presence.
 
 Recommended all-platform checks:
 
 - Free roam: enable it, wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
   alignment, and cancels on mouse move, state change, drag, mini mode, and DND.
+- Free roam constraints: exercise axis off/horizontal/vertical both with and
+  without a valid fence, then use a small fence and invalid/missing fence input.
+  Targets must remain reachable and on-screen, with invalid input falling back
+  safely.
 - Dizzy spin: on the Clawd theme, circle the cursor rapidly and confirm dizzy
   triggers; repeat on Calico/Cloudling and confirm no unsupported-state glitch.
 - Low-power idle mode: verify sleeping/Cloudling static sleep behavior and that
   the HUD can be reclaimed/reopened without a blank surface.
+- Download, install, select, and uninstall Whale-chan from Settings -> Theme;
+  confirm the theme is absent from packaged resources and its license/credit
+  remains available from the separately downloaded theme package.
+- Opt into mini peek hold and sleep peek and confirm each appears at the
+  intended state boundary. Check selectable-only idle visuals appear only
+  after selection. On the built-in Clawd theme, play its idle bubble on both
+  halves of the screen and confirm it mirrors on the right; repeat with an
+  opted-in custom idle animation.
 - Right-click Hide pet / Show pet still works; while hidden, a newly arriving
   permission request still shows a bubble, by design.
 - Settings -> About -> Check for updates completes without an error.
-- Update labels never show a duplicated prefix such as `vv0.11.0`.
+- Update labels never show a duplicated prefix such as `vv1.2.0`.
 - Telegram approval cards show the final outcome for decisions made on Telegram
   and for approvals resolved elsewhere.
 - Scan the mobile PWA pairing URL on a phone and confirm session cards appear.
@@ -114,6 +327,26 @@ Recommended all-platform checks:
 
 Windows checks:
 
+- Required: run real packaged OpenCode 1.18.31 and 2.x sessions. Verify v1
+  `plugin` and v2 `plugins` registration, one state stream and one permission
+  request per interaction, Allow/Deny/Always decisions, interruption cleanup,
+  compound-command warnings, and uninstall preservation. Include a host path
+  with non-ASCII characters under code page 936 and confirm detection; for 2.x,
+  also run `opencode service restart`. Record the exact 2.x version and any
+  packaging differences from the macOS v2.0.15 source check.
+- Required: displace Claude's managed hooks as CC Switch can, then observe the
+  Agents attention badge and reason for paused repair, repeated repair failure,
+  or a missing script. Confirm the one-time tray notice on repair pause and a
+  healthy badge after a verified repair.
+- Required: run a WSL agent session and confirm its PID is not probed on the
+  Windows host or aliased to an unrelated local process.
+- Required: enable fullscreen auto-hide, enter a fullscreen application, and
+  send a new permission request. Local surfaces stay hidden; leaving fullscreen
+  restores only requests still pending. Manual Hide pet keeps its separate
+  behavior for new requests; remote approval and configured auto-close still work.
+- Required: cold-start the packaged app twice with a saved upgrade position;
+  the first rendered pet visual must appear at that position without using
+  "Bring Pet to Primary Display" / "将桌宠拉回主屏".
 - Required: fullscreen/borderless game or video app smoke. The pet should float
   over the fullscreen app when overlay mode is on; clicking or dragging the pet
   must not kick the app out of fullscreen.
@@ -122,17 +355,38 @@ Windows checks:
 - Required: drag a folder onto the pet and confirm a terminal opens in that
   directory.
 - Required: right-click New Session starts Claude Code without `0x800700c1`.
+- Required: prompt submission under Windows Terminal produces no visible
+  PowerShell flash; cloak/sleep/display-wake recovery restores the pet and tray
+  icon without a transient size jump.
 - Recommended: focus jump targets the correct terminal.
 - Recommended: after restart, the pet restores its saved position and Keep size
   across displays does not grow after DPI/display-scale changes.
 
 macOS checks:
 
+- Required when macOS hardware is available: manually install the signed v1.2.0
+  DMG over v1.1.0 once, preserving app data. Validate a signed A→B updater pair
+  from an update-capable build on each available architecture, including
+  Restart Now and Later/quit/reopen; record exact versions and asset hashes.
+  A source run or a mocked updater does not complete this gate.
+- Required when macOS hardware is available: toggle menu-bar and Dock visibility,
+  restart, and confirm both preferences persist and Settings can still regain focus.
+- Required when macOS hardware is available: test Dock left/right/bottom plus
+  auto-hide and confirm physical-edge pinning stays on-screen across displays.
 - Required when macOS hardware is available: Ghostty cross-Space focus switches
   to the target Space without yanking the Ghostty window to the current desktop.
 - Required when macOS hardware is available: answer a permission with
   Ctrl+Shift+Y or Ctrl+Shift+N and confirm focus is not stolen back to the agent
   terminal.
+- Required when macOS hardware is available: while editing text in a permission
+  or elicitation bubble, the pet drops behind the input surface and the IME
+  candidate window remains visible; ending edit restores stationary behavior.
+- Required when macOS hardware is available: put Clawd in the background, then
+  click Settings and Dashboard once each. The first click must reach the page.
+- Required when macOS hardware is available: restart Remote SSH monitoring
+  during a Codex Desktop thread and replay real turn-split rollouts. Confirm
+  one card per thread, no invented idle row, and no finished turn revived as
+  working. Record whether the full SSH deploy/tunnel/approval path was tested.
 - Recommended: jumping back to a session restores a minimized terminal window.
 - Recommended: dragging a folder onto the pet does not open a terminal and does
   not crash. This is intentionally disabled on macOS.
@@ -142,6 +396,8 @@ Linux checks:
 - Required when Linux hardware is available: Wayland session launches
   successfully and relaunches under XWayland when available; pet transparency
   and positioning work.
+- Required when Linux hardware is available: MiMo JSONC install/uninstall keeps
+  executable modes and comment-preserving writes correct on a POSIX filesystem.
 - Recommended for tmux users: focus jumps to the correct tmux pane.
 
 All required Windows items must pass before publishing the draft. Required macOS
@@ -149,12 +405,215 @@ and Linux items must pass when those machines are available. If any required
 item fails, fix it and create a new draft release; do not publish a known-bad
 draft.
 
-## Sidecar Dependency
+## Retired Telegram Sidecar Guard
 
-Clawd release builds do not consume upstream `cc-connect` latest artifacts. They
-download the fixed `cc-connect-clawd` fork release pinned by
-`scripts/fetch-sidecar-binaries.js`, verify SHA256 values pinned in that script,
-and package those binaries into app resources.
+The legacy Telegram sidecar was removed in v0.14.0. Release builds must run
+`scripts/assert-no-retired-telegram-sidecar.js` against every unpacked target:
+Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
+outer resources tree and the real `app.asar`; a retired executable or runtime
+module is a hard failure.
 
-When the sidecar needs an upstream update, publish a new fixed sidecar release
-from the fork first, then update the Clawd pin and rerun the fetch/verify tests.
+## WinGet Publishing
+
+Publishing the draft release fires `.github/workflows/winget.yml`. The `prepare`
+job generates a manifest with Komac, normalizes the locale metadata, validates
+the complete generated tree, and uploads the exact files that may be submitted.
+It receives only the ambient read-only `GITHUB_TOKEN`.
+
+An optional `submit` job can then open a one-version PR in
+`microsoft/winget-pkgs`. It is disabled unless the repository variable
+`WINGET_AUTO_SUBMIT` compares equal to `true` (GitHub expression comparisons are
+case-insensitive). Only the final step receives the classic PAT stored as the
+`winget-submit` environment secret `WINGET_TOKEN`. The workflow's ambient
+`GITHUB_TOKEN` remains read-only; the PAT separately carries every permission of
+its owner, so a dedicated account is the minimum-blast-radius configuration.
+The job re-downloads and revalidates the artifact, checks that the version is not
+already in the catalog or an open PR, and submits the four verified files without
+asking Komac to regenerate them. This opens the PR only: Microsoft validation,
+moderator approval, merge, catalog publication, and native Windows acceptance
+remain external gates.
+
+As of 2026-08-23, the upstream 0.14.0 manifest has been repaired and published by
+[`microsoft/winget-pkgs#416019`](https://github.com/microsoft/winget-pkgs/pull/416019),
+and v0.15.0 was subsequently published by
+[`microsoft/winget-pkgs#419082`](https://github.com/microsoft/winget-pkgs/pull/419082)
+on 2026-08-18. The v0.15.0 installer manifest carries the four expected
+architecture/scope entries and its locale declares `License: AGPL-3.0-only`.
+The former Dumplings tracker was also removed in
+[`SpecterShell/Dumplings#130`](https://github.com/SpecterShell/Dumplings/issues/130),
+so it is not currently competing with the maintainer-owned release path.
+
+The catalog gap is closed, but the published v0.15.0 locale still points both
+`LicenseUrl` and `ReleaseNotesUrl` at v0.14.0. Its files were generated with
+winmatsch, so their publication does not validate this repository's komac output.
+The first v0.15.0 prepare run
+[`31654717731`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31654717731)
+also predates the upstream repair and reproduced the old two-x64 shape. The
+generated-output validator exists because a correct upstream installer matrix
+alone is not sufficient reason to expose a submission token.
+
+**The workflow must already be on `main` before the tag is created.** For
+`release` events GitHub reads the workflow definition from the tagged ref, so a
+tag cut before this file landed can never trigger it — including v0.14.0, which
+was published on 2026-08-02.
+
+The workflow checks out the default branch **explicitly** for tooling, then reads
+the target tag's `package.json` through the API and passes it with
+`--package-json`. Without an explicit `ref:`, `actions/checkout` takes the ref
+that triggered the run — for a release event that is the tag, which for older
+releases does not contain this tooling at all. Splitting the two keeps the
+tooling current while the installer filenames stay tied to the tree that actually
+produced the release's assets.
+
+### Why submission is staged rather than immediate
+
+`komac update` does not turn the URLs it is given into installer entries. It
+reads the **previous** manifest and emits one entry per previous entry, matching
+each to its best new installer
+(`src/commands/update_version.rs` -> `src/match_installers.rs`, which iterates
+`previous_installers`). Passing correct URLs therefore does not produce a correct
+manifest: if the upstream shape is wrong, komac faithfully reproduces it.
+
+Before the upstream repair, the v0.14.0 manifest had two entries, both
+`Architecture: x64` — those two were the **user/machine scope split**, carrying
+`/currentuser` and `/allusers`, not two architectures. Scoring both against a
+correct pair of new installers gave the x64 installer 8 points and the arm64
+installer 6, so both previous entries took x64 and the arm64 installer was
+discarded.
+
+That manifest was repaired by hand in `microsoft/winget-pkgs#416019`. The live
+shape is now **four** entries, not two:
+
+| Architecture | Scope | Installer | Custom |
+| --- | --- | --- | --- |
+| x64 | user | `...-x64.exe` | `/currentuser` |
+| x64 | machine | `...-x64.exe` | `/allusers` |
+| arm64 | user | `...-arm64.exe` | `/currentuser` |
+| arm64 | machine | `...-arm64.exe` | `/allusers` |
+
+Collapsing to two entries would drop the per-user/per-machine choice the NSIS
+installer supports (`build.nsis` sets `oneClick: false` and no `perMachine`).
+
+### Staged plan
+
+1. **Prepare-only plumbing — complete.** Hosted
+   run
+   [`31549249655`](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/31549249655)
+   successfully exercised the workflow, token, installer downloads and artifact
+   paths. Against the then-broken upstream manifest it reproduced komac's bad
+   two-x64 output, confirming why automatic submission had to remain disabled.
+2. **Repair upstream — complete.** `microsoft/winget-pkgs#416019` fixed v0.14.0
+   to the four entries above, changed the license to `AGPL-3.0-only`, passed the
+   full validation pipeline and was published on 2026-08-17. The competing
+   Dumplings tracker has also been removed.
+3. **Validate Komac's output — complete.** The generated-output gate parses the
+   YAML and asserts the package identifier/version; exact
+   `{x64, arm64} x {user, machine}` set; each entry's URL, SHA256 and `Custom`
+   switch; `InstallerType: nullsoft`; `UpgradeBehavior: install`; top-level
+   `InstallerSwitches.Upgrade: --updated`; and ProductCode
+   `3e932233-a8b2-5530-b285-e0ceb08488f2` at both the installer and
+   `AppsAndFeaturesEntries` levels. The locale manifest must carry
+   `License: AGPL-3.0-only` plus version-pinned `LicenseUrl` and `ReleaseNotesUrl`.
+   Komac overwrites `License` from the repository's current `licenseInfo.spdxId`,
+   which GitHub reports as `AGPL-3.0`, not the `AGPL-3.0-only` in `package.json`,
+   so the gate rewrites and then asserts these fields rather than accepting the
+   raw output. It writes normalization only after the complete tree passes, emits
+   a SHA256 evidence report, rejects unsupported root/nested keys, and is
+   byte-for-byte idempotent. The submission process recalculates all four hashes
+   against that report immediately before copying the files.
+4. **Enable submission — implemented, disabled pending configuration.** The
+   workflow is split into `prepare` and `submit`, every third-party `uses:` is
+   pinned to a commit SHA, and the PAT exists only in the final submission step.
+   Set up the account, secret and opt-in variable below as a separate repository
+   configuration change. Prefer a dedicated account for the token: `public_repo`
+   grants write access to every public repository its owner can write to, this
+   one included.
+
+### Why the installer filename is a contract
+
+electron-builder emits a **32-bit x86 NSIS stub for both the x64 and the arm64
+target**, so PE-header inspection reports `x86` for both installers. Komac
+resolves architecture from the URL and lets that value override whatever binary
+analysis produced, so the `${arch}` token in `build.win.artifactName` is the only
+correct architecture signal we publish.
+
+`npm run verify:winget-arch` enforces this. It ports the upstream
+`Architecture::from_url` delimiter algorithm and fails the release if a filename
+stops resolving to the architecture it was built for, if two targets collapse
+onto one architecture, if the published set is not exactly `x64` and `arm64`, if
+a filename stops matching the workflow's `INSTALLERS_REGEX`, if the release
+carries a stray asset that regex would also select, if the release tag disagrees
+with `package.json`, or if both installers share a digest.
+
+This first gate checks Komac's input, not its output. The separate
+`verify:winget-manifest` gate validates and normalizes the generated YAML before
+the artifact is uploaded or the submission job can start.
+
+This guard exists because the third-party bot that previously owned the manifest
+forwarded only the first matching `.exe`. That was harmless while we shipped one
+Windows installer; from **v0.6.2** (2026-04-27), the first release to publish
+`-x64.exe` and `-arm64.exe` side by side, through v0.14.0 — **12 versions** —
+the original manifests each declared two `Architecture: x64` entries that both
+pointed at the **arm64** installer. The NSIS stub runs on x64, so the install
+reported success and the app then failed to launch.
+
+### Why komac is invoked directly
+
+The obvious choice, `winget-releaser`, is a composite action whose own steps run
+`cargo-bins/cargo-binstall@main` (a mutable branch ref) and
+`cargo binstall komac -y` (an unpinned build) — both in the same job, both
+*before* the step that would receive a PAT. Pinning that action to a commit SHA
+freezes the wrapper and neither of those links, so the workflow installs komac
+itself from a release archive whose SHA-256 is pinned in `env`.
+
+Bumping `KOMAC_VERSION` requires bumping `KOMAC_SHA256` in the same edit; the
+checksum is asserted in `test/winget-arch-contract.test.js`.
+
+All third-party Actions used by this workflow are pinned to full commit SHAs.
+When updating an Action, resolve and review the new tag target and change the SHA
+explicitly; do not replace it with a mutable major-version tag.
+
+### Optional automatic-submission setup
+
+1. Choose the account that will submit. A dedicated low-privilege account is
+   preferred; a PAT owned by `rullerzhou-afk` can also write to this source
+   repository. The chosen account's `winget-pkgs` repository must be a fork of
+   `microsoft/winget-pkgs`, and the account must complete Microsoft's CLA when
+   prompted.
+2. Create the `winget-submit` GitHub environment. Add a required reviewer only
+   if opening each PR should require a human gate; keep any deployment-ref rule
+   compatible with release tags.
+3. Create a **classic** PAT for that account with `public_repo` scope and store
+   it as the `WINGET_TOKEN` secret in the `winget-submit` environment, not as a
+   repository-wide secret. Fine-grained tokens can write a fork but cannot open
+   the required PR against the upstream repository.
+4. Set the required repository variable `WINGET_FORK_OWNER` to the submitting
+   account's login. The workflow deliberately has no owner fallback.
+5. The former `SpecterShell/Dumplings` tracker was removed in
+   [`a21ff13d`](https://github.com/SpecterShell/Dumplings/commit/a21ff13d2243afa0f58e9569a2f69e9903d726e2).
+   Reconfirm it has not returned before enabling submission.
+6. Set the repository variable `WINGET_AUTO_SUBMIT` to `true` (comparison is
+   case-insensitive). Removing it or changing it to another value returns the
+   workflow to prepare-and-upload mode without deleting the secret.
+
+### Per-release checks
+
+- Confirm `prepare` passed both `verify:winget-arch` and
+  `verify:winget-manifest`. The uploaded `winget-generated-manifest` artifact is
+  the normalized, validated four-file tree plus its evidence report.
+- Before either manual or automatic submission, synchronize the submitting
+  `winget-pkgs` fork with upstream `master` (for example,
+  `gh api -X POST repos/<fork>/merge-upstream -f branch=master`). A shallow
+  checkout of a stale fork cannot push the submission branch when upstream has
+  moved ahead.
+- If automatic submission is disabled, open a one-version PR from that exact
+  artifact. If it is enabled, confirm the `submit` job reports either the new PR
+  URL or an intentional `already-published` / `open-pull-request` skip.
+- Track Microsoft's validation, moderator review, merge, and catalog-publish
+  result. A successful Clawd workflow or an opened PR alone does **not** publish
+  the release.
+- Historical v0.15.0 locale links pointed at v0.14.0. The output gate rewrites
+  both links to the current release tag; never copy metadata from a prior
+  version by hand.
+- After the catalog refreshes, run an independent Windows `winget install` or
+  `winget upgrade` smoke test before documenting the command in the READMEs.

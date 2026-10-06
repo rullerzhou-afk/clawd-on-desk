@@ -5,12 +5,38 @@ const { BrowserWindow, globalShortcut } = require("electron");
 const { getDefaultShortcuts } = require("./shortcut-actions");
 const { keepOutOfTaskbar } = require("./taskbar");
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
+const { createTranslator } = require("./i18n");
+const { firstStringValue, formatDetail, formatReminderReason, truncate, parseMcpToolName } = require("./bubble-format");
+const {
+  getPermissionSessionKey,
+  groupPermissionEntries,
+  selectOverflowRepresentatives,
+} = require("./permission-overflow-model");
+const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
+const { redactSecrets } = require("./secret-redact");
 const path = require("path");
 const http = require("http");
+const { timingSafeEqual } = require("crypto");
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
 } = require("../hooks/server-config");
+const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
+const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { reminderHolds } = require("./permission-reminder");
+const {
+  normalizeOpencodeFamilyBridgeUrl,
+  isValidOpencodeFamilyBridgeToken,
+} = require("./opencode-family-bridge-url");
+const {
+  PERMISSION_AUTOMATION_MODE,
+  INTERACTION_INTENT,
+  AUTOMATION_ACTION,
+  classifyPermissionInteraction,
+  evaluatePermissionAutomation,
+  isValidInteraction,
+  isDecisionInteraction,
+} = require("./permission-automation-policy");
 
 const isMac = process.platform === "darwin";
 const isLinux = process.platform === "linux";
@@ -44,8 +70,26 @@ const BUBBLE_HEIGHT_RESERVE = 24;
 // integer DIP width, so the CSS viewport width (and therefore renderer-side
 // height measurements) stays exact across scale changes.
 const BUBBLE_BASE_WIDTH = 340;
+const BUBBLE_EXPANDED_BASE_WIDTH = 500;
+const BUBBLE_EXPANDED_PREFERRED_HEIGHT = 620;
+const BUBBLE_EXPANDED_WORK_AREA_RATIO = 0.6;
+const BUBBLE_EXPANDED_CHROME_FALLBACK = 190;
+const BUBBLE_EXPANDED_DETAIL_LINE_FALLBACK = 18;
+const BUBBLE_EXPANDED_MIN_DETAIL_LINES = 5;
 // Hard cap so a scaled bubble can't swallow a small work area.
 const BUBBLE_MAX_WORK_AREA_WIDTH_RATIO = 0.9;
+const OVERFLOW_EXIT_SLACK_BASE = 30;
+const QUEUE_COMPACT_BASE_HEIGHT = 64;
+const QUEUE_DRAWER_PREFERRED_HEIGHT = 620;
+const QUEUE_COMMIT_TIMEOUT_MS = 1500;
+const QUEUE_SUMMARY_MAX = 120;
+const PLAN_FEEDBACK_MAX_LENGTH = 4000;
+// WorkBuddy is intentionally absent: its desktop form factor resolves the
+// permission loop inside its own native sandbox + GUI, so Clawd never issues a
+// rich remote approval for it (see agents/workbuddy.js). If a future CLI form
+// factor emits a real PermissionRequest, re-adding it will need a source-owned
+// endpoint or server-side identity injection first (WorkBuddy's native events
+// carry client:"WorkBuddy", not an agent_id server-agent-id.js recognizes).
 const REMOTE_RICH_APPROVAL_AGENT_IDS = new Set(["claude-code", "codebuddy"]);
 
 function requiredDependency(value, name, owner) {
@@ -67,6 +111,29 @@ function registerPermissionIpc(options = {}) {
 
   on("bubble-height", (event, height) => permission.handleBubbleHeight(event, height));
   on("permission-decide", (event, behavior) => permission.handleDecide(event, behavior));
+  if (typeof permission.handleImeEditing === "function") {
+    on("bubble-ime-editing", (event, editing) => permission.handleImeEditing(event, editing));
+  }
+  if (typeof permission.handleBubbleExpanded === "function") {
+    on("permission-set-expanded", (event, expanded) => permission.handleBubbleExpanded(event, expanded));
+  }
+  if (typeof permission.handleCompositionActive === "function") {
+    on("bubble-composition-active", (event, active) => permission.handleCompositionActive(event, active));
+  }
+  if (typeof permission.handleQueueDrawerOpen === "function") {
+    on("permission-queue-open", (event) => permission.handleQueueDrawerOpen(event));
+  }
+  if (typeof permission.handleQueueDrawerClose === "function") {
+    on("permission-queue-close", (event) => permission.handleQueueDrawerClose(event));
+  }
+  if (typeof permission.handleQueueSelect === "function") {
+    on("permission-queue-select", (event, selection) => permission.handleQueueSelect(event, selection));
+  }
+  if (typeof permission.handleQueuePresentationAck === "function") {
+    on("permission-queue-ack", (event, acknowledgement) => (
+      permission.handleQueuePresentationAck(event, acknowledgement)
+    ));
+  }
 
   return {
     dispose() {
@@ -111,6 +178,11 @@ function shouldSuppressCodexNotifyBubble(ctx) {
     ctx.isAgentPermissionsEnabled("codex");
   const policy = getPolicy(ctx, "notification");
   return !!(ctx.doNotDisturb || !policy.enabled || !codexBubblesEnabled);
+}
+
+function shouldSuppressCodexUserInputBubble(ctx) {
+  const policy = getPolicy(ctx, "notification");
+  return !!(ctx.doNotDisturb || !policy.enabled);
 }
 
 function shouldSuppressKimiNotifyBubble(ctx) {
@@ -162,6 +234,13 @@ function buildCodexPermissionResponseBody(decisionOrBehavior, message) {
 }
 
 function buildQwenCodePermissionResponseBody(decisionOrBehavior, message) {
+  return buildCodexPermissionResponseBody(decisionOrBehavior, message);
+}
+
+// ZCode's 3.5.x PermissionRequest schema accepts the same minimal union the
+// codex builder emits ({ behavior } allow / { behavior, message } deny).
+// End-to-end Allow/Deny is verified on macOS ZCode 3.8.1.
+function buildZcodePermissionResponseBody(decisionOrBehavior, message) {
   return buildCodexPermissionResponseBody(decisionOrBehavior, message);
 }
 
@@ -221,10 +300,6 @@ function buildCopilotPermissionResponseBody(decisionOrBehavior, message) {
   return decision ? JSON.stringify(decision) : "{}";
 }
 
-function isPassiveNotifyEntry(permEntry) {
-  return !!(permEntry && (permEntry.isCodexNotify || permEntry.isKimiNotify));
-}
-
 function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now()) {
   const totalMs = Number(autoCloseMs);
   if (!Number.isFinite(totalMs) || totalMs <= 0) return 0;
@@ -233,37 +308,176 @@ function computePassiveNotifyRemainingMs(createdAt, autoCloseMs, now = Date.now(
   return Math.max(0, totalMs - Math.max(0, now - startedAt));
 }
 
-// Pure layout calculator for the permission bubble stack. Extracted out of
-// repositionBubbles() so the geometry can be unit-tested without spinning up
-// real Electron BrowserWindows. Returns one bounds object per height in the
-// input array, in the same (oldest→newest) order.
-//
-// Layout priority when followPet=true:
-//   1. below pet     — stack hangs from hitRect.bottom (oldest closest to
-//                       the pet body, newest at the bottom of the stack)
-//   2. side of pet   — pick the side with more horizontal room (right wins
-//                       on ties), vertically anchored on the pet center and
-//                       clamped to the work area
-//   3. corner fallback — only when neither side has bw of clearance, fall
-//                         back to the work area's bottom-right corner
-//
-// followPet=false → bottom-right of the work area (default Clawd behavior).
-//
-// Visual invariant across ALL branches: bubbles[0] (oldest) ends up at the
-// highest y, bubbles[N-1] (newest) at the lowest y. Crossing a layout
-// threshold only translates the anchor — it does NOT reverse the visual
-// order. PR #89 fixed the original below↔degraded order-flip; this guards
-// the same bug from regressing.
-//
-// Degenerate case (totalH > usable work area height): the second clamp on
-// yBottom intentionally wins, anchoring the stack to the TOP of the work
-// area. The OLDEST bubble stays visible while newer ones overflow off the
-// bottom. Rationale: oldest is the request that has been waiting longest,
-// and Claude Code re-sends on timeout if newest gets dropped — losing
-// oldest is harder to recover. See test
-// "anchors stack top when totalH overflows the work area".
+function computePermissionAutoCloseRemainingMs(entry, autoCloseMs, now = Date.now()) {
+  const timeout = Number(autoCloseMs);
+  if (!(timeout > 0)) return 0;
+  const createdAt = Number.isFinite(entry && entry.createdAt) ? entry.createdAt : now;
+  const completedPause = Number.isFinite(entry && entry.autoClosePausedTotalMs)
+    ? Math.max(0, entry.autoClosePausedTotalMs)
+    : 0;
+  const activePause = Number.isFinite(entry && entry.autoClosePauseStartedAt)
+    ? Math.max(0, now - entry.autoClosePauseStartedAt)
+    : 0;
+  const elapsed = Math.max(0, now - createdAt - completedPause - activePause);
+  return Math.max(0, timeout - elapsed);
+}
+
+const FOLLOW_PREFERENCES = new Set(["auto", "left", "right"]);
+const FIXED_CORNERS = new Set(["top-left", "top-right", "bottom-left", "bottom-right"]);
+
+function normalizeFollowPreference(value) {
+  return FOLLOW_PREFERENCES.has(value) ? value : "auto";
+}
+
+function normalizeFixedCorner(value) {
+  return FIXED_CORNERS.has(value) ? value : "bottom-right";
+}
+
+function isUsableRect(rect) {
+  return !!(
+    rect
+    && Number.isFinite(rect.x)
+    && Number.isFinite(rect.y)
+    && Number.isFinite(rect.width)
+    && rect.width > 0
+    && Number.isFinite(rect.height)
+    && rect.height > 0
+  );
+}
+
+function rectsIntersect(a, b) {
+  return a.x < b.x + b.width
+    && a.x + a.width > b.x
+    && a.y < b.y + b.height
+    && a.y + a.height > b.y;
+}
+
+function normalizeAvoidRects(avoidRects) {
+  return Array.isArray(avoidRects) ? avoidRects.filter(isUsableRect) : [];
+}
+
+function stackBoundsFromTop(bubbleHeights, x, yTop, width, gap) {
+  const bounds = new Array(bubbleHeights.length);
+  let y = yTop;
+  for (let i = 0; i < bubbleHeights.length; i++) {
+    const height = bubbleHeights[i];
+    bounds[i] = { x, y, width, height };
+    y += height + gap;
+  }
+  return bounds;
+}
+
+function alignVariableBubbleBounds(bounds, bubbleSizes, options) {
+  if (!Array.isArray(bounds) || !Array.isArray(bubbleSizes) || bounds.length !== bubbleSizes.length) {
+    return bounds;
+  }
+  const maxWidth = Math.max(...bubbleSizes.map((size) => size.width));
+  const first = bounds[0];
+  let alignment = "right";
+  if (options.followPet && options.hitRect) {
+    const hitLeft = Math.round(options.hitRect.left);
+    const hitRight = Math.round(options.hitRect.right);
+    const fallbackRight = options.workArea.x + options.workArea.width - maxWidth - options.margin;
+    if (first.x === hitRight) alignment = "left";
+    else if (first.x + maxWidth === hitLeft) alignment = "right";
+    else if (first.x === fallbackRight) alignment = "right";
+    else alignment = "center";
+  } else {
+    alignment = normalizeFixedCorner(options.fixedCorner).endsWith("left") ? "left" : "right";
+  }
+
+  const result = bounds.map((bound, index) => {
+    const size = bubbleSizes[index];
+    let x = bound.x;
+    if (alignment === "right") x += maxWidth - size.width;
+    else if (alignment === "center") x += Math.round((maxWidth - size.width) / 2);
+    return { x, y: bound.y, width: size.width, height: size.height };
+  });
+
+  const expandedIndex = Number.isInteger(options.expandedIndex) ? options.expandedIndex : -1;
+  const expanded = result[expandedIndex];
+  if (!expanded) return result;
+  const minTop = options.workArea.y + options.margin;
+  const maxBottom = options.workArea.y + options.workArea.height - options.margin;
+  let shiftY = 0;
+  if (expanded.y < minTop) shiftY = minTop - expanded.y;
+  if (expanded.y + expanded.height + shiftY > maxBottom) {
+    shiftY += maxBottom - (expanded.y + expanded.height + shiftY);
+  }
+  if (shiftY !== 0) {
+    for (const bound of result) bound.y += shiftY;
+  }
+  return result;
+}
+
+function findNonOverlappingStackTop({
+  x,
+  width,
+  totalHeight,
+  idealTop,
+  workArea,
+  margin,
+  gap,
+  avoidRects,
+}) {
+  const minTop = workArea.y + margin;
+  const maxTop = workArea.y + workArea.height - margin - totalHeight;
+  const rects = normalizeAvoidRects(avoidRects);
+  if (maxTop < minTop) {
+    const overflowRect = { x, y: minTop, width, height: totalHeight };
+    return rects.some((rect) => rectsIntersect(overflowRect, rect)) ? null : minTop;
+  }
+
+  const clampedIdeal = Math.max(minTop, Math.min(idealTop, maxTop));
+  const candidates = new Set([clampedIdeal, minTop, maxTop]);
+  for (const rect of rects) {
+    if (x >= rect.x + rect.width || x + width <= rect.x) continue;
+    candidates.add(rect.y - gap - totalHeight);
+    candidates.add(rect.y + rect.height + gap);
+  }
+
+  return [...candidates]
+    .filter((candidate) => Number.isFinite(candidate) && candidate >= minTop && candidate <= maxTop)
+    .sort((a, b) => Math.abs(a - idealTop) - Math.abs(b - idealTop) || a - b)
+    .find((candidate) => {
+      const stackRect = { x, y: candidate, width, height: totalHeight };
+      return !rects.some((rect) => rectsIntersect(stackRect, rect));
+    });
+}
+
+function findDownwardStackTop({
+  x,
+  width,
+  totalHeight,
+  idealTop,
+  workArea,
+  gap,
+  avoidRects,
+}) {
+  const minTop = workArea.y;
+  const maxTop = workArea.y + workArea.height - totalHeight;
+  if (maxTop < minTop || idealTop > maxTop) return null;
+  let y = Math.max(minTop, idealTop);
+  const rects = normalizeAvoidRects(avoidRects);
+
+  for (let pass = 0; pass <= rects.length; pass++) {
+    const stackRect = { x, y, width, height: totalHeight };
+    const collisions = rects.filter((rect) => rectsIntersect(stackRect, rect));
+    if (collisions.length === 0) return y;
+    y = Math.max(y, ...collisions.map((rect) => rect.y + rect.height + gap));
+    if (y > maxTop) return null;
+  }
+  return null;
+}
+
+// Pure layout calculator for the permission bubble stack. Returns one bounds
+// object per height in oldest→newest order. Follow placement uses an ordered
+// preference with safe fallback; fixed placement anchors to one work-area
+// corner. Across every branch, the oldest request remains visually highest.
 function computeBubbleStackLayout({
   followPet,
+  followPreference = "auto",
+  fixedCorner = "bottom-right",
   bubbleHeights,
   bubbleWidth: bw,
   margin,
@@ -271,10 +485,41 @@ function computeBubbleStackLayout({
   workArea: wa,
   hitRect,
   hudReservedOffset = 0,
+  avoidRects = [],
+  bubbleSizes = null,
+  expandedIndex = -1,
 }) {
+  if (Array.isArray(bubbleSizes)) {
+    const sizes = bubbleSizes.map((size) => ({
+      width: Math.max(1, Math.round(Number(size && size.width) || 0)),
+      height: Math.max(1, Math.round(Number(size && size.height) || 0)),
+    }));
+    if (sizes.length === 0) return [];
+    const maxWidth = Math.max(...sizes.map((size) => size.width));
+    const uniformBounds = computeBubbleStackLayout({
+      followPet,
+      followPreference,
+      fixedCorner,
+      bubbleHeights: sizes.map((size) => size.height),
+      bubbleWidth: maxWidth,
+      margin,
+      gap,
+      workArea: wa,
+      hitRect,
+      hudReservedOffset,
+      avoidRects,
+    });
+    return alignVariableBubbleBounds(uniformBounds, sizes, {
+      followPet,
+      fixedCorner,
+      hitRect,
+      expandedIndex,
+      workArea: wa,
+      margin,
+    });
+  }
   const N = bubbleHeights.length;
-  const bounds = new Array(N);
-  if (N === 0) return bounds;
+  if (N === 0) return [];
 
   // totalH = sum of heights + (N-1) gaps. The previous in-place loop in
   // repositionBubbles added a gap after every bubble (N gaps total), which
@@ -286,69 +531,94 @@ function computeBubbleStackLayout({
     if (i < N - 1) totalH += gap;
   }
 
-  let x, yBottom;
+  const buildCorner = (corner, allowCollisionFallback = false) => {
+    const normalizedCorner = normalizeFixedCorner(corner);
+    const left = normalizedCorner.endsWith("left");
+    const top = normalizedCorner.startsWith("top");
+    const x = left
+      ? wa.x + margin
+      : wa.x + wa.width - bw - margin;
+    const minTop = wa.y + margin;
+    const bottomTop = wa.y + wa.height - margin - totalH;
+    const idealTop = top || bottomTop < minTop ? minTop : bottomTop;
+    const yTop = findNonOverlappingStackTop({
+      x,
+      width: bw,
+      totalHeight: totalH,
+      idealTop,
+      workArea: wa,
+      margin,
+      gap,
+      avoidRects,
+    });
+    if (yTop !== undefined && yTop !== null) {
+      return stackBoundsFromTop(bubbleHeights, x, yTop, bw, gap);
+    }
+    return allowCollisionFallback
+      ? stackBoundsFromTop(bubbleHeights, x, idealTop, bw, gap)
+      : null;
+  };
+
   if (followPet && hitRect) {
     const hitBottom = Math.round(hitRect.bottom);
     const hitLeft = Math.round(hitRect.left);
     const hitRight = Math.round(hitRect.right);
     const hitCx = Math.round((hitRect.left + hitRect.right) / 2);
     const hitCy = Math.round((hitRect.top + hitRect.bottom) / 2);
-
-    // 1. Below pet — enough vertical room to hang the stack from the hitbox.
-    //    Iterate oldest→newest growing downward so the visual order matches
-    //    the side/corner branches' upward-stacking loop below.
     const reserve = Math.max(0, Number(hudReservedOffset) || 0);
-    if (wa.y + wa.height - hitBottom >= reserve + totalH) {
-      x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
-      let yTop = hitBottom + reserve;
-      for (let i = 0; i < N; i++) {
-        const bh = bubbleHeights[i];
-        bounds[i] = { x, y: yTop, width: bw, height: bh };
-        yTop += bh + gap;
-      }
-      return bounds;
-    }
-
-    // 2. Side — pick the side with more room (right wins on ties).
     const spaceRight = wa.x + wa.width - hitRight;
     const spaceLeft = hitLeft - wa.x;
-    if (spaceRight >= bw && spaceRight >= spaceLeft) {
-      x = Math.min(hitRight, wa.x + wa.width - bw);
-    } else if (spaceLeft >= bw) {
-      x = Math.max(wa.x, hitLeft - bw);
-    } else {
-      // 3. Corner fallback — neither side has bw of clearance.
-      x = wa.x + wa.width - bw - margin;
-      yBottom = wa.y + wa.height - margin;
-    }
+    const sideOrder = spaceRight >= spaceLeft ? ["right", "left"] : ["left", "right"];
+    const preference = normalizeFollowPreference(followPreference);
+    const candidateOrder = preference === "left"
+      ? ["left", "below", "right"]
+      : (preference === "right"
+        ? ["right", "below", "left"]
+        : ["below", ...sideOrder]);
 
-    if (yBottom === undefined) {
-      // Side vertical anchor: center the stack on the pet, then clamp to
-      // the work area. When totalH > usable height, minBottom > maxBottom
-      // and the second clamp wins on purpose (see header comment for the
-      // degenerate-case rationale).
-      yBottom = hitCy + Math.round(totalH / 2);
-      const maxBottom = wa.y + wa.height - margin;
-      const minBottom = wa.y + margin + totalH;
-      if (yBottom > maxBottom) yBottom = maxBottom;
-      if (yBottom < minBottom) yBottom = minBottom;
+    const tryBelow = () => {
+      const x = Math.max(wa.x, Math.min(hitCx - Math.round(bw / 2), wa.x + wa.width - bw));
+      const yTop = findDownwardStackTop({
+        x,
+        width: bw,
+        totalHeight: totalH,
+        idealTop: hitBottom + reserve,
+        workArea: wa,
+        gap,
+        avoidRects,
+      });
+      if (yTop === undefined || yTop === null) return null;
+      return stackBoundsFromTop(bubbleHeights, x, yTop, bw, gap);
+    };
+
+    const trySide = (side) => {
+      if (side === "right" && spaceRight < bw) return null;
+      if (side === "left" && spaceLeft < bw) return null;
+      const x = side === "right" ? hitRight : hitLeft - bw;
+      const idealTop = hitCy - Math.round(totalH / 2);
+      const yTop = findNonOverlappingStackTop({
+        x,
+        width: bw,
+        totalHeight: totalH,
+        idealTop,
+        workArea: wa,
+        margin,
+        gap,
+        avoidRects,
+      });
+      return yTop === undefined || yTop === null
+        ? null
+        : stackBoundsFromTop(bubbleHeights, x, yTop, bw, gap);
+    };
+
+    for (const candidate of candidateOrder) {
+      const result = candidate === "below" ? tryBelow() : trySide(candidate);
+      if (result) return result;
     }
-  } else {
-    // followPet=off (or no hit rect): bottom-right of the nearest work area.
-    x = wa.x + wa.width - bw - margin;
-    yBottom = wa.y + wa.height - margin;
+    return buildCorner("bottom-right", true);
   }
 
-  // Default upward stacking loop: newest (i=N-1) sits at yBottom, the rest
-  // grow upward. Combined with the below-branch's downward iteration above,
-  // the invariant holds: oldest highest on screen, newest lowest.
-  for (let i = N - 1; i >= 0; i--) {
-    const bh = bubbleHeights[i];
-    const y = yBottom - bh;
-    yBottom = y - gap;
-    bounds[i] = { x, y, width: bw, height: bh };
-  }
-  return bounds;
+  return buildCorner(fixedCorner, true);
 }
 
 function buildElicitationUpdatedInput(toolInput, answers) {
@@ -373,6 +643,75 @@ function buildElicitationUpdatedInput(toolInput, answers) {
   };
 }
 
+// Remote clients (Feishu / Telegram) clamp question text to card / message
+// limits before display (240 chars, trimmed, control chars stripped), so the
+// text they hold no longer round-trips to toolInput for long or
+// whitespace-heavy questions. Both remote clients and the desktop renderer
+// therefore key submitted answers by question index. Only this main-process
+// boundary maps those opaque display ids back to the exact upstream wire keys.
+function remapIndexedElicitationAnswers(toolInput, indexedAnswers) {
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  const source = indexedAnswers && typeof indexedAnswers === "object" && !Array.isArray(indexedAnswers)
+    ? indexedAnswers
+    : {};
+  const answers = {};
+  for (let i = 0; i < questions.length; i++) {
+    const question = questions[i];
+    if (!question || typeof question.question !== "string" || !question.question) continue;
+    if (!Object.prototype.hasOwnProperty.call(source, String(i))) continue;
+    answers[question.question] = source[String(i)];
+  }
+  return answers;
+}
+
+// Treat renderer/remote answer payloads as untrusted input. An elicitation is
+// only an allow when every upstream question has exactly one non-empty answer;
+// partial maps used to turn into a successful allow with missing fields, which
+// could make the agent loop or silently choose a default.
+function validateAndRemapIndexedElicitationAnswers(toolInput, indexedAnswers) {
+  const input = toolInput && typeof toolInput === "object" ? toolInput : {};
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  if (questions.length === 0) {
+    return { ok: false, reason: "elicitation has no questions" };
+  }
+  if (
+    !indexedAnswers
+    || typeof indexedAnswers !== "object"
+    || Array.isArray(indexedAnswers)
+  ) {
+    return { ok: false, reason: "elicitation answers must be an indexed object" };
+  }
+
+  const sourceKeys = Object.keys(indexedAnswers);
+  const expectedKeys = questions.map((_question, index) => String(index));
+  if (
+    sourceKeys.length !== expectedKeys.length
+    || sourceKeys.some((key) => !expectedKeys.includes(key))
+  ) {
+    return { ok: false, reason: "elicitation answers do not match all questions" };
+  }
+
+  const seenWireQuestions = new Set();
+  const answers = {};
+  for (let i = 0; i < questions.length; i++) {
+    const question = questions[i];
+    const wireQuestion = question && typeof question.question === "string"
+      ? question.question
+      : "";
+    if (!wireQuestion || seenWireQuestions.has(wireQuestion)) {
+      return { ok: false, reason: "elicitation questions have invalid or duplicate wire keys" };
+    }
+    seenWireQuestions.add(wireQuestion);
+    const answer = indexedAnswers[String(i)];
+    if (typeof answer !== "string" || !answer.trim()) {
+      return { ok: false, reason: `elicitation answer ${i} is empty` };
+    }
+    answers[wireQuestion] = answer.trim();
+  }
+  return { ok: true, answers };
+}
+
 function buildPermissionFocusEntry(perm) {
   if (!perm || typeof perm !== "object") return null;
   const sessionId = String(perm.sessionId || "");
@@ -384,18 +723,132 @@ function buildPermissionFocusEntry(perm) {
   if (perm.pidChain) focusEntry.pidChain = perm.pidChain;
   if (perm.tmuxSocket) focusEntry.tmuxSocket = perm.tmuxSocket;
   if (perm.tmuxClient) focusEntry.tmuxClient = perm.tmuxClient;
+  if (perm.orcaPaneKey) focusEntry.orcaPaneKey = perm.orcaPaneKey;
   if (perm.host) focusEntry.host = perm.host;
   if (perm.platform) focusEntry.platform = perm.platform;
   if (perm.model) focusEntry.model = perm.model;
   if (perm.codexOriginator) focusEntry.codexOriginator = perm.codexOriginator;
   if (perm.codexSource) focusEntry.codexSource = perm.codexSource;
+  // An approval can arrive before the session lifecycle event, so the fallback
+  // entry needs the carrier to remain jumpable to the desktop app window.
+  if (perm.dshCarrier) focusEntry.dshCarrier = perm.dshCarrier;
   return focusEntry;
+}
+
+function collectVisibleWindowBounds(windows) {
+  const bounds = [];
+  for (const bubble of windows || []) {
+    if (!bubble || bubble.isDestroyed()) continue;
+    if (typeof bubble.isVisible === "function" && !bubble.isVisible()) continue;
+    if (typeof bubble.getBounds !== "function") continue;
+    try {
+      const rect = bubble.getBounds();
+      if (rect && rect.width > 0 && rect.height > 0) bounds.push(rect);
+    } catch {}
+  }
+  return bounds;
+}
+
+function isLiveBrowserWindow(win) {
+  if (!win) return false;
+  try {
+    return typeof win.isDestroyed !== "function" || !win.isDestroyed();
+  } catch {
+    return false;
+  }
+}
+
+function areBubbleBoundsSafe(bounds, workArea, avoidRects = []) {
+  if (!Array.isArray(bounds) || !isUsableRect(workArea)) return false;
+  const right = workArea.x + workArea.width;
+  const bottom = workArea.y + workArea.height;
+  const rects = normalizeAvoidRects(avoidRects);
+  return bounds.every((rect) => (
+    isUsableRect(rect)
+    && rect.x >= workArea.x
+    && rect.y >= workArea.y
+    && rect.x + rect.width <= right
+    && rect.y + rect.height <= bottom
+    && !rects.some((avoidRect) => rectsIntersect(rect, avoidRect))
+  ));
+}
+
+function stackHeightForSizes(sizes, gap) {
+  if (!Array.isArray(sizes) || sizes.length === 0) return 0;
+  return sizes.reduce((sum, size) => sum + Math.max(0, Number(size && size.height) || 0), 0)
+    + Math.max(0, sizes.length - 1) * Math.max(0, Number(gap) || 0);
+}
+
+function computeQueueCommitDeadline(existingDeadline, now, timeoutMs = QUEUE_COMMIT_TIMEOUT_MS) {
+  const existing = Number(existingDeadline);
+  if (Number.isFinite(existing) && existing > 0) return existing;
+  const startedAt = Number.isFinite(Number(now)) ? Number(now) : Date.now();
+  const timeout = Math.max(1, Number(timeoutMs) || QUEUE_COMMIT_TIMEOUT_MS);
+  return startedAt + timeout;
+}
+
+// Only the permission queue payload (buildQueuePayload) uses this to label a
+// session; it lives at module scope so the __test export can reach it.
+function queueAgentLabel(entry) {
+  const id = String((entry && entry.agentId) || "claude-code");
+  const labels = {
+    "claude-code": "Claude Code",
+    codebuddy: "CodeBuddy",
+    codex: "Codex",
+    "qwen-code": "Qwen Code",
+    zcode: "ZCode",
+    "copilot-cli": "Copilot CLI",
+    hermes: "Hermes",
+    "deepseek-harness": "DeepSeek Harness",
+  };
+  return labels[id] || id;
 }
 
 module.exports = function initPermission(ctx) {
 
+// Bound to ctx.lang (a live getter), so a runtime language switch is picked up
+// by the next remote-approval payload without recreating this module.
+const t = createTranslator(() => ctx.lang);
+
 // Each entry: { res, abortHandler, suggestions, sessionId, bubble, hideTimer, toolName, toolInput, resolvedSuggestion, createdAt, measuredHeight }
 const pendingPermissions = [];
+let expandedPermissionEntry = null;
+// Keep windows independently of pendingPermissions so Orbit continues avoiding
+// a bubble during its 250ms fade-out after the request has already been removed
+// from the pending list.
+const permissionBubbleWindows = new Set();
+const overflowPresentation = {
+  mode: "normal",
+  revision: 0,
+  nextEntryOrdinal: 1,
+  visibleEntryIds: new Set(),
+  selectedEntryBySession: new Map(),
+  selectedGlobalEntryId: null,
+  queueWindow: null,
+  queueReady: false,
+  queueDrawerOpen: false,
+  queueDrawerCommittedOpen: false,
+  queueDrawerMeasuredHeight: 0,
+  queuePresentedRevision: 0,
+  queuePendingCommit: null,
+  queueCommitDeadlineTimer: null,
+  queueAttemptedInOverflowEpisode: false,
+  queueExpectedDestroy: false,
+  queueLastSignature: "",
+  queueLastPayload: null,
+  queueBounds: null,
+  queueCommittedBounds: null,
+  petHidden: !!ctx.petHidden,
+  petHiddenCutoffOrdinal: null,
+  // Fullscreen auto-hide is stricter than the user's ordinary Hide Pet
+  // action. Manual hide deliberately lets requests created afterwards surface;
+  // fullscreen suppression must keep every local permission surface hidden
+  // until the fullscreen episode ends. Keep the two reasons independent so
+  // leaving fullscreen can restore the manual cutoff semantics exactly.
+  fullscreenSuppressed: false,
+  reconciling: false,
+  reconcileAgain: false,
+};
 // Pure-metadata tools auto-allowed without showing a bubble (zero side effects)
 const PASSTHROUGH_TOOLS = new Set([
   "TaskCreate", "TaskUpdate", "TaskGet", "TaskList", "TaskStop", "TaskOutput",
@@ -433,18 +886,106 @@ function verifyUnregister(accelerator) {
   return true;
 }
 
-function isHardwareBuddyTestPermission(perm) {
-  return !!(perm && perm.isHardwareBuddyTest);
+function isHotkeyActionablePermission(permission) {
+  return !!(
+    permission
+    && !isPassiveNotifyEntry(permission)
+    && isValidInteraction(permission.interaction)
+    && permission.interaction.capabilities.allowDeny === true
+    && permission.textInputActive !== true
+    && (
+      permission.interaction.intent !== INTERACTION_INTENT.PLAN_REVIEW
+      || permission.expanded === true
+    )
+    && !isDecisionInteraction(permission.interaction)
+  );
 }
 
 function getActionablePermissions() {
-  return pendingPermissions.filter(
-    p => !isHardwareBuddyTestPermission(p)
-      && !p.isElicitation
-      && !p.isCodexNotify
-      && !p.isKimiNotify
-      && p.toolName !== "ExitPlanMode"
-  );
+  return pendingPermissions.filter(isHotkeyActionablePermission);
+}
+
+// #601: hotkeys must reach exactly what is on screen. While the pet is hidden,
+// bubbles pending at hide time are collapsed (they return on show) but new
+// requests still pop (docs/project/theme-state-ui.md) — so gate on bubble
+// visibility instead of dropping the hotkeys wholesale, and never let a blind
+// keypress resolve a request whose bubble the user cannot see. When the pet is
+// visible, keep the plain actionable list: entries without a bubble window
+// (creation failed / not yet created) must stay hotkey-reachable.
+function getHotkeyActionablePermissions() {
+  const actionable = getActionablePermissions();
+  // The presentation owner records the target state before pet-window-runtime
+  // updates its own getter. Keep the getter as a compatibility signal for
+  // older callers/tests that still toggle ctx.petHidden directly.
+  if (!overflowPresentation.petHidden && !ctx.petHidden) return actionable;
+  return actionable.filter((p) => {
+    const bub = p.bubble;
+    try {
+      return !!bub && !bub.isDestroyed() && bub.isVisible();
+    } catch {
+      return false;
+    }
+  });
+}
+
+// Overflow can hide newer requests behind the queue launcher. A global
+// shortcut must never resolve one of those invisible entries. The layout
+// contract keeps the oldest request highest, so the visible request with the
+// greatest bottom edge is the same card the user sees at the bottom of the
+// stack. If that card is not an ordinary Allow/Deny interaction, do not skip
+// over it and silently decide a different card.
+function getOverflowHotkeyTarget() {
+  let target = null;
+  let targetBottom = Number.NEGATIVE_INFINITY;
+  let targetOrdinal = Number.NEGATIVE_INFINITY;
+
+  for (const permission of pendingPermissions) {
+    if (!permission || permission.remoteOnly || !isLiveBrowserWindow(permission.bubble)) continue;
+    try {
+      if (typeof permission.bubble.isVisible === "function" && !permission.bubble.isVisible()) continue;
+    } catch {
+      continue;
+    }
+
+    let bottom = Number.NEGATIVE_INFINITY;
+    try {
+      const bounds = permission.bubble.getBounds();
+      if (bounds && Number.isFinite(bounds.y) && Number.isFinite(bounds.height)) {
+        bottom = bounds.y + bounds.height;
+      }
+    } catch {}
+    const ordinal = Number.isFinite(permission.uiOrdinal)
+      ? permission.uiOrdinal
+      : pendingPermissions.indexOf(permission);
+    if (bottom > targetBottom || (bottom === targetBottom && ordinal > targetOrdinal)) {
+      target = permission;
+      targetBottom = bottom;
+      targetOrdinal = ordinal;
+    }
+  }
+
+  return isHotkeyActionablePermission(target) ? target : null;
+}
+
+function getHotkeyTargetPermission() {
+  let target;
+  if (overflowPresentation.mode === "overflow") target = getOverflowHotkeyTarget();
+  else {
+    const targets = getHotkeyActionablePermissions();
+    target = targets.length > 0 ? targets[targets.length - 1] : null;
+  }
+  // Preserve the existing normal-mode fallback for requests without a window.
+  if (!target || !target.bubble) return target;
+  // isVisible() only means the native window was shown. In the ACK/failure
+  // fallback a tall stack can extend past the display, and macOS may clamp
+  // just its top edge while leaving the decision buttons below the screen.
+  // Protected expanded cards can also retain crowded normal-mode bounds.
+  // Validate the original target in both modes, never switch to another card.
+  try {
+    if (!isLiveBrowserWindow(target.bubble) || !target.bubble.isVisible()) return null;
+    if (!areBubbleBoundsSafe([target.bubble.getBounds()], getAnchorWorkArea(), getHudAvoidRects())) return null;
+  } catch { return null; }
+  return target;
 }
 
 function syncSingle(actionId, current, target, handler, setState) {
@@ -488,8 +1029,8 @@ function syncSingle(actionId, current, target, handler, setState) {
 function syncPermissionShortcuts() {
   const shortcutSnapshot = getShortcutSnapshot();
   const permissionPolicy = getPolicy(ctx, "permission");
-  const shouldRegister = permissionPolicy.enabled && !ctx.petHidden
-    && getActionablePermissions().length > 0;
+  const shouldRegister = permissionPolicy.enabled
+    && getHotkeyTargetPermission() !== null;
   const targetAllow = shouldRegister ? shortcutSnapshot.permissionAllow : null;
   const targetDeny = shouldRegister ? shortcutSnapshot.permissionDeny : null;
 
@@ -505,12 +1046,73 @@ function repositionDependentBubbles() {
   if (typeof ctx.repositionUpdateBubble === "function") {
     try { ctx.repositionUpdateBubble(); } catch {}
   }
+  if (typeof ctx.repositionSessionHud === "function") {
+    try { ctx.repositionSessionHud(); } catch {}
+  }
+}
+
+function getVisibleBubbleBounds() {
+  const windows = [...permissionBubbleWindows];
+  if (isLiveBrowserWindow(overflowPresentation.queueWindow)) {
+    windows.push(overflowPresentation.queueWindow);
+  }
+  return collectVisibleWindowBounds(windows);
+}
+
+function getPermissionPresentationWindows() {
+  const windows = [];
+  for (const bubble of permissionBubbleWindows) {
+    if (!isLiveBrowserWindow(bubble)) continue;
+    try {
+      if (typeof bubble.isVisible !== "function" || bubble.isVisible()) windows.push(bubble);
+    } catch {}
+  }
+  const queueWindow = overflowPresentation.queueWindow;
+  if (isLiveBrowserWindow(queueWindow)) {
+    try {
+      if (typeof queueWindow.isVisible !== "function" || queueWindow.isVisible()) {
+        windows.push(queueWindow);
+      }
+    } catch {}
+  }
+  return windows;
+}
+
+function hasVisiblePermissionBubbles() {
+  return getPermissionPresentationWindows().length > 0;
+}
+
+function hidePermissionSurfacesForPet() {
+  let cutoff = 0;
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly) continue;
+    ensurePermissionUiIdentity(entry);
+    cutoff = Math.max(cutoff, entry.uiOrdinal);
+  }
+  overflowPresentation.petHidden = true;
+  overflowPresentation.petHiddenCutoffOrdinal = cutoff || null;
+  overflowPresentation.queueDrawerOpen = false;
+  reconcilePermissionPresentation("pet-hidden");
+}
+
+function showPermissionSurfacesForPet() {
+  overflowPresentation.petHidden = false;
+  overflowPresentation.petHiddenCutoffOrdinal = null;
+  reconcilePermissionPresentation("pet-shown");
+}
+
+function setPermissionSurfacesFullscreenSuppressed(suppressed) {
+  const target = suppressed === true;
+  if (overflowPresentation.fullscreenSuppressed === target) return false;
+  overflowPresentation.fullscreenSuppressed = target;
+  if (target) overflowPresentation.queueDrawerOpen = false;
+  reconcilePermissionPresentation(target ? "fullscreen-suppressed" : "fullscreen-restored");
+  return true;
 }
 
 function hotkeyResolve(behavior, message) {
-  const targets = getActionablePermissions();
-  if (!targets.length) return;
-  const perm = targets[targets.length - 1]; // newest
+  const perm = getHotkeyTargetPermission();
+  if (!perm) return;
   captureFrontApp((appName) => {
     resolvePermissionEntry(perm, behavior, message);
     if (appName) {
@@ -534,8 +1136,8 @@ function estimateBubbleHeight(sugCount) {
   return 200 + (sugCount || 0) * 37;
 }
 
-function getTextScale() {
-  return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale() : 1);
+function getTextScale(workArea) {
+  return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale(workArea) : 1);
 }
 
 function getBubbleWidth(scale, workArea) {
@@ -545,68 +1147,1213 @@ function getBubbleWidth(scale, workArea) {
   return Math.min(scaled, Math.floor(waWidth * BUBBLE_MAX_WORK_AREA_WIDTH_RATIO));
 }
 
+function getExpandedBubbleWidth(scale, workArea) {
+  const scaled = scaleWidth(BUBBLE_EXPANDED_BASE_WIDTH, scale);
+  const waWidth = Math.floor(Number(workArea && workArea.width) || 0);
+  if (waWidth <= 0) return scaled;
+  return Math.min(scaled, Math.floor(waWidth * BUBBLE_MAX_WORK_AREA_WIDTH_RATIO));
+}
+
+function ensureBubblePresentationState(perm) {
+  if (!perm || typeof perm !== "object") return;
+  if (!Number.isInteger(perm.measurementEpoch) || perm.measurementEpoch < 0) {
+    perm.measurementEpoch = 0;
+  }
+  if (perm.expanded !== true) perm.expanded = false;
+  if (perm.compositionActive !== true) perm.compositionActive = false;
+}
+
+function getCompactBubbleHeight(perm, scale, workArea) {
+  return clampBubbleHeight(
+    scaleHeight(
+      perm.compactMeasuredHeight
+        || perm.measuredHeight
+        || estimateBubbleHeight((perm.suggestions || []).length),
+      scale
+    ),
+    workArea.height
+  );
+}
+
+function computeExpandedHeightBudget(perm, scale, workArea, margin, gap, siblingEntries = null) {
+  const sourceEntries = Array.isArray(siblingEntries)
+    ? siblingEntries
+    : pendingPermissions.filter((entry) => !entry.remoteOnly);
+  const otherEntries = sourceEntries.filter((entry) => entry !== perm && !entry.remoteOnly);
+  const compactSiblingHeight = otherEntries.reduce(
+    (sum, entry) => sum + getCompactBubbleHeight(entry, scale, workArea),
+    0
+  );
+  const stackGaps = Math.max(0, sourceEntries.length - 1) * gap;
+  const preferred = Math.min(
+    scaleHeight(BUBBLE_EXPANDED_PREFERRED_HEIGHT, scale),
+    Math.floor(workArea.height * BUBBLE_EXPANDED_WORK_AREA_RATIO)
+  );
+  const chromeHeight = scaleHeight(
+    perm.expandedChromeHeight || BUBBLE_EXPANDED_CHROME_FALLBACK,
+    scale
+  );
+  const detailLineHeight = scaleHeight(
+    perm.expandedDetailLineHeight || BUBBLE_EXPANDED_DETAIL_LINE_FALLBACK,
+    scale
+  );
+  const readableFloor = chromeHeight + detailLineHeight * BUBBLE_EXPANDED_MIN_DETAIL_LINES;
+  const stackBudget = workArea.height - margin * 2 - compactSiblingHeight - stackGaps;
+  const workAreaCap = Math.max(1, workArea.height - margin * 2);
+  return Math.min(workAreaCap, Math.max(readableFloor, Math.min(preferred, stackBudget)));
+}
+
+function getExpandedBubbleHeight(perm, scale, workArea, margin, gap) {
+  const budget = Math.min(
+    perm.expandedHeightBudget || computeExpandedHeightBudget(perm, scale, workArea, margin, gap),
+    Math.max(1, workArea.height - margin * 2)
+  );
+  const natural = scaleHeight(
+    perm.expandedMeasuredHeight || BUBBLE_EXPANDED_PREFERRED_HEIGHT,
+    scale
+  );
+  return Math.max(1, Math.min(natural, budget));
+}
+
+function getExpandedBudgetKey(workArea, scale) {
+  return [workArea.x, workArea.y, workArea.width, workArea.height, scale].join(":");
+}
+
 function getAnchorWorkArea(petBounds) {
   const bounds = petBounds || ctx.getPetWindowBounds();
+  if (typeof ctx.getBubbleWorkArea === "function") {
+    return ctx.getBubbleWorkArea(!!ctx.bubbleFollowPet, bounds);
+  }
   const cx = bounds.x + bounds.width / 2;
   const cy = bounds.y + bounds.height / 2;
   return ctx.getNearestWorkArea(cx, cy);
 }
 
-function repositionBubbles() {
-  // Thin wrapper around computeBubbleStackLayout (top of file). All the
-  // geometry lives there so it can be unit-tested without Electron windows.
-  if (!ctx.win || ctx.win.isDestroyed()) return;
-  const scale = getTextScale();
-  const margin = Math.round(8 * scale);
-  const gap = Math.round(6 * scale);
-  const petBounds = ctx.getPetWindowBounds();
-  const wa = getAnchorWorkArea(petBounds);
-  const bw = getBubbleWidth(scale, wa);
-  const hitRect = ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null;
-
-  const layoutPermissions = pendingPermissions.filter((perm) => !isHardwareBuddyTestPermission(perm));
-  const bubbleHeights = layoutPermissions.map(perm =>
-    clampBubbleHeight(
-      // measuredHeight/estimate are CSS px; the window needs DIP.
-      scaleHeight(
-        perm.measuredHeight || estimateBubbleHeight((perm.suggestions || []).length),
-        scale
-      ),
-      wa.height
-    )
-  );
-
-  const bounds = computeBubbleStackLayout({
-    followPet: !!ctx.bubbleFollowPet,
-    bubbleHeights,
-    bubbleWidth: bw,
-    margin,
-    gap,
-    workArea: wa,
-    hitRect,
-    hudReservedOffset: typeof ctx.getHudReservedOffset === "function" ? ctx.getHudReservedOffset() : 0,
-  });
-
-  for (let i = 0; i < layoutPermissions.length; i++) {
-    const perm = layoutPermissions[i];
-    if (perm.bubble && !perm.bubble.isDestroyed() && bounds[i]) {
-      // Re-resolve zoom here too: the pet may have crossed onto a display
-      // with a different textScale (applyZoomToWindow memoizes, so this is
-      // a no-op when nothing changed).
-      applyZoomToWindow(perm.bubble, scale);
-      perm.bubble.setBounds(bounds[i]);
-    }
+function getHudAvoidRects() {
+  if (typeof ctx.getSessionHudBounds !== "function") return [];
+  try {
+    const bounds = ctx.getSessionHudBounds();
+    return Array.isArray(bounds) ? bounds : (bounds ? [bounds] : []);
+  } catch {
+    return [];
   }
 }
 
-// DANGER "auto-pilot" chokepoint. Every agent branch in the /permission route
+function ensurePermissionUiIdentity(entry) {
+  if (!entry || typeof entry !== "object") return;
+  if (!Number.isInteger(entry.uiOrdinal) || entry.uiOrdinal <= 0) {
+    entry.uiOrdinal = overflowPresentation.nextEntryOrdinal;
+    overflowPresentation.nextEntryOrdinal += 1;
+  }
+  if (typeof entry.uiEntryId !== "string" || !entry.uiEntryId) {
+    entry.uiEntryId = `permission-${entry.uiOrdinal}`;
+  }
+}
+
+function isEntryCutOffByPet(entry) {
+  if (overflowPresentation.fullscreenSuppressed) return true;
+  return !!(
+    overflowPresentation.petHidden
+    && Number.isInteger(overflowPresentation.petHiddenCutoffOrdinal)
+    && Number(entry && entry.uiOrdinal) <= overflowPresentation.petHiddenCutoffOrdinal
+  );
+}
+
+function getLocalPresentationEntries() {
+  const entries = [];
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly) continue;
+    ensurePermissionUiIdentity(entry);
+    if (!isLiveBrowserWindow(entry.bubble) || isEntryCutOffByPet(entry)) continue;
+    entries.push(entry);
+  }
+  return entries.sort((a, b) => a.uiOrdinal - b.uiOrdinal);
+}
+
+function createPresentationGeometry() {
+  if (!ctx.win || ctx.win.isDestroyed()) return null;
+  const petBounds = ctx.getPetWindowBounds();
+  const workArea = getAnchorWorkArea(petBounds);
+  const scale = getTextScale(workArea);
+  const margin = Math.round(8 * scale);
+  const gap = Math.round(6 * scale);
+  const hudAvoidRects = getHudAvoidRects();
+  return {
+    petBounds,
+    workArea,
+    scale,
+    margin,
+    gap,
+    compactWidth: getBubbleWidth(scale, workArea),
+    expandedWidth: getExpandedBubbleWidth(scale, workArea),
+    hitRect: ctx.bubbleFollowPet ? ctx.getHitRectScreen(petBounds) : null,
+    hudAvoidRects,
+    hudReservedOffset: hudAvoidRects.length === 0 && typeof ctx.getHudReservedOffset === "function"
+      ? ctx.getHudReservedOffset()
+      : 0,
+  };
+}
+
+function ensureExpandedBudgets(entries, geometry, options = {}) {
+  const budgetKey = getExpandedBudgetKey(geometry.workArea, geometry.scale);
+  const updatedEntries = [];
+  for (const entry of entries) {
+    ensureBubblePresentationState(entry);
+    if (!entry.expanded) continue;
+    if (entry.expandedHeightBudget && entry.expandedBudgetKey === budgetKey) continue;
+    const hadFrozenBudget = !!(entry.expandedHeightBudget && entry.expandedBudgetKey);
+    entry.expandedHeightBudget = computeExpandedHeightBudget(
+      entry,
+      geometry.scale,
+      geometry.workArea,
+      geometry.margin,
+      geometry.gap,
+      entries
+    );
+    entry.expandedBudgetKey = budgetKey;
+    entry.expandedHeightBudgetMeasured = false;
+    if (hadFrozenBudget) entry.measurementEpoch += 1;
+    updatedEntries.push(entry);
+    if (options.sendPresentation !== false) sendPermissionPresentation(entry);
+  }
+  return updatedEntries;
+}
+
+function getPresentationEntrySize(entry, geometry) {
+  ensureBubblePresentationState(entry);
+  if (!entry.expanded) {
+    return {
+      width: geometry.compactWidth,
+      height: getCompactBubbleHeight(entry, geometry.scale, geometry.workArea),
+    };
+  }
+  const workAreaCap = Math.max(1, geometry.workArea.height - geometry.margin * 2);
+  const budget = Math.min(
+    entry.expandedHeightBudget || scaleHeight(BUBBLE_EXPANDED_PREFERRED_HEIGHT, geometry.scale),
+    workAreaCap
+  );
+  const natural = scaleHeight(
+    entry.expandedMeasuredHeight || BUBBLE_EXPANDED_PREFERRED_HEIGHT,
+    geometry.scale
+  );
+  return {
+    width: geometry.expandedWidth,
+    height: Math.max(1, Math.min(natural, budget)),
+  };
+}
+
+function getQueueCompactSize(geometry) {
+  return {
+    width: geometry.compactWidth,
+    height: clampBubbleHeight(
+      scaleHeight(QUEUE_COMPACT_BASE_HEIGHT, geometry.scale),
+      geometry.workArea.height
+    ),
+  };
+}
+
+function getQueueDrawerSize(geometry) {
+  const workAreaCap = Math.max(1, geometry.workArea.height - geometry.margin * 2);
+  const naturalCss = overflowPresentation.queueDrawerMeasuredHeight
+    || QUEUE_DRAWER_PREFERRED_HEIGHT;
+  return {
+    width: geometry.expandedWidth,
+    height: Math.max(1, Math.min(scaleHeight(naturalCss, geometry.scale), workAreaCap)),
+  };
+}
+
+function computePresentationLayout(entries, geometry, options = {}) {
+  const requestEntries = Array.isArray(entries) ? entries : [];
+  const sizes = requestEntries.map((entry) => getPresentationEntrySize(entry, geometry));
+  const includeQueue = options.includeQueue === true;
+  const expandedIndex = requestEntries.findIndex((entry) => entry.expanded === true);
+  if (includeQueue) {
+    const queueSize = options.drawerOpen
+      ? getQueueDrawerSize(geometry)
+      : getQueueCompactSize(geometry);
+    if (expandedIndex >= 0 && options.capExpandedForLauncher !== false) {
+      const otherRequestHeight = sizes.reduce((sum, size, index) => (
+        index === expandedIndex ? sum : sum + Math.max(0, Number(size && size.height) || 0)
+      ), 0);
+      // There is one gap between every adjacent item. With N request windows
+      // plus the launcher, that is exactly N gaps. Keep this as an effective
+      // overflow-only cap: mutating the frozen expanded budget here would make
+      // the card stay artificially short after the queue disappears.
+      const availableExpandedHeight = geometry.workArea.height
+        - geometry.margin * 2
+        - queueSize.height
+        - otherRequestHeight
+        - geometry.gap * requestEntries.length;
+      sizes[expandedIndex] = {
+        ...sizes[expandedIndex],
+        height: Math.min(
+          sizes[expandedIndex].height,
+          Math.max(1, Math.floor(availableExpandedHeight))
+        ),
+      };
+    }
+    sizes.push(queueSize);
+  }
+  const bounds = computeBubbleStackLayout({
+    followPet: !!ctx.bubbleFollowPet,
+    followPreference: ctx.bubbleFollowPreference,
+    fixedCorner: ctx.bubbleFixedCorner,
+    bubbleHeights: sizes.map((size) => size.height),
+    bubbleWidth: geometry.compactWidth,
+    bubbleSizes: sizes,
+    expandedIndex,
+    margin: geometry.margin,
+    gap: geometry.gap,
+    workArea: geometry.workArea,
+    hitRect: geometry.hitRect,
+    hudReservedOffset: geometry.hudReservedOffset,
+    avoidRects: geometry.hudAvoidRects,
+  });
+  const entryBounds = new Map();
+  for (let index = 0; index < requestEntries.length; index += 1) {
+    entryBounds.set(requestEntries[index].uiEntryId, bounds[index]);
+  }
+  return {
+    sizes,
+    bounds,
+    entryBounds,
+    queueBounds: includeQueue ? bounds[bounds.length - 1] : null,
+    safe: areBubbleBoundsSafe(bounds, geometry.workArea, geometry.hudAvoidRects),
+    stackHeight: stackHeightForSizes(sizes, geometry.gap),
+  };
+}
+
+function queueEntryKind(entry) {
+  if (isPassiveNotifyEntry(entry)) return "passive";
+  const interaction = isValidInteraction(entry && entry.interaction) ? entry.interaction : null;
+  const capabilities = interaction ? interaction.capabilities : {};
+  if (capabilities.answerQuestions === true) return "ask";
+  if (interaction && interaction.intent === INTERACTION_INTENT.PLAN_REVIEW) return "plan";
+  if (!interaction || capabilities.allowDeny !== true) return "native";
+  return "permission";
+}
+
+function tryAutoExpandAskOnArrival(entry) {
+  ensureBubblePresentationState(entry);
+  if (
+    entry.expanded
+    || queueEntryKind(entry) !== "ask"
+    || expandedPermissionEntry !== null
+    || overflowPresentation.mode !== "normal"
+    || overflowPresentation.queuePendingCommit !== null
+  ) {
+    return false;
+  }
+
+  const geometry = createPresentationGeometry();
+  if (!geometry) return false;
+  const entries = getLocalPresentationEntries();
+  if (!entries.includes(entry)) return false;
+
+  const previousBudget = entry.expandedHeightBudget;
+  const previousBudgetKey = entry.expandedBudgetKey;
+  const previousBudgetMeasured = entry.expandedHeightBudgetMeasured;
+  entry.expanded = true;
+  entry.expandedHeightBudget = computeExpandedHeightBudget(
+    entry,
+    geometry.scale,
+    geometry.workArea,
+    geometry.margin,
+    geometry.gap,
+    entries
+  );
+  entry.expandedBudgetKey = getExpandedBudgetKey(geometry.workArea, geometry.scale);
+  entry.expandedHeightBudgetMeasured = false;
+
+  const layout = computePresentationLayout(entries, geometry);
+  if (!layout.safe) {
+    entry.expanded = false;
+    entry.expandedHeightBudget = previousBudget;
+    entry.expandedBudgetKey = previousBudgetKey;
+    entry.expandedHeightBudgetMeasured = previousBudgetMeasured;
+    return false;
+  }
+
+  expandedPermissionEntry = entry;
+  return true;
+}
+
+function compactQueueSummary(entry) {
+  try {
+    const detailInput = entry && entry.elicitationDetailInput;
+    const questions = detailInput && Array.isArray(detailInput.questions)
+      ? detailInput.questions
+      : (entry && entry.toolInput && Array.isArray(entry.toolInput.questions)
+        ? entry.toolInput.questions
+        : []);
+    if (questions[0] && typeof questions[0].question === "string") {
+      return truncate(questions[0].question.replace(/\s+/g, " ").trim(), QUEUE_SUMMARY_MAX);
+    }
+    if (entry && typeof entry.detailText === "string" && entry.detailText.trim()) {
+      return truncate(entry.detailText.replace(/\s+/g, " ").trim(), QUEUE_SUMMARY_MAX);
+    }
+    const toolName = entry && entry.kimiToolName ? entry.kimiToolName : entry && entry.toolName;
+    const toolInput = entry && entry.kimiToolInput ? entry.kimiToolInput : entry && entry.toolInput;
+    return truncate(
+      String(formatDetail(toolName, toolInput, { isAntigravity: !!(entry && entry.isAntigravity) }) || "")
+        .replace(/\s+/g, " ")
+        .trim(),
+      QUEUE_SUMMARY_MAX
+    );
+  } catch {
+    return "";
+  }
+}
+
+function queueToolLabel(entry) {
+  const raw = String((entry && (entry.kimiToolName || entry.toolName)) || "Request");
+  const parsed = parseMcpToolName(raw);
+  return truncate(parsed ? parsed.display : raw, 80);
+}
+
+function queueSessionLabel(entry) {
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(entry && entry.sessionId)
+    : null;
+  const folder = basenameForDisplay((session && session.cwd) || (entry && entry.cwd) || "");
+  if (folder) return truncate(folder, 80);
+  const id = String((entry && entry.sessionId) || "");
+  return id ? `#${id.slice(-3)}` : "";
+}
+
+function isSwitchingLocked() {
+  return pendingPermissions.some((entry) => entry && entry.compositionActive === true);
+}
+
+function isProtectedOverflowEntry(entry) {
+  return !!(
+    entry
+    && (
+      entry.expanded === true
+      || entry.compositionActive === true
+      || entry.textInputActive === true
+      || entry.uiEntryId === overflowPresentation.selectedGlobalEntryId
+    )
+  );
+}
+
+function buildQueuePayload(entries, visibleEntryIds) {
+  const visible = visibleEntryIds instanceof Set ? visibleEntryIds : new Set();
+  const groups = groupPermissionEntries(entries);
+  const sessions = groups.map((group) => {
+    const first = group.entries[0];
+    return {
+      sessionKey: group.sessionKey,
+      agentLabel: queueAgentLabel(first),
+      sessionLabel: queueSessionLabel(first),
+      entries: group.entries.map((entry) => {
+        const kind = queueEntryKind(entry);
+        return {
+          uiEntryId: entry.uiEntryId,
+          kind,
+          toolLabel: queueToolLabel(entry),
+          summary: compactQueueSummary(entry),
+          action: kind === "ask" ? "answer" : (kind === "plan" ? "view-plan" : "view"),
+          visible: visible.has(entry.uiEntryId),
+          selected: entry.uiEntryId === overflowPresentation.selectedGlobalEntryId,
+        };
+      }),
+    };
+  });
+  return {
+    lang: ctx.lang,
+    drawerOpen: overflowPresentation.queueDrawerOpen,
+    switchingLocked: isSwitchingLocked(),
+    hiddenCount: Math.max(0, entries.length - visible.size),
+    totalCount: entries.length,
+    sessions,
+  };
+}
+
+function clearQueueCommitTimer() {
+  if (overflowPresentation.queueCommitDeadlineTimer) {
+    clearTimeout(overflowPresentation.queueCommitDeadlineTimer);
+    overflowPresentation.queueCommitDeadlineTimer = null;
+  }
+}
+
+function clearHiddenEditingFlags(entry) {
+  if (!entry) return;
+  entry.textInputActive = false;
+  const bubble = entry.bubble;
+  if (!isLiveBrowserWindow(bubble)) return;
+  try { delete bubble.__clawdMacImeEditing; } catch {}
+}
+
+function setRequestWindowVisible(entry, visible, bounds, geometry) {
+  const bubble = entry && entry.bubble;
+  if (!isLiveBrowserWindow(bubble)) return;
+  if (visible) {
+    try { applyZoomToWindow(bubble, geometry.scale); } catch {}
+    if (bounds && !bubble.__clawdMacImeEditing) {
+      try { bubble.setBounds(bounds); } catch {}
+    }
+    try {
+      if (isWin) bubble.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+      if (isMac && !bubble.__clawdMacImeEditing) bubble.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+    } catch {}
+    const needsShow = typeof bubble.isVisible !== "function" || !bubble.isVisible();
+    if (needsShow && typeof bubble.showInactive === "function") {
+      try { bubble.showInactive(); } catch {}
+    }
+    keepOutOfTaskbar(bubble);
+    return;
+  }
+  if (entry.compositionActive === true && !isEntryCutOffByPet(entry)) return;
+  if (isEntryCutOffByPet(entry)) entry.compositionActive = false;
+  clearHiddenEditingFlags(entry);
+  try {
+    if (typeof bubble.isVisible !== "function" || bubble.isVisible()) bubble.hide();
+  } catch {}
+}
+
+function applyRequestPresentation(entries, layout, geometry, options = {}) {
+  const entryMap = new Map((entries || []).map((entry) => [entry.uiEntryId, entry]));
+  const desiredVisibleIds = options.visibleEntryIds instanceof Set
+    ? options.visibleEntryIds
+    : new Set();
+  const hideAll = options.hideAll === true;
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly || !isLiveBrowserWindow(entry.bubble)) continue;
+    const displayable = entryMap.has(entry.uiEntryId);
+    const visible = displayable && !hideAll && desiredVisibleIds.has(entry.uiEntryId);
+    const bounds = layout && layout.entryBounds
+      ? layout.entryBounds.get(entry.uiEntryId)
+      : null;
+    setRequestWindowVisible(entry, visible, bounds, geometry);
+  }
+}
+
+function collectSlackRemeasureCandidates(entries) {
+  const candidates = [];
+  for (const entry of entries || []) {
+    if (!entry || entry._slackPermissionAnnounced === true || entry.bubbleReady !== true) continue;
+    const bubble = entry.bubble;
+    if (!isLiveBrowserWindow(bubble) || typeof bubble.isVisible !== "function") continue;
+    try {
+      if (!bubble.isVisible()) candidates.push(entry);
+    } catch {}
+  }
+  return candidates;
+}
+
+function requestSlackRemeasureForNewlyVisible(candidates) {
+  for (const entry of candidates || []) {
+    if (!pendingPermissions.includes(entry) || entry._slackPermissionAnnounced === true) continue;
+    const bubble = entry.bubble;
+    if (!isLiveBrowserWindow(bubble)) continue;
+    try {
+      if (typeof bubble.isVisible === "function" && !bubble.isVisible()) continue;
+    } catch {
+      continue;
+    }
+    // The renderer's height acknowledgement remains the proof that the exact
+    // request content is loaded and visible. Showing a previously queue-hidden
+    // request does not itself generate that acknowledgement, so ask the
+    // existing renderer to repeat its current presentation measurement.
+    sendPermissionPresentation(entry);
+  }
+}
+
+function showQueueWindow(bounds, geometry, options = {}) {
+  const queueWindow = overflowPresentation.queueWindow;
+  if (!isLiveBrowserWindow(queueWindow) || !bounds) return false;
+  try { applyZoomToWindow(queueWindow, geometry.scale); } catch {}
+  try {
+    queueWindow.setBounds(bounds);
+  } catch {
+    return false;
+  }
+  try {
+    if (isWin) queueWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    if (isMac) queueWindow.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+  } catch {}
+  try {
+    if (typeof queueWindow.isVisible !== "function" || !queueWindow.isVisible()) {
+      queueWindow.showInactive();
+    }
+    if (typeof queueWindow.isVisible === "function" && !queueWindow.isVisible()) return false;
+  } catch {
+    return false;
+  }
+  if (options.focus === true) {
+    try { queueWindow.focus(); } catch {}
+  }
+  keepOutOfTaskbar(queueWindow);
+  return true;
+}
+
+function hideQueueWindow() {
+  const queueWindow = overflowPresentation.queueWindow;
+  if (!isLiveBrowserWindow(queueWindow)) return;
+  try { queueWindow.hide(); } catch {}
+}
+
+function resetQueueStateAfterDestroy(options = {}) {
+  clearQueueCommitTimer();
+  overflowPresentation.queueWindow = null;
+  overflowPresentation.queueReady = false;
+  overflowPresentation.queueDrawerOpen = false;
+  overflowPresentation.queueDrawerCommittedOpen = false;
+  overflowPresentation.queueDrawerMeasuredHeight = 0;
+  overflowPresentation.queuePresentedRevision = 0;
+  overflowPresentation.queuePendingCommit = null;
+  overflowPresentation.queueLastSignature = "";
+  overflowPresentation.queueLastPayload = null;
+  overflowPresentation.queueBounds = null;
+  overflowPresentation.queueCommittedBounds = null;
+  if (options.resetEpisode === true) {
+    overflowPresentation.queueAttemptedInOverflowEpisode = false;
+  }
+}
+
+function destroyQueueWindow(options = {}) {
+  const queueWindow = overflowPresentation.queueWindow;
+  overflowPresentation.queueExpectedDestroy = true;
+  if (isLiveBrowserWindow(queueWindow)) {
+    try { queueWindow.destroy(); } catch {}
+  }
+  overflowPresentation.queueExpectedDestroy = false;
+  resetQueueStateAfterDestroy(options);
+}
+
+function fallbackFromQueueFailure(reason) {
+  permLog(`permission queue unavailable; falling back to request stack: ${reason}`);
+  destroyQueueWindow({ resetEpisode: false });
+  overflowPresentation.mode = "overflow";
+  overflowPresentation.queueAttemptedInOverflowEpisode = true;
+  reconcilePermissionPresentation("queue-fallback");
+  repositionDependentBubbles();
+}
+
+function createQueueWindow(geometry) {
+  if (isLiveBrowserWindow(overflowPresentation.queueWindow)) return true;
+  if (overflowPresentation.queueAttemptedInOverflowEpisode) return false;
+  overflowPresentation.queueAttemptedInOverflowEpisode = true;
+  const initialSize = getQueueCompactSize(geometry);
+  let queueWindow;
+  try {
+    queueWindow = new BrowserWindow({
+      width: initialSize.width,
+      height: initialSize.height,
+      x: 0,
+      y: 0,
+      show: false,
+      frame: false,
+      transparent: true,
+      alwaysOnTop: !isMac,
+      resizable: false,
+      skipTaskbar: true,
+      hasShadow: false,
+      focusable: true,
+      ...(isLinux ? { type: LINUX_WINDOW_TYPE } : {}),
+      ...(isMac ? { type: "panel", acceptFirstMouse: true } : {}),
+      webPreferences: {
+        preload: path.join(__dirname, "preload-permission-queue.js"),
+        nodeIntegration: false,
+        contextIsolation: true,
+      },
+    });
+    overflowPresentation.queueWindow = queueWindow;
+    overflowPresentation.queueReady = false;
+    if (isWin) queueWindow.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+    if (isMac) queueWindow.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+
+    queueWindow.webContents.once("did-finish-load", () => {
+      if (overflowPresentation.queueWindow !== queueWindow || !isLiveBrowserWindow(queueWindow)) return;
+      overflowPresentation.queueReady = true;
+      const currentGeometry = createPresentationGeometry();
+      if (currentGeometry) applyZoomToWindow(queueWindow, currentGeometry.scale);
+      sendPendingQueueCommit();
+    });
+    const fail = (reason) => {
+      if (overflowPresentation.queueWindow !== queueWindow) return;
+      fallbackFromQueueFailure(reason);
+    };
+    queueWindow.webContents.once("did-fail-load", (_event, code, description) => {
+      fail(`load failed (${code || "unknown"}: ${description || "unknown"})`);
+    });
+    queueWindow.webContents.on("render-process-gone", (_event, details) => {
+      fail(`renderer exited (${details && details.reason ? details.reason : "unknown"})`);
+    });
+    queueWindow.on("closed", () => {
+      if (overflowPresentation.queueWindow !== queueWindow) return;
+      if (overflowPresentation.queueExpectedDestroy) return;
+      fallbackFromQueueFailure("window closed");
+    });
+    const loadResult = queueWindow.loadFile(path.join(__dirname, "permission-queue.html"));
+    if (loadResult && typeof loadResult.catch === "function") {
+      loadResult.catch((err) => fail(err && err.message ? err.message : String(err)));
+    }
+    ctx.guardAlwaysOnTop(queueWindow);
+    return true;
+  } catch (err) {
+    if (isLiveBrowserWindow(queueWindow)) {
+      overflowPresentation.queueExpectedDestroy = true;
+      try { queueWindow.destroy(); } catch {}
+      overflowPresentation.queueExpectedDestroy = false;
+    }
+    resetQueueStateAfterDestroy({ resetEpisode: false });
+    overflowPresentation.queueAttemptedInOverflowEpisode = true;
+    permLog(`permission queue create failed: ${err && err.message ? err.message : err}`);
+    return false;
+  }
+}
+
+function armQueueCommitDeadline() {
+  const commit = overflowPresentation.queuePendingCommit;
+  if (!commit || commit.sent !== true) return;
+  clearQueueCommitTimer();
+  const remaining = Math.max(0, Number(commit.deadlineAt) - Date.now());
+  if (remaining <= 0) {
+    fallbackFromQueueFailure("presentation ACK timeout");
+    return;
+  }
+  overflowPresentation.queueCommitDeadlineTimer = setTimeout(() => {
+    overflowPresentation.queueCommitDeadlineTimer = null;
+    const current = overflowPresentation.queuePendingCommit;
+    if (!current || current.revision !== commit.revision) return;
+    fallbackFromQueueFailure("presentation ACK timeout");
+  }, remaining);
+}
+
+function sendPendingQueueCommit() {
+  const queueWindow = overflowPresentation.queueWindow;
+  const commit = overflowPresentation.queuePendingCommit;
+  if (!overflowPresentation.queueReady || !isLiveBrowserWindow(queueWindow) || !commit) return false;
+  try {
+    queueWindow.webContents.send("permission-queue-show", commit.payload);
+    commit.sent = true;
+    armQueueCommitDeadline();
+    return true;
+  } catch (err) {
+    fallbackFromQueueFailure(`presentation send failed: ${err && err.message ? err.message : err}`);
+    return false;
+  }
+}
+
+function prepareQueueCommit(entries, visibleEntries, hiddenEntries, queueBounds, geometry) {
+  if (!createQueueWindow(geometry)) return false;
+  const visibleIds = new Set(visibleEntries.map((entry) => entry.uiEntryId));
+  const payloadBase = buildQueuePayload(entries, visibleIds);
+  const signature = JSON.stringify(payloadBase);
+
+  if (signature === overflowPresentation.queueLastSignature) {
+    overflowPresentation.queueBounds = queueBounds;
+    if (overflowPresentation.queuePendingCommit) {
+      overflowPresentation.queuePendingCommit.queueBounds = queueBounds;
+      sendPendingQueueCommit();
+    } else if (overflowPresentation.queuePresentedRevision > 0) {
+      overflowPresentation.queueCommittedBounds = queueBounds;
+    }
+    return true;
+  }
+
+  overflowPresentation.revision += 1;
+  const existingDeadline = overflowPresentation.queuePendingCommit
+    ? overflowPresentation.queuePendingCommit.deadlineAt
+    : 0;
+  const deadlineAt = computeQueueCommitDeadline(existingDeadline, Date.now());
+  const payload = {
+    ...payloadBase,
+    revision: overflowPresentation.revision,
+  };
+  overflowPresentation.queueLastSignature = signature;
+  overflowPresentation.queueLastPayload = payload;
+  overflowPresentation.queueBounds = queueBounds;
+  overflowPresentation.queuePendingCommit = {
+    revision: payload.revision,
+    visibleEntryIds: new Set(visibleIds),
+    hiddenEntryIds: new Set(hiddenEntries.map((entry) => entry.uiEntryId)),
+    deadlineAt,
+    queueBounds,
+    drawerOpen: payload.drawerOpen,
+    payload,
+    sent: false,
+  };
+  sendPendingQueueCommit();
+  return true;
+}
+
+function getEntryLayoutForIds(entries, geometry, ids, includeQueue) {
+  const selected = entries.filter((entry) => ids.has(entry.uiEntryId));
+  ensureExpandedBudgets(selected, geometry);
+  return computePresentationLayout(selected, geometry, { includeQueue });
+}
+
+function applyCommittedOverflowPresentation(entries, geometry) {
+  const queueVisible = overflowPresentation.queuePresentedRevision > 0
+    && isLiveBrowserWindow(overflowPresentation.queueWindow);
+  if (!queueVisible) {
+    ensureExpandedBudgets(entries, geometry);
+    const fallbackLayout = computePresentationLayout(entries, geometry);
+    const allIds = new Set(entries.map((entry) => entry.uiEntryId));
+    applyRequestPresentation(entries, fallbackLayout, geometry, { visibleEntryIds: allIds });
+    hideQueueWindow();
+    return true;
+  }
+
+  const layout = getEntryLayoutForIds(
+    entries,
+    geometry,
+    overflowPresentation.visibleEntryIds,
+    true
+  );
+  const queueBounds = overflowPresentation.queueCommittedBounds || layout.queueBounds;
+  if (!showQueueWindow(queueBounds, geometry)) {
+    fallbackFromQueueFailure("window could not be shown");
+    return false;
+  }
+  applyRequestPresentation(entries, layout, geometry, {
+    visibleEntryIds: overflowPresentation.visibleEntryIds,
+    hideAll: overflowPresentation.queueDrawerCommittedOpen,
+  });
+  return true;
+}
+
+function applyNormalPresentation(entries, layout, geometry) {
+  const allIds = new Set(entries.map((entry) => entry.uiEntryId));
+  const slackRemeasureCandidates = collectSlackRemeasureCandidates(entries);
+  // Restore request cards before removing the queue so there is never an empty
+  // permission representation between modes.
+  applyRequestPresentation(entries, layout, geometry, { visibleEntryIds: allIds });
+  requestSlackRemeasureForNewlyVisible(slackRemeasureCandidates);
+  overflowPresentation.visibleEntryIds = allIds;
+  overflowPresentation.mode = "normal";
+  destroyQueueWindow({ resetEpisode: true });
+}
+
+function cleanupOverflowSelections() {
+  const liveIds = new Set();
+  for (const entry of pendingPermissions) {
+    if (!entry || entry.remoteOnly || !isLiveBrowserWindow(entry.bubble)) continue;
+    ensurePermissionUiIdentity(entry);
+    liveIds.add(entry.uiEntryId);
+  }
+  if (!liveIds.has(overflowPresentation.selectedGlobalEntryId)) {
+    overflowPresentation.selectedGlobalEntryId = null;
+  }
+  for (const [sessionKey, uiEntryId] of overflowPresentation.selectedEntryBySession) {
+    if (!liveIds.has(uiEntryId)) overflowPresentation.selectedEntryBySession.delete(sessionKey);
+  }
+}
+
+function reconcilePermissionPresentation(reason = "geometry") {
+  if (overflowPresentation.reconciling) {
+    overflowPresentation.reconcileAgain = true;
+    return;
+  }
+  overflowPresentation.reconciling = true;
+  try {
+    do {
+      overflowPresentation.reconcileAgain = false;
+      const geometry = createPresentationGeometry();
+      if (!geometry) break;
+      const entries = getLocalPresentationEntries();
+      cleanupOverflowSelections();
+
+      if (entries.length === 0) {
+        applyRequestPresentation([], null, geometry, { visibleEntryIds: new Set() });
+        overflowPresentation.visibleEntryIds = new Set();
+        overflowPresentation.mode = "normal";
+        destroyQueueWindow({ resetEpisode: true });
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      const preliminaryNormalLayout = computePresentationLayout(entries, geometry);
+      const exitSlack = scaleHeight(OVERFLOW_EXIT_SLACK_BASE, geometry.scale);
+      const normalHasExitSlack = preliminaryNormalLayout.stackHeight + exitSlack
+        <= geometry.workArea.height - geometry.margin * 2;
+      let normalSafe = preliminaryNormalLayout.safe
+        && (overflowPresentation.mode !== "overflow" || normalHasExitSlack);
+      let normalLayout = preliminaryNormalLayout;
+      if (normalSafe) {
+        ensureExpandedBudgets(entries, geometry);
+        normalLayout = computePresentationLayout(entries, geometry);
+        normalSafe = normalLayout.safe
+          && (overflowPresentation.mode !== "overflow" || (
+            normalLayout.stackHeight + exitSlack
+              <= geometry.workArea.height - geometry.margin * 2
+          ));
+      }
+
+      if (normalSafe) {
+        applyNormalPresentation(entries, normalLayout, geometry);
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      const previousPresentationMode = overflowPresentation.mode;
+      overflowPresentation.mode = "overflow";
+      const canFitWithLauncher = (candidateEntries) => (
+        computePresentationLayout(candidateEntries, geometry, {
+          includeQueue: true,
+          // Representative admission must respect the protected card's frozen
+          // size. The launcher cap belongs only to the final chosen set;
+          // otherwise each optional representative can make itself fit by
+          // squeezing the expanded owner toward 1px.
+          capExpandedForLauncher: false,
+        }).safe
+      );
+      const selected = selectOverflowRepresentatives(entries, {
+        selectedBySession: overflowPresentation.selectedEntryBySession,
+        selectedGlobalEntryId: overflowPresentation.selectedGlobalEntryId,
+        isProtected: isProtectedOverflowEntry,
+        canFit: canFitWithLauncher,
+      });
+      let visibleEntries = selected.visibleEntries;
+      let hiddenEntries = selected.hiddenEntries;
+      const expandedBudgetSnapshots = new Map();
+      for (const entry of visibleEntries) {
+        if (!entry || entry.expanded !== true) continue;
+        expandedBudgetSnapshots.set(entry, {
+          expandedHeightBudget: entry.expandedHeightBudget,
+          expandedBudgetKey: entry.expandedBudgetKey,
+          expandedHeightBudgetMeasured: entry.expandedHeightBudgetMeasured,
+          measurementEpoch: entry.measurementEpoch,
+        });
+      }
+      const updatedExpandedBudgets = ensureExpandedBudgets(visibleEntries, geometry, {
+        // Selection is still speculative until the final geometry guard. Do
+        // not expose an epoch/payload from a representative set we may reject.
+        sendPresentation: false,
+      });
+      let overflowLayout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+
+      // Recomputing an expanded budget may grow the selected card. Only move
+      // in the reducing direction: remove newest non-protected reps until the
+      // fixed launcher fits; never feed the new budget back into another
+      // expansion/selection loop.
+      while (!overflowLayout.safe) {
+        let removableIndex = -1;
+        for (let index = visibleEntries.length - 1; index >= 0; index -= 1) {
+          if (!isProtectedOverflowEntry(visibleEntries[index])) {
+            removableIndex = index;
+            break;
+          }
+        }
+        if (removableIndex === -1) break;
+        visibleEntries = visibleEntries.filter((_entry, index) => index !== removableIndex);
+        const visibleIds = new Set(visibleEntries.map((entry) => entry.uiEntryId));
+        hiddenEntries = entries.filter((entry) => !visibleIds.has(entry.uiEntryId));
+        overflowLayout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+      }
+
+      const hasExpandedRepresentative = visibleEntries.some((entry) => entry.expanded === true);
+      if (!overflowLayout.safe && hasExpandedRepresentative) {
+        for (const entry of updatedExpandedBudgets) {
+          const snapshot = expandedBudgetSnapshots.get(entry);
+          if (!snapshot) continue;
+          entry.expandedHeightBudget = snapshot.expandedHeightBudget;
+          entry.expandedBudgetKey = snapshot.expandedBudgetKey;
+          entry.expandedHeightBudgetMeasured = snapshot.expandedHeightBudgetMeasured;
+          entry.measurementEpoch = snapshot.measurementEpoch;
+        }
+        // A committed overflow already owns real windows, so leave it exactly
+        // as presented. First overflow from normal mode has no previous bounds
+        // for a newly created window: apply the already-computed crowded normal
+        // stack so every request remains positioned and visible, but publish no
+        // queue revision.
+        if (previousPresentationMode === "normal") {
+          applyNormalPresentation(entries, preliminaryNormalLayout, geometry);
+        } else {
+          overflowPresentation.mode = previousPresentationMode;
+        }
+        permLog(`permission overflow candidate unsafe after launcher cap (${reason})`);
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      for (const entry of updatedExpandedBudgets) sendPermissionPresentation(entry);
+
+      if (
+        hiddenEntries.length === 0
+        || (
+          overflowPresentation.queueAttemptedInOverflowEpisode
+          && !isLiveBrowserWindow(overflowPresentation.queueWindow)
+        )
+      ) {
+        const allIds = new Set(entries.map((entry) => entry.uiEntryId));
+        const slackRemeasureCandidates = collectSlackRemeasureCandidates(entries);
+        ensureExpandedBudgets(entries, geometry);
+        const fallbackLayout = computePresentationLayout(entries, geometry);
+        overflowPresentation.visibleEntryIds = allIds;
+        applyRequestPresentation(entries, fallbackLayout, geometry, { visibleEntryIds: allIds });
+        requestSlackRemeasureForNewlyVisible(slackRemeasureCandidates);
+        hideQueueWindow();
+        syncPermissionShortcuts();
+        continue;
+      }
+
+      prepareQueueCommit(
+        entries,
+        visibleEntries,
+        hiddenEntries,
+        overflowPresentation.queueDrawerOpen
+          ? computePresentationLayout([], geometry, { includeQueue: true, drawerOpen: true }).queueBounds
+          : overflowLayout.queueBounds,
+        geometry
+      );
+      applyCommittedOverflowPresentation(entries, geometry);
+      syncPermissionShortcuts();
+    } while (overflowPresentation.reconcileAgain);
+  } catch (err) {
+    permLog(`permission presentation reconcile failed (${reason}): ${err && err.message ? err.message : err}`);
+    throw err;
+  } finally {
+    overflowPresentation.reconciling = false;
+  }
+  if (typeof ctx.reapplyMacVisibility === "function") {
+    try { ctx.reapplyMacVisibility(); } catch {}
+  }
+}
+
+function repositionBubbles() {
+  reconcilePermissionPresentation("geometry");
+}
+
+// Permission-automation chokepoint. Every agent branch in the /permission route
 // funnels through showPermissionBubble after its DND / per-agent / headless
 // gates have already run, so this is the single place to honor the
-// autoApproveAllPermissions toggle without auto-approving requests those gates
-// meant to drop. Passive notifications (codex/kimi) and the hardware-buddy
-// self-test are excluded — they are not approvals and carry no HTTP response
+// runtime mode without auto-approving requests those gates
+// meant to drop. Passive notifications (codex/kimi) are excluded — they are
+// not approvals and carry no HTTP response
 // to satisfy. Returns true when it consumed the entry (caller must NOT build a
 // bubble), false otherwise.
+
+// Session-scoped automation can run after the route has returned (for example,
+// when a grant sweeps an already-queued request). Re-check the live permission
+// object instead of trusting a snapshot captured at route time.
+function isPermissionEntryLive(permEntry) {
+  if (!permEntry || !pendingPermissions.includes(permEntry)) return false;
+  if (permEntry._delayedResolve === true) return false;
+  if (permEntry._sessionTrustLifecycleCancelled === true) return false;
+  if (isPassiveNotifyEntry(permEntry)) return false;
+
+  // opencode/MiMo ACK the inbound HTTP request immediately and reply through a
+  // reverse bridge. Until that adapter exposes a positive, request-specific
+  // bridge-liveness signal, membership in pendingPermissions is not enough to
+  // prove that an automated decision can still reach the real request.
+  if (isOpencodeFamilyEntry(permEntry)) return false;
+
+  const res = permEntry.res;
+  if (!res || typeof res !== "object") return false;
+  if (res.destroyed === true) return false;
+  if (res.writableEnded === true) return false;
+  if (res.writableFinished === true) return false;
+  return true;
+}
+
+function isInteractiveCodexSubagentEntry(permEntry) {
+  return !!(permEntry
+    && permEntry.isCodex === true
+    && permEntry.codexInteractiveSubagent === true
+    && permEntry.headless !== true);
+}
+
+function isPermissionEntryHeadless(permEntry) {
+  if (!permEntry || typeof permEntry !== "object") return false;
+  if (permEntry.headless === true) return true;
+  const session = ctx.sessions && typeof ctx.sessions.get === "function"
+    ? ctx.sessions.get(permEntry.sessionId)
+    : null;
+  return !!(session
+    && session.headless === true
+    && !isInteractiveCodexSubagentEntry(permEntry));
+}
+
+// Destructive-action reminder (opt-in, off by default).
+//
+// Reads the stamp the route put on the entry instead of re-deriving anything
+// from entry.toolInput: that field is the display copy and has already been
+// through truncateDeep(), so a command whose destructive part sits past
+// PREVIEW_MAX would not be in it.
+//
+// If the setting cannot be read at all, an unmatched request keeps today's
+// behavior and a matched one ends at the human. A settings read that throws is
+// already a broken state, and the direction that costs an extra card is
+// preferable to the one that silently disarms a guard the user switched on.
+//
+// #1021 review (5), TOCTOU: the match stamp (hold/tag) is computed once, at
+// accept time, by permission-reminder.js -- a module with no ctx, so it
+// cannot read this setting at all. Whether that stamp actually holds used to
+// re-read the LIVE setting on every call, including from
+// canAutoResolvePendingPermission()/sweep(), which can run much later than
+// accept time (a session grant can arrive after the request has already been
+// sitting, displayed, for a while). That let a request already shown to a
+// human as held become sweep-resolvable the moment the setting was turned
+// off, with no human action and no re-render of the already-shown card --
+// and the reverse (turning it on) could newly hold a request that automation
+// had already committed to resolving through a path that does not re-check
+// this predicate. Freezing the decision the first time it is asked answers
+// both directions the same way a snapshot answers a race: whichever value
+// was true when this request first became eligible for automation is the
+// value it keeps for its whole pending lifetime, so the display (whenever it
+// last rendered) and the decision can never silently diverge on a request
+// that neither the human nor policy has touched.
+function permissionReminderHolds(permEntry) {
+  // Scoped to the same branch the policy scopes it to. Elicitation and plan
+  // entries are answered or reviewed on their own paths, and a question card
+  // must never show a reminder reason just because the safety net in the route
+  // stamped one.
+  if (!isValidInteraction(permEntry && permEntry.interaction)) return false;
+  const intent = permEntry.interaction.intent;
+  if (intent !== INTERACTION_INTENT.TOOL_APPROVAL && intent !== INTERACTION_INTENT.UNKNOWN) {
+    return false;
+  }
+  if (typeof permEntry._reminderHoldAtAccept === "boolean") {
+    return permEntry._reminderHoldAtAccept;
+  }
+  const stampHolds = reminderHolds(permEntry.permissionReminder);
+  let result;
+  if (typeof ctx.isDestructiveReminderEnabled !== "function") {
+    result = false;
+  } else {
+    try {
+      result = ctx.isDestructiveReminderEnabled() === true ? stampHolds : false;
+    } catch (err) {
+      permLog(`destructive reminder: setting read failed (${err && err.message ? err.message : err}); falling back to the match`);
+      result = stampHolds;
+    }
+  }
+  permEntry._reminderHoldAtAccept = result;
+  return result;
+}
+
+// Whether the reminder is the reason this request is in front of a human.
+//
+// permissionReminderHolds() answers "should automation stop here"; this answers
+// "did stopping here change anything". They differ whenever the request was going
+// to reach a human regardless -- automation off, an ineligible agent, a session
+// with no grant -- and in that case the card must not claim Clawd intervened.
+// The card still shows the ordinary destructive-action hint there, as before.
+//
+// #1021 review (3): this used to re-evaluate automation policy with its own
+// partial copy of canAutoResolvePendingPermission()'s gates, which skipped the
+// entry-level ones entirely (agent/subagent enabled, headless, Codex permission
+// intercept, session-automation eligibility, live-response, DND). Reachable
+// miss: a remote-only entry with an existing session grant, where Codex
+// permission intercept or the subagent automation gate is off -- sweep()
+// would never have resolved that entry (canAutoResolvePendingPermission
+// returns false), yet this function said the reminder was why it was
+// pending, so the card rendered Tier 1 ("Automatic approval paused") when the
+// request needed a human regardless (Tier 2 is correct).
+//
+// Fix: derive from canAutoResolvePendingPermission() itself -- the same
+// predicate sweep()/session-grant flows use -- instead of keeping a second
+// copy of its gates, but ONLY in the exact circumstance where that predicate
+// is actually consulted for real auto-resolution: a session-automation
+// override exists, or this is an interactive Codex subagent entry
+// (maybeAutoApprovePermission's own `needsLiveGate` condition, unchanged
+// here). An ordinary global-automation request is never routed through
+// canAutoResolvePendingPermission()'s entry-level gates either -- see
+// maybeAutoApprovePermission(), which auto-allows it directly once
+// evaluatePermissionAutomation() says AUTO_ALLOW -- so asking this predicate
+// to apply those gates there would claim a stronger check happened than the
+// one that actually resolves the request, which would then wrongly downgrade
+// an otherwise-correct Tier 1 card (e.g. an opencode-family session under
+// plain global automation) to Tier 2.
+function reminderIsWhyThisIsPending(permEntry) {
+  if (!permissionReminderHolds(permEntry)) return false;
+  let mode;
+  if (typeof ctx.getEffectivePermissionAutomationMode === "function") {
+    mode = ctx.getEffectivePermissionAutomationMode(permEntry, {
+      sessionOnly: permEntry.remoteOnly === true,
+    });
+  } else if (typeof ctx.getPermissionAutomationMode === "function") {
+    mode = ctx.getPermissionAutomationMode();
+  } else {
+    mode = PERMISSION_AUTOMATION_MODE.OFF;
+  }
+  const wouldAutoAllow = evaluatePermissionAutomation({
+    mode,
+    interaction: permEntry.interaction,
+    entry: permEntry,
+    reminderHold: false,
+  }) === AUTOMATION_ACTION.AUTO_ALLOW;
+  if (!wouldAutoAllow) return false;
+
+  const hasSessionOverride = typeof ctx.hasSessionAutomationOverride === "function"
+    && ctx.hasSessionAutomationOverride(permEntry);
+  const needsLiveGate = hasSessionOverride || isInteractiveCodexSubagentEntry(permEntry);
+  if (!needsLiveGate) return true;
+
+  return canAutoResolvePendingPermission(permEntry, { mode, ignoreReminderHold: true }) === true;
+}
+
+function canAutoResolvePendingPermission(permEntry, options = {}) {
+  if (!isPermissionEntryLive(permEntry)) return false;
+  if (ctx.doNotDisturb) return false;
+
+  const agentId = typeof permEntry.agentId === "string"
+    ? permEntry.agentId.trim()
+    : "";
+  if (!agentId) return false;
+  if (typeof ctx.isAgentEnabled !== "function" || !ctx.isAgentEnabled(agentId)) {
+    return false;
+  }
+  if (
+    typeof ctx.isAgentPermissionsEnabled !== "function"
+    || !ctx.isAgentPermissionsEnabled(agentId)
+  ) {
+    return false;
+  }
+  if (
+    (permEntry.subagentId || permEntry.subagentType)
+    && (
+      typeof ctx.isAgentSubagentPermissionsEnabled !== "function"
+      || !ctx.isAgentSubagentPermissionsEnabled(agentId)
+    )
+  ) {
+    return false;
+  }
+
+  if (isPermissionEntryHeadless(permEntry)) return false;
+
+  if (
+    permEntry.isCodex
+    && (
+      typeof ctx.isCodexPermissionInterceptEnabled !== "function"
+      || !ctx.isCodexPermissionInterceptEnabled()
+    )
+  ) {
+    return false;
+  }
+
+  const identity = permEntry.sessionAutomationIdentity;
+  if (!identity || identity.eligible !== true) return false;
+
+  let mode = options.mode;
+  if (mode === undefined) {
+    mode = options.sessionOnly === true
+      ? PERMISSION_AUTOMATION_MODE.OFF
+      : (
+          typeof ctx.getPermissionAutomationMode === "function"
+            ? ctx.getPermissionAutomationMode()
+            : PERMISSION_AUTOMATION_MODE.OFF
+        );
+  }
+
+  // ignoreReminderHold lets reminderIsWhyThisIsPending() ask "would every
+  // OTHER gate have let this through" without re-implementing them: it is
+  // the neutralize-only-the-reminder-hold view onto this exact predicate.
+  const reminderHold = options.ignoreReminderHold === true
+    ? false
+    : permissionReminderHolds(permEntry);
+
+  return evaluatePermissionAutomation({
+    mode,
+    interaction: permEntry.interaction,
+    entry: permEntry,
+    reminderHold,
+  }) === AUTOMATION_ACTION.AUTO_ALLOW;
+}
 
 // Default reply used to answer AskUserQuestion / clarify prompts while
 // auto-pilot is on. The user isn't present to type, so we explicitly defer the
@@ -630,39 +2377,103 @@ function buildAutoApproveElicitationAnswers(toolInput) {
 
 function maybeAutoApprovePermission(permEntry) {
   if (!permEntry) return false;
-  if (typeof ctx.isAutoApproveAllEnabled !== "function" || !ctx.isAutoApproveAllEnabled()) {
+  if (isPassiveNotifyEntry(permEntry)) return false;
+  const mode = typeof ctx.getEffectivePermissionAutomationMode === "function"
+    ? ctx.getEffectivePermissionAutomationMode(permEntry, { sessionOnly: false })
+    : (
+        typeof ctx.getPermissionAutomationMode === "function"
+          ? ctx.getPermissionAutomationMode()
+          : PERMISSION_AUTOMATION_MODE.OFF
+      );
+  const reminderHold = permissionReminderHolds(permEntry);
+  const action = evaluatePermissionAutomation({
+    mode,
+    interaction: permEntry.interaction,
+    entry: permEntry,
+    reminderHold,
+  });
+  if (action === AUTOMATION_ACTION.DEFER) {
+    if (reminderHold) {
+      permLog(`destructive reminder: holding for a human mode=${mode} reason=${permEntry.permissionReminder.tag} tool=${permEntry.toolName || "(missing)"} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    } else if (!isValidInteraction(permEntry.interaction)) {
+      permLog(`automation defer: invalid interaction tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    } else if (
+      mode !== PERMISSION_AUTOMATION_MODE.OFF
+      && permEntry.interaction.intent === INTERACTION_INTENT.UNKNOWN
+    ) {
+      permLog(`automation defer: unknown interaction mode=${mode} tool=${permEntry.toolName || "(missing)"} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    }
     return false;
   }
-  if (permEntry.isCodexNotify || permEntry.isKimiNotify) return false;
-  if (isHardwareBuddyTestPermission(permEntry)) return false;
 
-  // Elicitation (AskUserQuestion / Hermes clarify): a bare "allow" with no
-  // resolvedUpdatedInput is sent as a DENY downstream (see resolvePermissionEntry).
-  // Auto-pilot can't surface the questions to the user, so answer each one with
-  // a neutral "defer to the agent" reply rather than leaving it blank — an empty
-  // answers map makes the agent re-ask or fall back unpredictably.
-  if (permEntry.isElicitation) {
+  // Global automation keeps its existing adapter-wide behavior. A session
+  // override, however, may be consumed after the route has created the entry,
+  // so it must pass the same current liveness/gate/identity chokepoint used by
+  // warning returns, remote commit, and sweep.
+  if (action === AUTOMATION_ACTION.AUTO_ALLOW) {
+    const hasSessionOverride = typeof ctx.hasSessionAutomationOverride === "function"
+      && ctx.hasSessionAutomationOverride(permEntry);
+    // Interactive Codex children may inherit global automation only when the
+    // same route-owned identity and live gates used by session automation are
+    // valid. This prevents a Desktop/unknown process identity from turning an
+    // otherwise manual Agent-thread bubble into an automatic allow.
+    const needsLiveGate = hasSessionOverride || isInteractiveCodexSubagentEntry(permEntry);
+    if (needsLiveGate && !canAutoResolvePendingPermission(permEntry, { mode })) return false;
+  }
+
+  if (action === AUTOMATION_ACTION.AUTO_ANSWER) {
+    const wireInput = permEntry.elicitationWireInput || permEntry.toolInput;
     permEntry.resolvedUpdatedInput = buildElicitationUpdatedInput(
-      permEntry.toolInput,
-      buildAutoApproveElicitationAnswers(permEntry.toolInput)
+      wireInput,
+      buildAutoApproveElicitationAnswers(wireInput)
     );
   }
 
-  permLog(`auto-approve: tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "claude-code"}`);
+  permLog(`permission automation: mode=${mode} action=${action} intent=${permEntry.interaction.intent} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "claude-code"}`);
   resolvePermissionEntry(permEntry, "allow");
+  return true;
+}
+
+
+// Shared by the per-bubble closure below and by the exported test seam. The
+// closure owns the ownership checks (is this still *my* window?); this owns
+// what happens once a failure is real.
+function handlePermissionBubbleFailure(permEntry, reason) {
+  permEntry._bubbleFatalHandled = true;
+  if (isPassiveNotifyEntry(permEntry)) {
+    permLog(`passive notification bubble failed; dismissing: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+    dismissPassiveNotify(permEntry, `bubble-failed:${reason}`);
+    return true;
+  }
+  permLog(`permission bubble failed; returning no-decision: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+  resolvePermissionEntry(permEntry, "no-decision", reason);
   return true;
 }
 
 function showPermissionBubble(permEntry) {
   // Auto-pilot: if enabled, approve immediately and never render a bubble.
   if (maybeAutoApprovePermission(permEntry)) return;
+  ensureBubblePresentationState(permEntry);
+  ensurePermissionUiIdentity(permEntry);
 
-  const sugCount = (permEntry.suggestions || []).length;
-  const scale = getTextScale();
+  const canOfferSessionTrust = typeof ctx.canOfferSessionTrust === "function"
+    && ctx.canOfferSessionTrust(permEntry) === true;
+  const sugCount = (permEntry.suggestions || []).length + (canOfferSessionTrust ? 1 : 0);
   const wa = getAnchorWorkArea();
+  const scale = getTextScale(wa);
   const bh = clampBubbleHeight(scaleHeight(estimateBubbleHeight(sugCount), scale), wa.height);
   // Temporary position — repositionBubbles() will finalize after renderer reports real height
   const pos = { x: 0, y: 0, width: getBubbleWidth(scale, wa), height: bh };
+
+  // Bubbles that host a text input (elicitation "Other", ExitPlanMode
+  // feedback) need keyboard focus. On macOS, the topmost level is dropped
+  // per-edit at runtime instead (see handleImeEditing) so the IME candidate
+  // window isn't occluded.
+  const interactionCapabilities = isValidInteraction(permEntry.interaction)
+    ? permEntry.interaction.capabilities
+    : {};
+  const needsTextInput = interactionCapabilities.answerQuestions === true
+    || interactionCapabilities.planFeedback === true;
 
   const bub = new BrowserWindow({
     width: pos.width,
@@ -683,7 +2494,7 @@ function showPermissionBubble(permEntry) {
     // while acceptFirstMouse lets the first click hit the inactive panel.
     // ExitPlanMode needs keyboard focus for the "Tell Claude what to change"
     // textarea feedback path on other platforms.
-    focusable: isMac ? true : !!(permEntry.isElicitation || permEntry.toolName === "ExitPlanMode"),
+    focusable: isMac ? true : needsTextInput,
     webPreferences: {
       preload: path.join(__dirname, "preload-bubble.js"),
       nodeIntegration: false,
@@ -691,73 +2502,188 @@ function showPermissionBubble(permEntry) {
     },
   });
 
-  permEntry.bubble = bub;
-  permEntry.bubbleReady = false;
+  // Partial-create rollback: a synchronous throw after the BrowserWindow
+  // exists (setAlwaysOnTop/showInactive/repositioning on exotic platforms,
+  // shortcut sync, autoclose arming) must not orphan a live window with
+  // registered close handlers while the route-level catch drops the pending
+  // entry — nothing would ever close that window. Strip listeners, destroy
+  // the window, and rethrow so the caller finishes the rollback.
+  let autoExpansionRollback = null;
+  try {
+    permEntry.bubble = bub;
+    permissionBubbleWindows.add(bub);
+    permEntry.bubbleReady = false;
+    // macOS: text-input bubbles skip the native stationary treatment (SkyLight
+    // private space) that occludes the OS IME candidate window. They stay
+    // cross-space visible via Electron and drop out of always-on-top while a text
+    // field is focused (handleImeEditing) so CJK input popups can surface.
+    if (isMac && needsTextInput) bub.__clawdMacTextInputBubble = true;
 
-  if (isWin) {
-    bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-  }
-
-  bub.loadFile(path.join(__dirname, "bubble.html"));
-
-  bub.webContents.once("did-finish-load", () => {
-    permEntry.bubbleReady = true;
-    // Explicit even though same-origin propagation usually covers it — a
-    // stale partition-persisted factor must never win over prefs.
-    applyZoomToWindow(bub, getTextScale());
-    syncPermissionBubbleContent(permEntry);
-    // Elicitation bubbles need keyboard focus so arrow keys and Enter work.
-    // Regular permission bubbles must NOT steal focus from the terminal —
-    // doing so triggers false "User answered in terminal" denials in Claude Code.
-    if (permEntry.isElicitation) {
-      bub.focus();
+    if (isWin) {
+      bub.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
     }
-  });
 
-  // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking
-  if (isMac) {
-    bub.setAlwaysOnTop(true, "screen-saver");
-  }
+    bub.webContents.once("did-finish-load", () => {
+      if (pendingPermissions.indexOf(permEntry) === -1 || permEntry.bubble !== bub) return;
+      permEntry.bubbleReady = true;
+      // Explicit even though same-origin propagation usually covers it — a
+      // stale partition-persisted factor must never win over prefs.
+      applyZoomToWindow(bub, getTextScale(getAnchorWorkArea()));
+      syncPermissionBubbleContent(permEntry);
+      // Arrival never steals focus. Eligible Ask cards may already be visually
+      // expanded, but controls receive focus only after an explicit local or
+      // queue action.
+    });
 
-  repositionBubbles();
-  bub.showInactive();
-  repositionDependentBubbles();
-  keepOutOfTaskbar(bub);
-  // macOS: defer full visibility restoration to avoid activating Clawd
-  if (isMac) deferMacFloatingVisibility(ctx, bub);
-  else ctx.reapplyMacVisibility();
+    bub.on("closed", () => {
+      permissionBubbleWindows.delete(bub);
+      const idx = pendingPermissions.indexOf(permEntry);
+      if (idx !== -1) {
+        // Codex + Qwen + Copilot + ZCode + DSH can hand no-decision back to
+        // their native flow. opencode-family entries do the same: OpenCode v2
+        // answers 204 on its blocking evaluate hook so the native ask UI takes
+        // over, while OpenCode v1 / MiMo silently drop the request so their
+        // built-in terminal or Desktop prompt wins. Hermes has no native
+        // permission UI, so its opt-in plugin gate treats this as a retryable
+        // block. In every case we avoid fabricating a user denial.
+        // Claude Code / CodeBuddy still get an explicit deny for this user-close
+        // action.
+        const behavior = (
+          permEntry.isCodex
+          || permEntry.isQwenCode
+          || permEntry.isCopilotCli
+          || permEntry.isHermes
+          || permEntry.isZcode
+          || permEntry.isDsh
+          || isOpencodeFamilyEntry(permEntry)
+        ) ? "no-decision" : "deny";
+        resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
+      }
+      repositionDependentBubbles();
+    });
 
-  bub.on("closed", () => {
-    const idx = pendingPermissions.indexOf(permEntry);
-    if (idx !== -1) {
-      // Qwen + Copilot + Hermes are fail-open agents: a closed bubble means "no
-      // decision, let the native flow run" so the user isn't forced into a
-      // deny they didn't pick. CC/CodeBuddy still get an explicit deny so
-      // the hook unblocks instead of waiting for the long timeout.
-      const behavior = (permEntry.isQwenCode || permEntry.isCopilotCli || permEntry.isHermes) ? "no-decision" : "deny";
-      resolvePermissionEntry(permEntry, behavior, "Bubble window closed by user");
+    function failPermissionBubble(reason) {
+      if (
+        permEntry._bubbleFatalHandled
+        || pendingPermissions.indexOf(permEntry) === -1
+        || permEntry.bubble !== bub
+      ) {
+        return false;
+      }
+      handleBubbleRendererGone(bub);
+      return handlePermissionBubbleFailure(permEntry, reason);
     }
-  });
 
-  ctx.guardAlwaysOnTop(bub);
-  syncPermissionShortcuts();
-  armPermissionAutoCloseTimer(permEntry);
+    // Loading or renderer failure must release the blocking hook. Returning
+    // no-decision lets agents with a native approval flow take over and avoids
+    // fabricating either an allow or a deny.
+    bub.webContents.once("did-fail-load", (_event, errorCode, errorDescription) => {
+      failPermissionBubble(
+        `Permission bubble failed to load (${errorCode || "unknown"}: ${errorDescription || "unknown error"})`
+      );
+    });
+    bub.webContents.on("render-process-gone", (_event, details) => {
+      const reason = details && details.reason ? details.reason : "unknown";
+      failPermissionBubble(`Permission bubble renderer exited (${reason})`);
+    });
+
+    let loadFailedSynchronously = false;
+    try {
+      const loadResult = bub.loadFile(path.join(__dirname, "bubble.html"));
+      if (loadResult && typeof loadResult.catch === "function") {
+        loadResult.catch((err) => {
+          failPermissionBubble(
+            `Permission bubble failed to load: ${err && err.message ? err.message : String(err)}`
+          );
+        });
+      }
+    } catch (err) {
+      loadFailedSynchronously = failPermissionBubble(
+        `Permission bubble failed to load: ${err && err.message ? err.message : String(err)}`
+      );
+    }
+    if (loadFailedSynchronously) return;
+
+    // macOS: set alwaysOnTop BEFORE showInactive to prevent bubble from sinking.
+    // (Text-input bubbles later drop out of always-on-top per-edit — and skip the
+    // native SkyLight path — so their IME candidate window can surface; that's
+    // handled by handleImeEditing + reapplyMacVisibility, not a lower level here.)
+    if (isMac) {
+      bub.setAlwaysOnTop(true, MAC_TOPMOST_LEVEL);
+    }
+
+    const preArrivalExpansion = {
+      expanded: permEntry.expanded,
+      expandedHeightBudget: permEntry.expandedHeightBudget,
+      expandedBudgetKey: permEntry.expandedBudgetKey,
+      expandedHeightBudgetMeasured: permEntry.expandedHeightBudgetMeasured,
+    };
+    if (tryAutoExpandAskOnArrival(permEntry)) {
+      autoExpansionRollback = preArrivalExpansion;
+      // Electron load is asynchronous, so this is normally a no-op. Keeping
+      // the send here makes the transition correct even for an already-ready
+      // renderer or a synchronous test harness.
+      sendPermissionPresentation(permEntry);
+    }
+    reconcilePermissionPresentation("bubble-created");
+    // Keep creation transactional. Later reconciles tolerate an individual
+    // request window refusing to show so they cannot interrupt another
+    // request's decision response; this first show must still throw into the
+    // partial-create rollback or the new request would have no UI at all.
+    const queueAlreadyRepresentsPending = overflowPresentation.mode === "overflow"
+      && overflowPresentation.queuePresentedRevision > 0
+      && isLiveBrowserWindow(overflowPresentation.queueWindow);
+    if (
+      !queueAlreadyRepresentsPending
+      && !isEntryCutOffByPet(permEntry)
+      && (typeof bub.isVisible !== "function" || !bub.isVisible())
+      && typeof bub.showInactive === "function"
+    ) {
+      bub.showInactive();
+    }
+    repositionDependentBubbles();
+    // macOS: defer full visibility restoration to avoid activating Clawd
+    if (isMac) deferMacFloatingVisibility(ctx, bub);
+    else ctx.reapplyMacVisibility();
+
+    ctx.guardAlwaysOnTop(bub);
+    syncPermissionShortcuts();
+
+    armPermissionAutoCloseTimer(permEntry);
+  } catch (createErr) {
+    try { bub.removeAllListeners("closed"); } catch {}
+    try { bub.destroy(); } catch {}
+    permissionBubbleWindows.delete(bub);
+    permEntry.bubble = null;
+    if (autoExpansionRollback) {
+      permEntry.expanded = autoExpansionRollback.expanded;
+      permEntry.expandedHeightBudget = autoExpansionRollback.expandedHeightBudget;
+      permEntry.expandedBudgetKey = autoExpansionRollback.expandedBudgetKey;
+      permEntry.expandedHeightBudgetMeasured = autoExpansionRollback.expandedHeightBudgetMeasured;
+      if (expandedPermissionEntry === permEntry) expandedPermissionEntry = null;
+    }
+    throw createErr;
+  }
 }
-
 // Autoclose: set up the dismiss-without-decision timer for a single pending
 // permission. Passive notification entries (codex/kimi) own their own
 // dismissal via dismissPassiveNotify and must not be auto-closed through this
 // path — their UI lifecycle is decoupled from the agent's response channel.
 function armPermissionAutoCloseTimer(permEntry) {
-  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify) return;
+  if (!permEntry || isPassiveNotifyEntry(permEntry)) return;
   if (permEntry.autoCloseTimer) {
     clearTimeout(permEntry.autoCloseTimer);
     permEntry.autoCloseTimer = null;
   }
+  if (!pendingPermissions.includes(permEntry)) return;
+  if (permEntry.trustConfirming === true || isDecisionInteraction(permEntry.interaction)) return;
   const policy = getPolicy(ctx, "permission");
   if (!policy.enabled || !(policy.autoCloseMs > 0)) return;
-  const elapsed = Math.max(0, Date.now() - (permEntry.createdAt || Date.now()));
-  const remaining = Math.max(0, policy.autoCloseMs - elapsed);
+  const remaining = computePermissionAutoCloseRemainingMs(
+    permEntry,
+    policy.autoCloseMs,
+    Date.now()
+  );
   if (remaining === 0) {
     dismissPermissionWithoutDecision(permEntry, "Auto-closed before timer armed");
     return;
@@ -777,6 +2703,23 @@ function dismissPermissionWithoutDecision(permEntry, message) {
 }
 
 function notifyPermissionsChanged(reason) {
+  if (expandedPermissionEntry && !pendingPermissions.includes(expandedPermissionEntry)) {
+    expandedPermissionEntry = null;
+  }
+  // #640: every path that adds or removes a pendingPermissions entry funnels
+  // through here — including resolvePermissionEntry's inline splice, which is
+  // what Allow/Deny clicks, Enter submits, and the auto-close timer all use.
+  // A bubble can leave the list while its text field still holds focus (no
+  // blur ever fires, and handleImeEditing can't match a spliced entry), so
+  // this is the one reliable place to re-run the editing-overlap dodge scan
+  // and restore the pet. Cheap + edge-triggered; platform gate lives inside.
+  if (typeof ctx.syncImeEditingPetDodge === "function") {
+    try {
+      ctx.syncImeEditingPetDodge();
+    } catch (err) {
+      permLog(`syncImeEditingPetDodge failed: ${err && err.message ? err.message : err}`);
+    }
+  }
   if (typeof ctx.onPermissionsChanged !== "function") return;
   try {
     ctx.onPermissionsChanged(reason);
@@ -786,13 +2729,12 @@ function notifyPermissionsChanged(reason) {
 }
 
 function notifyPermissionResolved(permEntry, reason) {
-  if (!permEntry || permEntry.isCodexNotify || permEntry.isKimiNotify) return;
+  if (!permEntry || isPassiveNotifyEntry(permEntry)) return;
   if (typeof ctx.onPermissionResolved !== "function") return;
   const hasPendingForSession = pendingPermissions.some((entry) =>
     entry
     && entry.sessionId === permEntry.sessionId
-    && !entry.isCodexNotify
-    && !entry.isKimiNotify
+    && !isPassiveNotifyEntry(entry)
   );
   try {
     ctx.onPermissionResolved(permEntry, {
@@ -804,6 +2746,12 @@ function notifyPermissionResolved(permEntry, reason) {
   }
 }
 
+// NOTE: deliberately does NOT announce to Slack. Queueing an entry only means
+// the route accepted it — permission automation may still auto-allow it on the
+// very next statement, which used to produce a "needs your approval" Slack ping
+// for a request nobody ever saw. The announce happens later, at the two points
+// where a real user decision is known to be pending (the renderer's bubble
+// height acknowledgement or a remote client's card-delivery acknowledgement).
 function addPendingPermission(permEntry, reason = "added") {
   pendingPermissions.push(permEntry);
   notifyPermissionsChanged(reason);
@@ -829,6 +2777,7 @@ function refreshPermissionAutoCloseForPolicy() {
 }
 
 function buildPermissionBubblePayload(permEntry) {
+  ensureBubblePresentationState(permEntry);
   const sess = ctx.sessions.get(permEntry.sessionId);
   const sessionFolder = sess && sess.cwd ? path.basename(sess.cwd) : null;
   const sessionShortId = permEntry.sessionId
@@ -837,16 +2786,66 @@ function buildPermissionBubblePayload(permEntry) {
   return {
     toolName: permEntry.toolName,
     toolInput: permEntry.toolInput,
+    // Why this card exists, when it exists because the reminder held it. Null
+    // for every other card -- including one whose command the display hint
+    // badges anyway. The badge says "this looks destructive"; this says
+    // "automation would have allowed this and Clawd stopped for you".
+    reminderTag: reminderIsWhyThisIsPending(permEntry)
+      ? permEntry.permissionReminder.tag
+      : null,
+    detailText: typeof permEntry.detailText === "string"
+      ? permEntry.detailText
+      : null,
+    detailTruncated: permEntry.detailTruncated === true,
+    elicitationDetailInput: permEntry.elicitationDetailInput || null,
+    presentation: {
+      expanded: permEntry.expanded === true,
+      measurementEpoch: permEntry.measurementEpoch,
+    },
     suggestions: permEntry.suggestions || [],
+    canOfferSessionTrust: typeof ctx.canOfferSessionTrust === "function"
+      && ctx.canOfferSessionTrust(permEntry) === true,
+    sessionTrustError: typeof permEntry.sessionTrustError === "string"
+      ? permEntry.sessionTrustError
+      : null,
     lang: ctx.lang,
+    interaction: isValidInteraction(permEntry.interaction) ? permEntry.interaction : null,
     isElicitation: permEntry.isElicitation || false,
-    isOpencode: permEntry.isOpencode || false,
+    // opencode-family provenance for the renderer, which has no registry
+    // access: presence of familyAgentId selects the family render branch;
+    // familyDisplayName templates the blanket-always tooltip (plan §3.5).
+    familyAgentId: isOpencodeFamilyEntry(permEntry) ? permEntry.agentId : null,
+    familyDisplayName: isOpencodeFamilyEntry(permEntry)
+      ? ((getFamilyConfig(permEntry.agentId) || {}).displayName || permEntry.agentId)
+      : null,
+    // v2 family entries keep their "always" rule inside the host's background
+    // service (plugin memory), not the CLI process, so the blanket-always
+    // tooltip must not tell the user a terminal restart revokes it.
+    familyV2: permEntry.isOpencodeV2 === true,
     isAntigravity: permEntry.isAntigravity || false,
     // Provenance for the renderer: lets the bubble relabel Codex MCP tool calls
     // (issue #445) without touching approval semantics. Mirrors the flags above.
     isCodex: permEntry.isCodex || false,
-    opencodeAlways: permEntry.opencodeAlwaysCandidates || [],
-    opencodePatterns: permEntry.opencodePatterns || [],
+    isCodexSubagent: permEntry.isCodex === true && permEntry.codexSessionRole === "subagent",
+    codexAgentNickname: permEntry.codexAgentNickname || null,
+    isCodexUserInputNotify: permEntry.isCodexUserInputNotify || false,
+    codexUserInputCallId: permEntry.codexUserInputCallId || null,
+    isRemote: !!permEntry.host,
+    // Hermes must NOT get the regular go-to-terminal fallback: its opt-in
+    // permission gate has no native approval prompt to hand back to. A 204 is
+    // converted into a retryable block by the plugin. Clarify elicitation is
+    // different and can hand control to Hermes' native clarification UI.
+    isHermes: permEntry.isHermes || false,
+    // DSH has a downstream native web answerer. Its first-release bubble must
+    // not render Go to Terminal because that action has no decision meaning.
+    isDsh: permEntry.isDsh || false,
+    // Display-only detail for the passive Kimi notify card: the real tool
+    // name plus the whitelisted tool_input subset let the renderer reuse the
+    // standard cue path (formatDetail) while the card stays dismiss-only.
+    kimiToolName: permEntry.kimiToolName || null,
+    kimiToolInput: permEntry.kimiToolInput || null,
+    familyAlways: permEntry.familyAlwaysCandidates || [],
+    familyPatterns: permEntry.familyPatterns || [],
     sessionFolder,
     sessionShortId,
   };
@@ -856,6 +2855,44 @@ function syncPermissionBubbleContent(permEntry) {
   const bub = permEntry && permEntry.bubble;
   if (!bub || bub.isDestroyed() || !permEntry.bubbleReady) return false;
   bub.webContents.send("permission-show", buildPermissionBubblePayload(permEntry));
+  return true;
+}
+
+function sendPermissionPresentation(permEntry) {
+  const bub = permEntry && permEntry.bubble;
+  if (!bub || bub.isDestroyed() || !permEntry.bubbleReady) return false;
+  ensureBubblePresentationState(permEntry);
+  bub.webContents.send("permission-presentation", {
+    expanded: permEntry.expanded === true,
+    measurementEpoch: permEntry.measurementEpoch,
+  });
+  return true;
+}
+
+function beginSessionTrustConfirmation(permEntry) {
+  if (!isPermissionEntryLive(permEntry) || permEntry.trustConfirming === true) return false;
+  permEntry.trustConfirming = true;
+  permEntry.autoClosePauseStartedAt = Date.now();
+  if (permEntry.autoCloseTimer) {
+    clearTimeout(permEntry.autoCloseTimer);
+    permEntry.autoCloseTimer = null;
+  }
+  return true;
+}
+
+function endSessionTrustConfirmation(permEntry, options = {}) {
+  if (!permEntry) return false;
+  const now = Date.now();
+  if (Number.isFinite(permEntry.autoClosePauseStartedAt)) {
+    const elapsed = Math.max(0, now - permEntry.autoClosePauseStartedAt);
+    permEntry.autoClosePausedTotalMs = Math.max(
+      0,
+      Number(permEntry.autoClosePausedTotalMs) || 0
+    ) + elapsed;
+  }
+  permEntry.autoClosePauseStartedAt = null;
+  permEntry.trustConfirming = false;
+  if (options.rearm === true) armPermissionAutoCloseTimer(permEntry);
   return true;
 }
 
@@ -869,13 +2906,18 @@ function basenameForDisplay(value) {
 function compactRemoteApprovalText(value, maxLen = 200) {
   let text = typeof value === "string" ? value : String(value == null ? "" : value);
   text = text.replace(/[\u0000-\u001f\u007f]+/g, " ").replace(/\s+/g, " ").trim();
-  text = text.replace(/\b\d+:[A-Za-z0-9_-]{20,}\b/g, "<redacted:telegram-token>");
-  text = text.replace(/\b(?:Bearer|Token)\s+[A-Za-z0-9._~+/=-]{12,}\b/gi, "Bearer <redacted>");
-  text = text.replace(/\b(?:sk-[A-Za-z0-9_-]{16,}|xox[abprs]-[A-Za-z0-9-]{10,})\b/g, "<redacted:token>");
-  text = text.replace(/\b(?:api[_-]?key|access[_-]?token|refresh[_-]?token|authorization|cookie|password|secret)\s*[:=]\s*\S+/gi, "$1=<redacted>");
-  text = text.replace(/\b(?:telegram:)?-?\d{7,}(?::\d+){0,2}\b/g, "<redacted:id>");
+  text = redactSecrets(text);
   if (text.length > maxLen) text = `${text.slice(0, Math.max(0, maxLen - 1))}…`;
   return text;
+}
+
+function remoteApprovalDecisionLabel(decision) {
+  if (decision === "allow") return "批准一次";
+  if (decision === "deny") return "拒绝";
+  if (decision === "terminal") return "前往终端";
+  if (decision === "no-decision") return "未返回审批结果";
+  if (decision === "elicitation-submit") return "提交输入";
+  return "";
 }
 
 function isRemoteRichApprovalSupported(permEntry) {
@@ -885,23 +2927,145 @@ function isRemoteRichApprovalSupported(permEntry) {
 
 function isRemoteApprovalActionable(permEntry) {
   if (!permEntry || typeof permEntry !== "object") return false;
-  if (permEntry.isElicitation || permEntry.isCodexNotify || permEntry.isKimiNotify || permEntry.isOpencode || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
-  if (permEntry.toolName === "ExitPlanMode" || permEntry.toolName === "AskUserQuestion") return false;
+  const interaction = permEntry.interaction;
+  if (
+    isValidInteraction(interaction)
+    && interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+    && interaction.capabilities.answerQuestions
+  ) return true;
+  if (isPassiveNotifyEntry(permEntry) || isOpencodeFamilyEntry(permEntry) || permEntry.isAntigravity || permEntry.isCopilotCli) return false;
+  if (isDecisionInteraction(interaction)) return false;
   if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
-  // Headless sessions auto-deny locally; mirror that on the Telegram side so a
-  // non-interactive Codex/CC run never sends an actionable approval card.
-  const session = ctx.sessions && typeof ctx.sessions.get === "function"
-    ? ctx.sessions.get(permEntry.sessionId)
-    : null;
-  if (session && session.headless) return false;
+  // Mirror the local headless gate on remote channels. An audited interactive
+  // Codex Agent thread is the one exception: its state session is headless for
+  // HUD/focus policy, but the approval itself remains human-actionable.
+  if (isPermissionEntryHeadless(permEntry)) return false;
   return true;
 }
 
-// Returns a redacted summary string, or null when no agent-supplied description
-// is available. We refuse to send a Telegram approval card without something
-// describing the action — the local bubble shows the full tool input, so a
-// Telegram-only "Tool input hidden by Clawd." card would let the user approve
-// a black box.
+// Slack is a one-way attention channel, not an approval transport. Do not
+// reuse isRemoteApprovalActionable here: that predicate intentionally excludes
+// adapters such as the opencode family and Copilot because Telegram/Feishu
+// cannot safely return a decision for them. A successfully rendered desktop
+// bubble is still something Slack should announce.
+//
+// Route-owned interaction capabilities remain the authority. In particular,
+// an opencode-family AskUserQuestion cannot be answered in Clawd
+// (answerQuestions=false), so announcing "answer in the desktop app" would be
+// just as misleading as excluding its ordinary Allow/Deny bubbles.
+function isSlackPermissionAnnounceable(permEntry) {
+  if (!permEntry || typeof permEntry !== "object") return false;
+  if (!isValidInteraction(permEntry.interaction)) return false;
+  if (isPassiveNotifyEntry(permEntry)) return false;
+  if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return false;
+  if (isPermissionEntryHeadless(permEntry)) return false;
+
+  const { intent, capabilities } = permEntry.interaction;
+  if (intent === INTERACTION_INTENT.HUMAN_QUESTION) {
+    return capabilities.answerQuestions === true;
+  }
+  // ExitPlanMode has its own plan-review/feedback contract and is deliberately
+  // not a Slack permission notification in this phase.
+  if (isDecisionInteraction(permEntry.interaction)) return false;
+  return capabilities.allowDeny === true;
+}
+
+function buildRemoteElicitationPayload(permEntry) {
+  if (
+    !permEntry
+    || !isValidInteraction(permEntry.interaction)
+    || permEntry.interaction.intent !== INTERACTION_INTENT.HUMAN_QUESTION
+    || !permEntry.interaction.capabilities.answerQuestions
+  ) return null;
+  const input = permEntry.toolInput && typeof permEntry.toolInput === "object" ? permEntry.toolInput : {};
+  const questions = Array.isArray(input.questions) ? input.questions : [];
+  if (!questions.length) return null;
+  const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
+  const session = ctx.sessions.get(permEntry.sessionId);
+  const sessionFolder = compactRemoteApprovalText(
+    basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
+    80
+  );
+  return {
+    title: `${agentId} needs input`,
+    detail: compactRemoteApprovalText(input.description || input.summary || "", 200),
+    agentId,
+    folder: sessionFolder,
+    questions,
+  };
+}
+
+// Tool-specific fields that hint at what the action targets, tried in order
+// when the tool gave no description/summary/reason (e.g. Write, Edit, Read —
+// unlike Bash, which always carries `description`). Only cheap, low-risk
+// identifiers (a path, a Glob file-selection pattern) — never full file
+// contents/diffs/commands/search queries.
+// Field names reuse bubble-format.js's firstStringValue so this list doesn't
+// drift out of sync with the naming variants (TargetFile/AbsolutePath/...)
+// other agents use.
+const FALLBACK_PATH_FIELDS = ["file_path", "path", "TargetFile", "AbsolutePath", "filePath", "FilePath", "DirectoryPath"];
+const FALLBACK_PATTERN_FIELDS = ["pattern", "Pattern"];
+const FALLBACK_URL_FIELDS = ["url", "Url"];
+
+// `command`/`query` are deliberately excluded: they can carry secrets a
+// generic sanitizer can't reliably catch (inline env vars, API query
+// params), so they never leave the desktop bubble.
+function stripUrlQueryAndCredentials(value) {
+  try {
+    const parsed = new URL(value);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return null;
+  }
+}
+
+function buildRemoteApprovalFallbackDetail(input, toolName) {
+  const pathValue = firstStringValue(input, FALLBACK_PATH_FIELDS);
+  if (pathValue) {
+    const text = compactRemoteApprovalText(basenameForDisplay(pathValue), 200);
+    if (text) return text;
+  }
+  // `pattern` is overloaded: Glob uses it to identify files, while Grep uses
+  // it for the user's raw search expression. The latter can contain customer
+  // names, email addresses, or secret identifiers and is no safer to send to
+  // a remote channel than the deliberately excluded `query` field.
+  if (toolName === "Glob") {
+    const patternValue = firstStringValue(input, FALLBACK_PATTERN_FIELDS);
+    if (patternValue) {
+      const text = compactRemoteApprovalText(patternValue, 200);
+      if (text) return text;
+    }
+  }
+  const urlValue = firstStringValue(input, FALLBACK_URL_FIELDS);
+  if (urlValue) {
+    const originAndPath = stripUrlQueryAndCredentials(urlValue);
+    if (originAndPath) {
+      const text = compactRemoteApprovalText(originAndPath, 200);
+      if (text) return text;
+    }
+  }
+  return null;
+}
+
+// String.prototype.replace's replacement-string argument treats $$/$&/$`/$'
+// as special sequences. Dynamic values (tool input, agent/tool names, etc.)
+// must never be interpolated with the string form — a Glob pattern
+// containing "$$", for example, would corrupt the rendered card. The
+// function form of the replacement argument is never parsed for $-sequences.
+function interpolate(template, token, value) {
+  return template.replace(token, () => value);
+}
+
+// Returns a redacted summary string — never null. We used to refuse to send a
+// Telegram card at all when the tool gave no description/summary/reason (e.g.
+// Write/Edit, unlike Bash which always carries `description`), reasoning that
+// a blank "Tool input hidden by Clawd" card would let the user approve a black
+// box. In practice that meant those requests never reached Telegram at all —
+// worse than a labelled blank card, since the user had no idea anything was
+// pending. Now we fall back to a cheap identifier (file path / Glob pattern /
+// URL)
+// and, failing that, an explicit "no description, go check the desktop bubble"
+// notice — so every remote-approval-eligible request produces a card.
 function buildRemoteApprovalSummary(permEntry) {
   const input = permEntry && permEntry.toolInput && typeof permEntry.toolInput === "object"
     ? permEntry.toolInput
@@ -915,16 +3079,18 @@ function buildRemoteApprovalSummary(permEntry) {
     const text = compactRemoteApprovalText(candidate, 200);
     if (text) return text;
   }
-  return null;
+  const fallbackDetail = buildRemoteApprovalFallbackDetail(input, permEntry && permEntry.toolName);
+  if (fallbackDetail) return interpolate(t("approvalSummaryFallbackDetail"), "{detail}", fallbackDetail);
+  return t("approvalSummaryUnavailable");
 }
 
 function buildRemoteSuggestionLabel(suggestion) {
   if (!suggestion || typeof suggestion !== "object") return "";
   if (suggestion.type === "setMode") {
-    if (suggestion.mode === "acceptEdits") return "Auto edits";
-    if (suggestion.mode === "plan") return "Plan mode";
+    if (suggestion.mode === "acceptEdits") return t("approvalSuggestionAutoEdits");
+    if (suggestion.mode === "plan") return t("approvalSuggestionPlanMode");
     const mode = compactRemoteApprovalText(suggestion.mode || "", 18);
-    return mode ? `Mode: ${mode}` : "";
+    return mode ? interpolate(t("approvalSuggestionModePrefix"), "{mode}", mode) : "";
   }
   if (suggestion.type === "addRules") {
     const rules = Array.isArray(suggestion.rules) ? suggestion.rules : [suggestion];
@@ -932,8 +3098,12 @@ function buildRemoteSuggestionLabel(suggestion) {
     const behavior = compactRemoteApprovalText(suggestion.behavior || first.behavior || "allow", 12);
     const isDeny = behavior === "deny";
     const toolName = compactRemoteApprovalText(first.toolName || suggestion.toolName || "", 16);
-    if (toolName) return isDeny ? `Always deny ${toolName}` : `Always ${toolName}`;
-    return isDeny ? "Always deny" : "Always allow";
+    if (toolName) {
+      return isDeny
+        ? interpolate(t("approvalSuggestionAlwaysDenyTool"), "{tool}", toolName)
+        : interpolate(t("approvalSuggestionAlwaysAllowTool"), "{tool}", toolName);
+    }
+    return isDeny ? t("approvalSuggestionAlwaysDeny") : t("approvalSuggestionAlwaysAllow");
   }
   return "";
 }
@@ -952,36 +3122,146 @@ function buildRemoteSuggestionButtons(permEntry) {
   return buttons;
 }
 
-// Returns the Telegram approval payload, or null when there is no safe summary
-// to ship. Callers must treat null as a no-op signal — never send a card
-// without an action-describing summary.
+// Returns the Telegram approval payload. buildRemoteApprovalSummary always
+// returns a non-empty string (a real summary, a cheap fallback identifier, or
+// an explicit "no description" notice), so there is always a safe summary to
+// ship — this never returns null.
 function buildRemoteApprovalPayload(permEntry) {
   const summary = buildRemoteApprovalSummary(permEntry);
-  if (!summary) return null;
   const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
-  const toolName = compactRemoteApprovalText(permEntry.toolName || "Unknown", 80) || "Unknown";
+  const toolName = compactRemoteApprovalText(permEntry.toolName || t("approvalUnknownTool"), 80) || t("approvalUnknownTool");
   const session = ctx.sessions.get(permEntry.sessionId);
   const sessionFolder = compactRemoteApprovalText(
     basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
     80
   );
-  // Label is "Folder" (not "Session") on purpose: the pinned cc-connect-clawd
-  // sidecar redacts any "<sensitive_key>: <value>" pair it recognises, and
-  // "session" is in its keyword set — even though the value here is just the
-  // cwd basename, not a session id. "Folder" is plain and avoids the redact.
+  // Label this value "Folder" (not "Session"): it is only the cwd basename,
+  // never a session id or full local path.
+  // The same reason the local card shows, so a remote-only operator is not told
+  // less about why the request stopped than someone sitting at the desk.
+  //
+  // Two tiers, mirroring bubble-renderer.js's badge exactly, because the local
+  // card degrades to a weaker line where this used to degrade to silence:
+  //   held BY the reminder        -> "Automatic approval paused: X"
+  //   destructive but pending anyway -> "Potentially destructive action: X"
+  // The second tier is the case the old single-tier code dropped. It is the
+  // ONLY tier a remote-only operator can ever see: bubbles are off, so the
+  // local irreversible badge that carries this hint is not on their screen at
+  // all. Dropping it left exactly one configuration -- the one named in the
+  // comment above -- told nothing, which is the opposite of what it promises.
+  // Tier 2 must NOT reuse the tier-1 wording: the request was reaching a human
+  // regardless, so claiming Clawd stopped it would be false.
+  // One extraction, not three: reminderHolds() already rejects a null stamp, a
+  // malformed one, and an empty tag (test/permission-reminder lanes pin all
+  // four shapes), so a true from either predicate GUARANTEES an object with a
+  // truthy tag. Two cross-family reviewers independently read the old shape as
+  // a null-dereference plus an empty-tag asymmetry; both were refuted at the
+  // source, and the per-branch guards that invited the reading are gone with
+  // them rather than being left as dead code that documents a fear.
+  const reminderTag = permissionReminderHolds(permEntry)
+    ? permEntry.permissionReminder.tag
+    : null;
+  const reminderLine = !reminderTag
+    ? null
+    : (reminderIsWhyThisIsPending(permEntry)
+      ? interpolate(t("approvalDetailReminderValue"), "{reason}", formatReminderReason(reminderTag, ctx.lang))
+      : interpolate(t("approvalDetailIrreversibleValue"), "{reason}", formatReminderReason(reminderTag, ctx.lang)));
   const detail = [
-    `Agent: ${agentId}`,
-    `Tool: ${toolName}`,
-    sessionFolder ? `Folder: ${sessionFolder}` : null,
-    `Summary: ${summary}`,
+    `${t("approvalDetailAgent")}: ${agentId}`,
+    `${t("approvalDetailTool")}: ${toolName}`,
+    sessionFolder ? `${t("approvalDetailFolder")}: ${sessionFolder}` : null,
+    `${t("approvalDetailSummary")}: ${summary}`,
+    reminderLine ? `${t("approvalDetailReminder")}: ${reminderLine}` : null,
   ].filter(Boolean).join("\n");
+  const fields = [
+    { label: t("approvalDetailAgent"), value: agentId },
+    { label: t("approvalDetailTool"), value: toolName },
+    sessionFolder ? { label: t("approvalDetailFolder"), value: sessionFolder } : null,
+    { label: t("approvalDetailSummary"), value: summary },
+    reminderLine ? { label: t("approvalDetailReminder"), value: reminderLine } : null,
+  ].filter(Boolean);
   const suggestionButtons = buildRemoteSuggestionButtons(permEntry);
   const payload = {
-    title: `${agentId} requests ${toolName}`,
+    title: interpolate(interpolate(t("approvalRequestsTitle"), "{agent}", agentId), "{tool}", toolName),
     detail,
+    fields,
   };
+  // A capability flag, not an identity: the Feishu card switches to its
+  // structured layout as soon as it sees a top-level agentId, which would drop
+  // this payload's detail and reminder lines for every agent. This flag only
+  // removes an action DSH has no native terminal for.
+  if (agentId === "deepseek-harness") payload.canOfferTerminal = false;
   if (suggestionButtons.length > 0) payload.suggestions = suggestionButtons;
   return payload;
+}
+
+// One-way Slack heads-up when a permission request is actually waiting on the
+// user. Fires once per entry (guarded) and independently of whether an
+// interactive remote channel (Telegram/Feishu) is connected — Slack cannot
+// resolve the approval itself in this build, so it only announces where the
+// user can act (the desktop app, or an active remote-only channel).
+// Best-effort: never throws into the caller's sync path.
+//
+// Callers invoke this only after automation has had its chance: desktop entries
+// arrive from the renderer's post-reveal height acknowledgement, while
+// remote-only entries arrive from a remote client's explicit delivery
+// acknowledgement. The gates below are a belt-and-braces re-check of the
+// conditions that make a request human-visible, so a future call site cannot
+// reintroduce a ping for a request silently dropped by DND or already resolved.
+
+function announceSlackPermission(permEntry) {
+  if (typeof ctx.notifySlackPermission !== "function") return;
+  if (!permEntry || permEntry._slackPermissionAnnounced) return;
+  if (!isSlackPermissionAnnounceable(permEntry)) return;
+  // DND drops permission requests before they ever surface locally; a Slack
+  // ping would be the one thing that still reached the user.
+  if (ctx.doNotDisturb) return;
+  // Auto-approved / already-answered entries are out of the pending list.
+  if (pendingPermissions.indexOf(permEntry) === -1) return;
+  permEntry._slackPermissionAnnounced = true;
+  try {
+    const agentId = compactRemoteApprovalText(permEntry.agentId || "claude-code", 80) || "claude-code";
+    const toolName = compactRemoteApprovalText(permEntry.toolName || t("approvalUnknownTool"), 80) || t("approvalUnknownTool");
+    const session = ctx.sessions.get(permEntry.sessionId);
+    const folder = compactRemoteApprovalText(
+      basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
+      80
+    );
+    // An answerable elicitation is a question, not a decision: its
+    // capabilities.allowDeny is false, and buildRemoteApprovalSummary can never
+    // find a description for one, so it would always have reported "No
+    // description available". Reuse the elicitation payload the interactive
+    // channels already build, so Slack shows what was actually asked.
+    const elicitation = buildRemoteElicitationPayload(permEntry);
+    const actionTarget = permEntry.remoteOnly === true ? "remote" : "desktop";
+    if (elicitation) {
+      ctx.notifySlackPermission({
+        kind: "question",
+        actionTarget,
+        title: elicitation.title,
+        detail: elicitation.detail,
+        agentId: elicitation.agentId,
+        folder: elicitation.folder,
+        questions: elicitation.questions,
+      }, {
+        isStillRelevant: () => pendingPermissions.includes(permEntry),
+      });
+      return;
+    }
+    ctx.notifySlackPermission({
+      kind: "approval",
+      actionTarget,
+      title: interpolate(interpolate(t("approvalRequestsTitle"), "{agent}", agentId), "{tool}", toolName),
+      toolName,
+      agentId,
+      folder,
+      summary: buildRemoteApprovalSummary(permEntry),
+    }, {
+      isStillRelevant: () => pendingPermissions.includes(permEntry),
+    });
+  } catch (err) {
+    permLog(`slack permission announce failed: ${err && err.message ? err.message : err}`);
+  }
 }
 
 function normalizeRemoteApprovalDecision(decision) {
@@ -1006,34 +3286,173 @@ function getTelegramApprovalClient() {
   return ctx.telegramApprovalClient || null;
 }
 
-function cancelRemoteApproval(permEntry) {
+function getRemoteApprovalClients() {
+  const clients = [];
+  const telegramClient = getTelegramApprovalClient();
+  if (telegramClient) clients.push({ name: "telegram", client: telegramClient });
+  if (typeof ctx.getRemoteApprovalClients === "function") {
+    let extra = [];
+    try {
+      extra = ctx.getRemoteApprovalClients() || [];
+    } catch (err) {
+      permLog(`remote approval client lookup failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+    }
+    for (const entry of Array.isArray(extra) ? extra : []) {
+      if (!entry) continue;
+      const name = typeof entry.name === "string" && entry.name ? entry.name : "remote";
+      const client = entry.client || entry;
+      if (client && client !== telegramClient) clients.push({ name, client });
+    }
+  }
+  return clients.filter(({ client }) => {
+    if (!client || typeof client.requestApproval !== "function") return false;
+    return !(typeof client.isEnabled === "function" && !client.isEnabled());
+  });
+}
+
+function notifyRemoteApprovalResolved(permEntry, outcome = {}, options = {}) {
+  const requests = Array.isArray(permEntry && permEntry.remoteApprovalRequests)
+    ? [...permEntry.remoteApprovalRequests]
+    : [];
+  let notified = 0;
+  for (const request of requests) {
+    if (!request || request.name === options.skipClientName) continue;
+    const client = request.client;
+    if (!client || typeof client.resolveApprovalExternally !== "function") continue;
+    try {
+      if (client.resolveApprovalExternally(request.signal, outcome)) notified += 1;
+    } catch (err) {
+      permLog(`${request.name || "remote"} remote approval update failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+    }
+  }
+  return notified;
+}
+
+function cancelRemoteApproval(permEntry, options = {}) {
+  if (permEntry && permEntry.sessionTrustCandidate && typeof ctx.cancelSessionTrustCandidate === "function") {
+    try {
+      ctx.cancelSessionTrustCandidate(permEntry, {
+        reason: options.reason || "permission-resolved",
+      });
+    } catch {}
+  }
+  if (options.outcome) {
+    notifyRemoteApprovalResolved(permEntry, options.outcome, {
+      skipClientName: options.skipClientName,
+    });
+  }
+  const controllers = [];
+  if (permEntry && Array.isArray(permEntry.remoteApprovalAbortControllers)) {
+    controllers.push(...permEntry.remoteApprovalAbortControllers);
+    permEntry.remoteApprovalAbortControllers = [];
+  }
   const controller = permEntry && permEntry.remoteApprovalAbortController;
-  if (!controller) return;
-  permEntry.remoteApprovalAbortController = null;
-  try { controller.abort(); } catch {}
+  if (controller) {
+    controllers.push(controller);
+    permEntry.remoteApprovalAbortController = null;
+  }
+  for (const item of controllers) {
+    try { item.abort(); } catch {}
+  }
+  if (permEntry) permEntry.remoteApprovalRequests = [];
 }
 
 // "Go to terminal" path: drop the bubble, abort any in-flight Telegram prompt,
-// hand focus back to the agent terminal. The HTTP res is intentionally NOT
-// answered here — the original socket-close abortHandler stays registered so
-// the agent's own disconnect drives final cleanup.
+// destroy the hook socket WITHOUT writing a decision, hand focus back to the
+// agent terminal. The destroy is what actually frees the terminal: CC and
+// CodeBuddy block on the PermissionRequest HTTP hook (600s) and show nothing
+// in the terminal until it finishes — a dropped connection is a non-blocking
+// hook error, so they immediately fall back to their native chat prompt
+// without treating it as a deny (same mechanism as the autoclose no-decision
+// path and the bypass gate in server-route-permission.js). For opencode the
+// destroy is a no-op behind the writableEnded guard: its fire-and-forget POST
+// was 200-ACKed on arrival and the native TUI prompt owns the request.
+// All permission cleanup paths share the same defensive renderer teardown.
+// A renderer crash may leave the BrowserWindow alive while webContents is
+// already gone, so never assume either object can still receive IPC.
+function hidePermissionBubbleSafely(permEntry) {
+  const bub = permEntry && permEntry.bubble;
+  if (!bub) return false;
+
+  let bubbleDestroyed = false;
+  try {
+    bubbleDestroyed = typeof bub.isDestroyed === "function" && bub.isDestroyed();
+  } catch (err) {
+    permLog(`permission bubble state check failed: ${err && err.message ? err.message : String(err)}`);
+    bubbleDestroyed = true;
+  }
+  if (bubbleDestroyed) return false;
+
+  try {
+    const bubbleContents = bub.webContents;
+    if (
+      bubbleContents
+      && typeof bubbleContents.send === "function"
+      && (
+        typeof bubbleContents.isDestroyed !== "function"
+        || !bubbleContents.isDestroyed()
+      )
+    ) {
+      bubbleContents.send("permission-hide");
+    }
+  } catch (err) {
+    permLog(`permission bubble hide failed: ${err && err.message ? err.message : String(err)}`);
+  }
+
+  if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
+  permEntry.hideTimer = setTimeout(() => {
+    try {
+      if (
+        bub
+        && (
+          typeof bub.isDestroyed !== "function"
+          || !bub.isDestroyed()
+        )
+        && typeof bub.destroy === "function"
+      ) {
+        bub.destroy();
+      }
+    } catch (err) {
+      permLog(`permission bubble destroy failed: ${err && err.message ? err.message : String(err)}`);
+    }
+  }, 250);
+  return true;
+}
+
+// A remote-only entry (bubbles disabled, decided over Feishu/Telegram) has no
+// desktop bubble to drop — route it through the shared no-decision path.
 function dismissPermissionForTerminal(perm) {
   if (!perm) return;
+  if (perm.remoteOnly) {
+    resolvePermissionEntry(perm, "no-decision", "Go to terminal from remote approval");
+    ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    return;
+  }
   // Cancel before splicing so a late Telegram decision can't slip in between
   // the splice and the abort.
-  cancelRemoteApproval(perm);
+  const remoteOutcome = perm.remoteApprovalResolution || {
+    decision: "terminal",
+    actionLabel: "前往终端",
+    source: "desktop",
+  };
+  cancelRemoteApproval(perm, {
+    outcome: remoteOutcome,
+    skipClientName: perm.remoteApprovalSkipClientName,
+  });
   const idx = pendingPermissions.indexOf(perm);
   if (idx !== -1) {
     pendingPermissions.splice(idx, 1);
     notifyPermissionsChanged("deny-and-focus");
     notifyPermissionResolved(perm, "deny-and-focus");
   }
-  if (perm.bubble && !perm.bubble.isDestroyed()) {
-    perm.bubble.webContents.send("permission-hide");
-    if (perm.hideTimer) clearTimeout(perm.hideTimer);
-    const bub = perm.bubble;
-    perm.hideTimer = setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
+  const { res, abortHandler } = perm;
+  if (res && abortHandler) {
+    try { res.removeListener("close", abortHandler); } catch {}
   }
+  if (res && !res.writableEnded && !res.destroyed) {
+    try { res.destroy(); } catch {}
+  }
+  hidePermissionBubbleSafely(perm);
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
@@ -1042,65 +3461,321 @@ function dismissPermissionForTerminal(perm) {
 
 function maybeStartRemoteApproval(permEntry) {
   if (!isRemoteApprovalActionable(permEntry)) return false;
-  // Auto-pilot resolves synchronously inside showPermissionBubble, but the CC
-  // and Codex route branches call startRemoteApproval right after. If the
-  // entry is already gone from the pending list it was resolved (auto-approved
-  // or otherwise) — don't fire a Telegram card for a closed request.
   if (pendingPermissions.indexOf(permEntry) === -1) return false;
-  const client = getTelegramApprovalClient();
-  if (!client || typeof client.requestApproval !== "function") return false;
-  if (typeof client.isEnabled === "function" && !client.isEnabled()) return false;
+  const clients = getRemoteApprovalClients();
+  if (!clients.length) return false;
 
-  const payload = buildRemoteApprovalPayload(permEntry);
+  const payload = isValidInteraction(permEntry.interaction)
+    && permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+    ? buildRemoteElicitationPayload(permEntry)
+    : buildRemoteApprovalPayload(permEntry);
   if (!payload) return false;
 
-  const controller = typeof AbortController === "function" ? new AbortController() : null;
-  if (controller) permEntry.remoteApprovalAbortController = controller;
+  const controllers = [];
+  const remoteRequests = [];
+  let started = false;
+  // Remote-only entries (bubble === null, from tryRemoteOnlyApproval when the
+  // desktop bubble is disabled) have no other UI waiting on the decision — if
+  // every remote client settles without ever producing one (send failure,
+  // invalid payload, client disconnect), the entry would otherwise sit in
+  // pendingPermissions holding the HTTP connection open until the hook's own
+  // timeout. Track settlements and fall back once none are left. The fallback
+  // is "no-decision" (drop the socket → the agent re-prompts in its own UI),
+  // NOT an explicit deny: nobody actually said no — answering deny here would
+  // decide on the user's behalf over a transient Telegram/Feishu failure.
+  let settledWithoutDecision = 0;
 
-  let request;
-  try {
-    request = client.requestApproval(
-      payload,
-      controller ? { signal: controller.signal } : {}
-    );
-  } catch (err) {
-    if (controller && permEntry.remoteApprovalAbortController === controller) {
-      permEntry.remoteApprovalAbortController = null;
-    }
-    permLog(`telegram remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
-    return false;
+  function onRemoteCardDelivered() {
+    // Starting requestApproval/requestElicitation only means the client began
+    // an async send. Slack may announce a remote-only request only after the
+    // client confirms that its actionable card obtained a message id. Re-check
+    // relevance here because the request may have resolved or DND may have
+    // been enabled while the send was in flight.
+    if (permEntry.remoteOnly !== true) return;
+    if (ctx.doNotDisturb) return;
+    if (!pendingPermissions.includes(permEntry)) return;
+    announceSlackPermission(permEntry);
   }
 
-  Promise.resolve(request)
-    .then((decision) => {
-      const normalized = normalizeRemoteApprovalDecision(decision);
-      if (!normalized) {
-        if (decision) permLog(`telegram remote approval ignored decision=${compactRemoteApprovalText(decision, 40)}`);
-        return;
+  function maybeFallBackRemoteOnlyEntry() {
+    if (!permEntry.remoteOnly) return;
+    if (settledWithoutDecision < remoteRequests.length) return;
+    if (pendingPermissions.indexOf(permEntry) === -1) return;
+    permLog(`remote-only approval: all remote requests settled without a decision, falling back (tool=${permEntry.toolName} session=${permEntry.sessionId})`);
+    resolvePermissionEntry(permEntry, "no-decision", "Remote approval unavailable; no client returned a decision");
+  }
+
+  for (const { name, client } of clients) {
+    const controller = typeof AbortController === "function" ? new AbortController() : null;
+    if (controller) controllers.push(controller);
+    let request;
+    try {
+      if (
+        isValidInteraction(permEntry.interaction)
+        && permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+        && permEntry.interaction.capabilities.answerQuestions
+      ) {
+        if (typeof client.requestElicitation !== "function") continue;
+        request = client.requestElicitation(payload, {
+          ...(controller ? { signal: controller.signal } : {}),
+          onDelivered: onRemoteCardDelivered,
+        });
+      } else {
+        const clientPayload = {
+          ...payload,
+          canOfferSessionTrust: typeof ctx.canOfferRemoteSessionTrust === "function"
+            && ctx.canOfferRemoteSessionTrust(permEntry, { name, client }) === true,
+        };
+        request = client.requestApproval(clientPayload, {
+          ...(controller ? { signal: controller.signal } : {}),
+          onDelivered: onRemoteCardDelivered,
+        });
       }
-      if (pendingPermissions.indexOf(permEntry) === -1) return;
-      if (normalized.action === "allow" || normalized.action === "deny") {
-        resolvePermissionEntry(permEntry, normalized.action);
-        return;
+      remoteRequests.push({
+        name,
+        client,
+        controller,
+        signal: controller ? controller.signal : null,
+      });
+      permEntry.remoteApprovalRequests = remoteRequests;
+      started = true;
+    } catch (err) {
+      permLog(`${name} remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+      continue;
+    }
+    Promise.resolve(request)
+      .then((decision) => {
+        if (!isRemoteApprovalDecision(decision)) {
+          if (decision) permLog(`${name} remote approval ignored decision=${compactRemoteApprovalText(decision, 40)}`);
+          settledWithoutDecision += 1;
+          maybeFallBackRemoteOnlyEntry();
+          return;
+        }
+        // A decision can pass the shape check above yet still be unusable
+        // (e.g. "suggestion:9" for an entry with no such suggestion). That is
+        // just as settled-without-a-decision as an invalid payload.
+        if (handleRemoteApprovalDecision(
+          permEntry,
+          decision,
+          name,
+          client,
+          () => {
+            settledWithoutDecision += 1;
+            maybeFallBackRemoteOnlyEntry();
+          }
+        ) === false) {
+          settledWithoutDecision += 1;
+          maybeFallBackRemoteOnlyEntry();
+        }
+      })
+      .catch((err) => {
+        permLog(`${name} remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+        settledWithoutDecision += 1;
+        maybeFallBackRemoteOnlyEntry();
+      })
+      .finally(() => {
+        if (!controller || !Array.isArray(permEntry.remoteApprovalAbortControllers)) return;
+        const idx = permEntry.remoteApprovalAbortControllers.indexOf(controller);
+        if (idx !== -1) permEntry.remoteApprovalAbortControllers.splice(idx, 1);
+      });
+  }
+  if (!started) return false;
+  permEntry.remoteApprovalRequests = remoteRequests;
+  if (controllers.length) {
+    permEntry.remoteApprovalAbortControllers = controllers;
+    permEntry.remoteApprovalAbortController = controllers[0];
+  }
+  return started;
+}
+
+function isRemoteApprovalDecision(decision) {
+  return decision === "allow"
+    || decision === "deny"
+    || decision === "terminal"
+    || (decision && typeof decision === "object" && decision.type === "elicitation-submit")
+    || (decision && typeof decision === "object" && decision.action === "session-trust")
+    || (typeof decision === "string" && /^suggestion:\d+$/.test(decision))
+    || !!normalizeRemoteApprovalDecision(decision);
+}
+
+function remoteDecisionSource(name) {
+  if (name === "telegram") return "remote";
+  if (name === "feishu") return "feishu";
+  return "remote";
+}
+
+function applyRemotePermissionSuggestion(permEntry, decision) {
+  if (!isRemoteRichApprovalSupported(permEntry)) return "";
+  const index = parseInt(String(decision).split(":")[1], 10);
+  if (!Number.isInteger(index) || index < 0) return "";
+  const suggestion = permEntry && Array.isArray(permEntry.suggestions)
+    ? permEntry.suggestions[index]
+    : null;
+  if (!suggestion) return "";
+  if (!applyPermissionSuggestion(permEntry, index, { requireResolved: true })) return "";
+  return buildRemoteSuggestionLabel(suggestion);
+}
+
+function setRemoteResolutionOutcome(permEntry, outcome, sourceName) {
+  permEntry.remoteApprovalResolution = outcome;
+  permEntry.remoteApprovalSkipClientName = sourceName || "";
+}
+
+// Returns false only when the decision passed isRemoteApprovalDecision but
+// could not actually be applied (an invalid suggestion index) and the entry is
+// still pending — the caller counts that as "settled without a decision" so a
+// remote-only entry can still fall back instead of hanging until the hook's
+// timeout. Every consumed/already-resolved path returns true.
+function handleRemoteApprovalDecision(
+  permEntry,
+  decision,
+  sourceName,
+  sourceClient,
+  onSessionTrustSettledWithoutDecision
+) {
+  const isSessionTrustDecision = !!(
+    decision
+    && typeof decision === "object"
+    && decision.action === "session-trust"
+  );
+  const discardUnusedSessionTrustHandle = (reason) => {
+    if (
+      !isSessionTrustDecision
+      || !sourceClient
+      || typeof sourceClient.discardSessionTrustCardHandle !== "function"
+    ) {
+      return false;
+    }
+    try {
+      return sourceClient.discardSessionTrustCardHandle(decision.cardHandle, { reason }) === true;
+    } catch {
+      return false;
+    }
+  };
+  if (pendingPermissions.indexOf(permEntry) === -1) {
+    discardUnusedSessionTrustHandle("permission-resolved");
+    return true;
+  }
+  const source = remoteDecisionSource(sourceName);
+  if (
+    isSessionTrustDecision
+    && typeof ctx.requestRemoteSessionTrust === "function"
+  ) {
+    let reportedUnresolved = false;
+    const reportUnresolved = () => {
+      if (reportedUnresolved || pendingPermissions.indexOf(permEntry) === -1) return;
+      reportedUnresolved = true;
+      if (typeof onSessionTrustSettledWithoutDecision === "function") {
+        onSessionTrustSettledWithoutDecision();
       }
-      if (!isRemoteRichApprovalSupported(permEntry)) {
-        permLog(`telegram remote approval ignored rich decision for agent=${compactRemoteApprovalText(permEntry.agentId || "unknown", 80)}`);
-        return;
+    };
+    Promise.resolve(ctx.requestRemoteSessionTrust(permEntry, {
+      clientName: sourceName,
+      client: sourceClient,
+      cardHandle: decision.cardHandle,
+    })).then((result) => {
+      const status = result && result.status;
+      if (status !== "applied" && status !== "equivalent") {
+        discardUnusedSessionTrustHandle("session-trust-unavailable");
+        reportUnresolved();
       }
-      if (!applyPermissionSuggestion(permEntry, normalized.index, { requireResolved: true })) {
-        permLog(`telegram remote approval ignored invalid suggestion index=${normalized.index}`);
-        return;
-      }
-      resolvePermissionEntry(permEntry, "allow");
-    })
-    .catch((err) => {
-      permLog(`telegram remote approval failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
-    })
-    .finally(() => {
-      if (controller && permEntry.remoteApprovalAbortController === controller) {
-        permEntry.remoteApprovalAbortController = null;
-      }
+    }).catch((err) => {
+      permLog(`${sourceName || "remote"} session trust failed: ${compactRemoteApprovalText(err && err.message ? err.message : err, 200)}`);
+      discardUnusedSessionTrustHandle("session-trust-failed");
+      reportUnresolved();
     });
+    return true;
+  }
+  if (isSessionTrustDecision) discardUnusedSessionTrustHandle("session-trust-unavailable");
+  const normalizedLegacy = normalizeRemoteApprovalDecision(decision);
+  if (normalizedLegacy) {
+    if (normalizedLegacy.action === "suggestion") {
+      decision = `suggestion:${normalizedLegacy.index}`;
+    } else {
+      decision = normalizedLegacy.action;
+    }
+  }
+  if (decision === "terminal") {
+    setRemoteResolutionOutcome(permEntry, {
+      decision: "terminal",
+      actionLabel: "前往终端",
+      source,
+    }, sourceName);
+    if (
+      isValidInteraction(permEntry.interaction)
+      && permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+    ) {
+      if (permEntry.isHermes || permEntry.isDsh) {
+        // Hermes treats an explicit deny as "clarification cancelled"; only a
+        // no-decision (204) falls back to its native terminal prompt, which is
+        // what "go to terminal" means here.
+        resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
+        ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
+        return true;
+      }
+      resolvePermissionEntry(permEntry, "deny", "User answered in terminal");
+      return true;
+    }
+    if (permEntry.isCodex || permEntry.isQwenCode || permEntry.isAntigravity || permEntry.isZcode || permEntry.isDsh) {
+      resolvePermissionEntry(permEntry, "no-decision", "Go to terminal from remote approval");
+      ctx.focusTerminalForSession(permEntry.sessionId, { fallbackEntry: buildPermissionFocusEntry(permEntry) });
+    } else {
+      dismissPermissionForTerminal(permEntry);
+    }
+    return true;
+  }
+
+  if (
+    isValidInteraction(permEntry.interaction)
+    && permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+    && permEntry.interaction.capabilities.answerQuestions
+    && decision
+    && typeof decision === "object"
+    && decision.type === "elicitation-submit"
+  ) {
+    const wireInput = permEntry.elicitationWireInput || permEntry.toolInput;
+    const validatedAnswers = validateAndRemapIndexedElicitationAnswers(
+      wireInput,
+      decision.answers
+    );
+    if (!validatedAnswers.ok) {
+      permLog(`${sourceName || "remote"} remote approval ignored incomplete elicitation: ${validatedAnswers.reason}`);
+      return false;
+    }
+    permEntry.resolvedUpdatedInput = buildElicitationUpdatedInput(
+      wireInput,
+      validatedAnswers.answers
+    );
+    setRemoteResolutionOutcome(permEntry, {
+      decision: "elicitation-submit",
+      actionLabel: "提交输入",
+      source,
+    }, sourceName);
+    resolvePermissionEntry(permEntry, "allow");
+    return true;
+  }
+
+  if (typeof decision === "string" && decision.startsWith("suggestion:")) {
+    const label = applyRemotePermissionSuggestion(permEntry, decision);
+    if (!label) {
+      permLog(`${sourceName || "remote"} remote approval ignored invalid suggestion decision=${compactRemoteApprovalText(decision, 40)}`);
+      return false;
+    }
+    setRemoteResolutionOutcome(permEntry, {
+      decision,
+      actionLabel: label,
+      source,
+    }, sourceName);
+    resolvePermissionEntry(permEntry, "allow");
+    return true;
+  }
+
+  setRemoteResolutionOutcome(permEntry, {
+    decision,
+    actionLabel: remoteApprovalDecisionLabel(decision),
+    source,
+  }, sourceName);
+  resolvePermissionEntry(permEntry, decision);
   return true;
 }
 
@@ -1132,13 +3807,41 @@ function applyPermissionSuggestion(perm, index, options = {}) {
 
   function resolvePermissionEntry(permEntry, behavior, message) {
     // Codex notify bubbles have no HTTP connection — route to dedicated cleanup
-    if (permEntry.isCodexNotify || permEntry.isKimiNotify) {
+    if (isPassiveNotifyEntry(permEntry)) {
       dismissPassiveNotify(permEntry, `resolve:${behavior || "unknown"}`);
       return;
     }
   const idx = pendingPermissions.indexOf(permEntry);
   if (idx === -1) return;
-  cancelRemoteApproval(permEntry);
+  let planReviewUpdatedInput = null;
+  let focusPlanReviewFallback = false;
+  if (
+    behavior === "allow"
+    && permEntry.agentId === "claude-code"
+    && isValidInteraction(permEntry.interaction)
+    && permEntry.interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
+  ) {
+    const wireInput = permEntry.planReviewWireInput;
+    if (!wireInput || typeof wireInput !== "object" || Array.isArray(wireInput)) {
+      // Never approve a display/truncated copy. Dropping the hook response is
+      // Claude Code's documented non-blocking fallback to its native prompt.
+      permLog("plan-review allow missing exact tool_input -> no-decision native fallback");
+      behavior = "no-decision";
+      message = "Exact ExitPlanMode tool_input unavailable";
+      focusPlanReviewFallback = true;
+    } else {
+      planReviewUpdatedInput = wireInput;
+    }
+  }
+  const remoteOutcome = permEntry.remoteApprovalResolution || {
+    decision: behavior === "deny" ? "deny" : behavior === "no-decision" ? "no-decision" : "allow",
+    actionLabel: remoteApprovalDecisionLabel(behavior === "deny" || behavior === "no-decision" ? behavior : "allow"),
+    source: "desktop",
+  };
+  cancelRemoteApproval(permEntry, {
+    outcome: remoteOutcome,
+    skipClientName: permEntry.remoteApprovalSkipClientName,
+  });
 
   // Minimum display time: if bubble just appeared and dismiss is automatic
   // (client disconnect / terminal answer), delay so user can see it briefly
@@ -1160,39 +3863,48 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     permEntry.autoCloseTimer = null;
   }
 
-  const { res, abortHandler, bubble: bub } = permEntry;
+  const { res, abortHandler } = permEntry;
   if (res && abortHandler) res.removeListener("close", abortHandler);
 
   // Hide this bubble (fade out + destroy)
-  if (bub && !bub.isDestroyed()) {
-    bub.webContents.send("permission-hide");
-    if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
-    permEntry.hideTimer = setTimeout(() => {
-      if (bub && !bub.isDestroyed()) bub.destroy();
-    }, 250);
-  }
+  hidePermissionBubbleSafely(permEntry);
 
   // Reposition remaining bubbles to fill the gap
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
 
-  // opencode: decisions go back via the plugin's reverse bridge (Bun.serve
-  // on a random localhost port). The plugin then calls opencode's in-process
-  // Hono route. Plugin sent us a fire-and-forget POST — no HTTP response to
-  // complete on this connection.
-  if (permEntry.isOpencode) {
-    // Autoclose: silent drop — same DND semantics. opencode TUI falls back
-    // to its built-in prompt so the user can answer in the terminal.
+  // opencode-family: decisions go back via the plugin's reverse bridge
+  // (Bun.serve or node:http on a random localhost port). The plugin then calls
+  // the host's in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
+  // response to complete on this connection.
+  if (permEntry.isOpencodeV2) {
+    // opencode v2 (issue #1039): the plugin's evaluate hook is BLOCKING on
+    // this very HTTP response — the decision is the response body. 204 keeps
+    // the effect untouched so the native ask UI takes over.
+    if (behavior === "no-decision") {
+      sendOpencodeV2NoDecisionResponse(res, message || "no-decision");
+      return;
+    }
+    const decision = behavior === "deny"
+      ? "deny"
+      : (permEntry.familyAlwaysPicked ? "always" : "allow");
+    sendOpencodeV2Response(res, decision, message);
+    return;
+  }
+  if (isOpencodeFamilyEntry(permEntry)) {
+    // Autoclose: silent drop — same DND semantics. The host falls back to its
+    // built-in terminal or Desktop prompt so the user can answer natively.
     if (behavior === "no-decision") return;
     let reply;
     if (behavior === "deny") reply = "reject";
-    else if (permEntry.opencodeAlwaysPicked) reply = "always";
+    else if (permEntry.familyAlwaysPicked) reply = "always";
     else reply = "once";
-    replyOpencodePermission({
-      bridgeUrl: permEntry.opencodeBridgeUrl,
-      bridgeToken: permEntry.opencodeBridgeToken,
-      requestId: permEntry.opencodeRequestId,
+    replyOpencodeFamilyPermission({
+      agentId: permEntry.agentId,
+      bridgeUrl: permEntry.familyBridgeUrl,
+      bridgeToken: permEntry.familyBridgeToken,
+      requestId: permEntry.familyRequestId,
       reply,
       toolName: permEntry.toolName,
     });
@@ -1219,6 +3931,18 @@ function applyPermissionSuggestion(perm, index, options = {}) {
       sendQwenCodeNoDecisionResponse(res, message || "fallback");
     } else {
       sendQwenCodePermissionResponse(res, {
+        behavior: behavior === "deny" ? "deny" : "allow",
+        message,
+      });
+    }
+    return;
+  }
+
+  if (permEntry.isZcode) {
+    if (behavior === "no-decision") {
+      sendZcodeNoDecisionResponse(res, message || "fallback");
+    } else {
+      sendZcodePermissionResponse(res, {
         behavior: behavior === "deny" ? "deny" : "allow",
         message,
       });
@@ -1267,6 +3991,20 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     return;
   }
 
+  // DeepSeek Harness bridge waits on this HTTP response inside its public
+  // approval/request waterfall. Only ordinary approval decisions travel here;
+  // ask_user_question remains owned by DSH's native provider.
+  if (permEntry.isDsh) {
+    if (behavior === "no-decision") {
+      sendDshNoDecisionResponse(res, message || "fallback");
+      return;
+    }
+    sendDshPermissionResponse(res, {
+      decision: behavior === "deny" ? "deny" : "allow",
+    });
+    return;
+  }
+
   if (permEntry.isElicitation) {
     if (behavior === "no-decision") {
       // Autoclose: drop the socket so CC stops waiting, then refocus the
@@ -1293,11 +4031,17 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     // per the hooks doc — CC falls back to its built-in chat prompt rather
     // than treating it as an explicit deny.
     try { res.destroy(); } catch {}
+    if (focusPlanReviewFallback && typeof ctx.focusTerminalForSession === "function") {
+      ctx.focusTerminalForSession(permEntry.sessionId, {
+        fallbackEntry: buildPermissionFocusEntry(permEntry),
+      });
+    }
     return;
   }
 
   const decision = { behavior: behavior === "deny" ? "deny" : "allow" };
   if (behavior === "deny" && message) decision.message = message;
+  if (planReviewUpdatedInput) decision.updatedInput = planReviewUpdatedInput;
   if (permEntry.resolvedSuggestion) {
     decision.updatedPermissions = [permEntry.resolvedSuggestion];
   }
@@ -1311,12 +4055,16 @@ function permLog(msg) {
   rotatedAppend(ctx.permDebugLog, `[${new Date().toISOString()}] ${msg}\n`);
 }
 
-// Fire-and-forget POST to the opencode plugin's reverse bridge. The plugin
-// runs inside opencode's Bun process and does NOT expose opencode's own
-// permission route externally — TUI mode has no TCP listener at all (see
-// Phase 2 Spike in docs/plans/plan-opencode-integration.md). Instead the plugin
-// starts its own Bun.serve on a random localhost port and forwards our
-// decision to opencode's in-process Hono router via ctx.client._client.post().
+// Fire-and-forget POST to the family plugin's reverse bridge. The default TUI
+// has no TCP listener at all (see Phase 2 Spike in
+// docs/plans/plan-opencode-integration.md), so the plugin starts a tiny
+// Bun.serve (CLI/TUI) or node:http (Desktop) listener on a random port and
+// forwards our decision to the host's router. Under `opencode serve` / `web`
+// the host does listen, but ctx.client targets that listening address; a
+// wildcard address (0.0.0.0 / [::]) is a listen address rather than a
+// destination, and the host process's Bun fetch would hand it to HTTP_PROXY, so
+// the plugin rewrites those hosts to loopback per call (#1065). This side always
+// talks to the plugin's own 127.0.0.1 bridge.
 //
 // Shape: POST http://127.0.0.1:<plugin-port>/reply
 //   Authorization: Bearer <hex token>
@@ -1324,20 +4072,25 @@ function permLog(msg) {
 //
 // Uses raw http.request (not fetch) to avoid Electron main-process fetch
 // polyfill concerns. Bridge is always 127.0.0.1 bound by the plugin so no
-// IPv4/IPv6 gotcha. 5s timeout — on failure the opencode TUI still falls
-// back to terminal-based approval.
-function replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply, toolName }) {
-  if (!bridgeUrl || !bridgeToken || !requestId) {
-    const missing = !bridgeUrl ? "bridgeUrl" : (!bridgeToken ? "bridgeToken" : "requestId");
-    permLog(`opencode reply skipped: missing ${missing}`);
+// IPv4/IPv6 gotcha. 5s timeout — on failure the host still falls back to its
+// native terminal or Desktop approval.
+function replyOpencodeFamilyPermission({ agentId, bridgeUrl, bridgeToken, requestId, reply, toolName }) {
+  const tag = agentId || "opencode-family";
+  const normalizedBridgeUrl = normalizeOpencodeFamilyBridgeUrl(bridgeUrl);
+  const validBridgeToken = isValidOpencodeFamilyBridgeToken(bridgeToken);
+  if (!normalizedBridgeUrl || !validBridgeToken || !requestId) {
+    const missing = !normalizedBridgeUrl
+      ? "valid bridgeUrl"
+      : (!validBridgeToken ? "valid bridgeToken" : "requestId");
+    permLog(`${tag} reply skipped: missing ${missing}`);
     return;
   }
-  const fullUrl = `${bridgeUrl.replace(/\/$/, "")}/reply`;
-  permLog(`opencode reply: tool=${toolName || "?"} request=${requestId} reply=${reply} url=${fullUrl}`);
+  const fullUrl = `${normalizedBridgeUrl}/reply`;
+  permLog(`${tag} reply: tool=${toolName || "?"} request=${requestId} reply=${reply} url=${fullUrl}`);
 
   let parsed;
   try { parsed = new URL(fullUrl); } catch {
-    permLog(`opencode reply skipped: invalid bridge URL ${fullUrl}`);
+    permLog(`${tag} reply skipped: invalid bridge URL ${fullUrl}`);
     return;
   }
   const body = JSON.stringify({ request_id: requestId, reply });
@@ -1358,18 +4111,18 @@ function replyOpencodePermission({ bridgeUrl, bridgeToken, requestId, reply, too
     res.setEncoding("utf8");
     res.on("data", (chunk) => { if (respBody.length < 500) respBody += chunk; });
     res.on("end", () => {
-      permLog(`opencode reply status=${res.statusCode} request=${requestId} body=${respBody.trim() || "(empty)"}`);
+      permLog(`${tag} reply status=${res.statusCode} request=${requestId} body=${respBody.trim() || "(empty)"}`);
     });
   });
   req.on("error", (err) => {
     const info = err
       ? `code=${err.code || ""} errno=${err.errno || ""} syscall=${err.syscall || ""} msg=${err.message || ""}`
       : "null";
-    permLog(`opencode reply ERR ${info} request=${requestId}`);
+    permLog(`${tag} reply ERR ${info} request=${requestId}`);
   });
   req.on("timeout", () => {
     req.destroy();
-    permLog(`opencode reply timeout request=${requestId}`);
+    permLog(`${tag} reply timeout request=${requestId}`);
   });
   req.write(body);
   req.end();
@@ -1425,6 +4178,27 @@ function sendQwenCodeNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "qwen-code");
 }
 
+// opencode v2 (issue #1039): the plugin's evaluate hook awaits this response.
+// 200 + JSON { decision: "allow" | "always" | "deny", message? } resolves the
+// await; 204 means "no decision" and leaves the hook's effect untouched so the
+// native prompt wins. Any non-2xx/identity-less answer is treated the same by
+// the plugin.
+function sendOpencodeV2Response(res, decision, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(message ? { decision, message } : { decision });
+  permLog(`opencode-v2 response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
+function sendOpencodeV2NoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "opencode-v2");
+}
+
 function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
   if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
   const responseBody = buildQwenCodePermissionResponseBody(decisionOrBehavior, message);
@@ -1432,6 +4206,25 @@ function sendQwenCodePermissionResponse(res, decisionOrBehavior, message) {
     return sendQwenCodeNoDecisionResponse(res, "invalid decision");
   }
   permLog(`qwen-code response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
+function sendZcodeNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "zcode");
+}
+
+function sendZcodePermissionResponse(res, decisionOrBehavior, message) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = buildZcodePermissionResponseBody(decisionOrBehavior, message);
+  if (responseBody === "{}") {
+    return sendZcodeNoDecisionResponse(res, "invalid decision");
+  }
+  permLog(`zcode response: ${responseBody}`);
   res.writeHead(200, {
     "Content-Type": "application/json",
     [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
@@ -1482,6 +4275,22 @@ function sendHermesNoDecisionResponse(res, reason = "") {
   return sendNoDecisionResponse(res, reason, "hermes");
 }
 
+function sendDshNoDecisionResponse(res, reason = "") {
+  return sendNoDecisionResponse(res, reason, "dsh");
+}
+
+function sendDshPermissionResponse(res, responseObj) {
+  if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
+  const responseBody = JSON.stringify(responseObj);
+  permLog(`dsh response: ${responseBody}`);
+  res.writeHead(200, {
+    "Content-Type": "application/json",
+    [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID,
+  });
+  res.end(responseBody);
+  return true;
+}
+
 function sendHermesPermissionResponse(res, responseObj) {
   if (!res || res.writableEnded || res.destroyed || res.headersSent) return false;
   const responseBody = JSON.stringify(responseObj);
@@ -1494,14 +4303,372 @@ function sendHermesPermissionResponse(res, responseObj) {
   return true;
 }
 
-function handleBubbleHeight(event, height) {
+function handleBubbleHeight(event, measurement) {
   const senderWin = BrowserWindow.fromWebContents(event.sender);
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
-  if (perm && typeof height === "number" && height > 0) {
-    perm.measuredHeight = Math.ceil(height);
-    repositionBubbles();
-    repositionDependentBubbles();
+  if (!perm) return;
+  ensureBubblePresentationState(perm);
+  const legacyHeight = typeof measurement === "number" ? measurement : null;
+  const height = legacyHeight !== null ? legacyHeight : Number(measurement && measurement.height);
+  const state = legacyHeight !== null ? "compact" : measurement && measurement.state;
+  const epoch = legacyHeight !== null ? 0 : Number(measurement && measurement.measurementEpoch);
+  if (!(height > 0)) return;
+  if (state !== (perm.expanded ? "expanded" : "compact")) return;
+  if (!Number.isInteger(epoch) || epoch !== perm.measurementEpoch) return;
+
+  if (state === "expanded") {
+    perm.expandedMeasuredHeight = Math.ceil(height);
+    const chromeHeight = Number(measurement && measurement.chromeHeight);
+    const detailLineHeight = Number(measurement && measurement.detailLineHeight);
+    if (chromeHeight > 0) perm.expandedChromeHeight = Math.ceil(chromeHeight);
+    if (detailLineHeight > 0) perm.expandedDetailLineHeight = Math.ceil(detailLineHeight);
+    if (!perm.expandedHeightBudgetMeasured) {
+      perm.expandedHeightBudgetMeasured = true;
+    }
+  } else {
+    perm.compactMeasuredHeight = Math.ceil(height);
+    // Keep the legacy field during the transition because several tests and
+    // older callers inspect it directly.
+    perm.measuredHeight = perm.compactMeasuredHeight;
   }
+  // revealCard() reports height on the next animation frame, so this is the
+  // first main-process acknowledgement that the exact interaction was loaded,
+  // received through permission-show, rendered, and made visible. Announcing
+  // earlier (even at did-finish-load) can strand an unretractable Slack card
+  // when content sync or the renderer fails. Later resize reports are safe:
+  // announceSlackPermission is once-guarded per entry.
+  let requestWindowVisible = true;
+  try {
+    if (perm.bubble && typeof perm.bubble.isVisible === "function") {
+      requestWindowVisible = perm.bubble.isVisible();
+    }
+  } catch {
+    requestWindowVisible = false;
+  }
+  if (requestWindowVisible) announceSlackPermission(perm);
+  // Geometry updates happen after the delivery acknowledgement. If either
+  // reflow throws, the already-rendered card must still be announced.
+  repositionBubbles();
+  repositionDependentBubbles();
+}
+
+function restoreActiveControlAfterExplicitExpansion(perm, senderWin) {
+  const capabilities = isValidInteraction(perm && perm.interaction)
+    ? perm.interaction.capabilities
+    : {};
+  if (capabilities.answerQuestions !== true && capabilities.planFeedback !== true) return;
+  try { senderWin.focus(); } catch {}
+  try { senderWin.webContents.send("permission-restore-active-control"); } catch {}
+}
+
+function handleBubbleExpanded(event, expanded) {
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find((entry) => entry.bubble === senderWin);
+  if (!perm) return false;
+  // Codex request_user_input is intentionally read-only in Clawd because the
+  // answer must travel over Codex Desktop's private app-server connection.
+  // Expanding a copy of the options implies that they are actionable here.
+  // Treat any stale/old renderer expansion request as the card's real action:
+  // dismiss it and return to the native Codex UI.
+  if (perm.isCodexUserInputNotify) {
+    if (expanded === true) {
+      dismissPassiveNotify(perm, "expand-focus");
+      if (!perm.host) {
+        ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+      }
+    }
+    return false;
+  }
+  ensureBubblePresentationState(perm);
+  const wantsExpanded = expanded === true;
+  if (wantsExpanded === perm.expanded) {
+    sendPermissionPresentation(perm);
+    if (wantsExpanded) restoreActiveControlAfterExplicitExpansion(perm, senderWin);
+    return true;
+  }
+
+  if (wantsExpanded) {
+    const previous = expandedPermissionEntry;
+    if (previous && previous !== perm) {
+      ensureBubblePresentationState(previous);
+      if (previous.compositionActive) {
+        sendPermissionPresentation(previous);
+        sendPermissionPresentation(perm);
+        return false;
+      }
+      previous.expanded = false;
+      previous.measurementEpoch += 1;
+      sendPermissionPresentation(previous);
+    }
+    perm.expanded = true;
+    perm.measurementEpoch += 1;
+    // The unified reconcile chooses the visible siblings first, then freezes
+    // one budget for this expansion. Do not size from every pending request:
+    // overflow-hidden siblings must not shrink the card being read.
+    perm.expandedHeightBudget = 0;
+    perm.expandedBudgetKey = "";
+    perm.expandedHeightBudgetMeasured = false;
+    expandedPermissionEntry = perm;
+    repositionBubbles();
+    sendPermissionPresentation(perm);
+
+    restoreActiveControlAfterExplicitExpansion(perm, senderWin);
+  } else {
+    perm.expanded = false;
+    perm.measurementEpoch += 1;
+    if (expandedPermissionEntry === perm) expandedPermissionEntry = null;
+    sendPermissionPresentation(perm);
+    repositionBubbles();
+  }
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  return true;
+}
+
+function handleCompositionActive(event, active) {
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find((entry) => entry.bubble === senderWin);
+  if (!perm) return;
+  ensureBubblePresentationState(perm);
+  perm.compositionActive = active === true;
+  reconcilePermissionPresentation("composition-changed");
+  repositionDependentBubbles();
+}
+
+function isQueueSender(event) {
+  const senderWin = BrowserWindow.fromWebContents(event && event.sender);
+  return !!(
+    senderWin
+    && senderWin === overflowPresentation.queueWindow
+    && isLiveBrowserWindow(senderWin)
+  );
+}
+
+function handleQueuePresentationAck(event, acknowledgement) {
+  if (!isQueueSender(event)) return false;
+  const commit = overflowPresentation.queuePendingCommit;
+  const revision = Number(acknowledgement && acknowledgement.revision);
+  if (!commit || !Number.isInteger(revision) || revision !== commit.revision) return false;
+
+  const measuredHeight = Number(acknowledgement && acknowledgement.height);
+  if (commit.drawerOpen && measuredHeight > 0) {
+    overflowPresentation.queueDrawerMeasuredHeight = Math.ceil(measuredHeight);
+    const geometry = createPresentationGeometry();
+    if (geometry) {
+      commit.queueBounds = computePresentationLayout([], geometry, {
+        includeQueue: true,
+        drawerOpen: true,
+      }).queueBounds;
+    }
+  }
+
+  clearQueueCommitTimer();
+  overflowPresentation.queuePresentedRevision = revision;
+  overflowPresentation.visibleEntryIds = new Set(commit.visibleEntryIds);
+  overflowPresentation.queueDrawerCommittedOpen = commit.drawerOpen === true;
+  overflowPresentation.queueCommittedBounds = commit.queueBounds;
+  overflowPresentation.queuePendingCommit = null;
+
+  const geometry = createPresentationGeometry();
+  const entries = getLocalPresentationEntries();
+  if (geometry) {
+    // Establish the visible queue before hiding request windows on the first
+    // overflow commit. The reverse direction already restored requests before
+    // shrinking the drawer in the explicit close/select handlers.
+    if (!applyCommittedOverflowPresentation(entries, geometry)) return false;
+  }
+  for (const entry of entries) {
+    if (commit.hiddenEntryIds.has(entry.uiEntryId)) {
+      announceSlackPermission(entry);
+    } else if (
+      commit.visibleEntryIds.has(entry.uiEntryId)
+      && entry._slackPermissionAnnounced !== true
+    ) {
+      // A representative added after the previous commit may have sent its
+      // first height report while still hidden. Ask its existing renderer for
+      // a fresh local height acknowledgement now that the original request
+      // window is visible; the normal height path then owns Slack delivery.
+      sendPermissionPresentation(entry);
+    }
+  }
+  syncPermissionShortcuts();
+  repositionDependentBubbles();
+  if (typeof ctx.reapplyMacVisibility === "function") {
+    try { ctx.reapplyMacVisibility(); } catch {}
+  }
+  return true;
+}
+
+function handleQueueDrawerOpen(event) {
+  if (!isQueueSender(event) || overflowPresentation.mode !== "overflow") return false;
+  if (isSwitchingLocked()) {
+    reconcilePermissionPresentation("queue-open-locked");
+    return false;
+  }
+  overflowPresentation.queueDrawerOpen = true;
+  overflowPresentation.queueDrawerMeasuredHeight = 0;
+  reconcilePermissionPresentation("queue-open");
+  const geometry = createPresentationGeometry();
+  if (geometry && overflowPresentation.queuePendingCommit) {
+    if (!showQueueWindow(
+      overflowPresentation.queuePendingCommit.queueBounds,
+      geometry,
+      { focus: true }
+    )) {
+      fallbackFromQueueFailure("drawer could not be shown");
+      return false;
+    }
+  }
+  repositionDependentBubbles();
+  return true;
+}
+
+function restoreCommittedRequestsBeforeQueueCollapse() {
+  const geometry = createPresentationGeometry();
+  if (!geometry) return null;
+  const entries = getLocalPresentationEntries();
+  const visibleEntries = entries.filter((entry) => (
+    overflowPresentation.visibleEntryIds.has(entry.uiEntryId)
+  ));
+  ensureExpandedBudgets(visibleEntries, geometry);
+  const layout = computePresentationLayout(visibleEntries, geometry, { includeQueue: true });
+  applyRequestPresentation(entries, layout, geometry, {
+    visibleEntryIds: overflowPresentation.visibleEntryIds,
+  });
+  overflowPresentation.queueDrawerCommittedOpen = false;
+  overflowPresentation.queueCommittedBounds = layout.queueBounds;
+  if (!showQueueWindow(layout.queueBounds, geometry)) {
+    fallbackFromQueueFailure("launcher could not be restored");
+    return null;
+  }
+  return { geometry, entries, layout };
+}
+
+function handleQueueDrawerClose(event) {
+  if (!isQueueSender(event)) return false;
+  overflowPresentation.queueDrawerOpen = false;
+  restoreCommittedRequestsBeforeQueueCollapse();
+  reconcilePermissionPresentation("queue-close");
+  repositionDependentBubbles();
+  return true;
+}
+
+function setExpandedFromQueue(entry) {
+  if (!entry) return false;
+  const previous = expandedPermissionEntry;
+  if (previous && previous !== entry) {
+    ensureBubblePresentationState(previous);
+    if (previous.compositionActive) return false;
+    previous.expanded = false;
+    previous.measurementEpoch += 1;
+    sendPermissionPresentation(previous);
+  }
+  ensureBubblePresentationState(entry);
+  if (!entry.expanded) {
+    entry.expanded = true;
+    entry.measurementEpoch += 1;
+    entry.expandedHeightBudget = 0;
+    entry.expandedBudgetKey = "";
+    entry.expandedHeightBudgetMeasured = false;
+  }
+  expandedPermissionEntry = entry;
+  sendPermissionPresentation(entry);
+  return true;
+}
+
+function handleQueueSelect(event, selection) {
+  if (!isQueueSender(event) || isSwitchingLocked()) return false;
+  const uiEntryId = selection && typeof selection.uiEntryId === "string"
+    ? selection.uiEntryId
+    : "";
+  const intent = selection && typeof selection.intent === "string"
+    ? selection.intent
+    : "";
+  const entries = getLocalPresentationEntries();
+  const target = entries.find((entry) => entry.uiEntryId === uiEntryId);
+  if (!target) {
+    reconcilePermissionPresentation("queue-select-stale");
+    return false;
+  }
+  const kind = queueEntryKind(target);
+  const expectedIntent = kind === "ask" ? "answer" : (kind === "plan" ? "view-plan" : "view");
+  if (intent !== expectedIntent) return false;
+
+  overflowPresentation.selectedGlobalEntryId = target.uiEntryId;
+  overflowPresentation.selectedEntryBySession.set(
+    getPermissionSessionKey(target),
+    target.uiEntryId
+  );
+  if ((kind === "ask" || kind === "plan") && !setExpandedFromQueue(target)) return false;
+
+  overflowPresentation.queueDrawerOpen = false;
+  reconcilePermissionPresentation("queue-select");
+  const pendingCommit = overflowPresentation.queuePendingCommit;
+  if (pendingCommit && pendingCommit.visibleEntryIds.has(target.uiEntryId)) {
+    // The target was already represented by the ACKed drawer payload, so this
+    // trusted user selection may switch request windows immediately. The new
+    // revision still needs an ACK for the launcher payload and Slack once.
+    overflowPresentation.visibleEntryIds = new Set(pendingCommit.visibleEntryIds);
+  }
+  const restored = restoreCommittedRequestsBeforeQueueCollapse();
+  if (restored && isLiveBrowserWindow(target.bubble)) {
+    if (kind === "ask" || kind === "plan") {
+      try { target.bubble.focus(); } catch {}
+      try { target.bubble.webContents.send("permission-restore-active-control"); } catch {}
+    }
+  }
+  syncPermissionShortcuts();
+  repositionDependentBubbles();
+  if (typeof ctx.reapplyMacVisibility === "function") {
+    try { ctx.reapplyMacVisibility(); } catch {}
+  }
+  return true;
+}
+
+// macOS only: while a text input inside the bubble is focused, the bubble must
+// drop out of always-on-top so the OS IME candidate window (Chinese/Japanese/
+// Korean input popup) can surface — it floats above normal windows only, so any
+// always-on-top level (and the native SkyLight stationary path) occludes it.
+// We only flip the __clawdMacImeEditing flag here and let reapplyMacVisibility()
+// apply the actual editing-vs-normal window state, so both directions round-trip
+// through one place (topmost-runtime.js) instead of being hand-rolled twice.
+// The renderer clears the flag on element blur AND on window blur (e.g. Cmd-Tab
+// away mid-composition), so it can't get stuck and strand the bubble.
+function handleImeEditing(event, editing) {
+  const senderWin = BrowserWindow.fromWebContents(event.sender);
+  const perm = pendingPermissions.find(p => p.bubble === senderWin);
+  if (!perm || !perm.bubble || perm.bubble.isDestroyed()) return;
+  perm.textInputActive = editing === true;
+  syncPermissionShortcuts();
+  if (!isMac) return;
+  const wasEditing = perm.bubble.__clawdMacImeEditing === true;
+  if (editing) perm.bubble.__clawdMacImeEditing = true;
+  else delete perm.bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
+  if (!editing && wasEditing) {
+    if (typeof ctx.repositionFloatingBubbles === "function") {
+      try { ctx.repositionFloatingBubbles(); } catch {}
+    } else {
+      repositionBubbles();
+      repositionDependentBubbles();
+    }
+    // reapplyMacVisibility() evaluates the pet dodge before the frozen bubble
+    // moves. Re-evaluate once more against its final bounds so blur cannot
+    // strand the pet faded/click-through (or leave it covering the input).
+    if (typeof ctx.syncImeEditingPetDodge === "function") {
+      try { ctx.syncImeEditingPetDodge(); } catch {}
+    }
+  }
+}
+
+// #640: the editing flag is normally cleared by renderer focusout/window-blur
+// IPC (see handleImeEditing) — a crashed renderer can't send either, so the
+// flag would stay stuck and keep the pet faded + click-through. Called from
+// the bubble's render-process-gone listener.
+function handleBubbleRendererGone(bubble) {
+  if (!bubble || !bubble.__clawdMacImeEditing) return;
+  delete bubble.__clawdMacImeEditing;
+  if (typeof ctx.reapplyMacVisibility === "function") ctx.reapplyMacVisibility();
 }
 
 function handleDecide(event, behavior) {
@@ -1510,8 +4677,35 @@ function handleDecide(event, behavior) {
   const perm = pendingPermissions.find(p => p.bubble === senderWin);
   permLog(`IPC permission-decide: behavior=${behavior} matched=${!!perm}`);
   if (!perm) return;
+  if (perm.isCodexUserInputNotify) {
+    dismissPassiveNotify(perm, "ipc-decide");
+    if (behavior === "codex-user-input-focus" && !perm.host) {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
   if (perm.isCodexNotify || perm.isKimiNotify) {
     dismissPassiveNotify(perm, "ipc-decide");
+    // Kimi Code's cue is a heads-up that its terminal is blocking on a native
+    // approve/reject prompt, so "Got it" doubles as "take me there": focus the
+    // originating terminal after dismissing. Codex's passive notify is
+    // informational-only, so it stays a plain acknowledge.
+    if (perm.isKimiNotify) {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
+  if (behavior === "session-trust") {
+    if (typeof ctx.requestSessionTrust === "function") {
+      Promise.resolve(ctx.requestSessionTrust(perm)).catch((err) => {
+        permLog(`session trust request failed: ${err && err.message ? err.message : err}`);
+        perm.sessionTrustError = typeof ctx.translate === "function"
+          ? ctx.translate("sessionAutomationFailedRetry")
+          : "Session automation failed. Please try again.";
+        endSessionTrustConfirmation(perm, { rearm: true });
+        syncPermissionBubbleContent(perm);
+      });
+    }
     return;
   }
   if (perm.isCodex) {
@@ -1539,13 +4733,24 @@ function handleDecide(event, behavior) {
     }
     return;
   }
+  if (perm.isZcode) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported ZCode bubble action: ${String(behavior)}`);
+    if (behavior === "deny-and-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
   if (perm.isCopilotCli) {
     if (behavior === "allow" || behavior === "deny") {
       resolvePermissionEntry(perm, behavior);
       return;
     }
     // Mirror Codex/Qwen: any non-allow/deny UI action (deny-and-focus,
-    // suggestion picker, opencode-always) is unsupported for Copilot's
+    // suggestion picker, family-always) is unsupported for Copilot's
     // simple {behavior, message} wire format. Resolve as no-decision so
     // the hook returns empty stdout and Copilot's native menu owns the
     // call rather than the bubble parking until timeout.
@@ -1562,24 +4767,76 @@ function handleDecide(event, behavior) {
     }
     return;
   }
+  if (perm.isDsh) {
+    if (behavior === "allow" || behavior === "deny") {
+      resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", `Unsupported DSH bubble action: ${String(behavior)}`);
+    return;
+  }
   if (perm.isHermes) {
     if (behavior === "allow" || behavior === "deny") {
       resolvePermissionEntry(perm, behavior);
       return;
     }
-    if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
-      perm.resolvedUpdatedInput = buildElicitationUpdatedInput(perm.toolInput, behavior.answers);
+    if (
+      isValidInteraction(perm.interaction)
+      && perm.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+      && perm.interaction.capabilities.answerQuestions
+      && behavior
+      && typeof behavior === "object"
+      && behavior.type === "elicitation-submit"
+    ) {
+      const wireInput = perm.elicitationWireInput || perm.toolInput;
+      const validatedAnswers = validateAndRemapIndexedElicitationAnswers(
+        wireInput,
+        behavior.answers
+      );
+      if (!validatedAnswers.ok) {
+        permLog(`desktop Hermes elicitation rejected: ${validatedAnswers.reason}`);
+        resolvePermissionEntry(perm, "no-decision", validatedAnswers.reason);
+        return;
+      }
+      perm.resolvedUpdatedInput = buildElicitationUpdatedInput(
+        wireInput,
+        validatedAnswers.answers
+      );
       resolvePermissionEntry(perm, "allow");
       return;
     }
+    // Hermes' opt-in permission gate has no native approval prompt. The plugin
+    // maps no-decision to a retryable block, while clarify elicitation maps it
+    // to Hermes' native clarification UI. This branch backstops unknown/legacy
+    // actions without fabricating allow or deny.
     resolvePermissionEntry(perm, "no-decision", `Unsupported Hermes bubble action: ${String(behavior)}`);
     if (behavior === "deny-and-focus") {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
     return;
   }
-  if (perm.isElicitation && behavior && typeof behavior === "object" && behavior.type === "elicitation-submit") {
-    perm.resolvedUpdatedInput = buildElicitationUpdatedInput(perm.toolInput, behavior.answers);
+  if (
+    isValidInteraction(perm.interaction)
+    && perm.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+    && perm.interaction.capabilities.answerQuestions
+    && behavior
+    && typeof behavior === "object"
+    && behavior.type === "elicitation-submit"
+  ) {
+    const wireInput = perm.elicitationWireInput || perm.toolInput;
+    const validatedAnswers = validateAndRemapIndexedElicitationAnswers(
+      wireInput,
+      behavior.answers
+    );
+    if (!validatedAnswers.ok) {
+      permLog(`desktop elicitation rejected: ${validatedAnswers.reason}`);
+      resolvePermissionEntry(perm, "no-decision", validatedAnswers.reason);
+      return;
+    }
+    perm.resolvedUpdatedInput = buildElicitationUpdatedInput(
+      wireInput,
+      validatedAnswers.answers
+    );
     resolvePermissionEntry(perm, "allow");
     return;
   }
@@ -1587,7 +4844,9 @@ function handleDecide(event, behavior) {
   // ExitPlanMode bubble. Sends deny + reason so CC feeds the feedback to
   // Claude as a system message for plan revision.
   if (
-    perm.toolName === "ExitPlanMode"
+    isValidInteraction(perm.interaction)
+    && perm.interaction.intent === INTERACTION_INTENT.PLAN_REVIEW
+    && perm.interaction.capabilities.planFeedback
     && behavior
     && typeof behavior === "object"
     && behavior.type === "plan-feedback"
@@ -1600,12 +4859,17 @@ function handleDecide(event, behavior) {
       dismissPermissionForTerminal(perm);
       return;
     }
+    if (feedback.length > PLAN_FEEDBACK_MAX_LENGTH) {
+      permLog(`desktop plan feedback rejected: exceeds ${PLAN_FEEDBACK_MAX_LENGTH} characters`);
+      resolvePermissionEntry(perm, "no-decision", "Plan feedback is too long");
+      return;
+    }
     resolvePermissionEntry(perm, "deny", feedback);
     return;
   }
-  // opencode "Always" button — map to reply="always" via resolvePermissionEntry
-  if (behavior === "opencode-always") {
-    perm.opencodeAlwaysPicked = true;
+  // opencode-family "Always" button — map to reply="always" via resolvePermissionEntry
+  if (behavior === "family-always") {
+    perm.familyAlwaysPicked = true;
     resolvePermissionEntry(perm, "allow");
     return;
   }
@@ -1644,6 +4908,11 @@ function showCodexNotifyBubble({ sessionId, command }) {
     toolName: "CodexExec",
     toolInput: { command: command || "(unknown)" },
     resolvedSuggestion: null, createdAt: Date.now(),
+    interaction: classifyPermissionInteraction({
+      agentId: "codex",
+      eventKind: "notification",
+      toolName: "CodexExec",
+    }),
     isElicitation: false, isCodexNotify: true,
     agentId: "codex",
     autoExpireTimer: null,
@@ -1654,20 +4923,121 @@ function showCodexNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
-function showKimiNotifyBubble({ sessionId, command }) {
+function showCodexUserInputBubble({
+  sessionId,
+  callId,
+  questions,
+  autoResolutionMs,
+  sourcePid,
+  agentPid,
+  cwd,
+  host,
+  codexOriginator,
+  codexSource,
+}) {
+  if (!sessionId || !callId || !Array.isArray(questions) || !questions.length) return false;
+  if (shouldSuppressCodexUserInputBubble(ctx)) {
+    const policy = getPolicy(ctx, "notification");
+    permLog(`codex user-input suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
+    return false;
+  }
+  // autoResolutionMs is validated/clamped at the protocol boundary
+  // (hooks/codex-user-input.js) but has no reader in the bubble UI — nothing
+  // auto-closes this card but a matching function_call_output or an
+  // explicit lifecycle end (see agent-runtime-main.js), so it's deliberately
+  // left out of toolInput rather than threaded somewhere that implies a
+  // countdown exists.
+  const existing = findCodexUserInputEntry(sessionId, callId);
+  if (existing) {
+    existing.toolInput = { questions };
+    existing.createdAt = Date.now();
+    syncPermissionBubbleContent(existing);
+    return true;
+  }
+  const permEntry = {
+    res: null,
+    abortHandler: null,
+    suggestions: [],
+    sessionId,
+    bubble: null,
+    hideTimer: null,
+    toolName: "CodexUserInput",
+    toolInput: { questions },
+    codexUserInputCallId: callId,
+    resolvedSuggestion: null,
+    createdAt: Date.now(),
+    interaction: classifyPermissionInteraction({
+      agentId: "codex",
+      eventKind: "native-question",
+      toolName: "CodexUserInput",
+    }),
+    isElicitation: false,
+    isCodexUserInputNotify: true,
+    agentId: "codex",
+    sourcePid: sourcePid || null,
+    agentPid: agentPid || null,
+    cwd: cwd || "",
+    host: host || null,
+    codexOriginator: codexOriginator || null,
+    codexSource: codexSource || null,
+    autoExpireTimer: null,
+  };
+  addPendingPermission(permEntry, "passive-added");
+  showPermissionBubble(permEntry);
+  permLog(`passive user-input show: agent=codex session=${sessionId} call=${callId}`);
+  return true;
+}
+
+function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand, permissionToolInput }) {
   if (shouldSuppressKimiNotifyBubble(ctx)) {
     const policy = getPolicy(ctx, "notification");
     permLog(`kimi notify suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
     return;
   }
   const policy = getPolicy(ctx, "notification");
+  // #563: prefer the real command from Kimi Code's native PermissionRequest
+  // display block, then its human-readable action line; legacy synthesized
+  // requests carry neither and keep the generic copy.
+  const bubbleCommand = permissionCommand || permissionAction || command
+    || "Approve or reject in Kimi terminal.";
+  // A newer request for the same session replaces the stale cue in place
+  // (codex idiom above): the terminal now blocks on the NEW command, and
+  // keeping request #1's pill/command/badge would show a wrong answer with
+  // authority. A legacy-shaped refresh downgrades to the generic copy — the
+  // generic line can't be wrong.
+  const existing = findKimiNotifyEntryBySession(sessionId);
+  if (existing) {
+    existing.toolInput = { command: bubbleCommand };
+    existing.kimiToolName = typeof toolName === "string" && toolName ? toolName : null;
+    existing.kimiToolInput = permissionToolInput && typeof permissionToolInput === "object"
+      ? permissionToolInput
+      : null;
+    existing.createdAt = Date.now();
+    permLog(`passive notify refresh: agent=kimi-cli session=${sessionId} autoCloseMs=${policy.autoCloseMs}`);
+    syncPermissionBubbleContent(existing);
+    schedulePassiveNotifyAutoExpire(existing, policy.autoCloseMs);
+    return;
+  }
   const permEntry = {
     res: null,
     abortHandler: null, suggestions: [],
     sessionId, bubble: null, hideTimer: null,
     toolName: "KimiPermission",
-    toolInput: { command: command || "Approve or reject in Kimi terminal." },
+    toolInput: { command: bubbleCommand },
+    kimiToolName: typeof toolName === "string" && toolName ? toolName : null,
+    // Whitelisted subset of the native request's tool_input (see
+    // extractPermissionToolInput in hooks/kimi-hook.js — the server re-runs
+    // it at the trust boundary). Display-only: it feeds the bubble's
+    // tool-aware cue and never touches approval semantics.
+    kimiToolInput: permissionToolInput && typeof permissionToolInput === "object"
+      ? permissionToolInput
+      : null,
     resolvedSuggestion: null, createdAt: Date.now(),
+    interaction: classifyPermissionInteraction({
+      agentId: "kimi-cli",
+      eventKind: "notification",
+      toolName: "KimiPermission",
+    }),
     isElicitation: false, isKimiNotify: true,
     agentId: "kimi-cli",
     autoExpireTimer: null,
@@ -1679,14 +5049,29 @@ function showKimiNotifyBubble({ sessionId, command }) {
 }
 
 function getPassiveNotifyAgentId(permEntry) {
-  if (permEntry?.isCodexNotify) return "codex";
+  if (permEntry?.isCodexNotify || permEntry?.isCodexUserInputNotify) return "codex";
   if (permEntry?.isKimiNotify) return "kimi-cli";
   return permEntry?.agentId || "unknown";
+}
+
+function findCodexUserInputEntry(sessionId, callId) {
+  if (!sessionId || !callId) return null;
+  return pendingPermissions.find((permEntry) =>
+    permEntry
+    && permEntry.isCodexUserInputNotify
+    && permEntry.sessionId === sessionId
+    && permEntry.codexUserInputCallId === callId
+  ) || null;
 }
 
 function findCodexNotifyEntryBySession(sessionId) {
   if (!sessionId) return null;
   return pendingPermissions.find((permEntry) => permEntry && permEntry.isCodexNotify && permEntry.sessionId === sessionId) || null;
+}
+
+function findKimiNotifyEntryBySession(sessionId) {
+  if (!sessionId) return null;
+  return pendingPermissions.find((permEntry) => permEntry && permEntry.isKimiNotify && permEntry.sessionId === sessionId) || null;
 }
 
 function dismissPassiveNotify(permEntry, reason = "unknown") {
@@ -1699,11 +5084,7 @@ function dismissPassiveNotify(permEntry, reason = "unknown") {
   notifyPermissionsChanged("passive-dismissed");
   if (permEntry.autoExpireTimer) clearTimeout(permEntry.autoExpireTimer);
   if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
-  if (permEntry.bubble && !permEntry.bubble.isDestroyed()) {
-    permEntry.bubble.webContents.send("permission-hide");
-    const bub = permEntry.bubble;
-    setTimeout(() => { if (!bub.isDestroyed()) bub.destroy(); }, 250);
-  }
+  hidePermissionBubbleSafely(permEntry);
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
@@ -1715,6 +5096,11 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
     clearTimeout(permEntry.autoExpireTimer);
     permEntry.autoExpireTimer = null;
   }
+  // request_user_input is a blocking question, not a transient notification.
+  // Keep it visible until Codex records the matching function_call_output (or
+  // the user explicitly dismisses/focuses it), even if notification policy is
+  // refreshed while the card is open.
+  if (permEntry.isCodexUserInputNotify) return false;
   const remainingMs = computePassiveNotifyRemainingMs(permEntry.createdAt, autoCloseMs, now);
   permLog(
     `passive notify schedule: agent=${getPassiveNotifyAgentId(permEntry)} session=${permEntry.sessionId || "(none)"} autoCloseMs=${autoCloseMs} remainingMs=${remainingMs}`
@@ -1730,7 +5116,9 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
 }
 
 function refreshPassiveNotifyAutoClose() {
-  const passiveEntries = pendingPermissions.filter(isPassiveNotifyEntry);
+  const passiveEntries = pendingPermissions.filter(
+    (entry) => isPassiveNotifyEntry(entry) && !entry.isCodexUserInputNotify
+  );
   if (passiveEntries.length === 0) return 0;
   const policy = getPolicy(ctx, "notification");
   const now = Date.now();
@@ -1755,14 +5143,7 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   if (perm.abortHandler && perm.res) {
     try { perm.res.removeListener("close", perm.abortHandler); } catch {}
   }
-  if (perm.hideTimer) clearTimeout(perm.hideTimer);
-  if (perm.bubble && !perm.bubble.isDestroyed()) {
-    try { perm.bubble.webContents.send("permission-hide"); } catch {}
-    const bub = perm.bubble;
-    perm.hideTimer = setTimeout(() => {
-      if (bub && !bub.isDestroyed()) bub.destroy();
-    }, 250);
-  }
+  hidePermissionBubbleSafely(perm);
   // Do not answer approval requests on the user's behalf. Dropping the UI
   // means Codex/Antigravity receive no decision, CC/CodeBuddy fall back
   // via socket close, and opencode falls back by receiving no bridge reply.
@@ -1770,15 +5151,115 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isQwenCode) {
     sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isOpencodeV2) {
+    // v2 blocks on this connection: release the await explicitly instead of
+    // relying on socket close (same contract as codex/qwen above).
+    sendOpencodeV2NoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (perm.isZcode) {
+    sendZcodeNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isCopilotCli) {
     sendCopilotNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isAntigravity) {
     sendAntigravityNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isHermes) {
     sendHermesNoDecisionResponse(perm.res, reason || "permission-dismissed");
-  } else if (!perm.isOpencode && perm.res && !perm.res.destroyed) {
+  } else if (perm.isDsh) {
+    sendDshNoDecisionResponse(perm.res, reason || "permission-dismissed");
+  } else if (!isOpencodeFamilyEntry(perm) && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }
+}
+
+function opencodeFamilyBridgeTokensEqual(expected, candidate) {
+  if (
+    !isValidOpencodeFamilyBridgeToken(expected)
+    || !isValidOpencodeFamilyBridgeToken(candidate)
+  ) return false;
+  const expectedBytes = Buffer.from(expected, "utf8");
+  const candidateBytes = Buffer.from(candidate, "utf8");
+  if (expectedBytes.length !== candidateBytes.length) return false;
+  try {
+    return timingSafeEqual(expectedBytes, candidateBytes);
+  } catch {
+    return false;
+  }
+}
+
+function normalizeExternalFamilyPermissionIdentity(identity) {
+  if (!identity || typeof identity !== "object") return null;
+  const agentId = typeof identity.agentId === "string" ? identity.agentId : "";
+  if (!getFamilyConfig(agentId)) return null;
+  const requestId = typeof identity.requestId === "string" && identity.requestId
+    ? identity.requestId
+    : null;
+  const sessionId = typeof identity.sessionId === "string" && identity.sessionId
+    ? identity.sessionId
+    : null;
+  const bridgeUrl = normalizeOpencodeFamilyBridgeUrl(identity.bridgeUrl);
+  const bridgeToken = isValidOpencodeFamilyBridgeToken(identity.bridgeToken)
+    ? identity.bridgeToken
+    : null;
+  if (!requestId || !sessionId || !bridgeUrl || !bridgeToken) return null;
+  return { agentId, requestId, sessionId, bridgeUrl, bridgeToken };
+}
+
+function boundedPermissionIdentityForLog(value) {
+  if (typeof value !== "string") return "(invalid)";
+  const clean = value.replace(/[\u0000-\u001F\u007F-\u009F]/g, " ").trim();
+  if (!clean) return "(empty)";
+  return clean.length > 120 ? `${clean.slice(0, 119)}…` : clean;
+}
+
+// A native OpenCode-family UI already resolved this exact request. Remove all
+// exact duplicates locally, but never call resolvePermissionEntry(): that path
+// would send a second once/always/reject decision through the reverse bridge.
+function dismissOpencodeFamilyPermissionResolvedExternally(identity) {
+  const normalized = normalizeExternalFamilyPermissionIdentity(identity);
+  if (!normalized) {
+    permLog("opencode-family external resolve no-op: invalid identity");
+    return 0;
+  }
+
+  const matches = pendingPermissions.filter((entry) => {
+    if (!isOpencodeFamilyEntry(entry) || entry.agentId !== normalized.agentId) return false;
+    if (entry.familyRequestId !== normalized.requestId) return false;
+    if (entry.sessionId !== normalized.sessionId) return false;
+    const entryBridgeUrl = normalizeOpencodeFamilyBridgeUrl(entry.familyBridgeUrl);
+    if (!entryBridgeUrl || entryBridgeUrl !== normalized.bridgeUrl) return false;
+    return opencodeFamilyBridgeTokensEqual(entry.familyBridgeToken, normalized.bridgeToken);
+  });
+
+  if (matches.length === 0) {
+    permLog(`opencode-family external resolve no-op: agent=${normalized.agentId} request=${boundedPermissionIdentityForLog(normalized.requestId)}`);
+    return 0;
+  }
+
+  // Establish non-liveness first for every exact duplicate. A late click,
+  // hotkey, automation callback, or timer will now fail its pending-membership
+  // guard before any slower renderer/notification teardown runs.
+  for (const entry of matches) {
+    const index = pendingPermissions.indexOf(entry);
+    if (index !== -1) pendingPermissions.splice(index, 1);
+  }
+  notifyPermissionsChanged("resolved-externally");
+
+  for (const entry of matches) {
+    cancelRemoteApproval(entry, { reason: "resolved-externally" });
+    if (entry._delayTimer) { clearTimeout(entry._delayTimer); entry._delayTimer = null; }
+    if (entry.autoCloseTimer) { clearTimeout(entry.autoCloseTimer); entry.autoCloseTimer = null; }
+    if (entry.autoExpireTimer) { clearTimeout(entry.autoExpireTimer); entry.autoExpireTimer = null; }
+    if (entry.abortHandler && entry.res) {
+      try { entry.res.removeListener("close", entry.abortHandler); } catch {}
+    }
+    hidePermissionBubbleSafely(entry);
+    notifyPermissionResolved(entry, "resolved-externally");
+  }
+
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  permLog(`opencode-family external resolve matched: agent=${normalized.agentId} request=${boundedPermissionIdentityForLog(normalized.requestId)} count=${matches.length}`);
+  return matches.length;
 }
 
 // Mirrors the DND dispatcher: CC res.destroy() so it falls back to chat,
@@ -1791,12 +5272,12 @@ function dismissPermissionsByAgent(agentId, options = {}) {
   if (!agentId) return 0;
   const subagentOnly = !!(options && options.subagentOnly);
   const matchesScope = (p) => !subagentOnly
-    || (p.subagentId && p.toolName !== "ExitPlanMode" && p.toolName !== "AskUserQuestion");
+    || (p.subagentId && !isDecisionInteraction(p.interaction));
   const toDismiss = pendingPermissions.filter((p) => p && p.agentId === agentId && matchesScope(p));
   if (toDismiss.length === 0) return 0;
   const reason = subagentOnly ? `dismiss-by-agent-subagent:${agentId}` : `dismiss-by-agent:${agentId}`;
   for (const perm of toDismiss) {
-    if (perm.isCodexNotify || perm.isKimiNotify) {
+    if (isPassiveNotifyEntry(perm)) {
       dismissPassiveNotify(perm, reason);
       continue;
     }
@@ -1809,13 +5290,37 @@ function dismissPermissionsByAgent(agentId, options = {}) {
   return toDismiss.length;
 }
 
+// Session-scoped retirement used by Codex archive lifecycle (#655). Drops only
+// the surfaces owned by this session: passive notify/user-input cards are
+// cleared, and any interactive prompt is handed back with the normal
+// no-decision semantics — never an allow/deny on the user's behalf.
+function dismissPermissionsForSession(sessionId, reason = "session-dismissed") {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return 0;
+  const toDismiss = pendingPermissions.filter((p) => p && p.sessionId === id);
+  if (toDismiss.length === 0) return 0;
+  for (const perm of toDismiss) {
+    if (isPassiveNotifyEntry(perm)) {
+      dismissPassiveNotify(perm, reason);
+      continue;
+    }
+    dismissInteractivePermissionWithoutDecision(perm, reason);
+  }
+  repositionBubbles();
+  repositionDependentBubbles();
+  syncPermissionShortcuts();
+  permLog(`dismissPermissionsForSession(${id}): cleared ${toDismiss.length}`);
+  return toDismiss.length;
+}
+
 function dismissInteractivePermissionBubbles() {
-  const toDismiss = pendingPermissions.filter((p) => p && !p.isCodexNotify && !p.isKimiNotify);
+  const toDismiss = pendingPermissions.filter((p) => p && !isPassiveNotifyEntry(p));
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
     dismissInteractivePermissionWithoutDecision(perm, "interactive-bubbles-dismissed");
   }
   repositionBubbles();
+  repositionDependentBubbles();
   syncPermissionShortcuts();
   permLog(`dismissInteractivePermissionBubbles(): cleared ${toDismiss.length}`);
   return toDismiss.length;
@@ -1825,7 +5330,7 @@ function dismissPermissionsForDnd() {
   const toDismiss = pendingPermissions.filter(Boolean);
   if (toDismiss.length === 0) return 0;
   for (const perm of toDismiss) {
-    if (perm.isCodexNotify || perm.isKimiNotify) {
+    if (isPassiveNotifyEntry(perm)) {
       dismissPassiveNotify(perm, "dnd-enabled");
       continue;
     }
@@ -1844,6 +5349,17 @@ function clearCodexNotifyBubbles(sessionId, reason = sessionId ? "codex-session-
     ? pendingPermissions.filter((p) => p.isCodexNotify && p.sessionId === sessionId)
     : pendingPermissions.filter((p) => p.isCodexNotify);
   for (const perm of toRemove) dismissPassiveNotify(perm, reason);
+}
+
+function clearCodexUserInputBubbles(sessionId, callId, reason = "codex-user-input-clear") {
+  const toRemove = pendingPermissions.filter((perm) =>
+    perm
+    && perm.isCodexUserInputNotify
+    && (!sessionId || perm.sessionId === sessionId)
+    && (!callId || perm.codexUserInputCallId === callId)
+  );
+  for (const perm of toRemove) dismissPassiveNotify(perm, reason);
+  return toRemove.length;
 }
 
 function clearKimiNotifyBubbles(sessionId, reason = sessionId ? "kimi-session-release" : "kimi-global-clear") {
@@ -1868,33 +5384,60 @@ function cleanup() {
   if (typeof unsubscribeShortcuts === "function") {
     try { unsubscribeShortcuts(); } catch {}
   }
-  // Clean up all pending permission requests. Codex/Qwen/Copilot/Antigravity
-  // get no-decision so their native flow can continue; Claude/CodeBuddy get
-  // explicit deny so they don't hang while quitting.
+  // Clean up all pending permission requests without deciding on the user's
+  // behalf. Each protocol gets its normal no-decision fallback: bodyless
+  // replies for supported hooks, socket close for Claude/CodeBuddy, and no
+  // bridge reply for opencode-family requests.
   for (const perm of [...pendingPermissions]) {
     if (perm._delayTimer) clearTimeout(perm._delayTimer);
     if (perm.autoExpireTimer) clearTimeout(perm.autoExpireTimer);
-    if (perm.isCodex || perm.isQwenCode || perm.isCopilotCli || perm.isAntigravity || perm.isHermes) resolvePermissionEntry(perm, "no-decision", "Clawd is quitting");
-    else resolvePermissionEntry(perm, "deny", "Clawd is quitting");
+    if (isPassiveNotifyEntry(perm)) dismissPassiveNotify(perm, "Clawd is quitting");
+    else dismissInteractivePermissionWithoutDecision(perm, "Clawd is quitting");
   }
+  destroyQueueWindow({ resetEpisode: true });
+  permissionBubbleWindows.clear();
 }
 
 return {
   showPermissionBubble, resolvePermissionEntry,
   sendPermissionResponse, repositionBubbles, permLog,
   pendingPermissions, PASSTHROUGH_TOOLS,
+  getVisibleBubbleBounds,
+  getPermissionPresentationWindows,
+  hasVisiblePermissionBubbles,
+  showPermissionSurfacesForPet,
+  hidePermissionSurfacesForPet,
+  setPermissionSurfacesFullscreenSuppressed,
+  reconcilePermissionPresentation,
   addPendingPermission, removePendingPermission,
+  isPermissionEntryLive, canAutoResolvePendingPermission,
+  beginSessionTrustConfirmation, endSessionTrustConfirmation,
+  syncPermissionBubbleContent,
   maybeStartRemoteApproval,
   dismissPermissionForTerminal,
-  handleBubbleHeight, handleDecide, cleanup,
+  // Test seam: lets wire-level tests pin which provenance flags reach the
+  // renderer (isHermes suppresses the go-to-terminal action — issue #689).
+  buildPermissionBubblePayload,
+  handleBubbleHeight, handleBubbleExpanded, handleCompositionActive,
+  handleQueueDrawerOpen, handleQueueDrawerClose,
+  handleQueueSelect, handleQueuePresentationAck,
+  handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
+  showCodexUserInputBubble, clearCodexUserInputBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,
+  dismissPermissionsForSession,
   dismissPermissionsForDnd,
+  dismissOpencodeFamilyPermissionResolvedExternally,
   syncPermissionShortcuts,
-  replyOpencodePermission,
+  replyOpencodeFamilyPermission,
+  sendOpencodeV2Response,
+  sendOpencodeV2NoDecisionResponse,
+  // Exposed for the payload↔renderer contract test (plan §3.5/§9): the
+  // builder closes over ctx, so it can only be reached through an instance.
+  buildPermissionBubblePayload,
 };
 
 };
@@ -1906,12 +5449,22 @@ module.exports.registerPermissionIpc = registerPermissionIpc;
 module.exports.__test = {
   computeBubbleStackLayout,
   computePassiveNotifyRemainingMs,
+  computePermissionAutoCloseRemainingMs,
   clampBubbleHeight,
   shouldSuppressCodexNotifyBubble,
   sanitizeCodexPermissionDecision,
   buildCodexPermissionResponseBody,
   buildQwenCodePermissionResponseBody,
+  buildZcodePermissionResponseBody,
   sanitizeAntigravityPermissionDecision,
   buildAntigravityPermissionResponseBody,
   buildElicitationUpdatedInput,
+  remapIndexedElicitationAnswers,
+  validateAndRemapIndexedElicitationAnswers,
+  collectVisibleWindowBounds,
+  areBubbleBoundsSafe,
+  stackHeightForSizes,
+  computeQueueCommitDeadline,
+  queueAgentLabel,
+  buildPermissionFocusEntry,
 };

@@ -1,15 +1,14 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const { spawnSync } = require("node:child_process");
 const path = require("node:path");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 
 function runReasonixHook(payload) {
   const scriptPath = path.resolve(__dirname, "..", "hooks", "reasonix-hook.js");
-  const blockerPath = path.resolve(__dirname, "hook-http-blocker.js");
-  return spawnSync(process.execPath, ["--require", blockerPath, scriptPath], {
-    input: `${JSON.stringify(payload)}\n`,
-    encoding: "utf8",
-    windowsHide: true,
+  return runSpawnedHook({
+    script: scriptPath,
+    payload,
+    httpContract: "block",
   });
 }
 

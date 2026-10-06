@@ -3,6 +3,7 @@
 const defaultFs = require("fs");
 const defaultPath = require("path");
 const { pathToFileURL: defaultPathToFileURL } = require("url");
+const { hasDedicatedRoamVisual, getRightSideMirrorFiles } = require("./mirrored-files");
 
 function createThemeContext(theme, options = {}) {
   const fs = options.fs || defaultFs;
@@ -74,15 +75,37 @@ function createThemeContext(theme, options = {}) {
       eyeTracking: theme.eyeTracking,
       glyphFlips: theme.miniMode ? theme.miniMode.glyphFlips : {},
       miniFlipAssets: theme.miniMode ? !!theme.miniMode.flipAssets : false,
+      roamFlipAssets: !!theme.roamFlipAssets,
+      rightSideMirrorFiles: getRightSideMirrorFiles(theme),
       dragSvg: theme.reactions && theme.reactions.drag ? theme.reactions.drag.file : null,
       dragSvgs: theme.reactions && theme.reactions.drag ? {
         left: theme.reactions.drag.fileLeft || null,
         right: theme.reactions.drag.fileRight || null,
       } : null,
       idleFollowSvg: theme.states.idle[0],
+      // Free roam: true when the theme binds a dedicated roam visual. The
+      // visual resolver injects exactly states.roam = [idle[0]] as a synthetic
+      // fallback, so only that precise shape (single entry, same file as
+      // idle[0]) means "no dedicated visual" — the renderer then keeps its
+      // roam-walk bob compensation. Multi-entry bindings count as dedicated
+      // even if one entry reuses the idle file.
+      hasRoamVisual: hasDedicatedRoamVisual(theme),
       eyeTrackingStates: theme.eyeTracking.enabled ? theme.eyeTracking.states : [],
       trustedScriptedSvgFiles: [...trustedScriptedSvgFiles],
       rendering: theme.rendering || { svgChannel: "auto" },
+      petTintSupported: !!(theme._capabilities && theme._capabilities.petTint),
+      accessorySupported: !!(theme._capabilities && theme._capabilities.accessories),
+      accessoryAttachments: (
+        theme._capabilities
+        && theme._capabilities.accessories
+        && theme.customization
+      ) ? (theme.customization.accessories || null) : null,
+      mouthAccessorySupported: !!(theme._capabilities && theme._capabilities.mouthAccessories),
+      mouthAccessoryAttachments: (
+        theme._capabilities
+        && theme._capabilities.mouthAccessories
+        && theme.customization
+      ) ? (theme.customization.mouthAccessories || null) : null,
       objectScale: theme.objectScale,
       transitions: theme.transitions || {},
     };

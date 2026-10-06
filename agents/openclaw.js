@@ -9,6 +9,7 @@ module.exports = {
   // avoids process-name detection and keeps terminal focus as a known limit
   // because OpenClaw's installer blocks plugins that import child_process.
   processNames: { win: [], mac: [], linux: [] },
+  startupRecoveryProcessNames: { win: [], mac: [], linux: [] },
   eventSource: "plugin-event",
   eventMap: {
     SessionStart: "idle",

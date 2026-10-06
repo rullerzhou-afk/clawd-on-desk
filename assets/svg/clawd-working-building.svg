@@ -220,7 +220,7 @@
       </g>
 
       <!-- Body core [squash] — only torso + hat + eyes get squashed -->
-      <g class="body-squash">
+      <g id="accessory-anchor" class="body-squash">
 
         <!-- Torso -->
         <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>

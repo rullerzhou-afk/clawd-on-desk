@@ -93,13 +93,14 @@ describe("state-payload-size fitStateBodyToByteBudget", () => {
       session_id: "sid",
       event: "Stop",
       background_tasks_count: 2,
+      background_subagents_count: 1,
       session_crons_count: 1,
       stop_hook_active: true,
       assistant_last_output: "字".repeat(50),
     };
     // Tight budget: the gate/completion fields alone nearly fill it, leaving no
     // usable room for any assistant text → drop it but keep everything else.
-    const r = fitStateBodyToByteBudget(body, { targetBytes: 150 });
+    const r = fitStateBodyToByteBudget(body, { targetBytes: 170 });
     assert.strictEqual(r.assistantDropped, true);
     assert.strictEqual(r.fitted, true);
     assert.strictEqual(r.body.assistant_last_output, undefined);
@@ -107,6 +108,7 @@ describe("state-payload-size fitStateBodyToByteBudget", () => {
     assert.strictEqual(r.body.state, "attention");
     assert.strictEqual(r.body.event, "Stop");
     assert.strictEqual(r.body.background_tasks_count, 2);
+    assert.strictEqual(r.body.background_subagents_count, 1);
     assert.strictEqual(r.body.session_crons_count, 1);
     assert.strictEqual(r.body.stop_hook_active, true);
   });
@@ -156,5 +158,55 @@ describe("state-payload-size fitStateBodyToByteBudget", () => {
     assert.strictEqual(r.assistantDropped, true);
     assert.strictEqual(r.fitted, true);
     assert.ok(Buffer.byteLength(JSON.stringify(r.body), "utf8") <= 250);
+  });
+});
+
+describe("state-payload-size stdin_diag interaction (#583)", () => {
+  it("preserves stdin_diag when an oversized assistant_last_output is truncated", () => {
+    const body = {
+      state: "attention",
+      session_id: "default",
+      event: "Stop",
+      stdin_diag: { bytes: 0, timed_out: true, duration_ms: 2001 },
+      assistant_last_output: "y".repeat(20 * 1024),
+    };
+    const fitted = fitStateBodyToByteBudget(body);
+    assert.ok(fitted.bytes <= DEFAULT_TARGET_BYTES);
+    assert.ok(fitted.assistantTruncated || fitted.assistantDropped);
+    assert.deepStrictEqual(fitted.body.stdin_diag, { bytes: 0, timed_out: true, duration_ms: 2001 });
+  });
+});
+
+describe("state-payload-size preserves the prompt-fallback marker (#1125)", () => {
+  it("keeps session_title_from_prompt when a large reply is truncated", () => {
+    const body = {
+      state: "thinking",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      session_title: "Prompt line",
+      session_title_from_prompt: true,
+      assistant_last_output: "字".repeat(20000),
+    };
+    const r = fitStateBodyToByteBudget(body);
+    assert.strictEqual(r.assistantTruncated, true);
+    assert.strictEqual(r.body.session_title_from_prompt, true);
+  });
+
+  it("keeps session_title_from_prompt when a reply must be dropped", () => {
+    const body = {
+      state: "thinking",
+      session_id: "sid",
+      event: "UserPromptSubmit",
+      session_title: "Prompt line",
+      session_title_from_prompt: true,
+      background_tasks_count: 2,
+      background_subagents_count: 1,
+      session_crons_count: 1,
+      stop_hook_active: true,
+      assistant_last_output: "字".repeat(50),
+    };
+    const r = fitStateBodyToByteBudget(body, { targetBytes: 170 });
+    assert.strictEqual(r.assistantDropped, true);
+    assert.strictEqual(r.body.session_title_from_prompt, true);
   });
 });

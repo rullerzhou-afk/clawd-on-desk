@@ -4,6 +4,9 @@
   "author": "rullerzhou",
   "version": "1.0.0",
   "description": "A calico cat desk pet — AI-generated APNG animations",
+  "customization": {
+    "petTint": false
+  },
   "viewBox": {
     "x": 0,
     "y": 0,
@@ -70,9 +73,13 @@
       }
     }
   },
+  "roamFlipAssets": true,
   "states": {
     "idle": [
       "calico-idle-follow.svg"
+    ],
+    "roam": [
+      "calico-roam-crabwalk.apng"
     ],
     "yawning": [
       "calico-yawning.apng"
@@ -302,7 +309,8 @@
       "calico-mini-enter.apng": 1.15,
       "calico-mini-peek.apng": 1.15,
       "calico-mini-crabwalk.apng": 1.05,
-      "calico-mini-sleep.apng": 1.15
+      "calico-mini-sleep.apng": 1.15,
+      "calico-roam-crabwalk.apng": 1.05
     },
     "fileOffsets": {
       "calico-idle-follow.svg": {

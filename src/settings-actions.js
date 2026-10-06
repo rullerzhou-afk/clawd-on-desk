@@ -48,13 +48,28 @@
 // prefs without writing them right back. Object-form entries must therefore
 // keep validate side-effect-free.
 
-const { CURRENT_VERSION } = require("./prefs");
+const {
+  CURRENT_VERSION,
+  MAX_CUSTOM_DISCOVERY_PATHS,
+  MAX_HIDDEN_QUOTA_PROVIDERS,
+  isValidSettingsWindowBounds,
+  normalizePathList,
+} = require("./prefs");
+const {
+  MAX_CUSTOM_APPLICATIONS,
+  normalizeCustomApplications,
+} = require("./custom-applications");
 const {
   TEXT_SCALE_MIN,
   TEXT_SCALE_MAX,
   isValidTextScale,
   normalizeTextScaleByDisplay,
 } = require("./text-scale");
+const {
+  isPetTintId,
+  isPetAccessoryId,
+  isPetMouthAccessoryId,
+} = require("./pet-customization-catalog");
 const { isValidDisplaySnapshot } = require("./work-area");
 const {
   MAX_AUTO_CLOSE_SECONDS,
@@ -78,17 +93,24 @@ const {
   requireString,
   requirePlainObject,
 } = require("./settings-validators");
+const { listIdleVisualOptions } = require("./idle-visual");
 const {
   registerShortcut,
   resetShortcut,
   resetAllShortcuts,
 } = require("./settings-actions-shortcuts");
 const {
+  addCustomApplication,
   clearAgentCleanupHints,
   clearAgentInstallHints,
+  deployToWsl,
   dismissAgentCleanupHints,
   installAgentIntegration,
   dismissAgentInstallHints,
+  removeFromWsl,
+  removeCustomApplication,
+  setAgentCustomDiscoveryPaths,
+  setAgentCustomPermissionUrl,
   setAgentFlag,
   setAgentPermissionMode,
   uninstallAgentIntegration,
@@ -106,6 +128,7 @@ const {
 } = require("./settings-actions-theme-overrides");
 const {
   autoStartWithClaude,
+  autoStartWithCodex,
   createRepairDoctorIssue,
   installHooks,
   manageClaudeHooksAutomatically,
@@ -121,45 +144,103 @@ const {
   isValidDetectedRemoteNodeSource,
   deployTargetFingerprint,
   deployTargetDrift,
+  normalizeManagedDeployTargets,
+  sanitizeManagedDeployTarget,
+  remoteAccountKey,
+  isValidInstallId,
+  isValidRoutingNonce,
+  sanitizeIsolatedRuntime,
+  sanitizeRuntimeModeTxn,
+  REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
+  REMOTE_RUNTIME_MODE_PROFILE_ISOLATED,
+  ACCOUNT_DEFAULT_RUNTIME_KEY,
+  REMOTE_LAYOUT_VERSION,
 } = require("./remote-ssh-profile");
+const {
+  createIdentityTxn,
+  updateIdentityTxnStep,
+  commitIdentityTxn,
+  cloneRecoverRemoteSsh,
+  forceRevokeOldIdentity,
+  abortIdentityTxnToEmergencyNonce,
+} = require("./remote-ssh-identity");
 const {
   validateTelegramApproval,
   validateTelegramBotToken,
 } = require("./telegram-approval-settings");
-const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
+const { validateDiscordPresence } = require("./discord-presence-settings");
 const {
-  validateHardwareBuddySettings,
-} = require("./hardware-buddy-settings");
+  normalizeFeishuApproval,
+  validateFeishuApproval,
+  evaluateFeishuApprovalConfiguration,
+  planFeishuCredentialWrite,
+} = require("./feishu-approval-settings");
+const {
+  validateSlackNotify,
+} = require("./slack-notify-settings");
+const { classifyFeishuApprovalRecipient } = require("./feishu-approval-recipient");
+const { EVENTS: TELEGRAM_MIGRATION_EVENTS } = require("./telegram-migration-state");
 
+// Only the Step-3 enable switch dispatches from the renderer since the
+// migration card retired: turn-on tests native, turn-off disables. The
+// legacy-enable / rollback transitions stay in the reducer for main-side
+// integrity but are no longer renderer-callable.
 const TELEGRAM_MIGRATION_RENDERER_EVENTS = new Set([
   TELEGRAM_MIGRATION_EVENTS.USER_TEST_NATIVE,
-  TELEGRAM_MIGRATION_EVENTS.USER_ENABLE_LEGACY,
-  TELEGRAM_MIGRATION_EVENTS.USER_ROLLBACK_TO_LEGACY,
   TELEGRAM_MIGRATION_EVENTS.USER_DISABLE,
 ]);
 
 const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "claude-code",
+  "deepseek-harness",
   "codex",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
+  "grok-build",
   "kiro-cli",
+  "kirocrew",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
+  "mimocode",
   "pi",
+  "omp",
   "openclaw",
   "hermes",
   "qoder",
   "reasonix",
+  "qoderwork",
+  "traecode",
+  "qwenwork",
+  "minimax",
 ]);
 
 // ── updateRegistry ──
 // Maps prefs field name → validator. Controller looks up by key and runs.
+
+function validateFeishuApprovalUpdate(value, deps = {}) {
+  const current = normalizeFeishuApproval(
+    deps.snapshot && deps.snapshot.feishuApproval
+  );
+  for (const key of [
+    "idType",
+    "approverId",
+    "approverSource",
+    "approverBoundPlatform",
+    "approverBoundAppId",
+  ]) {
+    if (!value || value[key] !== current[key]) {
+      return { status: "error", code: "approver-command-required" };
+    }
+  }
+  return validateFeishuApproval(value);
+}
 
 const updateRegistry = {
   // ── Window state ──
@@ -194,6 +275,20 @@ const updateRegistry = {
   },
   savedPixelWidth: requireNonNegativeFiniteNumber("savedPixelWidth"),
   savedPixelHeight: requireNonNegativeFiniteNumber("savedPixelHeight"),
+  settingsWindowBounds: (value) => {
+    if (value === null || isValidSettingsWindowBounds(value)) return { status: "ok" };
+    return {
+      status: "error",
+      message: "settingsWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
+    };
+  },
+  dashboardWindowBounds: (value) => {
+    if (value === null || isValidSettingsWindowBounds(value)) return { status: "ok" };
+    return {
+      status: "error",
+      message: "dashboardWindowBounds must be null or integer { x, y, width, height } with positive dimensions",
+    };
+  },
   // #408: frozen-origin work area for keepSizeAcrossDisplays. null = unknown
   // (legacy prefs / never seeded); otherwise positive width+height.
   savedPixelWorkArea: (value) => {
@@ -210,7 +305,8 @@ const updateRegistry = {
   },
 
   // ── Pure data prefs (function-form: validator only) ──
-  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja"]),
+  lang: requireEnum("lang", ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]),
+  recapEnabled: requireBoolean("recapEnabled"),
   tutorialSeen: requireBoolean("tutorialSeen"),
   soundMuted: requireBoolean("soundMuted"),
   soundVolume: requireNumberInRange("soundVolume", 0, 1),
@@ -235,20 +331,164 @@ const updateRegistry = {
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
+  testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),
+  telegramMigrationLastNotified: requireString("telegramMigrationLastNotified", { allowEmpty: true }),
+  feishuApprovalMigrationLastNotified: requireString("feishuApprovalMigrationLastNotified", { allowEmpty: true }),
   lowPowerIdleMode: requireBoolean("lowPowerIdleMode"),
   keepAwakeWhileWorking: requireBoolean("keepAwakeWhileWorking"),
+  petTint(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petTint must be a theme-to-tint object" };
+    }
+    for (const [themeId, tintId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetTintId(tintId)
+        || tintId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petTint entry "${themeId}" must map a safe theme id to a non-default catalog tint id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  petAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  petMouthAccessory(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "petMouthAccessory must be a theme-to-accessory object" };
+    }
+    for (const [themeId, accessoryId] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || !isPetMouthAccessoryId(accessoryId)
+        || accessoryId === "none"
+      ) {
+        return {
+          status: "error",
+          message: `petMouthAccessory entry "${themeId}" must map a safe theme id to a non-default catalog accessory id`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
+  holidayAccessoryEnabled(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "holidayAccessoryEnabled must be a theme-to-boolean object" };
+    }
+    for (const [themeId, enabled] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || enabled !== true
+      ) {
+        return {
+          status: "error",
+          message: `holidayAccessoryEnabled entry "${themeId}" must map a safe theme id to true`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   bubbleFollowPet: requireBoolean("bubbleFollowPet"),
+  bubbleFollowPreference: requireEnum("bubbleFollowPreference", ["auto", "left", "right"]),
+  bubbleFixedCorner: requireEnum("bubbleFixedCorner", [
+    "top-left",
+    "top-right",
+    "bottom-left",
+    "bottom-right",
+  ]),
   sessionHudEnabled: requireBoolean("sessionHudEnabled"),
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
+  sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
+  quotaRingDisplayMode: requireEnum("quotaRingDisplayMode", ["used", "remaining"]),
+  // Shape only — the entries are provider keys, and deliberately not checked
+  // against the ring's provider list here (see prefs.js: rejecting an
+  // unfamiliar key would un-hide a provider behind the user's back).
+  quotaRingHiddenProviders(value) {
+    if (!Array.isArray(value)) {
+      return { status: "error", message: "quotaRingHiddenProviders must be an array" };
+    }
+    if (value.length > MAX_HIDDEN_QUOTA_PROVIDERS) {
+      return {
+        status: "error",
+        message: `quotaRingHiddenProviders must contain at most ${MAX_HIDDEN_QUOTA_PROVIDERS} entries`,
+      };
+    }
+    if (value.some((entry) => typeof entry !== "string" || !entry.trim())) {
+      return { status: "error", message: "quotaRingHiddenProviders must contain non-empty strings" };
+    }
+    return { status: "ok" };
+  },
+  claudeQuotaCollectionEnabled: {
+    validate: requireBoolean("claudeQuotaCollectionEnabled"),
+    effect(value, deps = {}) {
+      if (typeof deps.setClaudeQuotaCollectionEnabled !== "function") {
+        return { status: "error", message: "Claude usage collection is unavailable" };
+      }
+      return deps.setClaudeQuotaCollectionEnabled(value);
+    },
+  },
+  // Only the dedicated, trusted Kimi quota IPC path may change this opt-in.
+  // Generic settings:update/applyBulk/hydrate are intentionally rejected by
+  // the controller's commandOnly boundary.
+  kimiQuotaCollectionEnabled: {
+    validate: requireBoolean("kimiQuotaCollectionEnabled"),
+    commandOnly: true,
+  },
+  quotaMergeSources: requireBoolean("quotaMergeSources"),
   sessionHudCleanupDetached: requireBoolean("sessionHudCleanupDetached"),
   sessionHudPinned: requireBoolean("sessionHudPinned"),
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
-  autoApproveAllPermissions: requireBoolean("autoApproveAllPermissions"),
+  destructiveActionReminder: requireBoolean("destructiveActionReminder"),
+  // Permission automation is safety-sensitive: the command path owns its
+  // warning/confirmation gate and the coupled mode + dismissal commit. Keep
+  // the validators available for defensive command validation, but reject
+  // generic applyUpdate/applyBulk/hydrate callers at the controller boundary.
+  permissionAutomationMode: {
+    validate: requireEnum("permissionAutomationMode", [
+      "off",
+      "auto-tools",
+      "unattended",
+    ]),
+    commandOnly: true,
+  },
+  permissionAutomationAutoToolsWarningDismissed: {
+    validate: requireBoolean("permissionAutomationAutoToolsWarningDismissed"),
+    commandOnly: true,
+  },
+  permissionAutomationUnattendedWarningDismissed: {
+    validate: requireBoolean("permissionAutomationUnattendedWarningDismissed"),
+    commandOnly: true,
+  },
+  // Legacy tombstone: readable/validatable for old snapshots, never writable
+  // through a generic controller API.
+  autoApproveAllPermissions: {
+    validate: requireBoolean("autoApproveAllPermissions"),
+    commandOnly: true,
+  },
   notificationBubbleAutoCloseSeconds: requireIntegerInRange(
     "notificationBubbleAutoCloseSeconds",
     0,
@@ -298,16 +538,33 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  codexWorkingStaleMs(value) {
+    if (value === 0) return { status: "ok" };
+    return requireIntegerInRange("codexWorkingStaleMs", 30_000, 86_400_000)(value);
+  },
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
-  keepSizeAcrossDisplays: requireBoolean("keepSizeAcrossDisplays"),
+  roamConstrainAxis: requireBoolean("roamConstrainAxis"),
+  keepSizeAcrossDisplays: {
+    validate: requireBoolean("keepSizeAcrossDisplays"),
+    effect(value, deps = {}) {
+      // Rebase size before this toggle commits, while the frozen pixels are
+      // still available to keep the slider and window in sync.
+      if (value === false && typeof deps.rebaseSizeToRealizedPixels === "function") {
+        deps.rebaseSizeToRealizedPixels();
+      }
+      return { status: "ok" };
+    },
+  },
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
+  fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
   mobilePreviewEnabled: requireBoolean("mobilePreviewEnabled"),
 
   // ── System-backed prefs (object-form: validate + effect pre-commit gate) ──
   autoStartWithClaude,
+  autoStartWithCodex,
   manageClaudeHooksAutomatically,
   openAtLogin,
 
@@ -414,6 +671,48 @@ const updateRegistry = {
     return { status: "ok" };
   },
 
+  // Custom application commands commit these top-level prefs fields. Keep
+  // strict registry entries here because the controller rejects every command
+  // commit key that is not registered, even when prefs.js already knows it.
+  customToolDiscoveryPaths(value) {
+    if (!Array.isArray(value)) {
+      return { status: "error", message: "customToolDiscoveryPaths must be an array" };
+    }
+    const normalized = normalizePathList(value, { maxEntries: MAX_CUSTOM_DISCOVERY_PATHS + 1 });
+    if (
+      normalized.length !== value.length
+      || normalized.length > MAX_CUSTOM_DISCOVERY_PATHS
+      || normalized.some((entry, index) => entry !== value[index])
+    ) {
+      return {
+        status: "error",
+        message: `customToolDiscoveryPaths must contain at most ${MAX_CUSTOM_DISCOVERY_PATHS} normalized unique paths`,
+      };
+    }
+    return { status: "ok" };
+  },
+  customApplications(value) {
+    if (!Array.isArray(value) || value.length > MAX_CUSTOM_APPLICATIONS) {
+      return {
+        status: "error",
+        message: `customApplications must be an array with at most ${MAX_CUSTOM_APPLICATIONS} entries`,
+      };
+    }
+    const normalized = normalizeCustomApplications(value);
+    const allowedKeys = new Set(["id", "name", "sourcePath", "executablePath", "processName", "category"]);
+    const isNormalized = normalized.length === value.length && normalized.every((entry, index) => {
+      const original = value[index];
+      return original
+        && typeof original === "object"
+        && !Array.isArray(original)
+        && Object.keys(original).every((key) => allowedKeys.has(key))
+        && Object.keys(entry).every((key) => entry[key] === original[key]);
+    });
+    return isNormalized
+      ? { status: "ok" }
+      : { status: "error", message: "customApplications must contain normalized unique custom application entries" };
+  },
+
   // ── Phase 2/3 placeholders — schema reserves these so applyUpdate accepts them ──
   agents: requirePlainObject("agents"),
   themeOverrides: requirePlainObject("themeOverrides"),
@@ -434,6 +733,10 @@ const updateRegistry = {
   // Letting this field have an effect would double-activate when the UI
   // updates `theme` and `themeVariant` separately.
   themeVariant: requirePlainObject("themeVariant"),
+  // #509: per-theme default idle visual. Writes go through the `setIdleVisual`
+  // command (which validates the file against the active theme); this entry
+  // exists so applyCommand's commit re-validation accepts the key.
+  idleVisual: requirePlainObject("idleVisual"),
 
   // Remote SSH profile store. Plain validator — actual CRUD goes through
   // commandRegistry below to keep id-uniqueness, default-fill, and
@@ -446,6 +749,9 @@ const updateRegistry = {
     if (!Array.isArray(value.profiles)) {
       return { status: "error", message: "remoteSsh.profiles must be an array" };
     }
+    if (value.installId !== undefined && !isValidInstallId(value.installId)) {
+      return { status: "error", message: "remoteSsh.installId must be a SHA-256 hex id" };
+    }
     for (let i = 0; i < value.profiles.length; i++) {
       const r = validateRemoteSshProfile(value.profiles[i]);
       if (r.status !== "ok") {
@@ -456,6 +762,16 @@ const updateRegistry = {
   },
   tgApproval(value) {
     return validateTelegramApproval(value);
+  },
+  discordPresence(value) {
+    return validateDiscordPresence(value);
+  },
+  feishuApproval: {
+    validate: validateFeishuApprovalUpdate,
+    commandOnly: true,
+  },
+  slackNotify(value) {
+    return validateSlackNotify(value);
   },
 
   // v0.9.0 spike: persisted migration state across restarts. Shape:
@@ -483,10 +799,6 @@ const updateRegistry = {
       return { status: "error", message: "tgMigration.migration must be an object" };
     }
     return { status: "ok" };
-  },
-
-  hardwareBuddy(value) {
-    return validateHardwareBuddySettings(value);
   },
 
   shortcuts: {
@@ -531,29 +843,73 @@ function setAllBubblesHidden(payload, deps) {
   return { status: "ok", commit: buildAggregateHideCommit(hidden, deps && deps.snapshot) };
 }
 
-// DANGER "auto-pilot" writer. Enabling auto-approve-everything is a one-way
-// trust decision, so this command — not a raw settings:update — is the only
-// path allowed to flip it ON, and it requires an explicit confirmed:true.
-// The settings:update IPC handler rejects the field directly (see
-// settings-ipc.js), so the confirmation dialog is a real gate, not just UI
-// decoration: anything reaching the data layer must carry proof the user
-// confirmed. Disabling needs no confirmation (turning a danger toggle off is
-// always safe).
-function setAutoApproveAll(payload, _deps) {
-  if (!payload || typeof payload !== "object") {
-    return { status: "error", message: "setAutoApproveAll: payload must be an object" };
-  }
-  const enabled = payload.enabled;
+function setKimiQuotaCollectionEnabled(payload) {
+  const enabled = typeof payload === "boolean" ? payload : payload && payload.enabled;
   if (typeof enabled !== "boolean") {
-    return { status: "error", message: "setAutoApproveAll.enabled must be a boolean" };
-  }
-  if (enabled && payload.confirmed !== true) {
     return {
       status: "error",
-      message: "setAutoApproveAll: enabling requires confirmed:true (user must confirm the danger dialog)",
+      message: "setKimiQuotaCollectionEnabled.enabled must be a boolean",
     };
   }
-  return { status: "ok", commit: { autoApproveAllPermissions: enabled } };
+  return { status: "ok", commit: { kimiQuotaCollectionEnabled: enabled } };
+}
+setKimiQuotaCollectionEnabled.lockKey = "kimiQuota";
+
+// Permission automation writer. A plain settings:update cannot reach this
+// field; both automatic modes require confirmation at the data layer, including
+// an auto-tools -> unattended escalation. Turning automation off is always
+// allowed immediately.
+function setPermissionAutomationMode(payload, deps) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "setPermissionAutomationMode: payload must be an object" };
+  }
+  const mode = payload.mode;
+  if (!["off", "auto-tools", "unattended"].includes(mode)) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode.mode must be off, auto-tools, or unattended",
+    };
+  }
+  if (
+    Object.prototype.hasOwnProperty.call(payload, "suppressFutureConfirmation")
+    && typeof payload.suppressFutureConfirmation !== "boolean"
+  ) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode.suppressFutureConfirmation must be a boolean",
+    };
+  }
+  const warningKey = mode === "auto-tools"
+    ? "permissionAutomationAutoToolsWarningDismissed"
+    : (mode === "unattended"
+      ? "permissionAutomationUnattendedWarningDismissed"
+      : null);
+  const snapshot = (deps && deps.snapshot) || {};
+  const confirmedNow = payload.confirmed === true;
+  const confirmedPreviously = warningKey && snapshot[warningKey] === true;
+  if (mode !== "off" && !confirmedNow && !confirmedPreviously) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode: automatic modes require current or remembered confirmation",
+    };
+  }
+  if (mode === "off" && payload.suppressFutureConfirmation === true) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode: off mode cannot suppress a warning",
+    };
+  }
+  if (payload.suppressFutureConfirmation === true && !confirmedNow) {
+    return {
+      status: "error",
+      message: "setPermissionAutomationMode: suppressing future warnings requires confirmed:true",
+    };
+  }
+  const commit = { permissionAutomationMode: mode };
+  if (warningKey && payload.suppressFutureConfirmation === true) {
+    commit[warningKey] = true;
+  }
+  return { status: "ok", commit };
 }
 
 function setBubbleCategoryEnabled(payload, deps) {
@@ -566,7 +922,9 @@ function setBubbleCategoryEnabled(payload, deps) {
   return { status: "ok", commit: result.commit };
 }
 
-// Atomic three-key writer for the session-cleanup intervals. Lives as a
+// Atomic writer for the session-cleanup intervals. The historical command name
+// is retained for renderer/backward compatibility even though the policy now
+// includes a fourth, Codex-specific value. Lives as a
 // command (not as `applyBulk`) because applyBulk runs each single-key
 // validator against the PRE-bulk snapshot, which would reject a Reset that
 // lowers both knobs simultaneously. The controller's command path re-runs
@@ -581,7 +939,7 @@ function setSessionCleanupTriple(payload, deps) {
 
   // Strict presence check: a present-but-wrong-type value is a programmer
   // error and must surface, not silently fall back to the snapshot.
-  function pick(key) {
+  function pick(key, fallbackDefault = null) {
     if (key in payload) {
       const v = payload[key];
       if (!Number.isInteger(v)) {
@@ -590,21 +948,26 @@ function setSessionCleanupTriple(payload, deps) {
       return { value: v };
     }
     const fallback = Number(snapshot[key]);
-    if (!Number.isFinite(fallback)) {
-      return { error: `${key} missing from payload and not present in snapshot` };
-    }
-    return { value: fallback };
+    if (Number.isFinite(fallback)) return { value: fallback };
+    if (Number.isFinite(fallbackDefault)) return { value: fallbackDefault };
+    return { error: `${key} missing from payload and not present in snapshot` };
   }
 
   const s = pick("sessionStaleMs");
   if (s.error) return { status: "error", message: s.error };
   const w = pick("workingStaleMs");
   if (w.error) return { status: "error", message: w.error };
+  // Older controller snapshots predate the fourth value. An absent key
+  // receives the shipped default; a present malformed value still fails
+  // closed through the strict branch above.
+  const c = pick("codexWorkingStaleMs", 1_200_000);
+  if (c.error) return { status: "error", message: c.error };
   const d = pick("detachedIdleStaleMs");
   if (d.error) return { status: "error", message: d.error };
 
   const sessionStaleMs = s.value;
   const workingStaleMs = w.value;
+  const codexWorkingStaleMs = c.value;
   const detachedIdleStaleMs = d.value;
 
   if (!(sessionStaleMs === 0 || (sessionStaleMs >= 60_000 && sessionStaleMs <= 86_400_000))) {
@@ -612,6 +975,9 @@ function setSessionCleanupTriple(payload, deps) {
   }
   if (!(workingStaleMs >= 30_000 && workingStaleMs <= 86_400_000)) {
     return { status: "error", message: `workingStaleMs out of range: ${workingStaleMs}` };
+  }
+  if (!(codexWorkingStaleMs === 0 || (codexWorkingStaleMs >= 30_000 && codexWorkingStaleMs <= 86_400_000))) {
+    return { status: "error", message: `codexWorkingStaleMs out of range: ${codexWorkingStaleMs}` };
   }
   if (!(detachedIdleStaleMs >= 5_000 && detachedIdleStaleMs <= 300_000)) {
     return { status: "error", message: `detachedIdleStaleMs out of range: ${detachedIdleStaleMs}` };
@@ -626,7 +992,7 @@ function setSessionCleanupTriple(payload, deps) {
 
   return {
     status: "ok",
-    commit: { sessionStaleMs, workingStaleMs, detachedIdleStaleMs },
+    commit: { sessionStaleMs, workingStaleMs, codexWorkingStaleMs, detachedIdleStaleMs },
   };
 }
 
@@ -662,8 +1028,14 @@ function setSessionAlias(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "setSessionAlias: payload must be an object" };
   }
-  const { host, agentId, sessionId, cwd, alias } = payload;
-  const key = sessionAliasKey(host, agentId, sessionId, { cwd });
+  const { host, agentId, sessionId, rawSessionId, profileId, cwd, alias } = payload;
+  // sessionId is the canonical action id for remote sessions. Alias storage
+  // is keyed by the trusted profile scope plus the separately transported raw
+  // id so the opaque action id never leaks into visible/legacy alias keys.
+  const aliasSessionId = typeof rawSessionId === "string" && rawSessionId.trim()
+    ? rawSessionId
+    : sessionId;
+  const key = sessionAliasKey(host, agentId, aliasSessionId, { cwd, profileId });
   if (!key) {
     return { status: "error", message: "setSessionAlias.sessionId must be a non-empty string" };
   }
@@ -693,6 +1065,50 @@ function setSessionAlias(payload, deps) {
     return { status: "ok", noop: true };
   }
   return { status: "ok", commit: { sessionAliases: prunedAliases } };
+}
+
+// Theme-scoped preference deletions shared by the generic removeTheme and the
+// managed official-theme uninstall. Sharing one boundary keeps the two removal
+// paths from drifting apart.
+function buildThemeScopedPrefsCommit(themeId, snapshot) {
+  const current = snapshot || {};
+  const nextCommit = {};
+  if (current.themeOverrides && current.themeOverrides[themeId]) {
+    const nextOverrides = { ...current.themeOverrides };
+    delete nextOverrides[themeId];
+    nextCommit.themeOverrides = nextOverrides;
+  }
+  if (current.themeVariant && current.themeVariant[themeId] !== undefined) {
+    const nextVariantMap = { ...current.themeVariant };
+    delete nextVariantMap[themeId];
+    nextCommit.themeVariant = nextVariantMap;
+  }
+  if (current.idleVisual && current.idleVisual[themeId] !== undefined) {
+    const nextIdleVisual = { ...current.idleVisual };
+    delete nextIdleVisual[themeId];
+    nextCommit.idleVisual = nextIdleVisual;
+  }
+  if (current.petTint && current.petTint[themeId] !== undefined) {
+    const nextPetTint = { ...current.petTint };
+    delete nextPetTint[themeId];
+    nextCommit.petTint = nextPetTint;
+  }
+  if (current.petAccessory && current.petAccessory[themeId] !== undefined) {
+    const nextPetAccessory = { ...current.petAccessory };
+    delete nextPetAccessory[themeId];
+    nextCommit.petAccessory = nextPetAccessory;
+  }
+  if (current.petMouthAccessory && current.petMouthAccessory[themeId] !== undefined) {
+    const nextPetMouthAccessory = { ...current.petMouthAccessory };
+    delete nextPetMouthAccessory[themeId];
+    nextCommit.petMouthAccessory = nextPetMouthAccessory;
+  }
+  if (current.holidayAccessoryEnabled && current.holidayAccessoryEnabled[themeId] !== undefined) {
+    const nextHoliday = { ...current.holidayAccessoryEnabled };
+    delete nextHoliday[themeId];
+    nextCommit.holidayAccessoryEnabled = nextHoliday;
+  }
+  return nextCommit;
 }
 
 const _validateRemoveThemeId = requireString("removeTheme.themeId");
@@ -732,6 +1148,14 @@ async function removeTheme(payload, deps) {
       message: `removeTheme: cannot delete managed Codex Pet theme "${themeId}" — remove it from Petdex instead`,
     };
   }
+  if (info.managedOfficialTheme
+    || (deps.officialThemeManager && typeof deps.officialThemeManager.isManagedTheme === "function"
+      && deps.officialThemeManager.isManagedTheme(themeId))) {
+    return {
+      status: "error",
+      message: `removeTheme: cannot delete managed official theme "${themeId}" — use Uninstall in the official themes section`,
+    };
+  }
 
   try {
     await deps.removeThemeDir(themeId);
@@ -739,24 +1163,56 @@ async function removeTheme(payload, deps) {
     return { status: "error", message: `removeTheme: ${err && err.message}` };
   }
 
-  const snapshot = deps.snapshot || {};
-  const currentOverrides = snapshot.themeOverrides || {};
-  const currentVariantMap = snapshot.themeVariant || {};
-  const nextCommit = {};
-  if (currentOverrides[themeId]) {
-    const nextOverrides = { ...currentOverrides };
-    delete nextOverrides[themeId];
-    nextCommit.themeOverrides = nextOverrides;
-  }
-  if (currentVariantMap[themeId] !== undefined) {
-    const nextVariantMap = { ...currentVariantMap };
-    delete nextVariantMap[themeId];
-    nextCommit.themeVariant = nextVariantMap;
-  }
+  const nextCommit = buildThemeScopedPrefsCommit(themeId, deps.snapshot || {});
   if (Object.keys(nextCommit).length > 0) {
     return { status: "ok", commit: nextCommit };
   }
   return { status: "ok" };
+}
+
+// Non-recursive runtime theme selection. Called by both the `setThemeSelection`
+// command and `officialTheme.uninstall` (the latter while already holding the
+// shared `theme` lock, so it must not re-enter the controller). Activates
+// `themeId` with the resolved variant + override map, reads back the variant
+// actually applied (lenient dead-variant fallback), and reports the active
+// theme's fail-closed customization capabilities.
+function applyThemeSelection(themeId, variantIdInput, overrideMap, deps) {
+  if (!deps || typeof deps.activateTheme !== "function") {
+    return { status: "error", message: "theme selection requires activateTheme dep" };
+  }
+  const targetVariant = (typeof variantIdInput === "string" && variantIdInput) ? variantIdInput : "default";
+  const targetOverrideMap = overrideMap === undefined ? null : overrideMap;
+
+  let resolved;
+  try {
+    resolved = deps.activateTheme(themeId, targetVariant, targetOverrideMap);
+  } catch (err) {
+    return { status: "error", message: `setThemeSelection: ${err && err.message}` };
+  }
+  const resolvedVariant = (resolved && typeof resolved === "object" && typeof resolved.variantId === "string")
+    ? resolved.variantId
+    : targetVariant;
+  const activeTheme = typeof deps.getActiveTheme === "function" ? deps.getActiveTheme() : null;
+  const customizationCapabilities = (
+    activeTheme
+    && activeTheme._id === themeId
+    && activeTheme._capabilities
+    && typeof activeTheme._capabilities === "object"
+    && !Array.isArray(activeTheme._capabilities)
+  )
+    ? {
+        petTint: activeTheme._capabilities.petTint === true,
+        accessories: activeTheme._capabilities.accessories === true,
+        mouthAccessories: activeTheme._capabilities.mouthAccessories === true,
+      }
+    : null;
+
+  return {
+    status: "ok",
+    themeId,
+    variantId: resolvedVariant,
+    customizationCapabilities,
+  };
 }
 
 // Phase 3b-swap: atomic theme + variant switch.
@@ -777,34 +1233,115 @@ function setThemeSelection(payload, deps) {
     return { status: "error", message: "setThemeSelection.variantId must be a non-empty string when provided" };
   }
 
-  if (!deps || typeof deps.activateTheme !== "function") {
-    return { status: "error", message: "setThemeSelection effect requires activateTheme dep" };
-  }
-
-  const snapshot = deps.snapshot || {};
+  const snapshot = deps && deps.snapshot ? deps.snapshot : {};
   const currentVariantMap = snapshot.themeVariant || {};
   const currentOverrides = snapshot.themeOverrides || {};
   const targetVariant = variantIdInput || currentVariantMap[themeId] || "default";
   const targetOverrideMap = currentOverrides[themeId] || null;
 
-  let resolved;
-  try {
-    resolved = deps.activateTheme(themeId, targetVariant, targetOverrideMap);
-  } catch (err) {
-    return { status: "error", message: `setThemeSelection: ${err && err.message}` };
-  }
-  // activateTheme returns { themeId, variantId } — the variantId here reflects
-  // lenient fallback (dead variant → "default"). We commit the resolved value
-  // so prefs self-heal away from stale ids.
-  const resolvedVariant = (resolved && typeof resolved === "object" && typeof resolved.variantId === "string")
-    ? resolved.variantId
-    : targetVariant;
+  const selection = applyThemeSelection(themeId, targetVariant, targetOverrideMap, deps);
+  if (selection.status !== "ok") return selection;
 
-  const nextVariantMap = { ...currentVariantMap, [themeId]: resolvedVariant };
+  // We commit the resolved value so prefs self-heal away from stale ids.
+  const nextVariantMap = { ...currentVariantMap, [themeId]: selection.variantId };
   return {
     status: "ok",
     commit: { theme: themeId, themeVariant: nextVariantMap },
+    customizationCapabilities: selection.customizationCapabilities,
   };
+}
+
+// #509: default idle visual picker.
+//   payload: { themeId: string, file: string|null }  (null = back to theme default)
+// Validates against the LOADED active theme (only it knows the real file list
+// after variants/overrides), so only the active theme's entry can be written.
+const _validateSetIdleVisualThemeId = requireString("setIdleVisual.themeId");
+function setIdleVisual(payload, deps) {
+  const themeId = payload && payload.themeId;
+  const file = payload && typeof payload === "object" ? payload.file : undefined;
+  const idCheck = _validateSetIdleVisualThemeId(themeId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (file !== null && (typeof file !== "string" || !file)) {
+    return { status: "error", message: "setIdleVisual.file must be a non-empty string or null" };
+  }
+
+  if (!deps || typeof deps.getActiveTheme !== "function") {
+    return { status: "error", message: "setIdleVisual effect requires getActiveTheme dep" };
+  }
+  const activeTheme = deps.getActiveTheme();
+  if (!activeTheme || activeTheme._id !== themeId) {
+    return { status: "error", message: `setIdleVisual: theme "${themeId}" is not the active theme` };
+  }
+
+  let nextFile = file;
+  if (nextFile !== null) {
+    const match = listIdleVisualOptions(activeTheme).find((option) => option.file === nextFile);
+    if (!match) {
+      return { status: "error", message: `setIdleVisual: "${nextFile}" is not an idle visual of theme "${themeId}"` };
+    }
+    // Theme default is represented by the absence of an entry.
+    if (match.isThemeDefault) nextFile = null;
+  }
+
+  const snapshot = (deps && deps.snapshot) || {};
+  const currentMap = snapshot.idleVisual || {};
+  const nextMap = { ...currentMap };
+  if (nextFile === null) {
+    if (nextMap[themeId] === undefined) return { status: "ok", noop: true };
+    delete nextMap[themeId];
+    return { status: "ok", commit: { idleVisual: nextMap } };
+  }
+  if (nextMap[themeId] === nextFile) return { status: "ok", noop: true };
+  nextMap[themeId] = nextFile;
+  return { status: "ok", commit: { idleVisual: nextMap } };
+}
+
+// ── Official theme commands (internal; main-only IPC) ──
+//
+// These run under the shared `theme` domain lock. The download/extract work
+// happens outside the lock in official-theme-main; only the final fs commit and
+// the runtime switch/delete run here, re-reading catalog/target/marker inside
+// the lock so a check/delete TOCTOU cannot slip through.
+const _validateOfficialThemeId = requireString("officialTheme.themeId");
+
+async function officialThemeCommitInstall(payload, deps) {
+  const themeId = payload && payload.themeId;
+  const idCheck = _validateOfficialThemeId(themeId);
+  if (idCheck.status !== "ok") return idCheck;
+  const manager = deps && deps.officialThemeManager;
+  if (!manager || typeof manager.commitStagedInstall !== "function") {
+    return { status: "error", message: "officialTheme.commitInstall requires officialThemeManager" };
+  }
+  return manager.commitStagedInstall(payload);
+}
+
+async function officialThemeUninstall(payload, deps) {
+  const themeId = payload && payload.themeId;
+  const idCheck = _validateOfficialThemeId(themeId);
+  if (idCheck.status !== "ok") return idCheck;
+  const manager = deps && deps.officialThemeManager;
+  if (!manager || typeof manager.uninstall !== "function") {
+    return { status: "error", message: "officialTheme.uninstall requires officialThemeManager" };
+  }
+  // Reuse the exact runtime selection helper as setThemeSelection (bound to this
+  // command's deps). The uninstall runs inside the shared `theme` lock, so the
+  // helper must not re-enter the controller.
+  const selectTheme = (targetId, variantId, overrideMap) =>
+    applyThemeSelection(targetId, variantId, overrideMap, deps);
+  const result = await manager.uninstall({ themeId }, deps, { selectTheme });
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", message: "officialTheme.uninstall returned no result" };
+  }
+  // The command owns the preference commit boundary. When the runtime already
+  // switched to clawd, the controller MUST still commit even if the directory
+  // deletion failed, or prefs and runtime disagree.
+  const prefsCommit = buildThemeScopedPrefsCommit(themeId, (deps && deps.snapshot) || {});
+  const commit = { ...prefsCommit, ...(result.commit || {}) };
+  const out = { status: "ok", uninstallStatus: result.uninstallStatus || "ok" };
+  if (Object.keys(commit).length > 0) out.commit = commit;
+  if (result.removed) out.removed = result.removed;
+  if (result.reason) out.reason = result.reason;
+  return out;
 }
 
 function resizePet(payload, deps) {
@@ -841,7 +1378,41 @@ function _remoteSshSnapshot(deps) {
   const snap = (deps && deps.snapshot) || {};
   const cur = snap.remoteSsh && typeof snap.remoteSsh === "object" ? snap.remoteSsh : {};
   const profiles = Array.isArray(cur.profiles) ? cur.profiles.slice() : [];
-  return { profiles };
+  const out = { profiles };
+  if (isValidInstallId(cur.installId)) out.installId = cur.installId;
+  return out;
+}
+
+const REMOTE_SSH_TRUSTED_PROFILE_FIELDS = Object.freeze([
+  "routingNonce",
+  "previousNonce",
+  "previousExpiresAt",
+  "identityTxn",
+  "runtimeModeTxn",
+  "isolatedActive",
+  "runtimeKeyConflict",
+  "isolatedRuntime",
+]);
+const REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS = Object.freeze([
+  "lastDeployedAt",
+  "managedDeployTargets",
+  "detectedRemoteNodeBin",
+  "detectedRemoteNodeVersion",
+  "detectedRemoteNodeSource",
+  "detectedRemoteNodeAt",
+  "remoteHome",
+]);
+
+function stripTrustedRemoteProfileFields(profile) {
+  for (const field of [...REMOTE_SSH_TRUSTED_PROFILE_FIELDS, ...REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS]) {
+    delete profile[field];
+  }
+}
+
+function preserveTrustedRemoteProfileFields(target, source) {
+  for (const field of REMOTE_SSH_TRUSTED_PROFILE_FIELDS) {
+    if (source && source[field] !== undefined) target[field] = source[field];
+  }
 }
 
 function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
@@ -896,6 +1467,9 @@ function remoteSshAddProfile(payload, deps) {
   if (next.profiles.some((p) => p.id === profile.id)) {
     return { status: "error", message: `remoteSsh.add: profile id "${profile.id}" already exists` };
   }
+  // Ownership metadata is server-issued only after a successful deploy.
+  // Renderer input must never be able to manufacture cleanup authority.
+  stripTrustedRemoteProfileFields(profile);
   next.profiles.push(profile);
   return { status: "ok", commit: { remoteSsh: next } };
 }
@@ -919,9 +1493,26 @@ function remoteSshUpdateProfile(payload, deps) {
   }
   // Preserve original createdAt if caller didn't supply one new.
   const prev = next.profiles[idx];
+  if (prev.runtimeModeTxn) {
+    return {
+      status: "error",
+      message: "remoteSsh.update: finish the runtime mode transaction before editing this profile",
+    };
+  }
   if (Number.isFinite(prev.createdAt) && !Number.isFinite(payload.createdAt)) {
     profile.createdAt = prev.createdAt;
   }
+  // Runtime identity is server-owned. A normal profile edit must not switch
+  // layouts merely because the renderer omits these hidden fields, and a
+  // forged settings command must not bypass the dedicated, confirmation-gated
+  // runtime-mode transaction.
+  profile.runtimeMode = prev.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
+  profile.runtimeKey = profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    ? prev.runtimeKey
+    : ACCOUNT_DEFAULT_RUNTIME_KEY;
+  profile.layoutVersion = Number.isInteger(prev.layoutVersion)
+    ? prev.layoutVersion
+    : REMOTE_LAYOUT_VERSION;
   // Preserve lastDeployedAt across cosmetic edits (label, autoStartCodexMonitor,
   // connectOnLaunch). Only clear it when deploy target fields drifted — those
   // changes mean the previous deploy is no longer valid for the new target,
@@ -931,16 +1522,261 @@ function remoteSshUpdateProfile(payload, deps) {
   // false-flag "port drift" when prev had port:22 and the UI saveBtn omitted
   // the default 22 from the payload.
   const drift = deployTargetDrift(deployTargetFingerprint(prev), deployTargetFingerprint(profile));
+  const transportModeChanged = (prev.sshTransportMode || "auto")
+    !== (profile.sshTransportMode || "auto");
+  if ((drift || transportModeChanged)
+    && typeof deps.isRemoteSshTransportBusy === "function"
+    && deps.isRemoteSshTransportBusy(profile.id)) {
+    return {
+      status: "error",
+      reason: "serialized_transport_busy",
+      message: "Disconnect this Remote SSH profile before editing its transport target or mode",
+    };
+  }
+  // Deployment stamps and cleanup ownership are server-issued metadata.
+  // Ignore anything supplied by the renderer, then restore only the trusted
+  // values already present in the current settings snapshot.
+  stripTrustedRemoteProfileFields(profile);
+  preserveTrustedRemoteProfileFields(profile, prev);
+  // Ownership history is independent of whether the current form still
+  // points at the deployed target. Preserve it across A → B edits so delete
+  // later cleans the actual managed account(s), never the current guess.
+  const managedDeployTargets = normalizeManagedDeployTargets(prev.managedDeployTargets);
+  if (managedDeployTargets.length) profile.managedDeployTargets = managedDeployTargets;
   if (drift === null) {
-    if (Number.isFinite(prev.lastDeployedAt) && !Number.isFinite(payload.lastDeployedAt)) {
+    if (Number.isFinite(prev.lastDeployedAt)) {
       profile.lastDeployedAt = prev.lastDeployedAt;
     }
     if (profile.detectedRemoteNodeBin === undefined) {
       copyRemoteNodeDetection(profile, prev);
     }
+    if (typeof prev.remoteHome === "string") profile.remoteHome = prev.remoteHome;
   }
   next.profiles[idx] = profile;
   return { status: "ok", commit: { remoteSsh: next } };
+}
+
+function remoteSshApplyInstallationIdentity(payload, deps) {
+  const installId = payload && payload.installId;
+  if (!isValidInstallId(installId)) {
+    return { status: "error", message: "remoteSsh.applyInstallationIdentity.installId is invalid" };
+  }
+  const current = _remoteSshSnapshot(deps);
+  if (payload.cloneRecoveryRequired === true) {
+    return {
+      status: "ok",
+      commit: { remoteSsh: cloneRecoverRemoteSsh(current, installId) },
+      cloneRecovered: true,
+    };
+  }
+  return {
+    status: "ok",
+    commit: { remoteSsh: { ...current, installId } },
+  };
+}
+
+function remoteSshBeginIdentityRotation(payload, deps) {
+  const id = payload && payload.id;
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.beginIdentityRotation: profile not found" };
+  const current = next.profiles[idx];
+  if (current.identityTxn && current.identityTxn.phase !== "committed") {
+    return { status: "ok", noop: true, identityTxn: current.identityTxn };
+  }
+  // Randomness and time sources are main-process authority. Never accept
+  // renderer-supplied options here, even though the IPC boundary also blocks
+  // this internal command.
+  const txn = createIdentityTxn(current);
+  next.profiles[idx] = { ...current, identityTxn: txn };
+  return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
+}
+
+function remoteSshUpdateIdentityStep(payload, deps) {
+  const { id, step, value } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.updateIdentityStep: profile not found" };
+  const current = next.profiles[idx];
+  if (!current.identityTxn) return { status: "error", message: "remoteSsh.updateIdentityStep: no active transaction" };
+  const txn = updateIdentityTxnStep(current.identityTxn, step, value, current);
+  next.profiles[idx] = { ...current, identityTxn: txn };
+  return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
+}
+
+function remoteSshCommitIdentityRotation(payload, deps) {
+  const id = payload && payload.id;
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.commitIdentityRotation: profile not found" };
+  const current = next.profiles[idx];
+  if (!current.identityTxn) return { status: "error", message: "remoteSsh.commitIdentityRotation: no active transaction" };
+  const committed = commitIdentityTxn(current, current.identityTxn);
+  next.profiles[idx] = committed;
+  return { status: "ok", commit: { remoteSsh: next }, routingNonce: committed.routingNonce };
+}
+
+function remoteSshForceRevoke(payload, deps) {
+  const id = payload && payload.id;
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.forceRevoke: profile not found" };
+  const current = next.profiles[idx];
+  if (!payload || payload.confirmed !== true) {
+    return { status: "error", message: "remoteSsh.forceRevoke requires confirmed:true" };
+  }
+  const mode = payload.mode || "old";
+  if (mode !== "old" && mode !== "all") {
+    return { status: "error", message: "remoteSsh.forceRevoke.mode must be old or all" };
+  }
+  const updated = mode === "old"
+    ? forceRevokeOldIdentity(current)
+    : abortIdentityTxnToEmergencyNonce(current);
+  next.profiles[idx] = updated;
+  return {
+    status: "ok",
+    commit: { remoteSsh: next },
+    identityTxn: updated.identityTxn || null,
+  };
+}
+
+function remoteSshBeginRuntimeModeSwitch(payload, deps) {
+  const { id, runtimeMode } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch: profile not found" };
+  if (runtimeMode !== REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT
+    && runtimeMode !== REMOTE_RUNTIME_MODE_PROFILE_ISOLATED) {
+    return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch.runtimeMode is invalid" };
+  }
+  const current = next.profiles[idx];
+  if (current.identityTxn && current.identityTxn.phase !== "committed") {
+    return {
+      status: "error",
+      message: "remoteSsh.beginRuntimeModeSwitch: identity transaction is active",
+    };
+  }
+  if (current.runtimeModeTxn) {
+    if (current.runtimeModeTxn.toMode === runtimeMode) {
+      return { status: "ok", noop: true, runtimeModeTxn: current.runtimeModeTxn };
+    }
+    return {
+      status: "error",
+      message: "remoteSsh.beginRuntimeModeSwitch: another target mode is already pending",
+    };
+  }
+  const currentMode = current.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
+  const currentKey = current.runtimeKey || ACCOUNT_DEFAULT_RUNTIME_KEY;
+  if (currentMode === runtimeMode) {
+    return { status: "ok", noop: true };
+  }
+  const runtimeKey = runtimeMode === REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT
+    ? ACCOUNT_DEFAULT_RUNTIME_KEY
+    : payload.runtimeKey;
+  const txn = sanitizeRuntimeModeTxn({
+    fromMode: currentMode,
+    fromKey: currentKey,
+    toMode: runtimeMode,
+    toKey: runtimeKey,
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    phase: "prepared",
+    startedAt: Date.now(),
+  });
+  if (!txn) {
+    return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch target is invalid" };
+  }
+  if (txn.toMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    && next.profiles.some((profile, profileIndex) =>
+      profileIndex !== idx
+      && profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+      && profile.runtimeKey === txn.toKey)) {
+    return {
+      status: "error",
+      message: "remoteSsh.beginRuntimeModeSwitch runtime key is already owned by another profile",
+    };
+  }
+  next.profiles[idx] = { ...current, runtimeModeTxn: txn };
+  return { status: "ok", commit: { remoteSsh: next }, runtimeModeTxn: txn };
+}
+
+function remoteSshAdvanceRuntimeModeSwitch(payload, deps) {
+  const { id, phase } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.advanceRuntimeModeSwitch: profile not found" };
+  const current = next.profiles[idx];
+  const txn = sanitizeRuntimeModeTxn(current.runtimeModeTxn);
+  if (!txn) {
+    return { status: "error", message: "remoteSsh.advanceRuntimeModeSwitch: no valid transaction" };
+  }
+  const allowed = (txn.phase === "prepared" && phase === "cleanup-done")
+    || (txn.phase === "cleanup-done"
+      && txn.toMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+      && phase === "bootstrap-done");
+  if (!allowed) {
+    if (txn.phase === phase) return { status: "ok", noop: true, runtimeModeTxn: txn };
+    return {
+      status: "error",
+      message: `remoteSsh.advanceRuntimeModeSwitch cannot advance ${txn.phase} to ${String(phase)}`,
+    };
+  }
+  const advanced = { ...txn, phase };
+  next.profiles[idx] = { ...current, runtimeModeTxn: advanced };
+  return { status: "ok", commit: { remoteSsh: next }, runtimeModeTxn: advanced };
+}
+
+function remoteSshSwitchRuntimeMode(payload, deps) {
+  const { id } = payload || {};
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) return { status: "error", message: "remoteSsh.switchRuntimeMode: profile not found" };
+  const current = next.profiles[idx];
+  const txn = sanitizeRuntimeModeTxn(current.runtimeModeTxn);
+  if (!txn) return { status: "error", message: "remoteSsh.switchRuntimeMode: no valid transaction" };
+  const ready = txn.toMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    ? txn.phase === "bootstrap-done"
+    : txn.phase === "cleanup-done";
+  if (!ready) {
+    return {
+      status: "error",
+      message: `remoteSsh.switchRuntimeMode: transaction phase ${txn.phase} is not ready`,
+    };
+  }
+  const rawCandidate = {
+    ...current,
+    runtimeMode: txn.toMode,
+    runtimeKey: txn.toKey,
+    layoutVersion: REMOTE_LAYOUT_VERSION,
+    isolatedActive: false,
+    runtimeKeyConflict: false,
+    managedDeployTargets: [],
+  };
+  for (const field of [
+    "routingNonce",
+    "previousNonce",
+    "previousExpiresAt",
+    "identityTxn",
+    "runtimeModeTxn",
+    "lastDeployedAt",
+    "remoteHome",
+    "isolatedRuntime",
+  ]) {
+    delete rawCandidate[field];
+  }
+  const candidate = sanitizeRemoteSshProfile(rawCandidate);
+  if (!candidate) return { status: "error", message: "remoteSsh.switchRuntimeMode target is invalid" };
+  if (candidate.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+    && next.profiles.some((profile, profileIndex) =>
+      profileIndex !== idx
+      && profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
+      && profile.runtimeKey === candidate.runtimeKey)) {
+    return {
+      status: "error",
+      message: "remoteSsh.switchRuntimeMode runtime key is already owned by another profile",
+    };
+  }
+  next.profiles[idx] = candidate;
+  return { status: "ok", commit: { remoteSsh: next }, profile: candidate };
 }
 
 // Stamp deploy completion onto a profile WITHOUT touching any other field.
@@ -973,6 +1809,32 @@ function remoteSshMarkDeployed(payload, deps) {
     return { status: "ok", noop: true, reason: "profile_deleted" };
   }
   const current = next.profiles[idx];
+  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  const targetAtDeployStart = expectedTarget && typeof expectedTarget === "object"
+    ? expectedTarget
+    : current;
+  const ownedTarget = sanitizeManagedDeployTarget({
+    ...deployTargetFingerprint(targetAtDeployStart),
+    ...(payload.sshTransportHint ? { sshTransportHint: payload.sshTransportHint } : {}),
+    ...(remoteNode || {}),
+    ...(isValidInstallId(payload.installId) && typeof payload.remoteHome === "string"
+      ? {
+          profileId: id,
+          installId: payload.installId,
+          remoteHome: payload.remoteHome,
+        }
+      : {}),
+    deployedAt,
+  });
+  if (!ownedTarget) {
+    return { status: "error", message: "remoteSsh.markDeployed: invalid deployment ownership target" };
+  }
+  const ownedTargets = normalizeManagedDeployTargets([
+    ...(current.managedDeployTargets || []).filter(
+      (target) => remoteAccountKey(target) !== remoteAccountKey(ownedTarget)
+    ),
+    ownedTarget,
+  ]);
   if (expectedTarget && typeof expectedTarget === "object") {
     // Normalize both sides through deployTargetFingerprint so port-22 vs
     // undefined / empty-string vs missing don't false-flag drift. This also
@@ -983,24 +1845,53 @@ function remoteSshMarkDeployed(payload, deps) {
       deployTargetFingerprint(expectedTarget)
     );
     if (drift) {
+      const updatedProfile = { ...current, managedDeployTargets: ownedTargets };
+      const newProfiles = next.profiles.slice();
+      newProfiles[idx] = updatedProfile;
       return {
         status: "ok",
+        commit: { remoteSsh: { ...next, profiles: newProfiles } },
         noop: true,
         reason: "target_drift",
         targetDrift: drift,
-        message: `remoteSsh.markDeployed: profile ${id}.${drift} changed during deploy; not stamping`,
+        message: `remoteSsh.markDeployed: profile ${id}.${drift} changed during deploy; ownership recorded without stamping current target`,
       };
     }
   }
   // Only mutate deployment metadata — every other field stays as-is so
   // concurrent user edits (label / autoStartCodexMonitor / connectOnLaunch)
   // survive.
-  const updatedProfile = { ...current, lastDeployedAt: deployedAt };
-  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  const updatedProfile = {
+    ...current,
+    lastDeployedAt: deployedAt,
+    managedDeployTargets: ownedTargets,
+  };
   if (remoteNode) copyRemoteNodeDetection(updatedProfile, remoteNode);
+  if (typeof payload.remoteHome === "string") updatedProfile.remoteHome = payload.remoteHome;
+  if (payload.isolation && current.runtimeMode === "profile-isolated") {
+    const isolatedRuntime = sanitizeIsolatedRuntime({
+      ...payload.isolation,
+      verifiedAt: deployedAt,
+    });
+    if (!isolatedRuntime) {
+      return { status: "error", message: "remoteSsh.markDeployed: invalid isolated runtime evidence" };
+    }
+    updatedProfile.isolatedRuntime = isolatedRuntime;
+    const normalizedProfile = sanitizeRemoteSshProfile(updatedProfile);
+    if (!normalizedProfile) {
+      return { status: "error", message: "remoteSsh.markDeployed: isolation evidence does not match the profile layout" };
+    }
+    updatedProfile.isolatedActive = normalizedProfile.isolatedActive === true;
+  } else if (current.runtimeMode !== "profile-isolated") {
+    delete updatedProfile.isolatedRuntime;
+    updatedProfile.isolatedActive = false;
+  }
   const newProfiles = next.profiles.slice();
   newProfiles[idx] = updatedProfile;
-  return { status: "ok", commit: { remoteSsh: { profiles: newProfiles } } };
+  return {
+    status: "ok",
+    commit: { remoteSsh: { ...next, profiles: newProfiles } },
+  };
 }
 
 function remoteSshMarkRemoteNode(payload, deps) {
@@ -1040,7 +1931,10 @@ function remoteSshMarkRemoteNode(payload, deps) {
   copyRemoteNodeDetection(updatedProfile, remoteNode);
   const newProfiles = next.profiles.slice();
   newProfiles[idx] = updatedProfile;
-  return { status: "ok", commit: { remoteSsh: { profiles: newProfiles } } };
+  return {
+    status: "ok",
+    commit: { remoteSsh: { ...next, profiles: newProfiles } },
+  };
 }
 
 function remoteSshDeleteProfile(payload, deps) {
@@ -1055,6 +1949,19 @@ function remoteSshDeleteProfile(payload, deps) {
   if (idx === -1) {
     // No-op rather than error — UI may have raced with a re-render.
     return { status: "ok", noop: true };
+  }
+  if (next.profiles[idx].runtimeModeTxn) {
+    return {
+      status: "error",
+      message: "remoteSsh.delete: finish the runtime mode transaction before deleting this profile",
+    };
+  }
+  if (next.profiles[idx].identityTxn
+    && next.profiles[idx].identityTxn.phase !== "committed") {
+    return {
+      status: "error",
+      message: "remoteSsh.delete: finish or force-revoke the identity transaction before deleting this profile",
+    };
   }
   next.profiles.splice(idx, 1);
   return { status: "ok", commit: { remoteSsh: next } };
@@ -1074,14 +1981,6 @@ async function telegramApprovalSetToken(payload, deps = {}) {
     return result || { status: "error", message: "Telegram bot token write failed" };
   }
   return { status: "ok", tokenStored: true };
-}
-
-async function telegramApprovalDeleteTokenFile(_payload, deps = {}) {
-  if (!deps || typeof deps.deleteTelegramApprovalTokenFile !== "function") {
-    return { status: "error", message: "telegramApproval.deleteTokenFile requires deleteTelegramApprovalTokenFile dep" };
-  }
-  const result = await deps.deleteTelegramApprovalTokenFile();
-  return result || { status: "error", message: "Telegram token file delete returned no result" };
 }
 
 function telegramApprovalStatus(_payload, deps = {}) {
@@ -1104,9 +2003,9 @@ function telegramApprovalTokenInfo(_payload, deps = {}) {
   };
 }
 
-// v0.9.0 migration: native-vs-sidecar transport controller.
+// Telegram approval transport migration controller.
 // All telegramMigration.* commands lock on the same `tgApproval` domain as the
-// legacy approval commands so they can't race against token writes.
+// approval commands so they can't race against token writes.
 function telegramMigrationSnapshot(_payload, deps = {}) {
   if (!deps || !deps.telegramMigration) {
     return { status: "error", message: "telegramMigration.snapshot requires controller dep" };
@@ -1129,7 +2028,7 @@ async function telegramMigrationDispatch(payload, deps = {}) {
       snapshot: deps.telegramMigration.getSnapshot(),
     };
   }
-  const res = await deps.telegramMigration.dispatch(payload);
+  const res = await deps.telegramMigration.dispatch({ type: payload.type });
   return res && res.ok
     ? { status: "ok", state: res.state, snapshot: deps.telegramMigration.getSnapshot() }
     : {
@@ -1141,7 +2040,6 @@ async function telegramMigrationDispatch(payload, deps = {}) {
 }
 
 telegramMigrationDispatch.lockKey = "tgApproval";
-telegramApprovalDeleteTokenFile.lockKey = "tgApproval";
 
 async function telegramApprovalSendTest(_payload, deps = {}) {
   if (!deps || typeof deps.sendTelegramApprovalTest !== "function") {
@@ -1149,6 +2047,344 @@ async function telegramApprovalSendTest(_payload, deps = {}) {
   }
   const result = await deps.sendTelegramApprovalTest();
   return result || { status: "error", message: "Telegram approval test returned no result" };
+}
+
+async function feishuApprovalSetSecrets(payload, deps = {}) {
+  if (!deps || typeof deps.writeFeishuApprovalSecrets !== "function") {
+    return { status: "error", message: "feishuApproval.setSecrets requires writeFeishuApprovalSecrets dep" };
+  }
+  if (typeof deps.getFeishuApprovalSecrets !== "function") {
+    return { status: "error", message: "feishuApproval.setSecrets requires getFeishuApprovalSecrets dep" };
+  }
+  const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  let current;
+  try {
+    current = deps.getFeishuApprovalSecrets();
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  if (current && typeof current.then === "function") {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const planned = planFeishuCredentialWrite(current, config.platform, payload);
+  if (!planned.ok) return { status: "error", code: planned.code };
+  // Pass the writer's result through untouched: it carries the `code` the
+  // settings page localizes and the English detail naming the real cause.
+  const result = await deps.writeFeishuApprovalSecrets(planned.nextBundle);
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", code: "write-failed", message: "Secrets write returned no result" };
+  }
+  return { status: "ok", secretsStored: true };
+}
+
+function feishuApprovalSaveManualApprover(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const idType = typeof input.idType === "string" ? input.idType.trim() : "";
+  const approverId = typeof input.approverId === "string" ? input.approverId.trim() : "";
+  const recipient = classifyFeishuApprovalRecipient(approverId, idType);
+  if (recipient.kind === "email") {
+    return { status: "error", code: "email-requires-lookup" };
+  }
+  if (recipient.kind === "invalid") {
+    return { status: "error", code: recipient.code };
+  }
+  if (!new Set(["open_id", "user_id", "union_id"]).has(idType)) {
+    return { status: "error", code: "invalid-id-type" };
+  }
+  if (recipient.kind !== "manual" || !recipient.approverId || recipient.approverId.length > 128) {
+    return { status: "error", code: "missing-approver" };
+  }
+  if (typeof deps.getFeishuApprovalSecrets !== "function") {
+    return { status: "error", code: "missing-credentials" };
+  }
+  const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  let secrets;
+  try {
+    secrets = deps.getFeishuApprovalSecrets();
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
+    requireEnabled: false,
+    requireApprover: false,
+  });
+  if (!saved.ok) return { status: "error", code: saved.code };
+  return {
+    status: "ok",
+    commit: {
+      feishuApproval: {
+        ...saved.config,
+        idType: recipient.idType,
+        approverId: recipient.approverId,
+        approverSource: "manual",
+        approverBoundPlatform: saved.identity.platform,
+        approverBoundAppId: saved.identity.appId,
+      },
+    },
+  };
+}
+
+function feishuApprovalUpdateConfig(payload, deps = {}) {
+  const patch = payload && typeof payload === "object" && !Array.isArray(payload)
+    ? payload
+    : null;
+  const allowed = new Set(["enabled", "platform", "connectionTimeoutSeconds"]);
+  if (!patch || Object.keys(patch).length === 0) {
+    return { status: "error", code: "invalid-config-patch" };
+  }
+  for (const key of Object.keys(patch)) {
+    if (!allowed.has(key)) return { status: "error", code: "invalid-config-patch" };
+  }
+
+  const current = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  const next = { ...current, ...patch };
+  const validated = validateFeishuApproval(next);
+  if (!validated || validated.status !== "ok") {
+    return { status: "error", code: "invalid-config-patch" };
+  }
+  return {
+    status: "ok",
+    commit: { feishuApproval: next },
+  };
+}
+
+function isFeishuLookupSignal(signal) {
+  return !!signal
+    && typeof signal === "object"
+    && typeof signal.aborted === "boolean"
+    && typeof signal.addEventListener === "function";
+}
+
+function feishuLookupResult(result) {
+  if (result && result.status === "ok") return { status: "ok" };
+  return result && typeof result.code === "string"
+    ? { status: "error", code: result.code }
+    : { status: "error" };
+}
+
+async function saveFeishuApproverByEmail(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const email = typeof input.email === "string" ? input.email.trim() : "";
+  if (classifyFeishuApprovalRecipient(email, "open_id").kind !== "email") {
+    return { status: "error", code: "invalid-email" };
+  }
+  if (!isFeishuLookupSignal(input.signal)) {
+    return { status: "error", code: "lookup-failed" };
+  }
+
+  let rawConfig;
+  let secrets;
+  let secretsRevision;
+  try {
+    rawConfig = typeof deps.getFeishuApprovalPrefs === "function"
+      ? deps.getFeishuApprovalPrefs()
+      : deps.snapshot && deps.snapshot.feishuApproval;
+    secrets = typeof deps.getFeishuApprovalSecrets === "function"
+      ? deps.getFeishuApprovalSecrets()
+      : null;
+    secretsRevision = typeof deps.getFeishuApprovalSecretsRevision === "function"
+      ? deps.getFeishuApprovalSecretsRevision()
+      : 0;
+  } catch {
+    return { status: "error", code: "lookup-failed" };
+  }
+  if (
+    rawConfig && typeof rawConfig.then === "function"
+    || secrets && typeof secrets.then === "function"
+    || secretsRevision && typeof secretsRevision.then === "function"
+  ) {
+    return { status: "error", code: "lookup-failed" };
+  }
+  const config = normalizeFeishuApproval(rawConfig);
+  const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
+    requireEnabled: false,
+    requireApprover: false,
+  });
+  if (!saved.ok) return { status: "error", code: saved.code };
+  if (input.signal.aborted) return { status: "error", code: "lookup-cancelled" };
+  if (
+    typeof deps.lookupFeishuApproverByEmail !== "function"
+    || typeof deps.commitResolvedApprover !== "function"
+  ) {
+    return { status: "error", code: "lookup-failed" };
+  }
+  let result;
+  try {
+    result = await deps.lookupFeishuApproverByEmail({
+      platform: saved.identity.platform,
+      appId: saved.identity.appId,
+      appSecret: secrets.appSecret,
+      email,
+      signal: input.signal,
+    });
+  } catch {
+    return { status: "error", code: "lookup-failed" };
+  }
+  if (input.signal.aborted) return { status: "error", code: "lookup-cancelled" };
+  if (!result || result.status !== "ok") {
+    const allowedCodes = new Set(["missing-contact-scope", "approver-not-found", "lookup-failed"]);
+    return {
+      status: "error",
+      code: allowedCodes.has(result && result.code) ? result.code : "lookup-failed",
+    };
+  }
+  const approverId = typeof result.approverId === "string" ? result.approverId.trim() : "";
+  if (!approverId) return { status: "error", code: "lookup-failed" };
+  let committed;
+  try {
+    committed = await deps.commitResolvedApprover({
+      signal: input.signal,
+      approverId,
+      platform: saved.identity.platform,
+      appId: saved.identity.appId,
+      secretsRevision,
+    });
+  } catch {
+    return { status: "error", code: "lookup-failed" };
+  }
+  return feishuLookupResult(committed);
+}
+
+function feishuApprovalCommitResolvedApprover(payload, deps = {}) {
+  const input = payload && typeof payload === "object" ? payload : {};
+  const signal = input.signal;
+  const approverId = typeof input.approverId === "string" ? input.approverId.trim() : "";
+  const platform = typeof input.platform === "string" ? input.platform : "";
+  const appId = typeof input.appId === "string" ? input.appId : "";
+  if (!isFeishuLookupSignal(signal) || !approverId || approverId.length > 128) {
+    return { status: "error", code: "lookup-failed" };
+  }
+  if (signal.aborted) return { status: "error", code: "lookup-cancelled" };
+  const config = normalizeFeishuApproval(deps.snapshot && deps.snapshot.feishuApproval);
+  let secrets;
+  let secretsRevision;
+  try {
+    secrets = typeof deps.getFeishuApprovalSecrets === "function"
+      ? deps.getFeishuApprovalSecrets()
+      : null;
+    secretsRevision = typeof deps.getFeishuApprovalSecretsRevision === "function"
+      ? deps.getFeishuApprovalSecretsRevision()
+      : 0;
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  if (
+    secrets && typeof secrets.then === "function"
+    || secretsRevision && typeof secretsRevision.then === "function"
+  ) {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const saved = evaluateFeishuApprovalConfiguration(config, secrets, {
+    requireEnabled: false,
+    requireApprover: false,
+  });
+  if (!saved.ok) return { status: "error", code: saved.code };
+  if (
+    saved.identity.platform !== platform
+    || saved.identity.appId !== appId
+    || secretsRevision !== input.secretsRevision
+  ) {
+    return { status: "error", code: "lookup-credentials-changed" };
+  }
+  if (signal.aborted) return { status: "error", code: "lookup-cancelled" };
+  return {
+    status: "ok",
+    commit: {
+      feishuApproval: {
+        ...saved.config,
+        idType: "open_id",
+        approverId,
+        approverSource: "lookup",
+        approverBoundPlatform: saved.identity.platform,
+        approverBoundAppId: saved.identity.appId,
+      },
+    },
+  };
+}
+
+function feishuApprovalStatus(_payload, deps = {}) {
+  if (!deps || typeof deps.getFeishuApprovalStatus !== "function") {
+    return { status: "error", message: "feishuApproval.status requires getFeishuApprovalStatus dep" };
+  }
+  const status = deps.getFeishuApprovalStatus();
+  return { status: "ok", state: status || { status: "stopped" } };
+}
+
+function feishuApprovalSecretInfo(_payload, deps = {}) {
+  if (!deps || typeof deps.getFeishuApprovalSecretInfo !== "function") {
+    return { status: "error", message: "feishuApproval.secretInfo requires getFeishuApprovalSecretInfo dep" };
+  }
+  const info = deps.getFeishuApprovalSecretInfo() || { configured: false };
+  return { status: "ok", ...info };
+}
+
+async function feishuApprovalSendTest(_payload, deps = {}) {
+  if (!deps || typeof deps.sendFeishuApprovalTest !== "function") {
+    return { status: "error", message: "feishuApproval.test requires sendFeishuApprovalTest dep" };
+  }
+  let secrets;
+  let secretsRevision;
+  try {
+    secrets = typeof deps.getFeishuApprovalSecrets === "function"
+      ? deps.getFeishuApprovalSecrets()
+      : null;
+    secretsRevision = typeof deps.getFeishuApprovalSecretsRevision === "function"
+      ? deps.getFeishuApprovalSecretsRevision()
+      : 0;
+  } catch {
+    return { status: "error", code: "credentials-read-failed" };
+  }
+  const evaluated = evaluateFeishuApprovalConfiguration(
+    deps.snapshot && deps.snapshot.feishuApproval,
+    secrets,
+  );
+  if (!evaluated.ok) return { status: "error", code: evaluated.code };
+  const result = await deps.sendFeishuApprovalTest({
+    config: evaluated.config,
+    secrets,
+    secretsRevision,
+  });
+  // Defensive only, but the renderer shows a code-less `message` verbatim — so
+  // it stays brand-neutral like every other user-visible string on this path.
+  return result || { status: "error", message: "Remote approval test returned no result" };
+}
+
+async function slackNotifySetSecrets(payload, deps = {}) {
+  const secrets = payload && typeof payload === "object" ? payload : {};
+  if (!deps || typeof deps.writeSlackNotifySecrets !== "function") {
+    return { status: "error", message: "slackNotify.setSecrets requires writeSlackNotifySecrets dep" };
+  }
+  // Pass the writer's result through untouched: it carries the `code` the
+  // settings page localizes and the English detail naming the real cause.
+  const result = await deps.writeSlackNotifySecrets(secrets);
+  if (!result || result.status !== "ok") {
+    return result || { status: "error", code: "write-failed", message: "Secrets write returned no result" };
+  }
+  return { status: "ok", secretsStored: true };
+}
+
+function slackNotifyStatus(_payload, deps = {}) {
+  if (!deps || typeof deps.getSlackNotifyStatus !== "function") {
+    return { status: "error", message: "slackNotify.status requires getSlackNotifyStatus dep" };
+  }
+  const status = deps.getSlackNotifyStatus();
+  return { status: "ok", state: status || { enabled: false, configured: false } };
+}
+
+function slackNotifySecretInfo(_payload, deps = {}) {
+  if (!deps || typeof deps.getSlackNotifySecretInfo !== "function") {
+    return { status: "error", message: "slackNotify.secretInfo requires getSlackNotifySecretInfo dep" };
+  }
+  const info = deps.getSlackNotifySecretInfo() || { configured: false };
+  return { status: "ok", ...info };
+}
+
+async function slackNotifySendTest(_payload, deps = {}) {
+  if (!deps || typeof deps.sendSlackNotifyTest !== "function") {
+    return { status: "error", message: "slackNotify.test requires sendSlackNotifyTest dep" };
+  }
+  const result = await deps.sendSlackNotifyTest();
+  return result || { status: "error", message: "Slack notification test returned no result" };
 }
 
 function cleanupMessage(result) {
@@ -1192,6 +2428,8 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
   let agents = { ...((snapshot && snapshot.agents) || {}) };
   let agentsChanged = false;
 
+  // Step 1: always disable every managed target so a failed disk cleanup can
+  // never keep receiving Clawd events or be re-synced at startup.
   for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
     const flagDeps = {
       ...deps,
@@ -1205,19 +2443,6 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
       agents = result.commit.agents;
       agentsChanged = true;
     }
-    const currentEntry = agents[agentId] && typeof agents[agentId] === "object"
-      ? agents[agentId]
-      : {};
-    if (currentEntry.integrationInstalled !== false) {
-      agents = {
-        ...agents,
-        [agentId]: {
-          ...currentEntry,
-          integrationInstalled: false,
-        },
-      };
-      agentsChanged = true;
-    }
   }
 
   let cleanup;
@@ -1229,6 +2454,58 @@ async function cleanupIntegrationsCommand(_payload, deps = {}) {
       message: err && err.message ? err.message : String(err),
       summary: { agentsChecked: 0, agentsAffected: 0, entriesRemoved: 0, skipped: 0, failed: 1 },
     };
+  }
+
+  // Step 2: decide `integrationInstalled` from the per-agent disk result.
+  // Never mark an agent uninstalled before its actual registration was removed.
+  const diskAgents = cleanup && Array.isArray(cleanup.agents) ? cleanup.agents : null;
+  const failedCount = cleanup && cleanup.summary ? Number(cleanup.summary.failed || 0) : 0;
+  const cleanupErrored = !!(cleanup && cleanup.status === "error") || (!diskAgents && failedCount > 0);
+  const summaryWarnings = [];
+  if (cleanup && typeof cleanup.summary === "object" && cleanup.summary) {
+    if (Array.isArray(cleanup.summary.warnings)) summaryWarnings.push(...cleanup.summary.warnings);
+  }
+
+  for (const agentId of MANAGED_CLEANUP_AGENT_IDS) {
+    const currentEntry = agents[agentId] && typeof agents[agentId] === "object"
+      ? agents[agentId]
+      : {};
+    let shouldUninstall;
+    if (diskAgents) {
+      const diskAgent = diskAgents.find((entry) => entry && entry.agentId === agentId);
+      if (!diskAgent) {
+        // Conservative: a missing result is not proof of success.
+        shouldUninstall = false;
+        summaryWarnings.push(`cleanup result did not include ${agentId}; keeping its install intent`);
+      } else if (diskAgent.status === "failed") {
+        shouldUninstall = false;
+      } else if (diskAgent.registrationRemoved === false || diskAgent.registrationRemoved === null) {
+        shouldUninstall = false;
+      } else if (diskAgent.activeEntryRemaining === true) {
+        shouldUninstall = false;
+      } else {
+        shouldUninstall = true;
+      }
+    } else {
+      // Legacy cleaner contract: no `agents` array. Blanket-uninstall only on a
+      // clean success; any error/throw keeps the install intent (disabled only).
+      shouldUninstall = !cleanupErrored;
+    }
+
+    if (shouldUninstall && currentEntry.integrationInstalled !== false) {
+      agents = {
+        ...agents,
+        [agentId]: {
+          ...currentEntry,
+          integrationInstalled: false,
+        },
+      };
+      agentsChanged = true;
+    }
+  }
+
+  if (summaryWarnings.length && cleanup && typeof cleanup === "object") {
+    cleanup.summary = { ...(cleanup.summary || {}), warnings: summaryWarnings };
   }
 
   const response = {
@@ -1262,9 +2539,35 @@ remoteSshUpdateProfile.lockKey = "remoteSsh";
 remoteSshDeleteProfile.lockKey = "remoteSsh";
 remoteSshMarkDeployed.lockKey = "remoteSsh";
 remoteSshMarkRemoteNode.lockKey = "remoteSsh";
+remoteSshApplyInstallationIdentity.lockKey = "remoteSsh";
+remoteSshBeginIdentityRotation.lockKey = "remoteSsh";
+remoteSshUpdateIdentityStep.lockKey = "remoteSsh";
+remoteSshCommitIdentityRotation.lockKey = "remoteSsh";
+remoteSshForceRevoke.lockKey = "remoteSsh";
+remoteSshBeginRuntimeModeSwitch.lockKey = "remoteSsh";
+remoteSshAdvanceRuntimeModeSwitch.lockKey = "remoteSsh";
+remoteSshSwitchRuntimeMode.lockKey = "remoteSsh";
 telegramApprovalSetToken.lockKey = "tgApproval";
 telegramApprovalSendTest.lockKey = "tgApproval";
+updateRegistry.feishuApproval.lockKey = "feishuApproval";
+feishuApprovalSetSecrets.lockKey = "feishuApproval";
+feishuApprovalSaveManualApprover.lockKey = "feishuApproval";
+feishuApprovalCommitResolvedApprover.lockKey = "feishuApproval";
+feishuApprovalUpdateConfig.lockKey = "feishuApproval";
+feishuApprovalSendTest.lockKey = "feishuApproval";
+slackNotifySetSecrets.lockKey = "slackNotify";
+slackNotifySendTest.lockKey = "slackNotify";
 cleanupIntegrationsCommand.lockKey = "agentIntegration";
+// All theme mutations share one domain lock: selection, generic removal, and
+// the managed official install-commit/uninstall. Without a shared key a
+// selection could land between an uninstall's active check and its delete.
+setThemeSelection.lockKey = "theme";
+removeTheme.lockKey = "theme";
+officialThemeCommitInstall.lockKey = "theme";
+officialThemeUninstall.lockKey = "theme";
+// The legacy single-field `theme` update also activates the runtime, so it
+// must share the same domain lock as selection/removal.
+updateRegistry.theme.lockKey = "theme";
 
 const repairDoctorIssue = createRepairDoctorIssue({
   repairAgentIntegration,
@@ -1301,16 +2604,22 @@ function setTextScaleForDisplay(payload, deps) {
 }
 
 const commandRegistry = {
+  addCustomApplication,
   removeTheme,
   installHooks,
   uninstallHooks,
   cleanupIntegrations: cleanupIntegrationsCommand,
   clearAgentCleanupHints,
   clearAgentInstallHints,
+  deployToWsl,
   dismissAgentCleanupHints,
   dismissAgentInstallHints,
   installAgentIntegration,
+  removeFromWsl,
+  removeCustomApplication,
   repairAgentIntegration,
+  setAgentCustomDiscoveryPaths,
+  setAgentCustomPermissionUrl,
   uninstallAgentIntegration,
   repairLocalServer,
   repairDoctorIssue,
@@ -1321,7 +2630,8 @@ const commandRegistry = {
   setAgentFlag,
   setAgentPermissionMode,
   setAllBubblesHidden,
-  setAutoApproveAll,
+  setKimiQuotaCollectionEnabled,
+  setPermissionAutomationMode,
   setBubbleCategoryEnabled,
   "sessionCleanup.setTriple": setSessionCleanupTriple,
   setSessionAlias,
@@ -1333,16 +2643,37 @@ const commandRegistry = {
   importAnimationOverrides,
   setWideHitboxOverride,
   setThemeSelection,
+  setIdleVisual,
+  "officialTheme.commitInstall": officialThemeCommitInstall,
+  "officialTheme.uninstall": officialThemeUninstall,
   "remoteSsh.add": remoteSshAddProfile,
   "remoteSsh.update": remoteSshUpdateProfile,
   "remoteSsh.delete": remoteSshDeleteProfile,
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
+  "remoteSsh.applyInstallationIdentity": remoteSshApplyInstallationIdentity,
+  "remoteSsh.beginIdentityRotation": remoteSshBeginIdentityRotation,
+  "remoteSsh.updateIdentityStep": remoteSshUpdateIdentityStep,
+  "remoteSsh.commitIdentityRotation": remoteSshCommitIdentityRotation,
+  "remoteSsh.forceRevoke": remoteSshForceRevoke,
+  "remoteSsh.beginRuntimeModeSwitch": remoteSshBeginRuntimeModeSwitch,
+  "remoteSsh.advanceRuntimeModeSwitch": remoteSshAdvanceRuntimeModeSwitch,
+  "remoteSsh.switchRuntimeMode": remoteSshSwitchRuntimeMode,
   "telegramApproval.setToken": telegramApprovalSetToken,
-  "telegramApproval.deleteTokenFile": telegramApprovalDeleteTokenFile,
   "telegramApproval.status": telegramApprovalStatus,
   "telegramApproval.tokenInfo": telegramApprovalTokenInfo,
   "telegramApproval.test": telegramApprovalSendTest,
+  "feishuApproval.setSecrets": feishuApprovalSetSecrets,
+  "feishuApproval.saveManualApprover": feishuApprovalSaveManualApprover,
+  "feishuApproval.updateConfig": feishuApprovalUpdateConfig,
+  "feishuApproval.commitResolvedApprover": feishuApprovalCommitResolvedApprover,
+  "feishuApproval.status": feishuApprovalStatus,
+  "feishuApproval.secretInfo": feishuApprovalSecretInfo,
+  "feishuApproval.test": feishuApprovalSendTest,
+  "slackNotify.setSecrets": slackNotifySetSecrets,
+  "slackNotify.status": slackNotifyStatus,
+  "slackNotify.secretInfo": slackNotifySecretInfo,
+  "slackNotify.test": slackNotifySendTest,
   "telegramMigration.snapshot": telegramMigrationSnapshot,
   "telegramMigration.dispatch": telegramMigrationDispatch,
 };
@@ -1350,6 +2681,7 @@ const commandRegistry = {
 module.exports = {
   updateRegistry,
   commandRegistry,
+  saveFeishuApproverByEmail,
   ONESHOT_OVERRIDE_STATES,
   ANIMATION_OVERRIDES_EXPORT_VERSION,
   MANAGED_CLEANUP_AGENT_IDS,
@@ -1360,4 +2692,6 @@ module.exports = {
   requireString,
   requirePlainObject,
   requireIntegerInRange,
+  buildThemeScopedPrefsCommit,
+  applyThemeSelection,
 };

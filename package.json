@@ -1,27 +1,31 @@
 {
   "name": "clawd-on-desk",
-  "version": "0.11.0",
+  "version": "1.2.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
-    "start": "node scripts/ensure-sidecar-binaries.js && node launch.js",
+    "start": "node launch.js",
     "build": "electron-builder --win",
     "build:win:x64": "electron-builder --win nsis:x64",
     "build:win:arm64": "electron-builder --win nsis:arm64",
     "build:win:all": "electron-builder --win nsis:x64 nsis:arm64",
     "build:mac": "electron-builder --mac",
+    "build:mac:x64": "electron-builder --mac dmg:x64 zip:x64",
+    "build:mac:arm64": "electron-builder --mac dmg:arm64 zip:arm64",
     "build:linux": "electron-builder --linux",
+    "build:linux:x64": "electron-builder --linux AppImage:x64 deb:x64",
     "build:all": "electron-builder --win --mac --linux",
-    "fetch:sidecars": "node scripts/fetch-sidecar-binaries.js",
-    "verify:sidecars": "node scripts/verify-sidecar-binaries.js",
-    "prebuild": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:win:x64": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:win:arm64": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:win:all": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:mac": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:linux": "node scripts/verify-sidecar-binaries.js",
-    "prebuild:all": "node scripts/verify-sidecar-binaries.js",
+    "verify:electron": "node scripts/verify-electron-install.js",
+    "postinstall": "node scripts/verify-electron-install.js --context postinstall",
     "test": "node test/run-tests.js",
+    "audit:assets": "node scripts/audit-repository-assets.js",
+    "audit:pr-history-assets": "node scripts/audit-pr-history-assets.js",
+    "audit:native-package": "node scripts/audit-packaged-native.js",
+    "update:official-theme-snapshot": "node scripts/update-official-theme-catalog-snapshot.js",
+    "verify:updater-metadata": "node scripts/verify-updater-metadata.js",
+    "verify:winget-arch": "node scripts/verify-winget-arch-contract.js",
+    "verify:winget-manifest": "node scripts/verify-winget-generated-manifest.js",
+    "verify:release": "node scripts/verify-release-version.js && node scripts/verify-release-contributors.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
     "install:claude-hooks": "node hooks/install.js",
@@ -34,12 +38,18 @@
     "uninstall:kirocrew-hooks": "node hooks/kirocrew-install.js --uninstall",
     "install:kimi-hooks": "node hooks/kimi-install.js",
     "install:qwen-hooks": "node hooks/qwen-code-install.js",
+    "install:zcode-hooks": "node hooks/zcode-install.js",
+    "uninstall:zcode-hooks": "node hooks/zcode-install.js --uninstall",
     "install:codewhale-hooks": "node hooks/codewhale-install.js",
     "uninstall:codewhale-hooks": "node hooks/codewhale-install.js --uninstall",
     "install:pi-extension": "node hooks/pi-install.js",
     "uninstall:pi-extension": "node hooks/pi-install.js --uninstall",
+    "install:omp-extension": "node hooks/omp-install.js",
+    "uninstall:omp-extension": "node hooks/omp-install.js --uninstall",
     "install:openclaw-plugin": "node hooks/openclaw-install.js",
     "uninstall:openclaw-plugin": "node hooks/openclaw-install.js --uninstall",
+    "install:mimocode-plugin": "node hooks/mimocode-install.js",
+    "uninstall:mimocode-plugin": "node hooks/mimocode-install.js --uninstall",
     "install:codex-hooks": "node hooks/codex-install.js",
     "uninstall:codex-hooks": "node hooks/codex-install.js --uninstall",
     "install:codex-debug-hooks": "node hooks/codex-debug-install.js",
@@ -50,6 +60,20 @@
     "uninstall:qoder-hooks": "node hooks/qoder-install.js --uninstall",
     "install:reasonix-hooks": "node hooks/reasonix-install.js",
     "uninstall:reasonix-hooks": "node hooks/reasonix-install.js --uninstall",
+    "install:qoderwork-hooks": "node hooks/qoderwork-install.js",
+    "uninstall:qoderwork-hooks": "node hooks/qoderwork-install.js --uninstall",
+    "install:qwenwork-hooks": "node hooks/qwenwork-install.js",
+    "uninstall:qwenwork-hooks": "node hooks/qwenwork-install.js --uninstall",
+    "install:traecode-hooks": "node hooks/traecode-install.js",
+    "uninstall:traecode-hooks": "node hooks/traecode-install.js --uninstall",
+    "install:workbuddy-hooks": "node hooks/workbuddy-install.js",
+    "uninstall:workbuddy-hooks": "node hooks/workbuddy-install.js --uninstall",
+    "install:grok-hooks": "node hooks/grok-install.js",
+    "uninstall:grok-hooks": "node hooks/grok-install.js --uninstall",
+    "install:minimax-hooks": "node hooks/minimax-install.js",
+    "uninstall:minimax-hooks": "node hooks/minimax-install.js --uninstall",
+    "install:dsh": "node hooks/dsh-install.js",
+    "uninstall:dsh": "node hooks/dsh-install.js --uninstall",
     "cleanup:integrations": "node hooks/cleanup-integrations.js --apply",
     "register-protocol:dev": "node launch.js --register-protocol"
   },
@@ -65,6 +89,7 @@
   "build": {
     "appId": "com.clawd.on-desk",
     "productName": "Clawd on Desk",
+    "afterPack": "scripts/after-pack-koffi.js",
     "protocols": [
       {
         "name": "Clawd Import Protocol",
@@ -75,10 +100,18 @@
     ],
     "mac": {
       "icon": "assets/icon.png",
+      "identity": "-",
       "artifactName": "Clawd-on-Desk-${version}-${arch}.${ext}",
       "target": [
         {
           "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
           "arch": [
             "x64",
             "arm64"
@@ -92,7 +125,6 @@
     },
     "win": {
       "icon": "assets/icon.ico",
-      "signAndEditExecutable": false,
       "artifactName": "Clawd-on-Desk-Setup-${version}-${arch}.${ext}",
       "target": [
         {
@@ -136,10 +168,11 @@
     "files": [
       "NOTICE.md",
       "src/**/*",
-      "assets/icon.ico",
+      "assets/icon.png",
       "assets/icons/**/*",
       "assets/icons/agents/**/*",
       "assets/svg/**/*",
+      "assets/accessories/**/*",
       "assets/sounds/**/*",
       "assets/dock-icon.png",
       "assets/tray-icon*.png",
@@ -151,19 +184,17 @@
     ],
     "asarUnpack": [
       "assets/svg/**/*",
+      "assets/accessories/**/*",
       "hooks/**/*",
       "extensions/**/*",
       "agents/**/*",
-      "themes/**/*"
+      "themes/**/*",
+      "node_modules/jsonc-parser/**/*"
     ],
     "extraResources": [
       {
         "from": "assets/icon.ico",
         "to": "icon.ico"
-      },
-      {
-        "from": "bin/cc-connect-clawd",
-        "to": "sidecars/cc-connect-clawd"
       }
     ],
     "publish": [
@@ -174,14 +205,23 @@
       }
     ]
   },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "devDependencies": {
-    "electron": "^41.0.2",
-    "electron-builder": "^26.8.1"
+    "@electron/asar": "^3.4.1",
+    "electron": "^41.10.4",
+    "electron-builder": "^26.15.7",
+    "js-yaml": "^4.1.0"
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.71.1",
     "electron-updater": "^6.8.3",
     "htmlparser2": "^12.0.0",
-    "koffi": "^2.15.2",
-    "ws": "^8.21.0"
+    "jsonc-parser": "^3.3.1",
+    "koffi": "2.16.3",
+    "markdown-it": "15.0.0",
+    "ws": "^8.21.0",
+    "yauzl": "^2.10.0"
   }
 }

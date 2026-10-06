@@ -7,6 +7,9 @@ module.exports = {
   id: "pi",
   name: "Pi",
   processNames: { win: ["pi.exe"], mac: ["pi"], linux: ["pi"] },
+  // A bare `pi` process name is ambiguous on POSIX; package-path matching in
+  // state.js covers the known CLI distribution there.
+  startupRecoveryProcessNames: { win: ["pi.exe"], mac: [], linux: [] },
   eventSource: "extension",
   // Clawd-internal event names. hooks/pi-extension-core.js translates Pi's
   // native snake_case events to this shared PascalCase event vocabulary.

@@ -4,6 +4,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const CURSOR_HOOK_SENTINEL = "--clawd-cursor-hook=v1";
 
 function stripUtf8Bom(text) {
   const value = String(text || "");
@@ -215,6 +216,7 @@ function createBackup(filePath, options = {}) {
   if (typeof options.backupPath === "string" && options.backupPath) {
     const backupPath = uniqueBackupPath(filePath, options);
     fs.copyFileSync(filePath, backupPath);
+    try { fs.chmodSync(backupPath, 0o600); } catch {}
     return backupPath;
   }
   // Auto-named path: COPYFILE_EXCL makes the copy fail if the destination
@@ -226,6 +228,7 @@ function createBackup(filePath, options = {}) {
     const backupPath = uniqueBackupPath(filePath, options);
     try {
       fs.copyFileSync(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      try { fs.chmodSync(backupPath, 0o600); } catch {}
       return backupPath;
     } catch (err) {
       lastErr = err;
@@ -241,6 +244,7 @@ async function createBackupAsync(filePath, options = {}) {
   if (typeof options.backupPath === "string" && options.backupPath) {
     const backupPath = uniqueBackupPath(filePath, options);
     await fs.promises.copyFile(filePath, backupPath);
+    try { await fs.promises.chmod(backupPath, 0o600); } catch {}
     return backupPath;
   }
   let lastErr;
@@ -248,6 +252,7 @@ async function createBackupAsync(filePath, options = {}) {
     const backupPath = uniqueBackupPath(filePath, options);
     try {
       await fs.promises.copyFile(filePath, backupPath, fs.constants.COPYFILE_EXCL);
+      try { await fs.promises.chmod(backupPath, 0o600); } catch {}
       return backupPath;
     } catch (err) {
       lastErr = err;
@@ -274,13 +279,25 @@ async function writeJsonAtomicWithBackupAsync(filePath, data, options = {}) {
   return backupPath;
 }
 
-function writeTextAtomic(filePath, text, encoding = "utf-8") {
+// `encodingOrOptions` accepts the legacy encoding string or
+// { encoding, mode }. Passing the ORIGINAL file's mode matters for configs
+// that may hold secrets (e.g. a 0600 mimocode.jsonc with provider tokens):
+// the rename-into-place pattern otherwise replaces them with a fresh
+// umask-default 0644 file — a silent permission widening.
+function writeTextAtomic(filePath, text, encodingOrOptions = "utf-8") {
+  const opts = typeof encodingOrOptions === "string" ? { encoding: encodingOrOptions } : (encodingOrOptions || {});
+  const encoding = opts.encoding || "utf-8";
   const dir = path.dirname(filePath);
   const base = path.basename(filePath);
   const tmpPath = path.join(dir, `.${base}.${process.pid}.${Date.now()}.tmp`);
   fs.mkdirSync(dir, { recursive: true });
   try {
-    fs.writeFileSync(tmpPath, text, encoding);
+    fs.writeFileSync(tmpPath, text, opts.mode === undefined ? encoding : { encoding, mode: opts.mode });
+    // open()'s mode is masked by the process umask (022 turns 0664 into
+    // 0644), so writeFileSync alone only "preserves" bits the umask happens
+    // to allow. chmod is umask-immune — apply the exact bits before the
+    // rename (dual-review S-F1).
+    if (opts.mode !== undefined) fs.chmodSync(tmpPath, opts.mode);
     fs.renameSync(tmpPath, filePath);
   } catch (err) {
     try { fs.unlinkSync(tmpPath); } catch {}
@@ -290,7 +307,7 @@ function writeTextAtomic(filePath, text, encoding = "utf-8") {
 
 function writeTextAtomicWithBackup(filePath, text, options = {}) {
   const backupPath = createBackup(filePath, options);
-  writeTextAtomic(filePath, text, options.encoding || "utf-8");
+  writeTextAtomic(filePath, text, { encoding: options.encoding || "utf-8", mode: options.mode });
   if (backupPath) pruneOldBackups(filePath, options, backupPath);
   return backupPath;
 }
@@ -303,11 +320,23 @@ function writeTextAtomicWithBackup(filePath, text, options = {}) {
  * "asarUnpack"). No-op for dev/source installs.
  */
 function asarUnpackedPath(p) {
-  return p.replace("app.asar/", "app.asar.unpacked/");
+  return p.replace(/app\.asar([\\/])/, "app.asar.unpacked$1");
 }
 
 function quoteHookCommandArg(value) {
   return `"${String(value).replace(/"/g, '\\"')}"`;
+}
+
+// WSL detection for the hook command format, mirroring install.js's
+// resolveInstallWslDistro: CLAWD_WSL_DISTRO is injected by the Windows-side
+// one-click deploy, WSL_DISTRO_NAME by WSL init itself. Gated on linux so a
+// stale variable in some other environment cannot flip the format.
+function resolveWslDistroEnv() {
+  if (process.env.CLAWD_WSL_DISTRO) return process.env.CLAWD_WSL_DISTRO;
+  if (process.platform === "linux" && process.env.WSL_DISTRO_NAME) {
+    return process.env.WSL_DISTRO_NAME;
+  }
+  return null;
 }
 
 function quotePowerShellSingleArg(value) {
@@ -362,6 +391,22 @@ function extractFirstQuotedToken(command) {
 }
 
 /**
+ * Windows interpreter token that parses in Git Bash, PowerShell, and cmd.
+ * No QUOTED command token parses in all three (`& "..."` is PowerShell-only,
+ * a bare `"..."` is a string literal in PowerShell, and an unquoted backslash
+ * path is eaten by bash), so the token must be unquoted: an absolute path
+ * written with forward slashes when it needs no quoting, and a bare `node`
+ * PATH lookup otherwise (the default install under "C:\Program Files" is on
+ * PATH by the Node installer).
+ */
+function portableWindowsNodeToken(nodeBin) {
+  const raw = String(nodeBin || "").trim();
+  return /^[A-Za-z]:[\\/]/.test(raw) && !NON_PORTABLE_COMMAND_TOKEN_RE.test(raw)
+    ? raw.replace(/\\/g, "/")
+    : "node";
+}
+
+/**
  * Format a Node-based hook command consistently across installers.
  *
  * POSIX hook launchers can execute a plain quoted command. On Windows, some
@@ -370,14 +415,34 @@ function extractFirstQuotedToken(command) {
  * Antigravity) shell out through `cmd.exe /d /s /c <command>`, which mangles
  * any quoted path with a space — those use windowsWrapper:"encoded" to wrap
  * everything in PowerShell -EncodedCommand and bypass cmd's parser entirely.
- * Callers choose the wrapper that matches the target agent while sharing
- * the quoting rules.
+ * Launchers that execute hooks through a POSIX shell on Windows (Qoder CLI
+ * runs command hooks via Git Bash — see issue #597) need
+ * windowsWrapper:"portable": an unquoted forward-slash interpreter token plus
+ * double-quoted arguments, which parses under bash, cmd, and PowerShell-free
+ * spawn paths alike. Same known limit as buildPortableStatuslineCommand:
+ * inside double quotes bash/PowerShell still expand `$` and backticks, so an
+ * install path containing those is rewritten before node sees it — accepted,
+ * since no quoting form is inert in every target shell. Callers choose the
+ * wrapper that matches the target agent while sharing the quoting rules.
  */
 function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;
   const args = Array.isArray(options.args) ? options.args : [];
   if (platform === "win32" && options.windowsWrapper === "encoded") {
     return buildWindowsEncodedNodeHookCommand(nodeBin, scriptPath, args, options);
+  }
+  if (platform === "win32" && options.windowsWrapper === "portable") {
+    const rest = [String(scriptPath).replace(/\\/g, "/"), ...args].map(quoteHookCommandArg).join(" ");
+    return `${portableWindowsNodeToken(nodeBin)} ${rest}`;
+  }
+  // WSL: plain (unquoted) form. A quoted command without a shell field breaks
+  // hook runners that naive-split on spaces (quotes become part of the
+  // executable name — the root cause of silent WSL hook failures; see
+  // install.js buildCommandHookSpec). Plain works under both naive-split and
+  // sh -c semantics since WSL-side paths contain no spaces.
+  const wslDistro = options.wslDistro !== undefined ? options.wslDistro : resolveWslDistroEnv();
+  if (platform !== "win32" && wslDistro) {
+    return [nodeBin, scriptPath, ...args].join(" ");
   }
   const command = [nodeBin, scriptPath, ...args].map(quoteHookCommandArg).join(" ");
   if (platform !== "win32") return command;
@@ -386,6 +451,40 @@ function formatNodeHookCommand(nodeBin, scriptPath, options = {}) {
   if (wrapper === "cmd") return `cmd /d /s /c "${command}"`;
   if (wrapper === "none") return command;
   return `& ${command}`;
+}
+
+// Characters that would need quoting (or would be rewritten) in at least one
+// of Git Bash / PowerShell / cmd when they appear in an unquoted command
+// token. A path containing any of these cannot be written portably, so the
+// command falls back to a bare PATH lookup instead.
+const NON_PORTABLE_COMMAND_TOKEN_RE = /[\s"'`&|<>^%!();,$*?#~={}[\]]/;
+
+/**
+ * Build a statusline command that parses in every shell the host agent might
+ * run it under. Unlike hooks, statusLine settings have no `shell` field:
+ * Claude Code runs the command through Git Bash when Git is installed
+ * (nearly always - it's an install prerequisite) and PowerShell otherwise;
+ * Antigravity is expected to use cmd like its hook runner. No QUOTED command
+ * token parses in all of those: `& "..."` is PowerShell-only (bash: syntax
+ * error), a bare `"..."` is a string literal in PowerShell (never executed),
+ * and an unquoted backslash path is eaten by bash. So the interpreter token
+ * must be unquoted: an absolute path only when it needs no quoting (no
+ * spaces or shell-special characters), written with forward slashes, and a
+ * bare `node` PATH lookup otherwise (the default install under
+ * "C:\Program Files" is on PATH by the Node installer). The script path
+ * stays double-quoted - a quoted *argument* is fine in all three shells.
+ *
+ * Known limit: inside double quotes, Git Bash/PowerShell still expand `$`
+ * and backticks and cmd expands %VAR%, so an install path containing those
+ * would be rewritten before node sees it. There is no quoting form that is
+ * inert in all three shells (cmd has no single-quote), and the previous
+ * PowerShell-only form had the same exposure - accepted, not a regression.
+ */
+function buildPortableStatuslineCommand(nodeBin, scriptPath, options = {}) {
+  const platform = options.platform || process.platform;
+  const script = String(scriptPath).replace(/\\/g, "/");
+  if (platform !== "win32") return `"${nodeBin}" "${script}"`;
+  return `${portableWindowsNodeToken(nodeBin)} "${script}"`;
 }
 
 /**
@@ -418,6 +517,14 @@ function extractExistingNodeBinFromCommands(commands, marker) {
       const token = match && match[1];
       if (!token || token.includes(marker)) continue;
       if (isAbsoluteCommandToken(token)) return token;
+    }
+    // Portable Windows form (`C:/path/node.exe "script" "arg"`): the
+    // interpreter token is deliberately unquoted, so also accept a bare
+    // absolute first token.
+    const bare = cmd.trim().match(/^(\S+)/);
+    const bareToken = bare && bare[1];
+    if (bareToken && !bareToken.includes(marker) && isAbsoluteCommandToken(bareToken)) {
+      return bareToken;
     }
   }
   return null;
@@ -456,6 +563,189 @@ function commandMatchesMarker(command, marker) {
   if (command.includes(marker)) return true;
   const decoded = decodeWindowsEncodedCommand(command);
   return !!(decoded && decoded.includes(marker));
+}
+
+const CLAUDE_STATE_HOOK_MARKER = "clawd-hook.js";
+const CLAUDE_HOOK_PATH_VAR_TOKENS = new Set([
+  "$CLAWD_HOOK_PATH",
+  "${CLAWD_HOOK_PATH}",
+]);
+const CLAUDE_NODE_BIN_VAR_TOKENS = new Set([
+  "$CLAWD_NODE_BIN",
+  "${CLAWD_NODE_BIN}",
+]);
+
+// Parse exactly one whitespace-delimited command whose only quoting form is
+// double quotes. This is intentionally much narrower than a shell parser: the
+// env-indirected Claude compatibility rule must fail closed on composition,
+// substitution, redirection, single quotes, or trailing commands.
+function parseSimpleDoubleQuotedCommand(command) {
+  if (typeof command !== "string" || !command.trim() || /[\r\n\0]/.test(command)) return null;
+  const tokens = [];
+  let index = 0;
+
+  while (index < command.length) {
+    while (index < command.length && /\s/.test(command[index])) index++;
+    if (index >= command.length) break;
+
+    if (command[index] === "'") return null;
+    if (command[index] === '"') {
+      index++;
+      const start = index;
+      while (index < command.length && command[index] !== '"') index++;
+      if (index >= command.length) return null;
+      const value = command.slice(start, index);
+      index++;
+      if (index < command.length && !/\s/.test(command[index])) return null;
+      tokens.push({ value, quoted: true });
+      continue;
+    }
+
+    const start = index;
+    while (index < command.length && !/\s/.test(command[index])) {
+      if (command[index] === "'" || command[index] === '"') return null;
+      index++;
+    }
+    tokens.push({ value: command.slice(start, index), quoted: false });
+  }
+
+  return tokens;
+}
+
+function crossPlatformBasename(value) {
+  return path.posix.basename(String(value || "").replace(/\\/g, "/"));
+}
+
+function isDirectAbsoluteNodePath(value, options = {}) {
+  if (typeof value !== "string" || !value || /[\r\n\0$`]/.test(value)) return false;
+  if (options.quoted !== true && /[;&|<>()[\]]/.test(value)) return false;
+  if (!path.posix.isAbsolute(value) && !path.win32.isAbsolute(value)) return false;
+  const base = crossPlatformBasename(value).toLowerCase();
+  return base === "node" || base === "node.exe";
+}
+
+function isSafeNodeExecutableCandidate(value) {
+  return isDirectAbsoluteNodePath(value, { quoted: true })
+    && !/["';&|<>()\[\]{}*?!%\r\n\0$`]/.test(value)
+    // POSIX double-quoted command serialization consumes selected backslash
+    // escapes. Windows drive/UNC paths need backslashes, but a POSIX absolute
+    // candidate containing one would no longer name the access-checked file.
+    && !(path.posix.isAbsolute(value) && value.includes("\\"));
+}
+
+function nodeCandidateDedupeKey(value) {
+  // Node also considers `/opt/...` win32-absolute. Keep POSIX absolutes
+  // case-sensitive; only drive/UNC/rooted-Windows-only forms are normalized.
+  return path.win32.isAbsolute(value) && !path.posix.isAbsolute(value)
+    ? value.replace(/\\/g, "/").toLowerCase()
+    : value;
+}
+
+function isDirectClawdHookPath(value) {
+  if (typeof value !== "string") return false;
+  const text = value.trim();
+  if (!text || /[\r\n\0$`]/.test(text) || /%[^%]+%/.test(text)) return false;
+  return crossPlatformBasename(text) === CLAUDE_STATE_HOOK_MARKER;
+}
+
+/**
+ * Recognize only the externally evidenced POSIX env-indirected Claude state
+ * hook command. This is syntax recognition, not ownership: callers must also
+ * prove settings.env.CLAWD_HOOK_PATH resolves to the Clawd marker.
+ */
+function parseClaudeEnvStateHookCommand(command, event) {
+  if (typeof event !== "string" || !event) return null;
+  const tokens = parseSimpleDoubleQuotedCommand(command);
+  if (!tokens || tokens.length !== 3) return null;
+  const [interpreter, hookPath, eventToken] = tokens;
+  if (!CLAUDE_HOOK_PATH_VAR_TOKENS.has(hookPath.value)) return null;
+  if (eventToken.quoted || eventToken.value !== event) return null;
+
+  let interpreterKind = null;
+  if (CLAUDE_NODE_BIN_VAR_TOKENS.has(interpreter.value)) {
+    interpreterKind = "env";
+  } else if (interpreter.value === "node") {
+    interpreterKind = "bare";
+  } else if (isDirectAbsoluteNodePath(interpreter.value, { quoted: interpreter.quoted })) {
+    interpreterKind = "absolute";
+  }
+  if (!interpreterKind) return null;
+
+  return {
+    interpreter: interpreter.value,
+    interpreterKind,
+    hookPathToken: hookPath.value,
+  };
+}
+
+function classifyManagedClaudeStateHookCommand(command, settings, event) {
+  // Preserve the installer's historical literal-marker ownership boundary.
+  // Other integrations intentionally decode PowerShell EncodedCommand via
+  // commandMatchesMarker(), but #852 must not broaden Claude ownership from
+  // a raw filename marker to arbitrary decoded payloads.
+  if (typeof command === "string" && command.includes(CLAUDE_STATE_HOOK_MARKER)) return "literal";
+  if (!parseClaudeEnvStateHookCommand(command, event)) return null;
+  const env = settings && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : null;
+  if (!env || !Object.prototype.hasOwnProperty.call(env, "CLAWD_HOOK_PATH")) return null;
+  return isDirectClawdHookPath(env.CLAWD_HOOK_PATH) ? "env" : null;
+}
+
+function getClaudeEnvNodeBinCandidates(settings, parsedCommand = null) {
+  const candidates = [];
+  const seen = new Set();
+  const append = (value) => {
+    if (!isSafeNodeExecutableCandidate(value)) return;
+    const key = nodeCandidateDedupeKey(value);
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(value);
+  };
+
+  if (parsedCommand && parsedCommand.interpreterKind === "absolute") {
+    append(parsedCommand.interpreter);
+  }
+  const env = settings && typeof settings.env === "object" && !Array.isArray(settings.env)
+    ? settings.env
+    : null;
+  if (env && Object.prototype.hasOwnProperty.call(env, "CLAWD_NODE_BIN")) {
+    append(typeof env.CLAWD_NODE_BIN === "string" ? env.CLAWD_NODE_BIN.trim() : "");
+  }
+  return candidates;
+}
+
+function getClaudeEnvNodeBinCandidate(settings, parsedCommand = null) {
+  return getClaudeEnvNodeBinCandidates(settings, parsedCommand)[0] || null;
+}
+
+function findManagedClaudeEnvNodeBinCandidates(settings) {
+  if (!settings || !settings.hooks || typeof settings.hooks !== "object") return [];
+  const candidates = [];
+  const seen = new Set();
+  const append = (value) => {
+    const key = nodeCandidateDedupeKey(value);
+    if (seen.has(key)) return;
+    seen.add(key);
+    candidates.push(value);
+  };
+  const collect = (hook, event) => {
+    if (!hook || typeof hook.command !== "string") return;
+    if (classifyManagedClaudeStateHookCommand(hook.command, settings, event) !== "env") return;
+    const parsed = parseClaudeEnvStateHookCommand(hook.command, event);
+    for (const candidate of getClaudeEnvNodeBinCandidates(settings, parsed)) append(candidate);
+  };
+
+  for (const [event, entries] of Object.entries(settings.hooks)) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      if (!entry || typeof entry !== "object") continue;
+      collect(entry, event);
+      if (!Array.isArray(entry.hooks)) continue;
+      for (const hook of entry.hooks) collect(hook, event);
+    }
+  }
+  return candidates;
 }
 
 function removeMatchingCommandHooks(entries, predicate) {
@@ -570,6 +860,7 @@ function findHookCommands(settings, marker, options) {
 }
 
 module.exports = {
+  CURSOR_HOOK_SENTINEL,
   stripUtf8Bom,
   readTextFileStripBom,
   readTextFileStripBomAsync,
@@ -588,12 +879,21 @@ module.exports = {
   DEFAULT_BACKUP_KEEP,
   asarUnpackedPath,
   commandMatchesMarker,
+  classifyManagedClaudeStateHookCommand,
+  findManagedClaudeEnvNodeBinCandidates,
+  getClaudeEnvNodeBinCandidate,
+  getClaudeEnvNodeBinCandidates,
+  isDirectAbsoluteNodePath,
+  isSafeNodeExecutableCandidate,
+  parseClaudeEnvStateHookCommand,
   extractExistingNodeBin,
   extractExistingNodeBinFromCommands,
   findHookCommands,
   removeMatchingCommandHooks,
   removeMatchingHttpHooks,
   formatNodeHookCommand,
+  resolveWslDistroEnv,
+  buildPortableStatuslineCommand,
   buildWindowsEncodedNodeHookCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,

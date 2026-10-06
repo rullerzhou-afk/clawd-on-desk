@@ -5,15 +5,24 @@ const assert = require("node:assert/strict");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const childProcess = require("child_process");
 const { EventEmitter } = require("events");
 
 const {
   HOOK_FILES,
   resolveHooksDir,
-  deploy,
-  startCodexMonitor,
-  stopCodexMonitor,
+  deploy: secureDeploy,
+  startCodexMonitor: secureStartCodexMonitor,
+  stopCodexMonitor: secureStopCodexMonitor,
+  uninstallRemoteIntegrations: secureUninstallRemoteIntegrations,
+  __test,
 } = require("../src/remote-ssh-deploy");
+// Preserve focused coverage of the retired implementation as a test-only
+// seam. The public exports below are exercised separately and never fall back.
+const deploy = __test.legacyDeploy;
+const startCodexMonitor = __test.legacyStartCodexMonitor;
+const stopCodexMonitor = __test.legacyStopCodexMonitor;
+const uninstallRemoteIntegrations = __test.legacyUninstallRemoteIntegrations;
 const { clearRemoteNodeCache } = require("../src/remote-ssh-node");
 
 const REPO_ROOT = path.join(__dirname, "..");
@@ -22,37 +31,2579 @@ afterEach(() => {
   clearRemoteNodeCache();
 });
 
-// ── Manifest consistency: HOOK_FILES vs scripts/remote-deploy.sh FILES=() ──
-//
-// Strict regex parser per v6/v7 — expects each line inside FILES=( ... ) to
-// be exactly `"$HOOKS_DIR/<basename>"`. Anything else (comments, vars,
-// continuations) fails the test, forcing maintainers to update either the
-// parser or the manifest deliberately.
-test("HOOK_FILES matches scripts/remote-deploy.sh FILES=() array exactly", () => {
-  const sh = fs.readFileSync(path.join(REPO_ROOT, "scripts", "remote-deploy.sh"), "utf8");
-  const m = sh.match(/^FILES=\(([\s\S]*?)^\)/m);
-  assert.ok(m, "FILES=() array not found in remote-deploy.sh");
-  const block = m[1];
-  const lines = block.split("\n");
-  const lineRegex = /^\s*"\$HOOKS_DIR\/([^"]+)"\s*$/;
-  const shellNames = [];
-  for (const raw of lines) {
-    const line = raw.replace(/\r$/, "");
-    if (line.trim() === "") continue;
-    const lm = line.match(lineRegex);
-    assert.ok(lm, `Unexpected FILES line (must match ^\\s*"\\$HOOKS_DIR/<name>"\\s*$): ${JSON.stringify(line)}`);
-    shellNames.push(lm[1]);
-  }
-  // Set equality — order doesn't matter, but both lists must agree.
-  const a = [...HOOK_FILES].sort();
-  const b = [...shellNames].sort();
-  assert.deepEqual(a, b, "HOOK_FILES (Node) and FILES=() (shell) must list the same hook files");
+test("scripts/remote-deploy.sh is a fail-fast tombstone with no legacy transport", () => {
+  const sh = fs.readFileSync(
+    path.join(REPO_ROOT, "scripts", "remote-deploy.sh"),
+    "utf8",
+  ).replace(/\r\n/g, "\n");
+  assert.match(sh, /^#!\/usr\/bin\/env bash\n(?:echo .+\n)exit 2\n$/);
+  assert.match(sh, /Settings -> Remote SSH/);
+  assert.doesNotMatch(sh, /\bssh\b|\bscp\b|RemoteForward|23333|FILES=\(/);
 });
 
 test("HOOK_FILES entries all exist in hooks/", () => {
   for (const name of HOOK_FILES) {
     const full = path.join(REPO_ROOT, "hooks", name);
     assert.ok(fs.existsSync(full), `missing on disk: hooks/${name}`);
+  }
+});
+
+function secureFixture(overrides = {}) {
+  const profile = {
+    id: "profile-a",
+    label: "Profile A",
+    host: "user@example.test",
+    remoteForwardPort: 23334,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    routingNonce: "a".repeat(32),
+    autoStartCodexMonitor: false,
+    ...overrides.profile,
+  };
+  const identityTxn = {
+    runtimeKey: profile.runtimeKey,
+    layoutVersion: profile.layoutVersion,
+    phase: "rotating",
+    fromNonce: profile.routingNonce,
+    toNonce: "b".repeat(32),
+    startedAt: 1_000,
+    previousExpiresAt: 901_000,
+    steps: {},
+    ...overrides.identityTxn,
+  };
+  return {
+    profile,
+    identityTxn,
+    installId: "c".repeat(64),
+  };
+}
+
+// ── Hermes phase fixtures ──
+//
+// The Hermes preflight fields are additive: with `hermes` unset the preflight
+// JSON is byte-for-byte the pre-Hermes payload, the phase reports "not
+// applicable", and NO spawn index moves. Every existing test keeps its
+// indices.
+const HERMES_ROOT_HOME = "/home/remote-user/.hermes";
+const HERMES_PROFILE_HOME = "/home/remote-user/.hermes/profiles/qarpus";
+
+// hermes-install.js is a HOOK_FILES member now, so its name also appears in
+// the hook promotion and hash-verification commands. Only the fenced remote
+// *install* run carries --source-dir.
+function isHermesInstallerRun(command) {
+  return command.includes("hermes-install.js") && command.includes("'--source-dir'");
+}
+
+function hermesTarget(home, kind, plugin = "absent") {
+  return { home, kind, plugin };
+}
+
+function hermesResultTarget(home, kind, overrides = {}) {
+  return {
+    home,
+    kind,
+    plugin: "absent",
+    action: "installed",
+    status: "ok",
+    reason: null,
+    message: "installed",
+    hashes: { "plugin.yaml": "a".repeat(64), "__init__.py": "b".repeat(64) },
+    marker: true,
+    enabled: true,
+    activation: "next-session",
+    warnings: [],
+    ...overrides,
+  };
+}
+
+function hermesInstallerStdout(result = {}) {
+  return `CLAWD_HERMES_RESULT_V1=${JSON.stringify({
+    schemaVersion: 1,
+    operation: "install",
+    status: "ok",
+    message: "Hermes plugin installed",
+    remote: true,
+    cliCommand: "/home/remote-user/.local/bin/hermes",
+    targets: [hermesResultTarget(HERMES_ROOT_HOME, "root")],
+    activeGatewayUnits: ["hermes-gateway.service"],
+    ...result,
+  })}\n`;
+}
+
+function secureHappySpawn(options = {}) {
+  let index = 0;
+  const hermes = options.hermes || null;
+  const hermesTargets = hermes && hermes.present
+    ? (hermes.targets || [hermesTarget(HERMES_ROOT_HOME, "root")])
+    : [];
+  const basePreflight = options.preflight || {
+    ok: true,
+    identity: false,
+    legacyTraces: 0,
+    claudePresent: true,
+    codexPresent: true,
+    copilotPresent: true,
+  };
+  const preflight = hermes
+    ? {
+        ...basePreflight,
+        hermesHome: HERMES_ROOT_HOME,
+        hermesPresent: !!hermes.present,
+        hermesTargets,
+      }
+    : basePreflight;
+  return makeRecordingSpawn((_child, meta) => {
+    const child = _child;
+    const current = index++;
+    const command = String((meta && meta.args && meta.args.at(-1)) || "");
+    let response = { code: 0 };
+    if (options.responses && Object.prototype.hasOwnProperty.call(options.responses, current)) {
+      response = options.responses[current];
+    } else if (current === 0) response = { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/remote-user\n" };
+    else if (current === 1) response = { code: 0, stdout: `${nodeProbeStdout()}\n` };
+    else if (current === 2 && options.lockFailure) response = options.lockFailure;
+    else if (current === 3) response = options.preflightFailure || {
+      code: 0,
+      stdout: `${JSON.stringify(preflight)}\n`,
+    };
+    else if (current === 14) response = {
+      code: 0,
+      stdout: `${options.permissionMode === "native" ? "native" : "managed"}\n`,
+    };
+    // Keyed by content, not index: the Hermes installer runs last and its
+    // position shifts with the optional Codex monitor step.
+    if (hermes && hermes.present && isHermesInstallerRun(command)) {
+      response = hermes.installer || {
+        code: 0,
+        stdout: hermesInstallerStdout(hermes.result || {}),
+      };
+    } else if (hermes && hermes.present && hermes.cleanupFailure
+      && command.includes("rmdir ") && command.includes("-hermes")) {
+      response = hermes.cleanupFailure;
+    }
+    queueMicrotask(() => {
+      if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+      if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
+      const code = Object.hasOwn(response, "code") ? response.code : 0;
+      child.emit("exit", code, response.signal || null);
+      child.emit("close", code, response.signal || null);
+    });
+  });
+}
+
+function secureIsolatedHappySpawn(options = {}) {
+  let index = 0;
+  const cliCapabilities = options.cliCapabilities || {
+    claude: { present: true, path: "/opt/tools/claude", version: "2.1.211" },
+    codex: { present: true, path: "/opt/tools/codex", version: "0.100.0" },
+    copilot: { present: true, path: "/opt/tools/copilot", version: "1.0.0" },
+  };
+  const artifacts = options.artifacts || {
+    claude: { artifact: true, wrapper: true },
+    codex: { artifact: true, wrapper: true },
+    copilot: { artifact: true, wrapper: true },
+  };
+  const preflight = {
+    ok: true,
+    identity: false,
+    legacyTraces: 0,
+    claudePresent: false,
+    codexPresent: false,
+    copilotPresent: false,
+  };
+  return makeRecordingSpawn((child) => {
+    const current = index++;
+    let response = { code: 0 };
+    if (options.responses && Object.prototype.hasOwnProperty.call(options.responses, current)) {
+      response = options.responses[current];
+    } else if (current === 0) {
+      response = { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/shared\n" };
+    } else if (current === 1) {
+      response = { code: 0, stdout: `${nodeProbeStdout()}\n` };
+    } else if (current === 3) {
+      response = { code: 0, stdout: `${JSON.stringify(preflight)}\n` };
+    } else if (current === 4) {
+      response = { code: 0, stdout: `${JSON.stringify(cliCapabilities)}\n` };
+    } else if (current === 16) {
+      response = { code: 0, stdout: "managed\n" };
+    } else if (current === 17) {
+      response = { code: 0, stdout: `${JSON.stringify(artifacts)}\n` };
+    }
+    queueMicrotask(() => {
+      if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+      if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
+      const code = response.code == null ? 0 : response.code;
+      child.emit("exit", code, null);
+      child.emit("close", code, null);
+    });
+  });
+}
+
+test("public deploy and cleanup APIs fail closed without secure ownership", async () => {
+  const result = await secureDeploy({
+    profile: { id: "legacy", host: "user@host", remoteForwardPort: 23333 },
+  });
+  assert.deepEqual(result, {
+    ok: false,
+    skipped: true,
+    step: "identity",
+    reason: "secure_identity_required",
+    stderr: "A trusted installation binding and active identity transaction are required; no remote mutation was attempted.",
+  });
+
+  for (const operation of [
+    secureStartCodexMonitor,
+    secureStopCodexMonitor,
+    secureUninstallRemoteIntegrations,
+  ]) {
+    const cleanup = await operation({
+      profile: { id: "legacy", host: "user@host", remoteForwardPort: 23333 },
+    });
+    assert.equal(cleanup.ok, false);
+    assert.equal(cleanup.skipped, true);
+    assert.equal(cleanup.reason, "ownership_unverified");
+  }
+});
+
+test("secure deploy holds a fenced lease, verifies every component, and never puts nonce in argv", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn();
+  const runtime = makeRuntimeStub();
+  const stepUpdates = [];
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.secure, true);
+  assert.equal(result.transactionReady, true);
+  assert.deepEqual(stepUpdates.map(([name]) => name), [
+    "identity",
+    "secureMarker",
+    "hookFiles",
+    "installClaude",
+    "installCodex",
+    "installCopilot",
+    "claudePermission",
+    "codexMonitor",
+  ]);
+  assert.equal(stepUpdates.at(-1)[1].status, "not-applicable");
+
+  const allArgv = recorder.calls.flatMap((call) => call.args).join("\n");
+  assert.equal(allArgv.includes(fixture.identityTxn.toNonce), false);
+  const secretWrites = recorder.calls.filter((call) =>
+    String(call.child._stdin || "").includes(fixture.identityTxn.toNonce));
+  assert.equal(secretWrites.length, 2, "identity write and read-back verification use stdin");
+
+  const scpIndex = recorder.calls.findIndex((call) => call.command === "scp");
+  const identityIndex = recorder.calls.findIndex((call) =>
+    String(call.child._stdin || "").includes('"routingNonce"'));
+  const markerIndex = recorder.calls.findIndex((call) =>
+    call.child._stdin === "clawd-ssh-secure-v1");
+  assert.ok(identityIndex > 2);
+  assert.ok(markerIndex > identityIndex);
+  assert.ok(scpIndex > markerIndex);
+
+  const liveSshCalls = recorder.calls.slice(4, -1).filter((call) => call.command === "ssh");
+  for (const call of liveSshCalls) {
+    const command = String(call.args.at(-1));
+    assert.match(command, /leaseId/);
+    assert.match(command, /runtimeKey/);
+  }
+});
+
+test("secure deploy only stops a prior Codex monitor after matching its command line", async () => {
+  const fixture = secureFixture({
+    profile: { autoStartCodexMonitor: true },
+  });
+  const recorder = secureHappySpawn();
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async () => {},
+    },
+  });
+
+  assert.equal(result.ok, true);
+  const monitorMutation = recorder.calls
+    .map((call) => String(call.args.at(-1)))
+    .find((command) => command.includes("nohup env") && command.includes("codex-remote-monitor.js"));
+  assert.ok(monitorMutation);
+  assert.match(monitorMutation, /ps -p "\$pid" -o command=/);
+  assert.match(monitorMutation, /case "\$cmd" in/);
+});
+
+test("secure deploy lock contention exits before every live mutation", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    lockFailure: {
+      code: 73,
+      stdout: '{"leaseId":"other","runtimeKey":"account-default"}\n',
+    },
+  });
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "lock_busy");
+  assert.equal(recorder.calls.length, 3);
+  assert.equal(recorder.calls.some((call) => call.command === "scp"), false);
+});
+
+test("known lock contention restores the managed stage, while an ambiguous acquire quarantines", async () => {
+  const fixture = secureFixture();
+  const layout = {
+    deployLockDir: "/home/remote/.clawd/deploy.lock",
+    runtimeKey: fixture.profile.runtimeKey,
+    layoutVersion: fixture.profile.layoutVersion,
+  };
+  for (const code of [73, 74]) {
+    const recorder = makeRecordingSpawn({ code, stdout: code === 73 ? "other-owner\n" : "" });
+    const stages = [];
+    const result = await __test.acquireDeployLock({
+      profile: fixture.profile,
+      layout,
+      installId: fixture.installId,
+      leaseId: "d".repeat(32),
+      spawn: recorder.spawn,
+      runtime: { setManagedLockStage: (stage) => stages.push(stage) },
+      now: () => 123,
+    });
+    assert.equal(result.ok, false);
+    assert.deepEqual(stages, ["acquire-attempted", "before-acquire"]);
+  }
+
+  const recorder = makeRecordingSpawn({ code: 75 });
+  const stages = [];
+  let invalidated = null;
+  await assert.rejects(__test.acquireDeployLock({
+    profile: fixture.profile,
+    layout,
+    installId: fixture.installId,
+    leaseId: "e".repeat(32),
+    spawn: recorder.spawn,
+    runtime: {
+      setManagedLockStage: (stage) => stages.push(stage),
+      invalidateManagedOperation: (err) => { invalidated = err; },
+    },
+    now: () => 123,
+  }), (err) => err && err.code === "lock_acquire_unknown"
+    && err.recoveryCode === "manual_lock_inspection_required");
+  assert.deepEqual(stages, ["acquire-attempted"]);
+  assert.ok(invalidated);
+});
+
+test("managed mutating close 255 is an unknown result that invalidates the operation", async () => {
+  const child = makeFakeChild();
+  let invalidated = null;
+  const runtime = {
+    spawnManagedTransportChild: () => child,
+    assertTransportActive: () => {},
+    invalidateManagedOperation: (err) => {
+      invalidated = err;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+  };
+  const pending = __test.spawnAndWait(null, "ssh", ["host", "mutate"], {
+    runtime,
+    role: "test-mutation",
+    mutation: true,
+  });
+  queueMicrotask(() => {
+    child.stderr.emit("data", Buffer.from(
+      "Connection closed; ProxyCommand gh cs ssh --stdio ghp_12345678901234567890 Bearer secret-token /private/id_rsa",
+    ));
+    child.emit("exit", 255, null);
+    child.emit("close", 255, null);
+  });
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "transport_unknown_result");
+    assert.equal(err.recoveryCode, "manual_lock_inspection_required");
+    assert.equal(err.drainVerified, true);
+    assert.equal(Object.hasOwn(err, "stderr"), false);
+    const serialized = JSON.stringify(err);
+    assert.doesNotMatch(serialized, /ghp_|secret-token|id_rsa|ProxyCommand/i);
+    return true;
+  });
+  assert.ok(invalidated);
+});
+
+test("verified deploy-lock release resets the managed lock stage", async () => {
+  const child = makeFakeChild();
+  const stages = [];
+  const runtime = {
+    spawnManagedTransportChild: () => child,
+    assertTransportActive: () => {},
+    invalidateManagedOperation: () => assert.fail("successful release must not invalidate"),
+    setManagedLockStage: (stage) => stages.push(stage),
+  };
+  const pending = __test.releaseDeployLock({
+    profile: secureFixture().profile,
+    layout: {
+      deployLockDir: "/home/remote/.clawd/deploy.lock",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+    },
+    leaseId: "a".repeat(32),
+    remoteNode: "/usr/bin/node",
+    runtime,
+  });
+  queueMicrotask(() => {
+    child.emit("exit", 0, null);
+    child.emit("close", 0, null);
+  });
+  const result = await pending;
+  assert.equal(result.code, 0);
+  assert.deepEqual(stages, ["before-acquire"]);
+});
+
+test("deploy-lock release close 255 is a recovery error, never success", async () => {
+  const child = makeFakeChild();
+  let invalidated = null;
+  const runtime = {
+    spawnManagedTransportChild: () => child,
+    assertTransportActive: () => {},
+    invalidateManagedOperation: (err) => {
+      invalidated = err;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => assert.fail("unknown release must retain lock-owned stage"),
+  };
+  const pending = __test.releaseDeployLock({
+    profile: secureFixture().profile,
+    layout: {
+      deployLockDir: "/home/remote/.clawd/deploy.lock",
+      runtimeKey: "account-default",
+      layoutVersion: 1,
+    },
+    leaseId: "a".repeat(32),
+    remoteNode: "/usr/bin/node",
+    runtime,
+  });
+  queueMicrotask(() => {
+    child.emit("exit", 255, null);
+    child.emit("close", 255, null);
+  });
+  await assert.rejects(pending, (err) => {
+    assert.equal(err.code, "transport_unknown_result");
+    assert.equal(err.recoveryCode, "manual_lock_inspection_required");
+    return true;
+  });
+  assert.ok(invalidated);
+});
+
+test("a lock-release unknown result preserves the primary secure operation failure", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    responses: {
+      3: {
+        code: 83,
+        stdout: '{"ok":false,"reason":"ownership_conflict","field":"installId"}\n',
+      },
+      4: { code: 255, stderr: "Connection closed by remote host" },
+    },
+  });
+  let active = true;
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => recorder.spawn(spec.tool, spec.args, spec.options),
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive transport");
+    },
+    invalidateManagedOperation: (err) => {
+      active = false;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => {},
+  };
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.step, "preflight");
+  assert.equal(result.reason, "ownership_conflict");
+  assert.equal(result.recoveryCode, "manual_lock_inspection_required");
+  assert.match(result.recoveryError, /manual inspection/i);
+});
+
+test("owned monitor cleanup preserves its known failure when lock release is unknown", async () => {
+  const fixture = secureFixture();
+  const profile = {
+    ...fixture.profile,
+    installId: fixture.installId,
+    remoteHome: "/home/remote",
+  };
+  const responses = [
+    { code: 0 },
+    { code: 0, stdout: '{"ok":true,"identity":true}\n' },
+    { code: 42, stderr: "monitor stop failed" },
+    { code: 255, stderr: "Connection closed by remote host" },
+  ];
+  let index = 0;
+  let active = true;
+  const runtime = {
+    spawnManagedTransportChild: () => {
+      const child = makeFakeChild();
+      const response = responses[index++];
+      queueMicrotask(() => {
+        if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+        if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
+        child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
+      });
+      return child;
+    },
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive transport");
+    },
+    invalidateManagedOperation: (err) => {
+      active = false;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => {},
+  };
+  const result = await secureStopCodexMonitor({
+    profile,
+    runtime,
+    deps: {
+      nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.stderr, "monitor stop failed");
+  assert.equal(result.recoveryCode, "manual_lock_inspection_required");
+  assert.match(result.recoveryError, /manual inspection/i);
+});
+
+test("secure deploy never releases its lock after an unknown-result mutation", async () => {
+  const fixture = secureFixture();
+  const roles = [];
+  const stages = [];
+  let active = true;
+  let invalidated = null;
+  let index = 0;
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => {
+      const child = makeFakeChild();
+      roles.push(spec.role);
+      const current = index++;
+      queueMicrotask(() => {
+        let response = { code: 0, stdout: "" };
+        if (current === 0) response.stdout = "CLAWD_REMOTE_HOME=/home/remote-user\n";
+        if (current === 1) response.stdout = `${nodeProbeStdout()}\n`;
+        if (current === 3) {
+          response.stdout = `${JSON.stringify({
+            ok: true,
+            identity: false,
+            legacyTraces: 0,
+            claudePresent: true,
+            codexPresent: true,
+            copilotPresent: true,
+          })}\n`;
+        }
+        if (spec.role === "identity-write") {
+          response = { code: 255, stdout: "", stderr: "Connection closed by remote host" };
+        }
+        if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+        if (response.stderr) child.stderr.emit("data", Buffer.from(response.stderr));
+        child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
+      });
+      return child;
+    },
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive");
+    },
+    invalidateManagedOperation: (err) => {
+      invalidated = err;
+      active = false;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: (stage) => stages.push(stage),
+  };
+
+  await assert.rejects(secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async () => {},
+    },
+  }), (err) => err && err.code === "transport_unknown_result");
+  assert.ok(invalidated);
+  assert.deepEqual(stages.slice(0, 2), ["acquire-attempted", "lock-owned"]);
+  assert.equal(roles.includes("identity-write"), true);
+  assert.equal(roles.includes("deploy-lock-release"), false);
+});
+
+test("secure deploy ownership conflict is found inside the lease and writes no live files", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    preflightFailure: {
+      code: 83,
+      stdout: '{"ok":false,"reason":"ownership_conflict","field":"installId"}\n',
+    },
+  });
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "ownership_conflict");
+  assert.equal(recorder.calls.length, 5, "home, node, lock, locked preflight, fenced release");
+  assert.equal(recorder.calls.some((call) => call.command === "scp"), false);
+});
+
+test("account-default deploy hard-blocks a live remote Clawd with no override or mutation", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    preflightFailure: {
+      code: 84,
+      stdout: '{"ok":false,"reason":"local_clawd_conflict"}\n',
+    },
+  });
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "local_clawd_conflict");
+  assert.match(result.message, /live Clawd desktop/);
+  assert.equal(recorder.calls.length, 5, "home, node, lock, locked preflight, release only");
+  assert.equal(recorder.calls.some((call) => call.command === "scp"), false);
+  assert.equal(Object.hasOwn(result, "canContinue"), false);
+});
+
+test("legacy traces always require explicit migration confirmation; local timestamps are not ownership", async () => {
+  const legacyPreflight = {
+    ok: true,
+    identity: false,
+    legacyTraces: 2,
+    claudePresent: true,
+    codexPresent: true,
+    copilotPresent: true,
+  };
+  const fixture = secureFixture();
+  const blockedRecorder = secureHappySpawn({ preflight: legacyPreflight });
+  const blocked = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: blockedRecorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(blocked.ok, false);
+  assert.equal(blocked.reason, "legacy_deployment_confirmation_required");
+  assert.equal(blockedRecorder.calls.length, 5, "only home, node, lock, preflight, and conditional release run");
+  assert.equal(blockedRecorder.calls.some((call) => call.command === "scp"), false);
+
+  for (const [label, profile, confirmed, expectedOk] of [
+    ["explicit confirmation", fixture.profile, true, true],
+    ["known prior deployment without confirmation", { ...fixture.profile, lastDeployedAt: 12345 }, false, false],
+  ]) {
+    const recorder = secureHappySpawn({ preflight: legacyPreflight });
+    const result = await secureDeploy({
+      ...fixture,
+      profile,
+      legacyMigrationConfirmed: confirmed,
+      runtime: makeRuntimeStub(),
+      deps: {
+        spawn: recorder.spawn,
+        hooksDir: path.join(REPO_ROOT, "hooks"),
+        detectRemoteShell: stubPosixShellProbe,
+        randomBytes: () => Buffer.alloc(16, 0xab),
+      },
+    });
+    assert.equal(result.ok, expectedOk, label);
+    assert.equal(recorder.calls.some((call) => call.command === "scp"), expectedOk, label);
+  }
+});
+
+test("losing the lease after staging prevents hook promotion and all installers", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    responses: {
+      9: { code: 92, stderr: "lease changed" },
+    },
+  });
+  const updates = [];
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async (name, update) => updates.push([name, update]),
+    },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.step, "hook-files");
+  assert.equal(
+    updates.some(([name, update]) => name === "hookFiles" && update.status === "failed"),
+    true,
+  );
+  const commands = recorder.calls.map((call) => String(call.args.at(-1)));
+  assert.equal(commands.some((command) => command.includes("install.js") && command.includes("--remote")), false);
+  assert.equal(commands.some((command) =>
+    command.includes("codex-install.js") && command.includes("--remote")), false);
+});
+
+test("every applicable identity component failure leaves the transaction uncommittable", async () => {
+  const cases = [
+    ["identity", 5, "identity"],
+    ["secure-marker", 7, "secureMarker"],
+    ["hook-files", 8, "hookFiles"],
+    ["install-claude", 11, "installClaude"],
+    ["install-codex", 12, "installCodex"],
+    ["install-copilot", 13, "installCopilot"],
+    ["claude-permission", 14, "claudePermission"],
+    ["codex-monitor", 15, "codexMonitor"],
+  ];
+  for (const [expectedStep, failureIndex, txnStep] of cases) {
+    const fixture = secureFixture({
+      profile: { autoStartCodexMonitor: expectedStep === "codex-monitor" },
+    });
+    const recorder = secureHappySpawn({
+      responses: {
+        [failureIndex]: { code: 1, stderr: `forced ${expectedStep} failure` },
+      },
+    });
+    const updates = [];
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: {
+        spawn: recorder.spawn,
+        hooksDir: path.join(REPO_ROOT, "hooks"),
+        detectRemoteShell: stubPosixShellProbe,
+        randomBytes: () => Buffer.alloc(16, 0xab),
+        onIdentityStep: async (name, update) => updates.push([name, update]),
+      },
+    });
+    assert.equal(result.ok, false, expectedStep);
+    assert.equal(result.step, expectedStep, expectedStep);
+    assert.equal(
+      updates.some(([name, update]) => name === txnStep && update.status === "failed"),
+      true,
+      `${txnStep} must persist failed evidence`,
+    );
+    assert.equal(result.transactionReady, undefined, expectedStep);
+  }
+});
+
+test("native permission fallback and absent optional agents persist evidence-backed N/A steps", async () => {
+  const fixture = secureFixture();
+  const nativeRecorder = secureHappySpawn({ permissionMode: "native" });
+  const nativeUpdates = [];
+  const native = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: nativeRecorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async (name, update) => nativeUpdates.push([name, update]),
+    },
+  });
+  assert.equal(native.ok, true);
+  const permission = nativeUpdates.find(([name]) => name === "claudePermission")[1];
+  assert.equal(permission.status, "not-applicable");
+  assert.match(permission.evidence, /native approval/);
+  const monitor = nativeUpdates.find(([name]) => name === "codexMonitor")[1];
+  assert.equal(monitor.status, "not-applicable");
+  assert.ok(monitor.evidence);
+});
+
+// ── Hermes Agent phase ──
+
+const IDENTITY_STEP_NAMES = [
+  "identity",
+  "secureMarker",
+  "hookFiles",
+  "installClaude",
+  "installCodex",
+  "installCopilot",
+  "claudePermission",
+  "codexMonitor",
+];
+
+function accountDefaultLayout(remoteHome = "/home/remote-user") {
+  return require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome,
+  });
+}
+
+function hermesStagePaths(leaseByte = 0xab) {
+  const layout = accountDefaultLayout();
+  const leaseId = Buffer.alloc(16, leaseByte).toString("hex");
+  const flatStage = path.posix.join(layout.deployStagingDir, leaseId);
+  return { layout, leaseId, flatStage, hermesStage: `${flatStage}-hermes` };
+}
+
+function deployDeps(extra = {}) {
+  return {
+    hooksDir: path.join(REPO_ROOT, "hooks"),
+    detectRemoteShell: stubPosixShellProbe,
+    randomBytes: () => Buffer.alloc(16, 0xab),
+    onIdentityStep: async () => {},
+    ...extra,
+  };
+}
+
+function lastArg(call) {
+  return String(call.args.at(-1));
+}
+
+test("no Hermes on the remote: the phase is not applicable and adds no spawn at all", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({ hermes: { present: false } });
+  const runtime = makeRuntimeStub();
+  const stepUpdates = [];
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: deployDeps({
+      spawn: recorder.spawn,
+      onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.hermes, null);
+  const commands = recorder.calls.map(lastArg);
+  assert.equal(commands.some(isHermesInstallerRun), false);
+  assert.equal(commands.some((command) => command.includes("-hermes")), false);
+  assert.equal(recorder.calls.filter((call) => call.command === "scp").length, 1);
+  // No transaction step is added for Hermes in any outcome.
+  assert.deepEqual(stepUpdates.map(([name]) => name), IDENTITY_STEP_NAMES);
+  const hermesProgress = runtime.events
+    .filter(({ payload }) => payload && payload.step === "install-hermes")
+    .map(({ payload }) => [payload.status, payload.message]);
+  assert.deepEqual(hermesProgress, [["ok", "not applicable"]]);
+  assert.equal(
+    runtime.events.some(({ payload }) => payload && payload.step === "hermes-files"),
+    false,
+  );
+});
+
+test("Hermes phase stages exactly two assets, installs under the fence, and removes its own stage", async () => {
+  const fixture = secureFixture();
+  const { leaseId, flatStage, hermesStage } = hermesStagePaths();
+  const recorder = secureHappySpawn({
+    hermes: {
+      present: true,
+      targets: [
+        hermesTarget(HERMES_ROOT_HOME, "root", "absent"),
+        hermesTarget(HERMES_PROFILE_HOME, "profile", "managed"),
+      ],
+      result: {
+        message: "Hermes plugin installed on 2 targets (1 installed, 1 updated)",
+        targets: [
+          hermesResultTarget(HERMES_ROOT_HOME, "root"),
+          hermesResultTarget(HERMES_PROFILE_HOME, "profile", {
+            plugin: "managed",
+            action: "updated",
+            activation: "restart-required",
+          }),
+        ],
+      },
+    },
+  });
+  const runtime = makeRuntimeStub();
+  const stepUpdates = [];
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: deployDeps({
+      spawn: recorder.spawn,
+      onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+    }),
+  });
+
+  assert.equal(result.ok, true);
+  // Q1: the Hermes stage is a SIBLING of the flat hook stage, never nested,
+  // so its rmdir can never break the flat-stage rmdir.
+  assert.equal(hermesStage, `${flatStage}-hermes`);
+  assert.equal(path.posix.dirname(hermesStage), path.posix.dirname(flatStage));
+  assert.equal(hermesStage.startsWith(`${flatStage}/`), false);
+  assert.match(hermesStage, new RegExp(`/${leaseId}-hermes$`));
+
+  const commands = recorder.calls.map(lastArg);
+  const labels = recorder.calls.map((call) => {
+    if (call.command === "scp") {
+      return call.args.some((arg) => String(arg).includes("hermes-plugin")) ? "hermes-scp" : "hook-scp";
+    }
+    const command = lastArg(call);
+    if (isHermesInstallerRun(command)) return "hermes-installer";
+    if (command.includes(hermesStage)) {
+      if (command.includes("mkdir -p")) return "hermes-mkdir";
+      if (command.includes("rmdir ")) return "hermes-cleanup";
+      return "hermes-readback";
+    }
+    if (command.includes("rm -rf")) return "lock-release";
+    return "other";
+  });
+  assert.deepEqual(labels.slice(15), [
+    "hermes-mkdir",
+    "hermes-scp",
+    "hermes-readback",
+    "hermes-installer",
+    "hermes-cleanup",
+    "lock-release",
+  ]);
+  assert.equal(labels.length, 21);
+
+  // scp carries exactly the two plugin assets into the exact stage directory.
+  const assetScp = recorder.calls.find((call, index) => call.command === "scp" && labels[index] === "hermes-scp");
+  assert.deepEqual(assetScp.args.slice(-3), [
+    path.join(REPO_ROOT, "hooks", "hermes-plugin", "plugin.yaml"),
+    path.join(REPO_ROOT, "hooks", "hermes-plugin", "__init__.py"),
+    `${fixture.profile.host}:${hermesStage}/`,
+  ]);
+
+  const installerCommand = commands.find(isHermesInstallerRun);
+  const expectedArgv = [
+    "--remote",
+    "--json",
+    "--source-dir",
+    hermesStage,
+    "--cli-timeout-ms",
+    "15000",
+    "--target-home",
+    HERMES_ROOT_HOME,
+    "--target-home",
+    HERMES_PROFILE_HOME,
+  ].map((arg) => `'${arg}'`).join(" ");
+  assert.ok(installerCommand.includes(expectedArgv), installerCommand);
+  assert.ok(installerCommand.includes(`HERMES_HOME='${HERMES_ROOT_HOME}'`));
+
+  // Every Hermes mutation is fenced by the lease assertion.
+  for (const label of ["hermes-mkdir", "hermes-installer", "hermes-cleanup"]) {
+    const command = commands[labels.indexOf(label)];
+    assert.match(command, /leaseId/, label);
+    assert.match(command, /runtimeKey/, label);
+  }
+
+  // Exact-file cleanup, after the installer, never recursive.
+  const cleanupCommand = commands[labels.indexOf("hermes-cleanup")];
+  assert.ok(labels.indexOf("hermes-cleanup") > labels.indexOf("hermes-installer"));
+  assert.ok(cleanupCommand.includes(
+    `rm -f '${hermesStage}/plugin.yaml' '${hermesStage}/__init__.py' && rmdir '${hermesStage}'`,
+  ));
+  assert.doesNotMatch(cleanupCommand, /rm -rf|rmSync|recursive/);
+
+  assert.equal(result.hermes.status, "ok");
+  assert.deepEqual(result.hermes.targets.map((target) => target.home), [
+    HERMES_ROOT_HOME,
+    HERMES_PROFILE_HOME,
+  ]);
+  assert.deepEqual(result.hermes.activeGatewayUnits, ["hermes-gateway.service"]);
+  // No installHermes transaction step: the persisted schema is untouched.
+  assert.deepEqual(stepUpdates.map(([name]) => name), IDENTITY_STEP_NAMES);
+
+  const hermesSteps = runtime.events
+    .filter(({ payload }) => payload && (payload.step === "hermes-files" || payload.step === "install-hermes"))
+    .map(({ payload }) => [payload.step, payload.status]);
+  assert.deepEqual(hermesSteps, [
+    ["hermes-files", "start"],
+    ["hermes-files", "ok"],
+    ["install-hermes", "start"],
+    ["install-hermes", "ok"],
+  ]);
+  const summary = runtime.events
+    .filter(({ payload }) => payload && payload.step === "install-hermes" && payload.status === "ok")
+    .map(({ payload }) => payload.message)[0];
+  assert.match(summary, /installed 1/);
+  assert.match(summary, /updated 1/);
+  assert.match(summary, /gateway restart required for/);
+});
+
+test("Hermes outer timeout scales with the frozen target count and is capped", () => {
+  assert.equal(__test.hermesOuterTimeoutMs(1), 30000 + 35000);
+  assert.equal(__test.hermesOuterTimeoutMs(2), 30000 + 2 * 35000);
+  assert.equal(__test.hermesOuterTimeoutMs(3), 30000 + 3 * 35000);
+  assert.equal(__test.hermesOuterTimeoutMs(7), 275000);
+  assert.equal(__test.hermesOuterTimeoutMs(8), 300000);
+  assert.equal(__test.hermesOuterTimeoutMs(50), 300000);
+});
+
+test("any per-target Hermes error fails the whole deploy, even under an aggregate warning", async () => {
+  const cases = [
+    [
+      "aggregate error and non-zero exit",
+      {
+        installer: {
+          code: 1,
+          stdout: hermesInstallerStdout({
+            status: "error",
+            message: "Hermes plugin registration failed on 1 of 2 targets",
+            targets: [
+              hermesResultTarget(HERMES_ROOT_HOME, "root"),
+              hermesResultTarget(HERMES_PROFILE_HOME, "profile", {
+                action: "failed",
+                status: "error",
+                reason: "hermes-cli-enable-failed",
+                marker: false,
+                enabled: false,
+                activation: null,
+              }),
+            ],
+          }),
+        },
+      },
+    ],
+    [
+      "aggregate warning with a failing profile still fails the deploy",
+      {
+        installer: {
+          code: 0,
+          stdout: hermesInstallerStdout({
+            status: "warning",
+            message: "Hermes plugin installed with warnings",
+            targets: [
+              hermesResultTarget(HERMES_ROOT_HOME, "root"),
+              hermesResultTarget(HERMES_PROFILE_HOME, "profile", {
+                action: "failed",
+                status: "error",
+                reason: "hermes-enable-not-verified",
+                marker: false,
+                enabled: false,
+                activation: null,
+              }),
+            ],
+          }),
+        },
+      },
+    ],
+  ];
+
+  for (const [label, hermesOptions] of cases) {
+    const fixture = secureFixture();
+    const { hermesStage } = hermesStagePaths();
+    const recorder = secureHappySpawn({
+      hermes: {
+        present: true,
+        targets: [
+          hermesTarget(HERMES_ROOT_HOME, "root"),
+          hermesTarget(HERMES_PROFILE_HOME, "profile"),
+        ],
+        ...hermesOptions,
+      },
+    });
+    const stepUpdates = [];
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: deployDeps({
+        spawn: recorder.spawn,
+        onIdentityStep: async (name, update) => stepUpdates.push([name, update]),
+      }),
+    });
+
+    assert.equal(result.ok, false, label);
+    assert.equal(result.step, "install-hermes", label);
+    assert.equal(result.reason, "hermes_install_failed", label);
+    assert.equal(result.transactionReady, undefined, label);
+    const commands = recorder.calls.map(lastArg);
+    // The installer returned a KNOWN result, so the stage is still cleaned.
+    assert.ok(
+      commands.some((command) => command.includes(`rmdir '${hermesStage}'`)),
+      `${label}: stage cleanup must still run`,
+    );
+    assert.ok(commands.some((command) => command.includes("rm -rf")), `${label}: lock released`);
+    // No Hermes transaction step exists, so nothing new can be marked failed.
+    assert.deepEqual(stepUpdates.map(([name]) => name), IDENTITY_STEP_NAMES, label);
+    assert.equal(stepUpdates.some(([, update]) => update.status === "failed"), false, label);
+  }
+});
+
+test("a foreign or symlinked Hermes plugin directory fails closed before any Hermes spawn", async () => {
+  for (const plugin of ["foreign", "symlink"]) {
+    const fixture = secureFixture();
+    const recorder = secureHappySpawn({
+      hermes: {
+        present: true,
+        targets: [
+          hermesTarget(HERMES_ROOT_HOME, "root", "managed"),
+          hermesTarget(HERMES_PROFILE_HOME, "profile", plugin),
+        ],
+      },
+    });
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: deployDeps({ spawn: recorder.spawn }),
+    });
+
+    assert.equal(result.ok, false, plugin);
+    assert.equal(result.step, "install-hermes", plugin);
+    assert.equal(result.reason, "hermes_plugin_ownership_conflict", plugin);
+    assert.match(result.message, /not managed by Clawd/, plugin);
+    assert.ok(result.message.includes(HERMES_PROFILE_HOME), plugin);
+    const commands = recorder.calls.map(lastArg);
+    assert.equal(commands.some((command) => command.includes("-hermes")), false, plugin);
+    assert.equal(commands.some(isHermesInstallerRun), false, plugin);
+    assert.equal(recorder.calls.filter((call) => call.command === "scp").length, 1, plugin);
+  }
+});
+
+test("an unparseable Hermes installer result fails the deploy but still cleans the stage", async () => {
+  const line = hermesInstallerStdout().trimEnd();
+  for (const [label, stdout] of [
+    ["two sentinels", `${line}\n${line}\n`],
+    ["invalid JSON", "CLAWD_HERMES_RESULT_V1={\n"],
+    ["no sentinel", "installed\n"],
+  ]) {
+    const fixture = secureFixture();
+    const { hermesStage } = hermesStagePaths();
+    const recorder = secureHappySpawn({
+      hermes: { present: true, installer: { code: 0, stdout } },
+    });
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: deployDeps({ spawn: recorder.spawn }),
+    });
+    assert.equal(result.ok, false, label);
+    assert.equal(result.step, "install-hermes", label);
+    assert.equal(result.reason, "hermes_install_result_invalid", label);
+    const commands = recorder.calls.map(lastArg);
+    assert.ok(commands.some((command) => command.includes(`rmdir '${hermesStage}'`)), label);
+  }
+});
+
+test("an unknown Hermes installer result runs no cleanup and never releases the lock", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn({
+    hermes: {
+      present: true,
+      installer: { code: 255, stderr: "Connection closed by remote host" },
+    },
+  });
+  const roles = [];
+  let active = true;
+  let invalidated = null;
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => {
+      roles.push(spec.role);
+      return recorder.spawn(spec.tool, spec.args, spec.options);
+    },
+    assertTransportActive: () => {
+      if (!active) throw new Error("inactive transport");
+    },
+    invalidateManagedOperation: (err) => {
+      active = false;
+      invalidated = err;
+      err.recoveryCode = "manual_lock_inspection_required";
+    },
+    setManagedLockStage: () => {},
+  };
+
+  await assert.rejects(
+    secureDeploy({ ...fixture, runtime, deps: deployDeps() }),
+    (err) => err && err.code === "transport_unknown_result" && err.role === "installer-hermes",
+  );
+  assert.ok(invalidated);
+  const { hermesStage } = hermesStagePaths();
+  const commands = recorder.calls.map(lastArg);
+  // Q1: no follow-up cleanup mutation in the unknown state — the stage, the
+  // lock and the recovery evidence all survive.
+  assert.equal(roles.includes("hermes-stage-cleanup"), false);
+  assert.equal(commands.some((command) => command.includes(`rmdir '${hermesStage}'`)), false);
+  assert.equal(roles.includes("deploy-lock-release"), false);
+  assert.equal(roles.filter((role) => role === "installer-hermes").length, 1, "never replayed");
+});
+
+test("ordinary SSH preserves the Hermes stage and lease after every unknown installer result", async () => {
+  for (const installer of [
+    { code: 255, stderr: "Connection closed by remote host" },
+    { code: 1, stderr: "read: Connection reset by peer" },
+    { code: 1, stderr: "EOF" },
+    { code: null, signal: "SIGTERM" },
+    { code: null },
+  ]) {
+    const recorder = secureHappySpawn({ hermes: { present: true, installer } });
+    await assert.rejects(secureDeploy({
+      ...secureFixture(), runtime: makeRuntimeStub(), deps: { ...deployDeps(), spawn: recorder.spawn },
+    }), (err) => err.code === "transport_unknown_result" && err.recoveryCode === "manual_lock_inspection_required");
+    const commands = recorder.calls.map(lastArg);
+    assert.ok(isHermesInstallerRun(commands.at(-1)), "no cleanup or lease release after uncertain install");
+    assert.equal(commands.filter(isHermesInstallerRun).length, 1);
+  }
+});
+
+test("ordinary mutation deadlines retain recovery state until the exact child closes", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const child = makeFakeChild();
+  const tracked = new Set();
+  const pending = __test.spawnAndWait(() => child, "ssh", ["host", "mutate"], {
+    mutation: true, timeoutMs: 10,
+    runtime: { registerChild: (c) => tracked.add(c), unregisterChild: (c) => tracked.delete(c) },
+  });
+  const rejected = assert.rejects(pending, (err) => err.code === "transport_drain_timeout"
+    && err.recoveryCode === "manual_lock_inspection_required" && err.drainVerified === false);
+  t.mock.timers.tick(10);
+  t.mock.timers.tick(5000);
+  await rejected;
+  assert.ok(tracked.has(child));
+  child.emit("close", null, "SIGTERM");
+  assert.equal(tracked.size, 0);
+});
+
+test("ordinary timed-out mutations remain unknown even if their child subsequently exits zero", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const child = makeFakeChild();
+  const pending = __test.spawnAndWait(() => child, "ssh", ["host", "mutate"], { mutation: true, timeoutMs: 10 });
+  const rejected = assert.rejects(pending, (err) => err.code === "transport_unknown_result"
+    && err.recoveryCode === "manual_lock_inspection_required" && err.timedOut === true);
+  t.mock.timers.tick(10);
+  child.emit("exit", 0, null);
+  child.emit("close", 0, null);
+  await rejected;
+});
+
+test("Q4: Hermes is the final remote mutation phase of the deploy", async () => {
+  const fixture = secureFixture({ profile: { autoStartCodexMonitor: true } });
+  const recorder = secureHappySpawn({ hermes: { present: true } });
+  const roles = [];
+  const runtime = {
+    emit: () => {},
+    spawnManagedTransportChild: (spec) => {
+      roles.push(spec.role);
+      return recorder.spawn(spec.tool, spec.args, spec.options);
+    },
+    assertTransportActive: () => {},
+    invalidateManagedOperation: () => {},
+    setManagedLockStage: () => {},
+  };
+  const result = await secureDeploy({ ...fixture, runtime, deps: deployDeps() });
+  assert.equal(result.ok, true);
+
+  const installerAt = roles.indexOf("installer-hermes");
+  assert.ok(installerAt > 0);
+  // Nothing runs after the Hermes installer except the phase's own stage
+  // cleanup and the lease teardown. Every other mutating phase — the Codex
+  // monitor restart included — happens before it.
+  //
+  // deploy-lock-release is itself a mutation, but it is the lease teardown
+  // that closes every secureDeploy outcome: no deploy phase can run after it,
+  // so "Hermes is the final remote mutation phase" means exactly this shape.
+  assert.deepEqual(roles.slice(installerAt + 1), ["hermes-stage-cleanup", "deploy-lock-release"]);
+  for (const mutatingRole of [
+    "layout-create",
+    "identity-write",
+    "secure-marker-write",
+    "hook-files-upload",
+    "hook-files-promote",
+    "installer-installClaude",
+    "installer-installCodex",
+    "installer-installCopilot",
+    "codex-monitor-restart",
+  ]) {
+    assert.ok(roles.indexOf(mutatingRole) >= 0, mutatingRole);
+    assert.ok(roles.indexOf(mutatingRole) < installerAt, `${mutatingRole} must precede Hermes`);
+  }
+});
+
+test("the read-only steps around the Hermes phase carry no mutation flag", async () => {
+  // Behavioural proof: a managed mutating spawn that closes 255 becomes an
+  // unknown transport result. These two spawns close 255 and stay ordinary
+  // known failures, so neither is declared as a mutation.
+  for (const [label, index, expectedStep] of [
+    ["claude permission readback", 14, "claude-permission"],
+    ["hermes staged asset readback", 17, "hermes-files"],
+  ]) {
+    const fixture = secureFixture();
+    const recorder = secureHappySpawn({
+      hermes: { present: true },
+      responses: { [index]: { code: 255, stderr: "Connection closed by remote host" } },
+    });
+    const runtime = {
+      emit: () => {},
+      spawnManagedTransportChild: (spec) => recorder.spawn(spec.tool, spec.args, spec.options),
+      assertTransportActive: () => {},
+      invalidateManagedOperation: () => assert.fail(`${label} must not be an unknown mutation`),
+      setManagedLockStage: () => {},
+    };
+    const result = await secureDeploy({ ...fixture, runtime, deps: deployDeps() });
+    assert.equal(result.ok, false, label);
+    assert.equal(result.step, expectedStep, label);
+  }
+});
+
+test("secure cleanup uninstalls the Hermes plugin before the shipped installer is removed", async () => {
+  const profile = {
+    ...secureFixture().profile,
+    installId: "c".repeat(64),
+    remoteHome: "/home/remote-user",
+  };
+  let index = 0;
+  const recorder = makeRecordingSpawn((child, meta) => {
+    const current = index++;
+    const isHermesCleanup = String(meta.args.at(-1)).includes("'--uninstall' '--remote' '--json'");
+    const response = isHermesCleanup
+      ? { code: 0, stdout: hermesInstallerStdout({ operation: "uninstall", targets: [hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "removed" })] }) }
+      : current === 1
+      ? {
+          code: 0,
+          stdout: `${JSON.stringify({
+            ok: true,
+            identity: true,
+            legacyTraces: 0,
+            legacyMonitorPresent: false,
+            claudePresent: true,
+            codexPresent: true,
+            copilotPresent: true,
+          })}\n`,
+        }
+      : { code: 0 };
+    queueMicrotask(() => {
+      if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+      child.emit("exit", response.code, null);
+      child.emit("close", response.code, null);
+    });
+  });
+  const cleaned = await secureUninstallRemoteIntegrations({
+    profile,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xcd),
+    },
+  });
+
+  assert.equal(cleaned.ok, true);
+  const commands = recorder.calls.map(lastArg);
+  const hermesIndex = commands.findIndex((command) =>
+    command.includes("hermes-install.js") && command.includes("'--uninstall'"));
+  const removalIndex = commands.findIndex((command) =>
+    command.includes("rm -f") && command.includes("copilot-install.js"));
+  assert.ok(hermesIndex >= 0, "hermes uninstall must run");
+  assert.ok(removalIndex > hermesIndex, "hook files are removed only after the uninstaller ran");
+  const hermesCommand = commands[hermesIndex];
+  assert.match(hermesCommand, /if \[ -f '[^']*hermes-install\.js' \]; then/);
+  assert.ok(hermesCommand.includes("'--uninstall' '--remote' '--json'"));
+  assert.ok(hermesCommand.includes("HERMES_HOME='/home/remote-user/.hermes'"));
+  assert.match(hermesCommand, /leaseId/);
+  assert.doesNotMatch(hermesCommand, /rm -rf/);
+});
+
+test("Hermes cleanup retains its payload and identity when a target remains or its result is invalid", async () => {
+  const conflictPath = `${HERMES_ROOT_HOME}/plugins/clawd-on-desk/foreign.txt`;
+  for (const [stdout, reason] of [
+    [hermesInstallerStdout({ operation: "uninstall", status: "warning", targets: [
+      hermesResultTarget(HERMES_ROOT_HOME, "root", { plugin: "foreign", action: "skipped", status: "warning", reason: "hermes-plugin-ownership-conflict", message: `Ownership conflict at ${conflictPath}` }),
+    ] }), "hermes_cleanup_incomplete"],
+    [hermesInstallerStdout({ operation: "uninstall", status: "warning", targets: [
+      hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "failed", status: "warning", message: "Directory not empty" }),
+    ] }), "hermes_cleanup_incomplete"],
+    ["", "hermes_cleanup_result_invalid"],
+    [hermesInstallerStdout({ operation: "uninstall", targets: [] }), "hermes_cleanup_result_invalid"],
+  ]) {
+    const recorder = makeRecordingSpawn([
+      { code: 0 }, { code: 0, stdout: '{"ok":true,"identity":true}\n' },
+      { code: 0 }, { code: 0 }, { code: 0 }, { code: 0 },
+      { code: 0, stdout }, { code: 0 },
+    ]);
+    const result = await secureUninstallRemoteIntegrations({
+      profile: { ...secureFixture().profile, installId: "c".repeat(64), remoteHome: "/home/remote-user" },
+      runtime: makeRuntimeStub(),
+      deps: { spawn: recorder.spawn, nodeBin: "/usr/bin/node", randomBytes: () => Buffer.alloc(16, 0xcd) },
+    });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, reason);
+    if (stdout.includes("foreign.txt")) assert.ok(result.stderr.includes(conflictPath));
+    assert.equal(recorder.calls.length, 8, "only lease release follows the incomplete cleanup");
+    assert.match(lastArg(recorder.calls.at(-1)), /leaseId/);
+    assert.doesNotMatch(lastArg(recorder.calls.at(-1)), /rm -f.*hermes-install/);
+  }
+});
+
+test("ordinary SSH preserves a known Hermes failure when stage cleanup loses its result", async () => {
+  const recorder = secureHappySpawn({ hermes: {
+    present: true,
+    installer: { code: 1, stdout: hermesInstallerStdout({ status: "error", message: "Hermes enable failed" }) },
+    cleanupFailure: { code: 255, stderr: "Connection closed" },
+  } });
+  const result = await secureDeploy({
+    ...secureFixture(), runtime: makeRuntimeStub(), deps: { ...deployDeps(), spawn: recorder.spawn },
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "hermes_install_failed");
+  assert.equal(result.message, "Hermes enable failed");
+  assert.equal(result.recoveryCode, "manual_lock_inspection_required");
+  assert.match(lastArg(recorder.calls.at(-1)), /rmdir.*-hermes/);
+});
+
+test("Hermes cleanup accepts diagnostic warnings and older deployments without an installer", async () => {
+  for (const result of [
+    { status: "warning", targets: [hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "removed", status: "warning" })], warnings: ["Could not inspect gateway services"] },
+    { targets: [], skipped: "installer-absent" },
+  ]) {
+    const recorder = makeRecordingSpawn([
+      { code: 0 }, { code: 0, stdout: '{"ok":true,"identity":true}\n' },
+      { code: 0 }, { code: 0 }, { code: 0 }, { code: 0 },
+      { code: 0, stdout: hermesInstallerStdout({ operation: "uninstall", ...result }) },
+    ]);
+    const cleaned = await secureUninstallRemoteIntegrations({
+      profile: { ...secureFixture().profile, installId: "c".repeat(64), remoteHome: "/home/remote-user" },
+      runtime: makeRuntimeStub(),
+      deps: { spawn: recorder.spawn, nodeBin: "/usr/bin/node", randomBytes: () => Buffer.alloc(16, 0xcd) },
+    });
+    assert.equal(cleaned.ok, true);
+    assert.equal(cleaned.hermes.status, result.status || "ok");
+    assert.ok(recorder.calls.some((call) => /rm -f.*hermes-install/.test(lastArg(call))));
+  }
+});
+
+test("the Hermes phase changes neither the identity step list nor the persisted txn schema", () => {
+  const {
+    REMOTE_IDENTITY_STEP_NAMES,
+    sanitizeIdentityTxn,
+  } = require("../src/remote-ssh-profile");
+  assert.deepStrictEqual([...REMOTE_IDENTITY_STEP_NAMES], IDENTITY_STEP_NAMES);
+  assert.equal(REMOTE_IDENTITY_STEP_NAMES.includes("installHermes"), false);
+
+  const persisted = {
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    phase: "verifying",
+    fromNonce: "a".repeat(32),
+    toNonce: "b".repeat(32),
+    startedAt: 1000,
+    previousExpiresAt: 901000,
+    steps: Object.fromEntries(IDENTITY_STEP_NAMES.map((name) => [
+      name,
+      { status: "done", evidence: "verified" },
+    ])),
+  };
+  const sanitized = sanitizeIdentityTxn(persisted, {
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+  });
+  assert.ok(sanitized);
+  assert.deepStrictEqual(Object.keys(sanitized.steps), IDENTITY_STEP_NAMES);
+
+  // An installHermes step is not persisted even if something offers one.
+  const withHermes = sanitizeIdentityTxn({
+    ...persisted,
+    steps: { ...persisted.steps, installHermes: { status: "done", evidence: "nope" } },
+  }, { runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1 });
+  assert.ok(withHermes);
+  assert.deepStrictEqual(Object.keys(withHermes.steps), IDENTITY_STEP_NAMES);
+});
+
+test("preflight freezes the Hermes target set and classifies plugin directories per C6", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and symlink semantics" : false,
+}, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-hermes-preflight-"));
+  try {
+    const hermesHome = path.join(temp, ".hermes");
+    fs.mkdirSync(hermesHome, { recursive: true });
+    fs.writeFileSync(path.join(hermesHome, "config.yaml"), "plugins: {}\n");
+
+    const managedYaml = 'name: "clawd-on-desk"\nversion: "0.3.0"\n';
+    const managedInit = 'CLAWD_SERVER_ID = "clawd-on-desk"\n';
+    const pluginDir = (home) => path.join(home, "plugins", "clawd-on-desk");
+    const makeProfile = (name) => {
+      const home = path.join(hermesHome, "profiles", name);
+      fs.mkdirSync(home, { recursive: true });
+      fs.writeFileSync(path.join(home, "config.yaml"), "plugins: {}\n");
+      fs.mkdirSync(pluginDir(home), { recursive: true });
+      return home;
+    };
+
+    // root: managed (marker + both files + tolerated __pycache__)
+    fs.mkdirSync(pluginDir(hermesHome), { recursive: true });
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "__init__.py"), managedInit);
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "clawd-ssh-secure-v1"), "clawd-ssh-secure-v1");
+    fs.mkdirSync(path.join(pluginDir(hermesHome), "__pycache__"));
+    fs.writeFileSync(path.join(pluginDir(hermesHome), "__pycache__", "x.pyc"), "");
+
+    const legacy = makeProfile("a-legacy");
+    fs.writeFileSync(path.join(pluginDir(legacy), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(legacy), "__init__.py"), managedInit);
+
+    const noEvidence = makeProfile("b-no-evidence");
+    fs.writeFileSync(path.join(pluginDir(noEvidence), "plugin.yaml"), 'name: "other"\n');
+    fs.writeFileSync(path.join(pluginDir(noEvidence), "__init__.py"), "pass\n");
+
+    const extra = makeProfile("c-extra-file");
+    fs.writeFileSync(path.join(pluginDir(extra), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(extra), "__init__.py"), managedInit);
+    fs.writeFileSync(path.join(pluginDir(extra), "notes.txt"), "hi");
+
+    const symlinked = makeProfile("d-symlink");
+    fs.writeFileSync(path.join(pluginDir(symlinked), "plugin.yaml"), managedYaml);
+    fs.symlinkSync(path.join(hermesHome, "config.yaml"), path.join(pluginDir(symlinked), "__init__.py"));
+
+    const badCache = makeProfile("e-bad-cache");
+    fs.writeFileSync(path.join(pluginDir(badCache), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(badCache), "__init__.py"), managedInit);
+    fs.mkdirSync(path.join(pluginDir(badCache), "__pycache__"));
+    fs.writeFileSync(path.join(pluginDir(badCache), "__pycache__", "note.txt"), "");
+
+    const absent = makeProfile("f-absent");
+    fs.rmdirSync(pluginDir(absent));
+
+    const badMarker = makeProfile("g-bad-marker");
+    fs.writeFileSync(path.join(pluginDir(badMarker), "plugin.yaml"), managedYaml);
+    fs.writeFileSync(path.join(pluginDir(badMarker), "__init__.py"), managedInit);
+    fs.writeFileSync(path.join(pluginDir(badMarker), "clawd-ssh-secure-v1"), "not-the-marker");
+
+    const layout = accountDefaultLayout(temp);
+    // The lines run inside buildOwnershipPreflightScript, which already has fs.
+    const script = [
+      "const fs=require('fs');",
+      ...__test.buildHermesPreflightLines(layout),
+      "console.log(JSON.stringify({hermesHome,hermesPresent,hermesTargets}));",
+    ].join("");
+    const run = childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    const detail = JSON.parse(run.stdout.trim().split(/\r?\n/).at(-1));
+
+    assert.equal(detail.hermesHome, `${temp}/.hermes`);
+    assert.equal(detail.hermesPresent, true);
+    assert.equal(detail.hermesTargets[0].kind, "root");
+    assert.deepEqual(
+      detail.hermesTargets.map((target) => [path.posix.basename(target.home), target.kind, target.plugin]),
+      [
+        [".hermes", "root", "managed"],
+        ["a-legacy", "profile", "legacy"],
+        ["b-no-evidence", "profile", "foreign"],
+        ["c-extra-file", "profile", "foreign"],
+        ["d-symlink", "profile", "symlink"],
+        ["e-bad-cache", "profile", "foreign"],
+        ["f-absent", "profile", "absent"],
+        ["g-bad-marker", "profile", "foreign"],
+      ],
+    );
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("profile-isolated runtimes report no Hermes home and no targets", () => {
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    remoteHome: "/home/shared",
+  });
+  assert.equal(__test.resolveRemoteHermesHome(layout), null);
+  const script = [
+    "const fs=require('fs');",
+    ...__test.buildHermesPreflightLines(layout),
+    "console.log(JSON.stringify({hermesHome,hermesPresent,hermesTargets}));",
+  ].join("");
+  const run = childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+  assert.equal(run.status, 0, run.stderr);
+  assert.deepEqual(JSON.parse(run.stdout.trim()), {
+    hermesHome: null,
+    hermesPresent: false,
+    hermesTargets: [],
+  });
+  // No HERMES_HOME leaks into a profile-isolated installer environment.
+  assert.equal(__test.buildRemoteInstallerEnv(layout, "path").includes("HERMES_HOME"), false);
+  assert.ok(__test.buildRemoteInstallerEnv(accountDefaultLayout(), "path")
+    .includes(`HERMES_HOME='${HERMES_ROOT_HOME}'`));
+});
+
+// ── §4.9: post-verify local Hermes enable ──
+//
+// After a fully verified Remote SSH deploy in which the Hermes phase actually
+// ran, Clawd flips the LOCAL Hermes toggle through the same Settings
+// controller command the Settings → Agents switch uses (setAgentFlag), so the
+// local ingress/state/permission gates accept the remote events. It never
+// writes the settings file and never touches integrationInstalled.
+
+function localEnableHarness({ agents = { hermes: { integrationInstalled: false, enabled: false } } } = {}) {
+  const commandCalls = [];
+  const state = { agents: JSON.parse(JSON.stringify(agents)) };
+  let profiles = [{
+    id: "p1",
+    label: "Pi",
+    host: "user@pi",
+    remoteForwardPort: 23333,
+    autoStartCodexMonitor: false,
+    connectOnLaunch: false,
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    layoutVersion: 1,
+    routingNonce: "b".repeat(32),
+    remoteHome: "/home/user",
+    lastDeployedAt: 1_700_000_000_000,
+  }];
+  const settingsController = {
+    getSnapshot: () => ({
+      remoteSsh: { installId: "a".repeat(64), profiles },
+      agents: state.agents,
+    }),
+    applyCommand: async (action, args) => {
+      commandCalls.push({ action, args });
+      if (action === "remoteSsh.beginIdentityRotation") {
+        profiles = profiles.map((profile) => (profile.id === args.id
+          ? {
+              ...profile,
+              identityTxn: {
+                runtimeKey: "account-default",
+                layoutVersion: 1,
+                phase: "rotating",
+                fromNonce: null,
+                toNonce: "c".repeat(32),
+                startedAt: 1,
+                previousExpiresAt: 900001,
+                steps: {},
+              },
+            }
+          : profile));
+        return { status: "ok" };
+      }
+      if (action === "setAgentFlag") {
+        // Mirrors src/settings-actions-agents.js: integrationInstalled is not
+        // in SETTABLE_AGENT_FLAGS, so this command can never write it.
+        assert.notEqual(args.flag, "integrationInstalled");
+        const current = state.agents[args.agentId] || {};
+        if (current[args.flag] === args.value) return { status: "ok", noop: true };
+        state.agents = {
+          ...state.agents,
+          [args.agentId]: { ...current, [args.flag]: args.value },
+        };
+        return { status: "ok" };
+      }
+      return { status: "ok" };
+    },
+  };
+  const ipcHandlers = new Map();
+  const ipcMain = {
+    handle: (channel, listener) => ipcHandlers.set(channel, listener),
+    removeHandler: (channel) => ipcHandlers.delete(channel),
+    invoke: async (channel, payload) => ipcHandlers.get(channel)({}, payload),
+  };
+  const runtime = new EventEmitter();
+  runtime.connect = () => null;
+  runtime.disconnect = (id) => ({ profileId: id, status: "idle" });
+  runtime.cleanup = () => {};
+  runtime.getProfileStatus = (id) => ({ profileId: id, status: "idle" });
+  runtime.listStatuses = () => [];
+  const BrowserWindow = {
+    getAllWindows: () => [{
+      isDestroyed: () => false,
+      webContents: { isDestroyed: () => false, send: () => {} },
+    }],
+  };
+  return {
+    commandCalls,
+    agents: () => state.agents,
+    register: (deployResult) => require("../src/remote-ssh-ipc").registerRemoteSshIpc({
+      ipcMain,
+      settingsController,
+      remoteSshRuntime: runtime,
+      BrowserWindow,
+      spawn: () => {
+        const child = new EventEmitter();
+        child.unref = () => {};
+        child.kill = () => {};
+        queueMicrotask(() => child.emit("spawn"));
+        return child;
+      },
+      getInstallationIdentity: () => ({ installId: "a".repeat(64) }),
+      enableProfileIsolation: true,
+      finalizeRetiredRemoteLayoutFn: async () => ({ ok: true }),
+      deployFn: async () => deployResult,
+    }),
+    invoke: (channel, payload) => ipcMain.invoke(channel, payload),
+  };
+}
+
+function deployResultWithHermes(hermes) {
+  return {
+    ok: true,
+    secure: true,
+    transactionReady: true,
+    remoteNode: { nodeBin: "/usr/bin/node", version: "20.1.0", source: "path" },
+    layout: { remoteHome: "/home/user" },
+    isolation: null,
+    hermes,
+  };
+}
+
+test("a verified deploy with a Hermes phase enables Hermes locally, leaving integrationInstalled alone", async () => {
+  for (const status of ["ok", "warning"]) {
+    const harness = localEnableHarness();
+    const ipc = harness.register(deployResultWithHermes({
+      status,
+      message: "Hermes plugin installed",
+      warning: null,
+      targets: [hermesResultTarget(HERMES_ROOT_HOME, "root")],
+      activeGatewayUnits: null,
+    }));
+    const result = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+    assert.equal(result.status, "ok", status);
+    assert.equal(result.hermes.status, status);
+
+    const flagCalls = harness.commandCalls.filter((call) => call.action === "setAgentFlag");
+    assert.deepEqual(flagCalls.map((call) => call.args), [
+      { agentId: "hermes", flag: "enabled", value: true },
+    ], status);
+    assert.deepEqual(harness.agents().hermes, { integrationInstalled: false, enabled: true }, status);
+    ipc.dispose();
+  }
+});
+
+test("the local Hermes enable is idempotent and never claims a local install", async () => {
+  const harness = localEnableHarness({
+    agents: { hermes: { integrationInstalled: true, enabled: true } },
+  });
+  const ipc = harness.register(deployResultWithHermes({
+    status: "ok",
+    message: "unchanged",
+    warning: null,
+    targets: [hermesResultTarget(HERMES_ROOT_HOME, "root", { action: "unchanged", activation: "unchanged" })],
+    activeGatewayUnits: null,
+  }));
+  const first = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+  const second = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+  assert.equal(first.status, "ok");
+  assert.equal(second.status, "ok");
+  // Already enabled → the controller reports a no-op; a true value is never
+  // written twice and integrationInstalled: true is preserved as true.
+  assert.deepEqual(harness.agents().hermes, { integrationInstalled: true, enabled: true });
+  ipc.dispose();
+});
+
+test("not-applicable, failed and unknown-result deploys touch no local Hermes flag", async () => {
+  const cases = [
+    ["not applicable", deployResultWithHermes(null)],
+    ["installer error", { ok: false, step: "install-hermes", reason: "hermes_install_failed", message: "boom" }],
+    ["aggregate error summary", deployResultWithHermes({
+      status: "error",
+      message: "failed",
+      warning: null,
+      targets: [],
+      activeGatewayUnits: null,
+    })],
+  ];
+  for (const [label, deployResult] of cases) {
+    const harness = localEnableHarness();
+    const ipc = harness.register(deployResult);
+    await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+    assert.equal(
+      harness.commandCalls.some((call) => call.action === "setAgentFlag"),
+      false,
+      label,
+    );
+    assert.deepEqual(harness.agents().hermes, { integrationInstalled: false, enabled: false }, label);
+    ipc.dispose();
+  }
+
+  // An unknown transport result throws out of deploy: nothing local changes.
+  const harness = localEnableHarness();
+  const ipc = harness.register(Promise.reject(Object.assign(
+    new Error("Remote SSH mutation completed with an unknown transport result"),
+    { code: "transport_unknown_result" },
+  )));
+  const thrown = await harness.invoke("remoteSsh:deploy", { profileId: "p1" });
+  assert.equal(thrown.status, "error");
+  assert.equal(harness.commandCalls.some((call) => call.action === "setAgentFlag"), false);
+  assert.deepEqual(harness.agents().hermes, { integrationInstalled: false, enabled: false });
+  ipc.dispose();
+});
+
+test("cleanup/start/stop all fail closed for missing or mismatched ownership identity", async () => {
+  const base = secureFixture().profile;
+  const ownedProfile = {
+    ...base,
+    installId: "c".repeat(64),
+    remoteHome: "/home/remote-user",
+  };
+  const failures = [
+    ["missing", { code: 0, stdout: '{"ok":true,"identity":false,"legacyTraces":0}\n' }, "ownership_identity_missing"],
+    ["installId", { code: 83, stdout: '{"ok":false,"reason":"ownership_conflict","field":"installId"}\n' }, "ownership_conflict"],
+    ["profileId", { code: 83, stdout: '{"ok":false,"reason":"ownership_conflict","field":"profileId"}\n' }, "ownership_conflict"],
+    ["runtimeKey", { code: 83, stdout: '{"ok":false,"reason":"ownership_conflict","field":"runtimeKey"}\n' }, "ownership_conflict"],
+    ["layoutVersion", { code: 83, stdout: '{"ok":false,"reason":"ownership_conflict","field":"layoutVersion"}\n' }, "ownership_conflict"],
+  ];
+  for (const operation of [
+    secureStartCodexMonitor,
+    secureStopCodexMonitor,
+    secureUninstallRemoteIntegrations,
+  ]) {
+    for (const [label, preflight, reason] of failures) {
+      let index = 0;
+      const recorder = makeRecordingSpawn((child) => {
+        const current = index++;
+        const response = current === 1 ? preflight : { code: 0 };
+        queueMicrotask(() => {
+          if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+          child.emit("exit", response.code, null);
+          child.emit("close", response.code, null);
+        });
+      });
+      const result = await operation({
+        profile: ownedProfile,
+        runtime: makeRuntimeStub(),
+        deps: {
+          spawn: recorder.spawn,
+          nodeBin: "/usr/bin/node",
+          randomBytes: () => Buffer.alloc(16, 0xab),
+        },
+      });
+      assert.equal(result.ok, false, `${operation.name}:${label}`);
+      assert.equal(result.skipped, true, `${operation.name}:${label}`);
+      assert.equal(result.reason, reason, `${operation.name}:${label}`);
+      assert.equal(recorder.calls.length, 3, `${operation.name}:${label} must only lock, preflight, release`);
+      const commands = recorder.calls.map((call) => String(call.args.at(-1)));
+      assert.equal(commands.some((command) => /--uninstall|nohup env|kill "\$pid"/.test(command)), false);
+    }
+  }
+});
+
+test("isolated monitor and cleanup commands stay inside their layout and retain user data", async () => {
+  const profile = {
+    ...secureFixture().profile,
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    installId: "c".repeat(64),
+    remoteHome: "/home/shared",
+  };
+  const makeOwnedRecorder = () => {
+    let index = 0;
+    return makeRecordingSpawn((child) => {
+      const current = index++;
+      let response = { code: 0 };
+      if (current === 1) {
+        response = {
+          code: 0,
+          stdout: `${JSON.stringify({
+            ok: true,
+            identity: true,
+            legacyTraces: 4,
+            legacyMonitorPresent: false,
+            claudePresent: true,
+            codexPresent: true,
+            copilotPresent: true,
+          })}\n`,
+        };
+      }
+      queueMicrotask(() => {
+        if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+        child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
+      });
+    });
+  };
+
+  let recorder = makeOwnedRecorder();
+  const started = await secureStartCodexMonitor({
+    profile,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(started.ok, true);
+  const startMutation = String(recorder.calls[2].args.at(-1));
+  assert.match(startMutation, /\/home\/shared\/\.clawd\/profiles\/runtime_a\/clawd\/codex-monitor\.pid/);
+  assert.match(startMutation, /CODEX_HOME='\/home\/shared\/\.clawd\/profiles\/runtime_a\/codex'/);
+  assert.match(startMutation, /ps -p "\$pid" -o command=/);
+  assert.match(startMutation, /codex-remote-monitor\.js/);
+  assert.doesNotMatch(startMutation, /\/home\/shared\/\.codex|\.clawd-codex-monitor\.pid/);
+
+  recorder = makeOwnedRecorder();
+  const cleaned = await secureUninstallRemoteIntegrations({
+    profile,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      nodeBin: "/usr/bin/node",
+      randomBytes: () => Buffer.alloc(16, 0xcd),
+    },
+  });
+  assert.equal(cleaned.ok, true);
+  const cleanupMutations = recorder.calls.slice(2, -1)
+    .map((call) => String(call.args.at(-1)))
+    .join("\n");
+  assert.match(cleanupMutations, /\/home\/shared\/\.clawd\/profiles\/runtime_a/);
+  assert.doesNotMatch(cleanupMutations, /\/home\/shared\/\.claude|\/home\/shared\/\.codex|\/home\/shared\/\.copilot/);
+  assert.doesNotMatch(cleanupMutations, /'--uninstall' '--remote' '--json'|HERMES_HOME=/);
+  assert.doesNotMatch(cleanupMutations, /\.clawd-codex-monitor\.pid/);
+  assert.doesNotMatch(cleanupMutations, /rm -rf '\/home\/shared\/\.clawd\/profiles\/runtime_a'/);
+});
+
+test("ownerless lock and stale release are diagnosed without takeover or broad deletion", async () => {
+  const fixture = secureFixture();
+  let recorder = makeRecordingSpawn([
+    { code: 74 },
+  ]);
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: "/home/remote-user",
+  });
+  const acquired = await __test.acquireDeployLock({
+    profile: fixture.profile,
+    layout,
+    installId: fixture.installId,
+    leaseId: "a".repeat(32),
+    spawn: recorder.spawn,
+    runtime: makeRuntimeStub(),
+  });
+  assert.equal(acquired.ok, false);
+  assert.equal(acquired.reason, "lock_owner_invalid");
+  assert.match(acquired.message, new RegExp(layout.deployLockDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+
+  recorder = makeRecordingSpawn([{ code: 91 }]);
+  await assert.rejects(__test.releaseDeployLock({
+    profile: fixture.profile,
+    layout,
+    leaseId: "a".repeat(32),
+    remoteNode: "/usr/bin/node",
+    spawn: recorder.spawn,
+    runtime: makeRuntimeStub(),
+  }), (err) => err.recoveryCode === "manual_lock_inspection_required");
+  const releaseCommand = recorder.calls[0].args.at(-1);
+  assert.match(releaseCommand, /leaseId/);
+  assert.match(releaseCommand, /runtimeKey/);
+  assert.match(releaseCommand, /&& rm -rf/);
+});
+
+test("lease fencing gates every command in a multiline mutation block", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-fence-exec-"));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: temp,
+  });
+  const firstWrite = path.join(temp, "first-write");
+  const escapedWrite = path.join(temp, "escaped-write");
+  try {
+    fs.mkdirSync(layout.deployLockDir, { recursive: true });
+    fs.writeFileSync(path.join(layout.deployLockDir, "owner"), JSON.stringify({
+      leaseId: "b".repeat(32),
+      runtimeKey: layout.runtimeKey,
+      layoutVersion: layout.layoutVersion,
+    }));
+    const command = __test.fencedCommand(
+      layout,
+      "a".repeat(32),
+      process.execPath,
+      [
+        `printf first > '${firstWrite}'`,
+        `printf escaped > '${escapedWrite}'`,
+      ].join("\n"),
+    );
+    const result = childProcess.spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+    assert.equal(fs.existsSync(firstWrite), false);
+    assert.equal(fs.existsSync(escapedWrite), false);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("ownership preflight detects managed config traces even when hook files are gone", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-config-trace-"));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: temp,
+  });
+  try {
+    fs.mkdirSync(path.dirname(layout.claudeSettingsFile), { recursive: true });
+    fs.writeFileSync(layout.claudeSettingsFile, JSON.stringify({
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "node /missing/clawd-hook.js Stop" }] }],
+      },
+    }));
+    const script = __test.buildOwnershipPreflightScript({
+      profile: { id: "profile-a" },
+      layout,
+      installId: "c".repeat(64),
+    });
+    const result = childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    const detail = JSON.parse(result.stdout.trim());
+    assert.equal(detail.legacyTraces, 0);
+    assert.equal(detail.legacyConfigTraces, 1);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("installer verification reads back the secure managed command shape", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-installer-readback-"));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    remoteHome: temp,
+  });
+  try {
+    fs.mkdirSync(path.dirname(layout.claudeSettingsFile), { recursive: true });
+    const writeSettings = (sshRemoteAssignment) => {
+      fs.writeFileSync(layout.claudeSettingsFile, JSON.stringify({
+        hooks: {
+          Stop: [{
+            hooks: [{
+              type: "command",
+              command: `CLAWD_REMOTE='1' ${sshRemoteAssignment} CLAWD_REMOTE_IDENTITY_PATH='${layout.identityFile}' node '${path.join(layout.claudeHooksDir, "clawd-hook.js")}' Stop`,
+            }],
+          }],
+        },
+      }));
+    };
+    writeSettings("CLAWD_SSH_REMOTE='1'");
+    const command = __test.buildInstallerVerificationCommand(
+      "installClaude",
+      layout,
+      process.execPath,
+    );
+    let result = childProcess.spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+
+    writeSettings("CLAWD_SSH_REMOTE='0'");
+    result = childProcess.spawnSync("/bin/sh", ["-c", command], { encoding: "utf8" });
+    assert.notEqual(result.status, 0);
+
+    const copilotHooksFile = path.join(layout.copilotHome, "hooks", "hooks.json");
+    fs.mkdirSync(path.dirname(copilotHooksFile), { recursive: true });
+    fs.writeFileSync(copilotHooksFile, JSON.stringify({
+      hooks: {
+        sessionStart: [{
+          type: "command",
+          bash: `CLAWD_REMOTE=1 CLAWD_SSH_REMOTE=1 CLAWD_REMOTE_IDENTITY_PATH='${layout.identityFile}' COPILOT_HOME='${layout.copilotHome}' node '${path.join(layout.claudeHooksDir, "copilot-hook.js")}' sessionStart`,
+          powershell: "$env:CLAWD_REMOTE='1'; exit 99",
+        }],
+      },
+    }));
+    const copilotCommand = __test.buildInstallerVerificationCommand(
+      "installCopilot",
+      layout,
+      process.execPath,
+    );
+    result = childProcess.spawnSync("/bin/sh", ["-c", copilotCommand], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("secure scp target is one raw argv token without literal shell quotes", () => {
+  assert.equal(
+    __test.buildScpRemoteTarget(
+      "user@example.test",
+      "/home/user/.clawd/remote-deploy-staging/lease-a",
+    ),
+    "user@example.test:/home/user/.clawd/remote-deploy-staging/lease-a/",
+  );
+  assert.equal(
+    __test.buildScpRemoteTarget("user@example.test", "/home/user/staging/"),
+    "user@example.test:/home/user/staging/",
+  );
+});
+
+test("monitor verification requires a live PID with the exact layout script path", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-monitor-readback-"));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: temp,
+  });
+  const scriptPath = path.join(layout.claudeHooksDir, "codex-remote-monitor.js");
+  const fakeBin = path.join(temp, "test-bin");
+  const fakePs = path.join(fakeBin, "ps");
+  fs.mkdirSync(path.dirname(scriptPath), { recursive: true });
+  fs.mkdirSync(path.dirname(layout.monitorPidFile), { recursive: true });
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(scriptPath, "setInterval(() => {}, 1000);\n");
+  fs.writeFileSync(fakePs, "#!/bin/sh\nprintf '%s\\n' \"$CLAWD_TEST_PS_COMMAND\"\n", {
+    mode: 0o700,
+  });
+  const child = childProcess.spawn(process.execPath, [scriptPath], { stdio: "ignore" });
+  try {
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    fs.writeFileSync(layout.monitorPidFile, `${child.pid}\n`);
+    const command = __test.buildMonitorVerificationCommand(layout, process.execPath);
+    const verificationEnv = {
+      ...process.env,
+      PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+      CLAWD_TEST_PS_COMMAND: `${process.execPath} ${scriptPath}`,
+    };
+    let result = childProcess.spawnSync("/bin/sh", ["-c", command], {
+      encoding: "utf8",
+      env: verificationEnv,
+    });
+    assert.equal(result.status, 0, result.stderr);
+
+    result = childProcess.spawnSync("/bin/sh", ["-c", command], {
+      encoding: "utf8",
+      env: { ...verificationEnv, CLAWD_TEST_PS_COMMAND: `${process.execPath} unrelated.js` },
+    });
+    assert.notEqual(result.status, 0);
+  } finally {
+    try { child.kill(); } catch {}
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("isolated CLI probe survives the real remote shell and discovers PATH executables", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, async () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-isolated-cli-probe-"));
+  const fakeBin = path.join(temp, "fake-bin");
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    remoteHome: temp,
+  });
+  try {
+    fs.mkdirSync(fakeBin, { recursive: true });
+    for (const [name, version] of [
+      ["claude", "2.1.211"],
+      ["codex", "0.100.0"],
+      ["copilot", "1.0.0"],
+    ]) {
+      fs.writeFileSync(
+        path.join(fakeBin, name),
+        `#!/bin/sh\nprintf '%s\\n' '${version}'\n`,
+        { mode: 0o700 },
+      );
+    }
+    const spawn = (_command, args, options) => childProcess.spawn(
+      "/bin/sh",
+      ["-c", args.at(-1)],
+      {
+        ...options,
+        env: {
+          ...(options && options.env),
+          PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        },
+      },
+    );
+    const result = await __test.probeRemoteCliCapabilities({
+      profile: { host: "user@example.test", remoteForwardPort: 23333 },
+      layout,
+      remoteNode: process.execPath,
+      spawn,
+      runtime: makeRuntimeStub(),
+      minimums: {
+        claude: { major: 2, minor: 1, patch: 211 },
+        codex: { major: 0, minor: 100, patch: 0 },
+        copilot: { major: 1, minor: 0, patch: 0 },
+      },
+    });
+    assert.equal(result.ok, true);
+    for (const name of ["claude", "codex", "copilot"]) {
+      assert.equal(result.capabilities[name].present, true, name);
+      assert.equal(result.capabilities[name].versionVerified, true, name);
+      assert.equal(
+        result.capabilities[name].executablePath,
+        fs.realpathSync(path.join(fakeBin, name)),
+      );
+    }
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("isolated wrapper records exact evidence only after the CLI exits successfully", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, () => {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-wrapper-evidence-"));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "profile-isolated",
+    runtimeKey: "runtime_a",
+    remoteHome: temp,
+  });
+  const cli = path.join(temp, "fake-claude");
+  try {
+    fs.mkdirSync(path.dirname(layout.claudeWrapperFile), { recursive: true });
+    fs.writeFileSync(
+      cli,
+      [
+        "#!/bin/sh",
+        `[ "$CLAUDE_CONFIG_DIR" = '${layout.claudeConfigDir}' ] || exit 8`,
+        '[ "$1" = "fail" ] && exit 7',
+        "exit 0",
+        "",
+      ].join("\n"),
+      { mode: 0o700 },
+    );
+    fs.writeFileSync(
+      layout.claudeWrapperFile,
+      __test.buildIsolatedWrapper(
+        layout,
+        cli,
+        "CLAUDE_CONFIG_DIR",
+        layout.claudeConfigDir,
+        layout.claudeWrapperEvidenceFile,
+      ),
+      { mode: 0o700 },
+    );
+
+    let result = childProcess.spawnSync(layout.claudeWrapperFile, ["fail"], { encoding: "utf8" });
+    assert.equal(result.status, 7);
+    assert.equal(fs.existsSync(layout.claudeWrapperEvidenceFile), false);
+
+    result = childProcess.spawnSync(layout.claudeWrapperFile, [], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(
+      fs.readFileSync(layout.claudeWrapperEvidenceFile, "utf8"),
+      __test.buildWrapperEvidence(cli, "CLAUDE_CONFIG_DIR", layout.claudeConfigDir),
+    );
+  } finally {
+    fs.rmSync(temp, { recursive: true, force: true });
+  }
+});
+
+test("legacy monitor cleanup kills only the exact account-default monitor command", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
+}, async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-legacy-monitor-"));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: tmpDir,
+  });
+  fs.mkdirSync(layout.claudeHooksDir, { recursive: true });
+  const expectedScript = path.join(layout.claudeHooksDir, "codex-remote-monitor.js");
+  const fakeBin = path.join(tmpDir, "test-bin");
+  const fakePs = path.join(fakeBin, "ps");
+  fs.mkdirSync(fakeBin, { recursive: true });
+  fs.writeFileSync(
+    fakePs,
+    "#!/bin/sh\n[ \"$CLAWD_TEST_PS_FAIL\" = 1 ] && exit 1\nprintf '%s\\n' \"$CLAWD_TEST_PS_OUTPUT\"\n",
+    { mode: 0o700 },
+  );
+  const children = [];
+  const spawnSleeper = async (scriptArg) => {
+    fs.mkdirSync(path.dirname(scriptArg), { recursive: true });
+    fs.writeFileSync(scriptArg, "setInterval(()=>{},1000);\n", { mode: 0o700 });
+    const child = childProcess.spawn(
+      process.execPath,
+      [scriptArg],
+      { stdio: "ignore" },
+    );
+    children.push(child);
+    await new Promise((resolve, reject) => {
+      child.once("spawn", resolve);
+      child.once("error", reject);
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return child;
+  };
+  const runCleanup = ({ psOutput = "", psFail = false } = {}) => childProcess.spawnSync(
+    process.execPath,
+    ["-e", __test.buildLegacyMonitorCleanupScript(layout)],
+    {
+      encoding: "utf8",
+      env: {
+        ...process.env,
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH || ""}`,
+        CLAWD_TEST_PS_OUTPUT: psOutput,
+        CLAWD_TEST_PS_FAIL: psFail ? "1" : "0",
+      },
+    },
+  );
+  try {
+    let result = runCleanup();
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout).status, "absent");
+
+    fs.writeFileSync(layout.legacyMonitorPidFile, "99999999\n", { mode: 0o600 });
+    result = runCleanup({ psFail: true });
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout).status, "pid-not-running");
+    assert.equal(fs.existsSync(layout.legacyMonitorPidFile), true);
+
+    const unrelated = await spawnSleeper(path.join(tmpDir, "not-the-monitor.js"));
+    fs.writeFileSync(layout.legacyMonitorPidFile, `${unrelated.pid}\n`, { mode: 0o600 });
+    result = runCleanup({ psOutput: `${process.execPath} ${path.join(tmpDir, "not-the-monitor.js")}` });
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout).status, "command-mismatch");
+    assert.doesNotThrow(() => process.kill(unrelated.pid, 0));
+    assert.equal(fs.existsSync(layout.legacyMonitorPidFile), true);
+
+    const owned = await spawnSleeper(expectedScript);
+    fs.writeFileSync(layout.legacyMonitorPidFile, `${owned.pid}\n`, { mode: 0o600 });
+    result = runCleanup({ psOutput: `${process.execPath} ${expectedScript}` });
+    assert.equal(result.status, 0, result.stderr);
+    assert.equal(JSON.parse(result.stdout).status, "stopped");
+    assert.equal(fs.existsSync(layout.legacyMonitorPidFile), false);
+    await new Promise((resolve) => owned.once("exit", resolve));
+
+    const isolated = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+      runtimeMode: "profile-isolated",
+      runtimeKey: "profile-a",
+      remoteHome: tmpDir,
+    });
+    let spawnCalls = 0;
+    const skipped = await __test.cleanupLegacyMonitor({
+      profile: { host: "user@example.test" },
+      layout: isolated,
+      leaseId: "a".repeat(32),
+      remoteNode: process.execPath,
+      spawn: () => { spawnCalls += 1; },
+    });
+    assert.deepEqual(skipped, { ok: true, status: "not-applicable" });
+    assert.equal(spawnCalls, 0);
+  } finally {
+    for (const child of children) {
+      try { child.kill(); } catch {}
+    }
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("isolated bootstrap validates the key first, creates a fresh root under the account lease, and never assumes ownership", async () => {
+  const fixture = secureFixture();
+  let recorder = makeRecordingSpawn([
+    { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/shared\n" },
+    { code: 0, stdout: `${nodeProbeStdout()}\n` },
+    { code: 0 },
+    { code: 0 },
+    { code: 0 },
+  ]);
+  const created = await require("../src/remote-ssh-deploy").bootstrapIsolatedRuntime({
+    profile: fixture.profile,
+    installId: fixture.installId,
+    runtimeKey: "profile_a",
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+    },
+  });
+  assert.equal(created.ok, true);
+  assert.equal(created.layout.runtimeRoot, "/home/shared/.clawd/profiles/profile_a");
+  assert.equal(recorder.calls.length, 5);
+  const lockCommand = String(recorder.calls[2].args.at(-1));
+  assert.match(lockCommand, /\.clawd-remote-deploy-account-default\.lock/);
+  assert.doesNotMatch(lockCommand, /profiles\/profile_a\/clawd\/remote-deploy\.lock/);
+  const createCommand = String(recorder.calls[3].args.at(-1));
+  assert.match(createCommand, /bootstrap-owner\.json/);
+  assert.match(createCommand, /profile_a/);
+  assert.match(createCommand, /profile-a/);
+  assert.match(createCommand, /installId/);
+  assert.match(createCommand, /wrapper-evidence/);
+  assert.match(createCommand, /0o700/);
+
+  recorder = makeRecordingSpawn([]);
+  const invalid = await require("../src/remote-ssh-deploy").bootstrapIsolatedRuntime({
+    profile: fixture.profile,
+    installId: fixture.installId,
+    runtimeKey: "../escape",
+    deps: { spawn: recorder.spawn },
+  });
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.reason, "layout_invalid");
+  assert.equal(recorder.calls.length, 0);
+
+  recorder = makeRecordingSpawn([
+    { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/shared\n" },
+    { code: 0, stdout: `${nodeProbeStdout()}\n` },
+    { code: 0 },
+    { code: 88 },
+    { code: 0 },
+  ]);
+  const exists = await require("../src/remote-ssh-deploy").bootstrapIsolatedRuntime({
+    profile: fixture.profile,
+    installId: fixture.installId,
+    runtimeKey: "profile_b",
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      randomBytes: () => Buffer.alloc(16, 0xcd),
+    },
+  });
+  assert.equal(exists.ok, false);
+  assert.equal(exists.reason, "isolated_root_exists");
+  assert.equal(recorder.calls.length, 5, "conditional account lock release still runs");
+});
+
+test("profile-isolated deploy writes root-specific wrappers and activates only after real CLI artifacts exist", async () => {
+  const fixture = secureFixture({
+    profile: {
+      runtimeMode: "profile-isolated",
+      runtimeKey: "rt_profile_a",
+    },
+    identityTxn: {
+      runtimeKey: "rt_profile_a",
+    },
+  });
+  const recorder = secureIsolatedHappySpawn();
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      isolatedCliMinimums: {
+        claude: { major: 2, minor: 1, patch: 211 },
+        codex: { major: 0, minor: 100, patch: 0 },
+        copilot: { major: 1, minor: 0, patch: 0 },
+      },
+    },
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.isolation.active, true);
+  assert.equal(result.isolation.runtimeRoot, "/home/shared/.clawd/profiles/rt_profile_a");
+  assert.equal(result.isolation.binDir, "/home/shared/.clawd/profiles/rt_profile_a/bin");
+  assert.equal(
+    result.isolation.capabilities.claude.wrapperPath,
+    "/home/shared/.clawd/profiles/rt_profile_a/bin/claude",
+  );
+  const cliProbeCommand = String(recorder.calls[4].args.at(-1));
+  assert.ok(cliProbeCommand.includes(
+    'const wrapperBin="/home/shared/.clawd/profiles/rt_profile_a/bin"'
+  ));
+  assert.match(cliProbeCommand, /real\(x\)!==wrapperReal/);
+
+  const wrapperCall = recorder.calls.find((call) => {
+    const stdin = String(call.child._stdin || "");
+    return stdin.includes("#!/bin/sh") && stdin.includes("CLAUDE_CONFIG_DIR");
+  });
+  assert.ok(wrapperCall, "wrapper bodies must travel over stdin");
+  const wrapperPayload = JSON.parse(wrapperCall.child._stdin);
+  assert.match(
+    wrapperPayload["/home/shared/.clawd/profiles/rt_profile_a/bin/claude"],
+    /export CLAUDE_CONFIG_DIR='\/home\/shared\/\.clawd\/profiles\/rt_profile_a\/claude'/,
+  );
+  assert.match(
+    wrapperPayload["/home/shared/.clawd/profiles/rt_profile_a/bin/codex"],
+    /export CODEX_HOME='\/home\/shared\/\.clawd\/profiles\/rt_profile_a\/codex'/,
+  );
+  assert.match(
+    wrapperPayload["/home/shared/.clawd/profiles/rt_profile_a/bin/copilot"],
+    /export COPILOT_HOME='\/home\/shared\/\.clawd\/profiles\/rt_profile_a\/copilot'/,
+  );
+  for (const body of Object.values(wrapperPayload)) {
+    assert.doesNotMatch(body, /export HOME=/);
+    assert.match(body, /wrapper-evidence/);
+    assert.match(body, /'\/opt\/tools\//);
+    assert.match(body, /status=\$\?/);
+    assert.ok(
+      body.indexOf("status=$?") < body.indexOf("clawd-wrapper-evidence-v1"),
+      "evidence must be written only after the CLI exits successfully",
+    );
+  }
+
+  const remoteArgv = recorder.calls.flatMap((call) => call.args).join("\n");
+  assert.match(remoteArgv, /CLAWD_REMOTE=1/);
+  assert.match(remoteArgv, /CLAWD_SSH_REMOTE=1/);
+  assert.match(remoteArgv, /\/home\/shared\/\.clawd\/profiles\/rt_profile_a\/claude/);
+  assert.doesNotMatch(remoteArgv, /\/home\/shared\/\.claude/);
+  assert.doesNotMatch(remoteArgv, /\/home\/shared\/\.codex/);
+  assert.doesNotMatch(remoteArgv, /\/home\/shared\/\.copilot/);
+});
+
+test("profile-isolated deploy stays prepared, not active, for absent artifacts or unverified Claude versions", async () => {
+  const fixture = secureFixture({
+    profile: {
+      runtimeMode: "profile-isolated",
+      runtimeKey: "rt_profile_a",
+    },
+    identityTxn: {
+      runtimeKey: "rt_profile_a",
+    },
+  });
+  for (const [label, spawn] of [
+    ["missing artifacts", secureIsolatedHappySpawn({
+      artifacts: {
+        claude: { artifact: false, wrapper: true },
+        codex: { artifact: true, wrapper: true },
+        copilot: { artifact: true, wrapper: true },
+      },
+    })],
+    ["old Claude", secureIsolatedHappySpawn({
+      cliCapabilities: {
+        claude: { present: true, path: "/opt/tools/claude", version: "2.1.210" },
+        codex: { present: true, path: "/opt/tools/codex", version: "0.100.0" },
+        copilot: { present: true, path: "/opt/tools/copilot", version: "1.0.0" },
+      },
+    })],
+  ]) {
+    const result = await secureDeploy({
+      ...fixture,
+      runtime: makeRuntimeStub(),
+      deps: {
+        spawn: spawn.spawn,
+        hooksDir: path.join(REPO_ROOT, "hooks"),
+        detectRemoteShell: stubPosixShellProbe,
+        randomBytes: () => Buffer.alloc(16, 0xab),
+      },
+    });
+    assert.equal(result.ok, true, label);
+    assert.equal(result.isolation.active, false, label);
   }
 });
 
@@ -110,10 +2661,16 @@ function makeRecordingSpawn(handlers) {
       queueMicrotask(() => {
         if (handler.stdout) child.stdout.emit("data", Buffer.from(handler.stdout));
         if (handler.stderr) child.stderr.emit("data", Buffer.from(handler.stderr));
-        child.emit("exit", handler.code != null ? handler.code : 0, handler.signal || null);
+        const code = handler.code != null ? handler.code : 0;
+        const signal = handler.signal || null;
+        child.emit("exit", code, signal);
+        child.emit("close", code, signal);
       });
     } else {
-      queueMicrotask(() => child.emit("exit", 0, null));
+      queueMicrotask(() => {
+        child.emit("exit", 0, null);
+        child.emit("close", 0, null);
+      });
     }
     return child;
   };
@@ -260,6 +2817,7 @@ test("deploy: with hostPrefix triggers host-prefix step via ssh stdin", async ()
       queueMicrotask(() => {
         capturedStdin = child._stdin;
         child.emit("exit", 0, null);
+        child.emit("close", 0, null);
       });
     },
     { code: 0 }, // install-claude
@@ -450,6 +3008,60 @@ test("stopCodexMonitor kills PID and removes pid file (best-effort)", async () =
   const cmd = calls[0].args[calls[0].args.length - 1];
   assert.match(cmd, /kill \$\(cat .*\.pid\)/);
   assert.match(cmd, /rm -f .*\.pid/);
+});
+
+test("uninstallRemoteIntegrations runs the Claude and Codex uninstallers over SSH", async () => {
+  const profile = { id: "p1", host: "pi", remoteForwardPort: 23335 };
+  const { spawn, calls } = makeRecordingSpawn([
+    { code: 0 },
+    { code: 0 },
+  ]);
+  const r = await uninstallRemoteIntegrations({ profile, deps: { spawn, nodeBin: "/usr/bin/node" } });
+
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 2);
+  const first = calls[0].args[calls[0].args.length - 1];
+  const second = calls[1].args[calls[1].args.length - 1];
+  assert.match(first, /if \[ -f .*uninstall\.js/);
+  assert.match(first, /uninstall\.js/);
+  assert.match(first, /unregisterHooks/);
+  assert.match(second, /codex-install\.js.*--uninstall/);
+});
+
+test("uninstallRemoteIntegrations verifies a stale cached Node path and re-probes", async () => {
+  const profile = {
+    id: "p1",
+    host: "pi",
+    remoteForwardPort: 23335,
+    detectedRemoteNodeBin: "/stale/node",
+    detectedRemoteNodeVersion: "v20.10.0",
+    detectedRemoteNodeSource: "profile",
+  };
+  const { spawn, calls } = makeRecordingSpawn([
+    { code: 127, stderr: "/stale/node: not found" },
+    { code: 0, stdout: nodeProbeStdout("/usr/local/bin/node", "v22.1.0", "path") },
+    { code: 0 },
+    { code: 0 },
+  ]);
+
+  const r = await uninstallRemoteIntegrations({ profile, deps: { spawn } });
+
+  assert.equal(r.ok, true);
+  assert.equal(calls.length, 4);
+  assert.ok(calls[0].args[calls[0].args.length - 1].includes("/stale/node"));
+  assert.match(calls[2].args[calls[2].args.length - 1], /'\/usr\/local\/bin\/node'/);
+});
+
+test("uninstallRemoteIntegrations reports failure but never throws when a step exits non-zero", async () => {
+  const profile = { id: "p1", host: "pi", remoteForwardPort: 23335 };
+  const { spawn } = makeRecordingSpawn([
+    { code: 1, stderr: "no route to host" },
+    { code: 0 },
+  ]);
+  const r = await uninstallRemoteIntegrations({ profile, deps: { spawn, nodeBin: "/usr/bin/node" } });
+
+  assert.equal(r.ok, false);
+  assert.match(r.stderr || "", /no route to host/);
 });
 
 test("deploy: registers each spawned child with runtime so cleanup can kill it", async () => {

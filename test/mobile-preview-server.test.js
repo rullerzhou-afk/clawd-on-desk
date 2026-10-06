@@ -4,10 +4,40 @@ const { describe, it, before, after } = require("node:test");
 const assert = require("node:assert");
 const WebSocket = require("ws");
 const http = require("http");
+const { EventEmitter } = require("events");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
-const { initMobilePreviewServer, PROTOCOL_VERSION } = require("../src/network/mobile-preview-server");
+const {
+  initMobilePreviewServer,
+  isRetryablePortError,
+  PROTOCOL_VERSION,
+} = require("../src/network/mobile-preview-server");
+
+async function occupyPort(port) {
+  const blocker = http.createServer((_req, res) => res.end());
+  let owned = false;
+  await new Promise((resolve, reject) => {
+    blocker.once("error", (error) => {
+      if (error && error.code === "EADDRINUSE") {
+        resolve();
+        return;
+      }
+      reject(error);
+    });
+    blocker.listen(port, "0.0.0.0", () => {
+      owned = true;
+      resolve();
+    });
+  });
+  return { blocker, owned };
+}
+
+async function closeOwnedBlockers(blockers) {
+  await Promise.all(blockers.map(({ blocker, owned }) => (
+    owned ? new Promise((resolve) => blocker.close(resolve)) : Promise.resolve()
+  )));
+}
 
 function waitForMessage(ws, type, timeoutMs = 5000) {
   return new Promise((resolve, reject) => {
@@ -88,12 +118,278 @@ function httpGet(port, pathStr) {
   });
 }
 
+function httpGetBuffer(port, pathStr) {
+  return new Promise((resolve, reject) => {
+    http.get({ hostname: "127.0.0.1", port, path: pathStr }, (res) => {
+      const chunks = [];
+      res.on("data", (chunk) => { chunks.push(chunk); });
+      res.on("end", () => resolve({
+        status: res.statusCode,
+        body: Buffer.concat(chunks),
+        headers: res.headers,
+      }));
+    }).on("error", reject);
+  });
+}
+
 function waitForClose(ws, timeoutMs = 3000) {
   return new Promise((resolve) => {
     const timer = setTimeout(() => resolve(null), timeoutMs);
     ws.on("close", (code) => { clearTimeout(timer); resolve(code); });
   });
 }
+
+describe("Mobile Preview Server port fallback", () => {
+  it("classifies occupied and Windows-reserved ports as retryable", () => {
+    assert.equal(isRetryablePortError({ code: "EADDRINUSE" }), true);
+    assert.equal(isRetryablePortError({ code: "EACCES" }), true);
+    assert.equal(isRetryablePortError({ code: "EINVAL" }), false);
+  });
+
+  it("advances past an occupied 23334 and serves on the next candidate", async () => {
+    const blocker = http.createServer((_req, res) => res.end());
+    let ownsBlocker = false;
+    await new Promise((resolve, reject) => {
+      blocker.once("error", (error) => {
+        if (error && error.code === "EADDRINUSE") {
+          resolve();
+          return;
+        }
+        reject(error);
+      });
+      blocker.listen(23334, "0.0.0.0", () => {
+        ownsBlocker = true;
+        resolve();
+      });
+    });
+
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-port-fallback-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+    });
+    try {
+      const port = await server.start();
+      assert.notStrictEqual(port, 23334);
+      assert.ok(port >= 23335 && port <= 23338);
+      const res = await httpGet(port, "/api/connection-info");
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(JSON.parse(res.body).port, port);
+    } finally {
+      server.cleanup();
+      // cleanup() intentionally stays synchronous for production callers;
+      // give the underlying close callbacks one turn before the next suite
+      // reuses the same fallback port.
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      if (ownsBlocker) {
+        await new Promise((resolve) => blocker.close(resolve));
+      }
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("retries the actual start path after a synthetic Windows EACCES", async () => {
+    const attempts = [];
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-port-eacces-"));
+    class SyntheticHttpServer extends EventEmitter {
+      constructor() {
+        super();
+        this.listening = false;
+      }
+
+      listen(port) {
+        attempts.push(port);
+        queueMicrotask(() => {
+          if (port === 23334) {
+            const error = new Error("synthetic reserved port");
+            error.code = "EACCES";
+            this.emit("error", error);
+            return;
+          }
+          this.listening = true;
+          this.emit("listening");
+        });
+      }
+
+      close() { this.listening = false; }
+    }
+    class SyntheticWebSocketServer extends EventEmitter {
+      close() {}
+    }
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      createHttpServer: () => new SyntheticHttpServer(),
+      WebSocketServer: SyntheticWebSocketServer,
+    });
+
+    try {
+      assert.equal(await server.start(), 23335);
+      assert.deepStrictEqual(attempts, [23334, 23335]);
+    } finally {
+      server.cleanup();
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("rejects after all candidate ports without arming token rotation", async () => {
+    const blockers = [];
+    for (let port = 23334; port <= 23338; port++) blockers.push(await occupyPort(port));
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-port-exhaustion-"));
+    const tokenPath = path.join(tmpTokenDir, "mobile-token.json");
+    const originalState = {
+      token: "a".repeat(32),
+      previous: null,
+      graceUntil: null,
+      rotatedAt: 1,
+      rotationPending: false,
+    };
+    fs.writeFileSync(tokenPath, JSON.stringify(originalState), "utf8");
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath,
+    });
+
+    try {
+      await assert.rejects(server.start(), (err) => isRetryablePortError(err));
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      assert.equal(server.getPort(), null);
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(tokenPath, "utf8")), originalState);
+    } finally {
+      server.cleanup();
+      await closeOwnedBlockers(blockers);
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("coalesces concurrent starts and cleanup cancels a pending start", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-start-lifecycle-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+    });
+
+    try {
+      const first = server.start();
+      const second = server.start();
+      assert.strictEqual(second, first);
+      const port = await first;
+      assert.equal(server.getPort(), port);
+      assert.equal(await server.start(), port);
+    } finally {
+      server.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+
+    const blockers = [];
+    for (let port = 23334; port <= 23338; port++) blockers.push(await occupyPort(port));
+    const cancelDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-start-cancel-"));
+    const cancellable = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(cancelDir, "mobile-token.json"),
+    });
+    try {
+      const pending = cancellable.start();
+      cancellable.cleanup();
+      await assert.rejects(pending, (err) => err && err.code === "ECANCELED");
+      assert.equal(cancellable.getPort(), null);
+    } finally {
+      cancellable.cleanup();
+      await closeOwnedBlockers(blockers);
+      try { fs.rmSync(cancelDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("keeps a replacement start cancellable after the old rejection continuation runs", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-start-generation-"));
+    class PendingHttpServer extends EventEmitter {
+      constructor() {
+        super();
+        this.listening = false;
+      }
+
+      listen() {}
+      close() { this.listening = false; }
+    }
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      createHttpServer: () => new PendingHttpServer(),
+    });
+
+    try {
+      const first = server.start();
+      server.cleanup();
+      const replacement = server.start();
+
+      await assert.rejects(first, (err) => err && err.code === "ECANCELED");
+      server.cleanup();
+      await assert.rejects(replacement, (err) => err && err.code === "ECANCELED");
+    } finally {
+      server.cleanup();
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("releases the HTTP listener when WebSocket attachment fails", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-ws-attach-failure-"));
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      WebSocketServer: class ThrowingWebSocketServer {
+        constructor() { throw new Error("synthetic ws attach failure"); }
+      },
+    });
+    try {
+      await assert.rejects(server.start(), /synthetic ws attach failure/);
+      assert.equal(server.getPort(), null);
+    } finally {
+      server.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("observes a WebSocket runtime error after successful attachment", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-ws-runtime-error-"));
+    let socketServer = null;
+    class SyntheticWebSocketServer extends EventEmitter {
+      constructor() {
+        super();
+        socketServer = this;
+      }
+
+      close() {}
+    }
+    const logs = [];
+    const server = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      WebSocketServer: SyntheticWebSocketServer,
+      onWebSocketError: (error) => logs.push(error.message),
+    });
+
+    try {
+      await server.start();
+      socketServer.emit("error", new Error("synthetic runtime failure"));
+      assert.equal(logs.length, 1);
+      assert.match(logs[0], /synthetic runtime failure/);
+    } finally {
+      server.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+});
 
 // ── Original test suite (adapted to use injectable tokenPath) ──
 
@@ -150,6 +446,18 @@ describe("Mobile Preview Server", () => {
     assert.ok(res.headers["content-type"].includes("text/html"));
   });
 
+  it("serves canonical project icons at the stable PWA icon URLs", async () => {
+    for (const [route, canonicalPath] of [
+      ["/mobile/icons/icon-256.png", path.join(__dirname, "..", "assets", "icons", "256x256.png")],
+      ["/mobile/icons/icon-512.png", path.join(__dirname, "..", "assets", "icons", "512x512.png")],
+    ]) {
+      const res = await httpGetBuffer(port, route);
+      assert.strictEqual(res.status, 200, `${route} should resolve`);
+      assert.strictEqual(res.headers["content-type"], "image/png");
+      assert.deepStrictEqual(res.body, fs.readFileSync(canonicalPath));
+    }
+  });
+
   it("serves public connection info without exposing the token", async () => {
     const res = await httpGet(port, "/api/connection-info");
     assert.strictEqual(res.status, 200);
@@ -200,6 +508,43 @@ describe("Mobile Preview Server", () => {
     assert.strictEqual(typeof snapshot.sessions.s1.updatedAt, "number");
 
     client.close();
+    await new Promise((r) => setTimeout(r, 100));
+  });
+
+  it("keeps internal and explicitly hidden display folders out of public sessions", async () => {
+    const opaque = "mqgw60jiigjsjcid";
+    sessions.set("qwenwork:hidden", {
+      state: "working",
+      agentId: "qwenwork",
+      cwd: `/Users/me/.QwenWorkCN/workspace/${opaque}`,
+      sessionTitle: "Private workspace",
+      updatedAt: Date.now(),
+      recentEvents: [],
+    });
+    sessions.set("legacy:explicit-hidden", {
+      state: "working",
+      agentId: "claude-code",
+      cwd: `/Users/me/projects/${opaque}`,
+      displayFolder: "",
+      sessionTitle: "Explicitly private workspace",
+      updatedAt: Date.now(),
+      recentEvents: [],
+    });
+    server.onSnapshot();
+
+    const client = connectClient(port, token);
+    await waitForOpen(client.ws);
+    const snapshot = await client.waitFor("snapshot");
+
+    assert.equal(snapshot.sessions["qwenwork:hidden"].basename, null);
+    assert.ok(!JSON.stringify(snapshot.sessions["qwenwork:hidden"]).includes(opaque));
+    assert.equal(snapshot.sessions["legacy:explicit-hidden"].basename, null);
+    assert.ok(!JSON.stringify(snapshot.sessions["legacy:explicit-hidden"]).includes(opaque));
+
+    client.close();
+    sessions.delete("qwenwork:hidden");
+    sessions.delete("legacy:explicit-hidden");
+    server.onSnapshot();
     await new Promise((r) => setTimeout(r, 100));
   });
 

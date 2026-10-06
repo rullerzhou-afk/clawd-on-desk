@@ -1,0 +1,307 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <!-- ✅ FINAL · clawd 老板皮肤定稿版 (2026-04-16 鹿鹿确认)
+       定稿 = v13. 后续 v14/v15 尝试加墨镜反光滑动被否, 画蛇添足, 留档不删
+
+       动作清单:
+         - 踱步 pacing gait (左两腿 / 右两腿 交替抬, 周期 2.2s 气定神闲)
+         - body-walk 身体起伏 + 左右重心转移 (锁相踱步)
+         - 金币摆 (pivot 金币顶部挂点, rotate ±3°, 锁相 body-walk)
+         - 雪茄摆 (pivot 手握端, rotate -150°±3°, 周期 2.8s 互质自主节奏)
+         - 影子跟随 (translateX 跟 body-walk, scale+opacity 脉动)
+         - 代码烟雾 (8 符号从火星飘起, 已在 v10 修好初始帧 bug)
+         - 外层 rotate(+1°) 克制抬头气场
+         - 墨镜 / V 形金链条 / 雪茄火星明灭 (v8 / v10 继承)
+
+       v13 · v12 基础上修影子 (让影子跟身体走 + 改对相位)
+       v12 → v13 修改:
+         1. 影子加 translateX 跟随 body-walk 左右晃:
+            - 身体 25% 向右偏 +0.15 → 影子也 +0.15
+            - 身体 75% 向左偏 -0.15 → 影子也 -0.15
+         2. scale/opacity 相位修正:
+            - v12 错在: 身体抬起瞬间 (25%/75%) 影子变大+深, 反物理
+            - v13 改: 身体下沉瞬间 (0%/50%/100%) 影子变大+深 (贴地重, 压得深)
+                     身体抬起瞬间 (25%/75%) 影子变小+浅 (离地轻, 影子收敛)
+         3. 幅度保持克制 (scale ±1.5%, opacity 0.5↔0.52) — 身体本身起伏就小
+
+       其他保留 v12 (踱步 pacing gait / 金币摆 / 雪茄摆 / 代码烟雾)
+
+       v11 → v12 修改:
+         1. 金币摆 (coin-sway):
+            - pivot 金币顶部挂点 (12.7, 10.9275) — 链条汇合点, 模拟从链条挂下
+            - rotate ±3°, 周期 1.1s + alternate = 来回 2.2s 锁相 body-walk
+            - 金币外层包一层 g.coin-sway, 内层保持原 translate+scale
+         2. 雪茄摆 bug 修复:
+            - v11 用 transform-box: fill-box + 百分比 origin
+              SVG <g> 上浏览器 fill-box 支持不一致, 可能导致 animation 不生效
+            - 改成 carrying/pack-swing 同款的绝对坐标 origin (1px 10.5px), 稳妥
+            - 雪茄结构重构:
+              * 去掉外层 <g transform="translate(1 10)">, rects 坐标直接 shift 到 (1..6, 10..11)
+              * 内层新增 <g transform="rotate(-150 1 10.5)"> 做基础 -150° 旋转
+              * 外层 .cigar-sway 用 CSS 叠加 ±3° 旋转, pivot 同样 (1, 10.5)
+              * 两层 rotate 绕同一 pivot, 矩阵复合 = rotate(-150 ± 3°)
+         3. 火星全局坐标 (-2.9, 8.25) 不变 (验算: (5.5, 10.5) 绕 (1, 10.5) rotate(-150) = (-2.9, 8.25))
+            codesmoke 起点保持不变
+
+       为什么金币 pivot 在顶部而不是中心:
+         物理上金币是从链条挂点吊下, 摆动轴 = 链条末端 = 金币顶部中心
+         pivot 放金币底部会看起来像"金币从底部被钉住", 反物理
+
+       为什么金币周期对齐 body-walk (2.2s) 而不是错开:
+         金币挂在身上, 走路时自然应和身体律动, 不是独立节奏
+         错开反而显得金币有自主意识, 违和
+         雪茄是"大佬主动叼的", 有自主节奏 (2.8s 互质) 才像"悠着抽"
+
+       其他保留 v11 (踱步 pacing gait / body-walk / 阴影脉动 / 代码烟雾) -->
+
+  <defs>
+    <filter id="smoke-glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="0.3" result="glow"/>
+      <feMerge>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="glow"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <style>
+      .body-walk {
+        transform-origin: 7.5px 15px;
+        animation: body-walk 2.2s infinite ease-in-out;
+      }
+      .step-left {
+        animation: step-left 2.2s infinite ease-in-out;
+      }
+      .step-right {
+        animation: step-right 2.2s infinite ease-in-out;
+      }
+      .coin-sway {
+        transform-origin: 12.7px 10.9275px;
+        animation: coin-sway 1.1s infinite alternate ease-in-out;
+      }
+      .cigar-sway {
+        transform-origin: 1px 10.5px;
+        animation: cigar-sway 2.8s infinite alternate ease-in-out;
+      }
+      .shadow-pulse {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-pulse 2.2s infinite ease-in-out;
+      }
+
+      @keyframes body-walk {
+        0%, 50%, 100% { transform: translate(0px, 0.5px); }
+        25%           { transform: translate(0.15px, 0px); }
+        75%           { transform: translate(-0.15px, 0px); }
+      }
+      @keyframes step-left {
+        0%, 15%, 35%, 100% { transform: translateY(0); }
+        25%                { transform: translateY(-0.7px); }
+      }
+      @keyframes step-right {
+        0%, 65%, 85%, 100% { transform: translateY(0); }
+        75%                { transform: translateY(-0.7px); }
+      }
+      @keyframes coin-sway {
+        0%   { transform: rotate(-3deg); }
+        100% { transform: rotate(3deg); }
+      }
+      @keyframes cigar-sway {
+        0%   { transform: rotate(-3deg); }
+        100% { transform: rotate(3deg); }
+      }
+      @keyframes shadow-pulse {
+        0%, 50%, 100% { transform: translate(0px, 0px)     scale(1.015); opacity: 0.52; }
+        25%           { transform: translate(0.15px, 0px)  scale(1);     opacity: 0.5;  }
+        75%           { transform: translate(-0.15px, 0px) scale(1);     opacity: 0.5;  }
+      }
+    </style>
+  </defs>
+
+  <rect class="shadow-pulse" id="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000"/>
+
+  <g transform="rotate(1 7.5 15)">
+    <g id="master-group">
+
+      <g id="legs" fill="#DE886D">
+        <rect class="step-left"  id="outer-left-leg"  x="3"  y="13" width="1" height="2"/>
+        <rect class="step-left"  id="inner-left-leg"  x="5"  y="13" width="1" height="2"/>
+        <rect class="step-right" id="inner-right-leg" x="9"  y="13" width="1" height="2"/>
+        <rect class="step-right" id="outer-right-leg" x="11" y="13" width="1" height="2"/>
+      </g>
+
+      <g class="body-walk">
+
+        <g id="body-parts" fill="#DE886D">
+          <rect id="torso"     x="2"  y="6" width="11" height="7"/>
+          <rect id="left-arm"  x="0"  y="9" width="2"  height="2"/>
+          <rect id="right-arm" x="13" y="9" width="2"  height="2"/>
+        </g>
+
+        <g id="eyes-color-group" fill="#000000">
+          <rect id="left-eye"  x="4"  y="8" width="1" height="2"/>
+          <rect id="right-eye" x="10" y="8" width="1" height="2"/>
+        </g>
+
+        <g id="chain" fill="none" stroke="#FFD700" stroke-width="0.15">
+          <circle cx="2.200" cy="8.800"  r="0.22"/>
+          <circle cx="2.856" cy="9.207"  r="0.22"/>
+          <circle cx="3.513" cy="9.607"  r="0.22"/>
+          <circle cx="4.169" cy="9.994"  r="0.22"/>
+          <circle cx="4.825" cy="10.361" r="0.22"/>
+          <circle cx="5.481" cy="10.705" r="0.22"/>
+          <circle cx="6.138" cy="11.019" r="0.22"/>
+          <circle cx="6.794" cy="11.302" r="0.22"/>
+          <circle cx="7.450" cy="11.550" r="0.22"/>
+          <circle cx="8.106" cy="11.764" r="0.22"/>
+          <circle cx="8.763" cy="11.944" r="0.22"/>
+          <circle cx="9.419" cy="12.092" r="0.22"/>
+          <circle cx="10.075" cy="12.211" r="0.22"/>
+          <circle cx="10.731" cy="12.306" r="0.22"/>
+          <circle cx="11.388" cy="12.382" r="0.22"/>
+          <circle cx="12.044" cy="12.444" r="0.22"/>
+          <circle cx="12.700" cy="12.500" r="0.22"/>
+          <circle cx="12.800" cy="8.800"  r="0.22"/>
+          <circle cx="12.780" cy="9.716"  r="0.22"/>
+          <circle cx="12.760" cy="10.565" r="0.22"/>
+          <circle cx="12.740" cy="11.305" r="0.22"/>
+          <circle cx="12.720" cy="11.936" r="0.22"/>
+          <circle cx="12.700" cy="12.500" r="0.22"/>
+        </g>
+
+        <g id="glasses" transform="translate(1.325 7.375) scale(0.65)">
+          <g fill="#000000">
+            <rect x="0"  y="0" width="19" height="1"/>
+            <rect x="0"  y="1" width="8"  height="1"/>
+            <rect x="11" y="1" width="8"  height="1"/>
+            <rect x="0"  y="2" width="8"  height="1"/>
+            <rect x="11" y="2" width="8"  height="1"/>
+            <rect x="1"  y="3" width="6"  height="1"/>
+            <rect x="12" y="3" width="6"  height="1"/>
+            <rect x="2"  y="4" width="4"  height="1"/>
+            <rect x="13" y="4" width="4"  height="1"/>
+          </g>
+          <g fill="#FFFFFF">
+            <rect x="5"  y="1" width="1" height="1"/>
+            <rect x="4"  y="2" width="1" height="1"/>
+            <rect x="16" y="1" width="1" height="1"/>
+            <rect x="15" y="2" width="1" height="1"/>
+          </g>
+        </g>
+
+        <g class="coin-sway">
+          <g id="coin" transform="translate(11.1275 10.9275) scale(0.185)">
+            <g fill="#CC6600">
+              <rect x="6" y="0"  width="5"  height="1"/>
+              <rect x="4" y="1"  width="9"  height="1"/>
+              <rect x="3" y="2"  width="11" height="1"/>
+              <rect x="2" y="3"  width="13" height="1"/>
+              <rect x="1" y="4"  width="15" height="2"/>
+              <rect x="0" y="6"  width="17" height="5"/>
+              <rect x="1" y="11" width="15" height="2"/>
+              <rect x="2" y="13" width="13" height="1"/>
+              <rect x="3" y="14" width="11" height="1"/>
+              <rect x="4" y="15" width="9"  height="1"/>
+              <rect x="6" y="16" width="5"  height="1"/>
+            </g>
+            <g fill="#FFD700">
+              <rect x="7" y="1"  width="3"  height="1"/>
+              <rect x="5" y="2"  width="7"  height="1"/>
+              <rect x="4" y="3"  width="9"  height="1"/>
+              <rect x="3" y="4"  width="11" height="1"/>
+              <rect x="2" y="5"  width="13" height="2"/>
+              <rect x="1" y="7"  width="15" height="3"/>
+              <rect x="2" y="10" width="13" height="2"/>
+              <rect x="3" y="12" width="11" height="1"/>
+              <rect x="4" y="13" width="9"  height="1"/>
+              <rect x="5" y="14" width="7"  height="1"/>
+              <rect x="7" y="15" width="3"  height="1"/>
+            </g>
+            <g fill="#FF9900">
+              <rect x="8"  y="4"  width="1" height="9"/>
+              <rect x="6"  y="5"  width="5" height="1"/>
+              <rect x="6"  y="6"  width="1" height="1"/>
+              <rect x="6"  y="7"  width="2" height="1"/>
+              <rect x="7"  y="8"  width="1" height="1"/>
+              <rect x="9"  y="8"  width="1" height="1"/>
+              <rect x="9"  y="9"  width="2" height="1"/>
+              <rect x="10" y="10" width="1" height="1"/>
+              <rect x="6"  y="11" width="5" height="1"/>
+            </g>
+            <g fill="#FFEE55">
+              <rect x="6" y="2" width="2" height="1"/>
+              <rect x="5" y="3" width="2" height="1"/>
+            </g>
+          </g>
+        </g>
+
+        <g class="cigar-sway">
+          <g id="cigarette-rotor" transform="rotate(-150 1 10.5)">
+            <rect x="1" y="10" width="1" height="1" fill="#8B4513"/>
+            <rect x="2" y="10" width="3" height="1" fill="#F0E4C8"/>
+            <rect x="5" y="10" width="1" height="1" fill="#FFD700">
+              <animate attributeName="fill"
+                       values="#FFD700;#FF8800;#CC3300;#CC3300;#FFD700"
+                       keyTimes="0;0.1;0.25;0.9;1"
+                       dur="3s"
+                       repeatCount="indefinite"/>
+            </rect>
+          </g>
+        </g>
+
+        <g id="codesmoke" font-family="Consolas, 'Courier New', Menlo, monospace"
+           font-size="1.5" font-weight="bold"
+           text-anchor="middle" dominant-baseline="central"
+           fill="#5A5A5A" filter="url(#smoke-glow)">
+
+          <text x="-2.9" y="8.25" opacity="0">{<animateTransform attributeName="transform" type="translate"
+              values="0,0; 0.5,-3; -0.3,-6; 0.4,-9; -0.2,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="0s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="0s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">;<animateTransform attributeName="transform" type="translate"
+              values="0,0; -0.4,-3; 0.5,-6; -0.3,-9; 0.2,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="0.5s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="0.5s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">&lt;<animateTransform attributeName="transform" type="translate"
+              values="0,0; 0.3,-3; -0.5,-6; 0.2,-9; -0.4,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="1s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="1s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">}<animateTransform attributeName="transform" type="translate"
+              values="0,0; -0.5,-3; 0.4,-6; -0.2,-9; 0.3,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="1.5s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="1.5s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">=<animateTransform attributeName="transform" type="translate"
+              values="0,0; 0.6,-3; -0.2,-6; 0.5,-9; -0.3,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="2s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="2s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">&gt;<animateTransform attributeName="transform" type="translate"
+              values="0,0; -0.3,-3; 0.5,-6; -0.4,-9; 0.2,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="2.5s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="2.5s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">*<animateTransform attributeName="transform" type="translate"
+              values="0,0; 0.4,-3; -0.6,-6; 0.3,-9; -0.5,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="3s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="3s" repeatCount="indefinite"/></text>
+
+          <text x="-2.9" y="8.25" opacity="0">#<animateTransform attributeName="transform" type="translate"
+              values="0,0; -0.5,-3; 0.3,-6; -0.6,-9; 0.4,-12"
+              keyTimes="0;0.25;0.5;0.75;1" dur="4s" begin="3.5s" repeatCount="indefinite"/>
+            <animate attributeName="opacity" values="0;1;1;0.5;0"
+              keyTimes="0;0.12;0.5;0.8;1" dur="4s" begin="3.5s" repeatCount="indefinite"/></text>
+
+        </g>
+
+      </g>
+    </g>
+  </g>
+</svg>

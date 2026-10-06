@@ -20,10 +20,17 @@ function createSettingsSizePreviewSession({
   async function begin() {
     if (protectionActive) return { status: "ok", noop: true };
     if (beginPromise) return beginPromise;
-    beginPromise = Promise.resolve(startProtection()).then(() => {
+    beginPromise = (async () => {
+      try {
+        await startProtection();
+      } catch (error) {
+        // Start may have applied part of the protection before failing.
+        try { await stopProtection(); } catch {}
+        throw error;
+      }
       protectionActive = true;
       return { status: "ok" };
-    }).finally(() => {
+    })().finally(() => {
       beginPromise = null;
     });
     return beginPromise;

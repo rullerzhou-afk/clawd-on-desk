@@ -12,6 +12,11 @@ function isLiveWindow(win) {
 function createThemeFadeSequencer(options = {}) {
   const getRenderWindow = options.getRenderWindow || (() => null);
   const getHitWindow = options.getHitWindow || (() => null);
+  // #640: "full" opacity is not always 1 — while the pet dodges an editing
+  // bubble it sits at a faded value owned by topmost-runtime. Every restore
+  // path below asks this at restore time instead of hardcoding 1, so a theme
+  // reload mid-edit doesn't snap the pet opaque over the box being typed into.
+  const getRestoreOpacity = options.getRestoreOpacity || (() => 1);
   const animateWindowOpacity = options.animateWindowOpacity || defaultAnimateWindowOpacity;
   const setWindowOpacity = options.setWindowOpacity || defaultSetWindowOpacity;
   const setTimeoutFn = options.setTimeout || setTimeout;
@@ -27,6 +32,12 @@ function createThemeFadeSequencer(options = {}) {
 
   function isCurrent(seq) {
     return seq === sequenceId;
+  }
+
+  function restoreOpacity() {
+    let value = 1;
+    try { value = Number(getRestoreOpacity()); } catch { value = 1; }
+    return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
   }
 
   function clearFadeFallback() {
@@ -58,7 +69,7 @@ function createThemeFadeSequencer(options = {}) {
       if (typeof onFallback === "function") {
         onFallback();
       } else {
-        setWindowOpacity(getRenderWindow(), 1);
+        setWindowOpacity(getRenderWindow(), restoreOpacity());
       }
     }, fallbackMs);
   }
@@ -81,8 +92,20 @@ function createThemeFadeSequencer(options = {}) {
   function fadeIn(seq) {
     if (!isCurrent(seq)) return;
     clearFadeFallback();
-    animateOpacity(seq, 1, fadeInMs).then((ok) => {
-      if (!ok && isCurrent(seq)) setWindowOpacity(getRenderWindow(), 1);
+    const target = restoreOpacity();
+    animateOpacity(seq, target, fadeInMs).then((ok) => {
+      if (!isCurrent(seq)) return;
+      if (!ok) {
+        setWindowOpacity(getRenderWindow(), restoreOpacity());
+        return;
+      }
+      // #640: the baseline can move WHILE this fade-in runs (the dodge engages
+      // or releases mid-animation, racing this loop with its own independent
+      // one — separate cancel signals, last writer wins). Whoever finishes
+      // last must land on the CURRENT baseline, so re-read it at completion
+      // and converge instead of trusting the target chosen at start.
+      const finalTarget = restoreOpacity();
+      if (finalTarget !== target) setWindowOpacity(getRenderWindow(), finalTarget);
     });
   }
 
@@ -92,7 +115,7 @@ function createThemeFadeSequencer(options = {}) {
     const hitWin = getHitWindow();
     if (!isLiveWindow(renderWin) || !isLiveWindow(hitWin)) {
       if (typeof onFallback === "function") onFallback();
-      else setWindowOpacity(renderWin, 1);
+      else setWindowOpacity(renderWin, restoreOpacity());
       return;
     }
 

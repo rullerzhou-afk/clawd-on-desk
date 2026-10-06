@@ -24,38 +24,72 @@ const childProcess = require("child_process");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 
 const PROBE_TIMEOUT_MS = 15000;
+// Serialized proxy transports such as `gh cs ssh --stdio` have a noticeably
+// slower cold round-trip on real Windows/Codespaces hosts. The ordinary probe
+// keeps its established 15s bound, while a coordinator-owned probe gets enough
+// time to finish naturally instead of being misclassified at the boundary.
+const MANAGED_PROBE_TIMEOUT_MS = 30000;
 
 const POSIX_OS_RX = /^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX|CYGWIN|MINGW|MSYS)/i;
 
 function spawnAndWait(spawn, command, args, opts = {}) {
-  const { timeoutMs = PROBE_TIMEOUT_MS, runtime } = opts;
-  return new Promise((resolve) => {
+  const { timeoutMs = PROBE_TIMEOUT_MS, runtime, role = "shell-detect" } = opts;
+  return new Promise((resolve, reject) => {
     let child;
+    const childOptions = {
+      env: { ...process.env, LANG: "C", LC_ALL: "C" },
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+    };
     try {
-      child = spawn(command, args, {
-        env: { ...process.env, LANG: "C", LC_ALL: "C" },
-        stdio: ["ignore", "pipe", "pipe"],
-        windowsHide: true,
-      });
+      child = runtime && typeof runtime.spawnManagedTransportChild === "function"
+        ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
+        : spawn(command, args, childOptions);
     } catch (err) {
-      resolve({ code: -1, signal: null, stdout: "", stderr: (err && err.message) || "spawn failed" });
+      reject(err);
       return;
     }
-    if (runtime && typeof runtime.registerChild === "function") {
+    const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
+    if (!managed && runtime && typeof runtime.registerChild === "function") {
       runtime.registerChild(child);
     }
     const stdoutChunks = [];
     const stderrChunks = [];
     let done = false;
+    let exitCode = null;
+    let exitSignal = null;
+    let processError = null;
+    let timedOut = false;
+    let drainTimer = null;
     const timer = setTimeout(() => {
       if (done) return;
-      try { child.kill(); } catch {}
+      timedOut = true;
+      if (!managed) {
+        try { child.kill(); } catch {}
+      }
+      drainTimer = setTimeout(() => {
+        if (done) return;
+        done = true;
+        const err = Object.assign(new Error("Remote shell probe did not close after timeout"), {
+          code: "transport_drain_timeout",
+          timedOut: true,
+          drainVerified: false,
+          role,
+        });
+        if (managed && runtime && typeof runtime.invalidateManagedOperation === "function") {
+          try { runtime.invalidateManagedOperation(err); } catch {}
+          reject(err);
+          return;
+        }
+        resolve({ code: exitCode, signal: exitSignal, stdout: "", stderr: err.message, timedOut: true, drainVerified: false });
+      }, 5000);
     }, timeoutMs);
     function finish(payload) {
       if (done) return;
       done = true;
       clearTimeout(timer);
-      if (runtime && typeof runtime.unregisterChild === "function") {
+      if (drainTimer) clearTimeout(drainTimer);
+      if (!managed && runtime && typeof runtime.unregisterChild === "function") {
         runtime.unregisterChild(child);
       }
       resolve(payload);
@@ -63,20 +97,45 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     if (child.stdout) child.stdout.on("data", (d) => { stdoutChunks.push(d); });
     if (child.stderr) child.stderr.on("data", (d) => { stderrChunks.push(d); });
     if (child.stdin) { try { child.stdin.end(); } catch {} }
-    child.on("error", (err) => {
-      finish({
-        code: -1,
-        signal: null,
-        stdout: decodeShellBytes(stdoutChunks),
-        stderr: decodeShellBytes(stderrChunks) || (err && err.message) || "process error",
-      });
-    });
+    child.on("error", (err) => { processError = err; });
     child.on("exit", (code, signal) => {
+      exitCode = code;
+      exitSignal = signal;
+    });
+    child.on("close", (code, signal) => {
+      if (managed && timedOut) {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        if (drainTimer) clearTimeout(drainTimer);
+        const err = Object.assign(new Error("Remote shell probe exceeded its operation deadline"), {
+          code: "transport_operation_timeout",
+          timedOut: true,
+          drainVerified: true,
+          role,
+        });
+        if (runtime && typeof runtime.settleManagedTimeoutAfterClose === "function") {
+          try { runtime.settleManagedTimeoutAfterClose(err); } catch {}
+        }
+        reject(err);
+        return;
+      }
+      if (managed && runtime && typeof runtime.assertTransportActive === "function") {
+        try {
+          runtime.assertTransportActive();
+        } catch (err) {
+          done = true;
+          clearTimeout(timer);
+          if (drainTimer) clearTimeout(drainTimer);
+          reject(err);
+          return;
+        }
+      }
       finish({
-        code,
-        signal,
+        code: exitCode === null ? code : exitCode,
+        signal: exitSignal === null ? signal : exitSignal,
         stdout: decodeShellBytes(stdoutChunks),
-        stderr: decodeShellBytes(stderrChunks),
+        stderr: decodeShellBytes(stderrChunks) || (processError && processError.message) || "",
       });
     });
   });
@@ -88,13 +147,17 @@ async function detectRemoteShell({ profile, spawn, buildSshArgs, runtime, deps =
     throw new Error("detectRemoteShell: buildSshArgs required");
   }
   const spawnFn = spawn || (deps.spawn || childProcess.spawn);
+  const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
+  const timeoutMs = Number.isFinite(deps.timeoutMs)
+    ? deps.timeoutMs
+    : (managed ? MANAGED_PROBE_TIMEOUT_MS : PROBE_TIMEOUT_MS);
 
   // POSIX probe — `uname -s` is the canonical "what kernel are you" check
   // and exists on every POSIX system Clawd targets. cmd.exe responds with
   // "'uname' is not recognized…" and non-zero exit, so a 0/Linux response
   // is a strong POSIX signal.
   const posixArgs = buildSshArgs(profile).concat(["uname -s"]);
-  const posix = await spawnAndWait(spawnFn, "ssh", posixArgs, { runtime });
+  const posix = await spawnAndWait(spawnFn, "ssh", posixArgs, { runtime, timeoutMs });
   if (posix.code === 0) {
     const firstLine = String(posix.stdout || "").trim().split(/\r?\n/)[0] || "";
     if (POSIX_OS_RX.test(firstLine)) {
@@ -107,7 +170,7 @@ async function detectRemoteShell({ profile, spawn, buildSshArgs, runtime, deps =
   // ("ver: command not found"), so a 0/"Microsoft Windows" response
   // confirms cmd.exe.
   const winArgs = buildSshArgs(profile).concat(["ver"]);
-  const win = await spawnAndWait(spawnFn, "ssh", winArgs, { runtime });
+  const win = await spawnAndWait(spawnFn, "ssh", winArgs, { runtime, timeoutMs });
   if (win.code === 0 && /Microsoft Windows/i.test(win.stdout || "")) {
     return { ok: true, shell: "windows-cmd", os: "windows" };
   }
@@ -126,5 +189,6 @@ async function detectRemoteShell({ profile, spawn, buildSshArgs, runtime, deps =
 module.exports = {
   detectRemoteShell,
   PROBE_TIMEOUT_MS,
+  MANAGED_PROBE_TIMEOUT_MS,
   POSIX_OS_RX,
 };

@@ -62,13 +62,22 @@ describe("validateOpencodeEntry", () => {
     );
   });
 
+  // The thin entry's fixed shared-dependency closure (plan §3.4): the doctor
+  // must see these exist or packaging that drops one would be a false green.
+  function familySharedFiles(entry) {
+    return [
+      path.join(entry, "..", "opencode-family-plugin", "core.mjs"),
+      path.join(entry, "..", "opencode-family-plugin", "session-ids.mjs"),
+    ];
+  }
+
   it("accepts absolute plugin directories with index.mjs", () => {
     const entry = "/opt/clawd/hooks/opencode-plugin";
     assert.deepStrictEqual(
       validateOpencodeEntry(entry, {
         fs: fakeFs({
           dirs: [entry],
-          files: [path.join(entry, "index.mjs")],
+          files: [path.join(entry, "index.mjs"), ...familySharedFiles(entry)],
         }),
       }),
       { ok: true }
@@ -81,10 +90,38 @@ describe("validateOpencodeEntry", () => {
       validateOpencodeEntry(entry, {
         fs: fakeFs({
           dirs: [entry],
-          files: [path.join(entry, "index.mjs")],
+          files: [path.join(entry, "index.mjs"), ...familySharedFiles(entry)],
         }),
       }),
       { ok: true }
+    );
+  });
+
+  it("reports a missing shared core (packaging false-green guard)", () => {
+    const entry = "/opt/clawd/hooks/opencode-plugin";
+    const [corePath, sessionIdsPath] = familySharedFiles(entry);
+    assert.deepStrictEqual(
+      validateOpencodeEntry(entry, {
+        fs: fakeFs({
+          dirs: [entry],
+          files: [path.join(entry, "index.mjs"), sessionIdsPath],
+        }),
+      }),
+      { ok: false, reason: "family-core-missing", missing: corePath }
+    );
+  });
+
+  it("reports core present but session helpers missing (two-level closure)", () => {
+    const entry = "/opt/clawd/hooks/opencode-plugin";
+    const [corePath, sessionIdsPath] = familySharedFiles(entry);
+    assert.deepStrictEqual(
+      validateOpencodeEntry(entry, {
+        fs: fakeFs({
+          dirs: [entry],
+          files: [path.join(entry, "index.mjs"), corePath],
+        }),
+      }),
+      { ok: false, reason: "family-core-missing", missing: sessionIdsPath }
     );
   });
 
@@ -95,7 +132,7 @@ describe("validateOpencodeEntry", () => {
       validateOpencodeEntry(entry, {
         fs: fakeFs({
           dirs: [entry],
-          files: [indexPath],
+          files: [indexPath, ...familySharedFiles(entry)],
           contents: {
             [indexPath]:
               "export const __test = {};\nexport default async () => ({ event: async () => {} });\n",
@@ -113,7 +150,7 @@ describe("validateOpencodeEntry", () => {
       validateOpencodeEntry(entry, {
         fs: fakeFs({
           dirs: [entry],
-          files: [indexPath],
+          files: [indexPath, ...familySharedFiles(entry)],
           contents: {
             [indexPath]:
               'const plugin = async () => ({ event: async () => {} });\nObject.defineProperty(plugin, "__test", { value: {} });\nexport default plugin;\n',

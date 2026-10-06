@@ -1,0 +1,108 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .body-react {
+        animation: body-panic 3.5s 1 ease-in-out forwards;
+      }
+      .eyes-react {
+        animation: eyes-panic 3.5s 1 ease-in-out forwards;
+      }
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 3s infinite linear;
+      }
+      .question-pop {
+        transform-origin: center;
+        animation: question-fade 3.5s 1 ease-in-out forwards;
+        opacity: 0;
+      }
+      .exclamation-pop {
+        transform-origin: center;
+        animation: excl-fade 3.5s 1 ease-in-out forwards;
+        opacity: 0;
+      }
+
+      /* Frantic left-right looking */
+      @keyframes body-panic {
+        0%, 4%   { transform: translate(0px, 0px); }
+        10%, 18% { transform: translate(-1px, 0px); }
+        24%, 32% { transform: translate(1px, 0px); }
+        36%      { transform: translate(-1px, 0px); }
+        40%      { transform: translate(1px, 0px); }
+        46%, 72% { transform: translate(1px, -1px); }
+        82%, 100%{ transform: translate(0px, 0px); }
+      }
+
+      @keyframes eyes-panic {
+        0%, 4%   { transform: translate(0px, 0px); }
+        10%, 18% { transform: translate(-2px, 0px); }
+        24%, 32% { transform: translate(2px, 0px); }
+        36%      { transform: translate(-2px, 0px); }
+        40%      { transform: translate(2px, 0px); }
+        46%, 72% { transform: translate(3px, -2px); }
+        82%, 100%{ transform: translate(0px, 0px); }
+      }
+
+      @keyframes blink {
+        0%, 20%, 24%, 60%, 64%, 80%, 84%, 100% { transform: scaleY(1); }
+        22%, 62%, 82% { transform: scaleY(0.1); }
+      }
+
+      /* Question mark appears early (while looking left) */
+      @keyframes question-fade {
+        0%, 6%   { opacity: 0; transform: translate(-4px, 4px) scale(0.5); }
+        12%, 38% { opacity: 1; transform: translate(-4px, 0px) scale(1); }
+        44%, 100%{ opacity: 0; transform: translate(-4px, -4px) scale(1.2); }
+      }
+
+      /* Exclamation appears later (while staring up-right) */
+      @keyframes excl-fade {
+        0%, 42%  { opacity: 0; transform: translate(6px, 0px) scale(0.5); }
+        48%, 72% { opacity: 1; transform: translate(6px, -4px) scale(1); }
+        80%, 100%{ opacity: 0; transform: translate(6px, -8px) scale(1.2); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Static Legs (extended upward to prevent gap when body shifts up) -->
+  <g fill="#DE886D">
+    <rect x="3" y="11" width="1" height="4"/>
+    <rect x="5" y="11" width="1" height="4"/>
+    <rect x="9" y="11" width="1" height="4"/>
+    <rect x="11" y="11" width="1" height="4"/>
+  </g>
+
+  <!-- Animated Upper Body -->
+  <g class="body-react">
+    <g fill="#DE886D">
+      <rect x="2" y="6" width="11" height="7"/>
+      <rect x="0" y="9" width="2" height="2"/>
+      <rect x="13" y="9" width="2" height="2"/>
+    </g>
+    <g class="eyes-react">
+      <g class="eyes-blink" fill="#000000">
+        <rect x="4" y="8" width="1" height="2"/>
+        <rect x="10" y="8" width="1" height="2"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Question Mark (left side) -->
+  <g class="question-pop" fill="#FFFFFF">
+    <rect x="1" y="0" width="2" height="1"/>
+    <rect x="0" y="1" width="1" height="1"/>
+    <rect x="3" y="1" width="1" height="2"/>
+    <rect x="2" y="3" width="1" height="1"/>
+    <rect x="1" y="4" width="1" height="1"/>
+    <rect x="1" y="6" width="1" height="1"/>
+  </g>
+
+  <!-- Exclamation Mark (right side) -->
+  <g class="exclamation-pop" fill="#0082FC">
+    <rect x="1" y="0" width="1" height="4"/>
+    <rect x="1" y="5" width="1" height="1"/>
+  </g>
+</svg>

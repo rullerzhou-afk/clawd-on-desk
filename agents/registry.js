@@ -2,6 +2,7 @@
 // Used by main.js for process detection and session tracking
 
 const claudeCode = require("./claude-code");
+const deepseekHarness = require("./deepseek-harness");
 const codex = require("./codex");
 const copilotCli = require("./copilot-cli");
 const geminiCli = require("./gemini-cli");
@@ -12,16 +13,26 @@ const kiroCli = require("./kiro-cli");
 const kirocrew = require("./kirocrew");
 const kimiCli = require("./kimi-cli");
 const qwenCode = require("./qwen-code");
+const zcode = require("./zcode");
 const codewhale = require("./codewhale");
 const opencode = require("./opencode");
+const mimocode = require("./mimocode");
 const pi = require("./pi");
+const omp = require("./omp");
 const openclaw = require("./openclaw");
 const hermes = require("./hermes");
 const qoder = require("./qoder");
 const reasonix = require("./reasonix");
+const qoderwork = require("./qoderwork");
+const qwenwork = require("./qwenwork");
+const workbuddy = require("./workbuddy");
+const traecode = require("./traecode");
+const grokBuild = require("./grok-build");
+const minimax = require("./minimax");
 
 const AGENTS = [
   claudeCode,
+  deepseekHarness,
   codex,
   copilotCli,
   geminiCli,
@@ -32,33 +43,49 @@ const AGENTS = [
   kirocrew,
   kimiCli,
   qwenCode,
+  zcode,
   codewhale,
   opencode,
+  mimocode,
   pi,
+  omp,
   openclaw,
   hermes,
   qoder,
   reasonix,
+  qoderwork,
+  qwenwork,
+  workbuddy,
+  traecode,
+  grokBuild,
+  minimax,
 ];
 const AGENT_MAP = new Map(AGENTS.map((a) => [a.id, a]));
+
+function namesForPlatform(agent, field) {
+  const namesByPlatform = agent[field] || {};
+  const isWin = process.platform === "win32";
+  const isLinux = process.platform === "linux";
+  return isWin
+    ? (namesByPlatform.win || [])
+    : isLinux
+      ? (namesByPlatform.linux || namesByPlatform.mac || [])
+      : (namesByPlatform.mac || []);
+}
+
+function collectProcessNames(field) {
+  const result = [];
+  for (const agent of AGENTS) {
+    const names = namesForPlatform(agent, field);
+    for (const name of names) result.push({ name, agentId: agent.id });
+  }
+  return result;
+}
 
 module.exports = {
   getAllAgents: () => AGENTS,
   getAgent: (id) => AGENT_MAP.get(id),
 
-  // Aggregate all agent process names for detectRunningAgentProcesses()
-  getAllProcessNames: () => {
-    const isWin = process.platform === "win32";
-    const isLinux = process.platform === "linux";
-    const result = [];
-    for (const a of AGENTS) {
-      const names = isWin
-        ? a.processNames.win
-        : isLinux
-          ? (a.processNames.linux || a.processNames.mac)
-          : a.processNames.mac;
-      for (const n of names) result.push({ name: n, agentId: a.id });
-    }
-    return result;
-  },
+  getAllProcessNames: () => collectProcessNames("processNames"),
+  getStartupRecoveryProcessNames: () => collectProcessNames("startupRecoveryProcessNames"),
 };

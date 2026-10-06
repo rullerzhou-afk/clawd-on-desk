@@ -1,10 +1,18 @@
 "use strict";
 
 (function initSettingsTabAbout(root) {
+  let state = null;
   let runtime = null;
   let helpers = null;
   let ops = null;
   let i18n = null;
+
+  // Contributors who are credited but whose GitHub account no longer resolves, so
+  // https://github.com/<name> would 404. tomaioo authored the Linux Electron sandbox
+  // gate (commit 2cab204e, shipped via the now-deleted PR #168) and the account was
+  // removed afterwards — lookup by login and by numeric id both 404, so it is gone
+  // rather than renamed. The contribution still ships in hooks/shared-process.js.
+  const NO_GITHUB_ACCOUNT = new Set(["tomaioo"]);
 
   function t(key) {
     return helpers.t(key);
@@ -12,6 +20,116 @@
 
   function formatVersionForMessage(version) {
     return String(version || "").replace(/^v/i, "");
+  }
+
+  function normalizeUpdateCheckSnapshot(snapshot) {
+    if (!snapshot || typeof snapshot !== "object") return { state: "idle" };
+    const allowed = new Set(["idle", "checking", "up-to-date", "available", "downloading", "ready", "error"]);
+    return {
+      ...snapshot,
+      state: allowed.has(snapshot.state) ? snapshot.state : "idle",
+    };
+  }
+
+  function buildUpdateErrorCard(report, onClose) {
+    const card = document.createElement("div");
+    card.className = "about-update-error-card";
+    card.setAttribute("role", "alert");
+
+    const header = document.createElement("div");
+    header.className = "about-update-error-header";
+    const title = document.createElement("div");
+    title.className = "about-update-error-title";
+    title.textContent = report.title || t("aboutUpdateErrorTitle");
+    const closeButton = document.createElement("button");
+    closeButton.type = "button";
+    closeButton.className = "about-update-error-close";
+    closeButton.textContent = "×";
+    closeButton.title = t("aboutUpdateErrorClose");
+    closeButton.setAttribute("aria-label", t("aboutUpdateErrorClose"));
+    closeButton.addEventListener("click", onClose);
+    header.appendChild(title);
+    header.appendChild(closeButton);
+    card.appendChild(header);
+
+    const message = document.createElement("div");
+    message.className = "about-update-error-message";
+    message.textContent = report.message || t("aboutUpdateErrorFallback");
+    card.appendChild(message);
+
+    if (report.nextStep) {
+      const nextStep = document.createElement("div");
+      nextStep.className = "about-update-error-next";
+      const nextLabel = document.createElement("strong");
+      nextLabel.textContent = t("aboutUpdateErrorNextStep") + " ";
+      nextStep.appendChild(nextLabel);
+      const nextText = document.createElement("span");
+      nextText.textContent = report.nextStep;
+      nextStep.appendChild(nextText);
+      card.appendChild(nextStep);
+    }
+
+    const details = document.createElement("div");
+    details.className = "about-update-error-details";
+    const summary = document.createElement("button");
+    summary.type = "button";
+    summary.className = "about-update-error-details-trigger";
+    summary.appendChild(helpers.createDisclosureChevron("about-update-error-chevron"));
+    const summaryLabel = document.createElement("span");
+    summaryLabel.textContent = t("aboutUpdateErrorDetails");
+    summary.appendChild(summaryLabel);
+    const body = document.createElement("div");
+    body.className = "about-update-error-details-body settings-disclosure-body";
+    const bodyInner = document.createElement("div");
+    bodyInner.className = "about-update-error-details-inner settings-disclosure-body-inner";
+    const technical = document.createElement("pre");
+    technical.textContent = [
+      report.code ? `${t("aboutUpdateErrorCode")}: ${report.code}` : "",
+      report.phase ? `${t("aboutUpdateErrorPhase")}: ${report.phase}` : "",
+      report.detail || "",
+    ].filter(Boolean).join("\n");
+    bodyInner.appendChild(technical);
+    body.appendChild(bodyInner);
+    details.appendChild(summary);
+    details.appendChild(body);
+    state.mountedControls.aboutUpdateErrorDisclosure = helpers.registerMountedDisposable(
+      helpers.attachSettingsDisclosure({
+        root: details,
+        trigger: summary,
+        body,
+        expanded: false,
+      }),
+    );
+    card.appendChild(details);
+
+    const actions = document.createElement("div");
+    actions.className = "about-update-error-actions";
+    const copyButton = helpers.buildButton({
+      labelKey: "aboutUpdateErrorCopy",
+      size: "compact",
+      className: "about-update-error-copy",
+    });
+    copyButton.addEventListener("click", async () => {
+      helpers.setButtonState(copyButton, { pending: true });
+      try {
+        const copy = window.settingsAPI && window.settingsAPI.copyUpdateError;
+        if (typeof copy !== "function") throw new Error("clipboard unavailable");
+        const result = await copy(String(report.copyText || report.detail || report.message || ""));
+        if (!result || result.status !== "ok") throw new Error(result && result.message || "copy failed");
+        helpers.setButtonState(copyButton, {
+          pending: false,
+          labelKey: "aboutUpdateErrorCopied",
+        });
+      } catch (_) {
+        helpers.setButtonState(copyButton, {
+          pending: false,
+          labelKey: "aboutUpdateErrorCopyFailed",
+        });
+      }
+    });
+    actions.appendChild(copyButton);
+    card.appendChild(actions);
+    return card;
   }
 
   // #329: getAboutInfo() now returns dynamic fields (pendingUpdateVersion,
@@ -37,6 +155,8 @@
       merged.version = info.version;
       merged.pendingUpdateVersion = info.pendingUpdateVersion || "";
       merged.autoUpdateCheck = info.autoUpdateCheck !== false;
+      merged.updateCheckSnapshot = normalizeUpdateCheckSnapshot(info.updateCheckSnapshot);
+      runtime.about.updateCheckSnapshot = merged.updateCheckSnapshot;
       runtime.about.infoCache = merged;
       return merged;
     }).catch(() => runtime.about.infoCache || null);
@@ -110,18 +230,19 @@
     button.textContent = t("aboutCleanupButton");
     const status = document.createElement("div");
     status.className = "about-cleanup-status";
+    let confirmationPending = false;
 
-    button.addEventListener("click", () => {
-      if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
-      if (typeof window.confirm !== "function") {
-        status.textContent = t("aboutCleanupFailed");
-        return;
-      }
-      if (!window.confirm(t("aboutCleanupConfirm"))) return;
+    function resetCleanupButton() {
+      button.disabled = false;
+      button.textContent = t("aboutCleanupButton");
+    }
+
+    function runCleanup() {
       button.disabled = true;
       button.textContent = t("aboutCleanupRunning");
       status.textContent = "";
-      window.settingsAPI.command("cleanupIntegrations")
+      return Promise.resolve()
+        .then(() => window.settingsAPI.command("cleanupIntegrations"))
         .then((result) => {
           if (!result || result.status !== "ok") {
             throw new Error((result && result.message) || t("aboutCleanupFailed"));
@@ -135,9 +256,37 @@
           status.textContent = message;
           ops.showToast(message, { ttl: 7000 });
         })
+        .finally(resetCleanupButton);
+    }
+
+    button.addEventListener("click", () => {
+      if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
+      if (confirmationPending || button.disabled) return;
+      if (!helpers || typeof helpers.showSettingsConfirmModal !== "function") {
+        status.textContent = t("aboutCleanupFailed");
+        return;
+      }
+      confirmationPending = true;
+      Promise.resolve()
+        .then(() => helpers.showSettingsConfirmModal({
+          title: t("aboutCleanupConfirmTitle"),
+          detail: t("aboutCleanupConfirmDetail"),
+          actions: [
+            { id: "cancel", label: t("aboutCleanupConfirmCancel"), tone: "neutral", defaultFocus: true },
+            { id: "confirm", label: t("aboutCleanupConfirmAction"), tone: "danger" },
+          ],
+        }))
+        .then((actionId) => {
+          if (actionId !== "confirm") return null;
+          return runCleanup();
+        })
+        .catch((err) => {
+          const message = t("aboutCleanupFailed") + (err && err.message ? ": " + err.message : "");
+          status.textContent = message;
+          ops.showToast(message, { ttl: 7000 });
+        })
         .finally(() => {
-          button.disabled = false;
-          button.textContent = t("aboutCleanupButton");
+          confirmationPending = false;
         });
     });
 
@@ -206,6 +355,15 @@
     const contribList = document.createElement("div");
     contribList.className = "about-contributors-list";
     for (const name of i18n.CONTRIBUTORS) {
+      // Contributors whose GitHub account no longer resolves keep their credit but
+      // get plain text: a link to a deleted account only leads to a 404.
+      if (NO_GITHUB_ACCOUNT.has(name)) {
+        const plain = document.createElement("span");
+        plain.className = "about-contributor-link";
+        plain.textContent = "@" + name;
+        contribList.appendChild(plain);
+        continue;
+      }
       const link = document.createElement("a");
       link.className = "about-contributor-link";
       link.textContent = "@" + name;
@@ -255,33 +413,68 @@
         );
         hint.style.cursor = "pointer";
         hint.addEventListener("click", () => {
-          if (!window.settingsAPI || typeof window.settingsAPI.checkForUpdates !== "function") return;
-          window.settingsAPI.checkForUpdates().catch(() => {});
+          void runUpdateCheck();
         });
         vvWrap.appendChild(hint);
       }
       const updateBtn = document.createElement("button");
       updateBtn.className = "about-check-update-btn";
-      updateBtn.textContent = t("aboutCheckForUpdates");
-      updateBtn.addEventListener("click", () => {
+      const updateStatusHost = document.createElement("div");
+      updateStatusHost.className = "about-update-status-host";
+
+      function applyUpdateCheckStatus(snapshot) {
+        const normalized = normalizeUpdateCheckSnapshot(snapshot);
+        runtime.about.updateCheckSnapshot = normalized;
+        const busy = normalized.state === "checking" || normalized.state === "downloading";
+        updateBtn.disabled = busy;
+        updateBtn.classList.toggle("checking", normalized.state === "checking");
+        updateBtn.textContent = normalized.state === "checking"
+          ? t("aboutCheckingForUpdates")
+          : t("aboutCheckForUpdates");
+        helpers.disposeMountedDisposable(state.mountedControls.aboutUpdateErrorDisclosure);
+        state.mountedControls.aboutUpdateErrorDisclosure = null;
+        updateStatusHost.innerHTML = "";
+        if (normalized.state === "error" && normalized.error) {
+          updateStatusHost.appendChild(buildUpdateErrorCard(normalized.error, () => {
+            const clear = window.settingsAPI && window.settingsAPI.clearUpdateError;
+            Promise.resolve(typeof clear === "function" ? clear() : { state: "idle" })
+              .then((next) => applyUpdateCheckStatus(next || { state: "idle" }))
+              .catch(() => applyUpdateCheckStatus({ state: "idle" }));
+          }));
+        }
+      }
+
+      async function runUpdateCheck() {
         if (!window.settingsAPI || typeof window.settingsAPI.checkForUpdates !== "function") return;
-        updateBtn.disabled = true;
-        window.settingsAPI.checkForUpdates()
-          .catch(() => {})
-          .finally(() => { updateBtn.disabled = false; });
-      });
+        applyUpdateCheckStatus({ state: "checking" });
+        try {
+          const result = await window.settingsAPI.checkForUpdates();
+          applyUpdateCheckStatus(result);
+        } catch (_) {
+          applyUpdateCheckStatus(runtime.about.updateCheckSnapshot);
+        }
+      }
+      updateBtn.addEventListener("click", () => { void runUpdateCheck(); });
       vvWrap.appendChild(updateBtn);
       versionRow.appendChild(vl);
       versionRow.appendChild(vvWrap);
       infoSection.appendChild(versionRow);
+      infoSection.appendChild(updateStatusHost);
+      state.mountedControls.aboutUpdateStatus = {
+        element: updateStatusHost,
+        apply: applyUpdateCheckStatus,
+      };
+      applyUpdateCheckStatus(safe.updateCheckSnapshot || runtime.about.updateCheckSnapshot);
 
       const autoUpdateRow = document.createElement("div");
       autoUpdateRow.className = "about-info-row";
       const autoUpdateLabelWrap = document.createElement("div");
       autoUpdateLabelWrap.className = "about-info-label";
       const autoUpdateLabel = document.createElement("div");
+      autoUpdateLabel.id = "settings-about-auto-update-label";
       autoUpdateLabel.textContent = t("autoUpdateCheck");
       const autoUpdateDesc = document.createElement("div");
+      autoUpdateDesc.id = "settings-about-auto-update-description";
       autoUpdateDesc.className = "about-info-description";
       autoUpdateDesc.textContent = t("autoUpdateCheckDescription");
       autoUpdateDesc.style.opacity = "0.7";
@@ -290,14 +483,67 @@
       autoUpdateLabelWrap.appendChild(autoUpdateDesc);
       const autoUpdateValue = document.createElement("div");
       autoUpdateValue.className = "about-info-value";
-      const autoUpdateBox = document.createElement("input");
-      autoUpdateBox.type = "checkbox";
-      autoUpdateBox.checked = safe.autoUpdateCheck !== false;
-      autoUpdateBox.addEventListener("change", () => {
-        if (!window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
-        window.settingsAPI.update("autoUpdateCheck", autoUpdateBox.checked).catch(() => {});
+      let committedAutoUpdate = safe.autoUpdateCheck !== false;
+      let autoUpdatePending = false;
+      const autoUpdateControl = helpers.buildSwitch({
+        checked: committedAutoUpdate,
+        ariaLabelledBy: autoUpdateLabel.id,
+        ariaDescribedBy: autoUpdateDesc.id,
+        className: "about-auto-update-switch",
       });
-      autoUpdateValue.appendChild(autoUpdateBox);
+      const autoUpdateSwitch = autoUpdateControl.element;
+
+      function paintAutoUpdate(value, pending = autoUpdatePending) {
+        autoUpdateControl.setState({ checked: value, pending });
+      }
+
+      function syncAutoUpdateFromSnapshot() {
+        const snapshotHasValue = state.snapshot
+          && Object.prototype.hasOwnProperty.call(state.snapshot, "autoUpdateCheck");
+        committedAutoUpdate = snapshotHasValue
+          ? state.snapshot.autoUpdateCheck !== false
+          : runtime.about.infoCache.autoUpdateCheck !== false;
+        runtime.about.infoCache.autoUpdateCheck = committedAutoUpdate;
+        autoUpdatePending = false;
+        paintAutoUpdate(committedAutoUpdate, false);
+      }
+
+      function toggleAutoUpdate() {
+        if (autoUpdatePending || !window.settingsAPI || typeof window.settingsAPI.update !== "function") return;
+        const previous = committedAutoUpdate;
+        const next = !committedAutoUpdate;
+        committedAutoUpdate = next;
+        autoUpdatePending = true;
+        runtime.about.infoCache.autoUpdateCheck = next;
+        paintAutoUpdate(next, true);
+        Promise.resolve(window.settingsAPI.update("autoUpdateCheck", next))
+          .then((result) => {
+            if (!result || result.status !== "ok") {
+              committedAutoUpdate = previous;
+              runtime.about.infoCache.autoUpdateCheck = previous;
+              ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
+            }
+          })
+          .catch((err) => {
+            committedAutoUpdate = previous;
+            runtime.about.infoCache.autoUpdateCheck = previous;
+            const message = err && err.message ? err.message : "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+          })
+          .finally(() => {
+            autoUpdatePending = false;
+            if (document.body.contains(autoUpdateSwitch)) paintAutoUpdate(committedAutoUpdate, false);
+          });
+      }
+
+      autoUpdateControl.setOnToggle(toggleAutoUpdate);
+      state.mountedControls.aboutAutoUpdate = {
+        control: autoUpdateControl,
+        element: autoUpdateSwitch,
+        syncFromSnapshot: syncAutoUpdateFromSnapshot,
+      };
+      paintAutoUpdate(committedAutoUpdate, false);
+      autoUpdateValue.appendChild(autoUpdateSwitch);
       autoUpdateRow.appendChild(autoUpdateLabelWrap);
       autoUpdateRow.appendChild(autoUpdateValue);
       infoSection.appendChild(autoUpdateRow);
@@ -339,12 +585,29 @@
   }
 
   function init(core) {
+    state = core.state;
     runtime = core.runtime;
     helpers = core.helpers;
     ops = core.ops;
     i18n = core.i18n;
     core.tabs.about = {
       render,
+      patchInPlace(changes) {
+        if (!changes || Object.keys(changes).some((key) => key !== "autoUpdateCheck")) return false;
+        if (!Object.prototype.hasOwnProperty.call(changes, "autoUpdateCheck")) return false;
+        const control = state.mountedControls.aboutAutoUpdate;
+        if (!control || !document.body.contains(control.element)) return false;
+        runtime.about.infoCache.autoUpdateCheck = changes.autoUpdateCheck !== false;
+        control.syncFromSnapshot();
+        return true;
+      },
+      applyUpdateCheckStatus(snapshot) {
+        runtime.about.updateCheckSnapshot = normalizeUpdateCheckSnapshot(snapshot);
+        const control = state.mountedControls.aboutUpdateStatus;
+        if (!control || !document.body.contains(control.element)) return false;
+        control.apply(runtime.about.updateCheckSnapshot);
+        return true;
+      },
     };
   }
 

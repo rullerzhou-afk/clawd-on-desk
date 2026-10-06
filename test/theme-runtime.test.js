@@ -135,6 +135,9 @@ function createRuntime(options = {}) {
     syncHitWin: () => calls.push("syncHitWin"),
     syncSessionHudVisibility: () => calls.push("syncSessionHud"),
     startMainTick: () => calls.push("startMainTick"),
+    invalidateDisplayedVisual: (detail) => calls.push(["invalidateDisplayedVisual", detail]),
+    refreshDisplayedVisualHitBoxes: () => calls.push("refreshDisplayedVisualHitBoxes"),
+    getAnimationOverridesRuntime: () => options.animationOverrides || null,
     bumpAnimationOverridePreviewPosterGeneration: () => calls.push("bumpPoster"),
     rebuildAllMenus: () => calls.push("rebuildMenus"),
   });
@@ -259,6 +262,7 @@ describe("theme-runtime active ownership", () => {
       "state.cleanup",
       "tick.cleanup",
       "mini.cleanup",
+      ["invalidateDisplayedVisual", "theme-activation"],
       "mini.refreshTheme",
       "state.refreshTheme",
       "tick.refreshTheme",
@@ -290,6 +294,7 @@ describe("theme-runtime active ownership", () => {
     assert.deepStrictEqual(runtime.getActiveTheme().wideHitboxFiles, ["thinking.svg"]);
     assert.deepStrictEqual(calls, [
       "state.refreshTheme",
+      "refreshDisplayedVisualHitBoxes",
       "syncHitState",
       "syncHitWin",
       "flushPrefs",
@@ -355,5 +360,102 @@ describe("theme-runtime active ownership", () => {
 
     assert.strictEqual(runtime.isReloadInProgress(), false);
     assert.ok(calls.includes("sequencer.cleanup"));
+  });
+});
+
+describe("theme-runtime animation preview handoff", () => {
+  it("hands a running animation preview back instead of only dropping its timer", () => {
+    makeFixture();
+    const seen = [];
+    const { runtime } = createRuntime({
+      animationOverrides: {
+        cancelAnimationPreview: () => {
+          seen.push("cancelAnimationPreview");
+          return { status: "ok", restoredState: true };
+        },
+        clearPreviewTimer: () => seen.push("clearPreviewTimer"),
+      },
+    });
+    runtime.loadInitialTheme("clawd");
+
+    runtime.activateTheme("calico");
+
+    // Dropping the timer alone would leave the preview state as the current
+    // one, and the reload re-applies exactly that afterwards.
+    assert.deepStrictEqual(seen, ["cancelAnimationPreview"]);
+  });
+
+  it("falls back to clearing the timer when the overrides runtime cannot cancel", () => {
+    makeFixture();
+    const seen = [];
+    const { runtime } = createRuntime({
+      animationOverrides: { clearPreviewTimer: () => seen.push("clearPreviewTimer") },
+    });
+    runtime.loadInitialTheme("clawd");
+
+    runtime.activateTheme("calico");
+
+    assert.deepStrictEqual(seen, ["clearPreviewTimer"]);
+  });
+});
+
+describe("theme-runtime reload settled signal", () => {
+  it("resolves immediately when no reload is in progress", async () => {
+    makeFixture();
+    const { runtime } = createRuntime();
+    const result = await runtime.waitForThemeReloadSettled({ timeoutMs: 50 });
+    assert.strictEqual(result.status, "settled");
+  });
+
+  it("resolves when the fade sequencer reports the reload finished", async () => {
+    makeFixture();
+    let finishReload = null;
+    const { runtime } = createRuntime({
+      sequencer: {
+        run(callbacks) {
+          finishReload = callbacks.onReloadFinished;
+        },
+        cleanup() {},
+      },
+    });
+    runtime.loadInitialTheme("clawd");
+    runtime.activateTheme("calico");
+    assert.strictEqual(runtime.isReloadInProgress(), true);
+
+    let settled = null;
+    const pending = runtime.waitForThemeReloadSettled({ timeoutMs: 1000 }).then((value) => {
+      settled = value;
+      return value;
+    });
+    assert.strictEqual(settled, null);
+    finishReload();
+    const result = await pending;
+    assert.strictEqual(result.status, "settled");
+    assert.strictEqual(runtime.isReloadInProgress(), false);
+  });
+
+  it("times out rather than hanging when the renderer never settles", async () => {
+    makeFixture();
+    const { runtime } = createRuntime({
+      sequencer: { run() {}, cleanup() {} },
+    });
+    runtime.loadInitialTheme("clawd");
+    runtime.activateTheme("calico");
+    const result = await runtime.waitForThemeReloadSettled({ timeoutMs: 10 });
+    assert.strictEqual(result.status, "timeout");
+  });
+
+  it("swallows a synchronous sequencer throw after the runtime has switched", () => {
+    makeFixture();
+    const { runtime } = createRuntime({
+      sequencer: { run() { throw new Error("sequencer exploded"); }, cleanup() {} },
+    });
+    runtime.loadInitialTheme("clawd");
+    // Must report success (the active theme already changed) and complete the
+    // no-fade fallback instead of leaving the reload flag stuck.
+    const result = runtime.activateTheme("calico");
+    assert.strictEqual(result.themeId, "calico");
+    assert.strictEqual(runtime.getActiveTheme()._id, "calico");
+    assert.strictEqual(runtime.isReloadInProgress(), false);
   });
 });

@@ -1,0 +1,329 @@
+<!--
+  clawd-experiment-working-building-helmet-v1.svg (2026-04-24)
+  基础 = D:\animation\assets\svg\clawd-working-building.svg
+  改动 = 把原黄色安全帽 (#FBC02D/#F9A825) 换成 helmet-tryon-v1 的三色橙帽 (#EFA74A/#B7782E/#FAB253)
+  帽子仍放在 body-squash 组内, 跟随锤击 squash; z-order: torso → helmet → eyes (helmet 不遮眼, 无视觉冲突)
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* ===== Independent sub-animations ===== */
+
+      /* Breathe 3.2s */
+      .breathe {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      /* Blink 4s */
+      .blink {
+        transform-origin: 7.5px 9px;
+        animation: blink 4s infinite;
+      }
+
+      /* ===== Hammer cycle 1.2s ===== */
+
+      /* Body bounce: up-down motion (shared by body + arms) */
+      .body-bounce {
+        transform-origin: 7.5px 15px;
+        animation: body-bounce 1.2s infinite;
+      }
+
+      /* Body squash: scale only (torso + hat + eyes, arms excluded) */
+      .body-squash {
+        transform-origin: 7.5px 15px;
+        animation: body-squash 1.2s infinite;
+      }
+
+      /* Right arm hammer swing */
+      .arm-hammer {
+        transform-origin: 14px 10px;
+        animation: hammer-swing 1.2s infinite;
+      }
+
+      /* Left arm counter-motion */
+      .arm-l-rest {
+        transform-origin: 2px 10px;
+        animation: arm-l-rest 1.2s infinite;
+      }
+
+      /* Shadow synced with bounce */
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-bounce 1.2s infinite;
+      }
+
+      /* Hot metal flash */
+      .hot-metal {
+        animation: metal-glow 1.2s infinite;
+      }
+
+      /* Sparks */
+      .spark { opacity: 0; }
+      .s1 { animation: spark-1 1.2s infinite; }
+      .s2 { animation: spark-2 1.2s infinite; }
+      .s3 { animation: spark-3 1.2s infinite; }
+
+      /* ===== Eyes 5s ===== */
+      .eyes-look {
+        animation: eyes-look 5s infinite ease-in-out;
+      }
+
+      /* ===== Sweat 6s ===== */
+      .sweat {
+        opacity: 0;
+        animation: sweat-fly 6s infinite;
+      }
+
+      /* ==================== Keyframes ==================== */
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
+      }
+
+      /* Body bounce: translateY only (arms share this, stay clean) */
+      @keyframes body-bounce {
+        0%, 100% { transform: translateY(0); }
+        30%      { transform: translateY(-2px); }
+        45%      { transform: translateY(0); }
+        50%      { transform: translateY(2px); }
+        70%      { transform: translateY(0); }
+      }
+
+      /* Body squash: scale only (torso+hat+eyes, not arms) */
+      @keyframes body-squash {
+        0%, 100% { transform: scale(1, 1); }
+        30%      { transform: scale(0.95, 1.05); }
+        45%      { transform: scale(1, 1); }
+        50%      { transform: scale(1.15, 0.85); }
+        70%      { transform: scale(1, 1); }
+      }
+
+      /* Shadow: lighter on rise, heavier on impact */
+      @keyframes shadow-bounce {
+        0%, 45%, 70%, 100% { transform: scaleX(1); opacity: 0.5; }
+        30%      { transform: scaleX(0.92); opacity: 0.42; }
+        50%      { transform: scaleX(1.08); opacity: 0.58; }
+      }
+
+      /* Hammer swing: original angles preserved */
+      @keyframes hammer-swing {
+        0%, 100% { transform: rotate(15deg); }
+        30%      { transform: rotate(-45deg); }
+        45%      { transform: rotate(40deg); }
+        50%      { transform: rotate(125deg); }
+        70%      { transform: rotate(15deg); }
+      }
+
+      /* Left arm: reacts to hammer rhythm */
+      @keyframes arm-l-rest {
+        0%, 100% { transform: rotate(0deg); }
+        30%      { transform: rotate(15deg); }
+        50%      { transform: rotate(-5deg); }
+      }
+
+      /* Hot metal glow on impact */
+      @keyframes metal-glow {
+        0%, 49%  { fill: #FF5252; }
+        50%, 60% { fill: #FFF59D; }
+        100%     { fill: #FF5252; }
+      }
+
+      /* Eyes: mostly watch anvil, occasional glance at hammer */
+      @keyframes eyes-look {
+        0%, 100% { transform: translate(1.5px, 0.5px); }
+        20%      { transform: translate(1.5px, 0.5px); }
+        25%      { transform: translate(1px, -0.5px); }
+        35%      { transform: translate(1px, -0.5px); }
+        40%      { transform: translate(1.5px, 0.5px); }
+        70%      { transform: translate(0.3px, 0); }
+        80%      { transform: translate(1.5px, 0.5px); }
+      }
+
+      /* Sparks: appear at impact, scatter outward */
+      @keyframes spark-1 {
+        0%, 49%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        50%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        70%       { opacity: 0; transform: translate(4px, -6px) scale(0); }
+        71%, 100% { opacity: 0; transform: translate(0, 0) scale(0); }
+      }
+      @keyframes spark-2 {
+        0%, 49%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        50%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        70%       { opacity: 0; transform: translate(7px, -1px) scale(0); }
+        71%, 100% { opacity: 0; transform: translate(0, 0) scale(0); }
+      }
+      @keyframes spark-3 {
+        0%, 49%   { opacity: 0; transform: translate(0, 0) scale(0); }
+        50%       { opacity: 1; transform: translate(0, 0) scale(1); }
+        70%       { opacity: 0; transform: translate(3px, 3px) scale(0); }
+        71%, 100% { opacity: 0; transform: translate(0, 0) scale(0); }
+      }
+
+      /* Sweat: one drop every 6s */
+      @keyframes sweat-fly {
+        0%, 55%  { opacity: 0; transform: translate(0, 0) scale(0); }
+        60%      { opacity: 1; transform: translate(0, 0) scale(1); }
+        80%      { opacity: 0; transform: translate(-6px, -6px) scale(0.5); }
+        100%     { opacity: 0; }
+      }
+    </style>
+
+    <!-- Pixel Spark -->
+    <g id="pixel-spark">
+      <rect x="0" y="0" width="1" height="1"/>
+    </g>
+  </defs>
+
+  <!-- Ground Shadows -->
+  <rect class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000"/>
+  <rect x="16" y="15" width="7" height="1" fill="#000000" opacity="0.4"/>
+
+  <!-- Metal Block / Anvil -->
+  <g transform="translate(17, 13)">
+    <rect x="0" y="2" width="5" height="1" fill="#546E7A"/>
+    <rect x="1" y="0" width="3" height="2" fill="#78909C"/>
+    <rect x="1.5" y="-0.5" width="2" height="1" class="hot-metal"/>
+  </g>
+
+  <!-- Impact Sparks -->
+  <g fill="#FFC107" transform="translate(19, 12.5)">
+    <use href="#pixel-spark" class="spark s1"/>
+    <use href="#pixel-spark" class="spark s2"/>
+    <use href="#pixel-spark" class="spark s3"/>
+  </g>
+
+  <!-- Legs (bounce with body, no squash) -->
+  <g class="body-bounce" fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+  </g>
+
+  <!-- Body group [bounce > breathe] -->
+  <g class="body-bounce">
+    <g class="breathe">
+
+      <!-- Sweat (bounces + breathes, outside squash) -->
+      <g transform="translate(1, 8)">
+        <g class="sweat" fill="#40C4FF">
+          <rect x="0" y="1" width="1.5" height="1.5"/>
+          <rect x="0.25" y="0" width="1" height="1"/>
+        </g>
+      </g>
+
+      <!-- Body core [squash] — only torso + hat + eyes get squashed -->
+      <g class="body-squash">
+
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- Eyes [look 5s > blink 4s] — 放在 helmet 之前, 让帽子压过眼睛 -->
+        <g class="eyes-look">
+          <g class="blink" fill="#000">
+            <rect x="4" y="8" width="1" height="2"/>
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+
+        <!-- Helmet (from helmet-tryon-v1: 三色橙, translate(0.5 1) scale(0.7) — v1 下移 1 格戴更低) -->
+        <g id="helmet" transform="translate(0.5 1) scale(0.7)">
+          <g fill="#EFA74A">
+            <rect x="7" y="0" width="6" height="1"/>
+            <rect x="7" y="1" width="6" height="1"/>
+            <rect x="14" y="1" width="2" height="1"/>
+            <rect x="2" y="2" width="3" height="1"/>
+            <rect x="7" y="2" width="2" height="1"/>
+            <rect x="11" y="2" width="2" height="1"/>
+            <rect x="14" y="2" width="4" height="1"/>
+            <rect x="2" y="3" width="3" height="1"/>
+            <rect x="7" y="3" width="1" height="1"/>
+            <rect x="14" y="3" width="4" height="1"/>
+            <rect x="1" y="4" width="4" height="1"/>
+            <rect x="7" y="4" width="1" height="1"/>
+            <rect x="14" y="4" width="5" height="1"/>
+            <rect x="1" y="5" width="4" height="1"/>
+            <rect x="7" y="5" width="1" height="1"/>
+            <rect x="12" y="5" width="1" height="1"/>
+            <rect x="14" y="5" width="5" height="1"/>
+            <rect x="1" y="6" width="4" height="1"/>
+            <rect x="8" y="6" width="1" height="1"/>
+            <rect x="11" y="6" width="1" height="1"/>
+            <rect x="14" y="6" width="5" height="1"/>
+            <rect x="1" y="7" width="1" height="1"/>
+            <rect x="0" y="9" width="20" height="1"/>
+          </g>
+          <g fill="#B7782E">
+            <rect x="6" y="1" width="1" height="1"/>
+            <rect x="13" y="1" width="1" height="1"/>
+            <rect x="6" y="2" width="1" height="1"/>
+            <rect x="9" y="2" width="2" height="1"/>
+            <rect x="13" y="2" width="1" height="1"/>
+            <rect x="6" y="3" width="1" height="1"/>
+            <rect x="8" y="3" width="4" height="1"/>
+            <rect x="13" y="3" width="1" height="1"/>
+            <rect x="6" y="4" width="1" height="1"/>
+            <rect x="8" y="4" width="4" height="1"/>
+            <rect x="13" y="4" width="1" height="1"/>
+            <rect x="6" y="5" width="1" height="1"/>
+            <rect x="9" y="5" width="2" height="1"/>
+            <rect x="13" y="5" width="1" height="1"/>
+            <rect x="6" y="6" width="1" height="1"/>
+            <rect x="9" y="6" width="2" height="1"/>
+            <rect x="13" y="6" width="1" height="1"/>
+            <rect x="7" y="7" width="1" height="1"/>
+            <rect x="12" y="7" width="1" height="1"/>
+            <rect x="1" y="8" width="18" height="1"/>
+          </g>
+          <g fill="#FAB253">
+            <rect x="5" y="1" width="1" height="1"/>
+            <rect x="5" y="2" width="1" height="1"/>
+            <rect x="5" y="3" width="1" height="1"/>
+            <rect x="12" y="3" width="1" height="1"/>
+            <rect x="5" y="4" width="1" height="1"/>
+            <rect x="12" y="4" width="1" height="1"/>
+            <rect x="5" y="5" width="1" height="1"/>
+            <rect x="8" y="5" width="1" height="1"/>
+            <rect x="11" y="5" width="1" height="1"/>
+            <rect x="5" y="6" width="1" height="1"/>
+            <rect x="7" y="6" width="1" height="1"/>
+            <rect x="12" y="6" width="1" height="1"/>
+            <rect x="2" y="7" width="5" height="1"/>
+            <rect x="8" y="7" width="4" height="1"/>
+            <rect x="13" y="7" width="6" height="1"/>
+          </g>
+        </g>
+
+      </g>
+
+      <!-- Left arm (bounces + breathes, NO squash) -->
+      <g class="arm-l-rest">
+        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+
+    </g>
+  </g>
+
+  <!-- Right arm + hammer [bounce > breathe] (separate group, same classes = auto sync) -->
+  <g class="body-bounce">
+    <g class="breathe">
+      <g class="arm-hammer">
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+        <!-- Hammer -->
+        <g>
+          <!-- Handle -->
+          <rect x="13.5" y="4" width="1" height="6" fill="#795548"/>
+          <!-- Head -->
+          <rect x="12.5" y="3" width="3" height="2" fill="#9E9E9E"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

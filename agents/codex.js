@@ -6,6 +6,7 @@ module.exports = {
   id: "codex",
   name: "Codex CLI",
   processNames: { win: ["codex.exe"], mac: ["codex"], linux: ["codex"] },
+  startupRecoveryProcessNames: { win: ["codex.exe"], mac: ["codex"], linux: ["codex"] },
   eventSource: "hook+log-poll",
   eventMap: {
     SessionStart: "idle",
