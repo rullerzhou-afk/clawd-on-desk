@@ -1048,6 +1048,43 @@ describe("Codex official hook", () => {
 
     const WINDOWS_CODEX_HOME = "C:\\Users\\Tester\\.codex";
 
+    it("keeps runtime-directory permission requests and transcript-backed state on their normal paths", async () => {
+      const cwd = "C:\\Users\\Tester\\AppData\\Local\\OpenAI\\Codex\\bin\\0123456789abcdef";
+      const options = { platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\Tester\\AppData\\Local" },
+        resolveWslDistro: () => null, resolvePid: mockResolve };
+      let states = 0, permissions = 0;
+      const state = await runCodexHook({ hook_event_name: "PreToolUse", session_id: "real",
+        cwd, transcript_path: "C:\\codex\\rollout.jsonl" }, {
+        ...options, postState(_body, _options, callback) { states++; callback(true, 23333); },
+      });
+      const permission = await runCodexHook({ hook_event_name: "PermissionRequest", session_id: "helper",
+        cwd, tool_name: "Bash", tool_input: { command: "echo test" } }, {
+        ...options, postPermission(_body, _options, callback) { permissions++; callback(true, 23333, "{}"); },
+      });
+      assert.strictEqual(states, 1);
+      assert.strictEqual(state.posted, true);
+      assert.strictEqual(permissions, 1);
+      assert.strictEqual(permission.posted, true);
+      assert.strictEqual(permission.stdout, buildCodexNoDecisionOutput());
+    });
+
+    it("keeps an indexed conversation even before its runtime-folder hook supplies a transcript", async () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-runtime-named-"));
+      try {
+        fs.writeFileSync(path.join(home, "session_index.jsonl"), JSON.stringify({ id: "named-runtime",
+          thread_name: "Named conversation" })+"\n");
+        let posts = 0;
+        const result = await runCodexHook({ hook_event_name: "UserPromptSubmit", session_id: "named-runtime",
+          cwd: "C:\\Users\\Tester\\AppData\\Local\\OpenAI\\Codex\\bin\\0123456789abcdef" }, {
+          platform: "win32", env: { LOCALAPPDATA: "C:\\Users\\Tester\\AppData\\Local", CODEX_HOME: home },
+          resolveWslDistro: () => null, resolvePid: mockResolve,
+          postState(_body,_options,callback) { posts++;callback(true,23333); },
+        });
+        assert.strictEqual(posts,1);
+        assert.strictEqual(result.posted,true);
+      } finally { fs.rmSync(home,{recursive:true,force:true}); }
+    });
+
     async function expectDropped(event, options, extraPayload = {}) {
       const calls = {
         posts: 0,
@@ -1095,6 +1132,14 @@ describe("Codex official hook", () => {
     }
 
     for (const event of EVENTS) {
+      it(`drops a transcript-less ${event} from the Windows app runtime before downstream work`, async () => {
+        await expectDropped(event, {
+          env: { LOCALAPPDATA: "C:\\Users\\Tester\\AppData\\Local" },
+          platform: "win32",
+        }, {
+          cwd: "C:\\Users\\Tester\\AppData\\Local\\OpenAI\\Codex\\bin\\0123456789abcdef",
+        });
+      });
       it(`drops a ${event} win32 worker event without touching any downstream path`, async () => {
         await expectDropped(event, {
           env: { CODEX_HOME: WINDOWS_CODEX_HOME },

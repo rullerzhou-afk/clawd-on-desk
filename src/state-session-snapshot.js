@@ -10,6 +10,7 @@ const {
 } = require("./state-session-dedupe");
 const { bareCodexSessionId, readCodexThreadName, readCodexThreadNames } = require("../hooks/codex-session-index");
 const { isWslSourced } = require("./remote-process-metadata");
+const { isCodexRuntimeHelperPayload } = require("../hooks/codex-internal-worker");
 
 // ── Session source derivation ────────────────────────────────────────
 
@@ -360,9 +361,23 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   // Existing hidden reasons also disable focus (there is nothing to jump to).
   // The awaiting-activity marker is different: it only hides the HUD row, so the
   // Dashboard can still list the conversation and open it on demand.
+  // Old hooks may already have created this runtime-helper row. Apply the
+  // same narrow rule to the shared snapshot so it cannot remain a HUD/body
+  // jump target for an incidental command shell while the row ages out.
+  const codexRuntimeHelper = session && session.agentId === "codex"
+    && !session.host && !isWslSourced(session) && session.platform !== "wsl"
+    && !(alias && alias.title) && !getEffectiveSessionTitle(id, session, options)
+    && isCodexRuntimeHelperPayload({
+      cwd: session.cwd,
+      transcript_path: session.transcriptPath,
+      codex_source: session.codexSource,
+      codex_originator: session.codexOriginator,
+    }, { platform: options.osPlatform || process.platform, env: options.env || process.env });
   const hiddenByExistingReason = shouldAutoClearDetachedSession(session, badge, options)
-    || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
+    || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds)
+    || codexRuntimeHelper;
   const hiddenFromHud = hiddenByExistingReason || isSessionAwaitingActivity(session);
+
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
     ? getSessionFocusTarget({ ...(session || {}), id }, {

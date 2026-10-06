@@ -7,7 +7,57 @@ const {
   isCodexAmbientSuggestionPrompt,
   isCodexClientEphemeralPayload,
   isCodexMemoryWorkerPayload,
+  isCodexRuntimeHelperPayload,
 } = require("../hooks/codex-internal-worker");
+
+describe("Windows Codex runtime helper detection", () => {
+  const local = "C:\\Users\\Tester\\AppData\\Local";
+  const cwd = `${local}\\OpenAI\\Codex\\bin\\0123456789abcdef`;
+  const options = { platform: "win32", env: { LOCALAPPDATA: local } };
+
+  it("recognizes the observed transcript-less version directory, including Windows path forms", () => {
+    for (const value of [cwd, cwd.toUpperCase()+"\\", cwd.replace(/\\/g, "/"), `\\\\?\\${cwd}`]) {
+      assert.strictEqual(isCodexRuntimeHelperPayload({ cwd: value }, options), true, value);
+    }
+    for (const transcript of [undefined, null, "", " "]) {
+      assert.strictEqual(isCodexRuntimeHelperPayload({ cwd, transcript_path: transcript }, options), true);
+    }
+  });
+
+  it("keeps transcript-backed and explicitly interactive CLI sessions", () => {
+    for (const extra of [
+      { transcript_path: "C:\\codex\\rollout.jsonl" }, { transcript_path: {} },
+      { source: "cli" }, { codex_source: "codex-cli" },
+      { codex_session_role: "ROOT" }, { codex_session_role: "primary" },
+      { originator: "codex-tui" }, { codex_originator: "codex_cli_rs" },
+      { session_title: "Named conversation" },
+    ]) assert.strictEqual(isCodexRuntimeHelperPayload({ cwd, ...extra }, options), false);
+  });
+
+  it("does not classify hash-named user folders, runtime descendants or unrelated installations", () => {
+    for (const value of [
+      "C:\\work\\0123456789abcdef", `${cwd}\\project`,
+      `${local}\\Other\\Codex\\bin\\0123456789abcdef`,
+      `${local}\\OpenAI\\Codex\\bin\\unknown`, `${cwd}0`,
+      "C:OpenAI\\Codex\\bin\\0123456789abcdef",
+      `\\OpenAI\\Codex\\bin\\0123456789abcdef`,
+      `${local}\\unused\\..\\OpenAI\\Codex\\bin\\0123456789abcdef`,
+    ]) assert.strictEqual(isCodexRuntimeHelperPayload({ cwd: value }, options), false, value);
+  });
+
+  it("does not apply the local Windows rule to remote, WSL, non-Windows or uncertain homes", () => {
+    for (const override of [
+      { platform: "darwin" }, { platform: "linux" }, { wslInterop: true },
+      ...["CLAWD_REMOTE","CLAWD_SSH_REMOTE","CLAWD_WSL_DISTRO","WSL_DISTRO_NAME"]
+        .map(key=>({ env: { LOCALAPPDATA: local, [key]: "1" } })),
+      { env: {} }, { env: { LOCALAPPDATA: "local" } },
+      { env: { LOCALAPPDATA: "C:relative" } },
+      { env: { LOCALAPPDATA: `${local}\\x\\..` } },
+      { env: { LOCALAPPDATA: "\\\\server\\share" } },
+    ]) assert.strictEqual(isCodexRuntimeHelperPayload({ cwd }, { ...options, ...override }), false);
+  });
+});
+
 
 function withTempDir(prefix, fn) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), prefix));

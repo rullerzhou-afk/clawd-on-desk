@@ -120,6 +120,12 @@ SessionStart / UserPromptSubmit，被 fence 拒掉的旧回合开始不解除；
 HUD/Dashboard；不创建会话、不改变状态/活跃时间/完成提醒/小结，不清空已有标题。
 尚未生成原生标题时仍使用既有文件夹 fallback；用户别名继续优先。
 monitor 当前标题与索引不一致时也会重发，覆盖索引恢复场景。
+Windows 本机还有无 transcript 的运行目录 helper：本次日志把额外 HUD 行的点击和 Codex 线程日志关联到
+`%LOCALAPPDATA%/OpenAI/Codex/bin/<16 位十六进制版本目录>`，该线程没有持久化记录，目录名被当作标题并聚焦到命令行。
+`codex-internal-worker` 只按这个精确的本机保留路径 + 无 transcript 识别；明确交互式 CLI 来源、正常工作区、
+带 transcript 的会话、远端及 WSL 都保持原行为。hook 在状态上报前跳过它，PermissionRequest 仍走正常权限路径。
+共享快照也将旧 hook 创建的同形状行排除在 HUD 和 pet-body 聚焦目标外；不按所有无标题会话、版本哈希标题或 PID 去重。
+这条记录确认的是运行目录 helper 的可见性问题，不确认它属于哪一种后台服务。
 一次快照构建最多读一次本机索引；无本机 Codex 会话时不读。
 标题通道跳过带 host 或 WSL 标记的会话；刷新覆盖仍在活动或退休记录中的会话
 （最多 50 个活动、100 个退休 rollout）。超出后与既有行为相同，标题等下一次快照广播或生命周期事件更新。

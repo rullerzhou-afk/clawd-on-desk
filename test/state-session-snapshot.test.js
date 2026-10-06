@@ -62,6 +62,47 @@ describe("deriveSourceInfo", () => {
   });
 });
 
+describe("Codex runtime-helper HUD rows", () => {
+  const local = "C:\\Users\\Tester\\AppData\\Local";
+  const cwd = `${local}\\OpenAI\\Codex\\bin\\0123456789abcdef`;
+  const options = { osPlatform: "win32", focusHostPlatform: "win32", env: { LOCALAPPDATA: local },
+    readCodexThreadName: () => null };
+
+  it("removes an old transcript-less helper from HUD counts and all HUD focus targets", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["codex:helper", { agentId: "codex", cwd, sourcePid: 100, updatedAt: 1000, state: "working" }],
+      ["codex:real", { agentId: "codex", cwd: "C:\\work\\project", sourcePid: 200,
+        transcriptPath: "C:\\codex\\rollout.jsonl", updatedAt: 2000, state: "working" }],
+    ]), options);
+    const helper = snapshot.sessions.find(entry => entry.id === "codex:helper");
+    assert.strictEqual(helper.hiddenFromHud, true);
+    assert.strictEqual(helper.canFocus, false);
+    assert.deepStrictEqual(getFocusableLocalHudSessionIds(snapshot, { osPlatform: "win32" }), ["codex:real"]);
+    assert.strictEqual(snapshot.hudTotalNonIdle, 1);
+  });
+
+  it("preserves real runtime-folder conversations and unrelated scopes", () => {
+    for (const override of [
+      { transcriptPath: "C:\\codex\\rollout.jsonl" }, { codexSource: "cli" },
+      { codexOriginator: "codex-tui" }, { host: "server" }, { wslDistro: "Ubuntu" },
+      { platform: "wsl" }, { agentId: "claude-code" }, { cwd: "C:\\work\\0123456789abcdef" },
+      { sessionTitle: "Named conversation" },
+    ]) {
+      const entry = buildSessionSnapshotEntry("codex:real", {
+        agentId: "codex", cwd, sourcePid: 100, state: "working", ...override,
+      }, {}, options);
+      assert.strictEqual(entry.hiddenFromHud, false, JSON.stringify(override));
+    }
+    const indexed = buildSessionSnapshotEntry("codex:indexed", { agentId: "codex", cwd, state: "working" }, {},
+      { ...options, readCodexThreadName: () => "Indexed conversation" });
+    assert.strictEqual(indexed.hiddenFromHud, false);
+    const aliasKey = sessionAliasKey(null, "codex", "codex:aliased");
+    const aliased = buildSessionSnapshotEntry("codex:aliased", { agentId: "codex", cwd, state: "working" },
+      { [aliasKey]: { title: "My conversation" } }, options);
+    assert.strictEqual(aliased.hiddenFromHud, false);
+  });
+});
+
 describe("isDoneEvent", () => {
   it("is the shared completion boundary for state arbitration and snapshots", () => {
     assert.strictEqual(isDoneEvent("Stop"), true);

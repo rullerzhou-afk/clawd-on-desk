@@ -194,9 +194,48 @@ function isCodexAmbientSuggestionPrompt(prompt) {
   return CODEX_AMBIENT_SUGGESTION_PROMPT_PREFIXES.some((prefix) => trimmed.startsWith(prefix));
 }
 
+// Observed Windows helper: an unpersisted thread runs from the desktop
+// application's versioned CLI directory. The directory's 16-hex build key
+// becomes the HUD title and its incidental cmd.exe ancestor becomes a focus
+// target. Identify only that reserved local path with no transcript, never
+// arbitrary hash-named workspaces or an explicitly interactive CLI session.
+function isCodexRuntimeHelperPayload(payload, options = {}) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  const platform = options.platform || process.platform;
+  const env = options.env || process.env;
+  if (platform !== "win32" || env.CLAWD_REMOTE || env.CLAWD_SSH_REMOTE
+    || env.CLAWD_WSL_DISTRO || env.WSL_DISTRO_NAME || options.wslInterop) return false;
+  const transcript = payload.transcript_path;
+  if (transcript !== undefined && transcript !== null
+    && (typeof transcript !== "string" || transcript.trim())) return false;
+  if (typeof payload.session_title === "string" && payload.session_title.trim()) return false;
+  if ([payload.source, payload.codex_source].some(value =>
+    typeof value === "string" && ["cli", "codex-cli", "codex-tui"].includes(value.trim().toLowerCase()))) return false;
+  if (typeof payload.codex_session_role === "string"
+    && ["root", "main", "primary"].includes(payload.codex_session_role.trim().toLowerCase())) return false;
+  if ([payload.originator, payload.codex_originator].some(value =>
+    typeof value === "string" && ["codex-tui", "codex_cli_rs"].includes(value.trim().toLowerCase()))) return false;
+  const cwd = payload.cwd;
+  const localAppData = env.LOCALAPPDATA;
+  if (typeof cwd !== "string" || typeof localAppData !== "string"
+    || !cwd || !localAppData || hasParentSegment(cwd, "win32")
+    || hasParentSegment(localAppData, "win32")) return false;
+  const canonical = value => stripTrailingSeparator(
+    path.win32.normalize(stripWindowsNamespacePrefix(value)), "\\").toLowerCase();
+  const normalizedCwd = canonical(cwd);
+  const normalizedLocal = canonical(localAppData);
+  // Local runtime layout only; don't resolve drive-relative or UNC homes.
+  if (!/^[a-z]:\\/.test(normalizedCwd) || !/^[a-z]:\\/.test(normalizedLocal)) return false;
+  const runtimeRoot = path.win32.join(normalizedLocal, "openai", "codex", "bin");
+  return path.win32.dirname(normalizedCwd) === runtimeRoot
+    && /^[0-9a-f]{16}$/.test(path.win32.basename(normalizedCwd));
+
+}
+
 module.exports = {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
   isCodexAmbientSuggestionPrompt,
   isCodexClientEphemeralPayload,
   isCodexMemoryWorkerPayload,
+  isCodexRuntimeHelperPayload,
 };

@@ -41,7 +41,9 @@ const {
   isCodexAmbientSuggestionPrompt,
   isCodexClientEphemeralPayload,
   isCodexMemoryWorkerPayload,
+  isCodexRuntimeHelperPayload,
 } = require("./codex-internal-worker");
+
 const {
   CODEX_DEFAULT_SESSION_ID,
   isCodexCliOriginator,
@@ -749,7 +751,15 @@ async function runCodexHook(payload, options = {}) {
   // POST, no auto-start gate, no cold start. PermissionRequest is handled
   // above and is deliberately not filtered: the worker's approval policy is
   // Never, and a permission request must never be silently swallowed here.
-  if (isCodexMemoryWorkerPayload(payload, { env, platform })) {
+  // Also skip the observed Windows runtime-helper shape: no transcript and
+  // cwd exactly LOCALAPPDATA/OpenAI/Codex/bin/<16-hex build key>. Keep explicit
+  // interactive CLI provenance and remote/WSL events out of this rule.
+  const runtimeHelper = !wslDistro
+    && isCodexRuntimeHelperPayload(payload, { env, platform, wslInterop });
+  const runtimeHelperHasTitle = runtimeHelper && readCodexThreadName(
+    normalizeCodexSessionId(payload.session_id), { codexDir: env.CODEX_HOME });
+  if (isCodexMemoryWorkerPayload(payload, { env, platform })
+    || (runtimeHelper && !runtimeHelperHasTitle)) {
     return { body: null, posted: false, stdout: "" };
   }
 
