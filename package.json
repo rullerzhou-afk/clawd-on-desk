@@ -30,6 +30,8 @@
     "install:antigravity-hooks": "node hooks/antigravity-install.js",
     "install:cursor-hooks": "node hooks/cursor-install.js",
     "install:kiro-hooks": "node hooks/kiro-install.js",
+    "install:kirocrew-hooks": "node hooks/kirocrew-install.js",
+    "uninstall:kirocrew-hooks": "node hooks/kirocrew-install.js --uninstall",
     "install:kimi-hooks": "node hooks/kimi-install.js",
     "install:qwen-hooks": "node hooks/qwen-code-install.js",
     "install:codewhale-hooks": "node hooks/codewhale-install.js",

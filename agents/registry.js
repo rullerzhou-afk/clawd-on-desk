@@ -9,6 +9,7 @@ const antigravityCli = require("./antigravity-cli");
 const cursorAgent = require("./cursor-agent");
 const codebuddy = require("./codebuddy");
 const kiroCli = require("./kiro-cli");
+const kirocrew = require("./kirocrew");
 const kimiCli = require("./kimi-cli");
 const qwenCode = require("./qwen-code");
 const codewhale = require("./codewhale");
@@ -28,6 +29,7 @@ const AGENTS = [
   cursorAgent,
   codebuddy,
   kiroCli,
+  kirocrew,
   kimiCli,
   qwenCode,
   codewhale,

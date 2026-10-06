@@ -11,6 +11,7 @@ const { unregisterCursorHooks } = require("./cursor-install");
 const { unregisterCopilotHooks } = require("./copilot-install");
 const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
 const { unregisterKiroHooks } = require("./kiro-install");
+const { unregisterKiroCrewHooks } = require("./kirocrew-install");
 const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterCodewhaleHooks } = require("./codewhale-install");
@@ -32,6 +33,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "copilot-cli",
   "codebuddy",
   "kiro-cli",
+  "kirocrew",
   "kimi-cli",
   "qwen-code",
   "codewhale",
@@ -52,6 +54,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "copilot-cli": "GitHub Copilot CLI",
   codebuddy: "CodeBuddy",
   "kiro-cli": "Kiro CLI",
+  kirocrew: "KiroCrew",
   "kimi-cli": "Kimi Code CLI",
   "qwen-code": "Qwen Code",
   codewhale: "CodeWhale",
@@ -150,6 +153,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         agentsDir: path.join(homeDir, ".kiro", "agents"),
       },
+      kirocrew: {
+        ...common,
+        hooksPath: path.join(homeDir, ".kiro", "crew", "hooks.json"),
+      },
       "kimi-cli": {
         ...common,
         settingsPath: path.join(homeDir, ".kimi", "config.toml"),
@@ -210,6 +217,7 @@ const AGENT_CLEANERS = Object.freeze({
   "copilot-cli": unregisterCopilotHooks,
   codebuddy: unregisterCodeBuddyHooks,
   "kiro-cli": unregisterKiroHooks,
+  kirocrew: unregisterKiroCrewHooks,
   "kimi-cli": unregisterKimiHooks,
   "qwen-code": unregisterQwenCodeHooks,
   codewhale: unregisterCodewhaleHooks,
