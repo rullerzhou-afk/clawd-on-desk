@@ -11,6 +11,7 @@ const gemini = require("../../hooks/gemini-install");
 const antigravity = require("../../hooks/antigravity-install");
 const codebuddy = require("../../hooks/codebuddy-install");
 const kiro = require("../../hooks/kiro-install");
+const kirocrew = require("../../hooks/kirocrew-install");
 const kimi = require("../../hooks/kimi-install");
 const qwen = require("../../hooks/qwen-code-install");
 const codewhale = require("../../hooks/codewhale-install");
@@ -124,6 +125,17 @@ const AGENT_DESCRIPTORS = Object.freeze([
     configMode: "dir",
     autoInstall: true,
     marker: "kiro-hook.js",
+    nested: true,
+  }),
+  Object.freeze({
+    agentId: "kirocrew",
+    agentName: agentName("kirocrew"),
+    eventSource: agentEventSource("kirocrew"),
+    parentDir: kirocrew.DEFAULT_PARENT_DIR,
+    configPath: kirocrew.DEFAULT_HOOKS_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: "kirocrew-hook.js",
     nested: true,
   }),
   Object.freeze({

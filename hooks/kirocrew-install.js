@@ -45,6 +45,7 @@ const KIROCREW_HOOK_EVENTS = [
 const HOOK_TIMEOUT_SECONDS = 5; // generous for a localhost POST; well under the 300s cap
 
 const DEFAULT_HOOKS_PATH = path.join(os.homedir(), ".kiro", "crew", "hooks.json");
+const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".kiro", "crew");
 
 function getHookScriptPath() {
   let hookScript = path.resolve(__dirname, "kirocrew-hook.js").replace(/\\/g, "/");
@@ -210,6 +211,7 @@ function unregisterKiroCrewHooks(options = {}) {
 
 module.exports = {
   DEFAULT_HOOKS_PATH,
+  DEFAULT_PARENT_DIR,
   KIROCREW_HOOK_EVENTS,
   registerKiroCrewHooks,
   unregisterKiroCrewHooks,

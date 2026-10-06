@@ -21,6 +21,7 @@ describe("doctor agent descriptors", () => {
         "antigravity-cli",
         "codebuddy",
         "kiro-cli",
+        "kirocrew",
         "kimi-cli",
         "qwen-code",
         "codewhale",
