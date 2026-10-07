@@ -191,7 +191,10 @@ const AGENT_DESCRIPTORS = Object.freeze([
     configMode: "file",
     autoInstall: true,
     marker: "kirocrew-hook.js",
-    nested: true,
+    // KiroCrew's hooks.json stores `hooks` as a FLAT array of hook objects, not
+    // the Claude-style object of per-event arrays. findHookCommands needs
+    // flatArray to read it; `nested` does not apply.
+    flatArray: true,
   }),
   Object.freeze({
     agentId: "kimi-cli",

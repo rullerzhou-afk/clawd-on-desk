@@ -1646,7 +1646,7 @@ function checkFileMode(descriptor, options) {
   } else {
     detail = validateCommandList(
       descriptor,
-      findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested }),
+      findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested, flatArray: !!descriptor.flatArray }),
       options
     );
   }
@@ -2048,7 +2048,7 @@ function checkKiroDirMode(descriptor, options) {
       continue;
     }
 
-    const commands = findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested });
+    const commands = findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested, flatArray: !!descriptor.flatArray });
     if (!commands.length) {
       scan.noMarkerFiles.push(file);
       continue;

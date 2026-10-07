@@ -838,7 +838,20 @@ function removeMatchingHttpHooks(entries, predicate) {
 function findHookCommands(settings, marker, options) {
   if (!settings || !settings.hooks || typeof marker !== "string" || !marker) return [];
   const nested = options && options.nested;
+  const flatArray = options && options.flatArray;
   const commands = [];
+
+  // KiroCrew's hooks.json stores `hooks` as a FLAT array of hook objects
+  // ({ event, command, ... }), not the Claude-style object of per-event
+  // arrays. Object.values() over an array would yield individual hook objects
+  // (not arrays), so the generic loop below misses them — iterate directly.
+  if (flatArray && Array.isArray(settings.hooks)) {
+    for (const entry of settings.hooks) {
+      if (!entry || typeof entry !== "object") continue;
+      if (commandMatchesMarker(entry.command, marker)) commands.push(entry.command);
+    }
+    return commands;
+  }
 
   for (const entries of Object.values(settings.hooks)) {
     if (!Array.isArray(entries)) continue;

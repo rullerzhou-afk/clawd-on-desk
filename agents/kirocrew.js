@@ -19,10 +19,15 @@ module.exports = {
   startupRecoveryProcessNames: { win: [], mac: [], linux: [] },
   eventSource: "hook",
   // PascalCase event names — matches KiroCrew's chat lifecycle hook system.
+  // PreToolUse is intentionally NOT mapped/installed: in KiroCrew any
+  // PreToolUse exit other than 0 or 2 denies the tool on the approval path
+  // (a missing script, a stale node path, or a governance policy disabling
+  // script_hooks would all deny), and the bridge's exit-0 guarantee only
+  // holds once Node has started. The four remaining events only warn on
+  // failure and are sufficient to drive the pet.
   eventMap: {
     AgentSpawn: "idle",
     UserPromptSubmit: "thinking",
-    PreToolUse: "working",
     PostToolUse: "working",
     Stop: "attention",
   },
