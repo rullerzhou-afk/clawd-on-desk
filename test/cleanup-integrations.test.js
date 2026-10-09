@@ -84,6 +84,8 @@ describe("cleanupIntegrations", () => {
     assert.strictEqual(plan.env.DSH_HOME, path.resolve(path.join(os.tmpdir(), "admin-dsh")));
     assert.strictEqual(plan.byAgent["deepseek-harness"].dshHome, plan.env.DSH_HOME);
     assert.strictEqual(plan.byAgent["deepseek-harness"].env.DSH_HOME, plan.env.DSH_HOME);
+    assert.strictEqual(plan.env.KIROCREW_HOME, undefined);
+    assert.strictEqual(plan.byAgent.kirocrew.hooksPath, path.join(homeDir, ".kiro", "crew", "hooks.json"));
     assert.strictEqual(plan.byAgent.hermes.env.LOCALAPPDATA, targetLocalAppData);
     assert.notStrictEqual(plan.byAgent.hermes.hermesHome, path.join(inheritedLocalAppData, "hermes"));
   });
@@ -104,6 +106,39 @@ describe("cleanupIntegrations", () => {
       resolveDshManagedRoot(plan.byAgent["deepseek-harness"]),
       resolveDshManagedRoot(defaultPlan.byAgent["deepseek-harness"]),
     );
+  });
+
+  it("honors KIROCREW_HOME for current-home cleanup and isolates alternate-home cleanup", () => {
+    const customHome = path.join(os.tmpdir(), "clawd-kirocrew-custom-home");
+    const currentHome = buildCleanupOptionsForHome(null, {
+      env: { HOME: os.homedir(), USERPROFILE: os.homedir(), KIROCREW_HOME: customHome },
+    });
+    assert.strictEqual(currentHome.env.KIROCREW_HOME, customHome);
+    assert.strictEqual(currentHome.byAgent.kirocrew.hooksPath, path.join(customHome, "hooks.json"));
+
+    const alternateHome = path.join(os.tmpdir(), "clawd-kirocrew-alternate-home");
+    const inherited = process.env.KIROCREW_HOME;
+    process.env.KIROCREW_HOME = customHome;
+    let isolated;
+    try {
+      isolated = buildCleanupOptionsForHome(alternateHome);
+    } finally {
+      if (inherited === undefined) delete process.env.KIROCREW_HOME;
+      else process.env.KIROCREW_HOME = inherited;
+    }
+    assert.strictEqual(isolated.env.KIROCREW_HOME, undefined);
+    assert.strictEqual(isolated.byAgent.kirocrew.hooksPath, path.join(alternateHome, ".kiro", "crew", "hooks.json"));
+
+    const explicitEnvTarget = buildCleanupOptionsForHome(alternateHome, {
+      env: { KIROCREW_HOME: customHome },
+    });
+    assert.strictEqual(explicitEnvTarget.byAgent.kirocrew.hooksPath, path.join(customHome, "hooks.json"));
+
+    const explicitlyTargeted = buildCleanupOptionsForHome(alternateHome, {
+      env: { KIROCREW_HOME: customHome },
+      kirocrewHome: customHome,
+    });
+    assert.strictEqual(explicitlyTargeted.byAgent.kirocrew.hooksPath, path.join(customHome, "hooks.json"));
   });
 
   it("does not inherit the process DSH_HOME for an explicit alternate home", () => {

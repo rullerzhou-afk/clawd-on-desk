@@ -2309,6 +2309,60 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.fixAction, undefined);
   });
 
+  it("requires all four enabled KiroCrew gateway events", () => {
+    const root = makeTempDir();
+    const descriptor = baseDescriptor({
+      agentId: "kirocrew",
+      agentName: "KiroCrew",
+      parentDir: path.join(root, ".kiro", "crew"),
+      configPath: path.join(root, ".kiro", "crew", "hooks.json"),
+      marker: "kirocrew-hook.js",
+      flatArray: true,
+      flatArrayHookEvents: true,
+      hookEvents: ["AgentSpawn", "UserPromptSubmit", "PostToolUse", "Stop"],
+    });
+    const command = '"/node" "/app/hooks/kirocrew-hook.js"';
+    const baseEntry = (event, enabled = true) => ({ event, command, enabled });
+    const prefs = { agents: { kirocrew: { integrationInstalled: true, enabled: true } } };
+
+    writeJson(descriptor.configPath, { hooks: [baseEntry("AgentSpawn")] });
+    const partial = runOne(descriptor, { prefs });
+    assert.strictEqual(partial.status, "not-connected");
+    assert.deepStrictEqual(partial.missingHookEvents, ["UserPromptSubmit", "PostToolUse", "Stop"]);
+    assert.match(partial.detail, /hooks\.json missing KiroCrew hook event/);
+
+    writeJson(descriptor.configPath, {
+      hooks: [
+        baseEntry("AgentSpawn"), baseEntry("UserPromptSubmit"),
+        baseEntry("PostToolUse"), baseEntry("Stop", false),
+      ],
+    });
+    const disabled = runOne(descriptor, { prefs });
+    assert.strictEqual(disabled.status, "not-connected");
+    assert.deepStrictEqual(disabled.disabledHookEvents, ["Stop"]);
+
+    writeJson(descriptor.configPath, {
+      hooks: [
+        baseEntry("AgentSpawn"), baseEntry("UserPromptSubmit"),
+        baseEntry("PostToolUse"), baseEntry("Stop"),
+      ],
+    });
+    assert.strictEqual(runOne(descriptor, { prefs }).status, "ok");
+
+    writeJson(descriptor.configPath, {
+      hooks: [
+        baseEntry("AgentSpawn", true),
+        { ...baseEntry("UserPromptSubmit"), command: "node /user/kirocrew-hook.js.backup" },
+        { ...baseEntry("PostToolUse"), command: "echo kirocrew-hook.js" },
+        { ...baseEntry("Stop"), command: "node /user/kirocrew-hook.js && echo foreign" },
+      ],
+    });
+    const foreignOnly = runOne(descriptor, { prefs });
+    assert.strictEqual(foreignOnly.status, "not-connected");
+    assert.strictEqual(foreignOnly.commandCount, 1);
+    assert.deepStrictEqual(foreignOnly.missingHookEvents, ["UserPromptSubmit", "PostToolUse", "Stop"]);
+  });
+
   function piDescriptor() {
     const root = makeTempDir();
     const parentDir = path.join(root, ".pi", "agent");

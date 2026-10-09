@@ -16,6 +16,7 @@ describe("Agent Registry", () => {
       "cursor-agent",
       "codebuddy",
       "kiro-cli",
+      "kirocrew",
       "kimi-cli",
       "qwen-code",
       "zcode",

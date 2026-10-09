@@ -202,6 +202,7 @@ const MANAGED_CLEANUP_AGENT_IDS = Object.freeze([
   "workbuddy",
   "grok-build",
   "kiro-cli",
+  "kirocrew",
   "kimi-cli",
   "qwen-code",
   "zcode",

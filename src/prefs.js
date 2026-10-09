@@ -464,6 +464,13 @@ const SCHEMA = {
       // hook, so permission bubbles default off. Opt-in like other non-default
       // agents — agent-gate fail-opens missing entries.
       "grok-build": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // KiroCrew is a state-only bridge over the gateway's chat lifecycle
+      // hooks. It has no PermissionRequest and no Notification hook event, so
+      // both flags default off (like minimax). Opt-in like every other
+      // non-default agent — agent-gate.js fail-opens a MISSING entry, so this
+      // default MUST exist or startup sync would write the hooks for any user
+      // who merely has a ~/.kiro/crew directory.
+      "kirocrew": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
     }),
     normalize: normalizeAgents,
   },

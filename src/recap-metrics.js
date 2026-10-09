@@ -60,6 +60,17 @@ const AGENT_METRIC_POLICIES = Object.freeze({
   // Claude-compatible adapters; PreToolUse/PostToolUse bracket tool calls.
   minimax: policy(null, STANDARD_COMPLETION, STANDARD_TOOL_START),
   "grok-build": policy(null, null, STANDARD_TOOL_START),
+  // KiroCrew is a state-only bridge over the gateway's chat lifecycle hooks.
+  // It opts out of every proven-boundary metric rather than guessing one:
+  //  - sessionStart: AgentSpawn is not a fresh-start source and carries no
+  //    startup/clear origin, so it cannot prove a session-start.
+  //  - turnComplete: Stop marks the end of a turn, not a completed task — it
+  //    also fires on user cancel and before a hook-requested continuation —
+  //    so it is not a safe completed-turn boundary.
+  //  - toolCall: PreToolUse is intentionally NOT installed (its non-zero exit
+  //    denies tools on KiroCrew's approval path), and PostToolUse is a plain
+  //    state ping, not a proven per-call tool boundary.
+  kirocrew: policy(null, null, null),
 });
 
 function policy(sessionStart, turnCompleteEvents, toolCallEvents) {

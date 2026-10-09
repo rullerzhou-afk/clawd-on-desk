@@ -305,6 +305,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncKiroCrewHooks() {
+    try {
+      if (typeof ctx.syncKiroCrewHooksImpl === "function") return ctx.syncKiroCrewHooksImpl();
+      const { registerKiroCrewHooks } = require("../hooks/kirocrew-install.js");
+      const result = registerKiroCrewHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced KiroCrew hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "KiroCrew", "kirocrew-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync KiroCrew hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync KiroCrew hooks" };
+    }
+  }
+
   function syncKimiHooks() {
     try {
       if (typeof ctx.syncKimiHooksImpl === "function") return ctx.syncKimiHooksImpl();
@@ -687,6 +702,7 @@ function createIntegrationSyncRuntime(options = {}) {
     workbuddy: syncWorkBuddyHooks,
     "grok-build": syncGrokBuildHooks,
     "kiro-cli": syncKiroHooks,
+    kirocrew: syncKiroCrewHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
     zcode: syncZcodeHooks,

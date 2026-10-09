@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Grok Build、Kiro CLI、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness、TraeCode (Trae CN)、MiniMax Code；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题，并可经 Settings 从独立 `rullerzhou-afk/clawd-themes` 仓库下载可选官方主题（Hash Sage、Whale-chan，external theme 权限、可卸载）；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Grok Build、Kiro CLI、KiroCrew、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness、TraeCode (Trae CN)、MiniMax Code；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题，并可经 Settings 从独立 `rullerzhou-afk/clawd-themes` 仓库下载可选官方主题（Hash Sage、Whale-chan，external theme 权限、可卸载）；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
 
 ## Common Commands
 
@@ -32,6 +32,8 @@ npm run install:cursor-hooks
 npm run install:gemini-hooks
 npm run install:antigravity-hooks
 npm run install:kiro-hooks
+npm run install:kirocrew-hooks
+npm run uninstall:kirocrew-hooks
 npm run install:kimi-hooks
 npm run install:qwen-hooks
 npm run install:zcode-hooks
@@ -73,7 +75,7 @@ bash test-macos.sh
 bash test-oneshot-gate.sh [state] [seconds]
 ```
 
-新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Grok Build / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix / TraeCode / MiniMax Code hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
+新安装默认只把 Claude Code 和 Codex 标记为已安装并启用；其他 agent 默认未安装、未启用。正常启动时，Clawd 只会为 `integrationInstalled=true` 且 `enabled=true` 的 agent 自动同步 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Grok Build / Kiro / KiroCrew / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix / TraeCode / MiniMax Code hooks、opencode / MiMo Code / OpenClaw / Hermes plugins 和 Pi extension。Settings Agent 页的 Install 会安装并启用该集成；Uninstall 会卸载 Clawd 管理的 hook/plugin/extension，并同时把该 agent 设为未安装、未启用。单独关闭 enabled 只会跳过启动同步并屏蔽事件/权限入口，不卸载用户已有 hooks / plugins / extensions；重新启用未安装 agent 只打开事件入口，不会写本机集成文件。手动安装命令主要用于调试、重装或远程部署。
 Settings 注册的自定义 HTTP Agent 是独立模型：`customApplications` 是注册真相，对应 `agents[customId]` 必须显式保持 `integrationInstalled=false`。注册只分配 ID 和状态入口，不安装 hook、不观察进程；v1 仅允许已注册且启用的 ID 向 `/state` 上报，`/permission` 永远不提供决定。删除或伪造的 `custom-` ID 必须直接拒绝，不能降级成 Claude Code subagent。
 Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-based 增量合并只接管含 `copilot-hook.js` 标记的条目，用户其他 entry / 其他 `hooks/*.json` 文件原样保留；hooks.json 或 `settings.json` 顶层 `disableAllHooks: true` 时 doctor 报 warning（不挂 Fix 按钮）。详见 `docs/guides/copilot-setup.md`。
 
@@ -154,6 +156,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `agents/codex-log-monitor.js` | Codex JSONL fallback 轮询 |
 | `agents/gemini-log-monitor.js` | legacy Gemini session JSON 轮询器；当前 Gemini hook-only 路径不启动 |
 | `hooks/dsh-install.js` | DeepSeek Harness immutable managed bridge generation、ownership verify、web 与 desktop 两个 profile 的安装 / 修复 / 卸载编排 |
+| `hooks/kirocrew-install.js` + `hooks/kirocrew-store.js` | KiroCrew state-only gateway hooks、upstream-compatible mutation locks and atomic private store writes |
+| `hooks/kirocrew-hook.js` + `hooks/kirocrew-command.js` | KiroCrew state bridge and exact command-shape ownership classifier |
 | `hooks/dsh-notices.js` | DeepSeek Harness 常驻提示的存储与规则（按 profile 的 `notices-<profile>.json`） |
 | `hooks/clawd-hook.js` + `hooks/copilot-hook.js` | Claude Code / Copilot CLI 状态上报脚本 |
 | `hooks/install.js` | Claude hook 注册 / 卸载 |
@@ -265,6 +269,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - Codex 的记忆整理（phase 2）是 `SessionSource::Internal` 内部线程，cwd 固定为 `<CODEX_HOME>/memories`（v2 为 `memories_v2`），`ephemeral` 不写 rollout 所以 hook payload 没有 transcript，且上游（openai/codex#40587）不再把用户级 Stop 发给它。Clawd 在 `hooks/codex-hook.js` 里按「cwd 恰好等于这两个目录 + payload 无 transcript」丢弃它的状态事件（含 Stop），不 POST、不读自动启动开关、不冷启动；`hooks/codex-internal-worker.js` 负责该判定（只认绝对路径的 CODEX_HOME 或未设置时的 `~/.codex`；按原值精确比较 `<home>/memories` 与 `<home>/memories_v2`，刻意不做 trim；相对路径的 CODEX_HOME、含 `..` 段的 CODEX_HOME 或 cwd 一律不处理，宁可漏判也不吞真实会话；win32 的 CODEX_HOME 必须带盘符或 UNC，realpath 与 cwd 都会去掉 `\\?\` 前缀，8.3 短名不处理），需随 Remote SSH `HOOK_FILES` 部署。不按标题 `memories` 过滤、不按整条 session_id 封锁，PermissionRequest 不走这条过滤（整理线程审批策略固定为 Never，权限请求不得被静默吞掉）
 - Codex 桌面端 app-server 下的临时线程（无 transcript + hook 环境有非空 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`，判定见 `hooks/codex-internal-worker.js` 的 `isCodexClientEphemeralPayload`）既包含隐藏的「智能建议」后台线程，也包含用户自己的侧边聊天，两者 hook 字段完全相同。Clawd 只按两个固定提示词开头认智能建议（`isCodexAmbientSuggestionPrompt`）：这类线程的 `SessionStart` 不显示，`UserPromptSubmit` 在 body 上带 `codex_internal_thread:"ambient_suggestions"` 标记，服务端 `src/agent-runtime-main.js` 用有界集合（200）记住该本地 Codex sid，之后该 sid 的官方事件一律不建行、不播完成，已有行则按归档方式撤掉，直到它的 SessionEnd 把 sid 移出集合；其他临时线程（含侧边聊天）照常显示。所有客户端临时线程的 `SessionStart` 都不显示，但仍用 `lifecycle:"start"` 做一次常规进程解析预热 Windows pid 缓存（不 POST、不读自动启动开关、不冷启动），否则 Windows 默认 legacy 模式下侧边聊天的首次 `UserPromptSubmit` 是 cache-only、拿不到 PID。若上游改写提示词文字，识别失效只会退化成「短暂出现、被 SessionEnd 收掉」，不会藏起用户的对话。Codex 的 official `SessionEnd` 已注册（`hooks/codex-install-utils.js` 的 `CODEX_HOOK_EVENTS`，timeout 固定 3 秒），线程拆除时发（归档、删除、闲置卸载、正常关闭），所以闲置几小时后卸载也会发；服务端 `src/state.js` 的 SessionEnd 分支删行、取消 exit probe、结束 automation lifecycle，但**本地 Codex 会话若仍有可回复的完成映射（`ctx.hasReplyableCompletionMapping`，与过期清理同一判定）则整体当作 no-op**，否则 Telegram 直接回复会因会话不在而 `session_not_live`。`src/agent-runtime-main.js` 对「官方 SessionEnd 真正删掉的本地 Codex sid」记一个有界墓碑（200，参照 turn fence）：之后该 sid 的 JSONL 事件除回合开始（`event_msg:task_started`，或 `syntheticBackfill && turnBoundaryOpen` 且带 turnId）外一律丢弃、不建会话，quota / context 照常摄入；解除墓碑只看 fences 接受的新回合开始或该 sid 的官方 SessionStart / UserPromptSubmit，被 fence 拒掉的旧回合开始不解除，被保留下来的会话不记标记。SessionEnd 不清 turn fence（已关闭回合的重复终止/工作事件仍被拦）。新增这个 hook 需要用户在 Codex `/hooks` 里重新批准（sha256 trusted_hash gate）后才生效。
 - Kiro 没有 global hooks，只能注入到 `~/.kiro/agents/*.json`
+- KiroCrew（`agentId: kirocrew`）仅用 `~/.kiro/crew/hooks.json` 的 AgentSpawn / UserPromptSubmit / PostToolUse / Stop 四个 state-only gateway events；不注册 PreToolUse 或 `/permission`。只有精确两 token Node + `kirocrew-hook.js` 命令（含本 PR 的 Windows `cmd /d /s /c` 预览形态）证明 Clawd 所有权，marker 子串不得授权更新或卸载。配置路径尊重 `KIROCREW_HOME`；payload 的 gateway cwd 不可信，不送入 Clawd。安装且启用后，startup 才自动同步 hooks。Install/Uninstall 必须 single-shot 持有 gateway.lock、POSIX KiroCrew home-directory anchor 与 hooks.json.lock（Windows 仅文件 locks）覆盖检查到原子写；遇锁明确失败，不能 busy-spin。hooks.json 新写入及已有文件收紧为 owner-only（POSIX 0600；Windows 在 payload 写入前设置 owner-only DACL）。store helper 仅用于本机安装/维护；事件 bridge 仍是纯 Node hook，KiroCrew 不进入 Remote SSH `HOOK_FILES`。
 - `src/renderer.js` 里给 `<img>` SVG 追加的 `?_t=` cache-bust query 不能删；Chromium 会复用同 URL SVG 的动画时间线，一次性动画会停在末帧
 
 ## Do Not Revisit

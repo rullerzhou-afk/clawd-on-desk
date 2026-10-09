@@ -11,6 +11,7 @@ const {
 } = require("../agent-gate");
 const { getAgent } = require("../../agents/registry");
 const { commandMatchesMarker, findHookCommands } = require("../../hooks/json-utils");
+const { isOwnedKiroCrewCommand } = require("../../hooks/kirocrew-command");
 const { GEMINI_HOOK_EVENTS } = require("../../hooks/gemini-install");
 const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = require("../../hooks/antigravity-install");
 const cursor = require("../../hooks/cursor-install");
@@ -859,20 +860,42 @@ function validateFileHookEvents(descriptor, settings, options) {
   const missingKey = descriptor.agentId === "qwen-code" ? "missingQwenHookEvents" : "missingHookEvents";
   const brokenKey = descriptor.agentId === "qwen-code" ? "brokenQwenHookEvent" : "brokenHookEvent";
   const missingEvents = [];
+  const disabledEvents = [];
   let commandCount = 0;
   let firstOk = null;
   let firstFailure = null;
 
   for (const eventName of events) {
-    const commands = findHookCommandsForEvent(settings, eventName, descriptor.marker, {
-      nested: !!descriptor.nested,
-      hookEventsContainer: descriptor.hookEventsContainer,
-    });
+    let commands;
+    if (descriptor.flatArrayHookEvents) {
+      const entries = settings && Array.isArray(settings.hooks)
+        ? settings.hooks.filter((entry) => (
+          entry && typeof entry === "object"
+          && entry.event === eventName
+          && typeof entry.command === "string"
+          && (descriptor.agentId === "kirocrew"
+            ? isOwnedKiroCrewCommand(entry.command)
+            : commandContainsFragment(entry.command, descriptor.marker))
+        ))
+        : [];
+      const active = entries.filter((entry) => entry.enabled !== false);
+      if (!active.length) {
+        if (entries.length) disabledEvents.push(eventName);
+        else missingEvents.push(eventName);
+      }
+      commands = active.map((entry) => entry.command);
+    } else {
+      commands = findHookCommandsForEvent(settings, eventName, descriptor.marker, {
+        nested: !!descriptor.nested,
+        hookEventsContainer: descriptor.hookEventsContainer,
+      });
+    }
     commandCount += commands.length;
-    if (!commands.length) {
+    if (!commands.length && !descriptor.flatArrayHookEvents) {
       missingEvents.push(eventName);
       continue;
     }
+    if (!commands.length) continue;
 
     const results = commands.map((command) => options.validateCommand(command, {
       platform: options.platform,
@@ -892,12 +915,16 @@ function validateFileHookEvents(descriptor, settings, options) {
     }
   }
 
-  if (missingEvents.length) {
+  if (missingEvents.length || disabledEvents.length) {
     return makeDetail(descriptor, "not-connected", {
       level: "warning",
-      detail: `${descriptor.configPath} missing ${agentName} hook event(s): ${missingEvents.join(", ")}`,
+      detail: `${descriptor.configPath} ${[
+        missingEvents.length ? `missing ${agentName} hook event(s): ${missingEvents.join(", ")}` : null,
+        disabledEvents.length ? `disabled ${agentName} hook event(s): ${disabledEvents.join(", ")}` : null,
+      ].filter(Boolean).join("; ")}`,
       commandCount,
       [missingKey]: missingEvents,
+      ...(descriptor.flatArrayHookEvents ? { disabledHookEvents: disabledEvents } : {}),
     });
   }
 
@@ -1646,7 +1673,7 @@ function checkFileMode(descriptor, options) {
   } else {
     detail = validateCommandList(
       descriptor,
-      findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested }),
+      findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested, flatArray: !!descriptor.flatArray }),
       options
     );
   }
@@ -2048,7 +2075,7 @@ function checkKiroDirMode(descriptor, options) {
       continue;
     }
 
-    const commands = findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested });
+    const commands = findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested, flatArray: !!descriptor.flatArray });
     if (!commands.length) {
       scan.noMarkerFiles.push(file);
       continue;

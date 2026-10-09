@@ -11,6 +11,7 @@ const { unregisterCursorHooks } = require("./cursor-install");
 const { unregisterCopilotHooks } = require("./copilot-install");
 const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
 const { unregisterKiroHooks } = require("./kiro-install");
+const { unregisterKiroCrewHooks } = require("./kirocrew-install");
 const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterZcodeHooks } = require("./zcode-install");
@@ -50,6 +51,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "copilot-cli",
   "codebuddy",
   "kiro-cli",
+  "kirocrew",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -82,6 +84,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   workbuddy: "WorkBuddy",
   "grok-build": "Grok Build",
   "kiro-cli": "Kiro CLI",
+  kirocrew: "KiroCrew",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
   zcode: "ZCode",
@@ -125,6 +128,11 @@ function buildTargetEnv(homeDir, options = {}) {
   } else if (options.ignoreInheritedDshHome) {
     delete env.DSH_HOME;
   }
+  if (typeof options.kirocrewHome === "string" && options.kirocrewHome.trim()) {
+    env.KIROCREW_HOME = path.resolve(options.kirocrewHome);
+  } else if (options.ignoreInheritedKiroCrewHome) {
+    delete env.KIROCREW_HOME;
+  }
   if ((options.platform || process.platform) === "win32") {
     env.LOCALAPPDATA = options.localAppData || path.join(homeDir, "AppData", "Local");
     env.APPDATA = options.appData || path.join(homeDir, "AppData", "Roaming");
@@ -150,12 +158,19 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
     : (options.env && typeof options.env.DSH_HOME === "string" && options.env.DSH_HOME.trim()
       ? options.env.DSH_HOME.trim()
       : null);
+  const explicitKiroCrewHome = typeof options.kirocrewHome === "string" && options.kirocrewHome.trim()
+    ? options.kirocrewHome.trim()
+    : (options.env && typeof options.env.KIROCREW_HOME === "string" && options.env.KIROCREW_HOME.trim()
+      ? options.env.KIROCREW_HOME.trim()
+      : null);
   const env = buildTargetEnv(homeDir, {
     ...options,
     dshHome: explicitDshHome,
+    kirocrewHome: explicitKiroCrewHome,
     ignoreInheritedHermesHome: explicitHomeDir && !options.hermesHome,
     ignoreInheritedReasonixHome: explicitHomeDir && !options.reasonixHome,
     ignoreInheritedDshHome: explicitHomeDir && !explicitDshHome,
+    ignoreInheritedKiroCrewHome: explicitHomeDir && !explicitKiroCrewHome,
   });
   const backup = options.backup !== false;
   const silent = options.silent !== false;
@@ -183,6 +198,9 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const hermesHome = options.hermesHome
     || resolveHermesHome({ homeDir, env, platform: options.platform || process.platform });
   const minimaxDataDir = resolveMinimaxDataDir(homeDir, env);
+  const kirocrewHome = env.KIROCREW_HOME && env.KIROCREW_HOME.trim()
+    ? env.KIROCREW_HOME.trim()
+    : path.join(homeDir, ".kiro", "crew");
 
   return {
     homeDir,
@@ -228,6 +246,10 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       "kiro-cli": {
         ...common,
         agentsDir: path.join(homeDir, ".kiro", "agents"),
+      },
+      kirocrew: {
+        ...common,
+        hooksPath: path.join(kirocrewHome, "hooks.json"),
       },
       "kimi-cli": {
         ...common,
@@ -393,6 +415,7 @@ const AGENT_CLEANERS = Object.freeze({
   "copilot-cli": unregisterCopilotHooks,
   codebuddy: unregisterCodeBuddyHooks,
   "kiro-cli": unregisterKiroHooks,
+  kirocrew: unregisterKiroCrewHooks,
   "kimi-cli": unregisterKimiHooks,
   "qwen-code": unregisterQwenCodeHooks,
   zcode: unregisterZcodeHooks,
