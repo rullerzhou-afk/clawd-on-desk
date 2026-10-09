@@ -51,6 +51,8 @@ describe("built-in Cloudling theme", () => {
 
     assert.strictEqual(theme.schemaVersion, 1);
     assert.strictEqual(theme._builtin, true);
+    assert.strictEqual(theme._capabilities.petTint, true);
+    assert.strictEqual(rendererConfig.petTintSupported, true);
     assert.deepStrictEqual(theme.trustedRuntime.scriptedSvgFiles, CLOUDLING_SCRIPTED_FILES);
     assert.strictEqual(Object.keys(theme.trustedRuntime.scriptedSvgCycleMs || {}).length, CLOUDLING_SCRIPTED_FILES.length);
     assert.strictEqual(theme.trustedRuntime.scriptedSvgCycleMs["cloudling-building.svg"], 5400);

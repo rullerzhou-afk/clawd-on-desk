@@ -1,0 +1,124 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .breathe-anim {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      /* Happy arm wave — continuous, fast, fixed pivot at shoulder */
+      .arm-happy {
+        transform-origin: 2px 9px; /* Shoulder joint in SVG coords, no fill-box */
+        animation: arm-happy-wave 0.4s infinite alternate ease-in-out;
+      }
+
+      /* Eyes ^^ blink — mostly ^^ with occasional full blink */
+      .eyes-happy-blink {
+        transform-origin: 7.5px 9px;
+        animation: happy-blink 3s infinite ease-in-out;
+      }
+
+      /* Pixel-Art Sparkle Animations */
+      .spark-center {
+        opacity: 0;
+        animation: flash-center 1.5s infinite step-end;
+        animation-delay: var(--delay, 0s);
+      }
+      .spark-outer {
+        opacity: 0;
+        animation: flash-outer 1.5s infinite step-end;
+        animation-delay: var(--delay, 0s);
+      }
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      /* Continuous happy waving */
+      @keyframes arm-happy-wave {
+        0% { transform: rotate(22deg); }
+        100% { transform: rotate(-8deg); }
+      }
+
+      /* Happy blink: frequent blinks to look excited */
+      @keyframes happy-blink {
+        0%, 12%, 30%, 42%, 100% { transform: scaleY(1); }
+        6% { transform: scaleY(0.1); }
+        36% { transform: scaleY(0.1); }
+      }
+
+      @keyframes flash-center {
+        0%  { opacity: 0; }
+        10% { opacity: 1; }
+        30% { opacity: 0; }
+        100%{ opacity: 0; }
+      }
+      @keyframes flash-outer {
+        0%  { opacity: 0; }
+        20% { opacity: 1; }
+        40% { opacity: 0; }
+        100%{ opacity: 0; }
+      }
+    </style>
+
+    <!-- Reusable Pixel Art Sparkle (from clawd-happy.svg) -->
+    <g id="px-sparkle">
+      <rect class="spark-center" x="-0.5" y="-0.5" width="1" height="1" />
+      <path class="spark-outer" d="M -0.5,-1.5 h1 v1 h-1 z
+                                   M -0.5,0.5 h1 v1 h-1 z
+                                   M -1.5,-0.5 h1 v1 h-1 z
+                                   M 0.5,-0.5 h1 v1 h-1 z" />
+    </g>
+  </defs>
+
+  <!-- Entire character leaning -->
+  <g transform="rotate(-12, 7.5, 15)">
+
+    <!-- Legs -->
+    <g fill="#DE886D">
+      <rect x="3" y="11" width="1" height="4"/>
+      <rect x="5" y="11" width="1" height="4"/>
+      <rect x="9" y="11" width="1" height="4"/>
+      <rect x="11" y="11" width="1" height="4"/>
+    </g>
+
+    <g id="body-js">
+      <g class="breathe-anim">
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- Left Arm — happy continuous wave + flower on top -->
+        <g class="arm-happy">
+          <rect x="-1.5" y="9" width="4.5" height="2" fill="#DE886D"/>
+          <!-- Flower held at hand tip -->
+          <!-- Stem (black, from hand top to flower) -->
+          <rect x="-1.5" y="6" width="0.5" height="3" fill="#000000"/>
+          <!-- Petals (yellow pixel cross) -->
+          <rect x="-2.5" y="5" width="0.8" height="0.8" fill="#FFD700"/>
+          <rect x="-0.5" y="5" width="0.8" height="0.8" fill="#FFD700"/>
+          <rect x="-1.5" y="4.2" width="0.8" height="0.8" fill="#FFD700"/>
+          <rect x="-1.5" y="5.8" width="0.8" height="0.8" fill="#FFD700"/>
+          <!-- Center -->
+          <rect x="-1.5" y="5" width="0.8" height="0.8" fill="#FFA000"/>
+        </g>
+
+        <!-- Right Arm -->
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+
+        <!-- Eyes: ^^ happy squint with blink -->
+        <g class="eyes-happy-blink">
+          <g fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="3.5,9 4.5,8 5.5,9"/>
+            <polyline points="9.5,9 10.5,8 11.5,9"/>
+          </g>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Sparkles (outside rotation = stay upright, within window bounds) -->
+  <use href="#px-sparkle" x="-3" y="0"  fill="#FFD700" style="--delay: 0s"/>
+  <use href="#px-sparkle" x="-6" y="6"  fill="#FFA000" style="--delay: 0.4s"/>
+  <use href="#px-sparkle" x="0"  y="-5" fill="#FFF59D" style="--delay: 0.8s"/>
+</svg>

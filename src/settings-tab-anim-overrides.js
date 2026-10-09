@@ -19,6 +19,7 @@
   let ops = null;
   let i18n = null;
   let readers = null;
+  let mountedSubtabBody = null;
 
   function t(key) {
     return helpers.t(key);
@@ -723,7 +724,7 @@
           syncMountedWideHitboxToggles();
           syncMountedOverrideStatusControls();
         } else if (state.activeTab === "animOverrides") {
-          ops.requestRender({ content: true });
+          refreshMountedSubtabBody();
         }
         ops.requestRender({ modal: true });
         return result;
@@ -750,10 +751,31 @@
       // stale (e.g. "reset all" wipes the whole theme's overrides). Drop the
       // cache so the Animations/Sounds subtabs refetch when next opened; the
       // map subtab never reads it, so it stays a pure in-place patch.
-      if (handled) runtime.animationOverridesData = null;
+      if (handled) {
+        runtime.animationOverridesData = null;
+        // Theme overrides can change the reachable visual set and therefore
+        // the runtime-derived accessory capability. Keep the Theme tab cache
+        // coherent even though the mounted Animation Map stays in place.
+        ops.fetchThemes();
+      }
       return handled;
     }
     if (!changes || typeof changes !== "object") return false;
+    // #509: an idleVisual-only broadcast leaves the option list unchanged —
+    // patch the cached selection and re-sync the mounted picker instead of a
+    // full re-render (which would flicker the optimistic label away).
+    if (Object.keys(changes).length === 1 && Object.prototype.hasOwnProperty.call(changes, "idleVisual")) {
+      const info = runtime.animationOverridesData && runtime.animationOverridesData.idleDefaultVisual;
+      if (info) {
+        const stored = (changes.idleVisual || {})[info.themeId];
+        const valid = typeof stored === "string"
+          && info.options.some((option) => option.file === stored && !option.isThemeDefault);
+        info.selectedFile = valid ? stored : null;
+        const picker = state.mountedControls && state.mountedControls.idleVisualPicker;
+        if (picker && typeof picker.syncFromData === "function") picker.syncFromData();
+      }
+      return true;
+    }
     if (!Object.prototype.hasOwnProperty.call(changes, "themeOverrides")) return false;
     if (Object.keys(changes).length !== 1) return false;
     if (Object.prototype.hasOwnProperty.call(changes, "theme")
@@ -804,9 +826,56 @@
       if (minSessions === maxSessions) return `${minSessions} 세션`;
       return `${minSessions}-${maxSessions} 세션`;
     }
+    if (lang === "pt-BR") {
+      if (maxSessions == null) return `${minSessions}+ sessões`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "sessão" : "sessões"}`;
+      return `${minSessions}-${maxSessions} sessões`;
+    }
+    if (lang === "es") {
+      if (maxSessions == null) return `${minSessions}+ sesiones`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "sesión" : "sesiones"}`;
+      return `${minSessions}-${maxSessions} sesiones`;
+    }
     if (maxSessions == null) return `${minSessions}+ sessions`;
     if (minSessions === maxSessions) return `${minSessions} session${minSessions === 1 ? "" : "s"}`;
     return `${minSessions}-${maxSessions} sessions`;
+  }
+
+  function formatSubagentRange(minSessions, maxSessions) {
+    const lang = readers.getLang();
+    if (lang === "zh") {
+      if (maxSessions == null) return `${minSessions}+ 个子代理`;
+      if (minSessions === maxSessions) return `${minSessions} 个子代理`;
+      return `${minSessions}-${maxSessions} 个子代理`;
+    }
+    if (lang === "zh-TW") {
+      if (maxSessions == null) return `${minSessions}+ 個子代理`;
+      if (minSessions === maxSessions) return `${minSessions} 個子代理`;
+      return `${minSessions}-${maxSessions} 個子代理`;
+    }
+    if (lang === "ko") {
+      if (maxSessions == null) return `하위 에이전트 ${minSessions}개 이상`;
+      if (minSessions === maxSessions) return `하위 에이전트 ${minSessions}개`;
+      return `하위 에이전트 ${minSessions}-${maxSessions}개`;
+    }
+    if (lang === "ja") {
+      if (maxSessions == null) return `サブエージェント ${minSessions}+`;
+      if (minSessions === maxSessions) return `サブエージェント ${minSessions}`;
+      return `サブエージェント ${minSessions}-${maxSessions}`;
+    }
+    if (lang === "pt-BR") {
+      if (maxSessions == null) return `${minSessions}+ subagentes`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "subagente" : "subagentes"}`;
+      return `${minSessions}-${maxSessions} subagentes`;
+    }
+    if (lang === "es") {
+      if (maxSessions == null) return `${minSessions}+ subagentes`;
+      if (minSessions === maxSessions) return `${minSessions} ${minSessions === 1 ? "subagente" : "subagentes"}`;
+      return `${minSessions}-${maxSessions} subagentes`;
+    }
+    if (maxSessions == null) return `${minSessions}+ subagents`;
+    if (minSessions === maxSessions) return `${minSessions} subagent${minSessions === 1 ? "" : "s"}`;
+    return `${minSessions}-${maxSessions} subagents`;
   }
 
   function getAnimOverrideTriggerLabel(card) {
@@ -817,7 +886,7 @@
       case "roam": return "Free roam walk";
       case "thinking": return "UserPromptSubmit / PostCompact";
       case "working": return `PreToolUse (${formatSessionRange(card.minSessions, card.maxSessions)})`;
-      case "juggling": return `SubagentStart (${formatSessionRange(card.minSessions, card.maxSessions)})`;
+      case "juggling": return `SubagentStart (${formatSubagentRange(card.minSessions, card.maxSessions)})`;
       case "error": return "PostToolUseFailure";
       case "attention": return "Stop";
       case "notification": return "PermissionRequest";
@@ -833,9 +902,11 @@
       case "mini-enter-sleep": return "Mini enter sleep";
       case "mini-crabwalk": return "Mini crabwalk";
       case "mini-peek": return "Mini peek";
+      case "mini-peek-hold": return "Mini peek hold";
       case "mini-alert": return "Mini alert";
       case "mini-happy": return "Mini happy";
       case "mini-sleep": return "Mini sleep";
+      case "mini-sleep-peek": return "Mini sleep peek";
       case "dragReaction": return t("animReactionDrag");
       case "clickLeftReaction": return t("animReactionClickLeft");
       case "clickRightReaction": return t("animReactionClickRight");
@@ -872,6 +943,67 @@
     return "";
   }
 
+  // #509: default idle visual picker — which look the pet rests in while
+  // idle. Options come from states.idle, idleAnimations, and idleVisualOptions;
+  // selection applies live, so the pet itself is the preview.
+  function buildIdleVisualPickerRow() {
+    const info = runtime.animationOverridesData && runtime.animationOverridesData.idleDefaultVisual;
+    if (!info || !Array.isArray(info.options) || info.options.length <= 1) return null;
+    const defaultOption = info.options.find((option) => option.isThemeDefault) || info.options[0];
+
+    const wrap = document.createElement("div");
+    wrap.className = "anim-idle-visual-row";
+    const row = document.createElement("div");
+    row.className = "row";
+    const getLabel = (option) => (option.isThemeDefault ? t("animIdleVisualThemeDefault") : option.label || option.file);
+    const currentFile = info.selectedFile || defaultOption.file;
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("animIdleVisualLabel");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("animIdleVisualDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = helpers.buildSettingsSelect({
+      value: currentFile,
+      options: info.options.map((option) => ({ value: option.file, label: getLabel(option) })),
+      ariaLabel: t("animIdleVisualLabel"),
+      onChange(next) {
+        // Success needs no explicit refresh: the idleVisual broadcast lands in
+        // patchInPlace, which updates the cached selection and re-syncs this row.
+        return window.settingsAPI.command("setIdleVisual", { themeId: info.themeId, file: next }).then((result) => {
+          if (result && result.status === "ok") return true;
+          const msg = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + msg, { error: true });
+          return false;
+        }).catch((err) => {
+          ops.showToast(t("toastSaveFailed") + ((err && err.message) || "unknown error"), { error: true });
+          return false;
+        });
+      },
+    });
+    const rowControl = document.createElement("div");
+    rowControl.className = "row-control";
+    rowControl.appendChild(control.element);
+    row.appendChild(text);
+    row.appendChild(rowControl);
+
+    state.mountedControls.idleVisualPicker = {
+      syncFromData: () => {
+        if (!document.body || !document.body.contains(row)) return;
+        const latest = runtime.animationOverridesData && runtime.animationOverridesData.idleDefaultVisual;
+        control.setValue((latest && latest.selectedFile) || defaultOption.file);
+      },
+      dispose: () => control.dispose(),
+    };
+    wrap.appendChild(row);
+    return wrap;
+  }
+
   function buildAnimOverrideSection(section) {
     const wrapper = document.createElement("section");
     wrapper.className = "anim-override-section";
@@ -892,6 +1024,11 @@
       head.appendChild(subtitle);
     }
     wrapper.appendChild(head);
+
+    if (section.id === "idle") {
+      const idleVisualRow = buildIdleVisualPickerRow();
+      if (idleVisualRow) wrapper.appendChild(idleVisualRow);
+    }
 
     const list = document.createElement("div");
     list.className = "anim-override-list";
@@ -918,33 +1055,71 @@
     return frame;
   }
 
-  function render(parent) {
-    const h1 = document.createElement("h1");
-    h1.textContent = t("animOverridesTitle");
-    parent.appendChild(h1);
+  function getSubtabScrollPositions() {
+    if (!runtime.animOverridesScrollTop || typeof runtime.animOverridesScrollTop !== "object") {
+      runtime.animOverridesScrollTop = { map: 0, animations: 0, sounds: 0 };
+    }
+    return runtime.animOverridesScrollTop;
+  }
 
-    // "On / off" subtab: which interrupt reactions play at all. It reads
-    // themeOverrides straight from the snapshot (no asset data needed), so it
-    // renders before the animationOverridesData loading gate and hands off to
-    // the anim-map module. Its own subtitle carries the explanatory copy.
-    if (runtime.animOverridesSubtab === "map") {
-      parent.appendChild(buildSubtabSwitcher());
-      root.ClawdSettingsTabAnimMap.renderMapSubtab(parent);
+  function normalizeSubtab(value = runtime.animOverridesSubtab) {
+    return value === "sounds" ? "sounds" : value === "map" ? "map" : "animations";
+  }
+
+  function restoreSubtabScroll(scroller, subtab) {
+    if (!scroller) return;
+    const saved = Number(getSubtabScrollPositions()[subtab]);
+    requestAnimationFrame(() => {
+      if (state.activeTab !== "animOverrides" || normalizeSubtab() !== subtab) return;
+      scroller.scrollTop = Number.isFinite(saved) && saved > 0 ? saved : 0;
+    });
+  }
+
+  function clearSubtabControls() {
+    if (typeof ops.clearMountedControls === "function") {
+      ops.clearMountedControls();
       return;
     }
+    if (state.mountedControls.idleVisualPicker
+      && typeof state.mountedControls.idleVisualPicker.dispose === "function") {
+      state.mountedControls.idleVisualPicker.dispose();
+      state.mountedControls.idleVisualPicker = null;
+    }
+    if (state.mountedControls.animMapSwitches && typeof state.mountedControls.animMapSwitches.clear === "function") {
+      state.mountedControls.animMapSwitches.clear();
+    }
+    state.mountedControls.animMapReset = null;
+    if (state.mountedControls.animOverrideTimingSliders
+      && typeof state.mountedControls.animOverrideTimingSliders.clear === "function") {
+      state.mountedControls.animOverrideTimingSliders.clear();
+    }
+  }
 
-    const subtitle = document.createElement("p");
-    subtitle.className = "subtitle";
-    subtitle.textContent = t("animOverridesSubtitle");
-    parent.appendChild(subtitle);
+  function renderSubtabBody(body) {
+    if (!body) return;
+    mountedSubtabBody = body;
+    body.innerHTML = "";
+    const subtab = normalizeSubtab();
+
+    // "On / off" reads themeOverrides directly, so it does not wait for the
+    // animation asset payload used by the other two subtabs.
+    if (subtab === "map") {
+      root.ClawdSettingsTabAnimMap.renderMapSubtab(body);
+      return;
+    }
 
     if (runtime.animationOverridesData === null) {
       const loading = document.createElement("div");
       loading.className = "placeholder-desc";
       loading.textContent = t("animOverridesLoading");
-      parent.appendChild(loading);
+      body.appendChild(loading);
       ops.fetchAnimationOverridesData().then(() => {
-        if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+        if (state.activeTab !== "animOverrides" || mountedSubtabBody !== body) return;
+        if (normalizeSubtab() !== subtab) return;
+        if (runtime.animationOverridesData === null) return;
+        clearSubtabControls();
+        renderSubtabBody(body);
+        restoreSubtabScroll(document.getElementById("content"), subtab);
       });
       return;
     }
@@ -953,19 +1128,46 @@
     reconcilePendingWideHitboxOverrideEdits();
     const data = runtime.animationOverridesData;
 
-    parent.appendChild(buildSubtabSwitcher());
-
-    if (runtime.animOverridesSubtab === "sounds") {
-      parent.appendChild(buildSoundOverridesSection(data));
+    if (subtab === "sounds") {
+      body.appendChild(buildSoundOverridesSection(data));
     } else {
-      parent.appendChild(buildAnimOverrideThemeMeta(data));
+      body.appendChild(buildAnimOverrideThemeMeta(data));
       const sections = Array.isArray(data.sections) ? data.sections : [];
       for (const section of sections) {
         if (!section || !Array.isArray(section.cards) || !section.cards.length) continue;
-        parent.appendChild(buildAnimOverrideSection(section));
+        body.appendChild(buildAnimOverrideSection(section));
       }
     }
     if (runtime.assetPicker.state) ops.requestRender({ modal: true });
+  }
+
+  function refreshMountedSubtabBody() {
+    if (state.activeTab !== "animOverrides" || !mountedSubtabBody) return false;
+    const scroller = document.getElementById("content");
+    const subtab = normalizeSubtab();
+    if (scroller) getSubtabScrollPositions()[subtab] = scroller.scrollTop;
+    clearSubtabControls();
+    renderSubtabBody(mountedSubtabBody);
+    restoreSubtabScroll(scroller, subtab);
+    return true;
+  }
+
+  function render(parent) {
+    const h1 = document.createElement("h1");
+    h1.textContent = t("animOverridesTitle");
+    parent.appendChild(h1);
+
+    const subtitle = document.createElement("p");
+    subtitle.className = "subtitle";
+    subtitle.textContent = t("animOverridesSubtitle");
+    parent.appendChild(subtitle);
+    const switcher = buildSubtabSwitcher();
+    parent.appendChild(switcher);
+    const body = document.createElement("div");
+    body.className = "anim-override-subtab-body";
+    parent.appendChild(body);
+    renderSubtabBody(body);
+    restoreSubtabScroll(document.getElementById("content"), normalizeSubtab());
   }
 
   function buildSubtabSwitcher() {
@@ -986,11 +1188,25 @@
       const btn = document.createElement("button");
       btn.type = "button";
       btn.textContent = entry.label;
+      btn.dataset.animOverridesSubtab = entry.key;
       if (entry.key === current) btn.classList.add("active");
       btn.addEventListener("click", () => {
         if (runtime.animOverridesSubtab === entry.key) return;
+        const scroller = document.getElementById("content");
+        const previousSubtab = normalizeSubtab();
+        if (scroller) getSubtabScrollPositions()[previousSubtab] = scroller.scrollTop;
         runtime.animOverridesSubtab = entry.key;
-        ops.requestRender({ content: true });
+        for (const candidate of group.querySelectorAll("button")) {
+          candidate.classList.toggle("active", candidate.dataset.animOverridesSubtab === entry.key);
+        }
+        clearSubtabControls();
+        renderSubtabBody(mountedSubtabBody);
+        restoreSubtabScroll(scroller, entry.key);
+        requestAnimationFrame(() => {
+          if (typeof btn.focus === "function") {
+            try { btn.focus({ preventScroll: true }); } catch (_) { btn.focus(); }
+          }
+        });
       });
       group.appendChild(btn);
     }
@@ -1007,7 +1223,7 @@
 
   function refreshSoundOverridesUi() {
     return ops.fetchAnimationOverridesData().then(() => {
-      if (state.activeTab === "animOverrides") ops.requestRender({ content: true });
+      refreshMountedSubtabBody();
     });
   }
 
@@ -1320,18 +1536,31 @@
 
   function buildAnimOverrideRow(card) {
     card = applyPendingAnimOverrideCard(card);
-    const row = document.createElement("details");
+    const row = document.createElement("div");
     row.className = "anim-override-row";
     if (card.fallbackTargetState) row.classList.add("inherited");
     row.dataset.rowId = card.id;
-    if (runtime.expandedOverrideRowIds.has(card.id)) row.open = true;
-    row.addEventListener("toggle", () => {
-      if (row.open) runtime.expandedOverrideRowIds.add(card.id);
-      else runtime.expandedOverrideRowIds.delete(card.id);
-    });
 
-    row.appendChild(buildAnimOverrideSummary(card));
-    row.appendChild(buildAnimOverrideDrawer(card));
+    const summary = buildAnimOverrideSummary(card);
+    const body = document.createElement("div");
+    body.className = "anim-override-body settings-disclosure-body";
+    const bodyInner = document.createElement("div");
+    bodyInner.className = "anim-override-body-inner settings-disclosure-body-inner";
+    bodyInner.appendChild(buildAnimOverrideDrawer(card));
+    body.appendChild(bodyInner);
+    row.appendChild(summary);
+    row.appendChild(body);
+
+    helpers.registerMountedDisposable(helpers.attachSettingsDisclosure({
+      root: row,
+      trigger: summary,
+      body,
+      expanded: runtime.expandedOverrideRowIds.has(card.id),
+      onExpandedChange(nextExpanded) {
+        if (nextExpanded) runtime.expandedOverrideRowIds.add(card.id);
+        else runtime.expandedOverrideRowIds.delete(card.id);
+      },
+    }), { scope: "animation-overrides" });
     if (card && card.id) {
       const controls = getMountedOverrideStatusControls();
       const current = controls.get(card.id) || { cardId: card.id };
@@ -1341,7 +1570,8 @@
   }
 
   function buildAnimOverrideSummary(card) {
-    const summary = document.createElement("summary");
+    const summary = document.createElement("div");
+    summary.className = "anim-override-summary";
 
     const chevron = helpers.createDisclosureChevron("anim-override-chevron");
     summary.appendChild(chevron);
@@ -2069,6 +2299,9 @@
   }
 
   function onExit() {
+    const scroller = document.getElementById("content");
+    if (scroller) getSubtabScrollPositions()[normalizeSubtab()] = scroller.scrollTop;
+    mountedSubtabBody = null;
     ops.closeAssetPicker();
   }
 

@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Party hat — pixel art (11x14 grid). Stepped cone, striped bands, pompom. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 11 14" shape-rendering="crispEdges" width="11" height="14">
+  <rect x="5" y="0" width="1" height="1" fill="#ffd84d"/>
+  <g fill="#ff5d8f">
+    <rect x="5" y="1" width="1" height="1"/>
+    <rect x="4" y="2" width="3" height="1"/>
+    <rect x="4" y="3" width="3" height="1"/>
+  </g>
+  <g fill="#4ec3e0">
+    <rect x="3" y="4" width="5" height="1"/>
+    <rect x="3" y="5" width="5" height="1"/>
+    <rect x="3" y="6" width="5" height="1"/>
+  </g>
+  <g fill="#ff5d8f">
+    <rect x="2" y="7" width="7" height="1"/>
+    <rect x="2" y="8" width="7" height="1"/>
+    <rect x="2" y="9" width="7" height="1"/>
+  </g>
+  <g fill="#4ec3e0">
+    <rect x="1" y="10" width="9" height="1"/>
+    <rect x="1" y="11" width="9" height="1"/>
+    <rect x="1" y="12" width="9" height="1"/>
+    <rect x="0" y="13" width="11" height="1"/>
+  </g>
+</svg>

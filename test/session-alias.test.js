@@ -46,6 +46,18 @@ describe("session alias helpers", () => {
     );
   });
 
+  it("scopes identical remote raw ids by trusted profile before the legacy host key", () => {
+    const a = sessionAliasKey("shared-host", "codex", "same-raw", {
+      profileId: "profile-a",
+    });
+    const b = sessionAliasKey("shared-host", "codex", "same-raw", {
+      profileId: "profile-b",
+    });
+    assert.notStrictEqual(a, b);
+    assert.strictEqual(a, "profile:profile-a|shared-host|codex|same-raw");
+    assert.strictEqual(b, "profile:profile-b|shared-host|codex|same-raw");
+  });
+
   it("adds cwd scope for Kiro's reusable default session id", () => {
     assert.strictEqual(
       sessionAliasKey(null, "kiro-cli", "default", { cwd: "/repo/a" }),

@@ -106,6 +106,48 @@ describe("theme metadata preview helpers", () => {
     assert.deepStrictEqual(computePreviewContentOffsetPct(raw), { x: 15, y: -20 });
     assert.strictEqual(computePreviewContentRatio(validThemeJson()), null);
   });
+
+  it("frames preview content in the preview file's own fileViewBox", () => {
+    const layout = { contentBox: { x: 32, y: 96, width: 128, height: 128 } };
+    const viewBox = { x: -128, y: -128, width: 512, height: 512 };
+    const fileViewBox = { x: 0, y: 0, width: 256, height: 256 };
+    const placedIdle = validThemeJson({ viewBox, layout, fileViewBoxes: { "idle.svg": fileViewBox } });
+    const placedPreview = validThemeJson({
+      viewBox,
+      layout,
+      preview: "../still.svg",
+      fileViewBoxes: { "still.svg": fileViewBox },
+    });
+    const placedOther = validThemeJson({ viewBox, layout, fileViewBoxes: { "working.svg": fileViewBox } });
+
+    for (const raw of [placedIdle, placedPreview]) {
+      assert.strictEqual(computePreviewContentRatio(raw), 0.5);
+      assert.deepStrictEqual(computePreviewContentOffsetPct(raw), { x: 12.5, y: -12.5 });
+    }
+    assert.strictEqual(computePreviewContentRatio(placedOther), 0.25);
+    assert.deepStrictEqual(computePreviewContentOffsetPct(placedOther), { x: 6.25, y: -6.25 });
+  });
+
+  it("keeps the root viewBox when the content box leaves the preview file's canvas", () => {
+    const raw = validThemeJson({
+      viewBox: { x: -128, y: -128, width: 512, height: 512 },
+      layout: { contentBox: { x: 32, y: 96, width: 128, height: 128 } },
+      fileViewBoxes: { "idle.svg": { x: 0, y: 0, width: 64, height: 64 } },
+    });
+
+    assert.strictEqual(computePreviewContentRatio(raw), 0.25);
+    assert.deepStrictEqual(computePreviewContentOffsetPct(raw), { x: 6.25, y: -6.25 });
+  });
+
+  it("resolves a preview path on either separator, the way the loader does", () => {
+    const { userThemesDir } = makeTempRoot();
+    const raw = validThemeJson({ preview: "nested\\idle.svg" });
+    const themeDir = writeTheme(userThemesDir, "user", raw, { "idle.svg": "<svg/>" });
+
+    const url = buildPreviewUrl(raw, themeDir, false);
+
+    assert.ok(url && url.endsWith("/idle.svg"), `expected idle.svg, got ${url}`);
+  });
 });
 
 describe("theme metadata variants", () => {
@@ -139,6 +181,44 @@ describe("theme metadata variants", () => {
     assert.deepStrictEqual(variants.find((v) => v.id === "cozy").description, { en: "Softer" });
     assert.ok(variants.find((v) => v.id === "night").previewFileUrl.includes("night.svg"));
     assert.ok(variants.find((v) => v.id === "plain").previewFileUrl.includes("root.svg"));
+  });
+
+  it("gives every variant the geometry of the file its own card shows", () => {
+    const { userThemesDir } = makeTempRoot();
+    const raw = validThemeJson({
+      viewBox: { x: -128, y: -128, width: 512, height: 512 },
+      layout: { contentBox: { x: 32, y: 96, width: 128, height: 128 } },
+      fileViewBoxes: {
+        "idle.svg": { x: 0, y: 0, width: 256, height: 256 },
+        "gala-idle.svg": { x: 0, y: 0, width: 512, height: 512 },
+      },
+      variants: {
+        gala: { name: "Gala", preview: "gala-idle.svg" },
+        missing: { name: "Missing", preview: "gone.svg" },
+      },
+    });
+    const themeDir = writeTheme(userThemesDir, "user", raw, {
+      "idle.svg": "<svg/>",
+      "gala-idle.svg": "<svg/>",
+    });
+
+    const byId = Object.fromEntries(
+      buildVariantMetadata(raw, themeDir, false).map((variant) => [variant.id, variant])
+    );
+
+    assert.ok(byId.default.previewFileUrl.endsWith("/idle.svg"));
+    assert.strictEqual(byId.default.previewContentRatio, 0.5);
+    assert.deepStrictEqual(byId.default.previewContentOffsetPct, { x: 12.5, y: -12.5 });
+
+    assert.ok(byId.gala.previewFileUrl.endsWith("/gala-idle.svg"));
+    assert.strictEqual(byId.gala.previewContentRatio, 0.25);
+    assert.deepStrictEqual(byId.gala.previewContentOffsetPct, { x: 31.25, y: 18.75 });
+
+    // The variant's own asset is missing, so its card falls back to the theme
+    // preview — and has to be framed by that file, not by its own declaration.
+    assert.ok(byId.missing.previewFileUrl.endsWith("/idle.svg"));
+    assert.strictEqual(byId.missing.previewContentRatio, 0.5);
+    assert.deepStrictEqual(byId.missing.previewContentOffsetPct, { x: 12.5, y: -12.5 });
   });
 
   it("does not synthesize default metadata when an explicit default variant exists", () => {

@@ -1,23 +1,15 @@
-# Headless-Wayland smoke test for the XWayland auto-relaunch (issue #441, PR #443).
+# Packaged Linux smoke tests for the XWayland auto-relaunch (issue #441).
 #
-# We have no Linux/Wayland hardware to verify on — this job stands in: it
-# builds the AppImage from source, boots a REAL Wayland compositor (weston
-# headless) + Xwayland on the runner, and asserts the app relaunches itself
-# onto XWayland and comes up healthy. See ci/wayland-smoke.sh for the exact
-# assertions.
+# Build once, then download the exact same AppImage into fresh runner jobs.
+# Each scenario owns its HOME, Electron userData, D-Bus session, Weston/Xwayland
+# compositor and process namespace. This prevents a failed teardown or stale
+# singleton/runtime file in one scenario from contaminating another.
 #
-# History: the first revision of this job ran the v3 (app.relaunch) build that
-# had been posted to the #441 reporter — run 27110582080 — and caught it red:
-# Electron's relauncher helper runs from the AppImage FUSE mount, which dies
-# with the first process, so the helper never launches the replacement (run
-# 27248005113). The spawn()-based fix this job verifies went green in run
-# 27248372732.
-#
-# Triggers: Electron upgrades are the main regression vector (the Ozone
-# default flipped in Electron 38, which caused #441), hence the
-# package.json/package-lock.json paths. src/main.js hosts the relaunch block
-# but changes in nearly every PR, so it is deliberately NOT a path trigger —
-# use workflow_dispatch after touching that block.
+# Native Wayland remains a packaged contract check, not a full GUI-health
+# assertion: weston --backend=headless has no real input seat or DRM render
+# node, so requiring the complete Electron app and /state server there is
+# host-dependent. Real native-Wayland rendering still needs a VM/hardware field
+# test. The two XWayland scenarios remain full end-to-end health checks.
 name: Wayland smoke (issue 441)
 
 on:
@@ -28,9 +20,29 @@ on:
     paths:
       - src/linux-ozone.js
       - ci/wayland-smoke.sh
+      - ci/appimage-wrapper-shutdown.py
       - .github/workflows/wayland-smoke.yml
       - package.json
       - package-lock.json
+      - scripts/verify-appimage-apprun.js
+      - scripts/prepare-appimage-launcher.js
+      - scripts/after-pack-koffi.js
+      - build/appimage-launcher.sh
+      - test/fixtures/appimage-apprun/**
+      # AppImage Claude/Codex hook persistence (#1027): the packaged smoke is
+      # the only place that exercises a real FUSE mount -> persistent generation
+      # transition. Use the whole hooks/** closure (it evolves) instead of a
+      # hand-enumerated list that silently misses new dependency files, plus the
+      # server-side files that decide the mutation/verify path.
+      - hooks/**
+      - src/claude-hook-health.js
+      - src/claude-settings-watcher.js
+      - src/claude-hook-operations.js
+      - src/prefs.js
+      - src/integration-sync.js
+      - src/server.js
+      - src/remote-ssh-deploy.js
+      - test/**
 
 permissions:
   contents: read
@@ -40,46 +52,164 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  xwayland-relaunch:
+  build-appimage:
+    name: Build AppImage
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version-file: .nvmrc
+
+      - name: Install dependencies and verify the Ozone resolver
+        run: |
+          npm ci
+          node --test test/linux-ozone.test.js
+          node --test test/appimage-apprun.test.js
+          node --test test/appimage-launcher.test.js
 
       - name: Build the AppImage from this ref
         run: |
-          npm install
-          node --test test/linux-ozone.test.js
-          npm run fetch:sidecars -- --target linux-x64
-          node scripts/verify-sidecar-binaries.js prebuild:linux
           npx electron-builder --linux AppImage --publish never
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifest.json
           ls -l dist/*.AppImage
 
-      - name: Install headless Wayland stack
+      - name: Verify final AppImage AppRun search paths
+        run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
+
+      - name: Upload AppImage for isolated smoke jobs
+        uses: actions/upload-artifact@v4
+        with:
+          # Preserve the established download name used by issue #441 field
+          # testers and the regular Linux build workflow.
+          name: linux-installer
+          path: |
+            dist/*.AppImage
+            dist/appimage-apprun-manifests/*.json
+          if-no-files-found: error
+          retention-days: 3
+
+  xwayland-smoke:
+    name: XWayland / ${{ matrix.scenario }}
+    needs: build-appimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - manual-x11
+          - auto-xwayland
+          - appimage-wrapper-termination
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-installer
+          path: dist
+
+      - name: Install isolated headless Wayland stack
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
-            weston xwayland libfuse2t64 x11-utils xdotool
+            dbus-x11 weston xwayland libfuse2t64 x11-utils xdotool
 
       # Ubuntu 24.04 restricts unprivileged user namespaces (AppArmor), which
-      # breaks Chromium's sandbox. Relax the restriction instead of passing
-      # --no-sandbox: the test must run the AppImage exactly as a user does —
-      # no extra argv.
+      # breaks Chromium's sandbox. Keep the real sandboxed AppImage invocation
+      # instead of weakening it with --no-sandbox.
       - name: Allow Chromium userns sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
 
-      - name: Smoke test
-        run: bash ci/wayland-smoke.sh dist/*.AppImage
+      - name: Run isolated ${{ matrix.scenario }} smoke
+        run: |
+          dbus-run-session -- \
+            bash ci/wayland-smoke.sh "${{ matrix.scenario }}" dist/*.AppImage
 
-      # The smoke-tested binary, ready to hand to Wayland users on #441.
-      # Same artifact name as build.yml so download instructions stay familiar.
-      - name: Upload tested AppImage
+      - name: Upload ${{ matrix.scenario }} diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
+          name: wayland-smoke-${{ matrix.scenario }}-diagnostics
+          path: wayland-smoke-artifacts/${{ matrix.scenario }}/
+          if-no-files-found: warn
+          retention-days: 7
+
+  native-wayland-contract:
+    name: Native Wayland / packaged contract
+    needs: build-appimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v4
+        with:
           name: linux-installer
-          path: dist/*.AppImage
-          if-no-files-found: ignore
+          path: dist
+
+      - name: Install isolated headless Wayland stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dbus-x11 weston xwayland libfuse2t64 x11-utils
+
+      - name: Allow Chromium userns sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify the packaged native-Wayland escape hatch
+        run: |
+          dbus-run-session -- \
+            bash ci/wayland-smoke.sh native-wayland-contract dist/*.AppImage
+
+      - name: Upload native-Wayland diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayland-smoke-native-wayland-diagnostics
+          path: wayland-smoke-artifacts/native-wayland-contract/
+          if-no-files-found: warn
+          retention-days: 7
+
+  appimage-claude-hooks:
+    name: AppImage / persistent Claude hooks
+    needs: build-appimage
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: actions/download-artifact@v4
+        with:
+          name: linux-installer
+          path: dist
+
+      - name: Install isolated headless Wayland stack
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            dbus-x11 weston xwayland libfuse2t64 x11-utils
+
+      - name: Allow Chromium userns sandbox
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
+      - name: Verify packaged Claude hooks persist outside the FUSE mount
+        run: |
+          dbus-run-session -- \
+            bash ci/wayland-smoke.sh appimage-claude-hooks dist/*.AppImage
+
+      - name: Upload AppImage Claude hook diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wayland-smoke-appimage-claude-hooks-diagnostics
+          path: wayland-smoke-artifacts/appimage-claude-hooks/
+          if-no-files-found: warn
+          retention-days: 7

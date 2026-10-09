@@ -168,7 +168,8 @@ timeout = 30
       const count = clawdBlocks.filter((block) => block.includes(`event = "${event}"`)).length;
       assert.strictEqual(count, 1, `event ${event} should appear exactly once`);
     }
-    assert.ok(content.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"));
+    assert.ok(content.includes("--permission-mode=suspect"));
+    assert.ok(!content.includes("CLAWD_KIMI_PERMISSION_MODE="));
     assert.ok(result.updated >= 1);
   });
 
@@ -324,7 +325,7 @@ timeout = 30
     assert.ok(!fs.existsSync(settingsPath));
   });
 
-  it("writes CLAWD_KIMI_PERMISSION_MODE into hook command when provided", () => {
+  it("writes the provided permission mode as an argv flag (never an env prefix)", () => {
     const { settingsPath } = makeTempKimiHome();
     registerKimiHooks({
       silent: true,
@@ -333,7 +334,40 @@ timeout = 30
       permissionMode: MODE_SUSPECT,
     });
     const content = fs.readFileSync(settingsPath, "utf8");
-    assert.ok(content.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"));
+    assert.ok(content.includes('"/usr/local/bin/node"'));
+    assert.ok(/kimi-hook\.js" --permission-mode=suspect'/.test(content));
+    assert.ok(!content.includes("CLAWD_KIMI_PERMISSION_MODE="));
+  });
+
+  it("defaults the legacy flavor to suspect mode when nothing is provided or persisted", () => {
+    const { settingsPath } = makeTempKimiHome();
+    const prevEnv = process.env.CLAWD_KIMI_PERMISSION_MODE;
+    delete process.env.CLAWD_KIMI_PERMISSION_MODE;
+    try {
+      registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    } finally {
+      if (prevEnv === undefined) delete process.env.CLAWD_KIMI_PERMISSION_MODE;
+      else process.env.CLAWD_KIMI_PERMISSION_MODE = prevEnv;
+    }
+    const content = fs.readFileSync(settingsPath, "utf8");
+    // Current kimi-cli never emits explicit permission fields, so the old
+    // explicit-only default meant the passive cue never fired at all.
+    assert.ok(content.includes("--permission-mode=suspect"));
+  });
+
+  it("env var supplies the mode when no caller option is given", () => {
+    const { settingsPath } = makeTempKimiHome();
+    const prevEnv = process.env.CLAWD_KIMI_PERMISSION_MODE;
+    process.env.CLAWD_KIMI_PERMISSION_MODE = "explicit";
+    try {
+      registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    } finally {
+      if (prevEnv === undefined) delete process.env.CLAWD_KIMI_PERMISSION_MODE;
+      else process.env.CLAWD_KIMI_PERMISSION_MODE = prevEnv;
+    }
+    const content = fs.readFileSync(settingsPath, "utf8");
+    assert.ok(content.includes("--permission-mode=explicit"));
+    assert.ok(!content.includes("--permission-mode=suspect"));
   });
 
   it("normalizes permission mode values", () => {
@@ -344,32 +378,39 @@ timeout = 30
     assert.strictEqual(normalizePermissionMode("other"), null);
   });
 
-  it("extracts the permission mode baked into an existing command line", () => {
-    const content = `
+  it("extracts the permission mode baked into an existing command line (argv and retired prefix forms)", () => {
+    const prefixForm = `
 [[hooks]]
 event = "PreToolUse"
 command = 'CLAWD_KIMI_PERMISSION_MODE=suspect "/usr/bin/node" "/some/path/kimi-hook.js"'
 `;
-    assert.strictEqual(extractExistingPermissionMode(content), MODE_SUSPECT);
+    assert.strictEqual(extractExistingPermissionMode(prefixForm), MODE_SUSPECT);
+    const argvForm = `
+[[hooks]]
+event = "PreToolUse"
+command = '"/usr/bin/node" "/some/path/kimi-hook.js" --permission-mode=explicit'
+`;
+    assert.strictEqual(extractExistingPermissionMode(argvForm), MODE_EXPLICIT);
     assert.strictEqual(extractExistingPermissionMode(""), null);
     assert.strictEqual(extractExistingPermissionMode("command = \"echo hello\""), null);
   });
 
-  it("preserves existing CLAWD_KIMI_PERMISSION_MODE across env-less re-syncs", () => {
+  it("preserves the persisted mode across env-less re-syncs (explicit is never flipped to the suspect default)", () => {
     const { settingsPath } = makeTempKimiHome();
 
-    // First install: user explicitly opts into suspect mode.
+    // First install: user explicitly opts OUT of the suspect default.
     registerKimiHooks({
       silent: true,
       settingsPath,
       nodeBin: "/usr/local/bin/node",
-      permissionMode: MODE_SUSPECT,
+      permissionMode: MODE_EXPLICIT,
     });
     const afterFirst = fs.readFileSync(settingsPath, "utf8");
-    assert.ok(afterFirst.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"));
+    assert.ok(afterFirst.includes("--permission-mode=explicit"));
 
-    // Second install emulates Clawd's startup auto-sync when the env var
-    // is NOT set. Before the fix this path silently stripped the prefix.
+    // Second install emulates Clawd's startup auto-sync when the env var is
+    // NOT set. The persisted explicit choice must survive — falling through
+    // to the suspect default here would flip the user against their will.
     const prevEnv = process.env.CLAWD_KIMI_PERMISSION_MODE;
     delete process.env.CLAWD_KIMI_PERMISSION_MODE;
     try {
@@ -385,9 +426,10 @@ command = 'CLAWD_KIMI_PERMISSION_MODE=suspect "/usr/bin/node" "/some/path/kimi-h
 
     const afterSecond = fs.readFileSync(settingsPath, "utf8");
     assert.ok(
-      afterSecond.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"),
-      "env-less re-sync should preserve the previously written mode prefix"
+      afterSecond.includes("--permission-mode=explicit"),
+      "env-less re-sync should preserve the previously written mode"
     );
+    assert.ok(!afterSecond.includes("--permission-mode=suspect"));
   });
 
   it("extracts mode from double-quoted commands with escaped inner quotes", () => {
@@ -435,10 +477,14 @@ command = 'CLAWD_KIMI_PERMISSION_MODE=suspect "/usr/bin/node" "/some/path/kimi-h
     }
 
     const after = fs.readFileSync(settingsPath, "utf8");
+    // Migration: the retired env-prefix form is consumed as the mode source
+    // and re-emitted as the argv flag — never kept as a prefix (it silently
+    // does not execute on Windows, where kimi-cli runs hooks through a shell).
     assert.ok(
-      after.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"),
+      after.includes("--permission-mode=suspect"),
       "legacy escaped-quote install should keep suspect mode after env-less re-sync"
     );
+    assert.ok(!after.includes("CLAWD_KIMI_PERMISSION_MODE="));
   });
 
   it("explicit override wins over the previously written mode", () => {
@@ -460,8 +506,65 @@ command = 'CLAWD_KIMI_PERMISSION_MODE=suspect "/usr/bin/node" "/some/path/kimi-h
     });
 
     const content = fs.readFileSync(settingsPath, "utf8");
-    assert.ok(content.includes("CLAWD_KIMI_PERMISSION_MODE=explicit"));
-    assert.ok(!content.includes("CLAWD_KIMI_PERMISSION_MODE=suspect"));
+    assert.ok(content.includes("--permission-mode=explicit"));
+    assert.ok(!content.includes("--permission-mode=suspect"));
+  });
+
+  it("migrates a prefix-form explicit install to argv form without flipping the mode", () => {
+    const { settingsPath } = makeTempKimiHome();
+    const legacyBlocks = KIMI_HOOK_EVENTS.map((event) => [
+      "[[hooks]]",
+      `event = "${event}"`,
+      'command = \'CLAWD_KIMI_PERMISSION_MODE=explicit "/usr/local/bin/node" "/opt/clawd/hooks/kimi-hook.js"\'',
+      'matcher = ""',
+      "timeout = 30",
+      "",
+    ].join("\n")).join("\n");
+    fs.writeFileSync(settingsPath, `default_model = "kimi-for-coding"\n\n${legacyBlocks}`, "utf8");
+
+    const prevEnv = process.env.CLAWD_KIMI_PERMISSION_MODE;
+    delete process.env.CLAWD_KIMI_PERMISSION_MODE;
+    try {
+      registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+    } finally {
+      if (prevEnv === undefined) delete process.env.CLAWD_KIMI_PERMISSION_MODE;
+      else process.env.CLAWD_KIMI_PERMISSION_MODE = prevEnv;
+    }
+
+    const after = fs.readFileSync(settingsPath, "utf8");
+    assert.ok(after.includes("--permission-mode=explicit"), "explicit user must stay explicit through the format migration");
+    assert.ok(!after.includes("--permission-mode=suspect"));
+    assert.ok(!after.includes("CLAWD_KIMI_PERMISSION_MODE="));
+  });
+
+  it("WSL form: unquoted command still carries the argv mode flag", () => {
+    const { settingsPath } = makeTempKimiHome();
+    const prevDistro = process.env.CLAWD_WSL_DISTRO;
+    process.env.CLAWD_WSL_DISTRO = "Ubuntu";
+    try {
+      registerKimiHooks({
+        silent: true,
+        settingsPath,
+        nodeBin: "node",
+        permissionMode: MODE_SUSPECT,
+      });
+    } finally {
+      if (prevDistro === undefined) delete process.env.CLAWD_WSL_DISTRO;
+      else process.env.CLAWD_WSL_DISTRO = prevDistro;
+    }
+    const content = fs.readFileSync(settingsPath, "utf8");
+    // Unquoted (naive-split hook runners) + the flag as a plain trailing arg.
+    assert.ok(/command = 'node [^'"]*kimi-hook\.js --permission-mode=suspect'/.test(content));
+  });
+
+  it("re-sync of an argv-form install is byte-stable (no churn)", () => {
+    const { settingsPath } = makeTempKimiHome();
+    registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", permissionMode: MODE_SUSPECT });
+    const first = fs.readFileSync(settingsPath, "utf8");
+    const result = registerKimiHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node", permissionMode: MODE_SUSPECT });
+    const second = fs.readFileSync(settingsPath, "utf8");
+    assert.strictEqual(second, first);
+    assert.strictEqual(result.updated, 0);
   });
 });
 
@@ -494,6 +597,10 @@ describe("Kimi Code hook installer (kimi-code flavor, #563)", () => {
     // is spawn(shell:true) → %COMSPEC%); the kimi-code target must never
     // carry one even when a permission mode is explicitly requested.
     assert.ok(!content.includes("CLAWD_KIMI_PERMISSION_MODE"));
+    // Same for the argv flag: native PermissionRequest/Result events replace
+    // the heuristic entirely, so the suspect-default work must not leak the
+    // --permission-mode flag onto this target.
+    assert.ok(!content.includes("--permission-mode"));
   });
 
   it("creates a hooks-only config.toml without default_model", () => {

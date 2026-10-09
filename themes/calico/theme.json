@@ -4,6 +4,9 @@
   "author": "rullerzhou",
   "version": "1.0.0",
   "description": "A calico cat desk pet — AI-generated APNG animations",
+  "customization": {
+    "petTint": false
+  },
   "viewBox": {
     "x": 0,
     "y": 0,

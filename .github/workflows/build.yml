@@ -5,67 +5,510 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      artifact_validation_only:
+        description: "Use focused package tests for manual artifact validation; tag and normal runs retain full tests"
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
 
 jobs:
+  validate-release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm run verify:release
+
+  native-package-audit:
+    needs: validate-release
+    uses: ./.github/workflows/telegram-retirement-package-audit.yml
+
   build-windows:
+    needs: validate-release
+    timeout-minutes: 60
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm install
+          node-version-file: .nvmrc
+      - run: npm ci
       - run: npm test
-      - run: npm run fetch:sidecars -- --target windows-x64,windows-arm64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:win:all
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
+      - name: Run package validation tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - run: npx electron-builder --win --publish never
+      - name: Assert retired Telegram sidecar is absent
+        run: |
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-unpacked/resources --output dist/telegram-retirement-manifests/windows-x64.json
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/win-arm64-unpacked/resources --output dist/telegram-retirement-manifests/windows-arm64.json
+      - name: Audit packaged native payloads
+        run: |
+          node scripts/audit-packaged-native.js --app-root dist/win-unpacked --target windows-x64 --output dist/native-package-manifests/windows-x64.json
+          node scripts/audit-packaged-native.js --app-root dist/win-arm64-unpacked --target windows-arm64 --output dist/native-package-manifests/windows-arm64.json
+      - name: Run native-host packaged Koffi smoke
+        run: node scripts/run-packaged-koffi-smoke.js --executable "dist/win-unpacked/Clawd on Desk.exe" --target windows-x64 --output dist/koffi-smoke/windows-x64.json
+      - name: Verify Windows updater metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest.yml --artifact-root dist --contract windows --package-json package.json --output dist/updater-metadata-manifests/windows.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: windows-installer
           path: |
             dist/*.exe
             dist/latest.yml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-telegram-retirement-manifests
+          path: |
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: windows-native-package-audit
+          path: |
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/native-package-manifests/*.json
+            dist/updater-metadata-manifests/*.json
+          if-no-files-found: error
 
   build-mac:
+    needs: validate-release
+    timeout-minutes: 60
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm install
-      - run: npm run fetch:sidecars -- --target darwin-x64,darwin-arm64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:mac
-      - run: npx electron-builder --mac --publish never
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: npm test
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
+      - name: Run package validation tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
+        run: node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
+      - name: Prepare macOS signing credentials
+        id: mac-signing
+        shell: bash
+        env:
+          CSC_LINK_VALUE: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD_VALUE: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY_BASE64: ${{ secrets.APPLE_API_KEY }}
+          APPLE_API_KEY_ID_VALUE: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER_VALUE: ${{ secrets.APPLE_API_ISSUER }}
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          has_non_whitespace() {
+            [[ "$1" =~ [^[:space:]] ]]
+          }
+
+          present=0
+          for value in \
+            "$CSC_LINK_VALUE" \
+            "$CSC_KEY_PASSWORD_VALUE" \
+            "$APPLE_API_KEY_BASE64" \
+            "$APPLE_API_KEY_ID_VALUE" \
+            "$APPLE_API_ISSUER_VALUE"; do
+            if has_non_whitespace "$value"; then
+              present=$((present + 1))
+            fi
+          done
+
+          if (( present == 0 )); then
+            if [[ "$GITHUB_EVENT_NAME" == "push" && "$GITHUB_REF" == refs/tags/v* ]]; then
+              echo "::error::A tag release requires all macOS signing and notarization secrets. Refusing to build an ad-hoc official release."
+              exit 1
+            fi
+            echo "mode=adhoc" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if (( present != 5 )); then
+            missing=()
+            has_non_whitespace "$CSC_LINK_VALUE" || missing+=(CSC_LINK)
+            has_non_whitespace "$CSC_KEY_PASSWORD_VALUE" || missing+=(CSC_KEY_PASSWORD)
+            has_non_whitespace "$APPLE_API_KEY_BASE64" || missing+=(APPLE_API_KEY)
+            has_non_whitespace "$APPLE_API_KEY_ID_VALUE" || missing+=(APPLE_API_KEY_ID)
+            has_non_whitespace "$APPLE_API_ISSUER_VALUE" || missing+=(APPLE_API_ISSUER)
+            echo "::error::Incomplete macOS signing configuration. Missing: ${missing[*]}"
+            exit 1
+          fi
+
+          if [[ "$APPLE_API_KEY_ID_VALUE" =~ [[:space:]] ]]; then
+            echo "::error::APPLE_API_KEY_ID must not contain spaces or line breaks. Copy only the Key ID value."
+            exit 1
+          fi
+          if [[ "$APPLE_API_ISSUER_VALUE" =~ [[:space:]] ]]; then
+            echo "::error::APPLE_API_ISSUER must not contain spaces or line breaks. Copy only the Issuer ID value."
+            exit 1
+          fi
+          if [[ ! "$EXPECTED_APPLE_TEAM_ID" =~ ^[A-Z0-9]{10}$ ]]; then
+            echo "::error::APPLE_TEAM_ID repository variable must be the expected 10-character Developer Team ID."
+            exit 1
+          fi
+
+          umask 077
+          api_key_path="$RUNNER_TEMP/AuthKey_${APPLE_API_KEY_ID_VALUE}.p8"
+          echo "api_key_path=$api_key_path" >> "$GITHUB_OUTPUT"
+          if ! printf '%s' "$APPLE_API_KEY_BASE64" | base64 --decode > "$api_key_path"; then
+            echo "::error::APPLE_API_KEY is not valid Base64. Store the Base64-encoded .p8 file in this secret."
+            exit 1
+          fi
+          if [[ ! -s "$api_key_path" ]]; then
+            echo "::error::APPLE_API_KEY decoded to an empty file."
+            exit 1
+          fi
+          chmod 600 "$api_key_path"
+          if ! openssl pkey -in "$api_key_path" -noout >/dev/null 2>&1; then
+            echo "::error::APPLE_API_KEY did not decode to a valid PKCS#8 private key. Store the Base64-encoded .p8 file in this secret."
+            exit 1
+          fi
+          echo "mode=developer-id" >> "$GITHUB_OUTPUT"
+
+      - name: Correct macOS signing keychain password
+        if: steps.mac-signing.outputs.mode == 'developer-id'
+        run: |
+          node --test test/macos-signing-keychain.test.js
+          node scripts/prepare-macos-signing.js
+
+      - name: Build macOS (Developer ID signed and notarized)
+        if: steps.mac-signing.outputs.mode == 'developer-id'
+        env:
+          CSC_LINK: ${{ secrets.CSC_LINK }}
+          CSC_KEY_PASSWORD: ${{ secrets.CSC_KEY_PASSWORD }}
+          APPLE_API_KEY: ${{ steps.mac-signing.outputs.api_key_path }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: npx electron-builder --mac --publish never -c.mac.identity="Developer ID Application" -c.forceCodeSigning=true
+
+      - name: Build macOS (ad-hoc manual validation only)
+        if: steps.mac-signing.outputs.mode == 'adhoc'
+        run: npx electron-builder --mac --publish never
+
+      - name: Remove decoded notarization key
+        if: ${{ always() && steps.mac-signing.outputs.api_key_path != '' }}
+        shell: bash
+        env:
+          APPLE_API_KEY_FILE: ${{ steps.mac-signing.outputs.api_key_path }}
+        run: rm -f -- "$APPLE_API_KEY_FILE"
+
+      - name: Verify macOS Developer ID artifacts
+        if: steps.mac-signing.outputs.mode == 'developer-id'
+        shell: bash
+        env:
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          verify_signed_app() {
+            local app="$1"
+            local signature_details
+            local entitlements
+            local entitlements_file
+
+            signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            grep -Eq "^Authority=Developer ID Application: .+ \($EXPECTED_APPLE_TEAM_ID\)$" <<<"$signature_details"
+            grep -Eq "flags=.*\\(runtime\\)" <<<"$signature_details"
+            grep -Fxq "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details"
+            codesign --verify --deep --strict --verbose=2 "$app"
+            spctl --assess --type execute --verbose=4 "$app"
+            xcrun stapler validate "$app"
+
+            entitlements_file="$(mktemp)"
+            entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            printf '%s\n' "$entitlements" > "$entitlements_file"
+            for entitlement in \
+              com.apple.security.cs.allow-jit \
+              com.apple.security.cs.allow-unsigned-executable-memory \
+              com.apple.security.cs.disable-library-validation; do
+              entitlement_key="${entitlement//./\\.}"
+              if [[ "$(/usr/bin/plutil -extract "$entitlement_key" raw -o - "$entitlements_file" 2>/dev/null || true)" != "true" ]]; then
+                echo "Required entitlement is not true: $entitlement ($app)" >&2
+                rm -f -- "$entitlements_file"
+                return 1
+              fi
+            done
+            rm -f -- "$entitlements_file"
+          }
+
+          verify_signed_app "dist/mac/Clawd on Desk.app"
+          verify_signed_app "dist/mac-arm64/Clawd on Desk.app"
+
+          active_mount=""
+          cleanup_mount() {
+            if [[ -n "$active_mount" ]]; then
+              hdiutil detach "$active_mount" >/dev/null 2>&1 || true
+              rmdir "$active_mount" >/dev/null 2>&1 || true
+            fi
+          }
+          trap cleanup_mount EXIT
+          shopt -s nullglob
+
+          for arch in x64 arm64; do
+            dmgs=(dist/Clawd-on-Desk-*-"$arch".dmg)
+            if (( ${#dmgs[@]} != 1 )); then
+              echo "Expected exactly one $arch DMG, found ${#dmgs[@]}" >&2
+              exit 1
+            fi
+
+            dmg="${dmgs[0]}"
+            hdiutil verify "$dmg"
+            active_mount="$RUNNER_TEMP/clawd-dmg-$arch"
+            mkdir "$active_mount"
+            hdiutil attach -readonly -nobrowse -mountpoint "$active_mount" "$dmg"
+            verify_signed_app "$active_mount/Clawd on Desk.app"
+            hdiutil detach "$active_mount"
+            rmdir "$active_mount"
+            active_mount=""
+          done
+
+      - name: Verify macOS ad-hoc hardened signatures
+        if: steps.mac-signing.outputs.mode == 'adhoc'
+        shell: bash
+        run: |
+          set -euo pipefail
+          for app in \
+            "dist/mac/Clawd on Desk.app" \
+            "dist/mac-arm64/Clawd on Desk.app"; do
+            signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            grep -q "Signature=adhoc" <<<"$signature_details"
+            grep -Eq "flags=.*\\(adhoc,runtime\\)" <<<"$signature_details"
+            codesign --verify --deep --strict --verbose=2 "$app"
+
+            entitlements_file="$(mktemp)"
+            entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            printf '%s\n' "$entitlements" > "$entitlements_file"
+            for entitlement in \
+              com.apple.security.cs.allow-jit \
+              com.apple.security.cs.allow-unsigned-executable-memory \
+              com.apple.security.cs.disable-library-validation; do
+              entitlement_key="${entitlement//./\\.}"
+              if [[ "$(/usr/bin/plutil -extract "$entitlement_key" raw -o - "$entitlements_file" 2>/dev/null || true)" != "true" ]]; then
+                echo "Required entitlement is not true: $entitlement ($app)" >&2
+                rm -f -- "$entitlements_file"
+                exit 1
+              fi
+            done
+            rm -f -- "$entitlements_file"
+          done
+      - name: Verify macOS ZIP payloads
+        shell: bash
+        env:
+          SIGNING_MODE: ${{ steps.mac-signing.outputs.mode }}
+          EXPECTED_APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+        run: |
+          set -euo pipefail
+
+          verify_zip_app() {
+            local app="$1"
+            local signature_details
+            local entitlements
+            local entitlements_file
+
+            signature_details="$(codesign -dv --verbose=4 "$app" 2>&1)"
+            if [[ "$SIGNING_MODE" == "developer-id" ]]; then
+              grep -Eq "^Authority=Developer ID Application: .+ \($EXPECTED_APPLE_TEAM_ID\)$" <<<"$signature_details"
+              grep -Eq "flags=.*\(runtime\)" <<<"$signature_details"
+              grep -Fxq "TeamIdentifier=$EXPECTED_APPLE_TEAM_ID" <<<"$signature_details"
+              spctl --assess --type execute --verbose=4 "$app"
+              xcrun stapler validate "$app"
+            else
+              grep -q "Signature=adhoc" <<<"$signature_details"
+              grep -Eq "flags=.*\(adhoc,runtime\)" <<<"$signature_details"
+            fi
+            codesign --verify --deep --strict --verbose=2 "$app"
+
+            entitlements_file="$(mktemp)"
+            entitlements="$(codesign -d --entitlements :- "$app" 2>/dev/null)"
+            printf '%s\n' "$entitlements" > "$entitlements_file"
+            for entitlement in \
+              com.apple.security.cs.allow-jit \
+              com.apple.security.cs.allow-unsigned-executable-memory \
+              com.apple.security.cs.disable-library-validation; do
+              entitlement_key="${entitlement//./\.}"
+              if [[ "$(/usr/bin/plutil -extract "$entitlement_key" raw -o - "$entitlements_file" 2>/dev/null || true)" != "true" ]]; then
+                echo "Required entitlement is not true: $entitlement ($app)" >&2
+                rm -f -- "$entitlements_file"
+                return 1
+              fi
+            done
+            rm -f -- "$entitlements_file"
+          }
+
+          shopt -s nullglob
+          active_archive=""
+          cleanup_archive() {
+            if [[ -n "$active_archive" ]]; then
+              rm -rf -- "$active_archive"
+            fi
+          }
+          trap cleanup_archive EXIT
+
+          for arch in x64 arm64; do
+            zips=(dist/Clawd-on-Desk-*-"$arch".zip)
+            if (( ${#zips[@]} != 1 )); then
+              echo "Expected exactly one $arch ZIP, found ${#zips[@]}" >&2
+              exit 1
+            fi
+            active_archive="$(mktemp -d "$RUNNER_TEMP/clawd-zip-$arch.XXXXXX")"
+            ditto -x -k "${zips[0]}" "$active_archive"
+            entries=("$active_archive"/*)
+            expected_app="$active_archive/Clawd on Desk.app"
+            if (( ${#entries[@]} != 1 )) || [[ "${entries[0]}" != "$expected_app" ]] || [[ ! -d "$expected_app" ]]; then
+              echo "ZIP must contain exactly Clawd on Desk.app at its root: ${zips[0]}" >&2
+              exit 1
+            fi
+            verify_zip_app "$expected_app"
+            node scripts/audit-packaged-native.js --app-root "$expected_app" --target "darwin-$arch" --output "$RUNNER_TEMP/clawd-zip-native-$arch.json"
+            rm -rf -- "$active_archive"
+            active_archive=""
+          done
+      - name: Assert retired Telegram sidecar is absent
+        run: |
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-x64.json
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root "dist/mac-arm64/Clawd on Desk.app/Contents/Resources" --output dist/telegram-retirement-manifests/darwin-arm64.json
+      - name: Audit packaged native payloads
+        run: |
+          node scripts/audit-packaged-native.js --app-root "dist/mac/Clawd on Desk.app" --target darwin-x64 --output dist/native-package-manifests/darwin-x64.json
+          node scripts/audit-packaged-native.js --app-root "dist/mac-arm64/Clawd on Desk.app" --target darwin-arm64 --output dist/native-package-manifests/darwin-arm64.json
+      - name: Run native-host packaged Koffi smoke
+        run: node scripts/run-packaged-koffi-smoke.js --executable "dist/mac-arm64/Clawd on Desk.app/Contents/MacOS/Clawd on Desk" --target darwin-arm64 --output dist/koffi-smoke/darwin-arm64.json
+      - name: Assert macOS updater release files
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          shopt -s nullglob
+          actual_files=(dist/*.dmg dist/*.zip dist/*.zip.blockmap)
+          if [[ -f dist/latest-mac.yml ]]; then
+            actual_files+=(dist/latest-mac.yml)
+          fi
+          if (( ${#actual_files[@]} != 7 )); then
+            echo "Expected exactly 7 macOS release files, found ${#actual_files[@]}" >&2
+            printf '  %s\n' "${actual_files[@]}" >&2
+            exit 1
+          fi
+          for filename in \
+            "Clawd-on-Desk-$version-x64.dmg" \
+            "Clawd-on-Desk-$version-arm64.dmg" \
+            "Clawd-on-Desk-$version-x64.zip" \
+            "Clawd-on-Desk-$version-arm64.zip" \
+            "Clawd-on-Desk-$version-x64.zip.blockmap" \
+            "Clawd-on-Desk-$version-arm64.zip.blockmap" \
+            "latest-mac.yml"; do
+            if [[ ! -f "dist/$filename" ]]; then
+              echo "Missing required macOS release file: dist/$filename" >&2
+              exit 1
+            fi
+          done
+      - name: Verify macOS updater metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-mac.yml --artifact-root dist --contract mac --package-json package.json --output dist/updater-metadata-manifests/mac.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: mac-installer
           path: |
             dist/*.dmg
+            dist/*.zip
+            dist/*.zip.blockmap
             dist/latest-mac.yml
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-telegram-retirement-manifests
+          path: |
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: mac-native-package-audit
+          path: |
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/native-package-manifests/*.json
+            dist/updater-metadata-manifests/*.json
+          if-no-files-found: error
 
   build-linux:
+    needs: validate-release
+    timeout-minutes: 60
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
-      - run: npm install
-      - run: npm run fetch:sidecars -- --target linux-x64
-      - run: node scripts/verify-sidecar-binaries.js prebuild:linux
+          node-version-file: .nvmrc
+      - run: npm ci
+      # Under xvfb so the Electron-backed suites actually run here instead of
+      # skipping themselves for want of a display — a silent skip on the one
+      # Linux job reads exactly like a pass.
+      - run: xvfb-run -a npm test
+        if: ${{ github.event_name != 'workflow_dispatch' || !inputs.artifact_validation_only }}
+      - name: Run package validation tests
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
+        run: xvfb-run -a node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - run: npx electron-builder --linux --publish never
+      - name: Verify final AppImage AppRun search paths
+        run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
+      - name: Assert retired Telegram sidecar is absent
+        run: |
+          node scripts/assert-no-retired-telegram-sidecar.js --resources-root dist/linux-unpacked/resources --output dist/telegram-retirement-manifests/linux-x64.json
+      - name: Audit packaged native payloads
+        run: node scripts/audit-packaged-native.js --app-root dist/linux-unpacked --target linux-x64 --output dist/native-package-manifests/linux-x64.json
+      - name: Configure Linux Chromium sandbox
+        run: |
+          sudo chown root:root dist/linux-unpacked/chrome-sandbox
+          sudo chmod 4755 dist/linux-unpacked/chrome-sandbox
+      - name: Run packaged Koffi smoke
+        run: node scripts/run-packaged-koffi-smoke.js --executable dist/linux-unpacked/clawd-on-desk --target linux-x64 --output dist/koffi-smoke/linux-x64.json --xvfb
+      - name: Verify Linux updater metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-linux.yml --artifact-root dist --contract linux --package-json package.json --output dist/updater-metadata-manifests/linux.json
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: linux-installer
           path: |
             dist/*.AppImage
             dist/*.deb
             dist/latest-linux.yml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-telegram-retirement-manifests
+          path: |
+            dist/telegram-retirement-manifests/*.json
+          if-no-files-found: warn
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-native-package-audit
+          path: |
+            dist/koffi-prune-manifests/*.json
+            dist/koffi-smoke/*.json
+            dist/appimage-apprun-manifests/*.json
+            dist/native-package-manifests/*.json
+            dist/updater-metadata-manifests/*.json
+          if-no-files-found: error
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [build-windows, build-mac, build-linux]
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [build-windows, build-mac, build-linux, native-package-audit]
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -74,7 +517,36 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: "*-installer"
           merge-multiple: true
+      - name: Assert macOS release files before draft creation
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./package.json').version")"
+          shopt -s nullglob
+          actual_files=(artifacts/*.dmg artifacts/*.zip artifacts/*.zip.blockmap)
+          if [[ -f artifacts/latest-mac.yml ]]; then
+            actual_files+=(artifacts/latest-mac.yml)
+          fi
+          if (( ${#actual_files[@]} != 7 )); then
+            echo "Expected exactly 7 macOS release files, found ${#actual_files[@]}" >&2
+            printf '  %s\n' "${actual_files[@]}" >&2
+            exit 1
+          fi
+          for filename in \
+            "Clawd-on-Desk-$version-x64.dmg" \
+            "Clawd-on-Desk-$version-arm64.dmg" \
+            "Clawd-on-Desk-$version-x64.zip" \
+            "Clawd-on-Desk-$version-arm64.zip" \
+            "Clawd-on-Desk-$version-x64.zip.blockmap" \
+            "Clawd-on-Desk-$version-arm64.zip.blockmap" \
+            "latest-mac.yml"; do
+            if [[ ! -f "artifacts/$filename" ]]; then
+              echo "Missing required macOS release file: artifacts/$filename" >&2
+              exit 1
+            fi
+          done
       - uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*

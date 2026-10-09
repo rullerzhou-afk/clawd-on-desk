@@ -1,15 +1,21 @@
 "use strict";
 
+const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
 const HUD_TITLE_MAX_UNITS = 15;
 const RECENT_DONE_UNREAD_MS = 60 * 1000;
+const SESSION_ACTION_FEEDBACK_MS = 4000;
 
-let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudShowContextUsage: true, hudPinned: false };
+let snapshot = { sessions: [], orderedIds: [], hudTotalNonIdle: 0, hudLastTitle: null, hudShowStateLabels: true, hudShowElapsed: true, hudShowContextUsage: true, hudShowQuota: true, hudPinned: false, accountQuota: [] };
 let i18nPayload = { lang: "en", translations: {} };
 
 const unreadSessions = new Set();
 const prevBadges = new Map();
+const pendingFolderSessions = new Set();
+let sessionActionFeedback = null;
+let sessionActionFeedbackTimer = null;
 
 const hudEl = document.getElementById("hud");
 
@@ -121,14 +127,23 @@ function makeChipInfo(entry) {
 }
 
 function stateChipInfo(session) {
-  if (snapshot.hudShowStateLabels === false) return null;
+  if (snapshot.hudShowStateLabels === false) {
+    return session && session.startupRecovered
+      ? { label: t("sessionRecovered"), cls: "chip-recovered" }
+      : null;
+  }
   const rawEvent = session && session.lastEvent && session.lastEvent.rawEvent;
   const eventChip = makeChipInfo(EVENT_CHIP_MAP[rawEvent]);
   if (eventChip && session.badge !== "done" && session.badge !== "interrupted") return eventChip;
 
   if (session.badge === "running") {
     const stateChip = makeChipInfo(STATE_CHIP_MAP[session.state]);
-    if (stateChip) return stateChip;
+    if (stateChip) {
+      return session.startupRecovered
+        ? { label: `${t("sessionRecovered")} · ${stateChip.label}`, cls: `${stateChip.cls} chip-recovered` }
+        : stateChip;
+    }
+    if (session.startupRecovered) return { label: t("sessionRecovered"), cls: "chip-recovered" };
     return { label: t("sessionBadgeRunning"), cls: "chip-working" };
   }
   if (session.badge === "interrupted") {
@@ -166,6 +181,7 @@ function usageChipInfo(session) {
 
 const BELL_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 22c1.1 0 2-.9 2-2h-4c0 1.1.9 2 2 2zm6-6v-5c0-3.07-1.64-5.64-4.5-6.32V4c0-.83-.67-1.5-1.5-1.5s-1.5.67-1.5 1.5v.68C7.63 5.36 6 7.92 6 11v5l-2 2v1h16v-1l-2-2z"/></svg>`;
 const FOCUS_UNAVAILABLE_SVG = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l16 16"/><path d="M9.5 5h5"/><path d="M7 9h10"/><path d="M5 14h9"/><path d="M12 19h5"/></svg>`;
+const FOLDER_SVG = `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7h6l2 2h10v9H3z"/><path d="M3 7V5h6l2 2"/></svg>`;
 const PIN_SVG_FILLED = `<svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 const PIN_SVG_OUTLINE = `<svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" aria-hidden="true"><path d="M14 4l6 6-4 1-3 3 1 5-2 1-4-4-5 5-1-1 5-5-4-4 1-2 5 1 3-3 1-4z"/></svg>`;
 
@@ -205,15 +221,41 @@ function splitHudLayout(sessions) {
 }
 
 function focusUnavailableTooltip(session) {
-  return session && session.host
-    ? t("sessionHudRemoteFocusUnavailableTooltip")
-    : t("sessionHudFocusUnavailableTooltip");
+  return t(focusUnavailableReasonKey(session));
+}
+
+function showSessionFeedback(sessionId, message) {
+  if (sessionActionFeedbackTimer) clearTimeout(sessionActionFeedbackTimer);
+  sessionActionFeedback = {
+    sessionId,
+    message,
+    expiresAt: Date.now() + SESSION_ACTION_FEEDBACK_MS,
+  };
+  render();
+  sessionActionFeedbackTimer = setTimeout(() => {
+    sessionActionFeedbackTimer = null;
+    sessionActionFeedback = null;
+    render();
+  }, SESSION_ACTION_FEEDBACK_MS);
+}
+
+function sessionFeedbackText(sessionId, now) {
+  if (!sessionActionFeedback || sessionActionFeedback.sessionId !== sessionId) return "";
+  return sessionActionFeedback.expiresAt > now ? sessionActionFeedback.message : "";
+}
+
+function openFolderFailureText(result) {
+  if (result && result.status === "error" && result.message) {
+    return t("sessionOpenFolderFailed").replace("{reason}", result.message);
+  }
+  return t("sessionOpenFolderUnavailable");
 }
 
 function createRowForSession(session, now) {
   const row = document.createElement("div");
   row.className = "row";
   const canFocus = session.canFocus === true;
+  const feedbackText = sessionFeedbackText(session.id, now);
   if (!canFocus) {
     row.classList.add("row-unfocusable");
     row.title = focusUnavailableTooltip(session);
@@ -246,9 +288,14 @@ function createRowForSession(session, now) {
   const title = document.createElement("span");
   const fullTitle = titleFor(session);
   const shortTitle = shortenHudTitle(fullTitle);
-  title.className = "title";
-  title.textContent = shortTitle;
-  if (shortTitle && shortTitle !== fullTitle) title.title = fullTitle;
+  title.className = feedbackText ? "title session-inline-feedback" : "title";
+  title.textContent = feedbackText || shortTitle;
+  if (feedbackText) {
+    title.title = feedbackText;
+    title.setAttribute("aria-live", "polite");
+  } else if (shortTitle && shortTitle !== fullTitle) {
+    title.title = fullTitle;
+  }
   left.appendChild(title);
 
   const showElapsed = snapshot.hudShowElapsed !== false;
@@ -256,25 +303,61 @@ function createRowForSession(session, now) {
   right.className = "right";
   let hasRightContent = false;
 
-  if (session.badge === "done" && unreadSessions.has(session.id)) {
+  if (!feedbackText && session.badge === "done" && unreadSessions.has(session.id)) {
     const bell = document.createElement("span");
     bell.className = "completion-bell unread-bell";
     bell.innerHTML = BELL_SVG;
     right.appendChild(bell);
     hasRightContent = true;
+
   }
 
   if (!canFocus) {
-    const marker = document.createElement("span");
-    marker.className = "focus-unavailable";
-    marker.innerHTML = FOCUS_UNAVAILABLE_SVG;
-    marker.title = focusUnavailableTooltip(session);
-    marker.setAttribute("aria-label", focusUnavailableTooltip(session));
-    right.appendChild(marker);
-    hasRightContent = true;
+    if (!feedbackText) {
+      const marker = document.createElement("span");
+      marker.className = "focus-unavailable";
+      marker.innerHTML = FOCUS_UNAVAILABLE_SVG;
+      marker.title = focusUnavailableTooltip(session);
+      marker.setAttribute("aria-label", focusUnavailableTooltip(session));
+      right.appendChild(marker);
+      hasRightContent = true;
+    }
+
+    if (canOfferLocalFolder(session)) {
+      const openFolder = document.createElement("button");
+      openFolder.type = "button";
+      openFolder.className = "open-folder-button";
+      openFolder.innerHTML = FOLDER_SVG;
+      openFolder.title = t("dashboardOpenFolder");
+      openFolder.setAttribute("aria-label", t("dashboardOpenFolder"));
+      openFolder.disabled = pendingFolderSessions.has(session.id);
+      openFolder.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        if (pendingFolderSessions.has(session.id)) return;
+        pendingFolderSessions.add(session.id);
+        openFolder.disabled = true;
+        render();
+        let feedbackMessage = "";
+        try {
+          const result = await window.sessionHudAPI.openSessionFolder(session.id);
+          if (!result || result.status !== "ok") {
+            feedbackMessage = openFolderFailureText(result);
+          }
+        } catch (err) {
+          feedbackMessage = t("sessionOpenFolderFailed")
+            .replace("{reason}", err && err.message ? err.message : String(err));
+          console.warn("open session folder threw:", err);
+        }
+        pendingFolderSessions.delete(session.id);
+        if (feedbackMessage) showSessionFeedback(session.id, feedbackMessage);
+        else render();
+      });
+      right.appendChild(openFolder);
+      hasRightContent = true;
+    }
   }
 
-  const chipInfo = stateChipInfo(session);
+  const chipInfo = feedbackText ? null : stateChipInfo(session);
   if (chipInfo) {
     const chip = document.createElement("span");
     chip.className = `state-chip ${chipInfo.cls}`;
@@ -283,7 +366,7 @@ function createRowForSession(session, now) {
     hasRightContent = true;
   }
 
-  const usageInfo = usageChipInfo(session);
+  const usageInfo = feedbackText ? null : usageChipInfo(session);
   if (usageInfo && usageInfo.label) {
     const chip = document.createElement("span");
     chip.className = `usage-chip ${usageInfo.cls}`;
@@ -293,7 +376,7 @@ function createRowForSession(session, now) {
     hasRightContent = true;
   }
 
-  if (showElapsed) {
+  if (showElapsed && !feedbackText) {
     const updatedAt = Number(session.updatedAt) || now;
     const elapsed = document.createElement("span");
     elapsed.className = "elapsed";
@@ -308,8 +391,12 @@ function createRowForSession(session, now) {
 
   row.addEventListener("click", () => {
     unreadSessions.delete(session.id);
-    render();
-    if (canFocus) window.sessionHudAPI.focusSession(session.id);
+    if (canFocus) {
+      render();
+      window.sessionHudAPI.focusSession(session.id);
+    } else {
+      showSessionFeedback(session.id, focusUnavailableTooltip(session));
+    }
     // Fire-and-forget: the row click's primary intent is focus / unread
     // dismissal. ack failure shouldn't block the UI — the next snapshot
     // will reconcile the lifecycle flag.
@@ -365,9 +452,20 @@ function createPinButton(pinned) {
 
 function render() {
   const sessions = orderedHudSessions(snapshot);
+  const currentIds = new Set(sessions.map((session) => session.id));
+  for (const sessionId of pendingFolderSessions) {
+    if (!currentIds.has(sessionId)) pendingFolderSessions.delete(sessionId);
+  }
+  if (sessionActionFeedback && !currentIds.has(sessionActionFeedback.sessionId)) {
+    if (sessionActionFeedbackTimer) clearTimeout(sessionActionFeedbackTimer);
+    sessionActionFeedbackTimer = null;
+    sessionActionFeedback = null;
+  }
   updateUnread(sessions);
   hudEl.replaceChildren();
   hudEl.classList.add("has-pin");
+  // The HUD shows sessions only; account quota now lives in the pet-attached
+  // quota ring window (quota-ring.html).
   if (!sessions.length) return;
 
   const now = Date.now();

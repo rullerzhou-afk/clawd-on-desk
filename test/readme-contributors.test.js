@@ -3,17 +3,29 @@
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
+const vm = require("node:vm");
 const test = require("node:test");
 
 const ROOT = path.join(__dirname, "..");
-const TABLE_READMES = ["README.md", "README.ko-KR.md", "README.ja-JP.md"];
+const TABLE_READMES = ["README.md", "README.ko-KR.md", "README.ja-JP.md", "README.es.md"];
 const ALL_READMES = [
   "README.md",
   "README.zh-CN.md",
   "README.zh-TW.md",
   "README.ko-KR.md",
   "README.ja-JP.md",
+  "README.es.md",
 ];
+
+test("all other README variants expose Spanish navigation without a Spanish self-link", () => {
+  for (const file of ALL_READMES.filter((name) => name !== "README.es.md")) {
+    const source = fs.readFileSync(path.join(ROOT, file), "utf8");
+    assert.match(source, /href="README\.es\.md"/, `${file} should link to README.es.md`);
+  }
+  const spanish = fs.readFileSync(path.join(ROOT, "README.es.md"), "utf8");
+  assert.doesNotMatch(spanish, /href="README\.es\.md"/, "README.es.md should not link to itself");
+});
+
 const VERIFIED_GITHUB_CONTRIBUTORS = [
   "Bynlk",
   "zxypro1",
@@ -39,7 +51,64 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "royhuang91",
   "Schlaflied",
   "KaiC5504",
+  "jiaxuan1101",
+  "kkirito16",
+  "200780381",
+  "Dxy2326",
+  "lurui1997",
+  "JesmonX",
+  "chen86860",
+  "LinYsssss",
+  "He-wei-gui",
+  "liugou27",
+  "YOOGOMJA",
+  "anupamme",
+  "anthonyonazure",
+  "weed33834",
+  "arismarioneves",
+  "wang4433",
+  "shengmai-justin",
+  "Zamaniego",
+  "CheeseAgent",
+  "RS-Nocsi",
+  "Cobb04",
+  "TalexDreamSoul",
+  "FuZoe",
+  "undefined-moe",
+  "pu-1205",
+  "Free-LZJ",
+  "easyhak",
+  "jlimcode",
+  "xfurqan0",
+  "brantshin",
+  "mantertius",
+  "VonSdite",
+  "sunnyswag",
+  "hanzhe-one",
+  "52mzd",
+  "gzx19990101",
+  "ypjn",
+  "jin-codes",
 ];
+
+function loadSettingsContributors() {
+  const source = fs.readFileSync(path.join(ROOT, "src", "settings-i18n.js"), "utf8");
+  const context = {};
+  context.globalThis = context;
+  vm.runInNewContext(source, context, { filename: "settings-i18n.js" });
+  return Array.from(context.ClawdSettingsI18n.CONTRIBUTORS);
+}
+
+function extractContributorLogins(markdown, filename) {
+  const section = extractContributorSection(markdown, filename);
+  const linked = [...section.matchAll(/href="https:\/\/github\.com\/([^"/]+)"/g)].map((match) => match[1]);
+  // A contributor whose GitHub account no longer resolves is credited as plain text
+  // rather than a link and avatar that both 404. Those entries still belong in the
+  // list, so collect them from the markup left over once every link is removed.
+  const unlinkedMarkup = section.replace(/<a\s[^>]*>[\s\S]*?<\/a>/g, "");
+  const unlinked = [...unlinkedMarkup.matchAll(/<sub>([^<]+)<\/sub>/g)].map((match) => match[1].trim());
+  return [...linked, ...unlinked];
+}
 
 function extractContributorTable(markdown, filename) {
   const tables = [...markdown.matchAll(/<table>[\s\S]*?<\/table>/g)]
@@ -56,7 +125,15 @@ function extractContributorTable(markdown, filename) {
   return tables[0].table;
 }
 
-function getRows(table) {
+function getRows(table, filename) {
+  const openingRows = (table.match(/<tr>/g) || []).length;
+  const closingRows = (table.match(/<\/tr>/g) || []).length;
+  assert.strictEqual(
+    closingRows,
+    openingRows,
+    `${filename} should close every contributor row`,
+  );
+  assert.match(table, /<\/tr>\s*<\/table>$/, `${filename} should close its final contributor row`);
   return [...table.matchAll(/<tr>([\s\S]*?)<\/tr>/g)].map((match) => match[1]);
 }
 
@@ -66,7 +143,7 @@ function countCells(row) {
 
 function getContributorShape(filename) {
   const markdown = fs.readFileSync(path.join(ROOT, filename), "utf8");
-  const rows = getRows(extractContributorTable(markdown, filename));
+  const rows = getRows(extractContributorTable(markdown, filename), filename);
   const cellCounts = rows.map(countCells);
   const totalCells = cellCounts.reduce((sum, count) => sum + count, 0);
 
@@ -129,5 +206,17 @@ test("README contributor sections include verified GitHub contributors", () => {
         `${filename} should include ${login}`,
       );
     }
+  }
+});
+
+test("all README contributor lists exactly match Settings About", () => {
+  const expected = loadSettingsContributors();
+  assert.strictEqual(new Set(expected).size, expected.length, "Settings contributors should not contain duplicates");
+
+  for (const filename of ALL_READMES) {
+    const markdown = fs.readFileSync(path.join(ROOT, filename), "utf8");
+    const actual = extractContributorLogins(markdown, filename);
+    assert.strictEqual(new Set(actual).size, actual.length, `${filename} should not contain duplicate contributors`);
+    assert.deepStrictEqual(actual.slice().sort(), expected.slice().sort(), `${filename} contributors should match Settings About`);
   }
 });

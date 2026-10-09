@@ -10,6 +10,7 @@ module.exports = {
   id: "codewhale",
   name: "CodeWhale",
   processNames: { win: ["codewhale.exe"], mac: ["codewhale"], linux: ["codewhale"] },
+  startupRecoveryProcessNames: { win: ["codewhale.exe"], mac: ["codewhale"], linux: ["codewhale"] },
   eventSource: "hook",
   // Clawd-internal event names (PascalCase). hooks/codewhale-hook.js translates
   // CodeWhale snake_case lifecycle events into these.

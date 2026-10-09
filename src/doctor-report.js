@@ -149,8 +149,10 @@ function formatAgentDiagnosticNotes(detail) {
   }
   pushIfValue(notes, "kiro", formatKiroScan(detail.kiroScan));
   pushIfValue(notes, "hook issue", detail.hookCommandIssue);
-  pushIfValue(notes, "opencode issue", detail.opencodeEntryIssue);
-  pushIfValue(notes, "opencode entry", detail.opencodeEntry);
+  // Field names are historical (checkOpencodeSettings); the label must stay
+  // agent-neutral — mimocode reports through the same fields (R9 F3).
+  pushIfValue(notes, "plugin issue", detail.opencodeEntryIssue);
+  pushIfValue(notes, "plugin entry", detail.opencodeEntry);
   return notes;
 }
 

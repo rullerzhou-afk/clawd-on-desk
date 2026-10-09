@@ -1,7 +1,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const { spawnSync } = require("node:child_process");
 const path = require("path");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 const {
   buildPermissionBody,
   buildQwenNoDecisionOutput,
@@ -98,6 +98,16 @@ describe("Qwen Code hook", () => {
     assert.strictEqual(body.agent_pid, 456);
   });
 
+  it("fails closed instead of posting a PermissionRequest with an unknown tool", () => {
+    for (const tool_name of [undefined, "", "  ", "Unknown", "unknown"]) {
+      assert.strictEqual(buildPermissionBody("PermissionRequest", {
+        session_id: "s1",
+        tool_name,
+        tool_input: {},
+      }, mockResolve), null);
+    }
+  });
+
   it("uses host instead of local pid fields in remote mode", () => {
     const body = buildPermissionBody("PermissionRequest", {
       session_id: "s1",
@@ -173,13 +183,13 @@ describe("Qwen Code hook", () => {
 
   it("prints exact no-decision stdout and empty stderr for unknown events", () => {
     const scriptPath = path.resolve(__dirname, "..", "hooks", "qwen-code-hook.js");
-    const result = spawnSync(process.execPath, [scriptPath], {
-      input: JSON.stringify({
+    const result = runSpawnedHook({
+      script: scriptPath,
+      payload: {
         hook_event_name: "UnknownEvent",
         session_id: "s1",
-      }),
-      encoding: "utf8",
-      windowsHide: true,
+      },
+      httpContract: "expect-none",
     });
 
     assert.strictEqual(result.status, 0);

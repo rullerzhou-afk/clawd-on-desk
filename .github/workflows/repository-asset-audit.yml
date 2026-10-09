@@ -1,0 +1,86 @@
+name: Repository Asset Audit
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # PR-history audit needs the base commit's objects, so a shallow
+          # single-commit checkout is not enough.
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm install
+      - name: Test Claude installer CLI and WSL documentation
+        run: node --test test/install.test.js test/install-dependency-cli.test.js test/remote-deploy.test.js
+      - name: Test repository contracts, macOS icon contracts, and spawned-hook isolation
+        run: >-
+          node --test
+          test/assert-no-retired-telegram-sidecar.test.js
+          test/mac-dock-icon-runtime.test.js
+          test/mac-dock-visibility.test.js
+          test/mac-tray-icon-assets.test.js
+          test/main-mac-dock-icon.test.js
+          test/menu-hide-pet.test.js
+          test/package-build-config.test.js
+          test/contribution-template-parity.test.js
+          test/state-agent-icons.test.js
+          test/tray-flash-icon.test.js
+          test/preload-settings.test.js
+          test/repository-asset-audit.test.js
+          test/telegram-legacy-retirement.test.js
+          test/telegram-migration-state.test.js
+          test/telegram-migration-controller.test.js
+          test/telegram-migration-user-data.test.js
+          test/spawned-hook-helper.test.js
+          test/claude-recovery-lease-hook.test.js
+          test/codex-hook.test.js
+          test/codex-install.test.js
+          test/qwen-code-hook.test.js
+          test/workbuddy-hook.test.js
+      # #1021 review (6): these two files carry the destructive-action
+      # reminder feature (permission-reminder.js, the tier 1/tier 2 card
+      # wording, the argv scan budget, the setting's eager-scan + pinned
+      # accept-time decision) and its route-level wiring. Neither appeared in
+      # ANY workflow before this line -- confirmed by grepping every
+      # .github/workflows/*.yml for both filenames, zero hits -- so this PR's
+      # own test additions would never run in CI without it. This job's
+      # existing steps are curated per-subject fixed lists rather than a
+      # glob; matching that convention here (see this file's own listed
+      # rationale in the PR review) rather than introducing the first glob
+      # into this workflow.
+      - name: Test destructive-action reminder and its permission-route wiring
+        run: >-
+          node --test
+          test/permission-destructive-reminder.test.js
+          test/server-route-permission.test.js
+      - run: npm run audit:assets
+      - name: Audit PR-reachable history for large binary assets
+        if: github.event_name == 'pull_request'
+        env:
+          # Both event SHAs are validated as 40-hex inside the script and are
+          # never spliced into a shell string. The audit derives their
+          # merge-base so a base-branch advance does not break or widen the
+          # contributor-only range.
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          # Audit the contributor branch itself, not Actions' synthetic merge
+          # commit, so unrelated base-branch changes cannot become PR findings.
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run audit:pr-history-assets
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: repository-asset-audit
+          path: dist/repository-asset-audit/*.json

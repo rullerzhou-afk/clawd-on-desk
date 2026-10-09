@@ -49,9 +49,11 @@ function createHarness(overrides = {}) {
     getThemeMarginBox,
     computeThemeAnchorRect,
     getActiveTheme: () => overrides.theme === undefined ? THEME : overrides.theme,
+    getDisplayedVisual: () => overrides.displayedVisual || null,
     getCurrentState: () => overrides.state || "thinking",
     getCurrentSvg: () => overrides.svg === undefined ? "thinking.svg" : overrides.svg,
     getCurrentHitBox: () => overrides.hitBox || { left: 1, top: 2, right: 3, bottom: 4 },
+    getCurrentAccessoryPayload: () => overrides.accessoryPayload || null,
     getMiniMode: () => !!overrides.miniMode,
     getMiniPeekOffset: () => overrides.miniPeekOffset || 18,
   });
@@ -151,6 +153,73 @@ test("getHitRectScreen passes hitbox and mini padding, with a full-window fallba
   normal.runtime.getHitRectScreen(BOUNDS);
   assert.deepStrictEqual(normal.calls[0][6], { padX: 0, padY: 0 });
   assert.strictEqual(normal.runtime.getHitRectScreen(null), null);
+});
+
+test("all geometry consumers read state, file, and hitbox from one committed visual tuple", () => {
+  const displayedVisual = {
+    displayState: "reacting",
+    file: "reaction.svg",
+    hitBox: { left: 9, top: 8, right: 7, bottom: 6 },
+    visualGeneration: 42,
+  };
+  const harness = createHarness({ displayedVisual });
+
+  harness.runtime.getObjRect(BOUNDS);
+  harness.runtime.getAssetPointerPayload(BOUNDS, { x: 50, y: 60 });
+  harness.runtime.getHitRectScreen(BOUNDS);
+
+  assert.deepStrictEqual(harness.calls[0].slice(3), ["reacting", "reaction.svg"]);
+  assert.deepStrictEqual(harness.calls[1].slice(3, 5), ["reacting", "reaction.svg"]);
+  assert.deepStrictEqual(harness.calls[2].slice(3, 6), [
+    "reacting",
+    "reaction.svg",
+    displayedVisual.hitBox,
+  ]);
+});
+
+test("getHitRectScreen expands only for the currently selected accessory", () => {
+  const theme = {
+    ...THEME,
+    customization: {
+      accessories: {
+        files: {
+          "thinking.svg": {
+            staticFrame: { cx: 8, baseY: 4, width: 16 },
+            hitBoxPadding: { left: 1, top: 2, right: 1, bottom: 1 },
+          },
+        },
+      },
+    },
+  };
+  const selected = createHarness({
+    theme,
+    hitBox: { x: 0, y: 5, w: 16, h: 12 },
+    accessoryPayload: {
+      id: "party-hat",
+      assetFile: "party-hat.svg",
+      aspect: 11 / 14,
+      widthScale: 0.7,
+      offsetY: 0.3,
+    },
+  });
+  selected.runtime.getHitRectScreen(BOUNDS);
+  assert.deepStrictEqual(selected.calls[0][5], {
+    x: 0,
+    y: -11.954545454545453,
+    w: 16,
+    h: 28.954545454545453,
+  });
+  assert.strictEqual(selected.calls[0][6].accessoryPayloads.head.id, "party-hat");
+
+  const none = createHarness({
+    theme,
+    hitBox: { x: 0, y: 5, w: 16, h: 12 },
+    accessoryPayload: {
+      id: "none", assetFile: null, aspect: 1, widthScale: 1, offsetY: 0,
+    },
+  });
+  none.runtime.getHitRectScreen(BOUNDS);
+  assert.deepStrictEqual(none.calls[0][5], { x: 0, y: 5, w: 16, h: 12 });
 });
 
 test("getUpdateBubbleAnchorRect prefers stable anchors, then current-file anchors, then hit rect", () => {

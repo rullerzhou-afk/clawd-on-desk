@@ -1,6 +1,6 @@
 "use strict";
 
-const { normalizeQuotaGroup } = require("./quota-bucket");
+const { normalizeQuotaGroup, anchorRelativeResetAt } = require("./quota-bucket");
 
 // Antigravity's statusline payload (unlike Claude Code's transcript) already
 // reports the model's real context window size and fill level directly, so
@@ -72,17 +72,10 @@ function invertAntigravityQuotaPayload(quota) {
     if (!Number.isFinite(remaining)) continue;
     const entry = { usedPercent: (1 - Math.max(0, Math.min(1, remaining))) * 100 };
     // agy reports a relative countdown (reset_in_seconds), not an absolute
-    // instant, so anchor it to receive time here - see quota-bucket.js.
-    // Quantized to whole minutes: the countdown and our receive time tick
-    // independently, so a raw nowMs + s*1000 jitters by hundreds of ms on
-    // every statusline refresh - each refresh would produce a "different"
-    // resetAt, changing the snapshot signature every tick and re-opening
-    // the broadcast storm that absolute timestamps were adopted to close.
-    // Reset labels render at minute granularity, so nothing is lost.
-    const resetInSeconds = Number(bucket.reset_in_seconds);
-    if (Number.isFinite(resetInSeconds)) {
-      entry.resetAt = Math.round((nowMs + resetInSeconds * 1000) / 60000) * 60000;
-    }
+    // instant - anchor it to receive time, minute-quantized against the
+    // broadcast-storm jitter (see quota-bucket.js anchorRelativeResetAt).
+    const resetAt = anchorRelativeResetAt(bucket.reset_in_seconds, nowMs);
+    if (resetAt !== null) entry.resetAt = resetAt;
     out[field] = entry;
   }
   return out;

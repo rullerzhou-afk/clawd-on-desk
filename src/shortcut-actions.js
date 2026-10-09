@@ -15,6 +15,17 @@
       defaultAccelerator: "CommandOrControl+Shift+Alt+C",
       labelKey: "shortcutLabelTogglePet",
     }),
+    quickSelectSession: Object.freeze({
+      persistent: true,
+      defaultAccelerator: null,
+      labelKey: "shortcutLabelQuickSelectSession",
+      showInTutorial: false,
+      // The Dashboard keyboard mode needs a non-activating quick host, which
+      // only darwin/win32 can provide (opacity parking is a documented no-op on
+      // Linux). Linux keeps the ordinary Dashboard, so the action is not
+      // offered, registered, or allowed to occupy an accelerator there.
+      supportedPlatforms: Object.freeze(["darwin", "win32"]),
+    }),
     permissionAllow: Object.freeze({
       persistent: false,
       defaultAccelerator: "CommandOrControl+Shift+Y",
@@ -28,16 +39,18 @@
   });
 
   const SHORTCUT_ACTION_IDS = Object.freeze(Object.keys(SHORTCUT_ACTIONS));
-  const MODIFIER_ORDER = Object.freeze(["CommandOrControl", "Shift", "Alt"]);
+  const MODIFIER_ORDER = Object.freeze(["CommandOrControl", "Control", "Shift", "Alt"]);
   const MODIFIER_ALIASES = Object.freeze({
     cmdorctrl: "CommandOrControl",
     cmdorcontrol: "CommandOrControl",
     commandorcontrol: "CommandOrControl",
     commandorctrl: "CommandOrControl",
-    ctrl: "CommandOrControl",
-    control: "CommandOrControl",
     command: "CommandOrControl",
     cmd: "CommandOrControl",
+    // Keep the established shorthand portable while allowing Electron's
+    // explicit Control modifier to represent the native ⌃ key on macOS.
+    ctrl: "CommandOrControl",
+    control: "Control",
     shift: "Shift",
     alt: "Alt",
     option: "Alt",
@@ -81,6 +94,15 @@
     "CommandOrControl+Q",
     "CommandOrControl+W",
     "CommandOrControl+R",
+    "Control+C",
+    "Control+V",
+    "Control+X",
+    "Control+Z",
+    "Control+A",
+    "Control+S",
+    "Control+Q",
+    "Control+W",
+    "Control+R",
     "Alt+F4",
     "F5",
   ]);
@@ -151,8 +173,76 @@
     };
   }
 
-  function isDangerousAccelerator(accelerator) {
-    return DANGEROUS_ACCELERATORS.has(accelerator);
+  // Platform truth for every gate (Settings row, global registration, settings
+  // command, conflict occupancy). Renderers have no `process`, so they must
+  // pass an explicit platform; an unresolvable platform is treated as
+  // unsupported so a gated action can never leak onto an unknown host.
+  // Only an omitted platform falls back to `process.platform`. An explicitly
+  // supplied but unresolvable value (a renderer that could not identify its
+  // host) must stay unresolved so the gate stays closed.
+  function resolveShortcutPlatform(platform) {
+    if (platform === undefined || platform === null) {
+      return typeof process !== "undefined" && process.platform ? process.platform : "";
+    }
+    if (typeof platform === "string") return platform;
+    if (typeof platform === "object" && typeof platform.platform === "string") {
+      return platform.platform;
+    }
+    return "";
+  }
+
+  function isShortcutActionSupported(actionId, platform) {
+    const meta = SHORTCUT_ACTIONS[actionId];
+    if (!meta) return false;
+    if (!Array.isArray(meta.supportedPlatforms)) return true;
+    return meta.supportedPlatforms.includes(resolveShortcutPlatform(platform));
+  }
+
+  function getSupportedShortcutActionIds(platform) {
+    return SHORTCUT_ACTION_IDS.filter((actionId) =>
+      isShortcutActionSupported(actionId, platform));
+  }
+
+  function resolveIsMac(options) {
+    if (options && typeof options.isMac === "boolean") return options.isMac;
+    if (options && typeof options.platform === "string" && options.platform) {
+      return options.platform === "darwin";
+    }
+    return typeof process !== "undefined" && process.platform === "darwin";
+  }
+
+  function normalizeModifiersForPlatform(modifiers, { isMac = false } = {}) {
+    const normalized = [];
+    const seen = new Set();
+    for (const modifier of modifiers) {
+      const platformModifier = !isMac && modifier === "Control"
+        ? "CommandOrControl"
+        : modifier;
+      if (seen.has(platformModifier)) continue;
+      seen.add(platformModifier);
+      normalized.push(platformModifier);
+    }
+    return normalized;
+  }
+
+  function acceleratorConflictKey(accelerator, options) {
+    const parsed = parseAccelerator(accelerator);
+    if (!parsed) return null;
+    const isMac = resolveIsMac(options);
+    const modifiers = new Set(normalizeModifiersForPlatform(parsed.modifiers, { isMac }));
+    const orderedModifiers = MODIFIER_ORDER.filter((modifier) => modifiers.has(modifier));
+    return [...orderedModifiers, parsed.key].join("+");
+  }
+
+  function acceleratorsConflict(left, right, options) {
+    const leftKey = acceleratorConflictKey(left, options);
+    const rightKey = acceleratorConflictKey(right, options);
+    return leftKey !== null && rightKey !== null && leftKey === rightKey;
+  }
+
+  function isDangerousAccelerator(accelerator, options) {
+    const platformKey = acceleratorConflictKey(accelerator, options);
+    return platformKey !== null && DANGEROUS_ACCELERATORS.has(platformKey);
   }
 
   function buildShortcutDefaults(defaultsValue) {
@@ -168,16 +258,19 @@
     return out;
   }
 
-  function normalizeShortcutValue(value, defaultAccelerator) {
+  function normalizeShortcutValue(value, defaultAccelerator, options) {
     if (value === "" || value === null || value === undefined) return null;
     if (typeof value !== "string") return defaultAccelerator;
     const parsed = parseAccelerator(value);
     if (!parsed) return defaultAccelerator;
-    if (isDangerousAccelerator(parsed.accelerator)) return defaultAccelerator;
+    if (isDangerousAccelerator(parsed.accelerator, options)) return defaultAccelerator;
     return parsed.accelerator;
   }
 
-  function normalizeShortcuts(value, defaultsValue) {
+  function normalizeShortcuts(value, defaultsValue, options) {
+    const isMac = resolveIsMac(options);
+    const platform = resolveShortcutPlatform(options && options.platform);
+    const platformOptions = { isMac };
     const defaults = buildShortcutDefaults(defaultsValue);
     const raw = isPlainObject(value) ? value : {};
     const normalized = {};
@@ -187,16 +280,39 @@
         normalized[actionId] = defaults[actionId];
         continue;
       }
-      normalized[actionId] = normalizeShortcutValue(raw[actionId], defaults[actionId]);
+      normalized[actionId] = normalizeShortcutValue(
+        raw[actionId],
+        defaults[actionId],
+        platformOptions
+      );
     }
 
     const out = {};
     const taken = new Set();
+    const conflictKey = (accelerator) => acceleratorConflictKey(accelerator, platformOptions);
+    const isTaken = (accelerator) => {
+      const key = conflictKey(accelerator);
+      return key !== null && taken.has(key);
+    };
+    const markTaken = (accelerator) => {
+      const key = conflictKey(accelerator);
+      if (key !== null) taken.add(key);
+    };
+
+    // A leftover binding for an action this platform does not support is kept
+    // verbatim (never silently deleted from the user's prefs) but must not
+    // occupy its accelerator, otherwise it would block a supported action from
+    // using the same combination on that platform.
+    for (const actionId of SHORTCUT_ACTION_IDS) {
+      if (isShortcutActionSupported(actionId, platform)) continue;
+      out[actionId] = normalized[actionId];
+    }
 
     for (const actionId of SHORTCUT_ACTION_IDS) {
-      if (normalized[actionId] === defaults[actionId]) {
-        out[actionId] = defaults[actionId];
-        if (out[actionId] !== null) taken.add(out[actionId]);
+      if (Object.prototype.hasOwnProperty.call(out, actionId)) continue;
+      if (acceleratorsConflict(normalized[actionId], defaults[actionId], platformOptions)) {
+        out[actionId] = normalized[actionId];
+        markTaken(out[actionId]);
       }
     }
 
@@ -207,18 +323,18 @@
         out[actionId] = null;
         continue;
       }
-      if (taken.has(candidate)) {
+      if (isTaken(candidate)) {
         const fallback = defaults[actionId];
-        if (fallback !== null && !taken.has(fallback)) {
+        if (fallback !== null && !isTaken(fallback)) {
           out[actionId] = fallback;
-          taken.add(fallback);
+          markTaken(fallback);
         } else {
           out[actionId] = null;
         }
         continue;
       }
       out[actionId] = candidate;
-      taken.add(candidate);
+      markTaken(candidate);
     }
 
     return out;
@@ -281,6 +397,7 @@
     const mods = [];
     if (isMac) {
       if (metaKey) mods.push("CommandOrControl");
+      if (ctrlKey) mods.push("Control");
     } else if (ctrlKey) {
       mods.push("CommandOrControl");
     }
@@ -302,8 +419,10 @@
 
   function formatAcceleratorPartial(modifiers, { isMac = false } = {}) {
     if (!Array.isArray(modifiers) || modifiers.length === 0) return "";
-    const labels = modifiers.map((modifier) => {
+    const displayModifiers = normalizeModifiersForPlatform(modifiers, { isMac });
+    const labels = displayModifiers.map((modifier) => {
       if (modifier === "CommandOrControl") return isMac ? "⌘" : "Ctrl";
+      if (modifier === "Control") return isMac ? "⌃" : "Ctrl";
       if (modifier === "Shift") return isMac ? "⇧" : "Shift";
       if (modifier === "Alt") return isMac ? "⌥" : "Alt";
       return modifier;
@@ -319,8 +438,10 @@
     const parsed = parseAccelerator(accelerator);
     if (!parsed) return accelerator;
 
-    const displayParts = parsed.modifiers.map((modifier) => {
+    const displayModifiers = normalizeModifiersForPlatform(parsed.modifiers, { isMac });
+    const displayParts = displayModifiers.map((modifier) => {
       if (modifier === "CommandOrControl") return isMac ? "⌘" : "Ctrl";
+      if (modifier === "Control") return isMac ? "⌃" : "Ctrl";
       if (modifier === "Shift") return isMac ? "⇧" : "Shift";
       if (modifier === "Alt") return isMac ? "⌥" : "Alt";
       return modifier;
@@ -360,6 +481,9 @@
     SHORTCUT_ACTIONS,
     SHORTCUT_ACTION_IDS,
     DANGEROUS_ACCELERATORS,
+    isShortcutActionSupported,
+    getSupportedShortcutActionIds,
+    resolveShortcutPlatform,
     getDefaultShortcuts,
     parseAccelerator,
     normalizeKey,
@@ -368,6 +492,8 @@
     formatAcceleratorPartial,
     normalizeShortcuts,
     isDangerousAccelerator,
+    acceleratorConflictKey,
+    acceleratorsConflict,
     validateShortcutMapShape,
   };
 });

@@ -20,6 +20,11 @@ module.exports = {
     mac: ["qoder", "qodercli", "qoder-cli"],
     linux: ["qoder", "qodercli", "qoder-cli"],
   },
+  startupRecoveryProcessNames: {
+    win: ["qodercli.exe", "qoder-cli.exe"],
+    mac: ["qodercli", "qoder-cli"],
+    linux: ["qodercli", "qoder-cli"],
+  },
   eventSource: "hook",
   eventMap: {
     SessionStart: "idle",

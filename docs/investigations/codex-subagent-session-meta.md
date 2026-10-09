@@ -57,10 +57,14 @@ The subagent sample was `rollout-2026-05-01T12-16-50-019de1c0-ed8e-73b0-992d-109
 
 - Treat unknown fields as `unknown` and fail open as root/interactive behavior.
 - Do not infer subagents from cwd or timing.
-- ~~Do not classify `/permission` requests; subagent PermissionRequest still needs a user decision.~~
-  **Superseded by PR #448 (2026-06-10).** The auto-pilot work made the `/permission` route gate
-  headless requests before the bubble/auto-approve chokepoint, and codex subagent requests are
-  deliberately treated as headless (no-decision → native fallback) rather than shown as bubbles
-  (`isHeadlessPermissionRequest`, `src/server-route-permission.js`). To make that gate
-  deterministic, `buildPermissionBody` now carries `codex_session_role` on PermissionRequest
-  payloads too (`hooks/codex-hook.js`, #448 follow-up). The state-path guidance above is unchanged.
+- `/permission` must classify subagents, but role and interactivity are separate concerns.
+  **PR #448's permission behavior was superseded on 2026-07-31.** Codex uses `headless:true`
+  on subagent state sessions to keep background child activity out of HUD/focus/completion
+  priority; that presentation marker must not suppress an official `PermissionRequest` from a
+  visible Agent thread. `buildPermissionBody` therefore still carries `codex_session_role` (plus
+  the child nickname/parent provenance). The interactive exception is limited to the resolved
+  Codex adapter plus audited CLI/Desktop originators; `codex_exec`, unknown originators, and an
+  explicit or derived `headless:true` stay on no-decision → native fallback, including when the
+  permission is the first event and no in-memory session exists yet. Ordinary headless
+  sessions still use the existing session gate. Interactive child requests enter the same
+  bubble/automation chokepoint as their parent. The state-path guidance above is unchanged.

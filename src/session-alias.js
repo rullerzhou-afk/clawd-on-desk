@@ -43,11 +43,17 @@ function normalizeSessionScope(agentId, sessionId, options = {}) {
 function sessionAliasKey(host, agentId, sessionId, options = {}) {
   const normalizedSessionId = normalizeSessionId(sessionId);
   if (!normalizedSessionId) return null;
+  const profileId = options && typeof options.profileId === "string"
+    ? options.profileId.trim()
+    : "";
   const parts = [
     normalizeSessionHost(host),
     normalizeSessionAgent(agentId),
     normalizedSessionId,
   ];
+  if (profileId && profileId !== "local") {
+    parts.unshift(`profile:${encodeURIComponent(profileId)}`);
+  }
   const scope = normalizeSessionScope(agentId, normalizedSessionId, options);
   if (scope) parts.push(scope);
   return parts.join("|");

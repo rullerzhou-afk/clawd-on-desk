@@ -8,6 +8,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const Module = require("node:module");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 // ── Mock electron before requiring permission.js ──
 // permission.js does `const { BrowserWindow, globalShortcut } = require("electron")`
@@ -110,7 +111,8 @@ function makeCtx(overrides = {}) {
 }
 
 function makePlanPermEntry(res, overrides = {}) {
-  return {
+  const planReviewWireInput = { plan: "Build a React app" };
+  const entry = {
     res,
     abortHandler: () => {},
     suggestions: [],
@@ -118,11 +120,18 @@ function makePlanPermEntry(res, overrides = {}) {
     bubble: null,
     hideTimer: null,
     toolName: "ExitPlanMode",
-    toolInput: { plan: "Build a React app" },
+    toolInput: planReviewWireInput,
+    planReviewWireInput,
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
+    agentId: "claude-code",
     ...overrides,
   };
+  entry.interaction = entry.interaction || classifyPermissionInteraction({
+    agentId: entry.agentId,
+    toolName: entry.toolName,
+  });
+  return entry;
 }
 
 // Fake bubble window + IPC event. handleDecide() calls
@@ -137,6 +146,72 @@ function makeEventFor(bubble) {
 }
 
 describe("permission plan-feedback handleDecide", () => {
+  it("replays the exact original ExitPlanMode input when allowing a plan", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const res = createMockResponse();
+    const planReviewWireInput = {
+      plan: "Build a React app",
+      planFilePath: "C:\\Users\\Ruller\\.claude\\plans\\exact.md",
+      metadata: { source: "permission-hook", untouched: true },
+      steps: ["first", "second"],
+    };
+    const permEntry = makePlanPermEntry(res, {
+      toolInput: { plan: "Build a React app…" },
+      planReviewWireInput,
+    });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.resolvePermissionEntry(permEntry, "allow");
+
+    assert.strictEqual(res.captured.body, JSON.stringify({
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: {
+          behavior: "allow",
+          updatedInput: planReviewWireInput,
+        },
+      },
+    }));
+  });
+
+  it("falls back to Claude's native prompt when exact plan input is unavailable", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const res = createMockResponse();
+    const permEntry = makePlanPermEntry(res, { planReviewWireInput: null });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.resolvePermissionEntry(permEntry, "allow");
+
+    assert.strictEqual(res.captured.ended, false, "must not emit a false allow decision");
+    assert.strictEqual(res.captured.body, null, "fallback must not write a response body");
+    assert.strictEqual(res.destroyed, true, "socket drop returns control to Claude's native prompt");
+    assert.strictEqual(ctx.focusTerminalCalls.length, 1);
+    assert.strictEqual(perm.pendingPermissions.indexOf(permEntry), -1);
+  });
+
+  it("keeps ordinary Claude tool allows free of updatedInput", () => {
+    const ctx = makeCtx();
+    const perm = initPermission(ctx);
+    const res = createMockResponse();
+    const permEntry = makePlanPermEntry(res, {
+      toolName: "Bash",
+      toolInput: { command: "npm test" },
+      planReviewWireInput: null,
+    });
+    perm.pendingPermissions.push(permEntry);
+
+    perm.resolvePermissionEntry(permEntry, "allow");
+
+    assert.deepStrictEqual(JSON.parse(res.captured.body), {
+      hookSpecificOutput: {
+        hookEventName: "PermissionRequest",
+        decision: { behavior: "allow" },
+      },
+    });
+  });
+
   it("resolves ExitPlanMode with deny + feedback message", () => {
     const ctx = makeCtx();
     const perm = initPermission(ctx);
@@ -174,7 +249,7 @@ describe("permission plan-feedback handleDecide", () => {
     );
   });
 
-  it("empty feedback results in dismiss-for-terminal (no HTTP response written)", () => {
+  it("empty feedback dismisses for terminal: destroys the socket without writing a decision", () => {
     const ctx = makeCtx();
     const perm = initPermission(ctx);
     const { pendingPermissions, handleDecide } = perm;
@@ -186,6 +261,9 @@ describe("permission plan-feedback handleDecide", () => {
       destroy: () => {},
     };
     const permEntry = makePlanPermEntry(res, { bubble: fakeBubble });
+    // Mirror the server route: the abort handler is registered on the socket,
+    // so the detach assertion below exercises the real cleanup path.
+    res.on("close", permEntry.abortHandler);
     pendingPermissions.push(permEntry);
 
     // Simulate handleDecide being called with plan-feedback but empty feedback
@@ -195,9 +273,17 @@ describe("permission plan-feedback handleDecide", () => {
     // directly through the exported dismissPermissionForTerminal:
     perm.dismissPermissionForTerminal(permEntry);
 
-    // Should NOT have written an HTTP response (dismissPermissionForTerminal
-    // leaves the HTTP connection open for CC to detect socket close)
-    assert.strictEqual(res.captured.ended, false, "HTTP response should NOT be ended by dismiss-for-terminal");
+    // No decision may be written — but the socket MUST be destroyed, not left
+    // parked: CC blocks on the PermissionRequest hook (600s) with nothing in
+    // the terminal until the connection dies, and a dropped connection is a
+    // non-blocking hook error that sends CC to its native prompt (issue #689).
+    assert.strictEqual(res.captured.ended, false, "No decision body may be written by dismiss-for-terminal");
+    assert.strictEqual(res.captured.body, null, "Response body must stay empty");
+    assert.strictEqual(res.destroyed, true, "Hook socket must be destroyed so CC falls back to its native prompt");
+
+    // The socket-close abort handler must be detached before the destroy so
+    // the close event can't double-resolve the already-removed entry.
+    assert.deepStrictEqual(res.captured.listeners.close || [], [], "close listener should be removed");
 
     // Entry should be removed
     assert.strictEqual(
@@ -293,6 +379,19 @@ describe("permission plan-feedback handleDecide routing (IPC entry point)", () =
     assert.strictEqual(perm.pendingPermissions.indexOf(permEntry), -1);
     assert.strictEqual(ctx.focusTerminalCalls.length, 1);
     assert.strictEqual(ctx.focusTerminalCalls[0].sessionId, "plan-session-1");
+  });
+
+  it("rejects oversized plan feedback without sending a deny payload", () => {
+    const { perm, res, bubble, permEntry } = setup();
+
+    perm.handleDecide(makeEventFor(bubble), {
+      type: "plan-feedback",
+      feedback: "x".repeat(4001),
+    });
+
+    assert.strictEqual(res.captured.ended, false);
+    assert.strictEqual(res.destroyed, true);
+    assert.strictEqual(perm.pendingPermissions.indexOf(permEntry), -1);
   });
 
   it("does NOT treat a plan-feedback object as feedback for a non-ExitPlanMode tool", () => {

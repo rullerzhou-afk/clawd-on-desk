@@ -1,0 +1,102 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      /* Body sways side to side (held from above) */
+      .body-sway {
+        transform-origin: 7.5px 6px;
+        animation: sway 1.2s infinite alternate ease-in-out;
+      }
+
+      /* Leg dangling (from debugger sneak) */
+      .leg-dangle-1 {
+        animation: dangle-1 0.5s infinite linear;
+        transform-origin: top center;
+        transform-box: fill-box;
+      }
+      .leg-dangle-2 {
+        animation: dangle-2 0.5s infinite linear;
+        transform-origin: top center;
+        transform-box: fill-box;
+      }
+
+      /* Arm flailing (from happy wave, slightly slower) */
+      .arm-flail-l {
+        transform-box: fill-box;
+        transform-origin: 100% 50%;
+        animation: flail-l 0.2s infinite alternate ease-in-out;
+      }
+      .arm-flail-r {
+        transform-box: fill-box;
+        transform-origin: 0% 50%;
+        animation: flail-r 0.2s infinite alternate ease-in-out;
+      }
+
+      /* Shadow shrinks when lifted */
+      .shadow-lift {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-pulse 1.2s infinite alternate ease-in-out;
+      }
+
+      @keyframes sway {
+        0%   { transform: rotate(-3deg) translate(-1px, 0); }
+        100% { transform: rotate(3deg) translate(1px, 0); }
+      }
+
+      @keyframes dangle-1 {
+        0%, 100% { transform: rotate(0deg) scaleY(1); }
+        50%      { transform: rotate(-25deg) scaleY(0.7); }
+      }
+      @keyframes dangle-2 {
+        0%, 100% { transform: rotate(-25deg) scaleY(0.7); }
+        50%      { transform: rotate(0deg) scaleY(1); }
+      }
+
+      @keyframes flail-l {
+        0%   { transform: rotate(45deg); }
+        100% { transform: rotate(85deg); }
+      }
+      @keyframes flail-r {
+        0%   { transform: rotate(-45deg); }
+        100% { transform: rotate(-85deg); }
+      }
+
+      @keyframes shadow-pulse {
+        0%   { transform: scale(0.7); opacity: 0.2; }
+        100% { transform: scale(0.8); opacity: 0.3; }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow (small + faint = lifted off ground) -->
+  <rect class="shadow-lift" x="3" y="15" width="9" height="1" fill="#000000"/>
+
+  <!-- Swaying body -->
+  <g class="body-sway">
+    <!-- Dangling legs -->
+    <g fill="#DE886D">
+      <rect class="leg-dangle-1" x="3" y="13" width="1" height="2"/>
+      <rect class="leg-dangle-2" x="5" y="13" width="1" height="2"/>
+      <rect class="leg-dangle-1" x="9" y="13" width="1" height="2"/>
+      <rect class="leg-dangle-2" x="11" y="13" width="1" height="2"/>
+    </g>
+
+    <!-- Torso + flailing arms -->
+    <g fill="#DE886D">
+      <rect x="2" y="6" width="11" height="7"/>
+      <g class="arm-flail-l">
+        <rect x="0" y="9" width="2" height="2"/>
+      </g>
+      <g class="arm-flail-r">
+        <rect x="13" y="9" width="2" height="2"/>
+      </g>
+    </g>
+
+    <!-- >< Eyes (anime squint, drawn with thin lines) -->
+    <g fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+      <!-- Left eye: > -->
+      <polyline points="4,8 5.5,9 4,10"/>
+      <!-- Right eye: < -->
+      <polyline points="11,8 9.5,9 11,10"/>
+    </g>
+  </g>
+</svg>

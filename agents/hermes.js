@@ -5,6 +5,7 @@ module.exports = {
   id: "hermes",
   name: "Hermes Agent",
   processNames: { win: ["hermes.exe"], mac: ["hermes"], linux: ["hermes"] },
+  startupRecoveryProcessNames: { win: ["hermes.exe"], mac: ["hermes"], linux: ["hermes"] },
   eventSource: "plugin-event",
   eventMap: {
     SessionStart: "idle",

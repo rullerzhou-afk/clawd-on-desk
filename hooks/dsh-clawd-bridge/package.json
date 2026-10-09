@@ -1,0 +1,32 @@
+{
+  "name": "@dsh-external/dsh-clawd-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Forward public DeepSeek Harness session and approval events to Clawd on Desk",
+  "main": "./lib/index.js",
+  "exports": { ".": "./lib/index.js" },
+  "license": "MIT",
+  "clawd": {
+    "versionFamilies": [
+      { "family": "0.2", "minVersion": "0.2.0-rc.2", "range": ">=0.2.0-rc.2 <0.3.0-0" },
+      { "family": "0.1", "minVersion": "0.1.0-rc.6", "range": ">=0.1.0-rc.6 <0.2.0-0" }
+    ],
+    "verifiedArtifacts": [
+      { "version": "0.2.0-rc.2", "artifact": "@deepseek-ai/dsh@0.2.0-rc.2", "integrity": "sha512-EAJ3gPNcVt/uv8X19PMm9NkVhWgT7xXNMk0UKCVm+IQ5rpSQOcsMUa0HWlnYYVybKMsccjcRB21vVVsaXQ6IdA==" },
+      { "version": "0.1.5-rc.3", "artifact": "@deepseek-ai/dsh@0.1.5-rc.3", "integrity": "sha512-c0W6Xqc4ChjFcCJkbzPeIxZQdnbKqe+QAcJzWGtogg0ZzsnZRcw3vopMyZ5oZU6E2fmyqGcyDR1sBeiCH4yHcg==" },
+      { "version": "0.1.5-rc.1", "artifact": "@deepseek-ai/dsh@0.1.5-rc.1", "integrity": "sha512-rmNmzQCg3oIc1z8xH7izRSOuy1TNzq+/NILyfM+7e8DKOyV+yBtg47WEsqR2SiIe1ATec3L/rUa1YhIcfQ2XEg==" },
+      { "version": "0.1.1-rc.2", "artifact": "@deepseek-ai/dsh@0.1.1-rc.2", "integrity": "sha512-UP1UIh6q3Gme/yXRn/QL2P8IsVlv8Shpg22TRJIZPsCRWLm4CBiA1MUvXmJAfsOEETBMLAl+xWPtFw6ICsN3wg==" },
+      { "version": "0.1.0-rc.6", "artifact": "@deepseek-ai/dsh@0.1.0-rc.6", "integrity": "sha512-brpZfED7ieRa2PQ5tUxMhHrM1pb2CmKFVM/f6yMULBDMicahk+Z2OsHgTwTDnoiZm23Ftu9rQz0NN4pflaoJcg==" }
+    ],
+    "preferredFamilyRange": ">=0.2.0-rc.2 <0.3.0-0",
+    "latestVerifiedArtifact": "@deepseek-ai/dsh@0.2.0-rc.2",
+    "latestVerifiedArtifactIntegrity": "sha512-EAJ3gPNcVt/uv8X19PMm9NkVhWgT7xXNMk0UKCVm+IQ5rpSQOcsMUa0HWlnYYVybKMsccjcRB21vVVsaXQ6IdA==",
+    "sourceAuditBaselineCommit": "47f943859bef60e4160492346772ded9b24f765a"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

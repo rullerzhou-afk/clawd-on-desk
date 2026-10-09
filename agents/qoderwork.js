@@ -4,7 +4,7 @@
 // QoderWork is a standalone Electron IDE (separate from Qoder IDE / Qoder CLI)
 // that shares the `qodercli` backend binary. Because `qodercli` is ambiguous
 // (both Qoder IDE and QoderWork spawn it), processNames only lists the IDE
-// process name `QoderWork` so startup recovery never confuses the two.
+// process name `QoderWork`; the startup keep-awake surface stays empty.
 //
 // Clawd observes QoderWork's permission events (PermissionRequest /
 // PermissionDenied) as passive `working` state (they fire 40+ times per task
@@ -16,15 +16,17 @@
 module.exports = {
   id: "qoderwork",
   name: "QoderWork",
+  category: "work",
   // QoderWork is a standalone Electron IDE. Its backend CLI `qodercli` is
   // shared with Qoder IDE, so we deliberately exclude it from processNames
   // to avoid mis-attributing a Qoder-IDE-spawned qodercli to QoderWork.
-  // Startup recovery (src/state.js) only watches the IDE process name.
   processNames: {
     win: ["QoderWork.exe"],
     mac: ["QoderWork"],
     linux: ["QoderWork"],
   },
+  // The long-lived IDE process is not an active-turn signal.
+  startupRecoveryProcessNames: { win: [], mac: [], linux: [] },
   eventSource: "hook",
   eventMap: {
     SessionStart: "idle",

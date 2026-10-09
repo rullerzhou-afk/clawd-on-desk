@@ -184,6 +184,16 @@ body { padding: 2px 3px 8px; }
   color: var(--text);
 }
 
+.session-inline-feedback {
+  color: var(--text-muted);
+  font-size: 10px;
+  font-weight: 500;
+}
+
+.chip-recovered {
+  border: 1px dashed currentColor;
+}
+
 .row-folded .title {
   font-weight: 500;
   color: var(--text-muted);
@@ -283,6 +293,23 @@ body { padding: 2px 3px 8px; }
   height: 11px;
 }
 
+.open-folder-button {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 4px;
+  padding: 0;
+  background: rgba(59, 130, 246, 0.14);
+  color: var(--text);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.open-folder-button:disabled { opacity: 0.55; }
+
 @keyframes bell-ring {
   0%   { transform: rotate(0deg); }
   10%  { transform: rotate(12deg); }
@@ -311,6 +338,7 @@ body { padding: 2px 3px 8px; }
 </head>
 <body>
   <div id="hud" class="hud"></div>
+  <script src="./session-focus-unavailable.js"></script>
   <script src="./session-hud-renderer.js"></script>
 </body>
 </html>

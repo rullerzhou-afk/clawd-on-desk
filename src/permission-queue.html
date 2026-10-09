@@ -1,0 +1,25 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self'; script-src 'self'">
+<link rel="stylesheet" href="permission-queue.css">
+</head>
+<body>
+  <section class="queue-card" id="queueCard" aria-live="polite">
+    <button class="queue-launcher" id="queueLauncher" type="button">
+      <span class="queue-launcher-copy" id="queueLauncherCopy"></span>
+      <span class="queue-launcher-action" id="queueLauncherAction"></span>
+    </button>
+
+    <div class="queue-drawer" id="queueDrawer">
+      <header class="queue-header">
+        <h1 id="queueTitle"></h1>
+        <button class="queue-close" id="queueClose" type="button"></button>
+      </header>
+      <div class="queue-list" id="queueList"></div>
+    </div>
+  </section>
+  <script src="permission-queue-renderer.js"></script>
+</body>
+</html>

@@ -92,18 +92,17 @@ test("macOS runtime dock icon asset is packaged", () => {
   );
 });
 
-test("macOS runtime dock icon override respects hidden Dock preference", () => {
+test("main wires startup Dock icon behavior through the shared runtime helper", () => {
   const source = fs.readFileSync(MAIN, "utf8");
-  const setIcon = 'app.dock.setIcon(path.join(__dirname, "..", "assets", "dock-icon.png"))';
-  const guard = 'if (isMac && app.dock && _settingsController.get("showDock") !== false)';
-  const setIconIndex = source.indexOf(setIcon);
-  const guardIndex = source.lastIndexOf(guard, setIconIndex);
-
-  assert.ok(setIconIndex >= 0, "main.js should set the runtime macOS dock icon");
-  assert.ok(guardIndex >= 0, "dock icon override should be guarded by showDock !== false");
-  assert.ok(
-    setIconIndex - guardIndex < 250,
-    "showDock guard should wrap the dock icon override"
+  assert.match(source, /require\("\.\/mac-dock-icon-runtime"\)/);
+  assert.match(source, /resolveRuntimeDockIconPolicy\(\{/);
+  assert.match(source, /installStartupDockIcon\(\{/);
+  assert.match(source, /flashPath:\s*path\.join\([^\n]+tray-icon-flash\.png/);
+  assert.match(source, /flashTemplatePath:\s*path\.join\([^\n]+tray-icon-flashTemplate\.png/);
+  assert.doesNotMatch(
+    source,
+    /app\.dock\.setIcon\(path\.join\(__dirname, "\.\.", "assets", "dock-icon\.png"\)\)/,
+    "main.js should not bypass the tested startup helper"
   );
 });
 

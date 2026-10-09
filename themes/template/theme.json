@@ -8,6 +8,10 @@
   "version": "1.0.0",
   "description": "A short description of your theme",
   "_comment_license": "Optional: if you add a license field, treat it as descriptive metadata only. It should describe assets you own and does not grant rights by itself.",
+  "_comment_customization": "Set petTint:true only when built-in color filters suit the art. Accessory attachment metadata is documented in docs/guides/guide-theme-creation.md.",
+  "customization": {
+    "petTint": false
+  },
 
   "viewBox": {
     "_comment": "Logical canvas in SVG units. All assets should share this aspect ratio.",
@@ -18,7 +22,7 @@
   },
 
   "layout": {
-    "_comment": "Optional but recommended when your visible character height differs a lot from the raw viewBox. contentBox is the character's visible body area in viewBox units.",
+    "_comment": "Optional but recommended when your visible character height differs a lot from the raw viewBox. contentBox is the character's visible body area in viewBox units. These values suit Clawd's loose contentBox; if yours hugs the body, pick visibleHeightRatio from 'Character Size' in docs/guides/guide-theme-creation.md.",
     "contentBox": { "x": -4, "y": -3, "width": 23, "height": 20 },
     "centerX": 7.5,
     "baselineY": 17,
@@ -71,7 +75,7 @@
   ],
 
   "jugglingTiers": [
-    { "_comment": "Optional subagent-specific overrides. Omit this whole block to use states.juggling[0] if you provide that state.", "minSessions": 2, "file": "conducting.gif" },
+    { "_comment": "Optional subagent-specific overrides. minSessions counts live subagents here, despite the legacy field name. Omit this whole block to use states.juggling[0] if you provide that state.", "minSessions": 2, "file": "conducting.gif" },
     { "minSessions": 1, "file": "juggling.gif" }
   ],
 

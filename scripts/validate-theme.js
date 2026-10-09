@@ -19,6 +19,7 @@
 const fs = require("fs");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
+const themeSchema = require("../src/theme-schema");
 const { VARIANT_ALLOWED_KEYS } = require("../src/theme-variants");
 
 // ── Colors (ANSI) ──
@@ -35,6 +36,7 @@ const {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   isPlainObject,
   hasNonEmptyArray,
@@ -53,22 +55,99 @@ const {
 const args = process.argv.slice(2);
 let themeDir = null;
 let assetsOverride = null;
-for (let i = 0; i < args.length; i++) {
-  if (args[i] === "--assets" && args[i + 1]) {
-    assetsOverride = args[++i];
-  } else if (!themeDir) {
-    themeDir = args[i];
-  }
-}
-if (!themeDir) {
+
+function printUsage() {
   console.error(`Usage: node ${path.basename(process.argv[1])} <theme-directory> [--assets <assets-dir>]`);
   console.error(`Example: node scripts/validate-theme.js themes/template`);
   console.error(`         node scripts/validate-theme.js themes/clawd --assets assets/svg`);
+}
+
+// Anything the parser does not understand is refused rather than ignored. The old
+// loop silently dropped unknown flags, surplus positional arguments, and a
+// value-less `--assets`, so a mistyped command ran against the DEFAULT paths and
+// then reported the theme as valid -- the tool answering a question nobody asked.
+//
+// Refusing unknown options costs the one thing the permissive loop got for free: a
+// path that genuinely begins with "-". `--` ends option parsing for that case, so
+// no invocation that worked before is unreachable now.
+let optionsEnded = false;
+for (let i = 0; i < args.length; i++) {
+  const arg = args[i];
+  if (!optionsEnded && arg === "--") {
+    optionsEnded = true;
+  } else if (!optionsEnded && arg === "--assets") {
+    if (assetsOverride !== null) {
+      console.error(`${FAIL} --assets given more than once`);
+      printUsage();
+      process.exit(1);
+    }
+    const value = args[i + 1];
+    // Only absent or empty counts as "no path given". A value that merely looks
+    // like a flag is still passed to the filesystem, which is the thing that
+    // actually knows whether it is a usable directory.
+    if (value === undefined || value === "") {
+      console.error(`${FAIL} --assets requires a directory argument`);
+      printUsage();
+      process.exit(1);
+    }
+    assetsOverride = value;
+    i++;
+  } else if (!optionsEnded && arg.startsWith("-") && arg !== "-") {
+    console.error(`${FAIL} Unknown option: ${arg}`);
+    console.error(`  (if that is a real path, pass it after --)`);
+    printUsage();
+    process.exit(1);
+  } else if (themeDir === null) {
+    themeDir = arg;
+  } else {
+    console.error(`${FAIL} Unexpected extra argument: ${arg}`);
+    printUsage();
+    process.exit(1);
+  }
+}
+// Falsy, not just null: `validate-theme.js "$SOME_UNSET_VAR"` passes an empty
+// string, which path.resolve() turns into the current directory -- so without
+// this the script would go and validate whatever the caller happened to be in.
+if (!themeDir) {
+  console.error(`${FAIL} No theme directory given`);
+  printUsage();
   process.exit(1);
 }
 
 const resolvedDir = path.resolve(themeDir);
+const builtinThemesDir = path.resolve(__dirname, "..", "themes");
+const builtinRelative = path.relative(builtinThemesDir, resolvedDir);
+const isBuiltinTheme = !!(
+  builtinRelative
+  && builtinRelative !== ".."
+  && !builtinRelative.startsWith(`..${path.sep}`)
+  && !path.isAbsolute(builtinRelative)
+);
 const jsonPath = path.join(resolvedDir, "theme.json");
+
+// An explicit --assets override that does not resolve to a usable directory is a
+// mistake in the command, not a property of the theme -- so the message has to say
+// which one it is. Pointing --assets at a file used to produce a 27-error report
+// about the theme, sending the author hunting for theme bugs that do not exist.
+// The default `<theme>/assets` being absent is deliberately NOT handled here: that
+// one really is a property of the theme, and stays a normal validation error below.
+if (assetsOverride !== null) {
+  const overrideDir = path.resolve(assetsOverride);
+  let overrideStat;
+  try {
+    overrideStat = fs.statSync(overrideDir);
+  } catch (e) {
+    // Only ENOENT means "not there". ENOTDIR, ELOOP, EACCES and friends are all
+    // different problems and must not be flattened into one claim.
+    const why = e.code === "ENOENT" ? "not found" : `cannot be accessed (${e.code})`;
+    console.error(`${FAIL} --assets directory ${why}: ${overrideDir}`);
+    process.exit(1);
+  }
+  if (!overrideStat.isDirectory()) {
+    console.error(`${FAIL} --assets path is not a directory: ${overrideDir}`);
+    process.exit(1);
+  }
+}
 
 if (!fs.existsSync(jsonPath)) {
   console.error(`${FAIL} theme.json not found at: ${jsonPath}`);
@@ -80,7 +159,20 @@ try {
   const content = fs.readFileSync(jsonPath, "utf8");
   raw = JSON.parse(content);
 } catch (e) {
-  console.error(`${FAIL} Failed to parse theme.json: ${e.message}`);
+  // The try block covers readFileSync as well as JSON.parse, so this must not
+  // claim "parse" for what may have been a read failure (e.g. EISDIR).
+  console.error(`${FAIL} Failed to read or parse theme.json: ${e.message}`);
+  process.exit(1);
+}
+
+// theme.json has to be a JSON object for the checks below to walk it. `null` crashes
+// property access with an uncaught TypeError (a stack trace instead of a message),
+// and a number/string/boolean produces meaningless FAIL lines that read like real
+// findings about a theme that was never there. An array is deliberately let through:
+// nothing below it crashes, and its total absence of fields is a genuine "theme has
+// errors" outcome rather than a broken command.
+if (!isPlainObject(raw) && !Array.isArray(raw)) {
+  console.error(`${FAIL} theme.json must contain a JSON object (got: ${raw === null ? "null" : typeof raw})`);
   process.exit(1);
 }
 
@@ -130,6 +222,32 @@ if (check(vb && vb.x != null && vb.y != null && vb.width != null && vb.height !=
 }
 const sleepMode = deriveSleepMode(raw);
 const normalizedStates = normalizeStateBindings(raw.states);
+function reportAttachmentCapability(fieldName, deriveCapability) {
+  const pathName = `customization.${fieldName}`;
+  const schemaErrors = themeSchema.validateTheme(raw)
+    .filter((message) => message.includes(pathName));
+  // `false`/`null` is the documented opt-out, not a misconfiguration.
+  if (!raw.customization || !raw.customization[fieldName]) return;
+  if (schemaErrors.length > 0) {
+    for (const message of schemaErrors) {
+      console.log(`  ${FAIL} ${message}`);
+      errors++;
+    }
+    return;
+  }
+  if (deriveCapability(raw)) {
+    console.log(`  ${PASS} ${pathName} attachment geometry is schema-valid`);
+    return;
+  }
+  console.log(
+    `  ${WARN} ${pathName} is schema-valid but does not cover every visual, `
+    + "so this accessory slot stays disabled and its Settings row is hidden"
+  );
+  warnings++;
+}
+
+reportAttachmentCapability("accessories", themeSchema.deriveAccessoryCapability);
+reportAttachmentCapability("mouthAccessories", themeSchema.deriveMouthAccessoryCapability);
 
 if (check(!!raw.states, "states object exists")) {
   for (const s of REQUIRED_STATES) {
@@ -192,61 +310,14 @@ const assetsDir = assetsOverride ? path.resolve(assetsOverride) : path.join(reso
 const assetsDirExists = fs.existsSync(assetsDir);
 check(assetsDirExists, `assets/ directory exists`);
 
-/** Collect all referenced asset filenames */
-function collectFiles() {
-  const files = new Set();
-  // States
-  if (raw.states) {
-    for (const [key, entry] of Object.entries(raw.states)) {
-      if (key.startsWith("_")) continue; // skip _comment
-      getStateFiles(entry).forEach((f) => files.add(f));
-    }
-  }
-  // Mini mode states
-  if (raw.miniMode && raw.miniMode.states) {
-    for (const [key, arr] of Object.entries(raw.miniMode.states)) {
-      if (key.startsWith("_")) continue;
-      if (Array.isArray(arr)) arr.forEach(f => files.add(f));
-    }
-  }
-  // Working tiers
-  if (raw.workingTiers) {
-    for (const tier of raw.workingTiers) {
-      if (tier.file) files.add(tier.file);
-    }
-  }
-  // Juggling tiers
-  if (raw.jugglingTiers) {
-    for (const tier of raw.jugglingTiers) {
-      if (tier.file) files.add(tier.file);
-    }
-  }
-  // Idle animations
-  if (raw.idleAnimations) {
-    for (const anim of raw.idleAnimations) {
-      if (anim.file) files.add(anim.file);
-    }
-  }
-  // Reactions
-  if (raw.reactions) {
-    for (const [key, react] of Object.entries(raw.reactions)) {
-      if (key.startsWith("_")) continue;
-      if (react.file) files.add(react.file);
-      if (react.fileLeft) files.add(react.fileLeft);
-      if (react.fileRight) files.add(react.fileRight);
-      if (react.files) react.files.forEach(f => files.add(f));
-    }
-  }
-  // Display hint map values
-  if (raw.displayHintMap) {
-    for (const f of Object.values(raw.displayHintMap)) {
-      if (f) files.add(f);
-    }
-  }
-  return files;
-}
-
-const referencedFiles = collectFiles();
+// Selectable-only idle visuals are optional at runtime. Check them below as
+// warnings, not as missing required visual assets.
+const referencedFiles = new Set(themeSchema.collectRequiredAssetFiles({
+  ...raw, idleVisualOptions: undefined,
+}));
+const idleVisualOptions = Object.prototype.hasOwnProperty.call(raw, "idleVisualOptions")
+  ? themeSchema.normalizeIdleVisualOptions(raw.idleVisualOptions, (message) => warn(false, message))
+  : [];
 let missingCount = 0;
 let presentCount = 0;
 
@@ -265,6 +336,14 @@ if (assetsDirExists) {
     console.log(`  ${PASS} All ${presentCount} referenced assets exist`);
   } else {
     console.log(`  ${FAIL} ${missingCount}/${referencedFiles.size} assets missing`);
+  }
+
+  for (const entry of idleVisualOptions) {
+    const file = entry.file;
+    let exists = false;
+    try { exists = fs.statSync(path.join(assetsDir, file)).isFile(); } catch {}
+    if (exists) referencedFiles.add(file);
+    else warn(false, `idleVisualOptions entry dropped: missing asset ${file}`);
   }
 
   // Check for orphan files (in assets/ but not referenced)
@@ -380,6 +459,14 @@ if (isPlainObject(raw.miniMode) && raw.miniMode.supported !== false) {
     check(
       raw.miniMode.states && Array.isArray(raw.miniMode.states[s]) && raw.miniMode.states[s].length > 0,
       `miniMode.supported=true requires miniMode.states.${s}`
+    );
+  }
+  for (const s of MINI_OPTIONAL_PEEK_STATES) {
+    if (!Object.prototype.hasOwnProperty.call(raw.miniMode.states || {}, s)) continue;
+    check(
+      Array.isArray(raw.miniMode.states[s]) && raw.miniMode.states[s].length > 0
+        && raw.miniMode.states[s].every((file) => typeof file === "string" && !!file),
+      `miniMode.states.${s} is a non-empty file array when declared`
     );
   }
 }
@@ -547,7 +634,15 @@ if (raw.variants !== undefined) {
 
       // Rule 3: asset existence (format-agnostic: svg/apng/gif)
       const variantAssets = collectVariantAssetFiles(variantSpec);
+      const variantIdleOptions = Object.prototype.hasOwnProperty.call(variantSpec, "idleVisualOptions")
+        ? themeSchema.normalizeIdleVisualOptions(variantSpec.idleVisualOptions, (message) => warn(false, `variant "${variantId}": ${message}`))
+        : [];
       if (assetsDirExists) {
+        for (const entry of variantIdleOptions) {
+          let exists = false;
+          try { exists = fs.statSync(path.join(assetsDir, entry.file)).isFile(); } catch {}
+          if (!exists) warn(false, `variant "${variantId}" idleVisualOptions entry dropped: missing asset ${entry.file}`);
+        }
         for (const file of variantAssets) {
           const basename = path.basename(file);
           const filePath = path.join(assetsDir, basename);
@@ -611,20 +706,9 @@ if (raw.variants !== undefined) {
 }
 
 console.log(`\n${C}[Capabilities]${D}`);
-const capabilities = {
-  eyeTracking: !!(
-    isPlainObject(raw.eyeTracking)
-    && raw.eyeTracking.enabled
-    && hasNonEmptyArray(raw.eyeTracking.states)
-  ),
-  miniMode: !!(isPlainObject(raw.miniMode) && raw.miniMode.supported !== false),
-  idleAnimations: hasNonEmptyArray(raw.idleAnimations),
-  reactions: hasReactionBindings(raw.reactions),
-  workingTiers: hasNonEmptyArray(raw.workingTiers),
-  jugglingTiers: hasNonEmptyArray(raw.jugglingTiers),
-  idleMode: deriveIdleMode(raw),
-  sleepMode,
-};
+const capabilities = themeSchema.buildCapabilities(raw, {
+  trustedRuntimeAllowed: isBuiltinTheme,
+});
 for (const [key, value] of Object.entries(capabilities)) {
   console.log(`  ${PASS} ${key}: ${value}`);
 }

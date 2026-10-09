@@ -5,6 +5,9 @@
 // cap on width prevents a tall narrow screen from being swallowed by the pet.
 const PORTRAIT_BOOST = 1.6;
 const PORTRAIT_MAX_WIDTH_RATIO = 0.6;
+const {
+  SIZE_UI_MIN, SIZE_UI_MAX, uiSizeToPrefs, prefsSizeToUi, clampSizeUi,
+} = require("./settings-size-slider");
 
 function getProportionalBasePx(workArea) {
   if (!workArea) return 0;
@@ -27,6 +30,39 @@ function getProportionalPixelSize(ratio, workArea) {
   }
 
   return { width: px, height: px };
+}
+
+function resolveSizeSliderContext(sizeKey, effectiveSize, workArea, keepSizeActive) {
+  const match = typeof sizeKey === "string" && /^P:(\d+(?:\.\d+)?)$/.exec(sizeKey);
+  const ratio = match ? Number(match[1]) : NaN;
+  const fallbackUi = clampSizeUi(prefsSizeToUi(Number.isFinite(ratio) && ratio > 0 ? ratio : 9));
+  const width = Number(effectiveSize?.width);
+  const height = Number(effectiveSize?.height);
+  const waWidth = Number(workArea?.width);
+  const waHeight = Number(workArea?.height);
+  if (!Number.isFinite(ratio) || ratio <= 0
+    || !Number.isFinite(width) || width <= 0
+    || !Number.isFinite(height) || height <= 0
+    || !Number.isFinite(waWidth) || waWidth <= 0
+    || !Number.isFinite(waHeight) || waHeight <= 0) {
+    return { ui: fallbackUi, overMax: false, synced: true };
+  }
+  if (!keepSizeActive || getProportionalPixelSize(ratio, workArea).width === width) {
+    return { ui: fallbackUi, overMax: false, synced: true };
+  }
+  const maximumWidth = getProportionalPixelSize(uiSizeToPrefs(SIZE_UI_MAX), workArea).width;
+  if (width > maximumWidth) return { ui: SIZE_UI_MAX, overMax: true, synced: false };
+
+  let bestUi = SIZE_UI_MIN;
+  let bestDifference = Infinity;
+  for (let ui = SIZE_UI_MIN; ui <= SIZE_UI_MAX; ui++) {
+    const difference = Math.abs(getProportionalPixelSize(uiSizeToPrefs(ui), workArea).width - width);
+    if (difference < bestDifference) {
+      bestUi = ui;
+      bestDifference = difference;
+    }
+  }
+  return { ui: bestUi, overMax: false, synced: false };
 }
 
 function getLaunchSizingWorkArea(prefs, fallbackWorkArea, findNearestWorkArea) {
@@ -97,4 +133,5 @@ module.exports = {
   getProportionalBasePx,
   getProportionalPixelSize,
   getSavedPixelSize,
+  resolveSizeSliderContext,
 };

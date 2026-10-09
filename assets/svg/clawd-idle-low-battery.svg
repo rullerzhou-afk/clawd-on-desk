@@ -73,7 +73,7 @@
     <rect class="battery-low" x="88" y="394" width="102" height="51" fill="#FF4444"/>
   </g>
 
-  <g class="doze-body">
+  <g id="accessory-anchor" class="doze-body">
     <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
     <g class="arm-l-doze">
       <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>

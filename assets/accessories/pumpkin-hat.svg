@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Pumpkin hat — pixel art (13x9 grid). Jack-o'-lantern with stem + face. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 13 9" shape-rendering="crispEdges" width="13" height="9">
+  <rect x="6" y="0" width="1" height="2" fill="#5c8a32"/>
+  <g fill="#ef8a26">
+    <rect x="3" y="2" width="7" height="1"/>
+    <rect x="1" y="3" width="11" height="1"/>
+    <rect x="0" y="4" width="13" height="1"/>
+    <rect x="0" y="5" width="13" height="1"/>
+    <rect x="0" y="6" width="13" height="1"/>
+    <rect x="1" y="7" width="11" height="1"/>
+    <rect x="3" y="8" width="7" height="1"/>
+  </g>
+  <g fill="#c66a14">
+    <rect x="3" y="4" width="1" height="3"/>
+    <rect x="9" y="4" width="1" height="3"/>
+  </g>
+  <g fill="#3a2410">
+    <rect x="3" y="4" width="2" height="1"/>
+    <rect x="8" y="4" width="2" height="1"/>
+    <rect x="2" y="6" width="2" height="1"/>
+    <rect x="5" y="6" width="1" height="1"/>
+    <rect x="7" y="6" width="1" height="1"/>
+    <rect x="9" y="6" width="2" height="1"/>
+  </g>
+</svg>

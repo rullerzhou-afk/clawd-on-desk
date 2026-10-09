@@ -3,8 +3,10 @@
 const defaultFs = require("fs");
 const defaultPath = require("path");
 const codexPetImporter = require("./codex-pet-importer");
+const { MARKER_FILENAME: OFFICIAL_THEME_MARKER_FILENAME } = require("./official-theme-installer");
 const {
   collectRequiredAssetFiles,
+  filterIdleVisualOptionsByAsset,
   mergeDefaults,
   validateTheme,
 } = require("./theme-schema");
@@ -13,7 +15,7 @@ const MAX_THEME_ZIP_BYTES = 80 * 1024 * 1024;
 const MAX_THEME_ZIP_ENTRY_BYTES = 40 * 1024 * 1024;
 const MAX_THEME_UNZIPPED_BYTES = 160 * 1024 * 1024;
 const MAX_THEME_JSON_BYTES = 512 * 1024;
-const RESERVED_THEME_IDS = new Set(["clawd", "calico", "cloudling", "template"]);
+const RESERVED_THEME_IDS = new Set(["clawd", "calico", "cloudling", "hash-sage", "whale-chan", "template"]);
 
 function isPathInsideDir(pathModule, rootDir, targetPath) {
   const root = pathModule.resolve(rootDir);
@@ -62,10 +64,68 @@ function stripThemeRootPrefix(entryName, prefix) {
   return prefix ? entryName.slice(prefix.length) : entryName;
 }
 
+function normalizeZipEntryName(entryName) {
+  return String(entryName || "").replace(/\\/g, "/");
+}
+
+function portableZipPathPart(part) {
+  return String(part || "").replace(/[. ]+$/u, "").toLowerCase();
+}
+
+// Win32 resolves these names to DOS devices even when they carry an
+// extension (for example `LPT1.txt`). Reject them on every platform so a ZIP
+// accepted on macOS/Linux cannot later become unextractable on Windows.
+function isWindowsReservedPathPart(part) {
+  const portable = portableZipPathPart(part);
+  // Win32 also trims spaces/dots immediately before an extension while
+  // resolving a DOS device name (`CON .txt` aliases `CON`). Normalize the
+  // stem independently from the complete component so that form cannot pass.
+  const stem = portableZipPathPart(portable.split(".", 1)[0]);
+  return /^(?:con|prn|aux|nul|conin\$|conout\$|(?:com|lpt)[1-9¹²³])$/u.test(stem);
+}
+
+function portableZipPathKey(relativePath) {
+  return normalizeZipEntryName(relativePath)
+    .split("/")
+    .filter(Boolean)
+    .map(portableZipPathPart)
+    .join("/");
+}
+
+function assertNoReservedOfficialMarker(entries, prefix) {
+  const normalizedPrefix = normalizeZipEntryName(prefix);
+  const reserved = OFFICIAL_THEME_MARKER_FILENAME.toLowerCase();
+  for (const entry of entries || []) {
+    if (!entry) continue;
+    const normalizedName = normalizeZipEntryName(entry.name);
+    if (normalizedPrefix && normalizedName !== normalizedPrefix.slice(0, -1)
+      && !normalizedName.startsWith(normalizedPrefix)) continue;
+    const relativePath = normalizedPrefix ? normalizedName.slice(normalizedPrefix.length) : normalizedName;
+    const parts = relativePath.split("/").filter(Boolean);
+    // NTFS spells the unnamed/default data stream as `filename::$DATA`, which
+    // is equivalent to `filename`. Detect that alias before rejecting all
+    // Windows-reserved characters so a forged marker is still reported as the
+    // ownership-boundary violation it is, and do the complete scan before any
+    // staging directory exists.
+    if (parts.some((part) => portableZipPathPart(part.split(":", 1)[0]) === reserved)) {
+      throw new Error(`theme zip contains reserved official theme ownership marker: ${entry.name}`);
+    }
+    if (parts.some((part) => /[<>:"|?*\x00-\x1f]/u.test(part))) {
+      throw new Error(`unsafe theme zip entry path: ${entry.name}`);
+    }
+    if (parts.some(isWindowsReservedPathPart)) {
+      throw new Error(`unsafe Windows device name in theme zip entry: ${entry.name}`);
+    }
+  }
+}
+
 function assertSafeRelativePath(pathModule, rootDir, relativePath) {
   const normalized = String(relativePath || "").replace(/\\/g, "/");
   const parts = normalized.split("/").filter(Boolean);
-  if (!parts.length || parts.some((part) => part === "." || part === "..")) {
+  if (!parts.length || parts.some((part) => (
+    part === "." || part === ".." || /[<>:"|?*\x00-\x1f]/u.test(part)
+    || isWindowsReservedPathPart(part)
+  ))) {
     throw new Error(`unsafe theme zip entry path: ${relativePath}`);
   }
   const target = pathModule.resolve(pathModule.join(rootDir, ...parts));
@@ -87,6 +147,9 @@ function validateExtractedTheme({ fs, path, stagingDir, themeId }) {
   if (errors.length > 0) throw new Error(`theme.json validation failed: ${errors.join("; ")}`);
 
   const effective = mergeDefaults(raw, themeId, false);
+  filterIdleVisualOptionsByAsset(effective, (filename) => {
+    try { return fs.statSync(path.join(stagingDir, "assets", filename)).isFile(); } catch { return false; }
+  });
   const missingAssets = collectRequiredAssetFiles(effective)
     .filter((filename) => !fs.existsSync(path.join(stagingDir, "assets", filename)));
   if (missingAssets.length > 0) {
@@ -109,6 +172,11 @@ function importUserThemeZip(zipPath, options = {}) {
   const buffer = fs.readFileSync(zipPath);
   const entries = codexPetImporter.readZipEntries(buffer);
   const { prefix, folderName, themeJsonEntry } = chooseThemeZipRoot(entries);
+  // User imports must never be able to mint the marker consumed by the
+  // official-theme manager. Scan the complete logical theme root before a
+  // staging directory or target is created, including Windows separators and
+  // case variants that collapse on case-insensitive filesystems.
+  assertNoReservedOfficialMarker(entries, prefix);
   if (themeJsonEntry.uncompressedSize > MAX_THEME_JSON_BYTES) {
     throw new Error(`theme.json exceeds ${MAX_THEME_JSON_BYTES} bytes`);
   }
@@ -116,6 +184,9 @@ function importUserThemeZip(zipPath, options = {}) {
   const fallbackName = path.basename(zipPath, path.extname(zipPath));
   const themeId = sanitizeThemeDirName(folderName || fallbackName);
   if (!themeId) throw new Error("could not derive a theme folder name from the package");
+  if (isWindowsReservedPathPart(themeId)) {
+    throw new Error(`theme id "${themeId}" is a reserved Windows device name`);
+  }
   if (RESERVED_THEME_IDS.has(themeId.toLowerCase())) {
     throw new Error(`theme id "${themeId}" is reserved`);
   }
@@ -139,7 +210,7 @@ function importUserThemeZip(zipPath, options = {}) {
       const relativePath = stripThemeRootPrefix(entry.name, prefix);
       if (!relativePath) continue;
       const { target } = assertSafeRelativePath(path, stagingDir, relativePath);
-      const normalizedKey = path.relative(stagingDir, target).toLowerCase();
+      const normalizedKey = portableZipPathKey(relativePath);
       if (seenPaths.has(normalizedKey)) throw new Error(`duplicate theme zip entry: ${relativePath}`);
       seenPaths.add(normalizedKey);
       totalUnzipped += entry.uncompressedSize || 0;

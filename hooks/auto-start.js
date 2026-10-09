@@ -5,8 +5,12 @@
 // Uses shared server discovery helpers and should exit quickly in normal cases.
 
 const { spawn } = require("child_process");
+const fs = require("fs");
 const path = require("path");
-const { discoverClawdPort } = require("./server-config");
+const {
+  APPIMAGE_HOOK_MARKER_FILE,
+  discoverClawdPort,
+} = require("./server-config");
 const { buildElectronLaunchConfig } = require("./shared-process");
 
 const INITIAL_DISCOVER_TIMEOUT_MS = 300;
@@ -38,10 +42,132 @@ function waitForClawdPort(options, callback) {
   probe();
 }
 
+function decodeXmlText(value) {
+  return String(value || "")
+    .replace(/&lt;/g, "<")
+    .replace(/&gt;/g, ">")
+    .replace(/&quot;/g, "\"")
+    .replace(/&apos;/g, "'")
+    .replace(/&amp;/g, "&");
+}
+
+function resolveMacBundleExecutable(appBundle, options = {}) {
+  const fsApi = options.fs || fs;
+  let executableName = null;
+  try {
+    const plist = fsApi.readFileSync(
+      path.posix.join(appBundle, "Contents", "Info.plist"),
+      "utf8"
+    );
+    const match = plist.match(
+      /<key>\s*CFBundleExecutable\s*<\/key>\s*<string>\s*([^<]+?)\s*<\/string>/i
+    );
+    const candidate = match ? decodeXmlText(match[1]).trim() : "";
+    if (
+      candidate
+      && candidate !== "."
+      && candidate !== ".."
+      && !candidate.includes("/")
+      && !candidate.includes("\\")
+    ) {
+      executableName = candidate;
+    }
+  } catch {}
+  // electron-builder's productName is the stable executable name even when a
+  // user renames or copies the outer .app bundle in Finder.
+  if (!executableName) executableName = "Clawd on Desk";
+  return path.posix.join(appBundle, "Contents", "MacOS", executableName);
+}
+
+function isPosixInside(dir, target) {
+  const root = String(dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const child = String(target || "").replace(/\\/g, "/");
+  if (!root || !child) return false;
+  return child === root || child.startsWith(`${root}/`);
+}
+
+function resolveAppImageExecutable(hooksDir, options = {}) {
+  const fsApi = options.fs || fs;
+  const candidates = [];
+  try {
+    candidates.push(
+      fsApi.readFileSync(path.posix.join(hooksDir, APPIMAGE_HOOK_MARKER_FILE), "utf8")
+    );
+  } catch {}
+  // APPIMAGE/APPDIR belong to the running AppImage process, not arbitrary
+  // source shells: a deb/source Clawd launched from another AppImage's shell
+  // inherits both. Only trust the environment fallback while executing from
+  // this process's own APPDIR-owned asar tree (real Clawd AppImage with no
+  // materialized marker). A foreign APPDIR must never make us spawn an
+  // unrelated executable.
+  if (hooksDir.includes("app.asar")) {
+    const env = options.env || process.env;
+    const appDir = env && typeof env.APPDIR === "string" ? env.APPDIR.trim() : "";
+    if (appDir && path.posix.isAbsolute(appDir) && isPosixInside(appDir, hooksDir)) {
+      candidates.push(
+        typeof options.appImagePath === "string" ? options.appImagePath : "",
+        env && typeof env.APPIMAGE === "string" ? env.APPIMAGE : ""
+      );
+    }
+  }
+  for (const value of candidates) {
+    const candidate = String(value || "").trim();
+    if (candidate && path.posix.isAbsolute(candidate)) return candidate;
+  }
+  return null;
+}
+
+// A materialized AppImage generation lives at
+// <home>/.clawd/appimage-hooks/<generation>/. The layout name is the durable
+// signal that this directory must never be treated as a source checkout: if
+// the marker is missing/corrupt we must fail closed instead of falling through
+// to the dev `require("electron")` branch (which would crash inside Claude).
+function isMaterializedAppImageHooksDir(hooksDir, options = {}) {
+  const fsApi = options.fs || fs;
+  const normalized = String(hooksDir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  if (/\/\.clawd\/appimage-hooks\/[^/]+$/.test(normalized)) return true;
+  try {
+    return fsApi.existsSync(path.posix.join(hooksDir, APPIMAGE_HOOK_MARKER_FILE));
+  } catch {
+    return false;
+  }
+}
+
+function spawnDetached(spawnProcess, command, args, options, onError) {
+  const child = spawnProcess(command, args, options);
+  if (child && typeof child.once === "function") {
+    child.once("error", (err) => {
+      onError(err);
+    });
+  }
+  if (child && typeof child.unref === "function") child.unref();
+  return child;
+}
+
+function isGrokCompatibilityHookEnv(env = process.env) {
+  // Only the runner-injected official GROK_HOOK_EVENT activates the guard.
+  // GROK_HOME, an unrelated GROK_* variable, or the user's shell config must
+  // not suppress the Claude auto-start hook, and GROK_SESSION_ID alone is not
+  // official evidence that Grok invoked this process.
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
+}
+
 function main(deps = {}) {
+  const env = deps.env || process.env;
+  const exit = deps.exit || ((code) => process.exit(code));
+  // Grok scans Claude settings by default. SessionStart would otherwise cold-
+  // launch Clawd through the Claude auto-start hook even when Grok is not
+  // enabled in Settings. Emit the host-required passive stdout and exit
+  // without discovering a port or launching anything.
+  if (isGrokCompatibilityHookEnv(env)) {
+    const writeStdout = deps.writeStdout || ((text) => process.stdout.write(text));
+    writeStdout("{}\n");
+    exit(0);
+    return;
+  }
+
   const discover = deps.discoverClawdPort || discoverClawdPort;
   const launch = deps.launchApp || launchApp;
-  const exit = deps.exit || ((code) => process.exit(code));
 
   discover({ timeoutMs: INITIAL_DISCOVER_TIMEOUT_MS }, (port) => {
     if (port) {
@@ -60,55 +186,108 @@ function main(deps = {}) {
   });
 }
 
-function launchApp() {
-  const isPackaged = __dirname.includes("app.asar");
-  const isWin = process.platform === "win32";
-  const isMac = process.platform === "darwin";
+function launchApp(options = {}) {
+  const hooksDir = options.hooksDir || __dirname;
+  const platform = options.platform || process.platform;
+  const spawnProcess = options.spawn || spawn;
+  const onSpawnError = options.onSpawnError || ((err) => {
+    process.stderr.write(`clawd auto-start: ${err && err.message ? err.message : err}\n`);
+  });
+  const isWin = platform === "win32";
+  const isMac = platform === "darwin";
+  const appImage = platform === "linux"
+    ? resolveAppImageExecutable(hooksDir, options)
+    : null;
+  const materializedAppImageDir = platform === "linux"
+    && isMaterializedAppImageHooksDir(hooksDir, { fs: options.fs });
+  // A materialized generation with a missing/corrupt/non-absolute marker must
+  // fail closed. Falling back to the source/dev branch here would attempt
+  // require("electron") from inside a Claude hook and throw MODULE_NOT_FOUND.
+  if (materializedAppImageDir && !appImage) {
+    process.stderr.write(
+      "clawd auto-start: AppImage marker is missing or invalid; refusing to launch from a materialized hook directory\n"
+    );
+    return;
+  }
+  const isPackaged = hooksDir.includes("app.asar") || !!appImage || materializedAppImageDir;
 
   try {
     if (isPackaged) {
       if (isWin) {
         // __dirname: <install>/resources/app.asar.unpacked/hooks
         // exe:       <install>/Clawd on Desk.exe
-        const installDir = path.resolve(__dirname, "..", "..", "..");
+        const installDir = path.resolve(hooksDir, "..", "..", "..");
         const exe = path.join(installDir, "Clawd on Desk.exe");
-        spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+        spawnDetached(
+          spawnProcess,
+          exe,
+          [],
+          { detached: true, stdio: "ignore" },
+          onSpawnError
+        );
       } else if (isMac) {
         // __dirname: <name>.app/Contents/Resources/app.asar.unpacked/hooks
         // .app bundle: 4 levels up
-        const appBundle = path.resolve(__dirname, "..", "..", "..", "..");
-        spawn("open", ["-a", appBundle], {
-          detached: true,
-          stdio: "ignore",
-        }).unref();
+        const appBundle = path.posix.resolve(hooksDir, "..", "..", "..", "..");
+        const executable = resolveMacBundleExecutable(appBundle, {
+          fs: options.fs,
+        });
+        // Launch the bundle executable directly. LaunchServices can create a
+        // process without bringing an unpacked or unregistered bundle to a
+        // ready state, which drops the cold SessionStart during packaged
+        // smoke testing.
+        spawnDetached(
+          spawnProcess,
+          executable,
+          [],
+          { detached: true, stdio: "ignore" },
+          onSpawnError
+        );
       } else {
         // Linux packaged app:
         // AppImage: process.env.APPIMAGE holds the .AppImage file path.
         // deb/dir:  executable is <install>/clawd-on-desk, same depth as Windows.
         //   __dirname: <install>/resources/app.asar.unpacked/hooks
         //   install:   3 levels up
-        const appImage = process.env.APPIMAGE;
         if (appImage) {
-          spawn(appImage, [], { detached: true, stdio: "ignore" }).unref();
+          spawnDetached(
+            spawnProcess,
+            appImage,
+            [],
+            { detached: true, stdio: "ignore" },
+            onSpawnError
+          );
         } else {
-          const installDir = path.resolve(__dirname, "..", "..", "..");
-          const exe = path.join(installDir, "clawd-on-desk");
-          spawn(exe, [], { detached: true, stdio: "ignore" }).unref();
+          const installDir = path.posix.resolve(hooksDir, "..", "..", "..");
+          const exe = path.posix.join(installDir, "clawd-on-desk");
+          spawnDetached(
+            spawnProcess,
+            exe,
+            [],
+            { detached: true, stdio: "ignore" },
+            onSpawnError
+          );
         }
       }
     } else {
       // Source / development mode: start Electron directly so Windows does not
       // flash a console through the cmd/npm/launch.js process chain.
-      const projectDir = path.resolve(__dirname, "..");
-      const electron = require("electron");
+      const projectDir = path.resolve(hooksDir, "..");
+      const electron = options.electron || require("electron");
       const launchConfig = buildElectronLaunchConfig(projectDir);
-      spawn(electron, launchConfig.args, {
-        cwd: launchConfig.cwd,
-        detached: true,
-        stdio: "ignore",
-        windowsHide: true,
-        env: launchConfig.env,
-      }).unref();
+      spawnDetached(
+        spawnProcess,
+        electron,
+        launchConfig.args,
+        {
+          cwd: launchConfig.cwd,
+          detached: true,
+          stdio: "ignore",
+          windowsHide: true,
+          env: launchConfig.env,
+        },
+        onSpawnError
+      );
     }
   } catch (err) {
     process.stderr.write(`clawd auto-start: ${err.message}\n`);
@@ -123,6 +302,10 @@ module.exports = {
   STARTUP_DISCOVER_TIMEOUT_MS,
   STARTUP_POLL_INTERVAL_MS,
   waitForClawdPort,
+  resolveAppImageExecutable,
+  isMaterializedAppImageHooksDir,
+  resolveMacBundleExecutable,
   launchApp,
+  isGrokCompatibilityHookEnv,
   main,
 };

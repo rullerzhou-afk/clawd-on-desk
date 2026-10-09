@@ -12,7 +12,7 @@ const {
   readHostPrefix,
   applyWslSourceFields,
 } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;
@@ -124,14 +124,40 @@ function isQwenAgentCommandLine(cmd) {
     || /(^|[\s"'/])qwen(\.js)?($|[\s"'/])/.test(normalized);
 }
 
-function applyLocalProcessFields(body, resolve) {
-  const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve();
+// #634: lifecycle for the shared resolver's cross-process pid cache. Stop is
+// deliberately NOT "end" (turn completion, not session end). PermissionRequest
+// falls through to "event" like any other mid-session hook.
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  SessionEnd: "end",
+};
+
+// cacheable keys off the RAW session id: normalizeQwenSessionId prefixes, so
+// its "qwen-code:default" fallback would defeat the #583 same-key guard; a
+// literal raw "default" is rejected for the same reason.
+function pidCacheContext(hookName, payload, body) {
+  const raw = payload && payload.session_id != null && payload.session_id !== ""
+    ? String(payload.session_id)
+    : "";
+  return {
+    namespace: "qwen-code",
+    sessionId: body.session_id,
+    cacheCwd: body.cwd || "",
+    lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+    cacheable: !!raw && raw !== "default" && !!body.cwd,
+  };
+}
+
+function applyLocalProcessFields(body, resolve, ctx) {
+  const { stablePid, agentPid, detectedEditor, pidChain, tmuxSocket, tmuxClient } = resolve(ctx);
   if (Number.isFinite(stablePid) && stablePid > 0) body.source_pid = Math.floor(stablePid);
   if (detectedEditor) body.editor = detectedEditor;
   if (Number.isFinite(agentPid) && agentPid > 0) body.agent_pid = Math.floor(agentPid);
   if (Array.isArray(pidChain) && pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
+  applyOrcaPaneKey(body);
 }
 
 function maybeAddToolMetadata(body, payload) {
@@ -169,9 +195,10 @@ function buildStateBody(hookName, payload, resolve, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
-    applyLocalProcessFields(body, resolve);
+    applyLocalProcessFields(body, resolve, pidCacheContext(hookName, payload, body));
   }
 
   return body;
@@ -225,9 +252,10 @@ function buildPermissionBody(hookName, payload, resolve, options = {}) {
   const rawToolInput = payload && payload.tool_input && typeof payload.tool_input === "object"
     ? payload.tool_input
     : {};
-  const toolName = payload && typeof payload.tool_name === "string" && payload.tool_name
-    ? payload.tool_name
-    : "Unknown";
+  const toolName = payload && typeof payload.tool_name === "string"
+    ? payload.tool_name.trim()
+    : "";
+  if (!toolName || /^unknown$/i.test(toolName)) return null;
   const body = {
     agent_id: "qwen-code",
     session_id: normalizeQwenSessionId(payload && payload.session_id),
@@ -253,9 +281,10 @@ function buildPermissionBody(hookName, payload, resolve, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
   } else {
     applyWslSourceFields(body);
-    applyLocalProcessFields(body, resolve);
+    applyLocalProcessFields(body, resolve, pidCacheContext(hookName, payload, body));
   }
   return body;
 }

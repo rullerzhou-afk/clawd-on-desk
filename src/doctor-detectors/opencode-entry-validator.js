@@ -8,6 +8,17 @@ function isAbsoluteAnyPlatform(entry) {
   return path.posix.isAbsolute(normalized) || path.win32.isAbsolute(normalized);
 }
 
+// Fixed shared-dependency closure of a family entry (plan §3.4): the thin
+// entry imports ../opencode-family-plugin/core.mjs, which imports
+// ./session-ids.mjs. The graph is fixed and two levels deep, so it is
+// declared explicitly here rather than resolved by a generic ESM parser —
+// without this, packaging that drops a shared file would report a false ok
+// and the host would die with ERR_MODULE_NOT_FOUND at load time.
+const FAMILY_SHARED_FILES = [
+  ["..", "opencode-family-plugin", "core.mjs"],
+  ["..", "opencode-family-plugin", "session-ids.mjs"],
+];
+
 function validateOpencodeEntry(entry, options = {}) {
   const fsImpl = options.fs || fs;
   if (typeof entry !== "string" || !isAbsoluteAnyPlatform(entry)) {
@@ -27,6 +38,13 @@ function validateOpencodeEntry(entry, options = {}) {
   const indexPath = path.join(entry, "index.mjs");
   if (!fsImpl.existsSync(indexPath)) {
     return { ok: false, reason: "index-mjs-missing" };
+  }
+
+  for (const segments of FAMILY_SHARED_FILES) {
+    const sharedPath = path.join(entry, ...segments);
+    if (!fsImpl.existsSync(sharedPath)) {
+      return { ok: false, reason: "family-core-missing", missing: sharedPath };
+    }
   }
 
   // #413: opencode's plugin loader (getLegacyPlugins) iterates Object.values(mod)

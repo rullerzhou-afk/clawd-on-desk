@@ -2,19 +2,26 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
+  createCodexAutoStartGateEvaluator,
+  createRuntimeAgentGate,
   getCodexPermissionMode,
   isAgentEnabled,
   isAgentIntegrationInstalled,
   isAgentPermissionsEnabled,
   isAgentSubagentPermissionsEnabled,
   isAgentNotificationHookEnabled,
+  isCodexAutoStartEnabled,
   isCodexNativeNotificationSoundEnabled,
   isCodexPermissionInterceptEnabled,
   shouldSyncAgentIntegration,
 } = require("../src/agent-gate");
 const { commandRegistry } = require("../src/settings-actions");
+const { createSettingsController } = require("../src/settings-controller");
 const prefs = require("../src/prefs");
 
 describe("isAgentEnabled", () => {
@@ -86,6 +93,69 @@ describe("isAgentIntegrationInstalled", () => {
       shouldSyncAgentIntegration({ agents: { codex: { integrationInstalled: true, enabled: false } } }, "codex"),
       false
     );
+  });
+});
+
+describe("isCodexAutoStartEnabled", () => {
+  it("requires an explicit opt-in plus an installed and enabled Codex integration", () => {
+    const snapshot = prefs.getDefaults();
+    assert.strictEqual(snapshot.autoStartWithCodex, false);
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+
+    snapshot.autoStartWithCodex = true;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), true);
+
+    snapshot.agents.codex.enabled = false;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+    snapshot.agents.codex.enabled = true;
+    snapshot.agents.codex.integrationInstalled = false;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+  });
+
+  it("fails closed for missing or malformed opt-in state", () => {
+    assert.strictEqual(isCodexAutoStartEnabled(null), false);
+    assert.strictEqual(isCodexAutoStartEnabled({ agents: { codex: { enabled: true } } }), false);
+    assert.strictEqual(isCodexAutoStartEnabled({
+      autoStartWithCodex: "true",
+      agents: { codex: { integrationInstalled: true, enabled: true } },
+    }), false);
+  });
+
+  it("fails closed when any required Codex integration shape or flag is malformed", () => {
+    const malformed = [
+      { autoStartWithCodex: true },
+      { autoStartWithCodex: true, agents: null },
+      { autoStartWithCodex: true, agents: "oops" },
+      { autoStartWithCodex: true, agents: [] },
+      { autoStartWithCodex: true, agents: {} },
+      { autoStartWithCodex: true, agents: { codex: null } },
+      { autoStartWithCodex: true, agents: { codex: [] } },
+      { autoStartWithCodex: true, agents: { codex: {} } },
+      {
+        autoStartWithCodex: true,
+        agents: { codex: { integrationInstalled: true, enabled: "yes" } },
+      },
+      {
+        autoStartWithCodex: true,
+        agents: { codex: { integrationInstalled: 1, enabled: true } },
+      },
+    ];
+
+    for (const snapshot of malformed) {
+      assert.strictEqual(isCodexAutoStartEnabled(snapshot), false);
+    }
+  });
+
+  it("keeps a lost startup authority latched until a new evaluator is created", () => {
+    const snapshot = prefs.getDefaults();
+    snapshot.autoStartWithCodex = true;
+    assert.strictEqual(isCodexAutoStartEnabled(snapshot), true);
+
+    const currentProcess = createCodexAutoStartGateEvaluator({ authorityLost: true });
+    assert.strictEqual(currentProcess(snapshot), false);
+
+    const cleanRestart = createCodexAutoStartGateEvaluator({ authorityLost: false });
+    assert.strictEqual(cleanRestart(snapshot), true);
   });
 });
 
@@ -229,6 +299,100 @@ describe("Codex permission mode gate", () => {
   });
 });
 
+describe("createRuntimeAgentGate", () => {
+  it("preserves the normalized prefs gates while the snapshot is authoritative", () => {
+    const snapshot = prefs.getDefaults();
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => snapshot,
+      isAuthoritative: () => true,
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), true);
+    assert.strictEqual(gate.isAgentEnabled("claude-code"), true);
+    assert.strictEqual(gate.isAgentIntegrationInstalled("codex"), true);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), true);
+    assert.strictEqual(gate.isAgentPermissionsEnabled("codex"), true);
+    assert.strictEqual(gate.isAgentSubagentPermissionsEnabled("claude-code"), true);
+    assert.strictEqual(gate.isAgentNotificationHookEnabled("codex"), true);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), true);
+    assert.strictEqual(gate.hasAnyEnabledAgent(), true);
+  });
+
+  it("fails every prefs-backed runtime gate closed for a non-authoritative snapshot", () => {
+    const snapshot = prefs.getDefaults();
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => snapshot,
+      isAuthoritative: () => false,
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), false);
+    assert.strictEqual(gate.isAgentEnabled("claude-code"), false);
+    assert.strictEqual(gate.isAgentIntegrationInstalled("codex"), false);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+    assert.strictEqual(gate.isAgentPermissionsEnabled("codex"), false);
+    assert.strictEqual(gate.isAgentSubagentPermissionsEnabled("claude-code"), false);
+    assert.strictEqual(gate.isAgentNotificationHookEnabled("codex"), false);
+    assert.strictEqual(gate.isCodexNativeNotificationSoundEnabled(), false);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
+    assert.strictEqual(gate.hasAnyEnabledAgent(), false);
+  });
+
+  it("keeps a real malformed-prefs recovery non-authoritative until restart", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-agent-gate-recovered-"));
+    const prefsPath = path.join(dir, "clawd-prefs.json");
+    try {
+      fs.writeFileSync(prefsPath, '{"version":15,"agents":', "utf8");
+      const loaded = prefs.load(prefsPath);
+      assert.strictEqual(loaded.recovered, true);
+      assert.strictEqual(loaded.locked, false);
+      assert.strictEqual(fs.readFileSync(`${prefsPath}.bak`, "utf8"), '{"version":15,"agents":');
+      const controller = createSettingsController({ prefsPath, loadResult: loaded });
+      const initialRecovered = loaded.recovered === true;
+      const gate = createRuntimeAgentGate({
+        getSnapshot: () => controller.getSnapshot(),
+        isAuthoritative: () => !initialRecovered && !controller.hasReadFailure(),
+      });
+      assert.strictEqual(controller.hasReadFailure(), false);
+      assert.strictEqual(gate.isAuthoritative(), false);
+      assert.strictEqual(gate.isAgentEnabled("claude-code"), false);
+      assert.strictEqual(gate.isAgentEnabled("codex"), false);
+      assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+      assert.strictEqual(gate.isAgentPermissionsEnabled("codex"), false);
+      controller.dispose();
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed if the authority probe throws", () => {
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => prefs.getDefaults(),
+      isAuthoritative: () => {
+        throw new Error("authority unavailable");
+      },
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), false);
+    assert.strictEqual(gate.isAgentEnabled("codex"), false);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
+  });
+
+  it("fails closed if the authoritative snapshot reader throws", () => {
+    const gate = createRuntimeAgentGate({
+      getSnapshot: () => {
+        throw new Error("snapshot unavailable");
+      },
+    });
+
+    assert.strictEqual(gate.isAuthoritative(), true);
+    assert.strictEqual(gate.isAgentEnabled("codex"), false);
+    assert.strictEqual(gate.shouldSyncAgentIntegration("codex"), false);
+    assert.strictEqual(gate.isCodexPermissionInterceptEnabled(), false);
+    assert.strictEqual(gate.hasAnyEnabledAgent(), false);
+  });
+});
+
 describe("isAgentSubagentPermissionsEnabled", () => {
   it("returns true when the flag is absent (pre-#451 prefs file)", () => {
     assert.strictEqual(isAgentSubagentPermissionsEnabled(null, "claude-code"), true);
@@ -307,6 +471,7 @@ describe("setAgentFlag command", () => {
       dismissPermissionsByAgent: [],
       syncIntegrationForAgent: [],
       stopIntegrationForAgent: [],
+      writeCodexAutoStartGate: [],
     };
     return {
       calls,
@@ -318,6 +483,10 @@ describe("setAgentFlag command", () => {
         dismissPermissionsByAgent: (id) => calls.dismissPermissionsByAgent.push(id),
         syncIntegrationForAgent: (id) => calls.syncIntegrationForAgent.push(id),
         stopIntegrationForAgent: (id) => calls.stopIntegrationForAgent.push(id),
+        writeCodexAutoStartGate: (enabled) => {
+          calls.writeCodexAutoStartGate.push(enabled);
+          return true;
+        },
         ...overrides,
       },
     };

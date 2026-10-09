@@ -308,10 +308,10 @@ const NON_COLLAPSIBLE = [
 ### 5.8 `package.json`
 
 ```json
-"start": "node scripts/ensure-sidecar-binaries.js && node launch.js"
+"start": "node launch.js"
 ```
 
-CodeWhale 集成本身不需要改动 `npm start`。`ensure-sidecar-binaries.js` 是源码启动时 Telegram sidecar 二进制预检查 / 预拉取保障，本次 review 已恢复这段 preflight，避免把无关行为回退混进 CodeWhale PR。
+CodeWhale 集成本身不需要改动 `npm start`。Telegram legacy sidecar 已退役，源码启动不再预检查、下载或暂存该二进制。
 
 ### 5.9 Doctor / Cleanup
 

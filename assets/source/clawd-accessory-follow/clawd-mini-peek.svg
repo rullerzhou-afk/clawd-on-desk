@@ -1,0 +1,82 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .breathe-anim {
+        transform-origin: 7.5px 13px;
+        animation: breathe 3.2s infinite ease-in-out;
+      }
+
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: eye-blink 4s infinite ease-in-out;
+      }
+
+      #eyes-js {
+        transition: transform 0.2s ease-out;
+      }
+
+      /* Arm waving — fast 3 waves then pause, loop */
+      .arm-wave {
+        transform-origin: 2px 9px;
+        animation: peek-wave 3s infinite ease-in-out;
+      }
+
+      @keyframes breathe {
+        0%, 100% { transform: scale(1, 1) translate(0, 0); }
+        50% { transform: scale(1.02, 0.98) translate(0, 0.5px); }
+      }
+
+      @keyframes eye-blink {
+        0%, 10%, 100% { transform: scaleY(1); }
+        5% { transform: scaleY(0.1); }
+      }
+
+      /* Fast 3 waves (~0.9s) then still (~2.1s), loop */
+      @keyframes peek-wave {
+        0% { transform: rotate(0deg); }
+        5% { transform: rotate(35deg); }
+        10% { transform: rotate(-15deg); }
+        15% { transform: rotate(35deg); }
+        20% { transform: rotate(-15deg); }
+        25% { transform: rotate(35deg); }
+        30%, 100% { transform: rotate(0deg); }
+      }
+    </style>
+  </defs>
+
+  <!-- Entire character leaning -->
+  <g transform="rotate(-12, 7.5, 15)">
+
+    <!-- Legs -->
+    <g fill="#DE886D">
+      <rect x="3" y="11" width="1" height="4"/>
+      <rect x="5" y="11" width="1" height="4"/>
+      <rect x="9" y="11" width="1" height="4"/>
+      <rect x="11" y="11" width="1" height="4"/>
+    </g>
+
+    <!-- Upper Body -->
+    <g id="body-js">
+      <g class="breathe-anim">
+        <!-- Torso -->
+        <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+        <!-- Left Arm — continuous big wave -->
+        <g class="arm-wave">
+          <rect x="-1.5" y="9" width="5.5" height="2" fill="#DE886D"/>
+        </g>
+
+        <!-- Right Arm -->
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+
+        <!-- Eyes: JS translate wrapper + CSS blink -->
+        <g id="eyes-js" fill="#000000">
+          <g class="eyes-blink">
+            <rect x="4" y="8" width="1" height="2"/>
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

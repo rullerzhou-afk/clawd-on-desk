@@ -8,10 +8,14 @@ const fs = require("fs");
 const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
-const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, tmuxSocketFromEnv, processAlive } = require("./shared-process");
-const pidCache = require("./pid-cache");
-
-const isWin = process.platform === "win32";
+const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
+const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
+const { recordSessionHistoryFromStateBody } = require("./session-history");
+const { normalizeModelId } = require("./claude-rate-limits");
+const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./claude-tool-batch");
+// #634: the pid cache + lifecycle orchestration is owned by the shared resolver
+// now (hooks/shared-process.js); this adapter no longer touches pid-cache,
+// processAlive, or isWin directly.
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
 // #583: claude-code registers this hook with async:true and a 5s timeout
@@ -43,6 +47,18 @@ const TOOL_MATCH_ARRAY_MAX = 16;
 const TOOL_MATCH_OBJECT_KEYS_MAX = 32;
 const TOOL_MATCH_DEPTH_MAX = 6;
 const ASSISTANT_OUTPUT_CONTROL_RE = /[\u0000-\u0008\u000b\u000c\u000e-\u001F\u007F-\u009F]+/g;
+const CURSOR_VERSION_MAX = 128;
+
+function resolveReportingAgentId(payload) {
+  const cursorVersion = payload && typeof payload.cursor_version === "string"
+    ? payload.cursor_version.trim()
+    : "";
+  const isCursorCompatibilityHook =
+    cursorVersion.length > 0
+    && cursorVersion.length <= CURSOR_VERSION_MAX
+    && !/[\0\r\n]/.test(cursorVersion);
+  return isCursorCompatibilityHook ? "cursor-agent" : "claude-code";
+}
 
 function normalizeTitle(value) {
   if (typeof value !== "string") return null;
@@ -117,25 +133,35 @@ function readTranscriptTailEntries(transcriptPath) {
   return entries;
 }
 
-function extractSessionTitleFromEntries(entries) {
+function extractSessionTitleFromEntries(entries, sessionId) {
   if (!entries) return null;
-  let latest = null;
+  // Manual titles and AI titles are tracked separately: when Claude Code
+  // rewrites its metadata it appends the ai-title record after the manual
+  // custom-title one, so a single "last record wins" pass would let the AI
+  // title overwrite a manual rename.
+  let manualTitle = null;
+  let aiTitle = null;
   for (const obj of entries) {
     const type = typeof obj.type === "string" ? obj.type : "";
-    if (type !== "custom-title" && type !== "agent-name") continue;
-    latest =
-      normalizeTitle(obj.customTitle) ||
-      normalizeTitle(obj.title) ||
-      normalizeTitle(obj.custom_title) ||
-      normalizeTitle(obj.agentName) ||
-      normalizeTitle(obj.agent_name) ||
-      latest;
+    if (type === "custom-title" || type === "agent-name") {
+      manualTitle =
+        normalizeTitle(obj.customTitle) ||
+        normalizeTitle(obj.title) ||
+        normalizeTitle(obj.custom_title) ||
+        normalizeTitle(obj.agentName) ||
+        normalizeTitle(obj.agent_name) ||
+        manualTitle;
+      continue;
+    }
+    if (type === "ai-title" && entryMatchesSession(obj, sessionId)) {
+      aiTitle = normalizeTitle(obj.aiTitle) || aiTitle;
+    }
   }
-  return latest;
+  return manualTitle || aiTitle;
 }
 
-function extractSessionTitleFromTranscript(transcriptPath) {
-  return extractSessionTitleFromEntries(readTranscriptTailEntries(transcriptPath));
+function extractSessionTitleFromTranscript(transcriptPath, sessionId) {
+  return extractSessionTitleFromEntries(readTranscriptTailEntries(transcriptPath), sessionId);
 }
 
 function normalizeAssistantOutputText(value) {
@@ -167,7 +193,7 @@ function clampAssistantOutputText(text, maxLen = ASSISTANT_OUTPUT_MAX) {
   };
 }
 
-function assistantEntryMatchesSession(entry, sessionId) {
+function entryMatchesSession(entry, sessionId) {
   if (!sessionId) return true;
   if (!entry || typeof entry !== "object") return false;
   return !entry.sessionId || entry.sessionId === sessionId;
@@ -184,7 +210,7 @@ function assistantEntryLooksSubagent(entry) {
 function assistantEntryIsTurnBoundary(entry, sessionId) {
   if (!entry || typeof entry !== "object") return false;
   if (entry.type !== "user") return false;
-  return assistantEntryMatchesSession(entry, sessionId);
+  return entryMatchesSession(entry, sessionId);
 }
 
 function assistantTextPartsFromContent(content) {
@@ -215,19 +241,45 @@ function assistantTextFromEntry(entry) {
   return normalizeAssistantOutputText(assistantTextPartsFromContent(content).join("\n\n"));
 }
 
+function assistantEntryHasToolUse(entry) {
+  if (!entry || typeof entry !== "object") return false;
+  const message = entry.message && typeof entry.message === "object" ? entry.message : null;
+  const content = message && Object.prototype.hasOwnProperty.call(message, "content")
+    ? message.content
+    : entry.content;
+  if (!Array.isArray(content)) return false;
+  return content.some((block) => (
+    block
+    && typeof block === "object"
+    && (block.type === "tool_use" || block.type === "server_tool_use")
+  ));
+}
+
+// options.rejectToolUse — treat the newest matching assistant entry as a
+// completion predicate, not just a text source. A text-plus-tool-use preamble
+// (e.g. Claude narrates then calls Edit) still carries text, but the turn is
+// not over: the corresponding PreToolUse may not have reached state.js yet.
+// Callers that only fire once a turn has genuinely ended (the Stop-time
+// extractor) leave this off; the mid-turn completion probe turns it on so it
+// reschedules instead of synthesizing a premature completion (#908 review).
 function extractLastAssistantTextFromEntries(entries, sessionId, options = {}) {
   if (!Array.isArray(entries) || !entries.length) return null;
   const maxLen = Number.isInteger(options.maxLen) && options.maxLen > 0
     ? options.maxLen
     : ASSISTANT_OUTPUT_MAX;
+  const rejectToolUse = options.rejectToolUse === true;
   for (let i = entries.length - 1; i >= 0; i--) {
     const entry = entries[i];
     if (!entry || typeof entry !== "object") continue;
     if (assistantEntryIsTurnBoundary(entry, sessionId)) break;
     if (entry.type !== "assistant") continue;
     if (entry.isApiErrorMessage === true) continue;
-    if (!assistantEntryMatchesSession(entry, sessionId)) continue;
+    if (!entryMatchesSession(entry, sessionId)) continue;
     if (assistantEntryLooksSubagent(entry)) continue;
+    // The newest in-session assistant entry decides the turn. If it still
+    // carries a tool_use block the turn is mid-flight — fail closed rather
+    // than fall back to an older, already-superseded text entry.
+    if (rejectToolUse && assistantEntryHasToolUse(entry)) return null;
     const text = assistantTextFromEntry(entry);
     if (!text) continue;
     return clampAssistantOutputText(text, maxLen);
@@ -310,8 +362,10 @@ const EVENT_TO_STATE = {
   SessionStart: "idle",
   SessionEnd: "sleeping",
   UserPromptSubmit: "thinking",
+  UserPromptExpansion: "thinking",
   PreToolUse: "working",
   PostToolUse: "working",
+  PostToolBatch: "thinking",
   PostToolUseFailure: "error",
   Stop: "attention",
   StopFailure: "error",
@@ -330,64 +384,244 @@ const EVENT_TO_STATE = {
   WorktreeCreate: "carrying",
 };
 
-function isTaskToolStart(event, payload) {
-  // Claude Code may report subagent launches as PreToolUse(Task) without a
-  // matching SubagentStart. Keep PostToolUse(Task) as a normal working update:
-  // state.js holds juggling through working events and releases it on a later
-  // Stop/UserPromptSubmit, or on a real SubagentStop if Claude emits one.
+// #634: maps a Claude hook event to a shared-resolver cache lifecycle.
+// SessionStart, both prompt events and SessionEnd are special; every other
+// state event is an ordinary
+// `event` (cache hit = zero spawn, miss = one fresh). Stop is deliberately NOT
+// end — it is turn completion, and dropping the cache on it would force a
+// re-resolve (flash) on the next event. SessionEnd with source=clear still maps
+// to end, so the cache is dropped on /clear too (matrix §5.0).
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  UserPromptSubmit: "prompt",
+  UserPromptExpansion: "prompt",
+  SessionEnd: "end",
+};
+
+function isSubagentToolStart(event, payload) {
+  // Claude Code reports subagent launches as PreToolUse(Task) on older builds
+  // or PreToolUse(Agent) today, sometimes without a native SubagentStart. Keep
+  // PostToolUse as working: state.js holds juggling until Stop/UserPromptSubmit,
+  // or until a real SubagentStop if Claude emits one.
   return event === "PreToolUse"
     && payload
     && typeof payload.tool_name === "string"
-    && payload.tool_name === "Task";
+    && (payload.tool_name === "Task" || payload.tool_name === "Agent");
 }
 
-// #442-compat + #627: agent pid fields. Shared by the fresh-resolve and
-// cache-hit paths so the `headless` derivation and the `claude_pid` backward-
-// compat alias can never drift between them.
-function applyAgentPidFields(body, agentPid, agentCommandLine) {
+// Test-result reactions are deliberately conservative: only commands whose
+// shell segment STARTS with a known test runner qualify. This avoids reacting
+// to prose/echoes such as `echo "run npm test"`, while still supporting the
+// common `cd app && npm test` and `FOO=1 pytest` forms.
+const TEST_RUNNER_SEGMENT_RE = /^(?:(?:env\s+)?(?:[A-Za-z_][A-Za-z0-9_]*=[^\s]+\s+)*)?(?:(?:npx|bunx|pnpm\s+(?:exec|dlx)|yarn\s+(?:exec|dlx)|npm\s+exec)\s+)?(?:npm\s+(?:run\s+)?test(?::[\w.-]+)?(?:\s|$)|npm\s+t(?:\s|$)|pnpm\s+(?:run\s+)?test(?::[\w.-]+)?(?:\s|$)|yarn\s+(?:run\s+)?test(?::[\w.-]+)?(?:\s|$)|bun\s+(?:run\s+)?test(?::[\w.-]+)?(?:\s|$)|jest(?:\s|$)|vitest(?:\s|$)|mocha(?:\s|$)|ava(?:\s|$)|tap(?:\s|$)|node\s+--test(?:\s|$)|pytest(?:\s|$)|py\.test(?:\s|$)|python(?:3(?:\.\d+)?)?\s+-m\s+pytest(?:\s|$)|uv\s+run\s+pytest(?:\s|$)|go\s+test(?:\s|$)|cargo\s+test(?:\s|$)|(?:bundle\s+exec\s+)?rspec(?:\s|$)|(?:\.\/vendor\/bin\/)?phpunit(?:\s|$)|(?:\.\/)?gradlew?\s+test(?:\s|$)|\.\/mvnw\s+test(?:\s|$)|mvn(?:\s+[^\s]+)*\s+test(?:\s|$)|dotnet\s+test(?:\s|$)|ctest(?:\s|$)|deno\s+test(?:\s|$)|rake\s+test(?:\s|$)|mix\s+test(?:\s|$)|swift\s+test(?:\s|$)|make\s+test(?:\s|$))/i;
+
+function splitShellSegments(command) {
+  const segments = [];
+  let start = 0;
+  let quote = null;
+  let escaped = false;
+
+  for (let i = 0; i < command.length; i++) {
+    const char = command[i];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\" && quote !== "'") {
+      escaped = true;
+      continue;
+    }
+    if (quote) {
+      if (char === quote) quote = null;
+      continue;
+    }
+    if (char === "'" || char === '"') {
+      quote = char;
+      continue;
+    }
+
+    let operator = null;
+    if (char === "\n" || char === ";") operator = char;
+    else if (char === "&" && command[i + 1] === "&") operator = "&&";
+    else if (char === "|") operator = command[i + 1] === "|" ? "||" : "|";
+    if (!operator) continue;
+
+    segments.push({ text: command.slice(start, i).trim(), operator });
+    if (operator.length === 2) i++;
+    start = i + 1;
+  }
+  segments.push({ text: command.slice(start).trim(), operator: null });
+  return segments.filter((segment) => segment.text);
+}
+
+function isRecognizedTestCommand(command) {
+  if (typeof command !== "string" || !command.trim()) return false;
+  return splitShellSegments(command)
+    .map((segment) => segment.text)
+    .some((segment) => TEST_RUNNER_SEGMENT_RE.test(segment.trim()));
+}
+
+// A failed compound Bash call does not prove the test segment failed: setup
+// may have stopped before it, or a later lint/build step may be the culprit.
+// Only a direct test invocation, optionally preceded by `cd ... &&`, is
+// authoritative without a test summary.
+function isDirectTestCommand(command) {
+  if (typeof command !== "string" || !command.trim()) return false;
+  const segments = splitShellSegments(command);
+  if (!segments.length || !TEST_RUNNER_SEGMENT_RE.test(segments[segments.length - 1].text)) return false;
+  return segments.slice(0, -1).every((segment) => (
+    segment.operator === "&&" && /^cd(?:\s|$)/i.test(segment.text)
+  ));
+}
+
+function collectToolResponseText(response) {
+  if (typeof response === "string") return response;
+  if (!response || typeof response !== "object") return "";
+  const parts = [response.stdout, response.stderr, response.output, response.text]
+    .filter((value) => typeof value === "string");
+  if (typeof response.content === "string") parts.push(response.content);
+  else if (Array.isArray(response.content)) {
+    for (const item of response.content) {
+      if (item && typeof item.text === "string") parts.push(item.text);
+    }
+  }
+  return parts.join("\n");
+}
+
+// Classify a completed Bash test command as "pass" | "fail". A
+// PostToolUseFailure is authoritative only for a direct test invocation; a
+// compound command may have failed before or after its test segment. A
+// successful tool event still needs a recognizable test summary.
+function classifyTestResult(event, payload) {
+  if (!payload || payload.tool_name !== "Bash") return null;
+  const toolInput = payload.tool_input;
+  const command = toolInput && typeof toolInput.command === "string"
+    ? toolInput.command
+    : "";
+  if (!isRecognizedTestCommand(command)) return null;
+  const failedToolEvent = event === "PostToolUseFailure";
+  if (failedToolEvent && isDirectTestCommand(command)) return "fail";
+  if (!failedToolEvent && event !== "PostToolUse") return null;
+
+  const text = collectToolResponseText(payload.tool_response).slice(-8000);
+  if (!text) return null;
+
+  const hasExplicitRunnerFailureSummary =
+    /[1-9]\d*\s+(?:failed|failing)\b/i.test(text)
+    || /(?:^|\n)[#\s]*fail(?:ed|ures)?[:\s]+[1-9]\d*/i.test(text)
+    || /\bfailures?[:=]\s*[1-9]\d*/i.test(text)
+    || /test result:\s*FAILED|\btests? failed\b/.test(text);
+  if (hasExplicitRunnerFailureSummary) {
+    return "fail";
+  }
+  // A compound failed Bash command may have failed in a non-test segment.
+  // Generic build/exit/error summaries are safe only for a successful tool
+  // event whose recognized test runner actually completed.
+  if (failedToolEvent) return null;
+  if (/(?:^|\n)\s*(?:FAIL|FAILED|✗|✖|✘)\b|AssertionError|Traceback \(most recent|panic:/.test(text)
+      || /[1-9]\d*\s+errors?\b/i.test(text)
+      || /\bBUILD FAIL(?:ED|URE)\b/.test(text)
+      || /\bexit (?:code|status) [1-9]/.test(text)) return "fail";
+
+  const hasNonZeroPassCount =
+    /[1-9]\d*\s+pass(?:ed|ing)\b/i.test(text)
+    || /(?:^|\n)[#\s]*pass(?:ed)?[:\s]+[1-9]\d*/i.test(text);
+  if (hasNonZeroPassCount) return "pass";
+  if (/\b(?:all tests passed|test result:\s*ok|tests? passed)\b/i.test(text)
+      || /(?:^|\n)ok\s+\S/i.test(text)
+      || /(?:^|\n)\s*PASS\b/.test(text)
+      || /\bBUILD SUCCESS(?:FUL)?\b/.test(text)
+      || /(?:^|\n)\s*Passed!\s*$/m.test(text)
+      || /✓|✔/.test(text)) {
+    return "pass";
+  }
+  return null;
+}
+
+// Claude headless detection: `claude -p` / `claude --print` is a one-shot,
+// non-interactive run, which the HUD must not show as a live session.
+//
+// #681: this predicate is now handed to the resolver (createPidResolver's
+// headlessCheck) instead of being applied to a command line here. The reason is
+// storage, not tidiness — the pid cache used to persist the whole command line
+// so a later cache hit could re-run this regex, which meant every Claude
+// session's full argv sat in a %TEMP% file for the life of the session to
+// answer one yes/no question. The resolver derives the boolean in memory and
+// caches only that, so this function is the single source of truth for both a
+// fresh walk and a cache hit.
+function isClaudeHeadlessCommandLine(cmdline) {
+  return /\s(-p|--print)(\s|$)/.test(cmdline || "");
+}
+
+// #442-compat + #627: agent pid fields. `headless` comes from the resolver for
+// both the fresh and cache-hit paths, so they cannot drift.
+function applyAgentPidFields(body, agentPid, headless) {
   if (!agentPid) return;
   body.agent_pid = agentPid;
   body.claude_pid = agentPid; // backward compat with older Clawd versions
-  if (agentCommandLine && /\s(-p|--print)(\s|$)/.test(agentCommandLine)) {
-    body.headless = true;
-  }
+  if (headless === true) body.headless = true;
 }
 
-// Fresh-resolve path: preserves the exact pre-cache field output (#627).
+// Applies the shared resolver's process metadata to the body. Works for all
+// three resolver result shapes (#634):
+//   - fresh          → full fields, including pid_chain and (on SessionStart)
+//     the foreground WT handle;
+//   - cache hit / v1→v2 promotion → the stable subset only (pidChain is [],
+//     foregroundWtHwnd/tmuxClient are null in the returned object, so they are
+//     naturally omitted — the server MERGE keeps the SessionStart pid_chain);
+//   - empty (prompt/end miss) → every pid field is null/[], so source_pid,
+//     agent_pid, pid_chain, etc. are all left off (never a degraded
+//     process.ppid). source_pid is guarded so an empty result ships no null pid.
 function applyResolvedFields(body, resolved, event) {
-  const { stablePid, agentPid, agentCommandLine, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
-  body.source_pid = stablePid;
+  const { stablePid, agentPid, headless, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient } = resolved;
+  if (stablePid) body.source_pid = stablePid;
   if (detectedEditor) body.editor = detectedEditor;
-  applyAgentPidFields(body, agentPid, agentCommandLine);
+  applyAgentPidFields(body, agentPid, headless);
   if (pidChain && pidChain.length) body.pid_chain = pidChain;
   if (tmuxSocket) body.tmux_socket = tmuxSocket;
   if (tmuxClient) body.tmux_client = tmuxClient;
+  applyOrcaPaneKey(body);
   if (shouldReportForegroundWtHwnd(event) && foregroundWtHwnd) {
     body.wt_hwnd = String(foregroundWtHwnd);
   }
-}
-
-// Cache-hit path (#627): stable subset only. Deliberately omits pid_chain — the
-// server MERGEs a missing pid_chain and keeps the SessionStart one, whereas the
-// cached chain's head would be a dead per-event PowerShell — and wt_hwnd, which
-// is only reported on the always-fresh SessionStart/UserPromptSubmit events.
-// tmux_socket is a pure-env value, recomputed so a tmux user still gets it.
-function applyCachedFields(body, cached) {
-  body.source_pid = cached.stablePid;
-  if (cached.detectedEditor) body.editor = cached.detectedEditor;
-  applyAgentPidFields(body, cached.agentPid, cached.agentCommandLine);
-  const tmuxSocket = tmuxSocketFromEnv();
-  if (tmuxSocket) body.tmux_socket = tmuxSocket;
+  if (resolved.agentProcessStartIdentity) {
+    Object.defineProperty(body, "_agentProcessStartIdentity", {
+      value: resolved.agentProcessStartIdentity,
+      enumerable: false,
+    });
+  }
+  if (resolved.sourceProcessStartIdentity) {
+    Object.defineProperty(body, "_sourceProcessStartIdentity", {
+      value: resolved.sourceProcessStartIdentity,
+      enumerable: false,
+    });
+  }
 }
 
 function buildStateBody(event, payload, resolve) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
+  const promptId = normalizeClaudePhaseId(payload.prompt_id);
+  if (event === "PostToolBatch") {
+    const toolUseIds = extractClaudeBatchToolUseIds(payload.tool_calls);
+    // A child batch cannot describe its parent's model phase. This minimal
+    // event deliberately avoids transcript reads and process-resolution work.
+    if (!promptId || !toolUseIds || !normalizeClaudePhaseId(payload.session_id)
+      || (payload.agent_id && payload.agent_id !== "claude-code")
+      || resolveReportingAgentId(payload) !== "claude-code") return null;
+    return { state, event, agent_id: "claude-code", session_id: payload.session_id,
+      prompt_id: promptId, tool_use_ids: toolUseIds };
+  }
+  // UserPromptExpansion includes structured command metadata. Only an explicit
+  // user-typed /design should select the design visual.
+  if (event === "UserPromptExpansion" && !(
+    payload.expansion_type === "slash_command" && payload.command_name === "design"
+  )) return null;
 
   const sessionId = payload.session_id || "default";
   const cwd = payload.cwd || "";
   const source = payload.source || payload.reason || "";
-  const syntheticSubagentStart = isTaskToolStart(event, payload);
+  const syntheticSubagentStart = isSubagentToolStart(event, payload);
 
   // /clear triggers SessionEnd → SessionStart in quick succession;
   // show sweeping (clearing context) instead of sleeping
@@ -404,8 +638,55 @@ function buildStateBody(event, payload, resolve) {
   const resolvedEvent = syntheticSubagentStart ? "SubagentStart" : event;
 
   const body = { state: resolvedState, session_id: sessionId, event: resolvedEvent };
-  body.agent_id = "claude-code";
+  if (promptId) body.prompt_id = promptId;
+  if (event === "UserPromptExpansion") body.display_svg = "claude-design";
+  if (
+    event === "UserPromptSubmit"
+    && typeof payload.prompt === "string"
+    && !/^\s*\/design(?:\s|$)/.test(payload.prompt)
+  ) body.display_svg = null;
+  if (syntheticSubagentStart) {
+    body.subagent_lifecycle_source = "synthetic-tool";
+  } else if (event === "SubagentStart" || event === "SubagentStop") {
+    body.subagent_lifecycle_source = "native";
+  }
+  if (event === "SessionStart" && source) {
+    body.session_start_source = source;
+  }
+  // Cursor imports Claude user hooks and adds cursor_version to the hook input.
+  // Use that explicit caller provenance instead of the process tree: a genuine
+  // Claude CLI launched inside Cursor's terminal must remain Claude Code.
+  body.agent_id = resolveReportingAgentId(payload);
+  // Claude-compatible command-hook payloads use agent_id/agent_type for
+  // subagent provenance. Keep the public Clawd agent_id canonical, but preserve
+  // that identity separately so a SubagentStop/PostToolUse event can settle
+  // only the matching subagent's pending permission.
+  const reportedSubagentId = typeof payload.agent_id === "string"
+    ? payload.agent_id.trim()
+    : "";
+  if (
+    reportedSubagentId
+    && reportedSubagentId !== "claude-code"
+    && reportedSubagentId.length <= 256
+    && !/[\0\r\n]/.test(reportedSubagentId)
+  ) {
+    body.subagent_id = reportedSubagentId;
+    const reportedSubagentType = typeof payload.agent_type === "string"
+      ? payload.agent_type.trim()
+      : "";
+    if (
+      reportedSubagentType
+      && reportedSubagentType.length <= 128
+      && !/[\0\r\n]/.test(reportedSubagentType)
+    ) {
+      body.subagent_type = reportedSubagentType;
+    }
+  }
   if (cwd) body.cwd = cwd;
+  // Only SessionStart carries a model, and even there it is optional (`clear`
+  // omits it). state.js merges it stickily, so one report is enough.
+  const model = normalizeModelId(payload.model);
+  if (model) body.model = model;
   const toolName = typeof payload.tool_name === "string" && payload.tool_name ? payload.tool_name : null;
   const toolUseId = normalizeToolUseId(payload.tool_use_id ?? payload.toolUseId ?? payload.toolUseID);
   const toolInputFingerprint = buildToolInputFingerprint(
@@ -414,6 +695,10 @@ function buildStateBody(event, payload, resolve) {
   if (toolName) body.tool_name = toolName;
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
+  if (event === "PostToolUse" || event === "PostToolUseFailure") {
+    const testResult = classifyTestResult(event, payload);
+    if (testResult) body.test_result = testResult;
+  }
   if (event !== "Stop" && typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
   }
@@ -430,11 +715,17 @@ function buildStateBody(event, payload, resolve) {
   if (contextUsage) body.context_usage = contextUsage;
   const sessionTitle =
     normalizeTitle(payload.session_title) ||
-    extractSessionTitleFromEntries(transcriptEntries);
+    extractSessionTitleFromEntries(transcriptEntries, payload.session_id || null);
   if (sessionTitle) body.session_title = sessionTitle;
   if (event === "UserPromptSubmit" && !body.session_title) {
     const promptTitle = extractPromptTitle(payload.prompt);
-    if (promptTitle) body.session_title = promptTitle;
+    if (promptTitle) {
+      body.session_title = promptTitle;
+      // The fallback is derived from prompt content. Mark it so the server
+      // never lets it replace a formal title, and so session history and
+      // recovery leases never persist it.
+      body.session_title_from_prompt = true;
+    }
   }
 
   // Claude Code synthesizes API errors into a fake assistant message tagged
@@ -457,17 +748,45 @@ function buildStateBody(event, payload, resolve) {
       }
     }
   }
-  // #406 completion-gate inputs. A Stop that still has live background shells or
-  // cron wakeups, or a Stop-hook continuation (stop_hook_active), is not a real
-  // turn completion. Forward only counts + the boolean — never the task
-  // command/description — so state.js can suppress the celebration without
-  // leaking shell contents into Clawd state.
+  // #406/#952 completion-gate inputs. A Stop that still has live background
+  // shells, cron wakeups or an exact typed one-shot subagent is not a real turn
+  // completion. Forward only counts + the boolean — never task ids, status,
+  // command or description text — so state.js can suppress the celebration
+  // without leaking background-task details into Clawd state.
+  //
+  // Presence of background_subagents_count is meaningful: an omitted field
+  // means this Claude payload had no usable background_tasks snapshot, while 0
+  // is an authoritative snapshot that contains no exact `type: "subagent"`
+  // entry. Keep the classifier intentionally narrow: teammate entries have
+  // different lifecycle semantics and must not become a completion gate.
+  if (body.event === "Stop" || body.event === "SubagentStop") {
+    const backgroundTasks = Array.isArray(payload.background_tasks)
+      ? payload.background_tasks
+      : null;
+    if (backgroundTasks) {
+      const subagentCount = backgroundTasks.reduce((count, entry) => {
+        if (!entry || typeof entry !== "object" || Array.isArray(entry)) return count;
+        const prototype = Object.getPrototypeOf(entry);
+        if (prototype !== Object.prototype && prototype !== null) return count;
+        const type = typeof entry.type === "string"
+          ? entry.type.trim().replace(/[A-Z]/g, (letter) => letter.toLowerCase())
+          : "";
+        return count + (type === "subagent" ? 1 : 0);
+      }, 0);
+      body.background_subagents_count = subagentCount;
+    }
+  }
   if (body.event === "Stop") {
     const bgCount = Array.isArray(payload.background_tasks) ? payload.background_tasks.length : 0;
     const cronCount = Array.isArray(payload.session_crons) ? payload.session_crons.length : 0;
     if (bgCount > 0) body.background_tasks_count = bgCount;
     if (cronCount > 0) body.session_crons_count = cronCount;
     if (payload.stop_hook_active === true) body.stop_hook_active = true;
+  } else if (body.event === "SubagentStop" && payload.stop_hook_active === true) {
+    // SubagentStop is a termination attempt: another hook may veto it and let
+    // the same child continue. Preserve the upstream marker for diagnostics;
+    // state.js also self-corrects when later activity for the same id arrives.
+    body.stop_hook_active = true;
   }
   const wslDistro = resolveWslDistro();
   if (process.env.CLAWD_REMOTE) {
@@ -475,102 +794,38 @@ function buildStateBody(event, payload, resolve) {
     // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
     if (wslDistro) body.wsl_distro = wslDistro;
+    applyOrcaPaneKey(body);
   } else {
-    // #627: on Windows every hook event otherwise cold-starts a PowerShell to
-    // snapshot the process tree, flashing a console window under Windows
-    // Terminal. The tree is stable within a session, so snapshot once on
-    // SessionStart; every other event reads a per-session cache instead of
-    // spawning. Ordinary high-frequency events (PreToolUse/PostToolUse/Stop/
-    // etc.) keep #630's original miss behavior: a miss still falls back to
-    // one fresh resolve (and may repopulate the cache) — that fallback is
-    // what gets the cache warm again after a PID dies mid-session, and it's
-    // rare in steady state once SessionStart has populated the cache.
-    //
-    // #627 residual: two events get a STRICTER "miss = zero spawn, no
-    // fallback" contract instead:
-    //   - UserPromptSubmit used to be an always-fresh event (it needed a live
-    //     foreground WT window handle). That handle is now sampled
-    //     server-side (src/main.js's koffi probe, wired through
-    //     src/server-route-state.js), so UserPromptSubmit no longer has any
-    //     reason to spawn — cache hit or miss, it never calls resolve().
-    //   - SessionEnd reads the cache to fill the final body, then drops it;
-    //     a miss no longer falls back to a fresh resolve either (see below).
-    // A miss on either ships a body with no process-metadata fields; the
-    // server's MERGE (state.js) keeps whatever the session already had.
-    // See docs/plans/plan-issue-627-residual-userprompt-flash.md §4.3.
-    const canCacheSession = isWin && pidCache.canCache(sessionId, cwd);
-    const wantsFresh = event === "SessionStart";
-    // The no-fallback contract is a WINDOWS contract, not a cache-availability
-    // one: it must hold even when caching is disabled (session_id "default" /
-    // empty cwd, #583) — otherwise those degenerate sessions keep flashing a
-    // console once per prompt, which is the exact symptom this fix removes.
-    // Non-Windows keeps resolving fresh on every event (the ps path neither
-    // flashes nor pays a cold start), unchanged.
-    const cacheOnlyNoFallback = isWin && (event === "UserPromptSubmit" || event === "SessionEnd");
-
-    let cached = null;
-    if (canCacheSession && event === "SessionEnd") {
-      // Cache-only + drop: read the last-known subset for the final body (if
-      // any), then drop — and, per the #627 residual plan, a MISS no longer
-      // falls back to a fresh resolve. That resolve was itself the
-      // console-flashing spawn this cache exists to avoid, and by SessionEnd
-      // the session is already ending: an incomplete final body (server
-      // MERGE keeps whatever the session already had) beats a guaranteed
-      // flash. This reverses the #630-shipped SessionEnd-miss fallback (630
-      // plan §3.2) — test/clawd-hook-pid-cache.test.js's "SessionEnd on a
-      // miss" case is inverted to match.
-      cached = pidCache.readPidCache(sessionId, cwd);
-      pidCache.dropPidCache(sessionId, cwd);
-    } else if (canCacheSession && !wantsFresh) {
-      const c = pidCache.readPidCache(sessionId, cwd);
-      // M1 (630 plan §5) + lease rewrite (#627 residual §4.4): the PID that
-      // becomes source_pid (stablePid) must be alive — session-focus.js only
-      // checks source_pid's existence, so a dead stablePid must trigger a
-      // fresh resolve. agentPid (claude.exe) must ALSO be alive: it tracks
-      // session liveness, so a dead agentPid means the session ended and the
-      // cache must NOT be treated as a hit. Both alive → hit, no clock
-      // consulted (pid-cache.js's readPidCache no longer expires by time).
-      if (c && c.cwd === cwd && processAlive(c.stablePid) && processAlive(c.agentPid)) {
-        pidCache.touchPidCache(sessionId, cwd);
-        cached = c;
-      }
-    }
-
-    if (cached) {
-      applyCachedFields(body, cached);
-    } else if (!cacheOnlyNoFallback) {
-      // Fresh resolve: non-Windows (always resolves on every event,
-      // unchanged), SessionStart (still the one event that spawns once,
-      // prewarmed during stdin buffering — see main() below), or an ordinary
-      // cache-only event (PreToolUse/PostToolUse/Stop/etc.) on a miss or with
-      // caching unavailable — #630's original repopulate fallback, unchanged.
-      // On Windows, UserPromptSubmit/SessionEnd can NEVER reach this branch,
-      // cacheable session or not (see cacheOnlyNoFallback above).
-      if (event === "SessionStart" && canCacheSession) {
-        pidCache.sweepStalePidCaches({ isProcessAlive: processAlive });
-      }
-      const resolved = resolve();
-      applyResolvedFields(body, resolved, event);
-      // M2 (630 plan §5): only cache a non-degraded result. An empty Windows
-      // snapshot decays stablePid to process.ppid (a per-event ephemeral
-      // PID); snapshotOk rules that out, and a found agentPid proves the walk
-      // reached a real ancestor. Never write on SessionEnd (unreachable here
-      // since SessionEnd never takes this branch, but keep the guard as
-      // defense in depth).
-      if (canCacheSession && event !== "SessionEnd" && resolved.snapshotOk && resolved.agentPid) {
-        pidCache.writePidCache(sessionId, cwd, {
-          stablePid: resolved.stablePid,
-          agentPid: resolved.agentPid,
-          agentCommandLine: resolved.agentCommandLine,
-          detectedEditor: resolved.detectedEditor,
-        });
-      }
-    }
-    // else: Windows UserPromptSubmit/SessionEnd with no usable cache entry
-    // (cacheable miss OR caching unavailable) — zero spawn, no fallback. Body
-    // gets no source_pid/agent_pid/etc.; server MERGE keeps whatever the
-    // session already had. Never degrade to process.ppid — that would ship a
-    // wrong-but-plausible-looking pid (#627 residual plan §4.3).
+    // #627/#634: the per-session pid cache + lifecycle orchestration now lives
+    // in the shared resolver (hooks/shared-process.js). This hook is the Claude
+    // adapter — it maps the event to a resolver lifecycle, declares the cache
+    // identity, and applies whatever process metadata the resolver returns:
+    //   - SessionStart → start (fresh once, prewarmed during stdin buffering;
+    //     writes the v2 cache),
+    //   - UserPromptSubmit → prompt (cache-only, NEVER spawns — even for a
+    //     non-cacheable session; the foreground WT handle it used to fresh for
+    //     is sampled server-side now, src/server-route-state.js),
+    //   - SessionEnd → end (cache-only, fills the final body then drops; never
+    //     spawns, never writes back),
+    //   - everything else → event (cache hit = zero spawn; a miss falls back to
+    //     one fresh resolve and repopulates).
+    // The Windows zero-spawn contracts, the double-PID liveness check, and the
+    // v1→v2 promotion all live in the resolver; mac/linux keep the
+    // fresh-every-event runtime behavior. The cache identity is Claude's raw
+    // session id + payload cwd (matrix §5.0): a "default" session id (#583) or
+    // an empty cwd is non-cacheable, which the resolver honors WITHOUT relaxing
+    // the prompt/end no-spawn contract. A miss ships a body with no
+    // process-metadata fields; the server MERGE (state.js) keeps whatever the
+    // session already had — never a degraded process.ppid.
+    const cacheCwd = cwd;
+    const resolved = resolve({
+      namespace: "claude-code",
+      sessionId,
+      cacheCwd,
+      lifecycle: EVENT_TO_LIFECYCLE[event] || "event",
+      cacheable: sessionId !== "default" && !!cacheCwd,
+    });
+    applyResolvedFields(body, resolved, event);
 
     if (wslDistro) {
       body.wsl_distro = wslDistro;
@@ -600,14 +855,32 @@ function attachStdinDiag(body, stdinRead) {
   return body;
 }
 
+function launchedByGrok(env = process.env) {
+  // Only the runner-injected official GROK_HOOK_EVENT activates the guard.
+  // GROK_HOME, an unrelated GROK_* variable, or the user's shell config must
+  // not suppress the Claude hook, and GROK_SESSION_ID alone is not official.
+  return Boolean(env && env.GROK_HOOK_EVENT && String(env.GROK_HOOK_EVENT).trim());
+}
+
 function main() {
+  // Grok scans ~/.claude/settings.json by default. Those Claude hooks must not
+  // report a phantom claude-code session; Grok events go through grok-hook.js.
+  if (launchedByGrok()) {
+    process.stdout.write("{}\n");
+    process.exit(0);
+  }
   const event = process.argv[2];
   if (!EVENT_TO_STATE[event]) process.exit(0);
+  const eventAt = Date.now();
 
   const config = getPlatformConfig();
   const resolve = createPidResolver({
     agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
     agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
+    // #681: Claude is the only adapter that derives anything from the agent's
+    // command line, so it is the only one that passes this. The resolver applies
+    // it in memory and caches the boolean instead of the line.
+    headlessCheck: isClaudeHeadlessCommandLine,
     platformConfig: config,
   });
 
@@ -633,6 +906,15 @@ function main() {
       // the server's /state cap and trigger a headerless 413 (read back as
       // posted=false, dropping the happy completion). hooks/state-payload-size.js.
       const fitted = fitStateBodyToByteBudget(body);
+      // Persist the real session evidence before POST. If Clawd is restarting,
+      // the HTTP request may fail but the next process can still recover the
+      // same session id and last sustained state. This is best-effort and never
+      // changes the hook's stdout or exit contract.
+      updateRecoveryLeaseFromStateBody(body, { eventAt });
+      // The lease above is liveness-scoped and is erased once its PID dies,
+      // which is every PID after a reboot. Keep a separate durable row so a
+      // session interrupted by a restart can still be found and resumed.
+      recordSessionHistoryFromStateBody(body, { eventAt });
       postStateToRunningServer(
         JSON.stringify(fitted.body),
         { timeoutMs: statePostTimeoutMs },
@@ -646,7 +928,11 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  classifyTestResult,
+  isRecognizedTestCommand,
+  isClaudeHeadlessCommandLine,
   attachStdinDiag,
+  launchedByGrok,
   STDIN_READ_TIMEOUT_MS,
   extractSessionTitleFromTranscript,
   extractApiErrorFromEntries,

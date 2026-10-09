@@ -3,6 +3,10 @@
 const {
   AGENT_FLAGS,
   CODEX_PERMISSION_MODES,
+  MAX_CUSTOM_DISCOVERY_PATH_LENGTH,
+  MAX_CUSTOM_DISCOVERY_PATHS,
+  normalizeOptionalHttpUrl,
+  normalizePathList,
 } = require("./prefs");
 const {
   getCodexPermissionMode,
@@ -13,53 +17,99 @@ const {
   requireBoolean,
   requireString,
 } = require("./settings-validators");
+const { getAgent } = require("../agents/registry");
+const {
+  MAX_CUSTOM_APPLICATIONS,
+  identifyCustomApplication: defaultIdentifyCustomApplication,
+  isCustomApplicationId,
+  isCustomApplicationNamespace,
+  normalizeCustomApplications,
+} = require("./custom-applications");
 
 const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "deepseek-harness",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
+  "grok-build",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
+  "mimocode",
+  "pi",
+  "omp",
   "hermes",
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
+  "qwenwork",
+  "minimax",
 ]);
 
 const INSTALLABLE_AGENT_IDS = new Set([
   "claude-code",
   "codex",
+  "deepseek-harness",
   "copilot-cli",
   "cursor-agent",
   "gemini-cli",
   "antigravity-cli",
   "codebuddy",
+  "workbuddy",
+  "grok-build",
   "kiro-cli",
   "kimi-cli",
   "qwen-code",
+  "zcode",
   "codewhale",
   "opencode",
+  "mimocode",
   "pi",
+  "omp",
   "openclaw",
   "hermes",
   "qoder",
   "reasonix",
   "qoderwork",
+  "traecode",
+  "qwenwork",
+  "minimax",
 ]);
 const SETTABLE_AGENT_FLAGS = AGENT_FLAGS.filter((flag) => flag !== "integrationInstalled");
+const CUSTOM_DISCOVERY_AGENT_IDS = new Set([...INSTALLABLE_AGENT_IDS, "custom"]);
 
 // setAgentFlag is atomic single-agent, single-flag toggle.
 // Payload `{ agentId, flag, value }` where flag is in AGENT_FLAGS.
 const _validateAgentFlagId = requireString("setAgentFlag.agentId");
 const _validateAgentFlagValue = requireBoolean("setAgentFlag.value");
 const _validateRepairAgentId = requireString("repairAgentIntegration.agentId");
+
+function disableCodexAutoStartGate(agentId, deps, actionName) {
+  if (agentId !== "codex") return null;
+  if (!deps || typeof deps.writeCodexAutoStartGate !== "function") {
+    return { status: "error", message: `${actionName}: writeCodexAutoStartGate is required` };
+  }
+  try {
+    if (deps.writeCodexAutoStartGate(false) !== true) {
+      return { status: "error", message: `${actionName}: failed to persist Codex auto-start gate` };
+    }
+  } catch (err) {
+    return {
+      status: "error",
+      message: `${actionName}: failed to persist Codex auto-start gate: ${err && err.message}`,
+    };
+  }
+  return null;
+}
 
 function setAgentFlag(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -85,6 +135,12 @@ function setAgentFlag(payload, deps) {
       message: "setAgentFlag.subagentPermissionsEnabled only supports claude-code",
     };
   }
+  if (flag === "permissionsEnabled" && isCustomApplicationNamespace(agentId)) {
+    return {
+      status: "error",
+      message: "setAgentFlag.permissionsEnabled is not supported for custom state-only agents",
+    };
+  }
   const valueCheck = _validateAgentFlagValue(value);
   if (valueCheck.status !== "ok") return valueCheck;
   const snapshot = deps && deps.snapshot;
@@ -99,6 +155,10 @@ function setAgentFlag(payload, deps) {
   const nextEntry = { ...(currentEntry || {}), [flag]: value };
   const nextAgents = { ...currentAgents, [agentId]: nextEntry };
   const commitResult = { status: "ok", commit: { agents: nextAgents } };
+  if (agentId === "codex" && flag === "enabled" && value === false) {
+    const gateError = disableCodexAutoStartGate(agentId, deps, "setAgentFlag");
+    if (gateError) return gateError;
+  }
 
   // Claude Code enable is the one branch with an awaited external mutation:
   // hooks must actually land (via the server-owned operation queue, #657)
@@ -135,6 +195,9 @@ function setAgentFlag(payload, deps) {
           deps.stopIntegrationForAgent(agentId);
         }
         if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
+        if (typeof deps.clearSessionAutomationByAgent === "function") {
+          deps.clearSessionAutomationByAgent(agentId);
+        }
         if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
         if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
       } else {
@@ -142,7 +205,7 @@ function setAgentFlag(payload, deps) {
           isAgentIntegrationInstalled(snapshot, agentId)
           && typeof deps.syncIntegrationForAgent === "function"
         ) {
-          deps.syncIntegrationForAgent(agentId);
+          deps.syncIntegrationForAgent(agentId, buildAgentIntegrationOptions(snapshot, agentId));
         }
         if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
       }
@@ -173,6 +236,8 @@ const _validateUninstallAgentId = requireString("uninstallAgentIntegration.agent
 const _validateDismissInstallHintId = requireString("dismissAgentInstallHints.agentId");
 const _validateDismissCleanupHintId = requireString("dismissAgentCleanupHints.agentId");
 const _validateClearCleanupHintId = requireString("clearAgentCleanupHints.agentId");
+const _validateCustomPermissionUrlAgentId = requireString("setAgentCustomPermissionUrl.agentId");
+const _validateCustomDiscoveryPathsAgentId = requireString("setAgentCustomDiscoveryPaths.agentId");
 
 function setAgentPermissionMode(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -232,9 +297,35 @@ function normalizeAgentIntegrationPayload(payload, validateAgentId, actionName) 
 }
 
 function resultMessage(result, fallback) {
-  return result && typeof result === "object" && typeof result.message === "string" && result.message
+  const base = result && typeof result === "object" && typeof result.message === "string" && result.message
     ? result.message
     : fallback;
+  const manualCommand = result && typeof result === "object" && typeof result.manualCommand === "string"
+    ? result.manualCommand.trim()
+    : "";
+  return manualCommand && !base.includes(manualCommand) ? `${base}\n${manualCommand}` : base;
+}
+
+function integrationResultMetadata(result) {
+  if (!result || typeof result !== "object") return {};
+  const metadata = {};
+  for (const key of ["reason", "manualCommand", "supportedRange", "detectedVersion", "healthReason"]) {
+    if (typeof result[key] === "string" && result[key]) metadata[key] = result[key];
+  }
+  if (result.manualInspectionRequired === true) metadata.manualInspectionRequired = true;
+  // #1026 additive, type-guarded passthrough. Other agents simply omit these.
+  for (const key of ["registrationRemoved", "activeEntryRemaining", "managedFilesRemoved"]) {
+    if (typeof result[key] === "boolean" || result[key] === null) metadata[key] = result[key];
+  }
+  if (Array.isArray(result.warnings)) {
+    const warnings = result.warnings.filter((warning) => typeof warning === "string" && warning);
+    if (warnings.length) metadata.warnings = warnings;
+  }
+  if (Array.isArray(result.residualPaths)) {
+    const residualPaths = result.residualPaths.filter((p) => typeof p === "string" && p);
+    if (residualPaths.length) metadata.residualPaths = residualPaths;
+  }
+  return metadata;
 }
 
 function buildAgentCommit(snapshot, agentId, patch) {
@@ -249,6 +340,214 @@ function buildAgentCommit(snapshot, agentId, patch) {
         ...currentEntry,
         ...patch,
       },
+    },
+  };
+}
+
+function buildAgentIntegrationOptions(snapshot, agentId) {
+  const entry = snapshot && snapshot.agents && snapshot.agents[agentId];
+  if (!entry || typeof entry !== "object") return {};
+  const options = {};
+  if (agentSupportsCustomPermissionUrl(agentId)) {
+    const customPermissionUrl = normalizeOptionalHttpUrl(entry.customPermissionUrl);
+    options.permissionTarget = customPermissionUrl
+      ? { mode: "custom", url: customPermissionUrl }
+      : { mode: "local" };
+  }
+  return options;
+}
+
+function agentSupportsCustomPermissionUrl(agentId) {
+  const agent = getAgent(agentId);
+  return !!(
+    agent
+    && agent.capabilities
+    && agent.capabilities.httpHook
+    && agent.capabilities.customPermissionUrl
+  );
+}
+
+function buildAgentIntegrationOptionsWithPatch(snapshot, agentId, patch) {
+  const currentAgents = (snapshot && snapshot.agents) || {};
+  const currentEntry = currentAgents[agentId] && typeof currentAgents[agentId] === "object"
+    ? currentAgents[agentId]
+    : {};
+  return buildAgentIntegrationOptions({
+    ...snapshot,
+    agents: {
+      ...currentAgents,
+      [agentId]: {
+        ...currentEntry,
+        ...patch,
+      },
+    },
+  }, agentId);
+}
+
+function setAgentCustomPermissionUrl(payload, deps = {}) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "setAgentCustomPermissionUrl: payload must be an object" };
+  }
+  const idCheck = _validateCustomPermissionUrlAgentId(payload.agentId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (!agentSupportsCustomPermissionUrl(payload.agentId)) {
+    return {
+      status: "error",
+      message: `setAgentCustomPermissionUrl does not support ${payload.agentId}`,
+    };
+  }
+  if (typeof payload.value !== "string") {
+    return { status: "error", message: "setAgentCustomPermissionUrl.value must be a string" };
+  }
+  const value = normalizeOptionalHttpUrl(payload.value);
+  if (payload.value.trim() && !value) {
+    return { status: "error", message: "setAgentCustomPermissionUrl.value must be an http(s) URL" };
+  }
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.agents && snapshot.agents[payload.agentId];
+  const currentValue = normalizeOptionalHttpUrl(current && current.customPermissionUrl);
+  if (currentValue === value) return { status: "ok", noop: true };
+  const commit = buildAgentCommit(snapshot, payload.agentId, { customPermissionUrl: value });
+  const finishSync = (result) => {
+    if (
+      result === false
+      || (result && typeof result === "object" && (result.status === "error" || result.status === "skipped"))
+    ) {
+      return {
+        status: "error",
+        message: (result && (result.message || result.reason)) || "Failed to sync custom permission URL",
+      };
+    }
+    return { status: "ok", commit };
+  };
+  try {
+    if (
+      isAgentIntegrationInstalled(snapshot, payload.agentId)
+      && typeof deps.syncIntegrationForAgent === "function"
+    ) {
+      const syncResult = deps.syncIntegrationForAgent(
+        payload.agentId,
+        buildAgentIntegrationOptionsWithPatch(snapshot, payload.agentId, { customPermissionUrl: value })
+      );
+      if (syncResult && typeof syncResult.then === "function") {
+        return syncResult.then(finishSync, (err) => ({
+          status: "error",
+          message: `setAgentCustomPermissionUrl side effect threw: ${err && err.message}`,
+        }));
+      }
+      return finishSync(syncResult);
+    }
+  } catch (err) {
+    return {
+      status: "error",
+      message: `setAgentCustomPermissionUrl side effect threw: ${err && err.message}`,
+    };
+  }
+  return { status: "ok", commit };
+}
+
+function setAgentCustomDiscoveryPaths(payload, deps = {}) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "setAgentCustomDiscoveryPaths: payload must be an object" };
+  }
+  const idCheck = _validateCustomDiscoveryPathsAgentId(payload.agentId);
+  if (idCheck.status !== "ok") return idCheck;
+  if (!CUSTOM_DISCOVERY_AGENT_IDS.has(payload.agentId)) {
+    return {
+      status: "error",
+      message: `setAgentCustomDiscoveryPaths does not support ${payload.agentId}`,
+    };
+  }
+  const rawPaths = Array.isArray(payload.value)
+    ? payload.value
+    : (typeof payload.value === "string" ? payload.value.split(/[;\n]/g) : []);
+  if (rawPaths.some((entry) => typeof entry !== "string")) {
+    return { status: "error", message: "setAgentCustomDiscoveryPaths.value must contain only strings" };
+  }
+  if (rawPaths.some((entry) => entry.replace(/\0/g, "").trim().length > MAX_CUSTOM_DISCOVERY_PATH_LENGTH)) {
+    return {
+      status: "error",
+      message: `Discovery paths must be at most ${MAX_CUSTOM_DISCOVERY_PATH_LENGTH} characters`,
+    };
+  }
+  const paths = normalizePathList(payload.value, { maxEntries: MAX_CUSTOM_DISCOVERY_PATHS + 1 });
+  if (paths.length > MAX_CUSTOM_DISCOVERY_PATHS) {
+    return { status: "error", message: `Discovery path limit reached (${MAX_CUSTOM_DISCOVERY_PATHS})` };
+  }
+  const snapshot = deps.snapshot || {};
+  const current = snapshot.agents && snapshot.agents[payload.agentId];
+  const currentPaths = payload.agentId === "custom"
+    ? normalizePathList(snapshot.customToolDiscoveryPaths)
+    : normalizePathList(current && current.customDiscoveryPaths);
+  if (paths.length === currentPaths.length && paths.every((value, index) => value === currentPaths[index])) {
+    return { status: "ok", noop: true };
+  }
+  return payload.agentId === "custom"
+    ? { status: "ok", commit: { customToolDiscoveryPaths: paths } }
+    : {
+      status: "ok",
+      commit: buildAgentCommit(snapshot, payload.agentId, { customDiscoveryPaths: paths }),
+    };
+}
+
+function addCustomApplication(payload, deps = {}) {
+  if (!payload || typeof payload !== "object" || typeof payload.path !== "string") {
+    return { status: "error", message: "addCustomApplication requires a path" };
+  }
+  const identify = deps.identifyCustomApplication || defaultIdentifyCustomApplication;
+  const application = normalizeCustomApplications([identify(payload.path)])[0] || null;
+  if (!application) {
+    return { status: "error", message: "No launchable application was found at this path" };
+  }
+  const responseApplication = { ...application, managedIntegration: false, permissionApproval: false };
+  const snapshot = deps.snapshot || {};
+  const current = Array.isArray(snapshot.customApplications) ? snapshot.customApplications : [];
+  if (current.some((entry) => entry && entry.id === application.id)) {
+    return { status: "ok", noop: true, application: responseApplication };
+  }
+  if (current.length >= MAX_CUSTOM_APPLICATIONS) {
+    return { status: "error", message: `Custom AI limit reached (${MAX_CUSTOM_APPLICATIONS})` };
+  }
+  const agents = snapshot.agents && typeof snapshot.agents === "object" ? snapshot.agents : {};
+  return {
+    status: "ok",
+    application: responseApplication,
+    commit: {
+      customApplications: [...current, application],
+      agents: {
+        ...agents,
+        [application.id]: {
+          integrationInstalled: false,
+          enabled: true,
+          permissionsEnabled: false,
+          notificationHookEnabled: true,
+        },
+      },
+    },
+  };
+}
+
+function removeCustomApplication(payload, deps = {}) {
+  const id = payload && typeof payload.id === "string" ? payload.id.trim() : "";
+  if (!isCustomApplicationId(id)) {
+    return { status: "error", message: "removeCustomApplication requires a valid custom agent id" };
+  }
+  const snapshot = deps.snapshot || {};
+  const current = Array.isArray(snapshot.customApplications) ? snapshot.customApplications : [];
+  if (!current.some((entry) => entry && entry.id === id)) return { status: "ok", noop: true };
+  if (typeof deps.clearSessionAutomationByAgent === "function") {
+    deps.clearSessionAutomationByAgent(id);
+  }
+  if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(id);
+  if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(id);
+  if (typeof deps.clearRecentHookEvents === "function") deps.clearRecentHookEvents(id);
+  const agents = snapshot.agents && typeof snapshot.agents === "object" ? { ...snapshot.agents } : {};
+  delete agents[id];
+  return {
+    status: "ok",
+    commit: {
+      customApplications: current.filter((entry) => entry && entry.id !== id),
+      agents,
     },
   };
 }
@@ -296,20 +595,25 @@ async function installAgentIntegration(payload, deps = {}) {
   }
 
   try {
-    const result = await deps.syncIntegrationForAgent(agentId, { source: "settings-agent-install", automatic: false });
+    const result = await deps.syncIntegrationForAgent(agentId, {
+      ...buildAgentIntegrationOptions(snapshot, agentId),
+      source: "settings-agent-install",
+      automatic: false,
+    });
     if (result === false) {
       return { status: "error", message: `No automatic integration install is available for ${agentId}` };
     }
     if (result && typeof result === "object" && result.status === "skipped") {
       return {
         status: "skipped",
-        reason: result.reason,
+        ...integrationResultMetadata(result),
         message: resultMessage(result, `Skipped installing ${agentId}`),
       };
     }
     if (result && typeof result === "object" && result.status && result.status !== "ok") {
       return {
         status: "error",
+        ...integrationResultMetadata(result),
         message: resultMessage(result, `Failed to install ${agentId}`),
       };
     }
@@ -342,6 +646,8 @@ async function uninstallAgentIntegration(payload, deps = {}) {
   if (!deps || typeof deps.uninstallIntegrationForAgent !== "function") {
     return { status: "error", message: "uninstallAgentIntegration requires uninstallIntegrationForAgent dep" };
   }
+  const gateError = disableCodexAutoStartGate(agentId, deps, "uninstallAgentIntegration");
+  if (gateError) return gateError;
 
   try {
     const result = await deps.uninstallIntegrationForAgent(agentId);
@@ -351,14 +657,37 @@ async function uninstallAgentIntegration(payload, deps = {}) {
     if (result && typeof result === "object" && result.status === "error") {
       return {
         status: "error",
+        ...integrationResultMetadata(result),
         message: resultMessage(result, `Failed to uninstall ${agentId}`),
       };
     }
+    // #1026 §7.2: an uninstall only commits when the active registration is
+    // gone. `undefined` preserves the legacy status-only path for the other
+    // cleaners; `false`/`null` means an active (or unconfirmable) entry
+    // remains, so no commit and no runtime teardown.
+    if (result && typeof result === "object" && result.registrationRemoved === false) {
+      return {
+        status: "error",
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, `Failed to uninstall ${agentId}: an active integration entry is still registered`),
+      };
+    }
+    if (result && typeof result === "object" && result.registrationRemoved === null) {
+      return {
+        status: "error",
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, `Failed to uninstall ${agentId}: could not confirm the active registration was removed`),
+      };
+    }
     if (typeof deps.stopMonitorForAgent === "function") deps.stopMonitorForAgent(agentId);
+    if (typeof deps.clearSessionAutomationByAgent === "function") {
+      deps.clearSessionAutomationByAgent(agentId);
+    }
     if (typeof deps.clearSessionsByAgent === "function") deps.clearSessionsByAgent(agentId);
     if (typeof deps.dismissPermissionsByAgent === "function") deps.dismissPermissionsByAgent(agentId);
     return {
       status: "ok",
+      ...integrationResultMetadata(result),
       message: resultMessage(result, `Uninstalled ${agentId}`),
       commit: {
         ...buildAgentCommit(snapshot, agentId, {
@@ -437,15 +766,30 @@ async function repairAgentIntegration(payload, deps) {
 
   try {
     const result = await repairFn(agentId, {
+      ...buildAgentIntegrationOptions(snapshot, agentId),
       forceCodexHooksFeature: agentId === "codex" && forceCodexHooksFeature,
     });
     if (result === false) {
       return { status: "error", message: `No automatic integration repair is available for ${agentId}` };
     }
+    if (
+      agentId === "omp"
+      && result
+      && typeof result === "object"
+      && result.status === "skipped"
+      && result.reason === "standalone-bridge-present"
+    ) {
+      return {
+        status: "ok",
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, "OMP community bridge is active; no managed repair is needed"),
+      };
+    }
     if (result && typeof result === "object" && result.status && result.status !== "ok") {
       return {
         status: "error",
-        message: result.message || `Failed to repair ${agentId}`,
+        ...integrationResultMetadata(result),
+        message: resultMessage(result, `Failed to repair ${agentId}`),
       };
     }
     return {
@@ -553,6 +897,10 @@ setAgentPermissionMode.lockKey = "agentIntegration";
 installAgentIntegration.lockKey = "agentIntegration";
 uninstallAgentIntegration.lockKey = "agentIntegration";
 repairAgentIntegration.lockKey = "agentIntegration";
+setAgentCustomPermissionUrl.lockKey = "agentIntegration";
+setAgentCustomDiscoveryPaths.lockKey = "agentIntegration";
+addCustomApplication.lockKey = "agentIntegration";
+removeCustomApplication.lockKey = "agentIntegration";
 dismissAgentInstallHints.lockKey = "agentIntegration";
 dismissAgentCleanupHints.lockKey = "agentIntegration";
 clearAgentCleanupHints.lockKey = "agentIntegration";
@@ -578,10 +926,20 @@ async function _wslCommand(payload, deps, { commandName, depName, action }) {
   try {
     const result = await deps[depName](distro, agentId);
     if (result && result.ok) {
-      const okResult = { status: "ok", message: `${action} WSL ${distro}` };
+      const okResult = {
+        status: "ok",
+        message: (typeof result.message === "string" && result.message) || `${action} WSL ${distro}`,
+      };
       // deploy-only: false = hooks installed but Clawd is unreachable from
       // the distro (NAT networking) — renderer shows a localized warning.
       if (result.connectivity === false) okResult.wslConnectivity = false;
+      if (typeof result.warning === "string" && result.warning) okResult.warning = result.warning;
+      if (commandName === "deployToWsl" && agentId === "hermes") {
+        // WSL pairing opens the shared ingress gate but is not a Windows-local
+        // integration install. Preserve integrationInstalled and every sibling
+        // flag so startup cannot auto-sync Hermes onto the host by accident.
+        okResult.commit = buildAgentCommit(deps.snapshot || {}, agentId, { enabled: true });
+      }
       return okResult;
     }
     return {
@@ -613,15 +971,20 @@ deployToWsl.lockKey = "agentIntegration";
 removeFromWsl.lockKey = "agentIntegration";
 
 module.exports = {
+  AUTO_REPAIRABLE_AGENT_IDS,
   INSTALLABLE_AGENT_IDS,
+  addCustomApplication,
   clearAgentCleanupHints,
   clearAgentInstallHints,
   deployToWsl,
   dismissAgentCleanupHints,
   dismissAgentInstallHints,
   installAgentIntegration,
+  removeCustomApplication,
   removeFromWsl,
+  setAgentCustomDiscoveryPaths,
   setAgentFlag,
+  setAgentCustomPermissionUrl,
   setAgentPermissionMode,
   uninstallAgentIntegration,
   repairAgentIntegration,

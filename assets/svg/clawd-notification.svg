@@ -276,7 +276,7 @@
   <g id="master-group" transform="translate(15, 0) scale(-1, 1)">
     <!-- 主体 + 左侧腿 (要 body-tilt) + 左手 -->
     <g class="body-breathe">
-      <g class="body-tilt">
+      <g id="accessory-anchor" class="body-tilt">
         <!-- 左外/左内腿: 被身体右倾挤压抬起 -->
         <rect class="leg-left-outer" x="3" y="13" width="1" height="2" fill="#DE886D"/>
         <rect class="leg-left-inner" x="5" y="13" width="1" height="2" fill="#DE886D"/>
@@ -297,7 +297,7 @@
         </g>
 
         <!-- 左手 (在 body-tilt 内, 跟身体倾斜 + 自身 hold 期下沉微晃) -->
-        <rect class="arm-l-balance" x="0" y="9" width="2" height="2" fill="#DE886D"/>
+        <rect id="mouth-anchor-right" class="arm-l-balance" x="0" y="9" width="2" height="2" fill="#DE886D"/>
       </g>
 
       <!-- 右内腿 (在 body-tilt 外, 独立支撑) -->

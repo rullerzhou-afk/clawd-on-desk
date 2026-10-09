@@ -11,6 +11,11 @@ module.exports = {
     mac: ["CodeBuddy"],
     linux: ["codebuddy", "CodeBuddy"],
   },
+  startupRecoveryProcessNames: {
+    win: ["CodeBuddy.exe", "codebuddy.exe"],
+    mac: ["CodeBuddy"],
+    linux: ["codebuddy", "CodeBuddy"],
+  },
   eventSource: "hook",
   // PascalCase event names — identical to Claude Code hook system
   eventMap: {
@@ -26,6 +31,7 @@ module.exports = {
   },
   capabilities: {
     httpHook: true,
+    customPermissionUrl: true,
     permissionApproval: true,
     notificationHook: true,
     sessionEnd: true,

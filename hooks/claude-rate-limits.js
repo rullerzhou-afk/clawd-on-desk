@@ -16,6 +16,7 @@ const RATE_LIMIT_KEYS = {
   five_hour: "claudeFiveHour",
   seven_day: "claudeWeekly",
 };
+const MODEL_ID_MAX = 128;
 
 function convertClaudeRateLimitsPayload(rateLimits) {
   const out = {};
@@ -47,8 +48,24 @@ function resolveClaudeModelLabel(payload) {
   return id ? id.trim() : null;
 }
 
+// Rendered verbatim on the session card, so cap the length and drop control
+// characters that could break the row.
+function normalizeModelId(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > MODEL_ID_MAX) return null;
+  return /[\0\r\n]/.test(trimmed) ? null : trimmed;
+}
+
+function resolveClaudeModelId(payload) {
+  const model = payload && typeof payload.model === "object" ? payload.model : null;
+  return model ? normalizeModelId(model.id) : null;
+}
+
 module.exports = {
   resolveClaudeRateLimitQuota,
   resolveClaudeModelLabel,
+  resolveClaudeModelId,
+  normalizeModelId,
   CLAUDE_QUOTA_FIELDS,
 };

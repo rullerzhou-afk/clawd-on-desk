@@ -63,14 +63,17 @@ describe("macOS IME editing wiring", () => {
   });
 });
 
-// handleImeEditing only flips the __clawdMacImeEditing flag and defers the
-// actual window-visibility change to reapplyMacVisibility (single source of
-// truth). It early-returns off macOS, so the behavioral assertions run on darwin.
+// handleImeEditing defers visibility changes to reapplyMacVisibility (single
+// source of truth). On the true→false edge it also runs the existing floating
+// bubble cascade once so placement changes missed during IME freeze take effect.
+// It early-returns off macOS, so the behavioral assertions run on darwin.
 const macOnly = { skip: process.platform !== "darwin" ? "macOS-only" : false };
 
-function makeCtx(reapplySpy) {
+function makeCtx(reapplySpy, repositionSpy = () => {}, dodgeSpy = () => {}) {
   return {
     reapplyMacVisibility: reapplySpy,
+    repositionFloatingBubbles: repositionSpy,
+    syncImeEditingPetDodge: dodgeSpy,
     getSettingsSnapshot: () => ({}),
     isAgentPermissionsEnabled: () => true,
     getBubblePolicy: () => ({ enabled: true, autoCloseMs: null }),
@@ -103,8 +106,12 @@ function eventFor(bubble) {
 
 describe("handleImeEditing (macOS)", () => {
   it("sets the flag on focus and clears it on blur, reapplying each time", macOnly, () => {
-    const reapply = [];
-    const ctx = makeCtx(() => reapply.push(true));
+    const calls = [];
+    const ctx = makeCtx(
+      () => calls.push("reapply"),
+      () => calls.push("reposition"),
+      () => calls.push("dodge")
+    );
     const { handleImeEditing, pendingPermissions } = initPermission(ctx);
 
     const bubble = makeBubble();
@@ -112,11 +119,18 @@ describe("handleImeEditing (macOS)", () => {
 
     handleImeEditing(eventFor(bubble), true);
     assert.strictEqual(bubble.__clawdMacImeEditing, true);
-    assert.strictEqual(reapply.length, 1);
+    assert.deepStrictEqual(calls, ["reapply"]);
 
     handleImeEditing(eventFor(bubble), false);
     assert.strictEqual(bubble.__clawdMacImeEditing, undefined);
-    assert.strictEqual(reapply.length, 2);
+    assert.deepStrictEqual(calls, ["reapply", "reapply", "reposition", "dodge"]);
+
+    handleImeEditing(eventFor(bubble), false);
+    assert.deepStrictEqual(
+      calls,
+      ["reapply", "reapply", "reposition", "dodge", "reapply"],
+      "a repeated false event must not reflow or resync the dodge again"
+    );
   });
 
   it("ignores a sender that matches no pending permission", macOnly, () => {

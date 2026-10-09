@@ -44,6 +44,8 @@ function createThemeRuntime(options = {}) {
   const syncHitWin = options.syncHitWin || (() => {});
   const syncSessionHudVisibility = options.syncSessionHudVisibility || (() => {});
   const startMainTick = options.startMainTick || (() => {});
+  const invalidateDisplayedVisual = options.invalidateDisplayedVisual || (() => {});
+  const refreshDisplayedVisualHitBoxes = options.refreshDisplayedVisualHitBoxes || (() => {});
   const bumpAnimationOverridePreviewPosterGeneration =
     options.bumpAnimationOverridePreviewPosterGeneration || (() => {});
   const rebuildAllMenus = options.rebuildAllMenus || (() => {});
@@ -52,6 +54,35 @@ function createThemeRuntime(options = {}) {
   let activeTheme = null;
   let activeThemeContext = null;
   let reloadInProgress = false;
+  // Resolvers waiting for the renderer to finish loading the new theme assets.
+  // `activateTheme` returns before the fade/reload sequencer settles, so a
+  // caller that must delete the old on-disk assets (official theme uninstall)
+  // waits on this instead of trusting the command's own resolve.
+  const reloadWaiters = new Set();
+
+  function waitForThemeReloadSettled(opts = {}) {
+    if (!reloadInProgress) return Promise.resolve({ status: "settled", reason: "idle" });
+    const timeoutMs = Number.isFinite(opts.timeoutMs) ? opts.timeoutMs : 8000;
+    return new Promise((resolvePromise) => {
+      const entry = {};
+      entry.timer = setTimeout(() => {
+        reloadWaiters.delete(entry);
+        resolvePromise({ status: "timeout" });
+      }, timeoutMs);
+      entry.resolve = (value) => {
+        clearTimeout(entry.timer);
+        resolvePromise(value || { status: "settled" });
+      };
+      reloadWaiters.add(entry);
+    });
+  }
+
+  function resolveReloadWaiters(value) {
+    for (const entry of [...reloadWaiters]) {
+      reloadWaiters.delete(entry);
+      try { entry.resolve(value); } catch {}
+    }
+  }
 
   function buildThemeContext(theme) {
     return typeof themeLoader.createThemeContext === "function"
@@ -154,7 +185,12 @@ function createThemeRuntime(options = {}) {
     newTheme._overrideSignature = targetOverrideSignature;
 
     const animationOverrides = getAnimationOverridesRuntime();
-    if (animationOverrides && typeof animationOverrides.clearPreviewTimer === "function") {
+    // A reload re-applies whatever state is current once it finishes, so a
+    // preview has to be handed back here, not just have its timer dropped —
+    // otherwise the preview visual becomes the state the reload restores.
+    if (animationOverrides && typeof animationOverrides.cancelAnimationPreview === "function") {
+      animationOverrides.cancelAnimationPreview();
+    } else if (animationOverrides && typeof animationOverrides.clearPreviewTimer === "function") {
       animationOverrides.clearPreviewTimer();
     }
     if (!activeTheme || activeTheme._id !== newTheme._id) {
@@ -182,6 +218,7 @@ function createThemeRuntime(options = {}) {
     }
 
     setActiveTheme(newTheme);
+    invalidateDisplayedVisual("theme-activation");
     callMethod(miniRuntime, "refreshTheme");
     callMethod(stateRuntime, "refreshTheme");
     callMethod(tickRuntime, "refreshTheme");
@@ -196,6 +233,7 @@ function createThemeRuntime(options = {}) {
       if (reloadSettled) return;
       reloadSettled = true;
       reloadInProgress = false;
+      resolveReloadWaiters({ status: "settled" });
       if (
         preservedVirtualBounds &&
         !(typeof miniRuntime.getMiniTransitioning === "function" && miniRuntime.getMiniTransitioning()) &&
@@ -222,10 +260,19 @@ function createThemeRuntime(options = {}) {
     };
 
     const sequencer = getFadeSequencer();
-    callMethod(sequencer, "run", {
-      onReloadFinished: () => finishThemeReload(),
-      onFallback: () => finishThemeReload(),
-    });
+    try {
+      callMethod(sequencer, "run", {
+        onReloadFinished: () => finishThemeReload(),
+        onFallback: () => finishThemeReload(),
+      });
+    } catch (err) {
+      // The sequencer can throw synchronously after the runtime has already
+      // switched (windows not ready, animation setup failure). The theme is
+      // active either way, so complete the no-fade fallback and report success
+      // — returning an error here would leave prefs contradicting the runtime.
+      console.warn("Clawd: theme fade sequencer failed; applying without fade:", err && err.message);
+      finishThemeReload();
+    }
 
     flushRuntimeStateToPrefs();
     return { themeId, variantId: newTheme._variantId };
@@ -263,6 +310,7 @@ function createThemeRuntime(options = {}) {
 
     const stateRuntime = getStateRuntime();
     callMethod(stateRuntime, "refreshTheme");
+    refreshDisplayedVisualHitBoxes();
     if (isLiveWindow(getHitWindow())) syncHitStateAfterLoad();
     if (isLiveWindow(getRenderWindow())) syncHitWin();
     flushRuntimeStateToPrefs();
@@ -278,6 +326,9 @@ function createThemeRuntime(options = {}) {
       builtin: !!entry.builtin,
       active: activeTheme && activeTheme._id === themeId,
       managedCodexPet: isManagedTheme(themeId),
+      managedOfficialTheme: typeof options.isOfficialManagedTheme === "function"
+        ? options.isOfficialManagedTheme(themeId)
+        : false,
     };
   }
 
@@ -299,6 +350,7 @@ function createThemeRuntime(options = {}) {
 
   function cleanup() {
     reloadInProgress = false;
+    resolveReloadWaiters({ status: "cleanup" });
     const sequencer = getFadeSequencer();
     if (sequencer && typeof sequencer.cleanup === "function") sequencer.cleanup();
   }
@@ -323,6 +375,7 @@ function createThemeRuntime(options = {}) {
     getThemeInfo,
     removeThemeDir,
     isReloadInProgress,
+    waitForThemeReloadSettled,
     cleanup,
   };
 }

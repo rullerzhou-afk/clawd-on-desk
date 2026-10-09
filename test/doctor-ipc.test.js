@@ -43,6 +43,49 @@ describe("Doctor IPC helpers", () => {
     assert.strictEqual(calls, 2);
   });
 
+  it("warms Windows desktop discovery before running checks without blocking the caller", async () => {
+    const order = [];
+    let releasePreheat;
+    const runner = __test.createDoctorRunChecksRunner({
+      platform: "win32",
+      preheatDshDesktopDiscovery: () => {
+        order.push("preheat");
+        return new Promise((resolve) => { releasePreheat = resolve; });
+      },
+      runChecks: () => {
+        order.push("checks");
+        return { status: "ok" };
+      },
+    });
+
+    const pending = runner();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    assert.deepStrictEqual(order, ["preheat"]);
+    releasePreheat();
+    assert.deepStrictEqual(await pending, { status: "ok" });
+    assert.deepStrictEqual(order, ["preheat", "checks"]);
+  });
+
+  it("still returns checks when the desktop preheat fails", async () => {
+    const runner = __test.createDoctorRunChecksRunner({
+      platform: "win32",
+      preheatDshDesktopDiscovery: async () => { throw new Error("powershell unavailable"); },
+      runChecks: () => ({ status: "ok" }),
+    });
+    assert.deepStrictEqual(await runner(), { status: "ok" });
+  });
+
+  it("never preheats on non-Windows platforms", async () => {
+    let calls = 0;
+    const runner = __test.createDoctorRunChecksRunner({
+      platform: "darwin",
+      preheatDshDesktopDiscovery: async () => { calls += 1; },
+      runChecks: () => ({ status: "ok" }),
+    });
+    await runner();
+    assert.strictEqual(calls, 0);
+  });
+
   it("normalizes doctor:test-connection payloads to objects", () => {
     assert.deepStrictEqual(__test.normalizeDoctorConnectionTestPayload(null), {});
     assert.deepStrictEqual(__test.normalizeDoctorConnectionTestPayload("bad"), {});

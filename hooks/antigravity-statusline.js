@@ -12,7 +12,11 @@
 // *something* fast and never throw - a stuck or crashed statusline script
 // would blank out the user's real Antigravity CLI status line.
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+const {
+  applyWslSourceFields,
+  postStateToRunningServer,
+  readHostPrefix,
+} = require("./server-config");
 const { readStdinJson } = require("./shared-process");
 const {
   resolveAntigravityContextUsage,
@@ -61,7 +65,9 @@ function buildStateBody(payload, contextUsage, quota, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
   }
-  return body;
+  return (options.applyWslSourceFields || applyWslSourceFields)(body, {
+    remote: !!options.remote,
+  });
 }
 
 function postStateBody(body, deps, env) {
@@ -99,6 +105,7 @@ async function main(deps = {}) {
     const body = buildStateBody(payload, contextUsage, quota, {
       remote,
       host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
+      applyWslSourceFields: deps.applyWslSourceFields,
     });
     await postStateBody(body, deps, env);
   } catch {

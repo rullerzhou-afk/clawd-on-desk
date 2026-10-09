@@ -3,7 +3,7 @@
 // Registered in ~/.gemini/settings.json by hooks/gemini-install.js
 
 const { postStateToRunningServer, readHostPrefix, applyWslSourceFields } = require("./server-config");
-const { createPidResolver, readStdinJson, getPlatformConfig } = require("./shared-process");
+const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
 // Gemini hook event → { state, event } for the Clawd state machine
 const HOOK_MAP = {
@@ -54,6 +54,28 @@ function normalizeSessionId(value) {
   return raw.startsWith("gemini:") ? raw : `gemini:${raw}`;
 }
 
+// #634: lifecycle for the shared resolver's cross-process pid cache, keyed on
+// Gemini's RAW hook names (BeforeAgent = the UserPromptSubmit equivalent).
+// cacheable compares against the exact normalizeSessionId fallback so an
+// id-less payload ("gemini:default", cf. #583) never keys a shared entry.
+const EVENT_TO_LIFECYCLE = {
+  SessionStart: "start",
+  BeforeAgent: "prompt",
+  SessionEnd: "end",
+};
+
+function pidCacheContext(hookName, payload) {
+  const sessionId = normalizeSessionId(payload && payload.session_id);
+  const cwd = (payload && payload.cwd) || "";
+  return {
+    namespace: "gemini-cli",
+    sessionId,
+    cacheCwd: cwd,
+    lifecycle: EVENT_TO_LIFECYCLE[hookName] || "event",
+    cacheable: sessionId !== "gemini:default" && !!cwd,
+  };
+}
+
 function hasToolResponseError(payload) {
   const response = payload && payload.tool_response;
   if (!response || typeof response !== "object") return false;
@@ -97,9 +119,14 @@ function buildStateBody(hookName, payload, options = {}) {
   if (options.remote) {
     body.host = options.host || readHostPrefix();
     applyWslSourceFields(body, { remote: true });
+    applyOrcaPaneKey(body, options.env);
     return body;
   }
   applyWslSourceFields(body);
+
+  // Before the pidMeta gate: the pane key comes from the environment, so it has
+  // to survive the events where shouldResolvePid skips the process snapshot.
+  applyOrcaPaneKey(body, options.env);
 
   const pidMeta = options.pidMeta;
   if (!pidMeta || typeof pidMeta !== "object") return body;
@@ -120,8 +147,9 @@ function sendHookEvent(payload, argvEvent, deps = {}) {
   const body = buildStateBody(hookName, payload, {
     remote,
     host: remote && deps.readHostPrefix ? deps.readHostPrefix() : undefined,
+    env,
     pidMeta: shouldResolvePid(hookName, env)
-      ? (deps.resolvePid ? deps.resolvePid() : undefined)
+      ? (deps.resolvePid ? deps.resolvePid(pidCacheContext(hookName, payload)) : undefined)
       : undefined,
   });
 

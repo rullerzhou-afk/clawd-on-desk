@@ -4,16 +4,19 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { buildPermissionUrl } = require("../hooks/server-config");
+const { classifyManagedClaudeStateHookCommand, stripUtf8Bom } = require("../hooks/json-utils");
 const {
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
+  checkClaudeMaterializationFs,
+  resolveClaudeHookPaths,
   CLAUDE_CORE_HOOK_EVENTS,
 } = require("../hooks/install");
 const {
   inspectClaudeHookHealth,
   buildClaudeRepairSignature,
+  getClaudeHookDegradedDiagnostic,
   hasNoAutomaticRepairWork,
-  reportHasUnparseableCommand,
 } = require("./claude-hook-health");
 
 const HOOK_MARKER = "clawd-hook.js";
@@ -63,7 +66,7 @@ function settingsNeedClaudeHookResync(rawSettings, expectedPermissionUrl) {
 
   let parsed;
   try {
-    parsed = JSON.parse(rawSettings);
+    parsed = JSON.parse(stripUtf8Bom(rawSettings));
   } catch {
     return false;
   }
@@ -97,16 +100,22 @@ function commandContainsAnyMarker(command, markers) {
 function countCommandHooksInEntries(entries, options = {}) {
   if (!Array.isArray(entries)) return 0;
   const excludeMarkers = Array.isArray(options.excludeMarkers) ? options.excludeMarkers : null;
+  const isExcluded = (command) => commandContainsAnyMarker(command, excludeMarkers)
+    || (
+      options.settings
+      && typeof options.event === "string"
+      && classifyManagedClaudeStateHookCommand(command, options.settings, options.event) !== null
+    );
   let count = 0;
   for (const entry of entries) {
     if (!entry || typeof entry !== "object") continue;
     if (entry.type === "http") continue;
-    if (typeof entry.command === "string" && !commandContainsAnyMarker(entry.command, excludeMarkers)) count += 1;
+    if (typeof entry.command === "string" && !isExcluded(entry.command)) count += 1;
     if (!Array.isArray(entry.hooks)) continue;
     for (const hook of entry.hooks) {
       if (!hook || typeof hook !== "object") continue;
       if (hook.type === "http") continue;
-      if (typeof hook.command === "string" && !commandContainsAnyMarker(hook.command, excludeMarkers)) count += 1;
+      if (typeof hook.command === "string" && !isExcluded(hook.command)) count += 1;
     }
   }
   return count;
@@ -123,14 +132,14 @@ function countCommandHooksInEntries(entries, options = {}) {
 function countAllHooks(hooks, options = {}) {
   if (!hooks || typeof hooks !== "object") return 0;
   let total = 0;
-  for (const entries of Object.values(hooks)) {
-    total += countCommandHooksInEntries(entries, options);
+  for (const [event, entries] of Object.entries(hooks)) {
+    total += countCommandHooksInEntries(entries, { ...options, event });
   }
   return total;
 }
 
-function countThirdPartyHooks(hooks) {
-  return countAllHooks(hooks, { excludeMarkers: MANAGED_COMMAND_MARKERS });
+function countThirdPartyHooks(hooks, settings) {
+  return countAllHooks(hooks, { excludeMarkers: MANAGED_COMMAND_MARKERS, settings });
 }
 
 /**
@@ -143,7 +152,7 @@ function takeSnapshot(raw) {
   if (typeof raw !== "string" || !raw.trim()) return null;
   let parsed;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(stripUtf8Bom(raw));
   } catch {
     return null;
   }
@@ -151,7 +160,7 @@ function takeSnapshot(raw) {
   return {
     keyCount: Object.keys(parsed).length,
     hookCount: countAllHooks(parsed.hooks),
-    thirdPartyHookCount: countThirdPartyHooks(parsed.hooks),
+    thirdPartyHookCount: countThirdPartyHooks(parsed.hooks, parsed),
   };
 }
 
@@ -223,12 +232,29 @@ function createClaudeSettingsWatcher(ctx = {}) {
   const maxRepairAttempts = Number.isInteger(ctx.maxRepairAttempts) && ctx.maxRepairAttempts > 0
     ? ctx.maxRepairAttempts
     : DEFAULT_MAX_REPAIR_ATTEMPTS;
-  const expectedHookScriptPath = typeof ctx.expectedHookScriptPath === "string"
+  // Explicit paths keep the historical/test-injected direct contract. In
+  // production neither is supplied and every check resolves source/target
+  // through the shared Claude resolver instead of a frozen zero-arg getter,
+  // so a lazy AppImage generation (or its deletion) is tracked live.
+  const explicitHookScriptPath = typeof ctx.expectedHookScriptPath === "string"
     ? ctx.expectedHookScriptPath
-    : getClaudeHookScriptPath();
-  const expectedAutoStartScriptPath = typeof ctx.expectedAutoStartScriptPath === "string"
+    : null;
+  const explicitAutoStartScriptPath = typeof ctx.expectedAutoStartScriptPath === "string"
     ? ctx.expectedAutoStartScriptPath
-    : getClaudeAutoStartScriptPath();
+    : null;
+  const hasExplicitPaths = explicitHookScriptPath !== null || explicitAutoStartScriptPath !== null;
+  const resolverOptions = {
+    platform: ctx.platform || process.platform,
+    remote: ctx.remote,
+    homeDir: ctx.homeDir,
+    materializedRoot: ctx.materializedRoot,
+    processEnv: ctx.processEnv,
+    realpathSync: ctx.realpathSync,
+    fs: fsApi,
+  };
+  const resolvePaths = typeof ctx.resolveClaudeHookPaths === "function"
+    ? ctx.resolveClaudeHookPaths
+    : (options) => resolveClaudeHookPaths(options, { materialize: false });
   const coreEvents = Array.isArray(ctx.coreEvents) ? ctx.coreEvents : CLAUDE_CORE_HOOK_EVENTS;
   const platform = ctx.platform || process.platform;
 
@@ -241,6 +267,16 @@ function createClaudeSettingsWatcher(ctx = {}) {
   let unreadableStreak = 0;
   let sourceMissingLogged = false;
   let shrinkNotified = false;
+  // #874: host-Node resolution for classifying env-indirected hooks as migratable
+  // when the env evidence names no usable Node. The periodic health inspection
+  // stays synchronous and spawn-free — it only READS trustedNodeCandidate. The
+  // actual resolution runs out-of-band via resolveTrustedNodeBin (an async, full
+  // host resolver, the same one the installer uses), kicked only when an env hook
+  // is blocked on Node. trustedNodeResolving is a single-flight guard; a found
+  // value is cached, but a null result is NOT, so a Node that appears later is
+  // retried on the next patrol. Reset by start()/stop().
+  let trustedNodeCandidate = null;
+  let trustedNodeResolving = false;
   // { signature, attempts, manualFixRequired } for the currently tracked
   // automatically-repairable issue set, or null when nothing is being retried.
   let repairState = null;
@@ -304,17 +340,121 @@ function createClaudeSettingsWatcher(ctx = {}) {
     }
   }
 
+  // Kick a single out-of-band host-Node resolution when an env hook is blocked on
+  // Node. The patrol stays synchronous — this runs the async resolver (the same
+  // full resolver the installer uses) off the health-check path, so it never
+  // blocks on a subprocess. Single-flight; a found value is cached and triggers an
+  // immediate re-check (so migration happens without waiting for the next patrol);
+  // a null result is not cached, so the next patrol retries. A lifecycle change
+  // during resolution discards the result.
+  function kickTrustedNodeResolution() {
+    if (trustedNodeCandidate) return;
+    if (trustedNodeResolving) return;
+    if (typeof ctx.resolveTrustedNodeBin !== "function") return;
+    trustedNodeResolving = true;
+    const tokenAtStart = lifecycleToken;
+    Promise.resolve()
+      .then(() => ctx.resolveTrustedNodeBin(resolverOptions))
+      .then((resolved) => {
+        if (tokenAtStart !== lifecycleToken) return;
+        const value = typeof resolved === "string" && resolved ? resolved : null;
+        if (value && !trustedNodeCandidate) {
+          trustedNodeCandidate = value;
+          // null -> value: re-run the health check now so the env hook migrates
+          // this cycle instead of waiting up to one patrol interval.
+          scheduleHealthCheck(0, "trusted-node-resolved");
+        }
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (tokenAtStart === lifecycleToken) trustedNodeResolving = false;
+      });
+  }
+
   function buildReport(raw) {
     const port = typeof ctx.getHookServerPort === "function" ? ctx.getHookServerPort() : null;
-    return inspectClaudeHookHealth(raw, {
+    const common = {
       expectedPermissionUrl: buildPermissionUrl(port),
-      expectedHookScriptPath,
-      expectedAutoStartScriptPath,
       requireAutoStart: !!ctx.autoStartWithClaude,
       coreEvents,
       platform,
       fs: fsApi,
+      resolveTrustedNodeCandidate: () => trustedNodeCandidate,
+    };
+    if (hasExplicitPaths) {
+      // A one-sided injection must fall back to the real getter for the other
+      // entry. Leaving it null would make scriptPathMatchesExpected() treat the
+      // event as "nothing to compare" and report a false healthy.
+      const state = explicitHookScriptPath !== null ? explicitHookScriptPath : getClaudeHookScriptPath();
+      const autoStart = explicitAutoStartScriptPath !== null
+        ? explicitAutoStartScriptPath
+        : getClaudeAutoStartScriptPath();
+      return inspectClaudeHookHealth(raw, {
+        ...common,
+        expectedHookScriptPath: state,
+        expectedAutoStartScriptPath: autoStart,
+        sourceHookScriptPath: state,
+        sourceAutoStartScriptPath: autoStart,
+      });
+    }
+    // Same fail-closed contract as src/server.js when an injected read-only fs
+    // cannot be shared with the real installer materialization.
+    const fsGuard = checkClaudeMaterializationFs(resolverOptions);
+    if (fsGuard.ok !== true) {
+      return {
+        status: "resolver-degraded",
+        repairable: false,
+        degradedReason: fsGuard.reason,
+        issues: [],
+        commandCount: 0,
+        managedCoreEventCount: 0,
+        snapshot: null,
+        message: fsGuard.message,
+      };
+    }
+    // Total, read-only resolution. Any I/O or plan error becomes an explicit
+    // degraded signal instead of an exception or a phantom "expected path",
+    // and the caller reschedules the next patrol (handleReport).
+    let resolved;
+    try {
+      resolved = resolvePaths(resolverOptions);
+    } catch (err) {
+      resolved = { ok: false, reason: "resolver-threw", message: err && err.message };
+    }
+    if (!resolved || resolved.ok !== true) {
+      return {
+        status: "resolver-degraded",
+        repairable: false,
+        degradedReason: (resolved && resolved.reason) || "resolver-failed",
+        issues: [],
+        commandCount: 0,
+        managedCoreEventCount: 0,
+        snapshot: null,
+        message: (resolved && resolved.message) || "Claude hook path resolution failed",
+      };
+    }
+    return inspectClaudeHookHealth(raw, {
+      ...common,
+      expectedHookScriptPath: resolved.target.state,
+      expectedAutoStartScriptPath: resolved.target.autoStart,
+      sourceHookScriptPath: resolved.source.state,
+      sourceAutoStartScriptPath: resolved.source.autoStart,
+      targetGeneration: resolved.targetGeneration,
     });
+  }
+
+  // A degraded managed-hook diagnostic is deliberately not a trusted baseline.
+  // In particular, env-indirection-unverified commands still count as third-party
+  // until settings.env proves ownership. Seeding that snapshot would make the
+  // same commands disappear from the third-party count once the user supplies
+  // the missing evidence, falsely tripping suspicious-shrink and blocking the
+  // migration that should repair them.
+  function updateTrustedSnapshot(raw, report) {
+    if (getClaudeHookDegradedDiagnostic(report)) return false;
+    const snapshot = takeSnapshot(raw);
+    if (!snapshot) return false;
+    lastTrustedSnapshot = snapshot;
+    return true;
   }
 
   async function runHealthCheck(reason) {
@@ -362,6 +502,34 @@ function createClaudeSettingsWatcher(ctx = {}) {
     }
     unreadableStreak = 0;
 
+    if (report.status === "resolver-degraded") {
+      // A transient resolver I/O/plan failure must not permanently stop the
+      // patrol, fake a healthy report, or drive a blind repair. Degrade and
+      // schedule the next read-only check. A source-script-missing reason is
+      // the one durable case: no repair can succeed until Clawd is reinstalled.
+      const reasonCode = report.degradedReason || "resolver-failed";
+      const sourceMissing = reasonCode === "source-script-missing";
+      if (sourceMissing && !sourceMissingLogged) {
+        console.warn("Clawd: the current Claude hook source script is missing — reinstall or re-extract Clawd to restore automatic hook repair");
+        sourceMissingLogged = true;
+      } else if (!sourceMissing) {
+        sourceMissingLogged = false;
+      }
+      updateHealthStatus({
+        status: "degraded",
+        degradedReason: reasonCode,
+        lastCheckAt: nowFn(),
+        source: reason,
+        issueSignature: null,
+        issues: [],
+        message: sourceMissing
+          ? "Claude hook source script is missing; reinstall or re-extract Clawd"
+          : (report.message || "Claude hook path resolution failed; will retry"),
+      });
+      scheduleHealthCheck(healthCheckIntervalMs, "periodic-health");
+      return;
+    }
+
     if (report.status === "source-script-missing") {
       // Rewriting settings.json here would only point it at a path that
       // still doesn't exist — reconcile is deliberately never attempted.
@@ -391,24 +559,34 @@ function createClaudeSettingsWatcher(ctx = {}) {
       // PR and never drive automatic repair or mutation.
       repairState = null;
       shrinkNotified = false;
-      const snapshot = takeSnapshot(raw);
-      if (snapshot) lastTrustedSnapshot = snapshot;
-      // A command-unparseable issue is automaticRepairable:false (misclassifying
-      // a third-party/unusual command as Clawd's to rewrite is worse than
-      // leaving it alone) — it can sit here indefinitely with nothing left
-      // for auto-repair to attempt, so it must never be reported as "healthy"
-      // or advance lastSuccessAt.
-      const unparseable = reportHasUnparseableCommand(report);
+      // Non-automatic managed-hook diagnostics can sit here indefinitely with
+      // nothing left to repair. Preserve their degraded signal instead of
+      // incorrectly reporting healthy or advancing lastSuccessAt.
+      const diagnostic = getClaudeHookDegradedDiagnostic(report);
+      if (!diagnostic) updateTrustedSnapshot(raw, report);
+      // #874: an env hook blocked only on Node resolution — try to resolve a host
+      // Node out-of-band. On success the resolver schedules an immediate re-check,
+      // which reclassifies the hook as migratable and lets the installer migrate it.
+      // Reaching this diagnostic means the inspection just rejected whatever was
+      // cached (null, or a path that is no longer usable after a Node upgrade /
+      // manager switch), so drop the stale candidate first — otherwise its truthy
+      // value would keep kickTrustedNodeResolution() from re-resolving the Node
+      // that is actually available now, stalling until a restart. A healthy config
+      // never reaches here, so a usable cached value is preserved.
+      if (diagnostic && diagnostic.reason === "env-hook-node-unresolved") {
+        trustedNodeCandidate = null;
+        kickTrustedNodeResolution();
+      }
       updateHealthStatus({
-        status: unparseable ? "degraded" : "healthy",
-        degradedReason: unparseable ? "command-unparseable" : null,
+        status: diagnostic ? "degraded" : "healthy",
+        degradedReason: diagnostic ? diagnostic.reason : null,
         lastCheckAt: nowFn(),
-        lastSuccessAt: unparseable ? healthStatus.lastSuccessAt : nowFn(),
+        lastSuccessAt: diagnostic ? healthStatus.lastSuccessAt : nowFn(),
         source: reason,
         attempt: 0,
         issueSignature: null,
         issues: report.issues,
-        message: unparseable ? "a Clawd-owned hook command could not be parsed; see Doctor for details" : null,
+        message: diagnostic ? diagnostic.message : null,
       });
       scheduleHealthCheck(healthCheckIntervalMs, "periodic-health");
       return;
@@ -469,22 +647,20 @@ function createClaudeSettingsWatcher(ctx = {}) {
 
     if (hasNoAutomaticRepairWork(verifyReport)) {
       repairState = null;
-      const nextSnapshot = takeSnapshot(verifyRaw);
-      if (nextSnapshot) lastTrustedSnapshot = nextSnapshot;
-      // Same command-unparseable carve-out as the initial-detection branch
-      // above — repair has nothing left to attempt, but that is not the
-      // same thing as "verified healthy."
-      const unparseable = reportHasUnparseableCommand(verifyReport);
+      // Same non-automatic diagnostic carve-out as the initial branch above:
+      // no automatic work remains, but the config is not verified healthy.
+      const diagnostic = getClaudeHookDegradedDiagnostic(verifyReport);
+      if (!diagnostic) updateTrustedSnapshot(verifyRaw, verifyReport);
       updateHealthStatus({
-        status: unparseable ? "degraded" : "healthy",
-        degradedReason: unparseable ? "command-unparseable" : null,
+        status: diagnostic ? "degraded" : "healthy",
+        degradedReason: diagnostic ? diagnostic.reason : null,
         lastCheckAt: nowFn(),
-        lastSuccessAt: unparseable ? healthStatus.lastSuccessAt : nowFn(),
+        lastSuccessAt: diagnostic ? healthStatus.lastSuccessAt : nowFn(),
         source: reason,
         attempt: 0,
         issueSignature: null,
         issues: verifyReport.issues,
-        message: unparseable ? "a Clawd-owned hook command could not be parsed; see Doctor for details" : null,
+        message: diagnostic ? diagnostic.message : null,
       });
       scheduleHealthCheck(healthCheckIntervalMs, "periodic-health");
       return;
@@ -549,6 +725,8 @@ function createClaudeSettingsWatcher(ctx = {}) {
     unreadableStreak = 0;
     sourceMissingLogged = false;
     shrinkNotified = false;
+    trustedNodeCandidate = null;
+    trustedNodeResolving = false;
     repairState = null;
     healthStatus = initialHealthStatus(nowFn);
     if (!settingsWatcher) return false;
@@ -562,6 +740,8 @@ function createClaudeSettingsWatcher(ctx = {}) {
   function start() {
     if (settingsWatcher) return false;
     lifecycleToken++;
+    trustedNodeCandidate = null;
+    trustedNodeResolving = false;
     const settingsDir = getClaudeSettingsDir();
     const settingsPath = getClaudeSettingsPath();
 
@@ -574,7 +754,7 @@ function createClaudeSettingsWatcher(ctx = {}) {
       const seedRaw = fsApi.readFileSync(settingsPath, "utf-8");
       const seedReport = buildReport(seedRaw);
       if (hasNoAutomaticRepairWork(seedReport)) {
-        lastTrustedSnapshot = takeSnapshot(seedRaw);
+        updateTrustedSnapshot(seedRaw, seedReport);
       }
     } catch (err) {
       console.warn("Clawd: could not seed settings baseline:", err.message);

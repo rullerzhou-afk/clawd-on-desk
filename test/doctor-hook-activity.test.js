@@ -24,6 +24,21 @@ describe("doctor hook activity connection test", () => {
     assert.match(result.detail, /codex/);
   });
 
+  it("uses the resolved custom application name in summaries", () => {
+    const result = evaluateConnectionTest({
+      events: [{
+        agentId: "custom-nova-0123456789ab",
+        route: "state",
+        outcome: "accepted",
+      }],
+      resolveAgentDisplayName: () => "Nova AI",
+    });
+
+    assert.strictEqual(result.status, "http-verified");
+    assert.match(result.detail, /Nova AI/);
+    assert.doesNotMatch(result.detail, /custom-nova/);
+  });
+
   it("warns when HTTP works but events are dropped by gates", () => {
     const result = evaluateConnectionTest({
       events: [
@@ -38,6 +53,18 @@ describe("doctor hook activity connection test", () => {
     assert.match(result.detail, /dropped-by-dnd/);
   });
 
+  it("treats invalid and unsupported custom activity as dropped, never verified", () => {
+    const result = evaluateConnectionTest({
+      events: [
+        { agentId: "rejected-custom", route: "state", outcome: "dropped-invalid-agent" },
+        { agentId: "custom-nova-0123456789ab", route: "permission", outcome: "dropped-unsupported" },
+      ],
+    });
+
+    assert.strictEqual(result.status, "http-dropped");
+    assert.strictEqual(result.level, "warning");
+  });
+
   it("warns when Codex fallback files changed but no HTTP event arrived", () => {
     const result = evaluateConnectionTest({
       fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
@@ -46,6 +73,49 @@ describe("doctor hook activity connection test", () => {
     assert.strictEqual(result.status, "http-blocked");
     assert.strictEqual(result.level, "warning");
     assert.match(result.detail, /codex/);
+  });
+
+  it("points to Codex hook review before blaming the HTTP path", () => {
+    const result = evaluateConnectionTest({
+      fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
+      codexHookHealth: { signature: "needs-review", status: "needs-review" },
+    });
+
+    assert.strictEqual(result.status, "hooks-need-review");
+    assert.strictEqual(result.level, "warning");
+    assert.match(result.detail, /\/hooks/);
+    assert.doesNotMatch(result.detail, /HTTP works|likely/i);
+  });
+
+  it("keeps observed HTTP outcomes ahead of Codex hook review state", () => {
+    const shared = {
+      fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
+      codexHookHealth: { signature: "needs-review", status: "needs-review" },
+    };
+    const accepted = evaluateConnectionTest({
+      ...shared,
+      events: [{ agentId: "claude-code", route: "state", outcome: "accepted" }],
+    });
+    const dropped = evaluateConnectionTest({
+      ...shared,
+      events: [{ agentId: "codex", route: "state", outcome: "dropped-by-disabled" }],
+    });
+
+    assert.strictEqual(accepted.status, "http-verified");
+    assert.strictEqual(dropped.status, "http-dropped");
+  });
+
+  it("requires matching Codex activity before using its hook review state", () => {
+    const health = { signature: "needs-review", status: "needs-review" };
+    assert.strictEqual(evaluateConnectionTest({ codexHookHealth: health }).status, "no-activity");
+    assert.strictEqual(evaluateConnectionTest({
+      fileActivity: [{ agentId: "claude-code", source: "file-mtime", count: 1 }],
+      codexHookHealth: health,
+    }).status, "http-blocked");
+    assert.strictEqual(evaluateConnectionTest({
+      fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
+      codexHookHealth: { signature: null, status: "ok" },
+    }).status, "http-blocked");
   });
 
   it("warns when nothing changed during the window", () => {
@@ -92,6 +162,38 @@ describe("doctor hook activity connection test", () => {
     assert.strictEqual(result.events.length, 1);
   });
 
+  it("reads current Codex hook health after the observation window", async () => {
+    const calls = [];
+    const result = await runConnectionTest({
+      durationMs: 1000,
+      setTimeout: (fn) => {
+        calls.push("wait");
+        fn();
+      },
+      fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
+      getCodexHookHealth: () => {
+        calls.push("health");
+        return { signature: "needs-review", status: "needs-review" };
+      },
+    });
+
+    assert.deepStrictEqual(calls, ["wait", "health"]);
+    assert.strictEqual(result.status, "hooks-need-review");
+  });
+
+  it("degrades to the existing HTTP warning when the health probe fails", async () => {
+    const result = await runConnectionTest({
+      durationMs: 1000,
+      setTimeout: (fn) => fn(),
+      fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
+      getCodexHookHealth: () => {
+        throw new Error("probe failed");
+      },
+    });
+
+    assert.strictEqual(result.status, "http-blocked");
+  });
+
   it("deduplicates concurrent connection tests and resets after completion", async () => {
     let calls = 0;
     const resolvers = [];
@@ -120,5 +222,25 @@ describe("doctor hook activity connection test", () => {
     resolvers.shift()();
     assert.deepStrictEqual(await third, { status: "ok", marker: "third" });
     assert.deepStrictEqual(completed, ["first", "third"]);
+  });
+
+  it("runs the live hook-health probe once for a single-flighted test", async () => {
+    let healthCalls = 0;
+    const runGuarded = createConnectionTestDeduper((input) => runConnectionTest({
+      ...input,
+      durationMs: 1000,
+      setTimeout: (fn) => fn(),
+      fileActivity: [{ agentId: "codex", source: "file-mtime", count: 1 }],
+      getCodexHookHealth: () => {
+        healthCalls++;
+        return { signature: "needs-review", status: "needs-review" };
+      },
+    }));
+
+    const first = runGuarded({ marker: "first" });
+    const second = runGuarded({ marker: "second" });
+    assert.strictEqual(first, second);
+    assert.strictEqual((await first).status, "hooks-need-review");
+    assert.strictEqual(healthCalls, 1);
   });
 });

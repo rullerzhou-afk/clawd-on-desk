@@ -45,30 +45,34 @@ function readTail(filePath, maxBytes = SESSION_INDEX_READ_MAX_BYTES) {
   }
 }
 
-function readCodexThreadName(sessionId, options = {}) {
-  const id = bareCodexSessionId(sessionId);
-  if (!id) return null;
+// One bounded index read serves every tracked session in a monitor poll.
+function readCodexThreadNames(sessionIds, options = {}) {
+  const wanted = new Set(Array.from(sessionIds, bareCodexSessionId).filter(Boolean));
+  const names = new Map();
+  if (!wanted.size) return names;
   const codexDir = typeof options.codexDir === "string" && options.codexDir
     ? options.codexDir
     : getCodexDir();
-  const indexPath = path.join(codexDir, "session_index.jsonl");
-  const content = readTail(indexPath, options.maxBytes);
-  if (!content) return null;
-
-  let latest = null;
+  const content = readTail(path.join(codexDir, "session_index.jsonl"), options.maxBytes);
   for (const line of content.split(/\r?\n/)) {
     if (!line.trim()) continue;
     try {
       const entry = JSON.parse(line);
-      if (!entry || entry.id !== id) continue;
+      if (!entry || !wanted.has(entry.id)) continue;
       const name = normalizeThreadName(entry.thread_name);
-      if (name) latest = name;
+      if (name) names.set(entry.id, name);
     } catch {}
   }
-  return latest;
+  return names;
+}
+
+function readCodexThreadName(sessionId, options = {}) {
+  const id = bareCodexSessionId(sessionId);
+  return id ? readCodexThreadNames([sessionId], options).get(id) || null : null;
 }
 
 module.exports = {
   bareCodexSessionId,
   readCodexThreadName,
+  readCodexThreadNames,
 };

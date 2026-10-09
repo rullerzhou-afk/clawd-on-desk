@@ -1,0 +1,76 @@
+{
+  "schemaVersion": 1,
+  "catalogVersion": 8,
+  "themes": [
+    {
+      "id": "hash-sage",
+      "version": "1.0.0",
+      "name": {
+        "en": "Hash Sage",
+        "zh": "哈希仙人"
+      },
+      "description": {
+        "en": "A cloud-riding pixel sage.",
+        "zh": "乘云而行的像素仙人。"
+      },
+      "minAppVersion": "1.0.0",
+      "archive": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.clawd-theme.zip",
+        "bytes": 188750975,
+        "unpackedBytes": 188745323,
+        "sha256": "a0157e9a0542bb3c3ff425ce7d901fc234d0c0fb87aea1333da2be031d34dd62"
+      },
+      "preview": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/hash-sage-v1.0.0/hash-sage-1.0.0.preview.webp",
+        "bytes": 35110,
+        "sha256": "1ecb749c5cc4b28ad541324dfc7546cbb31dba03c7b690a8d1dda1713272a801"
+      },
+      "showcase": {
+        "url": "https://hash-sage-art.pages.dev/progress/"
+      },
+      "license": {
+        "spdx": "LicenseRef-Hash-Sage-Art",
+        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/5115abed553507d4944da8d633926c5d7cc95b44/themes/hash-sage/LICENSE",
+        "notice": {
+          "en": "All rights reserved. Personal use with Clawd on Desk as distributed by this project only. Hash Sage pays tribute to the OpenAI Codex logo; this project is not affiliated with or endorsed by OpenAI.",
+          "zh": "版权所有，仅允许在本项目发行的 Clawd on Desk 中个人使用。Hash Sage 的视觉方向致敬 OpenAI Codex logo；本项目与 OpenAI 无官方关联，也未获其背书。"
+        }
+      }
+    },
+    {
+      "id": "whale-chan",
+      "version": "1.0.2",
+      "name": {
+        "en": "Whale-chan",
+        "zh": "鲸鱼娘"
+      },
+      "description": {
+        "en": "A blue-haired desktop companion with a whale tail.",
+        "zh": "摇着鲸尾的蓝发桌面伙伴。"
+      },
+      "minAppVersion": "1.2.0",
+      "archive": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/whale-chan-v1.0.2/whale-chan-1.0.2.clawd-theme.zip",
+        "bytes": 164777743,
+        "unpackedBytes": 164771537,
+        "sha256": "1e37403b21570f5d6850caade7ec48e3d97da3f9d5223071461e6c202ad7e0d8"
+      },
+      "preview": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/whale-chan-v1.0.2/whale-chan-1.0.2.preview.webp",
+        "bytes": 74002,
+        "sha256": "3aa15b6546c04dbc49bfa5b67548b044d0151f668928fdeb25a060f52500472e"
+      },
+      "showcase": {
+        "url": "https://whale-chan-art.pages.dev/progress/"
+      },
+      "license": {
+        "spdx": "CC-BY-NC-SA-4.0",
+        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/d9b6cbb959841dbaedb06d42a96de50a179b1c5d/themes/whale-chan/LICENSE",
+        "notice": {
+          "en": "ZipZipPipe and 上善无形 are credited for upstream materials; 鹿鹿's new work is CC BY-NC-SA 4.0 where licensable, and this unofficial fan theme is unaffiliated with and neither authorised nor endorsed by DeepSeek.",
+          "zh": "上游素材署名 ZipZipPipe、上善无形；鹿鹿的新作在有权授权范围内采用 CC BY-NC-SA 4.0，本非官方同人主题与 DeepSeek 无关联，也未获其授权或背书。"
+        }
+      }
+    }
+  ]
+}

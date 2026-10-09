@@ -7,9 +7,11 @@ const {
   updateRegistry,
   commandRegistry,
   MANAGED_CLEANUP_AGENT_IDS,
+  saveFeishuApproverByEmail,
   requireBoolean,
   requireFiniteNumber,
   requireEnum,
+  applyThemeSelection,
 } = require("../src/settings-actions");
 const prefs = require("../src/prefs");
 
@@ -46,6 +48,7 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.lang("en", { snapshot: baseSnapshot }).status, "ok");
     assert.strictEqual(updateRegistry.lang("zh", { snapshot: baseSnapshot }).status, "ok");
     assert.strictEqual(updateRegistry.lang("ko", { snapshot: baseSnapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.lang("es", { snapshot: baseSnapshot }).status, "ok");
     assert.strictEqual(updateRegistry.lang("klingon", { snapshot: baseSnapshot }).status, "error");
   });
 
@@ -67,6 +70,92 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.miniEdge("top", deps).status, "error");
   });
 
+  it("petTint accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petTint({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petTint({ clawd: "gold", cloudling: "matcha" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petTint({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petTint({ clawd: "custom" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petTint({ "../unsafe": "gold" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petTint({ clawd: "url(file:///secret)" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petTint("gold", deps).status, "error");
+    assert.strictEqual(updateRegistry.petTint([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petTint(null, deps).status, "error");
+  });
+
+  it("petAccessory accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petAccessory({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "wizard-hat", cloudling: "halo" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory({ clawd: "seasonal" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petAccessory({ "../unsafe": "halo" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petAccessory({ clawd: "file:///secret.svg" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petAccessory("wizard-hat", deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petAccessory(null, deps).status, "error");
+  });
+
+  it("petMouthAccessory accepts only safe per-theme catalog selections", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.petMouthAccessory({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.petMouthAccessory({ clawd: "cigarette" }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(updateRegistry.petMouthAccessory({ clawd: "none" }, deps).status, "error");
+    assert.strictEqual(updateRegistry.petMouthAccessory({ clawd: "pipe" }, deps).status, "error");
+    assert.strictEqual(
+      updateRegistry.petMouthAccessory({ "../unsafe": "cigarette" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.petMouthAccessory({ clawd: "file:///secret.svg" }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.petMouthAccessory("cigarette", deps).status, "error");
+    assert.strictEqual(updateRegistry.petMouthAccessory([], deps).status, "error");
+    assert.strictEqual(updateRegistry.petMouthAccessory(null, deps).status, "error");
+  });
+
+  it("holidayAccessoryEnabled accepts only canonical per-theme true entries", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled({}, deps).status, "ok");
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: true, cloudling: true }, deps).status,
+      "ok"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ clawd: false }, deps).status,
+      "error"
+    );
+    assert.strictEqual(
+      updateRegistry.holidayAccessoryEnabled({ "../unsafe": true }, deps).status,
+      "error"
+    );
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(true, deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled([], deps).status, "error");
+    assert.strictEqual(updateRegistry.holidayAccessoryEnabled(null, deps).status, "error");
+  });
+
   it("x/y/preMiniX/preMiniY require finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     assert.strictEqual(updateRegistry.x(0, deps).status, "ok");
@@ -78,16 +167,56 @@ describe("updateRegistry pure-data validators", () => {
   it("function-form boolean fields reject non-booleans", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [
-      "sessionHudEnabled", "sessionHudShowElapsed", "sessionHudShowContextUsage", "sessionHudCleanupDetached",
+      "sessionHudEnabled", "sessionHudShowElapsed", "sessionHudShowContextUsage", "sessionHudShowQuota", "sessionHudCleanupDetached",
       "sessionHudShowStateLabels", "sessionHudPinned",
       "miniMode", "openAtLoginHydrated", "soundMuted", "bubbleFollowPet",
       "hideBubbles", "permissionBubblesEnabled", "elicitationBubblesEnabled", "lowPowerIdleMode",
-      "allowEdgePinning", "disableMiniMode", "keepSizeAcrossDisplays", "codexHookHealthNotifyEnabled",
+      "testReactionsEnabled",
+      "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
       assert.strictEqual(updateRegistry[key]("yes", deps).status, "error", `${key}("yes")`);
     }
+  });
+
+  it("keepSizeAcrossDisplays validates booleans through its object-form entry", () => {
+    const entry = updateRegistry.keepSizeAcrossDisplays;
+    assert.strictEqual(typeof entry, "object");
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate(false).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+  });
+
+  it("keepSizeAcrossDisplays rebases once only when turning off", () => {
+    const entry = updateRegistry.keepSizeAcrossDisplays;
+    let calls = 0;
+    const deps = { rebaseSizeToRealizedPixels: () => { calls += 1; } };
+    assert.deepStrictEqual(entry.effect(false, deps), { status: "ok" });
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(entry.effect(true, deps), { status: "ok" });
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(entry.effect(false, {}), { status: "ok" });
+    assert.deepStrictEqual(entry.effect(false), { status: "ok" });
+  });
+
+  it("accepts only supported quota ring display modes", () => {
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("used").status, "ok");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("remaining").status, "ok");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode("available").status, "error");
+    assert.strictEqual(updateRegistry.quotaRingDisplayMode(true).status, "error");
+  });
+
+  it("accepts only supported bubble placement enums", () => {
+    for (const value of ["auto", "left", "right"]) {
+      assert.strictEqual(updateRegistry.bubbleFollowPreference(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.bubbleFollowPreference("strict-left").status, "error");
+    for (const value of ["top-left", "top-right", "bottom-left", "bottom-right"]) {
+      assert.strictEqual(updateRegistry.bubbleFixedCorner(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.bubbleFixedCorner("center").status, "error");
   });
 
   it("codexHookHealthLastNotified accepts strings and empty reset", () => {
@@ -96,6 +225,64 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified("needs-review", deps).status, "ok");
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified(null, deps).status, "error");
     assert.strictEqual(updateRegistry.codexHookHealthLastNotified(42, deps).status, "error");
+  });
+
+  it("telegramMigrationLastNotified accepts signatures and empty reset", () => {
+    const deps = { snapshot: baseSnapshot };
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified("", deps).status, "ok");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified("legacy-migration", deps).status, "ok");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified(null, deps).status, "error");
+    assert.strictEqual(updateRegistry.telegramMigrationLastNotified(42, deps).status, "error");
+  });
+
+  it("hidden quota providers validate as a bounded list of non-empty strings", () => {
+    const entry = updateRegistry.quotaRingHiddenProviders;
+    const check = (value) => (typeof entry === "function" ? entry(value) : entry.validate(value));
+    assert.strictEqual(check([]).status, "ok");
+    assert.strictEqual(check(["codexQuota", "kimiQuota"]).status, "ok");
+    // Shape only — an unrecognized key is accepted on purpose, because
+    // rejecting it would un-hide the provider behind the user's back.
+    assert.strictEqual(check(["notAProviderYet"]).status, "ok");
+    assert.strictEqual(check("codexQuota").status, "error", "a bare string is not a list");
+    assert.strictEqual(check(null).status, "error");
+    assert.strictEqual(check([""]).status, "error");
+    assert.strictEqual(check(["  "]).status, "error");
+    assert.strictEqual(check([1]).status, "error");
+    assert.strictEqual(
+      check(Array.from({ length: 200 }, (_v, i) => `p${i}`)).status, "error",
+      "an unbounded list must be refused at the command boundary, not silently truncated"
+    );
+  });
+
+  it("Claude usage collection validates booleans and delegates the opt-in mutation", async () => {
+    const entry = updateRegistry.claudeQuotaCollectionEnabled;
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+    const calls = [];
+    const enabled = await entry.effect(true, {
+      setClaudeQuotaCollectionEnabled: async (value) => {
+        calls.push(value);
+        return { status: "ok" };
+      },
+    });
+    assert.strictEqual(enabled.status, "ok");
+    assert.deepStrictEqual(calls, [true]);
+    assert.strictEqual(entry.effect(false, {}).status, "error");
+  });
+
+  it("Kimi usage collection is command-only", () => {
+    const entry = updateRegistry.kimiQuotaCollectionEnabled;
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+    assert.strictEqual(entry.commandOnly, true);
+    assert.deepStrictEqual(
+      commandRegistry.setKimiQuotaCollectionEnabled({ enabled: true }),
+      { status: "ok", commit: { kimiQuotaCollectionEnabled: true } }
+    );
+    assert.strictEqual(
+      commandRegistry.setKimiQuotaCollectionEnabled({ enabled: "yes" }).status,
+      "error"
+    );
   });
 
   it("bubble auto-close seconds require integers in range", () => {
@@ -125,9 +312,45 @@ describe("updateRegistry pure-data validators", () => {
     }
   });
 
+  it("Settings window bounds accept normal integer geometry or null", () => {
+    const validate = updateRegistry.settingsWindowBounds;
+    assert.strictEqual(validate(null).status, "ok");
+    assert.strictEqual(
+      validate({ x: -1200, y: 80, width: 900, height: 640 }).status,
+      "ok",
+    );
+    for (const value of [
+      { x: 0.5, y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(validate(value).status, "error");
+    }
+  });
+
+  it("Dashboard window bounds accept normal integer geometry or null", () => {
+    const validate = updateRegistry.dashboardWindowBounds;
+    assert.strictEqual(validate(null).status, "ok");
+    assert.strictEqual(
+      validate({ x: -1200, y: 80, width: 900, height: 640 }).status,
+      "ok",
+    );
+    for (const value of [
+      { x: 0.5, y: 0, width: 800, height: 560 },
+      { x: 0, y: 0, width: 0, height: 560 },
+      { x: 0, y: 0, width: 800 },
+      [],
+      "800x560",
+    ]) {
+      assert.strictEqual(validate(value).status, "error");
+    }
+  });
+
   it("object-form boolean fields validate via entry.validate", () => {
     const deps = { snapshot: baseSnapshot };
-    for (const key of ["autoStartWithClaude", "manageClaudeHooksAutomatically", "openAtLogin"]) {
+    for (const key of ["autoStartWithClaude", "autoStartWithCodex", "manageClaudeHooksAutomatically", "openAtLogin"]) {
       const entry = updateRegistry[key];
       assert.strictEqual(typeof entry, "object", `${key} should be object-form`);
       assert.strictEqual(typeof entry.validate, "function", `${key} should expose validate`);
@@ -251,29 +474,34 @@ describe("updateRegistry pure-data validators", () => {
     }, deps).status, "error");
   });
 
-  it("feishuApproval validates the settings object while allowing incomplete saved config", () => {
+  it("feishuApproval is command-only while its validator remains available for defensive checks", () => {
+    const current = baseSnapshot.feishuApproval;
     const deps = { snapshot: baseSnapshot };
-    assert.strictEqual(updateRegistry.feishuApproval({
-      enabled: false,
-      idType: "open_id",
-      approverId: "",
-      connectionTimeoutSeconds: 15,
-    }, deps).status, "ok");
-    assert.strictEqual(updateRegistry.feishuApproval({
+    assert.strictEqual(updateRegistry.feishuApproval.commandOnly, true);
+    assert.strictEqual(typeof updateRegistry.feishuApproval.validate, "function");
+    assert.strictEqual(updateRegistry.feishuApproval.validate({
+      ...current,
       enabled: true,
-      idType: "open_id",
-      approverId: "ou_abc",
-      connectionTimeoutSeconds: 15,
     }, deps).status, "ok");
-    assert.strictEqual(updateRegistry.feishuApproval({
-      enabled: true,
-      idType: "bad",
-      approverId: "ou_abc",
-    }, deps).status, "error");
-    assert.strictEqual(updateRegistry.feishuApproval({
-      enabled: false,
-      idType: "open_id",
-      approverId: "",
+    assert.strictEqual(updateRegistry.feishuApproval.validate({
+      ...current,
+      platform: "lark",
+      connectionTimeoutSeconds: 30,
+    }, deps).status, "ok");
+    for (const patch of [
+      { idType: "user_id" },
+      { approverId: "ou_forged" },
+      { approverId: ` ${current.approverId} ` },
+      { approverSource: "manual" },
+      { approverBoundPlatform: "lark" },
+      { approverBoundAppId: "cli_forged" },
+    ]) {
+      const result = updateRegistry.feishuApproval.validate({ ...current, ...patch }, deps);
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.code, "approver-command-required");
+    }
+    assert.strictEqual(updateRegistry.feishuApproval.validate({
+      ...current,
       connectionTimeoutSeconds: 999,
       appSecret: "should-not-live-in-prefs",
     }, deps).status, "error");
@@ -307,7 +535,7 @@ describe("updateRegistry pure-data validators", () => {
   });
 });
 
-describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatically / openAtLogin)", () => {
+describe("object-form effects (agent auto-start / manageClaudeHooksAutomatically / openAtLogin)", () => {
   it("autoStartWithClaude effect calls installAutoStart on true", async () => {
     // installAutoStart/uninstallAutoStart go through the server-owned Claude
     // hook operation queue (#657) and now return a Promise.
@@ -364,6 +592,18 @@ describe("object-form effects (autoStartWithClaude / manageClaudeHooksAutomatica
     assert.deepStrictEqual(r, { status: "ok", noop: true });
     assert.strictEqual(installCalls, 0);
     assert.strictEqual(uninstallCalls, 0);
+  });
+
+  it("autoStartWithCodex effect writes only a fail-closed gate before commit", () => {
+    const writes = [];
+    const r = updateRegistry.autoStartWithCodex.effect(true, {
+      writeCodexAutoStartGate: (enabled) => {
+        writes.push(enabled);
+        return true;
+      },
+    });
+    assert.deepStrictEqual(r, { status: "ok" });
+    assert.deepStrictEqual(writes, [false]);
   });
 
   it("manageClaudeHooksAutomatically effect waits for async sync before starting watcher on true", async () => {
@@ -556,24 +796,695 @@ describe("telegram approval commands", () => {
 });
 
 describe("feishu approval commands", () => {
-  it("feishuApproval.setSecrets delegates storage without writing secrets to prefs", async () => {
+  it("saveFeishuApproverByEmail uses saved authority and returns only the final result", async () => {
+    for (const platform of ["feishu", "lark"]) {
+      const controller = new AbortController();
+      const appId = `cli_${platform}`;
+      const transportCalls = [];
+      const commitCalls = [];
+      const result = await saveFeishuApproverByEmail({
+        email: "  ou_admin@example.com  ",
+        signal: controller.signal,
+        platform: platform === "feishu" ? "lark" : "feishu",
+        appId: "renderer-app-id",
+        appSecret: "renderer-secret",
+      }, {
+        getFeishuApprovalPrefs: () => ({
+          ...prefs.getDefaults().feishuApproval,
+          platform,
+        }),
+        getFeishuApprovalSecrets: () => ({
+          credentialPlatform: platform,
+          appId,
+          appSecret: "saved-secret",
+        }),
+        getFeishuApprovalSecretsRevision: () => 7,
+        lookupFeishuApproverByEmail: async (payload) => {
+          transportCalls.push(payload);
+          return { status: "ok", approverId: "  ou_resolved  " };
+        },
+        commitResolvedApprover: async (payload) => {
+          commitCalls.push(payload);
+          return { status: "ok", approverId: "must-not-escape", message: "must-not-escape" };
+        },
+      });
+
+      assert.deepStrictEqual(transportCalls, [{
+        platform,
+        appId,
+        appSecret: "saved-secret",
+        email: "ou_admin@example.com",
+        signal: controller.signal,
+      }]);
+      assert.deepStrictEqual(commitCalls, [{
+        signal: controller.signal,
+        approverId: "ou_resolved",
+        platform,
+        appId,
+        secretsRevision: 7,
+      }]);
+      assert.deepStrictEqual(result, { status: "ok" });
+    }
+  });
+
+  it("saveFeishuApproverByEmail rejects thenable saved configuration before lookup", async () => {
+    let transports = 0;
+    let commits = 0;
+    const result = await saveFeishuApproverByEmail({
+      email: "person@example.com",
+      signal: new AbortController().signal,
+    }, {
+      getFeishuApprovalPrefs: () => Promise.resolve({
+        ...prefs.getDefaults().feishuApproval,
+        platform: "feishu",
+      }),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 7,
+      lookupFeishuApproverByEmail: async () => {
+        transports += 1;
+        return { status: "ok", approverId: "ou_resolved" };
+      },
+      commitResolvedApprover: async () => {
+        commits += 1;
+        return { status: "ok" };
+      },
+    });
+
+    assert.deepStrictEqual(result, { status: "error", code: "lookup-failed" });
+    assert.equal(transports, 0);
+    assert.equal(commits, 0);
+  });
+
+  it("saveFeishuApproverByEmail fails closed before commit and strips transport detail", async () => {
+    let transports = 0;
+    let commits = 0;
+    const baseDeps = {
+      getFeishuApprovalPrefs: () => ({
+        ...prefs.getDefaults().feishuApproval,
+        platform: "feishu",
+      }),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 7,
+      lookupFeishuApproverByEmail: async () => {
+        transports += 1;
+        return {
+          status: "error",
+          code: "missing-contact-scope",
+          message: "raw email=person@example.com secret=saved-secret",
+          approverId: "ou_must_not_escape",
+        };
+      },
+      commitResolvedApprover: async () => {
+        commits += 1;
+        return { status: "ok" };
+      },
+    };
+
+    assert.deepStrictEqual(await saveFeishuApproverByEmail({
+      email: "not-an-email",
+      signal: new AbortController().signal,
+    }, baseDeps), { status: "error", code: "invalid-email" });
+    assert.equal(transports, 0);
+
+    assert.deepStrictEqual(await saveFeishuApproverByEmail({
+      email: "person@example.com",
+      signal: new AbortController().signal,
+    }, {
+      ...baseDeps,
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "lark",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+    }), { status: "error", code: "credential-platform-mismatch" });
+    assert.equal(transports, 0);
+
+    const transportFailure = await saveFeishuApproverByEmail({
+      email: "person@example.com",
+      signal: new AbortController().signal,
+    }, baseDeps);
+    assert.deepStrictEqual(transportFailure, {
+      status: "error",
+      code: "missing-contact-scope",
+    });
+    assert.doesNotMatch(JSON.stringify(transportFailure), /person@example\.com|saved-secret|ou_must_not_escape/);
+    assert.equal(transports, 1);
+    assert.equal(commits, 0);
+  });
+
+  it("saveFeishuApproverByEmail does not commit a result after cancellation", async () => {
+    const transport = {};
+    transport.promise = new Promise((resolve) => { transport.resolve = resolve; });
+    const abort = new AbortController();
+    let commits = 0;
+    const pending = saveFeishuApproverByEmail({
+      email: "person@example.com",
+      signal: abort.signal,
+    }, {
+      getFeishuApprovalPrefs: () => ({
+        ...prefs.getDefaults().feishuApproval,
+        platform: "feishu",
+      }),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 7,
+      lookupFeishuApproverByEmail: () => transport.promise,
+      commitResolvedApprover: () => {
+        commits += 1;
+        return { status: "ok" };
+      },
+    });
+    abort.abort();
+    transport.resolve({ status: "ok", approverId: "ou_too_late" });
+
+    assert.deepStrictEqual(await pending, { status: "error", code: "lookup-cancelled" });
+    assert.equal(commits, 0);
+  });
+
+  it("saveFeishuApproverByEmail sanitizes a rejected internal commit", async () => {
+    const result = await saveFeishuApproverByEmail({
+      email: "person@example.com",
+      signal: new AbortController().signal,
+    }, {
+      getFeishuApprovalPrefs: () => ({
+        ...prefs.getDefaults().feishuApproval,
+        platform: "feishu",
+      }),
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 7,
+      lookupFeishuApproverByEmail: async () => ({ status: "ok", approverId: "ou_resolved" }),
+      commitResolvedApprover: async () => { throw new Error("raw persistence detail"); },
+    });
+    assert.deepStrictEqual(result, { status: "error", code: "lookup-failed" });
+  });
+
+  it("commitResolvedApprover merges only approver fields into the latest locked snapshot", () => {
+    const signal = new AbortController().signal;
+    const current = {
+      ...prefs.getDefaults().feishuApproval,
+      enabled: true,
+      platform: "lark",
+      connectionTimeoutSeconds: 60,
+      idType: "union_id",
+      approverId: "union_old",
+      approverSource: "manual",
+      approverBoundPlatform: "lark",
+      approverBoundAppId: "cli_saved",
+    };
+    const action = commandRegistry["feishuApproval.commitResolvedApprover"];
+    const result = action({
+      signal,
+      approverId: "  ou_new  ",
+      platform: "lark",
+      appId: "cli_saved",
+      secretsRevision: 11,
+    }, {
+      snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "lark",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 11,
+    });
+
+    assert.deepStrictEqual(result, {
+      status: "ok",
+      commit: {
+        feishuApproval: {
+          ...current,
+          idType: "open_id",
+          approverId: "ou_new",
+          approverSource: "lookup",
+          approverBoundPlatform: "lark",
+          approverBoundAppId: "cli_saved",
+        },
+      },
+    });
+    assert.strictEqual(action.lockKey, "feishuApproval");
+  });
+
+  it("commitResolvedApprover rejects cancellation and changed saved identity without a commit", () => {
+    const current = {
+      ...prefs.getDefaults().feishuApproval,
+      platform: "feishu",
+    };
+    const baseDeps = {
+      snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 3,
+    };
+    const action = commandRegistry["feishuApproval.commitResolvedApprover"];
+    const aborted = new AbortController();
+    aborted.abort();
+
+    for (const [payload, expectedCode] of [
+      [{ signal: null, approverId: "ou_new", platform: "feishu", appId: "cli_saved", secretsRevision: 3 }, "lookup-failed"],
+      [{ signal: new AbortController().signal, approverId: "  ", platform: "feishu", appId: "cli_saved", secretsRevision: 3 }, "lookup-failed"],
+      [{ signal: aborted.signal, approverId: "ou_new", platform: "feishu", appId: "cli_saved", secretsRevision: 3 }, "lookup-cancelled"],
+      [{ signal: new AbortController().signal, approverId: "ou_new", platform: "lark", appId: "cli_saved", secretsRevision: 3 }, "lookup-credentials-changed"],
+      [{ signal: new AbortController().signal, approverId: "ou_new", platform: "feishu", appId: "cli_other", secretsRevision: 3 }, "lookup-credentials-changed"],
+      [{ signal: new AbortController().signal, approverId: "ou_new", platform: "feishu", appId: "cli_saved", secretsRevision: 4 }, "lookup-credentials-changed"],
+    ]) {
+      const result = action(payload, baseDeps);
+      assert.deepStrictEqual(result, { status: "error", code: expectedCode });
+      assert.strictEqual("commit" in result, false);
+    }
+
+    for (const deps of [
+      { ...baseDeps, getFeishuApprovalSecrets: () => Promise.resolve({}) },
+      { ...baseDeps, getFeishuApprovalSecretsRevision: () => Promise.resolve(3) },
+    ]) {
+      const result = action({
+        signal: new AbortController().signal,
+        approverId: "ou_new",
+        platform: "feishu",
+        appId: "cli_saved",
+        secretsRevision: 3,
+      }, deps);
+      assert.deepStrictEqual(result, { status: "error", code: "credentials-read-failed" });
+      assert.strictEqual("commit" in result, false);
+    }
+  });
+
+  it("feishuApproval.updateConfig accepts only allowlisted field patches from the latest snapshot", () => {
+    const current = {
+      ...prefs.getDefaults().feishuApproval,
+      enabled: false,
+      platform: "lark",
+      connectionTimeoutSeconds: 15,
+      idType: "open_id",
+      approverId: "ou_authoritative",
+      approverSource: "lookup",
+      approverBoundPlatform: "lark",
+      approverBoundAppId: "cli_latest",
+    };
+    const action = commandRegistry["feishuApproval.updateConfig"];
+    assert.equal(typeof action, "function");
+    assert.deepEqual(action({ enabled: true, connectionTimeoutSeconds: 30 }, {
+      snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+    }), {
+      status: "ok",
+      commit: {
+        feishuApproval: {
+          ...current,
+          enabled: true,
+          connectionTimeoutSeconds: 30,
+        },
+      },
+    });
+
+    for (const forbidden of [
+      { idType: "user_id" },
+      { approverId: "ou_forged" },
+      { approverSource: "manual" },
+      { approverBoundPlatform: "feishu" },
+      { approverBoundAppId: "cli_forged" },
+      { appId: "cli_forged" },
+      { appSecret: "secret-forbidden" },
+      { arbitrary: true },
+    ]) {
+      const result = action(forbidden, {
+        snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+      });
+      assert.equal(result.status, "error");
+      assert.equal("commit" in result, false);
+    }
+  });
+
+  it("feishuApproval.setSecrets derives credential platform and merges only within the saved identity", async () => {
     const calls = [];
-    const secrets = {
+    const saved = {
+      credentialPlatform: "feishu",
       appId: "cli_123",
-      appSecret: "secret",
+      appSecret: "old-secret",
       verificationToken: "verify",
       encryptKey: "encrypt",
     };
-    const result = await commandRegistry["feishuApproval.setSecrets"](secrets, {
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      credentialPlatform: "lark",
+      appSecret: "new-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "feishu" },
+      },
+      getFeishuApprovalSecrets: () => saved,
       writeFeishuApprovalSecrets: (value) => {
         calls.push(value);
         return { status: "ok", secretsStored: true };
       },
     });
-    assert.deepStrictEqual(calls, [secrets]);
+    assert.deepStrictEqual(calls, [{ ...saved, appSecret: "new-secret" }]);
     assert.deepStrictEqual(result, { status: "ok", secretsStored: true });
+  });
 
-    const missing = await commandRegistry["feishuApproval.setSecrets"](secrets, {});
+  it("feishuApproval.setSecrets requires confirmation before replacement and writes nothing", async () => {
+    let writes = 0;
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_lark",
+      appSecret: "lark-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_feishu",
+        appSecret: "feishu-secret",
+        verificationToken: "old-verify",
+        encryptKey: "old-encrypt",
+      }),
+      writeFeishuApprovalSecrets: () => {
+        writes += 1;
+        return { status: "ok", secretsStored: true };
+      },
+    });
+    assert.deepStrictEqual(result, {
+      status: "error",
+      code: "credentials-replace-confirmation-required",
+    });
+    assert.strictEqual(writes, 0);
+    assert.strictEqual("commit" in result, false);
+  });
+
+  it("feishuApproval.setSecrets writes a confirmed replacement and clears omitted optional credentials", async () => {
+    const calls = [];
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_lark",
+      appSecret: "lark-secret",
+      confirmReplace: true,
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_feishu",
+        appSecret: "feishu-secret",
+        verificationToken: "old-verify",
+        encryptKey: "old-encrypt",
+      }),
+      writeFeishuApprovalSecrets: (value) => {
+        calls.push(value);
+        return { status: "ok", secretsStored: true };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "ok", secretsStored: true });
+    assert.deepStrictEqual(calls, [{
+      credentialPlatform: "lark",
+      appId: "cli_lark",
+      appSecret: "lark-secret",
+      verificationToken: "",
+      encryptKey: "",
+    }]);
+  });
+
+  it("feishuApproval.setSecrets rebinds a legacy same App without clearing optional credentials", async () => {
+    const calls = [];
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "unknown",
+        appId: "cli_legacy",
+        appSecret: "old-secret",
+        verificationToken: "old-verify",
+        encryptKey: "old-encrypt",
+      }),
+      writeFeishuApprovalSecrets: (value) => {
+        calls.push(value);
+        return { status: "ok", secretsStored: true };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "ok", secretsStored: true });
+    assert.deepStrictEqual(calls, [{
+      credentialPlatform: "lark",
+      appId: "cli_legacy",
+      appSecret: "rotated-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    }]);
+  });
+
+  it("feishuApproval.setSecrets rereads and replans after replacement confirmation", async () => {
+    let reads = 0;
+    let current = {
+      credentialPlatform: "feishu",
+      appId: "cli_old",
+      appSecret: "old-secret",
+      verificationToken: "old-verify",
+      encryptKey: "old-encrypt",
+    };
+    const writes = [];
+    const deps = {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => {
+        reads += 1;
+        return { ...current };
+      },
+      writeFeishuApprovalSecrets: (bundle) => {
+        writes.push(bundle);
+        return { status: "ok", secretsStored: true };
+      },
+    };
+    const draft = { appId: "cli_target", appSecret: "target-secret" };
+
+    assert.deepStrictEqual(
+      await commandRegistry["feishuApproval.setSecrets"](draft, deps),
+      { status: "error", code: "credentials-replace-confirmation-required" },
+    );
+    current = {
+      credentialPlatform: "lark",
+      appId: "cli_target",
+      appSecret: "external-secret",
+      verificationToken: "external-verify",
+      encryptKey: "external-encrypt",
+    };
+    assert.deepStrictEqual(
+      await commandRegistry["feishuApproval.setSecrets"]({ ...draft, confirmReplace: true }, deps),
+      { status: "ok", secretsStored: true },
+    );
+    assert.strictEqual(reads, 2);
+    assert.deepStrictEqual(writes, [{
+      credentialPlatform: "lark",
+      appId: "cli_target",
+      appSecret: "target-secret",
+      verificationToken: "external-verify",
+      encryptKey: "external-encrypt",
+    }]);
+  });
+
+  it("feishuApproval.setSecrets rejects thenable credential reads without writing", async () => {
+    let writes = 0;
+    const result = await commandRegistry["feishuApproval.setSecrets"]({
+      appId: "cli_target",
+      appSecret: "target-secret",
+    }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => Promise.resolve({
+        credentialPlatform: "lark",
+        appId: "cli_target",
+        appSecret: "saved-secret",
+      }),
+      writeFeishuApprovalSecrets: () => {
+        writes += 1;
+        return { status: "ok" };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "error", code: "credentials-read-failed" });
+    assert.strictEqual(writes, 0);
+    assert.strictEqual("commit" in result, false);
+  });
+
+  it("feishuApproval.setSecrets rejects incomplete replacement without writing", async () => {
+    let writes = 0;
+    const result = await commandRegistry["feishuApproval.setSecrets"]({ appId: "cli_lark" }, {
+      snapshot: {
+        ...prefs.getDefaults(),
+        feishuApproval: { ...prefs.getDefaults().feishuApproval, platform: "lark" },
+      },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_feishu",
+        appSecret: "feishu-secret",
+      }),
+      writeFeishuApprovalSecrets: () => {
+        writes += 1;
+        return { status: "ok" };
+      },
+    });
+    assert.deepStrictEqual(result, { status: "error", code: "credentials-replacement-incomplete" });
+    assert.strictEqual(writes, 0);
+  });
+
+  it("feishuApproval.saveManualApprover binds every ID type to the latest saved identity", () => {
+    for (const [idType, approverId] of [
+      ["open_id", "ou_manual"],
+      ["user_id", "manual-user"],
+      ["union_id", "manual-union"],
+    ]) {
+      const current = {
+        ...prefs.getDefaults().feishuApproval,
+        platform: "lark",
+        approverId: "preserved-before-command",
+        approverSource: "unknown",
+      };
+      const result = commandRegistry["feishuApproval.saveManualApprover"]({ idType, approverId }, {
+        snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+        getFeishuApprovalSecrets: () => ({
+          credentialPlatform: "lark",
+          appId: "cli_latest",
+          appSecret: "saved-secret",
+        }),
+      });
+      assert.deepStrictEqual(result, {
+        status: "ok",
+        commit: {
+          feishuApproval: {
+            ...current,
+            idType,
+            approverId,
+            approverSource: "manual",
+            approverBoundPlatform: "lark",
+            approverBoundAppId: "cli_latest",
+          },
+        },
+      });
+    }
+  });
+
+  it("feishuApproval.saveManualApprover rejects email before reading or writing credentials", () => {
+    for (const idType of ["open_id", "user_id", "union_id"]) {
+      let secretReads = 0;
+      const result = commandRegistry["feishuApproval.saveManualApprover"]({
+        idType,
+        approverId: "ou_admin@example.com",
+      }, {
+        snapshot: prefs.getDefaults(),
+        getFeishuApprovalSecrets: () => {
+          secretReads += 1;
+          return {
+            credentialPlatform: "feishu",
+            appId: "cli_saved",
+            appSecret: "saved-secret",
+          };
+        },
+      });
+
+      assert.deepStrictEqual(result, { status: "error", code: "email-requires-lookup" });
+      assert.equal(secretReads, 0, idType);
+      assert.equal("commit" in result, false, idType);
+    }
+  });
+
+  it("feishuApproval.saveManualApprover rejects malformed IDs before reading credentials", () => {
+    for (const [label, payload, expectedCode] of [
+      ["bad open_id prefix", { idType: "open_id", approverId: "not-an-open-id" }, "invalid-email"],
+      ["open_id newline", { idType: "open_id", approverId: "ou_a\nb" }, "invalid-approver-id"],
+      ["open_id NBSP", { idType: "open_id", approverId: "ou_a\u00a0b" }, "invalid-approver-id"],
+      ["open_id zero-width", { idType: "open_id", approverId: "ou_\u200b" }, "invalid-approver-id"],
+      ["open_id control", { idType: "open_id", approverId: "ou_a\u0007b" }, "invalid-approver-id"],
+      ["bare open_id prefix", { idType: "open_id", approverId: "ou_" }, "invalid-approver-id"],
+      ["user_id whitespace", { idType: "user_id", approverId: "user id" }, "invalid-approver-id"],
+      ["empty", { idType: "open_id", approverId: "" }, "missing-approver"],
+      ["whitespace-only", { idType: "open_id", approverId: "   " }, "missing-approver"],
+      ["too long", { idType: "open_id", approverId: `ou_${"a".repeat(126)}` }, "missing-approver"],
+      ["bad id type", { idType: "tenant_key", approverId: "value" }, "invalid-id-type"],
+    ]) {
+      let secretReads = 0;
+      const result = commandRegistry["feishuApproval.saveManualApprover"](payload, {
+        snapshot: prefs.getDefaults(),
+        getFeishuApprovalSecrets: () => {
+          secretReads += 1;
+          return {
+            credentialPlatform: "feishu",
+            appId: "cli_saved",
+            appSecret: "saved-secret",
+          };
+        },
+      });
+
+      assert.deepStrictEqual(result, { status: "error", code: expectedCode }, label);
+      assert.equal(secretReads, 0, label);
+      assert.equal("commit" in result, false, label);
+    }
+  });
+
+  it("feishuApproval.saveManualApprover fails closed without deleting the stored approver", () => {
+    const current = {
+      ...prefs.getDefaults().feishuApproval,
+      approverId: "keep-this-value",
+      approverSource: "unknown",
+    };
+    const result = commandRegistry["feishuApproval.saveManualApprover"]({
+      idType: "user_id",
+      approverId: "new-value",
+    }, {
+      snapshot: { ...prefs.getDefaults(), feishuApproval: current },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "unknown",
+        appId: "cli_legacy",
+        appSecret: "saved-secret",
+      }),
+    });
+    assert.deepStrictEqual(result, { status: "error", code: "credential-provenance-unknown" });
+    assert.strictEqual(current.approverId, "keep-this-value");
+    assert.strictEqual("commit" in result, false);
+  });
+
+  it("all Feishu writers and Test declare the same settings domain lock", () => {
+    assert.strictEqual(updateRegistry.feishuApproval.lockKey, "feishuApproval");
+    for (const name of [
+      "feishuApproval.setSecrets",
+      "feishuApproval.saveManualApprover",
+      "feishuApproval.commitResolvedApprover",
+      "feishuApproval.updateConfig",
+      "feishuApproval.test",
+    ]) {
+      assert.strictEqual(commandRegistry[name].lockKey, "feishuApproval", name);
+    }
+  });
+
+  it("feishuApproval.setSecrets reports a missing storage boundary", async () => {
+    const secrets = { appId: "cli_123", appSecret: "secret" };
+
+    const missing = await commandRegistry["feishuApproval.setSecrets"](secrets, {
+      snapshot: prefs.getDefaults(),
+      getFeishuApprovalSecrets: () => ({}),
+    });
     assert.equal(missing.status, "error");
   });
 
@@ -600,10 +1511,51 @@ describe("feishu approval commands", () => {
       appSecret: "secr......alue",
     });
 
+    const coherentSnapshots = [];
+    const feishuApproval = {
+      ...prefs.getDefaults().feishuApproval,
+      enabled: true,
+      approverId: "ou_saved",
+      approverSource: "lookup",
+      approverBoundPlatform: "feishu",
+      approverBoundAppId: "cli_saved",
+    };
     const testResult = await commandRegistry["feishuApproval.test"](null, {
-      sendFeishuApprovalTest: async () => ({ status: "ok", decision: "deny" }),
+      snapshot: { ...prefs.getDefaults(), feishuApproval },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      getFeishuApprovalSecretsRevision: () => 11,
+      sendFeishuApprovalTest: async (persisted) => {
+        coherentSnapshots.push(persisted);
+        return { status: "ok", decision: "deny" };
+      },
     });
     assert.deepStrictEqual(testResult, { status: "ok", decision: "deny" });
+    assert.deepStrictEqual(coherentSnapshots, [{
+      config: feishuApproval,
+      secrets: {
+        credentialPlatform: "feishu",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      },
+      secretsRevision: 11,
+    }]);
+
+    let sends = 0;
+    const mismatched = await commandRegistry["feishuApproval.test"](null, {
+      snapshot: { ...prefs.getDefaults(), feishuApproval },
+      getFeishuApprovalSecrets: () => ({
+        credentialPlatform: "lark",
+        appId: "cli_saved",
+        appSecret: "saved-secret",
+      }),
+      sendFeishuApprovalTest: async () => { sends += 1; return { status: "ok" }; },
+    });
+    assert.deepStrictEqual(mismatched, { status: "error", code: "credential-platform-mismatch" });
+    assert.equal(sends, 0);
   });
 });
 
@@ -681,34 +1633,90 @@ describe("bubble policy commands", () => {
   });
 });
 
-describe("setAutoApproveAll danger gate", () => {
-  it("refuses to enable without confirmed:true (dialog is a real boundary)", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true }, {});
+describe("setPermissionAutomationMode danger gate", () => {
+  it("refuses auto-tools without confirmed:true (dialog is a real boundary)", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "auto-tools" }, {});
     assert.strictEqual(r.status, "error");
-    assert.match(r.message, /confirmed:true/);
+    assert.match(r.message, /current or remembered confirmation/);
   });
 
-  it("refuses to enable when confirmed is falsy", async () => {
+  it("refuses either automatic mode when confirmed is falsy", async () => {
     for (const bad of [false, "true", 1, null, undefined]) {
-      const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: bad }, {});
-      assert.strictEqual(r.status, "error", `confirmed=${JSON.stringify(bad)} must be rejected`);
+      for (const mode of ["auto-tools", "unattended"]) {
+        const r = await commandRegistry.setPermissionAutomationMode({ mode, confirmed: bad }, {});
+        assert.strictEqual(r.status, "error", `${mode} confirmed=${JSON.stringify(bad)} must be rejected`);
+      }
     }
   });
 
-  it("enables only with explicit confirmed:true", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: true, confirmed: true }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: true });
+  it("enables both automatic modes only with explicit confirmed:true", async () => {
+    for (const mode of ["auto-tools", "unattended"]) {
+      const r = await commandRegistry.setPermissionAutomationMode({ mode, confirmed: true }, {});
+      assert.strictEqual(r.status, "ok");
+      assert.deepStrictEqual(r.commit, { permissionAutomationMode: mode });
+    }
   });
 
-  it("disables immediately with no confirmation required", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: false }, {});
-    assert.strictEqual(r.status, "ok");
-    assert.deepStrictEqual(r.commit, { autoApproveAllPermissions: false });
+  it("accepts a remembered confirmation for only its matching mode", async () => {
+    const autoTools = await commandRegistry.setPermissionAutomationMode(
+      { mode: "auto-tools", confirmed: false },
+      { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } }
+    );
+    assert.deepStrictEqual(autoTools.commit, { permissionAutomationMode: "auto-tools" });
+
+    const unattended = await commandRegistry.setPermissionAutomationMode(
+      { mode: "unattended", confirmed: false },
+      { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } }
+    );
+    assert.strictEqual(unattended.status, "error");
   });
 
-  it("rejects a non-boolean enabled", async () => {
-    const r = await commandRegistry.setAutoApproveAll({ enabled: "yes", confirmed: true }, {});
+  it("persists don't-show-again atomically only with a current confirmation", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({
+      mode: "auto-tools",
+      confirmed: true,
+      suppressFutureConfirmation: true,
+    }, {});
+    assert.deepStrictEqual(r.commit, {
+      permissionAutomationMode: "auto-tools",
+      permissionAutomationAutoToolsWarningDismissed: true,
+    });
+
+    const rejected = await commandRegistry.setPermissionAutomationMode({
+      mode: "auto-tools",
+      confirmed: false,
+      suppressFutureConfirmation: true,
+    }, { snapshot: { permissionAutomationAutoToolsWarningDismissed: true } });
+    assert.strictEqual(rejected.status, "error");
+    assert.match(rejected.message, /requires confirmed:true/);
+  });
+
+  it("rejects malformed or off-mode warning suppression", async () => {
+    assert.strictEqual(
+      (await commandRegistry.setPermissionAutomationMode({
+        mode: "auto-tools",
+        confirmed: true,
+        suppressFutureConfirmation: "yes",
+      }, {})).status,
+      "error"
+    );
+    assert.strictEqual(
+      (await commandRegistry.setPermissionAutomationMode({
+        mode: "off",
+        suppressFutureConfirmation: true,
+      }, {})).status,
+      "error"
+    );
+  });
+
+  it("switches off immediately with no confirmation required", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "off" }, {});
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit, { permissionAutomationMode: "off" });
+  });
+
+  it("rejects an unknown mode", async () => {
+    const r = await commandRegistry.setPermissionAutomationMode({ mode: "yolo", confirmed: true }, {});
     assert.strictEqual(r.status, "error");
   });
 });
@@ -769,6 +1777,14 @@ describe("session cleanup interval validators", () => {
     assert.strictEqual(updateRegistry.workingStaleMs(90_000_000, { snapshot }).status, "error");
   });
 
+  it("codexWorkingStaleMs accepts disabled or an independent in-range timeout", () => {
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(0, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(30_000, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(86_400_000, { snapshot }).status, "ok");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(20_000, { snapshot }).status, "error");
+    assert.strictEqual(updateRegistry.codexWorkingStaleMs(90_000_000, { snapshot }).status, "error");
+  });
+
   it("detachedIdleStaleMs enforces 5s-300s integer range", () => {
     assert.strictEqual(updateRegistry.detachedIdleStaleMs(5_000, { snapshot }).status, "ok");
     assert.strictEqual(updateRegistry.detachedIdleStaleMs(300_000, { snapshot }).status, "ok");
@@ -787,6 +1803,7 @@ describe("sessionCleanup.setTriple command", () => {
       {
         sessionStaleMs: 600_000,
         workingStaleMs: 300_000,
+        codexWorkingStaleMs: 0,
         detachedIdleStaleMs: 30_000,
       },
       { snapshot: baseSnapshot }
@@ -795,6 +1812,7 @@ describe("sessionCleanup.setTriple command", () => {
     assert.deepStrictEqual(result.commit, {
       sessionStaleMs: 600_000,
       workingStaleMs: 300_000,
+      codexWorkingStaleMs: 0,
       detachedIdleStaleMs: 30_000,
     });
   });
@@ -817,6 +1835,7 @@ describe("sessionCleanup.setTriple command", () => {
       {
         sessionStaleMs: 0,
         workingStaleMs: 86_400_000,
+        codexWorkingStaleMs: 1_200_000,
         detachedIdleStaleMs: 30_000,
       },
       { snapshot: baseSnapshot }
@@ -825,6 +1844,7 @@ describe("sessionCleanup.setTriple command", () => {
     assert.deepStrictEqual(result.commit, {
       sessionStaleMs: 0,
       workingStaleMs: 86_400_000,
+      codexWorkingStaleMs: 1_200_000,
       detachedIdleStaleMs: 30_000,
     });
   });
@@ -841,6 +1861,7 @@ describe("sessionCleanup.setTriple command", () => {
     assert.deepStrictEqual(result.commit, {
       sessionStaleMs: 600_000,
       workingStaleMs: 450_000,
+      codexWorkingStaleMs: 1_200_000,
       detachedIdleStaleMs: 45_000,
     });
   });
@@ -861,6 +1882,13 @@ describe("sessionCleanup.setTriple command", () => {
     );
     assert.strictEqual(tooSmall.status, "error");
     assert.strictEqual(tooSmall.commit, undefined);
+
+    const codexTooSmall = await cmd(
+      { sessionStaleMs: 600_000, workingStaleMs: 300_000, codexWorkingStaleMs: 1_000, detachedIdleStaleMs: 30_000 },
+      { snapshot: baseSnapshot }
+    );
+    assert.strictEqual(codexTooSmall.status, "error");
+    assert.strictEqual(codexTooSmall.commit, undefined);
 
     const detTooBig = await cmd(
       { sessionStaleMs: 600_000, workingStaleMs: 300_000, detachedIdleStaleMs: 999_999 },
@@ -940,6 +1968,7 @@ describe("hook commands", () => {
       stopMonitorForAgent: (agentId) => calls.push(["stopMonitor", agentId]),
       clearSessionsByAgent: (agentId) => calls.push(["clearSessions", agentId]),
       dismissPermissionsByAgent: (agentId) => calls.push(["dismissPermissions", agentId]),
+      writeCodexAutoStartGate: () => true,
       cleanupIntegrations: (options) => {
         calls.push(["cleanup", options.source]);
         return {
@@ -1225,6 +2254,7 @@ describe("shortcut commands", () => {
         globalShortcut,
         shortcutHandlers: {
           togglePet: () => {},
+          quickSelectSession: () => {},
           permissionAllow: () => {},
           permissionDeny: () => {},
         },
@@ -1579,6 +2609,37 @@ describe("removeTheme command", () => {
     assert.deepStrictEqual(r.commit.themeVariant, {});
   });
 
+  // #509: removeTheme also strips the idleVisual entry
+  it("strips idleVisual entry on success when one exists", async () => {
+    const snapshotWithIdleVisual = {
+      ...baseSnapshot,
+      idleVisual: { cat: "cat-idle-nap.svg", clawd: "clawd-idle-reading.svg" },
+    };
+    const { deps } = makeDeps({ snapshot: snapshotWithIdleVisual });
+    const r = await commandRegistry.removeTheme("cat", deps);
+    assert.strictEqual(r.status, "ok");
+    assert.ok(r.commit, "commit field expected");
+    assert.deepStrictEqual(r.commit.idleVisual, { clawd: "clawd-idle-reading.svg" });
+  });
+
+  it("strips pet tint, both accessory slots, and holiday opt-in entries on success when they exist", async () => {
+    const snapshotWithCustomization = {
+      ...baseSnapshot,
+      petTint: { cat: "matcha", clawd: "gold" },
+      petAccessory: { cat: "halo", clawd: "wizard-hat" },
+      petMouthAccessory: { cat: "cigarette", clawd: "cigarette" },
+      holidayAccessoryEnabled: { cat: true, clawd: true },
+    };
+    const { deps } = makeDeps({ snapshot: snapshotWithCustomization });
+    const r = await commandRegistry.removeTheme("cat", deps);
+    assert.strictEqual(r.status, "ok");
+    assert.ok(r.commit, "commit field expected");
+    assert.deepStrictEqual(r.commit.petTint, { clawd: "gold" });
+    assert.deepStrictEqual(r.commit.petAccessory, { clawd: "wizard-hat" });
+    assert.deepStrictEqual(r.commit.petMouthAccessory, { clawd: "cigarette" });
+    assert.deepStrictEqual(r.commit.holidayAccessoryEnabled, { clawd: true });
+  });
+
   it("surfaces removeThemeDir throws as error status", async () => {
     const { deps } = makeDeps({
       removeThemeDir: async () => { throw new Error("EBUSY"); },
@@ -1609,6 +2670,10 @@ describe("setThemeSelection command", () => {
         const resolved = variantId === "dead" ? "default" : variantId;
         return { themeId, variantId: resolved };
       },
+      getActiveTheme: () => ({
+        _id: calls.activateTheme.at(-1)?.themeId || "clawd",
+        _capabilities: { petTint: true, accessories: true },
+      }),
       ...overrides,
     };
     return { deps, calls };
@@ -1677,6 +2742,26 @@ describe("setThemeSelection command", () => {
     assert.ok(r.commit, "commit field expected");
     assert.strictEqual(r.commit.theme, "clawd");
     assert.deepStrictEqual(r.commit.themeVariant, { clawd: "chill" });
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: true,
+      mouthAccessories: false,
+    });
+  });
+
+  it("returns the activated theme's fail-closed customization capabilities", () => {
+    const { deps } = makeDeps({
+      getActiveTheme: () => ({
+        _id: "clawd",
+        _capabilities: { petTint: true, accessories: false },
+      }),
+    });
+    const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, deps);
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: false,
+      mouthAccessories: false,
+    });
   });
 
   it("preserves other themes' variantIds when committing", () => {
@@ -1713,6 +2798,167 @@ describe("setThemeSelection command", () => {
     const r = commandRegistry.setThemeSelection({ themeId: "clawd" }, { snapshot: baseSnapshot });
     assert.strictEqual(r.status, "error");
     assert.match(r.message, /activateTheme/);
+  });
+});
+
+// Shared non-recursive runtime selection helper used by BOTH setThemeSelection
+// and officialTheme.uninstall (the latter while already holding the theme lock).
+describe("applyThemeSelection shared helper", () => {
+  it("activates with the given variant/overrides and returns the resolved variant", () => {
+    const calls = [];
+    const deps = {
+      activateTheme: (themeId, variantId, overrideMap) => {
+        calls.push({ themeId, variantId, overrideMap });
+        return { themeId, variantId: variantId === "dead" ? "default" : variantId };
+      },
+      getActiveTheme: () => ({ _id: "clawd", _capabilities: { petTint: true, accessories: true } }),
+    };
+    const r = applyThemeSelection("clawd", "dead", { sounds: { complete: { file: "x.mp3" } } }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.themeId, "clawd");
+    assert.strictEqual(r.variantId, "default", "dead variant resolves to default");
+    assert.deepStrictEqual(r.customizationCapabilities, {
+      petTint: true,
+      accessories: true,
+      mouthAccessories: false,
+    });
+    assert.deepStrictEqual(calls, [{
+      themeId: "clawd",
+      variantId: "dead",
+      overrideMap: { sounds: { complete: { file: "x.mp3" } } },
+    }]);
+    // The helper performs the runtime switch only; the caller owns the commit.
+    assert.strictEqual(r.commit, undefined);
+  });
+
+  it("errors when activateTheme is missing", () => {
+    const r = applyThemeSelection("clawd", "default", null, {});
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /activateTheme/);
+  });
+});
+
+// #509: default idle visual picker command.
+describe("setIdleVisual command", () => {
+  const activeTheme = {
+    _id: "clawd",
+    states: { idle: ["clawd-idle-follow.svg"] },
+    idleAnimations: [
+      { file: "clawd-idle-look.svg", duration: 6500 },
+      { file: "clawd-idle-reading.svg", duration: 14000 },
+    ],
+  };
+
+  function makeDeps(overrides = {}) {
+    return {
+      snapshot: { ...prefs.getDefaults(), idleVisual: {} },
+      getActiveTheme: () => activeTheme,
+      ...overrides,
+    };
+  }
+
+  it("rejects missing themeId and malformed file", () => {
+    assert.strictEqual(commandRegistry.setIdleVisual({}, makeDeps()).status, "error");
+    assert.strictEqual(
+      commandRegistry.setIdleVisual({ themeId: "clawd", file: 42 }, makeDeps()).status,
+      "error"
+    );
+    assert.strictEqual(
+      commandRegistry.setIdleVisual({ themeId: "clawd", file: "" }, makeDeps()).status,
+      "error"
+    );
+  });
+
+  it("errors when getActiveTheme dep is missing", () => {
+    const r = commandRegistry.setIdleVisual(
+      { themeId: "clawd", file: "clawd-idle-look.svg" },
+      { snapshot: prefs.getDefaults() }
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /getActiveTheme/);
+  });
+
+  it("rejects a themeId that is not the active theme", () => {
+    const r = commandRegistry.setIdleVisual({ themeId: "calico", file: "x.svg" }, makeDeps());
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /not the active theme/);
+  });
+
+  it("rejects files that are not idle visuals of the theme", () => {
+    const r = commandRegistry.setIdleVisual(
+      { themeId: "clawd", file: "clawd-working-typing.svg" },
+      makeDeps()
+    );
+    assert.strictEqual(r.status, "error");
+    assert.match(r.message, /not an idle visual/);
+  });
+
+  it("accepts a selectable-only idle visual through the existing setting command", () => {
+    const theme = {
+      ...activeTheme,
+      idleVisualOptions: [{ file: "pool.apng" }],
+    };
+    const result = commandRegistry.setIdleVisual(
+      { themeId: "clawd", file: "pool.apng" },
+      makeDeps({ getActiveTheme: () => theme })
+    );
+    assert.deepStrictEqual(result, { status: "ok", commit: { idleVisual: { clawd: "pool.apng" } } });
+  });
+
+  it("commits the merged map for a valid pool file, preserving other themes", () => {
+    const deps = makeDeps({
+      snapshot: { ...prefs.getDefaults(), idleVisual: { calico: "calico-idle-stretch.svg" } },
+    });
+    const r = commandRegistry.setIdleVisual({ themeId: "clawd", file: "clawd-idle-reading.svg" }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.idleVisual, {
+      calico: "calico-idle-stretch.svg",
+      clawd: "clawd-idle-reading.svg",
+    });
+  });
+
+  it("null file deletes the entry; noop when already unset", () => {
+    const deps = makeDeps({
+      snapshot: { ...prefs.getDefaults(), idleVisual: { clawd: "clawd-idle-look.svg" } },
+    });
+    const r = commandRegistry.setIdleVisual({ themeId: "clawd", file: null }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.idleVisual, {});
+
+    const r2 = commandRegistry.setIdleVisual({ themeId: "clawd", file: null }, makeDeps());
+    assert.strictEqual(r2.status, "ok");
+    assert.strictEqual(r2.noop, true);
+    assert.strictEqual(r2.commit, undefined);
+  });
+
+  it("selecting the theme default stores nothing (absence = default)", () => {
+    const deps = makeDeps({
+      snapshot: { ...prefs.getDefaults(), idleVisual: { clawd: "clawd-idle-look.svg" } },
+    });
+    const r = commandRegistry.setIdleVisual({ themeId: "clawd", file: "clawd-idle-follow.svg" }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(r.commit.idleVisual, {});
+
+    const r2 = commandRegistry.setIdleVisual(
+      { themeId: "clawd", file: "clawd-idle-follow.svg" },
+      makeDeps()
+    );
+    assert.strictEqual(r2.status, "ok");
+    assert.strictEqual(r2.noop, true);
+  });
+
+  it("noop when re-selecting the current choice", () => {
+    const deps = makeDeps({
+      snapshot: { ...prefs.getDefaults(), idleVisual: { clawd: "clawd-idle-look.svg" } },
+    });
+    const r = commandRegistry.setIdleVisual({ themeId: "clawd", file: "clawd-idle-look.svg" }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.strictEqual(r.noop, true);
+  });
+
+  it("updateRegistry accepts idleVisual plain objects only", () => {
+    assert.strictEqual(updateRegistry.idleVisual({ clawd: "x.svg" }).status, "ok");
+    assert.strictEqual(updateRegistry.idleVisual("nope").status, "error");
   });
 });
 

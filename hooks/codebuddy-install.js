@@ -25,6 +25,7 @@ const {
 const MARKER = "codebuddy-hook.js";
 const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".codebuddy");
 const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
+const CLAWD_PERMISSION_HOOK_NAME = "clawd-on-desk.permission.v1";
 
 // CodeBuddy supported hook events (as of v1.16+)
 const CODEBUDDY_HOOK_EVENTS = [
@@ -38,12 +39,98 @@ const CODEBUDDY_HOOK_EVENTS = [
   "PreCompact",
 ];
 
+function normalizeCustomPermissionUrl(value) {
+  if (typeof value !== "string") return "";
+  const trimmed = value.trim();
+  if (!trimmed) return "";
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    throw new Error("permission URL must be a valid http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new Error("permission URL must be a valid http(s) URL");
+  }
+  return trimmed;
+}
+
+function normalizePermissionTarget(value) {
+  if (value === undefined) return { mode: "preserve" };
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("permissionTarget must be an object");
+  }
+  if (value.mode === "local" || value.mode === "preserve") return { mode: value.mode };
+  if (value.mode === "custom") {
+    const url = normalizeCustomPermissionUrl(value.url);
+    if (!url) throw new Error("permissionTarget custom mode requires an http(s) URL");
+    return { mode: "custom", url };
+  }
+  throw new Error("permissionTarget.mode must be local, custom, or preserve");
+}
+
+function normalizePreservedPermissionUrl(value) {
+  try {
+    return normalizeCustomPermissionUrl(value);
+  } catch {
+    // Preserve is a best-effort compatibility mode for config that already
+    // exists on disk. A malformed marker-owned URL must not prevent the
+    // command hooks from being installed; repair it to the local endpoint.
+    return "";
+  }
+}
+
+function isManagedPermissionHook(hook) {
+  if (!hook || hook.type !== "http") return false;
+  return hook.name === CLAWD_PERMISSION_HOOK_NAME || isManagedPermissionUrl(hook.url);
+}
+
+function findManagedPermissionHook(entries) {
+  if (!Array.isArray(entries)) return null;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (Array.isArray(entry.hooks)) {
+      const nested = entry.hooks.find(isManagedPermissionHook);
+      if (nested) return nested;
+    }
+    if (isManagedPermissionHook(entry)) return entry;
+  }
+  return null;
+}
+
+function resolvePermissionUrl(permissionTarget, existingHook, hookPort) {
+  if (permissionTarget.mode === "custom") return permissionTarget.url;
+  if (
+    permissionTarget.mode === "preserve"
+    && existingHook
+    && existingHook.name === CLAWD_PERMISSION_HOOK_NAME
+    && !isManagedPermissionUrl(existingHook.url)
+  ) {
+    return normalizePreservedPermissionUrl(existingHook.url) || buildPermissionUrl(hookPort);
+  }
+  return buildPermissionUrl(hookPort);
+}
+
+function parsePermissionTargetArgv(argv) {
+  const args = Array.isArray(argv) ? argv : [];
+  const index = args.indexOf("--permission-url");
+  if (index < 0) return { mode: "preserve" };
+  const value = args[index + 1];
+  if (typeof value !== "string" || !value.trim() || value.startsWith("--")) {
+    throw new Error("--permission-url requires local, preserve, or an http(s) URL");
+  }
+  const trimmed = value.trim();
+  if (trimmed === "local" || trimmed === "preserve") return { mode: trimmed };
+  return { mode: "custom", url: normalizeCustomPermissionUrl(trimmed) };
+}
+
 /**
  * Register Clawd hooks into ~/.codebuddy/settings.json
  * Uses Claude Code-compatible nested format: { matcher, hooks: [{ type, command }] }
  * @param {object} [options]
  * @param {boolean} [options.silent]
  * @param {string} [options.settingsPath]
+ * @param {{ mode: "local" }|{ mode: "custom", url: string }|{ mode: "preserve" }} [options.permissionTarget]
  * @returns {{ added: number, skipped: number, updated: number }}
  */
 function registerCodeBuddyHooks(options = {}) {
@@ -139,29 +226,33 @@ function registerCodeBuddyHooks(options = {}) {
 
   // Register PermissionRequest HTTP hook (blocking, for permission bubble)
   const hookPort = readRuntimePort() || DEFAULT_SERVER_PORT;
-  const permissionUrl = buildPermissionUrl(hookPort);
+  const permissionTarget = normalizePermissionTarget(options.permissionTarget);
   const permEvent = "PermissionRequest";
   if (!Array.isArray(settings.hooks[permEvent])) {
     settings.hooks[permEvent] = [];
     changed = true;
   }
+  const existingPermissionHook = findManagedPermissionHook(settings.hooks[permEvent]);
+  const permissionUrl = resolvePermissionUrl(permissionTarget, existingPermissionHook, hookPort);
   let permFound = false;
   for (const entry of settings.hooks[permEvent]) {
     if (!entry || typeof entry !== "object") continue;
     const innerHooks = entry.hooks;
     if (Array.isArray(innerHooks)) {
       for (const h of innerHooks) {
-        if (!h || h.type !== "http" || typeof h.url !== "string") continue;
+        if (!h || h.type !== "http") continue;
         // Only URLs we wrote ourselves are eligible for the in-place port
         // refresh; foreign endpoints are skipped and we append our own entry.
-        if (!isManagedPermissionUrl(h.url)) continue;
+        if (!isManagedPermissionHook(h)) continue;
         permFound = true;
+        if (h.name !== CLAWD_PERMISSION_HOOK_NAME) { h.name = CLAWD_PERMISSION_HOOK_NAME; changed = true; }
         if (h.url !== permissionUrl) { h.url = permissionUrl; updated++; changed = true; }
         break;
       }
     }
-    if (!permFound && entry.type === "http" && typeof entry.url === "string" && isManagedPermissionUrl(entry.url)) {
+    if (!permFound && entry.type === "http" && isManagedPermissionHook(entry)) {
       permFound = true;
+      if (entry.name !== CLAWD_PERMISSION_HOOK_NAME) { entry.name = CLAWD_PERMISSION_HOOK_NAME; changed = true; }
       if (entry.url !== permissionUrl) { entry.url = permissionUrl; updated++; changed = true; }
     }
     if (permFound) break;
@@ -169,7 +260,7 @@ function registerCodeBuddyHooks(options = {}) {
   if (!permFound) {
     settings.hooks[permEvent].push({
       matcher: "",
-      hooks: [{ type: "http", url: permissionUrl, timeout: 600 }],
+      hooks: [{ name: CLAWD_PERMISSION_HOOK_NAME, type: "http", url: permissionUrl, timeout: 600 }],
     });
     added++;
     changed = true;
@@ -217,7 +308,7 @@ function unregisterCodeBuddyHooks(options = {}) {
 
   if (Array.isArray(settings.hooks.PermissionRequest)) {
     const result = removeMatchingHttpHooks(settings.hooks.PermissionRequest, (hook) =>
-      hook && hook.type === "http" && isManagedPermissionUrl(hook.url)
+      isManagedPermissionHook(hook)
     );
     if (result.changed) {
       removed += result.removed;
@@ -238,16 +329,27 @@ function unregisterCodeBuddyHooks(options = {}) {
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  CLAWD_PERMISSION_HOOK_NAME,
+  isManagedPermissionHook,
   registerCodeBuddyHooks,
   unregisterCodeBuddyHooks,
   CODEBUDDY_HOOK_EVENTS,
-  __test: { isManagedPermissionUrl },
+  __test: {
+    findManagedPermissionHook,
+    isManagedPermissionHook,
+    isManagedPermissionUrl,
+    normalizeCustomPermissionUrl,
+    normalizePreservedPermissionUrl,
+    normalizePermissionTarget,
+    parsePermissionTargetArgv,
+    resolvePermissionUrl,
+  },
 };
 
 if (require.main === module) {
   try {
     if (process.argv.includes("--uninstall")) unregisterCodeBuddyHooks({});
-    else registerCodeBuddyHooks({});
+    else registerCodeBuddyHooks({ permissionTarget: parsePermissionTargetArgv(process.argv.slice(2)) });
   } catch (err) {
     console.error(err.message);
     process.exit(1);

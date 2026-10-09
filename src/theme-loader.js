@@ -17,6 +17,7 @@ const {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   validateTheme,
   mergeDefaults,
@@ -32,7 +33,12 @@ const {
   deriveIdleMode: _deriveIdleMode,
   deriveSleepMode: _deriveSleepMode,
   buildCapabilities: _buildCapabilities,
+  deriveAccessoryCapability: _deriveAccessoryCapability,
+  deriveMouthAccessoryCapability: _deriveMouthAccessoryCapability,
+  resolveEffectiveAccessoryAttachments: _resolveEffectiveAccessoryAttachments,
+  resolveEffectiveMouthAccessoryAttachments: _resolveEffectiveMouthAccessoryAttachments,
   collectRequiredAssetFiles: _collectRequiredAssetFiles,
+  filterIdleVisualOptionsByAsset: _filterIdleVisualOptionsByAsset,
   basenameOnly: _basenameOnly,
 } = require("./theme-schema");
 const {
@@ -121,10 +127,19 @@ function discoverThemes() {
   return themes;
 }
 
+// Any direct child whose name starts with "." is manager-owned scratch
+// (staging, backups, lock files), never a real theme. Enforced symmetrically in
+// _scanThemesDir, theme-metadata.scanMetadata and _readThemeJson so a dotted
+// directory can be neither scanned, selected by id, nor read directly.
+function isScannableThemeDirName(name) {
+  return typeof name === "string" && name.length > 0 && !name.startsWith(".");
+}
+
 function _scanThemesDir(dir, builtin, themes, seen) {
   try {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
+      if (!isScannableThemeDirName(entry.name)) continue;
       if (seen.has(entry.name)) continue;
       const jsonPath = path.join(dir, entry.name, "theme.json");
       let cfg;
@@ -179,11 +194,23 @@ function loadTheme(themeId, opts = {}) {
   // basename sanitization all run on the patched raw.
   const { resolvedId, spec: variantSpec } = _resolveVariant(raw, requestedVariant);
   const afterVariant = variantSpec ? _applyVariantPatch(raw, variantSpec, themeId, resolvedId) : raw;
+  // Wardrobe support belongs to the authored, selected variant. User animation
+  // overrides may replace a described file, but must not disable the theme-wide
+  // customization capability merely by making that authored descriptor stale
+  // in the effective visual projection.
   const patchedRaw = userOverrides ? _applyUserOverridesPatch(afterVariant, userOverrides) : afterVariant;
 
   // Merge defaults for optional fields
   const theme = mergeDefaults(patchedRaw, themeId, isBuiltin);
   theme._themeDir = themeDir;
+  _filterIdleVisualOptionsByAsset(theme, (file) => {
+    try { return fs.statSync(_resolveAssetPath(theme, file)).isFile(); } catch { return false; }
+  });
+  const authoredVisuals = Object.prototype.hasOwnProperty.call(afterVariant, "idleVisualOptions")
+    ? { ...afterVariant, idleVisualOptions: theme.idleVisualOptions }
+    : afterVariant;
+  const authoredAccessorySupported = _deriveAccessoryCapability(authoredVisuals);
+  const authoredMouthAccessorySupported = _deriveMouthAccessoryCapability(authoredVisuals);
   theme._variantId = resolvedId;
   theme._userOverrides = userOverrides;
   theme._bindingBase = _buildBaseBindingMetadata(afterVariant);
@@ -202,6 +229,14 @@ function loadTheme(themeId, opts = {}) {
     ? [...new Set(afterVariant.wideHitboxFiles.map((file) => _basenameOnly(file)).filter(Boolean))]
     : [];
   theme._capabilities = _buildCapabilities(theme, { trustedRuntimeAllowed: !!theme._builtin });
+  theme._capabilities.accessories = authoredAccessorySupported;
+  theme._capabilities.mouthAccessories = authoredMouthAccessorySupported;
+  theme.customization.accessories = authoredAccessorySupported
+    ? _resolveEffectiveAccessoryAttachments(authoredVisuals, theme)
+    : null;
+  theme.customization.mouthAccessories = authoredMouthAccessorySupported
+    ? _resolveEffectiveMouthAccessoryAttachments(authoredVisuals, theme)
+    : null;
 
   // For external themes: sanitize SVGs + resolve asset paths
   if (!isBuiltin) {
@@ -244,6 +279,12 @@ function _resolveSoundOverrideFiles(themeId, userOverrides) {
  * Read theme.json from built-in or user themes directory.
  */
 function _readThemeJson(themeId) {
+  // Manager-owned scratch directories (staging/backup) are dotted direct
+  // children of the themes dir. They must never be readable as a theme by id,
+  // even though they may contain a perfectly valid theme.json.
+  if (!isScannableThemeDirName(themeId)) {
+    return { raw: null, isBuiltin: false, themeDir: null };
+  }
   // Built-in first
   if (builtinThemesDir) {
     const builtinPath = path.resolve(builtinThemesDir, themeId, "theme.json");
@@ -376,10 +417,32 @@ function ensureUserThemesDir() {
 
 // ── Validation ──
 
+/**
+ * Read `theme.json` from an explicit external theme directory (used by the
+ * official-theme installer to validate a staging directory that does not yet
+ * live under `<userData>/themes/`).
+ */
+function _readThemeJsonFromDir(themeDir) {
+  if (typeof themeDir !== "string" || !themeDir) return { raw: null, isBuiltin: false, themeDir: null };
+  if (!isScannableThemeDirName(path.basename(themeDir))) {
+    return { raw: null, isBuiltin: false, themeDir: null };
+  }
+  const jsonPath = path.join(themeDir, "theme.json");
+  try {
+    const raw = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+    return { raw, isBuiltin: false, themeDir };
+  } catch (e) {
+    return { raw: null, isBuiltin: false, themeDir: null };
+  }
+}
+
 function validateThemeShape(themeId, opts = {}) {
   const variant = typeof opts.variant === "string" && opts.variant ? opts.variant : "default";
   const overrides = _isPlainObject(opts.overrides) ? opts.overrides : null;
-  const { raw, isBuiltin, themeDir } = _readThemeJson(themeId);
+  const explicitThemeDir = typeof opts.themeDir === "string" && opts.themeDir ? opts.themeDir : null;
+  const { raw, isBuiltin, themeDir } = explicitThemeDir
+    ? _readThemeJsonFromDir(explicitThemeDir)
+    : _readThemeJson(themeId);
   if (!raw) {
     return {
       ok: false,
@@ -400,6 +463,9 @@ function validateThemeShape(themeId, opts = {}) {
   effective._themeDir = themeDir;
   effective._variantId = resolvedId;
   effective._assetsDir = isBuiltin ? assetsSvgDir : _externalAssetsSourceDir(themeDir);
+  _filterIdleVisualOptionsByAsset(effective, (file) => {
+    try { return fs.statSync(_resolveAssetPath(effective, file)).isFile(); } catch { return false; }
+  });
 
   const effectiveErrors = validateTheme(patched);
   const resourceErrors = _validateRequiredAssets(effective);
@@ -484,12 +550,14 @@ module.exports = {
   _resolveAssetPath,
   _externalAssetsSourceDir,
   _validateRequiredAssets,
+  isScannableThemeDirName,
   // Schema constants + helpers are re-exported for backward compatibility with
   // scripts/validate-theme.js and tests. New direct callers should require
   // "./theme-schema".
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   isPlainObject: _isPlainObject,
   hasNonEmptyArray: _hasNonEmptyArray,

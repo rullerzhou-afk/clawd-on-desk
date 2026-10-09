@@ -66,3 +66,39 @@ test("redactSecrets coerces non-strings safely", () => {
   assert.equal(redactSecrets(undefined), "");
   assert.equal(redactSecrets(42), "42");
 });
+
+// A Slack Incoming Webhook URL is a bearer credential: anyone holding it can
+// post to that channel. Clawd's own Slack notifier posts *into* that channel,
+// so an agent quoting the URL would publish the key to its own lock.
+test("redactSecrets masks Slack webhook URLs", () => {
+  const url = "https://hooks.slack.com/services/T00000000/B00000000/EXAMPLEexampleEXAMPLEexam";
+  const out = redactSecrets(`deploy with ${url} now`);
+  assert.doesNotMatch(out, /EXAMPLEexampleEXAMPLEexam/);
+  assert.doesNotMatch(out, /T00000000/);
+  assert.match(out, /<redacted:slack-webhook>/);
+
+  // Also the workflow variant Slack issues for Workflow Builder.
+  assert.match(
+    redactSecrets("https://hooks.slack.com/workflows/T00000000/A00000000/1234567890/abcdefghijklmnop"),
+    /<redacted:slack-webhook>/,
+  );
+
+  // Do not encode today's two documented path families into the safety net:
+  // Slack can add a new opaque credential path without coordinating a Clawd
+  // release, and diagnostics may preserve an explicit port.
+  for (const variant of [
+    "https://hooks.slack.com/custom/opaque/credential/value",
+    "https://hooks.slack.com:8443/edge/T00000000/super-secret?token=also-secret",
+    "http://hooks.slack.com/services/T00000000/B00000000/plaintext-bearer",
+    "HTTPS://HOOKS.SLACK.COM/future/path/credential",
+  ]) {
+    const redacted = redactSecrets(`use ${variant} now`);
+    assert.match(redacted, /<redacted:slack-webhook>/);
+    assert.doesNotMatch(redacted, /opaque|super-secret|plaintext-bearer|credential/i);
+  }
+
+  // The bare host in prose is not a credential and must survive, or setup
+  // instructions ("paste the https://hooks.slack.com/... URL") become unreadable.
+  const prose = redactSecrets("open hooks.slack.com and create a webhook");
+  assert.match(prose, /hooks\.slack\.com/);
+});

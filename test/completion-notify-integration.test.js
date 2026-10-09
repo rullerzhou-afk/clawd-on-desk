@@ -12,6 +12,7 @@ const assert = require("node:assert");
 const path = require("path");
 const themeLoader = require("../src/theme-loader");
 const { createTelegramCompanion } = require("../src/telegram-companion");
+const { createSlackNotifyClient } = require("../src/slack-notify-client");
 
 themeLoader.init(path.join(__dirname, "..", "src"));
 const theme = themeLoader.loadTheme("clawd");
@@ -100,6 +101,25 @@ describe("#406 state -> Telegram completion integration", () => {
     assert.strictEqual(sent.length, 0, "background work pending -> no premature completion push");
   });
 
+  it("typed background subagents suppress Telegram until an authoritative-zero Stop completes (#952)", async () => {
+    stop(api, "s1", {
+      backgroundTasksCount: 1,
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response while child runs.",
+    });
+    mock.timers.tick(5000);
+    await flush();
+    assert.strictEqual(sent.length, 0, "typed child still running -> no Telegram completion");
+
+    stop(api, "s1", {
+      backgroundSubagentsCount: 0,
+      assistantLastOutput: "Final response after child exit.",
+    });
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "authoritative zero releases exactly one Telegram completion");
+  });
+
   it("bg-only Stop with final assistant text pushes exactly once after the quiet window", async () => {
     stop(api, "s1", { backgroundTasksCount: 1, assistantLastOutput: "All done." });
     await flush();
@@ -118,5 +138,399 @@ describe("#406 state -> Telegram completion integration", () => {
     mock.timers.tick(1000);
     await flush();
     assert.strictEqual(sent.length, 1, "the Notification does not bury the completion; exactly one push");
+  });
+});
+
+describe("#952 state -> Slack completion integration", () => {
+  let api;
+  let fetchCalls;
+  let slack;
+  let savedDebounceEnv;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    savedDebounceEnv = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "1000";
+    fetchCalls = [];
+    slack = createSlackNotifyClient({
+      getConfig: () => ({
+        enabled: true,
+        channelId: "",
+        notifyOnDone: true,
+        notifyOnError: true,
+        notifyOnPermission: false,
+        outputMode: "off",
+      }),
+      getSecrets: () => ({
+        webhookUrl: "https://hooks.slack.com/services/T/B/test",
+        botToken: "",
+      }),
+      getLang: () => "en",
+      fetchImpl: async (url, options) => {
+        fetchCalls.push({ url, options });
+        return { ok: true, status: 200, text: async () => "ok" };
+      },
+    });
+    slack.onSnapshot({ sessions: [] });
+    api = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => slack.onSnapshot(snapshot),
+    }));
+  });
+
+  afterEach(() => {
+    api.cleanup();
+    mock.timers.reset();
+    if (savedDebounceEnv === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = savedDebounceEnv;
+  });
+
+  it("does not enqueue Slack completion while a typed child is live, then sends once after known zero", async () => {
+    stop(api, "s1", {
+      backgroundSubagentsCount: 1,
+      assistantLastOutput: "Parent response while child runs.",
+    });
+    mock.timers.tick(5000);
+    await slack.drained();
+    assert.strictEqual(fetchCalls.length, 0);
+
+    stop(api, "s1", {
+      backgroundSubagentsCount: 0,
+      assistantLastOutput: "Final response after child exit.",
+    });
+    mock.timers.tick(1000);
+    await slack.drained();
+    assert.strictEqual(fetchCalls.length, 1);
+  });
+});
+
+// The gate above can withhold a Stop and replay it later via promoteCompletion.
+// Any event arriving inside that window carries no assistant output, so before
+// the state.js carry-forward the recorded answer was rewritten to null and the
+// promoted completion shipped title-only — or, with plain pings disabled, was
+// dropped entirely. The cases above drive this exact sequence but assert only
+// sent.length, which is why the regression was invisible.
+describe("#406 completion hold preserves the assistant output", () => {
+  let api;
+  let sent;
+  let savedDebounceEnv;
+
+  // Assert on the VISIBLE text, never on JSON.stringify of the message: the
+  // message object carries a `truncated` field, so a serialized form contains
+  // the word "truncated" whatever its value.
+  function sentText(i) {
+    const value = sent[i];
+    return value && typeof value === "object" && typeof value.plainText === "string"
+      ? value.plainText
+      : String(value == null ? "" : value);
+  }
+
+  function setup({ notifyOnComplete = true } = {}) {
+    sent = [];
+    const companion = createTelegramCompanion({
+      getClient: () => ({
+        sendNotification: async (text) => { sent.push(text); return { ok: true }; },
+      }),
+      isEnabled: () => true,
+      getNotifyOnComplete: () => notifyOnComplete,
+      getCompletionOutputMode: () => "full",
+    });
+    companion.onSnapshot({ sessions: [] }); // prime dedupe (no backlog re-ping)
+    api = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => companion.onSnapshot(snapshot),
+    }));
+  }
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    savedDebounceEnv = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "1000";
+  });
+  afterEach(() => {
+    if (api) api.cleanup();
+    api = null;
+    mock.timers.reset();
+    if (savedDebounceEnv === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = savedDebounceEnv;
+  });
+
+  it("keeps the answer when a Notification lands inside the hold", async () => {
+    setup();
+    stop(api, "s1", { assistantLastOutput: "HELD-TURN-ANSWER" });
+    mock.timers.tick(400);
+    api.updateSession("s1", "notification", "Notification", { agentId: "claude-code" });
+    await flush();
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "exactly one completion push");
+    assert.ok(
+      sentText(0).includes("HELD-TURN-ANSWER"),
+      `promoted completion must still carry the assistant output, got: ${sentText(0)}`,
+    );
+  });
+
+  it("still delivers the completion when plain pings are off and an event lands inside the hold", async () => {
+    // With getNotifyOnComplete() false the push exists only to carry the
+    // output, so losing the field drops the notification outright.
+    setup({ notifyOnComplete: false });
+    stop(api, "s1", { assistantLastOutput: "OUTPUT-ONLY-ANSWER" });
+    mock.timers.tick(400);
+    api.updateSession("s1", "notification", "Notification", { agentId: "claude-code" });
+    await flush();
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "output-only completion must not be dropped");
+    assert.ok(
+      sentText(0).includes("OUTPUT-ONLY-ANSWER"),
+      `output-only completion must carry the assistant output, got: ${sentText(0)}`,
+    );
+  });
+
+  // The truncated flag is inherited only when the text is inherited. If it were
+  // taken from the incoming event instead, a carried-forward truncated answer
+  // would ship without its "(truncated)" marker and read as complete.
+  it("carries the truncation marker along with the answer", async () => {
+    setup();
+    stop(api, "s1", { assistantLastOutput: "CLIPPED-ANSWER", assistantLastOutputTruncated: true });
+    mock.timers.tick(400);
+    api.updateSession("s1", "notification", "Notification", { agentId: "claude-code" });
+    await flush();
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "exactly one completion push");
+    assert.ok(sentText(0).includes("CLIPPED-ANSWER"), "the answer survives");
+    assert.ok(
+      sentText(0).includes("Assistant output (truncated):"),
+      `a carried-forward truncated answer must still be marked truncated, got: ${sentText(0)}`,
+    );
+  });
+
+  it("does not leak the previous turn's answer into the next completion", async () => {
+    setup();
+    stop(api, "s1", { assistantLastOutput: "TURN-ONE-ANSWER" });
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "turn one pushes once");
+
+    api.updateSession("s1", "working", "UserPromptSubmit", { agentId: "claude-code" });
+    await flush();
+    stop(api, "s1", { agentId: "claude-code" }); // turn two ends with no text
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 2, "turn two pushes once");
+    assert.ok(
+      !sentText(1).includes("TURN-ONE-ANSWER"),
+      `turn two must not carry turn one's answer, got: ${sentText(1)}`,
+    );
+  });
+});
+
+// The carry-forward is bounded by the hold window, not by a guessed turn
+// boundary. These pin the two ways a boundary-based version went wrong.
+describe("#406 completion hold does not overreach", () => {
+  let api;
+  let sent;
+  let savedDebounceEnv;
+
+  function sentText(i) {
+    const value = sent[i];
+    return value && typeof value === "object" && typeof value.plainText === "string"
+      ? value.plainText
+      : String(value == null ? "" : value);
+  }
+
+  function setup() {
+    sent = [];
+    const companion = createTelegramCompanion({
+      getClient: () => ({
+        sendNotification: async (text) => { sent.push(text); return { ok: true }; },
+      }),
+      isEnabled: () => true,
+      getNotifyOnComplete: () => true,
+      getCompletionOutputMode: () => "full",
+    });
+    companion.onSnapshot({ sessions: [] });
+    api = require("../src/state")(makeCtx({
+      broadcastSessionSnapshot: (snapshot) => companion.onSnapshot(snapshot),
+    }));
+  }
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+    savedDebounceEnv = process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    process.env.CLAWD_COMPLETION_DEBOUNCE_MS = "1000";
+  });
+  afterEach(() => {
+    if (api) api.cleanup();
+    api = null;
+    mock.timers.reset();
+    if (savedDebounceEnv === undefined) delete process.env.CLAWD_COMPLETION_DEBOUNCE_MS;
+    else process.env.CLAWD_COMPLETION_DEBOUNCE_MS = savedDebounceEnv;
+  });
+
+  // The Codex JSONL monitor emits task_started / task_complete and never
+  // UserPromptSubmit or SessionStart, so a boundary-based carry-forward could
+  // never clear and shipped turn N's answer as turn N+1's completion. Only the
+  // claude-code gate can withhold, so codex must never carry anything forward.
+  it("never carries an answer between turns on an agent that cannot be withheld", async () => {
+    setup();
+    api.updateSession("cx1", "attention", "event_msg:task_complete", {
+      agentId: "codex",
+      assistantLastOutput: "TURN-ONE-SECRET-ANSWER",
+    });
+    await flush();
+    assert.strictEqual(sent.length, 1, "turn one pushes once");
+    assert.ok(sentText(0).includes("TURN-ONE-SECRET-ANSWER"), "turn one carries its own answer");
+
+    mock.timers.tick(5000);
+    api.updateSession("cx1", "working", "event_msg:task_started", { agentId: "codex" });
+    await flush();
+    api.updateSession("cx1", "attention", "event_msg:task_complete", { agentId: "codex" });
+    await flush();
+
+    assert.strictEqual(sent.length, 2, "turn two pushes once");
+    assert.ok(
+      !sentText(1).includes("TURN-ONE-SECRET-ANSWER"),
+      `turn two must not carry turn one's answer, got: ${sentText(1)}`,
+    );
+  });
+
+  // A held completion can end by being CANCELLED rather than promoted -- a new
+  // prompt inside the quiet window means the turn never ended. The marker has to
+  // be released there too, or the answer stays sticky into the next turn.
+  it("releases the carry-forward when the hold is cancelled instead of promoted", async () => {
+    setup();
+    stop(api, "s2", { assistantLastOutput: "CANCELLED-TURN-ANSWER" });
+    mock.timers.tick(400);
+    api.updateSession("s2", "working", "UserPromptSubmit", { agentId: "claude-code" });
+    await flush();
+    assert.strictEqual(sent.length, 0, "a cancelled hold never pushes");
+
+    mock.timers.tick(5000);
+    stop(api, "s2", { agentId: "claude-code" }); // next turn ends with no text
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the next turn pushes once");
+    assert.ok(
+      !sentText(0).includes("CANCELLED-TURN-ANSWER"),
+      `a cancelled hold must not leak its answer forward, got: ${sentText(0)}`,
+    );
+  });
+
+  it("does not leak hard-held intermediate output into a later textless Stop", async () => {
+    setup();
+    stop(api, "s-hard", {
+      stopHookActive: true,
+      assistantLastOutput: "INTERMEDIATE-NOT-FINAL",
+    });
+    mock.timers.tick(5000);
+    await flush();
+    assert.strictEqual(sent.length, 0, "hard-held intermediate output must not push");
+
+    stop(api, "s-hard");
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the later plain Stop still completes once");
+    assert.ok(
+      !sentText(0).includes("INTERMEDIATE-NOT-FINAL"),
+      `later textless Stop must not reuse hard-held intermediate output, got: ${sentText(0)}`,
+    );
+  });
+
+  it("uses only the later Stop output after a hard-held intermediate Stop", async () => {
+    setup();
+    stop(api, "s-hard-final", {
+      stopHookActive: true,
+      assistantLastOutput: "INTERMEDIATE-NOT-FINAL",
+    });
+    mock.timers.tick(5000);
+    await flush();
+
+    stop(api, "s-hard-final", { assistantLastOutput: "ACTUAL-FINAL-ANSWER" });
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the later final Stop completes once");
+    assert.ok(sentText(0).includes("ACTUAL-FINAL-ANSWER"), "later Stop output survives");
+    assert.ok(
+      !sentText(0).includes("INTERMEDIATE-NOT-FINAL"),
+      `later final Stop must not include hard-held intermediate output, got: ${sentText(0)}`,
+    );
+  });
+
+  it("does not leak hard-held output through a Notification into a later textless Stop", async () => {
+    setup();
+    stop(api, "s-hard-notification", {
+      stopHookActive: true,
+      assistantLastOutput: "INTERMEDIATE-NOT-FINAL",
+    });
+    api.updateSession("s-hard-notification", "notification", "Notification", { agentId: "claude-code" });
+    mock.timers.tick(5000);
+    await flush();
+    assert.strictEqual(sent.length, 0, "hard-held intermediate output must not push through notification");
+
+    stop(api, "s-hard-notification");
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the later textless Stop completes once");
+    assert.ok(
+      !sentText(0).includes("INTERMEDIATE-NOT-FINAL"),
+      `later textless Stop must not inherit hard-held output after Notification, got: ${sentText(0)}`,
+    );
+  });
+
+  it("uses the superseding debounced Stop payload exactly once", async () => {
+    setup();
+    stop(api, "s-supersede", { assistantLastOutput: "FIRST-DEBOUNCED-ANSWER" });
+    mock.timers.tick(500);
+    stop(api, "s-supersede", { assistantLastOutput: "SECOND-DEBOUNCED-ANSWER" });
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "the superseding Stop completes once");
+    assert.ok(sentText(0).includes("SECOND-DEBOUNCED-ANSWER"), "latest debounced Stop output wins");
+    assert.ok(
+      !sentText(0).includes("FIRST-DEBOUNCED-ANSWER"),
+      `superseded Stop output must not leak, got: ${sentText(0)}`,
+    );
+  });
+
+  it("does not send a duplicate completion notification for the same Stop payload", async () => {
+    setup();
+    stop(api, "s-dup-payload", { assistantLastOutput: "FINAL-ONCE" });
+    mock.timers.tick(1000);
+    await flush();
+    assert.strictEqual(sent.length, 1, "first completion pushes once");
+    assert.ok(sentText(0).includes("FINAL-ONCE"), "first completion carries its output");
+
+    stop(api, "s-dup-payload", { assistantLastOutput: "FINAL-ONCE" });
+    mock.timers.tick(1000);
+    await flush();
+
+    assert.strictEqual(sent.length, 1, "duplicate Stop with the same payload must not push again");
+  });
+
+  // The gate asks whether THIS Stop ended the turn with text. A carried-forward
+  // value made a text-less Stop look complete, releasing a hard hold while
+  // background work was still live.
+  it("does not let a carried answer release a hard hold", async () => {
+    setup();
+    stop(api, "s9", { stopHookActive: true, assistantLastOutput: "TURN-TEXT" });
+    await flush();
+    assert.strictEqual(sent.length, 0, "a stop-hook veto holds");
+
+    mock.timers.tick(5000);
+    stop(api, "s9", { backgroundTasksCount: 1 });
+    await flush();
+    mock.timers.tick(5000);
+    await flush();
+
+    assert.strictEqual(
+      sent.length, 0,
+      `live background work must still hold; pushed: ${sent.map((_, i) => sentText(i)).join(" | ")}`,
+    );
   });
 });

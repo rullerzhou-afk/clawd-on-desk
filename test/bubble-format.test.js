@@ -3,7 +3,31 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
-const { formatDetail, formatAntigravityDetail, truncate, firstStringValue, parseMcpToolName } = require("../src/bubble-format");
+const { formatDetail, formatAntigravityDetail, formatReminderReason, truncate, firstStringValue, parseMcpToolName } = require("../src/bubble-format");
+const { SUPPORTED_LANGS } = require("../src/i18n");
+
+describe("bubble-format reminder reason labels", () => {
+  it("turns stable diagnostic tags into readable text in every supported locale", () => {
+    for (const lang of SUPPORTED_LANGS) {
+      const label = formatReminderReason("force-push", lang);
+      assert.ok(label);
+      assert.notStrictEqual(label, "force-push");
+    }
+  });
+
+  it("never leaks an unknown future tag into user-visible text", () => {
+    assert.strictEqual(formatReminderReason("future-internal-tag", "en"), "destructive action");
+    assert.strictEqual(formatReminderReason("future-internal-tag", "zh"), "破坏性操作");
+    assert.strictEqual(formatReminderReason("force-push", "unsupported"), "force push");
+  });
+
+  it("treats inherited object names as unknown tags and languages", () => {
+    for (const tag of ["constructor", "__proto__", "toString"]) {
+      assert.strictEqual(formatReminderReason(tag, "en"), "destructive action");
+    }
+    assert.strictEqual(formatReminderReason("force-push", "constructor"), "force push");
+  });
+});
 
 describe("bubble-format truncate", () => {
   it("returns input unchanged when within max", () => {
@@ -35,6 +59,30 @@ describe("bubble-format formatDetail builtin tools", () => {
 
   it("formats Bash command", () => {
     assert.strictEqual(formatDetail("Bash", { command: "npm test" }), "npm test");
+  });
+
+  it("uses explicit full-text fields in detail mode", () => {
+    const command = `echo ${"x".repeat(300)}`;
+    const plan = `Plan\n${"step\n".repeat(80)}END_MARKER`;
+    assert.strictEqual(
+      formatDetail("Bash", { description: "short preview", command }, { mode: "detail" }),
+      command
+    );
+    assert.strictEqual(
+      formatDetail("ExitPlanMode", { note: "wrong first string", plan }, { mode: "detail" }),
+      plan
+    );
+    assert.strictEqual(
+      formatDetail("ExitPlanMode", { note: "wrong first string", plan }),
+      truncate(plan, 120)
+    );
+  });
+
+  it("uses readable JSON for unknown tools in detail mode", () => {
+    assert.strictEqual(
+      formatDetail("mcp__server__tool", { first: "a", nested: { second: "b" } }, { mode: "detail" }),
+      '{\n  "first": "a",\n  "nested": {\n    "second": "b"\n  }\n}'
+    );
   });
 
   it("formats Edit/Write/Read file_path", () => {

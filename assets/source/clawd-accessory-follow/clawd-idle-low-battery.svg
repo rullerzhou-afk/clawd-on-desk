@@ -1,0 +1,89 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .doze-body {
+        transform-origin: 7.5px 13px;
+        animation: doze-breathe 4s infinite ease-in-out;
+      }
+
+      .doze-shadow {
+        transform-origin: 7.5px 15.5px;
+        animation: doze-shadow 4s infinite ease-in-out;
+      }
+
+      .arm-l-doze {
+        transform-origin: 1px 10px;
+        transform: translate(0px, 1px) rotate(-15deg);
+      }
+
+      .arm-r-doze {
+        transform-origin: 14px 10px;
+        transform: translate(0px, 1px) rotate(15deg);
+      }
+
+      .eyes-struggle {
+        transform-origin: 7.5px 9px;
+        animation: eyes-struggle 8s infinite ease-in-out;
+      }
+
+      .battery-low {
+        animation: battery-pulse 4s infinite ease-in-out;
+        animation-delay: 0.2s;
+      }
+
+
+      @keyframes doze-breathe {
+        0%, 100% { transform: scale(1.05, 0.95) translate(0, 1px); }
+        50%      { transform: scale(1.08, 0.92) translate(0, 1.8px); }
+      }
+
+      @keyframes doze-shadow {
+        0%, 100% { transform: scaleX(1.05); opacity: 0.55; }
+        50%      { transform: scaleX(1.08); opacity: 0.5; }
+      }
+
+      @keyframes eyes-struggle {
+        0%, 65%   { transform: scaleY(0.1); }
+        72%, 80%  { transform: scaleY(0.5); }
+        88%, 100% { transform: scaleY(0.1); }
+      }
+
+      @keyframes battery-pulse {
+        0%, 100% { opacity: 1; }
+        50%      { opacity: 0.25; }
+      }
+    </style>
+  </defs>
+
+  <rect class="doze-shadow" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.55"/>
+
+  <g id="legs" fill="#DE886D">
+    <rect x="3" y="12" width="1" height="3"/>
+    <rect x="5" y="12" width="1" height="3"/>
+    <rect x="9" y="12" width="1" height="3"/>
+    <rect x="11" y="12" width="1" height="3"/>
+  </g>
+
+  <g id="battery" transform="translate(8 2.2) rotate(90) scale(0.025) translate(-139.5 -275)">
+    <polygon points="97.5 72 181.5 72 197.5 108 81.5 108" fill="#FF4444"/>
+    <rect x="55"  y="116" width="169" height="22"  fill="#FF4444"/>
+    <rect x="55"  y="456" width="169" height="22"  fill="#FF4444"/>
+    <rect x="55"  y="138" width="22"  height="318" fill="#FF4444"/>
+    <rect x="202" y="138" width="22"  height="318" fill="#FF4444"/>
+    <rect class="battery-low" x="88" y="394" width="102" height="51" fill="#FF4444"/>
+  </g>
+
+  <g class="doze-body">
+    <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+    <g class="arm-l-doze">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <g class="arm-r-doze">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <g class="eyes-struggle" fill="#000000">
+      <rect x="4" y="8" width="1" height="2"/>
+      <rect x="10" y="8" width="1" height="2"/>
+    </g>
+  </g>
+</svg>

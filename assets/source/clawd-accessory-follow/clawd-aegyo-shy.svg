@@ -1,0 +1,277 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <!-- PoC v4: 害羞型撒娇
+       目标:
+         - 不做持续左右摇, 改成一次性的缩一下 / 停一下 / 回弹
+         - 腿基本站稳, 让情绪重心落在手、眼睛和身体收缩感上
+         - 眼睛走 3 段过渡: 普通竖眼 → 压扁成线 → 开心笑眼
+         - 爱心改成多颗接力上浮, 不做特效喷泉
+       v2 调整:
+         - 线眼停留压缩成真正的过门, 眼睛一闭就接笑眼
+         - 爱心上浮和停留整体拉长, 不再一闪而过
+       v3 调整:
+         - 爱心改成 4 颗接力上浮, 一路飘到收尾再结束
+         - 保留主次大小差, 但把时间轴拉开, 避免中段太空
+       v4 调整:
+         - 笑眼回程延后到双手快归位时, 不再过早恢复正常眼 -->
+  <defs>
+    <style>
+      .ground-shadow {
+        transform-origin: 7.5px 15.5px;
+        animation: ground-shadow 3.2s infinite ease-in-out;
+      }
+
+      .body-bashful {
+        transform-origin: 7.5px 13px;
+        animation: body-bashful 3.2s infinite ease-in-out;
+      }
+
+      .left-arm-shy {
+        animation: left-arm-shy 3.2s infinite ease-in-out;
+      }
+
+      .right-arm-shy {
+        animation: right-arm-shy 3.2s infinite ease-in-out;
+      }
+
+      .arm-shadow-fade {
+        animation: arm-shadow-fade 3.2s infinite ease-in-out;
+      }
+
+      .eye-block {
+        animation: eye-block-fade 3.2s infinite ease-in-out;
+      }
+
+      .eye-block-part {
+        transform-box: fill-box;
+        transform-origin: 50% 50%;
+        animation: eye-block-squash 3.2s infinite ease-in-out;
+      }
+
+      .eye-line {
+        animation: eye-line-fade 3.2s infinite ease-in-out;
+      }
+
+      .eye-smile {
+        animation: eye-smile-fade 3.2s infinite ease-in-out;
+      }
+
+      .eye-smile-shape {
+        transform-box: fill-box;
+        transform-origin: 50% 100%;
+        animation: eye-smile-pop 3.2s infinite ease-in-out;
+      }
+
+      .heart {
+        animation-duration: 3.2s;
+        animation-iteration-count: infinite;
+        animation-timing-function: ease-out;
+        opacity: 0;
+      }
+
+      .heart-main {
+        animation-name: heart-main;
+      }
+
+      .heart-small {
+        animation-name: heart-small;
+      }
+
+      .heart-mid {
+        animation-name: heart-mid;
+      }
+
+      .heart-tiny {
+        animation-name: heart-tiny;
+      }
+
+      @keyframes ground-shadow {
+        0%, 12%, 100% { transform: scaleX(1); opacity: 0.5; }
+        22% { transform: scaleX(1.08); opacity: 0.58; }
+        52% { transform: scaleX(1.05); opacity: 0.55; }
+        82% { transform: scaleX(1); opacity: 0.5; }
+      }
+
+      @keyframes body-bashful {
+        0%, 12%, 100% { transform: translate(0px, 0px) scale(1, 1) rotate(0deg); }
+        22% { transform: translate(0px, 0.8px) scale(1.03, 0.96) rotate(-2.2deg); }
+        34% { transform: translate(0px, 0.45px) scale(1.01, 0.98) rotate(-0.8deg); }
+        52% { transform: translate(0px, 0.55px) scale(1.01, 0.98) rotate(0.9deg); }
+        66% { transform: translate(0px, 0.3px) scale(1, 0.99) rotate(0.3deg); }
+        82% { transform: translate(0px, 0px) scale(1, 1) rotate(0deg); }
+      }
+
+      @keyframes left-arm-shy {
+        0%, 12%, 100% { transform: translate(0px, 0px); }
+        22% { transform: translate(5.4px, -0.2px); }
+        30%, 64% { transform: translate(5px, 0px); }
+        74% { transform: translate(5.1px, 0.1px); }
+        84% { transform: translate(0px, 0px); }
+      }
+
+      @keyframes right-arm-shy {
+        0%, 14%, 100% { transform: translate(0px, 0px); }
+        24% { transform: translate(-5.1px, 0px); }
+        32%, 64% { transform: translate(-4.8px, 0px); }
+        74% { transform: translate(-4.9px, 0.1px); }
+        84% { transform: translate(0px, 0px); }
+      }
+
+      @keyframes arm-shadow-fade {
+        0%, 14%, 100% { opacity: 0; }
+        22%, 68% { opacity: 1; }
+        84% { opacity: 0; }
+      }
+
+      @keyframes eye-block-fade {
+        0%, 16%, 19% { opacity: 1; }
+        22%, 78% { opacity: 0; }
+        82%, 100% { opacity: 1; }
+      }
+
+      @keyframes eye-block-squash {
+        0%, 16%, 100% { transform: scaleY(1); }
+        18% { transform: scaleY(0.42); }
+        20%, 22%, 78%, 80% { transform: scaleY(0.12); }
+        84% { transform: scaleY(1); }
+      }
+
+      @keyframes eye-line-fade {
+        0%, 18%, 79%, 100% { opacity: 0; }
+        20%, 21%, 76%, 78% { opacity: 1; }
+        23%, 74% { opacity: 0; }
+      }
+
+      @keyframes eye-smile-fade {
+        0%, 21%, 74%, 100% { opacity: 0; }
+        24%, 72% { opacity: 1; }
+      }
+
+      @keyframes eye-smile-pop {
+        0%, 21%, 74%, 100% { transform: scaleY(0.15); }
+        24%, 72% { transform: scaleY(1); }
+        78% { transform: scaleY(0.15); }
+      }
+
+      @keyframes heart-main {
+        0%, 22% { transform: translate(7.4px, 3.8px) scale(0.6); opacity: 0; }
+        30% { transform: translate(7.2px, 1.7px) scale(1); opacity: 1; }
+        46% { transform: translate(6.9px, -1.2px) scale(0.98); opacity: 1; }
+        62% { transform: translate(6.5px, -4.2px) scale(0.92); opacity: 0.95; }
+        76%, 100% { transform: translate(6.1px, -7.2px) scale(0.84); opacity: 0; }
+      }
+
+      @keyframes heart-mid {
+        0%, 32% { transform: translate(8.8px, 4.1px) scale(0.48); opacity: 0; }
+        40% { transform: translate(9px, 2.5px) scale(0.82); opacity: 0.92; }
+        56% { transform: translate(9.4px, -0.2px) scale(0.79); opacity: 0.92; }
+        70% { transform: translate(9.9px, -3px) scale(0.72); opacity: 0.82; }
+        82%, 100% { transform: translate(10.4px, -5.7px) scale(0.64); opacity: 0; }
+      }
+
+      @keyframes heart-small {
+        0%, 44% { transform: translate(10.4px, 4.3px) scale(0.45); opacity: 0; }
+        52% { transform: translate(10.8px, 3px) scale(0.8); opacity: 0.88; }
+        66% { transform: translate(11.3px, 0.7px) scale(0.76); opacity: 0.88; }
+        80% { transform: translate(11.9px, -2px) scale(0.68); opacity: 0.78; }
+        90%, 100% { transform: translate(12.3px, -4.6px) scale(0.6); opacity: 0; }
+      }
+
+      @keyframes heart-tiny {
+        0%, 56% { transform: translate(6.2px, 4.5px) scale(0.38); opacity: 0; }
+        64% { transform: translate(5.7px, 3px) scale(0.68); opacity: 0.8; }
+        76% { transform: translate(5.2px, 0.9px) scale(0.64); opacity: 0.78; }
+        88% { transform: translate(4.8px, -1.6px) scale(0.58); opacity: 0.68; }
+        96%, 100% { transform: translate(4.3px, -3.8px) scale(0.5); opacity: 0; }
+      }
+    </style>
+
+    <clipPath id="inside-torso">
+      <rect x="2" y="6" width="11" height="7"/>
+    </clipPath>
+  </defs>
+
+  <rect class="ground-shadow" x="3" y="15" width="9" height="1" fill="#000000"/>
+
+  <!-- 腿保持站稳, 不单独摆动 -->
+  <g fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+  </g>
+
+  <g class="body-bashful">
+    <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+    <g clip-path="url(#inside-torso)" class="arm-shadow-fade">
+      <g class="left-arm-shy">
+        <rect x="-0.4" y="9" width="2.4" height="2.4" fill="#A85A3A"/>
+      </g>
+    </g>
+
+    <g clip-path="url(#inside-torso)" class="arm-shadow-fade">
+      <g class="right-arm-shy">
+        <rect x="12.6" y="9" width="2.4" height="2.4" fill="#A85A3A"/>
+      </g>
+    </g>
+
+    <!-- 普通眼先压扁, 线眼只做极短过门, 紧接着长成笑眼 -->
+    <g class="eye-block" fill="#000000">
+      <rect class="eye-block-part" x="4" y="8" width="1" height="2"/>
+      <rect class="eye-block-part" x="10" y="8" width="1" height="2"/>
+    </g>
+
+    <g class="eye-line" fill="#000000">
+      <rect x="3.6" y="8.8" width="1.8" height="0.5"/>
+      <rect x="9.6" y="8.8" width="1.8" height="0.5"/>
+    </g>
+
+    <g class="eye-smile">
+      <g class="eye-smile-shape" fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+        <polyline points="3.5,9 4.5,8 5.5,9"/>
+        <polyline points="9.5,9 10.5,8 11.5,9"/>
+      </g>
+    </g>
+
+    <g class="left-arm-shy">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+
+    <g class="right-arm-shy">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+  </g>
+
+  <!-- 峰值强调: 4 颗爱心接力上浮, 一路飘到收尾 -->
+  <g class="heart heart-main" fill="#FF2D3D">
+    <rect x="-1.05" y="-1.75" width="0.7" height="0.7"/>
+    <rect x="0.35" y="-1.75" width="0.7" height="0.7"/>
+    <rect x="-1.75" y="-1.05" width="3.5" height="1.4"/>
+    <rect x="-1.05" y="0.35" width="2.1" height="0.7"/>
+    <rect x="-0.35" y="1.05" width="0.7" height="0.7"/>
+  </g>
+
+  <g class="heart heart-mid" fill="#FF5365">
+    <rect x="-1.05" y="-1.75" width="0.7" height="0.7"/>
+    <rect x="0.35" y="-1.75" width="0.7" height="0.7"/>
+    <rect x="-1.75" y="-1.05" width="3.5" height="1.4"/>
+    <rect x="-1.05" y="0.35" width="2.1" height="0.7"/>
+    <rect x="-0.35" y="1.05" width="0.7" height="0.7"/>
+  </g>
+
+  <g class="heart heart-small" fill="#FF6B7A">
+    <rect x="-0.63" y="-1.05" width="0.42" height="0.42"/>
+    <rect x="0.21" y="-1.05" width="0.42" height="0.42"/>
+    <rect x="-1.05" y="-0.63" width="2.1" height="0.84"/>
+    <rect x="-0.63" y="0.21" width="1.26" height="0.42"/>
+    <rect x="-0.21" y="0.63" width="0.42" height="0.42"/>
+  </g>
+
+  <g class="heart heart-tiny" fill="#FF97A2">
+    <rect x="-0.63" y="-1.05" width="0.42" height="0.42"/>
+    <rect x="0.21" y="-1.05" width="0.42" height="0.42"/>
+    <rect x="-1.05" y="-0.63" width="2.1" height="0.84"/>
+    <rect x="-0.63" y="0.21" width="1.26" height="0.42"/>
+    <rect x="-0.21" y="0.63" width="0.42" height="0.42"/>
+  </g>
+</svg>

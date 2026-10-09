@@ -5,6 +5,12 @@ const { EventEmitter } = require("node:events");
 const { describe, it } = require("node:test");
 
 const initServer = require("../src/server");
+const { makeSessionKey } = require("../src/session-key");
+
+const localSessionKey = (rawSessionId) => makeSessionKey({
+  profileId: "local",
+  rawSessionId,
+});
 
 function makeFakeHttp() {
   let capturedHandler = null;
@@ -22,6 +28,7 @@ function makeReq(body) {
   const req = new EventEmitter();
   req.method = "POST";
   req.url = "/permission";
+  req.headers = { host: "127.0.0.1:23333", "content-type": "application/json" };
   setImmediate(() => {
     req.emit("data", Buffer.from(JSON.stringify(body)));
     req.emit("end");
@@ -110,6 +117,56 @@ function startServer(overrides = {}) {
 }
 
 describe("Codex official /permission path", () => {
+  it("returns no-decision for an archived local task before any bubble, state or automation", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer({
+      shouldSuppressCodexArchive: (raw) => raw === "codex:archived",
+    });
+
+    const res = await callPermission(handler, {
+      agent_id: "codex",
+      session_id: "codex:archived",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      hook_source: "codex-official",
+    });
+
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(res.body, "");
+    assert.strictEqual(pendingPermissions.length, 0);
+    assert.strictEqual(updates.length, 0, "no session/card is created");
+    // Codex automation is evaluated inside showPermissionBubble. The separate
+    // maybeAutoResolveSessionPermission callback belongs to other adapters.
+    assert.strictEqual(shown.length, 0, "Codex bubble/automation entry is not reached");
+  });
+
+  it("only gates the archived task on the exact local codex boundary", async () => {
+    const predicate = (raw, opts) =>
+      raw === "codex:archived" && opts.profileId === "local" && !opts.host && !opts.wslDistro;
+
+    const remote = startServer({ shouldSuppressCodexArchive: predicate });
+    remote.handler(makeReq({
+      agent_id: "codex",
+      session_id: "codex:archived",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      host: "remote-box",
+    }), makeRes());
+    for (let i = 0; i < 20 && remote.pendingPermissions.length === 0; i += 1) {
+      await new Promise((resolve) => setImmediate(resolve));
+    }
+    assert.strictEqual(remote.pendingPermissions.length, 1, "a remote session still prompts normally");
+
+    const local = startServer({ shouldSuppressCodexArchive: predicate });
+    const res = await callPermission(local.handler, {
+      agent_id: "codex",
+      session_id: "codex:archived",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    assert.strictEqual(res.statusCode, 204);
+    assert.strictEqual(local.pendingPermissions.length, 0);
+  });
+
   it("returns no-decision on DND instead of denying", async () => {
     const { handler, pendingPermissions } = startServer({ doNotDisturb: true });
 
@@ -160,10 +217,19 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 1);
     assert.strictEqual(shown.length, 1);
     assert.deepStrictEqual(updates[0], [
-      "codex:s1",
+      localSessionKey("codex:s1"),
       "notification",
       "PermissionRequest",
-      { agentId: "codex", hookSource: "codex-official" },
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: "codex:s1",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
+      },
     ]);
 
     res.destroy();
@@ -193,7 +259,7 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(pendingPermissions.length, 0);
     assert.strictEqual(shown.length, 0);
     assert.deepStrictEqual(updates[0], [
-      "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      localSessionKey("codex:019e115a-4df2-7ed0-b90e-8e6345aca777"),
       "notification",
       "PermissionRequest",
       {
@@ -206,6 +272,12 @@ describe("Codex official /permission path", () => {
         model: "gpt-5.4",
         codexOriginator: "Codex Desktop",
         codexSource: "vscode",
+        profileId: "local",
+        rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "unsupported-codex-session-source",
+        },
         transientPermissionEvent: true,
       },
     ]);
@@ -255,7 +327,9 @@ describe("Codex official /permission path", () => {
     const entry = pendingPermissions[0];
     assert.strictEqual(entry.isCodex, true);
     assert.strictEqual(entry.agentId, "codex");
-    assert.strictEqual(entry.sessionId, "codex:s1");
+    assert.strictEqual(entry.sessionId, localSessionKey("codex:s1"));
+    assert.strictEqual(entry.profileId, "local");
+    assert.strictEqual(entry.rawSessionId, "codex:s1");
     assert.strictEqual(entry.toolName, "Bash");
     assert.deepStrictEqual(entry.suggestions, []);
     assert.strictEqual(entry.isElicitation || false, false);
@@ -263,31 +337,151 @@ describe("Codex official /permission path", () => {
     assert.strictEqual(entry.toolInput.command, "npm test");
     assert.strictEqual(entry.toolInputFingerprint, "abc123");
     assert.deepStrictEqual(updates[0], [
-      "codex:s1",
+      localSessionKey("codex:s1"),
       "notification",
       "PermissionRequest",
-      { agentId: "codex", hookSource: "codex-official" },
+      {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId: "codex:s1",
+        sessionAutomationIdentity: {
+          eligible: false,
+          reason: "non-authoritative-codex-session-id",
+        },
+      },
     ]);
 
     res.destroy();
   });
 
-  it("returns no-decision for subagent PermissionRequest before auto-pilot can allow", async () => {
+  it("marks an audited local process-bound Codex TUI permission eligible", async () => {
+    const sessionId = "codex:019f9c87-23a9-7d03-a7ac-c11e3270c3b8";
+    const { handler, pendingPermissions, updates } = startServer();
+    const req = makeReq({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: sessionId,
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+      source_pid: 778,
+      agent_pid: 777,
+      codex_originator: "codex-tui",
+      codex_source: "cli",
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepStrictEqual(
+      pendingPermissions[0].sessionAutomationIdentity,
+      { eligible: true, reason: "eligible" }
+    );
+    assert.deepStrictEqual(
+      updates[0][3].sessionAutomationIdentity,
+      pendingPermissions[0].sessionAutomationIdentity
+    );
+    res.destroy();
+  });
+
+  it("routes an interactive subagent PermissionRequest through the approval bubble", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer({
+      isCodexPermissionInterceptEnabled: () => true,
+    });
+    const req = makeReq({
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex-tui",
+      codex_agent_nickname: "Halley",
+      codex_parent_thread_id: "parent-1",
+      session_id: "codex:sub",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(shown.length, 1);
+    assert.strictEqual(pendingPermissions[0].codexSessionRole, "subagent");
+    assert.strictEqual(pendingPermissions[0].codexAgentNickname, "Halley");
+    assert.strictEqual(pendingPermissions[0].codexParentThreadId, "parent-1");
+    assert.strictEqual(pendingPermissions[0].subagentId, localSessionKey("codex:sub"));
+    assert.strictEqual(updates.length, 1);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(updates[0][3], "headless"), false);
+
+    res.destroy();
+  });
+
+  it("does not let the state-only subagent headless marker suppress an interactive approval", async () => {
+    const sessionId = localSessionKey("codex:sub-state");
+    const { handler, pendingPermissions, shown } = startServer({
+      sessions: new Map([[sessionId, { agentId: "codex", headless: true }]]),
+      isCodexPermissionInterceptEnabled: () => true,
+    });
+    const req = makeReq({
+      hook_source: "codex-official",
+      codex_session_role: "subagent",
+      codex_originator: "codex_work_desktop",
+      session_id: "codex:sub-state",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(shown.length, 1);
+    res.destroy();
+  });
+
+  it("keeps an explicitly headless subagent on the native no-decision fallback", async () => {
     const { handler, pendingPermissions, updates, shown } = startServer({
       isCodexPermissionInterceptEnabled: () => true,
     });
     const res = await callPermission(handler, {
       hook_source: "codex-official",
       codex_session_role: "subagent",
-      session_id: "codex:sub",
+      codex_originator: "codex-tui",
+      headless: true,
+      session_id: "codex:sub-headless",
       tool_name: "Bash",
       tool_input: { command: "npm test" },
     });
 
     assert.strictEqual(res.statusCode, 204);
-    assert.strictEqual(res.body, "");
     assert.strictEqual(pendingPermissions.length, 0);
     assert.strictEqual(shown.length, 0);
     assert.deepStrictEqual(updates, []);
+  });
+
+  it("keeps codex_exec and unknown subagent originators on native fallback", async () => {
+    for (const originator of ["codex_exec", "unknown-client", null]) {
+      const rawSessionId = `codex:sub-${originator || "missing"}`;
+      const { handler, pendingPermissions, updates, shown } = startServer({
+        isCodexPermissionInterceptEnabled: () => true,
+      });
+      const body = {
+        hook_source: "codex-official",
+        codex_session_role: "subagent",
+        session_id: rawSessionId,
+        tool_name: "Bash",
+        tool_input: { command: "npm test" },
+      };
+      if (originator) body.codex_originator = originator;
+      const res = await callPermission(handler, body);
+
+      assert.strictEqual(res.statusCode, 204, String(originator));
+      assert.strictEqual(pendingPermissions.length, 0, String(originator));
+      assert.strictEqual(shown.length, 0, String(originator));
+      assert.deepStrictEqual(updates, [], String(originator));
+    }
   });
 });

@@ -29,6 +29,28 @@ function fixtureSpritesheet() {
   return fs.readFileSync(path.join(FIXTURE_DIR, "spritesheet.png"));
 }
 
+function makeVp8xWebp({ width = 1536, height = 2288 } = {}) {
+  const image = Buffer.alloc(10);
+  image[0] = 0x10;
+  const widthMinusOne = width - 1;
+  const heightMinusOne = height - 1;
+  image[4] = widthMinusOne & 0xff;
+  image[5] = (widthMinusOne >> 8) & 0xff;
+  image[6] = (widthMinusOne >> 16) & 0xff;
+  image[7] = heightMinusOne & 0xff;
+  image[8] = (heightMinusOne >> 8) & 0xff;
+  image[9] = (heightMinusOne >> 16) & 0xff;
+
+  const chunkHeader = Buffer.alloc(8);
+  chunkHeader.write("VP8X", 0, 4, "ascii");
+  chunkHeader.writeUInt32LE(image.length, 4);
+  const body = Buffer.concat([Buffer.from("WEBP", "ascii"), chunkHeader, image]);
+  const riff = Buffer.alloc(8);
+  riff.write("RIFF", 0, 4, "ascii");
+  riff.writeUInt32LE(body.length, 4);
+  return Buffer.concat([riff, body]);
+}
+
 function makeZip(entries) {
   const localParts = [];
   const centralParts = [];
@@ -300,6 +322,32 @@ test("imports zip packages from root or one top-level folder", async () => {
     () => importer.importCodexPetFromZipBuffer(Buffer.alloc(importer.MAX_ZIP_BYTES + 1)),
     /zip package exceeds/
   );
+});
+
+test("imports V2 zip packages with 8x11 spritesheets", async () => {
+  const root = makeTempDir();
+  const manifest = fixtureManifest({
+    id: "v2-wild-boar-shape",
+    displayName: "V2 Wild Boar Shape",
+    spriteVersionNumber: 2,
+    spritesheetPath: "spritesheet.webp",
+  });
+  const zip = makeZip([
+    { name: "pet.json", data: JSON.stringify(manifest), method: 8 },
+    { name: "spritesheet.webp", data: makeVp8xWebp(), method: 0 },
+  ]);
+
+  const imported = await importer.importCodexPetFromZipBuffer(zip, {
+    codexPetsDir: path.join(root, "pets"),
+  });
+
+  assert.strictEqual(path.basename(imported.packageDir), "v2-wild-boar-shape");
+  assert.strictEqual(imported.packageInfo.spriteVersionNumber, 2);
+  assert.deepStrictEqual(
+    { width: imported.packageInfo.image.width, height: imported.packageInfo.image.height },
+    { width: 1536, height: 2288 }
+  );
+  assert.strictEqual(adapter.validateCodexPetPackage(imported.packageDir).ok, true);
 });
 
 test("rejects unsafe zip paths and missing package files", () => {

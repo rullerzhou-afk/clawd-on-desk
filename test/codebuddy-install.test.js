@@ -7,6 +7,7 @@ const {
   registerCodeBuddyHooks,
   unregisterCodeBuddyHooks,
   CODEBUDDY_HOOK_EVENTS,
+  CLAWD_PERMISSION_HOOK_NAME,
   __test,
 } = require("../hooks/codebuddy-install");
 
@@ -71,10 +72,52 @@ describe("CodeBuddy hook installer", () => {
     assert.ok(Array.isArray(permEntries));
     assert.strictEqual(permEntries.length, 1);
     const permHook = permEntries[0].hooks[0];
+    assert.strictEqual(permHook.name, CLAWD_PERMISSION_HOOK_NAME);
     assert.strictEqual(permHook.type, "http");
     assert.ok(permHook.url.includes("127.0.0.1"));
     assert.ok(permHook.url.includes("/permission"));
     assert.strictEqual(permHook.timeout, 600);
+  });
+
+  it("registers a custom PermissionRequest HTTP hook URL", () => {
+    const settingsPath = makeTempSettingsFile({});
+    const result = registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" },
+    });
+
+    assert.strictEqual(result.added, 9);
+    const settings = readJson(settingsPath);
+    const permHook = settings.hooks.PermissionRequest[0].hooks[0];
+    assert.strictEqual(permHook.name, CLAWD_PERMISSION_HOOK_NAME);
+    assert.strictEqual(permHook.type, "http");
+    assert.strictEqual(permHook.url, "https://approval.example.test/permission");
+    assert.strictEqual(permHook.timeout, 600);
+  });
+
+  it("rejects invalid custom PermissionRequest hook URLs", () => {
+    const settingsPath = makeTempSettingsFile({});
+
+    assert.throws(
+      () => registerCodeBuddyHooks({
+        silent: true,
+        settingsPath,
+        nodeBin: "/usr/local/bin/node",
+        permissionTarget: { mode: "custom", url: "file:///tmp/permission" },
+      }),
+      /http\(s\) URL/
+    );
+    assert.throws(
+      () => registerCodeBuddyHooks({
+        silent: true,
+        settingsPath,
+        nodeBin: "/usr/local/bin/node",
+        permissionTarget: { mode: "custom", url: "" },
+      }),
+      /requires an http\(s\) URL/
+    );
   });
 
   it("is idempotent on second run", () => {
@@ -184,8 +227,34 @@ describe("CodeBuddy hook installer", () => {
     const settings = readJson(settingsPath);
     const permHook = settings.hooks.PermissionRequest[0].hooks[0];
     assert.ok(__test.isManagedPermissionUrl(permHook.url));
+    assert.strictEqual(permHook.name, CLAWD_PERMISSION_HOOK_NAME);
     assert.strictEqual(settings.hooks.PermissionRequest.length, 1);
     if (permHook.url !== stale) assert.ok(result.updated >= 1);
+  });
+
+  it("migrates a flat legacy-name local hook to the versioned marker", () => {
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{
+          name: "clawd",
+          type: "http",
+          url: "http://127.0.0.1:23337/permission",
+          timeout: 27,
+        }],
+      },
+    });
+
+    registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionTarget: { mode: "local" },
+    });
+
+    const hook = readJson(settingsPath).hooks.PermissionRequest[0];
+    assert.strictEqual(hook.name, CLAWD_PERMISSION_HOOK_NAME);
+    assert.ok(__test.isManagedPermissionUrl(hook.url));
+    assert.strictEqual(hook.timeout, 27);
   });
 
   it("leaves foreign PermissionRequest URLs untouched and appends the managed hook", () => {
@@ -233,6 +302,228 @@ describe("CodeBuddy hook installer", () => {
     const nested = settings.hooks.PermissionRequest.filter((entry) => Array.isArray(entry.hooks));
     assert.strictEqual(nested.length, 1);
     assert.ok(__test.isManagedPermissionUrl(nested[0].hooks[0].url));
+  });
+
+  it("does not claim a foreign hook merely because its legacy name is clawd", () => {
+    const foreignNested = {
+      name: "clawd",
+      type: "http",
+      url: "https://approval.corp.example/permission",
+      timeout: 30,
+      headers: { authorization: "keep" },
+    };
+    const foreignFlat = {
+      name: "clawd",
+      type: "http",
+      url: "https://flat.example/permission",
+      timeout: 45,
+    };
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [
+          { matcher: "foreign", hooks: [{ ...foreignNested }] },
+          { ...foreignFlat },
+        ],
+      },
+    });
+
+    registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionTarget: { mode: "local" },
+    });
+    let settings = readJson(settingsPath);
+    assert.deepStrictEqual(settings.hooks.PermissionRequest[0], {
+      matcher: "foreign",
+      hooks: [foreignNested],
+    });
+    assert.deepStrictEqual(settings.hooks.PermissionRequest[1], foreignFlat);
+
+    unregisterCodeBuddyHooks({ silent: true, settingsPath });
+    settings = readJson(settingsPath);
+    assert.deepStrictEqual(settings.hooks.PermissionRequest, [
+      { matcher: "foreign", hooks: [foreignNested] },
+      foreignFlat,
+    ]);
+  });
+
+  it("preserves a custom URL owned by the versioned marker on bare/default registration", () => {
+    const customHook = {
+      name: CLAWD_PERMISSION_HOOK_NAME,
+      type: "http",
+      url: "https://approval.example.test/permission",
+      timeout: 30,
+      headers: { "x-keep": "yes" },
+    };
+    const settingsPath = makeTempSettingsFile({
+      hooks: { PermissionRequest: [{ matcher: "", hooks: [{ ...customHook }] }] },
+    });
+
+    registerCodeBuddyHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    const hook = readJson(settingsPath).hooks.PermissionRequest[0].hooks[0];
+    assert.deepStrictEqual(hook, customHook);
+  });
+
+  it("preserves a flat custom URL owned by the versioned marker", () => {
+    const customHook = {
+      name: CLAWD_PERMISSION_HOOK_NAME,
+      type: "http",
+      url: "https://flat-approval.example/permission",
+      timeout: 22,
+    };
+    const settingsPath = makeTempSettingsFile({
+      hooks: { PermissionRequest: [{ ...customHook }] },
+    });
+
+    registerCodeBuddyHooks({ silent: true, settingsPath, nodeBin: "/usr/local/bin/node" });
+
+    assert.deepStrictEqual(readJson(settingsPath).hooks.PermissionRequest[0], customHook);
+  });
+
+  it("repairs an invalid marker-owned URL in preserve mode without blocking command hooks", () => {
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{
+          matcher: "",
+          hooks: [{
+            name: CLAWD_PERMISSION_HOOK_NAME,
+            type: "http",
+            url: "ws://relay.internal/permission",
+            timeout: 30,
+          }],
+        }],
+      },
+    });
+
+    const result = registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionTarget: { mode: "preserve" },
+    });
+
+    assert.strictEqual(result.added, CODEBUDDY_HOOK_EVENTS.length);
+    const settings = readJson(settingsPath);
+    for (const event of CODEBUDDY_HOOK_EVENTS) {
+      assert.strictEqual(settings.hooks[event].length, 1, event);
+    }
+    const hook = settings.hooks.PermissionRequest[0].hooks[0];
+    assert.strictEqual(__test.isManagedPermissionUrl(hook.url), true);
+    assert.strictEqual(hook.timeout, 30);
+  });
+
+  it("repairs a marker-owned hook with no URL instead of appending a duplicate", () => {
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{
+          matcher: "",
+          hooks: [{
+            name: CLAWD_PERMISSION_HOOK_NAME,
+            type: "http",
+            timeout: 30,
+          }],
+        }],
+      },
+    });
+
+    registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+    });
+
+    const entries = readJson(settingsPath).hooks.PermissionRequest;
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].hooks.length, 1);
+    assert.strictEqual(__test.isManagedPermissionUrl(entries[0].hooks[0].url), true);
+    assert.strictEqual(entries[0].hooks[0].timeout, 30);
+  });
+
+  it("uses explicit local/custom targets while preserving adjacent hook fields", () => {
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{
+          matcher: "",
+          hooks: [{
+            name: CLAWD_PERMISSION_HOOK_NAME,
+            type: "http",
+            url: "https://old.example/permission",
+            timeout: 30,
+            headers: { "x-keep": "yes" },
+          }],
+        }],
+      },
+    });
+
+    registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionTarget: { mode: "local" },
+    });
+    let hook = readJson(settingsPath).hooks.PermissionRequest[0].hooks[0];
+    assert.ok(__test.isManagedPermissionUrl(hook.url));
+    assert.strictEqual(hook.timeout, 30);
+    assert.deepStrictEqual(hook.headers, { "x-keep": "yes" });
+
+    registerCodeBuddyHooks({
+      silent: true,
+      settingsPath,
+      nodeBin: "/usr/local/bin/node",
+      permissionTarget: { mode: "custom", url: "https://new.example/permission" },
+    });
+    hook = readJson(settingsPath).hooks.PermissionRequest[0].hooks[0];
+    assert.strictEqual(hook.url, "https://new.example/permission");
+    assert.strictEqual(hook.timeout, 30);
+    assert.deepStrictEqual(hook.headers, { "x-keep": "yes" });
+  });
+
+  it("unregister removes versioned-marker custom URLs but keeps legacy-name foreign URLs", () => {
+    const settingsPath = makeTempSettingsFile({
+      hooks: {
+        PermissionRequest: [{
+          matcher: "",
+          hooks: [
+            {
+              name: CLAWD_PERMISSION_HOOK_NAME,
+              type: "http",
+              url: "https://approval.example/permission",
+              timeout: 600,
+            },
+            {
+              name: "clawd",
+              type: "http",
+              url: "https://foreign.example/permission",
+              timeout: 30,
+            },
+          ],
+        }],
+      },
+    });
+
+    const result = unregisterCodeBuddyHooks({ silent: true, settingsPath });
+
+    assert.strictEqual(result.removed, 1);
+    assert.deepStrictEqual(readJson(settingsPath).hooks.PermissionRequest[0].hooks, [{
+      name: "clawd",
+      type: "http",
+      url: "https://foreign.example/permission",
+      timeout: 30,
+    }]);
+  });
+
+  it("parses explicit CLI permission targets and defaults to preserve", () => {
+    assert.deepStrictEqual(__test.parsePermissionTargetArgv([]), { mode: "preserve" });
+    assert.deepStrictEqual(__test.parsePermissionTargetArgv(["--permission-url", "local"]), { mode: "local" });
+    assert.deepStrictEqual(__test.parsePermissionTargetArgv(["--permission-url", "preserve"]), { mode: "preserve" });
+    assert.deepStrictEqual(
+      __test.parsePermissionTargetArgv(["--permission-url", "https://approval.example/permission"]),
+      { mode: "custom", url: "https://approval.example/permission" }
+    );
+    assert.throws(() => __test.parsePermissionTargetArgv(["--permission-url"]), /requires/);
+    assert.throws(() => __test.parsePermissionTargetArgv(["--permission-url", "file:\/\/bad"]), /http\(s\)/);
   });
 
   it("unregister removes only managed command hooks and managed PermissionRequest URLs", () => {

@@ -9,6 +9,17 @@
 // This launcher strips that variable before spawning the real Electron binary.
 
 const { spawn } = require("child_process");
+const {
+  verifyElectronInstall,
+  formatElectronInstallFailure,
+} = require("./scripts/verify-electron-install");
+
+const electronInstall = verifyElectronInstall({ context: "launch" });
+if (!electronInstall.ok) {
+  process.stderr.write(`${formatElectronInstallFailure(electronInstall)}\n`);
+  process.exit(1);
+}
+
 const electron = require("electron");
 const { buildElectronLaunchConfig } = require("./hooks/shared-process");
 

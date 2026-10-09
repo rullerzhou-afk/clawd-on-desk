@@ -2,13 +2,23 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
 const { EventEmitter } = require("node:events");
 
 const {
   settingsNeedClaudeHookResync,
   createClaudeSettingsWatcher,
+  isSuspiciousShrink,
+  takeSnapshot,
 } = require("../src/claude-settings-watcher");
-const { CLAUDE_CORE_HOOK_EVENTS } = require("../hooks/install");
+const {
+  CLAUDE_CORE_HOOK_EVENTS,
+  registerHooksAsync,
+  getClaudeHookScriptPath,
+  getClaudeAutoStartScriptPath,
+} = require("../hooks/install");
 
 const EXPECTED_HOOK_SCRIPT_PATH = "C:/app/resources/app.asar.unpacked/hooks/clawd-hook.js";
 const EXPECTED_AUTO_START_SCRIPT_PATH = "C:/app/resources/app.asar.unpacked/hooks/auto-start.js";
@@ -101,6 +111,31 @@ function healthySettingsObject({ scriptPath = EXPECTED_HOOK_SCRIPT_PATH, permiss
   return { hooks };
 }
 
+function envOwnedSettingsObject({ nodeBin = "C:/nodejs/node.exe" } = {}) {
+  const hooks = {};
+  for (const event of CLAUDE_CORE_HOOK_EVENTS) {
+    hooks[event] = [{ matcher: "", hooks: [{
+      type: "command",
+      command: '"${CLAWD_NODE_BIN}" "${CLAWD_HOOK_PATH}" ' + event,
+      timeout: 5,
+    }] }];
+  }
+  hooks.PermissionRequest = [permissionHook(EXPECTED_PERMISSION_URL)];
+  return {
+    env: {
+      CLAWD_NODE_BIN: nodeBin,
+      CLAWD_HOOK_PATH: EXPECTED_HOOK_SCRIPT_PATH,
+    },
+    hooks,
+  };
+}
+
+function envUnverifiedSettingsObject(options = {}) {
+  const settings = envOwnedSettingsObject(options);
+  delete settings.env.CLAWD_HOOK_PATH;
+  return settings;
+}
+
 function makeWatcher(overrides = {}) {
   const { initialSettingsRaw, existingPaths, syncClawdHooksImpl, ...ctxOverrides } = overrides;
   const clock = makeFakeClock();
@@ -129,6 +164,9 @@ function makeWatcher(overrides = {}) {
       },
       existsSync(p) {
         return existing.has(p);
+      },
+      accessSync(p) {
+        if (!existing.has(p)) throw new Error("ENOENT");
       },
     },
     path: {
@@ -392,6 +430,33 @@ describe("createClaudeSettingsWatcher — suspicious shrink guard", () => {
     assert.strictEqual(watcher.getHealthStatus().status, "healthy");
     watcher.stop();
   });
+
+  it("notifies only once while the shrink persists across periodic patrols (#898)", async () => {
+    const notifyCalls = [];
+    const { watcher, clock, syncCalls, getWatcher, setSettingsRaw } = makeWatcher({
+      initialSettingsRaw: JSON.stringify(richHealthySettingsObject()),
+      notifySuspiciousShrink: (before, after) => notifyCalls.push({ before, after }),
+    });
+    watcher.start();
+    await clock.advance(0); // seeds trusted baseline from the healthy fixture
+
+    setSettingsRaw(JSON.stringify({ skipDangerousModePermissionPrompt: true }));
+    getWatcher().emitChange("settings.json");
+    await clock.advance(1000);
+
+    assert.strictEqual(watcher.getHealthStatus().status, "guarded");
+    assert.strictEqual(notifyCalls.length, 1, "first shrink detection notifies");
+
+    // The file stays shrunk; subsequent periodic health patrols keep finding the
+    // same guarded condition but must not re-pop the balloon every cycle.
+    await clock.advance(5 * 60 * 1000);
+    await clock.advance(5 * 60 * 1000);
+
+    assert.strictEqual(watcher.getHealthStatus().status, "guarded");
+    assert.deepStrictEqual(syncCalls, [], "auto-repair stays paused while guarded");
+    assert.strictEqual(notifyCalls.length, 1, "persisting shrink must not re-notify on later patrols");
+    watcher.stop();
+  });
 });
 
 describe("createClaudeSettingsWatcher — retry backoff and manual-fix-required", () => {
@@ -541,6 +606,277 @@ describe("createClaudeSettingsWatcher — source script missing", () => {
   });
 });
 
+describe("createClaudeSettingsWatcher — env-indirected Clawd hooks (#852)", () => {
+  it("does not count strict env-owned hooks as third-party shrink", () => {
+    const before = envOwnedSettingsObject();
+    before.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: 'node "/tmp/user.js" Stop' }] });
+    const after = JSON.parse(JSON.stringify(before));
+    for (const event of CLAUDE_CORE_HOOK_EVENTS) {
+      after.hooks[event] = after.hooks[event].filter((entry) => (
+        !entry.hooks?.some((hook) => hook.command?.includes("CLAWD_HOOK_PATH"))
+      ));
+    }
+
+    const beforeSnapshot = takeSnapshot(JSON.stringify(before));
+    const afterSnapshot = takeSnapshot(JSON.stringify(after));
+    assert.strictEqual(beforeSnapshot.thirdPartyHookCount, 1);
+    assert.strictEqual(afterSnapshot.thirdPartyHookCount, 1);
+    assert.strictEqual(isSuspiciousShrink(beforeSnapshot, afterSnapshot, 0.5, 2), false);
+  });
+
+  it("does not seed an unverified env diagnostic as trusted before ownership becomes provable", async () => {
+    const notifyCalls = [];
+    const nodeBin = "C:/nodejs/node.exe";
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envUnverifiedSettingsObject({ nodeBin })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeBin],
+      notifySuspiciousShrink: (...args) => notifyCalls.push(args),
+      syncClawdHooksImpl(options) {
+        harness.syncCalls.push(options);
+        harness.setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    assert.deepStrictEqual(harness.syncCalls, []);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "degraded");
+    assert.strictEqual(harness.watcher.getHealthStatus().degradedReason, "env-indirection-unverified");
+
+    harness.setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    assert.strictEqual(harness.syncCalls.length, 1, "new ownership evidence should trigger migration, not suspicious-shrink");
+    assert.strictEqual(notifyCalls.length, 0);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    harness.watcher.stop();
+  });
+
+  it("keeps an unresolved env hook degraded without consuming repair attempts", async () => {
+    const { watcher, clock, syncCalls } = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+    });
+    watcher.start();
+    await clock.advance(0);
+    await clock.advance(10 * 60 * 1000);
+
+    const status = watcher.getHealthStatus();
+    assert.deepStrictEqual(syncCalls, []);
+    assert.strictEqual(status.status, "degraded");
+    assert.strictEqual(status.degradedReason, "env-hook-node-unresolved");
+    assert.strictEqual(status.attempt, 0);
+    assert.strictEqual(status.issueSignature, null);
+    watcher.stop();
+  });
+
+  it("migrates an env hook when the async host Node resolver finds one (#874)", async () => {
+    const hostNode = "C:/nodejs/node.exe";
+    let resolverCalls = 0;
+    let setSettingsRaw;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode],
+      resolveTrustedNodeBin: async () => { resolverCalls++; return hostNode; },
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        // The installer would fold the env hook into a literal absolute-node
+        // command; simulate that converged, healthy result.
+        setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    setSettingsRaw = harness.setSettingsRaw;
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    const status = harness.watcher.getHealthStatus();
+    assert.strictEqual(harness.syncCalls.length, 1, "exactly one repair should be scheduled");
+    assert.strictEqual(status.status, "healthy");
+    assert.strictEqual(status.issueSignature, null);
+    assert.strictEqual(resolverCalls, 1, "a found Node is cached — resolve once, not every patrol");
+    harness.watcher.stop();
+  });
+
+  it("retries the host resolver each patrol while none is found, never caching null (#874)", async () => {
+    let resolverCalls = 0;
+    const { watcher, clock, syncCalls } = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      resolveTrustedNodeBin: async () => { resolverCalls++; return null; },
+    });
+    watcher.start();
+    await clock.advance(0);                 // startup patrol
+    await clock.advance(5 * 60 * 1000);     // periodic patrol 2
+    await clock.advance(5 * 60 * 1000);     // periodic patrol 3
+
+    const status = watcher.getHealthStatus();
+    assert.deepStrictEqual(syncCalls, [], "no repair when no usable Node exists");
+    assert.strictEqual(status.status, "degraded");
+    assert.strictEqual(status.degradedReason, "env-hook-node-unresolved");
+    assert.strictEqual(status.attempt, 0, "attempts must not increment for a non-automatic diagnostic");
+    assert.strictEqual(resolverCalls, 3, "null is not cached — one bounded retry per patrol, not a lifetime stall");
+    watcher.stop();
+  });
+
+  it("schedules an immediate re-check when the host Node appears later (#874)", async () => {
+    const hostNode = "C:/nodejs/node.exe";
+    let setSettingsRaw;
+    let node = null; // not resolvable yet
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode],
+      resolveTrustedNodeBin: async () => node,
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    setSettingsRaw = harness.setSettingsRaw;
+    harness.watcher.start();
+    await harness.clock.advance(0);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "degraded");
+    assert.deepStrictEqual(harness.syncCalls, []);
+
+    // Node becomes resolvable; the next patrol resolves it and null->value
+    // schedules an immediate re-check that migrates without a full interval wait.
+    node = hostNode;
+    await harness.clock.advance(5 * 60 * 1000);
+
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    assert.strictEqual(harness.syncCalls.length, 1);
+    harness.watcher.stop();
+  });
+
+  it("discards a host Node resolved after the lifecycle changed (#874)", async () => {
+    const hostNode = "C:/nodejs/node.exe";
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, hostNode],
+      resolveTrustedNodeBin: async () => { await gate; return hostNode; },
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        return { status: "ok" };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0); // kicks the (still pending) resolution
+    harness.watcher.stop();         // lifecycle token bumps before it settles
+    release(hostNode);
+    await harness.clock.advance(0);
+
+    // The stale result must be dropped: no repair, nothing carried into a new
+    // lifecycle.
+    assert.deepStrictEqual(harness.syncCalls, []);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "stopped");
+  });
+
+  it("invalidates a stale cached Node when the env hook reappears, converging without a restart (#874)", async () => {
+    const nodeA = "C:/nodeA/node.exe";
+    const nodeB = "C:/nodeB/node.exe";
+    let node = nodeA;
+    let resolverCalls = 0;
+    let setSettingsRaw;
+    let addExisting;
+    let removeExisting;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeA],
+      resolveTrustedNodeBin: async () => { resolverCalls++; return node; },
+      syncClawdHooksImpl() {
+        harness.syncCalls.push("repair");
+        setSettingsRaw(JSON.stringify(healthySettingsObject()));
+        return { status: "ok" };
+      },
+    });
+    ({ setSettingsRaw, addExisting, removeExisting } = harness);
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    // First migration resolves and caches Node A.
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    assert.strictEqual(harness.syncCalls.length, 1);
+    assert.strictEqual(resolverCalls, 1);
+
+    // A Node manager upgrade removes A and exposes B, then an external tool
+    // rewrites the strictly-owned hooks back to env form.
+    removeExisting(nodeA);
+    addExisting(nodeB);
+    node = nodeB;
+    setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    // The now-unusable cached A must not block discovery of B — converge without
+    // waiting for a restart.
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    assert.strictEqual(harness.syncCalls.length, 2);
+    assert.strictEqual(resolverCalls, 2, "stale cached Node A must be cleared so B is resolved");
+    harness.watcher.stop();
+  });
+
+  it("keeps the post-repair verification branch degraded when only an unresolved env diagnostic remains", async () => {
+    let setSettingsRaw;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })),
+      syncClawdHooksImpl() {
+        harness.syncCalls.push({ source: "test-repair", automatic: true });
+        setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin: "node" })));
+        return { status: "ok" };
+      },
+    });
+    setSettingsRaw = harness.setSettingsRaw;
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    const status = harness.watcher.getHealthStatus();
+    assert.strictEqual(status.status, "degraded");
+    assert.strictEqual(status.degradedReason, "env-hook-node-unresolved");
+    assert.strictEqual(status.attempt, 0);
+    assert.strictEqual(status.issueSignature, null);
+    harness.watcher.stop();
+  });
+
+  it("does not trust a post-repair unverified env diagnostic before later migration", async () => {
+    const notifyCalls = [];
+    const nodeBin = "C:/nodejs/node.exe";
+    let syncCount = 0;
+    const harness = makeWatcher({
+      initialSettingsRaw: JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })),
+      existingPaths: [EXPECTED_HOOK_SCRIPT_PATH, EXPECTED_AUTO_START_SCRIPT_PATH, nodeBin],
+      notifySuspiciousShrink: (...args) => notifyCalls.push(args),
+      syncClawdHooksImpl(options) {
+        syncCount += 1;
+        harness.syncCalls.push(options);
+        harness.setSettingsRaw(JSON.stringify(
+          syncCount === 1
+            ? envUnverifiedSettingsObject({ nodeBin })
+            : healthySettingsObject()
+        ));
+        return { status: "ok" };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0);
+
+    assert.strictEqual(harness.syncCalls.length, 1);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "degraded");
+    assert.strictEqual(harness.watcher.getHealthStatus().degradedReason, "env-indirection-unverified");
+
+    harness.setSettingsRaw(JSON.stringify(envOwnedSettingsObject({ nodeBin })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    assert.strictEqual(harness.syncCalls.length, 2, "post-repair degraded state must not guard a later proven migration");
+    assert.strictEqual(notifyCalls.length, 0);
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+    harness.watcher.stop();
+  });
+});
+
 describe("createClaudeSettingsWatcher — unparseable Clawd command", () => {
   function unparseableSettingsRaw() {
     return JSON.stringify({
@@ -673,5 +1009,196 @@ describe("createClaudeSettingsWatcher — checkNow / getHealthStatus", () => {
     assert.ok(Array.isArray(status.issues));
     assert.ok(status.issues.length <= 20);
     watcher.stop();
+  });
+});
+
+describe("createClaudeSettingsWatcher — UTF-8 BOM compatibility (#657)", () => {
+  const BOM = "\uFEFF";
+
+  it("settingsNeedClaudeHookResync and takeSnapshot parse through a leading BOM but reject BOM-only/non-object", () => {
+    const expectedUrl = EXPECTED_PERMISSION_URL;
+    const intact = BOM + JSON.stringify({
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "node clawd-hook.js Stop" }] }],
+        PermissionRequest: [{ matcher: "", hooks: [{ type: "http", url: expectedUrl }] }],
+      },
+    });
+    const missingPermission = BOM + JSON.stringify({
+      hooks: {
+        Stop: [{ matcher: "", hooks: [{ type: "command", command: "node clawd-hook.js Stop" }] }],
+      },
+    });
+
+    assert.strictEqual(settingsNeedClaudeHookResync(intact, expectedUrl), false);
+    assert.strictEqual(settingsNeedClaudeHookResync(missingPermission, expectedUrl), true);
+
+    const healthy = healthySettingsObject();
+    assert.deepStrictEqual(takeSnapshot(BOM + JSON.stringify(healthy)), takeSnapshot(JSON.stringify(healthy)));
+    assert.strictEqual(takeSnapshot(BOM), null);
+    assert.strictEqual(takeSnapshot(BOM + "[1,2,3]"), null);
+  });
+
+  for (const [name, override] of [
+    ["auto-manage", { shouldManageClaudeHooks: () => false }],
+    ["agent-enabled", { isAgentEnabled: () => false }],
+    ["integration-sync", { shouldSyncAgentIntegration: () => false }],
+  ]) {
+    it(`does not repair a BOM config when the ${name} gate is closed`, async () => {
+      const { watcher, clock, syncCalls } = makeWatcher({
+        initialSettingsRaw: BOM + JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })),
+        ...override,
+      });
+      watcher.start();
+      await clock.advance(0);
+      await clock.advance(5 * 60 * 1000);
+      await clock.advance(5 * 60 * 1000);
+
+      assert.deepStrictEqual(syncCalls, []);
+      watcher.stop();
+    });
+  }
+
+  it("guards on suspicious shrink when both the seed and the current config carry a BOM", async () => {
+    const notifyCalls = [];
+    function richHealthySettingsObject() {
+      const base = healthySettingsObject();
+      base.env = { FOO: "bar" };
+      base.permissions = { allow: ["*"], deny: [] };
+      base.enabledPlugins = { a: true };
+      base.hooks.Stop.push({ matcher: "", hooks: [{ type: "command", command: "node /home/u/.claude/hooks/third-party.js" }] });
+      return base;
+    }
+    const { watcher, clock, syncCalls, getWatcher, setSettingsRaw } = makeWatcher({
+      initialSettingsRaw: BOM + JSON.stringify(richHealthySettingsObject()),
+      notifySuspiciousShrink: (before, after) => notifyCalls.push({ before, after }),
+    });
+    watcher.start();
+    await clock.advance(0); // seeds the trusted baseline through the BOM
+
+    setSettingsRaw(BOM + JSON.stringify({ skipDangerousModePermissionPrompt: true }));
+    getWatcher().emitChange("settings.json");
+    await clock.advance(1000);
+
+    assert.deepStrictEqual(syncCalls, []);
+    assert.strictEqual(notifyCalls.length, 1, "a BOM seed must still give the shrink guard a baseline");
+    assert.strictEqual(watcher.getHealthStatus().status, "guarded");
+    watcher.stop();
+  });
+
+  it("repairs a BOM config on both the periodic tick and an fs event, then stays quiet", async () => {
+    const harness = makeWatcher({
+      initialSettingsRaw: BOM + JSON.stringify(healthySettingsObject()),
+      syncClawdHooksImpl(options) {
+        harness.syncCalls.push(options);
+        harness.setSettingsRaw(BOM + JSON.stringify(healthySettingsObject()));
+        return { status: "ok", updated: 1 };
+      },
+    });
+    harness.watcher.start();
+    await harness.clock.advance(0);
+    assert.deepStrictEqual(harness.syncCalls, [], "a BOM-prefixed healthy config must not repair");
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+
+    // No fs event: the periodic tick discovers a BOM config whose script path is gone.
+    harness.setSettingsRaw(BOM + JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })));
+    await harness.clock.advance(5 * 60 * 1000);
+
+    assert.strictEqual(harness.syncCalls.length, 1, "the periodic tick must repair the BOM config");
+    assert.strictEqual(harness.syncCalls[0].source, "periodic-health");
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+
+    // A settings fs event with a BOM config must repair and re-verify too.
+    harness.setSettingsRaw(BOM + JSON.stringify(healthySettingsObject({ scriptPath: OLD_TEMP_SCRIPT_PATH })));
+    harness.getWatcher().emitChange("settings.json");
+    await harness.clock.advance(1000);
+
+    assert.strictEqual(harness.syncCalls.length, 2, "the fs event must repair the BOM config");
+    assert.strictEqual(harness.syncCalls[1].source, "settings-watch");
+    assert.strictEqual(harness.watcher.getHealthStatus().status, "healthy");
+
+    // Once the on-disk BOM config is healthy again, periodic ticks stay quiet.
+    await harness.clock.advance(5 * 60 * 1000);
+    assert.strictEqual(harness.syncCalls.length, 2);
+    harness.watcher.stop();
+  });
+
+  it("repairs a BOM settings.json through the real registerHooksAsync and verifies healthy on disk", async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-watcher-bom-"));
+    const settingsPath = path.join(tmpDir, "settings.json");
+    const hookScript = getClaudeHookScriptPath();
+    const autoStartScript = getClaudeAutoStartScriptPath();
+    const clock = makeFakeClock();
+    const syncCalls = [];
+    let repairPromise = null;
+    let lastWatcher = null;
+    let watcher = null;
+    try {
+      fs.writeFileSync(settingsPath, BOM + JSON.stringify({ hooks: {} }), "utf8");
+
+      watcher = createClaudeSettingsWatcher({
+        fs: {
+          watch() {
+            lastWatcher = new FakeWatcher(() => {});
+            return lastWatcher;
+          },
+          readFileSync: (target) => fs.readFileSync(target, "utf-8"),
+          existsSync: (target) => fs.existsSync(target),
+          accessSync: (target) => fs.accessSync(target),
+        },
+        path,
+        os,
+        setTimeout: clock.setTimeout,
+        clearTimeout: clock.clearTimeout,
+        now: clock.now,
+        getHookServerPort: () => 23333,
+        shouldManageClaudeHooks: () => true,
+        isAgentEnabled: () => true,
+        shouldSyncAgentIntegration: () => true,
+        autoStartWithClaude: false,
+        platform: process.platform,
+        expectedHookScriptPath: hookScript,
+        expectedAutoStartScriptPath: autoStartScript,
+        coreEvents: CLAUDE_CORE_HOOK_EVENTS,
+        claudeSettingsPath: settingsPath,
+        claudeSettingsDir: tmpDir,
+        syncClawdHooks: (options) => {
+          syncCalls.push(options);
+          // Hand the real installer promise back to the watcher so the test can
+          // await the exact same async work instead of polling on wall-clock time.
+          repairPromise = registerHooksAsync({
+            silent: true,
+            settingsPath,
+            port: 23333,
+            nodeBin: process.execPath,
+            platform: process.platform,
+            claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
+          });
+          return repairPromise;
+        },
+      });
+
+      watcher.start();
+      await clock.advance(0);
+      assert.ok(repairPromise, "the startup check must invoke the real installer");
+      await repairPromise;
+      // Let the watcher's own awaited continuation (re-read + re-verify) settle.
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.strictEqual(syncCalls.length, 1, "the startup check must repair the BOM config");
+      assert.strictEqual(syncCalls[0].source, "periodic-health");
+      assert.strictEqual(watcher.getHealthStatus().status, "healthy", "the re-read must verify healthy");
+
+      const repaired = fs.readFileSync(settingsPath, "utf8");
+      assert.strictEqual(repaired.charCodeAt(0) === 0xFEFF, false, "registerHooksAsync writes the canonical BOM-free form");
+      assert.ok(repaired.includes("clawd-hook.js"));
+
+      // A later periodic tick stays quiet: the on-disk canonical file is healthy.
+      await clock.advance(5 * 60 * 1000);
+      assert.strictEqual(syncCalls.length, 1);
+    } finally {
+      if (watcher) watcher.stop();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
   });
 });

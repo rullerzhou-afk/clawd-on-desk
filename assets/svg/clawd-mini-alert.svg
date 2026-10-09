@@ -93,7 +93,7 @@
     </g>
 
     <g id="body-js">
-      <g class="breathe-anim">
+      <g id="accessory-anchor" class="breathe-anim">
         <!-- Torso -->
         <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
 

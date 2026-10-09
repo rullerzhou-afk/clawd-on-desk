@@ -232,7 +232,17 @@ describe("createForegroundWindowsTerminalProbe — expected misses (no onError)"
   });
 
   it("a call-time throw anywhere in the chain degrades to null, not onError", () => {
-    assertExpectedMiss({ classNameThrows: true });
+    let initErrors = 0;
+    let callErrors = 0;
+    const probe = createForegroundWindowsTerminalProbe({
+      isWin: true,
+      koffi: fakeKoffi({ classNameThrows: true }),
+      onError: () => { initErrors++; },
+      onCallError: () => { callErrors++; },
+    });
+    assert.strictEqual(probe(), null);
+    assert.strictEqual(initErrors, 0);
+    assert.strictEqual(callErrors, 1);
   });
 
   it("still closes the handle when QueryFullProcessImageNameW throws (finally)", () => {

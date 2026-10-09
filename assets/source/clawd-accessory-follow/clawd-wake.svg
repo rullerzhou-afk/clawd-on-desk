@@ -1,0 +1,277 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      .once {
+        animation-duration: 1.5s;
+        animation-fill-mode: forwards;
+        animation-iteration-count: 1;
+      }
+
+      .scale-top-left {
+        transform-box: fill-box;
+        transform-origin: top left;
+      }
+
+      .shadow {
+        transform-origin: 7.5px 15.5px;
+        animation-name: shadow-wake;
+        animation-timing-function: linear;
+      }
+
+      .body-motion {
+        transform-origin: 7.5px 15px;
+        animation-name: body-motion;
+        animation-timing-function: cubic-bezier(0.24, 0.8, 0.24, 1);
+      }
+
+      .torso-shift {
+        animation: torso-shift 1.5s linear forwards;
+      }
+
+      .torso-shape {
+        animation: torso-shape 1.5s linear forwards;
+      }
+
+      .arm-left {
+        animation: arm-left 1.5s linear forwards;
+      }
+
+      .arm-right {
+        animation: arm-right 1.5s linear forwards;
+      }
+
+      .leg-shift {
+        animation: leg-shift 1.5s linear forwards;
+      }
+
+      .leg-grow {
+        animation: leg-grow 1.5s linear forwards;
+      }
+
+      .eye-shift {
+        animation: eye-shift 1.5s linear forwards;
+      }
+
+      .eye-shape {
+        animation: eye-shape 1.5s linear forwards;
+      }
+
+      @keyframes shadow-wake {
+        0% {
+          opacity: 0.4;
+          transform: scaleX(1);
+        }
+        20% {
+          opacity: 0.47;
+          transform: scaleX(0.56);
+        }
+        33.333% {
+          opacity: 0.54;
+          transform: scaleX(0.42);
+        }
+        46.667% {
+          opacity: 0.48;
+          transform: scaleX(0.48);
+        }
+        56% {
+          opacity: 0.52;
+          transform: scaleX(0.56);
+        }
+        66.667%, 100% {
+          opacity: 0.5;
+          transform: scaleX(0.5294);
+        }
+      }
+
+      @keyframes body-motion {
+        0% {
+          transform: translate(0, 0) scale(1, 1) rotate(0deg);
+        }
+        6.667% {
+          transform: translate(0, 0.35px) scale(1.03, 0.96) rotate(0deg);
+        }
+        20% {
+          transform: translate(0, -2.6px) scale(0.98, 1.04) rotate(-6deg);
+        }
+        33.333% {
+          transform: translate(0, -4.1px) scale(0.9, 1.22) rotate(2deg);
+        }
+        46.667% {
+          transform: translate(0, -2px) scale(0.95, 1.11) rotate(0deg);
+        }
+        54% {
+          transform: translate(0, -0.55px) scale(1.02, 0.98) rotate(-4deg);
+        }
+        60% {
+          transform: translate(0, -0.2px) scale(0.99, 1.02) rotate(2.5deg);
+        }
+        66.667%, 100% {
+          transform: translate(0, 0) scale(1, 1) rotate(0deg);
+        }
+      }
+
+      @keyframes torso-shift {
+        0% {
+          transform: translate(-1px, 4px);
+        }
+        8% {
+          transform: translate(-0.82px, 3.4px);
+        }
+        20%, 100% {
+          transform: translate(0, 0);
+        }
+      }
+
+      @keyframes torso-shape {
+        0% {
+          transform: scale(1.1818, 0.7143);
+        }
+        8% {
+          transform: scale(1.14, 0.76);
+        }
+        20%, 100% {
+          transform: scale(1, 1);
+        }
+      }
+
+      @keyframes arm-left {
+        0% {
+          transform: translate(-1px, 4px);
+        }
+        8% {
+          transform: translate(-0.8px, 3.4px);
+        }
+        20%, 100% {
+          transform: translate(0, 0);
+        }
+      }
+
+      @keyframes arm-right {
+        0% {
+          transform: translate(1px, 4px);
+        }
+        8% {
+          transform: translate(0.8px, 3.4px);
+        }
+        20%, 100% {
+          transform: translate(0, 0);
+        }
+      }
+
+      @keyframes leg-shift {
+        0% {
+          transform: translate(0, -2px);
+        }
+        8% {
+          transform: translate(0, -1.5px);
+        }
+        20%, 100% {
+          transform: translate(0, 0);
+        }
+      }
+
+      @keyframes leg-grow {
+        0% {
+          transform: scale(1, 0.25);
+        }
+        8% {
+          transform: scale(1, 0.45);
+        }
+        20%, 100% {
+          transform: scale(1, 1);
+        }
+      }
+
+      @keyframes eye-shift {
+        0% {
+          transform: translate(-0.5px, 4.5px);
+        }
+        6.667% {
+          transform: translate(-0.5px, 4.15px);
+        }
+        10% {
+          transform: translate(-0.2px, 1px);
+        }
+        14% {
+          transform: translate(-0.06px, 0.2px);
+        }
+        20%, 54% {
+          transform: translate(0, 0);
+        }
+        58% {
+          transform: translate(0, 0.5px);
+        }
+        62%, 100% {
+          transform: translate(0, 0);
+        }
+      }
+
+      @keyframes eye-shape {
+        0% {
+          transform: scale(2, 0.2);
+        }
+        6.667% {
+          transform: scale(2.12, 0.12);
+        }
+        10% {
+          transform: scale(1.45, 1.8);
+        }
+        14% {
+          transform: scale(0.92, 1.08);
+        }
+        20%, 54% {
+          transform: scale(1, 1);
+        }
+        58% {
+          transform: scale(1, 0.08);
+        }
+        62% {
+          transform: scale(1, 1.08);
+        }
+        66.667%, 100% {
+          transform: scale(1, 1);
+        }
+      }
+    </style>
+  </defs>
+
+  <rect class="once shadow" x="-1" y="15" width="17" height="1" fill="#000000" opacity="0.4"/>
+
+  <g class="once body-motion">
+    <g fill="#DE886D">
+      <g class="once leg-shift">
+        <rect class="once scale-top-left leg-grow" x="3" y="11" width="1" height="4"/>
+      </g>
+      <g class="once leg-shift">
+        <rect class="once scale-top-left leg-grow" x="5" y="11" width="1" height="4"/>
+      </g>
+      <g class="once leg-shift">
+        <rect class="once scale-top-left leg-grow" x="9" y="11" width="1" height="4"/>
+      </g>
+      <g class="once leg-shift">
+        <rect class="once scale-top-left leg-grow" x="11" y="11" width="1" height="4"/>
+      </g>
+    </g>
+
+    <g class="once torso-shift">
+      <rect class="once scale-top-left torso-shape" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+    </g>
+
+    <g class="once arm-left">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+
+    <g class="once arm-right">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+
+    <g fill="#000000">
+      <g class="once eye-shift">
+        <rect class="once scale-top-left eye-shape" x="4" y="8" width="1" height="2"/>
+      </g>
+      <g class="once eye-shift">
+        <rect class="once scale-top-left eye-shape" x="10" y="8" width="1" height="2"/>
+      </g>
+    </g>
+  </g>
+</svg>

@@ -7,7 +7,20 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const childProcess = require("child_process");
-const { buildPermissionUrl, DEFAULT_SERVER_PORT, PERMISSION_PATH, readRuntimePort, REMOTE_HOOK_HTTP_TIMEOUT_MS, resolveNodeBin, resolveNodeBinAsync, SERVER_PORTS } = require("./server-config");
+const {
+  buildPermissionUrl,
+  DEFAULT_SERVER_PORT,
+  isManagedPermissionUrl,
+  PERMISSION_PATH,
+  readRuntimePort,
+  readRemoteIdentity,
+  resolveRemoteIdentityPath,
+  resolveSshSecureMarkerPath,
+  REMOTE_HOOK_HTTP_TIMEOUT_MS,
+  resolveNodeBin,
+  resolveNodeBinAsync,
+  SERVER_PORTS,
+} = require("./server-config");
 const {
   readJsonFile,
   readJsonFileAsync,
@@ -15,13 +28,44 @@ const {
   writeJsonAtomicAsync,
   writeJsonAtomicWithBackup,
   writeJsonAtomicWithBackupAsync,
+  writeTextAtomic,
+  createBackup,
+  pruneOldBackups,
   asarUnpackedPath,
   buildPortableStatuslineCommand,
+  classifyManagedClaudeStateHookCommand,
   extractExistingNodeBin,
+  findManagedClaudeEnvNodeBinCandidates,
 } = require("./json-utils");
+const {
+  planAppImageHookBundle,
+  materializeAppImageHookBundle,
+  isAppImageHookBundleComplete,
+  isLegacyAppImageHookPath,
+} = require("./appimage-hook-materializer");
+const {
+  findMissingHookDependencies,
+  formatMissingHookDependencies,
+} = require("./hook-dependency-preflight");
 
-const DEFAULT_PARENT_DIR = path.join(os.homedir(), ".claude");
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, "settings.json");
+function resolveClaudeHome(options = {}) {
+  const env = options.env || process.env;
+  const configured = typeof options.claudeHome === "string"
+    ? options.claudeHome
+    : env.CLAUDE_CONFIG_DIR;
+  if (typeof configured === "string" && configured.trim()) {
+    return configured.trim();
+  }
+  return path.join(options.homeDir || os.homedir(), ".claude");
+}
+
+function resolveClaudeSettingsPath(options = {}) {
+  return options.settingsPath || path.join(resolveClaudeHome(options), "settings.json");
+}
+
+function resolveClaudeHooksDir(options = {}) {
+  return options.hooksDir || path.join(resolveClaudeHome(options), "hooks");
+}
 
 // Hooks supported by all Claude Code versions
 const CORE_HOOKS = [
@@ -50,6 +94,10 @@ const VERSIONED_HOOKS = [
   { event: "PreCompact",  minVersion: "2.1.76" },
   { event: "PostCompact", minVersion: "2.1.76" },
   { event: "StopFailure", minVersion: "2.1.78" },
+  // /design is a built-in skill in Claude Code 2.1.265+.
+  { event: "UserPromptExpansion", minVersion: "2.1.265" },
+  // Conservative supported baseline, not the first release of this event.
+  { event: "PostToolBatch", minVersion: "2.1.280" },
 ];
 
 const CLAUDE_VERSION_PATTERN = /(\d+\.\d+\.\d+)/;
@@ -473,6 +521,265 @@ function getClaudeAutoStartScriptPath() {
   return asarUnpackedPath(path.resolve(__dirname, "auto-start.js").replace(/\\/g, "/"));
 }
 
+// Source (packaged) path of the statusline script. Its runtime target may be a
+// materialized AppImage generation; resolveClaudeHookPaths() is the only
+// source of truth for what settings should point at.
+function getClaudeStatuslineScriptPath() {
+  return asarUnpackedPath(path.resolve(__dirname, "claude-statusline.js").replace(/\\/g, "/"));
+}
+
+// All three Claude runtime artifacts shipped together in one content-addressed
+// generation. AppImage materialization always plans the full bundle, even when
+// a feature toggle (auto-start / quota statusline) is currently off, so
+// flipping a toggle never migrates the state hook to a different generation.
+function claudeSourceHookPaths() {
+  return {
+    state: getClaudeHookScriptPath(),
+    autoStart: getClaudeAutoStartScriptPath(),
+    statusline: getClaudeStatuslineScriptPath(),
+  };
+}
+
+// Single source of truth for "which source paths is this resolver working
+// with". A partial options.sourcePaths override must be merged identically by
+// every consumer (resolver, AppImage decision, fs guard), otherwise the guard
+// could see a partial object and decide direct while the resolver materializes.
+function mergeClaudeSourcePaths(options = {}) {
+  const override = options && typeof options.sourcePaths === "object" && options.sourcePaths
+    ? options.sourcePaths
+    : null;
+  return override ? { ...claudeSourceHookPaths(), ...override } : claudeSourceHookPaths();
+}
+
+// Accept an absolute path on either platform. This is only for APPDIR/source
+// paths: cross-platform tests synthesize platform:"linux" on a Windows host and
+// feed path.resolve() output (D:\\...). APPIMAGE itself must stay POSIX-absolute
+// because it is the emulated Linux runtime field.
+function isAbsoluteAnyPlatformPath(value) {
+  const text = String(value || "");
+  return path.posix.isAbsolute(text) || path.win32.isAbsolute(text);
+}
+
+// Normalized POSIX containment test used for APPIMAGE ownership. Both sides are
+// converted to forward slashes so a Windows-style separator/drive path cannot
+// sneak past.
+function isPosixPathInside(dir, target) {
+  const root = String(dir || "").replace(/\\/g, "/").replace(/\/+$/, "");
+  const child = String(target || "").replace(/\\/g, "/");
+  if (!root || !child) return false;
+  return child === root || child.startsWith(`${root}/`);
+}
+
+// Pure decision: should this process materialize Claude hooks for a local
+// AppImage? processEnv is intentionally separate from options.env — it only
+// answers "is this host process an AppImage, and where is it?", while
+// options.env still drives CLAUDE_CONFIG_DIR / shell installer semantics.
+//
+// APPIMAGE/APPDIR are plain inherited environment variables: a non-AppImage
+// Clawd launched from another AppImage's shell (e.g. VSCodium) also sees them.
+// Presence alone is therefore NOT evidence that *this* process runs from a
+// Clawd AppImage, and must never be used to write that foreign executable into
+// a marker. Ownership requires APPDIR to contain Clawd's own source scripts;
+// APPDIR is set by the AppImage runtime to this process's mount, so a foreign
+// mount cannot contain our hooks. deb/source/direct all fail this check.
+function claudeSourcesInsideAppDir(sources, appDir) {
+  return isPosixPathInside(appDir, sources.state)
+    && isPosixPathInside(appDir, sources.autoStart)
+    && isPosixPathInside(appDir, sources.statusline);
+}
+
+function evaluateClaudeAppImage(options = {}, sourcePaths) {
+  const platform = options.platform || process.platform;
+  if (platform !== "linux") return { materialize: false };
+  if (options.remote === true) return { materialize: false };
+  const env = options.processEnv || process.env;
+  if (!env || !Object.prototype.hasOwnProperty.call(env, "APPIMAGE")) {
+    return { materialize: false };
+  }
+  const raw = env.APPIMAGE;
+  // A set-but-malformed APPIMAGE is a fail-closed condition (ignored plan
+  // §3.1): a real AppImage host always exposes a non-empty absolute path, so
+  // guessing would risk writing a relative or unrelated target.
+  if (typeof raw !== "string" || !raw.trim()) {
+    return {
+      materialize: false,
+      error: {
+        reason: "invalid-appimage-path",
+        message: "APPIMAGE is set but is not a non-empty string; refusing to materialize Claude hooks",
+      },
+    };
+  }
+  const appImagePath = raw.trim();
+  // APPIMAGE is the emulated Linux runtime field: under platform:"linux" only a
+  // POSIX absolute path is valid. A Windows drive path or UNC is malformed for
+  // Linux and must fail closed, never fall through to a foreign executable.
+  if (!path.posix.isAbsolute(appImagePath)) {
+    return {
+      materialize: false,
+      error: {
+        reason: "invalid-appimage-path",
+        message: "APPIMAGE is set but is not an absolute POSIX path; refusing to materialize Claude hooks",
+      },
+    };
+  }
+  const appDir = env.APPDIR;
+  if (typeof appDir !== "string" || !appDir.trim() || !isAbsoluteAnyPlatformPath(appDir.trim())) {
+    // A valid absolute APPIMAGE without a usable absolute APPDIR cannot prove
+    // this process is the AppImage owner; fall back to direct mode rather than
+    // trusting a foreign executable. APPDIR/source paths accept win32 absolute
+    // so synthetic platform:"linux" tests on a Windows host still work.
+    return { materialize: false };
+  }
+  const override = sourcePaths && typeof sourcePaths === "object"
+    ? sourcePaths
+    : options.sourcePaths;
+  const sources = mergeClaudeSourcePaths({ ...options, sourcePaths: override });
+  if (!claudeSourcesInsideAppDir(sources, appDir.trim())) {
+    return { materialize: false };
+  }
+  return { materialize: true, appImagePath };
+}
+
+// The single Claude source/target resolver. `source` is always the current
+// package/repo script used for preflight and bundle input; `target` is what
+// settings commands and health expectations must use (identical to source in
+// direct mode, the persistent generation in AppImage mode). Total by design:
+// every I/O / plan / environment failure is returned as {ok:false,...}, never
+// thrown, so a lazy caller such as the settings watcher can degrade and keep
+// patrolling instead of dying on one transient error.
+function resolveClaudeHookPaths(options = {}, config = {}) {
+  const shouldMaterialize = config.materialize === true;
+  const source = mergeClaudeSourcePaths(options);
+  let decision;
+  try {
+    decision = evaluateClaudeAppImage(options, source);
+  } catch (err) {
+    return { ok: false, reason: "appimage-eval-failed", message: err && err.message };
+  }
+  if (decision.error) return { ok: false, ...decision.error };
+  if (!decision.materialize) {
+    return {
+      ok: true,
+      mode: "direct",
+      source,
+      target: { ...source },
+      generationDir: null,
+      appImagePath: null,
+      targetGeneration: null,
+    };
+  }
+  try {
+    const platform = options.platform || process.platform;
+    const plan = planAppImageHookBundle(
+      [source.state, source.autoStart, source.statusline],
+      {
+        appImagePath: decision.appImagePath,
+        homeDir: options.homeDir,
+        materializedRoot: options.materializedRoot,
+        platform,
+        rootDir: path.dirname(source.state),
+        fs: options.fs,
+        realpathSync: options.realpathSync,
+      }
+    );
+    if (shouldMaterialize) {
+      materializeAppImageHookBundle(plan, { fs: options.fs });
+    }
+    const targetFor = (sourcePath) => plan.entryTargets.get(path.resolve(sourcePath));
+    const target = {
+      // path.resolve normalizes the injected-fs-independent source string to
+      // the exact key planAppImageHookBundle used (path.resolve on each entry).
+      state: targetFor(source.state),
+      autoStart: targetFor(source.autoStart),
+      statusline: targetFor(source.statusline),
+    };
+    if (!target.state || !target.autoStart || !target.statusline) {
+      return {
+        ok: false,
+        reason: "appimage-plan-incomplete",
+        message: "AppImage hook plan did not resolve all Claude entry targets",
+      };
+    }
+    return {
+      ok: true,
+      mode: "appimage-materialized",
+      source,
+      target,
+      generationDir: plan.generationDir,
+      appImagePath: decision.appImagePath,
+      targetGeneration: {
+        ok: isAppImageHookBundleComplete(plan, { fs: options.fs }),
+        dir: plan.generationDir,
+      },
+    };
+  } catch (err) {
+    const cause = err && err.details && err.details.cause;
+    const reason = err && err.code === "READ_FAILED" && (cause === "ENOENT" || cause === "EACCES")
+      ? "source-script-missing"
+      : ((err && err.code) || "appimage-materialize-failed");
+    return {
+      ok: false,
+      reason,
+      message: err && err.message,
+    };
+  }
+}
+
+// Best-effort, read-only helper for callers that only need the expected target
+// paths (health/watcher/Doctor). Returns the resolver result; callers must
+// treat !ok as degraded and never write.
+function resolveClaudeHookPathsReadOnly(options = {}) {
+  return resolveClaudeHookPaths(options, { materialize: false });
+}
+
+// Shared pure contract for the "injected fs must match the mutation target"
+// hazard. src/server.js deliberately does NOT hand ctx.fs to the installer
+// mutation: mutation always writes through node:fs. Therefore, whenever a local
+// AppImage materialization is in effect, ANY injected fs (even one exposing
+// every read/write method) could plan a different generation than the real
+// installer writes, so it must fail closed. Direct mode never reads files
+// through the seam, so any fs is fine there.
+function checkClaudeMaterializationFs(options = {}) {
+  const fsApi = options.fs;
+  if (!fsApi || fsApi === fs) return { ok: true };
+  let decision;
+  try {
+    // evaluateClaudeAppImage merges partial sourcePaths the same way the
+    // resolver does, so the guard can never see a partial object and decide
+    // direct while the resolver materializes.
+    decision = evaluateClaudeAppImage(options);
+  } catch (err) {
+    return { ok: false, reason: "appimage-eval-failed", message: err && err.message };
+  }
+  if (decision.materialize !== true) return { ok: true };
+  return {
+    ok: false,
+    reason: "resolver-fs-inconsistent",
+    message: "AppImage hook materialization always uses the real filesystem for the settings mutation; an injected fs cannot be shared with it",
+  };
+}
+
+// Production preflight contract shared by server and installer. Resolves and,
+// for a local AppImage, materializes the persistent generation so a caller can
+// prove the whole runtime exists BEFORE writing any settings. `requireStatusline`
+// additionally validates the statusline source closure in direct mode, where
+// resolveClaudeHookPaths does not read files.
+function preflightClaudeRuntime(options = {}) {
+  const resolved = resolveClaudeHookPaths(options, { materialize: true });
+  if (!resolved || resolved.ok !== true) {
+    return resolved || { ok: false, reason: "resolver-failed", message: "Claude hook path resolution failed" };
+  }
+  if (options.requireStatusline === true && resolved.mode === "direct") {
+    const missing = findMissingHookDependencies(["claude-statusline.js"], {
+      hooksDir: path.dirname(resolved.target.statusline),
+    });
+    if (missing.length) {
+      return { ok: false, reason: "source-script-missing", message: formatMissingHookDependencies(missing) };
+    }
+  }
+  return resolved;
+}
+
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
@@ -504,7 +811,7 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   if (options.remote) {
     return withHookOptions({
       type: "command",
-      command: `CLAWD_REMOTE=1 ${shellQuotedCommand}`,
+      command: `${buildRemoteHookEnvPrefix(options)} ${shellQuotedCommand}`,
     });
   }
 
@@ -534,6 +841,60 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
     type: "command",
     command: shellQuotedCommand,
   });
+}
+
+function quotePosixEnvValue(value) {
+  return `'${String(value).replace(/'/g, `'\\''`)}'`;
+}
+
+function isSshSecureRemoteInstall(options = {}) {
+  const env = options.env || process.env;
+  return options.remote === true
+    && (options.sshRemote === true || env.CLAWD_SSH_REMOTE === "1");
+}
+
+function buildRemoteHookEnvPrefix(options = {}) {
+  if (!isSshSecureRemoteInstall(options)) return "CLAWD_REMOTE=1";
+  const identityPath = resolveRemoteIdentityPath(options);
+  const markerPath = resolveSshSecureMarkerPath(options);
+  const hostPrefixPath = options.hostPrefixPath
+    || (options.env || process.env).CLAWD_HOST_PREFIX_PATH
+    || path.join(path.dirname(identityPath), "clawd-host-prefix");
+  const remoteLastLogPath = options.remoteLastLogPath
+    || (options.env || process.env).CLAWD_REMOTE_LAST_LOG_PATH
+    || path.join(path.dirname(identityPath), "clawd-remote-last-error.log");
+  const statuslineSidecarPath = options.statuslineSidecarPath
+    || (options.env || process.env).CLAWD_STATUSLINE_SIDECAR_PATH
+    || path.join(path.dirname(identityPath), "clawd-statusline-chain.json");
+  return [
+    "CLAWD_REMOTE=1",
+    "CLAWD_SSH_REMOTE=1",
+    `CLAWD_REMOTE_IDENTITY_PATH=${quotePosixEnvValue(identityPath)}`,
+    `CLAWD_SSH_SECURE_MARKER_PATH=${quotePosixEnvValue(markerPath)}`,
+    `CLAWD_HOST_PREFIX_PATH=${quotePosixEnvValue(hostPrefixPath)}`,
+    `CLAWD_REMOTE_LAST_LOG_PATH=${quotePosixEnvValue(remoteLastLogPath)}`,
+    `CLAWD_STATUSLINE_SIDECAR_PATH=${quotePosixEnvValue(statuslineSidecarPath)}`,
+  ].join(" ");
+}
+
+function requireRemoteInstallIdentity(options = {}) {
+  if (!isSshSecureRemoteInstall(options)) return null;
+  const identity = options.remoteIdentity && options.remoteIdentity.ok !== undefined
+    ? options.remoteIdentity
+    : readRemoteIdentity(options);
+  if (!identity || identity.ok !== true) {
+    const reason = identity && identity.reason ? identity.reason : "identity-invalid";
+    throw new Error(`Secure Remote SSH identity is required before installing hooks (${reason})`);
+  }
+  return identity;
+}
+
+function resolveRemotePermissionTransport(options = {}) {
+  if (options.remote !== true) return "path";
+  const value = options.remotePermissionTransport
+    || (options.env || process.env).CLAWD_REMOTE_PERMISSION_TRANSPORT
+    || "path";
+  return value === "query" || value === "native" ? value : "path";
 }
 
 function forEachCommandHook(entries, visitor) {
@@ -584,23 +945,143 @@ function syncCommandHook(entries, marker, expectedHook) {
   return { found, changed };
 }
 
-function isClawdPermissionUrl(url) {
-  if (typeof url !== "string" || !url) return false;
-  try {
-    const parsed = new URL(url);
-    const port = Number(parsed.port);
-    return parsed.protocol === "http:"
-      && parsed.hostname === "127.0.0.1"
-      && parsed.pathname === HTTP_MARKER
-      && parsed.search === ""
-      && parsed.hash === ""
-      && parsed.username === ""
-      && parsed.password === ""
-      && Number.isInteger(port)
-      && SERVER_PORTS.includes(port);
-  } catch {
-    return false;
+const STATE_HOOK_SYNC_FIELDS = Object.freeze(["type", "command", "shell", "async", "timeout"]);
+
+function commandHookMatchesExpected(hook, expectedHook) {
+  if (!hook || !expectedHook) return false;
+  return STATE_HOOK_SYNC_FIELDS.every((field) => {
+    const hasExpected = Object.prototype.hasOwnProperty.call(expectedHook, field);
+    const hasCurrent = Object.prototype.hasOwnProperty.call(hook, field);
+    return hasExpected === hasCurrent && (!hasExpected || hook[field] === expectedHook[field]);
+  });
+}
+
+function syncCommandHookFields(hook, expectedHook) {
+  let changed = false;
+  for (const field of STATE_HOOK_SYNC_FIELDS) {
+    const hasExpected = Object.prototype.hasOwnProperty.call(expectedHook, field);
+    const hasCurrent = Object.prototype.hasOwnProperty.call(hook, field);
+    if (!hasExpected) {
+      if (hasCurrent) {
+        delete hook[field];
+        changed = true;
+      }
+      continue;
+    }
+    if (hook[field] !== expectedHook[field]) {
+      hook[field] = expectedHook[field];
+      changed = true;
+    }
   }
+  return changed;
+}
+
+function collectManagedStateHookRecords(entries, settings, event) {
+  if (!Array.isArray(entries)) return [];
+  const records = [];
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    const entry = entries[entryIndex];
+    if (!entry || typeof entry !== "object") continue;
+    if (typeof entry.command === "string") {
+      const kind = classifyManagedClaudeStateHookCommand(entry.command, settings, event);
+      if (kind) records.push({ entryIndex, hookIndex: null, hook: entry, kind });
+    }
+    if (!Array.isArray(entry.hooks)) continue;
+    for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
+      const hook = entry.hooks[hookIndex];
+      if (!hook || typeof hook !== "object" || typeof hook.command !== "string") continue;
+      const kind = classifyManagedClaudeStateHookCommand(hook.command, settings, event);
+      if (kind) records.push({ entryIndex, hookIndex, hook, kind });
+    }
+  }
+  return records;
+}
+
+function stateHookRecordKey(record) {
+  return `${record.entryIndex}:${record.hookIndex === null ? "flat" : record.hookIndex}`;
+}
+
+// Active state hooks converge to one owned child. Removal must be position-
+// aware: old syncCommandHook() can produce byte-identical duplicates, so a
+// command-string predicate cannot express "keep this one, remove the rest."
+function foldManagedStateHooks(entries, settings, event, expectedHook, options = {}) {
+  const records = collectManagedStateHookRecords(entries, settings, event);
+  if (records.length === 0) {
+    return { entries, found: false, changed: false, updated: false, removed: 0 };
+  }
+
+  const envRecords = records.filter((record) => record.kind === "env");
+  const literalRecords = records.filter((record) => record.kind === "literal");
+  const canCanonicalizeEnv = options.canCanonicalizeEnv === true;
+  let survivor;
+  if (!canCanonicalizeEnv && literalRecords.length > 0) {
+    // A working literal command is strictly better than an env command we
+    // cannot safely migrate. Never delete the literal merely because an env
+    // record happened to appear earlier in the event array.
+    survivor = literalRecords.find((record) => commandHookMatchesExpected(record.hook, expectedHook))
+      || literalRecords[0];
+  } else if (envRecords.length > 0 && !canCanonicalizeEnv) {
+    // With no literal fallback, preserve one env command unchanged instead of
+    // degrading it to bare `node` under Claude Code's minimal macOS PATH.
+    survivor = envRecords[0];
+  } else {
+    survivor = records.find((record) => commandHookMatchesExpected(record.hook, expectedHook)) || records[0];
+  }
+
+  const shouldCanonicalize = survivor.kind !== "env" || canCanonicalizeEnv;
+  const updated = shouldCanonicalize ? syncCommandHookFields(survivor.hook, expectedHook) : false;
+  const survivorKey = stateHookRecordKey(survivor);
+  const removedKeys = new Set(
+    records
+      .filter((record) => stateHookRecordKey(record) !== survivorKey)
+      .map(stateHookRecordKey)
+  );
+
+  if (removedKeys.size === 0) {
+    return { entries, found: true, changed: updated, updated, removed: 0 };
+  }
+
+  const nextEntries = [];
+  for (let entryIndex = 0; entryIndex < entries.length; entryIndex++) {
+    const entry = entries[entryIndex];
+    if (!entry || typeof entry !== "object") {
+      nextEntries.push(entry);
+      continue;
+    }
+
+    const removeFlat = removedKeys.has(`${entryIndex}:flat`);
+    const hasNested = Array.isArray(entry.hooks);
+    const nextHooks = hasNested
+      ? entry.hooks.filter((hook, hookIndex) => !removedKeys.has(`${entryIndex}:${hookIndex}`))
+      : null;
+
+    if (removeFlat) {
+      if (!nextHooks || nextHooks.length === 0) continue;
+      const nextEntry = { ...entry, hooks: nextHooks };
+      for (const field of STATE_HOOK_SYNC_FIELDS) delete nextEntry[field];
+      nextEntries.push(nextEntry);
+      continue;
+    }
+
+    if (!hasNested || nextHooks.length === entry.hooks.length) {
+      nextEntries.push(entry);
+      continue;
+    }
+    if (nextHooks.length === 0 && typeof entry.command !== "string") continue;
+    nextEntries.push({ ...entry, hooks: nextHooks });
+  }
+
+  return {
+    entries: nextEntries,
+    found: true,
+    changed: true,
+    updated,
+    removed: removedKeys.size,
+  };
+}
+
+function isClawdPermissionUrl(url) {
+  return isManagedPermissionUrl(url);
 }
 
 function isClawdPermissionHook(entry) {
@@ -787,7 +1268,7 @@ function reconcileVersionedHooks(settings, supportedEvents, versionInfo) {
 
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
 
     if (!result.changed) continue;
@@ -836,19 +1317,86 @@ function resolveWritePath(settingsPath) {
   }
 }
 
+function accessModeForPlatform(platform) {
+  return platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK;
+}
+
+function validateEnvNodeCandidatesSync(candidates, options = {}) {
+  const access = options.accessSync || fs.accessSync;
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    try {
+      access(candidate, accessModeForPlatform(options.platform || process.platform));
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+async function validateEnvNodeCandidatesAsync(candidates, options = {}) {
+  const access = options.access || fs.promises.access.bind(fs.promises);
+  for (const candidate of Array.isArray(candidates) ? candidates : []) {
+    try {
+      await access(candidate, accessModeForPlatform(options.platform || process.platform));
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+function configuredNodeResolution(nodeBin) {
+  const value = typeof nodeBin === "string" && nodeBin ? nodeBin : "node";
+  return {
+    nodeBin: value,
+    // isSafeNodeExecutableCandidate() intentionally applies a much stricter
+    // anti-injection grammar to untrusted settings.env values before they are
+    // considered. Candidates from that source have already passed that gate
+    // before reaching here. Resolver output, explicit caller choices, and
+    // existing literal commands are the same trusted values the installer
+    // already serializes for every core event; requiring basename `node` or
+    // rejecting quoted path characters such as parentheses would make env
+    // migration disagree with normal registration. The only unsafe fallback
+    // for migration is a non-absolute command such as bare `node`.
+    canCanonicalizeEnv: path.posix.isAbsolute(value) || path.win32.isAbsolute(value),
+  };
+}
+
+function resolveConfiguredNodeBinSync(options, settings) {
+  const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
+  if (typeof resolved === "string" && resolved) return configuredNodeResolution(resolved);
+
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  if (existing) return configuredNodeResolution(existing);
+
+  const envCandidate = validateEnvNodeCandidatesSync(
+    findManagedClaudeEnvNodeBinCandidates(settings),
+    options
+  );
+  if (envCandidate) return configuredNodeResolution(envCandidate);
+
+  return configuredNodeResolution("node");
+}
+
 function registerHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
-  const hookPort = getHookServerPort(options.port);
-  const hookScript = getClaudeHookScriptPath();
+  const remoteIdentity = requireRemoteInstallIdentity(options);
+  const remotePermissionTransport = resolveRemotePermissionTransport(options);
+  const hookPort = remoteIdentity ? remoteIdentity.remotePort : getHookServerPort(options.port);
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
 
-  // Read existing settings
+  // Read existing settings. readJsonFile strips a single leading UTF-8 BOM
+  // (#657) so a BOM-prefixed canonical config can be merged instead of
+  // failing to parse. A valid-JSON non-object root is rejected here (thrown
+  // inside the try so the existing catch wraps it as a read failure) rather
+  // than being treated as an empty config and overwritten.
   let settings = {};
   let preExisting = false;
   try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    settings = readJsonFile(settingsPath);
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      throw new Error("settings.json root must be a JSON object");
+    }
     preExisting = true;
   } catch (err) {
     if (err.code !== "ENOENT") {
@@ -858,14 +1406,25 @@ function registerHooks(options = {}) {
 
   if (!settings.hooks) settings.hooks = {};
 
+  // Resolve and (for a local Linux AppImage) materialize the persistent
+  // generation BEFORE any settings mutation. Failure here must abort the whole
+  // registration: writing a command toward a generation that was never
+  // completed would leave a permanently broken hook.
+  const resolvedHookPaths = resolveClaudeHookPaths(options, { materialize: true });
+  if (!resolvedHookPaths.ok) {
+    throw new Error(
+      `Failed to prepare Claude hook runtime: ${resolvedHookPaths.message || resolvedHookPaths.reason}`
+    );
+  }
+  const hookScript = resolvedHookPaths.target.state;
+  const autoStartScript = resolvedHookPaths.target.autoStart;
+
   // Resolve absolute node path — on macOS/Linux, Claude Code runs hooks with
   // a minimal PATH that excludes Homebrew, nvm, volta, etc.
   // If detection fails (null), preserve the existing absolute path from settings
   // to avoid destructively overwriting a working config with bare "node".
-  const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
-  const nodeBin = resolved
-    || extractExistingNodeBin(settings, MARKER, { nested: true })
-    || "node";
+  const nodeResolution = resolveConfiguredNodeBinSync(options, settings);
+  const { nodeBin } = nodeResolution;
 
   let added = 0;
   let skipped = 0;
@@ -891,7 +1450,7 @@ function registerHooks(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (!result.changed) continue;
     removed += result.removed;
@@ -920,14 +1479,28 @@ function registerHooks(options = {}) {
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
+      sshRemote: options.sshRemote,
       wslDistro,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
+      remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
+      secureMarkerPath: options.secureMarkerPath,
+      hostPrefixPath: options.hostPrefixPath,
     });
-    const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredHook);
+    const commandSync = foldManagedStateHooks(
+      settings.hooks[event],
+      settings,
+      event,
+      desiredHook,
+      { canCanonicalizeEnv: nodeResolution.canCanonicalizeEnv }
+    );
     if (commandSync.found) {
-      if (commandSync.changed) {
+      settings.hooks[event] = commandSync.entries;
+      removed += commandSync.removed;
+      if (commandSync.updated) {
         updated++;
+      }
+      if (commandSync.changed) {
         changed = true;
       } else {
         skipped++;
@@ -945,8 +1518,6 @@ function registerHooks(options = {}) {
 
   // Register auto-start hook for SessionStart (launches app if not running)
   if (options.autoStart) {
-    const autoStartScript = getClaudeAutoStartScriptPath();
-
     if (!Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = [];
       changed = true;
@@ -974,17 +1545,18 @@ function registerHooks(options = {}) {
       skipped++;
     }
 
-    // Remove all legacy auto-start.sh entries if present
-    const beforeLen = settings.hooks.SessionStart.length;
-    settings.hooks.SessionStart = settings.hooks.SessionStart.filter((entry) => {
-      if (!entry || typeof entry !== "object") return true;
-      if (typeof entry.command === "string" && entry.command.includes(LEGACY_AUTO_START_MARKER)) return false;
-      if (Array.isArray(entry.hooks)) {
-        if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(LEGACY_AUTO_START_MARKER))) return false;
-      }
-      return true;
-    });
-    if (settings.hooks.SessionStart.length < beforeLen) changed = true;
+    // Remove all legacy auto-start.sh entries if present. Match per sub-hook so
+    // a mixed wrapper keeps its third-party siblings (unlike the old
+    // whole-entry filter), and count each removal.
+    const legacyAutoStartResult = removeMatchingCommandHooks(
+      settings.hooks.SessionStart,
+      (command) => command.includes(LEGACY_AUTO_START_MARKER)
+    );
+    if (legacyAutoStartResult.changed) {
+      settings.hooks.SessionStart = legacyAutoStartResult.entries;
+      removed += legacyAutoStartResult.removed;
+      changed = true;
+    }
   }
 
   // Clean up stale command hooks for HTTP-only events (e.g. PermissionRequest).
@@ -994,7 +1566,7 @@ function registerHooks(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (result.changed) {
       settings.hooks[event] = result.entries;
@@ -1005,12 +1577,31 @@ function registerHooks(options = {}) {
 
   // Register HTTP hooks (permission decision collection)
   for (const [event, { matcher, hook }] of Object.entries(HTTP_HOOKS)) {
+    if (remotePermissionTransport === "native") {
+      const removedHttp = removeMatchingHttpHooks(
+        settings.hooks[event],
+        (entry) => isManagedPermissionUrl(entry && entry.url),
+      );
+      if (removedHttp.changed) {
+        settings.hooks[event] = removedHttp.entries;
+        removed += removedHttp.removed;
+        changed = true;
+      }
+      continue;
+    }
     if (!Array.isArray(settings.hooks[event])) {
       settings.hooks[event] = [];
       changed = true;
     }
 
-    const desiredHook = { ...hook, url: buildPermissionUrl(hookPort) };
+    const desiredHook = {
+      ...hook,
+      url: buildPermissionUrl(
+        hookPort,
+        remoteIdentity && remoteIdentity.routingNonce,
+        remotePermissionTransport,
+      ),
+    };
     const httpSync = syncHttpHook(settings.hooks[event], desiredHook.url);
     if (httpSync.found) {
       if (httpSync.changed) {
@@ -1061,7 +1652,7 @@ function registerHooks(options = {}) {
     }
     console.log(`  Added: ${added} hooks`);
     if (updated > 0) console.log(`  Updated: ${updated} stale hook paths`);
-    if (removed > 0) console.log(`  Removed: ${removed} incompatible versioned hooks`);
+    if (removed > 0) console.log(`  Removed: ${removed} obsolete or incompatible managed hooks`);
     if (skipped > 0) console.log(`  Skipped: ${skipped} (already registered)`);
     if (versionSkipped > 0) {
       const reason = versionInfo.status === "known"
@@ -1095,7 +1686,9 @@ function registerHooks(options = {}) {
 // Resolution only escalates to the async resolver (which may spawn a shell)
 // when there is no existing path, or the existing path fails that check.
 async function resolveConfiguredNodeBinAsync(options, settings) {
-  if (options.nodeBin !== undefined) return options.nodeBin;
+  if (typeof options.nodeBin === "string" && options.nodeBin) {
+    return configuredNodeResolution(options.nodeBin);
+  }
 
   const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
   if (existing) {
@@ -1110,27 +1703,40 @@ async function resolveConfiguredNodeBinAsync(options, settings) {
     const mode = platform === "win32" ? fs.constants.F_OK : fs.constants.X_OK;
     try {
       await access(existing, mode);
-      return existing;
+      return configuredNodeResolution(existing);
     } catch {
       // existing path is gone/inaccessible — fall through to the resolver
     }
   }
 
-  return (await resolveNodeBinAsync(options)) || "node";
+  const resolved = await resolveNodeBinAsync(options);
+  if (resolved) return configuredNodeResolution(resolved);
+
+  const envCandidate = await validateEnvNodeCandidatesAsync(
+    findManagedClaudeEnvNodeBinCandidates(settings),
+    options
+  );
+  if (envCandidate) return configuredNodeResolution(envCandidate);
+
+  return configuredNodeResolution("node");
 }
 
 async function registerHooksAsync(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
-  const hookPort = getHookServerPort(options.port);
-  const hookScript = getClaudeHookScriptPath();
+  const remoteIdentity = requireRemoteInstallIdentity(options);
+  const remotePermissionTransport = resolveRemotePermissionTransport(options);
+  const hookPort = remoteIdentity ? remoteIdentity.remotePort : getHookServerPort(options.port);
   const platform = options.platform || process.platform;
   const wslDistro = resolveInstallWslDistro(options);
 
   let settings = {};
   let preExisting = false;
   try {
-    settings = JSON.parse(await fs.promises.readFile(settingsPath, "utf-8"));
+    settings = await readJsonFileAsync(settingsPath);
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) {
+      throw new Error("settings.json root must be a JSON object");
+    }
     preExisting = true;
   } catch (err) {
     if (err.code !== "ENOENT") {
@@ -1140,7 +1746,19 @@ async function registerHooksAsync(options = {}) {
 
   if (!settings.hooks) settings.hooks = {};
 
-  const nodeBin = await resolveConfiguredNodeBinAsync(options, settings);
+  // Same source/target resolution as registerHooks() — materialize before any
+  // settings mutation, and use the persistent target for every command.
+  const resolvedHookPaths = resolveClaudeHookPaths(options, { materialize: true });
+  if (!resolvedHookPaths.ok) {
+    throw new Error(
+      `Failed to prepare Claude hook runtime: ${resolvedHookPaths.message || resolvedHookPaths.reason}`
+    );
+  }
+  const hookScript = resolvedHookPaths.target.state;
+  const autoStartScript = resolvedHookPaths.target.autoStart;
+
+  const nodeResolution = await resolveConfiguredNodeBinAsync(options, settings);
+  const { nodeBin } = nodeResolution;
 
   let added = 0;
   let skipped = 0;
@@ -1163,7 +1781,7 @@ async function registerHooksAsync(options = {}) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (!result.changed) continue;
     removed += result.removed;
@@ -1187,14 +1805,28 @@ async function registerHooksAsync(options = {}) {
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
+      sshRemote: options.sshRemote,
       wslDistro,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
+      remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
+      secureMarkerPath: options.secureMarkerPath,
+      hostPrefixPath: options.hostPrefixPath,
     });
-    const commandSync = syncCommandHook(settings.hooks[event], MARKER, desiredHook);
+    const commandSync = foldManagedStateHooks(
+      settings.hooks[event],
+      settings,
+      event,
+      desiredHook,
+      { canCanonicalizeEnv: nodeResolution.canCanonicalizeEnv }
+    );
     if (commandSync.found) {
-      if (commandSync.changed) {
+      settings.hooks[event] = commandSync.entries;
+      removed += commandSync.removed;
+      if (commandSync.updated) {
         updated++;
+      }
+      if (commandSync.changed) {
         changed = true;
       } else {
         skipped++;
@@ -1210,8 +1842,6 @@ async function registerHooksAsync(options = {}) {
   }
 
   if (options.autoStart) {
-    const autoStartScript = getClaudeAutoStartScriptPath();
-
     if (!Array.isArray(settings.hooks.SessionStart)) {
       settings.hooks.SessionStart = [];
       changed = true;
@@ -1237,23 +1867,25 @@ async function registerHooksAsync(options = {}) {
       skipped++;
     }
 
-    const beforeLen = settings.hooks.SessionStart.length;
-    settings.hooks.SessionStart = settings.hooks.SessionStart.filter((entry) => {
-      if (!entry || typeof entry !== "object") return true;
-      if (typeof entry.command === "string" && entry.command.includes(LEGACY_AUTO_START_MARKER)) return false;
-      if (Array.isArray(entry.hooks)) {
-        if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(LEGACY_AUTO_START_MARKER))) return false;
-      }
-      return true;
-    });
-    if (settings.hooks.SessionStart.length < beforeLen) changed = true;
+    // Remove all legacy auto-start.sh entries if present. Match per sub-hook so
+    // a mixed wrapper keeps its third-party siblings (unlike the old
+    // whole-entry filter), and count each removal.
+    const legacyAutoStartResult = removeMatchingCommandHooks(
+      settings.hooks.SessionStart,
+      (command) => command.includes(LEGACY_AUTO_START_MARKER)
+    );
+    if (legacyAutoStartResult.changed) {
+      settings.hooks.SessionStart = legacyAutoStartResult.entries;
+      removed += legacyAutoStartResult.removed;
+      changed = true;
+    }
   }
 
   for (const event of Object.keys(HTTP_HOOKS)) {
     if (!Array.isArray(settings.hooks[event])) continue;
     const result = removeMatchingCommandHooks(
       settings.hooks[event],
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
     );
     if (result.changed) {
       settings.hooks[event] = result.entries;
@@ -1263,12 +1895,31 @@ async function registerHooksAsync(options = {}) {
   }
 
   for (const [event, { matcher, hook }] of Object.entries(HTTP_HOOKS)) {
+    if (remotePermissionTransport === "native") {
+      const removedHttp = removeMatchingHttpHooks(
+        settings.hooks[event],
+        (entry) => isManagedPermissionUrl(entry && entry.url),
+      );
+      if (removedHttp.changed) {
+        settings.hooks[event] = removedHttp.entries;
+        removed += removedHttp.removed;
+        changed = true;
+      }
+      continue;
+    }
     if (!Array.isArray(settings.hooks[event])) {
       settings.hooks[event] = [];
       changed = true;
     }
 
-    const desiredHook = { ...hook, url: buildPermissionUrl(hookPort) };
+    const desiredHook = {
+      ...hook,
+      url: buildPermissionUrl(
+        hookPort,
+        remoteIdentity && remoteIdentity.routingNonce,
+        remotePermissionTransport,
+      ),
+    };
     const httpSync = syncHttpHook(settings.hooks[event], desiredHook.url);
     if (httpSync.found) {
       if (httpSync.changed) {
@@ -1316,7 +1967,7 @@ async function registerHooksAsync(options = {}) {
     }
     console.log(`  Added: ${added} hooks`);
     if (updated > 0) console.log(`  Updated: ${updated} stale hook paths`);
-    if (removed > 0) console.log(`  Removed: ${removed} incompatible versioned hooks`);
+    if (removed > 0) console.log(`  Removed: ${removed} obsolete or incompatible managed hooks`);
     if (skipped > 0) console.log(`  Skipped: ${skipped} (already registered)`);
     if (versionSkipped > 0) {
       const reason = versionInfo.status === "known"
@@ -1343,7 +1994,7 @@ async function registerHooksAsync(options = {}) {
 }
 
 function unregisterHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
@@ -1364,7 +2015,7 @@ function unregisterHooks(options = {}) {
 
     const commandResult = removeMatchingCommandHooks(
       entries,
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
         || command.includes(AUTO_START_MARKER)
         || command.includes(LEGACY_AUTO_START_MARKER)
     );
@@ -1392,7 +2043,7 @@ function unregisterHooks(options = {}) {
 }
 
 async function unregisterHooksAsync(options = {}) {
-  const settingsPath = options.settingsPath || path.join(os.homedir(), ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
@@ -1413,7 +2064,7 @@ async function unregisterHooksAsync(options = {}) {
 
     const commandResult = removeMatchingCommandHooks(
       entries,
-      (command) => command.includes(MARKER)
+      (command) => classifyManagedClaudeStateHookCommand(command, settings, event) !== null
         || command.includes(AUTO_START_MARKER)
         || command.includes(LEGACY_AUTO_START_MARKER)
     );
@@ -1445,50 +2096,40 @@ async function unregisterHooksAsync(options = {}) {
  * Also removes legacy auto-start.sh entries.
  * @returns {boolean} true if a hook was removed
  */
-function unregisterAutoStart() {
-  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+function unregisterAutoStart(options = {}) {
+  const settingsPath = resolveClaudeSettingsPath(options);
   const writePath = resolveWritePath(settingsPath);
   let settings;
   try {
-    settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    settings = readJsonFile(settingsPath);
   } catch {
     return false;
   }
 
-  const arr = settings.hooks && settings.hooks.SessionStart;
+  const arr = settings && settings.hooks && settings.hooks.SessionStart;
   if (!Array.isArray(arr)) return false;
 
-  const before = arr.length;
-  settings.hooks.SessionStart = arr.filter((entry) => {
-    if (!entry || typeof entry !== "object") return true;
-    // Remove auto-start.js entries
-    if (typeof entry.command === "string" && entry.command.includes(AUTO_START_MARKER)) return false;
-    if (Array.isArray(entry.hooks)) {
-      if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(AUTO_START_MARKER))) return false;
-    }
-    // Remove legacy auto-start.sh entries
-    if (typeof entry.command === "string" && entry.command.includes(LEGACY_AUTO_START_MARKER)) return false;
-    if (Array.isArray(entry.hooks)) {
-      if (entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(LEGACY_AUTO_START_MARKER))) return false;
-    }
-    return true;
-  });
+  // Remove only the managed sub-hooks. A whole-entry filter would drop a mixed
+  // wrapper's third-party siblings along with the managed command.
+  const result = removeMatchingCommandHooks(
+    arr,
+    (command) => command.includes(AUTO_START_MARKER) || command.includes(LEGACY_AUTO_START_MARKER)
+  );
+  if (!result.changed) return false;
 
-  if (settings.hooks.SessionStart.length < before) {
-    writeJsonAtomic(writePath, settings);
-    return true;
-  }
-  return false;
+  settings.hooks.SessionStart = result.entries;
+  writeJsonAtomic(writePath, settings);
+  return true;
 }
 
 /**
  * Check if the auto-start hook is currently registered in settings.json.
  * @returns {boolean}
  */
-function isAutoStartRegistered() {
-  const settingsPath = path.join(os.homedir(), ".claude", "settings.json");
+function isAutoStartRegistered(options = {}) {
+  const settingsPath = resolveClaudeSettingsPath(options);
   try {
-    const settings = JSON.parse(fs.readFileSync(settingsPath, "utf-8"));
+    const settings = readJsonFile(settingsPath);
     const arr = settings.hooks && settings.hooks.SessionStart;
     if (!Array.isArray(arr)) return false;
     return arr.some((entry) => {
@@ -1505,27 +2146,251 @@ function isAutoStartRegistered() {
 }
 
 const STATUSLINE_MARKER = "claude-statusline.js";
+const STATUSLINE_CHAIN_FLAG = "--chain";
 
-function hasClaudeSettingsDir(homeDir) {
-  return fs.existsSync(path.join(homeDir, ".claude"));
+function writeLocalStatuslineSettings(file, settings, options) {
+  const mode = fs.statSync(file).mode & 0o777;
+  const backupPath = createBackup(file, options);
+  writeTextAtomic(file, JSON.stringify(settings, null, 2), { encoding: "utf8", mode });
+  if (backupPath) pruneOldBackups(file, options, backupPath);
+  return backupPath;
+}
+
+function hasClaudeSettingsDir(homeDir, options = {}) {
+  return fs.existsSync(resolveClaudeHome({ ...options, homeDir }));
+}
+
+// Chain mode sidecar: holds the user's original statusLine object verbatim
+// while our command occupies the slot with `--chain`. The statusline script
+// executes the sidecar's command (their rendering survives), and unregister
+// restores the object from here. A sidecar file instead of a CLI argument
+// because real third-party statusline commands are arbitrarily-quoted shell
+// one-liners - embedding one inside another quoted command is exactly the
+// escaping swamp buildPortableStatuslineCommand exists to avoid.
+function statuslineChainSidecarPath(homeDir) {
+  return path.join(resolveClaudeHooksDir({ homeDir }), "clawd-statusline-chain.json");
+}
+
+function readChainSidecarStatusLine(sidecarPath) {
+  try {
+    const raw = readJsonFile(sidecarPath);
+    const statusLine = raw && typeof raw === "object" ? raw.statusLine : null;
+    if (statusLine && typeof statusLine === "object" && !Array.isArray(statusLine)
+      && typeof statusLine.command === "string" && statusLine.command.trim()) {
+      return statusLine;
+    }
+  } catch {}
+  return null;
+}
+
+function canonicalStatuslinePath(value, platform = process.platform) {
+  let normalized = String(value || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+  if (platform === "win32" || /^[A-Za-z]:\//.test(normalized) || normalized.startsWith("//")) {
+    normalized = normalized.toLowerCase();
+  }
+  return normalized;
+}
+
+function isNodeStatuslineToken(value) {
+  const basename = String(value || "").replace(/\\/g, "/").split("/").pop().toLowerCase();
+  return basename === "node" || basename === "node.exe";
+}
+
+function validateRemoteStatuslinePrefix(prefix) {
+  let rest = String(prefix || "").trim();
+  if (!rest) return { ok: true, remote: false };
+  const allowed = new Set([
+    "CLAWD_REMOTE",
+    "CLAWD_SSH_REMOTE",
+    "CLAWD_REMOTE_IDENTITY_PATH",
+    "CLAWD_SSH_SECURE_MARKER_PATH",
+    "CLAWD_HOST_PREFIX_PATH",
+    "CLAWD_REMOTE_LAST_LOG_PATH",
+    "CLAWD_STATUSLINE_SIDECAR_PATH",
+  ]);
+  let sawRemote = false;
+  while (rest) {
+    const match = rest.match(/^([A-Z_]+)=((?:'(?:'\\''|[^'])*')|(?:"(?:\\"|[^"])*")|(?:\S+))(?:\s+|$)/);
+    if (!match || !allowed.has(match[1])) return { ok: false, remote: false };
+    if (match[1] === "CLAWD_REMOTE") {
+      if (match[2] !== "1") return { ok: false, remote: false };
+      sawRemote = true;
+    }
+    rest = rest.slice(match[0].length);
+  }
+  return { ok: sawRemote, remote: sawRemote };
+}
+
+function parseStrictClaudeStatuslineCommand(command, expectedScript, platform = process.platform) {
+  if (typeof command !== "string" || !command.trim() || /[\r\n\0]/.test(command)) return null;
+  let body = command.trim();
+  let suffix = "plain";
+  const localMatch = body.match(/\s+--local-chain\s+([a-f0-9]{32})$/);
+  if (localMatch) {
+    suffix = "local";
+    body = body.slice(0, localMatch.index);
+  } else if (/\s+--chain$/.test(body)) {
+    suffix = "remote-chain";
+    body = body.replace(/\s+--chain$/, "");
+  }
+  const scriptMatch = body.match(/^(.*)\s+"((?:\\"|[^"])*)"$/);
+  if (!scriptMatch) return null;
+  const scriptPath = scriptMatch[2].replace(/\\"/g, '"');
+  let head = scriptMatch[1].trim();
+  let nodeBin;
+  const quotedNode = head.match(/^(.*?)(?:^|\s)"((?:\\"|[^"])*)"$/);
+  if (quotedNode) {
+    head = quotedNode[1].trim();
+    nodeBin = quotedNode[2].replace(/\\"/g, '"');
+  } else {
+    const bareNode = head.match(/^(.*?)(?:^|\s)(\S+)$/);
+    if (!bareNode) return null;
+    head = bareNode[1].trim();
+    nodeBin = bareNode[2];
+  }
+  if (head.endsWith("&")) head = head.slice(0, -1).trim();
+  const prefix = validateRemoteStatuslinePrefix(head);
+  if (!prefix.ok && head) return null;
+  if (!isNodeStatuslineToken(nodeBin)) return null;
+  const exactScript = canonicalStatuslinePath(scriptPath, platform) === canonicalStatuslinePath(expectedScript, platform);
+  const legacyAppImage = platform === "linux" && !exactScript
+    && isLegacyAppImageHookPath(scriptPath, STATUSLINE_MARKER);
+  if (!exactScript && !legacyAppImage) return null;
+  if (suffix === "local" && prefix.remote) return null;
+  if (suffix === "remote-chain" && !prefix.remote) return null;
+  return { suffix, remote: prefix.remote, nodeBin, scriptPath, legacyAppImage };
+}
+
+function hasExactStatuslineMarker(command) {
+  return new RegExp(`(?:^|[\\\\/])${STATUSLINE_MARKER.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?=["'\\s]|$)`, "i")
+    .test(String(command || ""));
+}
+
+function classifyManagedClaudeStatusline(existing, options = {}) {
+  const {
+    LOCAL_CHAIN_FLAG, requireOwnedLocalChain,
+    PLAIN_OWNER, REMOTE_CHAIN_OWNER,
+    readStatuslineOwnerRecord, ownerRecordMatchesCommand,
+  } = require("./claude-statusline-local-chain");
+  if (!existing || typeof existing.command !== "string" || !existing.command.trim()) {
+    return { classification: "foreign", mode: null };
+  }
+  const command = existing.command;
+  if (command.includes(` ${LOCAL_CHAIN_FLAG} `)) {
+    try {
+      const record = requireOwnedLocalChain(options.localSidecar, existing);
+      return { classification: "owned", mode: "local", record };
+    } catch (error) {
+      return { classification: "ambiguous", mode: "local", error };
+    }
+  }
+
+  let plainRecord = null;
+  let remoteRecord = null;
+  let plainRecordError = null;
+  let remoteRecordError = null;
+  try { plainRecord = readStatuslineOwnerRecord(options.plainOwnerPath, PLAIN_OWNER); } catch (error) { plainRecordError = error; }
+  try { remoteRecord = readStatuslineOwnerRecord(options.remoteSidecarPath, REMOTE_CHAIN_OWNER); } catch (error) { remoteRecordError = error; }
+  if (ownerRecordMatchesCommand(plainRecord, command)) {
+    return { classification: "owned", mode: "plain", record: plainRecord };
+  }
+  if (ownerRecordMatchesCommand(remoteRecord, command)) {
+    return { classification: "owned", mode: "remote", record: remoteRecord };
+  }
+
+  const parsed = parseStrictClaudeStatuslineCommand(command, options.expectedScript, options.platform);
+  if (parsed) {
+    if (parsed.remote || parsed.suffix === "remote-chain") {
+      if (remoteRecordError) {
+        const legacyOriginal = readChainSidecarStatusLine(options.remoteSidecarPath);
+        if (parsed.suffix === "remote-chain" && legacyOriginal) {
+          return { classification: "owned", mode: "remote", legacy: true, legacyOriginal, parsed };
+        }
+        return { classification: "ambiguous", mode: "remote", error: remoteRecordError };
+      }
+      if (parsed.suffix === "remote-chain" && !remoteRecord) {
+        const legacyOriginal = readChainSidecarStatusLine(options.remoteSidecarPath);
+        if (!legacyOriginal) return { classification: "ambiguous", mode: "remote" };
+        return { classification: "owned", mode: "remote", legacy: true, legacyOriginal, parsed };
+      }
+      if (remoteRecord) return { classification: "ambiguous", mode: "remote" };
+      return { classification: "owned", mode: "remote", legacy: !remoteRecord, parsed };
+    }
+    if (plainRecordError) return { classification: "ambiguous", mode: "plain", error: plainRecordError };
+    if (plainRecord) return { classification: "ambiguous", mode: "plain" };
+    return { classification: "owned", mode: "plain", legacy: !plainRecord, parsed };
+  }
+  return {
+    classification: hasExactStatuslineMarker(command) ? "ambiguous" : "foreign",
+    mode: null,
+  };
 }
 
 // Claude Code's statusLine setting is a single slot, not an event-keyed map
 // like hooks - only one script can render the visible status line at a
-// time. We only ever take that slot when it is empty or already ours, and
-// unregister only clears it when the command still carries our marker. A
-// user's own (or a third-party) statusline script is never touched. Mirrors
-// hooks/antigravity-install.js registerAntigravityStatusline.
+// time. Default registration only takes an empty/owned slot. Explicit local
+// coexistence preserves the original before wrapping it; remote --chain keeps
+// its separate historical contract.
 function registerClaudeStatusline(options = {}) {
+  // Lazy load so a partial manual copy can still run the CLI dependency
+  // preflight and report every missing runtime file before any mutation.
+  const {
+    LOCAL_CHAIN_FLAG, LOCAL_CHAIN_FILE, statuslineFingerprint,
+    createLocalChainRecord, requireOwnedLocalChain, resolveLocalChainShell,
+    PLAIN_OWNER_FILE, PLAIN_OWNER, REMOTE_CHAIN_FILE, REMOTE_CHAIN_OWNER,
+    readStatuslineOwnerRecord, writeStatuslineOwnerRecord, ownerRecordMatchesCommand,
+  } = require("./claude-statusline-local-chain");
   const homeDir = options.homeDir || os.homedir();
-  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath({ ...options, homeDir });
   const writePath = resolveWritePath(settingsPath);
+  const remoteIdentity = requireRemoteInstallIdentity(options);
 
-  if (!options.settingsPath && !hasClaudeSettingsDir(homeDir)) {
+  if (!options.settingsPath && !hasClaudeSettingsDir(homeDir, options)) {
     if (!options.silent) console.log("Clawd: Claude Code settings not found - skipping statusline registration");
     return { installed: false, changed: false, skippedExisting: false, settingsPath };
   }
 
+  // Materialize and byte-verify the persistent generation BEFORE reading or
+  // writing any sidecar / settings.statusLine. A failed materialization must
+  // leave the recovery record and both files exactly as they were.
+  const resolvedHookPaths = resolveClaudeHookPaths({ ...options, homeDir }, { materialize: true });
+  if (!resolvedHookPaths.ok) {
+    return {
+      installed: false,
+      changed: false,
+      skippedExisting: false,
+      settingsPath,
+      error: {
+        reason: resolvedHookPaths.reason,
+        message: resolvedHookPaths.message
+          || "Failed to prepare the Claude statusline runtime",
+      },
+    };
+  }
+  const targetStatuslineScript = resolvedHookPaths.target.statusline;
+  // Direct mode does not materialize, so validate the statusline source and
+  // its static relative closure here before touching any settings or sidecar.
+  // Without this, a partial hand copy could register a command that dies at
+  // require time. (AppImage mode already byte-validated the closure via
+  // materialize.)
+  if (resolvedHookPaths.mode === "direct") {
+    const missingDeps = findMissingHookDependencies(["claude-statusline.js"], {
+      hooksDir: path.dirname(targetStatuslineScript),
+    });
+    if (missingDeps.length) {
+      return {
+        installed: false,
+        changed: false,
+        skippedExisting: false,
+        settingsPath,
+        error: {
+          reason: "source-script-missing",
+          message: formatMissingHookDependencies(missingDeps),
+        },
+      };
+    }
+  }
+
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
@@ -1535,39 +2400,220 @@ function registerClaudeStatusline(options = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
 
   const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
-  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+  const platform = options.platform || process.platform;
+  const sidecarDir = options.settingsPath
+    ? path.join(path.dirname(settingsPath), "hooks")
+    : resolveClaudeHooksDir({ ...options, homeDir });
+  const localSidecar = options.localChainSidecarPath || path.join(sidecarDir, LOCAL_CHAIN_FILE);
+  const sidecarPath = options.chainSidecarPath || path.join(sidecarDir, REMOTE_CHAIN_FILE);
+  const plainOwnerPath = options.plainOwnerPath || path.join(sidecarDir, PLAIN_OWNER_FILE);
+  const ownership = classifyManagedClaudeStatusline(existing, {
+    expectedScript: targetStatuslineScript,
+    platform,
+    localSidecar,
+    remoteSidecarPath: sidecarPath,
+    plainOwnerPath,
+  });
+  if (ownership.classification === "ambiguous") {
+    throw new Error(`Claude statusline ownership is ambiguous; kept unchanged${ownership.error ? `: ${ownership.error.message}` : ""}`);
+  }
+  const existingIsOurs = ownership.classification === "owned";
 
-  if (existing && !existingIsOurs) {
-    if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
-    return { installed: true, changed: false, skippedExisting: true, settingsPath };
+  const requestedMode = options.remote === true ? "remote" : "plain";
+  if (existingIsOurs && (ownership.mode === "plain" || ownership.mode === "remote")
+    && ownership.mode !== requestedMode) {
+    throw new Error(`Claude statusline is owned by ${ownership.mode} mode; unregister that mode before registering ${requestedMode} mode. Recovery records kept unchanged`);
   }
 
-  const scriptPath = asarUnpackedPath(path.resolve(__dirname, "claude-statusline.js").replace(/\\/g, "/"));
+  if (options.expectedStatuslineFingerprint !== undefined
+    && statuslineFingerprint(existing) !== options.expectedStatuslineFingerprint) {
+    throw new Error("Claude statusline changed while confirmation was open; please try again");
+  }
+  const localChainRequested = options.remote !== true && options.chainExisting === true;
+  if (existingIsOurs && ownership.mode === "local") {
+    // Local consent cannot authorize a remote routing/mode migration. Refuse
+    // before refreshing either file; the two recovery records are independent.
+    if (options.remote === true) {
+      throw new Error("Claude statusline uses local coexistence; turn off local Claude usage collection on this account before remote deployment. "
+        + `Statusline and local recovery record kept unchanged: ${localSidecar}`);
+    }
+    const record = requireOwnedLocalChain(localSidecar, existing);
+    if (record.platform !== platform) throw new Error("Statusline recovery record belongs to a different platform");
+    const script = targetStatuslineScript;
+    const nodeBin = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
+    const command = `${buildPortableStatuslineCommand(nodeBin || "node", script, { platform })} ${LOCAL_CHAIN_FLAG} ${record.id}`;
+    if (command === existing.command) {
+      return { installed: true, changed: false, skippedExisting: false, chained: true, localChained: true, settingsPath };
+    }
+    // Keep both exact owned commands during a path refresh so a failed/crashed
+    // settings write can still be restored. The original is never rewritten.
+    writeTextAtomic(localSidecar, JSON.stringify({ ...record, managedCommand: command, previousManagedCommand: existing.command }),
+      { encoding: "utf8", mode: 0o600 });
+    const current = readJsonFile(settingsPath);
+    if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+      throw new Error("Claude statusline changed during refresh; recovery record was retained");
+    }
+    current.statusLine = { ...existing, command };
+    writeLocalStatuslineSettings(writePath, current, options);
+    return { installed: true, changed: true, skippedExisting: false, chained: true, localChained: true, settingsPath };
+  }
+  if (localChainRequested && existing && !existingIsOurs) {
+    if (existing.type !== "command" || typeof existing.command !== "string" || !existing.command.trim()) {
+      throw new Error("The existing Claude statusline is not a supported command; kept unchanged");
+    }
+    const platform = options.platform || process.platform;
+    resolveLocalChainShell({ platform, env: options.env, exists: options.shellExists });
+    const script = targetStatuslineScript;
+    const nodeBin = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
+    const portable = buildPortableStatuslineCommand(nodeBin || "node", script, { platform });
+    const record = createLocalChainRecord(localSidecar, existing, portable, platform);
+    // Re-read after saving recovery evidence, preserving unrelated changes
+    // made by another application while we prepared this registration.
+    const current = readJsonFile(settingsPath);
+    if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+      throw new Error("Claude statusline changed during registration; recovery record was retained");
+    }
+    current.statusLine = { ...existing, command: record.managedCommand };
+    writeLocalStatuslineSettings(writePath, current, options);
+    return { installed: true, changed: true, skippedExisting: false, chained: true, localChained: true, settingsPath };
+  }
+
+  // Legacy remote chain is independent from the consent-bound local record.
+  const chainRequested = options.remote === true && options.chainExisting === true;
+  const chainExplicitlyDisabled = options.remote === true && options.chainExisting === false;
+  if (existing && !existingIsOurs && !chainRequested) {
+    if (!options.silent) console.log(`Clawd: existing Claude Code statusline detected at ${settingsPath} - leaving it in place`);
+    return {
+      installed: true, changed: false, skippedExisting: true, settingsPath,
+      statuslineFingerprint: statuslineFingerprint(existing),
+    };
+  }
+
+  let chainActive = false;
+  let chainedOriginal = null;
+  if (existing && !existingIsOurs && chainRequested) {
+    chainedOriginal = existing;
+    chainActive = true;
+  } else if (existingIsOurs && ownership.mode === "remote" && existing.command.endsWith(` ${STATUSLINE_CHAIN_FLAG}`)) {
+    chainedOriginal = ownership.record ? ownership.record.statusLine : ownership.legacyOriginal;
+    if (chainExplicitlyDisabled && chainedOriginal) {
+      // A profile toggle is an explicit deploy target, not an omitted repair
+      // preference. Turning it off restores the third-party slot and consumes
+      // the sidecar exactly like unregister; otherwise Settings would mark an
+      // off profile deployed while the remote silently kept --chain.
+      const current = readJsonFile(settingsPath);
+      if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+        throw new Error("Claude statusline changed during remote restoration; recovery record was retained");
+      }
+      current.statusLine = chainedOriginal;
+      writeJsonAtomic(writePath, current);
+      try { fs.unlinkSync(sidecarPath); } catch {}
+      if (!options.silent) console.log(`Clawd: restored existing Claude Code statusline at ${settingsPath}`);
+      return {
+        installed: true,
+        changed: true,
+        skippedExisting: true,
+        chained: false,
+        restoredChained: true,
+        settingsPath,
+      };
+    }
+    // An omitted preference is a repair/startup refresh: preserve an existing
+    // chain and never rewrite its sidecar. If the sidecar vanished (or an
+    // explicit disable cannot restore it), degrade to our plain mode.
+    if (chainExplicitlyDisabled) {
+      try { fs.unlinkSync(sidecarPath); } catch {}
+    }
+    chainActive = !chainExplicitlyDisabled && !!chainedOriginal;
+  }
+
+  const scriptPath = targetStatuslineScript;
   const nodeBin = (options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin()) || "node";
-  const platform = options.platform || process.platform;
   // No `& "..."` here: statusLine has no shell field, and on Windows Claude
   // Code runs this through Git Bash when Git is installed - the PowerShell
   // call-operator form is a bash syntax error and the statusline dies
   // silently. See buildPortableStatuslineCommand.
-  const command = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
+  //
+  // Remote installs (install.js --remote, run ON the remote from
+  // ~/.claude/hooks/) target POSIX shells only (deploy aborts on cmd.exe),
+  // so the bash-style env prefix is safe - same convention as
+  // buildCommandHookSpec's remote hook form. CLAWD_REMOTE=1 is what makes
+  // claude-statusline.js stamp body.host so its best-effort quota POSTs ride
+  // the reverse tunnel onto the right sessions.
+  // nodeBin needs no remote resolution here: this code already runs under
+  // the remote's own node, so resolveNodeBin() IS the remote path.
+  const portableCommand = buildPortableStatuslineCommand(nodeBin, scriptPath, { platform });
+  const prefixed = options.remote === true
+    ? `${buildRemoteHookEnvPrefix({
+        ...options,
+        remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
+      })} ${portableCommand}`
+    : portableCommand;
+  const command = chainActive ? `${prefixed} ${STATUSLINE_CHAIN_FLAG}` : prefixed;
   const desired = { type: "command", command, padding: 0 };
+
+  const ownerPath = options.remote === true ? sidecarPath : plainOwnerPath;
+  const ownerLiteral = options.remote === true ? REMOTE_CHAIN_OWNER : PLAIN_OWNER;
+  let priorOwner = null;
+  try {
+    priorOwner = readStatuslineOwnerRecord(ownerPath, ownerLiteral);
+  } catch (error) {
+    // A legacy remote chain sidecar contains only the original statusLine.
+    // It is upgraded in place only after the strict current command above was
+    // recognized; any other malformed/foreign record remains a hard conflict.
+    if (!(options.remote === true && ownership.legacy === true && chainedOriginal)) throw error;
+  }
+  if (priorOwner && existingIsOurs && ownership.mode === (options.remote === true ? "remote" : "plain")
+    && !ownerRecordMatchesCommand(priorOwner, existing.command)) {
+    throw new Error(`Claude statusline ownership record does not match; kept unchanged: ${ownerPath}`);
+  }
+  if (priorOwner && options.remote === true && chainActive
+    && statuslineFingerprint(priorOwner.statusLine || null) !== statuslineFingerprint(chainedOriginal || null)) {
+    throw new Error(`Claude statusline recovery record does not match; kept unchanged: ${ownerPath}`);
+  }
+  const ownerRecord = {
+    ...(priorOwner || {}),
+    owner: ownerLiteral,
+    version: 1,
+    ...(options.remote === true ? { statusLine: chainActive ? chainedOriginal : (priorOwner && priorOwner.statusLine) || null } : {}),
+    managedCommand: command,
+    ...(existingIsOurs && existing.command !== command ? { previousManagedCommand: existing.command } : {}),
+  };
+  const ownerBefore = priorOwner ? statuslineFingerprint(priorOwner) : null;
+  writeStatuslineOwnerRecord(ownerPath, ownerRecord);
+  const ownershipChanged = ownerBefore !== statuslineFingerprint(ownerRecord);
 
   const changed = !existing || JSON.stringify(existing) !== JSON.stringify(desired);
   if (changed) {
-    settings.statusLine = desired;
-    writeJsonAtomic(writePath, settings);
+    const current = fs.existsSync(settingsPath) ? readJsonFile(settingsPath) : {};
+    if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+      throw new Error("Claude statusline changed during registration; ownership record was retained");
+    }
+    current.statusLine = desired;
+    if (fs.existsSync(writePath)) writeLocalStatuslineSettings(writePath, current, options);
+    else writeJsonAtomic(writePath, current);
+    // Consume only a record that classified the just-replaced slot. Stale or
+    // foreign evidence is never deleted merely because the target mode changed.
+    const obsoleteOwnerPath = options.remote === true ? plainOwnerPath : sidecarPath;
+    if (existingIsOurs && ownership.mode !== (options.remote === true ? "remote" : "plain") && ownership.record) {
+      try { fs.unlinkSync(obsoleteOwnerPath); } catch {}
+    }
   }
 
   if (!options.silent) {
-    console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}`);
+    console.log(`Clawd Claude Code statusline -> ${settingsPath}${changed ? " (updated)" : " (already up to date)"}${chainActive ? " (chained)" : ""}`);
   }
 
-  return { installed: true, changed, skippedExisting: false, settingsPath };
+  return { installed: true, changed: changed || ownershipChanged, skippedExisting: false, chained: chainActive, settingsPath };
 }
 
 function unregisterClaudeStatusline(options = {}) {
+  const {
+    LOCAL_CHAIN_FLAG, LOCAL_CHAIN_FILE, statuslineFingerprint, requireOwnedLocalChain,
+    PLAIN_OWNER_FILE, REMOTE_CHAIN_FILE,
+  } = require("./claude-statusline-local-chain");
   const homeDir = options.homeDir || os.homedir();
-  const settingsPath = options.settingsPath || path.join(homeDir, ".claude", "settings.json");
+  const settingsPath = resolveClaudeSettingsPath({ ...options, homeDir });
   const writePath = resolveWritePath(settingsPath);
   let settings = {};
   try {
@@ -1578,28 +2624,107 @@ function unregisterClaudeStatusline(options = {}) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) settings = {};
 
   const existing = settings.statusLine && typeof settings.statusLine === "object" ? settings.statusLine : null;
-  const existingIsOurs = !!(existing && typeof existing.command === "string" && existing.command.includes(STATUSLINE_MARKER));
+  const platform = options.platform || process.platform;
+  const resolved = resolveClaudeHookPathsReadOnly({ ...options, homeDir });
+  const expectedScript = resolved && resolved.ok === true
+    ? resolved.target.statusline
+    : getClaudeStatuslineScriptPath();
+  const sidecarDir = options.settingsPath
+    ? path.join(path.dirname(settingsPath), "hooks")
+    : resolveClaudeHooksDir({ ...options, homeDir });
+  const localSidecar = options.localChainSidecarPath || path.join(sidecarDir, LOCAL_CHAIN_FILE);
+  const sidecarPath = options.chainSidecarPath || path.join(sidecarDir, REMOTE_CHAIN_FILE);
+  const plainOwnerPath = options.plainOwnerPath || path.join(sidecarDir, PLAIN_OWNER_FILE);
+  const ownership = classifyManagedClaudeStatusline(existing, {
+    expectedScript,
+    platform,
+    localSidecar,
+    remoteSidecarPath: sidecarPath,
+    plainOwnerPath,
+  });
 
-  if (!existingIsOurs) {
+  if (ownership.classification !== "owned") {
+    if (ownership.classification === "ambiguous") {
+      throw new Error(`Claude statusline ownership is ambiguous; kept unchanged${ownership.error ? `: ${ownership.error.message}` : ""}`);
+    }
     return { installed: !!existing, removed: 0, changed: false, settingsPath };
   }
+  if (ownership.legacy === true && !(ownership.parsed && ownership.parsed.legacyAppImage === true)) {
+    throw new Error("Claude statusline ownership evidence is missing or legacy; run registration repair before uninstall");
+  }
 
-  delete settings.statusLine;
-  const backupPath = writeJsonAtomicWithBackup(writePath, settings, options);
-  if (!options.silent) console.log(`Clawd Claude Code statusline removed -> ${settingsPath}`);
+  if (ownership.mode === "local" && existing.command.includes(` ${LOCAL_CHAIN_FLAG} `)) {
+    const record = requireOwnedLocalChain(localSidecar, existing);
+    const current = readJsonFile(settingsPath);
+    if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+      throw new Error("Claude statusline changed during restoration; recovery record was retained");
+    }
+    current.statusLine = record.statusLine;
+    const backupPath = writeLocalStatuslineSettings(writePath, current, options);
+    // Never delete recovery evidence before the original settings are saved.
+    let recoveryRecordRetained = false;
+    try {
+      if (statuslineFingerprint(readJsonFile(localSidecar)) !== statuslineFingerprint(record)) {
+        recoveryRecordRetained = true;
+      } else fs.unlinkSync(localSidecar);
+    } catch { recoveryRecordRetained = true; }
+    return { installed: true, removed: 1, changed: true, restoredChained: true, recoveryRecordRetained, settingsPath, backupPath };
+  }
+
+  // A chained slot restores the user's original statusLine object from the
+  // sidecar instead of leaving the slot empty; the sidecar is consumed
+  // either way so no stale copy outlives the registration it served.
+  const chained = ownership.mode === "remote"
+    ? ((ownership.record && ownership.record.statusLine) || ownership.legacyOriginal || null)
+    : null;
+  const current = readJsonFile(settingsPath);
+  if (statuslineFingerprint(current.statusLine || null) !== statuslineFingerprint(existing)) {
+    throw new Error("Claude statusline changed during removal; ownership record was retained");
+  }
+  if (chained) current.statusLine = chained;
+  else delete current.statusLine;
+  const backupPath = writeJsonAtomicWithBackup(writePath, current, options);
+  const ownerPath = ownership.mode === "remote" ? sidecarPath : plainOwnerPath;
+  try { fs.unlinkSync(ownerPath); } catch {}
+  if (!options.silent) {
+    console.log(`Clawd Claude Code statusline ${chained ? "restored chained original" : "removed"} -> ${settingsPath}`);
+  }
   const result = { installed: true, removed: 1, changed: true, settingsPath };
+  if (chained) result.restoredChained = true;
   if (options.backup === true) result.backupPath = backupPath;
   return result;
 }
 
+function parseClaudeInstallCliOptions(argv = []) {
+  const args = Array.isArray(argv) ? argv : [];
+  const remote = args.includes("--remote");
+  return {
+    remote,
+    chainExisting: args.includes("--chain-existing"),
+    // Remote deploy is itself an explicit quota-collection action. Locally,
+    // installing/reinstalling command hooks must not silently opt the user into
+    // the visible single-slot statusLine; Settings owns that preference unless
+    // the debug CLI receives an explicit --statusline.
+    installStatusline: remote || args.includes("--statusline"),
+  };
+}
+
 // Export for use by main.js
 module.exports = {
-  DEFAULT_PARENT_DIR,
-  DEFAULT_CONFIG_PATH,
   STATUSLINE_MARKER,
   CLAUDE_CORE_HOOK_EVENTS: Object.freeze([...CORE_HOOKS]),
   getClaudeHookScriptPath,
   getClaudeAutoStartScriptPath,
+  getClaudeStatuslineScriptPath,
+  claudeSourceHookPaths,
+  evaluateClaudeAppImage,
+  checkClaudeMaterializationFs,
+  preflightClaudeRuntime,
+  resolveClaudeHookPaths,
+  resolveClaudeHookPathsReadOnly,
+  resolveClaudeHome,
+  resolveClaudeSettingsPath,
+  resolveClaudeHooksDir,
   registerHooks,
   registerHooksAsync,
   unregisterHooks,
@@ -1609,6 +2734,9 @@ module.exports = {
   registerClaudeStatusline,
   unregisterClaudeStatusline,
   __test: {
+    classifyManagedClaudeStatusline,
+    findMissingHookDependencies,
+    formatMissingHookDependencies,
     parseClaudeVersion,
     getWindowsClaudePathSuffixes,
     getClaudePathCandidates,
@@ -1629,19 +2757,44 @@ module.exports = {
     reconcileVersionedHooks,
     shouldReconcileVersionedHooks,
     buildCommandHookSpec,
+    buildRemoteHookEnvPrefix,
+    isSshSecureRemoteInstall,
+    parseClaudeInstallCliOptions,
   },
 };
 
-// CLI: run directly with `node hooks/install.js [--remote]`
+// Lazy getters preserve the public API without freezing HOME or
+// CLAUDE_CONFIG_DIR when this remote-capable module is loaded.
+Object.defineProperty(module.exports, "DEFAULT_PARENT_DIR", {
+  enumerable: true,
+  get() { return resolveClaudeHome(); },
+});
+Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
+  enumerable: true,
+  get() { return resolveClaudeSettingsPath(); },
+});
+
+// CLI: run directly with `node hooks/install.js [--remote] [--statusline]`
 if (require.main === module) {
   try {
-    const remote = process.argv.includes("--remote");
-    registerHooks({ remote });
-    // Keep the CLI symmetric with hooks/uninstall.js, which unregisters the
-    // statusline: without this, a manual uninstall + reinstall cycle loses
-    // the statusline until the next app startup sync. Remote installs skip
-    // it - remote/SSH statusline support is an intentional non-goal.
-    if (!remote) registerClaudeStatusline();
+    const { remote, chainExisting, installStatusline } =
+      parseClaudeInstallCliOptions(process.argv.slice(2));
+    // Check only what this invocation requests. auto-start.js is opt-in and
+    // is not registered by this CLI, so it must not become a prerequisite.
+    const entryPoints = ["clawd-hook.js"];
+    if (installStatusline) entryPoints.push("claude-statusline.js");
+    const missingDeps = findMissingHookDependencies(entryPoints);
+    if (missingDeps.length) {
+      console.error(formatMissingHookDependencies(missingDeps));
+      process.exitCode = 1;
+    } else {
+      registerHooks({ remote });
+      if (installStatusline) {
+        // Remote installs also register statusline. Local commands opt in
+        // only with --statusline and otherwise preserve the visible slot.
+        registerClaudeStatusline({ remote, chainExisting });
+      }
+    }
   } catch (err) {
     console.error(err.message);
     process.exit(1);

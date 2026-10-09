@@ -8,9 +8,80 @@ const {
   getProportionalBasePx,
   getProportionalPixelSize,
   getSavedPixelSize,
+  resolveSizeSliderContext,
 } = require("../src/size-utils");
+const { uiSizeToPrefs, prefsSizeToUi, clampSizeUi } = require("../src/settings-size-slider");
 
 describe("size utils", () => {
+  it("uses the saved slider value when keep size is off or proportional pixels are already synchronized", () => {
+    const workArea = { width: 1710, height: 991 };
+    const actual = getProportionalPixelSize(10.4, workArea);
+    const expectedUi = clampSizeUi(prefsSizeToUi(10.4));
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.4", actual, workArea, false),
+      { ui: expectedUi, overMax: false, synced: true });
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.4", actual, workArea, true),
+      { ui: expectedUi, overMax: false, synced: true });
+    assert.notStrictEqual(getProportionalPixelSize(uiSizeToPrefs(expectedUi), workArea).width, actual.width);
+  });
+
+  it("uses the saved tick with keep size off even when effective pixels differ", () => {
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", { width: 361, height: 361 },
+      { width: 1710, height: 991 }, false), { ui: 35, overMax: false, synced: true });
+  });
+
+  it("places a frozen 361 pixel pet at the nearest current-display slider tick", () => {
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", { width: 361, height: 361 },
+      { width: 1710, height: 991 }, true), { ui: 70, overMax: false, synced: false });
+  });
+
+  it("marks a frozen pet above the slider limit", () => {
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", { width: 722, height: 722 },
+      { width: 1710, height: 991 }, true), { ui: 100, overMax: true, synced: false });
+  });
+
+  it("marks only pixel widths above the maximum tick as over limit", () => {
+    const workArea = { width: 1710, height: 991 };
+    const maximum = getProportionalPixelSize(uiSizeToPrefs(100), workArea).width;
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", { width: maximum, height: maximum },
+      workArea, true), { ui: 100, overMax: false, synced: false });
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", { width: maximum + 1, height: maximum + 1 },
+      workArea, true), { ui: 100, overMax: true, synced: false });
+  });
+
+  it("chooses the lower tick when two ticks are equally close in pixels", () => {
+    const workArea = { width: 1710, height: 991 };
+    let tied = null;
+    for (let ui = 1; ui < 100; ui++) {
+      const lower = getProportionalPixelSize(uiSizeToPrefs(ui), workArea).width;
+      const upper = getProportionalPixelSize(uiSizeToPrefs(ui + 1), workArea).width;
+      if (upper > lower && (upper - lower) % 2 === 0) {
+        tied = { ui, midpoint: (lower + upper) / 2 };
+        break;
+      }
+    }
+    assert.ok(tied, "the work area must contain an even pixel gap between adjacent ticks");
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5",
+      { width: tied.midpoint, height: tied.midpoint }, workArea, true),
+    { ui: tied.ui, overMax: false, synced: false });
+  });
+
+  it("finds portrait ticks using the boosted and capped pixel sizing path", () => {
+    const workArea = { width: 1080, height: 1920 };
+    const actual = getProportionalPixelSize(uiSizeToPrefs(55), workArea);
+    assert.deepStrictEqual(resolveSizeSliderContext("P:9", actual, workArea, true),
+      { ui: 55, overMax: false, synced: false });
+  });
+
+  it("falls back without throwing for malformed size inputs", () => {
+    const workArea = { width: 1710, height: 991 };
+    const actual = { width: 361, height: 361 };
+    assert.deepStrictEqual(resolveSizeSliderContext("invalid", actual, workArea, true),
+      { ui: 30, overMax: false, synced: true });
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", null, workArea, true),
+      { ui: 35, overMax: false, synced: true });
+    assert.deepStrictEqual(resolveSizeSliderContext("P:10.5", actual, { width: 0, height: 991 }, true),
+      { ui: 35, overMax: false, synced: true });
+  });
   it("uses display width on landscape screens", () => {
     assert.strictEqual(getProportionalBasePx({ width: 2560, height: 1440 }), 2560);
     assert.deepStrictEqual(

@@ -54,6 +54,31 @@ describe("Antigravity statusline adapter", () => {
     assert.strictEqual(buildStateBody(null, null, null), null);
   });
 
+  it("stamps local WSL source fields and preserves an SSH host on remote WSL", () => {
+    const applyWsl = (body, options) => {
+      body.wsl_distro = "Ubuntu";
+      if (!options.remote) body.host = "wsl:Ubuntu";
+      return body;
+    };
+    const local = buildStateBody(
+      { conversation_id: "local" },
+      null,
+      { geminiWeekly: { usedPercent: 1 } },
+      { applyWslSourceFields: applyWsl }
+    );
+    assert.strictEqual(local.host, "wsl:Ubuntu");
+    assert.strictEqual(local.wsl_distro, "Ubuntu");
+
+    const remote = buildStateBody(
+      { conversation_id: "remote" },
+      null,
+      { geminiWeekly: { usedPercent: 2 } },
+      { remote: true, host: "lab", applyWslSourceFields: applyWsl }
+    );
+    assert.strictEqual(remote.host, "lab");
+    assert.strictEqual(remote.wsl_distro, "Ubuntu");
+  });
+
   it("main() posts state (including quota) and always writes a stdout line, even on a slow/failed POST", async () => {
     mock.timers.enable({ apis: ["Date"], now: 1738400000000 });
     const writes = [];

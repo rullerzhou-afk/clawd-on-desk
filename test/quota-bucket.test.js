@@ -6,9 +6,14 @@ const assert = require("node:assert");
 const { normalizeQuotaBucket, normalizeQuotaGroup } = require("../hooks/quota-bucket");
 
 describe("normalizeQuotaBucket", () => {
-  it("clamps usedPercent into [0, 100] and rounds resetAt", () => {
-    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 41.6, resetAt: 1234.9 }), {
+  it("clamps usedPercent and preserves rounded window/reset metadata", () => {
+    assert.deepStrictEqual(normalizeQuotaBucket({
+      usedPercent: 41.6,
+      windowMinutes: 10079.6,
+      resetAt: 1234.9,
+    }), {
       usedPercent: 42,
+      windowMinutes: 10080,
       resetAt: 1235,
     });
     assert.strictEqual(normalizeQuotaBucket({ usedPercent: 142 }).usedPercent, 100);
@@ -18,6 +23,15 @@ describe("normalizeQuotaBucket", () => {
   it("omits resetAt when absent or non-numeric", () => {
     assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10 }), { usedPercent: 10 });
     assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10, resetAt: "nope" }), { usedPercent: 10 });
+  });
+
+  it("omits invalid windowMinutes instead of inventing a label", () => {
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10, windowMinutes: 0 }), {
+      usedPercent: 10,
+    });
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 10, windowMinutes: "nope" }), {
+      usedPercent: 10,
+    });
   });
 
   it("returns null for missing/non-numeric usedPercent", () => {

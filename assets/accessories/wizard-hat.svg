@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Wizard hat — pixel art (15x16 grid). Tall cone, brim, stars. -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 15 16" shape-rendering="crispEdges" width="15" height="16">
+  <g fill="#4b3da0">
+    <rect x="7" y="0" width="1" height="1"/>
+    <rect x="7" y="1" width="1" height="1"/>
+    <rect x="6" y="2" width="3" height="1"/>
+    <rect x="6" y="3" width="3" height="1"/>
+    <rect x="6" y="4" width="3" height="1"/>
+    <rect x="5" y="5" width="5" height="1"/>
+    <rect x="5" y="6" width="5" height="1"/>
+    <rect x="5" y="7" width="5" height="1"/>
+    <rect x="4" y="8" width="7" height="1"/>
+    <rect x="4" y="9" width="7" height="1"/>
+    <rect x="4" y="10" width="7" height="1"/>
+    <rect x="3" y="11" width="9" height="1"/>
+    <rect x="3" y="12" width="9" height="1"/>
+    <rect x="3" y="13" width="9" height="1"/>
+  </g>
+  <rect x="0" y="14" width="15" height="1" fill="#2f2566"/>
+  <rect x="1" y="15" width="13" height="1" fill="#2f2566"/>
+  <g fill="#ffd84d">
+    <rect x="7" y="5" width="1" height="1"/>
+    <rect x="6" y="9" width="1" height="1"/>
+    <rect x="9" y="11" width="1" height="1"/>
+  </g>
+</svg>

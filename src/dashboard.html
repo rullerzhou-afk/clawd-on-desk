@@ -2,8 +2,9 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data: file:">
 <title>Sessions</title>
+<link rel="stylesheet" href="language-picker.css">
 <style>
 * { box-sizing: border-box; }
 
@@ -75,7 +76,7 @@ body { user-select: none; }
 
 .title-row {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 10px;
   min-width: 0;
 }
@@ -92,6 +93,106 @@ h1 {
   color: var(--muted);
   font-size: 12px;
   font-weight: 600;
+}
+
+/* The manual Kimi refresh lives inside the Kimi quota section header, next to
+   the data it reloads - a quiet ghost icon button, not a header-level CTA. */
+.quota-section-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.quota-section-titlebar .quota-section-header {
+  flex: 0 0 auto;
+}
+
+.quota-refresh-feedback {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 400;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.quota-refresh-feedback[hidden] {
+  display: none;
+}
+
+.quota-refresh-feedback.error {
+  color: var(--interrupted);
+}
+
+.quota-refresh-button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  height: 22px;
+  margin-left: auto;
+  padding: 0 8px;
+  border: none;
+  border-radius: 6px;
+  color: var(--id-kimi-outer);
+  background: color-mix(in srgb, var(--id-kimi-outer) 12%, transparent);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, opacity 0.15s ease;
+}
+
+.quota-refresh-button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--id-kimi-outer) 22%, transparent);
+}
+
+@media (prefers-color-scheme: dark) {
+  .quota-refresh-button {
+    background: color-mix(in srgb, var(--id-kimi-outer) 22%, transparent);
+  }
+
+  .quota-refresh-button:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--id-kimi-outer) 34%, transparent);
+  }
+}
+
+.quota-refresh-button:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--id-kimi-outer) 55%, white);
+  outline-offset: 1px;
+}
+
+.quota-refresh-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.quota-refresh-icon {
+  display: inline-block;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.quota-refresh-label {
+  line-height: 1;
+}
+
+.quota-refresh-button.is-refreshing .quota-refresh-icon {
+  animation: quota-refresh-spin 0.8s linear infinite;
+}
+
+@keyframes quota-refresh-spin {
+  to { transform: rotate(360deg); }
+}
+
+.quota-empty-hint {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 .quota-summary {
@@ -170,6 +271,28 @@ h1 {
   overflow: hidden;
 }
 
+/* Provider identity + severity are mirrored from quota-ring.html so a bar and
+   an Orbit coin answer "which provider / which window / which state" with the
+   same color. The hue follows the LOGICAL window: the 5h half wears the
+   provider's outer/rolling hue, the Weekly half the inner/weekly hue — the
+   same assignment the coins use. test/quota-palette.test.js pins the mirror,
+   so these values are not editable here alone — quota-ring.html carries the
+   reasoning for each hue and is where a change starts. Watch out for --done
+   above: it is a similar blue, but it means "session finished", not a quota
+   window, and a palette sweep must leave it alone. */
+:root {
+  --id-claude-outer: #2dd4bf;
+  --id-claude-inner: #6489f7;
+  --id-codex-outer: #a78bfa;
+  --id-codex-inner: #22d3ee;
+  --id-antigravity-outer: #38bdf8;
+  --id-antigravity-inner: #6366f1;
+  --id-kimi-outer: #3b93f7;
+  --id-kimi-inner: #e27aeb;
+  --sev-warn: #fbbf24;
+  --sev-hot: #f87171;
+}
+
 .quota-bar-fill {
   height: 100%;
   border-radius: 3px;
@@ -177,9 +300,20 @@ h1 {
   transition: width 0.2s ease;
 }
 
-.quota-bar-fill-warning {
-  background: var(--interrupted);
-}
+.quota-bar-fill.pv-claudeQuota.rg-outer { background: var(--id-claude-outer); }
+.quota-bar-fill.pv-claudeQuota.rg-inner { background: var(--id-claude-inner); }
+.quota-bar-fill.pv-codexQuota.rg-outer { background: var(--id-codex-outer); }
+.quota-bar-fill.pv-codexQuota.rg-inner { background: var(--id-codex-inner); }
+/* Spark is Codex-family quota shown only here, so it wears the Codex hues. */
+.quota-bar-fill.pv-codexSparkQuota.rg-outer { background: var(--id-codex-outer); }
+.quota-bar-fill.pv-codexSparkQuota.rg-inner { background: var(--id-codex-inner); }
+.quota-bar-fill.pv-antigravityQuota.rg-outer { background: var(--id-antigravity-outer); }
+.quota-bar-fill.pv-antigravityQuota.rg-inner { background: var(--id-antigravity-inner); }
+.quota-bar-fill.pv-kimiQuota.rg-outer { background: var(--id-kimi-outer); }
+.quota-bar-fill.pv-kimiQuota.rg-inner { background: var(--id-kimi-inner); }
+/* Severity overrides identity exactly like on the coins: warn 60, hot 85. */
+.quota-bar-fill.sev-warn { background: var(--sev-warn); }
+.quota-bar-fill.sev-hot { background: var(--sev-hot); }
 
 .content {
   flex: 1 1 auto;
@@ -228,6 +362,71 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--surface);
+}
+
+.card-unfocusable {
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: start;
+}
+
+.card-unfocusable .actions {
+  grid-column: 2;
+  min-width: 0;
+  justify-content: flex-start;
+}
+
+/* Keyboard mode. The banner lives in the header and the digit badge is
+   absolutely positioned, so entering the mode changes no card height and the
+   user's scroll position survives the next one-second rebuild. */
+.quick-banner {
+  margin-top: 10px;
+  padding: 6px 10px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.quick-banner[hidden] { display: none; }
+
+.quick-banner.is-active {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
+.quick-digit-badge {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  background: var(--accent);
+  color: #ffffff;
+  font-family: ui-monospace, Menlo, Consolas, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1;
+  pointer-events: none;
+}
+
+#content:not(.is-quick-capture) .quick-digit-badge {
+  visibility: hidden;
+}
+
+.card-quick-tombstone {
+  grid-template-columns: minmax(0, 1fr);
+  min-height: 0;
+  padding-left: 34px;
+  opacity: 0.55;
+}
+
+.card-quick-tombstone .quick-digit-badge {
+  background: var(--subtle);
 }
 
 .session-id-badge {
@@ -299,6 +498,7 @@ h1 {
 
 .meta,
 .path,
+.model-row,
 .event-row,
 .context-usage-row {
   overflow: hidden;
@@ -309,11 +509,199 @@ h1 {
   line-height: 1.45;
 }
 
+.session-automation-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+  margin-top: 3px;
+}
+
+.session-automation-label,
+.session-automation-feedback {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-automation-readonly {
+  display: inline-flex;
+  align-items: center;
+  min-height: 26px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--surface-alt);
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-automation-unavailable {
+  flex: 1 1 220px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.35;
+}
+
+.session-automation-picker {
+  min-width: 0;
+  width: 176px;
+  max-width: 100%;
+  font-size: 11px;
+}
+
+.session-automation-picker .language-picker-trigger {
+  height: 26px;
+  border-radius: 6px;
+  padding: 0 8px;
+}
+
+.session-automation-picker .language-picker-menu {
+  min-width: 176px;
+}
+
+.session-automation-picker .language-picker-option {
+  min-height: 28px;
+  height: auto;
+  padding-top: 6px;
+  padding-bottom: 6px;
+  line-height: 1.35;
+}
+
+.session-automation-picker .language-picker-option:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+.session-automation-picker .language-picker-option.selected:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+}
+
+.session-history-hint {
+  margin: -2px 2px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.session-history-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.session-history-main {
+  min-width: 0;
+}
+
+.session-history-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.session-history-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.session-history-flag {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--surface-alt);
+  color: var(--text);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* A row whose transcript Claude Code no longer holds still offers Resume:
+   the probe can only be advisory, so the flag warns without blocking. */
+.session-history-flag.is-missing {
+  color: var(--muted);
+}
+
+.session-history-actions {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 4px;
+}
+
+.session-history-feedback {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.session-history-feedback:empty { display: none; }
+
+.session-history-toggle {
+  margin-top: 10px;
+  background: var(--surface-alt);
+  color: var(--text);
+  border-color: var(--border);
+}
+
+.session-history-toggle:hover:not(:disabled) {
+  background: var(--accent);
+  color: #ffffff;
+  border-color: transparent;
+}
+
+.automation-orphans-hint {
+  margin: -2px 2px 8px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.automation-orphan-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+
+.automation-orphan-main {
+  min-width: 0;
+}
+
+.automation-orphan-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.automation-orphan-meta {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
 .path {
   color: var(--subtle);
 }
 
 .event-row {
+  color: var(--muted);
+}
+
+.model-row {
   color: var(--muted);
 }
 
@@ -348,6 +736,14 @@ h1 {
   color: var(--text-secondary);
   white-space: nowrap;
 }
+
+.recovery-badge {
+  font-size: 10px;
+  padding: 1px 6px;
+  border: 1px dashed var(--muted);
+  border-radius: 6px;
+  color: var(--muted);
+}
 .source-badge.source-wsl {
   background: rgba(76, 166, 79, 0.15);
   color: #4ca64f;
@@ -359,8 +755,34 @@ h1 {
 
 .actions {
   display: flex;
+  align-items: center;
+  flex-wrap: wrap;
   justify-content: flex-end;
   gap: 6px;
+}
+
+.focus-unavailable-reason,
+.session-action-feedback {
+  flex-basis: 100%;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.3;
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.card-unfocusable .focus-unavailable-reason,
+.card-unfocusable .session-action-feedback {
+  text-align: left;
+}
+
+.session-action-feedback:empty { display: none; }
+
+.open-folder-button {
+  background: var(--surface-alt);
+  color: var(--text);
+  border-color: var(--border);
 }
 
 .mark-read-button {
@@ -444,6 +866,14 @@ button:disabled {
   font-size: 15px;
 }
 
+/* Do not push the resume list below a full-height empty-state panel. */
+.empty.empty-with-history {
+  height: auto;
+  min-height: 0;
+  padding: 16px 24px;
+  margin-bottom: 16px;
+}
+
 .empty-hint {
   max-width: 260px;
   line-height: 1.45;
@@ -472,10 +902,13 @@ button:disabled {
         <h1 id="title">Sessions</h1>
         <span id="count" class="count"></span>
       </div>
+      <div id="quickBanner" class="quick-banner" role="status" aria-live="polite" hidden></div>
       <div id="quotaSummary" class="quota-summary" hidden></div>
     </header>
-    <main id="content" class="content" aria-live="polite"></main>
+    <main id="content" class="content" aria-live="polite" data-language-picker-boundary></main>
   </div>
+  <script src="./session-focus-unavailable.js"></script>
+  <script src="./language-picker.js"></script>
   <script src="./dashboard-renderer.js"></script>
 </body>
 </html>

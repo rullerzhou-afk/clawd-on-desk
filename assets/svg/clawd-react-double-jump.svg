@@ -195,7 +195,7 @@
 
   <!-- Body (jumps higher) -->
   <g class="body-jump">
-    <g class="body-react">
+    <g id="accessory-anchor" class="body-react">
       <!-- Torso -->
       <g fill="#DE886D">
         <rect x="2" y="6" width="11" height="7"/>

@@ -64,6 +64,7 @@ const MINI_REQUIRED_STATES = [
   "mini-happy",
   "mini-sleep",
 ];
+const MINI_OPTIONAL_PEEK_STATES = ["mini-peek-hold", "mini-sleep-peek"];
 const VISUAL_FALLBACK_STATES = new Set([
   "error",
   "attention",
@@ -73,6 +74,10 @@ const VISUAL_FALLBACK_STATES = new Set([
   "sleeping",
   "roam",
 ]);
+const SAFE_THEME_ASSET_BASENAME = /^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/;
+const SAFE_ACCESSORY_ITEM_ID = /^[a-z][a-z0-9-]{0,31}$/;
+const IDLE_EASTER_EGG_MAX_DURATION_MS = 60000;
+const IDLE_EASTER_EGG_MAX_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 function validateTheme(cfg) {
   const errors = [];
@@ -150,6 +155,21 @@ function validateTheme(cfg) {
     }
   }
 
+  if (cfg.completionVisualMap !== undefined) {
+    if (!isPlainObject(cfg.completionVisualMap)) {
+      errors.push("completionVisualMap must be an object when present");
+    } else {
+      for (const [hint, file] of Object.entries(cfg.completionVisualMap)) {
+        if (!isPlainObject(cfg.displayHintMap) || typeof cfg.displayHintMap[hint] !== "string") {
+          errors.push(`completionVisualMap.${hint} must refer to a displayHintMap key`);
+        }
+        if (typeof file !== "string" || !SAFE_THEME_ASSET_BASENAME.test(file)) {
+          errors.push(`completionVisualMap.${hint} must be a safe asset basename`);
+        }
+      }
+    }
+  }
+
   if (cfg.updateBubbleAnchorBox !== undefined) {
     const box = cfg.updateBubbleAnchorBox;
     if (
@@ -170,17 +190,68 @@ function validateTheme(cfg) {
   if (cfg.rendering !== undefined) {
     if (!isPlainObject(cfg.rendering)) {
       errors.push("rendering must be an object when present");
-    } else if (
-      cfg.rendering.svgChannel !== undefined
-      && cfg.rendering.svgChannel !== "auto"
-      && cfg.rendering.svgChannel !== "object"
-    ) {
-      errors.push(`rendering.svgChannel must be "auto" or "object", got ${cfg.rendering.svgChannel}`);
+    } else {
+      if (
+        cfg.rendering.svgChannel !== undefined
+        && cfg.rendering.svgChannel !== "auto"
+        && cfg.rendering.svgChannel !== "object"
+      ) {
+        errors.push(`rendering.svgChannel must be "auto" or "object", got ${cfg.rendering.svgChannel}`);
+      }
+      if (
+        cfg.rendering.objectChannelFiles !== undefined
+        && (!Array.isArray(cfg.rendering.objectChannelFiles)
+          || cfg.rendering.objectChannelFiles.some((file) => (
+            typeof file !== "string"
+            || basenameOnly(file) !== file
+            || !file.endsWith(".svg")
+          )))
+      ) {
+        errors.push("rendering.objectChannelFiles must contain SVG basenames only");
+      }
+    }
+  }
+
+  const idleEasterEggResult = normalizeIdleEasterEggs(cfg.idleEasterEggs);
+  errors.push(...idleEasterEggResult.errors);
+
+  if (cfg.customization !== undefined) {
+    if (!isPlainObject(cfg.customization)) {
+      errors.push("customization must be an object when present");
+    } else {
+      if (
+        cfg.customization.petTint !== undefined
+        && typeof cfg.customization.petTint !== "boolean"
+      ) {
+        errors.push(`customization.petTint must be a boolean, got ${JSON.stringify(cfg.customization.petTint)}`);
+      }
+      const accessoryResult = normalizeAccessoryAttachments(
+        cfg.customization.accessories,
+        cfg
+      );
+      errors.push(...accessoryResult.errors);
+      const mouthAccessoryResult = normalizeMouthAccessoryAttachments(
+        cfg.customization.mouthAccessories,
+        cfg
+      );
+      errors.push(...mouthAccessoryResult.errors);
     }
   }
 
   if (cfg.roamFlipAssets !== undefined && typeof cfg.roamFlipAssets !== "boolean") {
     errors.push(`roamFlipAssets must be a boolean, got ${JSON.stringify(cfg.roamFlipAssets)}`);
+  }
+
+  if (Array.isArray(cfg.idleAnimations)) {
+    cfg.idleAnimations.forEach((entry, index) => {
+      if (entry && entry.mirrorOnRightSide !== undefined && typeof entry.mirrorOnRightSide !== "boolean") {
+        errors.push(`idleAnimations[${index}].mirrorOnRightSide must be a boolean, got ${JSON.stringify(entry.mirrorOnRightSide)}`);
+      }
+    });
+  }
+
+  if (cfg.mirroredFiles !== undefined) {
+    errors.push(...validateMirroredFiles(cfg.mirroredFiles));
   }
 
   const fallbackStateKeys = Object.keys(normalizedStates);
@@ -236,6 +307,13 @@ function validateTheme(cfg) {
         errors.push(`miniMode.supported=true requires miniMode.states.${stateName} to be a non-empty array`);
       }
     }
+    for (const stateName of MINI_OPTIONAL_PEEK_STATES) {
+      if (!Object.prototype.hasOwnProperty.call(cfg.miniMode.states || {}, stateName)) continue;
+      const files = cfg.miniMode.states[stateName];
+      if (!Array.isArray(files) || !files.length || files.some((file) => typeof file !== "string" || !file)) {
+        errors.push(`miniMode.states.${stateName} must be a non-empty array of files when declared`);
+      }
+    }
   }
 
   if (cfg.layout) {
@@ -254,6 +332,114 @@ function isPlainObject(v) {
 
 function hasNonEmptyArray(value) {
   return Array.isArray(value) && value.length > 0;
+}
+
+function normalizeIdleVisualOptions(value, warn = console.warn) {
+  if (!Array.isArray(value)) {
+    warn("[theme-loader] idleVisualOptions dropped: expected array");
+    return [];
+  }
+  const options = [];
+  value.forEach((entry, index) => {
+    const file = entry && entry.file;
+    if (!isPlainObject(entry) || typeof file !== "string"
+      || basenameOnly(file) !== file || !SAFE_THEME_ASSET_BASENAME.test(file)) {
+      warn(`[theme-loader] idleVisualOptions[${index}] dropped: file must be a safe basename`);
+      return;
+    }
+    options.push({ ...entry, file });
+  });
+  return options;
+}
+
+function filterIdleVisualOptionsByAsset(theme, assetExists, warn = console.warn) {
+  if (!Object.prototype.hasOwnProperty.call(theme, "idleVisualOptions")) return;
+  theme.idleVisualOptions = theme.idleVisualOptions.filter((entry) => {
+    if (assetExists(entry.file)) return true;
+    warn(`[theme-loader] idleVisualOptions entry dropped: missing asset ${entry.file}`);
+    return false;
+  });
+}
+
+function normalizeIdleEasterEggs(value) {
+  const errors = [];
+  if (value === undefined || value === null) return { value: [], errors };
+  if (!Array.isArray(value)) {
+    return { value: [], errors: ["idleEasterEggs must be an array when present"] };
+  }
+
+  const normalized = [];
+  let totalChance = 0;
+  for (let index = 0; index < value.length; index++) {
+    const entry = value[index];
+    const pathName = `idleEasterEggs[${index}]`;
+    if (!isPlainObject(entry)) {
+      errors.push(`${pathName} must be an object`);
+      continue;
+    }
+    hasOnlyKeys(
+      entry,
+      new Set(["file", "duration", "chance", "cooldownMs", "requiresAccessories"]),
+      pathName,
+      errors
+    );
+    const file = basenameOnly(entry.file);
+    const safeFile = typeof entry.file === "string"
+      && entry.file === file
+      && SAFE_THEME_ASSET_BASENAME.test(file);
+    if (!safeFile) errors.push(`${pathName}.file must be a safe basename`);
+
+    const safeDuration = Number.isFinite(entry.duration)
+      && entry.duration >= 100
+      && entry.duration <= IDLE_EASTER_EGG_MAX_DURATION_MS;
+    if (!safeDuration) {
+      errors.push(`${pathName}.duration must be between 100 and ${IDLE_EASTER_EGG_MAX_DURATION_MS}`);
+    }
+    const safeChance = Number.isFinite(entry.chance)
+      && entry.chance > 0
+      && entry.chance <= 1;
+    if (!safeChance) errors.push(`${pathName}.chance must be greater than 0 and at most 1`);
+    const safeCooldown = Number.isFinite(entry.cooldownMs)
+      && entry.cooldownMs >= 0
+      && entry.cooldownMs <= IDLE_EASTER_EGG_MAX_COOLDOWN_MS;
+    if (!safeCooldown) {
+      errors.push(`${pathName}.cooldownMs must be between 0 and ${IDLE_EASTER_EGG_MAX_COOLDOWN_MS}`);
+    }
+
+    const requires = entry.requiresAccessories;
+    let safeRequires = isPlainObject(requires);
+    if (!safeRequires) {
+      errors.push(`${pathName}.requiresAccessories must be an object`);
+    } else {
+      const keys = Object.keys(requires);
+      const unknownKeys = keys.filter((key) => key !== "head" && key !== "mouth");
+      for (const key of unknownKeys) {
+        errors.push(`${pathName}.requiresAccessories.${key} is not supported`);
+      }
+      for (const slot of ["head", "mouth"]) {
+        if (!SAFE_ACCESSORY_ITEM_ID.test(requires[slot] || "")) {
+          errors.push(`${pathName}.requiresAccessories.${slot} must be a safe accessory item id`);
+          safeRequires = false;
+        }
+      }
+      if (unknownKeys.length > 0) safeRequires = false;
+    }
+
+    if (safeFile && safeDuration && safeChance && safeCooldown && safeRequires) {
+      totalChance += entry.chance;
+      normalized.push({
+        file,
+        duration: entry.duration,
+        chance: entry.chance,
+        cooldownMs: entry.cooldownMs,
+        requiresAccessories: { head: requires.head, mouth: requires.mouth },
+      });
+    }
+  }
+  if (totalChance > 1 + Number.EPSILON) {
+    errors.push("idleEasterEggs total chance must be at most 1");
+  }
+  return { value: errors.length === 0 ? normalized : [], errors };
 }
 
 function getStateBindingEntry(entry) {
@@ -342,12 +528,713 @@ function hasScriptedSvgRuntime(cfg, options = {}) {
   if (trustedRuntimeAllowed && scriptedFiles.some((file) => isSvgFilename(file))) return true;
   return !!(
     isPlainObject(cfg && cfg.rendering)
-    && cfg.rendering.svgChannel === "object"
+    && (
+      cfg.rendering.svgChannel === "object"
+      || (Array.isArray(cfg.rendering.objectChannelFiles)
+        && cfg.rendering.objectChannelFiles.some((file) => isSvgFilename(file)))
+    )
   );
 }
 
 function derivePowerProfile(cfg, options = {}) {
   return hasScriptedSvgRuntime(cfg, options) ? "scripted" : "standard";
+}
+
+function addVisualUsage(out, stateFamily, file, source) {
+  const safe = basenameOnly(file);
+  if (!safe) return;
+  out.push({ stateFamily, file: safe, source });
+}
+
+function addVisualBinding(out, stateFamily, binding, source) {
+  for (const file of getStateFiles(binding)) {
+    addVisualUsage(out, stateFamily, file, source);
+  }
+}
+
+function getCanonicalFileViewBoxes(cfg) {
+  const out = {};
+  if (!isPlainObject(cfg && cfg.fileViewBoxes)) return out;
+  for (const [rawFile, rawViewBox] of Object.entries(cfg.fileViewBoxes)) {
+    const file = basenameOnly(rawFile);
+    const viewBox = normalizeViewBox(rawViewBox);
+    if (file && viewBox) out[file] = viewBox;
+  }
+  return out;
+}
+
+/**
+ * Canonical projection of every runtime-reachable visual usage. Unlike the
+ * historical filename Set this retains the state family and effective
+ * viewBox, so accessory coverage cannot accidentally apply root coordinates
+ * to mini art. This is intentionally pure and works on raw or normalized
+ * theme objects.
+ */
+function projectThemeVisualUsages(cfg) {
+  const usages = [];
+  for (const [state, binding] of Object.entries((cfg && cfg.states) || {})) {
+    addVisualBinding(usages, `normal:${state}`, binding, `states.${state}`);
+  }
+  if (isMiniSupported(cfg)) {
+    for (const [state, binding] of Object.entries(
+      (cfg && cfg.miniMode && cfg.miniMode.states) || {}
+    )) {
+      addVisualBinding(usages, `mini:${state}`, binding, `miniMode.states.${state}`);
+    }
+  }
+  for (const [groupName, group] of [
+    ["workingTiers", cfg && cfg.workingTiers],
+    ["jugglingTiers", cfg && cfg.jugglingTiers],
+    ["idleAnimations", cfg && cfg.idleAnimations],
+    ["idleVisualOptions", cfg && cfg.idleVisualOptions],
+    ["idleEasterEggs", cfg && cfg.idleEasterEggs],
+  ]) {
+    for (const entry of Array.isArray(group) ? group : []) {
+      if (entry && typeof entry.file === "string") {
+        addVisualUsage(usages, `normal:${groupName}`, entry.file, groupName);
+      }
+    }
+  }
+  for (const [name, entry] of Object.entries((cfg && cfg.reactions) || {})) {
+    if (!isPlainObject(entry)) continue;
+    for (const key of ["file", "fileLeft", "fileRight"]) {
+      if (typeof entry[key] === "string") {
+        addVisualUsage(usages, `reaction:${name}`, entry[key], `reactions.${name}.${key}`);
+      }
+    }
+    for (const file of Array.isArray(entry.files) ? entry.files : []) {
+      addVisualUsage(usages, `reaction:${name}`, file, `reactions.${name}.files`);
+    }
+  }
+  for (const [hint, file] of Object.entries((cfg && cfg.displayHintMap) || {})) {
+    if (typeof file === "string") {
+      addVisualUsage(usages, `display-hint:${hint}`, file, `displayHintMap.${hint}`);
+    }
+  }
+  for (const [hint, file] of Object.entries((cfg && cfg.completionVisualMap) || {})) {
+    if (typeof file === "string") {
+      addVisualUsage(usages, `completion-hint:${hint}`, file, `completionVisualMap.${hint}`);
+    }
+  }
+  if (
+    isPlainObject(cfg && cfg.updateVisuals)
+    && typeof cfg.updateVisuals.checking === "string"
+  ) {
+    addVisualUsage(
+      usages,
+      "normal:update-checking",
+      cfg.updateVisuals.checking,
+      "updateVisuals.checking"
+    );
+  }
+  if (
+    isPlainObject(cfg && cfg.timings)
+    && typeof cfg.timings.dndSleepTransitionSvg === "string"
+  ) {
+    addVisualUsage(
+      usages,
+      "dnd:sleep-transition",
+      cfg.timings.dndSleepTransitionSvg,
+      "timings.dndSleepTransitionSvg"
+    );
+  }
+  const lowPower = cfg
+    && cfg.rendering
+    && cfg.rendering.lowPowerStaticImageOverrides;
+  for (const [state, override] of Object.entries(lowPower || {})) {
+    if (!isPlainObject(override)) continue;
+    const isMiniState = state.startsWith("mini-");
+    if (isMiniState && !isMiniSupported(cfg)) continue;
+    const usageFamily = isMiniState ? "mini:" : "";
+    if (typeof override.from === "string") {
+      addVisualUsage(
+        usages,
+        `${usageFamily}low-power-source:${state}`,
+        override.from,
+        `rendering.lowPowerStaticImageOverrides.${state}.from`
+      );
+    }
+    if (typeof override.to === "string") {
+      addVisualUsage(
+        usages,
+        `${usageFamily}low-power-static:${state}`,
+        override.to,
+        `rendering.lowPowerStaticImageOverrides.${state}.to`
+      );
+    }
+  }
+  const rootViewBox = normalizeViewBox(cfg && cfg.viewBox);
+  const miniViewBox = normalizeViewBox(cfg && cfg.miniMode && cfg.miniMode.viewBox);
+  const fileViewBoxes = getCanonicalFileViewBoxes(cfg);
+  return usages.map((usage) => {
+    const fileViewBox = fileViewBoxes[usage.file];
+    const isMini = usage.stateFamily.startsWith("mini:");
+    const effectiveViewBox = fileViewBox || (isMini && miniViewBox) || rootViewBox;
+    return {
+      ...usage,
+      effectiveViewBox: effectiveViewBox ? { ...effectiveViewBox } : null,
+      viewBoxSource: fileViewBox ? "file" : (isMini && miniViewBox ? "mini" : "root"),
+    };
+  });
+}
+
+function hasOnlyKeys(value, allowed, pathName, errors) {
+  for (const key of Object.keys(value)) {
+    if (!allowed.has(key)) errors.push(`${pathName}.${key} is not supported`);
+  }
+}
+
+function normalizeAccessoryFrame(value, viewBox, pathName, errors, targetLocal = false) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["cx", "baseY", "width"]), pathName, errors);
+  const { cx, baseY, width } = value;
+  if (![cx, baseY, width].every(Number.isFinite) || width <= 0) {
+    errors.push(`${pathName} must contain finite cx/baseY and positive width`);
+    return null;
+  }
+  if (targetLocal) {
+    if (Math.abs(cx) > 1_000_000 || Math.abs(baseY) > 1_000_000 || width > 1_000_000) {
+      errors.push(`${pathName} exceeds target-local numeric limits`);
+      return null;
+    }
+  } else {
+    if (!viewBox) {
+      errors.push(`${pathName} cannot be validated without an effective viewBox`);
+      return null;
+    }
+    if (
+      width > 4 * viewBox.width
+      || cx < viewBox.x - viewBox.width
+      || cx > viewBox.x + 2 * viewBox.width
+      || baseY < viewBox.y - viewBox.height
+      || baseY > viewBox.y + 2 * viewBox.height
+    ) {
+      errors.push(`${pathName} exceeds effective viewBox bounds`);
+      return null;
+    }
+  }
+  return { cx, baseY, width };
+}
+
+function normalizeAccessoryFollowTarget(value, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["id", "frame", "normalizeReflection"]), pathName, errors);
+  if (
+    typeof value.id !== "string"
+    || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
+  ) {
+    errors.push(`${pathName}.id must be a safe exact SVG id`);
+  }
+  const frame = normalizeAccessoryFrame(
+    value.frame,
+    null,
+    `${pathName}.frame`,
+    errors,
+    true
+  );
+  if (
+    value.normalizeReflection !== undefined
+    && value.normalizeReflection !== "x"
+  ) {
+    errors.push(`${pathName}.normalizeReflection must be "x" when present`);
+  }
+  if (
+    typeof value.id !== "string"
+    || !/^[A-Za-z_][A-Za-z0-9_.:-]{0,127}$/.test(value.id)
+    || !frame
+    || (value.normalizeReflection !== undefined && value.normalizeReflection !== "x")
+  ) {
+    return null;
+  }
+  return {
+    id: value.id,
+    frame,
+    ...(value.normalizeReflection === "x" ? { normalizeReflection: "x" } : {}),
+  };
+}
+
+function normalizeAccessoryHitBoxPadding(value, viewBox, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["left", "top", "right", "bottom"]), pathName, errors);
+  if (!viewBox) {
+    errors.push(`${pathName} cannot be validated without an effective viewBox`);
+    return null;
+  }
+
+  const normalized = {};
+  for (const [key, limit] of [
+    ["left", viewBox.width],
+    ["top", viewBox.height],
+    ["right", viewBox.width],
+    ["bottom", viewBox.height],
+  ]) {
+    if (value[key] === undefined) continue;
+    if (!Number.isFinite(value[key]) || value[key] < 0 || value[key] > limit) {
+      errors.push(`${pathName}.${key} must be a finite non-negative value within viewBox limits`);
+      continue;
+    }
+    normalized[key] = value[key];
+  }
+  return normalized;
+}
+
+function normalizeAccessoryStaticSection(value, viewBox, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(value, new Set(["staticFrame", "hitBoxPadding"]), pathName, errors);
+  const staticFrame = normalizeAccessoryFrame(
+    value.staticFrame,
+    viewBox,
+    `${pathName}.staticFrame`,
+    errors
+  );
+  const hitBoxPadding = value.hitBoxPadding === undefined
+    ? null
+    : normalizeAccessoryHitBoxPadding(
+      value.hitBoxPadding,
+      viewBox,
+      `${pathName}.hitBoxPadding`,
+      errors
+    );
+  if (!staticFrame || (value.hitBoxPadding !== undefined && !hitBoxPadding)) return null;
+  return hitBoxPadding ? { staticFrame, hitBoxPadding } : { staticFrame };
+}
+
+function viewBoxKey(viewBox) {
+  if (!viewBox) return "missing";
+  return [viewBox.x, viewBox.y, viewBox.width, viewBox.height].join(",");
+}
+
+function normalizeAccessoryFileDescriptor(value, viewBox, pathName, errors) {
+  if (!isPlainObject(value)) {
+    errors.push(`${pathName} must be an object`);
+    return null;
+  }
+  hasOnlyKeys(
+    value,
+    new Set(["visibility", "staticFrame", "followTarget", "hitBoxPadding"]),
+    pathName,
+    errors
+  );
+  if (value.visibility !== undefined) {
+    if (value.visibility !== "hidden") {
+      errors.push(`${pathName}.visibility must be "hidden"`);
+      return null;
+    }
+    if (
+      value.staticFrame !== undefined
+      || value.followTarget !== undefined
+      || value.hitBoxPadding !== undefined
+    ) {
+      errors.push(`${pathName} hidden descriptors cannot define placement`);
+      return null;
+    }
+    return { visibility: "hidden" };
+  }
+  const staticFrame = normalizeAccessoryFrame(
+    value.staticFrame,
+    viewBox,
+    `${pathName}.staticFrame`,
+    errors
+  );
+  const followTarget = value.followTarget === undefined
+    ? null
+    : normalizeAccessoryFollowTarget(
+      value.followTarget,
+      `${pathName}.followTarget`,
+      errors
+    );
+  const hitBoxPadding = value.hitBoxPadding === undefined
+    ? null
+    : normalizeAccessoryHitBoxPadding(
+      value.hitBoxPadding,
+      viewBox,
+      `${pathName}.hitBoxPadding`,
+      errors
+    );
+  if (
+    !staticFrame
+    || (value.followTarget !== undefined && !followTarget)
+    || (value.hitBoxPadding !== undefined && !hitBoxPadding)
+  ) return null;
+  return {
+    staticFrame,
+    ...(followTarget ? { followTarget } : {}),
+    ...(hitBoxPadding ? { hitBoxPadding } : {}),
+  };
+}
+
+function normalizeAttachmentCollection(value, cfg, options) {
+  const pathName = options.pathName;
+  const allowItemOverrides = options.allowItemOverrides === true;
+  const errors = [];
+  if (value === undefined || value === false || value === null) {
+    return { value: null, errors };
+  }
+  if (!isPlainObject(value)) {
+    return {
+      value: null,
+      errors: [`${pathName} must be an object or false`],
+    };
+  }
+  hasOnlyKeys(
+    value,
+    new Set(["default", "mini", "files", ...(allowItemOverrides ? ["itemOverrides"] : [])]),
+    pathName,
+    errors
+  );
+
+  const rootViewBox = normalizeViewBox(cfg && cfg.viewBox);
+  const miniViewBox = normalizeViewBox(cfg && cfg.miniMode && cfg.miniMode.viewBox);
+  const usages = projectThemeVisualUsages(cfg);
+  const usagesByFile = new Map();
+  for (const usage of usages) {
+    const existing = usagesByFile.get(usage.file) || [];
+    existing.push(usage);
+    usagesByFile.set(usage.file, existing);
+  }
+
+  const normalized = { files: {} };
+  if (value.default !== undefined) {
+    const defaultSection = normalizeAccessoryStaticSection(
+      value.default,
+      rootViewBox,
+      `${pathName}.default`,
+      errors
+    );
+    if (defaultSection) normalized.default = defaultSection;
+  }
+  if (value.mini !== undefined) {
+    const miniSection = normalizeAccessoryStaticSection(
+      value.mini,
+      miniViewBox,
+      `${pathName}.mini`,
+      errors
+    );
+    if (miniSection) normalized.mini = miniSection;
+  }
+  if (value.files !== undefined) {
+    if (!isPlainObject(value.files)) {
+      errors.push(`${pathName}.files must be an object map`);
+    } else {
+      for (const [rawFile, descriptor] of Object.entries(value.files)) {
+        const file = basenameOnly(rawFile);
+        if (
+          typeof rawFile !== "string"
+          || rawFile !== file
+          || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(file)
+        ) {
+          errors.push(`${pathName}.files["${rawFile}"] must be a safe basename`);
+          continue;
+        }
+        const fileUsages = usagesByFile.get(file) || [];
+        const uniqueViewBoxes = new Map();
+        for (const usage of fileUsages) {
+          uniqueViewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+        }
+        if (uniqueViewBoxes.size > 1) {
+          errors.push(`${pathName}.files["${file}"] has multiple effective viewBoxes`);
+          continue;
+        }
+        const effectiveViewBox = uniqueViewBoxes.size === 1
+          ? [...uniqueViewBoxes.values()][0]
+          : (getCanonicalFileViewBoxes(cfg)[file] || rootViewBox);
+        const normalizedDescriptor = normalizeAccessoryFileDescriptor(
+          descriptor,
+          effectiveViewBox,
+          `${pathName}.files["${file}"]`,
+          errors
+        );
+        if (normalizedDescriptor) normalized.files[file] = normalizedDescriptor;
+      }
+    }
+  }
+
+  if (allowItemOverrides && value.itemOverrides !== undefined) {
+    normalized.itemOverrides = {};
+    if (!isPlainObject(value.itemOverrides)) {
+      errors.push(`${pathName}.itemOverrides must be an object map`);
+    } else {
+      for (const [itemId, itemOverride] of Object.entries(value.itemOverrides)) {
+        const itemPath = `${pathName}.itemOverrides["${itemId}"]`;
+        if (!/^[a-z][a-z0-9-]{0,31}$/.test(itemId)) {
+          errors.push(`${itemPath} must use a safe accessory item id`);
+          continue;
+        }
+        if (!isPlainObject(itemOverride)) {
+          errors.push(`${itemPath} must be an object`);
+          continue;
+        }
+        hasOnlyKeys(itemOverride, new Set(["files"]), itemPath, errors);
+        if (!isPlainObject(itemOverride.files)) {
+          errors.push(`${itemPath}.files must be an object map`);
+          continue;
+        }
+        const normalizedItem = { files: {} };
+        for (const [rawFile, descriptor] of Object.entries(itemOverride.files)) {
+          const file = basenameOnly(rawFile);
+          const descriptorPath = `${itemPath}.files["${rawFile}"]`;
+          if (
+            rawFile !== file
+            || !/^[A-Za-z0-9][A-Za-z0-9._-]{0,254}$/.test(file)
+          ) {
+            errors.push(`${descriptorPath} must use a safe basename`);
+            continue;
+          }
+          const fileUsages = usagesByFile.get(file) || [];
+          if (fileUsages.length === 0) {
+            errors.push(`${descriptorPath} must reference a reachable theme visual`);
+            continue;
+          }
+          const uniqueViewBoxes = new Map();
+          for (const usage of fileUsages) {
+            uniqueViewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+          }
+          if (uniqueViewBoxes.size !== 1) {
+            errors.push(`${descriptorPath} has multiple effective viewBoxes`);
+            continue;
+          }
+          const effectiveViewBox = [...uniqueViewBoxes.values()][0];
+          const normalizedDescriptor = normalizeAccessoryFileDescriptor(
+            descriptor,
+            effectiveViewBox,
+            descriptorPath,
+            errors
+          );
+          if (normalizedDescriptor) normalizedItem.files[file] = normalizedDescriptor;
+        }
+        normalized.itemOverrides[itemId] = normalizedItem;
+      }
+    }
+  }
+  return {
+    value: errors.length === 0 ? normalized : null,
+    errors,
+  };
+}
+
+/**
+ * Strictly normalize head attachments. Structural errors are returned to
+ * validateTheme; ordinary coverage gaps only disable the capability.
+ */
+function normalizeAccessoryAttachments(value, cfg) {
+  return normalizeAttachmentCollection(value, cfg, {
+    pathName: "customization.accessories",
+    allowItemOverrides: true,
+  });
+}
+
+function normalizeMouthAccessoryAttachments(value, cfg) {
+  return normalizeAttachmentCollection(value, cfg, {
+    pathName: "customization.mouthAccessories",
+    allowItemOverrides: false,
+  });
+}
+
+function deriveAttachmentCapability(cfg, fieldName, normalize) {
+  const parsed = normalize(
+    cfg && cfg.customization && cfg.customization[fieldName],
+    cfg
+  );
+  if (parsed.errors.length > 0 || !parsed.value) return false;
+  const attachments = parsed.value;
+  const usages = projectThemeVisualUsages(cfg);
+  if (usages.length === 0) return false;
+
+  const viewBoxesByFile = new Map();
+  for (const usage of usages) {
+    const keys = viewBoxesByFile.get(usage.file) || new Set();
+    keys.add(viewBoxKey(usage.effectiveViewBox));
+    viewBoxesByFile.set(usage.file, keys);
+  }
+  if ([...viewBoxesByFile.values()].some((keys) => keys.size !== 1)) return false;
+
+  for (const usage of usages) {
+    if (!usage.effectiveViewBox) return false;
+    const fileDescriptor = attachments.files[usage.file];
+    if (fileDescriptor) {
+      if (fileDescriptor.visibility === "hidden") continue;
+      if (!fileDescriptor.staticFrame) return false;
+      continue;
+    }
+    if (usage.viewBoxSource === "file") return false;
+    if (usage.viewBoxSource === "mini") {
+      if (!attachments.mini || !attachments.mini.staticFrame) return false;
+      continue;
+    }
+    if (!attachments.default || !attachments.default.staticFrame) return false;
+  }
+  return true;
+}
+
+function deriveAccessoryCapability(cfg) {
+  return deriveAttachmentCapability(cfg, "accessories", normalizeAccessoryAttachments);
+}
+
+function deriveMouthAccessoryCapability(cfg) {
+  return deriveAttachmentCapability(
+    cfg,
+    "mouthAccessories",
+    normalizeMouthAccessoryAttachments
+  );
+}
+
+/**
+ * Resolve an already-authorized accessory wardrobe against the effective
+ * runtime visuals. The authored theme owns the capability decision; user
+ * animation overrides only choose the descriptor for each reachable file.
+ *
+ * Runtime descriptors are materialized per file instead of retaining the
+ * authored default/mini fallbacks. That makes an unknown or geometrically
+ * unsafe frame fail closed locally without disabling the whole wardrobe, and
+ * prevents mini artwork from ever falling through to root coordinates.
+ */
+function resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, options) {
+  const fieldName = options.fieldName;
+  const pathName = options.pathName;
+  const normalize = options.normalize;
+  const derive = options.derive;
+  if (!derive(authoredCfg)) return null;
+
+  const parsed = normalize(
+    authoredCfg && authoredCfg.customization && authoredCfg.customization[fieldName],
+    authoredCfg
+  );
+  if (parsed.errors.length > 0 || !parsed.value) return null;
+
+  const authored = parsed.value;
+  const usagesByFile = new Map();
+  for (const usage of projectThemeVisualUsages(effectiveCfg)) {
+    const entries = usagesByFile.get(usage.file) || [];
+    entries.push(usage);
+    usagesByFile.set(usage.file, entries);
+  }
+
+  // Preserve exact descriptors for optional animation-library assets even
+  // when no current binding selects them. The Settings picker can make one of
+  // these files reachable later; retaining the descriptor also keeps direct
+  // preview and geometry audits on the same policy as the eventual override.
+  const resolved = { files: { ...authored.files } };
+  for (const [file, usages] of usagesByFile) {
+    const viewBoxes = new Map();
+    for (const usage of usages) {
+      viewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+    }
+    if (viewBoxes.size !== 1 || ![...viewBoxes.values()][0]) {
+      resolved.files[file] = { visibility: "hidden" };
+      continue;
+    }
+    const effectiveViewBox = [...viewBoxes.values()][0];
+
+    const exact = authored.files[file];
+    if (exact) {
+      const errors = [];
+      const descriptor = normalizeAccessoryFileDescriptor(
+        exact,
+        effectiveViewBox,
+        `effective ${pathName}.files["${file}"]`,
+        errors
+      );
+      resolved.files[file] = errors.length === 0 && descriptor
+        ? descriptor
+        : { visibility: "hidden" };
+      continue;
+    }
+
+    const miniFlags = new Set(
+      usages.map((usage) => usage.stateFamily.startsWith("mini:"))
+    );
+    if (miniFlags.size !== 1) {
+      resolved.files[file] = { visibility: "hidden" };
+      continue;
+    }
+
+    const isMini = [...miniFlags][0];
+    const expectedViewBoxSource = isMini ? "mini" : "root";
+    const fallback = isMini ? authored.mini : authored.default;
+    if (
+      !fallback
+      || usages.some((usage) => usage.viewBoxSource !== expectedViewBoxSource)
+    ) {
+      resolved.files[file] = { visibility: "hidden" };
+      continue;
+    }
+
+    const errors = [];
+    const descriptor = normalizeAccessoryStaticSection(
+      fallback,
+      effectiveViewBox,
+      `effective ${pathName}.files["${file}"]`,
+      errors
+    );
+    resolved.files[file] = errors.length === 0 && descriptor
+      ? descriptor
+      : { visibility: "hidden" };
+  }
+
+  if (authored.itemOverrides) {
+    resolved.itemOverrides = {};
+    for (const [itemId, itemOverride] of Object.entries(authored.itemOverrides)) {
+      const resolvedItem = { files: {} };
+      for (const [file, descriptor] of Object.entries(itemOverride.files || {})) {
+        const usages = usagesByFile.get(file);
+        if (!usages || usages.length === 0) continue;
+        const viewBoxes = new Map();
+        for (const usage of usages) {
+          viewBoxes.set(viewBoxKey(usage.effectiveViewBox), usage.effectiveViewBox);
+        }
+        if (viewBoxes.size !== 1 || ![...viewBoxes.values()][0]) {
+          resolvedItem.files[file] = { visibility: "hidden" };
+          continue;
+        }
+        const errors = [];
+        const normalized = normalizeAccessoryFileDescriptor(
+          descriptor,
+          [...viewBoxes.values()][0],
+          `effective ${pathName}.itemOverrides["${itemId}"].files["${file}"]`,
+          errors
+        );
+        resolvedItem.files[file] = errors.length === 0 && normalized
+          ? normalized
+          : { visibility: "hidden" };
+      }
+      if (Object.keys(resolvedItem.files).length > 0) {
+        resolved.itemOverrides[itemId] = resolvedItem;
+      }
+    }
+  }
+
+  return resolved;
+}
+
+
+function resolveEffectiveAccessoryAttachments(authoredCfg, effectiveCfg) {
+  return resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, {
+    fieldName: "accessories",
+    pathName: "customization.accessories",
+    normalize: normalizeAccessoryAttachments,
+    derive: deriveAccessoryCapability,
+  });
+}
+
+function resolveEffectiveMouthAccessoryAttachments(authoredCfg, effectiveCfg) {
+  return resolveEffectiveAttachmentCollection(authoredCfg, effectiveCfg, {
+    fieldName: "mouthAccessories",
+    pathName: "customization.mouthAccessories",
+    normalize: normalizeMouthAccessoryAttachments,
+    derive: deriveMouthAccessoryCapability,
+  });
 }
 
 function buildCapabilities(cfg, options = {}) {
@@ -365,64 +1252,71 @@ function buildCapabilities(cfg, options = {}) {
     idleMode: deriveIdleMode(cfg),
     sleepMode: deriveSleepMode(cfg),
     powerProfile: derivePowerProfile(cfg, options),
+    petTint: !!(
+      isPlainObject(cfg && cfg.customization)
+      && cfg.customization.petTint === true
+    ),
+    accessories: deriveAccessoryCapability(cfg),
+    mouthAccessories: deriveMouthAccessoryCapability(cfg),
   };
 }
 
+// mirroredFiles: { "<file>": "<variant>" }. Whenever the runtime draws a file
+// mirrored (left mini edge, leftward roam) it shows the variant, whose glyphs
+// are pre-mirrored so text reads the right way round (src/mirrored-files.js).
+function validateMirroredFiles(value) {
+  if (!isPlainObject(value)) {
+    return [`mirroredFiles must be an object mapping a file to its mirrored-display variant, got ${JSON.stringify(value)}`];
+  }
+  const errors = [];
+  for (const [from, to] of Object.entries(value)) {
+    if (typeof to !== "string" || !basenameOnly(to)) {
+      errors.push(`mirroredFiles["${from}"] must be a file name, got ${JSON.stringify(to)}`);
+    } else if (basenameOnly(to) === basenameOnly(from)) {
+      errors.push(`mirroredFiles["${from}"] must name a different file`);
+    }
+  }
+  return errors;
+}
+
+function normalizeMirroredFiles(value) {
+  const out = {};
+  if (!isPlainObject(value)) return out;
+  for (const [from, to] of Object.entries(value)) {
+    const source = basenameOnly(from);
+    const target = typeof to === "string" ? basenameOnly(to) : "";
+    if (source && target && source !== target) out[source] = target;
+  }
+  return out;
+}
+
 function addThemeAssetFile(out, filename) {
+  if (typeof filename !== "string") return;
   const safe = basenameOnly(filename);
   if (safe) out.add(safe);
 }
 
 function collectRequiredAssetFiles(theme) {
   const files = new Set();
-  if (theme && theme.states) {
-    for (const stateFiles of Object.values(theme.states)) {
-      if (!Array.isArray(stateFiles)) continue;
-      for (const file of stateFiles) addThemeAssetFile(files, file);
+  for (const usage of projectThemeVisualUsages(theme)) {
+    addThemeAssetFile(files, usage.file);
+  }
+  // Exact attachment descriptors may also prepare an otherwise optional file
+  // for the animation-override picker. Treat those library assets as required
+  // so typos fail asset validation and external SVGs still pass sanitization.
+  for (const field of ["accessories", "mouthAccessories"]) {
+    const attachments = theme && theme.customization && theme.customization[field];
+    for (const file of Object.keys((attachments && attachments.files) || {})) {
+      addThemeAssetFile(files, file);
     }
   }
-  if (theme && theme.miniMode && theme.miniMode.states) {
-    for (const stateFiles of Object.values(theme.miniMode.states)) {
-      if (!Array.isArray(stateFiles)) continue;
-      for (const file of stateFiles) addThemeAssetFile(files, file);
-    }
+  const objectChannelFiles = theme && theme.rendering && theme.rendering.objectChannelFiles;
+  for (const file of Array.isArray(objectChannelFiles) ? objectChannelFiles : []) {
+    addThemeAssetFile(files, file);
   }
-  for (const group of [theme && theme.workingTiers, theme && theme.jugglingTiers]) {
-    if (!Array.isArray(group)) continue;
-    for (const entry of group) {
-      if (entry && typeof entry.file === "string") addThemeAssetFile(files, entry.file);
-    }
-  }
-  if (Array.isArray(theme && theme.idleAnimations)) {
-    for (const entry of theme.idleAnimations) {
-      if (entry && typeof entry.file === "string") addThemeAssetFile(files, entry.file);
-    }
-  }
-  if (isPlainObject(theme && theme.reactions)) {
-    for (const entry of Object.values(theme.reactions)) {
-      if (!entry || typeof entry !== "object") continue;
-      if (typeof entry.file === "string") addThemeAssetFile(files, entry.file);
-      if (typeof entry.fileLeft === "string") addThemeAssetFile(files, entry.fileLeft);
-      if (typeof entry.fileRight === "string") addThemeAssetFile(files, entry.fileRight);
-      if (Array.isArray(entry.files)) {
-        for (const file of entry.files) addThemeAssetFile(files, file);
-      }
-    }
-  }
-  if (isPlainObject(theme && theme.displayHintMap)) {
-    for (const file of Object.values(theme.displayHintMap)) {
-      if (typeof file === "string") addThemeAssetFile(files, file);
-    }
-  }
-  if (isPlainObject(theme && theme.updateVisuals) && typeof theme.updateVisuals.checking === "string") {
-    addThemeAssetFile(files, theme.updateVisuals.checking);
-  }
-  if (isPlainObject(theme && theme.rendering) && isPlainObject(theme.rendering.lowPowerStaticImageOverrides)) {
-    for (const override of Object.values(theme.rendering.lowPowerStaticImageOverrides)) {
-      if (!isPlainObject(override)) continue;
-      if (typeof override.from === "string") addThemeAssetFile(files, override.from);
-      if (typeof override.to === "string") addThemeAssetFile(files, override.to);
-    }
+  const mirroredFiles = theme && theme.mirroredFiles;
+  for (const file of Object.values(isPlainObject(mirroredFiles) ? mirroredFiles : {})) {
+    addThemeAssetFile(files, file);
   }
   return [...files];
 }
@@ -451,6 +1345,29 @@ function normalizeViewBox(value) {
     return null;
   }
   return { x, y, width, height };
+}
+
+function normalizeMiniPeekMotion(value, key) {
+  if (value === undefined) return undefined;
+  if (!isPlainObject(value)) {
+    console.warn(`[theme-loader] miniMode.${key} dropped: expected object`);
+    return {};
+  }
+  const out = {};
+  for (const [field, min, max] of [
+    ["offsetRatio", 0, 0.5],
+    ["delayMs", 0, 5000],
+    ["durationMs", 16, 5000],
+  ]) {
+    if (!Object.prototype.hasOwnProperty.call(value, field)) continue;
+    const v = value[field];
+    if (typeof v === "number" && Number.isFinite(v) && v >= min && v <= max) {
+      out[field] = v;
+    } else {
+      console.warn(`[theme-loader] miniMode.${key}.${field} dropped: expected number in ${min}–${max}`);
+    }
+  }
+  return out;
 }
 
 function normalizeTrustedRuntime(value, isBuiltin, themeId) {
@@ -488,6 +1405,15 @@ function normalizeTrustedRuntime(value, isBuiltin, themeId) {
 function normalizeRendering(value) {
   if (!isPlainObject(value)) return { svgChannel: "auto" };
   const lowPowerStaticImageOverrides = {};
+  const objectChannelFiles = [];
+  const seenObjectChannelFiles = new Set();
+  for (const file of Array.isArray(value.objectChannelFiles) ? value.objectChannelFiles : []) {
+    if (typeof file !== "string") continue;
+    const safeFile = basenameOnly(file);
+    if (!safeFile || !safeFile.endsWith(".svg") || seenObjectChannelFiles.has(safeFile)) continue;
+    seenObjectChannelFiles.add(safeFile);
+    objectChannelFiles.push(safeFile);
+  }
   if (isPlainObject(value.lowPowerStaticImageOverrides)) {
     for (const [state, override] of Object.entries(value.lowPowerStaticImageOverrides)) {
       if (!isPlainObject(override)) continue;
@@ -503,6 +1429,7 @@ function normalizeRendering(value) {
   if (Object.keys(lowPowerStaticImageOverrides).length > 0) {
     rendering.lowPowerStaticImageOverrides = lowPowerStaticImageOverrides;
   }
+  if (objectChannelFiles.length > 0) rendering.objectChannelFiles = objectChannelFiles;
   return {
     ...rendering,
   };
@@ -600,6 +1527,14 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   // trustedRuntime grants script execution capability, so it requires loader-derived built-in trust.
   theme.trustedRuntime = normalizeTrustedRuntime(raw.trustedRuntime, isBuiltin, themeId);
   theme.rendering = normalizeRendering(raw.rendering);
+  theme.customization = {
+    petTint: !!(
+      isPlainObject(raw.customization)
+      && raw.customization.petTint === true
+    ),
+    accessories: null,
+    mouthAccessories: null,
+  };
 
   // objectScale
   theme.objectScale = { ...DEFAULT_OBJECT_SCALE, ...(raw.objectScale || {}) };
@@ -649,6 +1584,8 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   // artwork; themes whose roam asset is drawn facing left set this to invert
   // the mirror. Pure rendering flag — safe for external themes.
   theme.roamFlipAssets = !!raw.roamFlipAssets;
+  // Pre-mirrored-glyph variants shown whenever a file is drawn mirrored.
+  theme.mirroredFiles = normalizeMirroredFiles(raw.mirroredFiles);
 
   // miniMode
   if (raw.miniMode) {
@@ -656,6 +1593,10 @@ function mergeDefaults(raw, themeId, isBuiltin) {
       supported: true,
       offsetRatio: 0.486,
       ...raw.miniMode,
+      ...(Object.prototype.hasOwnProperty.call(raw.miniMode, "peek")
+        ? { peek: normalizeMiniPeekMotion(raw.miniMode.peek, "peek") } : {}),
+      ...(Object.prototype.hasOwnProperty.call(raw.miniMode, "sleepPeek")
+        ? { sleepPeek: normalizeMiniPeekMotion(raw.miniMode.sleepPeek, "sleepPeek") } : {}),
       viewBox: normalizeViewBox(raw.miniMode.viewBox),
       timings: {
         minDisplay: {},
@@ -668,6 +1609,15 @@ function mergeDefaults(raw, themeId, isBuiltin) {
     theme.miniMode = { supported: false, states: {}, viewBox: null, timings: { minDisplay: {}, autoReturn: {} }, glyphFlips: {} };
   }
 
+  theme.customization.accessories = normalizeAccessoryAttachments(
+    isPlainObject(raw.customization) ? raw.customization.accessories : undefined,
+    theme
+  ).value;
+  theme.customization.mouthAccessories = normalizeMouthAccessoryAttachments(
+    isPlainObject(raw.customization) ? raw.customization.mouthAccessories : undefined,
+    theme
+  ).value;
+
   // Merge mini timings into main timings for state.js convenience
   if (theme.miniMode.timings) {
     Object.assign(theme.timings.minDisplay, theme.miniMode.timings.minDisplay || {});
@@ -676,6 +1626,7 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // displayHintMap
   theme.displayHintMap = raw.displayHintMap || {};
+  theme.completionVisualMap = raw.completionVisualMap || {};
 
   // sounds
   theme.sounds = { ...DEFAULT_SOUNDS, ...(raw.sounds || {}) };
@@ -693,6 +1644,10 @@ function mergeDefaults(raw, themeId, isBuiltin) {
 
   // idleAnimations
   theme.idleAnimations = raw.idleAnimations || [];
+  if (Object.prototype.hasOwnProperty.call(raw, "idleVisualOptions")) {
+    theme.idleVisualOptions = normalizeIdleVisualOptions(raw.idleVisualOptions);
+  }
+  theme.idleEasterEggs = normalizeIdleEasterEggs(raw.idleEasterEggs).value;
 
   // updater-specific visual bindings
   theme.updateVisuals = isPlainObject(raw.updateVisuals) ? { ...raw.updateVisuals } : {};
@@ -732,6 +1687,9 @@ function mergeDefaults(raw, themeId, isBuiltin) {
   if (theme.displayHintMap) {
     for (const [k, v] of Object.entries(theme.displayHintMap)) theme.displayHintMap[k] = bn(v);
   }
+  if (theme.completionVisualMap) {
+    for (const [k, v] of Object.entries(theme.completionVisualMap)) theme.completionVisualMap[k] = bn(v);
+  }
   if (theme.workingTiers) {
     for (const t of theme.workingTiers) { if (t.file) t.file = bn(t.file); }
   }
@@ -747,6 +1705,13 @@ function mergeDefaults(raw, themeId, isBuiltin) {
     } else {
       delete theme.updateVisuals.checking;
     }
+  }
+  if (
+    theme.timings
+    && typeof theme.timings.dndSleepTransitionSvg === "string"
+    && theme.timings.dndSleepTransitionSvg
+  ) {
+    theme.timings.dndSleepTransitionSvg = bn(theme.timings.dndSleepTransitionSvg);
   }
   if (Array.isArray(theme.wideHitboxFiles)) theme.wideHitboxFiles = theme.wideHitboxFiles.map(bn);
   if (Array.isArray(theme.sleepingHitboxFiles)) theme.sleepingHitboxFiles = theme.sleepingHitboxFiles.map(bn);
@@ -764,11 +1729,15 @@ module.exports = {
   REQUIRED_STATES,
   FULL_SLEEP_REQUIRED_STATES,
   MINI_REQUIRED_STATES,
+  MINI_OPTIONAL_PEEK_STATES,
   VISUAL_FALLBACK_STATES,
   validateTheme,
   mergeDefaults,
   isPlainObject,
   hasNonEmptyArray,
+  normalizeIdleEasterEggs,
+  normalizeIdleVisualOptions,
+  filterIdleVisualOptionsByAsset,
   getStateBindingEntry,
   getStateFiles,
   hasStateFiles,
@@ -779,6 +1748,13 @@ module.exports = {
   deriveIdleMode,
   deriveSleepMode,
   buildCapabilities,
+  projectThemeVisualUsages,
+  normalizeAccessoryAttachments,
+  normalizeMouthAccessoryAttachments,
+  deriveAccessoryCapability,
+  deriveMouthAccessoryCapability,
+  resolveEffectiveAccessoryAttachments,
+  resolveEffectiveMouthAccessoryAttachments,
   collectRequiredAssetFiles,
   deepMergeObject,
   basenameOnly,
@@ -786,6 +1762,7 @@ module.exports = {
   normalizeTrustedRuntime,
   normalizeRendering,
   normalizeFileViewBoxes,
+  getCanonicalFileViewBoxes,
   normalizeFileHitBoxes,
   mergeFileHitBoxes,
 };

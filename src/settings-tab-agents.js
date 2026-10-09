@@ -15,10 +15,14 @@
     { id: "intercept", labelKey: "codexPermissionModeIntercept" },
   ];
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
+  const CUSTOM_TOOL_SCAN_STATUS_MIN_MS = 1200;
   let agentHintActionPending = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
   let codexHookHealthRequestSeq = 0;
+  let claudeHookHealthRequestSeq = 0;
+  let dshNoticesRequestSeq = 0;
+  const dshNoticeContainers = new Set();
 
   function t(key) {
     return helpers.t(key);
@@ -40,69 +44,157 @@
     subtitle.textContent = t("agentsSubtitle");
     parent.appendChild(subtitle);
 
-    // Scan toolbar — always available on Windows (wslSupported) so a failed
-    // auto scan still leaves the user a manual retry path.
-    const hints = runtime.agentInstallationHints;
-    const wslDistros = hints && Array.isArray(hints.wslDistros) ? hints.wslDistros : [];
-    const wslPending = !!(hints && hints.wslPending);
-    const wslSupported = !!(hints && hints.wslSupported);
-    if (wslSupported || wslDistros.length > 0 || wslPending) {
-      const toolbar = document.createElement("div");
-      toolbar.className = "agent-scan-toolbar";
+    const metadata = runtime.agentMetadata || [];
+    const agents = typeof sortAgentMetadataForSettings === "function"
+      ? sortAgentMetadataForSettings(metadata)
+      : metadata;
+    const categorized = categorizeAgentsForSections(agents);
+    const subtab = resolveAgentsSubtab(categorized);
 
-      const scanBtn = document.createElement("button");
-      scanBtn.type = "button";
-      scanBtn.className = "soft-btn agent-instance-scan-btn";
-      scanBtn.textContent = t("agentInstanceScanWsl");
-      scanBtn.title = t("agentInstanceScanWslDesc");
-      scanBtn.addEventListener("click", async () => {
-        scanBtn.disabled = true;
-        scanBtn.textContent = t("agentInstanceScanning");
-        try {
-          if (ops && typeof ops.fetchAgentInstallationHints === "function") {
-            await ops.fetchAgentInstallationHints({ refreshWsl: true });
-          }
-          ops.requestRender({ content: true });
-        } catch (err) {
-          console.warn("WSL scan failed:", err && err.message);
-        } finally {
-          scanBtn.disabled = false;
-          scanBtn.textContent = t("agentInstanceScanWsl");
-        }
-      });
-      toolbar.appendChild(scanBtn);
+    parent.appendChild(buildAgentSubtabRow(subtab, categorized));
 
-      if (wslPending) {
-        const status = document.createElement("span");
-        status.className = "agent-scan-status";
-        status.textContent = t("agentInstanceScanning") + "...";
-        toolbar.appendChild(status);
+    // Each banner lives in the subtab it acts on: "install what we detected"
+    // is what the discover subtab is for, and "your integration outlived its
+    // agent" is about the connected list.
+    if (subtab === "discover") {
+      const recommendedHints = getRecommendedInstallHints();
+      if (recommendedHints.length > 0) {
+        parent.appendChild(buildAgentInstallHintBanner(recommendedHints));
       }
-
-      parent.appendChild(toolbar);
+      renderDiscoverSubtab(parent, categorized);
+      return;
     }
 
-    const recommendedHints = getRecommendedInstallHints();
-    if (recommendedHints.length > 0) {
-      parent.appendChild(buildAgentInstallHintBanner(recommendedHints));
-    }
     const cleanupHints = getRecommendedCleanupHints();
     if (cleanupHints.length > 0) {
       parent.appendChild(buildAgentCleanupHintBanner(cleanupHints));
     }
+    renderConnectedSubtab(parent, categorized, metadata.length === 0);
+  }
 
-    if (!runtime.agentMetadata || runtime.agentMetadata.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "placeholder";
-      empty.innerHTML = `<div class="placeholder-desc">${helpers.escapeHtml(t("agentsEmpty"))}</div>`;
-      parent.appendChild(empty);
+  // "connected" unless nothing is connected yet — a first run would otherwise
+  // open on an empty list instead of the agents it could add. Once the user
+  // picks a subtab their choice is pinned for the rest of the session.
+  function resolveAgentsSubtab(categorized) {
+    if (runtime.agentsSubtab === "connected" || runtime.agentsSubtab === "discover") {
+      return runtime.agentsSubtab;
+    }
+    return categorized.connected.length > 0 ? "connected" : "discover";
+  }
+
+  function renderConnectedSubtab(parent, categorized, noAgentsAtAll) {
+    if (categorized.connected.length > 0) {
+      // No section title: the subtab pill already says "Connected".
+      const section = helpers.buildSection("", buildAgentRows(categorized.connected));
+      section.classList.add("agent-section", "agent-section-connected");
+      parent.appendChild(section);
       return;
     }
+    const empty = document.createElement("div");
+    empty.className = "placeholder";
+    const message = noAgentsAtAll ? t("agentsEmpty") : t("agentsConnectedEmpty");
+    empty.innerHTML = `<div class="placeholder-desc">${helpers.escapeHtml(message)}</div>`;
+    parent.appendChild(empty);
+  }
 
-    const agents = typeof sortAgentMetadataForSettings === "function"
-      ? sortAgentMetadataForSettings(runtime.agentMetadata)
-      : runtime.agentMetadata;
-    renderAgentSections(parent, agents);
+  function renderDiscoverSubtab(parent, categorized) {
+    if (categorized.recommended.length > 0) {
+      const section = helpers.buildSection(
+        t("agentSectionRecommended"),
+        buildAgentRows(categorized.recommended)
+      );
+      section.classList.add("agent-section", "agent-section-recommended");
+      parent.appendChild(section);
+    }
+    parent.appendChild(buildCustomToolsSection());
+    if (categorized.unavailable.length > 0) {
+      parent.appendChild(buildUnavailableSection(categorized.unavailable));
+    }
+  }
+
+  // A catalog of what Clawd supports, not a to-do list — collapsed by default
+  // so the two actionable blocks above it stay in view, and searchable because
+  // it is long enough that scanning it by eye is the slow path.
+  function buildUnavailableSection(agents) {
+    const rows = agents.map((agent) => {
+      const row = buildAgentGroup(agent);
+      row.dataset.agentSearch = `${agent.name || ""} ${agent.id || ""}`.toLowerCase();
+      return row;
+    });
+
+    const count = document.createElement("span");
+    count.className = "agent-section-count";
+
+    function applyFilter() {
+      const query = (runtime.agentsUnavailableQuery || "").trim().toLowerCase();
+      let shown = 0;
+      for (const row of rows) {
+        const matches = !query || String(row.dataset.agentSearch || "").includes(query);
+        row.classList.toggle("agent-row-filtered-out", !matches);
+        if (matches) shown += 1;
+      }
+      // Counts what is on screen, so the number always matches what you see.
+      count.textContent = String(shown);
+    }
+
+    const search = document.createElement("input");
+    search.type = "search";
+    search.className = "agent-section-search";
+    search.placeholder = t("agentSearchPlaceholder");
+    search.value = runtime.agentsUnavailableQuery || "";
+    // The input sits inside the collapsible header, whose click and Enter/Space
+    // handlers would otherwise toggle the group out from under the typist.
+    const stopHeaderToggle = (event) => {
+      if (event && typeof event.stopPropagation === "function") event.stopPropagation();
+    };
+    search.addEventListener("click", stopHeaderToggle);
+    search.addEventListener("keydown", stopHeaderToggle);
+
+    function commitQuery(event) {
+      runtime.agentsUnavailableQuery = (event && event.target && event.target.value) || "";
+      applyFilter();
+      // Typing into a collapsed catalog would filter rows nobody can see.
+      if (runtime.agentsUnavailableQuery && group.classList.contains("collapsed")) {
+        const header = group.querySelector(".collapsible-group-header");
+        // HTMLElement.click() in the browser; the test DOM has no click(), but
+        // its dispatchEvent takes a plain descriptor.
+        if (header && typeof header.click === "function") header.click();
+        else if (header) header.dispatchEvent({ type: "click", bubbles: false });
+      }
+    }
+
+    // Mid-composition the field holds pinyin/kana keystrokes rather than a
+    // query, and filtering on those empties the list under the candidate
+    // window while the user is still picking a character.
+    let composing = false;
+    search.addEventListener("compositionstart", () => { composing = true; });
+    search.addEventListener("compositionend", (event) => {
+      composing = false;
+      commitQuery(event);
+    });
+    search.addEventListener("input", (event) => {
+      if (composing) return;
+      commitQuery(event);
+    });
+
+    const summary = document.createElement("div");
+    summary.className = "agent-section-summary";
+    summary.appendChild(search);
+    summary.appendChild(count);
+
+    const group = helpers.buildCollapsibleGroup({
+      id: "agents:unavailable",
+      title: t("agentSectionUnavailable"),
+      summary,
+      children: rows,
+      defaultCollapsed: true,
+      className: "agent-unavailable-group",
+    });
+    applyFilter();
+
+    const section = helpers.buildSection("", [group]);
+    section.classList.add("agent-section", "agent-section-unavailable");
+    return section;
   }
 
   function getAgentMetadata(agentId) {
@@ -150,27 +242,18 @@
     const dismissed = state.snapshot && state.snapshot.dismissedAgentCleanupHints;
     return entries.filter((entry) => {
       if (!entry || typeof entry.agentId !== "string") return false;
-      if (entry.detectedInstalled) return false;
-      if (!getAgentMetadata(entry.agentId)) return false;
+      // #895: strict false only. A detector entry that never reported on this
+      // agent is unknown, and proposing a deletion on unknown is how a working
+      // integration gets torn out.
+      if (entry.detectedInstalled !== false) return false;
+      const meta = getAgentMetadata(entry.agentId);
+      // Fail closed: metadata that predates cleanupSuggestionExempt, or that
+      // failed to load at all, must not be read as "safe to remove".
+      if (!meta || meta.cleanupSuggestionExempt !== false) return false;
       if (!readers.readAgentIntegrationInstalled(entry.agentId)) return false;
       if (dismissed && dismissed[entry.agentId] === true) return false;
       return true;
     });
-  }
-
-  function getInstallationHint(agentId) {
-    const hints = runtime.agentInstallationHints;
-    const entries = hints && Array.isArray(hints.agents) ? hints.agents : [];
-    return entries.find((entry) => entry && entry.agentId === agentId) || null;
-  }
-
-  function hasRecommendedLocalInstall(agentId) {
-    const entry = getInstallationHint(agentId);
-    return !!(
-      entry
-      && entry.detectedInstalled === true
-      && INSTALL_HINT_CONFIDENCES.has(entry.confidence)
-    );
   }
 
   function categorizeAgentsForSections(agents) {
@@ -181,6 +264,15 @@
     };
     for (const agent of agents) {
       if (!agent || !agent.id) continue;
+      // A custom agent only exists in metadata once it has been registered,
+      // and registering is what connects it — there is nothing left to install,
+      // so it belongs with the connected agents whether or not its path still
+      // resolves. A vanished path surfaces through its own row, not by
+      // demoting the agent into the discover subtab.
+      if (agent.custom) {
+        sections.connected.push(agent);
+        continue;
+      }
       if (readers.readAgentIntegrationInstalled(agent.id)) {
         sections.connected.push(agent);
       } else if (hasRecommendedLocalInstall(agent.id)) {
@@ -192,20 +284,381 @@
     return sections;
   }
 
-  function renderAgentSections(parent, agents) {
-    const categorized = categorizeAgentsForSections(agents);
-    const specs = [
-      ["connected", "agentSectionConnected", "agent-section-connected"],
-      ["recommended", "agentSectionRecommended", "agent-section-recommended"],
-      ["unavailable", "agentSectionUnavailable", "agent-section-unavailable"],
+  function hasRecommendedLocalInstall(agentId) {
+    const entry = getInstallationHint(agentId);
+    return !!(
+      entry
+      && entry.detectedInstalled === true
+      && INSTALL_HINT_CONFIDENCES.has(entry.confidence)
+    );
+  }
+
+  function getInstallationHint(agentId, custom = false) {
+    const hints = runtime.agentInstallationHints;
+    const entries = custom
+      ? (hints && Array.isArray(hints.customAgents) ? hints.customAgents : [])
+      : (hints && Array.isArray(hints.agents) ? hints.agents : []);
+    return entries.find((entry) => entry && entry.agentId === agentId) || null;
+  }
+
+  function getCustomAgentUnavailableLabelKey(hint) {
+    if (hint && hint.reason === "not-executable") return "customToolDetectionNotExecutable";
+    if (hint && hint.reason === "not-file") return "customToolDetectionNotFile";
+    return "customToolDetectionMissing";
+  }
+
+  function buildAgentRows(agents) {
+    return agents.map((agent) => buildAgentGroup(agent));
+  }
+
+  // Splits the tab into "agent list" and "discover and add". The list is the
+  // default because it is what the tab is for; manual discovery is the fallback
+  // for when the built-in scan came up empty.
+  function buildAgentSubtabRow(current, categorized) {
+    const row = document.createElement("div");
+    row.className = "agents-subtabs";
+
+    const group = document.createElement("div");
+    group.className = "segmented";
+    group.setAttribute("role", "tablist");
+    const entries = [
+      { key: "connected", label: t("agentsSubtabConnected"), count: 0 },
+      // Counts what the user can act on right now, so the badge stays a
+      // to-do marker: agents detected locally but not connected yet.
+      { key: "discover", label: t("agentsSubtabDiscover"), count: categorized.recommended.length },
     ];
-    for (const [key, titleKey, className] of specs) {
-      const sectionAgents = categorized[key];
-      if (!Array.isArray(sectionAgents) || sectionAgents.length === 0) continue;
-      const groups = sectionAgents.map((agent) => buildAgentGroup(agent));
-      const section = helpers.buildSection(t(titleKey), groups);
-      section.classList.add("agent-section", className);
-      parent.appendChild(section);
+    for (const entry of entries) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.textContent = entry.label;
+      btn.setAttribute("role", "tab");
+      btn.setAttribute("aria-selected", entry.key === current ? "true" : "false");
+      if (entry.key === current) btn.classList.add("active");
+      if (entry.count > 0) {
+        const badge = document.createElement("span");
+        badge.className = "agents-subtab-count";
+        badge.textContent = String(entry.count);
+        btn.appendChild(badge);
+      }
+      btn.addEventListener("click", () => {
+        if (runtime.agentsSubtab === entry.key) return;
+        runtime.agentsSubtab = entry.key;
+        ops.requestRender({ content: true });
+      });
+      group.appendChild(btn);
+    }
+    row.appendChild(group);
+
+    // WSL rescan belongs to the connected subtab: it re-detects built-in
+    // agents installed inside distros, and its results render as instance rows
+    // inside the agent cards — not as custom-tool discovery hits.
+    if (current === "connected") {
+      const wslScanControl = buildWslScanControl();
+      if (wslScanControl) row.appendChild(wslScanControl);
+    }
+    return row;
+  }
+
+  function buildCustomToolsSection() {
+    const row = document.createElement("div");
+    row.className = "row-sub custom-tool-discovery-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("customToolDiscoveryTitle");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("rowCustomToolsDiscoveryPathsDesc");
+    const scanStatus = document.createElement("span");
+    scanStatus.className = "custom-tool-scan-status";
+    scanStatus.textContent = getCustomToolScanStatusText();
+    text.appendChild(label);
+    text.appendChild(desc);
+    text.appendChild(scanStatus);
+    row.appendChild(text);
+
+    const control = document.createElement("div");
+    control.className = "custom-tool-discovery-control custom-tool-discovery-actions";
+    const addButton = helpers.buildButton({
+      labelKey: "customToolManualAdd",
+      tone: "accent",
+      size: "compact",
+      className: "custom-tool-path-picker",
+    });
+    addButton.addEventListener("click", () => addPickedCustomDiscoveryPath(addButton));
+    control.appendChild(addButton);
+    const scanButton = helpers.buildButton({
+      labelKey: "customToolRescan",
+      size: "compact",
+      className: "custom-tool-scan",
+    });
+    scanButton.addEventListener("click", async () => {
+      const scanStartedAt = Date.now();
+      helpers.setButtonState(scanButton, { pending: true });
+      scanStatus.classList.remove("failed");
+      scanStatus.classList.add("pending");
+      scanStatus.textContent = t("customToolScanStatusScanning");
+      try {
+        if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+          await ops.fetchAgentInstallationHints({ force: true });
+        }
+        const remainingStatusMs = CUSTOM_TOOL_SCAN_STATUS_MIN_MS - (Date.now() - scanStartedAt);
+        if (remainingStatusMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remainingStatusMs));
+        }
+        scanStatus.textContent = getCustomToolScanStatusText();
+      } catch (err) {
+        scanStatus.classList.add("failed");
+        scanStatus.textContent = t("customToolScanStatusFailed");
+      } finally {
+        scanStatus.classList.remove("pending");
+        helpers.setButtonState(scanButton, { pending: false });
+      }
+    });
+    control.appendChild(scanButton);
+    row.appendChild(control);
+    const rows = [row, ...buildCustomToolResultRows()];
+    // No section title: the subtab pill already names this half of the tab.
+    const section = helpers.buildSection("", rows);
+    section.classList.add("agent-custom-tools-section");
+    return section;
+  }
+
+  function buildWslScanControl() {
+    const hints = runtime.agentInstallationHints;
+    const wslDistros = hints && Array.isArray(hints.wslDistros) ? hints.wslDistros : [];
+    const wslPending = !!(hints && hints.wslPending);
+    const wslSupported = !!(hints && hints.wslSupported);
+    if (!(wslSupported || wslDistros.length > 0 || wslPending)) return null;
+
+    const control = document.createElement("div");
+    control.className = "custom-tool-wsl-scan";
+    const scanButton = helpers.buildButton({
+      labelKey: "agentInstanceScanWsl",
+      size: "compact",
+      className: "agent-instance-scan-btn",
+      title: t("agentInstanceScanWslDesc"),
+    });
+    scanButton.addEventListener("click", async () => {
+      helpers.setButtonState(scanButton, {
+        pending: true,
+        labelKey: "agentInstanceScanning",
+      });
+      try {
+        if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+          await ops.fetchAgentInstallationHints({ refreshWsl: true });
+        }
+        ops.requestRender({ content: true });
+      } catch (err) {
+        console.warn("WSL scan failed:", err && err.message);
+      } finally {
+        helpers.setButtonState(scanButton, {
+          pending: false,
+          labelKey: "agentInstanceScanWsl",
+        });
+      }
+    });
+    control.appendChild(scanButton);
+
+    if (wslPending) {
+      const status = document.createElement("span");
+      status.className = "agent-scan-status";
+      status.textContent = t("agentInstanceScanning") + "...";
+      control.appendChild(status);
+    }
+    return control;
+  }
+
+  function getCustomToolScanStatusText() {
+    if (runtime.agentInstallationHintsPending) return t("customToolScanStatusScanning");
+    const checkedAt = runtime.agentInstallationHints && runtime.agentInstallationHints.checkedAt;
+    if (!Number.isFinite(checkedAt)) return t("customToolScanStatusIdle");
+    let time = new Date(checkedAt).toLocaleTimeString();
+    try {
+      time = new Intl.DateTimeFormat((state.snapshot && state.snapshot.lang) || "en", {
+        hour: "2-digit",
+        minute: "2-digit",
+      }).format(new Date(checkedAt));
+    } catch {}
+    return t("customToolScanStatusComplete").replace("{time}", time);
+  }
+
+  async function addPickedCustomDiscoveryPath(button) {
+    if (!window.settingsAPI || typeof window.settingsAPI.pickAgentDiscoveryPath !== "function") {
+      ops.showToast(t("toastSaveFailed") + "path picker unavailable", { error: true });
+      return;
+    }
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+      return;
+    }
+    const labelElement = button.querySelector(".settings-button-label");
+    const originalLabel = labelElement ? labelElement.textContent : "";
+    helpers.setButtonState(button, {
+      pending: true,
+      labelKey: "customToolScanStatusScanning",
+    });
+    try {
+      const result = await window.settingsAPI.pickAgentDiscoveryPath("directory");
+      if (!result || result.status === "cancel") return;
+      if (result.status !== "ok" || typeof result.path !== "string" || !result.path) {
+        ops.showToast(t("toastSaveFailed") + ((result && result.message) || "path picker failed"), { error: true });
+        return;
+      }
+      const paths = readers.readAgentCustomDiscoveryPaths("custom").slice();
+      if (!paths.includes(result.path)) paths.push(result.path);
+      const response = await window.settingsAPI.command("setAgentCustomDiscoveryPaths", {
+        agentId: "custom",
+        value: paths,
+      });
+      if (!response || response.status !== "ok") {
+        throw new Error((response && response.message) || "failed to save discovery path");
+      }
+      if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+        await ops.fetchAgentInstallationHints({ force: true });
+      }
+      ops.requestRender({ content: true });
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    } finally {
+      helpers.setButtonState(button, {
+        pending: false,
+        label: originalLabel,
+      });
+    }
+  }
+
+  function buildCustomToolResultRows() {
+    const configuredPaths = readers.readAgentCustomDiscoveryPaths("custom");
+    const results = typeof readers.readCustomToolDetectionResults === "function"
+      ? readers.readCustomToolDetectionResults()
+      : [];
+    if (configuredPaths.length === 0 && results.length === 0) return [];
+    if (results.length === 0) {
+      return configuredPaths.map((path) => buildCustomToolResultRow({
+        path,
+        detectedInstalled: null,
+      }));
+    }
+    return results.map(buildCustomToolResultRow);
+  }
+
+  function getCustomToolResultStatusText(result) {
+    if (result.detectedInstalled === true) return t("customToolNotRecognized");
+    if (result.detectedInstalled === false) return t("customToolDetectionMissing");
+    return t("customToolDetectionPending");
+  }
+
+  function buildCustomToolResultRow(result) {
+    const row = document.createElement("div");
+    // `.row` so the path and its action share one line, like every other row.
+    row.className = "row row-sub custom-tool-result-row";
+    row.classList.toggle("custom-tool-result-found", result.detectedInstalled === true);
+    row.classList.toggle("custom-tool-result-missing", result.detectedInstalled === false);
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    if (result.application) {
+      label.textContent = result.application.name;
+    } else {
+      // Raw path, not a name — mono + truncated, with the full value on hover.
+      label.classList.add("custom-tool-result-path");
+      label.textContent = result.path || "";
+      if (result.path) label.title = result.path;
+    }
+    text.appendChild(label);
+    const desc = document.createElement("span");
+    desc.className = "row-desc custom-tool-result-detail";
+    // result.detail is an untranslated detector string that restates the
+    // status, so unrecognized paths explain themselves here instead — one
+    // sentence, one language, no trailing badge repeating it.
+    desc.textContent = result.application
+      ? `${result.application.executablePath} · ${result.application.id}`
+      : getCustomToolResultStatusText(result);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    if (result.application) {
+      const status = result.application.added
+        ? document.createElement("span")
+        : helpers.buildButton({
+          labelKey: "customToolAdd",
+          tone: "accent",
+          size: "compact",
+          className: "custom-tool-add",
+        });
+      if (result.application.added) {
+        status.className = "custom-tool-result-status";
+        status.textContent = t("customToolAdded");
+      } else {
+        status.addEventListener("click", () => addCustomApplication(result, status));
+      }
+      row.appendChild(status);
+    }
+    if (result.path) {
+      const removePathButton = helpers.buildButton({
+        labelKey: "customToolRemovePath",
+        tone: "danger",
+        size: "compact",
+        className: "custom-tool-remove-path",
+      });
+      removePathButton.addEventListener("click", () => removeCustomDiscoveryPath(result.path, removePathButton));
+      row.appendChild(removePathButton);
+    }
+    return row;
+  }
+
+  async function removeCustomDiscoveryPath(pathToRemove, button) {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") return;
+    helpers.setButtonState(button, { pending: true });
+    try {
+      const paths = readers.readAgentCustomDiscoveryPaths("custom")
+        .filter((entry) => entry !== pathToRemove);
+      const response = await window.settingsAPI.command("setAgentCustomDiscoveryPaths", {
+        agentId: "custom",
+        value: paths,
+      });
+      if (!response || response.status !== "ok") {
+        throw new Error((response && response.message) || "failed to remove discovery path");
+      }
+      if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+        await ops.fetchAgentInstallationHints({ force: true });
+      }
+      ops.requestRender({ content: true });
+    } catch (err) {
+      helpers.setButtonState(button, { pending: false });
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    }
+  }
+
+  async function refreshCustomAgentUi() {
+    if (window.settingsAPI && typeof window.settingsAPI.listAgents === "function") {
+      const list = await window.settingsAPI.listAgents();
+      if (ops && typeof ops.applyAgentMetadata === "function") ops.applyAgentMetadata(list);
+      else runtime.agentMetadata = Array.isArray(list) ? list : [];
+    }
+    if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+      await ops.fetchAgentInstallationHints({ force: true });
+    }
+    ops.requestRender({ content: true });
+  }
+
+  async function addCustomApplication(result, button) {
+    helpers.setButtonState(button, { pending: true });
+    try {
+      const response = await window.settingsAPI.command("addCustomApplication", { path: result.path });
+      if (!response || response.status !== "ok") throw new Error((response && response.message) || "add failed");
+      ops.showToast(t("customToolAdded"));
+      // The AI is now a connected agent, so land the user where it appears
+      // and where its toggles live.
+      runtime.agentsSubtab = "connected";
+      await refreshCustomAgentUi();
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      helpers.setButtonState(button, { pending: false });
     }
   }
 
@@ -284,20 +737,24 @@
 
     const actions = document.createElement("div");
     actions.className = "agent-hint-actions agent-install-hint-actions";
-    const installBtn = document.createElement("button");
-    installBtn.type = "button";
-    installBtn.className = "soft-btn accent agent-install-hint-install";
-    installBtn.textContent = agentHintActionPending
-      ? t("agentIntegrationWorking")
-      : t("agentInstallHintInstallRecommended");
-    installBtn.disabled = !!agentHintActionPending;
+    const installBtn = helpers.buildButton({
+      labelKey: agentHintActionPending
+        ? "agentIntegrationWorking"
+        : "agentInstallHintInstallRecommended",
+      tone: "accent",
+      size: "compact",
+      className: "agent-install-hint-install",
+      disabled: !!agentHintActionPending,
+      pending: !!agentHintActionPending,
+    });
     installBtn.addEventListener("click", () => installRecommendedHints(agentIds));
 
-    const dismissBtn = document.createElement("button");
-    dismissBtn.type = "button";
-    dismissBtn.className = "soft-btn agent-install-hint-dismiss";
-    dismissBtn.textContent = t("agentInstallHintDismiss");
-    dismissBtn.disabled = !!agentHintActionPending;
+    const dismissBtn = helpers.buildButton({
+      labelKey: "agentInstallHintDismiss",
+      size: "compact",
+      className: "agent-install-hint-dismiss",
+      disabled: !!agentHintActionPending,
+    });
     dismissBtn.addEventListener("click", () => dismissInstallHints(agentIds));
 
     actions.appendChild(installBtn);
@@ -325,20 +782,22 @@
 
     const actions = document.createElement("div");
     actions.className = "agent-hint-actions agent-cleanup-hint-actions";
-    const removeBtn = document.createElement("button");
-    removeBtn.type = "button";
-    removeBtn.className = "soft-btn accent agent-cleanup-hint-remove";
-    removeBtn.textContent = agentHintActionPending
-      ? t("agentIntegrationWorking")
-      : t("agentCleanupHintRemove");
-    removeBtn.disabled = !!agentHintActionPending;
+    const removeBtn = helpers.buildButton({
+      labelKey: agentHintActionPending ? "agentIntegrationWorking" : "agentCleanupHintRemove",
+      tone: "accent",
+      size: "compact",
+      className: "agent-cleanup-hint-remove",
+      disabled: !!agentHintActionPending,
+      pending: !!agentHintActionPending,
+    });
     removeBtn.addEventListener("click", () => removeCleanupHints(agentIds));
 
-    const dismissBtn = document.createElement("button");
-    dismissBtn.type = "button";
-    dismissBtn.className = "soft-btn agent-cleanup-hint-dismiss";
-    dismissBtn.textContent = t("agentCleanupHintDismiss");
-    dismissBtn.disabled = !!agentHintActionPending;
+    const dismissBtn = helpers.buildButton({
+      labelKey: "agentCleanupHintDismiss",
+      size: "compact",
+      className: "agent-cleanup-hint-dismiss",
+      disabled: !!agentHintActionPending,
+    });
     dismissBtn.addEventListener("click", () => dismissCleanupHints(agentIds));
 
     actions.appendChild(removeBtn);
@@ -506,9 +965,9 @@
       title: t("claudeHooksDisableConfirmTitle"),
       detail: t("claudeHooksDisableConfirmDetail"),
       actions: [
-        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
+        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "neutral", defaultFocus: true },
         { id: "disable", label: t("claudeHooksDisableConfirmDisableOnly"), tone: "neutral" },
-        { id: "keep", label: t("claudeHooksDisableConfirmKeep"), tone: "accent", defaultFocus: true },
+        { id: "disconnect", label: t("claudeHooksDisableConfirmDisconnect"), tone: "danger" },
       ],
     });
   }
@@ -518,8 +977,8 @@
       title: t("claudeHooksDisconnectConfirmTitle"),
       detail: t("claudeHooksDisconnectConfirmDetail"),
       actions: [
+        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "neutral", defaultFocus: true },
         { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
-        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "accent", defaultFocus: true },
       ],
     });
   }
@@ -582,6 +1041,156 @@
     });
   }
 
+  // Failure reasons a Repair run can actually resolve; anything else needs
+  // manual inspection, so promising a Fix would be misleading.
+  const DSH_REPAIRABLE_FAILURE_REASONS = new Set([
+    "plugin-disabled-in-dsh",
+    "repair-pending",
+    "inspection-required",
+    "generation-conflict",
+  ]);
+
+  function dshNoticeProfileLabel(profile) {
+    return t(profile === "desktop" ? "dshNoticeProfileDesktop" : "dshNoticeProfileWeb");
+  }
+
+  function dshNoticeBody(notice) {
+    switch (notice.kind) {
+      case "restart-required":
+        return t("dshNoticeRestartRequired");
+      case "first-install":
+        return t("dshNoticeFirstInstall");
+      case "manual-command":
+        return t("dshNoticeManualCommand");
+      case "failed-target": {
+        const message = notice.message == null ? "" : String(notice.message);
+        const key = notice.operation === "uninstall" ? "dshNoticeUninstallFailed" : "dshNoticeInstallFailed";
+        let body = t(key).replace("{message}", message);
+        if (DSH_REPAIRABLE_FAILURE_REASONS.has(notice.reason)) {
+          body = `${body} ${t("dshNoticeOpenDoctor").replace("{fix}", t("doctorFix"))}`;
+        }
+        return body;
+      }
+      default:
+        return "";
+    }
+  }
+
+  function buildDshNoticeActions(container, notice) {
+    const actions = document.createElement("div");
+    actions.className = "agent-dsh-notice-actions";
+    if (notice.kind === "manual-command") {
+      const copy = helpers.buildButton({
+        labelKey: "dshNoticeCopy",
+        size: "compact",
+        className: "agent-dsh-notice-copy",
+      });
+      copy.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        copyDshNoticeCommands(notice, copy);
+      });
+      actions.appendChild(copy);
+    }
+    const ack = helpers.buildButton({
+      labelKey: "dshNoticeAcknowledge",
+      size: "compact",
+      className: "agent-dsh-notice-ack",
+    });
+    ack.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      acknowledgeDshNoticeRow(container, notice, ack);
+    });
+    actions.appendChild(ack);
+    return actions;
+  }
+
+  function buildDshNoticeRow(container, notice) {
+    const row = document.createElement("div");
+    row.className = "agent-dsh-notice";
+    row.setAttribute("data-kind", notice.kind);
+    row.setAttribute("data-profile", notice.profile);
+    const line = document.createElement("div");
+    line.className = "agent-dsh-notice-line";
+    line.textContent = t("dshNoticeLine")
+      .replace("{profile}", dshNoticeProfileLabel(notice.profile))
+      .replace("{text}", dshNoticeBody(notice));
+    row.appendChild(line);
+    if (notice.kind === "manual-command") {
+      const commands = document.createElement("pre");
+      commands.className = "agent-dsh-notice-commands";
+      commands.textContent = (notice.commands || []).join("\n");
+      row.appendChild(commands);
+    }
+    row.appendChild(buildDshNoticeActions(container, notice));
+    container.appendChild(row);
+  }
+
+  // Copy-only by design: the command mutates the user's DSH install, so Clawd
+  // hands it over instead of running it.
+  async function copyDshNoticeCommands(notice, button) {
+    helpers.setButtonState(button, { pending: true });
+    try {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+        throw new Error("clipboard unavailable");
+      }
+      await navigator.clipboard.writeText((notice.commands || []).join("\n"));
+      ops.showToast(t("dshNoticeCopied"));
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    } finally {
+      helpers.setButtonState(button, { pending: false });
+    }
+  }
+
+  async function acknowledgeDshNoticeRow(container, notice, button) {
+    helpers.setButtonState(button, { pending: true });
+    try {
+      const result = await window.settingsAPI.acknowledgeDshNotice(notice.profile, notice.id);
+      if (!result || result.status !== "ok") throw new Error((result && result.message) || "acknowledge failed");
+      await refreshDshNotices(container);
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      helpers.setButtonState(button, { pending: false });
+    }
+  }
+
+  async function refreshDshNotices(container) {
+    // The initial fetch starts while the row is still detached, so only the
+    // response is gated on the container still being on the page.
+    if (!container) return;
+    const seq = String(++dshNoticesRequestSeq);
+    container.dataset.dshNoticeSeq = seq;
+    try {
+      const result = await window.settingsAPI.getDshNotices();
+      if (container.isConnected === false) return;
+      if (container.dataset.dshNoticeSeq !== seq) return;
+      const notices = result && Array.isArray(result.notices) ? result.notices : [];
+      container.textContent = "";
+      for (const notice of notices) buildDshNoticeRow(container, notice);
+    } catch {
+      // Keep whatever is already shown; a transient IPC failure is not a row.
+    }
+  }
+
+  function refreshMountedDshNotices() {
+    for (const container of [...dshNoticeContainers]) {
+      if (container.isConnected === false) {
+        dshNoticeContainers.delete(container);
+        continue;
+      }
+      refreshDshNotices(container);
+    }
+  }
+
+  function buildDshNotices(agent, text) {
+    if (agent.custom || agent.id !== "deepseek-harness") return;
+    const container = document.createElement("div");
+    container.className = "agent-dsh-notices";
+    text.appendChild(container);
+    dshNoticeContainers.add(container);
+    refreshDshNotices(container);
+  }
+
   function buildAgentMasterRow(agent) {
     let integrationBadge = null;
     return buildAgentSwitchRow({
@@ -606,19 +1215,75 @@
         esBadge.className = "agent-badge";
         esBadge.textContent = t(esKey);
         badges.appendChild(esBadge);
-        integrationBadge = document.createElement("span");
-        integrationBadge.className = "agent-badge integration";
-        badges.appendChild(integrationBadge);
+        if (agent.custom) {
+          const registrationBadge = document.createElement("span");
+          registrationBadge.className = "agent-badge integration custom-registration";
+          registrationBadge.textContent = t("customToolRegistered");
+          badges.appendChild(registrationBadge);
+          // A registered custom AI stays in Connected even when its executable
+          // disappears, so the missing binary has to say so on the row itself —
+          // it used to be reported by the agent dropping into another section.
+          const customHint = getInstallationHint(agent.id, true);
+          if (customHint && customHint.detectedInstalled === false) {
+            const missingBadge = document.createElement("span");
+            missingBadge.className = "agent-badge custom-missing";
+            missingBadge.textContent = t(getCustomAgentUnavailableLabelKey(customHint));
+            badges.appendChild(missingBadge);
+          }
+        } else {
+          integrationBadge = document.createElement("span");
+          integrationBadge.className = "agent-badge integration";
+          badges.appendChild(integrationBadge);
+        }
         if (agent.capabilities && agent.capabilities.permissionApproval) {
           const permBadge = document.createElement("span");
           permBadge.className = "agent-badge accent";
           permBadge.textContent = t("badgePermissionBubble");
           badges.appendChild(permBadge);
         }
-        syncAgentIntegrationBadge(integrationBadge, agent.id);
+        if (!agent.custom) syncAgentIntegrationBadge(integrationBadge, agent.id);
         text.appendChild(badges);
+        // TraeCode requires a manual enable step inside Trae that Clawd cannot
+        // do for the user — surface it right on the card once the integration
+        // is installed so nobody installs it and sees "nothing happens".
+        if (!agent.custom && agent.id === "traecode" && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-traecode-hint";
+          hint.textContent = t("traecodeEnableHint");
+          text.appendChild(hint);
+        }
+        // MiniMax Code has the same manual-enable gap: the plugin directory
+        // is on disk but the app decides whether hooks fire.
+        if (!agent.custom && agent.id === "minimax" && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-minimax-hint";
+          hint.textContent = t("minimaxEnableHint");
+          text.appendChild(hint);
+        }
+        buildDshNotices(agent, text);
       },
       buildExtraControls: (ctrl) => {
+        if (agent.custom) {
+          const button = helpers.buildButton({
+            labelKey: "customToolRemove",
+            tone: "danger",
+            size: "compact",
+            className: "custom-agent-remove",
+          });
+          button.addEventListener("click", async () => {
+            helpers.setButtonState(button, { pending: true });
+            try {
+              const result = await window.settingsAPI.command("removeCustomApplication", { id: agent.id });
+              if (!result || result.status !== "ok") throw new Error((result && result.message) || "remove failed");
+              await refreshCustomAgentUi();
+            } catch (err) {
+              ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+              helpers.setButtonState(button, { pending: false });
+            }
+          });
+          ctrl.appendChild(button);
+          return;
+        }
         const button = buildAgentIntegrationActionButton(agent);
         const meta = state.mountedControls.agentIntegrationActions.get(agent.id);
         if (meta) {
@@ -633,10 +1298,89 @@
   function buildAgentDetailRows(agent) {
     const rows = [];
     const caps = agent.capabilities || {};
+    if (agent.custom) {
+      const payloadExample = JSON.stringify({
+        agent_id: agent.id,
+        session_id: "your-session-id",
+        state: "working",
+        event: "PreToolUse",
+      });
+      const lastStateEvent = agent.lastStateEvent && Number.isFinite(agent.lastStateEvent.timestamp)
+        ? agent.lastStateEvent
+        : null;
+      const activityText = formatCustomAgentActivity(lastStateEvent);
+      for (const [labelKey, value] of [
+        ["customAgentRegisteredDesc", t("customAgentRegisteredExternal")],
+        ["customToolAgentId", agent.id],
+        ["customAgentStateEndpoint", agent.stateEndpoint || "http://127.0.0.1:<runtime-port>/state"],
+        ["customAgentPayloadExample", payloadExample],
+        ["customAgentActivity", activityText],
+        ["customToolExecutable", agent.executablePath],
+        ["customToolSourcePath", agent.sourcePath],
+      ]) {
+        const row = document.createElement("div");
+        row.className = "row row-sub custom-agent-detail";
+        const text = document.createElement("div");
+        text.className = "row-text";
+        const label = document.createElement("span");
+        label.className = "row-label";
+        label.textContent = t(labelKey);
+        const desc = document.createElement("span");
+        desc.className = "row-desc";
+        if (labelKey === "customAgentPayloadExample") desc.classList.add("custom-agent-payload");
+        if (labelKey === "customAgentActivity") {
+          desc.classList.add("custom-agent-activity");
+          desc.dataset.agentId = agent.id;
+        }
+        desc.textContent = value || "";
+        text.appendChild(label);
+        text.appendChild(desc);
+        row.appendChild(text);
+        if (["customToolAgentId", "customAgentStateEndpoint", "customAgentPayloadExample"].includes(labelKey)) {
+          const copyButton = helpers.buildButton({
+            labelKey: "customAgentCopy",
+            size: "compact",
+            className: "custom-agent-copy",
+          });
+          copyButton.addEventListener("click", async () => {
+            try {
+              if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+                throw new Error("clipboard unavailable");
+              }
+              await navigator.clipboard.writeText(value || "");
+              ops.showToast(t("customAgentCopied"));
+            } catch (err) {
+              ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+            }
+          });
+          row.appendChild(copyButton);
+        }
+        rows.push(row);
+      }
+    }
     if (agent.id === "claude-code") {
       rows.push(...buildClaudeHookManagementRows());
+      // Quota collection belongs to the provider, not to the ring that draws
+      // it. This switch used to sit in General's quota-ring group while Kimi's
+      // equivalent sat here, so turning collection off meant a different tab
+      // depending on the provider, and no page could answer "who am I reading
+      // from". Every provider's collection opt-in now lives on its own card.
+      const claudeQuotaRow = helpers.buildSwitchRow({
+        key: "claudeQuotaCollectionEnabled",
+        labelKey: "rowClaudeQuotaCollection",
+        descKey: "rowClaudeQuotaCollectionDesc",
+      });
+      claudeQuotaRow.classList.add("row-sub");
+      rows.push(claudeQuotaRow);
     }
     if (agent.id === "codex") {
+      const codexAutoStartRow = helpers.buildSwitchRow({
+        key: "autoStartWithCodex",
+        labelKey: "rowStartWithCodex",
+        descKey: "rowStartWithCodexDesc",
+      });
+      codexAutoStartRow.classList.add("row-sub");
+      rows.push(codexAutoStartRow);
       rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
       rows.push(buildAgentSwitchRow({
         agent,
@@ -663,6 +1407,9 @@
       });
       codexHookNotifyRow.classList.add("row-sub");
       rows.push(codexHookNotifyRow);
+    }
+    if (agent.id === "kimi-cli") {
+      rows.push(buildKimiQuotaCard());
     }
     if (caps.permissionApproval || caps.interactiveBubble) {
       rows.push(buildAgentSwitchRow({
@@ -720,9 +1467,408 @@
         },
       }));
     }
+    if (caps.httpHook && caps.customPermissionUrl) {
+      rows.push(buildAgentTextInputRow({
+        agentId: agent.id,
+        command: "setAgentCustomPermissionUrl",
+        labelKey: "rowCodeBuddyCompatiblePermissionUrl",
+        descKey: "rowCodeBuddyCompatiblePermissionUrlDesc",
+        placeholderKey: "rowCodeBuddyCompatiblePermissionUrlPlaceholder",
+        value: () => readers.readAgentCustomPermissionUrl(agent.id),
+      }));
+    }
     // WSL instances: show detected agent installations across distros
     rows.push(...buildAgentInstanceRows(agent));
     return rows;
+  }
+
+  function kimiQuotaStatusText(status) {
+    const stateName = status && status.state;
+    if (stateName === "unconfigured") return t("kimiQuotaStatusUnconfigured");
+    if (stateName === "configured-disabled") return t("kimiQuotaStatusConfiguredDisabled");
+    if (stateName === "agent-disabled") return t("kimiQuotaStatusAgentDisabled");
+    if (stateName === "secure-storage-unavailable" || stateName === "credential-unreadable") {
+      return t("kimiQuotaStatusSecureStorageUnavailable");
+    }
+    if (stateName === "refreshing") return t("kimiQuotaStatusRefreshing");
+    if (stateName === "fresh" && Number.isFinite(status.lastQuotaCapturedAt)) {
+      return t("kimiQuotaStatusFresh").replace(
+        "{time}",
+        new Date(status.lastQuotaCapturedAt).toLocaleString()
+      );
+    }
+    if (stateName === "ready") return t("kimiQuotaStatusReady");
+    if (status && status.reason) {
+      return t("kimiQuotaStatusError").replace("{reason}", String(status.reason));
+    }
+    return t("kimiQuotaStatusLoading");
+  }
+
+  function buildKimiQuotaCard() {
+    const card = document.createElement("div");
+    card.className = "row row-sub kimi-quota-card";
+
+    const heading = document.createElement("div");
+    heading.className = "kimi-quota-heading";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("kimiQuotaTitle");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("kimiQuotaDesc");
+    heading.appendChild(label);
+    heading.appendChild(desc);
+    card.appendChild(heading);
+
+    const statusLine = document.createElement("span");
+    statusLine.className = "row-desc kimi-quota-status";
+    statusLine.textContent = t("kimiQuotaStatusLoading");
+    card.appendChild(statusLine);
+
+    function makePasswordInput() {
+      const input = document.createElement("input");
+      input.type = "password";
+      input.className = "kimi-quota-key-input";
+      input.placeholder = t("kimiQuotaApiKeyPlaceholder");
+      input.autocomplete = "new-password";
+      input.spellcheck = false;
+      input.setAttribute("aria-label", t("kimiQuotaApiKeyPlaceholder"));
+      input.addEventListener("click", (event) => event.stopPropagation());
+      input.addEventListener("keydown", (event) => event.stopPropagation());
+      return input;
+    }
+
+    function makeConsoleLink() {
+      const link = helpers.buildButton({
+        labelKey: "kimiQuotaOpenConsole",
+        tone: "quiet",
+        size: "compact",
+        className: "kimi-quota-console-link",
+      });
+      link.addEventListener("click", (event) => {
+        event.stopPropagation();
+        if (window.settingsAPI && typeof window.settingsAPI.openExternal === "function") {
+          window.settingsAPI.openExternal("https://www.kimi.com/code/console");
+        }
+      });
+      return link;
+    }
+
+    // ── Unconnected: one input, one primary action, quiet notes. The full
+    // safety disclosure stays, but as a footnote instead of a wall above the
+    // buttons; the Console link is a quiet link, not a competing button. ──
+    const connectSection = document.createElement("div");
+    connectSection.className = "kimi-quota-connect";
+    connectSection.hidden = true;
+    const connectRow = document.createElement("div");
+    connectRow.className = "kimi-quota-connect-row";
+    const connectInput = makePasswordInput();
+    const connectButton = helpers.buildButton({
+      labelKey: "kimiQuotaConnect",
+      tone: "accent",
+      className: "kimi-quota-primary",
+    });
+    connectRow.appendChild(connectInput);
+    connectRow.appendChild(connectButton);
+    connectSection.appendChild(connectRow);
+    const securityNote = document.createElement("span");
+    securityNote.className = "row-desc kimi-quota-note";
+    securityNote.textContent = t("kimiQuotaSecurityWarning");
+    connectSection.appendChild(securityNote);
+    const connectFoot = document.createElement("div");
+    connectFoot.className = "kimi-quota-foot";
+    const manualNote = document.createElement("span");
+    manualNote.className = "row-desc";
+    manualNote.textContent = t("kimiQuotaManualOnly");
+    connectFoot.appendChild(manualNote);
+    connectFoot.appendChild(makeConsoleLink());
+    connectSection.appendChild(connectFoot);
+    card.appendChild(connectSection);
+
+    // ── Connected: account/status first, one primary action (Refresh, or
+    // Reconnect while disconnected). Replace folds away behind a toggle; the
+    // destructive/low-frequency actions live below a hairline, each with its
+    // consequence spelled out — never beside the primary button. ──
+    const manageSection = document.createElement("div");
+    manageSection.className = "kimi-quota-manage";
+    manageSection.hidden = true;
+
+    const badges = document.createElement("div");
+    badges.className = "kimi-quota-badges";
+    const connBadge = document.createElement("span");
+    connBadge.className = "kimi-quota-badge";
+    connBadge.textContent = t("kimiQuotaConnectedBadge");
+    const modeBadge = document.createElement("span");
+    modeBadge.className = "kimi-quota-badge muted";
+    modeBadge.textContent = t("kimiQuotaManualOnlyBadge");
+    badges.appendChild(connBadge);
+    badges.appendChild(modeBadge);
+    manageSection.appendChild(badges);
+
+    const primaryRow = document.createElement("div");
+    primaryRow.className = "kimi-quota-primary-row";
+    const refreshButton = helpers.buildButton({
+      tone: "accent",
+      className: "kimi-quota-primary",
+    });
+    const replaceToggle = helpers.buildButton({
+      labelKey: "kimiQuotaReplace",
+      tone: "quiet",
+      size: "compact",
+      ariaPressed: false,
+    });
+    primaryRow.appendChild(refreshButton);
+    primaryRow.appendChild(replaceToggle);
+    manageSection.appendChild(primaryRow);
+
+    const replacePanel = document.createElement("div");
+    replacePanel.className = "kimi-quota-replace";
+    replacePanel.hidden = true;
+    const replaceInput = makePasswordInput();
+    replacePanel.appendChild(replaceInput);
+    const replaceActions = document.createElement("div");
+    replaceActions.className = "kimi-quota-replace-actions";
+    const replaceConfirm = helpers.buildButton({
+      labelKey: "kimiQuotaReplaceConfirm",
+      tone: "accent",
+      size: "compact",
+    });
+    const replaceCancel = helpers.buildButton({
+      labelKey: "kimiQuotaCancel",
+      tone: "quiet",
+      size: "compact",
+    });
+    replaceActions.appendChild(replaceConfirm);
+    replaceActions.appendChild(replaceCancel);
+    replacePanel.appendChild(replaceActions);
+    manageSection.appendChild(replacePanel);
+
+    const dangerZone = document.createElement("div");
+    dangerZone.className = "kimi-quota-danger";
+    const disconnectRow = document.createElement("div");
+    disconnectRow.className = "kimi-quota-danger-row";
+    const disconnectButton = helpers.buildButton({
+      labelKey: "kimiQuotaDisconnect",
+      size: "compact",
+    });
+    const disconnectDesc = document.createElement("span");
+    disconnectDesc.className = "row-desc kimi-quota-danger-desc";
+    disconnectDesc.textContent = t("kimiQuotaDisconnectDesc");
+    disconnectRow.appendChild(disconnectButton);
+    disconnectRow.appendChild(disconnectDesc);
+    dangerZone.appendChild(disconnectRow);
+    const forgetRow = document.createElement("div");
+    forgetRow.className = "kimi-quota-danger-row";
+    const forgetButton = helpers.buildButton({
+      labelKey: "kimiQuotaForgetLocal",
+      tone: "danger",
+      size: "compact",
+    });
+    const forgetDesc = document.createElement("span");
+    forgetDesc.className = "row-desc kimi-quota-danger-desc";
+    forgetDesc.textContent = t("kimiQuotaForgetDesc");
+    forgetRow.appendChild(forgetButton);
+    forgetRow.appendChild(forgetDesc);
+    dangerZone.appendChild(forgetRow);
+    const revokeLine = document.createElement("div");
+    revokeLine.className = "kimi-quota-foot";
+    const revokeNote = document.createElement("span");
+    revokeNote.className = "row-desc kimi-quota-revoke-note";
+    revokeNote.textContent = t("kimiQuotaRevokeNote");
+    revokeLine.appendChild(revokeNote);
+    revokeLine.appendChild(makeConsoleLink());
+    dangerZone.appendChild(revokeLine);
+    manageSection.appendChild(dangerZone);
+    card.appendChild(manageSection);
+
+    let currentStatus = null;
+    let statusLoaded = false;
+    let busy = false;
+    let replaceOpen = false;
+    let pendingButton = null;
+
+    function setReplaceOpen(open) {
+      replaceOpen = open;
+      replacePanel.hidden = !open;
+      helpers.setButtonState(replaceToggle, {
+        disabled: busy || open,
+        ariaPressed: open,
+      });
+      if (!open) replaceInput.value = "";
+    }
+
+    function syncControls() {
+      const configured = !!(currentStatus && currentStatus.configured);
+      const decryptable = !!(currentStatus && currentStatus.decryptable);
+      const collectionEnabled = !!(currentStatus && currentStatus.collectionEnabled);
+      const agentEnabled = !currentStatus || currentStatus.agentEnabled !== false;
+
+      // No flash of the wrong view: both sections stay hidden until the first
+      // status read, and the connect card never shows a status line.
+      connectSection.hidden = !statusLoaded || configured;
+      manageSection.hidden = !statusLoaded || !configured;
+      statusLine.hidden = statusLoaded && !configured && !busy;
+
+      // The single primary action: Refresh while connected, Reconnect with
+      // the stored key while disconnected. Reconnect/Refresh both stay
+      // manual-only user actions, exactly like Connect.
+      helpers.setButtonState(refreshButton, {
+        labelKey: collectionEnabled ? "kimiQuotaRefresh" : "kimiQuotaReconnect",
+        disabled: busy || !decryptable || (collectionEnabled && !agentEnabled),
+        pending: pendingButton === refreshButton,
+      });
+      helpers.setButtonState(connectButton, {
+        disabled: busy,
+        pending: pendingButton === connectButton,
+      });
+      connectInput.disabled = busy;
+      replaceInput.disabled = busy;
+      helpers.setButtonState(replaceConfirm, {
+        disabled: busy,
+        pending: pendingButton === replaceConfirm,
+      });
+      helpers.setButtonState(replaceCancel, { disabled: busy });
+      helpers.setButtonState(replaceToggle, {
+        disabled: busy || replaceOpen,
+        ariaPressed: replaceOpen,
+      });
+      replacePanel.hidden = !replaceOpen;
+      disconnectRow.hidden = !collectionEnabled;
+      helpers.setButtonState(disconnectButton, {
+        disabled: busy,
+        pending: pendingButton === disconnectButton,
+      });
+      // Forget is only legal once collection is off (the runtime enforces
+      // "disconnect-required"); the disabled state plus its desc says so.
+      helpers.setButtonState(forgetButton, {
+        disabled: busy || collectionEnabled,
+        pending: pendingButton === forgetButton,
+      });
+      statusLine.textContent = busy
+        ? t("kimiQuotaStatusRefreshing")
+        : kimiQuotaStatusText(currentStatus);
+    }
+
+    async function reloadStatus() {
+      if (!window.settingsAPI || typeof window.settingsAPI.getKimiQuotaStatus !== "function") {
+        currentStatus = { status: "error", reason: "runtime-unavailable" };
+      } else {
+        try { currentStatus = await window.settingsAPI.getKimiQuotaStatus(); }
+        catch { currentStatus = { status: "error", reason: "runtime-unavailable" }; }
+      }
+      statusLoaded = true;
+      if (card.isConnected === false) return;
+      syncControls();
+    }
+
+    async function runAction(invoke, sourceButton) {
+      if (busy) return;
+      busy = true;
+      pendingButton = sourceButton || null;
+      setReplaceOpen(false);
+      syncControls();
+      let result;
+      try { result = await invoke(); }
+      catch { result = { status: "error", reason: "runtime-unavailable" }; }
+      busy = false;
+      pendingButton = null;
+      await reloadStatus();
+      if (!result || result.status !== "ok") {
+        const reason = (result && (result.reason || result.message)) || "unknown-error";
+        ops.showToast(t("kimiQuotaStatusError").replace("{reason}", reason), { error: true });
+      }
+      return result;
+    }
+
+    function submitKey(input, invoke) {
+      const apiKey = input.value;
+      input.value = "";
+      if (!apiKey) {
+        ops.showToast(t("kimiQuotaKeyRequired"), { error: true });
+        return;
+      }
+      runAction(() => invoke(apiKey), input === connectInput ? connectButton : replaceConfirm);
+    }
+
+    connectButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitKey(connectInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
+    refreshButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const collectionEnabled = !!(currentStatus && currentStatus.collectionEnabled);
+      runAction(() => (collectionEnabled
+        ? window.settingsAPI.refreshKimiQuota()
+        : window.settingsAPI.reconnectKimiQuota()), refreshButton);
+    });
+    replaceToggle.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setReplaceOpen(true);
+    });
+    replaceCancel.addEventListener("click", (event) => {
+      event.stopPropagation();
+      setReplaceOpen(false);
+    });
+    replaceConfirm.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitKey(replaceInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
+    disconnectButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      runAction(() => window.settingsAPI.disconnectKimiQuota(), disconnectButton);
+    });
+    forgetButton.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (typeof window.confirm === "function" && !window.confirm(t("kimiQuotaForgetConfirm"))) return;
+      runAction(() => window.settingsAPI.forgetKimiQuotaCredential(), forgetButton);
+    });
+    connectInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitKey(connectInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
+    replaceInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") submitKey(replaceInput, (apiKey) => window.settingsAPI.connectKimiQuota(apiKey));
+    });
+
+    syncControls();
+    void reloadStatus();
+    return card;
+  }
+
+  function formatCustomAgentActivity(lastStateEvent) {
+    return lastStateEvent && Number.isFinite(lastStateEvent.timestamp)
+      ? t("customAgentLastState")
+        .replace("{event}", lastStateEvent.eventType || "state")
+        .replace("{time}", new Date(lastStateEvent.timestamp).toLocaleTimeString())
+      : t("customAgentWaiting");
+  }
+
+  function applyAgentActivity(payload) {
+    if (
+      !payload
+      || typeof payload.agentId !== "string"
+      || !Number.isFinite(payload.timestamp)
+    ) return false;
+    const index = (runtime.agentMetadata || []).findIndex((agent) => (
+      agent && agent.custom === true && agent.id === payload.agentId
+    ));
+    if (index < 0) return false;
+    const lastStateEvent = {
+      timestamp: payload.timestamp,
+      eventType: typeof payload.eventType === "string" ? payload.eventType : null,
+    };
+    runtime.agentMetadata[index] = {
+      ...runtime.agentMetadata[index],
+      lastStateEvent,
+    };
+    if (state.activeTab !== "agents") return true;
+    const content = document.getElementById("content");
+    if (!content || typeof content.querySelectorAll !== "function") return true;
+    for (const element of content.querySelectorAll(".custom-agent-activity")) {
+      if (element.dataset && element.dataset.agentId === payload.agentId) {
+        element.textContent = formatCustomAgentActivity(lastStateEvent);
+      }
+    }
+    return true;
   }
 
   // ── WSL instance rows ─────────────────────────────────────────────
@@ -766,12 +1912,26 @@
     label.textContent = `WSL: ${wslEntry.distro}`;
     text.appendChild(label);
 
+    const hasIntegrationEvidence = Object.prototype.hasOwnProperty.call(
+      wslEntry,
+      "integrationFilesPresent"
+    );
+
+    function refreshWslHints() {
+      if (typeof ops.fetchAgentInstallationHints !== "function") return;
+      ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
+        ops.requestRender({ content: true });
+      }).catch(() => {
+        // DOM may be torn down if the user navigated away before refresh.
+      });
+    }
+
     // Distro-level marker: hook files are present AND claude-code's
     // settings.json references them (hooksDeployed = DEPFILE && DEPREG).
     // Not per-agent pairing truth — that would require inspecting each
     // agent's config inside WSL — but enough to show Pair took effect and
     // to go dark after a claude-code Unpair.
-    if (wslEntry.hooksDeployed) {
+    if (!hasIntegrationEvidence && wslEntry.hooksDeployed) {
       const deployed = document.createElement("span");
       deployed.className = "agent-instance-deployed";
       deployed.textContent = t("agentInstanceDeployedBadge");
@@ -788,13 +1948,17 @@
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
 
-    const button = document.createElement("button");
-    button.className = "soft-btn agent-instance-action";
-    button.textContent = t("agentInstancePair");
-    button.title = `WSL: ${wslEntry.distro}`;
+    const button = helpers.buildButton({
+      labelKey: "agentInstancePair",
+      size: "compact",
+      className: "agent-instance-action",
+      title: `WSL: ${wslEntry.distro}`,
+    });
     button.addEventListener("click", async () => {
-      button.disabled = true;
-      button.textContent = t("agentInstancePairing");
+      helpers.setButtonState(button, {
+        pending: true,
+        labelKey: "agentInstancePairing",
+      });
       try {
         if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
           const result = await window.settingsAPI.command("deployToWsl", {
@@ -802,20 +1966,17 @@
             distro: wslEntry.distro,
           });
           if (result && result.status === "ok") {
+            const warnings = [];
+            if (typeof result.warning === "string" && result.warning) warnings.push(result.warning);
             if (result.wslConnectivity === false) {
               // Hooks installed, but the distro cannot reach Clawd (NAT
               // networking) — sessions would silently never appear.
-              ops.showToast(t("agentInstancePairedNoConnectivity"), { error: true });
+              warnings.push(t("agentInstancePairedNoConnectivity"));
+            }
+            if (warnings.length) {
+              ops.showToast(warnings.join("\n"), { error: true });
             } else {
               ops.showToast(result.message || t("agentInstancePaired"));
-            }
-            // Refresh hints so the UI updates (and Pair button may disappear)
-            if (typeof ops.fetchAgentInstallationHints === "function") {
-              ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
-                ops.requestRender({ content: true });
-              }).catch(() => {
-                // DOM may be torn down if user navigated away before refresh completes
-              });
             }
           } else {
             const msg = (result && result.message) || "WSL deploy failed";
@@ -828,26 +1989,36 @@
           { error: true }
         );
       } finally {
-        button.disabled = false;
-        button.textContent = t("agentInstancePair");
+        // Refresh after both success and failure: an installer can leave
+        // managed files that the user must be able to Unpair/repair.
+        refreshWslHints();
+        helpers.setButtonState(button, {
+          pending: false,
+          labelKey: "agentInstancePair",
+        });
       }
     });
     ctrl.appendChild(button);
 
-    // Unpair — offered whenever hook FILES are present (hooksFilesPresent),
-    // not gated on the registration-based badge (hooksDeployed): a distro
-    // paired with only a non-claude agent registers in that agent's own
-    // config, so the claude-settings badge is off, yet the user still needs
-    // an unpair entry point. Runs the agent's uninstall inside the distro;
-    // hook files stay (shared by other agents).
-    if (wslEntry.hooksFilesPresent) {
-      const unpairBtn = document.createElement("button");
-      unpairBtn.className = "soft-btn agent-instance-action";
-      unpairBtn.textContent = t("agentInstanceUnpair");
-      unpairBtn.title = `WSL: ${wslEntry.distro}`;
+    // Asset-backed integrations provide per-agent cleanup evidence. Only
+    // legacy persistent-hook agents fall back to the distro-level shared
+    // hooksFilesPresent marker; an explicit false/null must never inherit a
+    // Claude pairing and expose a fake Unpair action.
+    const canUnpair = hasIntegrationEvidence
+      ? wslEntry.integrationFilesPresent === true
+      : wslEntry.hooksFilesPresent === true;
+    if (canUnpair) {
+      const unpairBtn = helpers.buildButton({
+        labelKey: "agentInstanceUnpair",
+        size: "compact",
+        className: "agent-instance-action",
+        title: `WSL: ${wslEntry.distro}`,
+      });
       unpairBtn.addEventListener("click", async () => {
-        unpairBtn.disabled = true;
-        unpairBtn.textContent = t("agentInstanceUnpairing");
+        helpers.setButtonState(unpairBtn, {
+          pending: true,
+          labelKey: "agentInstanceUnpairing",
+        });
         try {
           if (window.settingsAPI && typeof window.settingsAPI.command === "function") {
             const result = await window.settingsAPI.command("removeFromWsl", {
@@ -855,14 +2026,10 @@
               distro: wslEntry.distro,
             });
             if (result && result.status === "ok") {
-              ops.showToast(result.message || t("agentInstanceUnpaired"));
-              if (typeof ops.fetchAgentInstallationHints === "function") {
-                ops.fetchAgentInstallationHints({ refreshWsl: true }).then(() => {
-                  ops.requestRender({ content: true });
-                }).catch(() => {
-                  // DOM may be torn down if user navigated away before refresh completes
-                });
-              }
+              ops.showToast(
+                result.warning || result.message || t("agentInstanceUnpaired"),
+                result.warning ? { error: true } : undefined
+              );
             } else {
               ops.showToast((result && result.message) || "WSL unpair failed", { error: true });
             }
@@ -870,8 +2037,11 @@
         } catch (err) {
           ops.showToast(String(err && err.message ? err.message : err), { error: true });
         } finally {
-          unpairBtn.disabled = false;
-          unpairBtn.textContent = t("agentInstanceUnpair");
+          refreshWslHints();
+          helpers.setButtonState(unpairBtn, {
+            pending: false,
+            labelKey: "agentInstanceUnpair",
+          });
         }
       });
       ctrl.appendChild(unpairBtn);
@@ -990,10 +2160,7 @@
 
   function syncAgentSwitchDisabledState(meta, disabled) {
     meta.disabled = !!disabled;
-    const sw = meta.element;
-    sw.classList.toggle("disabled", !!disabled);
-    sw.setAttribute("aria-disabled", disabled ? "true" : "false");
-    sw.setAttribute("tabindex", disabled ? "-1" : "0");
+    meta.control.setState({ disabled: !!disabled });
   }
 
   function syncAgentIntegrationBadge(badge, agentId) {
@@ -1002,6 +2169,7 @@
     badge.classList.toggle("not-installed", !installed);
     badge.textContent = t(installed ? "agentIntegrationInstalled" : "agentIntegrationNotInstalled");
     if (agentId === "codex") annotateCodexHookHealth(badge, installed);
+    if (agentId === "claude-code") annotateClaudeHookHealth(badge, installed);
   }
 
   // Codex approval awareness now depends ENTIRELY on the official PermissionRequest
@@ -1029,12 +2197,39 @@
     }).catch(() => {});
   }
 
+  // Claude counterpart of annotateCodexHookHealth. When the managed hook is no
+  // longer being kept healthy (auto-repair exhausted, paused by the suspicious-
+  // shrink guard, or the source script is missing), the prefs "Installed" flag
+  // is stale — Claude isn't actually driving the pet. Overlay the same amber
+  // warning, sourced from the live watcher status the Doctor reads, with the
+  // specific reason in the tooltip. Async + best-effort: an unavailable or
+  // healthy probe keeps the badge's base "Installed" state.
+  function annotateClaudeHookHealth(badge, installed) {
+    if (!badge) return;
+    const seq = String(++claudeHookHealthRequestSeq);
+    if (badge.dataset) badge.dataset.claudeHookHealthSeq = seq;
+    badge.classList.remove("hook-warning");
+    badge.removeAttribute("title");
+    if (!installed || !window.doctor || typeof window.doctor.claudeHookHealth !== "function") return;
+    window.doctor.claudeHookHealth().then((health) => {
+      if (badge.isConnected === false) return;
+      if (badge.dataset && badge.dataset.claudeHookHealthSeq !== seq) return;
+      if (!health || health.healthy || !health.signature) return;
+      if (!readers.readAgentIntegrationInstalled("claude-code")) return;
+      badge.classList.add("hook-warning");
+      badge.textContent = t("agentClaudeHookNeedsAttention");
+      if (health.reasonKey) badge.title = t(health.reasonKey);
+    }).catch(() => {});
+  }
+
   function syncAgentIntegrationAction(meta) {
     if (!meta || !meta.button) return;
     const installed = readers.readAgentIntegrationInstalled(meta.agentId);
-    meta.button.disabled = false;
-    meta.button.classList.remove("pending");
-    meta.button.textContent = t(installed ? "agentIntegrationUninstall" : "agentIntegrationInstall");
+    helpers.setButtonState(meta.button, {
+      disabled: false,
+      pending: false,
+      labelKey: installed ? "agentIntegrationUninstall" : "agentIntegrationInstall",
+    });
     meta.button.setAttribute(
       "aria-label",
       t(installed ? "agentIntegrationUninstall" : "agentIntegrationInstall")
@@ -1043,9 +2238,10 @@
   }
 
   function buildAgentIntegrationActionButton(agent) {
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "soft-btn agent-integration-action";
+    const button = helpers.buildButton({
+      size: "compact",
+      className: "agent-integration-action",
+    });
     const meta = {
       button,
       agentId: agent.id,
@@ -1061,9 +2257,10 @@
       if (installed && typeof window.confirm === "function" && !window.confirm(t("agentIntegrationUninstallConfirm"))) {
         return;
       }
-      button.disabled = true;
-      button.classList.add("pending");
-      button.textContent = t("agentIntegrationWorking");
+      helpers.setButtonState(button, {
+        pending: true,
+        labelKey: "agentIntegrationWorking",
+      });
       window.settingsAPI.command(command, { agentId: agent.id }).then((result) => {
         if (result && result.status === "skipped") {
           ops.showToast(formatHintResult(t("agentIntegrationInstallSkipped"), {
@@ -1086,6 +2283,9 @@
         ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       }).finally(() => {
         syncAgentIntegrationAction(meta);
+        // Install/uninstall rewrites the notices; refresh the DSH row whether
+        // the command succeeded or failed.
+        if (agent.id === "deepseek-harness") refreshMountedDshNotices();
       });
     });
     state.mountedControls.agentIntegrationActions.set(agent.id, meta);
@@ -1106,24 +2306,25 @@
     if (typeof buildExtraControls === "function") {
       buildExtraControls(ctrl);
     }
-    const sw = document.createElement("div");
-    sw.className = "switch";
-    sw.setAttribute("role", "switch");
-    sw.setAttribute("tabindex", disabled ? "-1" : "0");
-    sw.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-    });
-    sw.addEventListener("keydown", (ev) => {
-      ev.stopPropagation();
-    });
     const stateId = readers.agentSwitchStateId(agent.id, flag);
     const override = state.transientUiState.agentSwitches.get(stateId);
     const committedVisual = readers.readAgentFlagValue(agent.id, flag);
-    helpers.setSwitchVisual(sw, override ? override.visualOn : committedVisual, {
+    const label = text.querySelector(".row-label");
+    const desc = text.querySelector(".row-desc");
+    const controlId = `settings-agent-${agent.id}-${flag}`;
+    if (label) label.id = `${controlId}-label`;
+    if (desc) desc.id = `${controlId}-description`;
+    const switchControl = helpers.buildSwitch({
+      checked: override ? override.visualOn : committedVisual,
       pending: override ? override.pending : false,
+      disabled,
+      ariaLabelledBy: label ? label.id : null,
+      ariaDescribedBy: desc ? desc.id : null,
+      stopPropagation: true,
     });
     const meta = {
-      element: sw,
+      control: switchControl,
+      element: switchControl.element,
       agentId: agent.id,
       flag,
       disabled,
@@ -1131,7 +2332,7 @@
     };
     state.mountedControls.agentSwitches.set(stateId, meta);
     syncAgentSwitchDisabledState(meta, disabled);
-    helpers.attachAnimatedSwitch(sw, {
+    helpers.attachOptimisticSwitch(switchControl, {
       getCommittedVisual: () => readers.readAgentFlagValue(agent.id, flag),
       getTransientState: () => state.transientUiState.agentSwitches.get(stateId) || null,
       setTransientState: (value) => state.transientUiState.agentSwitches.set(stateId, value),
@@ -1147,9 +2348,84 @@
           value: !readers.readAgentFlagValue(agent.id, flag),
         }),
     });
-    ctrl.appendChild(sw);
+    ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
     return row;
+  }
+
+  function buildAgentTextInputRow({
+    agentId,
+    command,
+    labelKey,
+    descKey,
+    placeholderKey,
+    value,
+  }) {
+    const row = document.createElement("div");
+    row.className = "row row-sub agent-text-input-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t(labelKey);
+    text.appendChild(label);
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t(descKey);
+    text.appendChild(desc);
+    row.appendChild(text);
+
+    const ctrl = document.createElement("div");
+    ctrl.className = "row-control agent-text-input-control";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = typeof value === "function" ? value() : "";
+    input.placeholder = t(placeholderKey);
+    input.spellcheck = false;
+    input.addEventListener("click", (ev) => ev.stopPropagation());
+    input.addEventListener("keydown", (ev) => {
+      ev.stopPropagation();
+      if (ev.key === "Enter") input.blur();
+    });
+    input.addEventListener("change", () => {
+      saveAgentTextInput(input, { agentId, command });
+    });
+    ctrl.appendChild(input);
+    row.appendChild(ctrl);
+    row._settingsInput = input;
+    row._settingsControl = ctrl;
+    return row;
+  }
+
+  async function saveAgentTextInput(input, { agentId, command }) {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+      return { status: "error", message: "settings API unavailable" };
+    }
+    const nextValue = input.value;
+    input.disabled = true;
+    try {
+      const result = await window.settingsAPI.command(command, {
+        agentId,
+        value: nextValue,
+      });
+      if (!result || result.status !== "ok") {
+        const msg = (result && result.message) || "unknown error";
+        ops.showToast(t("toastSaveFailed") + msg, { error: true });
+        return result || { status: "error", message: msg };
+      }
+      ops.showToast(t("toastAgentCustomSaved"));
+      if (command === "setAgentCustomDiscoveryPaths" && typeof ops.fetchAgentInstallationHints === "function") {
+        await ops.fetchAgentInstallationHints({ force: true });
+      }
+      return result;
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      return { status: "error", message: err && err.message };
+    } finally {
+      input.disabled = false;
+    }
   }
 
   function patchInPlace(changes) {
@@ -1170,7 +2446,10 @@
       if (meta.flag !== "enabled") {
         meta.syncDisabledState(computeAgentSubSwitchDisabled(meta.agentId, meta.flag));
       }
-      helpers.setSwitchVisual(meta.element, readers.readAgentFlagValue(meta.agentId, meta.flag), { pending: false });
+      meta.control.setState({
+        checked: readers.readAgentFlagValue(meta.agentId, meta.flag),
+        pending: false,
+      });
     }
     for (const [, meta] of state.mountedControls.agentPermissionModes) {
       meta.syncFromSnapshot();
@@ -1187,9 +2466,15 @@
     readers = core.readers;
     helpers = core.helpers;
     ops = core.ops;
+    // Startup sync and Doctor repairs write notices while the window is open;
+    // refetching on focus is how those surface without a live push channel.
+    if (typeof window !== "undefined" && window && typeof window.addEventListener === "function") {
+      window.addEventListener("focus", () => refreshMountedDshNotices());
+    }
     core.tabs.agents = {
       render,
       patchInPlace,
+      applyAgentActivity,
     };
   }
 

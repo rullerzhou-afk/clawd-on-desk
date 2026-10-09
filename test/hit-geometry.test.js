@@ -243,6 +243,52 @@ describe("hit geometry", () => {
     );
   });
 
+  it("uses object-channel geometry for an explicitly listed SVG basename only", () => {
+    const theme = {
+      _builtin: false,
+      viewBox: { x: 0, y: 0, width: 100, height: 100 },
+      fileViewBoxes: {},
+      objectScale: { widthRatio: 1, heightRatio: 1, offsetX: 0, offsetY: 0, objBottom: 0 },
+      eyeTracking: { enabled: false, states: [] },
+      trustedRuntime: { scriptedSvgFiles: [] },
+      rendering: {
+        svgChannel: "auto",
+        objectChannelFiles: ["animated.svg"],
+      },
+    };
+
+    assert.strictEqual(hitGeometry.usesObjectChannel(theme, "idle", "animated.svg"), true);
+    assert.strictEqual(hitGeometry.usesObjectChannel(theme, "idle", "nested/animated.svg"), true);
+    assert.strictEqual(hitGeometry.usesObjectChannel(theme, "idle", "ordinary.svg"), false);
+  });
+
+  it("uses object-channel geometry when the selected accessory follows an SVG target", () => {
+    const theme = {
+      _builtin: false,
+      viewBox: { x: 0, y: 0, width: 100, height: 100 },
+      eyeTracking: { enabled: false, states: [] },
+      rendering: { svgChannel: "auto" },
+      customization: {
+        mouthAccessories: {
+          files: {
+            "animated.svg": {
+              staticFrame: { cx: 10, baseY: 10, width: 5 },
+              followTarget: {
+                id: "mouth-anchor",
+                frame: { cx: 2, baseY: 2, width: 1 },
+              },
+            },
+          },
+        },
+      },
+    };
+
+    assert.strictEqual(hitGeometry.usesObjectChannel(theme, "idle", "animated.svg"), false);
+    assert.strictEqual(hitGeometry.usesObjectChannel(theme, "idle", "animated.svg", {
+      accessoryPayloads: { mouth: { id: "cigarette" } },
+    }), true);
+  });
+
   it("uses object-channel geometry when a theme forces SVG object rendering", () => {
     const theme = {
       _builtin: false,

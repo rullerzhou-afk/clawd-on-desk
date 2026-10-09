@@ -80,6 +80,14 @@ describe("QoderWork hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(buildStateBody("", {}, {}), null);
   });
 
+  it("marks folded permission events with closed recap provenance", () => {
+    const permission = buildStateBody("PermissionDenied", { session_id: "s1" }, {});
+    const tool = buildStateBody("PreToolUse", { session_id: "s1" }, {});
+    assert.strictEqual(permission.event, "PreToolUse");
+    assert.strictEqual(permission.recap_boundary, "permission");
+    assert.strictEqual(tool.recap_boundary, undefined);
+  });
+
   it("uses host instead of local pid fields in remote mode", () => {
     const body = buildStateBody("Stop", { session_id: "s1" }, { remote: true, host: "myhost" });
     assert.strictEqual(body.host, "myhost");

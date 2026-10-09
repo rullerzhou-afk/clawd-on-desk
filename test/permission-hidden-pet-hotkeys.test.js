@@ -8,6 +8,7 @@
 const assert = require("node:assert");
 const Module = require("node:module");
 const { afterEach, test } = require("node:test");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 
@@ -81,6 +82,7 @@ function createFakeBubble({ visible }) {
     visible,
     isDestroyed() { return this.destroyed; },
     isVisible() { return this.visible; },
+    getBounds() { return { x: 100, y: 100, width: 340, height: 150 }; },
     hide() { this.visible = false; },
     showInactive() { this.visible = true; },
     destroy() { this.destroyed = true; },
@@ -94,6 +96,7 @@ function createContext() {
     subscribeShortcuts: () => () => {},
     getBubblePolicy: () => ({ enabled: true, autoCloseMs: null }),
     getPetWindowBounds: () => null,
+    getBubbleWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
     getNearestWorkArea: () => ({ x: 0, y: 0, width: 1920, height: 1080 }),
     getHitRectScreen: () => null,
     getHudReservedOffset: () => 0,
@@ -134,6 +137,8 @@ function pushPending(permission, { bubble = null, res = createResponse() } = {})
     hideTimer: null,
     toolName: "Bash",
     toolInput: { command: "echo hi" },
+    agentId: "claude-code",
+    interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
   };

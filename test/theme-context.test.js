@@ -129,7 +129,48 @@ test("built-in contexts prefer theme-local assets and expose relative renderer p
     assert.strictEqual(ctx.getRendererAssetsPath(), "../themes/calico/assets");
     assert.strictEqual(ctx.getRendererSourceAssetsPath(), "../themes/calico/assets");
     assert.strictEqual(ctx.getRendererConfig().assetsPath, "../themes/calico/assets");
+    assert.strictEqual(ctx.getRendererConfig().petTintSupported, false);
+    assert.strictEqual(ctx.getRendererConfig().accessorySupported, false);
+    assert.strictEqual(ctx.getRendererConfig().accessoryAttachments, null);
     assert.strictEqual(ctx.getHitRendererConfig().idleFollowSvg, "idle.apng");
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("renderer config exposes normalized accessory attachments only for capable themes", () => {
+  const fixture = makeRoot();
+  try {
+    const attachments = {
+      default: {
+        staticFrame: { cx: 50, baseY: 20, width: 40 },
+      },
+      files: {
+        "idle.svg": {
+          staticFrame: { cx: 50, baseY: 20, width: 40 },
+          followTarget: {
+            id: "body-js",
+            frame: { cx: 50, baseY: 20, width: 40 },
+          },
+        },
+      },
+    };
+    const capable = makeTheme({
+      _capabilities: { petTint: true, accessories: true },
+      customization: { petTint: true, accessories: attachments },
+    });
+    const disabled = makeTheme({
+      _capabilities: { petTint: true, accessories: false },
+      customization: { petTint: true, accessories: attachments },
+    });
+
+    assert.strictEqual(createThemeContext(capable, fixture).getRendererConfig().accessorySupported, true);
+    assert.deepStrictEqual(
+      createThemeContext(capable, fixture).getRendererConfig().accessoryAttachments,
+      attachments
+    );
+    assert.strictEqual(createThemeContext(disabled, fixture).getRendererConfig().accessorySupported, false);
+    assert.strictEqual(createThemeContext(disabled, fixture).getRendererConfig().accessoryAttachments, null);
   } finally {
     fixture.cleanup();
   }
@@ -268,6 +309,21 @@ test("getRendererConfig reports hasRoamVisual only for a dedicated roam binding"
       states: { idle: ["idle.svg"], roam: ["walk.svg", "idle.svg"] },
     }), fixture);
     assert.strictEqual(ctxMultiHead.getRendererConfig().hasRoamVisual, true);
+  } finally {
+    fixture.cleanup();
+  }
+});
+
+test("getRendererConfig lists idle animations that mirror on the right side", () => {
+  const fixture = makeRoot();
+  try {
+    const ctx = createThemeContext(makeTheme({
+      idleAnimations: [
+        { file: "look.svg", duration: 5000 },
+        { file: "bubble.svg", duration: 5000, mirrorOnRightSide: true },
+      ],
+    }), fixture);
+    assert.deepStrictEqual(ctx.getRendererConfig().rightSideMirrorFiles, ["bubble.svg"]);
   } finally {
     fixture.cleanup();
   }

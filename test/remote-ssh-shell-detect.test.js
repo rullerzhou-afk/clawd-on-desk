@@ -4,7 +4,12 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { EventEmitter } = require("events");
 
-const { detectRemoteShell, POSIX_OS_RX } = require("../src/remote-ssh-shell-detect");
+const {
+  detectRemoteShell,
+  PROBE_TIMEOUT_MS,
+  MANAGED_PROBE_TIMEOUT_MS,
+  POSIX_OS_RX,
+} = require("../src/remote-ssh-shell-detect");
 
 function makeFakeChild() {
   const child = new EventEmitter();
@@ -25,7 +30,10 @@ function makeRecordingSpawn(responses) {
     queueMicrotask(() => {
       if (resp.stdout) child.stdout.emit("data", Buffer.from(resp.stdout));
       if (resp.stderr) child.stderr.emit("data", Buffer.from(resp.stderr));
-      child.emit("exit", resp.code != null ? resp.code : 0, resp.signal || null);
+      const code = resp.code != null ? resp.code : 0;
+      const signal = resp.signal || null;
+      child.emit("exit", code, signal);
+      child.emit("close", code, signal);
     });
     return child;
   };
@@ -43,6 +51,12 @@ test("POSIX_OS_RX accepts every kernel name we emit", () => {
   for (const not of ["Windows", "windows", "Microsoft Windows", ""]) {
     assert.equal(POSIX_OS_RX.test(not), false, `did not expect POSIX_OS_RX to match ${JSON.stringify(not)}`);
   }
+});
+
+test("managed shell probes allow a longer Codespaces round-trip than ordinary probes", () => {
+  assert.equal(PROBE_TIMEOUT_MS, 15000);
+  assert.ok(MANAGED_PROBE_TIMEOUT_MS >= 30000);
+  assert.ok(MANAGED_PROBE_TIMEOUT_MS > PROBE_TIMEOUT_MS);
 });
 
 test("detectRemoteShell: Linux remote → posix", async () => {

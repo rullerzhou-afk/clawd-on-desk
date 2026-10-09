@@ -10,6 +10,7 @@ const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
 const initPermission = require("../src/permission");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 function createMockResponse() {
   const captured = { destroyCalls: 0 };
@@ -62,7 +63,7 @@ function makeCtx(overrides = {}) {
 }
 
 function makePermEntry(overrides = {}) {
-  return {
+  const entry = {
     res: createMockResponse(),
     abortHandler: () => {},
     suggestions: [],
@@ -78,6 +79,11 @@ function makePermEntry(overrides = {}) {
     subagentType: null,
     ...overrides,
   };
+  entry.interaction = overrides.interaction || classifyPermissionInteraction({
+    agentId: entry.agentId,
+    toolName: entry.toolName,
+  });
+  return entry;
 }
 
 describe("dismissPermissionsByAgent subagentOnly scope (#451)", () => {

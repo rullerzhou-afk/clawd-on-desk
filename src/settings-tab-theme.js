@@ -2,18 +2,82 @@
 
 (function initSettingsTabTheme(root) {
   const PREVIEW_TARGET_CONTENT_RATIO = 0.55;
+  const CATALOG_AUTO_RETRY_DELAYS_MS = [10000, 30000];
+  const CATALOG_AUTO_RETRY_MAX = CATALOG_AUTO_RETRY_DELAYS_MS.length;
+  const CATALOG_UNAVAILABLE_ERROR_CODE = "OFFICIAL_THEME_CATALOG_UNAVAILABLE";
 
   let state = null;
   let runtime = null;
   let helpers = null;
   let ops = null;
   let readers = null;
+  let customizingThemeId = null;
+  let customizationSelectionPendingThemeId = null;
+  let customizationSelectionSeq = 0;
+  let mountedCustomizationControls = null;
+  // Live handles for the theme LIST (the grid of cards). Populated by render()
+  // while the list view is mounted so state updates — official-download
+  // progress in particular, which fires many times per download — can patch
+  // the affected rows in place instead of re-rendering the whole list (a full
+  // re-render tears down every card, which drops the CSS hover highlight the
+  // cursor is sitting on).
+  let mountedThemeList = null;
+  let themeListScrollTop = 0;
+  let customizationReturnFocusKey = "";
+  let catalogAutoRetryTimer = null;
+  let catalogAutoRetryAttempts = 0;
+
+  function getContentElement() {
+    return document.getElementById("content");
+  }
+
+  function stabilizeCustomizationView({ themeId = null, scrollTop, focusKey }) {
+    const apply = () => {
+      if (state.activeTab !== "theme") return;
+      if (themeId ? customizingThemeId !== themeId : customizingThemeId !== null) return;
+      const content = getContentElement();
+      if (content) content.scrollTop = scrollTop;
+      ops.focusSettingsTarget(content, focusKey);
+    };
+    apply();
+    if (root && typeof root.requestAnimationFrame === "function") root.requestAnimationFrame(apply);
+  }
+
+  function enterThemeCustomization(themeId) {
+    customizingThemeId = themeId;
+    ops.requestRender({ content: true });
+    stabilizeCustomizationView({
+      themeId,
+      scrollTop: 0,
+      focusKey: "theme-customization-back",
+    });
+  }
 
   function t(key) {
     return helpers.t(key);
   }
 
   function render(parent) {
+    mountedCustomizationControls = null;
+    mountedThemeList = null;
+    const detailTheme = Array.isArray(runtime.themeList)
+      ? runtime.themeList.find((theme) => (
+        theme
+        && theme.id === customizingThemeId
+        && theme.active
+        && supportsThemeCustomization(theme)
+      ))
+      : null;
+    if (detailTheme) {
+      renderThemeDetail(parent, detailTheme);
+      return;
+    }
+    customizingThemeId = null;
+
+    // List handles must exist before buildThemeActions() so it can register
+    // its import/refresh buttons for in-place pending patches.
+    mountedThemeList = { officialControls: new Map(), actions: null };
+
     const h1 = document.createElement("h1");
     h1.textContent = t("themeTitle");
     parent.appendChild(h1);
@@ -23,6 +87,7 @@
     subtitle.textContent = t("themeSubtitle");
     parent.appendChild(subtitle);
     parent.appendChild(buildThemeActions());
+    maybeScheduleCatalogAutoRetry();
 
     if (runtime.themeList === null) {
       const loading = document.createElement("div");
@@ -53,6 +118,10 @@
       title.textContent = section.title;
       sectionEl.appendChild(title);
 
+      if (section.id === "official" && catalogIsOffline()) {
+        sectionEl.appendChild(buildOfficialOfflineBanner());
+      }
+
       const grid = document.createElement("div");
       grid.className = "theme-grid";
       for (const theme of section.themes) {
@@ -61,24 +130,183 @@
       sectionEl.appendChild(grid);
       parent.appendChild(sectionEl);
     }
+
+    // Remember the exact list data this render was built from so a later
+    // progress patch can tell whether a full re-render is actually needed.
+    mountedThemeList.dataKey = officialListDataKey();
+  }
+
+  // The official section renders from the catalog list; the local theme list
+  // stays the runtime authority for active selection and capabilities. Shared
+  // by the list render and the in-place progress patch so both always agree on
+  // what an official card currently looks like.
+  function getMergedOfficialThemes() {
+    const localById = new Map(
+      (Array.isArray(runtime.themeList) ? runtime.themeList : [])
+        .filter((theme) => theme && theme.id)
+        .map((theme) => [theme.id, theme])
+    );
+    return (Array.isArray(runtime.officialThemeList) ? runtime.officialThemeList : [])
+      .map((theme) => {
+        const localTheme = theme && localById.get(theme.id);
+        if (!localTheme) return theme;
+        return {
+          ...theme,
+          active: !!localTheme.active,
+          capabilities: localTheme.capabilities || theme.capabilities,
+        };
+      });
+  }
+
+  // A local entry can still carry `officialTheme` fields from an earlier
+  // catalog that has since dropped its id. Strip them so the card renders (and
+  // can be selected/deleted) as a plain user theme.
+  function withoutStaleOfficialDecoration(theme) {
+    const next = { ...theme };
+    for (const key of [
+      "officialTheme",
+      "managedOfficialTheme",
+      "officialThemeState",
+      "officialThemeVersion",
+      "officialThemeInstalledVersion",
+      "officialThemeCatalogVersion",
+      "officialThemeBytes",
+      "officialThemeUnpackedBytes",
+      "officialThemeCanUninstall",
+      "officialThemeConflict",
+    ]) {
+      delete next[key];
+    }
+    return next;
   }
 
   function getThemeSections(themes) {
+    const officialThemes = getMergedOfficialThemes();
+    const officialIds = new Set(officialThemes.map((theme) => theme && theme.id).filter(Boolean));
     const groups = {
       builtin: [],
+      official: officialThemes,
       importedCodexPets: [],
       user: [],
     };
     for (const theme of themes || []) {
-      if (theme && theme.builtin) groups.builtin.push(theme);
-      else if (theme && theme.managedCodexPet) groups.importedCodexPets.push(theme);
-      else groups.user.push(theme);
+      if (!theme) continue;
+      if (theme.builtin) { groups.builtin.push(theme); continue; }
+      if (theme.managedCodexPet) { groups.importedCodexPets.push(theme); continue; }
+      // The official section owns a local entry only when it actually has a
+      // matching card (installed or in the catalog), or when the official
+      // manager owns it via a marker. A stale `officialTheme` flag left over
+      // from a catalog that no longer lists this id must not hide the theme:
+      // it returns to the user section as an ordinary user theme.
+      if (officialIds.has(theme.id) || theme.managedOfficialTheme === true) continue;
+      groups.user.push(theme.officialTheme === true ? withoutStaleOfficialDecoration(theme) : theme);
     }
+    // A failed catalog must still surface the official section so the offline
+    // banner and its Retry button are reachable even when no card is known.
+    const showOfficialSection = groups.official.length > 0 || catalogIsOffline();
     return [
       { id: "builtin", title: t("themeGroupBuiltIn"), themes: groups.builtin },
+      { id: "official", title: t("themeGroupOfficialThemes"), themes: groups.official },
       { id: "imported-codex-pets", title: t("themeGroupImportedCodexPets"), themes: groups.importedCodexPets },
       { id: "user", title: t("themeGroupUserThemes"), themes: groups.user },
-    ].filter((section) => section.themes.length > 0);
+    ].filter((section) => section.themes.length > 0
+      || (section.id === "official" && showOfficialSection));
+  }
+
+  function catalogIsOffline() {
+    return !!runtime.officialThemeListFetched
+      && (runtime.officialThemeCatalogStatus === "offline"
+        || runtime.officialThemeCatalogStatus === "invalid");
+  }
+
+  function catalogRetrying() {
+    return !!runtime.officialThemeCatalogRetrying;
+  }
+
+  function syncCatalogRetryControls() {
+    const controls = mountedThemeList && mountedThemeList.catalogRetry;
+    if (!controls) return false;
+    const retrying = catalogRetrying();
+    controls.button.textContent = t(retrying ? "themeOfficialRetrying" : "themeOfficialRetry");
+    controls.button.disabled = retrying;
+    controls.button.classList.toggle("pending", retrying);
+    return true;
+  }
+
+  function buildOfficialOfflineBanner() {
+    const banner = document.createElement("div");
+    banner.className = "theme-official-offline-banner";
+    banner.setAttribute("role", "status");
+    const message = document.createElement("span");
+    message.className = "theme-official-offline-message";
+    message.textContent = t(getMergedOfficialThemes().length > 0
+      ? "themeOfficialOfflineWithList"
+      : "themeOfficialOfflineNoList");
+    banner.appendChild(message);
+    const retry = document.createElement("button");
+    retry.type = "button";
+    retry.className = "theme-official-offline-retry";
+    retry.setAttribute("data-settings-focus-key", "theme-official-offline-retry");
+    retry.addEventListener("click", handleCatalogRetry);
+    banner.appendChild(retry);
+    if (mountedThemeList) mountedThemeList.catalogRetry = { button: retry, message };
+    syncCatalogRetryControls();
+    return banner;
+  }
+
+  function cancelCatalogAutoRetry() {
+    if (catalogAutoRetryTimer === null) return;
+    root.clearTimeout(catalogAutoRetryTimer);
+    catalogAutoRetryTimer = null;
+  }
+
+  // The automatic budget is per failure episode: each time the catalog goes
+  // from healthy back to failing, up to two automatic retries (10s, then 30s)
+  // are scheduled. A success resets the count, so a later failure episode gets
+  // its own two attempts; with no new failure nothing is scheduled.
+  function maybeScheduleCatalogAutoRetry() {
+    if (state.activeTab !== "theme") return;
+    if (catalogRetrying()) return;
+    if (!catalogIsOffline()) {
+      catalogAutoRetryAttempts = 0;
+      cancelCatalogAutoRetry();
+      return;
+    }
+    if (catalogAutoRetryAttempts >= CATALOG_AUTO_RETRY_MAX) return;
+    if (catalogAutoRetryTimer !== null) return;
+    const delay = CATALOG_AUTO_RETRY_DELAYS_MS[Math.min(
+      catalogAutoRetryAttempts,
+      CATALOG_AUTO_RETRY_DELAYS_MS.length - 1,
+    )];
+    catalogAutoRetryTimer = root.setTimeout(() => {
+      catalogAutoRetryTimer = null;
+      if (state.activeTab !== "theme") return;
+      if (catalogRetrying()) return;
+      catalogAutoRetryAttempts += 1;
+      startCatalogRetry();
+    }, delay);
+  }
+
+  // Reuses the ordinary list request path. `fetchOfficialThemes` is
+  // single-flight, so a manual or automatic retry can never stack on top of an
+  // in-flight read.
+  function startCatalogRetry() {
+    if (catalogRetrying()) return Promise.resolve();
+    runtime.officialThemeCatalogRetrying = true;
+    syncCatalogRetryControls();
+    const local = ops.fetchThemes();
+    const official = ops.fetchOfficialThemes();
+    return Promise.allSettled([local, official]).then(() => {
+      runtime.officialThemeCatalogRetrying = false;
+      if (state.activeTab === "theme") {
+        ops.requestRender({ content: true, preserveScroll: true });
+      }
+    });
+  }
+
+  function handleCatalogRetry() {
+    cancelCatalogAutoRetry();
+    return startCatalogRetry();
   }
 
   function localizeField(value) {
@@ -129,6 +357,18 @@
     img.src = getCodexPetPreviewAtlasUrl(theme);
     img.alt = "";
     img.draggable = false;
+    const columns = Number.isInteger(theme.codexPet.atlasColumns)
+      && theme.codexPet.atlasColumns >= 1
+      && theme.codexPet.atlasColumns <= 64
+      ? theme.codexPet.atlasColumns
+      : 8;
+    const rows = Number.isInteger(theme.codexPet.atlasRows)
+      && theme.codexPet.atlasRows >= 1
+      && theme.codexPet.atlasRows <= 64
+      ? theme.codexPet.atlasRows
+      : 9;
+    img.style.width = `${columns * 100}%`;
+    img.style.height = `${rows * 100}%`;
     frame.appendChild(img);
     return frame;
   }
@@ -160,65 +400,589 @@
     return badges;
   }
 
+  function supportsThemeCustomization(theme) {
+    const caps = theme && theme.capabilities;
+    return !!(caps && (
+      caps.petTint === true
+      || caps.accessories === true
+      || caps.mouthAccessories === true
+    ));
+  }
+
+  function mirrorThemeSelectionResult(themeId, result) {
+    const runtimeCapabilities = (
+      result
+      && result.customizationCapabilities
+      && typeof result.customizationCapabilities === "object"
+      && !Array.isArray(result.customizationCapabilities)
+    )
+      ? result.customizationCapabilities
+      : null;
+    const mirrorEntry = (entry) => (
+      entry
+        ? {
+            ...entry,
+            active: entry.id === themeId,
+            capabilities: entry.id === themeId && runtimeCapabilities
+              ? { ...(entry.capabilities || {}), ...runtimeCapabilities }
+              : entry.capabilities,
+          }
+        : entry
+    );
+    // The selected theme may be an official card (which lives in the official
+    // list) or a local list entry; mirror into both so the active marker updates.
+    if (Array.isArray(runtime.themeList)) runtime.themeList = runtime.themeList.map(mirrorEntry);
+    if (Array.isArray(runtime.officialThemeList)) {
+      runtime.officialThemeList = runtime.officialThemeList.map(mirrorEntry);
+    }
+    if (!Array.isArray(runtime.themeList)) return null;
+    return runtime.themeList.find((entry) => entry && entry.id === themeId) || null;
+  }
+
+  function openThemeCustomization(theme) {
+    if (!theme || !supportsThemeCustomization(theme)) return;
+    const content = getContentElement();
+    themeListScrollTop = content && Number.isFinite(content.scrollTop) ? content.scrollTop : 0;
+    customizationReturnFocusKey = `theme-customize:${theme.id}`;
+    if (theme.active) {
+      enterThemeCustomization(theme.id);
+      return;
+    }
+    if (customizationSelectionPendingThemeId) return;
+
+    const requestSeq = ++customizationSelectionSeq;
+    customizationSelectionPendingThemeId = theme.id;
+    ops.requestRender({ content: true });
+    Promise.resolve(window.settingsAPI.command("setThemeSelection", { themeId: theme.id }))
+      .then((result) => {
+        if (requestSeq !== customizationSelectionSeq) return;
+        if (!result || result.status !== "ok") {
+          const message = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          return;
+        }
+        // The controller has already activated and committed this theme before
+        // returning ok. Mirror that acknowledged result into the renderer's
+        // metadata cache so opening the detail does not depend on a second IPC
+        // fetch that can fail independently.
+        const activeEntry = mirrorThemeSelectionResult(theme.id, result);
+        customizingThemeId = supportsThemeCustomization(activeEntry) ? theme.id : null;
+      })
+      .catch((err) => {
+        if (requestSeq !== customizationSelectionSeq) return;
+        const message = (err && err.message) || "unknown error";
+        ops.showToast(t("toastSaveFailed") + message, { error: true });
+      })
+      .finally(() => {
+        if (requestSeq !== customizationSelectionSeq) return;
+        customizationSelectionPendingThemeId = null;
+        if (state.activeTab === "theme") {
+          if (customizingThemeId === theme.id) enterThemeCustomization(theme.id);
+          else ops.requestRender({ content: true });
+        }
+      });
+  }
+
+  function closeThemeCustomization() {
+    customizingThemeId = null;
+    mountedCustomizationControls = null;
+    ops.requestRender({ content: true });
+    stabilizeCustomizationView({
+      scrollTop: themeListScrollTop,
+      focusKey: customizationReturnFocusKey,
+    });
+  }
+
+  function renderThemeDetail(parent, theme) {
+    mountedCustomizationControls = {
+      themeId: theme.id,
+      petTint: null,
+      petAccessory: null,
+      petMouthAccessory: null,
+      holidayAccessoryEnabled: null,
+    };
+    const back = document.createElement("button");
+    back.type = "button";
+    back.className = "theme-detail-back";
+    back.setAttribute("data-settings-focus-key", "theme-customization-back");
+    back.textContent = `\u2039 ${t("themeBackToPets")}`;
+    back.addEventListener("click", closeThemeCustomization);
+    parent.appendChild(back);
+
+    const hero = document.createElement("div");
+    hero.className = "theme-detail-hero";
+    const preview = document.createElement("div");
+    preview.className = "theme-thumb theme-detail-preview";
+    if (theme.previewFileUrl || getCodexPetPreviewAtlasUrl(theme)) {
+      preview.appendChild(buildThemePreviewMedia(theme));
+    } else {
+      const glyph = document.createElement("span");
+      glyph.className = "theme-thumb-empty";
+      glyph.textContent = t("themeThumbMissing");
+      preview.appendChild(glyph);
+    }
+    hero.appendChild(preview);
+
+    const heading = document.createElement("div");
+    heading.className = "theme-detail-heading";
+    const h1 = document.createElement("h1");
+    h1.textContent = localizeField(theme.name) || theme.id;
+    heading.appendChild(h1);
+    const current = document.createElement("div");
+    current.className = "theme-detail-current";
+    current.textContent = t("themeActiveIndicator");
+    heading.appendChild(current);
+    hero.appendChild(heading);
+    parent.appendChild(hero);
+
+    const section = document.createElement("section");
+    section.className = "section theme-detail-section";
+    const title = document.createElement("h2");
+    title.textContent = t("themeAppearanceTitle");
+    section.appendChild(title);
+    const caps = theme.capabilities || {};
+    if (caps.petTint === true) section.appendChild(buildThemeTintRow(theme));
+    if (caps.accessories === true) section.appendChild(buildThemeAccessoryRow(theme));
+    if (caps.mouthAccessories === true) section.appendChild(buildThemeMouthAccessoryRow(theme));
+    if (caps.accessories === true) section.appendChild(buildHolidayAccessoryRow(theme));
+    parent.appendChild(section);
+  }
+
+  function getTintOptions() {
+    return Array.isArray(runtime.petTintOptions)
+      ? runtime.petTintOptions.filter((entry) => (
+        entry
+        && typeof entry.id === "string"
+        && /^[a-z][a-z0-9-]{0,31}$/.test(entry.id)
+        && typeof entry.labelKey === "string"
+        && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(entry.labelKey)
+      ))
+      : [];
+  }
+
+  function getThemeTintId(themeId, options) {
+    const selections = state.snapshot && state.snapshot.petTint;
+    const value = typeof selections === "string"
+      ? selections
+      : (selections && typeof selections === "object" ? selections[themeId] : null);
+    return options.some((entry) => entry.id === value) ? value : "none";
+  }
+
+  function getAccessoryOptions() {
+    return Array.isArray(runtime.petAccessoryOptions)
+      ? runtime.petAccessoryOptions.filter((entry) => (
+        entry
+        && typeof entry.id === "string"
+        && /^[a-z][a-z0-9-]{0,31}$/.test(entry.id)
+        && typeof entry.labelKey === "string"
+        && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(entry.labelKey)
+      ))
+      : [];
+  }
+
+  function getThemeAccessoryId(themeId, options) {
+    const selections = state.snapshot && state.snapshot.petAccessory;
+    const value = selections && typeof selections === "object" && !Array.isArray(selections)
+      ? selections[themeId]
+      : null;
+    return options.some((entry) => entry.id === value) ? value : "none";
+  }
+
+  function getMouthAccessoryOptions() {
+    return Array.isArray(runtime.petMouthAccessoryOptions)
+      ? runtime.petMouthAccessoryOptions.filter((entry) => (
+        entry
+        && typeof entry.id === "string"
+        && /^[a-z][a-z0-9-]{0,31}$/.test(entry.id)
+        && typeof entry.labelKey === "string"
+        && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(entry.labelKey)
+      ))
+      : [];
+  }
+
+  function getThemeMouthAccessoryId(themeId, options) {
+    const selections = state.snapshot && state.snapshot.petMouthAccessory;
+    const value = selections && typeof selections === "object" && !Array.isArray(selections)
+      ? selections[themeId]
+      : null;
+    return options.some((entry) => entry.id === value) ? value : "none";
+  }
+
+  function buildThemeTintRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowPetColor");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themePetColorDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const options = getTintOptions();
+    const pickerOptions = options.length > 0
+      ? options.map((entry) => ({ value: entry.id, label: t(entry.labelKey) }))
+      : [{ value: "none", label: t("tintNone") }];
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeTintId(theme.id, options),
+      options: pickerOptions,
+      ariaLabel: t("rowPetColor"),
+      className: "pet-tint-select",
+      viewportPlacement: "down",
+      disabled: options.length === 0,
+      onChange(next) {
+        const committed = getThemeTintId(theme.id, options);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.petTint;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "none") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("petTint", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
+    });
+
+    function syncFromSnapshot() {
+      picker.setValue(getThemeTintId(theme.id, options));
+      picker.setPending(false);
+      picker.setDisabled(options.length === 0);
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.petTint = syncFromSnapshot;
+    }
+
+    control.appendChild(picker.element);
+    row.appendChild(text);
+    row.appendChild(control);
+    syncFromSnapshot();
+    return row;
+  }
+
+  function buildThemeAccessoryRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowPetAccessory");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themePetAccessoryDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const options = getAccessoryOptions();
+    const pickerOptions = options.length > 0
+      ? options.map((entry) => ({ value: entry.id, label: t(entry.labelKey) }))
+      : [{ value: "none", label: t("accessoryNone") }];
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeAccessoryId(theme.id, options),
+      options: pickerOptions,
+      ariaLabel: t("rowPetAccessory"),
+      className: "pet-accessory-select",
+      viewportPlacement: "up",
+      disabled: options.length === 0,
+      onChange(next) {
+        const committed = getThemeAccessoryId(theme.id, options);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.petAccessory;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "none") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("petAccessory", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
+    });
+
+    function syncFromSnapshot() {
+      picker.setValue(getThemeAccessoryId(theme.id, options));
+      picker.setPending(false);
+      picker.setDisabled(options.length === 0);
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.petAccessory = syncFromSnapshot;
+    }
+
+    control.appendChild(picker.element);
+    row.appendChild(text);
+    row.appendChild(control);
+    syncFromSnapshot();
+    return row;
+  }
+
+  function buildThemeMouthAccessoryRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowPetMouthAccessory");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("themePetMouthAccessoryDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const options = getMouthAccessoryOptions();
+    const pickerOptions = options.length > 0
+      ? options.map((entry) => ({ value: entry.id, label: t(entry.labelKey) }))
+      : [{ value: "none", label: t("accessoryNone") }];
+    const picker = helpers.buildSettingsSelect({
+      value: getThemeMouthAccessoryId(theme.id, options),
+      options: pickerOptions,
+      ariaLabel: t("rowPetMouthAccessory"),
+      className: "pet-mouth-accessory-select",
+      disabled: options.length === 0,
+      onChange(next) {
+        const committed = getThemeMouthAccessoryId(theme.id, options);
+        if (next === committed) return true;
+        const current = state.snapshot && state.snapshot.petMouthAccessory;
+        const nextMap = current && typeof current === "object" && !Array.isArray(current)
+          ? { ...current }
+          : {};
+        if (next === "none") delete nextMap[theme.id];
+        else nextMap[theme.id] = next;
+        return Promise.resolve(window.settingsAPI.update("petMouthAccessory", nextMap))
+          .then((result) => {
+            if (result && result.status === "ok") return true;
+            const message = (result && result.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          })
+          .catch((err) => {
+            const message = (err && err.message) || "unknown error";
+            ops.showToast(t("toastSaveFailed") + message, { error: true });
+            return false;
+          });
+      },
+    });
+
+    function syncFromSnapshot() {
+      picker.setValue(getThemeMouthAccessoryId(theme.id, options));
+      picker.setPending(false);
+      picker.setDisabled(options.length === 0);
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.petMouthAccessory = syncFromSnapshot;
+    }
+
+    control.appendChild(picker.element);
+    row.appendChild(text);
+    row.appendChild(control);
+    syncFromSnapshot();
+    return row;
+  }
+
+  function getHolidayAccessoryEnabled(themeId) {
+    const selections = state.snapshot && state.snapshot.holidayAccessoryEnabled;
+    return !!(
+      selections
+      && typeof selections === "object"
+      && !Array.isArray(selections)
+      && selections[themeId] === true
+    );
+  }
+
+  function buildHolidayAccessoryRow(theme) {
+    const row = document.createElement("div");
+    row.className = "row theme-customization-row holiday-accessory-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    // Only one theme detail is mounted; folder names may contain IDREF whitespace.
+    label.id = "settings-holiday-accessory-label";
+    label.textContent = t("rowHolidayAccessory");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.id = "settings-holiday-accessory-description";
+    desc.textContent = t("themeHolidayAccessoryDesc");
+    text.appendChild(label);
+    text.appendChild(desc);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    let visualEnabled = getHolidayAccessoryEnabled(theme.id);
+    const switchControl = helpers.buildSwitch({
+      checked: visualEnabled,
+      ariaLabelledBy: label.id,
+      ariaDescribedBy: desc.id,
+      className: "holiday-accessory-switch",
+    });
+    const sw = switchControl.element;
+
+    function setVisual(enabled, { pending = false } = {}) {
+      visualEnabled = !!enabled;
+      switchControl.setState({ checked: visualEnabled, pending });
+    }
+
+    function syncFromSnapshot() {
+      setVisual(getHolidayAccessoryEnabled(theme.id));
+    }
+
+    if (mountedCustomizationControls && mountedCustomizationControls.themeId === theme.id) {
+      mountedCustomizationControls.holidayAccessoryEnabled = syncFromSnapshot;
+    }
+
+    function run() {
+      const nextEnabled = !visualEnabled;
+      const current = state.snapshot && state.snapshot.holidayAccessoryEnabled;
+      const nextMap = current && typeof current === "object" && !Array.isArray(current)
+        ? { ...current }
+        : {};
+      if (nextEnabled) nextMap[theme.id] = true;
+      else delete nextMap[theme.id];
+      setVisual(nextEnabled, { pending: true });
+      Promise.resolve(window.settingsAPI.update("holidayAccessoryEnabled", nextMap))
+        .then((result) => {
+          if (result && result.status === "ok") return;
+          const message = (result && result.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          setVisual(getHolidayAccessoryEnabled(theme.id));
+        })
+        .catch((err) => {
+          const message = (err && err.message) || "unknown error";
+          ops.showToast(t("toastSaveFailed") + message, { error: true });
+          setVisual(getHolidayAccessoryEnabled(theme.id));
+        })
+        .finally(() => {
+          if (document.body.contains(sw)) switchControl.setState({ pending: false });
+        });
+    }
+
+    switchControl.setOnToggle(run);
+
+    control.appendChild(sw);
+    row.appendChild(text);
+    row.appendChild(control);
+    setVisual(visualEnabled);
+    return row;
+  }
+
+  function patchInPlace(changes) {
+    if (!changes || typeof changes !== "object" || !mountedCustomizationControls) return false;
+    if (mountedCustomizationControls.themeId !== customizingThemeId) return false;
+
+    const keys = Object.keys(changes);
+    const customizationKeys = new Set([
+      "petTint",
+      "petAccessory",
+      "petMouthAccessory",
+      "holidayAccessoryEnabled",
+    ]);
+    if (keys.length === 0 || !keys.every((key) => customizationKeys.has(key))) return false;
+
+    for (const key of keys) {
+      const syncControl = mountedCustomizationControls[key];
+      if (typeof syncControl === "function") syncControl();
+    }
+    return true;
+  }
+
   function buildThemeActions() {
     const row = document.createElement("div");
     row.className = "theme-actions";
 
     const codexGroup = buildThemeActionGroup(t("themeActionGroupCodexPets"));
-    const importBtn = document.createElement("button");
-    importBtn.type = "button";
-    importBtn.className = "soft-btn";
-    importBtn.textContent = t("themeImportPetZip");
-    importBtn.disabled = !!runtime.codexPetZipImportPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.importCodexPetZip !== "function";
-    if (runtime.codexPetZipImportPending) importBtn.classList.add("pending");
+    const importBtn = helpers.buildButton({
+      labelKey: "themeImportPetZip",
+      size: "compact",
+      disabled: !!runtime.codexPetZipImportPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.importCodexPetZip !== "function",
+      pending: !!runtime.codexPetZipImportPending,
+    });
     importBtn.addEventListener("click", handleImportCodexPetZip);
     codexGroup.buttons.appendChild(importBtn);
 
-    const refreshBtn = document.createElement("button");
-    refreshBtn.type = "button";
-    refreshBtn.className = "soft-btn";
-    refreshBtn.textContent = t("themeRefreshImportedPets");
-    refreshBtn.disabled = !!runtime.codexPetsRefreshPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.refreshCodexPets !== "function";
-    if (runtime.codexPetsRefreshPending) refreshBtn.classList.add("pending");
+    const refreshBtn = helpers.buildButton({
+      labelKey: "themeRefreshImportedPets",
+      size: "compact",
+      disabled: !!runtime.codexPetsRefreshPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.refreshCodexPets !== "function",
+      pending: !!runtime.codexPetsRefreshPending,
+    });
     refreshBtn.addEventListener("click", handleRefreshCodexPets);
     codexGroup.buttons.appendChild(refreshBtn);
     row.appendChild(codexGroup.group);
 
     const userThemeGroup = buildThemeActionGroup(t("themeActionGroupUserThemes"));
-    const importThemeBtn = document.createElement("button");
-    importThemeBtn.type = "button";
-    importThemeBtn.className = "soft-btn";
-    importThemeBtn.textContent = t("themeImportUserThemeZip");
-    importThemeBtn.title = t("themeImportUserThemeZipHint");
-    importThemeBtn.disabled = !!runtime.userThemeZipImportPending
-      || !window.settingsAPI
-      || typeof window.settingsAPI.importUserThemeZip !== "function";
-    if (runtime.userThemeZipImportPending) importThemeBtn.classList.add("pending");
+    const importThemeBtn = helpers.buildButton({
+      labelKey: "themeImportUserThemeZip",
+      size: "compact",
+      title: t("themeImportUserThemeZipHint"),
+      disabled: !!runtime.userThemeZipImportPending
+        || !window.settingsAPI
+        || typeof window.settingsAPI.importUserThemeZip !== "function",
+      pending: !!runtime.userThemeZipImportPending,
+    });
     importThemeBtn.addEventListener("click", handleImportUserThemeZip);
     userThemeGroup.buttons.appendChild(importThemeBtn);
 
-    const userThemeFolderBtn = document.createElement("button");
-    userThemeFolderBtn.type = "button";
-    userThemeFolderBtn.className = "soft-btn";
-    userThemeFolderBtn.textContent = t("themeOpenUserThemesFolder");
-    userThemeFolderBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.openUserThemesDir !== "function";
+    const userThemeFolderBtn = helpers.buildButton({
+      labelKey: "themeOpenUserThemesFolder",
+      size: "compact",
+      disabled: !window.settingsAPI
+        || typeof window.settingsAPI.openUserThemesDir !== "function",
+    });
     userThemeFolderBtn.addEventListener("click", handleOpenUserThemesFolder);
     userThemeGroup.buttons.appendChild(userThemeFolderBtn);
 
-    const refreshThemesBtn = document.createElement("button");
-    refreshThemesBtn.type = "button";
-    refreshThemesBtn.className = "soft-btn";
-    refreshThemesBtn.textContent = t("themeRefreshThemes");
-    refreshThemesBtn.disabled = !window.settingsAPI
-      || typeof window.settingsAPI.listThemes !== "function";
+    const refreshThemesBtn = helpers.buildButton({
+      labelKey: "themeRefreshThemes",
+      size: "compact",
+      disabled: !window.settingsAPI
+        || typeof window.settingsAPI.listThemes !== "function",
+    });
     refreshThemesBtn.addEventListener("click", handleRefreshThemes);
     userThemeGroup.buttons.appendChild(refreshThemesBtn);
     row.appendChild(userThemeGroup.group);
+    if (mountedThemeList) {
+      mountedThemeList.actions = { importBtn, refreshBtn, importThemeBtn };
+    }
 
     return row;
   }
@@ -238,6 +1002,413 @@
 
   function stopThemeCardButtonKeydown(ev) {
     ev.stopPropagation();
+  }
+
+  function getOfficialProgress(theme) {
+    const operation = runtime.officialThemeOperation;
+    if (operation && operation.id === theme.id) return operation;
+    // A per-card snapshot is only meaningful before the renderer has observed
+    // the operation end; after that it may be a stale live-download reading.
+    if (!ops.officialProgressSnapshotsTrusted()) return null;
+    return theme.officialThemeProgress || null;
+  }
+
+  function formatOfficialMessage(key, ...args) {
+    const value = t(key);
+    if (typeof value === "function") return value(...args);
+    return String(value);
+  }
+
+  // A missing catalog has its own localized copy; every other failure keeps the
+  // existing "install failed: <message>" wording.
+  function formatOfficialInstallFailure(result) {
+    if (result && result.code === CATALOG_UNAVAILABLE_ERROR_CODE) {
+      return t("toastOfficialThemeCatalogUnavailable");
+    }
+    return formatOfficialMessage("toastOfficialThemeInstallFailed", (result && result.message) || "unknown error");
+  }
+
+  // True while any official install is in flight. `officialThemePendingThemeId`
+  // only covers installs this renderer started; the operation mirror also sees a
+  // download that was already running when this Settings view was (re)opened.
+  // A list snapshot can establish the same before the next progress event, and
+  // the post-operation refresh keeps the buttons disabled until the fresh list
+  // lands. Other cards' download/retry buttons must stay disabled in every case.
+  function officialOperationBusy() {
+    if (runtime.officialThemePendingThemeId) return true;
+    const operation = runtime.officialThemeOperation;
+    if (operation
+      && (operation.phase === "downloading"
+        || operation.phase === "extracting"
+        || operation.phase === "installing")) {
+      return true;
+    }
+    if (runtime.officialThemeEndRefresh) return true;
+    if (ops.officialProgressSnapshotsTrusted()) {
+      const officialThemes = Array.isArray(runtime.officialThemeList) ? runtime.officialThemeList : [];
+      return officialThemes.some((theme) => {
+        const snapshot = theme && theme.officialThemeProgress;
+        return !!(
+          snapshot
+          && (snapshot.phase === "downloading"
+            || snapshot.phase === "extracting"
+            || snapshot.phase === "installing")
+        );
+      });
+    }
+    return false;
+  }
+
+  function buildOfficialThemeControls(theme) {
+    const nodes = [];
+    const state = theme.officialThemeState || "available";
+    const progress = getOfficialProgress(theme);
+    const busy = progress
+      && (progress.phase === "downloading" || progress.phase === "extracting" || progress.phase === "installing");
+    const mib = Number.isFinite(theme.officialThemeBytes)
+      ? Math.max(1, Math.round(theme.officialThemeBytes / (1024 * 1024)))
+      : "?";
+
+    const pushText = (text, className = "theme-official-note") => {
+      const el = document.createElement("span");
+      el.className = className;
+      el.textContent = text;
+      nodes.push(el);
+    };
+    const pushButton = (label, className, onClick, opts = {}) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = className;
+      btn.textContent = label;
+      if (opts.title) btn.title = opts.title;
+      if (opts.focusKey) btn.setAttribute("data-settings-focus-key", opts.focusKey);
+      btn.disabled = !!opts.disabled;
+      btn.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        onClick();
+      });
+      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+      nodes.push(btn);
+      return btn;
+    };
+
+    if (typeof theme.officialThemeShowcaseUrl === "string" && theme.officialThemeShowcaseUrl) {
+      pushButton(
+        t("themeOfficialViewAnimations"),
+        "theme-official-showcase-btn",
+        () => helpers.openExternalSafe(theme.officialThemeShowcaseUrl),
+        { focusKey: `official-showcase:${theme.id}` }
+      );
+    }
+
+    if (busy) {
+      const pct = progress.totalBytes > 0
+        ? Math.min(100, Math.floor((progress.receivedBytes / progress.totalBytes) * 100))
+        : 0;
+      const bar = document.createElement("div");
+      bar.className = "theme-official-progress";
+      bar.setAttribute("role", "progressbar");
+      bar.setAttribute("aria-valuemin", "0");
+      bar.setAttribute("aria-valuemax", "100");
+      bar.setAttribute("aria-valuenow", String(pct));
+      const inner = document.createElement("div");
+      inner.className = "theme-official-progress-bar";
+      inner.style.width = `${pct}%`;
+      bar.appendChild(inner);
+      nodes.push(bar);
+      if (progress.phase === "downloading") pushText(formatOfficialMessage("themeOfficialDownloading", pct));
+      else if (progress.phase === "extracting") pushText(t("themeOfficialVerifying"));
+      else pushText(t("themeOfficialInstalling"));
+      if (progress.phase !== "installing") {
+        pushButton(
+          t("themeOfficialCancel"),
+          "theme-official-cancel-btn",
+          () => handleCancelOfficialThemeInstall(),
+          { focusKey: `official-cancel:${theme.id}` },
+        );
+      }
+      return nodes;
+    }
+
+    if (state === "available") {
+      pushButton(
+        formatOfficialMessage("themeOfficialDownloadLabel", mib),
+        "theme-official-download-btn",
+        () => handleInstallOfficialTheme(theme),
+        { disabled: officialOperationBusy(), focusKey: `official-download:${theme.id}` }
+      );
+      return nodes;
+    }
+
+    if (state === "installed" || state === "update-available") {
+      const version = theme.officialThemeInstalledVersion || theme.officialThemeVersion;
+      pushText(formatOfficialMessage("themeOfficialInstalledVersion", version));
+      if (state === "update-available") {
+        pushText(formatOfficialMessage("themeOfficialUpdateAvailable", theme.officialThemeVersion));
+      }
+      if (theme.officialThemeCanUninstall) {
+        pushButton(
+          t("themeOfficialUninstall"),
+          "theme-uninstall-btn",
+          () => handleUninstallOfficialTheme(theme),
+          { focusKey: `official-uninstall:${theme.id}` },
+        );
+      }
+      return nodes;
+    }
+
+    if (state === "repair-required") {
+      pushText(t("themeOfficialRepairRequired"));
+      if (theme.officialThemeCanUninstall) {
+        pushButton(
+          t("themeOfficialUninstall"),
+          "theme-uninstall-btn",
+          () => handleUninstallOfficialTheme(theme),
+          { focusKey: `official-uninstall:${theme.id}` },
+        );
+      }
+      return nodes;
+    }
+
+    if (state === "update-app") {
+      pushText(formatOfficialMessage("themeOfficialUpdateApp", theme.officialThemeMinAppVersion || theme.officialThemeVersion));
+      return nodes;
+    }
+
+    if (state === "conflict") {
+      pushText(t("themeOfficialConflict"));
+      return nodes;
+    }
+
+    // error / unknown: surface the stable category and offer a retry.
+    if (theme.officialThemeError && theme.officialThemeError.message) {
+      if (theme.officialThemeError.code === CATALOG_UNAVAILABLE_ERROR_CODE) {
+        pushText(t("toastOfficialThemeCatalogUnavailable"));
+      } else {
+        pushText(formatOfficialMessage("themeOfficialError", theme.officialThemeError.message));
+      }
+    }
+    pushButton(t("themeOfficialRetry"), "theme-official-retry-btn", () => handleInstallOfficialTheme(theme), {
+      disabled: officialOperationBusy(),
+      focusKey: `official-retry:${theme.id}`,
+    });
+    return nodes;
+  }
+
+  // Everything about an official row that can change while the LIST DATA stays
+  // the same: the progress phase (busy vs. cancelled/installed) and whether any
+  // install is in flight (which gates the download/retry buttons). Every other
+  // structural input — card state, version, error, bytes, selection, catalog
+  // status — is covered by officialListDataKey() below, so data changes force a
+  // full render instead of a row patch.
+  function officialControlsSignature(theme, progress) {
+    return JSON.stringify([
+      progress ? progress.phase : null,
+      officialOperationBusy() ? 1 : 0,
+    ]);
+  }
+
+  // Fingerprint of everything the theme list render depends on EXCEPT the
+  // per-card official download progress snapshot (which changes many times per
+  // second and is patched in place). That covers both the official catalog
+  // (additions, byte changes, selection, offline notes) and the local list that
+  // drives the builtin / Codex Pet / user sections, which a row patch cannot
+  // create or update. When this differs from what the mounted list was built
+  // from, patchOfficialThemeProgress() bails so ui-core re-renders the content.
+  function officialListDataKey() {
+    const themes = getMergedOfficialThemes().map((theme) => {
+      if (!theme || typeof theme !== "object") return theme;
+      const { officialThemeProgress, ...rest } = theme;
+      return rest;
+    });
+    return JSON.stringify([
+      !!runtime.officialThemeListFetched,
+      runtime.officialThemeCatalogStatus,
+      themes,
+      runtime.themeList,
+    ]);
+  }
+
+  // Patch one card's official row in place. A structural change (phase flip,
+  // install finished, ...) rebuilds only that row; a pure progress tick only
+  // updates the bar width and label, so the card DOM — and any hover
+  // highlight on it — survives the whole download.
+  function patchOfficialControlsEntry(entry, theme) {
+    const progress = getOfficialProgress(theme);
+    const signature = officialControlsSignature(theme, progress);
+    if (signature !== entry.signature) {
+      // Rebuilding this row detaches whatever had keyboard focus inside it; a
+      // full content render is what normally restores focus, so capture the key
+      // here and put it back on the equivalent new button. Focus outside the row
+      // (and a button that no longer exists, e.g. Cancel after installing) is
+      // left alone.
+      const active = document.activeElement;
+      let focusKey = "";
+      if (active
+        && active !== document.body
+        && typeof entry.container.contains === "function"
+        && entry.container.contains(active)
+        && typeof active.getAttribute === "function") {
+        focusKey = String(active.getAttribute("data-settings-focus-key") || "").trim();
+      }
+      entry.container.textContent = "";
+      for (const node of buildOfficialThemeControls(theme)) entry.container.appendChild(node);
+      entry.signature = signature;
+      if (focusKey) ops.focusSettingsTarget(entry.container, focusKey, { onlyIfFocusLost: true });
+      return;
+    }
+    if (!progress) return;
+    const bar = typeof entry.container.querySelector === "function"
+      ? entry.container.querySelector(".theme-official-progress")
+      : null;
+    if (!bar) return;
+    const pct = progress.totalBytes > 0
+      ? Math.min(100, Math.floor((progress.receivedBytes / progress.totalBytes) * 100))
+      : 0;
+    bar.setAttribute("aria-valuenow", String(pct));
+    const inner = typeof bar.querySelector === "function"
+      ? bar.querySelector(".theme-official-progress-bar")
+      : null;
+    if (inner) inner.style.width = `${pct}%`;
+    const note = typeof entry.container.querySelector === "function"
+      ? entry.container.querySelector(".theme-official-note")
+      : null;
+    if (note) {
+      if (progress.phase === "downloading") note.textContent = formatOfficialMessage("themeOfficialDownloading", pct);
+      else if (progress.phase === "extracting") note.textContent = t("themeOfficialVerifying");
+      else note.textContent = t("themeOfficialInstalling");
+    }
+  }
+
+  // Pending flags only change how the action buttons look. Re-rendering the
+  // whole list for them tears down every card (and any hover highlight under
+  // the cursor), so the import/refresh handlers patch the buttons instead.
+  function syncThemePendingStates() {
+    if (!mountedThemeList || !mountedThemeList.actions) return false;
+    const api = window.settingsAPI || {};
+    const { importBtn, refreshBtn, importThemeBtn } = mountedThemeList.actions;
+    const apply = (btn, available, pending) => {
+      if (!btn) return;
+      // Keep disabled/pending/aria-busy in one place so the button's ARIA state
+      // can never drift from its visual state after a pending round trip.
+      helpers.setButtonState(btn, { disabled: !available, pending: !!pending });
+    };
+    apply(importBtn, typeof api.importCodexPetZip === "function", !!runtime.codexPetZipImportPending);
+    apply(refreshBtn, typeof api.refreshCodexPets === "function", !!runtime.codexPetsRefreshPending);
+    apply(importThemeBtn, typeof api.importUserThemeZip === "function", !!runtime.userThemeZipImportPending);
+    return true;
+  }
+
+  // Returns true when every mounted official row was patched in place (the
+  // caller can then skip the full list re-render). False means the list no
+  // longer matches the data — e.g. a theme was added or removed — and the
+  // caller must fall back to a full render.
+  function patchOfficialThemeProgress() {
+    // The theme customization detail view has no official download content, so
+    // progress events must not tear it down and rebuild it many times per
+    // second. Nothing to patch, but the caller can safely skip the full render.
+    if (mountedCustomizationControls) return true;
+    if (!mountedThemeList || mountedThemeList.officialControls.size === 0) return false;
+    if (mountedThemeList.dataKey !== officialListDataKey()) return false;
+    const officialThemes = getMergedOfficialThemes();
+    const byId = new Map(
+      officialThemes.filter((theme) => theme && theme.id).map((theme) => [theme.id, theme])
+    );
+    for (const [themeId, entry] of mountedThemeList.officialControls) {
+      const theme = byId.get(themeId);
+      if (!theme) return false;
+      patchOfficialControlsEntry(entry, theme);
+    }
+    return true;
+  }
+
+  function handleInstallOfficialTheme(theme) {
+    if (!window.settingsAPI || typeof window.settingsAPI.installOfficialTheme !== "function") return;
+    if (runtime.officialThemePendingThemeId) return;
+    runtime.officialThemePendingThemeId = theme.id;
+    runtime.officialThemeOperation = {
+      id: theme.id,
+      phase: "downloading",
+      receivedBytes: 0,
+      totalBytes: Number.isFinite(theme.officialThemeBytes) ? theme.officialThemeBytes : 0,
+    };
+    // Patch the affected row instead of re-rendering the list: this runs when
+    // the user just clicked a download button, and a full re-render here also
+    // throws away the hover highlight under the cursor.
+    if (state.activeTab === "theme" && !patchOfficialThemeProgress()) {
+      ops.requestRender({ content: true, preserveScroll: true });
+    }
+    window.settingsAPI.installOfficialTheme(theme.id)
+      .then((result) => {
+        if (!result || result.status !== "ok") {
+          ops.showToast(formatOfficialInstallFailure(result), { error: true });
+          return null;
+        }
+        ops.showToast(formatOfficialMessage("toastOfficialThemeInstallOk", localizeField(theme.name) || theme.id));
+        return null;
+      })
+      .catch((err) => {
+        ops.showToast(
+          formatOfficialMessage("toastOfficialThemeInstallFailed", (err && err.message) || "unknown error"),
+          { error: true }
+        );
+      })
+      .finally(() => {
+        runtime.officialThemePendingThemeId = null;
+        runtime.officialThemeOperation = null;
+        // The shared post-operation refresh waits out any read that started
+        // before the install finished, then fetches a fresh terminal list.
+        ops.refreshThemesAfterOfficialOperation();
+      });
+  }
+
+  function handleCancelOfficialThemeInstall() {
+    if (!window.settingsAPI || typeof window.settingsAPI.cancelOfficialThemeInstall !== "function") return;
+    window.settingsAPI.cancelOfficialThemeInstall()
+      .then((result) => {
+        if (result && result.cancelled === true) {
+          ops.showToast(t("toastOfficialThemeCancelled"));
+        }
+      })
+      .catch(() => {});
+  }
+
+  function handleUninstallOfficialTheme(theme) {
+    if (!window.settingsAPI || typeof window.settingsAPI.uninstallOfficialTheme !== "function") return;
+    const name = localizeField(theme.name) || theme.id;
+    Promise.resolve(
+      typeof window.settingsAPI.confirmUninstallOfficialTheme === "function"
+        ? window.settingsAPI.confirmUninstallOfficialTheme(theme.id)
+        : { confirmed: true }
+    )
+      .then((res) => {
+        if (!res || !res.confirmed) return null;
+        return window.settingsAPI.uninstallOfficialTheme(theme.id);
+      })
+      .then((result) => {
+        if (result == null) return;
+        if (result.status !== "ok") {
+          ops.showToast(
+            formatOfficialMessage("toastOfficialThemeUninstallFailed", (result && result.message) || "unknown error"),
+            { error: true }
+          );
+          return;
+        }
+        if (result.uninstallStatus === "retry-required") {
+          ops.showToast(formatOfficialMessage("toastOfficialThemeUninstallRetry", name), { error: true });
+        } else {
+          ops.showToast(formatOfficialMessage("toastOfficialThemeUninstallOk", name));
+        }
+        ops.fetchThemes().then(() => {
+          if (state.activeTab === "theme") ops.requestRender({ content: true });
+        });
+      })
+      .catch((err) => {
+        ops.showToast(
+          formatOfficialMessage("toastOfficialThemeUninstallFailed", (err && err.message) || "unknown error"),
+          { error: true }
+        );
+      });
   }
 
   function buildThemeCard(theme) {
@@ -278,7 +1449,23 @@
       badge.textContent = t("themeBadgeCodexPet");
       name.appendChild(badge);
     }
+    if (theme.officialTheme) {
+      const badge = document.createElement("span");
+      badge.className = "theme-card-badge accent";
+      badge.textContent = t("themeBadgeOfficial");
+      name.appendChild(badge);
+    }
     card.appendChild(name);
+
+    if (theme.officialTheme) {
+      const descriptionText = localizeField(theme.officialThemeDescription || theme.description);
+      if (descriptionText) {
+        const description = document.createElement("div");
+        description.className = "theme-card-description";
+        description.textContent = descriptionText;
+        card.appendChild(description);
+      }
+    }
 
     const capLabels = getThemeCapabilityBadgeLabels(theme);
     if (capLabels.length) {
@@ -293,48 +1480,95 @@
       card.appendChild(caps);
     }
 
-    const canDelete = !theme.builtin && !theme.active && !theme.managedCodexPet;
+    const isOfficial = !!theme.officialTheme;
+    const officialState = theme.officialThemeState || null;
+    const officialInstalled = isOfficial
+      && (officialState === "installed" || officialState === "update-available");
+    const canDelete = !isOfficial && !theme.builtin && !theme.active && !theme.managedCodexPet;
     const canRemoveCodexPet = !!theme.managedCodexPet;
     const footer = document.createElement("div");
-    footer.className = "theme-card-footer";
+    footer.className = isOfficial
+      ? "theme-card-footer theme-card-footer-official"
+      : "theme-card-footer";
     const indicator = document.createElement("span");
     indicator.className = "theme-card-check";
     indicator.textContent = theme.active ? t("themeActiveIndicator") : "";
     if (!theme.active) indicator.setAttribute("aria-hidden", "true");
     footer.appendChild(indicator);
-    if (canDelete) {
+    if (supportsThemeCustomization(theme)) {
       const btn = document.createElement("button");
-      btn.className = "theme-delete-btn";
+      btn.className = "theme-customize-btn";
       btn.type = "button";
-      btn.textContent = "\u{1F5D1}";
-      btn.title = t("themeDeleteLabel");
-      btn.setAttribute("aria-label", t("themeDeleteLabel"));
+      btn.textContent = `${t("themeCustomize")} \u203a`;
+      btn.setAttribute("data-settings-focus-key", `theme-customize:${theme.id}`);
+      btn.setAttribute("aria-label", `${t("themeCustomize")}: ${localizeField(theme.name) || theme.id}`);
+      btn.disabled = !!customizationSelectionPendingThemeId;
+      if (customizationSelectionPendingThemeId === theme.id) btn.classList.add("pending");
       btn.addEventListener("click", (ev) => {
         ev.stopPropagation();
-        handleDeleteTheme(theme);
+        openThemeCustomization(theme);
       });
       btn.addEventListener("keydown", stopThemeCardButtonKeydown);
       footer.appendChild(btn);
     }
-    if (canRemoveCodexPet) {
-      const btn = document.createElement("button");
-      btn.className = "theme-uninstall-btn";
-      btn.type = "button";
-      btn.textContent = t("themeUninstallPetLabel");
-      btn.title = t("themeUninstallPetLabel");
-      btn.setAttribute("aria-label", t("themeUninstallPetLabel"));
-      btn.disabled = runtime.codexPetRemovalPendingThemeId === theme.id;
-      btn.addEventListener("click", (ev) => {
-        ev.stopPropagation();
-        handleRemoveCodexPet(theme);
-      });
-      btn.addEventListener("keydown", stopThemeCardButtonKeydown);
-      footer.appendChild(btn);
+    if (isOfficial) {
+      // One wrapper per card so an in-place progress patch can rebuild just
+      // this card's official row (display: contents keeps the flex layout
+      // identical to appending the nodes directly to the footer).
+      const controls = document.createElement("div");
+      controls.className = "theme-official-controls";
+      for (const node of buildOfficialThemeControls(theme)) controls.appendChild(node);
+      footer.appendChild(controls);
+      if (mountedThemeList) {
+        mountedThemeList.officialControls.set(theme.id, {
+          container: controls,
+          signature: officialControlsSignature(theme, getOfficialProgress(theme)),
+        });
+      }
+    } else {
+      if (canDelete) {
+        const btn = document.createElement("button");
+        btn.className = "theme-delete-btn";
+        btn.type = "button";
+        btn.textContent = "\u{1F5D1}";
+        btn.title = t("themeDeleteLabel");
+        btn.setAttribute("aria-label", t("themeDeleteLabel"));
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          handleDeleteTheme(theme);
+        });
+        btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+        footer.appendChild(btn);
+      }
+      if (canRemoveCodexPet) {
+        const btn = document.createElement("button");
+        btn.className = "theme-uninstall-btn";
+        btn.type = "button";
+        btn.textContent = t("themeUninstallPetLabel");
+        btn.title = t("themeUninstallPetLabel");
+        btn.setAttribute("aria-label", t("themeUninstallPetLabel"));
+        btn.disabled = runtime.codexPetRemovalPendingThemeId === theme.id;
+        btn.addEventListener("click", (ev) => {
+          ev.stopPropagation();
+          handleRemoveCodexPet(theme);
+        });
+        btn.addEventListener("keydown", stopThemeCardButtonKeydown);
+        footer.appendChild(btn);
+      }
     }
     card.appendChild(footer);
 
-    if (!theme.active) {
-      helpers.attachActivation(card, () => window.settingsAPI.command("setThemeSelection", { themeId: theme.id }));
+    if (!theme.active && (!isOfficial || officialInstalled)) {
+      helpers.attachActivation(card, () => (
+        Promise.resolve(window.settingsAPI.command("setThemeSelection", { themeId: theme.id }))
+          .then((result) => {
+            if (result && result.status === "ok") {
+              mirrorThemeSelectionResult(theme.id, result);
+              if (state.activeTab === "theme") ops.requestRender({ content: true });
+            }
+            return result;
+          })
+      ));
     }
     return card;
   }
@@ -364,7 +1598,9 @@
   function handleRefreshCodexPets() {
     if (!window.settingsAPI || typeof window.settingsAPI.refreshCodexPets !== "function") return;
     runtime.codexPetsRefreshPending = true;
-    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    if (state.activeTab === "theme" && !syncThemePendingStates()) {
+      ops.requestRender({ content: true });
+    }
     window.settingsAPI.refreshCodexPets()
       .then((result) => {
         if (!result || result.status !== "ok") {
@@ -381,7 +1617,9 @@
       })
       .finally(() => {
         runtime.codexPetsRefreshPending = false;
-        if (state.activeTab === "theme") ops.requestRender({ content: true });
+        if (state.activeTab === "theme" && !syncThemePendingStates()) {
+          ops.requestRender({ content: true });
+        }
       });
   }
 
@@ -420,7 +1658,9 @@
   function handleImportUserThemeZip() {
     if (!window.settingsAPI || typeof window.settingsAPI.importUserThemeZip !== "function") return;
     runtime.userThemeZipImportPending = true;
-    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    if (state.activeTab === "theme" && !syncThemePendingStates()) {
+      ops.requestRender({ content: true });
+    }
     window.settingsAPI.importUserThemeZip()
       .then((result) => {
         if (!result || result.status === "cancel") return null;
@@ -438,7 +1678,9 @@
       })
       .finally(() => {
         runtime.userThemeZipImportPending = false;
-        if (state.activeTab === "theme") ops.requestRender({ content: true });
+        if (state.activeTab === "theme" && !syncThemePendingStates()) {
+          ops.requestRender({ content: true });
+        }
       });
   }
 
@@ -459,7 +1701,9 @@
   function handleImportCodexPetZip() {
     if (!window.settingsAPI || typeof window.settingsAPI.importCodexPetZip !== "function") return;
     runtime.codexPetZipImportPending = true;
-    if (state.activeTab === "theme") ops.requestRender({ content: true });
+    if (state.activeTab === "theme" && !syncThemePendingStates()) {
+      ops.requestRender({ content: true });
+    }
     window.settingsAPI.importCodexPetZip()
       .then((result) => {
         if (!result || result.status === "cancel") return null;
@@ -477,7 +1721,9 @@
       })
       .finally(() => {
         runtime.codexPetZipImportPending = false;
-        if (state.activeTab === "theme") ops.requestRender({ content: true });
+        if (state.activeTab === "theme" && !syncThemePendingStates()) {
+          ops.requestRender({ content: true });
+        }
       });
   }
 
@@ -553,6 +1799,20 @@
     readers = core.readers;
     core.tabs.theme = {
       render,
+      patchInPlace,
+      // Official-theme progress arrives many times per download; the tab
+      // patches its own rows so ui-core can skip the full content render.
+      patchOfficialThemeProgress,
+      onExit() {
+        customizationSelectionSeq += 1;
+        customizingThemeId = null;
+        customizationSelectionPendingThemeId = null;
+        mountedCustomizationControls = null;
+        mountedThemeList = null;
+        themeListScrollTop = 0;
+        customizationReturnFocusKey = "";
+        cancelCatalogAutoRetry();
+      },
     };
   }
 

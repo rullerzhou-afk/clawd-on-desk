@@ -3,6 +3,7 @@
 const assert = require("node:assert");
 const Module = require("node:module");
 const { afterEach, test, mock } = require("node:test");
+const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 
@@ -134,6 +135,8 @@ async function assertHotkeyLeavesFocusUntouchedOnCaptureFailure({ accelerator, e
     hideTimer: null,
     toolName: "Bash",
     toolInput: { command: "echo hi" },
+    agentId: "claude-code",
+    interaction: classifyPermissionInteraction({ agentId: "claude-code", toolName: "Bash" }),
     resolvedSuggestion: null,
     createdAt: Date.now() - 5000,
   });
@@ -167,4 +170,45 @@ test("macOS deny hotkey does not focus the terminal when frontmost capture fails
     accelerator: "CommandOrControl+Shift+N",
     expectedBehavior: "deny",
   });
+});
+
+test("opencode unknown permissions keep the global Allow/Deny shortcuts", () => {
+  const globalShortcut = createGlobalShortcut();
+  const initPermission = loadPermissionWithMocks({
+    electron: {
+      BrowserWindow: Object.assign(class {}, { fromWebContents() { return null; } }),
+      globalShortcut,
+    },
+    childProcess: { execFile() {} },
+  });
+  const permission = initPermission(createContext([]));
+  permission.pendingPermissions.push({
+    res: createResponse(),
+    abortHandler: () => {},
+    suggestions: [],
+    sessionId: "opencode-unknown",
+    bubble: null,
+    hideTimer: null,
+    toolName: "unknown",
+    toolInput: { command: "custom action" },
+    agentId: "opencode",
+    familyRequestId: "req-unknown",
+    interaction: classifyPermissionInteraction({
+      agentId: "opencode",
+      toolName: "unknown",
+    }),
+    resolvedSuggestion: null,
+    createdAt: Date.now() - 5000,
+  });
+
+  permission.syncPermissionShortcuts();
+
+  assert.strictEqual(
+    typeof globalShortcut.registered.get("CommandOrControl+Shift+Y"),
+    "function"
+  );
+  assert.strictEqual(
+    typeof globalShortcut.registered.get("CommandOrControl+Shift+N"),
+    "function"
+  );
 });

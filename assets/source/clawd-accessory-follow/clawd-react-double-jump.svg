@@ -1,0 +1,229 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      /* ===== 3.5s one-shot: startled jump, pat chest, settle =====
+         Phase 1 (0-15%):   Jump — body flies high, legs fly less, arms out, exclamation pops
+         Phase 2 (15-40%):  Land — squash cushion, micro bounce, exclamation fades
+         Phase 3 (40-70%):  Pat chest — right arm strokes chest, calming
+         Phase 4 (70-100%): Settle — arm down, blink, still
+      */
+
+      /* Body vertical jump (flies high) */
+      .body-jump {
+        animation: body-jump 3.5s 1 ease-in-out forwards;
+      }
+
+      /* Legs vertical jump (flies less = gap with body) */
+      .legs-jump {
+        animation: legs-jump 3.5s 1 ease-in-out forwards;
+      }
+
+      /* Upper body squash/stretch */
+      .body-react {
+        transform-origin: 7.5px 13px;
+        animation: body-squash 3.5s 1 ease-in-out forwards;
+      }
+
+      .arm-l-react {
+        transform-origin: 2px 10px;
+        animation: arm-l-react 3.5s 1 ease-in-out forwards;
+      }
+      .arm-r-react {
+        transform-origin: 13px 10px;
+        animation: arm-r-react 3.5s 1 ease-in-out forwards;
+      }
+      /* Eyes: gaze wrapper, rect eyes (blink+vis), xmark eyes (vis) */
+      .eyes-gaze {
+        animation: eyes-gaze 3.5s 1 ease-in-out forwards;
+      }
+      .eyes-rect {
+        transform-origin: 7.5px 9px;
+        animation: eyes-blink 3.5s 1 ease-in-out forwards, rect-vis 3.5s 1 step-end forwards;
+      }
+      .eyes-xmark {
+        visibility: hidden;
+        animation: xmark-vis 3.5s 1 step-end forwards;
+      }
+      .shadow-react {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-react 3.5s 1 ease-in-out forwards;
+      }
+      .excl-pop {
+        animation: excl-pop 3.5s 1 ease-in-out forwards;
+        opacity: 0;
+      }
+
+      /* ==================== Keyframes ==================== */
+
+      /* Body jumps HIGH */
+      @keyframes body-jump {
+        0%        { transform: translateY(0); }
+        10%       { transform: translateY(-5px); }
+        15%       { transform: translateY(-4.5px); }
+        /* fast drop */
+        23%       { transform: translateY(1px); }
+        29%       { transform: translateY(-0.5px); }
+        35%       { transform: translateY(0); }
+        100%      { transform: translateY(0); }
+      }
+
+      /* Legs jump LESS = visible gap from body */
+      @keyframes legs-jump {
+        0%        { transform: translateY(0); }
+        10%       { transform: translateY(-2px); }
+        15%       { transform: translateY(-1.5px); }
+        23%       { transform: translateY(0.5px); }
+        29%       { transform: translateY(-0.3px); }
+        35%       { transform: translateY(0); }
+        100%      { transform: translateY(0); }
+      }
+
+      /* Body squash on landing + sigh during chest pat */
+      @keyframes body-squash {
+        0%        { transform: scale(1, 1); }
+        10%       { transform: scale(0.88, 0.88); }
+        15%       { transform: scale(0.9, 0.9); }
+        23%       { transform: scale(1.1, 0.9); }
+        29%       { transform: scale(0.97, 1.03); }
+        35%       { transform: scale(1, 1); }
+        /* sigh: exhale compression while hand rests on chest */
+        45%       { transform: scale(1.03, 0.97); }
+        55%       { transform: scale(1, 1); }
+        100%      { transform: scale(1, 1); }
+      }
+
+      /* Left arm: fly out, return, rest */
+      @keyframes arm-l-react {
+        0%        { transform: translate(0, 0) rotate(0deg); }
+        10%       { transform: translate(-2px, -2px) rotate(70deg); }
+        15%       { transform: translate(-1.5px, -1.5px) rotate(55deg); }
+        30%       { transform: translate(0, 0) rotate(0deg); }
+        100%      { transform: translate(0, 0) rotate(0deg); }
+      }
+
+      /* Right arm: fly out, return, rest on chest (relief), slow pat, lower */
+      @keyframes arm-r-react {
+        0%        { transform: translate(0, 0) rotate(0deg); }
+        /* Phase 1: fly out */
+        10%       { transform: translate(2px, -2px) rotate(-70deg); }
+        15%       { transform: translate(1.5px, -1.5px) rotate(-55deg); }
+        /* Phase 2: return */
+        32%       { transform: translate(0, 0) rotate(0deg); }
+        /* Phase 3: hand to chest — HOLD first (the relief moment) */
+        40%       { transform: rotate(-50deg); }
+        50%       { transform: rotate(-50deg); }
+        /* slow pat: one gentle press */
+        56%       { transform: rotate(-42deg); }
+        62%       { transform: rotate(-48deg); }
+        /* Phase 4: lower */
+        78%       { transform: rotate(-15deg); }
+        90%       { transform: rotate(0deg); }
+        100%      { transform: rotate(0deg); }
+      }
+
+      /* Gaze direction (shared by both eye types) */
+      @keyframes eyes-gaze {
+        0%, 35%   { transform: translate(0, 0); }
+        42%, 63%  { transform: translate(0, 0.5px); }
+        70%, 100% { transform: translate(0, 0); }
+      }
+
+      /* Rect eyes: widen, blink on land, blink-shut to gate xmark switch, blink-open on return */
+      @keyframes eyes-blink {
+        0%        { transform: scaleY(1); }
+        8%        { transform: scaleY(1.3); }
+        15%       { transform: scaleY(1.2); }
+        /* blink on impact */
+        23%       { transform: scaleY(0.1); }
+        30%       { transform: scaleY(1); }
+        /* blink shut — gates switch to xmark at 38% */
+        36%       { transform: scaleY(0.1); }
+        /* hidden from 38%, value irrelevant */
+        50%       { transform: scaleY(0.1); }
+        /* reappear at 82% still shut — gates switch from xmark */
+        82%       { transform: scaleY(0.1); }
+        88%       { transform: scaleY(1); }
+        100%      { transform: scaleY(1); }
+      }
+
+      /* Rect eyes visibility: hide during xmark phase */
+      @keyframes rect-vis {
+        0%  { visibility: visible; }
+        38% { visibility: hidden; }
+        82% { visibility: visible; }
+      }
+
+      /* xmark eyes visibility: show during chest pat phase */
+      @keyframes xmark-vis {
+        0%  { visibility: hidden; }
+        38% { visibility: visible; }
+        82% { visibility: hidden; }
+      }
+
+      /* Shadow: shrink on jump, expand on land */
+      @keyframes shadow-react {
+        0%        { transform: scaleX(1); opacity: 0.5; }
+        10%       { transform: scaleX(0.55); opacity: 0.2; }
+        15%       { transform: scaleX(0.6); opacity: 0.23; }
+        23%       { transform: scaleX(1.12); opacity: 0.55; }
+        29%       { transform: scaleX(0.95); opacity: 0.48; }
+        35%       { transform: scaleX(1); opacity: 0.5; }
+        100%      { transform: scaleX(1); opacity: 0.5; }
+      }
+
+      /* Exclamation: emerge from below (head level), pop up high, fade */
+      @keyframes excl-pop {
+        0%, 4%    { opacity: 0; transform: translate(0, 10px) scale(0.3); }
+        10%       { opacity: 1; transform: translate(0, 0) scale(1.3); }
+        15%, 30%  { opacity: 1; transform: translate(0, 0) scale(1); }
+        42%       { opacity: 0; transform: translate(0, -2px) scale(0.8); }
+        100%      { opacity: 0; }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow (stays on ground) -->
+  <rect class="shadow-react" x="3" y="15" width="9" height="1" fill="#000" opacity="0.5"/>
+
+  <!-- Legs (jump less than body = visible separation) -->
+  <g class="legs-jump" fill="#DE886D">
+    <rect x="3" y="13" width="1" height="2"/>
+    <rect x="5" y="13" width="1" height="2"/>
+    <rect x="9" y="13" width="1" height="2"/>
+    <rect x="11" y="13" width="1" height="2"/>
+  </g>
+
+  <!-- Body (jumps higher) -->
+  <g class="body-jump">
+    <g class="body-react">
+      <!-- Torso -->
+      <g fill="#DE886D">
+        <rect x="2" y="6" width="11" height="7"/>
+      </g>
+      <!-- Arms -->
+      <g fill="#DE886D">
+        <g class="arm-l-react"><rect x="0" y="9" width="2" height="2"/></g>
+        <g class="arm-r-react"><rect x="13" y="9" width="2" height="2"/></g>
+      </g>
+      <!-- Eyes -->
+      <g class="eyes-gaze">
+        <!-- Normal rect eyes (phases 1,2,4) -->
+        <g class="eyes-rect" fill="#000">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+        <!-- Small square eyes (phase 3: chest pat — relieved squint) -->
+        <g class="eyes-xmark" fill="#000">
+          <rect x="4" y="9" width="1" height="1"/>
+          <rect x="10" y="9" width="1" height="1"/>
+        </g>
+      </g>
+    </g>
+
+    <!-- Exclamation mark (moves with body, base position high above head) -->
+    <g class="excl-pop" fill="#FF3D00">
+      <rect x="7" y="-5" width="1.5" height="3"/>
+      <rect x="7" y="-1" width="1.5" height="1.5"/>
+    </g>
+  </g>
+</svg>

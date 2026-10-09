@@ -1,0 +1,194 @@
+<!--
+  clawd-experiment-headphones-groove-v6.svg
+  v5 基础上鹿鹿两个微调:
+  1. 眼睛 V 字 y +0.5 (顶 8->8.5 底 9->9.5) — v5 位置偏高
+  2. 耳罩压缩 0.78 -> 0.85 (缩量 22%->15%), 过冲 1.04 -> 1.02 一起收 — v5 压太多
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .shadow-sway {
+        transform-box: fill-box;
+        transform-origin: 50% 50%;
+        animation: shadow-sway 1.6s infinite ease-in-out;
+      }
+
+      .body-sway {
+        transform-origin: 7.5px 13px;
+        animation: body-sway 1.6s infinite ease-in-out;
+      }
+
+      .leg-left-inner,
+      .leg-left-outer,
+      .leg-right-inner,
+      .leg-right-outer {
+        transform-box: fill-box;
+        transform-origin: 50% 0%;
+      }
+      .leg-left-inner  { animation: leg-left-inner  1.6s infinite ease-in-out; }
+      .leg-left-outer  { animation: leg-left-outer  1.6s infinite ease-in-out; }
+      .leg-right-inner { animation: leg-right-inner 1.6s infinite ease-in-out; }
+      .leg-right-outer { animation: leg-right-outer 1.6s infinite ease-in-out; }
+
+      .arm-left-dance  {
+        transform-box: fill-box;
+        transform-origin: 100% 0%;
+        animation: arm-left-dance 1.6s infinite ease-in-out;
+      }
+      .arm-right-dance {
+        transform-box: fill-box;
+        transform-origin: 0% 0%;
+        animation: arm-right-dance 1.6s infinite ease-in-out;
+      }
+
+      /* 耳罩 squeeze: 拍点挤压, 中性回弹过冲 */
+      .earcup-left {
+        transform-box: fill-box;
+        transform-origin: 100% 50%; /* 右边缘 = 内侧, 朝身体方向收 */
+        animation: earcup-squeeze 1.6s infinite ease-in-out;
+      }
+      .earcup-right {
+        transform-box: fill-box;
+        transform-origin: 0% 50%;   /* 左边缘 = 内侧 */
+        animation: earcup-squeeze 1.6s infinite ease-in-out;
+      }
+
+      .note-left  { animation: note-left  1.6s infinite ease-out; }
+      .note-right { animation: note-right 1.6s infinite ease-out; }
+
+      @keyframes shadow-sway {
+        0%, 100% { transform: translateX(0) scaleX(1); opacity: 0.5; }
+        22%, 30% { transform: translateX(-0.5px) scaleX(0.85); opacity: 0.45; }
+        50%      { transform: translateX(0) scaleX(1); opacity: 0.5; }
+        70%, 78% { transform: translateX(0.5px) scaleX(0.85); opacity: 0.45; }
+      }
+
+      @keyframes body-sway {
+        0%, 100% { transform: rotate(0deg) translateY(0); }
+        22%, 30% { transform: rotate(-6deg) translateY(0.3px); }
+        50%      { transform: rotate(0deg) translateY(-0.2px); }
+        70%, 78% { transform: rotate(6deg) translateY(0.3px); }
+      }
+
+      @keyframes leg-right-inner {
+        0%, 100% { transform: rotate(0deg) translateY(0); }
+        22%, 30% { transform: rotate(-12deg) translateY(-0.2px); }
+        50%, 70%, 78% { transform: rotate(0deg) translateY(0); }
+      }
+      @keyframes leg-right-outer {
+        0%, 100% { transform: rotate(0deg) translateY(0); }
+        22%, 30% { transform: rotate(-22deg) translateY(-0.3px); }
+        50%, 70%, 78% { transform: rotate(0deg) translateY(0); }
+      }
+      @keyframes leg-left-inner {
+        0%, 22%, 30%, 50%, 100% { transform: rotate(0deg) translateY(0); }
+        70%, 78% { transform: rotate(12deg) translateY(-0.2px); }
+      }
+      @keyframes leg-left-outer {
+        0%, 22%, 30%, 50%, 100% { transform: rotate(0deg) translateY(0); }
+        70%, 78% { transform: rotate(22deg) translateY(-0.3px); }
+      }
+
+      @keyframes arm-left-dance {
+        0%, 100% { transform: rotate(0deg); }
+        22%, 30% { transform: rotate(-30deg); }
+        50%      { transform: rotate(0deg); }
+        70%, 78% { transform: rotate(20deg); }
+      }
+      @keyframes arm-right-dance {
+        0%, 100% { transform: rotate(0deg); }
+        22%, 30% { transform: rotate(-20deg); }
+        50%      { transform: rotate(0deg); }
+        70%, 78% { transform: rotate(30deg); }
+      }
+
+      /* 耳罩: 拍点 (左压/右压) 都 squeeze 0.78, 中性 50% 回弹过冲 1.04 */
+      @keyframes earcup-squeeze {
+        0%, 100% { transform: scaleX(1); }
+        22%, 30% { transform: scaleX(0.85); }
+        50%      { transform: scaleX(1.02); }
+        70%, 78% { transform: scaleX(0.85); }
+      }
+
+      @keyframes note-left {
+        0%, 14%, 42%, 100% { opacity: 0; transform: translate(0, 0); }
+        22%                { opacity: 1; transform: translate(-0.4px, -1.2px); }
+        38%                { opacity: 0; transform: translate(-1.6px, -3.5px); }
+      }
+      @keyframes note-right {
+        0%, 62%, 82%, 100% { opacity: 0; transform: translate(0, 0); }
+        70%                { opacity: 1; transform: translate(0.4px, -1.2px); }
+        78%                { opacity: 0; transform: translate(1.6px, -3.5px); }
+      }
+    </style>
+
+    <g id="music-note" fill="#FFE066">
+      <rect x="0" y="2" width="1" height="1"/>
+      <rect x="1" y="0" width="1" height="3"/>
+      <rect x="2" y="0" width="1" height="1"/>
+    </g>
+  </defs>
+
+  <rect class="shadow-sway" x="3" y="15" width="9" height="1" fill="#000000"/>
+
+  <g fill="#DE886D">
+    <rect class="leg-left-outer"  x="3"  y="13" width="1" height="2"/>
+    <rect class="leg-left-inner"  x="5"  y="13" width="1" height="2"/>
+    <rect class="leg-right-inner" x="9"  y="13" width="1" height="2"/>
+    <rect class="leg-right-outer" x="11" y="13" width="1" height="2"/>
+  </g>
+
+  <g class="body-sway">
+    <rect x="2" y="6" width="11" height="7" fill="#DE886D"/>
+
+    <!-- 头带 (不参与 squeeze, 只跟随 body-sway) -->
+    <g fill="#1D5C83">
+      <rect x="4.9"   y="2.85" width="5.05" height="0.75"/>
+      <rect x="4.46"  y="2.93" width="0.75" height="0.75"/>
+      <rect x="9.66"  y="2.93" width="0.75" height="0.75"/>
+      <rect x="4.03"  y="3.1"  width="0.75" height="0.75"/>
+      <rect x="10.11" y="3.09" width="0.75" height="0.75"/>
+      <rect x="3.59"  y="3.34" width="0.75" height="0.75"/>
+      <rect x="10.57" y="3.33" width="0.75" height="0.75"/>
+      <rect x="3.15"  y="3.63" width="0.75" height="0.75"/>
+      <rect x="11.02" y="3.61" width="0.75" height="0.75"/>
+      <rect x="2.71"  y="3.98" width="0.75" height="0.75"/>
+      <rect x="11.48" y="3.96" width="0.75" height="0.75"/>
+      <rect x="2.28"  y="4.37" width="0.75" height="0.75"/>
+      <rect x="11.94" y="4.34" width="0.75" height="0.75"/>
+      <rect x="1.84"  y="4.82" width="0.75" height="0.75"/>
+      <rect x="12.39" y="4.78" width="0.75" height="0.75"/>
+      <rect x="1.4"   y="5.3"  width="0.75" height="0.75"/>
+      <rect x="12.85" y="5.25" width="0.75" height="0.75"/>
+    </g>
+
+    <!-- 左耳罩 (三层) -->
+    <g class="earcup-left">
+      <rect x="0.2" y="7"   width="0.6" height="2.4"  fill="#1D5C83"/>
+      <rect x="0.8" y="6.5" width="0.6" height="3.25" fill="#256891"/>
+      <rect x="1.4" y="6"   width="0.6" height="4.05" fill="#2E7AA8"/>
+    </g>
+
+    <!-- 右耳罩 (三层) -->
+    <g class="earcup-right">
+      <rect x="14.2" y="7"   width="0.6" height="2.4"  fill="#1D5C83"/>
+      <rect x="13.6" y="6.5" width="0.6" height="3.25" fill="#256891"/>
+      <rect x="13"   y="6"   width="0.6" height="4.05" fill="#2E7AA8"/>
+    </g>
+
+    <g class="arm-left-dance">
+      <rect x="-1" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <g class="arm-right-dance">
+      <rect x="14" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+
+    <g fill="none" stroke="#000000" stroke-width="0.7" stroke-linecap="round" stroke-linejoin="round">
+      <polyline points="3.5,8.5 4.5,9.5 5.5,8.5"/>
+      <polyline points="9.5,8.5 10.5,9.5 11.5,8.5"/>
+    </g>
+  </g>
+
+  <g transform="translate(-5 4)"><g class="note-left"><use href="#music-note"/></g></g>
+  <g transform="translate(15 4)"><g class="note-right"><use href="#music-note"/></g></g>
+</svg>

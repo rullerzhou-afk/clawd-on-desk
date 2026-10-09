@@ -7,12 +7,27 @@ const { PassThrough } = require("node:stream");
 const {
   getPlatformConfig,
   createPidResolver,
+  DEFAULT_AGENT_CMDLINE_NAMES,
   readStdinJsonDetailed,
   DEFAULT_STDIN_READ_TIMEOUT_MS,
   buildElectronLaunchConfig,
   tmuxSocketFromEnv,
   processAlive,
 } = require("../hooks/shared-process");
+
+// #681: the Windows resolver refuses to spawn unless it can read a runtime.json
+// naming a LIVE Clawd. Every test below that exercises the WALK (rather than the
+// gate itself) must therefore declare a passing gate — otherwise it silently
+// stops testing the walk and starts testing the gate.
+//
+// ownerPid is this test process, which is trivially alive, and the identity is
+// injected rather than read: a test must never depend on the developer's real
+// ~/.clawd/runtime.json (whose contents change with whether Clawd is running).
+// env:{} keeps a CLAWD_REMOTE in the developer's shell from skipping the walk.
+const LIVE_GATE = {
+  readRuntimeIdentity: () => ({ ok: true, reason: null, port: 23333, ownerPid: process.pid }),
+  env: {},
+};
 
 // ═════════════════════════════════════════════════════════════════════════════
 // getPlatformConfig()
@@ -89,13 +104,13 @@ describe("getPlatformConfig()", () => {
 describe("createPidResolver()", () => {
   it("returns a function", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg });
     assert.strictEqual(typeof resolve, "function");
   });
 
   it("caches result after first call", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid });
     const r1 = resolve();
     const r2 = resolve();
     assert.strictEqual(r1, r2, "should return same object reference");
@@ -103,7 +118,7 @@ describe("createPidResolver()", () => {
 
   it("result has expected shape", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid });
     const result = resolve();
     assert.ok("stablePid" in result);
     assert.ok("agentPid" in result);
@@ -113,7 +128,28 @@ describe("createPidResolver()", () => {
 
   it("walks from startPid and populates pidChain", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid });
+    // Keep this walk-semantic unit test independent of the live WMI service.
+    // Under the full parallel suite, Get-CimInstance can exceed the production
+    // three-second budget and correctly return an unavailable snapshot.
+    const windowsSnapshot = process.platform === "win32"
+      ? {
+          getWindowsProcessSnapshot: () => ({
+            processes: new Map([[process.pid, {
+              name: "node.exe",
+              ppid: 0,
+              commandLine: "node --test",
+              startIdentity: "test-process-start",
+            }]]),
+            foregroundWtHwnd: null,
+          }),
+        }
+      : {};
+    const resolve = createPidResolver({
+      ...LIVE_GATE,
+      ...windowsSnapshot,
+      platformConfig: cfg,
+      startPid: process.pid,
+    });
     const { pidChain } = resolve();
     // pidChain should contain at least the start PID (our own process)
     assert.ok(pidChain.length >= 1);
@@ -122,9 +158,215 @@ describe("createPidResolver()", () => {
 
   it("respects maxDepth", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: process.pid, maxDepth: 1 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: process.pid, maxDepth: 1 });
     const { pidChain } = resolve();
     assert.ok(pidChain.length <= 1);
+  });
+});
+
+describe("createPidResolver() — POSIX non-Node command-line probe", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  function workBuddyProcessMock(onCommandProbe = () => {}) {
+    return (command, args) => {
+      const invocation = `${command} ${args.join(" ")}`;
+      if (invocation === "ps -o ppid= -p 610") return "1\n";
+      if (invocation === "ps -o comm= -p 610") {
+        return "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron\n";
+      }
+      if (invocation === "ps -o command= -p 610") {
+        onCommandProbe();
+        return "/Applications/WorkBuddy AI.app/Contents/MacOS/Electron "
+          + "/Applications/WorkBuddy AI.app/Contents/Resources/app.asar.unpacked/cli/bin/codebuddy "
+          + "--serve --session-id session-1\n";
+      }
+      const err = new Error(`unexpected command: ${invocation}`);
+      err.code = "ENOENT";
+      throw err;
+    };
+  }
+
+  it("sets agentPid for an explicitly scoped Electron command-line match on macOS", () => {
+    let commandProbes = 0;
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: workBuddyProcessMock(() => { commandProbes++; }),
+      platform: "darwin",
+    });
+    try {
+      const resolve = mod.createPidResolver({
+        ...LIVE_GATE,
+        platformConfig: mod.getPlatformConfig(),
+        startPid: 610,
+        agentCmdlineCheck: (cmdline) => cmdline.includes("/cli/bin/codebuddy")
+          && cmdline.includes("--session-id"),
+        agentCmdlineNames: new Set(["electron"]),
+      });
+      const result = resolve();
+      assert.strictEqual(result.agentPid, 610);
+      assert.strictEqual(commandProbes, 1);
+      assert.ok(result.agentCommandLine.includes("--session-id"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("does not probe Electron command lines unless the caller opts in", () => {
+    let commandProbes = 0;
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock: workBuddyProcessMock(() => { commandProbes++; }),
+      platform: "darwin",
+    });
+    try {
+      const resolve = mod.createPidResolver({
+        ...LIVE_GATE,
+        platformConfig: mod.getPlatformConfig(),
+        startPid: 610,
+        agentCmdlineCheck: () => true,
+      });
+      const result = resolve();
+      assert.strictEqual(result.agentPid, null);
+      assert.strictEqual(commandProbes, 0);
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+// createPidResolver() — default command-line process names
+// ═════════════════════════════════════════════════════════════════════════════
+
+// On Linux, current Node is not "node" to `ps -o comm=` unless it set
+// process.title: 23.8+ names its main thread "MainThread" (25.5+
+// "node-MainThread"), and Linux reports the main thread's name as the process
+// name. With only node/node.exe in the default, no adapter relying on it ever
+// ran its command-line check there (seen on Linux CI in PR #1049).
+describe("createPidResolver() — default command-line process names", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  it("lists every name of a node process that never set process.title, in lowercase", () => {
+    for (const name of ["node", "node.exe", "mainthread", "node-mainthread"]) {
+      assert.ok(DEFAULT_AGENT_CMDLINE_NAMES.includes(name), name);
+    }
+    for (const name of DEFAULT_AGENT_CMDLINE_NAMES) {
+      assert.strictEqual(name, name.toLowerCase(), `${name} can never match a lowercased basename`);
+    }
+    assert.ok(Object.isFrozen(DEFAULT_AGENT_CMDLINE_NAMES), "adapters spread it; none may change it");
+  });
+
+  // What Linux `ps -o comm=` prints for such a process: Node <= 23.7, 23.8–25.4,
+  // and >= 25.5.
+  for (const comm of ["node", "MainThread", "node-MainThread"]) {
+    it(`runs the command-line check for a Linux node process listed as ${comm}`, () => {
+      let commandProbes = 0;
+      const { mod, cleanup } = loadSharedProcessWithMock({
+        execFileSyncMock: (command, args) => {
+          const invocation = `${command} ${args.join(" ")}`;
+          if (invocation === "ps -o ppid= -p 700") return "1\n";
+          if (invocation === "ps -o comm= -p 700") return `${comm}\n`;
+          if (invocation === "ps -o command= -p 700") {
+            commandProbes++;
+            return "node /usr/lib/node_modules/@example/agent-cli/cli.js\n";
+          }
+          const err = new Error(`unexpected command: ${invocation}`);
+          err.code = "ENOENT";
+          throw err;
+        },
+        platform: "linux",
+      });
+      try {
+        const result = mod.createPidResolver({
+          ...LIVE_GATE,
+          platformConfig: mod.getPlatformConfig(),
+          startPid: 700,
+          agentCmdlineCheck: (cmdline) => cmdline.includes("@example/agent-cli"),
+        })();
+        assert.strictEqual(result.agentPid, 700);
+        assert.strictEqual(commandProbes, 1);
+      } finally {
+        cleanup();
+      }
+    });
+  }
+
+  // The same through the real `ps` and the Node running this suite, so Linux
+  // CI notices if Node renames its main thread again. The probe runs as a
+  // short `node <marker>.js`, keeping the marker near the front of
+  // `ps -o command=`, and without COLUMNS, which procps otherwise applies as
+  // the width of piped output.
+  it("finds a real node process that never set process.title by its command line", {
+    skip: process.platform === "win32",
+  }, () => {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const { spawnSync } = require("node:child_process");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cmdline-"));
+    const probe = `clawd-cmdline-probe-${process.pid}.js`;
+    fs.writeFileSync(path.join(dir, probe), [
+      `const sp = require(${JSON.stringify(path.join(__dirname, "..", "hooks", "shared-process.js"))});`,
+      "const { agentPid } = sp.createPidResolver({",
+      "  platformConfig: sp.getPlatformConfig(),",
+      "  startPid: process.pid,",
+      "  maxDepth: 1,",
+      `  agentCmdlineCheck: (cmdline) => cmdline.includes(${JSON.stringify(probe)}),`,
+      "})();",
+      "const comm = require(\"node:child_process\")",
+      "  .execFileSync(\"ps\", [\"-o\", \"comm=\", \"-p\", String(process.pid)], { encoding: \"utf8\" }).trim();",
+      "process.stdout.write(JSON.stringify({ pid: process.pid, agentPid, comm }));",
+    ].join("\n"));
+    const env = { ...process.env };
+    delete env.NODE_OPTIONS; // a --title there would rename the process
+    delete env.COLUMNS;
+    try {
+      const child = spawnSync(process.execPath, [probe], { cwd: dir, encoding: "utf8", env, timeout: 10000 });
+      assert.strictEqual(child.status, 0, child.stderr);
+      const { pid, agentPid, comm } = JSON.parse(child.stdout);
+      assert.strictEqual(agentPid, pid,
+        `ps lists this node process as ${JSON.stringify(comm)}, which DEFAULT_AGENT_CMDLINE_NAMES lacks`);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Passing agentCmdlineNames replaces the default, so an adapter that only
+  // means to add a name must spread the default back in; a hand-written or
+  // trimmed node list silently goes stale again on Linux. This is a text
+  // check, not a parser, so it accepts one shape and reports everything else:
+  // `agentCmdlineNames: new Set([..., ...DEFAULT_AGENT_CMDLINE_NAMES])`, where
+  // the brackets hold only plain string literals and the spread itself (one
+  // line or several, no comments). A shorthand property, a variable, or any
+  // other mention not in that shape (one in a comment included) is reported,
+  // not guessed at; deliberately disguised keys (a computed property name) are
+  // beyond a text check. The one exception is a probe deliberately scoped to a
+  // non-Node host process.
+  it("keeps every adapter that passes agentCmdlineNames on the shared node names", () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const hooksDir = path.join(__dirname, "..", "hooks");
+    // WorkBuddy's check only matches its bundled macOS Electron task runner.
+    const scopedToNonNodeHost = new Set(["workbuddy-hook.js"]);
+    // The bracket contents: anything but "]" or a comment opener.
+    const setLiteral = /^agentCmdlineNames\s*:\s*new Set\(\[((?:(?!\/[/*])[^\]])*)\]\)/;
+    const stringLiteral = /^(?:"[^"\\\n]*"|'[^'\\\n]*')$/;
+    const spread = "...DEFAULT_AGENT_CMDLINE_NAMES";
+    const spreadsDefault = (contents) => {
+      const elements = contents.split(",").map((element) => element.trim());
+      if (elements[elements.length - 1] === "") elements.pop(); // trailing comma
+      return elements.includes(spread)
+        && elements.every((element) => element === spread || stringLiteral.test(element));
+    };
+    const stale = [];
+    for (const file of fs.readdirSync(hooksDir).sort()) {
+      if (!file.endsWith(".js") || file === "shared-process.js" || scopedToNonNodeHost.has(file)) continue;
+      const src = fs.readFileSync(path.join(hooksDir, file), "utf8");
+      for (const { index } of src.matchAll(/\bagentCmdlineNames\b/g)) {
+        const rest = src.slice(index);
+        const set = setLiteral.exec(rest);
+        if (!set || !spreadsDefault(set[1])) stale.push(`${file}: ${rest.split("\n", 1)[0].trim()}`);
+      }
+    }
+    assert.deepStrictEqual(stale, []);
   });
 });
 
@@ -171,7 +413,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const resolve = mod.createPidResolver({ platformConfig: cfg, startPid: 100 });
+      const resolve = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 });
       const { stablePid, pidChain, tmuxSocket, tmuxClient } = resolve();
       assert.strictEqual(stablePid, 300, "stablePid should be the terminal pid");
       assert.ok(pidChain.includes(200), "pidChain should include tmux server pid");
@@ -195,7 +437,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const { stablePid, pidChain } = mod.createPidResolver({
+      const { stablePid, pidChain } = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg, startPid: 100, maxDepth: 1,
       })();
       assert.strictEqual(stablePid, 100);
@@ -220,7 +462,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const { stablePid, pidChain } = mod.createPidResolver({
+      const { stablePid, pidChain } = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg, startPid: 100,
       })();
       assert.ok(!pidChain.some(p => p > 200), "no client pids appended past tmux server");
@@ -245,7 +487,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const result = mod.createPidResolver({ platformConfig: cfg, startPid: 100 })();
+      const result = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 })();
       assert.strictEqual(result.tmuxSocket, "/tmp/tmux-1000/work");
     } finally {
       cleanup();
@@ -264,7 +506,7 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const result = mod.createPidResolver({
+      const result = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg, startPid: 100, maxDepth: 1,
       })();
       assert.strictEqual(result.tmuxSocket, "/tmp/tmux-1000/default");
@@ -337,6 +579,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
       Name: p.name,
       ParentProcessId: p.ppid,
       CommandLine: typeof p.cmd === "string" ? p.cmd : null,
+      StartIdentity: typeof p.startIdentity === "string" ? p.startIdentity : null,
     })));
   }
 
@@ -347,9 +590,24 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
     });
   }
 
+  it("keeps snapshot overrides bounded and invalid values on the default deadline", () => {
+    const seen = [];
+    const cfg = getPlatformConfig();
+    withMockedExec((_file, _args, options) => {
+      seen.push(options.timeout);
+      return snapshotJson([{ pid: 1000, name: "cmd.exe", ppid: 0 }]);
+    }, () => {
+      for (const value of [undefined, 0, -1, Infinity, "5000", 3000.5, 5000, 60000]) {
+        createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 1000,
+          windowsSnapshotTimeoutMs: value })();
+      }
+    });
+    assert.deepStrictEqual(seen, [3000, 3000, 3000, 3000, 3000, 3000, 5000, 5000]);
+  });
+
   it("populates pidChain by walking the snapshot Map", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 1000 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 1000 });
     withMockedExec(() => snapshotJson([
       { pid: 1000, name: "cmd.exe", ppid: 1001 },
       { pid: 1001, name: "explorer.exe", ppid: 0 },
@@ -362,7 +620,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("breaks the walk immediately when the snapshot is empty", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 9999 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 9999 });
     withMockedExec(() => "", () => {
       const { pidChain } = resolve();
       assert.strictEqual(pidChain.length, 0);
@@ -371,7 +629,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("breaks the walk cleanly when ConvertTo-Json outputs 'null'", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 9000 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 9000 });
     withMockedExec(() => "null", () => {
       const { pidChain } = resolve();
       assert.strictEqual(pidChain.length, 0, "'null' PS output must abort the walk");
@@ -380,7 +638,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("sets stablePid to the terminal PID when a terminal process is found", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 500 });
     withMockedExec(() => snapshotJson([
       { pid: 500, name: "windowsterminal.exe", ppid: 0 },
     ]), () => {
@@ -391,7 +649,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("captures the foreground Windows Terminal HWND from the same snapshot", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 500 });
     withMockedExec(() => snapshotEnvelopeJson([
       { pid: 500, name: "powershell.exe", ppid: 501 },
       { pid: 501, name: "explorer.exe", ppid: 0 },
@@ -408,7 +666,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("rejects foreground HWNDs that are not Windows Terminal host windows", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 500 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 500 });
     withMockedExec(() => snapshotEnvelopeJson([
       { pid: 500, name: "powershell.exe", ppid: 501 },
       { pid: 501, name: "explorer.exe", ppid: 0 },
@@ -425,7 +683,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("detects editor from process name", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 200 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 200 });
     withMockedExec(() => snapshotJson([
       { pid: 200, name: "code.exe", ppid: 0 },
     ]), () => {
@@ -436,7 +694,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("stops the walk at a system boundary process (explorer.exe)", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 300 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 300 });
     withMockedExec(() => snapshotJson([
       { pid: 300, name: "cmd.exe", ppid: 301 },
       { pid: 301, name: "explorer.exe", ppid: 302 },
@@ -450,7 +708,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("uses a single PowerShell spawn for the snapshot regardless of chain depth", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({ platformConfig: cfg, startPid: 100 });
+    const resolve = createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 });
     let spawnCount = 0;
     withMockedExec(() => {
       spawnCount++;
@@ -467,7 +725,7 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
 
   it("detects agentPid when agentNameSet matches a process name", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({
+    const resolve = createPidResolver({ ...LIVE_GATE,
       platformConfig: cfg,
       startPid: 400,
       agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
@@ -482,9 +740,60 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
     });
   });
 
+  it("carries recovery identities privately from the same Windows snapshot", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ ...LIVE_GATE,
+      platformConfig: cfg,
+      startPid: 400,
+      agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+    });
+    let spawnCount = 0;
+    withMockedExec(() => {
+      spawnCount++;
+      return snapshotJson([
+        { pid: 400, name: "node.exe", ppid: 401, startIdentity: "node" },
+        { pid: 401, name: "claude.exe", ppid: 402, startIdentity: "agent" },
+        { pid: 402, name: "windowsterminal.exe", ppid: 0, startIdentity: "source" },
+      ]);
+    }, () => {
+      const result = resolve();
+      assert.strictEqual(spawnCount, 1);
+      assert.strictEqual(result.agentProcessStartIdentity, "win32:agent");
+      assert.strictEqual(result.sourceProcessStartIdentity, "win32:source");
+      assert.strictEqual(Object.keys(result).includes("agentProcessStartIdentity"), false);
+      assert.strictEqual(Object.keys(result).includes("sourceProcessStartIdentity"), false);
+    });
+  });
+
+  it("preserves private recovery identities through lifecycle metadata", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ ...LIVE_GATE,
+      platformConfig: cfg,
+      startPid: 400,
+      agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
+    });
+    withMockedExec(() => snapshotJson([
+      { pid: 400, name: "node.exe", ppid: 401, startIdentity: "node" },
+      { pid: 401, name: "claude.exe", ppid: 402, startIdentity: "agent" },
+      { pid: 402, name: "windowsterminal.exe", ppid: 0, startIdentity: "source" },
+    ]), () => {
+      const result = resolve({
+        namespace: "claude-code",
+        sessionId: "recovery-identity-session",
+        cacheCwd: "C:/work/project",
+        lifecycle: "start",
+        cacheable: false,
+      });
+      assert.strictEqual(result.agentProcessStartIdentity, "win32:agent");
+      assert.strictEqual(result.sourceProcessStartIdentity, "win32:source");
+      assert.strictEqual(Object.keys(result).includes("agentProcessStartIdentity"), false);
+      assert.strictEqual(Object.keys(result).includes("sourceProcessStartIdentity"), false);
+    });
+  });
+
   it("detects agentPid via agentCmdlineCheck on node.exe using snapshot CommandLine", () => {
     const cfg = getPlatformConfig();
-    const resolve = createPidResolver({
+    const resolve = createPidResolver({ ...LIVE_GATE,
       platformConfig: cfg,
       startPid: 600,
       agentCmdlineCheck: (cmdline) => cmdline.includes("claude-code"),
@@ -495,6 +804,23 @@ describe("createPidResolver() — Windows PowerShell path", { skip: process.plat
       const { agentPid, agentCommandLine } = resolve();
       assert.strictEqual(agentPid, 600);
       assert.ok(agentCommandLine.includes("claude-code"));
+    });
+  });
+
+  it("supports an explicitly scoped non-Node command-line probe", () => {
+    const cfg = getPlatformConfig();
+    const resolve = createPidResolver({ ...LIVE_GATE,
+      platformConfig: cfg,
+      startPid: 610,
+      agentCmdlineCheck: (cmdline) => cmdline.includes("/cli/bin/codebuddy --serve --session-id"),
+      agentCmdlineNames: new Set(["electron.exe"]),
+    });
+    withMockedExec(() => snapshotJson([
+      { pid: 610, name: "electron.exe", ppid: 0, cmd: "C:/WorkBuddy/Electron C:/WorkBuddy/cli/bin/codebuddy --serve --session-id s-1" },
+    ]), () => {
+      const { agentPid, agentCommandLine } = resolve();
+      assert.strictEqual(agentPid, 610);
+      assert.ok(agentCommandLine.includes("--session-id"));
     });
   });
 });
@@ -655,7 +981,7 @@ describe("createPidResolver() — snapshot provenance (#627, mocked win32)", () 
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const r = mod.createPidResolver({
+      const r = mod.createPidResolver({ ...LIVE_GATE,
         platformConfig: cfg,
         startPid: 500,
         agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
@@ -670,18 +996,30 @@ describe("createPidResolver() — snapshot provenance (#627, mocked win32)", () 
     }
   });
 
-  it("snapshotOk false + terminalPid null + stablePid decays to startPid on empty snapshot", () => {
+  // BASELINE INVERTED BY #681. This case used to assert stablePid === startPid
+  // ("decays to the ephemeral start pid — must not be cached"). Refusing to
+  // CACHE that pid was never enough: the degraded pid was still SHIPPED as
+  // source_pid on that very event, so terminal focus targeted the per-event hook
+  // wrapper, which is dead by the time anyone clicks. An attempted-but-failed
+  // snapshot now yields the same unavailable shape as the offline gate, with
+  // attempted:true to distinguish "tried and failed" from "never tried".
+  it("snapshotOk false + NO degraded pid on an empty snapshot (attempted, but nothing to report)", () => {
     const { mod, cleanup } = loadSharedProcessWithMock({
       execFileSyncMock: () => "", // empty PS output → getWindowsProcessSnapshot yields an empty Map
       platform: "win32",
     });
     try {
       const cfg = mod.getPlatformConfig();
-      const r = mod.createPidResolver({ platformConfig: cfg, startPid: 4242 })();
+      const r = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 4242 })();
       assert.strictEqual(r.snapshotOk, false);
       assert.strictEqual(r.terminalPid, null);
-      assert.strictEqual(r.stablePid, 4242, "decays to the ephemeral start pid — must not be cached");
+      assert.strictEqual(r.stablePid, null, "must NOT decay to the ephemeral start pid (#681)");
+      assert.notStrictEqual(r.stablePid, 4242);
       assert.strictEqual(r.agentPid, null);
+      assert.strictEqual(r.detectedEditor, null);
+      assert.deepStrictEqual(r.pidChain, [], "must be [] — six adapters do a bare pidChain.length");
+      assert.strictEqual(r.attempted, true, "the snapshot DID run; it just came back empty");
+      assert.strictEqual(r.skipReason, "snapshot-failed");
     } finally {
       cleanup();
     }

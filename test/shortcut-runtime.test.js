@@ -113,7 +113,9 @@ function createRuntime(options = {}) {
     getSettingsWindow: () => settingsWindow,
     shortcutHandlers: {
       togglePet: () => togglePetCalls.push("togglePet"),
+      quickSelectSession: () => {},
     },
+    platform: options.platform,
   });
   return { globalShortcut, ipcMain, runtime, settingsWindow, togglePetCalls };
 }
@@ -208,6 +210,19 @@ test("shortcut runtime broadcasts persistent registration failures and clears th
   ]]);
 });
 
+test("shortcut runtime restores a persisted macOS Control accelerator on startup", () => {
+  const { runtime, globalShortcut } = createRuntime({
+    snapshot: { shortcuts: { togglePet: "Control+Shift+1" } },
+  });
+
+  runtime.registerPersistentShortcutsFromSettings();
+
+  assert.deepStrictEqual(globalShortcut.calls, [
+    ["register", "Control+Shift+1"],
+  ]);
+  assert.ok(globalShortcut.registered.has("Control+Shift+1"));
+});
+
 test("shortcut runtime deduplicates failure broadcasts and ignores empty clears", () => {
   const { runtime, settingsWindow } = createRuntime();
 
@@ -275,6 +290,39 @@ test("shortcut runtime does not restore an accelerator when recording had no tem
   assert.deepStrictEqual(await ipcMain.invoke("settings:exitShortcutRecording"), { status: "ok" });
   assert.deepStrictEqual(globalShortcut.calls, [
     ["isRegistered", "CommandOrControl+Shift+Alt+C"],
+  ]);
+});
+
+test("shortcut recording temporarily unregisters and restores every persistent shortcut", async () => {
+  const toggle = "CommandOrControl+Shift+Alt+C";
+  const quickSelect = "CommandOrControl+Shift+J";
+  const { globalShortcut, ipcMain } = createRuntime({
+    platform: "win32",
+    snapshot: {
+      shortcuts: {
+        togglePet: toggle,
+        quickSelectSession: quickSelect,
+      },
+    },
+  });
+  globalShortcut.registered.set(toggle, () => {});
+  globalShortcut.registered.set(quickSelect, () => {});
+
+  assert.deepStrictEqual(
+    await ipcMain.invoke("settings:enterShortcutRecording", "permissionAllow"),
+    { status: "ok" }
+  );
+  assert.deepStrictEqual(globalShortcut.calls, [
+    ["isRegistered", toggle],
+    ["unregister", toggle],
+    ["isRegistered", quickSelect],
+    ["unregister", quickSelect],
+  ]);
+
+  assert.deepStrictEqual(await ipcMain.invoke("settings:exitShortcutRecording"), { status: "ok" });
+  assert.deepStrictEqual(globalShortcut.calls.slice(-2), [
+    ["register", toggle],
+    ["register", quickSelect],
   ]);
 });
 

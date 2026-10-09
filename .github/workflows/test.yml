@@ -1,0 +1,51 @@
+name: Test
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: test-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+          - windows-latest
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - name: Run full suite
+        if: runner.os != 'Linux'
+        env:
+          CLAWD_TEST_REPORT_FILE: ${{ runner.temp }}/node-test-report.tap
+        run: npm test
+      - name: Run full suite with a Linux display
+        if: runner.os == 'Linux'
+        env:
+          CLAWD_TEST_REPORT_FILE: ${{ runner.temp }}/node-test-report.tap
+        run: xvfb-run -a npm test
+      - name: Upload test report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: node-test-report-${{ matrix.os }}
+          path: ${{ runner.temp }}/node-test-report.tap
+          retention-days: 14
+          if-no-files-found: ignore

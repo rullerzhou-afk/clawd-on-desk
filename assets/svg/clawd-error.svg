@@ -55,7 +55,7 @@
     <use href="#smoke-puff" class="smoke sm3" transform="translate(2, 0)"/>
   </g>
 
-  <g class="body-exhausted">
+  <g id="accessory-anchor" class="body-exhausted">
     <!-- Sploot Legs -->
     <g fill="#DE886D">
       <rect x="3" y="9" width="1" height="1"/>

@@ -1,15 +1,19 @@
 # PermissionRequest HTTP hook fail-deny
 
-> **状态**：已定位为 Claude Code 上游 bug，跟踪 [anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)。
-> **影响**：桌宠没在跑时，Claude Code 调用 Edit/Write/Bash 等需要权限确认的工具会被自动 deny，用户看到 "tool use was rejected"。
-> **Clawd 侧动作**：**不兜底**，等上游修。临时方案 = 开桌宠。
+> **状态（2026-09-18 更新）**：**已由上游修复，本 investigation 归档为历史记录。**
+> - 已确认受影响版本：Claude Code **2.1.100**（完整受影响区间未逐版验证）。
+> - 上游修复：Claude Code **v2.1.113**。跟踪 [anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)；维护者账号在 v2.1.113 起无法复现，Claude contributor 明确回复 "fixed as of v2.1.113"，Issue 以 **Completed** 关闭。报告者在 **v2.1.274** 再次验证不再出现 fail-deny。
+> - **影响（仅历史版本）**：桌宠没在跑时，Claude Code 调用 Edit/Write/Bash 等需要权限确认的工具会被自动 deny，用户看到 "tool use was rejected"。
+> - **Clawd 侧动作**：**不兜底，也不因该历史问题改权限 hook 策略**。在仍能复现的旧版本上升级 Claude Code 或保持桌宠运行。
+> - 下面的证据链、根因与时间线保留原始版本信息，仅用于旧版用户排障，不代表当前行为。
 
 ## TL;DR
 
 - CC 2.1.100 给 Edit/Write/Bash 等所有需要权限的工具都发 `PermissionRequest` hook（用 `permission-debug.log` 实证 `tool=Write`）
 - CC 官方文档承诺 HTTP hook 连接失败 → non-blocking → execution continues（已 WebFetch 核实原文）
 - 实际行为：桌宠没在跑 → 端口 ECONNREFUSED → CC silently denies tool call → 用户看到 "tool use was rejected"
-- **实际行为违反 CC 自己的文档** → 这是 CC bug，不是 Clawd 应该兜底的事
+- **实际行为违反 CC 自己的文档** → 当时判定为 CC bug，不是 Clawd 应该兜底的事
+- **上游已在 v2.1.113 修复**；本 investigation 到此闭环，不再作为当前限制。
 
 ## 现象
 

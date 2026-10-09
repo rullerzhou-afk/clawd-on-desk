@@ -9,6 +9,7 @@ const systemActions = require("../src/settings-actions-system");
 test("settings system actions expose the command surface", () => {
   assert.deepStrictEqual(Object.keys(systemActions).sort(), [
     "autoStartWithClaude",
+    "autoStartWithCodex",
     "createRepairDoctorIssue",
     "installHooks",
     "manageClaudeHooksAutomatically",
@@ -59,6 +60,28 @@ test("settings system actions do not report auto-start success when the queue re
 
   assert.strictEqual(result.status, "error");
   assert.match(result.message, /queue disposed/);
+});
+
+test("Codex auto-start toggles publish a fail-closed gate before commit", () => {
+  const calls = [];
+  const deps = {
+    writeCodexAutoStartGate: (enabled) => {
+      calls.push(enabled);
+      return true;
+    },
+  };
+
+  assert.deepStrictEqual(systemActions.autoStartWithCodex.effect(true, deps), { status: "ok" });
+  assert.deepStrictEqual(systemActions.autoStartWithCodex.effect(false, deps), { status: "ok" });
+  assert.deepStrictEqual(calls, [false, false]);
+});
+
+test("Codex auto-start rejects the toggle when the fail-closed gate cannot be persisted", () => {
+  const result = systemActions.autoStartWithCodex.effect(false, {
+    writeCodexAutoStartGate: () => false,
+  });
+  assert.strictEqual(result.status, "error");
+  assert.match(result.message, /fail-closed gate/);
 });
 
 test("settings system actions sync hooks before starting the watcher", async () => {

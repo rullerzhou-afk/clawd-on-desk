@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs");
+const crypto = require("crypto");
 
 const { CODEX_HOOK_EVENTS } = require("../../hooks/codex-install-utils");
 
@@ -106,8 +107,8 @@ function parseHooksStateHeader(line) {
   return null;
 }
 
-function collectTrustedCodexHookIds(configText) {
-  const trusted = new Set();
+function collectTrustedCodexHookHashes(configText) {
+  const trusted = new Map();
   if (typeof configText !== "string") return trusted;
 
   let currentTrustId = null;
@@ -120,14 +121,16 @@ function collectTrustedCodexHookIds(configText) {
       continue;
     }
 
-    if (
-      currentTrustId
-      && /^trusted_hash\s*=\s*"sha256:[^"]+"\s*$/i.test(line)
-    ) {
-      trusted.add(currentTrustId);
-    }
+    const hashMatch = currentTrustId
+      ? line.match(/^trusted_hash\s*=\s*"(sha256:[^"]+)"\s*$/i)
+      : null;
+    if (hashMatch) trusted.set(currentTrustId, hashMatch[1]);
   }
   return trusted;
+}
+
+function collectTrustedCodexHookIds(configText) {
+  return new Set(collectTrustedCodexHookHashes(configText).keys());
 }
 
 function normalizeTrustId(value, platform = process.platform) {
@@ -135,18 +138,97 @@ function normalizeTrustId(value, platform = process.platform) {
   return platform === "win32" ? normalized.toLowerCase() : normalized;
 }
 
-function hookCommandMatchesMarker(hook, marker) {
+function hookCommandMatchesMarker(hook, marker, platform = process.platform) {
   return !!(
     hook
     && typeof hook === "object"
-    && typeof hook.command === "string"
     && typeof marker === "string"
     && marker
-    && hook.command.includes(marker)
+    && (
+      (typeof hook.command === "string" && hook.command.includes(marker))
+      || (
+        platform === "win32"
+        && typeof hook.commandWindows === "string"
+        && hook.commandWindows.includes(marker)
+      )
+    )
   );
 }
 
-function findCodexHookTrustPositions(settings, marker = "codex-hook.js") {
+function sortCanonicalJson(value) {
+  if (Array.isArray(value)) return value.map(sortCanonicalJson);
+  if (!value || typeof value !== "object") return value;
+  const sorted = {};
+  for (const key of Object.keys(value).sort()) sorted[key] = sortCanonicalJson(value[key]);
+  return sorted;
+}
+
+function matcherForCodexTrust(eventName, matcher) {
+  if (eventName === "UserPromptSubmit" || eventName === "Stop") return null;
+  return typeof matcher === "string" ? matcher : null;
+}
+
+function commandTimeoutForCodexTrust(eventName, value) {
+  const parsed = Number.isSafeInteger(value) && value >= 0 ? value : null;
+  if (eventName === "SessionEnd") return Math.min(3, Math.max(1, parsed === null ? 1 : parsed));
+  return Math.max(1, parsed === null ? 600 : parsed);
+}
+
+function supportsAdditionalContextLimit(eventName) {
+  return [
+    "PreToolUse",
+    "PostToolUse",
+    "SessionStart",
+    "UserPromptSubmit",
+    "SubagentStart",
+  ].includes(eventName);
+}
+
+// Mirrors openai/codex hook discovery's NormalizedHookIdentity and
+// config::fingerprint::version_for_toml. Codex selects commandWindows on
+// Windows, normalizes defaults, converts the TOML value to canonical JSON
+// (object keys recursively sorted), then hashes the UTF-8 JSON bytes.
+function computeCodexHookTrustedHash(eventName, group, hook, platform = process.platform) {
+  if (!hook || typeof hook !== "object") return null;
+  const command = platform === "win32" && typeof hook.commandWindows === "string"
+    ? hook.commandWindows
+    : hook.command;
+  if (typeof command !== "string" || !command.trim()) return null;
+
+  const normalizedHook = {
+    type: "command",
+    command,
+    timeout: commandTimeoutForCodexTrust(eventName, hook.timeout),
+    async: hook.async === true,
+  };
+  if (typeof hook.statusMessage === "string") {
+    normalizedHook.statusMessage = hook.statusMessage;
+  }
+  if (
+    supportsAdditionalContextLimit(eventName)
+    && Number.isSafeInteger(hook.additionalContextLimit)
+    && hook.additionalContextLimit >= 0
+    && hook.additionalContextLimit !== 2500
+  ) {
+    normalizedHook.additionalContextLimit = hook.additionalContextLimit;
+  }
+
+  const identity = {
+    event_name: CODEX_TRUST_EVENT_KEYS[eventName]
+      || eventName.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase(),
+    hooks: [normalizedHook],
+  };
+  const matcher = matcherForCodexTrust(eventName, group && group.matcher);
+  if (matcher !== null) identity.matcher = matcher;
+  const canonical = JSON.stringify(sortCanonicalJson(identity));
+  return `sha256:${crypto.createHash("sha256").update(canonical).digest("hex")}`;
+}
+
+function findCodexHookTrustPositions(
+  settings,
+  marker = "codex-hook.js",
+  platform = process.platform
+) {
   const hooks = settings && typeof settings === "object" && settings.hooks && typeof settings.hooks === "object"
     ? settings.hooks
     : null;
@@ -163,14 +245,28 @@ function findCodexHookTrustPositions(settings, marker = "codex-hook.js") {
 
       if (Array.isArray(entry.hooks)) {
         for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
-          if (hookCommandMatchesMarker(entry.hooks[hookIndex], marker)) {
-            positions.push({ eventName, eventKey, entryIndex, hookIndex });
+          if (hookCommandMatchesMarker(entry.hooks[hookIndex], marker, platform)) {
+            positions.push({
+              eventName,
+              eventKey,
+              entryIndex,
+              hookIndex,
+              group: entry,
+              hook: entry.hooks[hookIndex],
+            });
           }
         }
       }
 
-      if (hookCommandMatchesMarker(entry, marker)) {
-        positions.push({ eventName, eventKey, entryIndex, hookIndex: 0 });
+      if (hookCommandMatchesMarker(entry, marker, platform)) {
+        positions.push({
+          eventName,
+          eventKey,
+          entryIndex,
+          hookIndex: 0,
+          group: entry,
+          hook: entry,
+        });
       }
     }
   }
@@ -183,7 +279,8 @@ function makeTrustId(hooksPath, position) {
 
 function checkCodexHookTrustText(configText, settings, hooksPath, options = {}) {
   const marker = options.marker || "codex-hook.js";
-  const positions = findCodexHookTrustPositions(settings, marker);
+  const platform = options.platform || process.platform;
+  const positions = findCodexHookTrustPositions(settings, marker, platform);
   if (!positions.length) {
     return {
       key: "codex_hook_trust",
@@ -192,13 +289,21 @@ function checkCodexHookTrustText(configText, settings, hooksPath, options = {}) 
     };
   }
 
-  const platform = options.platform || process.platform;
-  const trusted = new Set(
-    [...collectTrustedCodexHookIds(configText)].map((trustId) => normalizeTrustId(trustId, platform))
+  const trusted = new Map(
+    [...collectTrustedCodexHookHashes(configText)].map(([trustId, hash]) => [
+      normalizeTrustId(trustId, platform),
+      hash,
+    ])
   );
   const missing = positions.filter((position) => {
     const expected = normalizeTrustId(makeTrustId(hooksPath, position), platform);
-    return !trusted.has(expected);
+    const currentHash = computeCodexHookTrustedHash(
+      position.eventName,
+      position.group,
+      position.hook,
+      platform
+    );
+    return !currentHash || trusted.get(expected) !== currentHash;
   });
 
   if (missing.length) {
@@ -244,6 +349,8 @@ module.exports = {
   checkCodexHookTrustText,
   checkCodexHooksFeature,
   checkCodexHooksFeatureText,
+  collectTrustedCodexHookHashes,
   collectTrustedCodexHookIds,
+  computeCodexHookTrustedHash,
   findCodexHookTrustPositions,
 };

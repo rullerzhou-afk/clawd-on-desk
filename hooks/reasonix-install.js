@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// Merge Clawd Reasonix hooks into <Reasonix home>/settings.json (append-only, idempotent)
+// Merge Clawd Reasonix hooks into the active current/legacy settings.json
+// (append-only, idempotent), and remove managed hooks from both on uninstall.
 // Reasonix hook format: { "hooks": { "EventName": [{ "match", "command", ... }] } }
 
 const fs = require("fs");
@@ -20,9 +21,31 @@ const {
 const MARKER = "reasonix-hook.js";
 const SETTINGS_DIRNAME = ".reasonix";
 const SETTINGS_FILENAME = "settings.json";
+const BRACED_ENV_VAR_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)(:-([^}]*))?\}/g;
+const BARE_ENV_VAR_PATTERN = /\$([A-Za-z_][A-Za-z0-9_]*)/g;
 
-function expandHomePath(value, homeDir) {
-  const raw = String(value || "").trim();
+function expandHomePath(value, homeDir, env = process.env) {
+  let unresolved = false;
+  const expandedBraced = String(value || "").trim().replace(
+    BRACED_ENV_VAR_PATTERN,
+    (_match, name, fallbackClause, fallbackValue) => {
+      const envValue = env && env[name] != null ? String(env[name]) : "";
+      if (envValue) return envValue;
+      if (fallbackClause) return fallbackValue;
+      unresolved = true;
+      return "";
+    }
+  );
+  const raw = expandedBraced.replace(BARE_ENV_VAR_PATTERN, (_match, name) => {
+    const envValue = env && env[name] != null ? String(env[name]) : "";
+    if (envValue) return envValue;
+    unresolved = true;
+    return "";
+  });
+  // An authoritative override containing any missing, fallback-less variable
+  // is invalid as a whole. Otherwise `${MISSING}/tmp` would silently become
+  // `/tmp`, which is worse than the original cwd fallback.
+  if (unresolved) return "";
   if (!raw) return "";
   const home = homeDir || os.homedir();
   if (raw === "~") return home;
@@ -40,8 +63,15 @@ function resolveReasonixHome(options = {}) {
   // the override is a fake OS home, not the Reasonix home itself.
   if (options.homeDir) return path.join(options.homeDir, SETTINGS_DIRNAME);
 
-  const explicit = expandHomePath(env.REASONIX_HOME, options.userHomeDir || os.homedir());
-  if (explicit) return path.resolve(explicit);
+  const configuredHome = String(env.REASONIX_HOME || "").trim();
+  if (configuredHome) {
+    const explicit = expandHomePath(configuredHome, options.userHomeDir || os.homedir(), env);
+    // A configured override is authoritative. If any fallback-less variable
+    // is unresolved, fail closed instead of collapsing the remaining suffix
+    // into a different absolute path (or the launch cwd).
+    if (!explicit) return "";
+    return path.resolve(explicit);
+  }
 
   if (platform === "win32") {
     const appData = String(env.APPDATA || env.AppData || "").trim();
@@ -53,8 +83,63 @@ function resolveReasonixHome(options = {}) {
   return path.join(options.userHomeDir || os.homedir(), SETTINGS_DIRNAME);
 }
 
+function resolveLegacyReasonixHome(options = {}) {
+  const env = options.env || process.env;
+  const platform = options.platform || process.platform;
+
+  // Reasonix treats both the test-only home override and REASONIX_HOME as
+  // isolated runtimes. Neither is allowed to fall back to another user config.
+  if (options.homeDir) return "";
+  if (String(env.REASONIX_HOME || "").trim()) return "";
+  if (platform !== "win32") return "";
+
+  const legacy = path.join(options.userHomeDir || os.homedir(), SETTINGS_DIRNAME);
+  return path.resolve(legacy) === path.resolve(resolveReasonixHome(options)) ? "" : legacy;
+}
+
+function resolveReasonixConfigTargets(options = {}) {
+  const platform = options.platform || process.platform;
+  const homes = [
+    { label: "current", parentDir: resolveReasonixHome(options) },
+    { label: "legacy", parentDir: resolveLegacyReasonixHome(options) },
+  ];
+  const seen = new Set();
+  const targets = [];
+  for (const home of homes) {
+    if (!home.parentDir) continue;
+    const resolved = path.resolve(home.parentDir);
+    const key = platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    targets.push({
+      label: home.label,
+      parentDir: home.parentDir,
+      configPath: path.join(home.parentDir, SETTINGS_FILENAME),
+    });
+  }
+  return targets;
+}
+
+function selectReasonixSettingsPath(options = {}) {
+  if (options.settingsPath) return options.settingsPath;
+  const targets = resolveReasonixConfigTargets(options);
+  if (targets.length === 0) return "";
+
+  // Mirror Reasonix's own loader: an existing current settings file wins; when
+  // it is absent, the legacy ~/.reasonix/settings.json remains active.
+  const withConfig = targets.find((target) => fs.existsSync(target.configPath));
+  if (withConfig) return withConfig.configPath;
+  const withHome = targets.find((target) => fs.existsSync(target.parentDir));
+  return (withHome || targets[0]).configPath;
+}
+
 const DEFAULT_PARENT_DIR = resolveReasonixHome();
-const DEFAULT_CONFIG_PATH = path.join(DEFAULT_PARENT_DIR, SETTINGS_FILENAME);
+const DEFAULT_CONFIG_PATH = DEFAULT_PARENT_DIR
+  ? path.join(DEFAULT_PARENT_DIR, SETTINGS_FILENAME)
+  : "";
+const DEFAULT_CONFIG_TARGETS = Object.freeze(
+  resolveReasonixConfigTargets().map((target) => Object.freeze(target))
+);
 
 const REASONIX_HOOK_EVENTS = [
   "SessionStart",
@@ -78,13 +163,20 @@ function buildReasonixHookEntry(command) {
 
 function buildReasonixHookCommand(nodeBin, hookScript, options = {}) {
   // Reasonix wraps commands with `cmd /c` on Windows (see hook.go shellInvocation).
-  // cmd /c cannot handle a quoted first token (node) or paths with spaces.
-  // Use PowerShell -EncodedCommand to bypass cmd's quoting bugs entirely.
+  // Go's Windows argv builder escapes every embedded `"` in that single command
+  // argument as `\"`; cmd.exe treats the backslashes literally, so every plain
+  // quoted command fails even when neither path contains spaces. Always use the
+  // encoded wrapper to bypass that argv/quote mismatch.
+  //
+  // PowerShell normalizes a native child's non-zero exit code to 1 here. This is
+  // safe only while reasonix-hook.js is state-only and always exits 0. A future
+  // blocking hook that needs Reasonix's exit-2 DecisionBlock contract must add
+  // explicit native exit-code propagation instead of reusing this wrapper as-is.
   const platform = options.platform || process.platform;
-  if (platform === "win32" && typeof nodeBin === "string" && nodeBin.includes(" ")) {
+  if (platform === "win32") {
     return formatNodeHookCommand(nodeBin, hookScript, { ...options, windowsWrapper: "encoded" });
   }
-  return formatNodeHookCommand(nodeBin, hookScript, { ...options, windowsWrapper: "none" });
+  return formatNodeHookCommand(nodeBin, hookScript, options);
 }
 
 function isDesiredReasonixHookEntry(entry, desiredCommand) {
@@ -144,7 +236,20 @@ function normalizeReasonixHookEntries(entries, desiredCommand) {
  * @returns {{ added: number, skipped: number, updated: number }}
  */
 function registerReasonixHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(resolveReasonixHome(options), SETTINGS_FILENAME);
+  const settingsPath = selectReasonixSettingsPath(options);
+  if (!settingsPath) {
+    const message = "REASONIX_HOME contains an unresolved variable or expands to an empty path; refusing to register hooks";
+    if (!options.silent) throw new Error(message);
+    console.warn(`Clawd: ${message}`);
+    return {
+      status: "skipped",
+      reason: "reasonix-home-invalid",
+      message,
+      added: 0,
+      skipped: 0,
+      updated: 0,
+    };
+  }
 
   // Skip if Reasonix home doesn't exist (Reasonix not installed/initialized).
   const reasonixDir = path.dirname(settingsPath);
@@ -217,9 +322,7 @@ function registerReasonixHooks(options = {}) {
   return { added, skipped, updated };
 }
 
-function unregisterReasonixHooks(options = {}) {
-  const settingsPath = options.settingsPath || path.join(resolveReasonixHome(options), SETTINGS_FILENAME);
-
+function unregisterReasonixHooksAtPath(settingsPath, options = {}) {
   let settings = {};
   try {
     settings = readJsonFile(settingsPath);
@@ -253,20 +356,111 @@ function unregisterReasonixHooks(options = {}) {
   return result;
 }
 
+function unregisterReasonixHooks(options = {}) {
+  const requestedPaths = Array.isArray(options.settingsPaths) && options.settingsPaths.length > 0
+    ? options.settingsPaths
+    : options.settingsPath
+      ? [options.settingsPath]
+      : resolveReasonixConfigTargets(options).map((target) => target.configPath);
+  const settingsPaths = [...new Set(requestedPaths)];
+  if (settingsPaths.length === 0) {
+    const message = "REASONIX_HOME contains an unresolved variable or expands to an empty path; refusing to unregister hooks";
+    if (!options.silent) {
+      return {
+        status: "error",
+        reason: "reasonix-home-invalid",
+        message,
+        removed: 0,
+        changed: false,
+        settingsPath: "",
+        settingsPaths: [],
+        results: [],
+      };
+    }
+    console.warn(`Clawd: ${message}`);
+    return {
+      status: "skipped",
+      reason: "reasonix-home-invalid",
+      message,
+      removed: 0,
+      changed: false,
+      settingsPath: "",
+      settingsPaths: [],
+      results: [],
+    };
+  }
+  let removed = 0;
+  let changed = false;
+  const backupPaths = [];
+  const results = [];
+  const errors = [];
+
+  for (const settingsPath of settingsPaths) {
+    let result;
+    try {
+      result = unregisterReasonixHooksAtPath(settingsPath, { ...options, silent: true });
+    } catch (err) {
+      result = {
+        removed: 0,
+        changed: false,
+        settingsPath,
+        status: "error",
+        message: err && err.message ? err.message : String(err),
+      };
+      errors.push(result);
+    }
+    results.push(result);
+    removed += result.removed;
+    changed = changed || result.changed;
+    if (result.backupPath) backupPaths.push(result.backupPath);
+  }
+
+  if (!options.silent) console.log(`Clawd Reasonix hooks removed: ${removed}`);
+  const primary = results.find((result) => result.changed) || results[0];
+  const result = {
+    removed,
+    changed,
+    settingsPath: primary ? primary.settingsPath : settingsPaths[0],
+    settingsPaths,
+    results,
+  };
+  if (errors.length > 0) {
+    result.status = "error";
+    result.errors = errors;
+    result.message = errors.length === 1
+      ? `Failed to clean Reasonix hooks at ${errors[0].settingsPath}: ${errors[0].message}`
+      : `Failed to clean Reasonix hooks at ${errors.length} settings paths`;
+  }
+  if (options.backup === true) {
+    if (settingsPaths.length === 1) result.backupPath = backupPaths[0] || null;
+    else result.backupPaths = backupPaths;
+  }
+  return result;
+}
+
 module.exports = {
   DEFAULT_PARENT_DIR,
   DEFAULT_CONFIG_PATH,
+  DEFAULT_CONFIG_TARGETS,
   MARKER,
   REASONIX_HOOK_EVENTS,
   registerReasonixHooks,
   unregisterReasonixHooks,
-  __test: { buildReasonixHookCommand, resolveReasonixHome },
+  resolveReasonixConfigTargets,
+  __test: {
+    buildReasonixHookCommand,
+    resolveLegacyReasonixHome,
+    resolveReasonixHome,
+    selectReasonixSettingsPath,
+  },
 };
 
 if (require.main === module) {
   try {
-    if (process.argv.includes("--uninstall")) unregisterReasonixHooks({});
-    else registerReasonixHooks({});
+    if (process.argv.includes("--uninstall")) {
+      const result = unregisterReasonixHooks({});
+      if (result.status === "error") throw new Error(result.message);
+    } else registerReasonixHooks({});
   } catch (err) {
     console.error(err.message);
     process.exit(1);

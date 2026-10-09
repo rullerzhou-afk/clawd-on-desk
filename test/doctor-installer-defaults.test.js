@@ -12,6 +12,8 @@ describe("installer default path exports", () => {
     const gemini = require("../hooks/gemini-install");
     const antigravity = require("../hooks/antigravity-install");
     const codebuddy = require("../hooks/codebuddy-install");
+    const workbuddy = require("../hooks/workbuddy-install");
+    const grok = require("../hooks/grok-install");
     const kiro = require("../hooks/kiro-install");
     const kimi = require("../hooks/kimi-install");
     const qwen = require("../hooks/qwen-code-install");
@@ -37,6 +39,14 @@ describe("installer default path exports", () => {
 
     assert.strictEqual(codebuddy.DEFAULT_PARENT_DIR, path.join(home, ".codebuddy"));
     assert.strictEqual(codebuddy.DEFAULT_CONFIG_PATH, path.join(home, ".codebuddy", "settings.json"));
+
+    assert.strictEqual(workbuddy.DEFAULT_PARENT_DIR, path.join(home, ".workbuddy-ai"));
+    assert.strictEqual(workbuddy.DEFAULT_CONFIG_PATH, path.join(home, ".workbuddy-ai", "settings.json"));
+    assert.strictEqual(workbuddy.LEGACY_PARENT_DIR, path.join(home, ".workbuddy"));
+    assert.strictEqual(workbuddy.LEGACY_CONFIG_PATH, path.join(home, ".workbuddy", "settings.json"));
+
+    assert.strictEqual(grok.DEFAULT_PARENT_DIR, path.join(home, ".grok"));
+    assert.strictEqual(grok.DEFAULT_CONFIG_PATH, path.join(home, ".grok", "hooks", "clawd-on-desk.json"));
 
     assert.strictEqual(kiro.DEFAULT_PARENT_DIR, path.join(home, ".kiro"));
     assert.strictEqual(kiro.DEFAULT_AGENTS_DIR, path.join(home, ".kiro", "agents"));

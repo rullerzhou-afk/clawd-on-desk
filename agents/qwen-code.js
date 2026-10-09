@@ -5,6 +5,7 @@ module.exports = {
   id: "qwen-code",
   name: "Qwen Code",
   processNames: { win: ["qwen.exe"], mac: ["qwen"], linux: ["qwen"] },
+  startupRecoveryProcessNames: { win: ["qwen.exe"], mac: ["qwen"], linux: ["qwen"] },
   eventSource: "hook",
   eventMap: {
     SessionStart: "idle",

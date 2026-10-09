@@ -1,7 +1,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
-const { spawnSync } = require("node:child_process");
 const path = require("node:path");
+const { runSpawnedHook } = require("./helpers/spawned-hook");
 const { __test } = require("../hooks/codewhale-hook");
 
 function cacheDeps(initial = null) {
@@ -105,10 +105,10 @@ describe("CodeWhale hook script", () => {
 
   it("exits cleanly without stdout or stderr for unknown CLI events", () => {
     const scriptPath = path.resolve(__dirname, "..", "hooks", "codewhale-hook.js");
-    const blockerPath = path.resolve(__dirname, "hook-http-blocker.js");
-    const result = spawnSync(process.execPath, ["--require", blockerPath, scriptPath, "shell_env"], {
-      encoding: "utf8",
-      windowsHide: true,
+    const result = runSpawnedHook({
+      script: scriptPath,
+      args: ["shell_env"],
+      httpContract: "expect-none",
     });
 
     assert.strictEqual(result.status, 0);

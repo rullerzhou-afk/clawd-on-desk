@@ -9,9 +9,30 @@
 <body>
   <div id="pet-clip">
     <div id="pet-container">
-      <object id="clawd" type="image/svg+xml"></object>
+      <div id="pet-facing-stage">
+        <div id="pet-motion-stage">
+          <div id="pet-asset-direction-stage">
+            <div id="pet-media-layer">
+              <object id="clawd" class="clawd-object" type="image/svg+xml"></object>
+            </div>
+            <div id="pet-accessory-layer">
+              <img id="clawd-accessory" class="clawd-accessory" alt="">
+            </div>
+            <div id="pet-mouth-accessory-layer">
+              <object id="clawd-mouth-accessory" class="clawd-accessory" type="image/svg+xml"></object>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div id="pet-effect-stage">
+        <div id="pet-particle-layer"></div>
+      </div>
     </div>
   </div>
+  <script src="pet-accessory-layout.js"></script>
+  <script src="pet-accessory-mirror.js"></script>
+  <script src="pet-accessory-descriptor.js"></script>
+  <script src="pet-visual-swap-policy.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

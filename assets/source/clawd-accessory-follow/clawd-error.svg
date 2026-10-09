@@ -1,0 +1,94 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
+  <defs>
+    <style>
+      .body-exhausted {
+        transform-origin: 7.5px 15px;
+        animation: heavy-breathe 2.5s infinite ease-in-out;
+      }
+      .arm-fan {
+        transform-origin: 14px 10px;
+        animation: fan-self 0.4s infinite alternate ease-in-out;
+      }
+      .smoke {
+        opacity: 0;
+        animation: puff-smoke 3s infinite ease-out;
+      }
+      .sm1 { animation-delay: 0s; }
+      .sm2 { animation-delay: 1s; }
+      .sm3 { animation-delay: 2s; }
+
+      /* Error warning flash */
+      .error-warning {
+        animation: error-flash 0.8s infinite ease-in-out;
+      }
+
+      @keyframes heavy-breathe {
+        0%, 100% { transform: scale(1, 1) translateY(0); }
+        50% { transform: scale(1.05, 0.9) translateY(1.5px); }
+      }
+      @keyframes fan-self {
+        0% { transform: rotate(0deg); }
+        100% { transform: rotate(-60deg); }
+      }
+      @keyframes puff-smoke {
+        0% { transform: translate(7.5px, 6px) scale(0.5); opacity: 0; }
+        20% { opacity: 0.6; }
+        100% { transform: translate(7.5px, -15px) scale(2); opacity: 0; }
+      }
+      @keyframes error-flash {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.15; }
+      }
+    </style>
+    <g id="smoke-puff">
+      <rect x="-1" y="-1" width="2" height="2" fill="#B0BEC5" rx="0.5"/>
+      <rect x="0" y="-2" width="2" height="2" fill="#CFD8DC" rx="0.5"/>
+    </g>
+  </defs>
+
+  <rect id="ground-shadow" x="-1" y="15" width="17" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Smoke -->
+  <g>
+    <use href="#smoke-puff" class="smoke sm1"/>
+    <use href="#smoke-puff" class="smoke sm2" transform="translate(-2, 0)"/>
+    <use href="#smoke-puff" class="smoke sm3" transform="translate(2, 0)"/>
+  </g>
+
+  <g class="body-exhausted">
+    <!-- Sploot Legs -->
+    <g fill="#DE886D">
+      <rect x="3" y="9" width="1" height="1"/>
+      <rect x="5" y="9" width="1" height="1"/>
+      <rect x="9" y="9" width="1" height="1"/>
+      <rect x="11" y="9" width="1" height="1"/>
+    </g>
+
+    <!-- Torso Sploot -->
+    <g fill="#DE886D">
+      <rect x="1" y="10" width="13" height="5"/>
+      <rect x="-1" y="13" width="2" height="2"/>
+    </g>
+
+    <!-- Fanning Arm (closer to body) -->
+    <g class="arm-fan">
+      <rect x="13" y="11" width="2" height="2" fill="#DE886D"/>
+    </g>
+
+    <!-- XX Eyes -->
+    <g fill="#000000">
+      <!-- Left X -->
+      <rect x="3" y="12" width="0.6" height="2.2" transform="rotate(45 3.3 13.1)"/>
+      <rect x="3" y="12" width="0.6" height="2.2" transform="rotate(-45 3.3 13.1)"/>
+      <!-- Right X -->
+      <rect x="10" y="12" width="0.6" height="2.2" transform="rotate(45 10.3 13.1)"/>
+      <rect x="10" y="12" width="0.6" height="2.2" transform="rotate(-45 10.3 13.1)"/>
+    </g>
+  </g>
+
+  <!-- Error Warning (flashing) -->
+  <g class="error-warning">
+    <!-- Error text only -->
+    <text x="7.5" y="6" text-anchor="middle" font-family="'Söhne', 'Helvetica Neue', Arial, sans-serif" font-size="3.5" font-weight="700" fill="#FF3B30">ERROR</text>
+  </g>
+</svg>
