@@ -23,63 +23,30 @@
 // This script relies only on absolute paths resolved at require time plus the
 // pet's own ~/.clawd/runtime.json port discovery, so it needs nothing extra.
 
-const { postStateToRunningServer, readHostPrefix } = require("./server-config");
-const { readStdinJson } = require("./shared-process");
-const resolveSessionId = require("./kirocrew-hook-session");
+const { buildKiroCrewHookPayload } = require("./kirocrew-hook-payload");
 
-// KiroCrew hook event → { state, event } for the Clawd state machine.
-// PreToolUse is intentionally absent: in KiroCrew a PreToolUse exit other than
-// 0 or 2 denies the tool on the approval path, and the bridge's exit-0
-// guarantee only holds after Node has started (a missing script, a stale node
-// path, or a governance policy disabling script_hooks would all deny). The
-// four events below only warn on failure and are enough to drive the pet.
-const HOOK_MAP = {
-  AgentSpawn:       { state: "idle",      event: "AgentSpawn" },
-  UserPromptSubmit: { state: "thinking",  event: "UserPromptSubmit" },
-  PostToolUse:      { state: "working",   event: "PostToolUse" },
-  Stop:             { state: "attention", event: "Stop" },
-};
-
-// Resolve the event from stdin first, then the env var the gateway always sets.
-function resolveEventName(payload) {
-  const fromStdin =
-    (payload && (payload.hook_event_name || payload.event || payload.Event)) || "";
-  if (fromStdin) return fromStdin;
-  return process.env.KIROCREW_HOOK_EVENT || "";
+if (require.main === module) {
+  const { postStateToRunningServer, readHostPrefix } = require("./server-config");
+  const { readStdinJson } = require("./shared-process");
+  readStdinJson()
+    .then((payload) => {
+      const body = buildKiroCrewHookPayload(payload, {
+        eventName: process.env.KIROCREW_HOOK_EVENT,
+        // The gateway cwd is its own process cwd, not the chat's project root.
+        // Do not forward it as session attribution.
+        remoteHostPrefix: process.env.CLAWD_REMOTE ? readHostPrefix() : null,
+      });
+      if (!body) {
+        process.exit(0);
+        return;
+      }
+      // Short timeout: a hook must not slow the gateway's turn. If the pet is
+      // not running, the post simply fails and we still exit 0.
+      postStateToRunningServer(JSON.stringify(body), { timeoutMs: 150 }, () => {
+        process.exit(0);
+      });
+    })
+    .catch(() => process.exit(0));
 }
 
-readStdinJson()
-  .then((payload) => {
-    const eventName = resolveEventName(payload);
-    const mapped = HOOK_MAP[eventName];
-    if (!mapped) {
-      // Not an event we model (including PreToolUse and the Kiro-agent-only
-      // triggers). Never block — exit 0 for every unmapped event.
-      process.exit(0);
-      return;
-    }
-
-    const { state, event } = mapped;
-
-    const sessionId = resolveSessionId(payload);
-    const cwd = (payload && (payload.cwd || payload.working_directory)) || "";
-
-    const body = {
-      state,
-      session_id: sessionId,
-      event,
-      agent_id: "kirocrew",
-    };
-    if (cwd) body.cwd = cwd;
-    // Tag a host only when this really is a remote source. kiro-hook.js adds
-    // `host` only under CLAWD_REMOTE; sending it unconditionally files a local
-    // gateway session as an SSH remote (sourceType: "ssh").
-    if (process.env.CLAWD_REMOTE) body.host = readHostPrefix();
-
-    // Short timeout: a hook must not slow the gateway's turn. If the pet is not
-    // running, the post simply fails and we still exit 0 (never deny a tool).
-    postStateToRunningServer(JSON.stringify(body), { timeoutMs: 150 }, () => {
-      process.exit(0);
-    });
-  })
-  .catch(() => process.exit(0));
+module.exports = { buildKiroCrewHookPayload };

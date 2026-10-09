@@ -2,15 +2,14 @@
 // Register the Clawd pet bridge into KiroCrew's chat lifecycle hooks.
 //
 // KiroCrew stores hooks in ~/.kiro/crew/hooks.json as { "hooks": [ ... ] }.
-// Each entry fires one of five gateway events and runs a shell command with the
+// Each entry fires one of four gateway events and runs a shell command with the
 // hook-event JSON on stdin and KIROCREW_HOOK_EVENT in the environment. We add
 // one hook per event, all pointing at hooks/kirocrew-hook.js, so the pet reacts
 // to KiroCrew gateway activity the same way it reacts to kiro-cli.
 //
-// This is idempotent and marker-based (like hooks/kiro-install.js): entries are
-// matched by the `kirocrew-hook.js` marker in their command, so re-running
-// updates a stale node/script path instead of duplicating hooks, and uninstall
-// removes exactly our entries and nothing the user authored.
+// This is idempotent: entries are matched only when they have the exact simple
+// Node + kirocrew-hook.js command shape Clawd emits. A marker substring alone
+// never authorizes updates or removal.
 //
 // Docs: KiroCrew "Steering files, prompts and hooks" (chat lifecycle hooks).
 
@@ -19,11 +18,14 @@ const path = require("path");
 const os = require("os");
 const crypto = require("crypto");
 const { resolveNodeBin } = require("./server-config");
+const { formatNodeHookCommand } = require("./json-utils");
+const { isOwnedKiroCrewCommand } = require("./kirocrew-command");
 const {
-  writeJsonAtomic,
-  writeJsonAtomicWithBackup,
-  formatNodeHookCommand,
-} = require("./json-utils");
+  acquireKiroCrewDirectoryLock,
+  acquireKiroCrewLock,
+  hardenOwnerOnlyFile,
+  writeKiroCrewStoreAtomic,
+} = require("./kirocrew-store");
 
 const MARKER = "kirocrew-hook.js";
 
@@ -65,7 +67,7 @@ function getHookScriptPath() {
 }
 
 // A KiroCrew hook runs in the platform's native shell (/bin/sh -c on POSIX,
-// cmd /c on Windows), so the command format matches the kiro-cli installer.
+// cmd /c on Windows); keep its Windows command wrapper specific to this runner.
 function formatHookCommand(nodeBin, scriptPath, platformOverride) {
   const platform = platformOverride || process.platform;
   return formatNodeHookCommand(nodeBin, scriptPath, {
@@ -100,41 +102,69 @@ function isGatewayRunning(crewDir) {
   }
 }
 
-// Acquire KiroCrew's own advisory lock (~/.kiro/crew/hooks.json.lock) before a
-// write, so we never race a gateway that is starting up. mkdir is atomic and
-// cross-platform; a stale lock older than STALE_LOCK_MS is reclaimed.
-const STALE_LOCK_MS = 30_000;
-function acquireHooksLock(hooksPath) {
-  const lockDir = `${hooksPath}.lock.d`;
-  const deadline = Date.now() + 2000;
-  for (;;) {
-    try {
-      fs.mkdirSync(lockDir);
-      return () => { try { fs.rmdirSync(lockDir); } catch {} };
-    } catch (err) {
-      if (err.code !== "EEXIST") throw err;
-      try {
-        const age = Date.now() - fs.statSync(lockDir).mtimeMs;
-        if (age > STALE_LOCK_MS) { fs.rmdirSync(lockDir); continue; }
-      } catch {}
-      if (Date.now() > deadline) return null; // could not acquire in time
-      // brief spin; this path is only hit under a concurrent writer
+function readHooksStore(filePath) {
+  let stat;
+  try {
+    stat = fs.lstatSync(filePath);
+  } catch (err) {
+    if (err.code === "ENOENT") return { hooks: [] };
+    throw new Error(`Failed to inspect ${path.basename(filePath)}: ${err.message}`);
+  }
+  if (!stat.isFile() || stat.nlink !== 1) {
+    throw new Error(`${path.basename(filePath)} must be a regular file with one link`);
+  }
+  try {
+    const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
+    if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+      throw new Error("hooks.json root must be an object");
     }
+    if (Object.prototype.hasOwnProperty.call(raw, "hooks") && !Array.isArray(raw.hooks)) {
+      throw new Error("hooks.json hooks field must be an array");
+    }
+    return raw;
+  } catch (err) {
+    throw new Error(`Failed to read ${path.basename(filePath)}: ${err.message}`);
   }
 }
 
-function readHooksStore(filePath) {
-  try {
-    const raw = JSON.parse(fs.readFileSync(filePath, "utf-8"));
-    if (raw && typeof raw === "object" && Array.isArray(raw.hooks)) return raw;
-    // Preserve any unknown top-level keys the gateway may add later.
-    if (raw && typeof raw === "object") return { ...raw, hooks: [] };
-  } catch (err) {
-    if (err.code !== "ENOENT") {
-      throw new Error(`Failed to read ${path.basename(filePath)}: ${err.message}`);
-    }
+// Match KiroCrew's own advisory locks. The gateway lock closes startup races;
+// the hooks sidecar serializes the full read/validate/merge/atomic-write with
+// KiroCrew's hooks API. Both acquisitions are single-shot on Electron's main
+// thread, so a concurrent writer produces an explicit retryable failure.
+function acquireStoreLocks(hooksPath, options = {}) {
+  const crewDir = path.dirname(hooksPath);
+  const platform = options.platform || process.platform;
+  if (options.force !== true && isGatewayRunning(crewDir)) {
+    return { blocked: "gateway-running" };
   }
-  return { hooks: [] };
+  const releaseGateway = acquireKiroCrewLock(path.join(crewDir, "gateway.lock"), { platform });
+  if (!releaseGateway) return { blocked: "gateway-running" };
+  let releaseHome;
+  let releaseHooks;
+  try {
+    releaseHome = acquireKiroCrewDirectoryLock(crewDir, { platform });
+    if (!releaseHome) {
+      releaseGateway();
+      return { blocked: "gateway-running" };
+    }
+    releaseHooks = acquireKiroCrewLock(`${hooksPath}.lock`, { platform });
+  } catch (error) {
+    if (releaseHome) releaseHome();
+    releaseGateway();
+    throw error;
+  }
+  if (!releaseHooks) {
+    releaseHome();
+    releaseGateway();
+    return { blocked: "locked" };
+  }
+  return {
+    release() {
+      try { releaseHooks(); } finally {
+        try { releaseHome(); } finally { releaseGateway(); }
+      }
+    },
+  };
 }
 
 function makeHookEntry(event, command) {
@@ -163,97 +193,100 @@ function makeHookEntry(event, command) {
 function registerKiroCrewHooks(options = {}) {
   const hooksPath = options.hooksPath || DEFAULT_HOOKS_PATH;
   const crewDir = path.dirname(hooksPath);
-
-  // Skip if ~/.kiro/crew/ doesn't exist (KiroCrew not installed).
   if (!fs.existsSync(crewDir)) {
-    if (!options.silent) {
-      console.log("Clawd: ~/.kiro/crew/ not found — skipping KiroCrew hook registration");
-    }
-    return { added: 0, updated: 0, skipped: 0, hooksPath, gatewayRunning: false };
-  }
-
-  // Refuse to write while the gateway is running — it would reconcile our
-  // entries away. The caller (dashboard Install button / CLI) surfaces this.
-  if (options.force !== true && isGatewayRunning(crewDir)) {
-    if (!options.silent) {
-      console.log(
-        "Clawd: the KiroCrew gateway is running — it owns hooks.json and would revert a direct write."
-      );
-      console.log(
-        "Clawd: stop the gateway (quit the KiroCrew app), then install; or add the hooks from KiroCrew's own Hooks page."
-      );
-    }
     return {
-      added: 0,
-      updated: 0,
-      skipped: 0,
-      hooksPath,
-      gatewayRunning: true,
-      blocked: "gateway-running",
+      status: "skipped", reason: "kirocrew-not-installed",
+      message: "KiroCrew home was not found; skipped hook registration",
+      added: 0, updated: 0, skipped: 0, hooksPath, gatewayRunning: false,
     };
   }
 
-  const store = readHooksStore(hooksPath);
-  // When node can't be resolved, other installers KEEP the existing command
-  // rather than writing a bare "node" (which may not be on the gateway's
-  // allowlisted PATH). resolveNodeBin() returns null in that case; we mirror
-  // it: refresh/create only when we have a real node binary, otherwise leave an
-  // existing entry untouched and skip creating a new one with a bare "node".
   const resolvedNodeBin =
     options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
-  const haveNodeBin = !!resolvedNodeBin;
-  const desiredCommand = haveNodeBin
-    ? formatHookCommand(resolvedNodeBin, getHookScriptPath(), options.platform)
-    : null;
+  if (typeof resolvedNodeBin !== "string" || !resolvedNodeBin.trim()) {
+    return {
+      status: "error", reason: "node-not-found",
+      message: "Could not find a Node.js executable for KiroCrew hooks",
+      added: 0, updated: 0, skipped: 0, hooksPath, gatewayRunning: false,
+    };
+  }
+  const desiredCommand = formatHookCommand(resolvedNodeBin, getHookScriptPath(), options.platform);
+  if (!isOwnedKiroCrewCommand(desiredCommand)) {
+    return {
+      status: "error", reason: "unsupported-hook-command",
+      message: "The Node.js or hook path cannot be represented as a safe KiroCrew command",
+      added: 0, updated: 0, skipped: 0, hooksPath, gatewayRunning: false,
+    };
+  }
 
   let added = 0;
   let updated = 0;
   let skipped = 0;
+  let removedObsolete = 0;
+  let locks;
+  try {
+    locks = acquireStoreLocks(hooksPath, options);
+    if (locks.blocked) {
+      return {
+        status: "error", reason: locks.blocked, blocked: locks.blocked,
+        message: locks.blocked === "gateway-running"
+          ? "The KiroCrew gateway is active or holds its lock; stop it before installing hooks"
+          : "KiroCrew hooks.json is being changed by another process; retry the install",
+        added: 0, updated: 0, skipped: 0, hooksPath,
+        gatewayRunning: locks.blocked === "gateway-running",
+      };
+    }
 
-  for (const event of KIROCREW_HOOK_EVENTS) {
-    const existing = store.hooks.find(
-      (h) =>
-        h &&
-        typeof h === "object" &&
-        h.event === event &&
-        typeof h.command === "string" &&
-        h.command.includes(MARKER)
-    );
+    // Read only after holding both locks. Invalid JSON or a malformed root /
+    // hooks field is an error; never reinterpret it as an empty store.
+    const store = readHooksStore(hooksPath);
+    store.hooks = Array.isArray(store.hooks) ? store.hooks : [];
+    const before = store.hooks.length;
+    store.hooks = store.hooks.filter((hook) => !(
+      hook && typeof hook === "object" && hook.event === "PreToolUse"
+      && isOwnedKiroCrewCommand(hook.command)
+    ));
+    removedObsolete = before - store.hooks.length;
 
-    if (existing) {
-      if (desiredCommand && existing.command !== desiredCommand) {
-        existing.command = desiredCommand; // refresh a stale node/script path
-        updated++;
+    for (const event of KIROCREW_HOOK_EVENTS) {
+      const existing = store.hooks.find((hook) => (
+        hook && typeof hook === "object" && hook.event === event
+        && isOwnedKiroCrewCommand(hook.command)
+      ));
+      if (existing) {
+        let changed = false;
+        if (existing.command !== desiredCommand) { existing.command = desiredCommand; changed = true; }
+        if (existing.enabled === false) { existing.enabled = true; changed = true; }
+        if (changed) updated++;
+        else skipped++;
       } else {
-        skipped++;
+        store.hooks.push(makeHookEntry(event, desiredCommand));
+        added++;
       }
-      continue;
     }
 
-    if (!desiredCommand) {
-      // No node binary and no existing entry to keep — skip rather than write a
-      // bare "node" the gateway's allowlisted PATH may not resolve.
-      skipped++;
-      continue;
+    if (added > 0 || updated > 0 || removedObsolete > 0) {
+      writeKiroCrewStoreAtomic(hooksPath, store, { platform: options.platform || process.platform });
+    } else if (fs.existsSync(hooksPath)) {
+      const platform = options.platform || process.platform;
+      if (platform === "win32") {
+        hardenOwnerOnlyFile(hooksPath, platform);
+      } else if ((fs.statSync(hooksPath).mode & 0o777) !== 0o600) {
+        fs.chmodSync(hooksPath, 0o600);
+      }
     }
-    store.hooks.push(makeHookEntry(event, desiredCommand));
-    added++;
-  }
-
-  if (added > 0 || updated > 0) {
-    const release = acquireHooksLock(hooksPath);
-    if (!release) {
-      return { added: 0, updated: 0, skipped, hooksPath, gatewayRunning: false, blocked: "locked" };
-    }
-    try {
-      writeJsonAtomic(hooksPath, store);
-    } finally {
-      release();
-    }
+  } catch (err) {
+    return {
+      status: "error", reason: "store-write-failed",
+      message: err && err.message ? err.message : "Failed to update KiroCrew hooks.json",
+      added: 0, updated: 0, skipped, hooksPath, gatewayRunning: false,
+    };
+  } finally {
+    if (locks && typeof locks.release === "function") locks.release();
   }
 
   if (!options.silent) {
-    if (added > 0 || updated > 0) {
+    if (added > 0 || updated > 0 || removedObsolete > 0) {
       console.log(
         `Clawd: KiroCrew hooks registered in ${path.basename(hooksPath)} — ` +
           `added ${added}, updated ${updated}, skipped ${skipped}`
@@ -266,7 +299,7 @@ function registerKiroCrewHooks(options = {}) {
     }
   }
 
-  return { added, updated, skipped, hooksPath, gatewayRunning: false };
+  return { status: "ok", added, updated, skipped, removedObsolete, hooksPath, gatewayRunning: false };
 }
 
 /**
@@ -278,47 +311,45 @@ function unregisterKiroCrewHooks(options = {}) {
   const hooksPath = options.hooksPath || DEFAULT_HOOKS_PATH;
   const crewDir = path.dirname(hooksPath);
 
-  if (!fs.existsSync(hooksPath)) {
+  if (!fs.existsSync(crewDir)) {
     if (!options.silent) {
-      console.log("Clawd: KiroCrew hooks.json not found — nothing to remove");
+      console.log("Clawd: KiroCrew home not found — nothing to remove");
     }
-    return { removed: 0, changed: false, hooksPath, gatewayRunning: false };
+    return { status: "ok", removed: 0, changed: false, registrationRemoved: true, hooksPath, gatewayRunning: false };
   }
-
-  // Refuse while the gateway is running: it holds the hooks in memory and
-  // rewrites them back after the next event, so a removal here is undone (and
-  // "uninstall, then remove Clawd" would leave stale entries behind).
-  if (options.force !== true && isGatewayRunning(crewDir)) {
-    if (!options.silent) {
-      console.log(
-        "Clawd: the KiroCrew gateway is running — it would restore removed hooks after the next event."
-      );
-      console.log(
-        "Clawd: stop the gateway (quit the KiroCrew app), then uninstall; or remove the hooks from KiroCrew's own Hooks page."
-      );
+  let removed = 0;
+  let changed = false;
+  let locks;
+  try {
+    locks = acquireStoreLocks(hooksPath, options);
+    if (locks.blocked) {
+      return {
+        status: "error", reason: locks.blocked, blocked: locks.blocked,
+        message: locks.blocked === "gateway-running"
+          ? "The KiroCrew gateway is active or holds its lock; stop it before uninstalling hooks"
+          : "KiroCrew hooks.json is being changed by another process; retry the uninstall",
+        removed: 0, changed: false, registrationRemoved: false, hooksPath,
+        gatewayRunning: locks.blocked === "gateway-running",
+      };
     }
-    return { removed: 0, changed: false, hooksPath, gatewayRunning: true, blocked: "gateway-running" };
-  }
-
-  const store = readHooksStore(hooksPath);
-  const before = store.hooks.length;
-  store.hooks = store.hooks.filter(
-    (h) => !(h && typeof h.command === "string" && h.command.includes(MARKER))
-  );
-  const removed = before - store.hooks.length;
-  const changed = removed > 0;
-
-  if (changed) {
-    const release = acquireHooksLock(hooksPath);
-    if (!release) {
-      return { removed: 0, changed: false, hooksPath, gatewayRunning: false, blocked: "locked" };
-    }
-    try {
-      if (options.backup === true) writeJsonAtomicWithBackup(hooksPath, store, options);
-      else writeJsonAtomic(hooksPath, store);
-    } finally {
-      release();
-    }
+    const store = readHooksStore(hooksPath);
+    store.hooks = Array.isArray(store.hooks) ? store.hooks : [];
+    const before = store.hooks.length;
+    store.hooks = store.hooks.filter((hook) => !(
+      hook && typeof hook === "object" && typeof hook.command === "string"
+      && isOwnedKiroCrewCommand(hook.command)
+    ));
+    removed = before - store.hooks.length;
+    changed = removed > 0;
+    if (changed) writeKiroCrewStoreAtomic(hooksPath, store, { platform: options.platform || process.platform });
+  } catch (err) {
+    return {
+      status: "error", reason: "store-write-failed",
+      message: err && err.message ? err.message : "Failed to update KiroCrew hooks.json",
+      removed: 0, changed: false, registrationRemoved: false, hooksPath, gatewayRunning: false,
+    };
+  } finally {
+    if (locks && typeof locks.release === "function") locks.release();
   }
 
   if (!options.silent) {
@@ -328,7 +359,7 @@ function unregisterKiroCrewHooks(options = {}) {
     }
   }
 
-  return { removed, changed, hooksPath, gatewayRunning: false };
+  return { status: "ok", removed, changed, registrationRemoved: true, hooksPath, gatewayRunning: false };
 }
 
 module.exports = {
@@ -344,16 +375,22 @@ module.exports = {
     getHookScriptPath,
     makeHookEntry,
     readHooksStore,
-    acquireHooksLock,
+    acquireStoreLocks,
     isGatewayRunning,
+    isOwnedKiroCrewCommand,
   },
 };
 
 if (require.main === module) {
   const force = process.argv.includes("--force");
   try {
-    if (process.argv.includes("--uninstall")) unregisterKiroCrewHooks({ force });
-    else registerKiroCrewHooks({ force });
+    const result = process.argv.includes("--uninstall")
+      ? unregisterKiroCrewHooks({ force })
+      : registerKiroCrewHooks({ force });
+    if (!result || result.status !== "ok") {
+      console.error(result && result.message ? result.message : "KiroCrew hook operation failed");
+      process.exitCode = 1;
+    }
   } catch (err) {
     console.error(err.message);
     process.exit(1);

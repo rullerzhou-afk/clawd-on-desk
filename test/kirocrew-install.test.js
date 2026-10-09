@@ -3,7 +3,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
-const { execFileSync } = require("child_process");
+const { execFileSync, spawn } = require("child_process");
 
 const registry = require("../agents/registry");
 const kirocrewAgent = require("../agents/kirocrew");
@@ -15,7 +15,58 @@ const {
 } = require("../hooks/kirocrew-install");
 
 const BRIDGE = path.resolve(__dirname, "..", "hooks", "kirocrew-hook.js");
+const SERVER_CONFIG = path.resolve(__dirname, "..", "hooks", "server-config.js");
+const { buildKiroCrewHookPayload } = require("../hooks/kirocrew-hook-payload");
 const tempDirs = [];
+
+function startChildKiroCrewLock(lockPath, { directory = false } = {}) {
+  const helperPath = path.resolve(__dirname, "..", "hooks", "kirocrew-store.js");
+  const method = directory ? "acquireKiroCrewDirectoryLock" : "acquireKiroCrewLock";
+  const source = [
+    `const helper = require(${JSON.stringify(helperPath)});`,
+    `const release = helper.${method}(${JSON.stringify(lockPath)});`,
+    'if (typeof release !== "function") process.exit(5);',
+    'process.stdout.write("ready\\n");',
+    "process.stdin.resume();",
+    'process.stdin.once("end", () => { release(); process.exit(0); });',
+  ].join("\n");
+  const child = spawn(process.execPath, ["-e", source], {
+    cwd: path.resolve(__dirname, ".."),
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  return new Promise((resolve, reject) => {
+    let stdout = "";
+    let stderr = "";
+    const timer = setTimeout(() => {
+      child.kill();
+      reject(new Error(`Timed out waiting for child lock: ${stderr}`));
+    }, 5000);
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk.toString();
+      if (stdout.includes("ready\n")) {
+        clearTimeout(timer);
+        resolve(child);
+      }
+    });
+    child.stderr.on("data", (chunk) => { stderr += chunk.toString(); });
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("exit", (code) => {
+      if (stdout.includes("ready\n")) return;
+      clearTimeout(timer);
+      reject(new Error(`Lock child exited before acquiring (${code}): ${stderr}`));
+    });
+  });
+}
+
+function stopChild(child) {
+  return new Promise((resolve) => {
+    child.once("exit", resolve);
+    child.stdin.end();
+  });
+}
 
 function makeTempCrewHome() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kirocrew-"));
@@ -74,6 +125,27 @@ describe("KiroCrew agent descriptor", () => {
 });
 
 describe("KiroCrew hook installer", () => {
+  it("recognizes only exact two-token Node bridge commands", () => {
+    const owns = __test.isOwnedKiroCrewCommand;
+    assert.strictEqual(owns('"/usr/local/bin/node" "/old/path/kirocrew-hook.js"'), true);
+    assert.strictEqual(owns('node /old/path/kirocrew-hook.js'), true);
+    for (const platform of ["darwin", "linux", "win32"]) {
+      const command = __test.formatHookCommand(
+        platform === "win32" ? "C:/Program Files/nodejs/node.exe" : "/usr/local/bin/node",
+        platform === "win32" ? "C:/Users/鹿鹿 User/hooks/kirocrew-hook.js" : "/Users/鹿鹿 User/hooks/kirocrew-hook.js",
+        platform
+      );
+      assert.strictEqual(owns(command), true, `${platform} formatter output is recognized: ${command}`);
+    }
+    assert.strictEqual(owns("node /user/kirocrew-hook.js.backup"), false);
+    assert.strictEqual(owns("echo kirocrew-hook.js"), false);
+    assert.strictEqual(owns("node /user/kirocrew-hook.js --extra"), false);
+    assert.strictEqual(owns("node /user/kirocrew-hook.js && echo foreign"), false);
+    assert.strictEqual(owns('"$(echo /usr/bin)/node" "/user/kirocrew-hook.js"'), false);
+    assert.strictEqual(owns('cmd /d /s /c ""%NODE_HOME%/node.exe" "C:/old/kirocrew-hook.js""'), false);
+    assert.strictEqual(owns('cmd /d /s /c ""C:/Program Files/node.exe" "C:/User&Other/kirocrew-hook.js""'), false);
+  });
+
   it("registers one hook per gateway event into hooks.json", () => {
     const { hooksPath } = makeTempCrewHome();
     fs.writeFileSync(hooksPath, JSON.stringify({ hooks: [] }));
@@ -94,6 +166,90 @@ describe("KiroCrew hook installer", () => {
       assert.strictEqual(h.matcher, "");
       assert.ok(typeof h.id === "string" && h.id.length > 0);
     }
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(hooksPath).mode & 0o777, 0o600, "published hooks.json remains owner-only");
+    }
+  });
+
+  it("preserves a valid webhook-only context store and unknown fields", () => {
+    const { hooksPath } = makeTempCrewHome();
+    const original = { webhooks: [{ name: "agent" }], extra: { keep: true } };
+    fs.writeFileSync(hooksPath, JSON.stringify(original));
+    const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(result.status, "ok");
+    const store = readJson(hooksPath);
+    assert.deepStrictEqual(store.webhooks, original.webhooks);
+    assert.deepStrictEqual(store.extra, original.extra);
+    assert.strictEqual(store.hooks.length, KIROCREW_HOOK_EVENTS.length);
+  });
+
+  it("fails closed on malformed root/hooks shapes without changing bytes", () => {
+    for (const raw of ["[]", "null", "{\"hooks\":{}}", "{\"hooks\":null}", "{ nope"]) {
+      const { hooksPath } = makeTempCrewHome();
+      fs.writeFileSync(hooksPath, raw);
+      const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+      assert.strictEqual(result.status, "error", raw);
+      assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), raw, "malformed store bytes remain untouched");
+    }
+  });
+
+  it("refuses symlinked hooks.json without changing the target", { skip: process.platform === "win32" }, () => {
+    const { crewDir, hooksPath } = makeTempCrewHome();
+    const target = path.join(crewDir, "user-hooks.json");
+    const before = '{"hooks":[],"foreign":true}\n';
+    fs.writeFileSync(target, before, { mode: 0o644 });
+    fs.symlinkSync(target, hooksPath);
+    const originalMode = fs.statSync(target).mode & 0o777;
+
+    const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(fs.lstatSync(hooksPath).isSymbolicLink(), true);
+    assert.strictEqual(fs.readFileSync(target, "utf8"), before);
+    assert.strictEqual(fs.statSync(target).mode & 0o777, originalMode);
+  });
+
+  it("removes the obsolete owned PreToolUse entry while preserving foreign entries", () => {
+    const { hooksPath } = makeTempCrewHome();
+    fs.writeFileSync(hooksPath, JSON.stringify({ hooks: [
+      { event: "PreToolUse", command: '"/node" "/old/kirocrew-hook.js"' },
+      { event: "PreToolUse", command: "echo foreign", name: "user" },
+      { event: "PreToolUse", command: "node /user/kirocrew-hook.js.backup", id: "suffix" },
+    ] }));
+    const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.removedObsolete, 1);
+    const hooks = readJson(hooksPath).hooks;
+    assert.ok(hooks.some((hook) => hook.event === "PreToolUse" && hook.command === "echo foreign"));
+    assert.deepStrictEqual(
+      hooks.find((hook) => hook.id === "suffix"),
+      { event: "PreToolUse", command: "node /user/kirocrew-hook.js.backup", id: "suffix" },
+      "a marker suffix is not proof of ownership"
+    );
+    assert.ok(!hooks.some((hook) => hook.event === "PreToolUse" && __test.isOwnedKiroCrewCommand(hook.command)));
+  });
+
+  it("preserves marker-like foreign commands during install and uninstall", () => {
+    const { hooksPath } = makeTempCrewHome();
+    const foreign = [
+      { id: "suffix", event: "PreToolUse", command: "node /user/kirocrew-hook.js.backup" },
+      { id: "echo", event: "Stop", command: "echo kirocrew-hook.js" },
+      { id: "composed", event: "AgentSpawn", command: "node /user/kirocrew-hook.js && echo foreign" },
+    ];
+    fs.writeFileSync(hooksPath, JSON.stringify({ hooks: foreign }));
+
+    const installed = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(installed.status, "ok");
+    assert.strictEqual(installed.added, KIROCREW_HOOK_EVENTS.length);
+    let hooks = readJson(hooksPath).hooks;
+    for (const original of foreign) {
+      assert.deepStrictEqual(hooks.find((entry) => entry.id === original.id), original);
+    }
+
+    const removed = unregisterKiroCrewHooks({ hooksPath, silent: true });
+    assert.strictEqual(removed.status, "ok");
+    assert.strictEqual(removed.removed, KIROCREW_HOOK_EVENTS.length);
+    hooks = readJson(hooksPath).hooks;
+    assert.deepStrictEqual(hooks, foreign);
   });
 
   it("is idempotent on re-run (no duplicates)", () => {
@@ -105,6 +261,23 @@ describe("KiroCrew hook installer", () => {
     assert.strictEqual(second.updated, 0);
     assert.strictEqual(second.skipped, KIROCREW_HOOK_EVENTS.length);
     assert.strictEqual(readJson(hooksPath).hooks.length, KIROCREW_HOOK_EVENTS.length);
+  });
+
+  it("tightens permissions on an already-current store without losing unknown keys", () => {
+    const { hooksPath } = makeTempCrewHome();
+    const command = __test.formatHookCommand("/usr/local/bin/node", __test.getHookScriptPath());
+    fs.writeFileSync(hooksPath, JSON.stringify({
+      hooks: KIROCREW_HOOK_EVENTS.map((event) => __test.makeHookEntry(event, command)),
+      gatewayOptions: { preserve: true },
+    }));
+    if (process.platform !== "win32") fs.chmodSync(hooksPath, 0o644);
+    const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+    assert.strictEqual(result.status, "ok");
+    assert.strictEqual(result.skipped, KIROCREW_HOOK_EVENTS.length);
+    if (process.platform !== "win32") {
+      assert.strictEqual(fs.statSync(hooksPath).mode & 0o777, 0o600);
+    }
+    assert.deepStrictEqual(readJson(hooksPath).gatewayOptions, { preserve: true });
   });
 
   it("refreshes a stale node/script path instead of duplicating", () => {
@@ -132,6 +305,8 @@ describe("KiroCrew hook installer", () => {
     // nodeBin:null simulates resolveNodeBin() returning null — existing entries
     // must be left untouched rather than rewritten to a bare "node".
     const result = registerKiroCrewHooks({ hooksPath, nodeBin: null, silent: true });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "node-not-found");
     assert.strictEqual(result.added, 0);
     assert.strictEqual(result.updated, 0);
     const after = readJson(hooksPath).hooks.find((h) => h.event === "Stop").command;
@@ -145,8 +320,29 @@ describe("KiroCrew hook installer", () => {
     const { hooksPath } = makeTempCrewHome();
     fs.writeFileSync(hooksPath, JSON.stringify({ hooks: [] }));
     const result = registerKiroCrewHooks({ hooksPath, nodeBin: null, silent: true });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "node-not-found");
     assert.strictEqual(result.added, 0);
     assert.strictEqual(readJson(hooksPath).hooks.length, 0);
+  });
+
+  it("refuses a desired command shape the ownership parser cannot later recognize", () => {
+    const { hooksPath } = makeTempCrewHome();
+    fs.writeFileSync(hooksPath, JSON.stringify({ hooks: [] }));
+    const result = registerKiroCrewHooks({ hooksPath, nodeBin: "$HOME/bin/node", silent: true });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.reason, "unsupported-hook-command");
+    assert.deepStrictEqual(readJson(hooksPath).hooks, []);
+
+    const windowsResult = registerKiroCrewHooks({
+      hooksPath,
+      nodeBin: "C:/Program Files/Node&Other/node.exe",
+      platform: "win32",
+      silent: true,
+    });
+    assert.strictEqual(windowsResult.status, "error");
+    assert.strictEqual(windowsResult.reason, "unsupported-hook-command");
+    assert.deepStrictEqual(readJson(hooksPath).hooks, []);
   });
 
   it("preserves user-authored hooks and removes only ours on uninstall", () => {
@@ -161,6 +357,7 @@ describe("KiroCrew hook installer", () => {
     assert.strictEqual(readJson(hooksPath).hooks.length, KIROCREW_HOOK_EVENTS.length + 1);
 
     const un = unregisterKiroCrewHooks({ hooksPath, silent: true });
+    assert.strictEqual(un.registrationRemoved, true);
     assert.strictEqual(un.removed, KIROCREW_HOOK_EVENTS.length);
     const remaining = readJson(hooksPath).hooks;
     assert.strictEqual(remaining.length, 1);
@@ -186,11 +383,79 @@ describe("KiroCrew hook installer", () => {
     assert.strictEqual(result.added, 0);
     assert.strictEqual(result.gatewayRunning, true);
     assert.strictEqual(result.blocked, "gateway-running");
+    assert.strictEqual(result.status, "error");
     assert.strictEqual(readJson(hooksPath).hooks.length, 0, "nothing written under a running gateway");
 
     const un = unregisterKiroCrewHooks({ hooksPath, silent: true });
     assert.strictEqual(un.gatewayRunning, true);
     assert.strictEqual(un.blocked, "gateway-running");
+    assert.strictEqual(un.registrationRemoved, false);
+  });
+
+  it("does not claim a missing hooks file is uninstalled when a gateway is live", () => {
+    const { crewDir, hooksPath } = makeTempCrewHome();
+    fs.writeFileSync(path.join(crewDir, "gateway.lock"), String(process.pid));
+    const result = unregisterKiroCrewHooks({ hooksPath, silent: true });
+    assert.strictEqual(result.status, "error");
+    assert.strictEqual(result.registrationRemoved, false);
+    assert.strictEqual(result.blocked, "gateway-running");
+  });
+
+  it("does not read or write while another process holds upstream hooks.json.lock", async () => {
+    const { hooksPath } = makeTempCrewHome();
+    const before = '{"hooks":[],"foreign":true}\n';
+    fs.writeFileSync(hooksPath, before);
+    const child = await startChildKiroCrewLock(`${hooksPath}.lock`);
+    try {
+      const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.blocked, "locked");
+      assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+      const un = unregisterKiroCrewHooks({ hooksPath, silent: true });
+      assert.strictEqual(un.status, "error");
+      assert.strictEqual(un.registrationRemoved, false);
+      assert.strictEqual(un.blocked, "locked");
+      assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    } finally {
+      await stopChild(child);
+    }
+  });
+
+  it("refuses the native gateway lock even when gateway.lock has no PID", async () => {
+    const { crewDir, hooksPath } = makeTempCrewHome();
+    const gatewayLockPath = path.join(crewDir, "gateway.lock");
+    const before = '{"hooks":[],"foreign":true}\n';
+    fs.writeFileSync(hooksPath, before);
+    fs.writeFileSync(gatewayLockPath, "");
+    const child = await startChildKiroCrewLock(gatewayLockPath);
+    try {
+      const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.blocked, "gateway-running");
+      assert.strictEqual(result.gatewayRunning, true);
+      assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+      const un = unregisterKiroCrewHooks({ hooksPath, silent: true });
+      assert.strictEqual(un.status, "error");
+      assert.strictEqual(un.registrationRemoved, false);
+      assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    } finally {
+      await stopChild(child);
+    }
+  });
+
+  it("respects another process holding the upstream POSIX KiroCrew-home directory lock", { skip: process.platform === "win32" }, async () => {
+    const { crewDir, hooksPath } = makeTempCrewHome();
+    const before = '{"hooks":[],"foreign":true}\n';
+    fs.writeFileSync(hooksPath, before);
+    const child = await startChildKiroCrewLock(crewDir, { directory: true });
+    try {
+      const result = registerKiroCrewHooks({ hooksPath, nodeBin: "/usr/local/bin/node", silent: true });
+      assert.strictEqual(result.status, "error");
+      assert.strictEqual(result.blocked, "gateway-running");
+      assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    } finally {
+      await stopChild(child);
+    }
   });
 
   it("writes when a stale gateway.lock points at a dead pid", () => {
@@ -216,34 +481,71 @@ describe("KiroCrew hook installer", () => {
 });
 
 describe("KiroCrew hook bridge", () => {
-  // No pet server is running in the test env; the bridge must always exit 0.
-  function runBridge(eventName, stdin, extraEnv = {}) {
+  // Exercise the real bridge entry point, but preload an isolated transport
+  // stub that only writes the submitted JSON to a temp fixture. No test can
+  // inherit or contact the user's Clawd server.
+  function runBridge(eventName, stdin) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kirocrew-bridge-"));
+    tempDirs.push(root);
+    const capturePath = path.join(root, "payload.json");
+    const preloadPath = path.join(root, "capture.js");
+    fs.writeFileSync(preloadPath, [
+      'const fs = require("fs");',
+      `const config = require(${JSON.stringify(SERVER_CONFIG)});`,
+      'config.postStateToRunningServer = (body, options, callback) => {',
+      '  fs.writeFileSync(process.env.KIROCREW_TEST_CAPTURE, body, "utf8");',
+      '  callback();',
+      '};',
+    ].join("\n"));
+    const env = {
+      PATH: process.env.PATH || "",
+      HOME: root,
+      USERPROFILE: root,
+      TMPDIR: root,
+      KIROCREW_HOOK_EVENT: eventName,
+      KIROCREW_TEST_CAPTURE: capturePath,
+    };
+    if (process.env.SystemRoot) env.SystemRoot = process.env.SystemRoot;
     try {
-      execFileSync(process.execPath, [BRIDGE], {
+      execFileSync(process.execPath, ["--require", preloadPath, BRIDGE], {
         input: stdin,
-        env: { ...process.env, KIROCREW_HOOK_EVENT: eventName, ...extraEnv },
+        env,
         timeout: 5000,
       });
-      return 0;
+      return { status: 0, capturePath };
     } catch (err) {
-      return typeof err.status === "number" ? err.status : 1;
+      return { status: typeof err.status === "number" ? err.status : 1, capturePath };
     }
   }
 
-  it("exits 0 on a mapped event with no server running", () => {
-    assert.strictEqual(runBridge("PostToolUse", JSON.stringify({ hook_event_name: "PostToolUse", cwd: "/tmp/x" })), 0);
+  it("posts a mapped event through the isolated capture transport without project cwd", () => {
+    const run = runBridge("PostToolUse", JSON.stringify({
+      hook_event_name: "PostToolUse", session_key: "session-a", cwd: "/gateway/root",
+    }));
+    assert.strictEqual(run.status, 0);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(run.capturePath, "utf8")), {
+      state: "working", session_id: "session-a", event: "PostToolUse", agent_id: "kirocrew",
+    });
   });
 
-  it("exits 0 on PreToolUse (now unmapped — never denies a tool)", () => {
-    assert.strictEqual(runBridge("PreToolUse", JSON.stringify({ hook_event_name: "PreToolUse" })), 0);
+  it("exits 0 on PreToolUse (unmapped) without submitting a state request", () => {
+    const run = runBridge("PreToolUse", JSON.stringify({ hook_event_name: "PreToolUse" }));
+    assert.strictEqual(run.status, 0);
+    assert.ok(!fs.existsSync(run.capturePath));
   });
 
   it("exits 0 on an unmapped event", () => {
-    assert.strictEqual(runBridge("FileCreated", JSON.stringify({ hook_event_name: "FileCreated" })), 0);
+    const run = runBridge("FileCreated", JSON.stringify({ hook_event_name: "FileCreated" }));
+    assert.strictEqual(run.status, 0);
+    assert.ok(!fs.existsSync(run.capturePath));
   });
 
-  it("exits 0 on malformed stdin", () => {
-    assert.strictEqual(runBridge("Stop", "not json"), 0);
+  it("keeps the existing env-event fallback for malformed stdin without network access", () => {
+    const run = runBridge("Stop", "not json");
+    assert.strictEqual(run.status, 0);
+    assert.deepStrictEqual(JSON.parse(fs.readFileSync(run.capturePath, "utf8")), {
+      state: "attention", session_id: "default", event: "Stop", agent_id: "kirocrew",
+    });
   });
 });
 
@@ -263,5 +565,14 @@ describe("KiroCrew bridge session + host attribution", () => {
 
   it("suffixes a subagent id so its events don't un-finish the parent", () => {
     assert.strictEqual(resolveSessionId({ session_key: "A", subagent_id: "s1" }), "A::sub:s1");
+  });
+
+  it("does not trust gateway cwd and ignores inherited object-property event names", () => {
+    const body = buildKiroCrewHookPayload({
+      hook_event_name: "AgentSpawn", session_key: "A", cwd: "/gateway/root",
+    });
+    assert.strictEqual(body.session_id, "A");
+    assert.ok(!Object.prototype.hasOwnProperty.call(body, "cwd"));
+    assert.strictEqual(buildKiroCrewHookPayload({ hook_event_name: "toString" }), null);
   });
 });

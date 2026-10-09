@@ -128,6 +128,11 @@ function buildTargetEnv(homeDir, options = {}) {
   } else if (options.ignoreInheritedDshHome) {
     delete env.DSH_HOME;
   }
+  if (typeof options.kirocrewHome === "string" && options.kirocrewHome.trim()) {
+    env.KIROCREW_HOME = path.resolve(options.kirocrewHome);
+  } else if (options.ignoreInheritedKiroCrewHome) {
+    delete env.KIROCREW_HOME;
+  }
   if ((options.platform || process.platform) === "win32") {
     env.LOCALAPPDATA = options.localAppData || path.join(homeDir, "AppData", "Local");
     env.APPDATA = options.appData || path.join(homeDir, "AppData", "Roaming");
@@ -153,12 +158,19 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
     : (options.env && typeof options.env.DSH_HOME === "string" && options.env.DSH_HOME.trim()
       ? options.env.DSH_HOME.trim()
       : null);
+  const explicitKiroCrewHome = typeof options.kirocrewHome === "string" && options.kirocrewHome.trim()
+    ? options.kirocrewHome.trim()
+    : (options.env && typeof options.env.KIROCREW_HOME === "string" && options.env.KIROCREW_HOME.trim()
+      ? options.env.KIROCREW_HOME.trim()
+      : null);
   const env = buildTargetEnv(homeDir, {
     ...options,
     dshHome: explicitDshHome,
+    kirocrewHome: explicitKiroCrewHome,
     ignoreInheritedHermesHome: explicitHomeDir && !options.hermesHome,
     ignoreInheritedReasonixHome: explicitHomeDir && !options.reasonixHome,
     ignoreInheritedDshHome: explicitHomeDir && !explicitDshHome,
+    ignoreInheritedKiroCrewHome: explicitHomeDir && !explicitKiroCrewHome,
   });
   const backup = options.backup !== false;
   const silent = options.silent !== false;
@@ -186,6 +198,9 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const hermesHome = options.hermesHome
     || resolveHermesHome({ homeDir, env, platform: options.platform || process.platform });
   const minimaxDataDir = resolveMinimaxDataDir(homeDir, env);
+  const kirocrewHome = env.KIROCREW_HOME && env.KIROCREW_HOME.trim()
+    ? env.KIROCREW_HOME.trim()
+    : path.join(homeDir, ".kiro", "crew");
 
   return {
     homeDir,
@@ -234,7 +249,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       kirocrew: {
         ...common,
-        hooksPath: path.join(homeDir, ".kiro", "crew", "hooks.json"),
+        hooksPath: path.join(kirocrewHome, "hooks.json"),
       },
       "kimi-cli": {
         ...common,

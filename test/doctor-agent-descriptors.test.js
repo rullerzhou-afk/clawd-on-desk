@@ -55,6 +55,7 @@ describe("doctor agent descriptors", () => {
     const codebuddy = require("../hooks/codebuddy-install");
     const workbuddy = require("../hooks/workbuddy-install");
     const kiro = require("../hooks/kiro-install");
+    const kirocrew = require("../hooks/kirocrew-install");
     const kimi = require("../hooks/kimi-install");
     const qwen = require("../hooks/qwen-code-install");
     const codewhale = require("../hooks/codewhale-install");
@@ -102,6 +103,10 @@ describe("doctor agent descriptors", () => {
 
     assert.strictEqual(getAgentDescriptor("kiro-cli").parentDir, kiro.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kiro-cli").configPath, kiro.DEFAULT_AGENTS_DIR);
+    assert.strictEqual(getAgentDescriptor("kirocrew").parentDir, kirocrew.DEFAULT_PARENT_DIR);
+    assert.strictEqual(getAgentDescriptor("kirocrew").configPath, kirocrew.DEFAULT_HOOKS_PATH);
+    assert.deepStrictEqual(getAgentDescriptor("kirocrew").hookEvents, kirocrew.KIROCREW_HOOK_EVENTS);
+    assert.strictEqual(getAgentDescriptor("kirocrew").flatArrayHookEvents, true);
 
     assert.strictEqual(getAgentDescriptor("kimi-cli").parentDir, kimi.DEFAULT_PARENT_DIR);
     assert.strictEqual(getAgentDescriptor("kimi-cli").configPath, kimi.DEFAULT_CONFIG_PATH);

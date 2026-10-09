@@ -11,8 +11,8 @@ module.exports = {
   name: "KiroCrew",
   // The gateway is a long-lived background service, not a per-session CLI
   // process in the pet's PID tree. Process-name detection cannot attribute pet
-  // state to it, so state is driven entirely by the hook bridge (host-tagged,
-  // like a remote source) rather than by PID resolution.
+  // state to it, so local state is driven by the hook bridge without a host tag
+  // or PID resolution.
   processNames: { win: [], mac: [], linux: [] },
   // The gateway is a background service with no recoverable GUI/CLI process,
   // so (like cursor-agent) it declares no startup-recovery process names.
@@ -38,7 +38,7 @@ module.exports = {
     // session-end lifecycle moment exposed to hooks, so sessionEnd stays false.
     sessionEnd: false,
     // KiroCrew spawns background subagents, but their lifecycle is not surfaced
-    // to the five gateway hook events, so the pet cannot react to them yet.
+    // to the four subscribed gateway events, so the pet cannot react to them yet.
     subagent: false,
   },
   hookConfig: {
