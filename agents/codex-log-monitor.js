@@ -65,6 +65,12 @@ const BACKFILL_GRACE_MS = 5 * 1000;
 // forward. A one-shot (attention, sweeping, …) must never be carried by
 // either: re-emitting it replays a finished turn's celebration.
 const SUSTAINED_ACTIVE_STATES = new Set(["thinking", "working"]);
+// These records prove model progress without owning a mascot state transition.
+// Quota, titles and file-mtime telemetry must never feed the activity clock.
+const MODEL_PROGRESS_EVENTS = new Set([
+  "event_msg:agent_message", "event_msg:agent_reasoning", "event_msg:agent_reasoning_raw_content",
+  "response_item:reasoning",
+]);
 // Startup recovery sweep bounds (see _recoverStalePendingUserInput). These
 // exist to keep the sweep a bounded, one-time cost — never a full readFileSync
 // of an arbitrarily large rollout file on the Electron main process.
@@ -154,6 +160,7 @@ class CodexLogMonitor {
   constructor(agentConfig, onStateChange, options = {}) {
     this._config = agentConfig;
     this._onStateChange = onStateChange;
+    this._onActivity = typeof options.onActivity === "function" ? options.onActivity : null;
     this._classifier = options.classifier || new CodexSubagentClassifier();
     this._onUserInputRequest = typeof options.onUserInputRequest === "function"
       ? options.onUserInputRequest
@@ -1741,10 +1748,12 @@ class CodexLogMonitor {
     const map = this._config.logEventMap;
     const state = map[key];
     if (state === undefined) {
+      this._emitLiveActivity(tracked, key, turnExtra, MODEL_PROGRESS_EVENTS.has(key) ? tracked.lastState : null);
       finishTurnTerminal();
       return; // unmapped event, skip
     }
     if (state === null) {
+      this._emitLiveActivity(tracked, key, turnExtra, MODEL_PROGRESS_EVENTS.has(key) ? tracked.lastState : null);
       finishTurnTerminal();
       return; // explicitly ignored
     }
@@ -1802,6 +1811,10 @@ class CodexLogMonitor {
       finishTurnTerminal();
       return;
     }
+
+    // A repeated result can be real progress even when the visual state is
+    // deduplicated below or official-hook arbitration suppresses its callback.
+    this._emitLiveActivity(tracked, key, turnExtra, state);
 
     // Avoid spamming repeated working state, except for one-shot tool
     // boundaries. The official hook emits every PreToolUse; JSONL fallback
@@ -2169,6 +2182,17 @@ class CodexLogMonitor {
       headless: this._isTrackedSubagent(tracked)
         ? true
         : (extra && Object.prototype.hasOwnProperty.call(extra, "headless") ? extra.headless : undefined),
+    });
+  }
+
+  _emitLiveActivity(tracked, event, extra, state) {
+    if (!this._onActivity || !tracked || this._isReplayActive(tracked)
+      || !tracked.turnBoundaryOpen || !SUSTAINED_ACTIVE_STATES.has(state)
+      || !extra || !Number.isSafeInteger(extra.recapOccurredAt)) return;
+    this._onActivity(tracked.sessionId, state, event, {
+      turnId: extra.turnId || null,
+      recapOccurredAt: extra.recapOccurredAt,
+      headless: this._isTrackedSubagent(tracked),
     });
   }
 }

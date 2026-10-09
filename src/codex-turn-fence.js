@@ -6,7 +6,7 @@ const DEFAULT_MAX_SESSIONS = 200;
 const DEFAULT_MAX_CLOSED_TURNS = 512;
 
 const START_EVENTS = new Set(["UserPromptSubmit", "event_msg:task_started"]);
-const TERMINAL_EVENTS = new Set(["Stop", "event_msg:task_complete", "event_msg:turn_aborted"]);
+const TERMINAL_EVENTS = new Set(["Stop", "Interrupt", "event_msg:task_complete", "event_msg:turn_aborted"]);
 const WORKING_STATES = new Set(["thinking", "working", "juggling", "sweeping"]);
 
 function createCodexTurnFence(options = {}) {
@@ -104,11 +104,13 @@ function createCodexTurnFence(options = {}) {
       sessionId,
       turnId: normalizeCodexTurnId(rawInput.turnId),
     };
-    // Manual compaction is valid while no turn is open. It is presentation
+    // Only compaction cue events take this housekeeping branch. Manual
+    // compaction is valid while no turn is open. It is presentation
     // housekeeping, not work that can reopen a completed turn. JSONL replay
     // and timestamp guards run at ingestion before this fence.
     if (input.state === "sweeping"
-      && (input.event === "PreCompact" || input.event === "event_msg:context_compacted")) {
+      && (input.event === "PreCompact" || input.event === "PostCompact"
+        || input.event === "event_msg:context_compacted")) {
       const owner = records.get(sessionId);
       // A post-turn/manual compact may finish after its old turn closed, but
       // must not overwrite another turn that has since started. With an open

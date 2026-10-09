@@ -208,32 +208,48 @@ describe("Codex official hook", () => {
     assert.deepStrictEqual(body.pid_chain, [789, 456, 123]);
   });
 
-  for (const trigger of ["auto", "manual"]) {
-    it(`reports ${trigger} PreCompact as sweeping without completing the turn`, async () => {
-      const payload = {
-        hook_event_name: "PreCompact", session_id: "compact-start",
-        turn_id: "compact-turn", cwd: "/repo", transcript_path: null, trigger,
-      };
-      const posted = [];
-      const result = await runCodexHook(payload, {
-        platform: "linux", env: {},
-        createPidResolver: () => mockResolve,
-        postState(body, _options, callback) {
-          posted.push(JSON.parse(body));
-          callback(true, 23333);
-        },
+  for (const event of ["PreCompact", "PostCompact"]) {
+    for (const trigger of ["auto", "manual"]) {
+      it(`reports ${trigger} ${event} as sweeping without completing the turn`, async () => {
+        const payload = {
+          hook_event_name: event, session_id: "compact-start",
+          turn_id: "compact-turn", cwd: "/repo", transcript_path: null, trigger,
+        };
+        const posted = [];
+        const result = await runCodexHook(payload, {
+          platform: "linux", env: {},
+          createPidResolver: () => mockResolve,
+          postState(body, _options, callback) {
+            posted.push(JSON.parse(body));
+            callback(true, 23333);
+          },
+        });
+        assert.strictEqual(posted.length, 1);
+        assert.strictEqual(posted[0].event, event);
+        assert.strictEqual(posted[0].state, "sweeping");
+        assert.strictEqual(posted[0].turn_id, "compact-turn");
+        assert.strictEqual(posted[0].session_id, "codex:compact-start");
+        assert.strictEqual(posted[0].hook_source, "codex-official");
+        assert.ok(!Object.hasOwn(posted[0], "assistant_last_output"));
+        assert.strictEqual(result.stdout, "");
+        assert.strictEqual(require("../agents/codex").eventMap[event], "sweeping");
       });
-      assert.strictEqual(posted.length, 1);
-      assert.strictEqual(posted[0].event, "PreCompact");
-      assert.strictEqual(posted[0].state, "sweeping");
-      assert.strictEqual(posted[0].turn_id, "compact-turn");
-      assert.strictEqual(posted[0].session_id, "codex:compact-start");
-      assert.strictEqual(posted[0].hook_source, "codex-official");
-      assert.ok(!Object.hasOwn(posted[0], "assistant_last_output"));
-      assert.strictEqual(result.stdout, "");
-      assert.strictEqual(require("../agents/codex").eventMap.PreCompact, "sweeping");
-    });
+    }
   }
+
+  it("reports official Interrupt as idle without a completion or approval decision", async () => {
+    const posted = [];
+    const result = await runCodexHook({ hook_event_name: "Interrupt", session_id: "interrupted",
+      turn_id: "T1", cwd: "/repo", transcript_path: null }, {
+      platform: "linux", env: {}, createPidResolver: () => mockResolve,
+      postState(body, _options, callback) { posted.push(JSON.parse(body)); callback(true, 23333); },
+    });
+    assert.equal(posted[0].event, "Interrupt");
+    assert.equal(posted[0].state, "idle");
+    assert.equal(posted[0].turn_id, "T1");
+    assert.equal(result.stdout, "");
+    assert.equal(require("../agents/codex").eventMap.Interrupt, "idle");
+  });
 
   it("includes foreground WT HWND only on foreground-safe state events", () => {
     const startBody = buildStateBody({

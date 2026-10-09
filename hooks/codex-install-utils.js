@@ -36,7 +36,9 @@ const CODEX_HOOK_EVENTS = [
   "PermissionRequest",
   "PostToolUse",
   "PreCompact",
+  "PostCompact",
   "Stop",
+  "Interrupt",
   "SessionEnd",
 ];
 const CODEX_HOOKS_FEATURE_KEY = "hooks";
@@ -695,8 +697,8 @@ function removeStableCodexHookLauncher(options = {}) {
 
 function timeoutForCodexEvent(event) {
   if (event === "PermissionRequest") return 600;
-  // Upstream caps SessionEnd at 3 seconds regardless of a larger config value.
-  if (event === "SessionEnd") return 3;
+  // Upstream caps teardown/interruption hooks at three seconds.
+  if (event === "SessionEnd" || event === "Interrupt") return 3;
   return 30;
 }
 

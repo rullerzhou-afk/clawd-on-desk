@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 describe("Codex official hook installer", () => {
-  it("adds PreCompact and SessionEnd to a legacy installation and preserves a foreign compaction hook", () => {
+  it("adds compaction/end hooks to a legacy installation and preserves a foreign compaction hook", () => {
     const previousEvents = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PermissionRequest", "PostToolUse", "Stop"];
     const codexDir = makeTempCodexDir({ hooks: {
       PreCompact: [{ matcher: "manual", hooks: [{ type: "command", command: "user-compaction-hook", timeout: 9 }] }],
@@ -66,12 +66,14 @@ describe("Codex official hook installer", () => {
     const before = readJson(path.join(codexDir, "hooks.json"));
     const result = registerCodexHooks({ codexDir, silent: true });
     const after = readJson(path.join(codexDir, "hooks.json"));
-    assert.strictEqual(result.added, 2);
+    assert.strictEqual(result.added, 4);
     assert.deepStrictEqual(after.hooks.PreCompact[0], before.hooks.PreCompact[0]);
     assert.strictEqual(after.hooks.PreCompact.length, 2);
     assert.strictEqual(after.hooks.PreCompact[1].hooks[0].timeout, 30);
     assert.strictEqual(after.hooks.SessionEnd.length, 1);
     assert.strictEqual(after.hooks.SessionEnd[0].hooks[0].timeout, 3);
+    assert.strictEqual(after.hooks.PostCompact[0].hooks[0].timeout, 30);
+    assert.strictEqual(after.hooks.Interrupt[0].hooks[0].timeout, 3);
     for (const event of previousEvents) assert.deepStrictEqual(after.hooks[event], before.hooks[event]);
     const repeated = registerCodexHooks({ codexDir, silent: true });
     assert.strictEqual(repeated.added, 0);
@@ -261,7 +263,7 @@ describe("Codex official hook installer", () => {
       assert.strictEqual(Object.prototype.hasOwnProperty.call(entry, "matcher"), false);
       const hook = entry.hooks[0];
       assert.strictEqual(hook.type, "command");
-      assert.strictEqual(hook.timeout, event === "PermissionRequest" ? 600 : event === "SessionEnd" ? 3 : 30);
+      assert.strictEqual(hook.timeout, event === "PermissionRequest" ? 600 : ["SessionEnd", "Interrupt"].includes(event) ? 3 : 30);
       assert.ok(hook.command.includes(MARKER));
       assert.ok(hook.command.includes("/bin/sh"));
       assert.ok(!hook.command.includes("/usr/local/bin/node"));

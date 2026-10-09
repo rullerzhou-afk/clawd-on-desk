@@ -88,6 +88,16 @@ Codex CLI 状态同步（official hooks primary + JSONL fallback）：
     → agents/codex-log-monitor.js（fallback：hook 未覆盖事件、hook 禁用/不可用、历史兼容）
     → src/agent-runtime-main.js 对 hook-active session 做事件级 suppression，避免重复状态/重复气泡；本地 JSONL 路径不经过 HTTP server
 
+JSONL 的状态 suppression 与活跃时钟分离：monitor 对本机当前回合内、有可信记录时间的模型消息/推理、
+工具调用/结果发 activity-only callback，故 official hooks 覆盖的事件或重复 working 状态也能延续真实活跃。
+runtime 只触及已存在的非 headless、非 WSL/远程行，并须匹配 turn fence 已接受的当前回合；
+backfill、旧/未来时间、quota/title/文件 mtime、已结束或其他回合不能延长时钟。
+仅被 working-timeout 转 idle 的行保留私有 timeout 标记和最后真实活跃时间，当前回合新进度可按原 thinking/working
+恢复；普通 idle、Stop/abort/end 不可恢复，任一 accepted lifecycle 或恢复清掉标记。标记不进入 snapshot。
+无真实进度时仍遵守用户配置的 Codex inactivity timeout，不以 Desktop 长寿 PID 永久保活。
+自动自由漫步同时检查 canonical in-progress session；临时 idle/roam 视觉不放行忙碌会话，取消走动时按
+resolveDisplayState 恢复真实显示。手动拖拽、设置预览、DND 与 Mini 的原有入口和 gate 保留。
+
 Codex 桌面端 app-server 下的临时线程（无 transcript 且 hook 环境有非空
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`）既包含隐藏的「智能建议」后台线程，也包含
 用户自己的侧边聊天，两者 hook 字段完全相同；终端里直接跑的 `codex exec --ephemeral`
@@ -131,14 +141,22 @@ Codex 压缩开始通过 official `PreCompact` hook 触发既有 `sweeping` 动�
 开始/完成清扫和持有记录重算都须让位于其他会话的活跃工作；完成重播不能清掉
 最小显示时长内排队的完成、错误或输入提示。此规则只保护进入清扫的请求，
 不会把完成提示改写成清扫，设置动画预览继续保持其显式展示行为。
-不改 session snapshot 合约。完成、同会话恢复工作/思考、SessionStart、Stop/abort/end、
+不改 session snapshot 合约。official `PostCompact` 和 JSONL completion 共用完成清扫，
+同一已识别回合的两种通道只重播一次；实际记录时间早于下一次压缩开始的 JSONL 完成不能释放新持有。
+完成、同会话恢复工作/思考、SessionStart、Stop/Interrupt/abort/end、
 过期清理、隐藏/禁用/移除会话均释放；缺失完成事件最多持有 10 分钟，重复开始不延长。
 headless 压缩不占全局动画；DND、禁用清扫、确认审批锁与更高优先级显示仍受保护。
 手动压缩可发生在回合结束后，turn fence 将精确的开始/完成清扫事件视为 housekeeping，
 不重开回合、不放行旧工具尾事件；新回合已打开时，带不同 turn ID 的压缩信号不能覆盖
 新回合，只有当前回合或无 ID 的兼容信号可进入。JSONL timestamp/backfill 保护不变。
+本机非 WSL 会话失败后的 JSONL terminal 即使遇到 recent official hook，也可结束仍在压缩的当前回合；
+本机 rollout 不释放相同 raw ID 的 WSL/远程持有，所属 official hook 仍可释放。
+已关闭回合的重复 terminal 只在回合 ID 与当前持有相同、且记录时间不早于压缩开始时
+释放清扫，不重开回合、不重新播完成、不更新时间或历史；其他会话和无法确认的旧事件不受影响。
+已删除后重建的 owner 不受旧计时回调影响，重复开始不延长原有上限。
 它不结束回合、不产生控制决定。已有安装在下次集成同步时
-增量注册该事件，保留用户 hook；新增命令仍须遵守 Codex 原生 hook review。
+增量注册 `PostCompact` 和 `Interrupt`，保留用户 hook；新增命令仍须遵守 Codex 原生 hook review。
+`Interrupt` 超时遵循上游的 3 秒上限，不发审批决定或完成声音。
 Codex 压缩完成同时兼容旧 `event_msg:context_compacted` 与新版
 `event_msg:item_completed`（`payload.item.type === "ContextCompaction"`）。本地与
 Remote SSH monitor 共用 `hooks/codex-log-event.js`，把后者归一化到旧事件键，沿用

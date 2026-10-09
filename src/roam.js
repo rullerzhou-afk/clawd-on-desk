@@ -76,6 +76,9 @@ module.exports = function initRoam(ctx) {
     const state = ctx.getCurrentState ? ctx.getCurrentState() : "idle";
     // Allow roaming when idle (about to start) or already roaming (mid-animation)
     if (state !== "idle" && state !== "roam") return false;
+    // A visual reaction/preview can be idle while a session is still busy.
+    // Movement eligibility follows the live activity projection as well.
+    if (typeof ctx.hasActiveSessions === "function" && ctx.hasActiveSessions()) return false;
     if (ctx.miniTransitioning) return false;
     if (hasPermissionBubbleHold()) return false;
     if (
@@ -678,10 +681,11 @@ module.exports = function initRoam(ctx) {
     roamActive = false;
     if (wasActive) notifyRoamProtectionReleased();
     // Roam is an interruptible movement state. A user theme may define
-    // timings.minDisplay.roam, but cancelling a walk must restore idle now so
-    // a delayed idle broadcast cannot overwrite a drag reaction mid-hold.
+    // timings.minDisplay.roam, but cancelling a walk must restore the current
+    // presentation now so a delayed broadcast cannot overwrite a reaction.
     if (shouldRestoreIdle) {
-      ctx.setState("idle", undefined, { bypassMinDisplay: true });
+      const resolved = typeof ctx.resolveDisplayState === "function" ? ctx.resolveDisplayState() : "idle";
+      ctx.setState(resolved, undefined, { bypassMinDisplay: true });
     }
   }
 

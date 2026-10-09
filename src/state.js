@@ -47,6 +47,8 @@ const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { getClaudeStopDisposition } = require("../hooks/claude-stop-disposition");
 const { createClaudeToolPhaseLedger } = require("./claude-tool-phase");
 const { getStartupRecoveryProcessNames } = require("../agents/registry");
+const { normalizeCodexTurnId } = require("./codex-turn-id");
+const { TERMINAL_EVENTS: CODEX_TERMINAL_EVENTS } = require("./codex-turn-fence");
 const { hasReusableDefaultIdentity, mapRecapMetrics } = require("./recap-metrics");
 const {
   NOOP_RECAP_SINK,
@@ -119,6 +121,7 @@ function completionVisualForHint(hint) {
 // Keep normal session bookkeeping intact; a lost completion has a finite cap.
 const CODEX_COMPACTION_HOLD_MS = 10 * 60 * 1000;
 const codexCompactionHolds = new Map();
+const codexCompactionCompletions = new Map();
 
 function releaseCodexCompaction(sessionId) {
   const hold = codexCompactionHolds.get(sessionId);
@@ -128,23 +131,62 @@ function releaseCodexCompaction(sessionId) {
   return true;
 }
 
-function observeCodexCompaction(sessionId, state, event, agentId, headless) {
+function hasCodexCompactionHold(sessionId, terminal = null) {
+  const hold = codexCompactionHolds.get(sessionId);
+  if (!hold) return false;
+  if (!terminal) return true;
+  return normalizeCodexTurnId(terminal.turnId) === hold.turnId
+    && Number.isSafeInteger(terminal.occurredAt)
+    && terminal.occurredAt >= hold.startedAt;
+}
+
+// A terminal for an already closed turn may end a later manual/post-turn
+// compaction. Release only its presentation ownership: never reopen the turn,
+// refresh activity, replay completion, or touch another conversation's hold.
+function releaseCodexCompactionOnTerminal(sessionId, event, terminal) {
+  if (!CODEX_TERMINAL_EVENTS.has(event) || !hasCodexCompactionHold(sessionId, terminal)) return false;
+  releaseCodexCompaction(sessionId);
+  const resolved = resolveDisplayState();
+  setState(resolved, getSvgOverride(resolved));
+  return true;
+}
+
+function observeCodexCompaction(sessionId, state, event, agentId, headless, opts) {
   if (agentId !== "codex" || headless) {
     releaseCodexCompaction(sessionId);
+    codexCompactionCompletions.delete(sessionId);
     return;
   }
   if (event === "PreCompact" && state === "sweeping") {
     if (codexCompactionHolds.has(sessionId)) return;
+    const hold = { timer: null, startedAt: Date.now(), turnId: normalizeCodexTurnId(opts.turnId) };
     const timer = setTimeout(() => {
+      // A callback already queued when an owner was removed must not release
+      // a new compaction that happens to reuse the same conversation ID.
+      if (codexCompactionHolds.get(sessionId) !== hold) return;
       codexCompactionHolds.delete(sessionId);
       const resolved = resolveDisplayState();
       setState(resolved, getSvgOverride(resolved));
     }, CODEX_COMPACTION_HOLD_MS);
     timer.unref?.();
-    codexCompactionHolds.set(sessionId, { timer });
-  } else if (event === "event_msg:context_compacted" || event === "SessionStart"
+    hold.timer = timer;
+    codexCompactionHolds.set(sessionId, hold);
+  } else if ((event === "PostCompact" || event === "event_msg:context_compacted") && state === "sweeping") {
+    const hold = codexCompactionHolds.get(sessionId);
+    const turnId = normalizeCodexTurnId(opts.turnId);
+    const previous = codexCompactionCompletions.get(sessionId);
+    const occurredAt = Number.isSafeInteger(opts.recapOccurredAt) ? opts.recapOccurredAt : Date.now();
+    // A delayed rollout completion must not release a later compaction in
+    // the same turn. The monitor supplies the actual record timestamp.
+    if (hold && event === "event_msg:context_compacted" && occurredAt < hold.startedAt) return false;
+    // PostCompact and the rollout item describe one success, not two sweeps.
+    // Exact turn ownership is required; legacy id-less signals remain visible.
+    if (!hold && turnId && previous && previous.turnId === turnId && previous.event !== event) return false;
+    releaseCodexCompaction(sessionId);
+    codexCompactionCompletions.set(sessionId, { turnId, event });
+  } else if (event === "SessionStart"
     || event === "SessionEnd" || event === "Stop" || event === "event_msg:task_complete"
-    || event === "event_msg:turn_aborted"
+    || event === "event_msg:turn_aborted" || event === "Interrupt"
     || state === "working" || state === "thinking" || state === "juggling") {
     // Accepted activity from THIS conversation proves compaction has finished,
     // even when its explicit completion was lost. Other conversations do not.
@@ -645,13 +687,14 @@ function clearPendingStateTimer() {
 function setState(newState, svgOverride, options = {}) {
   if (shouldDropForDnd()) return;
 
-  // Compaction is a low-priority busy cue, including its replay and passive
-  // hold reconciliation. Preserve queued completion/error/input cues before
+  // Every non-preview sweep request while a Codex hold is live, including
+  // Claude PreCompact and /clear, is a low-priority busy cue. Preserve queued
+  // one-shot cues before
   // the generic sweeping priority can cancel them. Settings previews retain
   // their explicit presentation behavior.
   if (newState === "sweeping" && options.settingsPreview !== true
     && (options.codexCompactionCue === true || hasCodexCompactionVisual())) {
-    if (pendingState && getStatePriority(pendingState, STATE_PRIORITY) >= getStatePriority("thinking", STATE_PRIORITY)) return;
+    if (pendingState && ONESHOT_STATES.has(pendingState) && pendingState !== "sweeping") return;
     const active = resolveDominantSessionState(sessions, { statePriority: STATE_PRIORITY });
     if (active !== "sweeping" && getStatePriority(active, STATE_PRIORITY) >= getStatePriority("thinking", STATE_PRIORITY)) {
       const resolved = resolveDisplayState();
@@ -1599,12 +1642,24 @@ function touchSessionActivity(sessionId, opts = {}) {
   // than a late transcript record; never revive or extend it.
   if (session.requiresCompletionAck === true) return false;
 
-  if (session.agentId === "codex") cancelCodexExitProbe(id, "session-activity");
   const now = Number.isFinite(opts.now) ? opts.now : Date.now();
   const reviveIdle = opts.reviveIdle === true && session.state === "idle";
+  if (reviveIdle && opts.onlyWorkingTimeout === true) {
+    if (!Number.isFinite(session.codexWorkingTimeoutAt)) return false;
+    // Source time can precede the cleanup tick by one poll. Check the actual
+    // inactivity policy against that record, not the housekeeping idle stamp.
+    const decision = getStaleSessionDecision({ ...session,
+      state: opts.activityState === "thinking" ? "thinking" : "working", updatedAt: now, ackedAt: 0,
+    }, { now: Date.now(), isProcessAlive, deriveSessionBadge, shouldAutoClearDetachedSession,
+      staleConfig: typeof ctx.getStaleConfig === "function" ? ctx.getStaleConfig() : null });
+    if (decision.action) return false;
+  }
+  if (session.agentId === "codex") cancelCodexExitProbe(id, "session-activity");
   session.updatedAt = now;
   if (reviveIdle) {
-    session.state = "working";
+    session.state = opts.activityState === "thinking" ? "thinking" : "working";
+    delete session.codexWorkingTimeoutAt;
+    delete session.codexWorkingTimeoutActivityAt;
     session.displayHint = null;
     session.subagentTracker = clearSubagentTracker(cloneSubagentTracker(session));
     const resolved = resolveDisplayState();
@@ -1834,6 +1889,7 @@ function clearAllClaudeTranscriptCompletionProbes() {
 
 function deleteSessionWithCompletionCleanup(sessionId, reason) {
   releaseCodexCompaction(sessionId);
+  codexCompactionCompletions.delete(sessionId);
   cancelCompletionDebounce(sessionId, reason);
   cancelClaudeTranscriptCompletionProbe(sessionId, reason);
   return sessions.delete(sessionId);
@@ -2489,7 +2545,13 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
   const srcPlatform = platform || (existing && existing.platform) || null;
-  observeCodexCompaction(sessionId, state, event, srcAgentId, srcHeadless);
+  if (observeCodexCompaction(sessionId, state, event, srcAgentId, srcHeadless, opts) === false) return false;
+  // An accepted lifecycle owns the state again; only stale working expiry may
+  // leave a row eligible for activity-only Codex revival.
+  if (existing) {
+    delete existing.codexWorkingTimeoutAt;
+    delete existing.codexWorkingTimeoutActivityAt;
+  }
   const srcModel = model || (existing && existing.model) || null;
   const srcProvider = provider || (existing && existing.provider) || null;
   const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
@@ -3195,10 +3257,10 @@ function updateSession(sessionId, state, event, opts = {}) {
     }
     setState(state, state === "attention" && event === "Stop" ? completionVisual : null, {
       codexCompactionCue: srcAgentId === "codex" && state === "sweeping"
-        && (event === "PreCompact" || event === "event_msg:context_compacted"),
+        && (event === "PreCompact" || event === "PostCompact" || event === "event_msg:context_compacted"),
       restartAnimation: srcAgentId === "codex"
         && state === "sweeping"
-        && event === "event_msg:context_compacted",
+        && (event === "PostCompact" || event === "event_msg:context_compacted"),
     });
     return;
   }
@@ -3344,6 +3406,10 @@ function cleanStaleSessions() {
     if (decision.action === "idle") {
       releaseCodexCompaction(id);
       debugSession(`stale-idle ${decision.reason} ${describeSession(id, s)}`);
+      if (s.agentId === "codex" && decision.reason === "working-timeout") {
+        s.codexWorkingTimeoutAt = now;
+        s.codexWorkingTimeoutActivityAt = s.updatedAt;
+      }
       s.state = "idle"; s.displayHint = null;
       s.subagentTracker = clearSubagentTracker(cloneSubagentTracker(s));
       s.claudeBackgroundSubagentHoldAt = null;
@@ -3884,6 +3950,7 @@ function getStartupRecoveryActive() { return startupRecoveryActive; }
 
 function cleanup() {
   for (const id of codexCompactionHolds.keys()) releaseCodexCompaction(id);
+  codexCompactionCompletions.clear();
   // The persist debounce timer is unref'd, so a quota update inside the
   // final debounce window before quit would otherwise never reach disk
   // (main.js before-quit calls this cleanup).
@@ -3925,6 +3992,8 @@ return {
   updateSessionFocusMetadata,
   touchSessionActivity,
   updateSessionMetadata,
+  hasCodexCompactionHold,
+  releaseCodexCompactionOnTerminal,
   clearClaudeStatuslineAuthority,
   updateAccountQuota,
   clearLocalClaudeQuota,

@@ -82,6 +82,8 @@ function resolveCodexOfficialHookState(
       current.hadToolUse = true;
       turns.set(turnKey, current);
       pruneCodexOfficialTurns(turns);
+    } else if (event === "Interrupt") {
+      turns.delete(turnKey);
     } else if (event === "Stop") {
       const current = turns.get(turnKey);
       if (current) turns.delete(turnKey);

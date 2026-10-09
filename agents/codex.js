@@ -15,6 +15,8 @@ module.exports = {
     PermissionRequest: "notification",
     PostToolUse: "working",
     PreCompact: "sweeping",
+    PostCompact: "sweeping",
+    Interrupt: "idle",
     Stop: "codex-turn-end",
     SessionEnd: "sleeping",
   },

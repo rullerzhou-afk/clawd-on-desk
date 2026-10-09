@@ -142,6 +142,8 @@ const EVENT_TO_STATE = {
   PreToolUse: "working",
   PostToolUse: "working",
   PreCompact: "sweeping",
+  PostCompact: "sweeping",
+  Interrupt: "idle",
   // Placeholder: server.js resolves official Codex Stop to attention/idle
   // using the per-turn tool-use map it owns.
   Stop: "idle",

@@ -43,6 +43,7 @@ function buildCodexMonitorSessionOptions(extra, options = {}) {
   if (Object.prototype.hasOwnProperty.call(input, "transcriptPath")) out.transcriptPath = input.transcriptPath;
   if (Object.prototype.hasOwnProperty.call(input, "codexOriginator")) out.codexOriginator = input.codexOriginator;
   if (Object.prototype.hasOwnProperty.call(input, "codexSource")) out.codexSource = input.codexSource;
+  if (Object.prototype.hasOwnProperty.call(input, "turnId")) out.turnId = input.turnId;
   if (options.includeRecap === true) {
     const hasTrustedRecapTime = Number.isSafeInteger(input.recapOccurredAt) && input.recapOccurredAt >= 0;
     if (hasTrustedRecapTime) out.recapOccurredAt = input.recapOccurredAt;
