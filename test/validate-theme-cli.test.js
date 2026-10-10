@@ -76,6 +76,40 @@ describe("validate-theme.js CLI (real process, spawnSync)", () => {
     assert.match(result.stdout, /Passed.*warning\(s\)/);
   });
 
+  it("checks every file of a tier files pool and flags a malformed pool", () => {
+    const dir = mkTempThemeDir();
+    const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+    raw.workingTiers[0] = {
+      minSessions: raw.workingTiers[0].minSessions,
+      file: "calico-working-typing.apng",
+      files: ["calico-working-building.apng", "pool-missing.apng"],
+    };
+    raw.jugglingTiers[0] = { minSessions: raw.jugglingTiers[0].minSessions, files: [] };
+    fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+    fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+    assert.match(result.stdout, /Missing asset: pool-missing\.apng/);
+    assert.match(result.stdout, /jugglingTiers\[0\]\.files must be a non-empty array of file names when present/);
+    // Only reported once the pools themselves are well formed.
+    assert.doesNotMatch(result.stdout, /"file" is ignored next to "files"/);
+  });
+
+  it("accepts a valid tier files pool and warns when file is left out of it", () => {
+    const dir = mkTempThemeDir();
+    const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+    raw.workingTiers[0] = {
+      minSessions: raw.workingTiers[0].minSessions,
+      file: "calico-working-typing.apng",
+      files: ["calico-working-building.apng", "calico-working-juggling.apng"],
+    };
+    fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+    fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /workingTiers\[0\]: "file" is ignored next to "files"/);
+  });
+
   // ── Usage errors: the command itself is wrong ──
 
   it("no theme directory given", () => {

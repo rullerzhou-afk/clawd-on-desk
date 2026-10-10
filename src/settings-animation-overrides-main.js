@@ -6,6 +6,7 @@ const { pathToFileURL } = require("url");
 const defaultAnimationCycle = require("./animation-cycle");
 const { ANIMATION_OVERRIDES_EXPORT_VERSION } = require("./settings-actions");
 const { listIdleVisualOptions, resolveIdleVisualChoice, humanizeIdleVisualLabel } = require("./idle-visual");
+const { getTierFiles } = require("./theme-schema");
 
 const ANIMATION_OVERRIDE_ASSET_EXTS = new Set([".svg", ".gif", ".apng", ".png", ".webp", ".jpg", ".jpeg"]);
 const ANIMATION_OVERRIDE_PREVIEW_POSTER_SIZE = { width: 176, height: 144 };
@@ -717,12 +718,16 @@ function createSettingsAnimationOverridesMain(options = {}) {
     if (!Array.isArray(resolvedTiers)) return [];
     return resolvedTiers.map((tier, index) => {
       const baseTier = Array.isArray(baseTiers) ? baseTiers[index] : null;
-      const originalFile = (baseTier && baseTier.originalFile) || tier.file;
+      // A multi-file tier shows (and overrides) the first file of its pool,
+      // the same slot a multi-file state card uses.
+      const tierFiles = getTierFiles(tier);
+      const currentFile = tierFiles[0];
+      const originalFile = (baseTier && baseTier.originalFile) || currentFile;
       const higherTier = index === 0 ? null : resolvedTiers[index - 1];
       const maxSessions = higherTier ? Math.max(tier.minSessions, higherTier.minSessions - 1) : null;
       const hintTarget = baseHintMap && baseHintMap[originalFile];
-      const timingHint = buildTimingHint(tier.file);
-      const preview = buildAnimationAssetPreview(tier.file);
+      const timingHint = buildTimingHint(currentFile);
+      const preview = buildAnimationAssetPreview(currentFile);
       return {
         id: `${tierGroup}:${originalFile}`,
         slotType: "tier",
@@ -733,15 +738,17 @@ function createSettingsAnimationOverridesMain(options = {}) {
         baseFile: originalFile,
         minSessions: tier.minSessions,
         maxSessions,
-        currentFile: tier.file,
+        currentFile,
         currentFileUrl: preview.fileUrl,
         currentFilePreviewUrl: preview.previewImageUrl,
         needsScriptedPreviewPoster: preview.needsScriptedPreviewPoster,
         currentFilePreviewPosterCacheKey: preview.previewPosterCacheKey,
         previewPosterPending: preview.previewPosterPending,
-        bindingLabel: `${tierGroup}[${originalFile}]`,
-        transition: readResolvedTransition(tier.file),
-        transitionThemeDefault: readThemeDefaultTransition(tier.file),
+        bindingLabel: tierFiles.length > 1
+          ? `${tierGroup}[${originalFile}].files[0]`
+          : `${tierGroup}[${originalFile}]`,
+        transition: readResolvedTransition(currentFile),
+        transitionThemeDefault: readThemeDefaultTransition(currentFile),
         hasTransitionOverride: hasTransitionOverride(
           themeOverrideMap
           && themeOverrideMap.tiers

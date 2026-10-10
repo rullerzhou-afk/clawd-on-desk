@@ -182,10 +182,49 @@ describe("theme user override patching", () => {
     assert.notStrictEqual(patched.workingTiers, raw.workingTiers);
   });
 
+  it("replaces the first file of a multi-file tier and keeps the rest of its pool", () => {
+    const raw = baseTheme({
+      workingTiers: [
+        { minSessions: 2, files: ["pool-a.svg", "pool-b.svg"] },
+        { minSessions: 1, file: "typing.svg", files: ["typing.svg", "typing-b.svg"] },
+      ],
+    });
+    const patched = applyUserOverridesPatch(raw, {
+      tiers: {
+        workingTiers: {
+          "pool-a.svg": { file: "custom-pool.svg", transition: { in: 10 } },
+          "typing.svg": { file: "custom-typing.svg" },
+        },
+      },
+    });
+
+    assert.deepStrictEqual(patched.workingTiers, [
+      { minSessions: 2, file: "custom-pool.svg", files: ["custom-pool.svg", "pool-b.svg"] },
+      { minSessions: 1, file: "custom-typing.svg", files: ["custom-typing.svg", "typing-b.svg"] },
+    ]);
+    assert.deepStrictEqual(patched.transitions, { "custom-pool.svg": { in: 10 } });
+    assert.deepStrictEqual(raw.workingTiers[0], { minSessions: 2, files: ["pool-a.svg", "pool-b.svg"] });
+  });
+
   it("returns the raw object for invalid override payloads", () => {
     const raw = baseTheme();
     assert.strictEqual(applyUserOverridesPatch(raw, null), raw);
     assert.strictEqual(applyUserOverridesPatch(raw, []), raw);
+  });
+});
+
+describe("theme binding metadata for multi-file tiers", () => {
+  it("keys a tier by file when declared, else by the first file of its pool", () => {
+    const metadata = buildBaseBindingMetadata(baseTheme({
+      workingTiers: [
+        { minSessions: 2, files: ["../pool-a.svg", "pool-b.svg"] },
+        { minSessions: 1, file: "typing.svg", files: ["typing-b.svg", "typing.svg"] },
+      ],
+    }));
+    assert.deepStrictEqual(metadata.workingTiers, [
+      { minSessions: 2, originalFile: "pool-a.svg" },
+      { minSessions: 1, originalFile: "typing.svg" },
+    ]);
   });
 });
 

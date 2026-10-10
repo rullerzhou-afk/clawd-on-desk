@@ -444,6 +444,22 @@ if (raw.hitBoxes) {
   warn(false, "hitBoxes not specified (will use defaults)");
 }
 
+// workingTiers / jugglingTiers: optional per-tier `files` pool
+const tierFileErrors = themeSchema.validateTierFiles(raw);
+for (const message of tierFileErrors) check(false, message);
+for (const groupName of ["workingTiers", "jugglingTiers"]) {
+  if (!Array.isArray(raw[groupName])) continue;
+  raw[groupName].forEach((tier, index) => {
+    if (!isPlainObject(tier) || tierFileErrors.length > 0) return;
+    if (Array.isArray(tier.files) && typeof tier.file === "string" && tier.file) {
+      warn(
+        tier.files.includes(tier.file),
+        `${groupName}[${index}]: "file" is ignored next to "files" (only older Clawd builds read it); list it in "files" too`
+      );
+    }
+  });
+}
+
 // workingTiers sort order
 if (raw.workingTiers && raw.workingTiers.length > 1) {
   const sorted = [...raw.workingTiers].sort((a, b) => b.minSessions - a.minSessions);
@@ -540,11 +556,16 @@ function collectVariantAssetFiles(variantSpec) {
   const files = new Set();
   if (!variantSpec || typeof variantSpec !== "object") return files;
   if (typeof variantSpec.preview === "string") files.add(variantSpec.preview);
-  for (const field of ["workingTiers", "jugglingTiers", "idleAnimations"]) {
+  for (const field of ["workingTiers", "jugglingTiers"]) {
     if (Array.isArray(variantSpec[field])) {
       for (const entry of variantSpec[field]) {
-        if (entry && typeof entry.file === "string") files.add(entry.file);
+        for (const file of themeSchema.getTierFiles(entry)) files.add(file);
       }
+    }
+  }
+  if (Array.isArray(variantSpec.idleAnimations)) {
+    for (const entry of variantSpec.idleAnimations) {
+      if (entry && typeof entry.file === "string") files.add(entry.file);
     }
   }
   for (const field of ["wideHitboxFiles", "sleepingHitboxFiles"]) {
@@ -566,11 +587,16 @@ function collectVariantAssetFiles(variantSpec) {
 // that the allow-list governs — used for rule 4 "new asset must have objectScale entry".
 function collectBaseAssetFiles(base) {
   const files = new Set();
-  for (const field of ["workingTiers", "jugglingTiers", "idleAnimations"]) {
+  for (const field of ["workingTiers", "jugglingTiers"]) {
     if (Array.isArray(base[field])) {
       for (const entry of base[field]) {
-        if (entry && typeof entry.file === "string") files.add(entry.file);
+        for (const file of themeSchema.getTierFiles(entry)) files.add(file);
       }
+    }
+  }
+  if (Array.isArray(base.idleAnimations)) {
+    for (const entry of base.idleAnimations) {
+      if (entry && typeof entry.file === "string") files.add(entry.file);
     }
   }
   if (base.states) {
@@ -632,6 +658,10 @@ if (raw.variants !== undefined) {
         }
       }
 
+      for (const message of themeSchema.validateTierFiles(variantSpec)) {
+        check(false, `variant "${variantId}": ${message}`);
+      }
+
       // Rule 3: asset existence (format-agnostic: svg/apng/gif)
       const variantAssets = collectVariantAssetFiles(variantSpec);
       const variantIdleOptions = Object.prototype.hasOwnProperty.call(variantSpec, "idleVisualOptions")
@@ -685,7 +715,7 @@ if (raw.variants !== undefined) {
       if (variantSpec.workingTiers && !variantSpec.displayHintMap) {
         const newTierFiles = new Set();
         for (const entry of variantSpec.workingTiers) {
-          if (entry && typeof entry.file === "string") newTierFiles.add(path.basename(entry.file));
+          for (const file of themeSchema.getTierFiles(entry)) newTierFiles.add(path.basename(file));
         }
         const hintOverlap = [];
         for (const [hintKey, hintValue] of Object.entries(baseDisplayHintMap)) {

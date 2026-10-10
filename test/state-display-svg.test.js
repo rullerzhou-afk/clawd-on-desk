@@ -297,3 +297,100 @@ describe("Claude design turn continuity", () => {
     assert.strictEqual(api.sessions.get("tool").displayHint, null);
   });
 });
+
+describe("multi-file thinking / working pools", () => {
+  let api;
+  let random;
+  const opts = { cwd: "/tmp", editor: "cursor", agentPid: process.pid, agentId: "cursor-agent" };
+  const THINKING = ["clawd-working-thinking.svg", "clawd-idle-reading.svg", "clawd-working-debugger.svg"];
+  const ONE_SESSION = ["clawd-working-typing.svg", "clawd-working-building.svg"];
+  const TWO_SESSIONS = ["clawd-headphones-groove.svg", "clawd-working-juggling.svg"];
+
+  function poolTheme() {
+    const theme = structuredClone(_defaultTheme);
+    delete theme._stateBindings;
+    theme.timings.minDisplay = Object.fromEntries(
+      Object.keys(theme.timings.minDisplay).map((state) => [state, 0]),
+    );
+    theme.states.thinking = [...THINKING];
+    theme.workingTiers = [
+      { minSessions: 2, files: [...TWO_SESSIONS] },
+      { minSessions: 1, file: ONE_SESSION[0], files: [...ONE_SESSION] },
+    ];
+    return theme;
+  }
+
+  function useRolls(...values) {
+    random = mock.method(Math, "random", () => (values.length > 0 ? values.shift() : 0));
+  }
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  });
+
+  afterEach(() => {
+    if (api) api.cleanup();
+    api = null;
+    mock.timers.reset();
+    mock.restoreAll();
+  });
+
+  it("keeps one drawn clip while the state lasts and draws again on re-entry", () => {
+    useRolls(0, 0.99, 0.99);
+    api = require("../src/state")({ ...makeCtx(), theme: poolTheme() });
+
+    api.updateSession("s1", "thinking", "UserPromptSubmit", opts);
+    assert.strictEqual(api.getCurrentSvg(), THINKING[0]);
+    api.updateSession("s1", "thinking", "UserPromptSubmit", opts);
+    assert.strictEqual(api.getSvgOverride("thinking"), THINKING[0]);
+
+    api.updateSession("s1", "working", "PreToolUse", opts);
+    assert.strictEqual(api.getCurrentSvg(), ONE_SESSION[1]);
+    for (const event of ["PostToolUse", "PreToolUse", "PostToolUse"]) {
+      api.updateSession("s1", "working", event, opts);
+      assert.strictEqual(api.getCurrentSvg(), ONE_SESSION[1]);
+    }
+    assert.strictEqual(random.mock.callCount(), 2);
+
+    api.updateSession("s1", "thinking", "UserPromptSubmit", opts);
+    assert.strictEqual(api.getCurrentSvg(), THINKING[2]);
+    assert.strictEqual(random.mock.callCount(), 3);
+  });
+
+  it("draws again when the working tier changes", () => {
+    useRolls(0, 0.99, 0.99);
+    api = require("../src/state")({ ...makeCtx(), theme: poolTheme() });
+
+    api.updateSession("s1", "working", "PreToolUse", opts);
+    assert.strictEqual(api.getCurrentSvg(), ONE_SESSION[0]);
+    api.updateSession("s2", "working", "PreToolUse", { ...opts, cwd: "/tmp/other" });
+    assert.strictEqual(api.getCurrentSvg(), TWO_SESSIONS[1]);
+    api.updateSession("s2", "working", "PostToolUse", { ...opts, cwd: "/tmp/other" });
+    assert.strictEqual(api.getCurrentSvg(), TWO_SESSIONS[1]);
+    assert.strictEqual(random.mock.callCount(), 2);
+  });
+
+  it("forgets held picks when the theme is refreshed", () => {
+    useRolls(0, 0.99);
+    api = require("../src/state")({ ...makeCtx(), theme: poolTheme() });
+    assert.strictEqual(api.getSvgOverride("thinking"), THINKING[0]);
+    assert.strictEqual(api.getSvgOverride("thinking"), THINKING[0]);
+    api.refreshTheme();
+    assert.strictEqual(api.getSvgOverride("thinking"), THINKING[2]);
+  });
+
+  it("never draws for single-file states and file-only tiers", () => {
+    useRolls(0.99);
+    const ctx = makeCtx();
+    ctx.theme = structuredClone(_defaultTheme);
+    ctx.theme.timings.minDisplay = Object.fromEntries(
+      Object.keys(ctx.theme.timings.minDisplay).map((state) => [state, 0]),
+    );
+    api = require("../src/state")(ctx);
+    api.updateSession("s1", "thinking", "UserPromptSubmit", opts);
+    assert.strictEqual(api.getCurrentSvg(), "clawd-working-thinking.svg");
+    api.updateSession("s1", "working", "PreToolUse", opts);
+    assert.strictEqual(api.getCurrentSvg(), "clawd-working-typing.svg");
+    assert.strictEqual(random.mock.callCount(), 0);
+  });
+});
