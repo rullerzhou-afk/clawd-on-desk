@@ -686,7 +686,10 @@
 
     // Two subtabs (same pattern as the anim-overrides page): IM channels vs
     // the LAN approval bridge.
-    parent.appendChild(buildSubtabSwitcher());
+    const switcher = buildSubtabSwitcher();
+    parent.appendChild(switcher.wrap);
+    for (const panel of switcher.control.panels.values()) parent.appendChild(panel);
+    parent = switcher.control.panels.get(switcher.control.getValue());
     if (coreRef.runtime.remoteApprovalSubtab === "lan") {
       parent.appendChild(buildMobileChannelCard());
       return;
@@ -701,29 +704,25 @@
   function buildSubtabSwitcher() {
     const wrap = document.createElement("div");
     wrap.className = "anim-override-subtabs";
-    const group = document.createElement("div");
-    group.className = "segmented";
-    group.setAttribute("role", "tablist");
     const current = coreRef.runtime.remoteApprovalSubtab === "lan" ? "lan" : "channels";
     const entries = [
       { key: "channels", label: t("remoteApprovalSubtabChannels") },
       { key: "lan", label: t("remoteApprovalSubtabLan") },
     ];
-    for (const entry of entries) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.textContent = entry.label;
-      if (entry.key === current) btn.classList.add("active");
-      btn.addEventListener("click", () => {
-        if (coreRef.runtime.remoteApprovalSubtab === entry.key) return;
-        if (entry.key === "lan") leaveFeishuLookupUi();
-        coreRef.runtime.remoteApprovalSubtab = entry.key;
+    const control = helpers.buildTabs({
+      id: "settings-remote-approval",
+      ariaLabel: t("remoteApprovalTitle"),
+      value: current,
+      options: entries.map((entry) => ({ value: entry.key, label: entry.label })),
+      onChange(value) {
+        if (value === "lan") leaveFeishuLookupUi();
+        coreRef.runtime.remoteApprovalSubtab = value;
         coreRef.ops.requestRender({ content: true });
-      });
-      group.appendChild(btn);
-    }
-    wrap.appendChild(group);
-    return wrap;
+      },
+    });
+    helpers.registerMountedDisposable(control);
+    wrap.appendChild(control.element);
+    return { wrap, control };
   }
 
   function refreshRuntimeStatus(payload) {
@@ -1464,6 +1463,7 @@
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
     const picker = helpers.buildSegmentedRadio({
+      id: "approval-completion-output",
       value: mode,
       options: ["off", "full"].map((value) => ({
         value,
@@ -1591,26 +1591,22 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
-    const segmented = document.createElement("div");
-    segmented.className = "segmented feishu-approval-platform";
-    segmented.setAttribute("role", "tablist");
-    for (const platform of FEISHU_PLATFORMS) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.dataset.platform = platform;
-      // Same source of truth as the {brand} token, so the button and the copy
-      // it controls can never drift apart.
-      btn.textContent = feishuBrand(platform);
-      btn.classList.toggle("active", cfg.platform === platform);
-      btn.disabled = allFeishuControlsBlocked();
-      btn.addEventListener("click", () => {
-        if (allFeishuControlsBlocked() || cfg.platform === platform) return;
+    const picker = helpers.buildSegmentedRadio({
+      id: "feishu-platform",
+      ariaLabel: t("feishuApprovalPlatformLabel"),
+      className: "feishu-approval-platform",
+      value: cfg.platform,
+      disabled: allFeishuControlsBlocked(),
+      options: FEISHU_PLATFORMS.map((platform) => ({
+        value: platform, label: feishuBrand(platform), dataset: { platform },
+      })),
+      onChange(platform) {
+        if (allFeishuControlsBlocked()) return false;
         clearFeishuSecretEditingState();
-        saveFeishuConfig({ platform }, { resetDraft: false });
-      });
-      segmented.appendChild(btn);
-    }
-    ctrl.appendChild(segmented);
+        return saveFeishuConfig({ platform }, { resetDraft: false });
+      },
+    });
+    ctrl.appendChild(picker.element);
     row.appendChild(ctrl);
     return row;
   }
@@ -1877,28 +1873,21 @@
 
     const ctrl = document.createElement("div");
     ctrl.className = "row-control tg-approval-input-row";
-    const segmented = document.createElement("div");
-    segmented.className = "segmented feishu-approval-id-type";
-    segmented.setAttribute("role", "tablist");
-    const idTypes = [
-      { id: "open_id", label: "open_id" },
-      { id: "user_id", label: "user_id" },
-      { id: "union_id", label: "union_id" },
-    ];
-    for (const item of idTypes) {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.dataset.idType = item.id;
-      btn.textContent = item.label;
-      btn.classList.toggle("active", draft.idType === item.id);
-      btn.disabled = allFeishuControlsBlocked();
-      btn.addEventListener("click", () => {
-        if (allFeishuControlsBlocked()) return;
-        setFeishuFormDraftValue("idType", item.id);
+    const picker = helpers.buildSegmentedRadio({
+      id: "feishu-id-type",
+      ariaLabel: t("feishuApprovalApproverLabel"),
+      className: "feishu-approval-id-type",
+      value: draft.idType,
+      disabled: allFeishuControlsBlocked(),
+      options: ["open_id", "user_id", "union_id"].map((id) => ({ value: id, label: id, dataset: { idType: id } })),
+      onChange(value) {
+        if (allFeishuControlsBlocked()) return false;
+        setFeishuFormDraftValue("idType", value);
         ops.requestRender({ content: true });
-      });
-      segmented.appendChild(btn);
-    }
+        return true;
+      },
+    });
+    const segmented = picker.element;
 
     const input = document.createElement("input");
     input.type = "text";

@@ -173,6 +173,7 @@
     const controlHost = document.createElement("div");
     controlHost.className = "row-control";
     const control = helpers.buildSegmentedRadio({
+      id: "roam-movement-style",
       value: readRoamMovementStyle(),
       disabled: !(state.snapshot && state.snapshot.freeRoam === true),
       ariaLabel: t("rowRoamMovementStyle"),
@@ -229,6 +230,7 @@
     let syncConditionalVisibility = () => {};
 
     const modeControl = helpers.buildSegmentedRadio({
+      id: "bubble-placement-mode",
       value: state.snapshot && state.snapshot.bubbleFollowPet === true ? "follow" : "fixed",
       ariaLabel: t("rowBubblePlacement"),
       className: "bubble-placement-mode-segmented",
@@ -244,6 +246,7 @@
       },
     });
     const followControl = helpers.buildSegmentedRadio({
+      id: "bubble-follow-preference",
       value: state.snapshot && state.snapshot.bubbleFollowPreference || "auto",
       ariaLabel: t("rowBubbleFollowPreference"),
       className: "bubble-follow-preference-segmented",
@@ -255,6 +258,7 @@
       onChange: (value) => saveBubblePlacementValue("bubbleFollowPreference", value),
     });
     const cornerControl = helpers.buildSegmentedRadio({
+      id: "bubble-fixed-corner",
       value: state.snapshot && state.snapshot.bubbleFixedCorner || "bottom-right",
       ariaLabel: t("rowBubbleFixedCorner"),
       className: "bubble-fixed-corner-segmented",
@@ -758,6 +762,7 @@
     const ctrl = document.createElement("div");
     ctrl.className = "row-control";
     const segmented = helpers.buildSegmentedRadio({
+      id: "permission-automation",
       value: current,
       ariaLabel: t("rowPermissionAutomation"),
       className: "permission-automation-segmented",
@@ -1135,6 +1140,7 @@
     const controlWrap = document.createElement("div");
     controlWrap.className = "row-control";
     const control = helpers.buildSegmentedRadio({
+      id: "quota-ring-display-mode",
       value: state.snapshot && state.snapshot.quotaRingDisplayMode,
       ariaLabel: t("rowQuotaRingDisplayMode"),
       className: "quota-ring-display-mode-choice",
