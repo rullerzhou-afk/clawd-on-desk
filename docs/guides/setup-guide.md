@@ -243,6 +243,25 @@ macOS Claude Keychain auth. See the dedicated guide for the exact boundary.
 
 > Thanks to [@Magic-Bytes](https://github.com/Magic-Bytes) for the original SSH tunneling idea ([#9](https://github.com/rullerzhou-afk/clawd-on-desk/issues/9)).
 
+## Remote OpenClaw Gateway
+
+Instead of tracking a locally installed OpenClaw, Clawd can connect straight to an OpenClaw **gateway** over the network and mirror its activity. Open **Settings → Remote OpenClaw**, fill in the gateway URL (a bare host is treated as HTTPS, so `openclaw.example.com` becomes `wss://openclaw.example.com/`), pick **Password** or **Token**, save the credential, and turn the toggle on.
+
+A gateway is a hub shared by several devices and agents. Leave **Only follow this agent** empty to mirror everything, or set it to one agent/session id so the pet ignores activity from your other nodes.
+
+The connection is deliberately **read-only**. A password or token handshake is granted `role: operator` with an *empty* scope list, so Clawd never subscribes — it consumes the gateway's own broadcast. That is a protocol boundary, not a missing feature:
+
+- `sessions.subscribe` / `sessions.messages.subscribe` answer `FORBIDDEN: missing scope: operator.read`.
+- The scope-upgrade path (`device.scopes.requestUpgrade`) requires a **paired browser identity** and returns `DEVICE_IDENTITY_REQUIRED`, so it is only reachable from the browser Control UI — not from a native desktop client.
+
+An empty scope list has a second consequence worth knowing: the gateway's broadcaster gates every `session.*` event on `operator.read`, so a credential-only client receives none of them. What it *does* receive is `health`, refreshed every 60 seconds, which carries `sessions.recent[]` (each with `updatedAt` / `age`, in milliseconds) plus a per-agent breakdown. Clawd therefore reads activity from those snapshots: a session touched within the last two minutes means **working**, everything quiet means **idle**, and a degraded event loop means **error**. Expect state changes to land up to a minute after the fact rather than instantly.
+
+If your connection is ever granted `operator.read` — a paired device, or a `trusted-proxy` deployment — the live `session.*` stream starts arriving and sharpens the same states with no setup change. The tab says *connected read-only* while that scope is missing, so you can tell the two modes apart.
+
+The credential is stored encrypted with the OS credential vault (`~/.clawd/remote-openclaw-credential.json`), not in Clawd's settings file, because settings are broadcast to every settings window. The settings panel only ever shows *whether* a credential is saved; it never reads it back. Systems without secure credential storage (for example Linux without a keyring) refuse to save one rather than fall back to reversible obfuscation.
+
+Status shown in the tab (`connecting` / `connected` / `reconnecting` / `error` / …) is live: the connection reconnects with capped backoff after a dropped socket, and adopts a new protocol version automatically when the gateway reports `PROTOCOL_MISMATCH`.
+
 ## WSL (Windows Subsystem for Linux)
 
 Run Clawd on Windows and install the agent integration in the WSL distro where the agent runs. Start with **Settings → Agents → Connected → WSL Scan**, find the matching agent/distro row, and choose **Pair**. The row may be under **Unavailable** when the agent is absent from Windows. Confirm that the agent is **enabled** in Clawd: Pair does not generally turn on a disabled agent and does not install or mark a Windows-local integration as installed.

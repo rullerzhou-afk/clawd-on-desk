@@ -3557,6 +3557,15 @@ function drainRemoteSshAndFeishuBeforeQuit() {
   } catch (err) {
     console.error("settings IPC shutdown failed:", err && err.message);
   }
+  // Closes the gateway socket so no further /state POSTs land after quit.
+  // Guarded with `typeof` because this drain also runs before the Remote
+  // OpenClaw block has been evaluated during startup failure paths.
+  if (typeof _remoteOpenclawIpc !== "undefined" && _remoteOpenclawIpc
+    && typeof _remoteOpenclawIpc.dispose === "function") {
+    try { _remoteOpenclawIpc.dispose(); } catch (err) {
+      console.error("remote-openclaw shutdown failed:", err && err.message);
+    }
+  }
   if (_remoteSshRuntime && typeof _remoteSshRuntime.shutdown === "function") {
     drains.push(
       Promise.resolve(_remoteSshRuntime.shutdown({ timeoutMs: 5000 }))
@@ -4921,6 +4930,7 @@ try {
 // ── Doctor tab IPC ──
 const { registerDoctorIpc } = require("./doctor-ipc");
 let _remoteSshRuntime = null;
+let _remoteOpenclawIpc = null;
 registerDoctorIpc({
   ipcMain,
   app,
@@ -4969,6 +4979,39 @@ const _remoteSshIpc = registerRemoteSshIpc({
   getInstallationIdentity: ensureRemoteSshInstallationIdentity,
   enableProfileIsolation: process.env.CLAWD_ENABLE_EXPERIMENTAL_REMOTE_ISOLATION === "1",
 });
+
+// ── Remote OpenClaw gateway ──
+//
+// Optional bridge to an OpenClaw gateway reachable over the network: the pet
+// then reflects that gateway's activity instead of (or in addition to) a local
+// agent. Config lives in `prefs.remoteOpenclaw` and is edited on the
+// "Remote OpenClaw" settings tab; this block owns the socket.
+//
+// The connection is READ-ONLY: a password/token handshake yields
+// `role: operator` with an empty scope list, so scope-gated methods are
+// refused and the client consumes the gateway's own broadcast. See
+// remote-openclaw-runtime.js.
+const { registerRemoteOpenclawIpc } = require("./remote-openclaw-ipc");
+const { createRemoteOpenclawCredentialStore } = require("./remote-openclaw-credential-store");
+// The gateway credential is kept out of prefs (and therefore out of every
+// renderer's settings snapshot) — same reasoning as the Kimi key store.
+const _remoteOpenclawCredentialStore = createRemoteOpenclawCredentialStore({ safeStorage });
+_remoteOpenclawIpc = registerRemoteOpenclawIpc({
+  ipcMain,
+  settingsController: _settingsController,
+  BrowserWindow,
+  credentialStore: _remoteOpenclawCredentialStore,
+  getHookServerPort: () => getHookServerPort(),
+  version: app.getVersion(),
+  log: (...args) => console.warn("Clawd remote-openclaw:", ...args),
+});
+// Follow the settings toggle. `sync()` is idempotent, so unrelated settings
+// writes do not drop the socket.
+_settingsController.subscribeKey("remoteOpenclaw", () => {
+  if (_settingsController.isLocked()) return;
+  if (_remoteOpenclawIpc) _remoteOpenclawIpc.sync();
+});
+_remoteOpenclawIpc.sync();
 
 // ── Settings panel window ──
 //
@@ -6090,6 +6133,9 @@ if (!gotTheLock) {
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}
+    if (_remoteOpenclawIpc && typeof _remoteOpenclawIpc.dispose === "function") {
+      try { _remoteOpenclawIpc.dispose(); } catch {}
+    }
     if (!_remoteSshRuntime || typeof _remoteSshRuntime.shutdown !== "function") {
       try { _remoteSshRuntime.cleanup(); } catch {}
     }

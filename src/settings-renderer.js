@@ -14,6 +14,7 @@ const SIDEBAR_TABS = [
   { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
   { id: "discord-presence", labelKey: "sidebarDiscordPresence", available: true },
   { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
+  { id: "remote-openclaw", labelKey: "sidebarRemoteOpenclaw", available: true },
   { id: "recap", labelKey: "sidebarRecap", available: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
 ];
@@ -96,6 +97,7 @@ if (globalThis.ClawdSettingsTabDiscordPresence) globalThis.ClawdSettingsTabDisco
 if (globalThis.ClawdSettingsTabRecap) globalThis.ClawdSettingsTabRecap.init(core);
 globalThis.ClawdSettingsTabAbout.init(core);
 if (globalThis.ClawdSettingsTabRemoteSsh) globalThis.ClawdSettingsTabRemoteSsh.init(core);
+if (globalThis.ClawdSettingsTabRemoteOpenclaw) globalThis.ClawdSettingsTabRemoteOpenclaw.init(core);
 if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(core);
 
 core.ops.restoreNavigationState();

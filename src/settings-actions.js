@@ -156,6 +156,7 @@ const {
   ACCOUNT_DEFAULT_RUNTIME_KEY,
   REMOTE_LAYOUT_VERSION,
 } = require("./remote-ssh-profile");
+const { validateRemoteOpenclaw } = require("./remote-openclaw-profile");
 const {
   createIdentityTxn,
   updateIdentityTxnStep,
@@ -767,6 +768,12 @@ const updateRegistry = {
       }
     }
     return { status: "ok" };
+  },
+  // Remote OpenClaw gateway config. Unlike remoteSsh this block has no
+  // dedicated command registry — the tab writes it whole through the
+  // generic update path, so this validator is the only gate.
+  remoteOpenclaw(value) {
+    return validateRemoteOpenclaw(value);
   },
   tgApproval(value) {
     return validateTelegramApproval(value);

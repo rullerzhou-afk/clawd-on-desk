@@ -46,6 +46,7 @@ const shortcutRecordKeyListeners = new Set();
 const remoteSshStatusListeners = new Set();
 const remoteSshProgressListeners = new Set();
 const remoteApprovalStatusListeners = new Set();
+const remoteOpenclawStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const sizeContextListeners = new Set();
 const agentActivityListeners = new Set();
@@ -77,6 +78,11 @@ ipcRenderer.on("remoteSsh:status-changed", (_event, payload) => {
 ipcRenderer.on("remoteSsh:progress", (_event, payload) => {
   for (const cb of remoteSshProgressListeners) {
     try { cb(payload); } catch (err) { console.warn("remoteSsh progress listener threw:", err); }
+  }
+});
+ipcRenderer.on("remoteOpenclaw:status-changed", (_event, payload) => {
+  for (const cb of remoteOpenclawStatusListeners) {
+    try { cb(payload); } catch (err) { console.warn("remoteOpenclaw status listener threw:", err); }
   }
 });
 ipcRenderer.on("remoteApproval:status-changed", (_event, payload) => {
@@ -322,5 +328,34 @@ contextBridge.exposeInMainWorld("remoteSsh", {
     if (typeof cb !== "function") return () => {};
     remoteSshProgressListeners.add(cb);
     return () => remoteSshProgressListeners.delete(cb);
+  },
+});
+
+// Surface: window.remoteOpenclaw
+//
+// Single remote OpenClaw gateway connection (no profiles). Config is written
+// through settingsAPI.update("remoteOpenclaw", ...) like every other block;
+// these methods only drive the live socket:
+//
+//   status()                       Promise<{ status, state: { phase, detail, at } }>
+//   connect()                      Promise<{ status, state }>
+//   disconnect()                   Promise<{ status, state }>
+//   onStatusChanged(cb)            cb({ phase, detail, at })
+//
+// The gateway credential has its own channels instead of going through
+// settingsAPI.update: that path would write it into prefs, and settings
+// snapshots are broadcast to every renderer window. The renderer only ever
+// learns *whether* a credential is saved, never its value.
+contextBridge.exposeInMainWorld("remoteOpenclaw", {
+  status: () => ipcRenderer.invoke("remoteOpenclaw:status"),
+  connect: () => ipcRenderer.invoke("remoteOpenclaw:connect"),
+  disconnect: () => ipcRenderer.invoke("remoteOpenclaw:disconnect"),
+  credentialStatus: () => ipcRenderer.invoke("remoteOpenclaw:credential-status"),
+  setCredential: (secret) => ipcRenderer.invoke("remoteOpenclaw:set-credential", secret),
+  clearCredential: () => ipcRenderer.invoke("remoteOpenclaw:clear-credential"),
+  onStatusChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    remoteOpenclawStatusListeners.add(cb);
+    return () => remoteOpenclawStatusListeners.delete(cb);
   },
 });

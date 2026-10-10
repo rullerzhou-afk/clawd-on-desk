@@ -29,6 +29,10 @@ const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions"
 const { isValidDisplaySnapshot } = require("./work-area");
 const { normalizeRemoteSsh, getDefaults: getRemoteSshDefaults } = require("./remote-ssh-profile");
 const {
+  normalizeRemoteOpenclaw,
+  getDefaults: getRemoteOpenclawDefaults,
+} = require("./remote-openclaw-profile");
+const {
   cloneDefaultTelegramApproval,
   normalizeTelegramApproval,
 } = require("./telegram-approval-settings");
@@ -522,6 +526,13 @@ const SCHEMA = {
     type: "object",
     defaultFactory: () => getRemoteSshDefaults(),
     normalize: normalizeRemoteSsh,
+  },
+  // Remote OpenClaw gateway reached by URL. Data only — the connection is
+  // owned by remote-openclaw-runtime.js.
+  remoteOpenclaw: {
+    type: "object",
+    defaultFactory: () => getRemoteOpenclawDefaults(),
+    normalize: normalizeRemoteOpenclaw,
   },
   tgApproval: {
     type: "object",
