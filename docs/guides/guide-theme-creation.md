@@ -262,8 +262,8 @@ The existing schema fields are the only runtime truth. They already act as the t
 | `idleVisualOptions` | Optional selectable-only files for the Default idle visual picker. These files do not enter either idle random pool. |
 | `idleEasterEggs` | Optional conditional idle pool. Each entry runs only for an exact selected head + mouth accessory pair and is subject to its own probability and cooldown. |
 | `reactions` | Optional click/drag reaction block. Omit it to disable click and drag reactions entirely. |
-| `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working[0]`. |
-| `jugglingTiers` | Optional subagent juggling overrides. Its legacy `minSessions` / `maxSessions` fields count live subagents, not top-level sessions. Omit to fall back to `states.juggling[0]` if you provide that state. |
+| `workingTiers` | Optional multi-session working overrides. Omit to fall back to `states.working`. A tier may list several `files` to pick from (see Working Tiers). |
+| `jugglingTiers` | Optional subagent juggling overrides. Its legacy `minSessions` / `maxSessions` fields count live subagents, not top-level sessions. Omit to fall back to `states.juggling` if you provide that state. |
 | `customization.petTint` | Opts the theme into the app's built-in pet color filters. Omit it or set it to `false` when filters distort authored colors. Themes cannot provide custom CSS filter strings. |
 | `customization.accessories` | Opts the theme into Clawd's built-in **head** accessory catalog only when every reachable visual has a deterministic attachment or an explicit hidden policy. Exact `files` entries may also prepare optional assets exposed by the animation-override picker; those files become required theme assets. |
 | `customization.mouthAccessories` | Independently opts the theme into the built-in mouth accessory catalog under the same complete-coverage rule, including optional picker assets declared by exact `files` entries. Omit it for head-only themes. |
@@ -351,7 +351,7 @@ State bindings accept the legacy array form, or an object with `files` and optio
 }
 ```
 
-- `files` — the state's own assets
+- `files` — the state's own assets (Working Tiers explains how `thinking`, `working` and `juggling` pick among several files)
 - `fallbackTo` — visual-only fallback target inside `states`
 - Supported `fallbackTo` source states: `error`, `attention`, `notification`, `sweeping`, `carrying`, `sleeping`
 - Fallback does **not** skip the logical state. Timers, hitboxes, and state transitions still run as the original state.
@@ -382,6 +382,22 @@ Different animations based on how many agent sessions are running concurrently:
 ```
 
 `jugglingTiers` uses the same object shape, but its legacy `minSessions` and `maxSessions` names count live subagents within a session.
+
+A tier can list several files in `files` instead of a single `file`, and Clawd picks one of them at random:
+
+```json
+"workingTiers": [
+  { "minSessions": 2, "files": ["juggling.gif", "conducting.gif"] },
+  { "minSessions": 1, "file": "typing.gif", "files": ["typing.gif", "reading.gif", "debugging.gif"] }
+]
+```
+
+- The same applies to `states.thinking`, to `states.working` when there are no `workingTiers`, and to `states.juggling` when there are no `jugglingTiers`: when they list several files, one is picked at random.
+- A pick holds for as long as the pet stays in that state, so repeated hook events (every tool call) keep the same file. Clawd picks again when the pet enters the state anew (for example thinking → working → thinking), when the tier changes because the session or subagent count crossed a `minSessions` threshold, and after a theme reload.
+- `files` wins over `file`. Keep `file` next to `files` only when the theme must also run on Clawd 1.2.0 or earlier, which reads `file` and ignores `files`; list that file inside `files` too. `validate-theme` warns when it is missing from `files`.
+- Every file in `files` is a required asset, and accessory attachments must cover it like any other visual.
+- A matching `displayHintMap` entry still wins over the pool.
+- Settings → Animation Overrides shows one card per tier with the first file of its pool. Replacing it swaps that first file and keeps the rest of the pool, as it does for a state with several files.
 
 ### Reactions
 
