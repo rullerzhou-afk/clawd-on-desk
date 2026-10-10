@@ -45,6 +45,7 @@
     "bubbleFollowPreference",
     "bubbleFixedCorner",
     "permissionBubblesEnabled",
+    "elicitationBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
     "updateBubbleAutoCloseSeconds",
     "sessionStaleMs",
@@ -510,6 +511,11 @@
         onToggle: ({ nextRaw }) => window.settingsAPI.command("setAllBubblesHidden", { hidden: nextRaw }),
       }),
       buildBubblePolicyRow(),
+      helpers.buildSwitchRow({
+        key: "elicitationBubblesEnabled",
+        labelKey: "rowElicitationBubbles",
+        descKey: "rowElicitationBubblesDesc",
+      }),
       buildBubblePlacementGroup(),
     ]));
 

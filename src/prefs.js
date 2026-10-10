@@ -253,6 +253,8 @@ const SCHEMA = {
   },
   hideBubbles: { type: "boolean", default: false },
   permissionBubblesEnabled: { type: "boolean", default: true },
+  // Turn off question cards to answer in the agent's own terminal instead.
+  elicitationBubblesEnabled: { type: "boolean", default: true },
   // Global permission automation keeps the user's safe startup preference.
   // `off` and `auto-tools` survive relaunches; `unattended` is a runtime-only
   // elevation that validate() always downgrades to `auto-tools` for disk/load.

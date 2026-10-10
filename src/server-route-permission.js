@@ -212,6 +212,16 @@ function arePermissionBubblesEnabled(ctx) {
   return !ctx.hideBubbles;
 }
 
+// AskUserQuestion is exempt from every other bubble gate (see
+// shouldBypassCCBubble) so plan-mode/elicitation flows never break. This is the
+// one opt-out for users who never want the desktop question card: dropping the
+// connection mirrors the DND path above, so CC falls back to its own in-terminal
+// question panel instead of hanging.
+function shouldBypassElicitationBubble(ctx, toolName) {
+  if (toolName !== "AskUserQuestion") return false;
+  return !!(ctx && ctx.elicitationBubblesEnabled === false);
+}
+
 function normalizeString(value) {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
@@ -2327,6 +2337,13 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      if (shouldBypassElicitationBubble(ctx, toolName)) {
+        recordRequestHookEvent.accepted();
+        ctx.permLog("elicitation bubbles disabled → destroy connection, CC terminal question panel");
+        res.destroy();
+        return;
+      }
+
       // Elicitation (AskUserQuestion) — show notification bubble, not permission bubble.
       // User clicks "Go to Terminal" → deny → Claude Code falls back to terminal.
       if (interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION) {
@@ -2491,6 +2508,7 @@ module.exports = {
   shouldBypassQwenCodeBubble,
   shouldBypassCopilotBubble,
   shouldBypassFamilyBubble,
+  shouldBypassElicitationBubble,
   arePermissionBubblesEnabled,
   shouldInterceptCodexPermission,
   shouldMuteCodexNativeNotificationSound,

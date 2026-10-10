@@ -170,7 +170,7 @@ describe("updateRegistry pure-data validators", () => {
       "sessionHudEnabled", "sessionHudShowElapsed", "sessionHudShowContextUsage", "sessionHudShowQuota", "sessionHudCleanupDetached",
       "sessionHudShowStateLabels", "sessionHudPinned",
       "miniMode", "openAtLoginHydrated", "soundMuted", "bubbleFollowPet",
-      "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
+      "hideBubbles", "permissionBubblesEnabled", "elicitationBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
       "quotaMergeSources", "freeRoam", "roamConstrainAxis",
