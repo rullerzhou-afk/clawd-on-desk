@@ -118,6 +118,17 @@ function normalizeOrcaPaneKey(value) {
   return /^[\w-]+:[\w-]+$/.test(text) ? text : null;
 }
 
+// herdr pane ids look like "w5:p4" (#1139); same shape check as the Orca key.
+const normalizeHerdrPaneId = normalizeOrcaPaneKey;
+
+// Absolute socket path only: it is handed to the herdr CLI as HERDR_SOCKET_PATH.
+function normalizeHerdrSocket(value) {
+  if (typeof value !== "string") return null;
+  const text = value.trim();
+  if (!text || text.length > 4096 || !text.startsWith("/")) return null;
+  return /[\0\r\n]/.test(text) ? null : text;
+}
+
 function normalizeAssistantLastOutput(value) {
   if (typeof value !== "string") return null;
   const text = value
@@ -271,6 +282,8 @@ function handleStatePost(req, res, options) {
         editor,
         tmuxSocket,
         tmuxClient,
+        herdrPaneId,
+        herdrSocket,
       } = stripRemoteProcessMetadata({
         sourcePid: Number.isFinite(data.source_pid) && data.source_pid > 0 ? Math.floor(data.source_pid) : null,
         wtHwnd: rawWtHwnd,
@@ -279,6 +292,8 @@ function handleStatePost(req, res, options) {
         editor: (data.editor === "code" || data.editor === "cursor") ? data.editor : null,
         tmuxSocket: normalizeTmuxSocket(data.tmux_socket),
         tmuxClient: normalizeTmuxClient(data.tmux_client),
+        herdrPaneId: normalizeHerdrPaneId(data.herdr_pane_id),
+        herdrSocket: normalizeHerdrSocket(data.herdr_socket),
       }, remoteProfile, wslSourced);
       // Intentional exception to the WSL PID strip: per-session automation
       // eligibility only strips Remote SSH, never WSL, to preserve the pre-fix
@@ -1077,6 +1092,8 @@ function handleStatePost(req, res, options) {
             tmuxSocket,
             tmuxClient,
             orcaPaneKey,
+            herdrPaneId,
+            herdrSocket,
             agentPid: effectiveProcessMetadata.agentPid,
             agentId,
             ...(subagentId ? { subagentId } : {}),

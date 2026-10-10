@@ -239,6 +239,41 @@ describe("macOS generic focus via open <bundle> (#465)", () => {
     }, 100);
   });
 
+  it("logs no-gui-process instead of ok when no candidate is a System Events process (#1139)", (t, done) => {
+    const logs = [];
+    let frontmostScript = null;
+    const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {
+      if (typeof opts === "function") { cb = opts; opts = {}; }
+      // A herdr server re-parented to launchd and the shells under it: no bundle.
+      if (isPidCommPs(cmd, args)) {
+        if (cb) cb(null, "1316 herdr\n36493 claude\n21588 -zsh\n", "");
+        return;
+      }
+      if (cmd === "ps") { if (cb) cb(null, "herdr\n", ""); return; }
+      if (isSystemEventsFrontmost(cmd, args)) {
+        frontmostScript = args.find((a) => typeof a === "string" && a.includes("System Events"));
+        if (cb) cb(null, "no-gui-process\n", "");
+        return;
+      }
+      if (cb) cb(null, "", "");
+    });
+
+    const { focusTerminalWindow } = initFocus({ focusLog: (msg) => logs.push(String(msg)) });
+    focusTerminalWindow(1316, null, null, [36493, 21588, 1316]);
+
+    setTimeout(() => {
+      cleanup();
+      assert.ok(frontmostScript && frontmostScript.includes('return "no-gui-process"'),
+        "the System Events script must report a miss instead of falling through silently");
+      const miss = logs.find((l) => l.includes("branch=mac-frontmost") && l.includes("reason=no-gui-process"));
+      assert.ok(miss, `focus log should record no-gui-process, got: ${JSON.stringify(logs)}`);
+      assert.ok(miss.includes("pids=1316,36493,21588"), miss);
+      assert.ok(!logs.some((l) => l.includes("branch=mac-frontmost reason=ok")),
+        "a miss must not also be logged as ok");
+      done();
+    }, 100);
+  });
+
   it("ignores the ps exit code and parses surviving rows (dead pid in the list)", (t, done) => {
     const calls = [];
     const { initFocus, cleanup } = loadFocusWithMock(function mockExecFile(cmd, args, opts, cb) {

@@ -794,6 +794,24 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get(scopedCodexSessionId).codexSource, "vscode");
   });
 
+  it("offers the terminal jump for a herdr-hosted session with a Desktop originator (#1139)", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {
+        agentId: "codex",
+        codexOriginator: "codex_work_desktop",
+        sourcePid: 900,
+        herdrPaneId: "w1:p1",
+        herdrSocket: "/tmp/herdr.sock",
+      })],
+    ]), { focusHostPlatform: "darwin" });
+
+    const [entry] = snapshot.sessions;
+    assert.strictEqual(entry.canFocus, true);
+    // The Dashboard button label follows this type: "terminal" renders the
+    // terminal jump, "codex-thread" the "open Codex session" deep link.
+    assert.deepStrictEqual(entry.focusTarget, { type: "terminal", url: null });
+  });
+
   it("exposes the DSH desktop carrier and moves the signature when it changes", () => {
     const carrierSession = session("working", {
       agentId: "deepseek-harness",

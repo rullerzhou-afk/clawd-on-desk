@@ -47,6 +47,20 @@ function hasSupportedOrcaPaneTarget(entry, options = {}) {
   return osPlatform === "darwin" || osPlatform === "win32";
 }
 
+// herdr (#1139) only ever ships a pane id from a hook running inside a local
+// herdr pane (HERDR_ENV, no nested terminal, never remote; the server strips it
+// for Remote SSH and WSL as well), and only macOS / Linux can run the CLI. The
+// focus path still needs the local source PID to raise the terminal, so a pane
+// id alone does not make a session focusable.
+function hasSupportedHerdrPaneTarget(entry, options = {}) {
+  if (!entry || entry.host || !entry.sourcePid) return false;
+  const paneId = normalizeString(entry.herdrPaneId);
+  if (!paneId || paneId.length > 256 || paneId.startsWith("-")) return false;
+  if (!/^[\w-]+:[\w-]+$/.test(paneId)) return false;
+  const osPlatform = normalizeOsPlatform(options);
+  return osPlatform === "darwin" || osPlatform === "linux";
+}
+
 function getSessionFocusTarget(entry, options = {}) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
   if (entry.platform === "webui") return { canFocus: false, type: null, url: null };
@@ -58,6 +72,13 @@ function getSessionFocusTarget(entry, options = {}) {
   const hasOrcaPaneTarget = hasSupportedOrcaPaneTarget(entry, options);
   if (entry.host && !hasOrcaPaneTarget) return { canFocus: false, type: null, url: null };
   if (hasOrcaPaneTarget) return { canFocus: true, type: "terminal", url: null };
+
+  // Ahead of the Codex Desktop deep link for the same reason as Orca: the pane id
+  // comes from the agent process's own environment, while the Desktop originator
+  // is a label Codex inherits from CODEX_INTERNAL_ORIGINATOR_OVERRIDE. A codex
+  // started inside a herdr pane whose server was launched from a Codex Desktop
+  // shell carries both, and lives in the pane, not in the Desktop window.
+  if (hasSupportedHerdrPaneTarget(entry, options)) return { canFocus: true, type: "terminal", url: null };
 
   const codexThreadUrl = getCodexThreadUrl(entry);
   if (codexThreadUrl) {

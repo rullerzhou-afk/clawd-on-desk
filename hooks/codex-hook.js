@@ -25,6 +25,7 @@ const {
   readStdinJson,
   getPlatformConfig,
   applyOrcaPaneKey,
+  herdrPaneFromEnv,
   processAlive,
 } = require("./shared-process");
 const {
@@ -365,7 +366,13 @@ function applyLocalProcessFields(body, resolve, options = {}) {
     cacheable: body.session_id !== "codex:default" && !!body.cwd,
   });
   const { stablePid, agentPid, detectedEditor, pidChain, foregroundWtHwnd, tmuxSocket, tmuxClient, headless } = metadata;
-  const sourcePid = options.preferAgentPid && agentPid ? agentPid : stablePid;
+  // Desktop's app-server hosts its threads, so its sessions point at the agent.
+  // Inside a herdr pane (#1139) the same originator only means the codex
+  // inherited CODEX_INTERNAL_ORIGINATOR_OVERRIDE from a Codex Desktop shell that
+  // started the herdr server: the process is a terminal codex, and the window to
+  // raise is the terminal hosting the herdr client, like any other CLI session.
+  const preferAgentPid = options.preferAgentPid === true && !herdrPaneFromEnv();
+  const sourcePid = preferAgentPid && agentPid ? agentPid : stablePid;
   body.source_pid = sourcePid;
   if (detectedEditor) body.editor = detectedEditor;
   if (agentPid) body.agent_pid = agentPid;

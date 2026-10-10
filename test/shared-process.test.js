@@ -517,6 +517,108 @@ describe("createPidResolver() — tmux bridge (mocked)", () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
+// createPidResolver() — herdr bridge (#1139)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe("createPidResolver() — herdr bridge (mocked, #1139)", () => {
+  const { loadSharedProcessWithMock } = require("./helpers/load-shared-process-with-mock");
+
+  // claude (100) -> zsh (150) -> herdr server (200, re-parented to launchd).
+  const WALK = [
+    ["ps -o ppid= -p 100", "150\n"],
+    ["ps -o comm= -p 100", "claude\n"],
+    ["ps -o ppid= -p 150", "200\n"],
+    ["ps -o comm= -p 150", "-zsh\n"],
+    ["ps -o ppid= -p 200", "1\n"],
+    ["ps -o comm= -p 200", "/opt/homebrew/bin/herdr\n"],
+  ];
+
+  function run(table, env = { HERDR_ENV: "1" }) {
+    const calls = [];
+    const routes = new Map(WALK);
+    routes.set("ps -A -o pid=,ppid=,comm=", table);
+    const execFileSyncMock = (cmd, args) => {
+      const key = cmd + " " + args.join(" ");
+      calls.push(key);
+      if (routes.has(key)) return routes.get(key);
+      const err = new Error("ENOENT: no route for " + key);
+      err.code = "ENOENT";
+      throw err;
+    };
+    const { mod, cleanup } = loadSharedProcessWithMock({
+      execFileSyncMock,
+      env: { HERDR_ENV: undefined, ...env },
+      platform: "darwin",
+    });
+    try {
+      const cfg = mod.getPlatformConfig();
+      const result = mod.createPidResolver({ ...LIVE_GATE, platformConfig: cfg, startPid: 100 })();
+      return { result, calls };
+    } finally {
+      cleanup();
+    }
+  }
+
+  it("one client: stablePid is its terminal and the client walk joins pidChain", () => {
+    const { result } = run([
+      "  1 0 /sbin/launchd",
+      "200 1 /opt/homebrew/bin/herdr",
+      "150 200 -zsh",
+      "100 150 claude",
+      "900 1 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+      "910 900 -zsh",
+      "920 910 /opt/homebrew/bin/herdr",
+    ].join("\n"));
+    assert.strictEqual(result.stablePid, 900);
+    assert.deepStrictEqual(result.pidChain, [100, 150, 200, 920, 910, 900]);
+  });
+
+  it("several clients in one terminal app: raise the app without picking a client", () => {
+    const { result } = run([
+      "200 1 herdr",
+      "900 1 /Applications/Ghostty.app/Contents/MacOS/ghostty",
+      "910 900 -zsh",
+      "920 910 herdr",
+      "930 900 -zsh",
+      "940 930 herdr",
+    ].join("\n"));
+    assert.strictEqual(result.stablePid, 900);
+    assert.deepStrictEqual(result.pidChain, [100, 150, 200, 900]);
+  });
+
+  it("clients in different terminals: refuse to guess", () => {
+    const { result } = run([
+      "200 1 herdr",
+      "900 1 ghostty",
+      "920 900 herdr",
+      "800 1 /Applications/iTerm.app/Contents/MacOS/iTerm2",
+      "820 800 herdr",
+    ].join("\n"));
+    assert.strictEqual(result.stablePid, 200, "falls back to lastGoodPid (herdr server)");
+    assert.deepStrictEqual(result.pidChain, [100, 150, 200]);
+  });
+
+  it("ignores other detached herdr servers and clients that reach no terminal", () => {
+    const { result } = run([
+      "200 1 herdr",
+      "300 1 herdr",
+      "900 1 ghostty",
+      "920 900 herdr",
+      "700 1 sshd",
+      "720 700 herdr",
+    ].join("\n"));
+    assert.strictEqual(result.stablePid, 900);
+    assert.deepStrictEqual(result.pidChain, [100, 150, 200, 920, 900]);
+  });
+
+  it("does not read the process table without HERDR_ENV", () => {
+    const { result, calls } = run("900 1 ghostty\n920 900 herdr\n", {});
+    assert.strictEqual(result.stablePid, 200);
+    assert.ok(!calls.includes("ps -A -o pid=,ppid=,comm="), "no process-table read outside herdr");
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
 // buildElectronLaunchConfig()
 // ═════════════════════════════════════════════════════════════════════════════
 

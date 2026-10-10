@@ -241,6 +241,8 @@ function update(api, o = {}) {
       editor: o.editor || null,
       pidChain: o.pidChain || null,
       orcaPaneKey: o.orcaPaneKey ?? null,
+      herdrPaneId: o.herdrPaneId ?? null,
+      herdrSocket: o.herdrSocket ?? null,
       agentPid: o.agentPid ?? null,
       agentId: o.agentId || "claude-code",
       profileId: o.profileId,
@@ -2568,6 +2570,33 @@ describe("updateSession()", () => {
     // !== would read 100 and "100" as two different terminals.
     update(api, { id: "s1", state: "working", event: "agentMessage", sourcePid: "100" });
     assert.strictEqual(api.sessions.get("s1").orcaPaneKey, "tab-1:leaf-1");
+  });
+
+  it("keeps the herdr pane sticky, with its socket, until the session moves (#1139)", () => {
+    update(api, {
+      id: "s1",
+      state: "thinking",
+      event: "UserPromptSubmit",
+      sourcePid: 900,
+      herdrPaneId: "w5:p4",
+      herdrSocket: "/tmp/herdr.sock",
+    });
+    update(api, { id: "s1", state: "working", event: "PreToolUse" });
+    assert.strictEqual(api.sessions.get("s1").herdrPaneId, "w5:p4");
+    assert.strictEqual(api.sessions.get("s1").herdrSocket, "/tmp/herdr.sock");
+
+    // A new pane id replaces the socket too, rather than keeping the old one.
+    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: 900, herdrPaneId: "w5:p7" });
+    assert.strictEqual(api.sessions.get("s1").herdrPaneId, "w5:p7");
+    assert.strictEqual(api.sessions.get("s1").herdrSocket, null);
+
+    // Resumed outside herdr: the SessionStart carries no pane, so it is dropped.
+    update(api, { id: "s1", state: "idle", event: "SessionStart", sourcePid: 901 });
+    assert.strictEqual(api.sessions.get("s1").herdrPaneId, null);
+
+    update(api, { id: "s1", state: "thinking", event: "UserPromptSubmit", sourcePid: 900, herdrPaneId: "w1:p1" });
+    update(api, { id: "s1", state: "working", event: "PreToolUse", sourcePid: 777 });
+    assert.strictEqual(api.sessions.get("s1").herdrPaneId, null, "a terminal change drops the pane");
   });
 
   it("keeps Ghostty terminal id sticky and allows focus-only metadata updates", () => {

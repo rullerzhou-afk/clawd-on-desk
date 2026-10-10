@@ -35,6 +35,10 @@ const REMOTE_STRIPPED_PROCESS_FIELDS = Object.freeze([
   "editor",
   "tmuxSocket",
   "tmuxClient",
+  // Unlike `orcaPaneKey`, a herdr pane id names a pane on the herdr server of the
+  // machine that sent it; the local `herdr` CLI can only reach a local server.
+  "herdrPaneId",
+  "herdrSocket",
 ]);
 
 const WSL_HOST_PREFIX = "wsl:";

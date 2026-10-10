@@ -296,6 +296,42 @@ describe("Codex official hook", () => {
     });
   });
 
+  it("reports the terminal, not the agent, for a Desktop originator inside a herdr pane (#1139)", () => {
+    // A herdr server started from a Codex Desktop shell passes
+    // CODEX_INTERNAL_ORIGINATOR_OVERRIDE to every pane, so a terminal codex there
+    // records the Desktop originator. Its window is the terminal, not Codex.app.
+    const keys = ["HERDR_ENV", "HERDR_PANE_ID", "HERDR_SOCKET_PATH", "CLAWD_REMOTE", "CLAWD_SSH_REMOTE",
+      ...require("../hooks/shared-process").NESTED_TERMINAL_ENV];
+    const saved = Object.fromEntries(keys.map((k) => [k, process.env[k]]));
+    for (const k of keys) delete process.env[k];
+    Object.assign(process.env, { HERDR_ENV: "1", HERDR_PANE_ID: "w1:p1", HERDR_SOCKET_PATH: "/tmp/herdr.sock" });
+    try {
+      withTempTranscript([
+        JSON.stringify({
+          type: "session_meta",
+          payload: { cwd: "/repo", originator: "codex_work_desktop", source: "cli" },
+        }),
+      ], (transcriptPath) => {
+        const body = buildStateBody({
+          hook_event_name: "UserPromptSubmit",
+          session_id: "official-session",
+          transcript_path: transcriptPath,
+        }, mockResolve);
+
+        assert.strictEqual(body.codex_originator, "codex_work_desktop");
+        assert.strictEqual(body.source_pid, 123, "terminal (stablePid), not the agent pid");
+        assert.strictEqual(body.agent_pid, 456);
+        assert.strictEqual(body.herdr_pane_id, "w1:p1");
+        assert.strictEqual(body.herdr_socket, "/tmp/herdr.sock");
+      });
+    } finally {
+      for (const k of keys) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+    }
+  });
+
   it("reads Codex /rename thread_name from session_index.jsonl", () => {
     withTempCodexIndex([
       JSON.stringify({ id: "019d23d4-f1a9-7633-b9c7-758327137228", thread_name: "Old Name" }),

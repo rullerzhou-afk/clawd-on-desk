@@ -308,6 +308,58 @@ describe("session focus helpers", () => {
     });
   });
 
+  it("sends a herdr-hosted session to its pane ahead of the Codex Desktop deep link (#1139)", () => {
+    // Real-machine report on #1164: a codex started inside a herdr pane whose
+    // server was launched from a Codex Desktop shell records the Desktop
+    // originator, so the Dashboard offered "open Codex session" and the click
+    // never reached the herdr branch.
+    const herdrDesktop = {
+      id: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+      agentId: "codex",
+      codexOriginator: "codex_work_desktop",
+      sourcePid: 900,
+      herdrPaneId: "w1:p1",
+    };
+    const terminalTarget = { canFocus: true, type: "terminal", url: null };
+    const desktopTarget = {
+      canFocus: true,
+      type: "codex-thread",
+      url: "codex://threads/019e115a-4df2-7ed0-b90e-8e6345aca777",
+    };
+
+    assert.deepStrictEqual(getSessionFocusTarget(herdrDesktop, { osPlatform: "darwin" }), terminalTarget);
+    assert.deepStrictEqual(getSessionFocusTarget(herdrDesktop, { osPlatform: "linux" }), terminalTarget);
+    assert.strictEqual(isFocusableLocalHudSession(herdrDesktop, { osPlatform: "darwin" }), true);
+
+    // Windows cannot run the herdr CLI, and a pane id alone cannot raise anything.
+    assert.deepStrictEqual(getSessionFocusTarget(herdrDesktop, { osPlatform: "win32" }), desktopTarget);
+    assert.deepStrictEqual(getSessionFocusTarget({ ...herdrDesktop, sourcePid: null }, { osPlatform: "darwin" }), desktopTarget);
+    // A malformed or flag-like pane id is ignored rather than trusted.
+    for (const herdrPaneId of ["bad", "--help:x", "w1:p1; rm -rf ~", ""]) {
+      assert.deepStrictEqual(
+        getSessionFocusTarget({ ...herdrDesktop, herdrPaneId }, { osPlatform: "darwin" }),
+        desktopTarget,
+        herdrPaneId
+      );
+    }
+    // Remote sessions never become focusable through a herdr pane id.
+    assert.deepStrictEqual(
+      getSessionFocusTarget({ ...herdrDesktop, host: "remote-box" }, { osPlatform: "darwin" }),
+      { canFocus: false, type: null, url: null }
+    );
+    // Direct Send still keeps the Desktop identity out of the paste path.
+    assert.deepStrictEqual(getDirectSendFocusTarget(herdrDesktop, { osPlatform: "darwin" }), {
+      ...desktopTarget,
+      canFocus: false,
+      reason: "codex_desktop_requires_manual_paste",
+    });
+    // A plain CLI session in herdr was already a terminal target and stays one.
+    assert.deepStrictEqual(
+      getSessionFocusTarget({ ...herdrDesktop, codexOriginator: "codex-tui" }, { osPlatform: "darwin" }),
+      terminalTarget
+    );
+  });
+
   it("rejects malformed entries defensively", () => {
     assert.strictEqual(isFocusableLocalHudSession(null), false);
     assert.strictEqual(isFocusableLocalHudSession({ sourcePid: 1 }), false);
