@@ -16,6 +16,20 @@ function evaluate(mode, interaction) {
   return evaluatePermissionAutomation({ mode, interaction });
 }
 
+describe("native question protocol capability", () => {
+  it("grants only explicit family question ingress and never approval automation", () => {
+    for (const agentId of ["opencode", "mimocode"]) {
+      const native = classifyPermissionInteraction({ agentId, eventKind: "question", toolName: "AskUserQuestion" });
+      assert.strictEqual(native.capabilities.answerQuestions, true);
+      assert.strictEqual(native.capabilities.allowDeny, false);
+      assert.strictEqual(native.automationEligibility.autoTools, false);
+      assert.strictEqual(native.automationEligibility.unattended, false);
+      const permission = classifyPermissionInteraction({ agentId, eventKind: "permission", toolName: "AskUserQuestion" });
+      assert.strictEqual(permission.capabilities.answerQuestions, false);
+    }
+  });
+});
+
 describe("permission automation interaction classifier", () => {
   it("classifies Claude tool, question, and plan interactions", () => {
     const tool = classifyPermissionInteraction({

@@ -23,6 +23,7 @@ const {
 } = require("../hooks/server-config");
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { validateQuestionAnswers } = require("./agent-question-wire");
 const { reminderHolds } = require("./permission-reminder");
 const {
   normalizeOpencodeFamilyBridgeUrl,
@@ -2841,6 +2842,9 @@ function buildPermissionBubblePayload(permEntry) {
     lang: ctx.lang,
     interaction: isValidInteraction(permEntry.interaction) ? permEntry.interaction : null,
     isElicitation: permEntry.isElicitation || false,
+    isFamilyQuestion: permEntry.isFamilyQuestion === true,
+    questionAwaitingDelivery: permEntry.questionAwaitingDelivery === true,
+    questionDeliveryUnconfirmed: permEntry.questionDeliveryUnconfirmed === true,
     // opencode-family provenance for the renderer, which has no registry
     // access: presence of familyAgentId selects the family render branch;
     // familyDisplayName templates the blanket-always tooltip (plan §3.5).
@@ -3908,6 +3912,11 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   // (Bun.serve or node:http on a random localhost port). The plugin then calls
   // the host's in-process Hono route. Plugin sent us a fire-and-forget POST — no HTTP
   // response to complete on this connection.
+  if (permEntry.isFamilyQuestion) {
+    if (!res || res.writableEnded || res.destroyed) return;
+    sendNoDecisionResponse(res, "question native fallback", "question");
+    return;
+  }
   if (permEntry.isOpencodeV2) {
     // opencode v2 (issue #1039): the plugin's evaluate hook is BLOCKING on
     // this very HTTP response — the decision is the response body. 204 keeps
@@ -4714,6 +4723,18 @@ function handleDecide(event, behavior) {
     }
     return;
   }
+  if (perm.isFamilyQuestion) {
+    if (perm.questionAwaitingDelivery && behavior !== "deny-and-focus") return;
+    const answers = !perm.questionDeliveryUnconfirmed && behavior && behavior.type === "elicitation-submit"
+      ? validateQuestionAnswers(perm.familyQuestionWire, behavior.answers) : null;
+    if (answers && typeof perm.submitQuestionAnswers === "function") {
+      perm.submitQuestionAnswers(answers);
+      return;
+    }
+    resolvePermissionEntry(perm, "no-decision", "Question native fallback");
+    if (behavior === "deny-and-focus") ctx.focusTerminalForSession(perm.sessionId);
+    return;
+  }
   if (perm.isCodexNotify || perm.isKimiNotify) {
     dismissPassiveNotify(perm, "ipc-decide");
     // Kimi Code's cue is a heads-up that its terminal is blocking on a native
@@ -5177,7 +5198,9 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   // Do not answer approval requests on the user's behalf. Dropping the UI
   // means Codex/Antigravity receive no decision, CC/CodeBuddy fall back
   // via socket close, and opencode falls back by receiving no bridge reply.
-  if (perm.isCodex) {
+  if (perm.isFamilyQuestion) {
+    sendNoDecisionResponse(perm.res, reason || "question-dismissed", "question");
+  } else if (perm.isCodex) {
     sendCodexNoDecisionResponse(perm.res, reason || "permission-dismissed");
   } else if (perm.isQwenCode) {
     sendQwenCodeNoDecisionResponse(perm.res, reason || "permission-dismissed");

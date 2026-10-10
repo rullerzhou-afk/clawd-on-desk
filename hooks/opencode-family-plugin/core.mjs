@@ -620,6 +620,8 @@ export function createOpencodeFamilyPlugin(config) {
   // delivery by contract (see opencode-family-bridge.test.js).
   const _permissionAskedSeen = new Set();
   const PERMISSION_SEEN_LIMIT = 256;
+  const _questionsById = new Map();
+  const _questionSettledIds = new Set();
   // Reverse bridge state. Set by startBridge() at plugin init. Clawd receives
   // _bridgeUrl + _bridgeToken with every /permission forward and POSTs back.
   let _bridgeUrl = "";
@@ -1514,6 +1516,167 @@ export function createOpencodeFamilyPlugin(config) {
     return enqueuePermissionPost(requestId, body, options);
   }
 
+  // Native question APIs are independent from permission replies. Event hooks
+  // return immediately; this request-scoped long poll never blocks the host bus.
+  function supportedQuestionVersion(version) {
+    const match = typeof version === "string" && /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(version);
+    if (!match) return false;
+    const [major, minor, patch] = match.slice(1).map(Number);
+    if (![major, minor, patch].every(Number.isSafeInteger)) return false;
+    return AGENT_ID === "opencode" ? major === 1 && (minor > 18 || (minor === 18 && patch >= 31))
+      : AGENT_ID === "mimocode" && major === 0 && minor === 1 && patch >= 15;
+  }
+
+  function settleQuestion(requestId, sessionId, nativeResolved = true) {
+    const target = _questionsById.get(requestId);
+    if (target && target.request.sessionID !== sessionId) return;
+    rememberPermissionEvent(_questionSettledIds, requestId);
+    if (target) {
+      target.nativeResolved = nativeResolved;
+      // question.reply publishes question.replied before completing its tool
+      // waiter. Do not abort our own in-flight native RPC on that notification.
+      // The host arbitrates any concurrent native reply by request ID.
+      if (!target.submitting) target.controller.abort();
+      _questionsById.delete(requestId);
+    }
+  }
+
+  function cancelInstanceQuestions(instance, sessionId = null) {
+    for (const [id, target] of _questionsById) {
+      if (target.instance === instance && (!sessionId || target.request.sessionID === sessionId)) {
+        settleQuestion(id, target.request.sessionID, false);
+      }
+    }
+  }
+
+  function questionAnswersValid(request, answers) {
+    return Array.isArray(answers) && answers.length === request.questions.length
+      && answers.every((answer, i) => Array.isArray(answer) && answer.length > 0 && answer.length <= 6
+        && (request.questions[i].multiple === true || answer.length === 1)
+        && new Set(answer).size === answer.length
+        && answer.filter(value => !request.questions[i].options.some(option => option.label === value)).length <= 1
+        && answer.every(value => typeof value === "string" && !!value.trim() && value.length <= 4000
+          && (request.questions[i].custom !== false
+            || request.questions[i].options.some(option => option.label === value))));
+  }
+
+  function sameQuestionSchema(left, right) {
+    const canonical = value => Array.isArray(value) ? value.map(canonical)
+      : value && typeof value === "object" ? Object.fromEntries(
+        Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
+    return JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
+  }
+
+  function startQuestion(event, instance) {
+    const p = event?.properties;
+    if (!p || typeof p.id !== "string" || !/^que[A-Za-z0-9_-]{1,124}$/.test(p.id)
+      || typeof p.sessionID !== "string" || !/^ses[A-Za-z0-9_-]{1,124}$/.test(p.sessionID)
+      || !p.tool || typeof p.tool.messageID !== "string" || typeof p.tool.callID !== "string"
+      || !Array.isArray(p.questions) || !p.questions.length || p.questions.length > 5
+      || _questionsById.has(p.id) || _questionSettledIds.has(p.id) || _questionsById.size >= 32
+      || !instance.directory || instance.disposed || !instance.client?._client?.get
+      || !instance.client?._client?.post || isChildSessionId(normalizeSessionId(p.sessionID), _sessionParentById)) return;
+    let request;
+    try {
+      const serialized = JSON.stringify(p);
+      if (Buffer.byteLength(serialized) > BRIDGE_MAX_BODY_BYTES) return;
+      request = JSON.parse(serialized);
+    } catch { return; }
+    const controller = new AbortController();
+    const target = { request, instance, controller, submitting: false, nativeResolved: false, observedNativeReply: null,
+      instanceId: randomBytes(16).toString("hex"), completion: null };
+    _questionsById.set(request.id, target);
+    const current = () => !instance.disposed && !controller.signal.aborted && _questionsById.get(request.id) === target;
+    const nativeOptions = () => {
+      const baseUrl = resolveLoopbackBaseUrl(instance.client);
+      return { ...(baseUrl ? { baseUrl } : {}), query: { directory: instance.directory }, signal: controller.signal };
+    };
+    const stillPending = async () => {
+      const result = await instance.client._client.get({ url: "/question", ...nativeOptions() });
+      return current() && !result?.error && Array.isArray(result?.data) && result.data.some(item =>
+        item.id === request.id && item.sessionID === request.sessionID
+        && item.tool?.messageID === request.tool.messageID && item.tool?.callID === request.tool.callID
+        && sameQuestionSchema(item.questions, request.questions));
+    };
+    const timer = setTimeout(() => controller.abort(), 590 * 1000);
+    timer.unref?.();
+    let confirmationToken = null;
+    let ownerPort = null;
+    let packet = null;
+    let outcome = "native-fallback";
+    target.completion = (async () => {
+      const health = await instance.client._client.get({ url: "/global/health", ...nativeOptions() });
+      if (!current() || health?.error || health?.data?.healthy !== true
+        || !supportedQuestionVersion(health.data.version) || !await stillPending()) return;
+      // Sensitive payloads only go to the live owner-only runtime target, never
+      // the cached/scanned state responder or an arbitrary host URL.
+      const port = readPermissionRuntimePort();
+      if (!port || !current()) return;
+      ownerPort = port;
+      packet = { agent_id: AGENT_ID, hook_source: HOOK_SOURCE,
+        question_protocol: "clawd.question.v1", host_version: health.data.version,
+        question_instance_id: target.instanceId, request };
+      const body = JSON.stringify(packet);
+      if (Buffer.byteLength(body) > BRIDGE_MAX_BODY_BYTES - 256) return;
+      const response = await fetch(`http://127.0.0.1:${port}/question`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body, signal: controller.signal,
+        redirect: "error",
+      });
+      if (response.status !== 200 || response.headers?.get(CLAWD_SERVER_HEADER) !== CLAWD_SERVER_ID) return;
+      const headerToken = response.headers?.get("x-clawd-question-confirmation");
+      if (typeof headerToken === "string" && /^[a-f0-9]{64}$/.test(headerToken)) confirmationToken = headerToken;
+      if (!current()) return;
+      const reply = await response.json();
+      if (!confirmationToken || reply?.confirmation_token !== confirmationToken
+        || !current() || !questionAnswersValid(request, reply?.answers) || !await stillPending()) return;
+      // One native POST only. Unknown delivery is never retried; 404 means the
+      // native UI won the race. Native pending removal is the final arbiter.
+      if (!current()) return;
+      target.submitting = true;
+      const nativeResult = await instance.client._client.post({ url: "/question/{requestID}/reply",
+        path: { requestID: request.id }, body: { answers: reply.answers }, ...nativeOptions(),
+        headers: { "Content-Type": "application/json" } });
+      if (AGENT_ID === "opencode") {
+        // OpenCode v1's reply handler returns true only after delivery and 404
+        // for an absent request. Event delivery can lag behind this RPC.
+        if (!nativeResult?.error && nativeResult?.data === true) outcome = "accepted";
+        else if (nativeResult?.response?.status === 404) outcome = "resolved-elsewhere";
+        else outcome = nativeResult?.error ? "native-fallback" : "unknown";
+      } else {
+        // MiMo also returns true for an absent request, so its exact replied
+        // event remains necessary to confirm the selected answers.
+        if (!nativeResult?.error && nativeResult?.data === true
+          && JSON.stringify(target.observedNativeReply) === JSON.stringify(reply.answers)) outcome = "accepted";
+        else if (target.nativeResolved || nativeResult?.response?.status === 404) outcome = "resolved-elsewhere";
+        else outcome = nativeResult?.error ? "native-fallback" : "unknown";
+      }
+    })().catch(() => {
+      // No answer on transport errors, schema errors or cancellation. The
+      // original native question remains available; never call reject().
+      debugLog("QUESTION native fallback");
+      outcome = target.submitting ? "unknown" : "native-fallback";
+    }).finally(async () => {
+      clearTimeout(timer);
+      if (confirmationToken && packet && ownerPort) {
+        if (outcome !== "accepted" && target.nativeResolved
+          && (!target.submitting || AGENT_ID !== "opencode")) outcome = "resolved-elsewhere";
+        const receiptController = new AbortController();
+        const receiptTimer = setTimeout(() => receiptController.abort(), 2000);
+        receiptTimer.unref?.();
+        try {
+          await fetch(`http://127.0.0.1:${ownerPort}/question`, {
+            method: "POST", headers: { "Content-Type": "application/json" }, redirect: "error",
+            body: JSON.stringify({ ...packet, question_result: outcome, confirmation_token: confirmationToken }),
+            signal: receiptController.signal,
+          });
+        } catch { /* Main's bounded confirmation timeout shows native fallback. */ }
+        finally { clearTimeout(receiptTimer); }
+      }
+      if (_questionsById.get(request.id) === target) _questionsById.delete(request.id);
+      rememberPermissionEvent(_questionSettledIds, request.id);
+    });
+  }
+
   function buildStateBody(state, eventName, sessionId) {
     if (!state || !eventName) return null;
     const clawdSessionId = normalizeSessionId(sessionId) || DEFAULT_SESSION_ID;
@@ -1707,6 +1870,7 @@ export function createOpencodeFamilyPlugin(config) {
     get _statePostMaxPending() { return STATE_POST_MAX_PENDING; },
     get _permissionTargetByRequestId() { return _permissionTargetByRequestId; },
     get _permissionPostTailByRequestId() { return _permissionPostTailByRequestId; },
+    get _questionsById() { return _questionsById; },
     handlePermissionReplied,
     enqueuePermissionPost,
     get _cachedPort() { return _cachedPort; },
@@ -2751,6 +2915,7 @@ export function createOpencodeFamilyPlugin(config) {
       if (instanceDisposed) return;
       instanceDisposed = true;
       contextInstance.disposed = true;
+      cancelInstanceQuestions(contextInstance);
       clearTimeout(contextInstance.hydrationTimer);
       contextInstance.hydrationTimer = null;
       for (const controller of contextInstance.historyRequests) controller.abort();
@@ -2767,6 +2932,25 @@ export function createOpencodeFamilyPlugin(config) {
         try {
           if (!event || typeof event.type !== "string") return;
           if (instanceDisposed) return;
+
+          if (event.type === "question.replied" || event.type === "question.rejected") {
+            const p = event.properties;
+            if (p && typeof p.requestID === "string" && typeof p.sessionID === "string") {
+              const target = _questionsById.get(p.requestID);
+              if (event.type === "question.replied" && target?.request.sessionID === p.sessionID
+                && Array.isArray(p.answers)) target.observedNativeReply = p.answers;
+              settleQuestion(p.requestID, p.sessionID);
+            }
+            return;
+          }
+          if (event.type === "question.asked") {
+            startQuestion(event, contextInstance);
+            return;
+          }
+          if (event.type === "session.deleted" || event.type === "session.error" || event.type === "session.idle") {
+            const rawId = getEventSessionId(event);
+            if (rawId) cancelInstanceQuestions(contextInstance, rawId.replace(new RegExp(`^${AGENT_ID}:`), ""));
+          }
 
           // Completion is cleanup-only. Handle it before session-directory and
           // root/last-seen capture so a standalone permission.replied cannot

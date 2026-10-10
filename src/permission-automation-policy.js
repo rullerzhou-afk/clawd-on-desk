@@ -216,6 +216,14 @@ function classifyPermissionInteraction({
     });
   }
 
+  // Only the reviewed local question ingress may grant this capability.
+  // A family permission named AskUserQuestion remains native-only.
+  if (eventKind === "question" && isOpencodeFamily(trustedAgentId)) {
+    return makeInteraction(INTERACTION_INTENT.HUMAN_QUESTION, {
+      answerQuestions: true, nativeFallback: true,
+    });
+  }
+
   // Display adapters may render "Unknown", but an absent/placeholder protocol
   // identity is never evidence that the request is an ordinary tool approval.
   if (isMissingToolName(trustedToolName)) {

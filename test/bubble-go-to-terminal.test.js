@@ -179,6 +179,60 @@ function createHarness(options = {}) {
   };
 }
 
+describe("native family question renderer", () => {
+  it("refreshes a pending answer into an unconfirmed fallback without enabling submission", () => {
+    const h = createHarness();
+    const original = { isFamilyQuestion: true, familyAgentId: "opencode", isElicitation: true,
+      interaction: interaction("human-question", { answerQuestions: true, nativeFallback: true }),
+      presentation: { expanded: true, measurementEpoch: 1 }, toolInput: { questions: [
+        { id: "0", header: "Pick", question: "Choose", allowOther: false,
+          options: [{ label: "A", description: "Only choice" }] },
+      ] } };
+    h.show(original);
+    h.show({ ...original, questionAwaitingDelivery: true });
+    assert.strictEqual(h.element("btnAllow").disabled, true);
+    h.show({ ...original, isElicitation: false, questionAwaitingDelivery: false, questionDeliveryUnconfirmed: true,
+      interaction: interaction("human-question", { nativeFallback: true }) });
+    assert.match(h.element("commandBlock").textContent, /not confirmed/);
+    assert.strictEqual(h.element("btnAllow").style.display, "none");
+    assert.strictEqual(h.terminalButtons().length, 1);
+  });
+
+  it("shows an unconfirmed native fallback without approval or resubmit actions", () => {
+    const h = createHarness();
+    h.show({ isFamilyQuestion: true, familyAgentId: "mimocode", questionDeliveryUnconfirmed: true,
+      interaction: interaction("human-question", { nativeFallback: true }) });
+    assert.match(h.element("commandBlock").textContent, /not confirmed/);
+    assert.strictEqual(h.element("btnAllow").style.display, "none");
+    assert.strictEqual(h.element("btnDeny").style.display, "none");
+    assert.strictEqual(h.terminalButtons().length, 1);
+    h.terminalButtons()[0].click();
+    assert.deepStrictEqual(h.decisions, ["deny-and-focus"]);
+  });
+
+  it("uses the shared question UI and preserves multi-select arrays and custom=false", () => {
+    const h = createHarness();
+    h.show({ isFamilyQuestion: true, familyAgentId: "opencode", isElicitation: true,
+      interaction: interaction("human-question", { answerQuestions: true, nativeFallback: true }),
+      presentation: { expanded: true, measurementEpoch: 1 }, toolInput: { questions: [
+        { id: "0", header: "Pick", question: "Pick labels", multiSelect: true, allowOther: false,
+          options: [{ label: "A, B", description: "First" }, { label: "C", description: "Second" }] },
+      ] } });
+    const form = h.element("elicitationForm");
+    const card = form.children[0];
+    const optionList = card.children.find(child => child.className === "option-list");
+    assert.ok(optionList, "family provenance must not divert question into approval renderer");
+    assert.equal(optionList.children.length, 2, "custom=false must not create Other");
+    for (const label of optionList.children) {
+      const input = label.children[0]; input.checked = true; input.dispatch("change");
+    }
+    h.element("btnAllow").click();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(h.decisions)), [
+      { type: "elicitation-submit", answers: { 0: ["A, B", "C"] } },
+    ]);
+  });
+});
+
 describe("permission bubble terminal fallback (issue #689)", () => {
   // Every actionable payload carries route-owned interaction semantics.
   // Provenance flags remain wire-format adapters, not renderer policy.

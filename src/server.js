@@ -51,6 +51,7 @@ const {
   shouldBypassFamilyBubble,
 } = require("./server-route-permission");
 const { createRemoteSshIngress } = require("./remote-ssh-ingress");
+const { handleQuestionPost } = require("./server-route-question");
 const {
   getCodexOfficialTurnKey,
   resolveCodexOfficialHookState,
@@ -993,6 +994,9 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         remoteProfile,
         isClaudeStatuslineMetadataAllowed,
       });
+    } else if (req.method === "POST" && req.url === "/question") {
+      if (!remoteProfile && rejectUnsafeLocalHookRequest(req, res, "/question")) return;
+      handleQuestionPost(req, res, { ctx, remoteProfile });
     } else if (req.method === "POST" && req.url === "/permission") {
       if (!remoteProfile && rejectUnsafeLocalHookRequest(req, res, "/permission")) return;
       handlePermissionPost(req, res, {
