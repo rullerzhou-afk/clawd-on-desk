@@ -615,6 +615,38 @@ test("animation override data builds tier cards with transition override metadat
   }
 });
 
+test("multi-file tier cards show and override the first file of the pool", () => {
+  const harness = createRuntimeHarness({
+    activeThemeFactory: (root) => makeTheme(root, {
+      _bindingBase: {
+        states: { idle: "idle.svg", thinking: "scripted.svg", sleeping: "sleep.svg" },
+        workingTiers: [{ minSessions: 2, originalFile: "idle.svg" }, { minSessions: 1, originalFile: "scripted.svg" }],
+        jugglingTiers: [],
+        displayHintMap: {},
+      },
+      workingTiers: [
+        { minSessions: 2, files: ["idle.svg", "sleep.svg"] },
+        { minSessions: 1, file: "scripted.svg" },
+      ],
+    }),
+  });
+  try {
+    const data = harness.runtime.buildAnimationOverrideData();
+    const poolCard = data.cards.find((card) => card.id === "workingTiers:idle.svg");
+    const singleCard = data.cards.find((card) => card.id === "workingTiers:scripted.svg");
+
+    assert.ok(poolCard);
+    assert.strictEqual(poolCard.originalFile, "idle.svg");
+    assert.strictEqual(poolCard.currentFile, "idle.svg");
+    assert.strictEqual(poolCard.bindingLabel, "workingTiers[idle.svg].files[0]");
+    assert.ok(singleCard);
+    assert.strictEqual(singleCard.currentFile, "scripted.svg");
+    assert.strictEqual(singleCard.bindingLabel, "workingTiers[scripted.svg]");
+  } finally {
+    harness.cleanup();
+  }
+});
+
 // #509: default idle visual picker payload
 test("animation override data exposes idle visual options and the current selection", () => {
   const harness = createRuntimeHarness({

@@ -11,6 +11,7 @@ const {
 } = require("./state-priority");
 const {
   buildStateBindings,
+  createStableVisualPicker,
   hasOwnVisualFiles: hasOwnVisualFilesWithBindings,
   resolveVisualBinding: resolveVisualBindingWithBindings,
   getSvgOverride: getSvgOverrideWithDeps,
@@ -88,6 +89,9 @@ let theme = null;
 let SVG_IDLE_FOLLOW = null;
 let STATE_SVGS = {};
 let STATE_BINDINGS = {};
+// One pick per long-running state (thinking / working / juggling) when the
+// theme lists several files; see createStableVisualPicker.
+const stableVisualPicker = createStableVisualPicker();
 let MIN_DISPLAY_MS = {};
 let AUTO_RETURN_MS = {};
 let DEEP_SLEEP_TIMEOUT = 0;
@@ -612,6 +616,7 @@ function refreshTheme() {
   SVG_IDLE_FOLLOW = theme.states.idle[0];
   STATE_SVGS = { ...theme.states };
   STATE_BINDINGS = buildStateBindings(theme);
+  stableVisualPicker.clear();
   // Sync back so settings-animation-overrides can resolve roam/fallback states
   theme._stateBindings = STATE_BINDINGS;
   if (theme.miniMode && theme.miniMode.states) {
@@ -902,6 +907,7 @@ function applyState(state, svgOverride, options = {}) {
 
   previousState = currentState;
   currentState = state;
+  stableVisualPicker.retainOnly(state);
   displayRevision += 1;
   currentVisualSource = applyOptions.settingsPreview === true
     ? VISUAL_SOURCE_SETTINGS_PREVIEW
@@ -3846,6 +3852,7 @@ function getSvgOverride(state) {
     displayHintMap: DISPLAY_HINT_MAP,
     theme,
     stateSvgs: STATE_SVGS,
+    pickVisualFile: stableVisualPicker.pick,
   });
 }
 

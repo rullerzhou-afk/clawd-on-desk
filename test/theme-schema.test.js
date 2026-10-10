@@ -804,3 +804,76 @@ describe("theme schema defaults and normalization", () => {
     assert.ok(schema.collectRequiredAssetFiles(theme).includes("mini-idle.svg"));
   });
 });
+
+describe("multi-file working / juggling tiers", () => {
+  it("accepts files pools, alone or next to the legacy file", () => {
+    const errors = schema.validateTheme(validThemeJson({
+      workingTiers: [
+        { minSessions: 2, files: ["two-a.svg", "two-b.svg"] },
+        { minSessions: 1, file: "one.svg", files: ["one.svg", "one-b.svg"] },
+      ],
+      jugglingTiers: [{ minSessions: 1, file: "juggle.svg" }],
+    }));
+    assert.deepStrictEqual(errors, []);
+  });
+
+  it("rejects empty, non-array, and non-string files pools", () => {
+    const errors = schema.validateTheme(validThemeJson({
+      workingTiers: [
+        { minSessions: 3, files: [] },
+        { minSessions: 2, files: "two.svg" },
+        { minSessions: 1, file: "one.svg", files: ["one.svg", ""] },
+      ],
+      jugglingTiers: [{ minSessions: 1, files: [42] }],
+    }));
+    assert.deepStrictEqual(errors, [
+      "workingTiers[0].files must be a non-empty array of file names when present",
+      "workingTiers[1].files must be a non-empty array of file names when present",
+      "workingTiers[2].files must be a non-empty array of file names when present",
+      "jugglingTiers[0].files must be a non-empty array of file names when present",
+    ]);
+  });
+
+  it("prefers files over file and keys a tier by file when both are declared", () => {
+    assert.deepStrictEqual(schema.getTierFiles({ file: "one.svg" }), ["one.svg"]);
+    assert.deepStrictEqual(schema.getTierFiles({ file: "one.svg", files: ["a.svg", "b.svg"] }), ["a.svg", "b.svg"]);
+    assert.deepStrictEqual(schema.getTierFiles({ files: [], file: "one.svg" }), ["one.svg"]);
+    assert.deepStrictEqual(schema.getTierFiles(null), []);
+    assert.strictEqual(schema.getTierKeyFile({ file: "one.svg", files: ["a.svg", "b.svg"] }), "one.svg");
+    assert.strictEqual(schema.getTierKeyFile({ files: ["a.svg", "b.svg"] }), "a.svg");
+    assert.strictEqual(schema.getTierKeyFile({}), null);
+  });
+
+  it("basenames every pool file during normalization", () => {
+    const theme = schema.mergeDefaults(validThemeJson({
+      workingTiers: [{ minSessions: 1, file: "../one.svg", files: ["../one.svg", "nested/two.svg"] }],
+      jugglingTiers: [{ minSessions: 1, files: ["..\\juggle.svg"] }],
+    }), "demo", false);
+    assert.strictEqual(theme.workingTiers[0].file, "one.svg");
+    assert.deepStrictEqual(theme.workingTiers[0].files, ["one.svg", "two.svg"]);
+    assert.deepStrictEqual(theme.jugglingTiers[0].files, ["juggle.svg"]);
+  });
+
+  it("treats every pool file as a reachable, required visual", () => {
+    const cfg = {
+      states: { idle: ["idle.svg"] },
+      workingTiers: [{ minSessions: 1, file: "legacy-only.svg", files: ["../work-a.svg", "work-b.svg"] }],
+      jugglingTiers: [{ minSessions: 1, files: ["juggle-a.svg", "juggle-b.svg"] }],
+    };
+    assert.deepStrictEqual(schema.collectRequiredAssetFiles(cfg).sort(), [
+      "idle.svg",
+      "juggle-a.svg",
+      "juggle-b.svg",
+      "work-a.svg",
+      "work-b.svg",
+    ]);
+    const tierUsages = schema.projectThemeVisualUsages(cfg)
+      .filter((usage) => usage.source === "workingTiers" || usage.source === "jugglingTiers");
+    assert.deepStrictEqual(tierUsages.map((usage) => [usage.stateFamily, usage.file]), [
+      ["normal:workingTiers", "work-a.svg"],
+      ["normal:workingTiers", "work-b.svg"],
+      ["normal:jugglingTiers", "juggle-a.svg"],
+      ["normal:jugglingTiers", "juggle-b.svg"],
+    ]);
+  });
+});

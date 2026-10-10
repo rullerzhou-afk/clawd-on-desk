@@ -1,6 +1,7 @@
 "use strict";
 
 const { VISUAL_FALLBACK_STATES } = require("./theme-loader");
+const { getTierFiles } = require("./theme-schema");
 const { getSubagentVisualCount } = require("./subagent-lifecycle");
 
 function buildStateBindings(nextTheme) {
@@ -119,13 +120,52 @@ function countLiveSubagents(sessions) {
   return count;
 }
 
-function selectTieredStateFile(tiers, count, fallbackFile) {
+// Candidate files of the first tier the count reaches, or the fallback list.
+function selectTieredStateFiles(tiers, count, fallbackFiles) {
   if (tiers) {
     for (const tier of tiers) {
-      if (count >= tier.minSessions) return tier.file;
+      if (count >= tier.minSessions) return getTierFiles(tier);
     }
   }
-  return fallbackFile;
+  return Array.isArray(fallbackFiles) ? fallbackFiles : [];
+}
+
+function pickFirstFile(state, files) {
+  return Array.isArray(files) && files.length > 0 ? files[0] : null;
+}
+
+// thinking / working / juggling are resolved again on every hook event, so a
+// fresh random pick per call would swap the clip on each tool call. Keep one
+// pick per state while its candidate list stays the same: the pool is drawn
+// again when the state is entered anew (callers drop the other states' picks
+// when a state is applied, see retainOnly) or when the list itself changes,
+// e.g. the working tier moves with the session count.
+function createStableVisualPicker(randomFn) {
+  const picks = new Map();
+  return {
+    pick(state, files) {
+      if (!Array.isArray(files) || files.length === 0) return null;
+      if (files.length === 1) return files[0];
+      const signature = files.join("\n");
+      const held = picks.get(state);
+      if (held && held.signature === signature) return held.file;
+      const file = pickStateFile(files, randomFn);
+      picks.set(state, { signature, file });
+      return file;
+    },
+    retainOnly(state) {
+      for (const key of [...picks.keys()]) {
+        if (key !== state) picks.delete(key);
+      }
+    },
+    clear() {
+      picks.clear();
+    },
+  };
+}
+
+function getPickVisualFile(options) {
+  return typeof options.pickVisualFile === "function" ? options.pickVisualFile : pickFirstFile;
 }
 
 function getWorkingSvg(options = {}) {
@@ -134,21 +174,21 @@ function getWorkingSvg(options = {}) {
     new Set(["working", "thinking", "juggling"])
   );
   const stateSvgs = options.stateSvgs;
-  return selectTieredStateFile(
+  return getPickVisualFile(options)("working", selectTieredStateFiles(
     options.theme && options.theme.workingTiers,
     count,
-    stateSvgs.working[0]
-  );
+    stateSvgs.working
+  ));
 }
 
 function getJugglingSvg(options = {}) {
   const count = countLiveSubagents(options.sessions);
   const stateSvgs = options.stateSvgs;
-  return selectTieredStateFile(
+  return getPickVisualFile(options)("juggling", selectTieredStateFiles(
     options.theme && options.theme.jugglingTiers,
     count,
-    stateSvgs.juggling[0]
-  );
+    stateSvgs.juggling
+  ));
 }
 
 function getWinningSessionDisplayHint(sessions, targetState, displayHintMap = {}) {
@@ -186,7 +226,7 @@ function getSvgOverride(state, options = {}) {
     const hinted = getWinningSessionDisplayHint(options.sessions, "thinking", options.displayHintMap);
     if (hinted) return hinted;
     const stateSvgs = options.stateSvgs;
-    return stateSvgs.thinking[0];
+    return getPickVisualFile(options)("thinking", stateSvgs.thinking);
   }
   return null;
 }
@@ -194,11 +234,12 @@ function getSvgOverride(state, options = {}) {
 module.exports = {
   buildStateBindings,
   pickStateFile,
+  createStableVisualPicker,
   hasOwnVisualFiles,
   resolveVisualBinding,
   countActiveSessionsByStates,
   countLiveSubagents,
-  selectTieredStateFile,
+  selectTieredStateFiles,
   getWorkingSvg,
   getJugglingSvg,
   getWinningSessionDisplayHint,

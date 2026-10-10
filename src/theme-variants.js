@@ -4,6 +4,8 @@ const {
   isPlainObject,
   getStateBindingEntry,
   getStateFiles,
+  getTierFiles,
+  getTierKeyFile,
   deepMergeObject,
   basenameOnly,
   mergeFileHitBoxes,
@@ -98,7 +100,7 @@ function buildBaseBindingMetadata(raw) {
         .filter((tier) => isPlainObject(tier))
         .map((tier) => ({
           minSessions: Number.isFinite(tier.minSessions) ? tier.minSessions : 0,
-          originalFile: basenameOnly(tier.file),
+          originalFile: basenameOnly(getTierKeyFile(tier)),
         }))
         .sort((a, b) => b.minSessions - a.minSessions)
       : [];
@@ -207,13 +209,18 @@ function applyUserOverridesPatch(raw, overrides) {
       if (!isPlainObject(entry)) continue;
       const cleanOriginal = basenameOnly(originalFile);
       const tier = nextTiers.find((candidate) =>
-        isPlainObject(candidate) && basenameOnly(candidate.file) === cleanOriginal
+        isPlainObject(candidate) && basenameOnly(getTierKeyFile(candidate)) === cleanOriginal
       );
       if (!tier) continue;
       if (typeof entry.file === "string" && entry.file) {
+        // Like a state slot, the override replaces the first file of a
+        // multi-file tier and leaves the rest of its pool in rotation.
+        if (Array.isArray(tier.files) && tier.files.length > 0) {
+          tier.files = [entry.file, ...getTierFiles(tier).slice(1)];
+        }
         tier.file = entry.file;
       }
-      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : tier.file;
+      const transitionTarget = (typeof entry.file === "string" && entry.file) ? entry.file : getTierFiles(tier)[0];
       applyTransitionOverride(patched, transitionTarget, entry.transition);
     }
     patched[tierGroup] = nextTiers;

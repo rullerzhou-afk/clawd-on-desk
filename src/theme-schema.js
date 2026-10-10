@@ -254,6 +254,8 @@ function validateTheme(cfg) {
     errors.push(...validateMirroredFiles(cfg.mirroredFiles));
   }
 
+  errors.push(...validateTierFiles(cfg));
+
   const fallbackStateKeys = Object.keys(normalizedStates);
   for (const stateKey of fallbackStateKeys) {
     const entry = normalizedStates[stateKey];
@@ -468,6 +470,45 @@ function hasStateBinding(entry) {
   return normalized.files.length > 0 || !!normalized.fallbackTo;
 }
 
+// A working/juggling tier names its visual with `file` (one visual) and/or
+// `files` (a pool the runtime draws from). `files` wins when it is present;
+// a theme may keep `file` next to it for Clawd builds that only read `file`.
+function getTierFiles(tier) {
+  if (!isPlainObject(tier)) return [];
+  if (Array.isArray(tier.files)) {
+    const files = tier.files.filter((file) => typeof file === "string" && file);
+    if (files.length > 0) return files;
+  }
+  return typeof tier.file === "string" && tier.file ? [tier.file] : [];
+}
+
+// Stable identity of a tier for per-tier user overrides. `file` stays the key
+// when both fields are declared, so adding `files` to an existing tier keeps
+// the overrides users already saved against it.
+function getTierKeyFile(tier) {
+  if (isPlainObject(tier) && typeof tier.file === "string" && tier.file) return tier.file;
+  return getTierFiles(tier)[0] || null;
+}
+
+function validateTierFiles(cfg) {
+  const errors = [];
+  for (const groupName of ["workingTiers", "jugglingTiers"]) {
+    const group = cfg && cfg[groupName];
+    if (!Array.isArray(group)) continue;
+    group.forEach((tier, index) => {
+      if (!isPlainObject(tier) || tier.files === undefined) return;
+      if (
+        !Array.isArray(tier.files)
+        || tier.files.length === 0
+        || tier.files.some((file) => typeof file !== "string" || !file)
+      ) {
+        errors.push(`${groupName}[${index}].files must be a non-empty array of file names when present`);
+      }
+    });
+  }
+  return errors;
+}
+
 function normalizeStateBindings(states) {
   const normalized = {};
   if (!isPlainObject(states)) return normalized;
@@ -585,6 +626,14 @@ function projectThemeVisualUsages(cfg) {
   for (const [groupName, group] of [
     ["workingTiers", cfg && cfg.workingTiers],
     ["jugglingTiers", cfg && cfg.jugglingTiers],
+  ]) {
+    for (const tier of Array.isArray(group) ? group : []) {
+      for (const file of getTierFiles(tier)) {
+        addVisualUsage(usages, `normal:${groupName}`, file, groupName);
+      }
+    }
+  }
+  for (const [groupName, group] of [
     ["idleAnimations", cfg && cfg.idleAnimations],
     ["idleVisualOptions", cfg && cfg.idleVisualOptions],
     ["idleEasterEggs", cfg && cfg.idleEasterEggs],
@@ -1691,10 +1740,16 @@ function mergeDefaults(raw, themeId, isBuiltin) {
     for (const [k, v] of Object.entries(theme.completionVisualMap)) theme.completionVisualMap[k] = bn(v);
   }
   if (theme.workingTiers) {
-    for (const t of theme.workingTiers) { if (t.file) t.file = bn(t.file); }
+    for (const t of theme.workingTiers) {
+      if (t.file) t.file = bn(t.file);
+      if (Array.isArray(t.files)) t.files = t.files.map(bn);
+    }
   }
   if (theme.jugglingTiers) {
-    for (const t of theme.jugglingTiers) { if (t.file) t.file = bn(t.file); }
+    for (const t of theme.jugglingTiers) {
+      if (t.file) t.file = bn(t.file);
+      if (Array.isArray(t.files)) t.files = t.files.map(bn);
+    }
   }
   if (Array.isArray(theme.idleAnimations)) {
     for (const a of theme.idleAnimations) { if (a && a.file) a.file = bn(a.file); }
@@ -1742,6 +1797,9 @@ module.exports = {
   getStateFiles,
   hasStateFiles,
   hasStateBinding,
+  getTierFiles,
+  getTierKeyFile,
+  validateTierFiles,
   normalizeStateBindings,
   hasReactionBindings,
   supportsIdleTracking,
