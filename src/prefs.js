@@ -1613,7 +1613,21 @@ function save(prefsPath, snapshot) {
   try {
     fs.mkdirSync(path.dirname(prefsPath), { recursive: true });
   } catch {}
-  fs.writeFileSync(prefsPath, JSON.stringify(validated, null, 2));
+  // Atomic write: stage to a sibling tmp file, then rename over the target.
+  // A crash mid-writeFileSync would otherwise truncate the live prefs file to
+  // a partial/empty state, which load() then treats as "invalid contents" and
+  // recovers from defaults — losing all user settings. rename() replaces the
+  // destination atomically on all supported platforms (Windows included).
+  const tmpPath = prefsPath + ".tmp";
+  try {
+    fs.writeFileSync(tmpPath, JSON.stringify(validated, null, 2));
+    fs.renameSync(tmpPath, prefsPath);
+  } catch (err) {
+    try {
+      fs.unlinkSync(tmpPath);
+    } catch {}
+    throw err;
+  }
 }
 
 // Map an OS locale string (e.g. Electron's app.getLocale()) onto one of the
