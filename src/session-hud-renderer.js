@@ -62,6 +62,13 @@ function titleFor(session) {
   return session.displayTitle || session.sessionTitle || session.id || "";
 }
 
+function untitledCodexTag(session) {
+  const tag = session.displaySessionTag;
+  if (session.agentId !== "codex" || session.hasAlias || session.sessionTitle || typeof tag !== "string"
+    || !/^[0-9a-f]{10}$/.test(tag)) return "";
+  return session.displayTitle === t("sessionCodexUntitled").replace("{tag}", tag) ? tag : "";
+}
+
 function titleUnits(value) {
   let units = 0;
   for (const ch of String(value || "")) {
@@ -289,7 +296,22 @@ function createRowForSession(session, now) {
   const fullTitle = titleFor(session);
   const shortTitle = shortenHudTitle(fullTitle);
   title.className = feedbackText ? "title session-inline-feedback" : "title";
-  title.textContent = feedbackText || shortTitle;
+  const fallbackTag = !feedbackText && untitledCodexTag(session);
+  if (fallbackTag) {
+    // Keep the identity suffix visible when the compact HUD clips the label.
+    title.classList.add("title-tagged-fallback");
+    const label = document.createElement("span");
+    label.className = "title-fallback-label";
+    label.textContent = fullTitle.slice(0, -fallbackTag.length);
+    const tag = document.createElement("span");
+    tag.className = "title-fallback-tag";
+    tag.textContent = fallbackTag;
+    title.appendChild(label);
+    title.appendChild(tag);
+    title.title = fullTitle;
+  } else {
+    title.textContent = feedbackText || shortTitle;
+  }
   if (feedbackText) {
     title.title = feedbackText;
     title.setAttribute("aria-live", "polite");

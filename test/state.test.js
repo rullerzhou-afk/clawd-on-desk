@@ -4635,6 +4635,37 @@ describe("buildSessionSnapshot", () => {
   });
   afterEach(() => api.cleanup());
 
+  it("localizes the untitled Desktop label and retains a formal title without new activity", () => {
+    const id = "codex:00000000-0000-4000-8000-000000000009";
+    update(api, {
+      id, state: "working", event: "PreToolUse", agentId: "codex",
+      codexOriginator: "Codex Desktop", codexSource: "vscode", cwd: "/repo/project",
+    });
+    const live = api.sessions.get(id);
+    const before = JSON.stringify(live);
+    const initial = api.buildSessionSnapshot().sessions[0];
+    assert.strictEqual(initial.displayTitle, `Codex chat · ${initial.displaySessionTag}`);
+    assert.strictEqual(live.sessionTitle, null);
+    ctx.lang = "zh";
+    assert.strictEqual(api.buildSessionSnapshot().sessions[0].displayTitle, `Codex 对话 · ${initial.displaySessionTag}`);
+    assert.strictEqual(JSON.stringify(live), before, "language/display changes cannot refresh activity or persistence fields");
+
+    assert.strictEqual(api.updateSessionMetadata(id, { sessionTitle: "Native title", expectedAgentId: "codex" }), true);
+    const named = api.buildSessionSnapshot();
+    assert.strictEqual(named.sessions.length, 1);
+    assert.strictEqual(named.sessions[0].id, initial.id);
+    assert.strictEqual(named.sessions[0].displayTitle, "Native title");
+    assert.strictEqual(named.sessions[0].updatedAt, initial.updatedAt);
+    assert.deepStrictEqual(named.sessions[0].lastEvent, initial.lastEvent);
+    assert.strictEqual(named.sessions[0].state, initial.state);
+    assert.strictEqual(named.sessions[0].badge, initial.badge);
+    assert.strictEqual(named.sessions[0].cwd, initial.cwd);
+    assert.strictEqual(api.updateSessionMetadata(id, { sessionTitle: "", expectedAgentId: "codex" }), false);
+    assert.strictEqual(api.buildSessionSnapshot().sessions[0].displayTitle, "Native title");
+    assert.strictEqual(api.updateSessionMetadata("missing-desktop-thread", { sessionTitle: "Late title", expectedAgentId: "codex" }), false);
+    assert.strictEqual(api.sessions.size, 1);
+  });
+
   it("returns a JSON-serializable empty snapshot", () => {
     const snapshot = api.buildSessionSnapshot();
     // Icon URLs are absolute file:// paths (machine-dependent) — assert the

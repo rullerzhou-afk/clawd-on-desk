@@ -128,7 +128,15 @@ SessionStart / UserPromptSubmit，被 fence 拒掉的旧回合开始不解除；
 `session_index.jsonl`（沿用 512 KiB tail 上限）。新标题/改名以 `session_index:title`
 送入 `updateSessionMetadata(expectedAgentId: "codex")`，即使 rollout 未增长也刷新
 HUD/Dashboard；不创建会话、不改变状态/活跃时间/完成提醒/小结，不清空已有标题。
-尚未生成原生标题时仍使用既有文件夹 fallback；用户别名继续优先。
+尚未生成原生标题时，已知 Desktop originator 的本机 Codex 会话显示本地化的
+「Codex 对话 · 稳定短标签」；标签复用 canonical session id 的 10 位哈希，不写入
+`sessionTitle`，HUD 保留标签后缀，Dashboard / 菜单复用同一 `displayTitle`。
+用户别名、索引标题和已有标题继续优先；CWD 和文件夹操作原样保留。CLI / 未知
+originator、headless（含已分类 child）、显式 CLI / exec / internal / subagent source、
+remote / WSL 不使用该 Desktop fallback。该标签不判断会话是否为用户侧聊或后台
+任务，不隐藏或合并行；不读 prompt、原生私有数据库，也不增加标题刷新通道。
+语言变更在更新 mirror 和广播字典后，复用 `emitSessionSnapshot({force:true})`
+刷新这些显示标签；同时修改别名只发一次，不通过 lifecycle 事件刷新活跃时间。
 monitor 当前标题与索引不一致时也会重发，覆盖索引恢复场景。
 一次快照构建最多读一次本机索引；无本机 Codex 会话时不读。
 标题通道跳过带 host 或 WSL 标记的会话；刷新覆盖仍在活动或退休记录中的会话

@@ -10,6 +10,8 @@ const {
 } = require("./state-session-dedupe");
 const { bareCodexSessionId, readCodexThreadName, readCodexThreadNames } = require("../hooks/codex-session-index");
 const { isWslSourced } = require("./remote-process-metadata");
+const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
+const { i18n } = require("./i18n");
 
 // ── Session source derivation ────────────────────────────────────────
 
@@ -305,6 +307,26 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
+  // An unnamed Desktop thread is still a separate session. Label it without
+  // borrowing prompt content or presenting its working directory as a chat name.
+  // Official child state is normalized to headless before reaching snapshots.
+  const source = sessionLike && sessionLike.codexSource;
+  const sourceName = typeof source === "string" ? source.trim().toLowerCase() : "";
+  if (sessionLike && sessionLike.agentId === "codex"
+    && isCodexDesktopOriginator(sessionLike.codexOriginator)
+    && !sessionLike.host && !isWslSourced(sessionLike)
+    && (!sessionLike.profileId || sessionLike.profileId === "local")
+    && !sessionLike.headless
+    && (source == null || typeof source === "string")
+    && !["cli", "codex-cli", "codex-tui", "exec", "internal", "subagent", "agent-subagent"].includes(sourceName)) {
+    const tag = buildDisplaySessionTag(id);
+    if (tag) {
+      const translated = typeof options.t === "function" ? options.t("sessionCodexUntitled") : null;
+      const template = typeof translated === "string" && translated.includes("{tag}")
+        ? translated : i18n.en.sessionCodexUntitled;
+      return template.replace("{tag}", tag);
+    }
+  }
   const folder = sessionDisplayFolder(id, sessionLike);
   if (folder) return folder;
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;

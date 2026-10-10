@@ -207,10 +207,12 @@ function createSettingsEffectRouter(options = {}) {
       safeCall(logWarn, "Clawd: session HUD lang broadcast failed:", sendSessionHudI18n);
       safeCall(logWarn, "Clawd: window title sync failed:", syncWindowTitles);
     }
-    if ("sessionAliases" in changes) {
+    // Localized display labels live in snapshots. Refresh after mirrors and
+    // dictionaries, also coalescing a simultaneous alias change into one send.
+    if ("lang" in changes || "sessionAliases" in changes) {
       safeCall(
         logWarn,
-        "Clawd: session alias snapshot broadcast failed:",
+        "Clawd: session title snapshot broadcast failed:",
         emitSessionSnapshot,
         { force: true }
       );
