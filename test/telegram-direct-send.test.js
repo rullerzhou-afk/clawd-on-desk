@@ -2604,6 +2604,48 @@ test("direct send rejects a reused session when mapped UI identity changes", asy
   }
 });
 
+test("direct send uses the real queue admission guard for a Desktop sidechat without transcript/store", async () => {
+  const entry = codexDesktopEntry({
+    rawSessionId: "codex:019e115a-4df2-7ed0-b90e-8e6345aca777",
+    codexOriginator: "Codex Desktop", transcriptPath: null, codexHome: null,
+    sourcePid: 14220, agentPid: 14220,
+  });
+  let execCalls = 0;
+  let consoleCalls = 0;
+  let adapterSelections = 0;
+  const copied = [];
+  const queueAdapter = createCodexQueueDeliveryAdapter({
+    osPlatform: "win32", executable: "synthetic-codex.exe", executableCandidates: ["synthetic-codex.exe"],
+    env: { CODEX_HOME: "C:\\synthetic\\ambient-store" },
+    execFile() { execCalls++; throw new Error("a no-transcript sidechat must not execute queue"); },
+  });
+  assert.equal(queueAdapter.canDeliver(entry), false);
+  const direct = createTelegramDirectSend({
+    isEnabled: () => true,
+    getSessionSnapshot: () => ({ sessions: [entry] }),
+    focusSession: () => { throw new Error("queue selection cannot authorize focus/input"); },
+    deliveryAdapter: { deliver: async () => { consoleCalls++; throw new Error("must not inject into the shared app-server Console"); } },
+    getDeliveryAdapter: ({ entry: selected }) => {
+      assert.equal(selected.codexOriginator, "Codex Desktop");
+      adapterSelections++;
+      return queueAdapter;
+    },
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard: { writeText: text => copied.push(text) } }),
+    osPlatform: "win32",
+  });
+  const context = direct.createCompletionNotificationContext(entry);
+  assert.equal(context.identity.codexHome, null);
+  assert.equal(direct.registerCompletionNotification({ messageId: 9970, chatId: "123", sessionId: entry.id, notificationContext: context }), true);
+  const result = await direct.handleTextMessage({ text: "review this reply manually", replyToMessageId: 9970, chatId: "123" });
+  assert.equal(result.status, "fallback_copied");
+  assert.equal(result.deliveryResult.autoEnter, false);
+  assert.equal(execCalls, 0);
+  assert.equal(consoleCalls, 0);
+  assert.ok(adapterSelections > 0, "the real Codex adapter must be selected, then refuse admission");
+  assert.deepEqual(copied, ["review this reply manually"]);
+  assert.equal(entry.codexHome, null, "the ambient environment store must not be promoted into session provenance");
+});
+
 test("direct send routes known Codex Desktop and CLI replies through the focusless queue", async () => {
   for (const [codexOriginator, messageId] of [
     ["codex_work_desktop", 9971],

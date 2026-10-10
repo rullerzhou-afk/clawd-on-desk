@@ -5,6 +5,7 @@ const { EventEmitter } = require("node:events");
 const { describe, it } = require("node:test");
 
 const initServer = require("../src/server");
+const { buildPermissionBody } = require("../hooks/codex-hook");
 const { makeSessionKey } = require("../src/session-key");
 
 const localSessionKey = (rawSessionId) => makeSessionKey({
@@ -500,6 +501,40 @@ describe("Codex official /permission path", () => {
       assert.strictEqual(pendingPermissions.length, 0, String(originator));
       assert.strictEqual(shown.length, 0, String(originator));
       assert.deepStrictEqual(updates, [], String(originator));
+    }
+  });
+
+  it("keeps headless, exec and unaudited children on native fallback despite a Desktop env", async () => {
+    const payloads = [
+      { headless: true },
+      { source: "exec", codex_session_role: "subagent" },
+      { originator: "codex_exec", codex_session_role: "subagent" },
+      { originator: "unknown-client", codex_session_role: "subagent" },
+      { source: { subagent: { thread_spawn: { parent_thread_id: "parent" } } } },
+      { codex_session_role: "subagent" },
+      { originator: 123, codex_session_role: "subagent" },
+      { originator: null, codex_session_role: "subagent" },
+      { source: { type: "exec" }, codex_session_role: "subagent" },
+      { source: { role: "unknown" }, codex_session_role: "subagent" },
+      ...["startup", "resume", "clear", "compact", "fork"].map((source) => ({ source, codex_session_role: "subagent" })),
+    ];
+    for (const payload of payloads) {
+      const { handler, pendingPermissions, updates, shown } = startServer({
+        isCodexPermissionInterceptEnabled: () => true,
+      });
+      const body = buildPermissionBody({
+        hook_event_name: "PermissionRequest", session_id: "env-child", tool_name: "Bash",
+        tool_input: { command: "npm test" }, ...payload,
+      }, () => ({ stablePid: null, agentPid: null }), {
+        platform: "win32", env: { CODEX_INTERNAL_ORIGINATOR_OVERRIDE: "Codex Desktop" },
+      });
+      assert.strictEqual(body.codex_originator, typeof payload.originator === "string" ? payload.originator : undefined);
+      const res = await callPermission(handler, body);
+      assert.strictEqual(res.statusCode, 204, JSON.stringify(payload));
+      assert.strictEqual(res.body, "");
+      assert.strictEqual(pendingPermissions.length, 0);
+      assert.strictEqual(shown.length, 0);
+      assert.deepStrictEqual(updates, []);
     }
   });
 });

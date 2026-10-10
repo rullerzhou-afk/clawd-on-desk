@@ -256,7 +256,7 @@ if ($fg -ne [IntPtr]::Zero) {
   [void][ClawdWin32]::GetClassName($fg, $sb, $sb.Capacity)
   $fgClass = $sb.ToString()
 }
-$processes = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Select-Object ProcessId, ParentProcessId, Name, CommandLine, @{Name='StartIdentity';Expression={try { $_.CreationDate.ToUniversalTime().Ticks.ToString() } catch { $null }}})
+$processes = @(Get-CimInstance Win32_Process -Property ProcessId,ParentProcessId,Name,CommandLine,CreationDate -ErrorAction SilentlyContinue | Select-Object ProcessId, ParentProcessId, Name, CommandLine, @{Name='StartIdentity';Expression={try { $_.CreationDate.ToUniversalTime().Ticks.ToString() } catch { $null }}})
 [pscustomobject]@{
   processes = $processes
   foreground = [pscustomobject]@{
@@ -796,7 +796,7 @@ function createPidResolver(options) {
   // Reuses the prewarmed in-process _cached (SessionStart) so a `start` context
   // after a no-arg prewarm never spawns a second time. Spreads into a NEW object
   // (never mutates _cached) so the no-arg shape stays pristine.
-  function freshMetadata() {
+  function freshMetadata(preferAgentPid = false) {
     const meta = freshResolve();
     const result = {
       ...meta,
@@ -809,13 +809,20 @@ function createPidResolver(options) {
       // make the offline path indistinguishable from a real walk in logs.
       cacheSource: meta.snapshotOk ? "fresh" : "none",
     };
+    // A verified Codex Desktop client uses its persistent app-server as both
+    // source and cache anchor. A hook's terminal match can be its short-lived
+    // PowerShell wrapper; retaining that anchor would invalidate both cached
+    // PIDs as soon as the wrapper exits. Preserve the raw terminal observation
+    // and the no-arg result, and never promote a headless or failed walk.
+    const useAgentAnchor = preferAgentPid && meta.snapshotOk && meta.agentPid && !result.headless;
+    if (useAgentAnchor) result.stablePid = meta.agentPid;
     // Object spread deliberately skips the recovery-only non-enumerable
     // identities attached by computeFreshSnapshot(). Reattach them privately
     // so the hook can seed the durable lease from this one live snapshot while
     // keeping the public resolver shape and sanitized v2 cache unchanged.
     Object.defineProperties(result, {
       agentProcessStartIdentity: { value: meta.agentProcessStartIdentity, enumerable: false },
-      sourceProcessStartIdentity: { value: meta.sourceProcessStartIdentity, enumerable: false },
+      sourceProcessStartIdentity: { value: useAgentAnchor ? meta.agentProcessStartIdentity : meta.sourceProcessStartIdentity, enumerable: false },
     });
     return result;
   }
@@ -858,9 +865,9 @@ function createPidResolver(options) {
   // The walk-usable condition stays: a degraded walk writes nothing and keeps
   // v1, since promotion is then the session's only remaining cache path. No
   // extra fresh for the cleanup.
-  function startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
+  function startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk, preferAgentPid) {
     if (canDisk) maybeSweep(pidCache);
-    const meta = freshMetadata();
+    const meta = freshMetadata(preferAgentPid);
     if (canDisk && meta.snapshotOk && meta.agentPid) {
       pidCache.writePidCacheV2(namespace, sessionId, cacheCwd, v2SubsetFrom(meta));
       claudeDropV1SameKey(pidCache, namespace, sessionId, cacheCwd);
@@ -897,7 +904,7 @@ function createPidResolver(options) {
   // event: a hit (or promotion) is zero spawn; a miss is at most ONE fresh, then
   // repopulate v2 if the walk was usable. Non-cacheable events may fresh (the
   // no-fallback contract is prompt/end only).
-  function eventLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk) {
+  function eventLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk, preferAgentPid) {
     if (canDisk) {
       const hit = readLiveV2(pidCache, namespace, sessionId, cacheCwd);
       if (hit) {
@@ -916,7 +923,7 @@ function createPidResolver(options) {
       const promoted = claudePromote(pidCache, namespace, sessionId, cacheCwd, deriveHeadless);
       if (promoted) return promoted;
     }
-    const meta = freshMetadata();
+    const meta = freshMetadata(preferAgentPid);
     if (canDisk && meta.snapshotOk && meta.agentPid) {
       // v1 drop mirrors start: unconditional once a usable fresh walk is in
       // hand (privacy-first even when the v2 write fails — see startLifecycle).
@@ -986,13 +993,17 @@ function createPidResolver(options) {
     // is the adapter's declaration; the path check guards a stray empty
     // ingredient. It never relaxes the prompt/end no-fallback contract below.
     const canDisk = cacheable && !!pidCache.cacheFilePathV2(namespace, sessionId, cacheCwd);
+    // Opt-in only: codex-hook verifies the known Desktop originator and local
+    // interactive provenance. Other namespaces retain terminal-first anchors
+    // and the existing double-liveness requirement, even with this flag set.
+    const preferAgentPid = namespace === "codex" && ctx.preferAgentPid === true;
 
     switch (lifecycle) {
-      case "start":  return startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
+      case "start":  return startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk, preferAgentPid);
       case "prompt": return promptLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
       case "end":    return endLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
       case "event":
-      default:       return eventLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk);
+      default:       return eventLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk, preferAgentPid);
     }
   }
 
