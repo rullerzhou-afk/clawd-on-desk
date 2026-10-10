@@ -1762,6 +1762,59 @@ function updateSessionMetadata(sessionId, opts = {}) {
   return true;
 }
 
+// Runtime-only, accepted late Codex initialization. Unlike a lifecycle update,
+// this cannot change phase, activity/history, completion/acknowledgement, recap,
+// or compaction ownership. Unlike statusline metadata it can enrich focus data.
+function updateCodexInitializationMetadata(sessionId, opts = {}) {
+  const session = sessions.get(sessionId);
+  if (!session || session.agentId !== "codex"
+    || (session.profileId || "local") !== "local"
+    || session.host || session.wslDistro || session.headless
+    || !isWorkingLikeState(session.state) || session.requiresCompletionAck === true
+    || opts.agentId !== "codex" || opts.profileId !== "local"
+    || opts.hookSource !== "codex-official"
+    || opts.host || opts.wslDistro || opts.headless
+    || opts.subagentId || opts.subagentType || opts.recapIsSubagent) return false;
+  const processMetadata = mergeSessionProcessMetadata(session, opts, {
+    replace: opts.replaceProcessMetadata === true,
+  });
+  Object.assign(session, {
+    sourcePid: processMetadata.sourcePid,
+    agentPid: processMetadata.agentPid,
+    wtHwnd: processMetadata.wtHwnd,
+    editor: processMetadata.editor,
+    pidChain: processMetadata.pidChain,
+    cwd: opts.cwd || session.cwd || "",
+    tmuxSocket: opts.tmuxSocket || session.tmuxSocket || null,
+    tmuxClient: opts.tmuxClient || session.tmuxClient || null,
+    orcaPaneKey: processMetadata.identityChanged && !opts.orcaPaneKey
+      ? null : mergeOrcaPaneKey(opts.orcaPaneKey, session, null, opts),
+    platform: opts.platform || session.platform || null,
+    provider: opts.provider || session.provider || null,
+    codexOriginator: opts.codexOriginator || session.codexOriginator || null,
+    codexSource: opts.codexSource || session.codexSource || null,
+    ghosttyTerminalId: normalizeGhosttyTerminalId(opts.ghosttyTerminalId) || session.ghosttyTerminalId || null,
+    transcriptPath: normalizeTranscriptPath(opts.transcriptPath) || session.transcriptPath || null,
+    sessionAutomationIdentity: normalizeSessionAutomationIdentity(opts.sessionAutomationIdentity)
+      || session.sessionAutomationIdentity || null,
+    pidReachable: resolvePidReachable(
+      opts.replaceProcessMetadata === true ? null : session,
+      processMetadata.agentPid,
+      processMetadata.sourcePid,
+    ),
+  });
+  updateSessionMetadata(sessionId, {
+    expectedAgentId: "codex",
+    sessionTitle: opts.sessionTitleFromPrompt ? null : opts.sessionTitle,
+    contextUsage: opts.contextUsage,
+    contextUsageOrigin: opts.contextUsageOrigin,
+    model: opts.model,
+  });
+  emitSessionSnapshot();
+  debugSession(`codex-initialization preserve ${describeSession(sessionId, session)}`);
+  return true;
+}
+
 function clearClaudeStatuslineAuthority(profileId = "local") {
   let cleared = 0;
   for (const session of sessions.values()) {
@@ -3992,6 +4045,7 @@ return {
   updateSessionFocusMetadata,
   touchSessionActivity,
   updateSessionMetadata,
+  updateCodexInitializationMetadata,
   hasCodexCompactionHold,
   releaseCodexCompactionOnTerminal,
   clearClaudeStatuslineAuthority,

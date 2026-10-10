@@ -607,7 +607,15 @@ function createAgentRuntimeMain(options = {}) {
     const sessionBeforeUpdate = event === "SessionEnd" && sessions && typeof sessions.get === "function"
       ? sessions.get(sessionId)
       : null;
-    const result = updateSession(sessionId, state, event, opts);
+    // Initialization can arrive after the fallback already accepted this turn.
+    // Keep its real phase/clock; valid initialization metadata still belongs to
+    // the conversation. New/closed owners and compaction keep their lifecycle path.
+    const preserveCodexInitialization = isLocalOfficialCodexEvent
+      && event === "SessionStart" && state === "idle"
+      && shouldPreserveCodexInitialization(sessionId, opts, stateRuntime);
+    const result = preserveCodexInitialization
+      ? stateRuntime.updateCodexInitializationMetadata(sessionId, opts)
+      : updateSession(sessionId, state, event, opts);
     // Tombstone only a local Codex row this official SessionEnd actually
     // deleted. A row kept alive for a replyable completion mapping (state.js
     // treats that end as a no-op) must not be tombstoned.
@@ -624,6 +632,23 @@ function createAgentRuntimeMain(options = {}) {
     enrichQoderSessionTitle(sessionId, event, opts);
     enrichWorkBuddySessionTitle(sessionId, event, opts);
     return result;
+  }
+
+  function shouldPreserveCodexInitialization(sessionId, opts, stateRuntime) {
+    if (!stateRuntime || typeof stateRuntime.updateCodexInitializationMetadata !== "function") return false;
+    const session = stateRuntime.sessions?.get(sessionId);
+    if (!isLocalCodexSessionRecord(session) || session.headless
+      || opts.headless || opts.subagentId || opts.subagentType || opts.recapIsSubagent
+      || !CODEX_WORKING_LIKE_STATES.has(session.state)
+      || session.requiresCompletionAck === true) return false;
+    const owner = codexTurnFence.getSnapshot(sessionId);
+    const turnId = normalizeCodexTurnId(opts.turnId);
+    if (!owner || owner.terminalLatch
+      || (turnId && turnId !== owner.currentTurnId)) return false;
+    // SessionStart is an existing compaction finish signal. Do not bypass it
+    // merely because the underlying turn remains open during the sweep.
+    if (stateRuntime.hasCodexCompactionHold?.(sessionId)) return false;
+    return true;
   }
 
   function localWorkBuddySession(sessionId) {

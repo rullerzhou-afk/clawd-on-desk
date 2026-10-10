@@ -95,6 +95,14 @@ backfill、旧/未来时间、quota/title/文件 mtime、已结束或其他回�
 仅被 working-timeout 转 idle 的行保留私有 timeout 标记和最后真实活跃时间，当前回合新进度可按原 thinking/working
 恢复；普通 idle、Stop/abort/end 不可恢复，任一 accepted lifecycle 或恢复清掉标记。标记不进入 snapshot。
 无真实进度时仍遵守用户配置的 Codex inactivity timeout，不以 Desktop 长寿 PID 永久保活。
+本机非 headless 的 Codex 回合已被 turn fence 接受且仍在 thinking/working/juggling 时，
+迟到的 idle SessionStart 只合并初始化元数据，不改 phase、updatedAt、事件历史、完成/确认或小结。
+有效进程、目录、标题、模型和上下文仍正常合并；既有回合的真实进度继续刷新活跃时钟。
+冷启动、已结束/非忙碌行、不同回合、远程/WSL/子代理保持原生命周期路径。
+当前清扫持有不走这条初始化保护，保留既有 SessionStart 压缩完成语义。
+初始化来源和 PID 变化不作为新回合证明；真正的新回合仍由 prompt/task_started 开启。
+同 ID 的恢复若只剩未结束的旧 owner，初始化不延长它的活跃时间，仍由真实回合事件或既有超时清理收敛。
+此修复不改变 hook 命令、原生信任记录或公开 HTTP 字段。
 自动自由漫步同时检查 canonical in-progress session；临时 idle/roam 视觉不放行忙碌会话，取消走动时按
 resolveDisplayState 恢复真实显示。手动拖拽、设置预览、DND 与 Mini 的原有入口和 gate 保留。
 
