@@ -505,7 +505,7 @@ describe("agent installation detector", () => {
     assert.strictEqual(gemini.clawdIntegration.detected, true);
   });
 
-  it("keeps exact Clawd register/unregister residue non-actionable for all five repaired agents", () => {
+  it("keeps exact Clawd register/unregister residue non-actionable for config-evidenced agents", () => {
     const homeDir = makeHome();
     const pluginDir = path.join(homeDir, "managed", "openclaw-plugin");
     const openclawStateDir = path.join(homeDir, ".openclaw");
@@ -534,7 +534,16 @@ describe("agent installation detector", () => {
 
     const detect = (now) => detectAgentInstallations({ homeDir, now, env: {} });
     let report = detect(1);
-    for (const agentId of ["zcode", "qoder", "codebuddy", "gemini-cli", "openclaw"]) {
+    // Directory-evidenced agents report installed once Clawd has registered
+    // (the directory exists); the Clawd-only residue distinction now lives on
+    // the clawdIntegration marker, not on installed detection.
+    for (const agentId of ["zcode", "qoder", "codebuddy"]) {
+      const entry = byId(report, agentId);
+      assert.strictEqual(entry.detectedInstalled, true, `${agentId} installed Clawd-only config`);
+      assert.strictEqual(entry.reason, "parent-dir", `${agentId} installed reason`);
+      assert.strictEqual(entry.clawdIntegration.detected, true, `${agentId} integration marker`);
+    }
+    for (const agentId of ["gemini-cli", "openclaw"]) {
       const entry = byId(report, agentId);
       assert.strictEqual(entry.detectedInstalled, null, `${agentId} installed Clawd-only config`);
       assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} installed reason`);
@@ -554,7 +563,13 @@ describe("agent installation detector", () => {
     });
 
     report = detect(2);
-    for (const agentId of ["zcode", "qoder", "codebuddy", "gemini-cli", "openclaw"]) {
+    for (const agentId of ["zcode", "qoder", "codebuddy"]) {
+      const entry = byId(report, agentId);
+      assert.strictEqual(entry.detectedInstalled, true, `${agentId} unregister residue`);
+      assert.strictEqual(entry.reason, "parent-dir", `${agentId} residue reason`);
+      assert.strictEqual(entry.clawdIntegration.detected, false, `${agentId} removed marker`);
+    }
+    for (const agentId of ["gemini-cli", "openclaw"]) {
       const entry = byId(report, agentId);
       assert.strictEqual(entry.detectedInstalled, null, `${agentId} unregister residue`);
       assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} residue reason`);
@@ -569,7 +584,7 @@ describe("agent installation detector", () => {
     ["openclaw", ".openclaw/openclaw.json", { gateway: { port: 18789 } }],
   ]) {
     const [agentId, relativeConfigPath, config] = fixture;
-    it(`detects source-pinned ${agentId} product config`, () => {
+    it(`detects source-pinned ${agentId} product presence`, () => {
       const homeDir = makeHome();
       writeJson(path.join(homeDir, relativeConfigPath), config);
 
@@ -577,7 +592,9 @@ describe("agent installation detector", () => {
 
       assert.strictEqual(entry.detectedInstalled, true);
       assert.strictEqual(entry.confidence, "high");
-      assert.strictEqual(entry.reason, "config-file");
+      // zcode/qoder/codebuddy now read install evidence from the product
+      // directory itself; openclaw still reads its config file.
+      assert.strictEqual(entry.reason, ["zcode", "qoder", "codebuddy"].includes(agentId) ? "parent-dir" : "config-file");
     });
   }
 
@@ -588,7 +605,7 @@ describe("agent installation detector", () => {
     ["openclaw", ".openclaw/openclaw.json", { plugins: { load: { paths: ["/third-party/plugin"] }, entries: { third: {} } } }],
   ]) {
     const [agentId, relativeConfigPath, config] = fixture;
-    it(`preserves a foreign ${agentId} hook/plugin as positive product evidence`, () => {
+    it(`detects ${agentId} alongside foreign hook/plugin content`, () => {
       const homeDir = makeHome();
       writeJson(path.join(homeDir, relativeConfigPath), config);
 
@@ -596,15 +613,32 @@ describe("agent installation detector", () => {
 
       assert.strictEqual(entry.detectedInstalled, true);
       assert.strictEqual(entry.confidence, "high");
-      assert.strictEqual(entry.reason, "config-file");
+      assert.strictEqual(entry.reason, ["zcode", "qoder", "codebuddy"].includes(agentId) ? "parent-dir" : "config-file");
     });
   }
 
-  it("returns null for empty, malformed, and symlinked reporter config evidence", () => {
+  it("detects zcode, qoder and codebuddy from the product directory alone", () => {
+    for (const [agentId, relativeDir] of [
+      ["zcode", ".zcode"],
+      ["qoder", ".qoder"],
+      ["codebuddy", ".codebuddy"],
+    ]) {
+      const presentHome = makeHome();
+      mkdirp(path.join(presentHome, relativeDir));
+      const present = byId(detectAgentInstallations({ homeDir: presentHome, now: 1, env: {} }), agentId);
+      assert.strictEqual(present.detectedInstalled, true, `${agentId} directory present`);
+      assert.strictEqual(present.reason, "parent-dir", `${agentId} present reason`);
+
+      const absentHome = makeHome();
+      const absent = byId(detectAgentInstallations({ homeDir: absentHome, now: 1, env: {} }), agentId);
+      assert.strictEqual(absent.detectedInstalled, false, `${agentId} directory absent`);
+      assert.strictEqual(absent.reason, "not-found", `${agentId} absent reason`);
+    }
+  });
+
+  it("still ignores empty, malformed, and symlinked gemini config evidence", () => {
     const fixtures = [
-      ["zcode", ".zcode/cli/config.json"],
-      ["qoder", ".qoder/settings.json"],
-      ["codebuddy", ".codebuddy/settings.json"],
+      ["gemini-cli", ".gemini/settings.json"],
     ];
     for (const [agentId, relativeConfigPath] of fixtures) {
       for (const shape of ["missing", "empty", "malformed", "symlink"]) {
@@ -626,7 +660,7 @@ describe("agent installation detector", () => {
     }
   });
 
-  it("fails an unreadable reporter config closed to insufficient evidence", () => {
+  it("detects qoder from its directory even when the config is unreadable", () => {
     const homeDir = makeHome();
     const configPath = path.join(homeDir, ".qoder", "settings.json");
     writeJson(configPath, { language: "en" });
@@ -651,11 +685,11 @@ describe("agent installation detector", () => {
       fs: fsImpl,
     });
 
-    assert.strictEqual(entry.detectedInstalled, null);
-    assert.strictEqual(entry.reason, "insufficient-evidence");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.strictEqual(entry.reason, "parent-dir");
   });
 
-  it("subtracts migrated ZCode and both exact CodeBuddy permission ownership shapes", () => {
+  it("detects ZCode and CodeBuddy by directory while their Clawd-only configs register as owned integration", () => {
     const zcodeHome = makeHome();
     writeJson(path.join(zcodeHome, ".zcode", "cli", "config.json"), {
       hooks: {
@@ -666,7 +700,8 @@ describe("agent installation detector", () => {
       },
     });
     const zcodeEntry = byId(detectAgentInstallations({ homeDir: zcodeHome, now: 1, env: {} }), "zcode");
-    assert.strictEqual(zcodeEntry.detectedInstalled, null);
+    assert.strictEqual(zcodeEntry.detectedInstalled, true);
+    assert.strictEqual(zcodeEntry.reason, "parent-dir");
 
     for (const permissionHook of [
       { name: "clawd-on-desk.permission.v1", type: "http", url: "https://preserved.example/permission" },
@@ -677,8 +712,8 @@ describe("agent installation detector", () => {
         hooks: { PermissionRequest: [{ hooks: [permissionHook] }] },
       });
       const entry = byId(detectAgentInstallations({ homeDir: codebuddyHome, now: 1, env: {} }), "codebuddy");
-      assert.strictEqual(entry.detectedInstalled, null, JSON.stringify(permissionHook));
-      assert.strictEqual(entry.reason, "insufficient-evidence");
+      assert.strictEqual(entry.detectedInstalled, true, JSON.stringify(permissionHook));
+      assert.strictEqual(entry.reason, "parent-dir");
     }
   });
 
@@ -714,11 +749,11 @@ describe("agent installation detector", () => {
       writeJson(path.join(homeDir, relativeConfigPath), config);
       const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
       assert.strictEqual(entry.detectedInstalled, true, agentId);
-      assert.strictEqual(entry.reason, "config-file", agentId);
+      assert.strictEqual(entry.reason, ["zcode", "qoder", "codebuddy"].includes(agentId) ? "parent-dir" : "config-file", agentId);
     }
   });
 
-  it("subtracts an owned hook leaf without hiding a foreign nested sibling", () => {
+  it("detects qoder from its directory while the owned hook registers as integration", () => {
     const homeDir = makeHome();
     writeJson(path.join(homeDir, ".qoder", "settings.json"), {
       hooks: {
@@ -732,7 +767,8 @@ describe("agent installation detector", () => {
 
     const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "qoder");
     assert.strictEqual(entry.detectedInstalled, true);
-    assert.strictEqual(entry.reason, "config-file");
+    assert.strictEqual(entry.reason, "parent-dir");
+    assert.strictEqual(entry.clawdIntegration.detected, true);
   });
 
   it("keeps mixed Clawd and foreign Gemini hooks insufficient", () => {

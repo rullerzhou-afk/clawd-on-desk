@@ -10,8 +10,6 @@ const copilot = require("../hooks/copilot-install");
 const hermes = require("../hooks/hermes-install");
 const reasonix = require("../hooks/reasonix-install");
 const dsh = require("../hooks/dsh-install");
-const zcode = require("../hooks/zcode-install");
-const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
 const grok = require("../hooks/grok-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
@@ -317,70 +315,6 @@ function parseExactJsonObject(fsImpl, configPath) {
   }
 }
 
-function hookTreeHasForeignEntry(value, isOwnedHook) {
-  if (!value || typeof value !== "object") return false;
-  if (Array.isArray(value)) return value.some((entry) => hookTreeHasForeignEntry(entry, isOwnedHook));
-  const owned = isOwnedHook(value);
-  if (!owned
-    && (typeof value.command === "string" || typeof value.url === "string" || typeof value.type === "string")) {
-    return true;
-  }
-  // Ownership subtracts this hook leaf, not the whole object. Keep traversing
-  // in case a malformed/shared wrapper also carries a foreign nested hook.
-  return Object.values(value).some((entry) => hookTreeHasForeignEntry(entry, isOwnedHook));
-}
-
-function isOwnedZcodeHook(entry) {
-  if (zcode.isClawdZcodeHook(entry)) return true;
-  if (zcode.isClaudeHookCommand(entry && entry.command)) return true;
-  // ZCode can import Claude process hooks with the marker in args rather than
-  // command. Those are still Clawd residue and must not become product proof.
-  try {
-    return hasClawdMarkerText(JSON.stringify(entry), zcode.CLAUDE_MARKER);
-  } catch {
-    return false;
-  }
-}
-
-function isOwnedQoderHook(entry, marker) {
-  return !!(entry && commandMatchesMarker(entry.command, marker));
-}
-
-function isOwnedCodeBuddyHook(entry, marker) {
-  if (entry && commandMatchesMarker(entry.command, marker)) return true;
-  return !!(entry && codebuddy.isManagedPermissionHook(entry));
-}
-
-function hookConfigHasProductContent(agentId, parsed, marker) {
-  if (Object.keys(parsed).some((key) => key !== "hooks")) return true;
-  if (!isObject(parsed.hooks)) return false;
-
-  if (agentId === "zcode") {
-    if (Object.keys(parsed.hooks).some((key) => key !== "enabled" && key !== "events")) return true;
-    return hookTreeHasForeignEntry(parsed.hooks.events, isOwnedZcodeHook);
-  }
-  if (agentId === "qoder") {
-    return hookTreeHasForeignEntry(parsed.hooks, (entry) => isOwnedQoderHook(entry, marker));
-  }
-  return hookTreeHasForeignEntry(parsed.hooks, (entry) => isOwnedCodeBuddyHook(entry, marker));
-}
-
-function detectOwnedHookConfigInstallation(descriptor, paths, options) {
-  const fsImpl = options.fs;
-  const parentInfo = lstatPath(fsImpl, paths.parentDir);
-  if (parentInfo.kind === "missing") return notFound();
-  if (parentInfo.kind !== "dir") {
-    return insufficient(`${paths.parentDir} exists but is not a regular directory`);
-  }
-
-  const classified = parseExactJsonObject(fsImpl, paths.configPath);
-  if (classified.status === "parsed"
-    && hookConfigHasProductContent(descriptor.agentId, classified.parsed, descriptor.marker)) {
-    return installationResult(true, "high", "config-file", `${paths.configPath} contains product configuration`);
-  }
-  return insufficient(`${paths.parentDir} exists without accepted ${descriptor.agentName} product evidence`);
-}
-
 function openClawConfigHasProductContent(parsed) {
   if (Object.keys(parsed).some((key) => key !== "plugins")) return true;
   if (!isObject(parsed.plugins)) return false;
@@ -503,6 +437,17 @@ function detectInstallation(descriptor, paths, options) {
     case "grok-build":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
+    // zcode, qoder and codebuddy bail out of registration when their config
+    // directory is missing (hooks/zcode-install.js, hooks/qoder-install.js,
+    // hooks/codebuddy-install.js), so Clawd never creates these directories
+    // itself. Existence of the directory is therefore product evidence, the
+    // same rule qoderwork already uses below. The previous owned-hook-config
+    // requirement created a catch-22: a freshly installed product has no hook
+    // configuration yet, so it was never detected, so Settings offered no
+    // install path, so no hook configuration ever appeared.
+    case "zcode":
+    case "qoder":
+    case "codebuddy":
     case "copilot-cli":
     case "cursor-agent":
     case "qwen-code":
@@ -515,10 +460,6 @@ function detectInstallation(descriptor, paths, options) {
     case "minimax":
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
-    case "zcode":
-    case "qoder":
-    case "codebuddy":
-      return detectOwnedHookConfigInstallation(descriptor, paths, options);
     case "reasonix":
       for (const target of paths.configTargets || []) {
         if (dirExists(fsImpl, target.parentDir)) {
