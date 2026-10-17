@@ -2,6 +2,28 @@
 
 [返回 README](../../README.zh-CN.md)
 
+## 源码开发前置条件
+
+安装、跑测试和本机启动请使用 Node.js 24.18.0（仓库 `.nvmrc` 指定的版本）。Electron 官方维护的安装器要求 Node.js 22.12.0 或更高。
+
+Node 24.16.x 和 24.17.x 存在一个已知的 stream 兼容性回归：只要旧的 `extract-zip` / `yauzl` 链路仍存在，它就可能静默截断 ZIP 解压结果（[nodejs/node#63487](https://github.com/nodejs/node/issues/63487)）。当前 Electron 依赖已不再使用该链路，但本仓库及其周边工具仍以 24.18.0 作为受支持的开发基线。
+
+如果 Electron 报缺少 Framework 或完整性校验失败，请删除整个包后重装；不要只创建 `path.txt`：
+
+```bash
+rm -rf node_modules/electron
+npm install
+```
+
+PowerShell 等价写法：
+
+```powershell
+Remove-Item -Recurse -Force node_modules/electron
+npm install
+```
+
+自定义开发分发时，Linux 上使用 `ELECTRON_OVERRIDE_DIST_PATH` 启动会沿用 Electron 的解析逻辑：`path.txt` 缺失时回退到 override 根目录下的 `electron` 可执行文件。macOS 和 Windows 的 override 必须保留 Electron 标准的 `path.txt`，因为这两个平台受支持的可执行文件布局使用 app bundle 和 `electron.exe`，而不是 Linux 的根目录可执行文件。
+
 ## Agent 配置说明
 
 全新安装默认只安装并启用 Claude Code 和 Codex。其他本机 agent 需要先到 **Settings → AI 编程工具** 点该 agent 的 **Install / 安装**；安装且启用后，Clawd 才会在启动时继续同步对应 hook / plugin / extension。单独关闭 agent 只会停止事件入口，不会卸载文件；**Uninstall / 卸载** 只删除 Clawd 管理的 hook / plugin / extension 条目，并同时禁用该 agent。
@@ -115,6 +137,12 @@ Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram b
 ## 飞书 / Lark 远程审批
 
 Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送交互卡片。两者属于同一个远程审批通道，可在 **Settings → 远程审批 → 飞书 / Lark** 中选择平台。权限范围、用户 ID 差异和卡片语言见 [feishu-lark-remote-approval.md](feishu-lark-remote-approval.md)。
+
+## Slack 通知
+
+与上面两个通道不同，Slack 仅做**通知**：会话结束、报错或等待权限时 Clawd 会推送消息，但决定始终在桌面应用中做出——本版本的 Slack 不能执行 Allow 或 Deny。可在 **Settings → 远程审批 → Slack** 使用 Incoming Webhook（推荐）或带 `chat:write` 权限的 `xoxb-` bot token 配置。
+
+消息发往 Slack 频道，内容可包含会话标题（由你的 prompt 推导）、文件夹名和主机名，因此**建议使用私有频道**。配置、完整字段清单、密钥存储和排障见 [slack-notifications.md](slack-notifications.md)。
 
 ## 远程 SSH 模式（Claude Code, Codex CLI & Copilot CLI）
 
