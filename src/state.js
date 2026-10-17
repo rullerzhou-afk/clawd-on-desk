@@ -1241,6 +1241,7 @@ function getSessionAliases() {
 
 function buildSessionSnapshot() {
   return buildSessionSnapshotFromSessions(sessions, {
+    t: ctx.t,
     sessionAliases: getSessionAliases(),
     getAgentIconUrl,
     resolveAgentDisplayName: ctx.resolveAgentDisplayName,

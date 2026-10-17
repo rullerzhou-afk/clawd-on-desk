@@ -60,6 +60,42 @@ describe("session HUD geometry", () => {
     );
   });
 
+  // A tagged fallback row appends " · <tag>" to the title and keeps that tag at
+  // its intrinsic width while the folder label ellipsizes. Without extra window
+  // width the label-only widths (notably hudShowElapsed=false) could not fit
+  // tag + status label + pin, and the status label was pushed under the pin.
+  it("widens the HUD for tagged fallback rows across every show-toggle combination", () => {
+    for (const showElapsed of [true, false]) {
+      for (const showStateLabels of [true, false]) {
+        for (const showContextUsage of [true, false]) {
+          const plain = getHudWidth(showElapsed, showStateLabels, showContextUsage, false);
+          const tagged = getHudWidth(showElapsed, showStateLabels, showContextUsage, true);
+          assert.strictEqual(
+            tagged,
+            plain + constants.HUD_TAGGED_FALLBACK_WIDTH_BUMP,
+            `tagged rows must be wider for elapsed=${showElapsed} labels=${showStateLabels} context=${showContextUsage}`
+          );
+          assert.ok(tagged > plain, "a tagged row never gets less room than a plain one");
+        }
+      }
+    }
+  });
+
+  // The narrowest labeled configuration is the one that regressed: state labels
+  // on, elapsed and context usage off.
+  it("gives the tightest labeled configuration room for a tag, a status label and the pin", () => {
+    const narrowest = getHudWidth(false, true, false, true);
+    assert.ok(
+      narrowest >= constants.HUD_WIDTH_LABELS_COMPACT,
+      "the tightest tagged width must reach the full label width"
+    );
+  });
+
+  it("leaves untagged HUD widths unchanged", () => {
+    assert.strictEqual(getHudWidth(true, true, false, false), getHudWidth(true, true, false));
+    assert.strictEqual(getHudWidth(false, true, false, false), getHudWidth(false, true, false));
+  });
+
   it("positions the visible HUD card below the pet hitbox with a fixed gap", () => {
     const result = computeSessionHudBounds({
       hitRect: { left: 10, top: 80, right: 90, bottom: 160 },
