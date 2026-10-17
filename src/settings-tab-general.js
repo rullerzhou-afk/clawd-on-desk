@@ -39,6 +39,7 @@
     "roamConstrainAxis",
     "keepSizeAcrossDisplays",
     "fullscreenAutoHide",
+    "disableHardwareAcceleration",
     "openAtLogin",
     "hideBubbles",
     "bubbleFollowPet",
@@ -575,6 +576,13 @@
         labelKey: "rowOpenAtLogin",
         descKey: "rowOpenAtLoginDesc",
       }),
+      // #1183: Windows-only, like the switch it backs (main.js reads it at
+      // startup only on win32).
+      ...(i18n && i18n.IS_WIN ? [helpers.buildSwitchRow({
+        key: "disableHardwareAcceleration",
+        labelKey: "rowDisableHardwareAcceleration",
+        descKey: "rowDisableHardwareAccelerationDesc",
+      })] : []),
     ]));
 
     // Permission automation stays last: both automatic modes carry a broad

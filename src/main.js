@@ -350,6 +350,11 @@ const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // process, and a backup failure locks persistence as well. Runtime gates stay
 // closed until restart in either case.
 const _initialPrefsRecovered = _initialPrefsLoad.recovered === true;
+// #1183: must run before app ready, so it reads the startup snapshot directly
+// instead of waiting for the settings controller.
+if (isWin && _initialPrefsLoad.snapshot && _initialPrefsLoad.snapshot.disableHardwareAcceleration === true) {
+  app.disableHardwareAcceleration();
+}
 const _initialPrefsRecoveryBackupFailed = _initialPrefsLoad.recoveryBackupFailed === true;
 const _recapStartupAuthorityLost = (
   _initialPrefsLoad.locked === true
