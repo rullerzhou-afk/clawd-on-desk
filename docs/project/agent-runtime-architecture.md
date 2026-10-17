@@ -682,6 +682,12 @@ Cursor 3.19.19 会把 stderr 非空标记为 Hook execution error，即使 exit 
 
 没有可用名称时只在 `beforeSubmitPrompt` 使用 prompt 第一条非空行，沿用 Claude/Trae 的 secret-looking 过滤策略，先检查完整行再截断。hook 只上报 `session_title`，不发送 prompt 其余内容或数据库 record。`CLAWD_REMOTE` 路径不读取本机 Cursor 数据库。标题继续使用既有 `/state` → session snapshot → HUD/Dashboard 合约。
 
+## Reasonix Blocking Hook Budget
+
+Reasonix 的 `UserPromptSubmit` / `PreToolUse` 从外层命令启动开始限时 5 秒，超时会阻止本次提交 / 工具调用。Clawd 仍是 state-only observer：不增加宿主 timeout，不输出权限决定，失败或放弃上报时静默 exit 0。Windows 保留 EncodedCommand 的引号兼容路径。
+
+`hooks/reasonix-hook.js` 保留 2000ms stdin 等待；阻塞事件在脚本开始后最多等 2500ms，且 stdin 结束后最多再等 1000ms，先到者生效，为外层启动和退出留余量。同步进程扫描仍只允许非阻塞事件；非阻塞事件保留 3500ms post-stdin allowance 和 15000ms 内部截止（Stop 另含排序延迟）。慢速本机 / 远程上报可能被放弃，不能为了补状态拖住用户的原生操作；该进程内计时不能保证任意 OS 调度或启动停顿都在宿主期限内。
+
 ## Windows B1a Process Metadata Capability (#694)
 
 Codex、Cursor Agent、Kiro CLI、CodeBuddy 和 Reasonix 的本地 Windows hook 支持一套版本化的 server-side process-chain capability。Clawd runtime owner 把以下数据写入 `~/.clawd/runtime.json`：随机 `instanceGeneration`，以及每个 agent 的 `legacy | shadow | b1a-authoritative` mode。默认始终是 `legacy`；`shadow` 和 `b1a-authoritative` 仅用于显式开发/验证，resolver 初始化或 ABI 校验失败时在写 runtime 前降级回 `legacy`。
