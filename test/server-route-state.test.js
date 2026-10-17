@@ -184,6 +184,54 @@ function callStatePost(body, overrides = {}) {
   });
 }
 
+describe("OpenCode serve attach metadata", () => {
+  const raw = "opencode:ses_attach123";
+  const body = (extra = {}) => JSON.stringify({
+    state: "working", event: "PreToolUse", agent_id: "opencode", hook_source: "opencode-plugin",
+    session_id: raw, cwd: "C:\\project", opencode_attach_url: "http://0.0.0.0:4096/", ...extra,
+  });
+
+  it("accepts only local root v1 plugin metadata and normalizes wildcard listeners", async () => {
+    const result = await callStatePost(body());
+    assert.strictEqual(result.calls.updateSession[0][3].opencodeAttachUrl, "http://127.0.0.1:4096/");
+    for (const extra of [{agent_id:"mimocode"},{hook_source:"opencode-plugin-v2"},{hook_source:"unverified"},
+      {host:"remote"},{wsl_distro:"Ubuntu"},{headless:true}]) {
+      const res = await callStatePost(body(extra));
+      assert.strictEqual(res.calls.updateSession[0]?.[3].opencodeAttachUrl, undefined, JSON.stringify(extra));
+    }
+    const res = await callStatePost(body(), {options:{remoteProfile:{profileId:"remote-one",displayHost:"remote"}}});
+    assert.strictEqual(res.calls.updateSession[0][3].opencodeAttachUrl, undefined);
+  });
+
+  it("uses explicit null to clear malformed or no-longer-serve targets", async () => {
+    for (const value of [null,"http://u:secret@localhost:4096/","http://opencode.local","javascript:alert(1)"]) {
+      const res = await callStatePost(body({opencode_attach_url:value}));
+      assert.strictEqual(res.calls.updateSession[0][3].opencodeAttachUrl,null);
+    }
+  });
+
+  it("metadata-only attach updates preserve lifecycle and refuse unknown or wrong-owner sessions", async () => {
+    const api = makeMetadataStateRuntime();
+    const sid = localSessionKey(raw);
+    try {
+      api.updateSession(sid,"working","PreToolUse",{agentId:"opencode",profileId:"local",rawSessionId:raw,
+        cwd:"C:\\project",hookSource:"opencode-plugin"});
+      const original = api.sessions.get(sid);
+      const events = JSON.stringify(original.recentEvents), at = original.updatedAt;
+      await callStatePost(body({metadata_only:true}), {ctx:{updateSessionMetadata:api.updateSessionMetadata}});
+      assert.strictEqual(original.opencodeAttachUrl,"http://127.0.0.1:4096/");
+      assert.strictEqual(original.opencodeAttachSource,"opencode-plugin");
+      assert.strictEqual(original.updatedAt,at);
+      assert.strictEqual(JSON.stringify(original.recentEvents),events);
+      await callStatePost(body({metadata_only:true,opencode_attach_url:null}), {ctx:{updateSessionMetadata:api.updateSessionMetadata}});
+      assert.strictEqual(original.opencodeAttachUrl,null);
+      assert.strictEqual(api.updateSessionMetadata("missing",{opencodeAttachUrl:"http://localhost:4096/",opencodeAttachSource:"opencode-plugin"}),false);
+      original.agentId="claude-code";
+      assert.strictEqual(api.updateSessionMetadata(sid,{expectedAgentId:"opencode",opencodeAttachUrl:"http://localhost:4096/",opencodeAttachSource:"opencode-plugin"}),false);
+    } finally { api.cleanup(); }
+  });
+});
+
 describe("server-route-state health", () => {
   it("returns the same /state health payload and header", () => {
     const res = makeRes();

@@ -3,6 +3,7 @@
 const crypto = require("crypto");
 const path = require("path");
 const { sessionAliasKey } = require("./session-alias");
+const { getOpencodeAttachTarget } = require("./opencode-attach-target");
 const { getSessionFocusTarget } = require("./session-focus");
 const {
   buildLatestLocalCodexProcessIds,
@@ -410,6 +411,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     // src/telegram-direct-send.js has to wait out before pasting.
     orcaPaneKey: (session && session.orcaPaneKey) || null,
     canFocus: focusTarget.canFocus === true,
+    canOpenInTerminal: !!getOpencodeAttachTarget(session, options.platform || process.platform),
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     wslDistro: (session && session.wslDistro) || null,
@@ -652,6 +654,7 @@ function sessionSnapshotSignature(snapshot) {
       sourcePid: entry.sourcePid,
       wtHwnd: entry.wtHwnd,
       canFocus: entry.canFocus,
+      canOpenInTerminal: entry.canOpenInTerminal,
       focusTarget: entry.focusTarget,
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,

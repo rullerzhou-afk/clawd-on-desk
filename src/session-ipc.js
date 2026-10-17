@@ -91,6 +91,16 @@ function registerSessionIpc(options = {}) {
     focusSession(sessionId, { requestSource: "dashboard" })
   );
   handle("dashboard:hide-session", (_event, sessionId) => hideSession(sessionId));
+  if (typeof options.openSessionInTerminal === "function") {
+    handle("dashboard:open-session-terminal", (event, sessionId, ...extra) => {
+      const rejected = rejectUntrustedDashboardEvent(event);
+      if (rejected) return rejected;
+      if (extra.length || typeof sessionId !== "string" || !sessionId || sessionId.length > 512) {
+        return { status: "invalid" };
+      }
+      return options.openSessionInTerminal(sessionId);
+    });
+  }
   handle("dashboard:open-session-folder", (_event, sessionId) => {
     if (typeof sessionId !== "string" || !sessionId) {
       return { status: "error", message: "dashboard:open-session-folder requires a sessionId string" };
