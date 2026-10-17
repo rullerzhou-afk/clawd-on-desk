@@ -291,6 +291,8 @@ WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   绝不用别的库推断）；别的家目录里的同 ID 归档副本不参与判断；读不到数据库一律按“不知道”处理，绝不撤卡。
   Windows WorkBuddy 的进程快照使用有界 5 秒超时（其他 adapter 默认仍为 3 秒）：5.7.6 真机观测到约 4.17 秒的快照，3 秒会丢失主 PID、无法按应用退出撤卡。
   hook 先输出 `{}` 再探测；输出后的退出 backstop 为 7.5 秒，给快照后的 HTTP 上报留出时间。超过上限仍不返回降级 PID，按既有状态/超时逻辑处理。
+  Windows PID 缓存复用 shared-process 的 lifecycle context，按 `workbuddy + session_id + cwd` 隔离：SessionStart 刷新一次，UserPromptSubmit 只读，普通事件（含 Stop）命中时不取快照、未命中时补建，SessionEnd 只读并删除本会话缓存。
+  缺失 ID 仍直接丢弃；`default` ID 或缺失/无效 cwd 不读写缓存。首轮 prompt 早于 start 时可以暂缺 PID，随后 start / 普通事件恢复；Remote 不访问本地缓存，macOS 保持既有进程解析路径。
 
   WorkBuddy's native `Notification` subtypes `idle_prompt` and `auth_success` are acknowledged with `{}` locally, before process resolution or HTTP delivery. `idle_prompt` is a "send another message" reminder, observed on 5.2.6 about 60 seconds after Stop (5.6.2's per-turn host exits before it can fire, so it was not observed there); `auth_success` is the login-success toast, emitted by 5.6.2 at the start of every turn. Forwarding either would create or settle a session — a phantom idle row before the first UserPromptSubmit, or knocking a running turn back to idle. Permission, elicitation, needs-input, unknown and untyped notifications retain their existing behavior. This does not change SessionEnd/process-exit handling or resolve completed-session retention in #655.
 
