@@ -111,7 +111,7 @@ Claude Code 和 Codex CLI 首次启动即接入；其他集成在 **设置 → A
 |---|---|
 | [功能特性](docs/guides/features.zh-CN.md) | 所有功能的详细说明 |
 | [安装指南](docs/guides/setup-guide.zh-CN.md) | 源码构建、agent 配置、Windows / macOS / Linux 说明 |
-| [权限处理](docs/guides/setup-guide.zh-CN.md#permission-handling-automation) | 每次询问、仅问题提示或自动放行 |
+| [权限处理](docs/guides/setup-guide.zh-CN.md#权限处理自动化) | 每次询问、仅问题提示或自动放行 |
 | [Remote SSH](docs/guides/guide-remote-ssh.zh-CN.md) | 远程服务器上的 agent 状态和权限气泡 |
 | [Codex + WSL](docs/guides/codex-wsl-clarification.zh-CN.md) | Clawd 对 WSL 中 Codex 的支持边界 |
 | [远程审批](docs/guides/telegram-approval.md) | Telegram，以及 [飞书 / Lark](docs/guides/feishu-lark-remote-approval.md) 和 [Slack 通知](docs/guides/slack-notifications.md) |
