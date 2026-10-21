@@ -7,14 +7,17 @@ const core = globalThis.ClawdSettingsCore;
 // system fonts and didn't dark-mode well.
 const SIDEBAR_TABS = [
   { id: "general", labelKey: "sidebarGeneral", available: true },
-  { id: "agents", labelKey: "sidebarAgents", available: true },
-  { id: "theme", labelKey: "sidebarTheme", available: true },
+  { id: "pet", labelKey: "sidebarPet", available: true },
+  { id: "notifications", labelKey: "sidebarNotifications", available: true },
+  { id: "sessions", labelKey: "sidebarSessions", available: true },
+  { id: "permissions", labelKey: "sidebarPermissions", available: true },
+  { id: "agents", labelKey: "sidebarAgents", available: true, groupStart: true },
+  { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
+  { id: "discord-presence", labelKey: "sidebarDiscordPresence", available: true },
+  { id: "theme", labelKey: "sidebarTheme", available: true, groupStart: true },
   { id: "animOverrides", labelKey: "sidebarAnimOverrides", available: true },
   { id: "shortcuts", labelKey: "sidebarShortcuts", available: true },
-  { id: "telegram-approval", labelKey: "sidebarTelegramApproval", available: true },
-  { id: "discord-presence", labelKey: "sidebarDiscordPresence", available: true },
-  { id: "remote-ssh", labelKey: "sidebarRemoteSsh", available: true },
-  { id: "recap", labelKey: "sidebarRecap", available: true },
+  { id: "recap", labelKey: "sidebarRecap", available: true, groupStart: true },
   { id: "about", labelKey: "sidebarAbout", available: true },
 ];
 
@@ -50,6 +53,7 @@ function renderSidebar() {
     options: SIDEBAR_TABS.map((tab) => ({ ...tab, value: tab.id, disabled: !tab.available })),
     onChange: (value) => core.ops.selectTab(value),
     renderLabel(item, tab) {
+      item.classList.toggle("sidebar-item-group-start", tab.groupStart === true);
       // Icons come from the bundled settings-icons.js, never user input.
       item.innerHTML =
         `<span class="sidebar-item-icon" aria-hidden="true">${getTabIcon(tab.id)}</span>` +
@@ -96,6 +100,10 @@ core.ops.installRenderHooks({
 });
 
 globalThis.ClawdSettingsTabGeneral.init(core);
+globalThis.ClawdSettingsTabPet.init(core);
+globalThis.ClawdSettingsTabNotifications.init(core);
+globalThis.ClawdSettingsTabSessions.init(core);
+globalThis.ClawdSettingsTabPermissions.init(core);
 globalThis.ClawdSettingsTabAgents.init(core);
 globalThis.ClawdSettingsTabTheme.init(core);
 // Not a top-level tab anymore — it provides the "on / off" subtab that
@@ -112,7 +120,9 @@ if (globalThis.ClawdSettingsTabMobile) globalThis.ClawdSettingsTabMobile.init(co
 
 core.ops.restoreNavigationState();
 function selectRequestedTab(tab) {
-  if (tab === "recap") core.ops.selectTab("recap", { persist: false });
+  if (tab === "recap" || tab === "sessions") {
+    core.ops.selectTab(tab, { persist: false });
+  }
 }
 if (window.settingsAPI && typeof window.settingsAPI.onRequestedTab === "function") {
   window.settingsAPI.onRequestedTab(selectRequestedTab);

@@ -118,6 +118,38 @@ afterEach(() => {
 });
 
 describe("agent installation detector", () => {
+  it("detects CN product settings even when international residue is Clawd-only", () => {
+    const homeDir = makeHome();
+    mkdirp(path.join(homeDir, ".qoder"));
+    registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+    const cnPath = path.join(homeDir, ".qoder-cn", "settings.json");
+    writeJson(cnPath, { language: "zh-CN" });
+    registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+    let entry = byId(detectAgentInstallations({ homeDir, env: {} }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.ok(entry.detail.includes(cnPath));
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+
+    writeJson(cnPath, {});
+    registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+    entry = byId(detectAgentInstallations({ homeDir, env: {} }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+  });
+
+  it("uses QODERCN_CONFIG_DIR for both CN product and hook detection", () => {
+    const homeDir = makeHome();
+    const cnDir = path.join(homeDir, "custom-cn");
+    const env = { QODERCN_CONFIG_DIR: cnDir };
+    writeJson(path.join(cnDir, "settings.json"), { language: "zh-CN" });
+    registerQoderHooks({ homeDir, env, silent: true, nodeBin: process.execPath });
+    const entry = byId(detectAgentInstallations({ homeDir, env }), "qoder");
+    assert.strictEqual(entry.detectedInstalled, true);
+    assert.strictEqual(entry.clawdIntegration.detected, true);
+    assert.strictEqual(entry.clawdIntegration.paths.configPath, path.join(cnDir, "settings.json"));
+    assert.strictEqual(fs.existsSync(path.join(homeDir, ".qoder-cn")), false);
+  });
+
   // #895 T11a/T11b: only Claude is skipped. Its parent dir is created by Clawd's
   // own default sync, so ~/.claude proves nothing; ~/.codex is never created by
   // Clawd, so it stays real evidence and Codex must be reported like any other
@@ -623,6 +655,49 @@ describe("agent installation detector", () => {
         assert.strictEqual(entry.detectedInstalled, null, `${agentId} ${shape}`);
         assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} ${shape} reason`);
       }
+    }
+  });
+
+  for (const fixture of [
+    ["qoder", ".qoder", ".auth", "dir"],
+    ["qoder", ".qoder", "state.json", "file"],
+    ["zcode", ".zcode", path.join("v2", "credentials.json"), "file"],
+    ["zcode", ".zcode", path.join("cli", "exec"), "dir"],
+    ["codebuddy", ".codebuddy", "logs", "dir"],
+    ["codebuddy", ".codebuddy", "history.jsonl", "file"],
+  ]) {
+    const [agentId, relativeDir, artifact, kind] = fixture;
+    it(`detects ${agentId} from a product-owned artifact (${artifact})`, () => {
+      const homeDir = makeHome();
+      const artifactPath = path.join(homeDir, relativeDir, artifact);
+      mkdirp(path.dirname(artifactPath));
+      if (kind === "dir") {
+        mkdirp(artifactPath);
+      } else {
+        writeText(artifactPath, "{}");
+      }
+
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+
+      assert.strictEqual(entry.detectedInstalled, true, `${agentId} ${artifact}`);
+      assert.strictEqual(entry.confidence, "high");
+      assert.strictEqual(entry.reason, "product-artifact");
+    });
+  }
+
+  it("still reports insufficient when a hook-config folder holds neither product config nor product artifacts", () => {
+    for (const [agentId, relativeDir] of [
+      ["qoder", ".qoder"],
+      ["zcode", ".zcode"],
+      ["codebuddy", ".codebuddy"],
+    ]) {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, relativeDir));
+      writeJson(path.join(homeDir, relativeDir, agentId === "zcode" ? path.join("cli", "config.json") : "settings.json"), {});
+
+      const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
+      assert.strictEqual(entry.detectedInstalled, null, `${agentId} empty folder with no artifacts`);
+      assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} empty folder reason`);
     }
   });
 

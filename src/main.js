@@ -86,6 +86,9 @@ const createRoamFenceSettings = require("./roam-fence-settings");
 const createRoamFencePicker = require("./roam-fence-picker");
 const createPermissionAutomationConfirmationRuntime = require("./permission-automation-confirmation");
 const {
+  stopActivePermissionReviews,
+} = require("./permission-review-command");
+const {
   createSettingsSizePreviewSession,
 } = require("./settings-size-preview-session");
 const { registerSettingsIpc } = require("./settings-ipc");
@@ -190,6 +193,7 @@ const createThemeRuntime = require("./theme-runtime");
 const createAgentRuntimeMain = require("./agent-runtime-main");
 const createFloatingWindowRuntime = require("./floating-window-runtime");
 const createPetWindowRuntime = require("./pet-window-runtime");
+const { createRendererConfigChannel } = require("./renderer-config-channel");
 const { collectRequiredAssetFiles } = require("./theme-schema");
 const { describeGeometrySync } = require("./pet-accessory-state");
 const { createDisplayedVisualProjection } = require("./displayed-visual-projection");
@@ -246,6 +250,10 @@ const _hitWindowActivationRuntime = createHitWindowActivationRuntime({
   getHitWindow: () => hitWin,
   onError: (err) => console.warn("Clawd: win-hit-window-activation failed:", err && err.message),
 });
+// Registered before any window exists so the sandboxed preloads can read the
+// config synchronously on their first load. Keeping it out of argv avoids the
+// Windows 32,767-character command-line limit.
+const rendererConfigChannel = createRendererConfigChannel({ ipcMain });
 
 // ── Linux/X11: keep the output-only pet render window out of WM focus ──
 // Best-effort; a no-op off the X11 backend or without koffi/libxcb. Chromium
@@ -2108,6 +2116,12 @@ const _permCtx = {
     _settingsController.get("permissionAutomationMode") || "off",
   isDestructiveReminderEnabled: () =>
     _settingsController.get("destructiveActionReminder") === true,
+  // Optional external review command (#995). The permission runtime consumes
+  // both values together; an empty command means the feature is off.
+  getPermissionReviewConfig: () => ({
+    command: _settingsController.get("permissionReviewCommand"),
+    timeoutMs: _settingsController.get("permissionReviewTimeoutMs"),
+  }),
   getEffectivePermissionAutomationMode: (entry, options) =>
     sessionAutomationCoordinator
       ? sessionAutomationCoordinator.getEffectiveMode(entry, options)
@@ -2330,10 +2344,11 @@ function buildRendererThemeConfig(accessorySnapshot = null) {
 
 function deliverRendererThemeConfig() {
   const delivery = prepareCurrentAccessorySlotsDelivery();
-  const delivered = sendToRenderer(
-    "theme-config",
-    buildRendererThemeConfig(delivery.snapshot)
-  );
+  const cfg = buildRendererThemeConfig(delivery.snapshot);
+  // Keep the sync-IPC source current so a window reload picks up the same
+  // config as this push.
+  rendererConfigChannel.setPetConfig(cfg);
+  const delivered = sendToRenderer("theme-config", cfg);
   return !!finalizePetAccessorySlotsDelivery(delivery, delivered);
 }
 
@@ -2812,6 +2827,11 @@ sendDashboardI18n = () => {
 // `will-quit` never arrives. Tear it down while the app is still deciding to
 // quit; the `will-quit` call stays as an idempotent backstop for a host created
 // after that point.
+// A review process still running after Clawd exits has no reader left, and its
+// verdict can no longer reach a permission decision. Stop it before the rest of
+// the quit path runs. Kept as its own listener so the quick-host teardown below
+// stays a single, directly testable line.
+app.on("before-quit", () => stopActivePermissionReviews());
 app.on("before-quit", () => _dashboard.quick.dispose());
 app.on("will-quit", () => _dashboard.quick.dispose());
 
@@ -3023,6 +3043,25 @@ const _serverCtx = {
     _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
   isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  // External review (#995): the route derives the review verdict at accept
+  // time, so it needs the same effective-mode and reminder gates the
+  // permission runtime uses. Values are read from the shared controller and
+  // coordinator; nothing is cached per request.
+  getEffectivePermissionAutomationMode: (entry, options) =>
+    sessionAutomationCoordinator
+      ? sessionAutomationCoordinator.getEffectiveMode(entry, options)
+      : (_settingsController.get("permissionAutomationMode") || "off"),
+  hasSessionAutomationOverride: (entry) =>
+    !!(
+      sessionAutomationCoordinator
+      && sessionAutomationCoordinator.getRecordForEntry(entry)
+    ),
+  isDestructiveReminderEnabled: () =>
+    _settingsController.get("destructiveActionReminder") === true,
+  getPermissionReviewConfig: () => ({
+    command: _settingsController.get("permissionReviewCommand"),
+    timeoutMs: _settingsController.get("permissionReviewTimeoutMs"),
+  }),
   isAgentSubagentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentSubagentPermissionsEnabled(agentId),
   isCodexNativeNotificationSoundEnabled: () => _runtimeAgentGate.isCodexNativeNotificationSoundEnabled(),
   getCodexPermissionMode: () => _runtimeAgentGate.getCodexPermissionMode(),
@@ -5080,7 +5119,7 @@ const settingsSizePreviewSession = createSettingsSizePreviewSession({
 const quotaNotifications = createQuotaNotificationPresenter({
   Notification, platform: process.platform, trayBalloonOwner, getTray: () => _menu.getTray(),
   isSuppressed: () => doNotDisturb || isQuitting || !app.isReady(),
-  isMuted: () => soundMuted, getLang: () => lang, openSettings: () => settingsWindowRuntime.open(),
+  isMuted: () => soundMuted, getLang: () => lang, openSettings: () => settingsWindowRuntime.open({ tab: "sessions" }),
 });
 const quotaNotificationIpc = registerQuotaNotificationIpc({
   ipcMain, settingsController: _settingsController, getSettingsWindow,
@@ -5281,6 +5320,7 @@ function createWindow() {
     preloadPath: path.join(__dirname, "preload.js"),
     loadFilePath: path.join(__dirname, "index.html"),
     themeConfig: buildRendererThemeConfig(initialAccessoryDelivery.snapshot),
+    rendererConfigChannel,
     setRenderWindow: (createdWindow) => { win = createdWindow; },
     isQuitting: () => isQuitting,
     applyDockVisibility,
@@ -5298,12 +5338,15 @@ function createWindow() {
     preloadPath: path.join(__dirname, "preload-hit.js"),
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
+    rendererConfigChannel,
     guardAlwaysOnTop,
     prepareActivation: (createdHitWin) => (
       _hitWindowActivationRuntime.controller.prepare(createdHitWin)
     ),
     onDidFinishLoad: () => {
-      sendToHitWin("theme-config", themeRuntime.getHitRendererConfig());
+      const hitConfig = themeRuntime.getHitRendererConfig();
+      rendererConfigChannel.setHitConfig(hitConfig);
+      sendToHitWin("theme-config", hitConfig);
       if (themeRuntime.isReloadInProgress()) return;
       syncHitStateAfterLoad();
     },
@@ -5677,6 +5720,11 @@ const _roamCtx = {
   clampToScreenVisual,
   getMiniMode: () => _mini.getMiniMode(),
   getCurrentState: () => _state.getCurrentState(),
+  getUnattendedMs: () => {
+    const mouseStillSince = _tick ? _tick._mouseStillSince : Date.now();
+    return Date.now() - mouseStillSince;
+  },
+  getSleepTimeoutMs: () => getActiveTheme().timings.mouseSleepTimeout,
   isSizePreviewActive: () => petWindowRuntime.isSettingsSizePreviewActive(),
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
@@ -5925,6 +5973,16 @@ if (!gotTheLock) {
   }
 
   app.whenReady().then(async () => {
+    // Linux X11: Electron's getCursorScreenPoint() freezes once the cursor
+    // leaves our windows; replace it with a live xcb_query_pointer for every
+    // caller. Same backend check as linux-x11-input-hint. The screen module is
+    // only usable after ready.
+    require("./linux-x11-cursor").installLinuxX11CursorFallback(screen, {
+      isLinuxX11: isLinux && app.commandLine.getSwitchValue("ozone-platform") === "x11",
+      displayName: app.commandLine.getSwitchValue("display"),
+      onError: (err) => console.warn("Clawd: linux-x11-cursor failed:", err && err.message),
+    });
+
     // Older macOS and development builds retain the padded runtime icon from
     // #416. Packaged Tahoe+ leaves the Dock untouched so macOS can apply the
     // user's Default/Dark/Clear/Tinted treatment to the bundle icon (#941).

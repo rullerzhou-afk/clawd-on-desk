@@ -485,7 +485,7 @@ function registerSettingsIpc(options = {}) {
     }
   });
   // Distinct quota-reporting sources (this machine + WSL / SSH remotes). The
-  // General tab uses it to hide the "merge across machines" switch when it is
+  // Sessions tab uses it to hide the "merge across machines" switch when it is
   // a single-machine no-op.
   handle("settings:get-quota-source-count", () => {
     try {

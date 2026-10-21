@@ -75,13 +75,59 @@ describe("#1026 managed OpenCode Doctor", () => {
     assert.strictEqual(detail.fixAction, undefined);
   });
 
-  it("issue #1039: a healthy install verifies both the plugin and plugins keys", () => {
+  it("issue #1039: a healthy v2-host install is verified from the plugins key", () => {
     const home = makeHome();
     registerOpencodePlugin({ silent: true, v2Host: "v2", homeDir: home });
     const detail = runOne(managedDescriptor(home)).details[0];
     assert.strictEqual(detail.status, "ok");
     assert.ok(Array.isArray(detail.v2Entries) && detail.v2Entries.length === 1, "v2 entry listed");
     assert.ok(/v2 plugins-key entry verified/.test(detail.detail), detail.detail);
+  });
+
+  it("PR #1182 follow-up: the v1.3.0 dual-key config is repairable on a v2 host and Repair sweeps the v1 entry", () => {
+    const home = makeHome();
+    registerOpencodePlugin({ silent: true, v2Host: "v2", homeDir: home });
+    // Rebuild what v1.3.0 wrote on a v2 host: the v1 entry (sibling dir of the
+    // same generation) under `plugin` next to the v2 entry under `plugins`.
+    const cfgPath = path.join(home, ".config", "opencode", "opencode.json");
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    const v1Entry = path.join(path.dirname(cfg.plugins[0]), "opencode-plugin").replace(/\\/g, "/");
+    writeJson(cfgPath, { ...cfg, plugin: [v1Entry] });
+
+    const detail = runOne(managedDescriptor(home)).details[0];
+    assert.strictEqual(detail.status, "duplicate-entry");
+    assert.strictEqual(detail.v2EntryState, "ok");
+    assert.ok(detail.fixAction, "repairable via Fix");
+    assert.match(detail.detail, /leftover legacy v1 plugin entry/);
+
+    const repair = registerOpencodePlugin({ silent: true, v2Host: "v2", homeDir: home });
+    assert.strictEqual(repair.status, "ok", repair.message);
+    const repaired = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+    assert.deepStrictEqual(repaired.plugin, [], "v1 entry swept");
+    assert.deepStrictEqual(repaired.plugins, cfg.plugins, "v2 entry untouched");
+
+    const after = runOne(managedDescriptor(home)).details[0];
+    assert.strictEqual(after.status, "ok");
+  });
+
+  it("PR #1182 follow-up: a swept v2 install downgraded to 1.x reports the leftover v2 entry, not not-connected", () => {
+    for (const plugin of [[], ["@vendor/keep"]]) {
+      const home = makeHome();
+      registerOpencodePlugin({ silent: true, v2Host: "v2", homeDir: home });
+      // The v2-host sweep leaves an empty (or foreign-only) `plugin` array.
+      const cfgPath = path.join(home, ".config", "opencode", "opencode.json");
+      const cfg = JSON.parse(fs.readFileSync(cfgPath, "utf8"));
+      writeJson(cfgPath, { ...cfg, plugin });
+
+      const detail = runOne(managedDescriptor(home), "v1").details[0];
+      assert.strictEqual(detail.status, "broken-path", JSON.stringify(plugin));
+      assert.strictEqual(detail.v2EntryState, "leftover");
+      assert.ok(detail.fixAction, "repairable via Fix");
+
+      const repair = registerOpencodePlugin({ silent: true, v2Host: "v1", homeDir: home });
+      assert.strictEqual(repair.status, "ok", repair.message);
+      assert.strictEqual(runOne(managedDescriptor(home), "v1").details[0].status, "ok");
+    }
   });
 
   it("issue #1039: a leftover v1 entry without the v2 key is a repairable legacy-path, never ok", () => {

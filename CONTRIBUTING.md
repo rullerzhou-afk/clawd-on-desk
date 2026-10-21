@@ -74,7 +74,7 @@ Before adding a tool:
 - Open an integration issue describing how the tool exposes its state (hooks, logs, a plugin API). Link to the tool's docs.
 - Read `docs/project/agent-runtime-architecture.md` for the module boundaries, and `AGENTS.md` for the install, enable, and uninstall rules every integration must follow. In short: a new install must not touch configuration the user did not ask Clawd to manage, and uninstall must remove only what Clawd added.
 
-A new integration PR normally includes the adapter, the installer and uninstaller, tests under `test/`, a setup guide under `docs/guides/`, and the tool added to the lists in `AGENTS.md` and the README.
+A new integration PR normally includes the adapter, the installer and uninstaller, tests under `test/`, a setup guide under `docs/guides/`, and the tool added to the lists in `AGENTS.md`, the README "Supported Agents" line, and `docs/guides/supported-agents.md`.
 
 ## Themes
 

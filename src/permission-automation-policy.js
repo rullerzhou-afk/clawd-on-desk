@@ -357,15 +357,16 @@ function isValidInteraction(interaction) {
 /**
  * Decide what automation does with one request.
  *
- * `reminderHold` is the destructive-action reminder's only input to this
- * function, and it can do exactly one thing: turn an automatic allow for an
- * ordinary tool request into DEFER, so the request reaches a human through the
- * existing approval channels. It cannot turn DEFER into an allow, it never
- * produces a deny, and it is deliberately not consulted on the question-answer
- * or plan-review branches below -- those keep their existing handling.
- * Callers that do not pass it get today's behavior unchanged.
+ * `reminderHold` and `reviewHold` are the two downgrade-only inputs. Each can
+ * do exactly one thing: turn an automatic allow for an ordinary tool request
+ * into DEFER, so the request reaches a human through the existing approval
+ * channels. Neither can turn DEFER into an allow, neither produces a deny, and
+ * neither is consulted on the question-answer or plan-review branches below --
+ * those keep their existing handling. `reminderHold` is the destructive-action
+ * reminder (#1021); `reviewHold` is the optional external review command
+ * (#995). Callers that do not pass them get today's behavior unchanged.
  */
-function evaluatePermissionAutomation({ mode, interaction, reminderHold } = {}) {
+function evaluatePermissionAutomation({ mode, interaction, reminderHold, reviewHold } = {}) {
   if (!Object.values(PERMISSION_AUTOMATION_MODE).includes(mode)) {
     return AUTOMATION_ACTION.DEFER;
   }
@@ -388,9 +389,9 @@ function evaluatePermissionAutomation({ mode, interaction, reminderHold } = {}) 
     )
     && interaction.capabilities.allowDeny
   ) {
-    // The one place the reminder applies: an ordinary tool request that
+    // The one place either hold applies: an ordinary tool request that
     // automation would have allowed by itself.
-    return reminderHold === true
+    return reminderHold === true || reviewHold === true
       ? AUTOMATION_ACTION.DEFER
       : AUTOMATION_ACTION.AUTO_ALLOW;
   }

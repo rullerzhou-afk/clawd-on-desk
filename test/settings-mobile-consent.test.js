@@ -6,6 +6,22 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
+const i18nContext = {};
+i18nContext.globalThis = i18nContext;
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, "..", "src", "settings-i18n.js"), "utf8"),
+  i18nContext,
+  { filename: "settings-i18n.js" },
+);
+test("all language packs define permissionAutomationCancel", () => {
+  for (const [locale, dictionary] of Object.entries(i18nContext.ClawdSettingsI18n.STRINGS)) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(dictionary, "permissionAutomationCancel"),
+      `${locale} should define permissionAutomationCancel`,
+    );
+  }
+});
+
 class FakeElement {
   constructor() {
     this.children = [];
@@ -60,8 +76,8 @@ test("mobile consent surfaces token-reset phase failure in the command error", a
   vm.runInContext(source, context, { filename: "settings-tab-mobile.js" });
 
   const strings = {
+    ...i18nContext.ClawdSettingsI18n.STRINGS.en,
     mobilePermissionTokenResetFailure: "TOKEN RESET — RE-PAIR. ",
-    cancel: "Cancel",
   };
   const core = {
     runtime: {},

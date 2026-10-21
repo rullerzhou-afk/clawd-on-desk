@@ -139,8 +139,8 @@
     });
   }
 
-  // Body of the "Mobile Web" channel card inside the Remote Approval tab
-  // (the card frame — header, status badge, collapse — is built by
+  // Body of the LAN approval card inside the Permissions tab's LAN approval
+  // sub-page (the card frame — header, status badge, collapse — is built by
   // settings-tab-telegram-approval.js next to the other channels).
   function renderChannelBody(container) {
     const section = document.createElement("div");
@@ -183,7 +183,7 @@
           actions: [
             { id: "reset", label: t("mobilePermissionConsentReset"), tone: "accent", defaultFocus: true },
             { id: "keep", label: t("mobilePermissionConsentKeep"), tone: "neutral" },
-            { id: "cancel", label: t("cancel"), tone: "neutral" },
+            { id: "cancel", label: t("permissionAutomationCancel"), tone: "neutral" },
           ],
         }).then(function(choice) {
           if (choice !== "reset" && choice !== "keep") {
@@ -250,7 +250,7 @@
     helpers = core.helpers;
     state = core.state;
     // No standalone tab registration: mobile renders as a channel card body
-    // inside the Remote Approval tab.
+    // inside the Permissions tab's LAN approval sub-page.
   }
 
   root.ClawdSettingsTabMobile = { init, renderChannelBody };

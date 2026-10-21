@@ -129,6 +129,38 @@ describe("opencode v2 plugins-key registration", () => {
     );
   });
 
+  it("PR #1182 follow-up: a dual-key v1.3.0 config sweeps only the v1 entry and prints the restart hint", () => {
+    const home = makeHome();
+    assert.strictEqual(registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) }).status, "ok");
+    const cfg = readConfig(home);
+    const v1Entry = path.join(path.dirname(cfg.plugins[0]), "opencode-plugin").replace(/\\/g, "/");
+    // What v1.3.0 wrote on a v2 host: both keys, pointing at one generation.
+    writeConfig(home, { $schema: cfg.$schema, plugin: [v1Entry], plugins: cfg.plugins });
+
+    const lines = [];
+    const originalLog = console.log;
+    console.log = (...args) => lines.push(args.join(" "));
+    let repair;
+    try {
+      repair = registerOpencodePlugin({ v2Host: "v2", ...managedRoots(home) });
+    } finally {
+      console.log = originalLog;
+    }
+    assert.strictEqual(repair.status, "ok", repair.message);
+    assert.strictEqual(repair.added, false, "nothing new registered");
+    const repaired = readConfig(home);
+    assert.deepStrictEqual(repaired.plugin, [], "v1 entry swept");
+    assert.deepStrictEqual(repaired.plugins, cfg.plugins, "v2 entry untouched");
+    const output = lines.join("\n");
+    assert.match(output, /Removed the legacy v1 "plugin" entry/);
+    // The running opencode service keeps the failed entry until it restarts.
+    assert.match(output, /restart the opencode service/);
+
+    // A second sync is a quiet no-op.
+    const again = registerOpencodePlugin({ silent: true, v2Host: "v2", ...managedRoots(home) });
+    assert.strictEqual(again.skipped, true);
+  });
+
   it("uninstall sweeps both keys and preserves foreign entries", () => {
     const home = makeHome();
     const foreignObject = { package: "keep-me", options: { a: 1 } };

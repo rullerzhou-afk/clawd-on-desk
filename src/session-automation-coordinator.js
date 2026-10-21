@@ -123,11 +123,25 @@ function createSessionAutomationCoordinator(options = {}) {
     return canAutoResolve(entry, {
       sessionOnly: config.sessionOnly === true,
       mode,
+      ignoreReviewHold: config.ignoreReviewHold === true,
     }) === true;
   }
 
+  // Offering session trust is a HUMAN action, so it must not depend on an
+  // external review that never ran: a request accepted while automation was
+  // off carries no verdict, and hiding the offer there would silently remove
+  // the feature whenever a review command is configured (#995 review).
+  //
+  // The offer and the clicked card's check against an already-equivalent grant
+  // ignore the review hold. `resolveIfAllowed` and `sweep` stay strict, so
+  // granting trust never releases a different pending request whose gate did
+  // not clear it. Later requests are reviewed normally.
   function canOfferSessionTrust(entry) {
-    return canResolve(entry, { sessionOnly: true, mode: MODE_AUTO_TOOLS });
+    return canResolve(entry, {
+      sessionOnly: true,
+      mode: MODE_AUTO_TOOLS,
+      ignoreReviewHold: true,
+    });
   }
 
   function resolveIfAllowed(entry, config = {}) {
@@ -215,7 +229,10 @@ function createSessionAutomationCoordinator(options = {}) {
       if (suppressFutureConfirmation) persistWarningPreference();
       return result;
     }
-    if (result.status === "equivalent" && canResolve(entry, { sessionOnly: true })) {
+    if (result.status === "equivalent" && canResolve(entry, {
+      sessionOnly: true,
+      ignoreReviewHold: true,
+    })) {
       entry.sessionTrustError = null;
       resolvePermissionEntry(
         entry,
@@ -254,7 +271,10 @@ function createSessionAutomationCoordinator(options = {}) {
       return Object.freeze({ status: "unavailable" });
     }
     const current = store.get(identity);
-    if (current && current.mode === MODE_AUTO_TOOLS && canResolve(entry, { sessionOnly: true })) {
+    if (current && current.mode === MODE_AUTO_TOOLS && canResolve(entry, {
+      sessionOnly: true,
+      ignoreReviewHold: true,
+    })) {
       resolvePermissionEntry(
         entry,
         "allow",
@@ -289,7 +309,10 @@ function createSessionAutomationCoordinator(options = {}) {
       return Object.freeze({ status: "unavailable" });
     }
     const latest = store.get(identity);
-    if (latest && latest.mode === MODE_AUTO_TOOLS && canResolve(entry, { sessionOnly: true })) {
+    if (latest && latest.mode === MODE_AUTO_TOOLS && canResolve(entry, {
+      sessionOnly: true,
+      ignoreReviewHold: true,
+    })) {
       resolvePermissionEntry(
         entry,
         "allow",

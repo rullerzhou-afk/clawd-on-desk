@@ -167,16 +167,19 @@ function makeFamilyInstaller(agentId) {
     return { fsImpl, platform, rootUnknown, target, configPath };
   }
 
-  function logRegister(options, editedPath, pluginDir, created, added, skipped) {
+  function logRegister(options, editedPath, pluginDir, created, added, skipped, legacySwept = false) {
     if (options.silent) return;
     console.log(`Clawd ${agentId} plugin → ${editedPath}`);
     if (created) console.log(`  Created ${cfg.configFileName}`);
     if (added) console.log(`  Registered: ${pluginDir}`);
     if (skipped) console.log(`  Already registered: ${pluginDir}`);
+    if (legacySwept) console.log(`  Removed the legacy v1 "plugin" entry (opencode 2.x rejects it)`);
     // opencode v2 (issue #1039): plugins run in the shared background service,
     // so a newly materialized generation needs a service restart (or a fresh
-    // `opencode` run, which starts one) to be picked up.
-    if (familyHasV2Entry(cfg) && added && !options.pluginDir) {
+    // `opencode` run, which starts one) to be picked up. The same holds for a
+    // swept legacy entry: the running service keeps reporting it as failed
+    // until it restarts.
+    if (familyHasV2Entry(cfg) && (added || legacySwept) && !options.pluginDir) {
       console.log(`  opencode v2: restart the opencode service (or start a new opencode session) to load the updated plugin`);
     }
   }
@@ -959,7 +962,8 @@ function makeFamilyInstaller(agentId) {
       // On a v2 host the entry opencode actually loads is the v2 sibling, so the
       // "Registered:" line must name that path, not the swept v1 entry dir.
       const registeredDir = (v2Mode === "register" && v2Apply.added) ? canonicalV2Entry : canonicalEntry;
-      logRegister(options, effectivePath, registeredDir, apply.created, added, false);
+      const legacySwept = v1SweepOnly && apply.mutatedPaths.length > 0 && !apply.created;
+      logRegister(options, effectivePath, registeredDir, apply.created, added, false, legacySwept);
       return {
         status: "ok",
         added,

@@ -22,13 +22,17 @@ function loadIcons() {
 // these must resolve to a real icon, not the placeholder fallback.
 const SIDEBAR_TAB_IDS = [
   "general",
+  "pet",
+  "notifications",
+  "sessions",
+  "permissions",
   "agents",
   "theme",
   "animOverrides",
   "shortcuts",
-  "telegram-approval",
   "discord-presence",
   "remote-ssh",
+  "recap",
   "about",
 ];
 

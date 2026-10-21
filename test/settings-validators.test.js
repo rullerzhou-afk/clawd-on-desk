@@ -15,6 +15,7 @@ test("settings validators expose the shared helper surface", () => {
     "requireNumberInRange",
     "requirePlainObject",
     "requireString",
+    "requireStringArray",
   ]);
 });
 

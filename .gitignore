@@ -40,6 +40,19 @@ docs/**
 !docs/guides/codex-wsl-clarification.md
 !docs/guides/codex-wsl-clarification.zh-CN.md
 !docs/guides/codex-wsl-clarification.ko-KR.md
+!docs/guides/features.md
+!docs/guides/features.zh-CN.md
+!docs/guides/features.zh-TW.md
+!docs/guides/features.ko-KR.md
+!docs/guides/features.ja-JP.md
+!docs/guides/features.es.md
+!docs/guides/supported-agents.md
+!docs/guides/supported-agents.zh-CN.md
+!docs/guides/supported-agents.zh-TW.md
+!docs/guides/supported-agents.ko-KR.md
+!docs/guides/supported-agents.ja-JP.md
+!docs/guides/supported-agents.es.md
+!docs/guides/permission-external-review.md
 !docs/investigations/
 !docs/investigations/permission-hook-fail-deny-investigation.md
 !docs/investigations/codex-subagent-session-meta.md
@@ -72,6 +85,7 @@ docs/**
 !docs/releases/release-v1.1.0.md
 !docs/releases/release-v1.2.0.md
 !docs/releases/release-v1.3.0.md
+!docs/releases/release-v1.4.0.md
 
 # Temp files from testing
 .tmp_*
@@ -109,6 +123,7 @@ logs/
 scripts/*
 # Deterministic source-backed macOS tray asset generator
 !scripts/generate-mac-tray-icons.js
+!scripts/generate-readme-contributors.js
 !scripts/update-official-theme-catalog-snapshot.js
 !scripts/manual/
 scripts/manual/*

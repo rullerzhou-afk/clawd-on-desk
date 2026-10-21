@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -26,6 +26,7 @@
     "verify:winget-arch": "node scripts/verify-winget-arch-contract.js",
     "verify:winget-manifest": "node scripts/verify-winget-generated-manifest.js",
     "verify:release": "node scripts/verify-release-version.js && node scripts/verify-release-contributors.js",
+    "generate:readme-contributors": "node scripts/generate-readme-contributors.js",
     "create-theme": "node scripts/create-theme.js",
     "export-agent-icons": "node scripts/export-agent-icons.js",
     "install:claude-hooks": "node hooks/install.js",

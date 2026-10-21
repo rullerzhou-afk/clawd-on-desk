@@ -1,8 +1,9 @@
 "use strict";
 
 const path = require("node:path");
-const { app, BrowserWindow } = require("electron");
+const { app, BrowserWindow, ipcMain } = require("electron");
 const themeLoader = require("../../src/theme-loader");
+const { createRendererConfigChannel } = require("../../src/renderer-config-channel");
 
 const HTML = path.join(__dirname, "cigarette-accessory-electron.html");
 const ROOT = path.join(__dirname, "..", "..");
@@ -121,6 +122,11 @@ async function assertProductionRendererBootsMouthObject() {
     },
   };
 
+  // Mirror the real app: the production preload reads this over sync IPC, so
+  // an argv-only fixture would leave sendSync without a responder.
+  const rendererConfigChannel = createRendererConfigChannel({ ipcMain });
+  rendererConfigChannel.setPetConfig(config);
+
   const win = new BrowserWindow({
     show: false,
     width: 200,
@@ -130,7 +136,6 @@ async function assertProductionRendererBootsMouthObject() {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
-      additionalArguments: [`--theme-config=${JSON.stringify(config)}`],
     },
   });
   try {

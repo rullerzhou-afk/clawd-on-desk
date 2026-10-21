@@ -3117,11 +3117,12 @@ export function createOpencodeFamilyPlugin(config) {
 //   - Unknown event types are ignored (fail-closed): the v1-era event vocabulary
 //     must never be assumed to fire on v2.
 //
-// Registration: v2 hosts read the `plugins` config key (they also tolerate the
-// legacy `plugin` key, where the v1 function entry merely logs a load warning).
-// The installer therefore keeps the v1 entry under `plugin` and registers this
-// entry directory under `plugins`; the two host generations never interfere
-// (verified both directions on 1.18.32 and 2.0.15).
+// Registration: v2 hosts read the `plugins` config key. OpenCode 2.0.15
+// tolerated a legacy `plugin` entry (verified historically), but the current
+// installer registers the v2 entry only under `plugins` and sweeps its owned
+// legacy `plugin` entry on v2 hosts; v1/unknown hosts retain the v1 path.
+// The two host generations never interfere (verified both directions on
+// 1.18.32 and 2.0.15).
 const V2_PERMISSION_BLOCKING_TIMEOUT_MS = 590 * 1000;
 // /permission bodies carry raw tool resources (shell commands, file paths).
 // Same fail-closed budget as the zcode hook: over budget → skip the POST and

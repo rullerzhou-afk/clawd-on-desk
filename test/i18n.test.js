@@ -540,7 +540,7 @@ describe("i18n locales", () => {
     const expected = {
       sidebarAnimOverrides: "Animación y sonido",
       sidebarRemoteSsh: "Hosts SSH",
-      remoteApprovalSubtitle: "Redirige las solicitudes de permiso locales a un canal remoto. Los secretos se mantienen fuera de las preferencias y el globo de escritorio sigue siendo la alternativa local.",
+      permissionsChannelsIntro: "Redirige las solicitudes de permiso locales a un canal remoto. Los secretos se mantienen fuera de las preferencias y el globo de escritorio sigue siendo la alternativa local.",
       telegramApprovalCardStarting: "Conectando con la aprobación nativa de Telegram…",
       telegramApprovalCardFailed: "La verificación nativa de Telegram falló. Corrige la configuración o vuelve a intentarlo.",
       telegramApprovalCompletionOutput: "Contenido de la notificación de finalización",

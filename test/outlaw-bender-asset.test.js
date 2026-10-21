@@ -21,18 +21,42 @@ const FORBIDDEN = [
   /<!ENTITY\b/i,
 ];
 
-test("builtin outlaw bender preserves the reviewed art with only the declared viewBox delta", () => {
-  const source = `${fs.readFileSync(SOURCE, "utf8").trimEnd()}\n`;
-  const expectedRuntime = source.replace(
-    'viewBox="-15 -25 45 45"',
-    'viewBox="-15 -25 45 46"'
-  );
-  assert.notStrictEqual(expectedRuntime, source, "reviewed source viewBox marker must stay recognizable");
-  assert.strictEqual(`${fs.readFileSync(RUNTIME, "utf8").trimEnd()}\n`, expectedRuntime);
+function readLf(file) {
+  return `${fs.readFileSync(file, "utf8").replace(/\r\n/g, "\n").trimEnd()}\n`;
+}
+
+test("builtin outlaw bender preserves the reviewed art with only the declared compositing deltas", () => {
+  const source = readLf(SOURCE);
+  const deltas = [
+    ['viewBox="-15 -25 45 45"', 'viewBox="-15 -25 45 46"'],
+    [
+      "      .bd-ember { animation: bd-ember 1.6s infinite ease-in-out; }\n",
+      "      .bd-ember { animation: bd-ember 1.6s infinite ease-in-out; }\n"
+        + "      .bd-ember-hot { animation: bd-ember-hot 1.6s infinite ease-in-out; }\n",
+    ],
+    [
+      "      @keyframes bd-ember { 0%, 100% { fill: #E03A00; opacity: .85; } 50% { fill: #FF7A1A; opacity: 1; } }\n",
+      "      @keyframes bd-ember { 0%, 100% { opacity: .85; } 50% { opacity: 1; } }\n"
+        + "      @keyframes bd-ember-hot { 0%, 100% { opacity: 0; } 50% { opacity: 1; } }\n",
+    ],
+    [
+      '        <rect x="15" y="11" width="1" height="1" fill="#FF5A00" class="bd-ember"/>\n',
+      '        <g class="bd-ember">\n'
+        + '          <rect x="15" y="11" width="1" height="1" fill="#E03A00"/>\n'
+        + '          <rect x="15" y="11" width="1" height="1" fill="#FF7A1A" class="bd-ember-hot"/>\n'
+        + '        </g>\n',
+    ],
+  ];
+  let expectedRuntime = source;
+  for (const [from, to] of deltas) {
+    assert.ok(expectedRuntime.includes(from), `reviewed source marker must stay recognizable: ${from}`);
+    expectedRuntime = expectedRuntime.replace(from, to);
+  }
+  assert.strictEqual(readLf(RUNTIME), expectedRuntime);
 });
 
 test("builtin outlaw bender has no active, linked, or externally loaded SVG content", () => {
-  const markup = fs.readFileSync(RUNTIME, "utf8");
+  const markup = readLf(RUNTIME);
   assert.match(markup, /<style\b/i, "local CSS keyframes are intentionally retained");
   for (const pattern of FORBIDDEN) {
     assert.doesNotMatch(markup, pattern, String(pattern));

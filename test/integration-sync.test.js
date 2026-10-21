@@ -424,6 +424,34 @@ describe("integration sync runtime", () => {
     assert.deepStrictEqual(calls.map((entry) => entry.name), ["copilot"]);
   });
 
+  it("keeps KiroCrew hooks disabled during startup but reopens them for explicit sync and repair", () => {
+    const kiroCrewOptions = [];
+    const { runtime } = makeRuntime({
+      ctx: {
+        syncKiroCrewHooksImpl: (options) => {
+          kiroCrewOptions.push(options);
+          return { status: "ok" };
+        },
+      },
+      shouldSyncAgentIntegration: (agentId) => agentId === "kirocrew",
+      getAgentIntegrationOptions: () => ({}),
+    });
+
+    runtime.syncEnabledStartupIntegrations();
+    runtime.syncIntegrationForAgent("kirocrew", {
+      source: "settings-agent-install",
+      automatic: false,
+    });
+    runtime.repairIntegrationForAgent("kirocrew", {});
+
+    assert.strictEqual(kiroCrewOptions.length, 3);
+    assert.deepStrictEqual(kiroCrewOptions, [
+      { silent: true, preserveDisabled: true },
+      { silent: true, preserveDisabled: false },
+      { silent: true, preserveDisabled: false },
+    ]);
+  });
+
   it("gives DSH startup, Settings Install, and Doctor Repair distinct mutation intent", async () => {
     const { runtime, calls } = makeRuntime();
     await runtime.syncIntegrationForAgent("deepseek-harness", { source: "startup", automatic: true });

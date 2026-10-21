@@ -1,13 +1,16 @@
 "use strict";
 
+// Remote approval bodies for the Permissions & approval tab: the IM channels
+// sub-page (Telegram / Feishu / Slack cards) and the LAN approval card, plus
+// their status refreshes and the Feishu lookup/draft cleanup on leave. This
+// module does not register a tab of its own; the shell resolves it at render
+// time, so load order in settings.html does not matter.
 (function initSettingsTabTelegramApproval(root) {
   const recipientApi = root.ClawdFeishuApprovalRecipient || {};
   let state = null;
   let coreRef = null;
   let helpers = null;
   let ops = null;
-  let mountedSubtabs = null;
-  let mountedHost = null;
 
   const view = {
     status: null,
@@ -477,6 +480,12 @@
     }));
   }
 
+  // Status refreshes only repaint when their cards are on screen: the
+  // Permissions tab is active and the user is on the IM channels or LAN sub-page.
+  function isRemoteBodyVisible() {
+    return state.activeTab === "permissions" && coreRef.runtime.permissionsSubtab !== "local";
+  }
+
   function refreshStatus({ forceRender = false } = {}) {
     if (view.statusLoading) {
       if (forceRender) view.statusForceRenderPending = true;
@@ -495,7 +504,7 @@
       view.statusForceRenderPending = false;
       const changed = updated && statusRenderKey(previousStatus) !== statusRenderKey(nextStatus);
       if (updated) view.status = result.state || null;
-      if ((shouldForceRender || (updated && (!hadStatus || changed))) && state.activeTab === "telegram-approval") {
+      if ((shouldForceRender || (updated && (!hadStatus || changed))) && isRemoteBodyVisible()) {
         ops.requestRender({ content: true });
       }
     });
@@ -518,7 +527,7 @@
       view.tokenInfoForceRenderPending = false;
       const changed = updated && tokenInfoRenderKey(previous) !== tokenInfoRenderKey(next);
       if (updated) view.tokenInfo = next;
-      if ((shouldForceRender || (updated && changed)) && state.activeTab === "telegram-approval") {
+      if ((shouldForceRender || (updated && changed)) && isRemoteBodyVisible()) {
         ops.requestRender({ content: true });
       }
     });
@@ -545,7 +554,7 @@
       recomputeFeishuLookupPreflight();
       scheduleFeishuStatusRefresh(nextStatus);
       const initialVisibleChange = !hadStatus && feishuStatusNeedsRender(nextStatus);
-      if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && state.activeTab === "telegram-approval") {
+      if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && isRemoteBodyVisible()) {
         ops.requestRender({ content: true });
       }
     });
@@ -561,7 +570,7 @@
   function scheduleFeishuStatusRefresh(status) {
     clearFeishuStatusRefreshTimer();
     const s = status && typeof status === "object" ? status : {};
-    if (state.activeTab !== "telegram-approval" || s.status !== "starting" || typeof setTimeout !== "function") return;
+    if (!isRemoteBodyVisible() || s.status !== "starting" || typeof setTimeout !== "function") return;
     feishuView.refreshTimer = setTimeout(() => {
       feishuView.refreshTimer = null;
       refreshFeishuStatus({ forceRender: true });
@@ -596,7 +605,7 @@
       if (updated) feishuView.secretInfo = next;
       recomputeFeishuLookupPreflight();
       const initialVisibleChange = !previous && feishuSecretInfoNeedsRender(next);
-      if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && state.activeTab === "telegram-approval") {
+      if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && isRemoteBodyVisible()) {
         ops.requestRender({ content: true });
       }
     });
@@ -669,7 +678,7 @@
     return !!(info && info.configured);
   }
 
-  function render(parent) {
+  function renderChannelsBody(parent) {
     refreshStatus();
     refreshTokenInfo();
     refreshFeishuStatus();
@@ -681,32 +690,11 @@
     // flight.
     refreshMigrationSnapshot();
 
-    const h1 = document.createElement("h1");
-    h1.textContent = t("remoteApprovalTitle");
-    parent.appendChild(h1);
-
     const subtitle = document.createElement("p");
     subtitle.className = "subtitle";
-    subtitle.textContent = t("remoteApprovalSubtitle");
+    subtitle.textContent = t("permissionsChannelsIntro");
     parent.appendChild(subtitle);
 
-    // Two subtabs (same pattern as the anim-overrides page): IM channels vs
-    // the LAN approval bridge.
-    if (mountedSubtabs) mountedSubtabs.dispose();
-    if (mountedHost) mountedHost.dispose();
-    mountedHost = helpers.createSubpageHost({ disposeBody: () => ops.clearMountedControls() });
-    const switcher = buildSubtabSwitcher();
-    mountedSubtabs = switcher.control;
-    parent.appendChild(switcher.wrap);
-    for (const panel of switcher.control.panels.values()) parent.appendChild(panel);
-    mountedHost.render(switcher.control.panels.get(switcher.control.getValue()), renderSubtabBody);
-  }
-
-  function renderSubtabBody(parent) {
-    if (coreRef.runtime.remoteApprovalSubtab === "lan") {
-      parent.appendChild(buildMobileChannelCard());
-      return;
-    }
     // Each remote approval channel renders as its own collapsible card so the
     // page can stay tidy as external approval channels grow.
     parent.appendChild(buildTelegramChannelCard());
@@ -714,27 +702,8 @@
     parent.appendChild(buildSlackChannelCard());
   }
 
-  function buildSubtabSwitcher() {
-    const wrap = document.createElement("div");
-    wrap.className = "anim-override-subtabs";
-    const current = coreRef.runtime.remoteApprovalSubtab === "lan" ? "lan" : "channels";
-    const entries = [
-      { key: "channels", label: t("remoteApprovalSubtabChannels") },
-      { key: "lan", label: t("remoteApprovalSubtabLan") },
-    ];
-    const control = helpers.buildTabs({
-      id: "settings-remote-approval",
-      ariaLabel: t("remoteApprovalTitle"),
-      value: current,
-      options: entries.map((entry) => ({ value: entry.key, label: entry.label })),
-      onChange(value) {
-        if (value === "lan") leaveFeishuLookupUi();
-        coreRef.runtime.remoteApprovalSubtab = value;
-        mountedHost.render(control.panels.get(value), renderSubtabBody, { scrollTop: 0 });
-      },
-    });
-    wrap.appendChild(control.element);
-    return { wrap, control };
+  function renderLanBody(parent) {
+    parent.appendChild(buildMobileChannelCard());
   }
 
   function refreshRuntimeStatus(payload) {
@@ -827,7 +796,7 @@
         const previousKey = migrationSnapshotRenderKey(migrationSnapshot);
         migrationSnapshot = res.snapshot;
         if (migrationSnapshotRenderKey(migrationSnapshot) !== previousKey
-          && state.activeTab === "telegram-approval") {
+          && isRemoteBodyVisible()) {
           ops.requestRender({ content: true });
         }
       }
@@ -2689,7 +2658,7 @@
       const changed = updated && slackStatusRenderKey(previousStatus) !== slackStatusRenderKey(nextStatus);
       if (updated) slackView.status = result.state || null;
       const initialVisibleChange = !hadStatus && slackStatusNeedsRender(nextStatus);
-      if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && state.activeTab === "telegram-approval") {
+      if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && isRemoteBodyVisible()) {
         ops.requestRender({ content: true });
       }
     });
@@ -2717,7 +2686,7 @@
       const changed = updated && slackSecretInfoRenderKey(previous) !== slackSecretInfoRenderKey(next);
       if (updated) slackView.secretInfo = next;
       const initialVisibleChange = !previous && slackSecretInfoNeedsRender(next);
-      if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && state.activeTab === "telegram-approval") {
+      if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && isRemoteBodyVisible()) {
         ops.requestRender({ content: true });
       }
     });
@@ -3264,19 +3233,14 @@
     state = core.state;
     helpers = core.helpers;
     ops = core.ops;
-    core.tabs["telegram-approval"] = {
-      render,
-      refreshRuntimeStatus,
-      patchInPlace,
-      onExit() {
-        leaveFeishuLookupUi();
-        if (mountedSubtabs) mountedSubtabs.dispose();
-        if (mountedHost) mountedHost.dispose();
-        mountedSubtabs = null;
-        mountedHost = null;
-      },
-    };
   }
 
-  root.ClawdSettingsTabTelegramApproval = { init };
+  root.ClawdSettingsTabTelegramApproval = {
+    init,
+    renderChannelsBody,
+    renderLanBody,
+    refreshRuntimeStatus,
+    patchInPlace,
+    leave: leaveFeishuLookupUi,
+  };
 })(globalThis);

@@ -320,7 +320,9 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       },
       qoder: {
         ...common,
-        settingsPath: path.join(homeDir, ".qoder", "settings.json"),
+        homeDir,
+        // Explicit cleanup homes must not inherit a different user's overrides.
+        env: explicitHomeDir ? (options.env || {}) : env,
       },
       reasonix: {
         ...common,

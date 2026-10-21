@@ -38,8 +38,8 @@ button stay disabled until token and recipient are in place.
 
 1. **Step 1 — Bot Token.** Create a dedicated bot with
    [@BotFather](https://t.me/botfather) using `/newbot`. Open Clawd Settings →
-   **Remote Approval** → expand the **Telegram** card and paste the token into
-   step 1.
+   **Permissions & approval** → **IM channels** → expand the **Telegram** card
+   and paste the token into step 1.
 
    Do not reuse the token from an existing Telegram bridge. Telegram allows
    only one active `getUpdates` owner per bot token, so sharing a token can

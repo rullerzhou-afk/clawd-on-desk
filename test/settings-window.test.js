@@ -291,9 +291,9 @@ test("settings window runtime creates the Settings BrowserWindow with taskbar id
   assert.strictEqual(runtime.getWindow(), win);
   assert.strictEqual(win.options.title, "Clawd Settings");
   assert.strictEqual(win.options.x, 240);
-  assert.strictEqual(win.options.y, 120);
+  assert.strictEqual(win.options.y, 70);
   assert.strictEqual(win.options.width, 800);
-  assert.strictEqual(win.options.height, 560);
+  assert.strictEqual(win.options.height, 660);
   assert.strictEqual(win.options.backgroundColor, "#1c1c1f");
   assert.strictEqual(win.options.webPreferences.preload, "C:\\app\\src\\preload-settings.js");
   assert.strictEqual(win.options.webPreferences.nodeIntegration, false);
@@ -430,6 +430,20 @@ test("settings window holds a requested recap tab until the new renderer is read
   ]);
 });
 
+test("settings window accepts a requested sessions tab through the whitelist", () => {
+  const { runtime } = createRuntime();
+  runtime.open({ tab: "sessions" });
+  const win = FakeBrowserWindow.instances[0];
+  assert.equal(win.calls.some((call) => Array.isArray(call) && call[0] === "send"), false);
+
+  win.emitWebContents("did-finish-load");
+  assert.deepStrictEqual(win.calls.find((call) => Array.isArray(call) && call[0] === "send"), [
+    "send",
+    "settings:select-tab",
+    "sessions",
+  ]);
+});
+
 test("settings window coalesces live recap changes after the renderer is ready", () => {
   const { runtime, timers } = createRuntime();
   runtime.open();
@@ -517,9 +531,9 @@ test("settings window runtime places the first Settings window on the pet displa
 
   assert.deepStrictEqual(nearestArgs, { cx: 1840, cy: 240 });
   assert.strictEqual(win.options.x, 1680);
-  assert.strictEqual(win.options.y, 210);
+  assert.strictEqual(win.options.y, 160);
   assert.strictEqual(win.options.width, 800);
-  assert.strictEqual(win.options.height, 560);
+  assert.strictEqual(win.options.height, 660);
 });
 
 test("settings window runtime restores saved bounds on the saved display", () => {
@@ -672,7 +686,7 @@ test("invalid saved Settings bounds fall back to pet-display centering", () => {
   const win = FakeBrowserWindow.instances[0];
   assert.deepStrictEqual(
     { x: win.options.x, y: win.options.y, width: win.options.width, height: win.options.height },
-    { x: 1680, y: 210, width: 800, height: 560 },
+    { x: 1680, y: 160, width: 800, height: 660 },
   );
 });
 

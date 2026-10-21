@@ -76,6 +76,8 @@ const BUBBLE_STRINGS = {
   en: {
     irreversibleHint: "Destructive action \u2014 may not be recoverable",
     reminderHeldHint: "Automatic approval paused: {reason}",
+    reviewHeldHint: "Automatic approval paused: external review",
+    reviewWarningHint: "External review flagged a warning",
     autoAcceptEdits: "Auto-accept edits",
     switchToPlanMode: "Switch to plan mode",
     allowInDir: "Allow {tool} in {dir}/",
@@ -129,6 +131,8 @@ const BUBBLE_STRINGS = {
   zh: {
     irreversibleHint: "\u7834\u574F\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u65E0\u6CD5\u6062\u590D",
     reminderHeldHint: "已暂停自动批准：{reason}",
+    reviewHeldHint: "已暂停自动批准：外部审查",
+    reviewWarningHint: "外部审查标记了警告",
     autoAcceptEdits: "\u81EA\u52A8\u63A5\u53D7\u7F16\u8F91",
     switchToPlanMode: "\u5207\u6362\u5230 Plan \u6A21\u5F0F",
     allowInDir: "\u5141\u8BB8 {tool} \u5728 {dir}/",
@@ -182,6 +186,8 @@ const BUBBLE_STRINGS = {
   "zh-TW": {
     irreversibleHint: "\u7834\u58DE\u6027\u64CD\u4F5C\u2014\u2014\u53EF\u80FD\u7121\u6CD5\u5FA9\u539F",
     reminderHeldHint: "已暫停自動允許：{reason}",
+    reviewHeldHint: "已暫停自動允許：外部審查",
+    reviewWarningHint: "外部審查標記了警告",
     autoAcceptEdits: "自動接受編輯",
     switchToPlanMode: "切換到計劃模式",
     allowInDir: "允許 {tool} 在 {dir}/",
@@ -235,6 +241,8 @@ const BUBBLE_STRINGS = {
   ko: {
     irreversibleHint: "\uD30C\uAD34\uC801 \uC791\uC5C5 \u2014 \uBCF5\uAD6C\uB418\uC9C0 \uC54A\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4",
     reminderHeldHint: "자동 승인을 일시 중지했습니다: {reason}",
+    reviewHeldHint: "자동 승인을 일시 중지했습니다: 외부 검토",
+    reviewWarningHint: "외부 검토에서 경고가 표시되었습니다",
     autoAcceptEdits: "\uD3B8\uC9D1 \uC790\uB3D9 \uC2B9\uC778",
     switchToPlanMode: "Plan \uBAA8\uB4DC\uB85C \uC804\uD658",
     allowInDir: "{dir}/\uC5D0\uC11C {tool} \uD5C8\uC6A9",
@@ -288,6 +296,8 @@ const BUBBLE_STRINGS = {
   ja: {
     irreversibleHint: "\u7834\u58CA\u7684\u306A\u64CD\u4F5C \u2014 \u5FA9\u5143\u3067\u304D\u306A\u3044\u53EF\u80FD\u6027\u304C\u3042\u308A\u307E\u3059",
     reminderHeldHint: "自動承認を一時停止しました：{reason}",
+    reviewHeldHint: "自動承認を一時停止しました：外部レビュー",
+    reviewWarningHint: "外部レビューが警告を付けました",
     autoAcceptEdits: "編集を自動承認",
     switchToPlanMode: "Plan モードに切り替え",
     allowInDir: "{dir}/ で {tool} を許可",
@@ -341,6 +351,8 @@ const BUBBLE_STRINGS = {
   "pt-BR": {
     irreversibleHint: "Ação destrutiva — pode não ter volta",
     reminderHeldHint: "A aprovação automática foi pausada: {reason}",
+    reviewHeldHint: "A aprovação automática foi pausada: revisão externa",
+    reviewWarningHint: "A revisão externa sinalizou um aviso",
     autoAcceptEdits: "Aceitar edições automaticamente",
     switchToPlanMode: "Mudar para o modo plano",
     allowInDir: "Permitir {tool} em {dir}/",
@@ -394,6 +406,8 @@ const BUBBLE_STRINGS = {
   es: {
     irreversibleHint: "Acción destructiva — puede ser irreversible",
     reminderHeldHint: "Aprobación automática pausada: {reason}",
+    reviewHeldHint: "Aprobación automática pausada: revisión externa",
+    reviewWarningHint: "La revisión externa marcó una advertencia",
     autoAcceptEdits: "Aceptar ediciones automáticamente",
     switchToPlanMode: "Cambiar al modo plan",
     allowInDir: "Permitir {tool} en {dir}/",
@@ -589,16 +603,43 @@ function renderIrreversibleBadge(data, isPlanReview = false) {
   const reminderTag = typeof data.reminderTag === "string" && data.reminderTag
     ? data.reminderTag
     : null;
-  if ((reminderTag || irreversible) && !isPlanReview) {
-    irreversibleBadge.textContent = "\u26A0 " + (reminderTag
-      ? bubbleText(data.lang, "reminderHeldHint", { reason: formatReminderReason(reminderTag, data.lang) })
+  // The external review command's verdict, decided in the main process. The
+  // note is its last stdout line (already bounded/control-stripped there).
+  // Display-only, like the reminder badge: nothing in the renderer decides.
+  const reviewTag = typeof data.reviewTag === "string" && data.reviewTag
+    ? data.reviewTag
+    : null;
+  const reviewNote = typeof data.reviewNote === "string" && data.reviewNote
+    ? data.reviewNote
+    : null;
+  // Exit code 2 means the gate asked for a human AND said "this one is worth a
+  // closer look". It must be visible, not just stored: the same badge gets a
+  // second line so the distinction survives at a glance.
+  const reviewWarning = reviewTag !== null && data.reviewWarning === true;
+  const heldReasons = [];
+  if (reminderTag) {
+    heldReasons.push(bubbleText(data.lang, "reminderHeldHint", {
+      reason: formatReminderReason(reminderTag, data.lang),
+    }));
+  }
+  if (reviewTag) {
+    heldReasons.push(bubbleText(data.lang, "reviewHeldHint")
+      + (reviewNote ? ` \u2014 ${reviewNote}` : "")
+      + (reviewWarning ? ` (${bubbleText(data.lang, "reviewWarningHint")})` : ""));
+  }
+  if ((heldReasons.length > 0 || irreversible) && !isPlanReview) {
+    irreversibleBadge.textContent = "\u26A0 " + (heldReasons.length > 0
+      ? heldReasons.join(" \u00B7 ")
       : bubbleText(data.lang, "irreversibleHint"));
-    irreversibleBadge.setAttribute("data-reason", reminderTag || irreversible.tag);
+    irreversibleBadge.setAttribute("data-reason", reminderTag || reviewTag || irreversible.tag);
+    if (reviewWarning) irreversibleBadge.setAttribute("data-review-warning", "true");
+    else irreversibleBadge.removeAttribute("data-review-warning");
     irreversibleBadge.style.display = "";
   } else {
     irreversibleBadge.textContent = "";
     irreversibleBadge.style.display = "none";
     irreversibleBadge.removeAttribute("data-reason");
+    irreversibleBadge.removeAttribute("data-review-warning");
   }
 }
 

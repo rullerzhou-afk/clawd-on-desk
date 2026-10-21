@@ -95,10 +95,12 @@ describe("bubble wiring — badge is display-only", () => {
   it("renderer defines localized hint for every supported bubble locale", () => {
     const count = (bubbleRenderer.match(/irreversibleHint:/g) || []).length;
     assert.strictEqual(count, SUPPORTED_LANGS.length);
+    const reviewCount = (bubbleRenderer.match(/reviewHeldHint:/g) || []).length;
+    assert.strictEqual(reviewCount, SUPPORTED_LANGS.length);
   });
   it("renderer localizes reminder tags while retaining the stable data attribute", () => {
     assert.match(bubbleRenderer, /formatReminderReason\(reminderTag, data\.lang\)/);
-    assert.match(bubbleRenderer, /setAttribute\("data-reason", reminderTag \|\| irreversible\.tag\)/);
+    assert.match(bubbleRenderer, /setAttribute\("data-reason", reminderTag \|\| reviewTag \|\| irreversible\.tag\)/);
     for (const lang of SUPPORTED_LANGS) {
       assert.notStrictEqual(formatReminderReason("scan-error", lang), "scan-error");
     }

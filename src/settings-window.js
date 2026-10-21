@@ -11,7 +11,7 @@ const {
 const { clampTextScale, scaleWidth, scaleHeight, applyZoomToWindow } = require("./text-scale");
 
 const DEFAULT_WIDTH = 800;
-const DEFAULT_HEIGHT = 560;
+const DEFAULT_HEIGHT = 660;
 const MIN_WIDTH = 640;
 const MIN_HEIGHT = 480;
 const READY_TO_SHOW_FALLBACK_MS = 2000;
@@ -104,11 +104,14 @@ function createSettingsWindowRuntime(options = {}) {
 
   const ALLOWED_TABS = new Set([
     "general",
+    "pet",
+    "notifications",
+    "sessions",
+    "permissions",
     "agents",
     "theme",
     "animOverrides",
     "shortcuts",
-    "telegram-approval",
     "discord-presence",
     "remote-ssh",
     "recap",

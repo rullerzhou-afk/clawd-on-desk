@@ -188,6 +188,7 @@ function makeHookEntry(event, command) {
  * @param {string} [options.nodeBin]
  * @param {string} [options.platform]
  * @param {boolean} [options.silent]
+ * @param {boolean} [options.preserveDisabled] keep existing disabled Clawd hooks disabled
  * @returns {{ added: number, updated: number, skipped: number, hooksPath: string }}
  */
 function registerKiroCrewHooks(options = {}) {
@@ -256,7 +257,10 @@ function registerKiroCrewHooks(options = {}) {
       if (existing) {
         let changed = false;
         if (existing.command !== desiredCommand) { existing.command = desiredCommand; changed = true; }
-        if (existing.enabled === false) { existing.enabled = true; changed = true; }
+        if (existing.enabled === false && options.preserveDisabled !== true) {
+          existing.enabled = true;
+          changed = true;
+        }
         if (changed) updated++;
         else skipped++;
       } else {

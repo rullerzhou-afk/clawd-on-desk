@@ -2205,6 +2205,13 @@ function createPetWindowRuntime(options = {}) {
     const isQuitting = typeof optionsArg.isQuitting === "function" ? optionsArg.isQuitting : () => false;
     const size = optionsArg.size;
     const initialWindowBounds = optionsArg.initialWindowBounds;
+    // The theme JSON used to ride in additionalArguments, but Windows caps a
+    // process command line at 32,767 characters and a large theme crosses it.
+    // The sandboxed preload reads the current config over synchronous IPC
+    // instead, which also refreshes on reload.
+    if (optionsArg.rendererConfigChannel) {
+      optionsArg.rendererConfigChannel.setPetConfig(optionsArg.themeConfig);
+    }
     const renderWin = new BrowserWindow({
       width: size.width,
       height: size.height,
@@ -2223,9 +2230,6 @@ function createPetWindowRuntime(options = {}) {
       webPreferences: {
         preload: optionsArg.preloadPath,
         backgroundThrottling: false,
-        additionalArguments: [
-          "--theme-config=" + JSON.stringify(optionsArg.themeConfig),
-        ],
       },
     });
 
@@ -2314,6 +2318,11 @@ function createPetWindowRuntime(options = {}) {
       throw new Error("createHitWindow requires BrowserWindow");
     }
     const initialHitWindowBounds = getInitialHitWindowBounds();
+    // Same Windows command-line limit as the pet window: keep the hit-renderer
+    // theme JSON out of argv and let its preload read the latest value over IPC.
+    if (optionsArg.rendererConfigChannel) {
+      optionsArg.rendererConfigChannel.setHitConfig(optionsArg.hitThemeConfig);
+    }
     const hitWin = new BrowserWindow({
       ...(isWin ? { show: false } : {}),
       width: initialHitWindowBounds.width,
@@ -2339,7 +2348,6 @@ function createPetWindowRuntime(options = {}) {
         preload: optionsArg.preloadPath,
         backgroundThrottling: false,
         additionalArguments: [
-          "--hit-theme-config=" + JSON.stringify(optionsArg.hitThemeConfig),
           "--hit-platform=" + process.platform,
         ],
       },

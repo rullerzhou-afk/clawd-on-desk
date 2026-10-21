@@ -477,20 +477,27 @@ function inspectManagedOpencode(descriptor, options = {}) {
     if (v2Primary) return v2Primary;
   }
 
+  // A 1.x host with no Clawd v1 entry but a leftover Clawd v2 entry is
+  // repairable (opencode <= 1.18.15 rejects the whole config), never a silent
+  // not-connected. This covers both a config with no `plugin` array and the
+  // empty / foreign-only array a v2-host sweep leaves behind before a
+  // downgrade to 1.x.
+  const v1HostLeftoverV2 = () => {
+    if (!(v2Host === "v1" && v2Assessment && v2Assessment.state === "ok")) return null;
+    return makeResult(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: effective.path,
+      v2EntryState: "leftover",
+      v2Entries: v2Assessment.entries || [],
+      detail: `${effective.path} has no Clawd v1 plugin entry, but a Clawd v2 plugins-key entry remains and no opencode v2 host was detected (opencode <= 1.18.15 rejects the key); Repair removes it and registers the v1 entry`,
+    });
+  };
+
   if (!hasPluginArray(effective)) {
-    // A v1/unknown host with a leftover Clawd v2 entry is repairable (opencode
-    // <= 1.18.15 rejects the whole config), never a silent not-connected.
-    if (v2Host === "v1" && v2Assessment && v2Assessment.state === "ok") {
-      return makeResult(descriptor, "broken-path", {
-        level: "warning",
-        parentDirExists: true,
-        configFileExists: true,
-        configPath: effective.path,
-        v2EntryState: "leftover",
-        v2Entries: v2Assessment.entries || [],
-        detail: `${effective.path} has no Clawd v1 plugin entry, but a Clawd v2 plugins-key entry remains and no opencode v2 host was detected (opencode <= 1.18.15 rejects the key); Repair removes it and registers the v1 entry`,
-      });
-    }
+    const leftoverV2 = v1HostLeftoverV2();
+    if (leftoverV2) return leftoverV2;
     // No effective plugin array. If a valid canonical generation is lying
     // around unreferenced, warn without claiming correctness.
     const residual = generationResidual(target, cfg, agentId, fsImpl);
@@ -558,6 +565,8 @@ function inspectManagedOpencode(descriptor, options = {}) {
   const owned = entries.filter((entry) => SAFE_CATEGORIES.has(entry.category));
 
   if (!owned.length) {
+    const leftoverV2 = v1HostLeftoverV2();
+    if (leftoverV2) return { ...leftoverV2, opencodeEntries: entries.map((entry) => entry.rawEntry) };
     return makeResult(descriptor, "not-connected", {
       level: "warning",
       parentDirExists: true,

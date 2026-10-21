@@ -317,6 +317,42 @@ describe("roam module", () => {
     );
   });
 
+  it("does not start a new walk after the unattended sleep threshold", () => {
+    let unattendedMs = 60000;
+    const ctx = makeCtx({
+      getUnattendedMs: () => unattendedMs,
+      getSleepTimeoutMs: () => 60000,
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+
+    assert.equal(ctx._stateLog.length, 0);
+    assert.equal(ctx._appliedBounds.length, 0);
+    mock.timers.tick(8000);
+    assert.equal(ctx._stateLog.length, 0, "the expired callback must not re-arm another walk");
+
+    unattendedMs = 59999;
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.ok(
+      ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"),
+      "an unattended period below the threshold should still start a walk"
+    );
+  });
+
+  it("keeps the old behavior when unattended-time getters are absent", () => {
+    const ctx = makeCtx();
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.ok(ctx._stateLog.some((event) => event.type === "applyState" && event.state === "roam"));
+  });
+
   it("subsequent roams use ROAM_BETWEEN_DELAY_MS (4s)", () => {
     const ctx = makeCtx();
     const roam = roamModule(ctx);

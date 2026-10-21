@@ -26,6 +26,12 @@ const {
 } = require("./custom-applications");
 const { isPlainObject } = require("./theme-loader");
 const { normalizeShortcuts, getDefaultShortcuts } = require("./shortcut-actions");
+const {
+  DEFAULT_TIMEOUT_MS: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
+  MIN_TIMEOUT_MS: PERMISSION_REVIEW_MIN_TIMEOUT_MS,
+  MAX_TIMEOUT_MS: PERMISSION_REVIEW_MAX_TIMEOUT_MS,
+  normalizePermissionReviewCommand,
+} = require("./permission-review-command");
 const { isValidDisplaySnapshot } = require("./work-area");
 const { normalizeRemoteSsh, getDefaults: getRemoteSshDefaults } = require("./remote-ssh-profile");
 const {
@@ -272,6 +278,26 @@ const SCHEMA = {
   // without a human, this only narrows it, so there is no trust transition to
   // confirm.
   destructiveActionReminder: { type: "boolean", default: false },
+  // Optional external review command (#995). Opt-in and empty by default.
+  // Stored as an argv array and executed without a shell; the first element is
+  // the executable. It runs only when permission automation is about to answer
+  // `allow`, and any outcome other than exit 0 pauses for a human card. Like
+  // the reminder above it can only narrow what automation allows, but unlike
+  // it this setting names an executable, so it is command-only at the
+  // controller boundary and can only be changed through the prefs file in this
+  // first release. A malformed value normalizes to "off".
+  permissionReviewCommand: {
+    type: "array",
+    defaultFactory: () => [],
+    normalize: (value) => normalizePermissionReviewCommand(value),
+  },
+  permissionReviewTimeoutMs: {
+    type: "number",
+    default: PERMISSION_REVIEW_DEFAULT_TIMEOUT_MS,
+    validate: (v) => Number.isInteger(v)
+      && v >= PERMISSION_REVIEW_MIN_TIMEOUT_MS
+      && v <= PERMISSION_REVIEW_MAX_TIMEOUT_MS,
+  },
   // One-release tombstone for old files/tests. It can never become the current
   // automation source: validation forces ephemeral fields to defaults, save()
   // drops them, and no product writer targets this key.

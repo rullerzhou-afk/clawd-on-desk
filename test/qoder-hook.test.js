@@ -171,10 +171,15 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(isQoderAgentCommandLine("node /x/@qoder-ai/qodercli/dist/cli.js"), true);
     assert.strictEqual(isQoderAgentCommandLine("node /opt/qoder-cli/dist/cli.js"), true);
     assert.strictEqual(isQoderAgentCommandLine("C:\\tools\\node_modules\\.bin\\qoder"), true);
+    assert.strictEqual(isQoderAgentCommandLine("qodercn"), true);
+    assert.strictEqual(isQoderAgentCommandLine('"C:\\tools\\qoderclicn.exe" --stdio'), true);
+    assert.strictEqual(isQoderAgentCommandLine("node /x/@qoder-ai/qoderclicn/dist/cli.js"), true);
     // Must NOT match a node process that merely runs inside a repo whose path
     // happens to contain "qoder".
     assert.strictEqual(isQoderAgentCommandLine("node /home/me/qoder-notes/index.js"), false);
     assert.strictEqual(isQoderAgentCommandLine("node /home/me/myqoder/app.js"), false);
+    assert.strictEqual(isQoderAgentCommandLine("node /home/me/qodercn-notes/index.js"), false);
+    assert.strictEqual(isQoderAgentCommandLine("node /home/me/qoderclicn-notes/index.js"), false);
     assert.strictEqual(isQoderAgentCommandLine(""), false);
   });
 });

@@ -411,6 +411,32 @@ test("settings agent actions enable an agent and preserve sibling flags", () => 
   assert.strictEqual(result.commit.agents.codex.permissionMode, "intercept");
 });
 
+test("settings agent actions enable installed KiroCrew without automatic override", () => {
+  const snapshot = prefs.getDefaults();
+  snapshot.agents.kirocrew = {
+    ...(snapshot.agents.kirocrew || {}),
+    integrationInstalled: true,
+    enabled: false,
+  };
+  const calls = [];
+  const result = agentCommands.setAgentFlag(
+    { agentId: "kirocrew", flag: "enabled", value: true },
+    {
+      snapshot,
+      syncIntegrationForAgent: (agentId, options) => calls.push({ agentId, options }),
+      startMonitorForAgent: (agentId) => calls.push({ startMonitorForAgent: agentId }),
+    }
+  );
+
+  assert.strictEqual(result.status, "ok");
+  assert.deepStrictEqual(calls, [
+    { agentId: "kirocrew", options: {} },
+    { startMonitorForAgent: "kirocrew" },
+  ]);
+  assert.strictEqual(Object.hasOwn(calls[0].options, "automatic"), false);
+  assert.strictEqual(result.commit.agents.kirocrew.enabled, true);
+});
+
 test("settings agent actions fail closed when the Codex auto-start gate cannot sync", () => {
   const snapshot = prefs.getDefaults();
   const calls = [];

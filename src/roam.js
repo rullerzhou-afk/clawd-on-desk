@@ -633,6 +633,20 @@ module.exports = function initRoam(ctx) {
     roamPauseTimer = setTimeout(() => {
       roamPauseTimer = null;
       if (!isRoamAllowed()) return;
+      if (
+        typeof ctx.getUnattendedMs === "function"
+        && typeof ctx.getSleepTimeoutMs === "function"
+      ) {
+        const unattendedMs = ctx.getUnattendedMs();
+        const sleepTimeoutMs = ctx.getSleepTimeoutMs();
+        // The current walk is allowed to finish. Once the existing idle
+        // clock reaches the theme's sleep threshold, do not start another.
+        if (
+          Number.isFinite(unattendedMs)
+          && Number.isFinite(sleepTimeoutMs)
+          && unattendedMs >= sleepTimeoutMs
+        ) return;
+      }
       const target = pickRandomTarget();
       if (!target) {
         scheduleNextRoam();

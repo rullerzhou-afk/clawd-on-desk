@@ -218,7 +218,11 @@ function managedFileDescriptor(agentId, dirName) {
 }
 
 function qoderDescriptor() {
-  return managedFileDescriptor("qoder", ".qoder");
+  const descriptor = managedFileDescriptor("qoder", ".qoder");
+  descriptor.configTargets = require("../hooks/qoder-install").resolveQoderConfigTargets({
+    homeDir: path.dirname(descriptor.parentDir), env: {},
+  });
+  return descriptor;
 }
 
 function nestedHooksConfig(events, marker, commandForEvent = (event) => `"/node" "/app/hooks/${marker}" ${event}`) {
@@ -235,6 +239,53 @@ function nestedHooksConfig(events, marker, commandForEvent = (event) => `"/node"
 function qoderHooksConfig(commandForEvent) {
   return nestedHooksConfig(QODER_HOOK_EVENTS, "qoder-hook.js", commandForEvent);
 }
+
+describe("Qoder CN Doctor coverage", () => {
+  it("offers CN repair even when international hooks were deliberately disabled", () => {
+    const descriptor = qoderDescriptor();
+    writeJson(descriptor.configPath, {
+      hooks: qoderHooksConfig(), hooksConfig: { disabled: ["clawd"] },
+    });
+    writeJson(descriptor.configTargets[1].configPath, { language: "zh-CN" });
+    assert.deepStrictEqual(runOne(descriptor).fixAction, { type: "agent-integration", agentId: "qoder" });
+  });
+
+  it("does not let healthy international hooks hide missing CN hooks", () => {
+    const descriptor = qoderDescriptor();
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig() });
+    const cnPath = descriptor.configTargets[1].configPath;
+    writeJson(cnPath, { language: "zh-CN" });
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.configPath, cnPath);
+    assert.deepStrictEqual(detail.configTargets.map((target) => target.status), ["ok", "not-connected"]);
+    assert.deepStrictEqual(detail.fixAction, { type: "agent-integration", agentId: "qoder" });
+  });
+
+  it("validates CN-only hooks and reports a corrupt CN config even with healthy international hooks", () => {
+    const descriptor = qoderDescriptor();
+    const cnPath = descriptor.configTargets[1].configPath;
+    writeJson(cnPath, { hooks: qoderHooksConfig() });
+    assert.strictEqual(runOne(descriptor).status, "ok");
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig() });
+    writeText(cnPath, "{");
+    assert.strictEqual(runOne(descriptor).status, "config-corrupt");
+  });
+
+  it("preserves the CN disabled-hook setting without offering a futile repair", () => {
+    const descriptor = qoderDescriptor();
+    writeJson(descriptor.configPath, { hooks: qoderHooksConfig() });
+    writeJson(descriptor.configTargets[1].configPath, {
+      hooks: qoderHooksConfig(), hooksConfig: { disabled: ["clawd"] },
+    });
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.strictEqual(detail.supplementary.value, "disabled-clawd");
+    assert.strictEqual(detail.fixAction, undefined);
+  });
+});
 
 function reasonixDescriptor() {
   const descriptor = managedFileDescriptor("reasonix", ".reasonix");

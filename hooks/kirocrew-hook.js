@@ -12,8 +12,9 @@
 // deliberately NOT used — see HOOK_MAP below.
 //
 // Session attribution: KiroCrew's hook stdin carries no `session_id`. It
-// exposes `session_key` and, for a subagent, `parent_session_key`. The bridge
-// reads these so each chat drives its own pet session instead of collapsing
+// exposes `session_key` and, for a subagent, `parent_session_key`. The payload
+// builder drops events with an explicit subagent id, while main-chat events
+// use these keys so each chat drives its own pet session instead of collapsing
 // into one shared session. The gateway is a background service with no PID in
 // the pet's process tree, so no source_pid is resolved; a `host` tag is sent
 // only for a genuine remote (CLAWD_REMOTE), matching kiro-hook.js.

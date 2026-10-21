@@ -87,10 +87,7 @@
       animMapReset: null,
       animOverrideTimingSliders: new Map(),
       idleVisualPicker: null,
-      bubblePolicySummary: null,
-      sessionHudSummary: null,
       size: null,
-      soundSummary: null,
       soundVolume: null,
       textScale: null,
       roamMovementStyle: null,
@@ -163,7 +160,7 @@
     // null = not chosen yet; the Agents tab resolves it from what is connected.
     agentsSubtab: null,
     agentsUnavailableQuery: "",
-    remoteApprovalSubtab: "channels",
+    permissionsSubtab: "local",
     expandedOverrideRowIds: new Set(),
     assetPicker: {
       state: null,
@@ -1946,11 +1943,8 @@
     state.mountedControls.animMapSwitches.clear();
     state.mountedControls.animMapReset = null;
     state.mountedControls.animOverrideTimingSliders.clear();
-    state.mountedControls.bubblePolicySummary = null;
-    state.mountedControls.sessionHudSummary = null;
     state.mountedControls.idleVisualPicker = null;
     state.mountedControls.size = null;
-    state.mountedControls.soundSummary = null;
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
     state.mountedControls.roamMovementStyle = null;
@@ -2155,7 +2149,12 @@
     try {
       const parsed = JSON.parse(localStorage.getItem(NAVIGATION_STORAGE_KEY) || "null");
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return false;
-      if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
+      // Compatibility for the pre-merge sidebar id; remove in the next major.
+      if (parsed.activeTab === "telegram-approval") {
+        state.activeTab = "permissions";
+        runtime.persistedSettingsTab = "permissions";
+        runtime.permissionsSubtab = "channels";
+      } else if (typeof parsed.activeTab === "string" && tabs[parsed.activeTab]) {
         state.activeTab = parsed.activeTab;
         runtime.persistedSettingsTab = parsed.activeTab;
       }

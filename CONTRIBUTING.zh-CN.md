@@ -74,7 +74,7 @@ Clawd 通过 hook、日志轮询、plugin 或 extension 感知 AI 编程工具�
 - 开一个集成类 Issue，说明这个工具怎么暴露状态（hook、日志、plugin API），附上它的文档链接。
 - 读 `docs/project/agent-runtime-architecture.md` 了解模块边界，读 `AGENTS.md` 了解每个集成都必须遵守的安装、启用、卸载规则。一句话：安装不能碰用户没让 Clawd 管的配置，卸载只能删 Clawd 自己加的东西。
 
-一个新集成的 PR 通常包括：适配器、安装器和卸载器、`test/` 下的测试、`docs/guides/` 下的配置指南，以及把工具加进 `AGENTS.md` 和 README 的列表。
+一个新集成的 PR 通常包括：适配器、安装器和卸载器、`test/` 下的测试、`docs/guides/` 下的配置指南，以及把工具加进 `AGENTS.md`、README 的「支持的 Agent」列表和 `docs/guides/supported-agents.md`。
 
 ## 主题
 

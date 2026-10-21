@@ -4296,3 +4296,58 @@ describe("stranded drag-lock release (#997 / #998)", () => {
     assert.equal(harness.runtime.isDragLocked(), false);
   });
 });
+
+describe("pet-window theme config transport", () => {
+  function makeConfigChannel() {
+    return {
+      pet: undefined,
+      hit: undefined,
+      setPetConfig(config) { this.pet = config; },
+      setHitConfig(config) { this.hit = config; },
+    };
+  }
+
+  it("hands the pet config to the channel and keeps it out of additionalArguments", () => {
+    const instances = [];
+    const harness = createRuntime();
+    const channel = makeConfigChannel();
+
+    createPetRenderWindowForTest(harness, makeBrowserWindow(instances), {
+      rendererConfigChannel: channel,
+    });
+
+    assert.deepStrictEqual(channel.pet, { ok: true });
+    assert.strictEqual(
+      instances[0].options.webPreferences.additionalArguments,
+      undefined,
+      "Windows caps the launch command line at 32,767 characters",
+    );
+  });
+
+  it("hands the hit config to the channel and only leaves the platform argument", () => {
+    const instances = [];
+    const harness = createRuntime();
+    const channel = makeConfigChannel();
+
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+      rendererConfigChannel: channel,
+    });
+
+    assert.deepStrictEqual(channel.hit, { ok: true });
+    assert.deepStrictEqual(instances[0].options.webPreferences.additionalArguments, [
+      `--hit-platform=${process.platform}`,
+    ]);
+  });
+
+  it("never puts theme JSON back on the command line", () => {
+    const source = fs.readFileSync(path.join(SRC_DIR, "pet-window-runtime.js"), "utf8");
+
+    assert.ok(!source.includes('"--theme-config=" +'));
+    assert.ok(!source.includes('"--hit-theme-config=" +'));
+    assert.ok(source.includes("32,767"));
+  });
+});

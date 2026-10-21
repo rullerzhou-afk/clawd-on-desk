@@ -19,7 +19,7 @@ hosts — an app created on one **cannot** be used on the other, and the
 credentials are not interchangeable.
 
 Clawd ships a single approval channel for both. Pick your platform in
-**Settings → Remote Approval → Feishu / Lark → step 1**:
+**Settings → Permissions & approval → IM channels → Feishu / Lark → step 1**:
 
 | | Feishu (China) | Lark (International) |
 |---|---|---|

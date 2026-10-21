@@ -140,7 +140,7 @@ channel id.
    segment is the credential. Treat the whole URL as a password: anyone holding
    it can post to that channel.
 
-2. **Save it in Clawd.** **Settings → Remote Approval → Slack**, paste into
+2. **Save it in Clawd.** **Settings → Permissions & approval → IM channels → Slack**, paste into
    step 1, then **Save**. For the bot transport also fill in the channel id.
 
    Clawd only accepts `https://hooks.slack.com/…`, compared by exact hostname —

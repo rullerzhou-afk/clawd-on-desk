@@ -103,6 +103,8 @@ html, body {
   font-weight: 500;
   transition: background 0.12s ease, color 0.12s ease;
 }
+.sidebar-item-group-start { position: relative; margin-top: 12px; }
+.sidebar-item-group-start::before { content: ""; position: absolute; left: 10px; right: 10px; top: -7px; border-top: 1px solid var(--border); }
 .sidebar-item:hover:not(.disabled) { background: var(--sidebar-hover); }
 .sidebar-item.active {
   background: var(--sidebar-active);
@@ -1085,19 +1087,6 @@ html, body {
   min-width: 0;
   transition: opacity 0.16s ease, transform 0.18s ease;
 }
-.session-hud-collapsible .collapsible-group-summary {
-  flex: 0 0 auto;
-  max-width: none;
-}
-.sound-collapsible .collapsible-group-summary {
-  flex: 0 0 auto;
-  max-width: none;
-}
-.bubble-policy-collapsible .collapsible-group-summary {
-  flex: 0 0 auto;
-  flex-wrap: nowrap;
-  max-width: none;
-}
 .collapsible-group:not(.collapsed) > .collapsible-group-header > .collapsible-group-summary {
   opacity: 0.72;
   transform: translateX(2px);
@@ -1116,55 +1105,6 @@ html, body {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.session-hud-collapsible .collapsible-summary-chip,
-.sound-collapsible .collapsible-summary-chip {
-  max-width: min(280px, 100%);
-  min-width: 0;
-}
-.session-hud-summary-control {
-  display: grid;
-  grid-template-columns: repeat(3, max-content);
-  justify-content: end;
-  gap: 6px;
-  width: auto;
-  max-width: none;
-  min-width: 0;
-}
-.session-hud-summary-control .collapsible-summary-chip {
-  justify-self: end;
-  width: max-content;
-  max-width: 118px;
-}
-.session-hud-summary-control.compact {
-  display: inline-flex;
-  width: auto;
-  max-width: none;
-}
-@media (max-width: 720px) {
-  .session-hud-collapsible .collapsible-group-header {
-    align-items: flex-start;
-    flex-wrap: wrap;
-  }
-  .session-hud-collapsible .collapsible-group-summary {
-    flex: 0 0 calc(100% - 22px);
-    justify-content: flex-start;
-    max-width: calc(100% - 22px);
-    margin-left: 22px;
-  }
-  .session-hud-summary-control {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    width: min(238px, 100%);
-    max-width: 100%;
-    justify-content: start;
-  }
-  .session-hud-summary-control .collapsible-summary-chip {
-    justify-self: start;
-    max-width: 100%;
-  }
-  .session-hud-summary-control.compact {
-    width: auto;
-  }
 }
 .collapsible-summary-chip.accent {
   background: rgba(217, 119, 87, 0.12);
@@ -1282,8 +1222,8 @@ html, body {
   display: grid;
   gap: 8px;
 }
-.quota-ring-collapsible .settings-option-list,
-.sound-collapsible .settings-option-list {
+.sound-section .section-rows,
+.quota-ring-section .section-rows {
   container-type: inline-size;
 }
 .settings-option-list .settings-option-item {
@@ -1299,29 +1239,6 @@ html, body {
 }
 .settings-option-list .settings-option-item:last-child {
   border-bottom: 1px solid var(--row-border);
-}
-.sound-summary-control {
-  display: inline-flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex: 0 0 auto;
-  min-width: max-content;
-}
-.sound-summary-control .collapsible-summary-chip {
-  flex: 0 0 auto;
-  max-width: none;
-}
-.sound-header-switch {
-  flex: 0 0 auto;
-}
-.sound-collapsible .collapsible-group-text .row-desc {
-  display: -webkit-box;
-  overflow: hidden;
-  white-space: normal;
-  line-height: 1.35;
-  -webkit-line-clamp: 2;
-  -webkit-box-orient: vertical;
 }
 @media (prefers-color-scheme: dark) {
   .settings-option-list .settings-option-item {
@@ -1391,31 +1308,6 @@ html, body {
   gap: 8px;
 }
 
-.bubble-policy-row {
-  flex-direction: column;
-  align-items: stretch;
-  gap: 10px;
-}
-.bubble-policy-heading {
-  width: 100%;
-}
-.bubble-policy-list {
-  display: grid;
-  gap: 8px;
-}
-.bubble-policy-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 12px;
-  padding: 10px 12px;
-  border: 1px solid var(--row-border);
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--panel-bg) 74%, transparent);
-}
-.bubble-policy-copy {
-  min-width: 0;
-}
 .bubble-policy-warning {
   color: var(--accent);
 }
@@ -1427,11 +1319,6 @@ html, body {
 }
 .size-over-max-hint[hidden] {
   display: none;
-}
-.bubble-policy-controls {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
 }
 .bubble-policy-seconds {
   width: 58px;
@@ -2183,7 +2070,7 @@ html, body {
 }
 /* Author display rules outrank the UA [hidden] rule, so the reminder rows
    toggled by the master switch need their own explicit hidden guard. */
-.quota-ring-option-list .row[hidden] {
+.quota-ring-section .section-rows .row[hidden] {
   display: none;
 }
 /* The longest localized presets (pt-BR / es) need more than the default

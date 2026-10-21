@@ -22,6 +22,36 @@ const ICONS = {
     '<path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z"/>' +
     '</svg>',
 
+  // cat face (the pet itself)
+  pet:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M12 5c.67 0 1.35.09 2 .26 1.78-2 5.03-2.84 6.42-2.26 1.4.58-.42 7-.42 7 .57 1.07 1 2.24 1 3.44C21 17.9 16.97 21 12 21s-9-3-9-7.56c0-1.25.5-2.4 1-3.44 0 0-1.89-6.42-.5-7 1.39-.58 4.72.23 6.5 2.23A9.04 9.04 0 0 1 12 5Z"/>' +
+    '<path d="M8 14v.5M16 14v.5"/>' +
+    '<path d="M11.25 16.25h1.5L12 17l-.75-.75Z"/>' +
+    '</svg>',
+
+  // bell
+  notifications:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M6 16v-5a6 6 0 1 1 12 0v5l1.5 2h-15L6 16Z"/>' +
+    '<path d="M10 20a2 2 0 0 0 4 0"/>' +
+    '</svg>',
+
+  // stacked session rows
+  sessions:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<rect x="3" y="4" width="18" height="5" rx="1.5"/>' +
+    '<rect x="3" y="11" width="18" height="5" rx="1.5"/>' +
+    '<path d="M3 20h12"/>' +
+    '</svg>',
+
+  // shield with check
+  permissions:
+    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
+    '<path d="M12 3 4 6v6c0 4.5 3.4 7.8 8 9 4.6-1.2 8-4.5 8-9V6l-8-3Z"/>' +
+    '<path d="m9 12 2 2 4-4"/>' +
+    '</svg>',
+
   // bolt
   agents:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
@@ -52,13 +82,6 @@ const ICONS = {
     '<path d="M6 10h.01M10 10h.01M14 10h.01M18 10h.01M6 14h12"/>' +
     '</svg>',
 
-  // paper plane (send)
-  "telegram-approval":
-    '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
-    '<path d="M22 2 11 13"/>' +
-    '<path d="M22 2 15 22l-4-9-9-4 20-7Z"/>' +
-    '</svg>',
-
   // gamepad (Discord presence)
   "discord-presence":
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
@@ -74,14 +97,12 @@ const ICONS = {
     '<path d="M12 16v6"/>' +
     '</svg>',
 
-  // paw print (local activity footprints)
+  // history clock (look back at past activity)
   recap:
     '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">' +
-    '<path d="M8 16.2c0-2.3 1.8-4.2 4-4.2s4 1.9 4 4.2c0 2.2-1.5 3.4-4 3.4s-4-1.2-4-3.4Z"/>' +
-    '<circle cx="6.4" cy="10.2" r="1.7"/>' +
-    '<circle cx="9.6" cy="6.6" r="1.7"/>' +
-    '<circle cx="14.4" cy="6.6" r="1.7"/>' +
-    '<circle cx="17.6" cy="10.2" r="1.7"/>' +
+    '<path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>' +
+    '<path d="M3 3v5h5"/>' +
+    '<path d="M12 7v5l4 2"/>' +
     '</svg>',
 
   // info circle

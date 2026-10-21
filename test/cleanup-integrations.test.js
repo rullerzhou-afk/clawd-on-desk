@@ -45,6 +45,27 @@ function listCleanupBackups(dir) {
 }
 
 describe("cleanupIntegrations", () => {
+  it("cleans both Qoder editions while preserving their independent user settings", () => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-cleanup-"));
+    try {
+      const { registerQoderHooks } = require("../hooks/qoder-install");
+      for (const dirname of [".qoder", ".qoder-cn"]) {
+        writeJson(path.join(homeDir, dirname, "settings.json"), { language: dirname });
+      }
+      registerQoderHooks({ homeDir, env: {}, silent: true, nodeBin: process.execPath });
+      const plan = buildCleanupOptionsForHome(homeDir, { env: {} });
+      const result = AGENT_CLEANERS.qoder(plan.byAgent.qoder);
+      assert.strictEqual(result.removed, 20);
+      for (const dirname of [".qoder", ".qoder-cn"]) {
+        const settings = readJson(path.join(homeDir, dirname, "settings.json"));
+        assert.strictEqual(settings.language, dirname);
+        assert.ok(Object.values(settings.hooks).every((entries) => entries.length === 0));
+      }
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
   it("builds explicit cleanup path overrides for every managed agent", () => {
     const homeDir = path.join(os.tmpdir(), "clawd-target-home");
     const inheritedLocalAppData = path.join(os.tmpdir(), "admin-local-appdata");

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Clawd — Qoder hook (Phase 1: state-only).
 //
-// Registered in ~/.qoder/settings.json by hooks/qoder-install.js. Reads the
+// Registered in Qoder / Qoder CN settings.json by hooks/qoder-install.js. Reads the
 // hook payload from stdin (JSON with hook_event_name), POSTs a state event to
 // the running Clawd server, and ALWAYS writes `{}` to stdout. Clawd never
 // answers a Qoder permission decision in Phase 1, so PermissionRequest /
@@ -110,15 +110,15 @@ function isQoderAgentCommandLine(cmd) {
   const normalized = cmd.toLowerCase().replace(/\\/g, "/");
   return normalized.includes("node_modules/.bin/qodercli")
     || normalized.includes("node_modules/.bin/qoder")
-    || /(^|[\s"'/])qoder(cli|-cli)?(\.js)?($|[\s"'/])/.test(normalized);
+    || /(^|[\s"'/])qoder(cn|cli(?:cn)?|-cli)?(\.(?:js|exe|cmd))?($|[\s"'/])/.test(normalized);
 }
 
 const config = getPlatformConfig();
 const defaultResolve = createPidResolver({
   agentNames: {
-    win: new Set(["qoder.exe", "qodercli.exe", "qoder-cli.exe"]),
-    mac: new Set(["qoder", "qodercli", "qoder-cli"]),
-    linux: new Set(["qoder", "qodercli", "qoder-cli"]),
+    win: new Set(["qoder.exe", "qodercli.exe", "qoder-cli.exe", "qoder cn.exe", "qodercn.exe", "qoderclicn.exe"]),
+    mac: new Set(["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"]),
+    linux: new Set(["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"]),
   },
   agentCmdlineCheck: isQoderAgentCommandLine,
   platformConfig: config,

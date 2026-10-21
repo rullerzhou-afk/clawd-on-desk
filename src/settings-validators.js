@@ -75,6 +75,15 @@ function requirePlainObject(key) {
   };
 }
 
+function requireStringArray(key) {
+  return function (value) {
+    if (!Array.isArray(value) || !value.every((part) => typeof part === "string")) {
+      return { status: "error", message: `${key} must be an array of strings` };
+    }
+    return { status: "ok" };
+  };
+}
+
 module.exports = {
   requireBoolean,
   requireFiniteNumber,
@@ -84,4 +93,5 @@ module.exports = {
   requireEnum,
   requireString,
   requirePlainObject,
+  requireStringArray,
 };

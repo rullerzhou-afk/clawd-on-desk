@@ -56,6 +56,10 @@ const {
   normalizePathList,
 } = require("./prefs");
 const {
+  MIN_TIMEOUT_MS: PERMISSION_REVIEW_MIN_TIMEOUT_MS,
+  MAX_TIMEOUT_MS: PERMISSION_REVIEW_MAX_TIMEOUT_MS,
+} = require("./permission-review-command");
+const {
   MAX_CUSTOM_APPLICATIONS,
   normalizeCustomApplications,
 } = require("./custom-applications");
@@ -92,6 +96,7 @@ const {
   requireEnum,
   requireString,
   requirePlainObject,
+  requireStringArray,
 } = require("./settings-validators");
 const { listIdleVisualOptions } = require("./idle-visual");
 const {
@@ -472,6 +477,22 @@ const updateRegistry = {
   hideBubbles: requireBoolean("hideBubbles"),
   permissionBubblesEnabled: requireBoolean("permissionBubblesEnabled"),
   destructiveActionReminder: requireBoolean("destructiveActionReminder"),
+  // Names an executable that Clawd runs when automation is about to allow a
+  // tool request. Command-only for the same reason the automation modes are:
+  // a generic settings:update must not be able to introduce process execution.
+  // The prefs file is the only writer in this first release (#995).
+  permissionReviewCommand: {
+    validate: requireStringArray("permissionReviewCommand"),
+    commandOnly: true,
+  },
+  permissionReviewTimeoutMs: {
+    validate: requireIntegerInRange(
+      "permissionReviewTimeoutMs",
+      PERMISSION_REVIEW_MIN_TIMEOUT_MS,
+      PERMISSION_REVIEW_MAX_TIMEOUT_MS
+    ),
+    commandOnly: true,
+  },
   // Permission automation is safety-sensitive: the command path owns its
   // warning/confirmation gate and the coupled mode + dismissal commit. Keep
   // the validators available for defensive command validation, but reject

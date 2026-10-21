@@ -63,7 +63,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖 head 槽；mouth 槽保持用户选择。日期窗口结束后恢复常驻 head 选择，不回写任一配饰偏好
 - `idleEasterEggs` 是条件式 idle 彩蛋池：每项声明文件、时长、概率、冷却时间和 head / mouth 的精确配饰组合。只有普通 idle、窗口可见、非 mini / roam / drag / 菜单 / 低功耗且两个槽仍匹配时才参与抽签；只有 renderer 确认该逻辑视觉最终 committed 后才从实际显示时刻开始计时长和冷却
 - 用户主题 SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越；内置 SVG 不走运行时 sanitizer，必须由仓库测试做静态安全审计
-- `rendering.objectChannelFiles` 可按 SVG basename 把需要 `contentDocument` 控制、且经逐素材 Electron 验证的少量精灵切到 document-backed `<object>` 通道；普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
+- `rendering.objectChannelFiles` 对 Clawd 内置主题固定覆盖 23 个需要 `contentDocument` 控制、且经逐素材 Electron 验证的 SVG；这 23 个文件也必须全部出现在 `discreteSampling` 中并按 24 步采样。普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
 - `trustedRuntime.scriptedSvgFiles` 只对 loader 判定为内置的主题生效；外部主题声明该字段会被忽略
 - 支持 SVG / GIF / APNG / WebP / PNG / JPG；动画周期由 `src/animation-cycle.js` 探测
 - 更新视觉遵循主题绑定：`checking` 可选走 `theme.updateVisuals.checking`，未声明时回退到当前主题的 `thinking`；发现新版本时会进入 `available -> notification`；`downloading / success / error` 继续分别走 `carrying / attention / error`
@@ -94,6 +94,8 @@ Pages mount only their active panel's content and retain ownership of rendering,
 exit cleanup, drafts, persistence and scrolling. An existing `panels` Map may be
 passed when rebuilding only the sidebar, preserving the mounted page.
 
+设置页按「它是什么东西」分 tab：通用（语言、文字大小、启动与系统）、桌宠（大小、走动、贴边、反应）、通知（声音、托盘闪烁、气泡）、会话（会话 HUD、额度环与提醒、超时清理、会话面板）、权限与审批（本机处理 / IM 渠道 / 局域网审批三个子页，远程渠道的身体由 `settings-tab-telegram-approval.js` 提供）。每个 tab 的 `patchInPlace` 只认自己渲染的键，别的 tab 的键一律返回 false 交给核心整页重画。新增开关放到它所属对象的 tab 里（例如新的气泡选项进「通知」，新的 HUD 子开关进「会话」），不要塞回「通用」。侧栏分组用 `SIDEBAR_TABS` 项的 `groupStart: true` 标记，渲染时加 `sidebar-item-group-start` 类画分隔线。
+
 Tabs use manual activation: arrows/Home/End move focus; Enter/Space/click activate.
 Horizontal tabs leave Up/Down available for scrolling; the vertical sidebar uses
 Up/Down. Disabled options are skipped. Focus and selection are separate; leaving
@@ -102,7 +104,7 @@ stable `aria-controls`/`aria-labelledby` panel relationship. Sidebar ownership i
 separate from content disposal; Animation Overrides owns its persistent subtab
 controller across local body refreshes and disposes it on full render/exit.
 
-Animation/Sound, Remote Approval and Recap share `helpers.createSubpageHost({
+Animation/Sound, Permissions and Recap share `helpers.createSubpageHost({
 disposeBody })`. Its `render(panel, renderBody, { scrollTop })` replaces only the
 active body, cleans up outgoing body controls, restores lost keyed focus, and
 preserves the current scroll position unless the page supplies another one.
@@ -111,7 +113,7 @@ global content teardown still owns final mounted-control disposal. Navigation
 must remain outside body disposal. `dispose()` invalidates queued scroll work.
 Tabs offer `onBeforeChange(next, previous)` for capturing outgoing scroll before
 the previous panel is hidden; Animation/Sound uses it for per-subpage positions.
-Remote Approval retains its Channels-to-LAN credential/lookup cleanup.
+Permissions keeps the Feishu credential/lookup cleanup when leaving the IM channels sub-page or the tab.
 
 Recap periods remain radios. A period change captures the requested period and
 fences stale responses, retains the previous chart as inert/busy until new data
@@ -127,7 +129,7 @@ inspection, including empty/unknown/future coverage states; native title tooltip
 are omitted. Blur, Escape and body disposal dismiss the popover.
 
 Enumerated values use the existing `buildSegmentedRadio`: Codex permission mode,
-Feishu platform and ID type, Recap period, and the General/approval choices. Add a
+Feishu platform and ID type, Recap period, and the Permissions/approval choices. Add a
 stable `id` for focus restoration and an accessible name (`ariaLabel` or
 `labelledBy`). Arrows select immediately. `onChange` may return synchronously or
 asynchronously; false/rejection rolls back unless a newer `setValue` snapshot has
@@ -323,7 +325,7 @@ Mini 状态映射：
 
 ### Test Result Reactions
 
-- Settings → General → Alerts & feedback 的“测试结果动画”是独立 opt-in，默认关闭
+- Settings → Pet → Reactions 的“测试结果动画”是独立 opt-in，默认关闭
 - Claude Code（包括 Cursor 导入的兼容 hook）的 Bash `PostToolUse` / `PostToolUseFailure` 只在命令以常见测试 runner 开头、且结果可可靠判断时上报 `pass` / `fail`；命令和测试输出不会传给 renderer，server 也只接受这两个来源的结果标签
 - `pass` 在 `#pet-particle-layer` 播放一次像素纸屑，`fail` 只对 `#pet-facing-stage` 使用独立 `translate` / `rotate` 抖动，不覆盖 mini 镜像、漫步位移或跨屏 viewport offset
 - DND、隐藏桌宠、mini / mini transition、拖拽和 headless 会话都会压住测试结果动画；状态机本身仍照常处理测试事件

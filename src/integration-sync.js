@@ -305,11 +305,16 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
-  function syncKiroCrewHooks() {
+  function syncKiroCrewHooks(options = {}) {
+    const syncOptions = options && typeof options === "object" ? options : {};
+    const registrationOptions = {
+      silent: true,
+      preserveDisabled: syncOptions.automatic !== false,
+    };
     try {
-      if (typeof ctx.syncKiroCrewHooksImpl === "function") return ctx.syncKiroCrewHooksImpl();
+      if (typeof ctx.syncKiroCrewHooksImpl === "function") return ctx.syncKiroCrewHooksImpl(registrationOptions);
       const { registerKiroCrewHooks } = require("../hooks/kirocrew-install.js");
-      const result = registerKiroCrewHooks({ silent: true });
+      const result = registerKiroCrewHooks(registrationOptions);
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced KiroCrew hooks (added ${result.added}, updated ${result.updated})`);
       }
@@ -318,6 +323,10 @@ function createIntegrationSyncRuntime(options = {}) {
       console.warn("Clawd: failed to sync KiroCrew hooks:", err.message);
       return { status: "error", message: err && err.message ? err.message : "Failed to sync KiroCrew hooks" };
     }
+  }
+
+  function repairKiroCrewHooks(options = {}) {
+    return syncKiroCrewHooks({ ...options, automatic: false });
   }
 
   function syncKimiHooks() {
@@ -728,6 +737,7 @@ function createIntegrationSyncRuntime(options = {}) {
     codex: repairCodexHooks,
     "deepseek-harness": repairDeepSeekHarnessPlugin,
     openclaw: repairOpenClawPlugin,
+    kirocrew: repairKiroCrewHooks,
   });
 
   function isClaudeSyncErrorResult(result) {

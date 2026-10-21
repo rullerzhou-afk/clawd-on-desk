@@ -9,10 +9,10 @@ themeLoader.init(path.join(__dirname, "..", "src"));
 const calico = themeLoader.loadTheme("calico");
 const clawd = themeLoader.loadTheme("clawd");
 
-function approx(actual, expected, epsilon = 0.01) {
+function approx(actual, expected, epsilon = 0.01, label = "") {
   assert.ok(
     Math.abs(actual - expected) <= epsilon,
-    `expected ${actual} to be within ${epsilon} of ${expected}`
+    `${label ? `${label}: ` : ""}expected ${actual} to be within ${epsilon} of ${expected}`
   );
 }
 
@@ -108,6 +108,40 @@ describe("hit geometry", () => {
     approx(rect.y, -53.6);
     approx(rect.w, 261);
     approx(rect.h, 261);
+  });
+
+  it("keeps Clawd object-channel geometry and hit regions identical across OBJECT and IMG", () => {
+    const imageTheme = structuredClone(clawd);
+    imageTheme.rendering.objectChannelFiles = [];
+    imageTheme.eyeTracking = { ...(imageTheme.eyeTracking || {}), enabled: false, states: [] };
+
+    const files = clawd.rendering.objectChannelFiles;
+    assert.ok(files.length > 0, "Clawd declares object-channel files");
+    for (const file of files) {
+      const state = file.startsWith("clawd-mini-") ? "mini-idle" : null;
+      assert.strictEqual(
+        hitGeometry.usesObjectChannel(clawd, state, file),
+        true,
+        `${state}/${file} should use OBJECT in Clawd`
+      );
+      assert.strictEqual(
+        hitGeometry.usesObjectChannel(imageTheme, state, file),
+        false,
+        `${state}/${file} should use IMG in the comparison theme`
+      );
+
+      const objectAsset = hitGeometry.getAssetRectScreen(clawd, bounds, state, file);
+      const imageAsset = hitGeometry.getAssetRectScreen(imageTheme, bounds, state, file);
+      for (const key of ["x", "y", "w", "h"]) {
+        approx(objectAsset[key], imageAsset[key], 1e-9, `${file} asset.${key}`);
+      }
+
+      const objectHit = hitGeometry.getHitRectScreen(clawd, bounds, state, file, clawd.hitBoxes.default);
+      const imageHit = hitGeometry.getHitRectScreen(imageTheme, bounds, state, file, imageTheme.hitBoxes.default);
+      for (const key of ["left", "top", "right", "bottom"]) {
+        approx(objectHit[key], imageHit[key], 1e-9, `${file} hit.${key}`);
+      }
+    }
   });
 
   it("derives the visible content rect from contentBox geometry", () => {

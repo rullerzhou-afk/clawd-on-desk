@@ -2,6 +2,28 @@
 
 [返回 README](../../README.zh-CN.md)
 
+## 源码开发前置条件
+
+安装、跑测试和本机启动请使用 Node.js 24.18.0（仓库 `.nvmrc` 指定的版本）。Electron 官方维护的安装器要求 Node.js 22.12.0 或更高。
+
+Node 24.16.x 和 24.17.x 存在一个已知的 stream 兼容性回归：只要旧的 `extract-zip` / `yauzl` 链路仍存在，它就可能静默截断 ZIP 解压结果（[nodejs/node#63487](https://github.com/nodejs/node/issues/63487)）。当前 Electron 依赖已不再使用该链路，但本仓库及其周边工具仍以 24.18.0 作为受支持的开发基线。
+
+如果 Electron 报缺少 Framework 或完整性校验失败，请删除整个包后重装；不要只创建 `path.txt`：
+
+```bash
+rm -rf node_modules/electron
+npm install
+```
+
+PowerShell 等价写法：
+
+```powershell
+Remove-Item -Recurse -Force node_modules/electron
+npm install
+```
+
+自定义开发分发时，Linux 上使用 `ELECTRON_OVERRIDE_DIST_PATH` 启动会沿用 Electron 的解析逻辑：`path.txt` 缺失时回退到 override 根目录下的 `electron` 可执行文件。macOS 和 Windows 的 override 必须保留 Electron 标准的 `path.txt`，因为这两个平台受支持的可执行文件布局使用 app bundle 和 `electron.exe`，而不是 Linux 的根目录可执行文件。
+
 ## Agent 配置说明
 
 全新安装默认只安装并启用 Claude Code 和 Codex。其他本机 agent 需要先到 **Settings → AI 编程工具** 点该 agent 的 **Install / 安装**；安装且启用后，Clawd 才会在启动时继续同步对应 hook / plugin / extension。单独关闭 agent 只会停止事件入口，不会卸载文件；**Uninstall / 卸载** 只删除 Clawd 管理的 hook / plugin / extension 条目，并同时禁用该 agent。
@@ -12,7 +34,7 @@
 
 ### Claude Code 使用信息：官方状态栏，不抓取网页
 
-本机 Claude 使用信息采集**默认关闭**。可在 **Settings → General → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
+本机 Claude 使用信息采集**默认关闭**。可在 **Settings → Sessions → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
 
 这里使用的是 Claude Code 官方扩展机制，不是私有或逆向接口。Claude Code 的[官方 statusline 文档](https://code.claude.com/docs/en/statusline)会向状态栏命令提供 `context_window.current_usage`、`context_window.context_window_size`，以及可用时的 `rate_limits`；命令在本机执行，不消耗额外 API token。
 
@@ -72,7 +94,7 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 
 **Reasonix CLI** — hooks 配置在 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，当前 Windows 版本为 `%APPDATA%\reasonix\settings.json`）。在 Windows 上，Clawd 也会跟随 Reasonix 的兼容回退读取旧的 `~/.reasonix/settings.json`；卸载时会从两处配置中分别删除 Clawd 管理的条目。需要本机 Reasonix 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步当前生效的 hooks。也可以手动执行 `npm run install:reasonix-hooks`。Phase 1 是 state-only：Clawd 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程。
 
-**opencode** — 使用 `~/.config/opencode/` 下当前生效的 plugin 配置：`config.json` → `opencode.json` → `opencode.jsonc`，后者优先。需要本机 opencode 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。v1 入口保留在 `plugin` 键；仅探测到 opencode 2.x（`@opencode/cli`）时才写入 v2 的 `plugins` 键。探测到 v1 时会清除 Clawd 自有的 v2 条目，探测结果未知时不改该键，以免旧版（1.18.15 及之前）因未知键拒绝整个配置。若自动探测找不到已知宿主，确认实际会读取配置的主版本后，可在 Clawd 进程环境中设置 `CLAWD_OPENCODE_HOST=v1` 或 `v2`，再执行安装 / 修复。v2 插件运行在共享后台 service 中；安装或修复后运行 `opencode service restart` 加载新版本，其会话的“跳转终端”会降级。
+**opencode** — 使用 `~/.config/opencode/` 下当前生效的 plugin 配置：`config.json` → `opencode.json` → `opencode.jsonc`，后者优先。需要本机 opencode 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。确认是 opencode 2.x（`@opencode/cli`）宿主时，Clawd 只把入口写进 `plugins` 键，并移除 `plugin` 键里 Clawd 自己留下的条目。v1 宿主继续使用原有的 v1 注册路径，只清理 Clawd 自有的 v2 残留；探测不到版本时不改 v2 键，以免旧版（1.18.15 及之前）因未知键拒绝整个配置。若自动探测找不到已知宿主，确认实际会读取配置的主版本后，可在 Clawd 进程环境中设置 `CLAWD_OPENCODE_HOST=v1` 或 `v2`，再执行安装 / 修复。v2 插件运行在共享后台 service 中；安装或修复后运行 `opencode service restart` 加载新版本，其会话的“跳转终端”会降级。
 
 **MiMo Code** — 使用 `~/.config/mimocode/` 下当前生效的 plugin 配置：`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先。需要本机 MiMo Code 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步生效的 plugin entry。也可以手动执行 `npm run install:mimocode-plugin`。MiMo Code 与 opencode 使用同一套 plugin SDK 和 Allow / Always / Deny 权限行为；`task` 创建的子会话不参与可见的多会话动画聚合。
 
@@ -96,7 +118,7 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 - **所有权**：合并与卸载只处理 command 中带 `qwenwork-hook.js` marker 的条目。仅仅名为 `clawd` 的 hook 不会被动；Clawd hook 与第三方 hook 混在同一 entry 时，第三方 hook 原样保留。
 - **可选调试日志**：`CLAWD_QWENWORK_HOOK_DEBUG=1` 会往 `~/.clawd/qwenwork-hook-debug.jsonl` 追加事件与字段结构摘要（不含 prompt、tool input、路径）。再加 `CLAWD_QWENWORK_HOOK_DEBUG_RAW=1` 才会记录完整原始 payload——**此时该文件含敏感数据**，用完请删除。macOS/Linux 上文件按 `0600` 创建；若 hook 新建调试目录则使用 `0700`，已有的共享 `~/.clawd` 目录保持原权限不变。
 
-**Qoder** — hooks 写入 `~/.qoder/settings.json`。需要本机 Qoder 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qoder-hooks`。Phase 1 是 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察——Clawd 不弹权限气泡、不代答权限决策，权限流程由 Qoder 原生接管。启动恢复只识别 Qoder CLI 进程（`qodercli` / `qoder-cli`），闲置打开的 Qoder IDE 不会被当成进行中的 agent 工作。
+**Qoder / Qoder CN** — hooks 分别写入 `~/.qoder/settings.json` 和 `~/.qoder-cn/settings.json`；`QODER_CONFIG_DIR` / `QODERCN_CONFIG_DIR` 可覆盖各自的用户配置目录。两版共用 **Settings → AI 编程工具 → Qoder** 入口。安装且启用后，Clawd 会在启动时同步所有已初始化版本的 hooks，不创建未安装版本的目录；也可以手动执行 `npm run install:qoder-hooks`。卸载只移除两版中的 Clawd hooks；两版共存时 Doctor 会分别检查。接入仍为 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察，权限流程由 Qoder 原生接管。启动恢复只识别 CLI 进程（`qodercli` / `qoder-cli` / `qoderclicn`），闲置打开的 Qoder 或 Qoder CN 桌面应用不会被当成进行中的 agent 工作。
 
 ## 权限处理自动化
 
@@ -114,7 +136,13 @@ Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram b
 
 ## 飞书 / Lark 远程审批
 
-Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送交互卡片。两者属于同一个远程审批通道，可在 **Settings → 远程审批 → 飞书 / Lark** 中选择平台。权限范围、用户 ID 差异和卡片语言见 [feishu-lark-remote-approval.md](feishu-lark-remote-approval.md)。
+Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送交互卡片。两者属于同一个远程审批通道，可在 **设置 → 权限与审批 → IM 渠道 → 飞书 / Lark** 中选择平台。权限范围、用户 ID 差异和卡片语言见 [feishu-lark-remote-approval.md](feishu-lark-remote-approval.md)。
+
+## Slack 通知
+
+与上面两个通道不同，Slack 仅做**通知**：会话结束、报错或等待权限时 Clawd 会推送消息，但决定始终在桌面应用中做出——本版本的 Slack 不能执行 Allow 或 Deny。可在 **设置 → 权限与审批 → IM 渠道 → Slack** 使用 Incoming Webhook（推荐）或带 `chat:write` 权限的 `xoxb-` bot token 配置。
+
+消息发往 Slack 频道，内容可包含会话标题（由你的 prompt 推导）、文件夹名和主机名，因此**建议使用私有频道**。配置、完整字段清单、密钥存储和排障见 [slack-notifications.md](slack-notifications.md)。
 
 ## 远程 SSH 模式（Claude Code, Codex CLI & Copilot CLI）
 

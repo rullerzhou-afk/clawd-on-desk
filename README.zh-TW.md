@@ -1,125 +1,78 @@
 <p align="center">
   <img src="assets/icon.png" width="128" alt="Clawd">
 </p>
-<h1 align="center">Clawd 桌寵</h1>
-<p align="center">
-  <a href="README.md">English</a>
-  ·
-  <a href="README.zh-CN.md">簡體中文</a>
-  ·
-  <a href="README.ko-KR.md">한국어</a>
-  ·
-  <a href="README.ja-JP.md">日本語</a>
-  ·
-  <a href="README.es.md">Español</a>
-</p>
-<p align="center">
-  <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk" alt="Version"></a>
-  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey" alt="Platform">
-</p>
-<p align="center">
-  <a href="https://github.com/rullerzhou-afk/clawd-on-desk/stargazers"><img src="https://img.shields.io/github/stars/rullerzhou-afk/clawd-on-desk?style=flat&logo=github&color=yellow" alt="Stars"></a>
+
+<div align="center">
+  <h1>Clawd 桌寵</h1>
+  <p><b>一隻像素桌寵，即時感知你的 AI 程式設計助理在做什麼。</b></p>
+  <p><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · 繁體中文 · <a href="README.ko-KR.md">한국어</a> · <a href="README.ja-JP.md">日本語</a> · <a href="README.es.md">Español</a></p>
+  <a href="https://github.com/rullerzhou-afk/clawd-on-desk/stargazers"><img src="https://img.shields.io/github/stars/rullerzhou-afk/clawd-on-desk?style=flat-square" alt="Stars"></a>
+  <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases"><img src="https://img.shields.io/github/v/release/rullerzhou-afk/clawd-on-desk?label=version&style=flat-square" alt="Version"></a>
+  <img src="https://img.shields.io/badge/platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey?style=flat-square" alt="Platform">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square" alt="License"></a>
   <a href="https://github.com/hesreallyhim/awesome-claude-code"><img src="https://awesome.re/mentioned-badge-flat.svg" alt="Mentioned in Awesome Claude Code"></a>
-</p>
+  <a href="https://discord.gg/VQsQZbZCPx"><img src="https://img.shields.io/badge/Discord-Join%20us-5865F2?style=flat-square&amp;logo=discord&amp;logoColor=white" alt="Discord"></a>
+</div>
 
 <p align="center">
   <img src="assets/hero.gif" alt="Clawd 桌寵動畫示範：像素螃蟹會跟著 AI 程式設計助理的狀態即時切換，睡覺、思考、工具執行時打字、單一子代理時戴耳機律動、多個子代理並行時三球雜耍、權限請求出現時提醒、任務完成後慶祝。支援 Claude Code、Codex、Cursor、Copilot、Gemini、Antigravity、Qwen、Pi、OMP、OpenClaw 等。">
 </p>
 
-Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。發起一個長任務，起身做點別的，等螃蟹告訴你任務完成了再回來。
-
-你提問時牠思考，工具執行時牠打字，子代理在跑時牠會戴耳機律動或三球雜耍，審查權限時牠彈卡片，任務完成時牠慶祝，你離開時牠睡覺。內建三套主題：**Clawd**（像素螃蟹）、**Calico**（三花貓）和 **Cloudling**（雲寶），支援自訂主題，也支援匯入 Codex Pet 動畫套件；另外可從 設定 → 主題 下載可選官方主題 **Hash Sage**（哈希仙人）和 **Whale-chan**（鯨魚娘）。
-
-> 支援 Windows 11、macOS 和 Ubuntu/Linux。Windows 發布版本提供獨立的 x64 和 ARM64 安裝檔。從原始碼執行需要 Node.js。支援 **Claude Code**、**Codex CLI**、**Copilot CLI**、**Gemini CLI**、**Antigravity CLI (agy)**、**Cursor Agent**、**CodeBuddy**、**WorkBuddy**、**Grok Build**、**Kiro CLI**、**KiroCrew**、**Kimi Code CLI（Kimi-CLI）**、**Qwen Code**、**ZCode**、**CodeWhale**、**opencode**、**MiMo Code**、**Pi**、**OMP**、**OpenClaw**、**Hermes Agent**、**Qoder**、**QoderWork**、**QwenWork（千問辦公）**、**Reasonix CLI**、**DeepSeek Harness**、**TraeCode (Trae CN)** 與 **MiniMax Code**。
+發起一個長任務，起身做點別的，等螃蟹告訴你完成了再回來。你提問時它思考，工具執行時它打字，子代理一多它就雜耍，需要審批時它跳出卡片，你離開時它睡覺。
 
 ## 功能特色
 
-### 多 Agent 支援
+- **即時狀態**：由 agent hook 和日誌驅動的 12 種動畫狀態，還有視線跟隨、睡眠序列、點擊反應，以及貼邊探頭的迷你模式
+- **涵蓋主流工具**：Claude Code、Codex、Copilot、Gemini、Cursor、opencode、Kiro、Qwen 等 20 多款，多個工作階段並行追蹤
+- **權限對話框**：在浮動卡片上或用全域快速鍵 Allow / Deny 工具請求，也可以切換成自動放行
+- **工作階段一目了然**：桌寵旁的 HUD、所有工作階段的儀表板（一鍵跳回終端機）、額度環，以及只存在本機的活動回顧
+- **離開電腦也能管**：透過 Telegram 或飛書 / Lark 遠端審批，Slack 通知，或在手機上用唯讀 PWA 查看工作階段
+- **換成你喜歡的樣子**：內建 Clawd、Calico、Cloudling，可下載官方主題、匯入 Codex Pet，或自己做主題
+- **在哪寫程式就在哪**：Windows（x64 / ARM64）、macOS、Linux，支援 Remote SSH 和 WSL，介面支援 7 種語言
 
-- **Claude Code** — 以 command hook + HTTP 權限 hook 完整整合
-- **Codex CLI** — official hooks 為主、JSONL 日誌輪詢（`~/.codex/sessions/`）備援，會自動註冊並支援真實的權限對話框
-- **Copilot CLI** — 在 `~/.copilot/hooks/hooks.json` 設定 command hook
-- **Gemini CLI** — 在 `~/.gemini/settings.json` 設定 command hook（Clawd 啟動時自動註冊，或執行 `npm run install:gemini-hooks`）
-- **Antigravity CLI (agy)** — 在 `~/.gemini/config/hooks.json` 設定 command hook（已有 Antigravity 設定時 Clawd 啟動會自動註冊，或執行 `npm run install:antigravity-hooks`）；**僅同步狀態**：Clawd 不會為 agy 顯示任何權限對話框，所有 Allow / Deny / Always-allow 都在 agy 自己的終端機選單完成
-- **Cursor Agent** — [Cursor IDE hooks](https://cursor.com/docs/agent/hooks)，設定在 `~/.cursor/hooks.json`（Clawd 啟動時自動註冊，或執行 `npm run install:cursor-hooks`）
-- **CodeBuddy** — 以 Claude Code 相容的 command hook + HTTP 權限 hook 整合，設定寫入 `~/.codebuddy/settings.json`（Clawd 啟動時自動註冊，或執行 `node hooks/codebuddy-install.js`）
-- **自訂 HTTP Agent** — 在 Settings 註冊其他本機應用，再由應用或 adapter 主動向 Clawd 的動態 `/state` 位址上報事件；註冊不會安裝 hook，v1 僅同步狀態，權限決定留在應用自己的介面。詳見[自訂 HTTP Agent 指南](docs/guides/custom-agent-http.md)
-- **WorkBuddy** — 可選 Claude Code 相容 command hook，當前使用 `~/.workbuddy-ai/settings.json`，舊版使用 `~/.workbuddy/settings.json`（從 Settings → AI 程式設計工具 安裝，或執行 `node hooks/workbuddy-install.js`）；僅同步狀態與通知，權限仍由 WorkBuddy 原生 GUI 處理
-- **Grok Build** — 可選 Claude Code 相容 command hook，寫入 `~/.grok/hooks/clawd-on-desk.json`（從 Settings → AI 程式設計工具 安裝，或執行 `node hooks/grok-install.js`）。僅同步狀態與通知；Grok 沒有阻塞式 `PermissionRequest` hook，Allow / Deny 仍由 Grok TUI 處理。
-- **Kiro CLI** — command hooks 注入到 `~/.kiro/agents/` 下的自訂 agent 設定，並自動建立 `clawd` agent；Clawd 每次啟動都會從內建的 `kiro_default` 重新同步它，盡量和預設 agent 保持一致。macOS 與 Windows 上狀態動效已驗證可用；需要時可用 `kiro-cli --agent clawd` 或在工作階段內執行 `/agent swap clawd` 啟用 hooks（Clawd 啟動時自動註冊，或執行 `npm run install:kiro-hooks`）
-- **Kimi Code CLI（Kimi-CLI）** — 在 `~/.kimi/config.toml` 的 `[[hooks]]` 條目設定 command hooks（Clawd 啟動時自動註冊，或執行 `npm run install:kimi-hooks`）
-- **Qwen Code** — 在 `~/.qwen/settings.json` 設定 command hooks（Clawd 啟動時自動註冊，或執行 `npm run install:qwen-hooks`）；支援狀態追蹤和 Qwen `PermissionRequest` 桌面權限對話框
-- **ZCode** — 可選狀態 + 阻塞式 `PermissionRequest` hooks，寫入 `~/.zcode/cli/config.json` 的 `hooks.events.*`（從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:zcode-hooks`）；Clawd 提供人工 Allow/Deny 權限氣泡，global 與 per-session 自動審批保持 defer。Clawd 會保留使用者明確設定的全域或單項 `enabled:false`，並且不會覆蓋第三方 `PermissionRequest` hook
-- **CodeWhale** — 可選、僅同步狀態的 lifecycle hooks，寫入 `~/.codewhale/config.toml`（`[[hooks.hooks]]`；從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:codewhale-hooks`）；Phase 1 只驅動狀態動畫，不接管權限或追蹤子代理
-- **Reasonix CLI** — 可選、僅同步狀態的 command hooks，寫入 `<Reasonix home>/settings.json`（macOS/Linux：`~/.reasonix/settings.json`；Windows：`%APPDATA%\reasonix\settings.json`；從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:reasonix-hooks`）；同步生命週期、工具、通知、壓縮與子代理結束動畫，權限留在 Reasonix 原生流程
-- **opencode** — 可選 [外掛整合](https://opencode.ai/docs/plugins)，寫入 `~/.config/opencode/` 下目前生效的檔案（`config.json` → `opencode.json` → `opencode.jsonc`，後者優先）（從 Settings → AI 程式設計工具 安裝）；支援零延遲事件流與 Allow/Always/Deny 權限對話框。`task` 工具產生的子工作階段是 headless，不參與可見的多工作階段動畫聚合
-- **MiMo Code** — 可選 [外掛整合](https://opencode.ai/docs/plugins)，寫入 `~/.config/mimocode/mimocode.jsonc`（從 Settings → AI 程式設計工具 安裝，或執行 `node hooks/mimocode-install.js`）；與 opencode 共用 `@mimo-ai/plugin` SDK 與權限行為，`task` 子工作階段同樣是 headless
-- **Pi** — 以全域擴充功能整合，寫入 `~/.pi/agent/extensions/clawd-on-desk`（Clawd 啟動時自動註冊，或執行 `npm run install:pi-extension`）；僅同步互動式 Pi 工作階段生命週期和工具活動狀態，並保留 Pi 預設 YOLO 行為
-- **OMP (oh-my-pi)** — 可選全域 extension，寫入 `~/.omp/agent/extensions/clawd-on-desk`（從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:omp-extension`）；僅同步互動式會話與工具狀態。`session_stop` 先記錄完成候選，隨後終態 `agent_end` 確認沒有 extension 要求續跑才提交完成；已有社群 bridge `clawd-on-desk-omp.ts` 時保留它並跳過自身安裝
-- **OpenClaw** — 靠 `~/.openclaw/openclaw.json` 裡的外掛路徑做狀態感知（OpenClaw 設定已存在時 Clawd 啟動會自動註冊，或執行 `npm run install:openclaw-plugin`）；Phase 1 針對本機 `openclaw tui --local` 工作階段，只驅動動畫，沒接權限對話框和終端機焦點
-- **Hermes Agent** — [外掛整合](https://hermes-agent.org/)，寫入 Hermes 受管理的外掛目錄（偵測到 Hermes 後 Clawd 啟動時自動註冊，或執行 `npm run install:hermes-plugin`）；支援狀態、工作階段、SessionEnd 和終端機焦點
-- **Qoder** — 在 `~/.qoder/settings.json` 設定 command hooks（`~/.qoder/` 目錄已存在時 Clawd 啟動會自動註冊，或執行 `npm run install:qoder-hooks`）；**僅同步狀態**：Phase 1 只驅動動畫，權限請求僅以通知方式觀察，Clawd 不顯示權限對話框也不代答，所有 Allow / Deny 都在 Qoder 自己的權限流程完成
-- **QoderWork** — 可選、僅同步狀態的 command hooks，寫入 `~/.qoderwork/settings.json`（從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:qoderwork-hooks`）；Phase 1 驅動動畫與 Session HUD，權限事件作為正常工作靜默觀察，所有 Allow / Deny 留在 QoderWork 原生流程
-- **QwenWork（千問辦公）** — 在 `~/.QwenWorkCN/settings.json` 設定 hook-only / state-only command hooks（從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:qwenwork-hooks`，解除安裝用 `npm run uninstall:qwenwork-hooks`）；目前只支援 macOS / Windows 桌面版——[qwenwork.cn/download](https://qwenwork.cn/download) 沒有 Linux 版，因此也不提供 WSL Pair。Phase 1 驅動動畫與 Session HUD；`PermissionRequest` / `PermissionDenied` 僅作觀察並對應到 `working`，hook stdout 恆為 `{}`，Clawd 不產生 allow/deny，權限唯一決策者是 QwenWork 自己的流程。沒有 startup recovery：桌面主程序長駐，不代表正在執行任務
-- **DeepSeek Harness** — 實驗性整合，支援 DSH 的 web profile 與 DeepSeek Harness 桌面版（macOS / Windows），透過 Clawd 管理的 DSH 行程內 plugin 運作。公開 session 事件會依 session 順序驅動 Clawd 狀態，公開的阻塞式 `approval/request` 可顯示 Allow Once / Deny 氣泡；無決定時一律交還給 DSH 自己的審批流程（web 的 answerer，或桌面版自己的審批框）。`ask_user_question` 完全留在 DSH 原生 provider，Clawd 從不讀取 DSH projection 儲存內容。詳見 [DeepSeek Harness 指南](docs/guides/dsh-setup.md)
-- **TraeCode (Trae CN)** — 實驗性、僅狀態同步的 hook 整合，寫入 `~/.trae-cn/hooks.json`（從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:traecode-hooks`；解除安裝用 `npm run uninstall:traecode-hooks`）。須在 Trae 手動開啟 hooks（**Settings → Hooks → Enable**，執行模式選 **Sandbox**；見 [Trae 官方 hooks 文件](https://docs.trae.cn/ide/automate-actions-with-hooks)）。首版僅支援 Trae 中國版；Clawd 從第一則提問推導會話標題，不接管權限，也沒有 `SessionEnd`，關閉的會話由桌面端閒置逾時清理。
-- **MiniMax Code** — 實驗性、僅同步狀態的本地插件，寫入 `<MINIMAX_DATA_DIR 或 MAVIS_DATA_DIR 或 ~/.minimax>/plugins/clawd-state/`（從 Settings → AI 程式設計工具 安裝，或執行 `npm run install:minimax-hooks`；解除安裝用 `npm run uninstall:minimax-hooks`）。支援 mcode CLI 與桌面應用，上報 10 個狀態事件（含 `SessionEnd`）；handler 的 1–10 秒上限無法承載阻塞式人工審批，因此不註冊 `PermissionRequest`，stdout 恆為 `{}`，權限留在 MiniMax。若未載入，可執行 `mcode plugin enable clawd-state@local` 或在插件面板啟用；標題保留首條提問
-- **多 Agent 並存** — 多個 Agent 可以同時跑，Clawd 會獨立追蹤每個工作階段
+完整功能說明：**[docs/guides/features.zh-TW.md](docs/guides/features.zh-TW.md)**
 
-### 動畫與互動
+## 快速開始
 
-- **即時狀態感知** — 由 Agent hook 和日誌輪詢自動驅動動畫
-- **12 種動畫狀態** — 待機、思考、打字、建造、戴耳機律動、多個子代理三球雜耍、報錯、開心、通知、掃地、搬運、睡覺
-- **Codex Pet 匯入** — 在 `設定…` → `主題` 內匯入 Codex Pet zip 套件，Clawd 會把 atlas 動畫轉成可管理主題
-- **眼球追蹤** — 待機狀態下 Clawd 跟著滑鼠，身體微傾，影子拉伸
-- **睡眠序列** — 60 秒沒活動 → 打哈欠 → 打盹 → 倒下 → 睡覺；移動滑鼠觸發驚醒彈起動畫
-- **點按反應** — 點兩下會戳一下，連點 4 下會東張西望
-- **任意狀態拖曳** — 隨時抓起 Clawd（Pointer Capture 防止快甩丟失），放手後回到目前動畫
-- **迷你模式** — 拖到右邊緣或右鍵「迷你模式」；Clawd 藏在螢幕邊緣，滑鼠移過去探頭招手，通知/完成有迷你動畫，拋物線跳躍過場
+從 **[GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest)** 下載最新安裝檔：
 
-### 權限審查對話框
+| 平台 | 下載 |
+|---|---|
+| Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` 或 `-arm64.exe` |
+| macOS | `.dmg`，或 `brew install --cask clawd-on-desk` |
+| Linux | `.AppImage` 或 `.deb`（x86_64 也可用 Homebrew） |
 
-- **桌面端權限審查** — Claude Code、Codex CLI、CodeBuddy、opencode 或 MiMo Code 請求工具權限時，Clawd 會彈出浮動卡片，不用切回終端機
-- **允許 / 拒絕 / Agent 原生擴充功能** — 一鍵允許或拒絕；如果該 Agent 支援，還會顯示權限規則或 `Always` 之類的額外動作
-- **全域快速鍵** — `Ctrl+Shift+Y` 允許、`Ctrl+Shift+N` 拒絕最新的權限對話框（只在對話框可見時註冊）
-- **堆疊版面** — 多個權限請求從螢幕右下角往上堆疊
-- **自動關閉** — 如果你先在終端機回答了，對話框會自動消失
-- **依 Agent 個別關閉** — 開啟 `設定…` → `AI 程式設計工具`，選取對應 Agent，關掉 `顯示彈出視窗`，權限提示就會回到該 Agent 自己的終端機或 TUI 處理
+啟動 Clawd 後它會立刻開始運作：第一次啟動就會接上 Claude Code 和 Codex。其他 agent 在 **設定 → AI 程式設計工具** 裡一鍵安裝。
 
-### 遠端通知
-- **Telegram / 飛書（Lark）** — 互動式遠端審批：把權限請求轉送到手機，直接遠端 Allow / Deny，不必回到桌面
-- **Slack** — **僅通知**：透過 Slack Incoming Webhook（或可選的 `xoxb-` Bot Token + channel id）以 Block Kit 卡片推送任務**完成**、**錯誤**與**權限請求**。本版本中 Slack 無法 Allow 或 Deny；權限訊息只是通知，仍需回到桌面 App 決定。請在遠端審批通道中與 Telegram / 飛書並列設定；密鑰保存在 prefs 之外的本機 env 檔案（macOS / Linux 為 `0600`，Windows 依賴 AppData ACL），未設定或離線時會安全降級。訊息可能包含 session 標題、資料夾與主機名稱，建議使用私人頻道。詳見 [Slack 通知指南](docs/guides/slack-notifications.md)
+<details>
+<summary><strong>從原始碼執行</strong></summary>
+<br/>
 
-### 工作階段智慧體
+只有參與開發、測試未發布程式碼或除錯整合時才需要。原始碼安裝會下載 Electron 和建置工具，`node_modules` 會比較大。
 
-- **多工作階段追蹤** — 所有已支援 Agent 的工作階段統一解析到最高優先順序狀態
-- **子代理感知** — 1 個子代理戴耳機律動，2 個以上三球雜耍
-- **工作階段 Dashboard + HUD** — 右鍵或系統匣 → `開啟 Dashboard` 看進行中的工作階段、最近事件、別名，並可跳到終端機；Clawd 附近的輕量 HUD 會持續顯示目前的 live session
-- **終端機焦點** — Dashboard 或 HUD 操作可跳到指定工作階段的終端機視窗；通知/注意狀態會自動聚焦相關終端機
-- **行程存活偵測** — 偵測已當掉或結束的受支援 Agent 行程，並在 10 秒內清理孤兒工作階段
-- **啟動回復** — 如果 Clawd 重新啟動時還有受支援的 Agent 在跑，牠會保持清醒等後續事件，而不是直接睡覺
+```bash
+# clone 儲存庫
+git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
+cd clawd-on-desk
 
-### 手機伴侶（PWA）
+# 安裝相依套件
+npm install
 
-- **手機即時鏡像** — 在 `設定…` → `Mobile / PWA` 開啟後，用手機開啟配對連結，「Clawd Mobile」網頁應用就會即時顯示各 Agent 工作階段與狀態
-- **唯讀設計** — 區網橋接只對外廣播狀態，手機端無法操作你的電腦（遠端審批已在規劃中）
-- **僅限區域網路 + 權杖防護** — 配對需要權杖，權杖會自動輪換並附寬限期，可一鍵重新產生或重設存取
-- **可安裝** — 標準 PWA，加入主畫面即可獲得近原生體驗
-> 手機伴侶這條線——從最初原型到權杖輪換——由核心貢獻者 [@Bynlk](https://github.com/Bynlk) 一手打造並持續主導，他還維護著內建原生 Android App 的姊妹專案 [clawd-on-mobile](https://github.com/Bynlk/clawd-on-mobile)。
+# 啟動 Clawd（啟動時自動註冊 Claude Code 和 Codex hooks）
+npm start
+```
 
-### 系統
+環境需求、Remote SSH、WSL 以及 macOS / Linux 說明：**[安裝指南](docs/guides/setup-guide.md)**
 
-- **滑鼠穿透** — 透明區域的滑鼠事件會直接穿到下層視窗，只有角色本體可互動
-- **位置記憶** — 重新啟動後 Clawd 回到上次的位置（包括迷你模式）
-- **單一執行個體鎖** — 防止重複啟動
-- **自動啟動** — Claude Code 的 SessionStart hook 可在 Clawd 沒在跑時自動啟動它
-- **勿擾模式** — 右鍵或系統匣選單進入休眠，所有 hook 事件靜默，直到手動喚醒。勿擾期間不彈權限對話框——Codex、opencode 和 MiMo Code 會退回原生的命令列確認，Claude Code 和 CodeBuddy 會退回各自內建的權限確認流程；Antigravity 和 Pi 都是僅同步狀態的整合
-- **提示音效** — 任務完成和權限請求時播放短音效（可從系統匣或設定中開關；10 秒冷卻，勿擾模式自動靜音）
-- **系統匣** — 勿擾、登入時啟動、檢查更新
-- **國際化** — 支援英文、簡體中文、繁體中文、韓文、日文、Português (Brasil) 和 Español 介面，可在設定 → 一般中切換
-- **自動更新** — 檢查 GitHub release；Windows 結束時安裝 NSIS 更新檔，macOS/Linux 從原始碼跑時以 `git pull` + 重新啟動自動更新
+</details>
 
-## 動畫一覽
+## 支援的 Agent
+
+> **Claude Code** · **Codex CLI** · **Copilot CLI** · **Gemini CLI** · **Antigravity CLI (agy)** · **Cursor Agent** · **CodeBuddy** · **WorkBuddy** · **Grok Build** · **Kiro CLI** · **KiroCrew** · **Kimi Code CLI（Kimi-CLI）** · **Qwen Code** · **ZCode** · **CodeWhale** · **opencode** · **MiMo Code** · **Pi** · **OMP** · **OpenClaw** · **Hermes Agent** · **Qoder** · **QoderWork** · **QwenWork（千問辦公）** · **Reasonix CLI** · **DeepSeek Harness** · **TraeCode (Trae CN)** · **MiniMax Code**
+
+Claude Code 和 Codex CLI 第一次啟動就會接上；其他整合在 **設定 → AI 程式設計工具** 中安裝，之後由 Clawd 保持同步。其他本機工具可以透過 [自訂 HTTP agent](docs/guides/custom-agent-http.md) 介面回報狀態。各 agent 的細節見 **[支援的 Agent](docs/guides/supported-agents.zh-TW.md)**，沒有權限對話框等差異見 **[已知限制](docs/guides/known-limitations.md)**。
+
+## 主題
 
 <table>
   <tr>
@@ -148,90 +101,28 @@ Clawd 住在你的桌面上，即時感知 AI 程式設計助理在做什麼。�
   </tr>
 </table>
 
-完整事件對應表、迷你模式、互動彩蛋見：**[狀態對應指南（簡體中文）](docs/guides/state-mapping.zh-CN.md)**
+內建 **Clawd**（像素螃蟹）、**Calico**（三花貓）和 **Cloudling**（雲寶）。**Hash Sage**（哈希仙人）和 **Whale-chan**（鯨魚娘）是可選官方主題，在 **設定 → 主題** 下載，那裡也可以匯入 Codex Pet 壓縮檔。想自己畫？執行 `npm run create-theme -- my-theme`，然後看 **[主題創作指南](docs/guides/guide-theme-creation.md)**。事件與動畫的對應：[狀態對應](docs/guides/state-mapping.md)。
 
-## 多螢幕支援
+社群工具：[Live2Pet](https://github.com/receyuki/live2pet)（作者 @receyuki）可以把 Live2D 模型轉換成 Clawd 主題。
 
-Clawd 支援多螢幕場景：按啟動時所在螢幕做等比縮放，直立螢幕有尺寸加成防止寵物過小，也可以跨螢幕拖動。
+## 文件
 
-<p align="center"><sub>想看多螢幕下的實際效果？可以<a href="assets/videos/clawd-multi-monitor-demo.mp4">開啟儲存庫裡的示範影片</a>。</sub></p>
+| 文件 | 內容 |
+|---|---|
+| [功能特色](docs/guides/features.zh-TW.md) | 所有功能的詳細說明 |
+| [安裝指南](docs/guides/setup-guide.md) | 原始碼建置、agent 設定、Windows / macOS / Linux 說明 |
+| [權限處理](docs/guides/setup-guide.md#permission-handling-automation) | 每次詢問、僅問題提示或自動放行 |
+| [Remote SSH](docs/guides/guide-remote-ssh.md) | 遠端伺服器上的 agent 狀態和權限對話框 |
+| [Codex + WSL](docs/guides/codex-wsl-clarification.md) | Clawd 對 WSL 中 Codex 的支援範圍 |
+| [遠端審批](docs/guides/telegram-approval.md) | Telegram，以及 [飛書 / Lark](docs/guides/feishu-lark-remote-approval.md) 和 [Slack 通知](docs/guides/slack-notifications.md) |
+| [活動回顧](docs/guides/recap.md) | 只存在本機的活動回顧 |
+| [自訂 HTTP agent](docs/guides/custom-agent-http.md) | 接入 Clawd 尚未整合的工具 |
+| [已知限制](docs/guides/known-limitations.md) | 各 agent 的功能差異 |
+| [主題創作](docs/guides/guide-theme-creation.md) | 製作並驗證自己的主題 |
 
-## 快速開始
+## 社群
 
-一般使用者建議直接從 **[GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest)** 下載最新的預先建置安裝檔：
-
-- **Windows**：`Clawd-on-Desk-Setup-<version>-x64.exe` 或 `Clawd-on-Desk-Setup-<version>-arm64.exe`
-- **macOS**：`.dmg`
-- **Linux**：`.AppImage` 或 `.deb`
-
-macOS 以及 Linux x86_64 也可以用 Homebrew 安裝：
-
-```bash
-brew install --cask clawd-on-desk
-```
-
-安裝後啟動 Clawd；支援的 agent hooks 或外掛會在啟動時自動同步。
-
-只有參與開發、測試還沒發布的程式碼或除錯整合時，才建議從原始碼跑。從原始碼安裝會下載 Electron 和打包工具，並產生比較大的 `node_modules`。
-
-```bash
-# clone 儲存庫
-git clone https://github.com/rullerzhou-afk/clawd-on-desk.git
-cd clawd-on-desk
-
-# 安裝相依套件
-npm install
-
-# 啟動 Clawd（啟動時會自動註冊 Claude Code hooks；要先手動註冊的話，可以單獨跑 `node hooks/install.js`）
-npm start
-```
-
-**Claude Code** 與 **Codex CLI** 預設會自動同步 hooks。其他 Agent 必須先在 **Settings → AI 程式設計工具** 安裝對應整合；只有已安裝且啟用的整合，Clawd 才會在啟動時繼續同步。也涵蓋遠端 SSH、WSL 及平台說明（macOS 與 Linux）：**[設定指南（簡體中文）](docs/guides/setup-guide.zh-CN.md)**
-
-關於 `Codex + WSL` 的官方現況、Clawd 目前實作的邊界、以及為什麼容易被誤解，見：**[Codex / WSL 說明（簡體中文）](docs/guides/codex-wsl-clarification.zh-CN.md)**
-
-## 已知限制
-
-有些 Agent 存在功能差異（沒有權限對話框、輪詢延遲、不能跳到終端機等）。完整列表見：**[已知限制（簡體中文）](docs/guides/known-limitations.zh-CN.md)**
-
-## 自訂主題
-
-Clawd 支援自訂主題——用你自己的角色和動畫取代預設的螃蟹。如果你已經有 Codex Pet 套件，也可以在 `設定…` → `主題` → `匯入寵物 zip` 直接匯入，Clawd 會自動把 atlas 轉成可管理主題。
-
-**快速開始：**
-
-1. 先產生一個主題骨架：
-   ```bash
-   node scripts/create-theme.js my-theme
-   # 或
-   npm run create-theme -- my-theme
-   ```
-   不傳參數也行，腳手架會自動在你的使用者主題目錄裡產生下一個可用的 `my-theme`。
-2. 編輯 `theme.json`，做出你自己的素材（SVG、GIF、APNG、WebP、PNG、JPG 或 JPEG）
-3. 重新啟動 Clawd，或開啟 `設定…` → `主題` 選你的主題
-
-**最小可用主題：** 1 個 SVG（帶眼球追蹤的閒置狀態）+ 7 個 GIF/APNG 檔案（thinking、working、error、happy、notification、sleeping、waking）。關掉眼球追蹤後所有狀態都可以用任意格式。
-
-驗證主題：
-
-```bash
-node scripts/validate-theme.js path/to/your-theme
-```
-
-`設定…` → `主題` 裡的主題卡現在會顯示支援項目，例如 `游標跟隨閒置狀態`、`靜態主題`、`迷你模式`、`直接睡`、`無 reactions`，方便使用者在切換前比較主題差異。
-
-詳見 [docs/guides/guide-theme-creation.md](docs/guides/guide-theme-creation.md)（主題創作完整指南，含入門/進階/高階路徑、theme.json 欄位說明、素材規範）。
-
-> 第三方 SVG 檔案會自動消毒，確保安全。
-
-### 未來規劃
-
-幾個我們想試試的方向：
-
-- Codex 終端機焦點（從 `codex.exe` PID 反查行程樹）
-- 主題註冊表 + 應用內下載
-- Hook 解除安裝腳本（乾淨移除應用程式）
-- 手機伴侶：在手機上遠端審批權限（推進中，由 [@Bynlk](https://github.com/Bynlk) 主導）
+歡迎加入 [Discord 社群](https://discord.gg/VQsQZbZCPx)，交流使用心得、尋求協助、分享主題和桌面配置，也歡迎討論新想法。支援中文和英文交流；Bug 請提交至 [GitHub Issues](https://github.com/rullerzhou-afk/clawd-on-desk/issues)，方便追蹤。
 
 ## 參與貢獻
 
@@ -239,141 +130,17 @@ Clawd on Desk 是社群驅動的專案。歡迎提 Bug、提需求、提 PR —�
 
 ### 維護者
 
-<table>
-  <tr>
-    <td align="center" valign="top" width="140"><a href="https://github.com/rullerzhou-afk"><img src="https://github.com/rullerzhou-afk.png" width="72" style="border-radius:50%" /><br /><sub><b>@rullerzhou-afk</b><br />鹿鹿 · 建立者</sub></a></td>
-    <td align="center" valign="top" width="140"><a href="https://github.com/YOIMIYA66"><img src="https://github.com/YOIMIYA66.png" width="72" style="border-radius:50%" /><br /><sub><b>@YOIMIYA66</b><br />維護者</sub></a></td>
-    <td align="center" valign="top" width="140"><a href="https://github.com/Bynlk"><img src="https://github.com/Bynlk.png" width="72" style="border-radius:50%" /><br /><sub><b>@Bynlk</b><br />核心貢獻者 · Mobile / PWA</sub></a></td>
-  </tr>
-</table>
+<p align="center">
+  <img src="assets/readme/maintainers.svg" width="660" alt="Maintainers: @rullerzhou-afk (creator), @YOIMIYA66, @Bynlk (Mobile / PWA)">
+</p>
 
 ### 貢獻者
 
 謝謝每一位讓 Clawd 變得更好的貢獻者：
 
-<a href="https://github.com/PixelCookie-zyf"><img src="https://github.com/PixelCookie-zyf.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/yujiachen-y"><img src="https://github.com/yujiachen-y.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/AooooooZzzz"><img src="https://github.com/AooooooZzzz.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/purefkh"><img src="https://github.com/purefkh.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Tobeabellwether"><img src="https://github.com/Tobeabellwether.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Jasonhonghh"><img src="https://github.com/Jasonhonghh.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/crashchen"><img src="https://github.com/crashchen.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/hongbigtou"><img src="https://github.com/hongbigtou.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/InTimmyDate"><img src="https://github.com/InTimmyDate.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/NeizhiTouhu"><img src="https://github.com/NeizhiTouhu.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/xu3stones-cmd"><img src="https://github.com/xu3stones-cmd.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Ye-0413"><img src="https://github.com/Ye-0413.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/WanfengzzZ"><img src="https://github.com/WanfengzzZ.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/androidZzT"><img src="https://github.com/androidZzT.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/TaoXieSZ"><img src="https://github.com/TaoXieSZ.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/ssly"><img src="https://github.com/ssly.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/stickycandy"><img src="https://github.com/stickycandy.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Rladmsrl"><img src="https://github.com/Rladmsrl.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/YOIMIYA66"><img src="https://github.com/YOIMIYA66.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Kevin7Qi"><img src="https://github.com/Kevin7Qi.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/sefuzhou770801-hub"><img src="https://github.com/sefuzhou770801-hub.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Tonic-Jin"><img src="https://github.com/Tonic-Jin.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/seoki180"><img src="https://github.com/seoki180.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/sophie-haynes"><img src="https://github.com/sophie-haynes.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/PeterShanxin"><img src="https://github.com/PeterShanxin.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/CHIANGANGSTER"><img src="https://github.com/CHIANGANGSTER.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/JaeHyeon-KAIST"><img src="https://github.com/JaeHyeon-KAIST.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/hhhzxyhhh"><img src="https://github.com/hhhzxyhhh.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/TVpoet"><img src="https://github.com/TVpoet.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/zeus6768"><img src="https://github.com/zeus6768.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/anhtrinh919"><img src="https://github.com/anhtrinh919.png" width="50" style="border-radius:50%" /></a>
-<sub>tomaioo</sub>
-<a href="https://github.com/v-avuso"><img src="https://github.com/v-avuso.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/livlign"><img src="https://github.com/livlign.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/tongguang2"><img src="https://github.com/tongguang2.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Ziy1-Tan"><img src="https://github.com/Ziy1-Tan.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/tatsuyanakanogaroinc"><img src="https://github.com/tatsuyanakanogaroinc.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/yeonhub"><img src="https://github.com/yeonhub.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/joshua-wu"><img src="https://github.com/joshua-wu.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/nmsn"><img src="https://github.com/nmsn.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/sunnysonx"><img src="https://github.com/sunnysonx.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/YuChenYunn"><img src="https://github.com/YuChenYunn.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/jhseo-b"><img src="https://github.com/jhseo-b.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Hwasowl"><img src="https://github.com/Hwasowl.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/XiangZheng2002"><img src="https://github.com/XiangZheng2002.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/keiyo118"><img src="https://github.com/keiyo118.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/pan93412"><img src="https://github.com/pan93412.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/taehwanis"><img src="https://github.com/taehwanis.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/linnin233"><img src="https://github.com/linnin233.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/xiyouMc"><img src="https://github.com/xiyouMc.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Bynlk"><img src="https://github.com/Bynlk.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/zxypro1"><img src="https://github.com/zxypro1.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/NeroAyase"><img src="https://github.com/NeroAyase.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/divergentD"><img src="https://github.com/divergentD.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Ne9roni"><img src="https://github.com/Ne9roni.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/QingXB"><img src="https://github.com/QingXB.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/29206394"><img src="https://github.com/29206394.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Tsdsj"><img src="https://github.com/Tsdsj.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/godlockin"><img src="https://github.com/godlockin.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/sLingli"><img src="https://github.com/sLingli.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/ustin-star"><img src="https://github.com/ustin-star.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/cod3hulk"><img src="https://github.com/cod3hulk.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/lxgxhsy"><img src="https://github.com/lxgxhsy.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/rebootcrab-blip"><img src="https://github.com/rebootcrab-blip.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/zhaoxv210"><img src="https://github.com/zhaoxv210.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/serenNan"><img src="https://github.com/serenNan.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/IatomicreactorI"><img src="https://github.com/IatomicreactorI.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/quantai1314"><img src="https://github.com/quantai1314.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Git-creat7"><img src="https://github.com/Git-creat7.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/undownding"><img src="https://github.com/undownding.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/chrono-meta"><img src="https://github.com/chrono-meta.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Yike-Ye"><img src="https://github.com/Yike-Ye.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/xiaoshidefeng"><img src="https://github.com/xiaoshidefeng.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/yanguibao1997"><img src="https://github.com/yanguibao1997.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/JasonZH6600"><img src="https://github.com/JasonZH6600.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/V1staz"><img src="https://github.com/V1staz.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/royhuang91"><img src="https://github.com/royhuang91.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Schlaflied"><img src="https://github.com/Schlaflied.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/KaiC5504"><img src="https://github.com/KaiC5504.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/jiaxuan1101"><img src="https://github.com/jiaxuan1101.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/kkirito16"><img src="https://github.com/kkirito16.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/200780381"><img src="https://github.com/200780381.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Dxy2326"><img src="https://github.com/Dxy2326.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/lurui1997"><img src="https://github.com/lurui1997.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/JesmonX"><img src="https://github.com/JesmonX.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/chen86860"><img src="https://github.com/chen86860.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/LinYsssss"><img src="https://github.com/LinYsssss.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/He-wei-gui"><img src="https://github.com/He-wei-gui.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/liugou27"><img src="https://github.com/liugou27.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/YOOGOMJA"><img src="https://github.com/YOOGOMJA.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/anupamme"><img src="https://github.com/anupamme.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/anthonyonazure"><img src="https://github.com/anthonyonazure.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/weed33834"><img src="https://github.com/weed33834.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/arismarioneves"><img src="https://github.com/arismarioneves.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/wang4433"><img src="https://github.com/wang4433.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/shengmai-justin"><img src="https://github.com/shengmai-justin.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/aaronWool"><img src="https://github.com/aaronWool.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Zamaniego"><img src="https://github.com/Zamaniego.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/CheeseAgent"><img src="https://github.com/CheeseAgent.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/RS-Nocsi"><img src="https://github.com/RS-Nocsi.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Cobb04"><img src="https://github.com/Cobb04.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/eugenewang5425"><img src="https://github.com/eugenewang5425.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/draintovmasyan783-creator"><img src="https://github.com/draintovmasyan783-creator.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Yueh-H"><img src="https://github.com/Yueh-H.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/TalexDreamSoul"><img src="https://github.com/TalexDreamSoul.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/FuZoe"><img src="https://github.com/FuZoe.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/undefined-moe"><img src="https://github.com/undefined-moe.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/pu-1205"><img src="https://github.com/pu-1205.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/Free-LZJ"><img src="https://github.com/Free-LZJ.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/easyhak"><img src="https://github.com/easyhak.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/jlimcode"><img src="https://github.com/jlimcode.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/xfurqan0"><img src="https://github.com/xfurqan0.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/brantshin"><img src="https://github.com/brantshin.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/mantertius"><img src="https://github.com/mantertius.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/VonSdite"><img src="https://github.com/VonSdite.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/sunnyswag"><img src="https://github.com/sunnyswag.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/hanzhe-one"><img src="https://github.com/hanzhe-one.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/52mzd"><img src="https://github.com/52mzd.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/gzx19990101"><img src="https://github.com/gzx19990101.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/ypjn"><img src="https://github.com/ypjn.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/jin-codes"><img src="https://github.com/jin-codes.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/LetitiaChan"><img src="https://github.com/LetitiaChan.png" width="50" style="border-radius:50%" /></a>
-<a href="https://github.com/sanzanazaman"><img src="https://github.com/sanzanazaman.png" width="50" style="border-radius:50%" /></a>
+<a href="https://github.com/rullerzhou-afk/clawd-on-desk/graphs/contributors">
+  <img src="assets/readme/contributors.svg" width="900" alt="Clawd on Desk contributors">
+</a>
 
 ## 致謝
 
