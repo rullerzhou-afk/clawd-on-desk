@@ -381,6 +381,15 @@
       "license": "MIT",
       "variant": "light"
     },
+    "autoclaw": {
+      "agentId": "autoclaw",
+      "originalFilename": "autoclaw.png",
+      "sourceFilename": "autoclaw.png",
+      "sourceType": "png",
+      "sha256": "757fcac6e5f518418d955c90ae40c5da1bbcd3eb86a1d7bf3bb9d273f255a276",
+      "fallback": false,
+      "provenance": "AutoClaw desktop app icon, extracted from AutoClaw.app/Contents/Resources/icon.icns (AutoClaw 1.20.0, macOS arm64)."
+    },
     "hermes": {
       "agentId": "hermes",
       "originalFilename": "hermesagent.png",
@@ -536,6 +545,12 @@
       "outputSha256": "22004c531a24751064dae7c54c9285837c4a5e1b6dab1d663336771077eaa069",
       "generatedFromSourceSha256": "98922033d598cf8eb280c0deb7088ecd04608517909d7e15e1f5c1ba5a22896b"
     },
+    "kirocrew": {
+      "agentId": "kirocrew",
+      "outputFilename": "kirocrew.png",
+      "outputSha256": "92f284435e38654757741d4eeaccd0c0b0ea72a4e00bb27c62f772e5b1a54659",
+      "generatedFromSourceSha256": "92f284435e38654757741d4eeaccd0c0b0ea72a4e00bb27c62f772e5b1a54659"
+    },
     "kimi-cli": {
       "agentId": "kimi-cli",
       "outputFilename": "kimi-cli.png",
@@ -590,6 +605,12 @@
       "outputSha256": "e3ece522be436c14887f84215462393fe1c8458ebb21b313682a4d3230ccbdb3",
       "generatedFromSourceSha256": "c6b3eaf0a8f21c343e9af8fa20b8d75523308b01917a5c5775420f8b118b6251"
     },
+    "autoclaw": {
+      "agentId": "autoclaw",
+      "outputFilename": "autoclaw.png",
+      "outputSha256": "d68ed4a4c561e162b468584c9c095588d7bf6690002f1ce8891197bff6920ef6",
+      "generatedFromSourceSha256": "757fcac6e5f518418d955c90ae40c5da1bbcd3eb86a1d7bf3bb9d273f255a276"
+    },
     "hermes": {
       "agentId": "hermes",
       "outputFilename": "hermes.png",
@@ -643,12 +664,6 @@
       "outputFilename": "minimax.png",
       "outputSha256": "79c3f64a29ed163a1cae04351e9dd9d0e37a6e2244f3a14d470862c744008657",
       "generatedFromSourceSha256": "9e596627348deb4030938a948243cc94e96cc1548d645ce4faf1de0e51b9043a"
-    },
-    "kirocrew": {
-      "agentId": "kirocrew",
-      "outputFilename": "kirocrew.png",
-      "outputSha256": "92f284435e38654757741d4eeaccd0c0b0ea72a4e00bb27c62f772e5b1a54659",
-      "generatedFromSourceSha256": "92f284435e38654757741d4eeaccd0c0b0ea72a4e00bb27c62f772e5b1a54659"
     }
   }
 }

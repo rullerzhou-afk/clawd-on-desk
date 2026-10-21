@@ -19,6 +19,7 @@ const AGENT_LABELS = {
   "grok-build": "Grok Build",
   pi: "Pi",
   openclaw: "OpenClaw",
+  autoclaw: "AutoClaw",
 };
 
 let snapshot = { sessions: [], groups: [], orderedIds: [] };

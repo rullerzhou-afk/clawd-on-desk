@@ -41,6 +41,7 @@ const { inspectManagedOpencode } = require("./opencode-managed-inspector");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
+const autoclawInstall = require("../../hooks/autoclaw-install");
 const { inspectDshTargetsSync } = require("../../hooks/dsh-install");
 const minimaxInstall = require("../../hooks/minimax-install");
 
@@ -2643,6 +2644,153 @@ function checkOpenClawPluginMode(descriptor, options) {
   });
 }
 
+// AutoClaw's embedded gateway loads Clawd from a materialized copy under
+// <state>/extensions/clawd-on-desk (its GatewayManager deletes unknown
+// plugins.entries keys, and only plugins found in that user extension root
+// count as known), so Doctor verifies the copy's ownership and currency on
+// top of the entry — there is no load path to check.
+function checkAutoClawExtensionMode(descriptor, options) {
+  if (!fileExists(options.fs, descriptor.configPath)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} missing (launch AutoClaw once so it writes its gateway config)`,
+    });
+  }
+
+  let settings;
+  try {
+    settings = readJson(options.fs, descriptor.configPath);
+  } catch (err) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `AutoClaw gateway config is not strict JSON; Clawd startup sync will skip direct edits (${err && err.message ? err.message : "parse failed"})`,
+    });
+  }
+
+  if (hasIncludeDirective(settings)) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: "AutoClaw gateway config uses include directives; Clawd startup sync will not edit it directly",
+    });
+  }
+
+  const inspection = autoclawInstall.inspectAutoClawExtension({
+    fs: options.fs,
+    stateDir: descriptor.parentDir,
+    configPath: descriptor.configPath,
+    extensionsDir: descriptor.extensionsDir,
+    pluginDir: descriptor.sourcePluginDir,
+  });
+  const extensionDir = inspection.extensionDir;
+  if (!inspection.ok) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `AutoClaw plugin source is unavailable: ${inspection.reason}`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.reason,
+    });
+  }
+
+  if (inspection.state === "foreign") {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${extensionDir} exists without a Clawd ownership marker; remove or rename it before installing`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  const pluginConfig = settings
+    && settings.plugins
+    && settings.plugins.entries
+    && settings.plugins.entries[descriptor.pluginId || "clawd-on-desk"];
+  if (inspection.state === "missing" || inspection.state === "empty") {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${extensionDir} has no Clawd plugin files`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  if (!pluginConfig) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} has no ${descriptor.pluginId || "clawd-on-desk"} plugin entry`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+  if (pluginConfig.enabled === false) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: "AutoClaw Clawd plugin is registered but disabled",
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  const validation = validateOpenClawEntry(extensionDir, { fs: options.fs });
+  if (!validation.ok) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `AutoClaw plugin copy is invalid: ${validation.reason}`,
+      openclawEntryIssue: validation.reason,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  if (inspection.state === "owned-stale") {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${extensionDir} differs from the current Clawd plugin; repair re-materializes it (restart AutoClaw afterwards)`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: descriptor.configPath,
+    detail: `${extensionDir} verified and enabled in ${descriptor.configPath}`,
+    autoclawExtensionDir: extensionDir,
+    autoclawExtensionState: inspection.state,
+  });
+}
+
 function readJsonIfPresent(fsImpl, filePath) {
   try {
     return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
@@ -3017,6 +3165,8 @@ function checkAgent(descriptor, options) {
     detail = checkExtensionMode(descriptor, options);
   } else if (descriptor.configMode === "openclaw-plugin") {
     detail = checkOpenClawPluginMode(descriptor, options);
+  } else if (descriptor.configMode === "autoclaw-extension") {
+    detail = checkAutoClawExtensionMode(descriptor, options);
   } else if (descriptor.configMode === "plugin-dir") {
     detail = checkPluginDirMode(descriptor, options);
   } else if (descriptor.configMode === "minimax-plugin") {
@@ -3194,6 +3344,7 @@ module.exports = {
     checkFileMode,
     checkKiroDirMode,
     checkOpenClawPluginMode,
+    checkAutoClawExtensionMode,
     checkExtensionMode,
     checkPluginDirMode,
     checkAntigravityHooksMode,
