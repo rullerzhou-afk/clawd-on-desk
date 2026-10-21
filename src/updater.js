@@ -132,6 +132,39 @@ function getErrorMessage(err) {
   return String(err.message || err).trim() || "Unknown error";
 }
 
+function extractErrorTechnicalDetails(err, meta = {}) {
+  const parts = [];
+  if (meta.detail) parts.push(String(meta.detail).trim());
+  if (err) {
+    if (typeof err === "string") {
+      const trimmed = err.trim();
+      if (!parts.includes(trimmed)) parts.push(trimmed);
+    } else {
+      const msg = String(err.message || "").trim();
+      if (msg && !parts.includes(msg)) parts.push(msg);
+
+      const tech = [];
+      if (err.code) tech.push(`Error Code: ${err.code}`);
+      if (err.statusCode || err.status || (err.response && err.response.status)) {
+        tech.push(`HTTP Status: ${err.statusCode || err.status || err.response.status}`);
+      }
+      if (err.errno) tech.push(`Errno: ${err.errno}`);
+      if (err.syscall) tech.push(`Syscall: ${err.syscall}`);
+      if (err.hostname || err.host) tech.push(`Host: ${err.hostname || err.host}`);
+      if (err.address) tech.push(`Address: ${err.address}`);
+      if (err.port) tech.push(`Port: ${err.port}`);
+      if (err.stderr) {
+        const stderrText = String(err.stderr).trim();
+        if (stderrText && !parts.join("\n").includes(stderrText)) {
+          tech.push(`Stderr:\n${stderrText}`);
+        }
+      }
+      if (tech.length > 0) parts.push(tech.join("\n"));
+    }
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LENGTH) {
   let text = redactSecrets(value);
   const tokenBoundary = String.raw`(^|[\s"'(<\[{=:,;\x60])`;
@@ -283,13 +316,12 @@ function initUpdater(ctx, deps = {}) {
     const copy = UPDATE_ERROR_COPY[code] || UPDATE_ERROR_COPY.UNKNOWN;
     const message = t(`updateError${copy.suffix}Msg`, copy.message);
     const nextStep = t(`updateError${copy.suffix}Next`, copy.nextStep);
-    const rawDetail = [meta.detail, getErrorMessage(err)]
-      .filter((value, index, values) => value && values.indexOf(value) === index)
-      .join("\n\n");
+    const rawDetail = extractErrorTechnicalDetails(err, meta);
     const detail = sanitizeUpdateErrorDetail(rawDetail);
     const timestamp = new Date(now()).toISOString();
     const phase = meta.phase || "availability-check";
     const mode = meta.mode || (getRepoRoot() ? "git" : "packaged");
+    const suggestionLabel = t("updateErrorSuggestionLabel", "Repair suggestion (for reference only):");
     const report = {
       code,
       phase,
@@ -307,7 +339,8 @@ function initUpdater(ctx, deps = {}) {
     report.copyText = sanitizeUpdateErrorDetail([
       report.title,
       report.message,
-      report.nextStep,
+      "",
+      report.nextStep ? `[${suggestionLabel}] ${report.nextStep}` : null,
       "",
       `Code: ${report.code}`,
       `Phase: ${report.phase}`,
@@ -568,11 +601,16 @@ function initUpdater(ctx, deps = {}) {
       : buildUpdateErrorReport(candidate.error || candidate.reason || candidate.detail, candidate);
     publishUpdateCheckSnapshot("error", { error: report });
     pulseState("error");
+    const suggestionLabel = t("updateErrorSuggestionLabel", "Repair suggestion (for reference only):");
     return showBubble({
       mode: "error",
       title: report.title,
       message: report.message,
-      detail: [report.nextStep, `Code: ${report.code}`, report.detail].filter(Boolean).join("\n\n"),
+      detail: [
+        report.nextStep ? `${suggestionLabel}\n${report.nextStep}` : null,
+        `Code: ${report.code}`,
+        report.detail
+      ].filter(Boolean).join("\n\n"),
       copyText: report.copyText,
       copyFeedback: {
         copied: t("updateErrorCopied", "Copied"),

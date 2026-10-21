@@ -1529,11 +1529,18 @@ html, body {
   color: var(--accent);
 }
 .agent-text-input-row {
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.agent-text-input-row .row-text {
+  width: 100%;
+  flex: 1 1 auto;
 }
 .agent-text-input-control {
-  flex: 1 1 260px;
-  min-width: min(100%, 260px);
+  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .agent-custom-tools-section .custom-tool-discovery-row {
   align-items: center;
@@ -2312,8 +2319,15 @@ html, body {
   transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .codex-permission-mode-segmented button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   background: transparent;
   white-space: nowrap;
+}
+.codex-permission-mode-segmented .settings-segmented-radio-label {
+  text-align: center;
 }
 .codex-permission-mode-segmented button.active {
   background: transparent;

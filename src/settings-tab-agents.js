@@ -2222,13 +2222,28 @@
     };
     meta.syncFromSnapshot = () => syncAgentIntegrationAction(meta);
     syncAgentIntegrationAction(meta);
-    button.addEventListener("click", (ev) => {
+    button.addEventListener("click", async (ev) => {
       ev.stopPropagation();
       if (button.disabled) return;
       const installed = readers.readAgentIntegrationInstalled(agent.id);
       const command = installed ? "uninstallAgentIntegration" : "installAgentIntegration";
-      if (installed && typeof window.confirm === "function" && !window.confirm(t("agentIntegrationUninstallConfirm"))) {
-        return;
+      if (installed) {
+        const hasModalRoot = typeof document !== "undefined"
+          && typeof document.getElementById === "function"
+          && !!document.getElementById("modalRoot");
+        if (hasModalRoot && helpers && typeof helpers.showSettingsConfirmModal === "function") {
+          const actionId = await helpers.showSettingsConfirmModal({
+            title: t("agentIntegrationUninstallConfirmTitle"),
+            detail: t("agentIntegrationUninstallConfirm"),
+            actions: [
+              { id: "cancel", label: t("agentIntegrationUninstallCancel"), tone: "neutral", defaultFocus: true },
+              { id: "uninstall", label: t("agentIntegrationUninstall"), tone: "danger" },
+            ],
+          });
+          if (actionId !== "uninstall") return;
+        } else if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(t("agentIntegrationUninstallConfirm"))) {
+          return;
+        }
       }
       helpers.setButtonState(button, {
         pending: true,

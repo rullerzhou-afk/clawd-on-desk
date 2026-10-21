@@ -133,24 +133,25 @@
     row.appendChild(text);
     const control = document.createElement("div");
     control.className = "row-control";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "btn";
-    button.textContent = t("codexApprovalSettingsLink");
-    button.addEventListener("click", () => {
-      root.ClawdSettingsCore.runtime.agentsSubtab = readers.readAgentIntegrationInstalled("codex")
-        ? "connected" : "discover";
-      ops.selectTab("agents");
-      requestAnimationFrame(() => {
-        const target = state.mountedControls.agentPermissionModes.get("codex");
-        if (!target || !target.row || !document.body.contains(target.row)) return;
-        for (let parent = target.row.parentElement; parent; parent = parent.parentElement) {
-          if (typeof parent.expand === "function") parent.expand({ animate: false });
-        }
-        target.row.scrollIntoView({ block: "center" });
-        const active = target.row.querySelector("button.active");
-        if (active) active.focus({ preventScroll: true });
-      });
+    const button = helpers.buildButton({
+      size: "compact",
+      label: t("codexApprovalSettingsLink"),
+      className: "codex-approval-settings-btn",
+      onClick: () => {
+        root.ClawdSettingsCore.runtime.agentsSubtab = readers.readAgentIntegrationInstalled("codex")
+          ? "connected" : "discover";
+        ops.selectTab("agents");
+        requestAnimationFrame(() => {
+          const target = state.mountedControls.agentPermissionModes.get("codex");
+          if (!target || !target.row || !document.body.contains(target.row)) return;
+          for (let parent = target.row.parentElement; parent; parent = parent.parentElement) {
+            if (typeof parent.expand === "function") parent.expand({ animate: false });
+          }
+          target.row.scrollIntoView({ block: "center" });
+          const active = target.row.querySelector("button.active");
+          if (active) active.focus({ preventScroll: true });
+        });
+      },
     });
     control.appendChild(button);
     row.appendChild(control);
