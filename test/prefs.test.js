@@ -2624,3 +2624,23 @@ describe("prefs.mapLocaleToLang (device locale → UI language)", () => {
     }
   });
 });
+
+describe("prefs.disableHardwareAcceleration (#1183)", () => {
+  it("defaults to off and round-trips through load", () => {
+    assert.strictEqual(prefs.getDefaults().disableHardwareAcceleration, false);
+    const p = makeTempPath();
+    fs.writeFileSync(p, JSON.stringify({ disableHardwareAcceleration: true }));
+    assert.strictEqual(prefs.load(p).snapshot.disableHardwareAcceleration, true);
+  });
+
+  it("is applied before app ready on Windows only", () => {
+    const mainSource = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+    const call = mainSource.indexOf("app.disableHardwareAcceleration()");
+    assert.ok(call > 0, "main.js must call app.disableHardwareAcceleration()");
+    assert.ok(call < mainSource.indexOf("app.whenReady()"), "the call must precede app.whenReady()");
+    assert.match(
+      mainSource,
+      /if \(isWin && _initialPrefsLoad\.snapshot && _initialPrefsLoad\.snapshot\.disableHardwareAcceleration === true\) \{\s*app\.disableHardwareAcceleration\(\);/
+    );
+  });
+});

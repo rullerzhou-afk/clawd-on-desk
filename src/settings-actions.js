@@ -590,6 +590,7 @@ const updateRegistry = {
   },
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
+  disableHardwareAcceleration: requireBoolean("disableHardwareAcceleration"),
   mobilePreviewEnabled: {
     validate: requireBoolean("mobilePreviewEnabled"),
     lockKey: "mobilePreview",

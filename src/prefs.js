@@ -377,6 +377,12 @@ const SCHEMA = {
   // so existing behavior — overlay by default, #538 stand-down as the escape
   // hatch — is untouched.
   fullscreenAutoHide: { type: "boolean", default: false },
+  // #1183: escape hatch for machines whose GPU compositor draws the
+  // transparent pet window as an opaque black square once part of it leaves
+  // the virtual desktop (edge snap / mini mode). Read once at startup, before
+  // app ready, because Electron can only turn GPU acceleration off then — a
+  // change takes effect on the next launch. Windows-only in effect.
+  disableHardwareAcceleration: { type: "boolean", default: false },
   // Text-window zoom (bubbles, HUD, dashboard, settings, resume input). The
   // pet itself scales via `size` and is never zoomed. `textScale` is the
   // global default; `textScaleByDisplay` overrides it per display id (the

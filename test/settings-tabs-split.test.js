@@ -61,6 +61,7 @@ const FROZEN_KEYS = [
   "keepSizeAcrossDisplays",
   "fullscreenAutoHide",
   "openAtLogin",
+  "disableHardwareAcceleration",
   "hideBubbles",
   "bubbleFollowPet",
   "bubbleFollowPreference",
@@ -83,6 +84,7 @@ const EXPECTED_KEYS = {
     "showTray",
     "showDock",
     "openAtLogin",
+    "disableHardwareAcceleration",
   ],
   pet: [
     "size",

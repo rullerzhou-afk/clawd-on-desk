@@ -12,6 +12,7 @@
     "showTray",
     "showDock",
     "openAtLogin",
+    "disableHardwareAcceleration",
   ]);
 
   let state = null;
@@ -475,6 +476,13 @@
         labelKey: "rowKeepAwakeWhileWorking",
         descKey: "rowKeepAwakeWhileWorkingDesc",
       }),
+      // #1183: Windows-only, like the switch it backs (main.js reads it at
+      // startup only on win32).
+      ...(i18n && i18n.IS_WIN ? [helpers.buildSwitchRow({
+        key: "disableHardwareAcceleration",
+        labelKey: "rowDisableHardwareAcceleration",
+        descKey: "rowDisableHardwareAccelerationDesc",
+      })] : []),
     ]));
   }
 
