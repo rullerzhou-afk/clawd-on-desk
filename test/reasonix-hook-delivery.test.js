@@ -195,6 +195,10 @@ function assertHangingHookExit(t, result, { delayedStdin = false, windowsWrapper
   if (delayedStdin) {
     assert.ok(request.at - ready.at >= 1800, "stdin must arrive 1800ms after Node readiness");
   }
+  // Check Node separately: a fast local PowerShell launch must not conceal
+  // the old 0.7–1s wait after stdin that exhausted the reporter's 5s budget.
+  const deliveryElapsed = exited.at - request.at;
+  assert.ok(deliveryElapsed < 500, `blocking HTTP must fail open promptly (${deliveryElapsed}ms)`);
   assert.ok(result.elapsed < budget, `hook must leave outer-wrapper headroom (${result.elapsed}ms, budget ${budget}ms)`);
 }
 
@@ -384,7 +388,7 @@ describe("reasonix hook delivery", () => {
       env: hookEnv(home),
     });
     // Never write and never close stdin: readStdinJsonDetailed's 2s window must
-    // settle and fail open inside the 2.5s in-process deadline, leaving time
+    // settle and fail open inside the 2.2s in-process deadline, leaving time
     // for Reasonix's outer PowerShell/cmd wrapper.
     const code = await new Promise((resolve) => child.on("exit", resolve));
     const elapsed = Date.now() - startedAt;

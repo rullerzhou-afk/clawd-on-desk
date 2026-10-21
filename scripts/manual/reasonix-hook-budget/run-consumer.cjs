@@ -28,11 +28,16 @@ async function main() {
   const mode = args.mode || "normal";
   const expect = args.expect || "pass";
   const delayMs = Number(args["delay-ms"] || 0);
+  const launchFloorMs = Number(args["launch-floor-ms"] || 0);
+  const stdinDelayMs = Number(args["stdin-delay-ms"] || 0);
   const repeat = Number(args.repeat || 1);
   const port = Number(args.port || 23337);
   const events = args.event && args.event !== "both" ? [args.event] : ["UserPromptSubmit", "PreToolUse"];
   if (!["normal", "stream"].includes(mode) || !["pass", "block"].includes(expect)) throw new Error("Invalid mode or expected decision");
   if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 3000) throw new Error("delay-ms must be 0..3000");
+  if (!Number.isInteger(launchFloorMs) || launchFloorMs < 0 || launchFloorMs > 3000) throw new Error("launch-floor-ms must be 0..3000");
+  if (!Number.isInteger(stdinDelayMs) || stdinDelayMs < 0 || stdinDelayMs > 1900) throw new Error("stdin-delay-ms must be 0..1900");
+  if (delayMs && launchFloorMs) throw new Error("Select delay-ms or launch-floor-ms, not both");
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 5) throw new Error("repeat must be 1..5");
   if (!Number.isInteger(port) || port < 23333 || port > 23337) throw new Error("port must be 23333..23337");
   if (events.some((event) => !["UserPromptSubmit", "PreToolUse"].includes(event))) throw new Error("Invalid event");
@@ -87,11 +92,33 @@ async function main() {
           TEMP: path.join(home, "tmp"), TMP: path.join(home, "tmp"), REASONIX_HOME: path.join(home, "reasonix"),
           NODE_OPTIONS: "",
         };
-        if (delayMs > 0) {
+        const injectDelay = delayMs > 0 || launchFloorMs > 0 || stdinDelayMs > 0;
+        if (injectDelay) {
           const preload = path.join(home, "startup-delay.cjs");
-          // Controlled delay before the hook module (and HOOK_STARTED_AT).
-          // This simulates launch overhead; it is not a claim about normal PCs.
-          fs.writeFileSync(preload, `const fs = require("node:fs");\nconst t = Date.now();\nAtomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ${delayMs});\nfs.writeFileSync(${JSON.stringify(path.join(home, "delay-proof.json"))}, JSON.stringify({ pid: process.pid, requestedMs: ${delayMs}, elapsedMs: Date.now()-t }));\n`);
+          // Test-only timing injection. The official consumer, command, HTTP
+          // transport and production hook remain unchanged. A launch floor
+          // models slow wrapper startup; relayed stdin models a late payload.
+          fs.writeFileSync(preload, `
+const fs = require("node:fs");
+const t = Date.now();
+const launchAt = Number(process.env.CLAWD_TEST_REASONIX_LAUNCH_AT);
+const waitMs = ${delayMs} || Math.max(0, ${launchFloorMs} - (t - launchAt));
+if (waitMs) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, waitMs);
+const readyAt = Date.now();
+const proofPath = ${JSON.stringify(path.join(home, "delay-proof.json"))};
+const proof = { requestedMs: ${delayMs}, launchFloorMs: ${launchFloorMs}, elapsedMs: readyAt - t, spawnToReadyMs: readyAt - launchAt, stdinDelayMs: ${stdinDelayMs} };
+fs.writeFileSync(proofPath, JSON.stringify(proof));
+if (${stdinDelayMs} > 0) {
+  const input = fs.readFileSync(0);
+  const relay = new (require("node:stream").PassThrough)();
+  Object.defineProperty(process, "stdin", { value: relay });
+  setTimeout(() => {
+    proof.stdinDeliveredAfterReadyMs = Date.now() - readyAt;
+    fs.writeFileSync(proofPath, JSON.stringify(proof));
+    relay.end(input);
+  }, ${stdinDelayMs});
+}
+`);
           isolatedEnv.NODE_OPTIONS = `--require="${preload.replace(/\\/g, "/")}"`;
         }
         const hookEntry = { match: "*", command, env: isolatedEnv };
@@ -99,6 +126,7 @@ async function main() {
         const env = { ...process.env, ...isolatedEnv };
         for (const name of Object.keys(env)) if (name.startsWith("CLAWD_")) delete env[name];
         const requestStart = requests.length;
+        env.CLAWD_TEST_REASONIX_LAUNCH_AT = String(Date.now());
         child = spawn(consumer, ["-home", home, "-event", event, "-expect", expect], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
@@ -115,10 +143,15 @@ async function main() {
         child = null;
         const result = JSON.parse(stdout.trim());
         const observed = requests.slice(requestStart);
-        const delayProof = delayMs ? JSON.parse(fs.readFileSync(path.join(home, "delay-proof.json"), "utf8")) : null;
+        const delayProof = injectDelay ? JSON.parse(fs.readFileSync(path.join(home, "delay-proof.json"), "utf8")) : null;
         const oneExpectedPost = observed.length === 1 && observed[0].method === "POST" && observed[0].path === "/state" && observed[0].event === event && observed[0].agentId === "reasonix";
-        const ok = code === 0 && signal === null && stderr === "" && oneExpectedPost;
-        console.log(JSON.stringify({ mode, expected: expect, iteration, nodeVersion: process.version, hookPath, injectedStartupDelayMs: delayMs, delayProof, requests: observed, consumer: result, harnessExitCode: code, harnessSignal: signal, harnessStderr: stderr, ok }));
+        const delayVerified = !injectDelay || (
+          delayProof.spawnToReadyMs >= launchFloorMs
+          && (!delayMs || delayProof.elapsedMs >= delayMs)
+          && (!stdinDelayMs || delayProof.stdinDeliveredAfterReadyMs >= stdinDelayMs)
+        );
+        const ok = delayVerified && code === 0 && signal === null && stderr === "" && oneExpectedPost;
+        console.log(JSON.stringify({ mode, expected: expect, iteration, nodeVersion: process.version, hookPath, injectedStartupDelayMs: delayMs, launchFloorMs, stdinDelayMs, delayProof, requests: observed, consumer: result, harnessExitCode: code, harnessSignal: signal, harnessStderr: stderr, ok }));
         if (!ok) failed = true;
       }
     }

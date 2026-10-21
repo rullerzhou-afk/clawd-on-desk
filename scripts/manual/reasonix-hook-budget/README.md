@@ -17,7 +17,7 @@ From that source directory, build with an installed Go 1.26.x:
 # validationRoot is the absolute, dedicated temporary test directory.
 $env:GOTOOLCHAIN = 'local'
 $env:GOCACHE = Join-Path $validationRoot 'go-build-cache'
-go build -mod=readonly -o (Join-Path $validationRoot 'reasonix-native-consumer.exe') ./cmd/clawd-consumer-check
+go build -buildvcs=false -mod=readonly -o (Join-Path $validationRoot 'reasonix-native-consumer.exe') ./cmd/clawd-consumer-check
 ```
 
 Missing module dependencies may download normally. Preserve `go.mod`/`go.sum`
@@ -84,6 +84,84 @@ readiness**: both blocking events exited in 3508–3525ms, with HTTP-attempt
 receipts. On macOS, 152 related checks and 15 delivery checks passed (six
 Windows-only delivery checks skipped). The four new direct-Node hanging-HTTP
 regressions failed against the baseline at 3526–4050ms and passed with the fix.
+
+## Follow-up check: 2026-10-21
+
+The reporter's phase receipts at PR head `e45bd9bb` measured up to 2557ms
+before Node readiness, about 2500ms inside Node with late input, and up to
+122ms after Node exit. The 2500ms script deadline still leaves too little
+room for that launch chain. This follow-up keeps the 2000ms stdin window and
+Windows encoded command, reduces blocking post-stdin waiting to 200ms, and
+caps the script at 2200ms. Non-blocking event budgets are unchanged. It remains
+best-effort state delivery: slow discovery or transport may be abandoned.
+
+The encoded command is retained for older Reasonix releases: installed
+v1.13.1 still passes the flat command through Go's Windows argv encoder.
+[Upstream #6911](https://github.com/esengine/DeepSeek-Reasonix/pull/6911) fixes
+that quoting contract in newer source, but removing PowerShell unconditionally
+would break older CLI/desktop installs and literal special-character paths.
+
+The driver now supports two explicit, test-only injections:
+
+- `--launch-floor-ms 2700` delays the preloader until at least 2700ms after
+  the driver launches the native consumer, before the production hook clock.
+- `--stdin-delay-ms 1800` buffers the consumer's real stdin, then relays the
+  same bytes to the hook after the requested delay. The official consumer's
+  timeout/decision logic and the production hook are not modified.
+
+Both delays emit receipts and are checked; a missing POST never counts as a
+pass. This is controlled fault injection, not natural failure frequency.
+Use the PR-head hook plus its helpers as `prHeadHook` for the negative control:
+
+```powershell
+node $driver --consumer $consumer --repo $fixedRepo --mode stream --launch-floor-ms 2700 --stdin-delay-ms 1800 --repeat 2 --expect pass
+node $driver --consumer $consumer --repo $fixedRepo --hook $prHeadHook --mode stream --launch-floor-ms 2700 --stdin-delay-ms 1800 --expect block
+node $driver --consumer $consumer --repo $fixedRepo --mode normal --launch-floor-ms 2700 --stdin-delay-ms 1900 --expect pass
+```
+
+Windows x64, Node 24.12.0, Go 1.26.3, same pinned official consumer:
+
+| Control | UserPromptSubmit | PreToolUse | Native outcome |
+| --- | ---: | ---: | --- |
+| Follow-up, normal HTTP | 340ms | 296ms | Pass, exit 0 |
+| Follow-up, stream + 2700ms launch floor + 1800ms stdin, two runs | 4691–4697ms | 4685–4686ms | All pass, exit 0 |
+| PR head `e45bd9bb`, identical injected conditions | 5188ms | 5167ms | Both TimedOut + Block |
+| Follow-up, healthy HTTP + 2700ms launch floor + 1900ms stdin | 4601ms | 4604ms | Pass, actual POST received |
+
+Every row received exactly one `/state` POST with the correct event and agent.
+The native timeout remained 5000ms. The positive stress cases leave roughly
+300ms of measured headroom on this machine; this does not guarantee success
+under arbitrary OS stalls or replace the reporter's own retest.
+
+The focused set passed all 43 tests on Windows and 37 on macOS (six Windows-only
+skips). The related server-config/process/PID-cache set passed 185 tests on
+macOS (one platform skip). Four strengthened hanging-HTTP regressions all fail
+against `e45bd9bb` (691–1000ms waiting after the HTTP attempt) and pass with the
+follow-up (about 200ms), so a fast local wrapper cannot conceal the old wait.
+
+An additional **full CLI smoke passed** with the installed, unmodified Windows
+Reasonix v1.13.1 executable and Node 24.12.0. It used a new temporary home,
+installer-generated settings, a local synthetic OpenAI-compatible endpoint,
+and a real `read_file` call. The second model request contained the exact test
+file contents; the CLI printed the final completion marker and exited 0.
+All six actual hook POSTs arrived with `agent_id=reasonix`: `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Stop`, and `SessionEnd`.
+The full session took 5137ms (not a per-hook duration), with no hook timeout or
+block. The generated hook path contained spaces and literal `& %PATH%!$`.
+No paid model, live Clawd UI, user configuration or proxy setting was changed.
+
+The initial CLI fixture used `http://127.0.0.1:23337/v1` and stalled even with
+all Clawd hooks removed. A temporary diagnostic build of the same upstream
+v1.13.1 source traced that request to `127.0.0.1:7897`, the existing system
+proxy. Its `internal/sysproxy/sysproxy.go` bypass matcher only handles leading
+wildcards, so the existing Windows `127.*` trailing-wildcard entry did not
+match. The fixture endpoint was changed to `http://localhost:23337/v1`, which
+matches the already-existing exact `localhost` exclusion. The successful run
+above used the installed original executable, not the diagnostic build.
+This change was limited to the disposable test endpoint; proxy settings and
+the production Clawd integration remained untouched. It verifies the full
+CLI path with deterministic model replies, not a live provider or desktop
+animation, and does not replace the reporter's own slower-machine retest.
 
 ## Collect phase timings after a failed Windows retest
 

@@ -162,11 +162,11 @@ function buildReasonixHookEntry(command) {
 }
 
 function buildReasonixHookCommand(nodeBin, hookScript, options = {}) {
-  // Reasonix wraps commands with `cmd /c` on Windows (see hook.go shellInvocation).
-  // Go's Windows argv builder escapes every embedded `"` in that single command
-  // argument as `\"`; cmd.exe treats the backslashes literally, so every plain
-  // quoted command fails even when neither path contains spaces. Always use the
-  // encoded wrapper to bypass that argv/quote mismatch.
+  // Older Reasonix releases pass Windows shell commands through Go's argv
+  // encoder, escaping embedded quotes in a way cmd.exe cannot execute.
+  // Upstream #6911 fixes the raw command line, but installed legacy CLI and
+  // desktop versions still need this wrapper. Preserve the pinned Node path
+  // and literal special characters instead of switching to bare PATH node.
   //
   // PowerShell normalizes a native child's non-zero exit code to 1 here. This is
   // safe only while reasonix-hook.js is state-only and always exits 0. A future

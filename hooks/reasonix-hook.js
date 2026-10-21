@@ -98,17 +98,18 @@ const STDIN_READ_TIMEOUT_MS = 2000;
 // the pet just looked "disconnected" after every long idle.
 // Blocking hooks (UserPromptSubmit/PreToolUse) get a 5s budget from Reasonix.
 // A timeout blocks the prompt or tool call even if this observer later exits 0.
-// #1198 measured more than 1.5s in the Windows launch chain alone: reserving
-// only 1s for cmd/PowerShell + Node was not enough. Keep the 2s stdin window,
-// but cap this script at 2.5s and give blocking delivery at most 1s after stdin.
-// This leaves 2.5s for launch/teardown; it cannot bound arbitrary OS stalls.
+// #1198 retesting measured up to 2.56s before Node readiness plus 0.12s
+// after Node exit. Keep the full 2s stdin window, but allow only 200ms for
+// best-effort blocking delivery and cap this script at 2.2s. The previous
+// 2.5s / 1s budgets still overran the native 5s limit on that machine.
+// This reserves 2.8s for launch/teardown; arbitrary OS stalls remain unbounded.
 // Blocking events also never perform a fresh synchronous process walk (see
 // below), since JS timers cannot interrupt a cold WMI/ps call. Non-blocking
 // events retain their longer delivery allowance and 30s upstream budget.
-const HARD_DEADLINE_MS = 2500;
+const HARD_DEADLINE_MS = 2200;
 const RELAXED_DEADLINE_MS = 15000;
 const STDIN_PHASE_BUDGET_MS = STDIN_READ_TIMEOUT_MS + 500;
-const BLOCKING_POST_STDIN_BUDGET_MS = 1000;
+const BLOCKING_POST_STDIN_BUDGET_MS = 200;
 const POST_STDIN_BUDGET_MS = 3500;
 const STOP_EXTRA_MS = STOP_DELAY_MS + 200;
 const BLOCKING_HOOKS = new Set(["UserPromptSubmit", "PreToolUse"]);
