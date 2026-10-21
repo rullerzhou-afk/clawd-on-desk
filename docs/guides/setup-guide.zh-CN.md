@@ -134,6 +134,8 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 
 Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram bot；本地气泡仍然可用。通道失败或超时不会产生远程决定，也不会自动拒绝：有本地气泡时请求继续等待；只有 remote-only 且所有可用 client 都无决定时，才回到 agent 原生界面。设置、支持范围和迁移说明见 [telegram-approval.md](telegram-approval.md)。
 
+v0.14.0 退役了旧的 Go sidecar 传输通道。既有 legacy 用户会保留已保存的 bot token、允许用户与目标会话，但必须先在阻塞式 Settings 迁移面板中完成一次真实的 Telegram 验证回调，远程审批才会重新生效。检查失败或超时不会删除这些设置，也不会回退到已退役的运行时。
+
 ## 飞书 / Lark 远程审批
 
 Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送交互卡片。两者属于同一个远程审批通道，可在 **设置 → 权限与审批 → IM 渠道 → 飞书 / Lark** 中选择平台。权限范围、用户 ID 差异和卡片语言见 [feishu-lark-remote-approval.md](feishu-lark-remote-approval.md)。

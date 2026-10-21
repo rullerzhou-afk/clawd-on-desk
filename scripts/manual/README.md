@@ -1,5 +1,11 @@
 # Manual validation harnesses
 
+## Reasonix Windows hook budget (#1198)
+
+[Native consumer check](reasonix-hook-budget/README.md) runs the official
+Reasonix hook runner with isolated settings and real HTTP success/hang controls.
+It needs Windows, Node, and Go; it does not run a model or a real user session.
+
 ## Kimi Code quota Phase 0
 
 This manual-only probe validates the experimental Kimi Code API-key usage
