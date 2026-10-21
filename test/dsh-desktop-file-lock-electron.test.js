@@ -50,6 +50,10 @@ test("Windows desktop discovery leaves the ASAR replaceable while Node and Elect
   };
   delete childEnv.ELECTRON_RUN_AS_NODE;
   const triggerFile = path.join(root, "recheck");
+  // watchFile emits an initial callback for a missing path. Seed the trigger
+  // before any child starts, or that unsolicited discovery can race the ASAR
+  // rename/copy gap and be mistaken for the requested post-replacement result.
+  fs.writeFileSync(triggerFile, "ready");
   const recheck = () => fs.writeFileSync(triggerFile, String(Date.now()));
   for (const [name, executable, injectDefaultFs] of [
     ["Node (default fs)", process.execPath, false],
