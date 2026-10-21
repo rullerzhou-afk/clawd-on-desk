@@ -88,6 +88,14 @@ const SOURCE_PROVENANCE = Object.freeze({
   "kiro-cli": lobeSource("kiro-color.png"),
   mimocode: lobeSource("xiaomimimo.png", { contrastTreatment: "neutral-light-tile" }),
   openclaw: lobeSource("openclaw-color.png"),
+  // AutoClaw ships no permissively-licensed standalone brand mark, so the
+  // source is the product's own macOS app icon (rounded dark tile with the
+  // white claw glyph) extracted from AutoClaw.app/Contents/Resources/icon.icns.
+  autoclaw: {
+    originalFilename: "autoclaw.png",
+    fallback: false,
+    provenance: "AutoClaw desktop app icon, extracted from AutoClaw.app/Contents/Resources/icon.icns (AutoClaw 1.20.0, macOS arm64).",
+  },
   opencode: lobeSource("opencode.png", { contrastTreatment: "neutral-light-tile" }),
   pi: lobeSource("pi.png", { contrastTreatment: "neutral-light-tile" }),
   qoder: lobeSource("qoder-color.png"),

@@ -20,6 +20,7 @@ const mimocode = require("./mimocode");
 const pi = require("./pi");
 const omp = require("./omp");
 const openclaw = require("./openclaw");
+const autoclaw = require("./autoclaw");
 const hermes = require("./hermes");
 const qoder = require("./qoder");
 const reasonix = require("./reasonix");
@@ -50,6 +51,7 @@ const AGENTS = [
   pi,
   omp,
   openclaw,
+  autoclaw,
   hermes,
   qoder,
   reasonix,

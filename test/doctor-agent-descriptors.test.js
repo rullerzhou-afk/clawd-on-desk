@@ -33,6 +33,7 @@ describe("doctor agent descriptors", () => {
         "pi",
         "omp",
         "openclaw",
+        "autoclaw",
         "hermes",
         "qoder",
         "reasonix",

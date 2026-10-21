@@ -25,6 +25,7 @@ const { unregisterMimocodePlugin } = require("./mimocode-install");
 const { unregisterPiExtension } = require("./pi-install");
 const { resolveOmpAgentDir, unregisterOmpExtension } = require("./omp-install");
 const { unregisterOpenClawPlugin } = require("./openclaw-install");
+const { unregisterAutoClawPlugin } = require("./autoclaw-install");
 const { resolveHermesHome, unregisterHermesPlugin } = require("./hermes-install");
 const { unregisterQoderHooks } = require("./qoder-install");
 const { resolveReasonixConfigTargets, unregisterReasonixHooks } = require("./reasonix-install");
@@ -62,6 +63,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "pi",
   "omp",
   "openclaw",
+  "autoclaw",
   "hermes",
   "qoder",
   "reasonix",
@@ -95,6 +97,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   pi: "Pi",
   omp: "OMP",
   openclaw: "OpenClaw",
+  autoclaw: "AutoClaw",
   hermes: "Hermes Agent",
   qoder: "Qoder",
   reasonix: "Reasonix",
@@ -195,6 +198,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
   const openClawConfigPath = options.openClawConfigPath
     || env.OPENCLAW_CONFIG_PATH
     || path.join(openClawStateDir, "openclaw.json");
+  const autoClawStateDir = options.autoClawStateDir
+    || env.AUTOCLAW_STATE_DIR
+    || path.join(homeDir, ".openclaw-autoclaw");
+  const autoClawConfigPath = options.autoClawConfigPath
+    || env.AUTOCLAW_CONFIG_PATH
+    || path.join(autoClawStateDir, "openclaw.json");
   const hermesHome = options.hermesHome
     || resolveHermesHome({ homeDir, env, platform: options.platform || process.platform });
   const minimaxDataDir = resolveMinimaxDataDir(homeDir, env);
@@ -310,6 +319,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         stateDir: openClawStateDir,
         configPath: openClawConfigPath,
         useCliFallback: false,
+      },
+      autoclaw: {
+        ...common,
+        env,
+        stateDir: autoClawStateDir,
+        configPath: autoClawConfigPath,
       },
       hermes: {
         ...common,
@@ -428,6 +443,7 @@ const AGENT_CLEANERS = Object.freeze({
   pi: unregisterPiExtension,
   omp: unregisterOmpExtension,
   openclaw: unregisterOpenClawPlugin,
+  autoclaw: unregisterAutoClawPlugin,
   hermes: unregisterHermesPlugin,
   qoder: unregisterQoderHooks,
   reasonix: unregisterReasonixHooks,
