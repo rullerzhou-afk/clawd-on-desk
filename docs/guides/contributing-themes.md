@@ -8,9 +8,13 @@ We welcome theme proposals and finished submissions for Clawd. Contribution guid
 
 You can open a submission issue now, or package and share a theme independently for installation via **Settings → Theme → Import Clawd theme package (.zip)** (see [Independent sharing](#independent-sharing-and-updates)).
 
-Community submissions use the review and publishing process below. Inclusion still requires a reviewed package, a public release, and a catalog update; acceptance alone does not make a theme immediately available. Applications with community attribution support display a separate **Community themes** group and author credit. Older releases may label these downloads **Official**.
+**Theme submission and catalog publication do not need to wait for a new Clawd application release.** Inclusion still requires a reviewed package, a public theme release, and a catalog update. Once the catalog refreshes, existing Clawd versions that support theme downloads can discover and install the theme, provided they meet its minimum app version.
 
-**Start with a [theme submission issue](https://github.com/rullerzhou-afk/clawd-on-desk/issues/new?template=theme-submission.yml).** English and Chinese are both welcome. If you only have an idea, include sketches or references and describe what you plan to make. An idea is a proposal, not an installable theme or a commitment by maintainers to produce it.
+The **Community themes** group, community badge, and author credit on the card require an application version containing that UI support. Older versions can still download compatible community themes while displaying them under **Official themes**.
+
+**Start with a [theme submission issue](https://github.com/rullerzhou-afk/clawd-on-desk/issues/new?template=theme-submission.yml).** English and Chinese are both welcome. An initial submission does not require forking the application repository or opening a PR. Theme files can stay in the author's own repository; provide its link, previews, licensing information, and the other details listed below in the issue.
+
+If you only have an idea, include sketches or references and describe what you plan to make. An idea is a proposal, not an installable theme or a commitment by maintainers to produce it.
 
 We consider distinctive design, completeness, usability, asset provenance, and maintenance. Submission or passing format checks does not guarantee inclusion. Different interpretations of the same character are welcome for review; explain the differences and use a separate theme ID.
 
