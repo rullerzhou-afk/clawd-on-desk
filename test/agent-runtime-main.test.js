@@ -2080,6 +2080,64 @@ describe("agent-runtime-main", () => {
     ]);
   });
 
+  it("does not restore a rejected old-turn plan into the current turn", () => {
+    const instances = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    try {
+      const rawSessionId = "codex:stale-plan";
+      const sessionId = localSessionKey(rawSessionId);
+      const official = (state, event, turnId) => runtime.updateSessionFromServer(sessionId, state, event, {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId,
+        turnId,
+      });
+      const monitor = runtime.startCodexLogMonitor();
+
+      official("thinking", "UserPromptSubmit", "A");
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A",
+        planProgress: { completed: 1, total: 2, percent: 50 },
+        planProgressTurnId: "A",
+      });
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 1, total: 2, percent: 50 });
+
+      official("attention", "Stop", "A");
+      official("thinking", "UserPromptSubmit", "B");
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A",
+        planProgress: { completed: 1, total: 2, percent: 50 },
+        planProgressTurnId: "A",
+      });
+
+      assert.strictEqual(harness.state.sessions.get(sessionId).state, "thinking");
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+
+      monitor.emit(rawSessionId, "idle", "event_msg:token_count", {
+        turnId: "A",
+        planProgress: { completed: 1, total: 2, percent: 50 },
+        planProgressTurnId: "A",
+      });
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
   it("bypasses the local fence for remote official hooks and resets tracking on Codex clear", () => {
     const updates = [];
     const clearCalls = [];

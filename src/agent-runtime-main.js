@@ -908,12 +908,31 @@ function createAgentRuntimeMain(options = {}) {
             stateRuntime.updateAccountQuota(null, accountQuotas);
           }
         };
-        const annotateCodexContextUsage = () => {
-          if (!sessionOptions.contextUsage) return false;
+        const annotateCodexMetadata = ({ includePlanProgress = true } = {}) => {
+          let planProgressAllowed = includePlanProgress
+            && Object.prototype.hasOwnProperty.call(sessionOptions, "planProgress");
+          const planTurnId = normalizeCodexTurnId(sessionOptions.planProgressTurnId);
+          const fenceSnapshot = codexTurnFence.getSnapshot(sessionId);
+          if (planProgressAllowed) {
+            if (event === "event_msg:token_count" && !planTurnId) {
+              planProgressAllowed = false;
+            } else if (planTurnId && fenceSnapshot
+              && (fenceSnapshot.terminalLatch || fenceSnapshot.currentTurnId !== planTurnId)) {
+              planProgressAllowed = false;
+            }
+          }
+          if (!sessionOptions.contextUsage && !planProgressAllowed) return false;
           const stateRuntime = getStateRuntime();
           if (!stateRuntime || typeof stateRuntime.updateSessionMetadata !== "function") return false;
           return stateRuntime.updateSessionMetadata(sessionId, {
             contextUsage: sessionOptions.contextUsage,
+            ...(planProgressAllowed
+              ? {
+                planProgress: sessionOptions.planProgress,
+                planProgressTurnId: planTurnId,
+                expectedAgentId: "codex",
+              }
+              : {}),
           });
         };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
@@ -928,7 +947,7 @@ function createAgentRuntimeMain(options = {}) {
               });
             }
           } else {
-            annotateCodexContextUsage();
+            annotateCodexMetadata();
             annotateCodexAccountQuota();
           }
           return;
@@ -939,7 +958,7 @@ function createAgentRuntimeMain(options = {}) {
           agentId: "codex",
           profileId: sessionIdentity.profileId,
         })) {
-          annotateCodexContextUsage();
+          annotateCodexMetadata({ includePlanProgress: false });
           annotateCodexAccountQuota();
           return;
         }
@@ -950,7 +969,7 @@ function createAgentRuntimeMain(options = {}) {
         const tombstoned = hasCodexSessionEndTombstone(sessionId);
         const tombstoneTurnStart = tombstoned && isCodexJsonlTurnStart(event, extra);
         if (tombstoned && !tombstoneTurnStart) {
-          annotateCodexContextUsage();
+          annotateCodexMetadata({ includePlanProgress: false });
           annotateCodexAccountQuota();
           return;
         }
@@ -980,7 +999,7 @@ function createAgentRuntimeMain(options = {}) {
           ) {
             recordCodexWebSearchRecapOnly(sessionIdentity, sessionOptions, event, extra);
           }
-          annotateCodexContextUsage();
+          annotateCodexMetadata({ includePlanProgress: false });
           annotateCodexAccountQuota();
           return;
         }
@@ -988,7 +1007,7 @@ function createAgentRuntimeMain(options = {}) {
         // for an already-closed turn is rejected above and must keep it.
         if (tombstoneTurnStart) clearCodexSessionEndTombstone(sessionId);
         if (shouldSuppressCodexLogEvent(sessionId, state, event, extra && extra.turnId, extra)) {
-          annotateCodexContextUsage();
+          annotateCodexMetadata();
           annotateCodexAccountQuota();
           return;
         }

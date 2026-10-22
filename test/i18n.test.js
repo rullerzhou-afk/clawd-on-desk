@@ -98,6 +98,13 @@ describe("i18n locales", () => {
     }
   });
 
+  it("localizes structured Codex plan progress in every runtime locale", () => {
+    for (const lang of SUPPORTED_LANGS) {
+      assert.deepStrictEqual(placeholders(i18n[lang].codexPlanProgress), ["{completed}", "{percent}", "{total}"], lang);
+      assert.ok(i18n[lang].codexPlanProgress.trim(), lang);
+    }
+  });
+
   it("localizes the DSH desktop open action in every supported language", () => {
     assert.deepStrictEqual(
       Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, i18n[lang].dashboardOpenDshDesktop])),

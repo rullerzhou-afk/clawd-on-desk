@@ -1261,6 +1261,15 @@ function appendMeta(main, session, now) {
     recoveryBadge.textContent = t("sessionRecovered");
     meta.appendChild(recoveryBadge);
   }
+  if (session.planProgress) {
+    const plan = session.planProgress;
+    const progress = createText("span", "badge", t("codexPlanProgress")
+      .replace("{completed}", plan.completed)
+      .replace("{total}", plan.total)
+      .replace("{percent}", plan.percent));
+    meta.appendChild(document.createTextNode(" · "));
+    meta.appendChild(progress);
+  }
   // Source badge: show where this session runs (WSL, SSH)
   if (session.sourceType && session.sourceType !== "local") {
     meta.appendChild(document.createTextNode(" · "));

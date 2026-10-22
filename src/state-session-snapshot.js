@@ -10,6 +10,7 @@ const {
 } = require("./state-session-dedupe");
 const { bareCodexSessionId, readCodexThreadName, readCodexThreadNames } = require("../hooks/codex-session-index");
 const { isWslSourced } = require("./remote-process-metadata");
+const { normalizePlanProgress } = require("./codex-plan-progress");
 
 // ── Session source derivation ────────────────────────────────────────
 
@@ -356,6 +357,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     ? options.resolveAgentDisplayName
     : () => "";
   const agentId = (session && session.agentId) || null;
+  const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
   // Existing hidden reasons also disable focus (there is nothing to jump to).
   // The awaiting-activity marker is different: it only hides the HUD row, so the
@@ -422,6 +424,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     provider: (session && session.provider) || null,
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
+    ...(planProgress ? { planProgress } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
@@ -662,6 +665,7 @@ function sessionSnapshotSignature(snapshot) {
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
+      planProgress: entry.planProgress || null,
       dshCarrier: entry.dshCarrier,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,

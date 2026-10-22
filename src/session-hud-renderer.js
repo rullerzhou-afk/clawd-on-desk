@@ -366,6 +366,18 @@ function createRowForSession(session, now) {
     hasRightContent = true;
   }
 
+  if (!feedbackText && session.planProgress) {
+    const chip = document.createElement("span");
+    chip.className = "state-chip";
+    const plan = session.planProgress;
+    chip.textContent = t("codexPlanProgress")
+      .replace("{completed}", plan.completed)
+      .replace("{total}", plan.total)
+      .replace("{percent}", plan.percent);
+    right.appendChild(chip);
+    hasRightContent = true;
+  }
+
   const usageInfo = feedbackText ? null : usageChipInfo(session);
   if (usageInfo && usageInfo.label) {
     const chip = document.createElement("span");
