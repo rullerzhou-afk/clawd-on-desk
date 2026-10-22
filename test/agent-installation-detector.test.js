@@ -11,7 +11,7 @@ const {
   detectAgentInstallations,
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
-const { registerReasonixHooks } = require("../hooks/reasonix-install");
+const { registerReasonixHooks, __test: reasonixInstallTest } = require("../hooks/reasonix-install");
 const { registerZcodeHooks, unregisterZcodeHooks } = require("../hooks/zcode-install");
 const { registerQoderHooks, unregisterQoderHooks } = require("../hooks/qoder-install");
 const { registerCodeBuddyHooks, unregisterCodeBuddyHooks } = require("../hooks/codebuddy-install");
@@ -389,7 +389,9 @@ describe("agent installation detector", () => {
       platform: "win32",
       env: { APPDATA: appData },
       userHomeDir: homeDir,
-      nodeBin: "D:\\npm\\node.exe",
+      // An unresolved PATH Node always selects the compatibility fallback,
+      // independently of this machine's checkout path or short-name support.
+      nodeBin: "node",
       powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     });
     const raw = fs.readFileSync(settingsPath, "utf8");
@@ -406,6 +408,26 @@ describe("agent installation detector", () => {
     });
     const reasonix = byId(report, "reasonix");
 
+    assert.strictEqual(reasonix.clawdIntegration.detected, true);
+    assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
+  });
+
+  it("recognizes direct Windows Reasonix hooks when the script uses a short alias", () => {
+    const homeDir = makeHome();
+    const appData = path.join(homeDir, "AppData", "Roaming");
+    const settingsPath = path.join(appData, "reasonix", "settings.json");
+    const descriptor = getAgentDescriptor("reasonix");
+    const command = reasonixInstallTest.buildReasonixHookCommand(
+      "D:\\npm\\node.exe", "D:\\clawd\\hooks\\REASON~1.JS", { platform: "win32" },
+    );
+    assert.doesNotMatch(command, /-EncodedCommand /);
+    assert.match(command, /--clawd-reasonix-hook=reasonix-hook\.js$/);
+    writeJson(settingsPath, {
+      hooks: Object.fromEntries(descriptor.hookEvents.map((event) => [event, [{ match: "*", command }]])),
+    });
+
+    const report = detectAgentInstallations({ homeDir, platform: "win32", env: { APPDATA: appData }, now: 1 });
+    const reasonix = byId(report, "reasonix");
     assert.strictEqual(reasonix.clawdIntegration.detected, true);
     assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
   });

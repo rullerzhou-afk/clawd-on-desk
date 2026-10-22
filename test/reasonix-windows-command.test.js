@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const { __test, unregisterReasonixHooks } = require("../hooks/reasonix-install");
 const { commandMatchesMarker, decodeWindowsEncodedCommand, extractExistingNodeBinFromCommands } = require("../hooks/json-utils");
 
@@ -128,6 +129,86 @@ describe("Reasonix Windows direct command", () => {
       const receipt = JSON.parse(output);
       assert.equal(fs.realpathSync(receipt.path), fs.realpathSync(hook));
       assert.deepEqual(receipt.args, ["--clawd-reasonix-hook=reasonix-hook.js"]);
+    } finally {
+      fs.rmSync(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("queries real Windows short names for forward-slash default-install paths", { skip: process.platform !== "win32" }, (t) => {
+    const homeDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-rx-short-query-"));
+    const hookDir = path.join(homeDir, "AppData", "Local", "Programs", "Clawd on Desk", "resources", "app.asar.unpacked", "hooks");
+    const settingsPath = path.join(homeDir, "reasonix", "settings.json");
+    const hook = path.join(hookDir, "reasonix-hook.js");
+    let nodeBin = process.execPath;
+    try {
+      // CI's Node path can be quote-free. Put the real executable behind a
+      // space-containing path so BOTH inputs must pass through the query.
+      if (!nodeBin.includes(" ")) {
+        nodeBin = path.join(homeDir, "Program Files", "nodejs", "node.exe");
+        fs.mkdirSync(path.dirname(nodeBin), { recursive: true });
+        fs.copyFileSync(process.execPath, nodeBin);
+      }
+      fs.cpSync(path.join(__dirname, "..", "hooks"), hookDir, { recursive: true });
+      fs.mkdirSync(path.dirname(settingsPath));
+
+      // Independent backslash control distinguishes unavailable 8.3 aliases
+      // from a production forward-slash regression. Never skip merely because
+      // the installer fell back or its query failed.
+      const systemRoot = process.env.SystemRoot || "C:\\Windows";
+      const cmd = path.join(systemRoot, "System32", "cmd.exe");
+      const control = execFileSync(cmd, ["/d", "/u", "/v:off", "/s", "/c",
+        '"for %I in ("%CLAWD_TEST_RX_NODE%") do @echo "%~sI" & for %I in ("%CLAWD_TEST_RX_HOOK%") do @echo "%~sI""',
+      ], {
+        env: { SystemRoot: systemRoot, CLAWD_TEST_RX_NODE: nodeBin, CLAWD_TEST_RX_HOOK: hook },
+        cwd: systemRoot, encoding: "utf16le", timeout: 5000, windowsHide: true, windowsVerbatimArguments: true,
+      }).trim().split(/\r?\n/).map((line) => {
+        const match = line.trim().match(/^"(.+)"$/);
+        assert.ok(match, "the independent Windows query must return quoted paths");
+        return match[1];
+      });
+      assert.equal(control.length, 2);
+      if (control.some((value) => !/^[A-Za-z]:[\\/][A-Za-z0-9_.\\/~+-]+$/.test(value))) {
+        return t.skip("Independent Windows query found no quote-free ASCII aliases on this volume/profile");
+      }
+      const sameFile = (original, alias) => {
+        const a = fs.statSync(original, { bigint: true });
+        const b = fs.statSync(alias, { bigint: true });
+        assert.equal(b.dev, a.dev);
+        assert.equal(b.ino, a.ino);
+      };
+      sameFile(nodeBin, control[0]);
+      sameFile(hook, control[1]);
+
+      const calls = [];
+      const installer = require(path.join(hookDir, "reasonix-install.js"));
+      const installed = installer.registerReasonixHooks({
+        silent: true, settingsPath, nodeBin,
+        execFileSync: (exe, args, options) => {
+          calls.push({ node: options.env.CLAWD_REASONIX_PATH_0, hook: options.env.CLAWD_REASONIX_PATH_1 });
+          return execFileSync(exe, args, options); // Real cmd.exe; no mocked output.
+        },
+      });
+      assert.equal(calls.length, 1);
+      assert.equal(calls[0].node, nodeBin);
+      assert.equal(calls[0].hook, hook.replace(/\\/g, "/"));
+      assert.ok(calls[0].hook.includes("/Programs/Clawd on Desk/"));
+      assert.equal(installed.added, installer.REASONIX_HOOK_EVENTS.length);
+      const entries = Object.values(JSON.parse(fs.readFileSync(settingsPath, "utf8")).hooks).flat();
+      assert.equal(entries.length, installer.REASONIX_HOOK_EVENTS.length);
+      for (const entry of entries) {
+        assert.doesNotMatch(entry.command, /-EncodedCommand /, "available aliases must produce direct launch");
+        const target = validateHookCommand(entry.command);
+        assert.equal(target.ok, true);
+        sameFile(nodeBin, target.nodeBin);
+        sameFile(hook, target.scriptPath);
+      }
+      // Malformed input proves the command launches silently without sending
+      // an event to a real Clawd instance or reading a live Reasonix config.
+      const output = execFileSync(cmd, ["/d", "/v:off", "/c", entries[0].command], {
+        input: "{invalid-json", encoding: "utf8", timeout: 5000, windowsHide: true,
+        env: { ...process.env, HOME: homeDir, USERPROFILE: homeDir, NODE_OPTIONS: "" },
+      });
+      assert.equal(output, "");
     } finally {
       fs.rmSync(homeDir, { recursive: true, force: true });
     }

@@ -224,6 +224,25 @@ live Clawd UI, or proxy configuration was changed. Node 22.22.2 was not run
 on this machine because the separate runtime download did not complete; the
 reporter's exact runtime/slow-host combination still needs a retest.
 
+### Windows CI regression follow-up
+
+The installation-detector test now explicitly selects the encoded fallback
+instead of assuming every Windows path needs it, and separately checks direct
+commands whose short filename needs the ownership marker. A Windows-only
+regression copies the real hooks into the default install directory layout,
+runs the actual short-name query with the installer's forward-slash path, and
+verifies both file identities, all generated event commands, Doctor parsing,
+and silent execution. It uses an independent backslash query to skip only
+when the volume/profile has no usable aliases; an installer fallback or query
+failure is a test failure when those aliases exist.
+
+On the same Windows 11 / Node 24.12.0 machine, the real-query regression ran
+without skipping. The complete repository suite then passed **13,411 tests**
+with **127 platform skips and zero failures** (57.3 seconds), using the normal
+`test/run-tests.js` entry point and all locked dependency versions. This
+supersedes the focused-only Windows coverage above; #1198 remains open for
+the reporter's exact runtime and slower host.
+
 ## Collect phase timings after a failed Windows retest
 
 The delivery tests emit a `reasonix-hook-timing` JSON diagnostic before their
