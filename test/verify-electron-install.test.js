@@ -394,7 +394,7 @@ test("repository and CI use the supported Node contract", () => {
   const rootDir = path.join(__dirname, "..");
   const pkg = require("../package.json");
   assert.equal(pkg.engines.node, ">=22.12.0");
-  assert.equal(fs.readFileSync(path.join(rootDir, ".nvmrc"), "utf8").trim(), "24.18.0");
+  assert.equal(fs.readFileSync(path.join(rootDir, ".nvmrc"), "utf8").trim(), "24.22.1");
 
   for (const workflowPath of [
     ".github/workflows/build.yml",
