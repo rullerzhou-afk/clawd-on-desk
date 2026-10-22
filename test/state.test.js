@@ -4116,6 +4116,25 @@ describe("updateSession()", () => {
   // else: no session creation, no recentEvents append, no updatedAt bump.
   // (Account quota deliberately does NOT flow through here — see the
   // updateAccountQuota tests above.)
+  it("keeps effort metadata separate from lifecycle and clears it on model switches", () => {
+    api.updateSession("power-session", "thinking", "UserPromptSubmit", { agentId: "codex", model: "gpt-6", effort: "high" });
+    const session = api.sessions.get("power-session");
+    assert.strictEqual(session.effort, "high");
+    session.updatedAt = 12345;
+    const history = JSON.stringify(session.recentEvents);
+    api.updateSessionMetadata("power-session", { expectedAgentId: "codex", effort: "xhigh" });
+    assert.strictEqual(session.effort, "xhigh");
+    assert.strictEqual(session.updatedAt, 12345);
+    assert.strictEqual(JSON.stringify(session.recentEvents), history);
+    api.updateSessionMetadata("power-session", { expectedAgentId: "claude-code", effort: "low" });
+    assert.strictEqual(session.effort, "xhigh");
+    api.updateSessionMetadata("power-session", { expectedAgentId: "codex", model: "other-model" });
+    assert.strictEqual(session.effort, null);
+    api.updateSessionMetadata("power-session", { effort: "high" });
+    api.updateSessionMetadata("power-session", { effort: null });
+    assert.strictEqual(session.effort, null);
+  });
+
   it("updateSessionMetadata annotates contextUsage without touching lifecycle fields", () => {
     update(api, { id: "s1", state: "working" });
     const session = api.sessions.get("s1");

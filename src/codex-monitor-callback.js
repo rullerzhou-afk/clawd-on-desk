@@ -1,5 +1,6 @@
 "use strict";
 
+const { normalizeEffort } = require("./pet-power-up");
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
 
@@ -37,6 +38,8 @@ function buildCodexMonitorSessionOptions(extra, options = {}) {
     agentId: "codex",
     sessionTitle: input.sessionTitle,
   };
+  if (typeof input.model === "string") out.model = input.model;
+  if (Object.hasOwn(input, "effort")) out.effort = normalizeEffort(input.effort);
   if (Object.prototype.hasOwnProperty.call(input, "sourcePid")) out.sourcePid = input.sourcePid;
   if (Object.prototype.hasOwnProperty.call(input, "agentPid")) out.agentPid = input.agentPid;
   if (Object.prototype.hasOwnProperty.call(input, "pidChain")) out.pidChain = input.pidChain;

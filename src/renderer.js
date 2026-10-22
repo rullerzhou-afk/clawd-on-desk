@@ -67,6 +67,7 @@ let queuedSystemWakeReplayTimer = null;
 let _lowPowerStaticImageOverrides = {};
 let _petTintPayload = { id: "none", filter: "" };
 let _petTintSupported = false;
+let _powerUpAppearance = { family: null, tier: 0, tint: "", color: "#ffd66b" };
 const ACCESSORY_SLOT_NAMES = Object.freeze(["head", "mouth"]);
 function createAccessorySlotRuntime(element) {
   return {
@@ -741,6 +742,19 @@ function applyPetTintToElement(element) {
   element.style.filter = _petTintSupported ? _petTintPayload.filter : "";
 }
 
+const PET_AURA_BASE_COLORS = Object.freeze({
+  clawd: "#40c4ff",
+  cloudling: "#7a9dff",
+  calico: "#de886d",
+});
+
+function syncPetAuraColor() {
+  const aura = document.getElementById("pet-power-aura");
+  if (!aura) return;
+  aura.style.setProperty("--power-color", PET_AURA_BASE_COLORS[tc.themeId] || "#40c4ff");
+  aura.style.filter = `${_petTintSupported ? _petTintPayload.filter : ""} blur(8px)`.trim();
+}
+
 function applyPetTintToAllMedia() {
   for (const element of getPetMediaElements()) applyPetTintToElement(element);
 }
@@ -748,10 +762,24 @@ function applyPetTintToAllMedia() {
 function setPetTintPayload(payload) {
   _petTintPayload = normalizePetTintPayload(payload);
   applyPetTintToAllMedia();
+  syncPetAuraColor();
 }
 
 if (window.electronAPI && typeof window.electronAPI.onPetTintChange === "function") {
   window.electronAPI.onPetTintChange(setPetTintPayload);
+}
+
+if (window.electronAPI && typeof window.electronAPI.onPetPowerUpChange === "function") {
+  window.electronAPI.onPetPowerUpChange((payload) => {
+    _powerUpAppearance = window.ClawdPowerUp.appearance(payload);
+    const aura = document.getElementById("pet-power-aura");
+    if (aura) {
+      aura.dataset.tier = String(_powerUpAppearance.tier);
+      aura.dataset.model = _powerUpAppearance.family ? "known" : "unknown";
+    }
+    syncPetAuraColor();
+    applyPetTintToAllMedia();
+  });
 }
 
 // ── Pet accessory wardrobe ──
@@ -2509,6 +2537,7 @@ function renderStateFile(requestOrState, legacySvg) {
   // Track the latest state name so the Kimi permission pulse can re-trigger
   // swapToFile() with the matching state for eye-tracking decisions.
   currentState = state;
+  const powerAura = document.getElementById("pet-power-aura");
   const requestedSvg = svg;
   const lowPowerStaticImageOverride = resolveLowPowerStaticImageOverride(state, requestedSvg);
   const effectiveSvg = lowPowerStaticImageOverride || requestedSvg;

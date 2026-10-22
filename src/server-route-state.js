@@ -1,4 +1,5 @@
 "use strict";
+const { normalizeEffort } = require("./pet-power-up");
 
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
@@ -389,6 +390,7 @@ function handleStatePost(req, res, options) {
       const model = typeof data.model === "string" && data.model.trim()
         ? data.model.trim()
         : null;
+      const effort = normalizeEffort(data.effort);
       const provider = typeof data.provider === "string" && data.provider.trim()
         ? data.provider.trim()
         : null;
@@ -700,6 +702,7 @@ function handleStatePost(req, res, options) {
           }
           if (clearDshContextUsage) metaUpdate.clearContextUsage = true;
           if (model && localClaudeStatuslineMetadataAllowed) metaUpdate.model = model;
+          if (Object.hasOwn(data, "effort") && localClaudeStatuslineMetadataAllowed) metaUpdate.effort = effort;
           // OpenCode title changes ride the same metadata-only channel (the
           // placeholder → real title swap arrives on session.updated, which
           // maps to no Clawd state). Not gated on the Claude telemetry flag —
@@ -1131,6 +1134,7 @@ function handleStatePost(req, res, options) {
             headless: headless || codexHookState.headless === true,
             platform,
             model,
+            ...(Object.hasOwn(data, "effort") ? { effort } : {}),
             provider,
             codexOriginator,
             codexSource,

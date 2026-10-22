@@ -988,6 +988,14 @@ function createAgentRuntimeMain(options = {}) {
         // for an already-closed turn is rejected above and must keep it.
         if (tombstoneTurnStart) clearCodexSessionEndTombstone(sessionId);
         if (shouldSuppressCodexLogEvent(sessionId, state, event, extra && extra.turnId, extra)) {
+          const stateRuntime = getStateRuntime();
+          if (isLocalCodexSessionRecord(stateRuntime?.sessions?.get(sessionId))) {
+            stateRuntime.updateSessionMetadata?.(sessionId, {
+              expectedAgentId: "codex",
+              model: sessionOptions.model,
+              ...(Object.hasOwn(sessionOptions, "effort") ? { effort: sessionOptions.effort } : {}),
+            });
+          }
           annotateCodexContextUsage();
           annotateCodexAccountQuota();
           return;

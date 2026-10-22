@@ -36,6 +36,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   // reason to let an illegal value cross the bridge in the first place.
   onViewportOffset: (cb) => ipcRenderer.on("viewport-offset", (_, offsetY) => cb(Number.isFinite(offsetY) ? offsetY : 0)),
   onViewportOffsetX: (cb) => ipcRenderer.on("viewport-offset-x", (_, offsetX) => cb(Number.isFinite(offsetX) ? offsetX : 0)),
+  onPetPowerUpChange: (cb) => ipcRenderer.on("pet-power-up-change", (_, payload) => cb(payload)),
   onPetTintChange: (cb) => ipcRenderer.on("pet-tint-change", (_, payload) => cb(payload)),
   onPetAccessoryChange: (cb) => ipcRenderer.on("pet-accessory-change", (_, payload) => cb(payload)),
   onPetAccessorySlotsChange: (cb) => ipcRenderer.on("pet-accessory-slots-change", (_, snapshot) => cb(snapshot)),

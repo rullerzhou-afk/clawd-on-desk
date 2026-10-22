@@ -1,6 +1,7 @@
 // src/state.js — State machine + session management + DND + wake poll
 // Extracted from main.js L158-240, L299-505, L544-960
 
+const { normalizeEffort } = require("./pet-power-up");
 let screen;
 try { ({ screen } = require("electron")); } catch { screen = null; }
 const {
@@ -1723,8 +1724,10 @@ function updateSessionMetadata(sessionId, opts = {}) {
     ? normalizeTitle(opts.sessionTitle)
     : null;
   const incomingModel = typeof opts.model === "string" ? opts.model.trim() : "";
+  const incomingEffort = normalizeEffort(opts.effort);
+  const hasEffort = Object.hasOwn(opts, "effort");
   const clearContextUsage = opts.clearContextUsage === true;
-  if (!incomingContextUsage && !clearContextUsage && !incomingTitle && !incomingModel) return false;
+  if (!incomingContextUsage && !clearContextUsage && !incomingTitle && !incomingModel && !hasEffort) return false;
   let applied = false;
   if (clearContextUsage) {
     if (session.contextUsage || session.contextUsageOrigin) {
@@ -1774,7 +1777,12 @@ function updateSessionMetadata(sessionId, opts = {}) {
   // telemetry freshness, and a model switch must not make stale telemetry
   // look fresh.
   if (incomingModel && incomingModel !== session.model) {
+    session.effort = null;
     session.model = incomingModel;
+    applied = true;
+  }
+  if (hasEffort && incomingEffort !== session.effort) {
+    session.effort = incomingEffort;
     applied = true;
   }
   if (applied) emitSessionSnapshot();
@@ -1828,6 +1836,7 @@ function updateCodexInitializationMetadata(sessionId, opts = {}) {
     contextUsage: opts.contextUsage,
     contextUsageOrigin: opts.contextUsageOrigin,
     model: opts.model,
+    ...(Object.hasOwn(opts, "effort") ? { effort: opts.effort } : {}),
   });
   emitSessionSnapshot();
   debugSession(`codex-initialization preserve ${describeSession(sessionId, session)}`);
@@ -2273,7 +2282,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     return updateSessionMetadata(sessionId, {
       expectedAgentId: "claude-code", contextUsage: opts.contextUsage,
       contextUsageOrigin: opts.contextUsageOrigin,
-      sessionTitle: opts.sessionTitleFromPrompt ? null : opts.sessionTitle, model: opts.model,
+      sessionTitle: opts.sessionTitleFromPrompt ? null : opts.sessionTitle, model: opts.model, ...(Object.hasOwn(opts, "effort") ? { effort: opts.effort } : {}),
     });
   }
   // A result racing behind its accepted batch still reports a real failure.
@@ -2307,6 +2316,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     headless = false,
     platform = null,
     model = null,
+    effort = null,
     provider = null,
     codexOriginator = null,
     codexSource = null,
@@ -2479,6 +2489,8 @@ function updateSession(sessionId, state, event, opts = {}) {
       const srcHeadless = headless || (existing && existing.headless) || false;
       const srcPlatform = platform || (existing && existing.platform) || null;
       const srcModel = model || (existing && existing.model) || null;
+      const srcEffort = Object.hasOwn(opts, "effort") ? normalizeEffort(effort)
+        : model && model !== (existing && existing.model) ? null : (existing && existing.effort) || null;
       const srcProvider = provider || (existing && existing.provider) || null;
       const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
       const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
@@ -2529,6 +2541,7 @@ function updateSession(sessionId, state, event, opts = {}) {
         headless: srcHeadless,
         platform: srcPlatform,
         model: srcModel,
+        effort: srcEffort,
         provider: srcProvider,
         codexOriginator: srcCodexOriginator,
         codexSource: srcCodexSource,
@@ -2631,6 +2644,8 @@ function updateSession(sessionId, state, event, opts = {}) {
     delete existing.codexWorkingTimeoutActivityAt;
   }
   const srcModel = model || (existing && existing.model) || null;
+  const srcEffort = Object.hasOwn(opts, "effort") ? normalizeEffort(effort)
+    : model && model !== (existing && existing.model) ? null : (existing && existing.effort) || null;
   const srcProvider = provider || (existing && existing.provider) || null;
   const srcCodexOriginator = codexOriginator || (existing && existing.codexOriginator) || null;
   const srcCodexSource = codexSource || (existing && existing.codexSource) || null;
@@ -2953,7 +2968,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     clearSubagentTracker(subagentTracker);
   }
 
-  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
+  const base = { sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless, platform: srcPlatform, model: srcModel, effort: srcEffort, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
   // Desktop apps can reopen a previous conversation on launch, so SessionStart
   // only means "opened" — not "used". Any other lifecycle event is a real action
   // and clears the marker. Only the listed agents carry the field; others are

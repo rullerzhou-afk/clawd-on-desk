@@ -312,6 +312,7 @@ function createRendererHarness(options = {}) {
   const context = {
     document,
     window: {
+      ClawdPowerUp: require("../src/pet-power-up"),
       themeConfig: {
         assetsPath: "../assets/svg",
         eyeTracking: { states: ["idle"] },
@@ -4336,5 +4337,22 @@ describe("preload theme config transport", () => {
       if (fallback) fallback.restore();
       if (loader) loader.restore();
     }
+  });
+});
+
+
+describe("model power-up tint", () => {
+  it("follows model metadata while preserving an explicit user tint", () => {
+    const harness = createRendererHarness();
+    const autoTint = require("../src/pet-power-up").appearance({ family: "opus", tier: 3 }).tint;
+    harness.electronHandlers.onPetPowerUpChange({ family: "opus", tier: 3 });
+    assert.strictEqual(harness.clawd.style.filter, autoTint);
+    harness.electronHandlers.onPetTintChange({ id: "mono", filter: "grayscale(1)" });
+    harness.electronHandlers.onPetPowerUpChange({ family: "sonnet", tier: 4 });
+    assert.strictEqual(harness.clawd.style.filter, "grayscale(1)");
+    harness.electronHandlers.onPetTintChange({ id: "none", filter: "" });
+    assert.ok(harness.clawd.style.filter.includes("hue-rotate"));
+    harness.electronHandlers.onPetPowerUpChange({ family: null, tier: 0 });
+    assert.strictEqual(harness.clawd.style.filter, "");
   });
 });

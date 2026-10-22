@@ -336,6 +336,13 @@ const updateRegistry = {
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
+  modelPowerUpEnabled: requireBoolean("modelPowerUpEnabled"),
+  modelPowerUpAuraEnabled: requireBoolean("modelPowerUpAuraEnabled"),
+  modelPowerUpSource(value) {
+    return value === "auto" || value === "claude-code" || value === "codex"
+      ? { status: "ok" }
+      : { status: "error", message: "modelPowerUpSource must be auto, claude-code, or codex" };
+  },
   testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),

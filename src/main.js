@@ -1558,6 +1558,7 @@ function syncPetScreenSide() {
 }
 
 function requestDisplayedVisual(displayState, file, options = {}) {
+  syncPetPowerUp();
   if (!displayedVisualProjection) return null;
   const activeTheme = getActiveTheme();
   // Re-sampled on every idle request, so a drag or roam since the last idle
@@ -1742,6 +1743,7 @@ function syncHitStateAfterLoad() {
 
 function syncRendererStateAfterLoad({ includeStartupRecovery = true } = {}) {
   syncSoundPreloads();
+  syncPetPowerUp();
   const activeTheme = getActiveTheme();
   const tintId = getPetTintIdForTheme(petTint, activeTheme && activeTheme._id);
   sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
@@ -1934,6 +1936,38 @@ let repositionSessionHud = () => {};
 let repositionQuotaRing = () => {};
 let syncSessionHudVisibility = () => {};
 let broadcastSessionHudSnapshot = () => {};
+const { resolvePowerUp, selectPowerUpSession } = require("./pet-power-up");
+let powerUpSnapshot = { sessions: [] };
+let powerUpSessionId = null;
+let lastPowerUpAppearance = { family: null, tier: 0 };
+function syncPetPowerUp(snapshot = powerUpSnapshot) {
+  powerUpSnapshot = snapshot;
+  const enabled = _settingsController.get("modelPowerUpEnabled");
+  if (!enabled) {
+    powerUpSessionId = null;
+    lastPowerUpAppearance = { family: null, tier: 0 };
+  } else {
+    const displayedState = _state.getCurrentState();
+    const sourceAgentId = _settingsController.get("modelPowerUpSource") || "auto";
+    const selected = selectPowerUpSession(snapshot, displayedState, powerUpSessionId, sourceAgentId);
+    if (selected) {
+      powerUpSessionId = selected.id;
+      const current = resolvePowerUp(snapshot, true, displayedState, selected.id, sourceAgentId,
+        _settingsController.get("modelPowerUpAuraEnabled") !== false);
+      if (current.family || current.tier) lastPowerUpAppearance = current;
+    } else {
+      powerUpSessionId = null;
+    }
+  }
+  sendToRenderer("pet-power-up-change", lastPowerUpAppearance);
+}
+_settingsController.subscribeKey("modelPowerUpEnabled", () => syncPetPowerUp());
+_settingsController.subscribeKey("modelPowerUpAuraEnabled", () => syncPetPowerUp());
+_settingsController.subscribeKey("modelPowerUpSource", () => {
+  powerUpSessionId = null;
+  lastPowerUpAppearance = { family: null, tier: 0 };
+  syncPetPowerUp();
+});
 let sendSessionHudI18n = () => {};
 let getSessionHudReservedOffset = () => 0;
 let getSessionHudWindow = () => null;
@@ -2423,6 +2457,7 @@ const _stateCtx = {
     reconcilePowerSaveBlocker();
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
+    syncPetPowerUp(snapshot);
     repositionFloatingBubbles();
     // R1a: best-effort completion notifications. Must never throw or block the
     // broadcast — the companion computes synchronously and fires sends async.

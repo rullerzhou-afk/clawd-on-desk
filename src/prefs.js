@@ -399,6 +399,13 @@ const SCHEMA = {
   },
   // Theme
   theme: { type: "string", default: "clawd" },
+  modelPowerUpEnabled: { type: "boolean", default: false },
+  modelPowerUpAuraEnabled: { type: "boolean", default: true },
+  modelPowerUpSource: {
+    type: "string",
+    default: "auto",
+    validate: (v) => v === "auto" || v === "claude-code" || v === "codex",
+  },
   // Per-theme color filter choice, e.g. { clawd: "matcha", cloudling: "mono" }.
   // Missing entries preserve the theme's native colors. The normalizer also
   // accepts the short-lived pre-detail-view string shape and seeds supported

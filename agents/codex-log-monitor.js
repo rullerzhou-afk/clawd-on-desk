@@ -1665,6 +1665,8 @@ class CodexLogMonitor {
       this._applySessionMeta(payload, tracked);
     }
     if (type === "turn_context" && payload && typeof payload === "object") {
+      tracked.model = typeof payload.model === "string" ? payload.model : null;
+      tracked.effort = typeof payload.effort === "string" ? payload.effort : null;
       const providerHint = resolveCodexModelQuotaProvider(payload.model);
       if (providerHint) tracked.codexQuotaProviderHint = providerHint;
     }
@@ -2162,6 +2164,7 @@ class CodexLogMonitor {
   }
 
   _emitStateChange(tracked, state, event, extra = null) {
+    extra = { ...(extra || {}), model: tracked.model || null, effort: tracked.effort || null };
     tracked.lastState = state;
     tracked.lastEventTime = Date.now();
     tracked.hasEmittedState = true;

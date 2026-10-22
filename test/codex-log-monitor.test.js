@@ -4392,6 +4392,21 @@ describe("CodexLogMonitor", () => {
   });
 
   describe("session title extraction (turn_context.summary)", () => {
+    it("forwards model and effort from turn_context on the next lifecycle callback", (_, done) => {
+      const testFile = path.join(dateDir, TEST_FILENAME);
+      fs.writeFileSync(testFile, [
+        JSON.stringify({ type: "turn_context", payload: { model: "gpt-6.1-sol", effort: "high" } }),
+        JSON.stringify({ type: "session_meta", payload: { cwd: "/tmp" } }),
+      ].join("\n") + "\n");
+      monitor = new CodexLogMonitor(makeConfig(tmpDir), (_sid, state, _event, extra) => {
+        if (state !== "idle") return;
+        assert.strictEqual(extra.model, "gpt-6.1-sol");
+        assert.strictEqual(extra.effort, "high");
+        done();
+      });
+      monitor.start();
+    });
+
     it("captures sessionTitle on next state emit after turn_context", (_, done) => {
       const testFile = path.join(dateDir, TEST_FILENAME);
       // turn_context carries the summary; session_meta (emitted after) triggers idle

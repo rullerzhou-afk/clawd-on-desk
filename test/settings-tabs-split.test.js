@@ -35,6 +35,7 @@ const FROZEN_KEYS = [
   "flashIntervalMs",
   "flashDurationMs",
   "testReactionsEnabled",
+  "modelPowerUpEnabled",
   "soundVolume",
   "lowPowerIdleMode",
   "keepAwakeWhileWorking",
@@ -88,6 +89,7 @@ const EXPECTED_KEYS = {
     "size",
     "keepSizeAcrossDisplays",
     "testReactionsEnabled",
+    "modelPowerUpEnabled",
     "allowEdgePinning",
     "disableMiniMode",
     "freeRoam",
@@ -708,7 +710,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
       ["自由漫步", "移动方式", "活动范围", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
-      ["测试结果动画"],
+      ["模型能量效果", "测试结果动画"],
     ]);
 
     const notifications = createHarness({

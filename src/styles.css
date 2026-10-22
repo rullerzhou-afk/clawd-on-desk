@@ -75,6 +75,49 @@ html, body {
   overflow: visible;
 }
 
+/* Keep the glow inside the existing viewport; it never owns input or geometry. */
+#pet-power-aura {
+  position: absolute;
+  inset: 60% 24% 5%;
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse, transparent 28%, var(--power-color, #40c4ff) 58%, transparent 100%);
+  filter: blur(8px);
+  transition: opacity 200ms ease;
+}
+#pet-power-aura[data-tier="1"] { opacity: 0.12; }
+#pet-power-aura[data-tier="0"][data-model="known"] { opacity: 0.12; }
+#pet-power-aura[data-tier="2"] { opacity: 0.24; }
+#pet-power-aura[data-tier="3"] { opacity: 0.38; }
+#pet-power-aura[data-tier="4"] {
+  opacity: 0.55;
+  animation: pet-power-pulse 1600ms ease-in-out infinite alternate;
+}
+#pet-power-aura[data-tier="4"]::before,
+#pet-power-aura[data-tier="4"]::after {
+  content: "";
+  position: absolute;
+  width: 8%;
+  height: 28%;
+  top: 20%;
+  left: 13%;
+  background: #ffe69a;
+  clip-path: polygon(55% 0, 100% 0, 58% 40%, 92% 40%, 0 100%, 30% 52%, 0 52%);
+}
+#pet-power-aura[data-tier="4"]::after {
+  left: auto;
+  right: 13%;
+  top: 48%;
+}
+@keyframes pet-power-pulse {
+  from { opacity: 0.35; }
+  to { opacity: 0.65; }
+}
+@media (prefers-reduced-motion: reduce) {
+  #pet-power-aura { animation: none; transition: none; }
+}
+
 #clawd {
   width: 190%;
   height: 130%;

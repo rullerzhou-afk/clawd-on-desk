@@ -31,6 +31,7 @@ function createHarness() {
   const projection = createDisplayedVisualProjection({ setTimeout: () => 1, clearTimeout() {} });
   const context = vm.createContext({
     ...mirror,
+    syncPetPowerUp: () => {},
     displayedVisualProjection: projection,
     getActiveTheme: () => theme,
     getPetWindowBounds: () => bounds,
