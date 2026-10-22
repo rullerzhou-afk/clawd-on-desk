@@ -216,7 +216,9 @@ launch (4336ms) and a deliberately unsafe short alias forcing encoded fallback
 (5055ms). Both used isolated homes, deterministic local model replies, a real
 `read_file`, all six state events, and exit 0 without hook errors. These are
 whole-session durations, not per-hook durations. The final focused Windows set
-passed all 52 tests (Node 24.12.0); the full macOS suite passed 13,319 tests with
+passed all 54 tests (Node 24.12.0), including Doctor validation of the generated
+command. Another 166 related Doctor checks passed with one platform skip. The
+full macOS suite passed 13,321 tests with
 73 platform skips and no failures (Node 24.18.0). No paid model, user settings,
 live Clawd UI, or proxy configuration was changed. Node 22.22.2 was not run
 on this machine because the separate runtime download did not complete; the

@@ -8,6 +8,8 @@ const path = require("node:path");
 const { __test, unregisterReasonixHooks } = require("../hooks/reasonix-install");
 const { commandMatchesMarker, decodeWindowsEncodedCommand, extractExistingNodeBinFromCommands } = require("../hooks/json-utils");
 
+const { validateHookCommand } = require("../src/doctor-detectors/agent-node-bin-parser");
+
 const nodePath = "C:\\Program Files\\nodejs\\node.exe";
 const hookPath = "D:\\Clawd & %PATH%! 中文\\hooks\\reasonix-hook.js";
 const shortNode = "C:\\PROGRA~1\\nodejs\\node.exe";
@@ -58,6 +60,23 @@ describe("Reasonix Windows direct command", () => {
     assert.equal(extractExistingNodeBinFromCommands([command], "reasonix-hook.js"), shortNode);
   });
 
+  it("lets Doctor validate the script alias instead of the ownership argument", () => {
+    const f = fixture();
+    const checked = validateHookCommand(f.build(), {
+      platform: "win32", fs: { existsSync: (name) => f.stats.has(name) },
+    });
+    assert.deepEqual(checked, { ok: true, nodeBin: shortNode, scriptPath: shortHook });
+    const plain = __test.buildReasonixHookCommand("C:\\node\\node.exe", "D:\\hooks\\reasonix-hook.js", { platform: "win32" });
+    assert.equal(validateHookCommand(plain, { platform: "win32", fs: { existsSync: () => true } }).ok, true);
+  });
+
+  it("does not let Doctor treat malformed cmd syntax as the direct command shape", () => {
+    const command = fixture().build();
+    for (const invalid of [command.replace("^&", "&"), command.replace("^&", "^x"), `${command} extra`]) {
+      assert.equal(validateHookCommand(invalid, { platform: "win32", fs: { existsSync: () => true } }).ok, false);
+    }
+  });
+
   it("does not switch an unresolved PATH-node fallback to cmd's current-directory lookup", () => {
     const command = __test.buildReasonixHookCommand("node", "D:\\clawd\\hooks\\reasonix-hook.js", fixture().options);
     assert.ok(decodeWindowsEncodedCommand(command)?.includes("'node'"));
@@ -105,6 +124,7 @@ describe("Reasonix Windows direct command", () => {
         ["/d", "/v:off", "/c", command],
         { encoding: "utf8", timeout: 5000, windowsHide: true },
       );
+      assert.equal(validateHookCommand(command).ok, true, "Doctor must accept the actual generated command");
       const receipt = JSON.parse(output);
       assert.equal(fs.realpathSync(receipt.path), fs.realpathSync(hook));
       assert.deepEqual(receipt.args, ["--clawd-reasonix-hook=reasonix-hook.js"]);
