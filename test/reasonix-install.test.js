@@ -10,7 +10,7 @@ const {
   unregisterReasonixHooks,
   __test,
 } = require("../hooks/reasonix-install");
-const { decodeWindowsEncodedCommand } = require("../hooks/json-utils");
+const { decodeWindowsEncodedCommand, extractExistingNodeBinFromCommands, formatNodeHookCommand } = require("../hooks/json-utils");
 
 const tempDirs = [];
 
@@ -289,7 +289,7 @@ describe("Reasonix hook installer", () => {
     assert.strictEqual(result.skipped, REASONIX_HOOK_EVENTS.length);
   });
 
-  it("is idempotent for Windows EncodedCommand hooks", () => {
+  it("is idempotent for Windows hook commands", () => {
     const homeDir = makeTempHome();
     const options = {
       silent: true,
@@ -309,9 +309,9 @@ describe("Reasonix hook installer", () => {
 
     const settings = readJson(path.join(homeDir, ".reasonix", "settings.json"));
     for (const event of REASONIX_HOOK_EVENTS) {
-      assert.strictEqual(settings.hooks[event].length, 1, `duplicate encoded hook for ${event}`);
-      assert.match(settings.hooks[event][0].command, /-EncodedCommand /);
-      assert.match(decodeWindowsEncodedCommand(settings.hooks[event][0].command), /reasonix-hook\.js/);
+      assert.strictEqual(settings.hooks[event].length, 1, `duplicate hook for ${event}`);
+      const command = settings.hooks[event][0].command;
+      assert.match(decodeWindowsEncodedCommand(command) || command, /reasonix-hook\.js/);
     }
   });
 
@@ -325,10 +325,10 @@ describe("Reasonix hook installer", () => {
       nodeBin: "C:\\Program Files\\nodejs\\node.exe",
       powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     };
-    const staleCommand = __test.buildReasonixHookCommand(
+    const staleCommand = formatNodeHookCommand(
       "C:\\Old Node\\node.exe",
       "C:/old-clawd/hooks/reasonix-hook.js",
-      options
+      { ...options, windowsWrapper: "encoded" }
     );
     fs.writeFileSync(settingsPath, JSON.stringify({
       hooks: {
@@ -347,13 +347,20 @@ describe("Reasonix hook installer", () => {
     const settings = readJson(settingsPath);
     assert.strictEqual(settings.hooks.Stop.length, 2);
     assert.strictEqual(settings.hooks.Stop[1].command, "echo user-hook");
-    const decoded = decodeWindowsEncodedCommand(settings.hooks.Stop[0].command);
-    assert.match(decoded, /reasonix-hook\.js/);
-    assert.doesNotMatch(decoded, /old-clawd/);
-    assert.match(decoded, /C:\\Program Files\\nodejs\\node\.exe/);
+    const command = settings.hooks.Stop[0].command;
+    const readable = decodeWindowsEncodedCommand(command) || command;
+    assert.match(readable, /reasonix-hook\.js/);
+    assert.doesNotMatch(readable, /old-clawd/);
+    const selectedNode = extractExistingNodeBinFromCommands([command], MARKER);
+    if (selectedNode !== options.nodeBin) {
+      const original = fs.statSync(options.nodeBin, { bigint: true });
+      const selected = fs.statSync(selectedNode, { bigint: true });
+      assert.strictEqual(selected.dev, original.dev);
+      assert.strictEqual(selected.ino, original.ino);
+    }
   });
 
-  it("uses PowerShell EncodedCommand on Windows even when paths have no spaces", () => {
+  it("uses the exact absolute Node directly when Windows paths need no quotes", () => {
     const nodeBin = "C:\\nodejs\\node.exe";
     const scriptPath = "C:/hooks/reasonix-hook.js";
     const command = __test.buildReasonixHookCommand(
@@ -362,13 +369,10 @@ describe("Reasonix hook installer", () => {
       { platform: "win32", powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe" }
     );
 
-    assert.ok(command.includes("-EncodedCommand"));
-    const decoded = decodeWindowsEncodedCommand(command);
-    assert.ok(decoded.includes(nodeBin));
-    assert.ok(decoded.includes(scriptPath));
+    assert.strictEqual(command, `${nodeBin} ${scriptPath} --clawd-reasonix-hook=${MARKER}`);
   });
 
-  it("uses PowerShell EncodedCommand on Windows when node path has spaces", () => {
+  it("preserves the encoded fallback when quoted Node paths cannot be resolved", () => {
     const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
     const scriptPath = "D:/clawd/Clawd on Desk/resources/hooks/reasonix-hook.js";
     const command = __test.buildReasonixHookCommand(
@@ -389,7 +393,7 @@ describe("Reasonix hook installer", () => {
     assert.ok(decoded.includes(MARKER), "encoded command should contain the marker");
   });
 
-  it("uses PowerShell EncodedCommand on Windows when script path has spaces", () => {
+  it("preserves the encoded fallback when quoted script paths cannot be resolved", () => {
     const nodeBin = "C:\\nodejs\\node.exe";
     const scriptPath = "D:/Clawd on Desk/hooks/reasonix-hook.js";
     const command = __test.buildReasonixHookCommand(

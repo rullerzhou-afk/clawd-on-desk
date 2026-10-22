@@ -161,19 +161,82 @@ function buildReasonixHookEntry(command) {
   return { match: "*", command };
 }
 
+// A quote-free command survives the legacy Go -> cmd argv encoder and avoids
+// starting PowerShell for every state event. Keep the exact selected Node;
+// never replace a path under Program Files with an unrelated PATH lookup.
+function isDirectWindowsNodePath(value) {
+  return /^[A-Za-z]:[\\/][A-Za-z0-9_.\\/~+-]+$/.test(value);
+}
+
+function isDirectWindowsHookPath(value) {
+  return /^[A-Za-z]:[\\/][A-Za-z0-9_.\\/~&^()$'@#{}+-]+$/.test(value);
+}
+
+function resolveReasonixWindowsPaths(nodeBin, hookScript, options = {}) {
+  const paths = [nodeBin, hookScript];
+  const accepts = [isDirectWindowsNodePath, isDirectWindowsHookPath];
+  const indexes = paths.map((value, index) => accepts[index](value) ? -1 : index).filter((index) => index >= 0);
+  if (indexes.length === 0) return paths;
+  if (process.platform !== "win32" && typeof options.execFileSync !== "function") return null;
+
+  // Only query existing files. Quotes/control characters must never enter
+  // cmd's FOR input; the environment carries the paths as data, with delayed
+  // expansion disabled. No short-name creation or filesystem mutation occurs.
+  const fsImpl = options.fs || fs;
+  try {
+    const originalStats = indexes.map((index) => {
+      const value = paths[index];
+      if (typeof value !== "string" || !path.win32.isAbsolute(value) || /["\x00-\x1f]/.test(value)) throw new Error("Invalid Windows hook path");
+      const stat = fsImpl.statSync(value, { bigint: true });
+      if (!stat.isFile() || stat.ino === 0n) throw new Error("Hook path has no file identity");
+      return stat;
+    });
+    const systemRoot = process.env.SystemRoot || "C:\\Windows";
+    const env = { SystemRoot: systemRoot };
+    const query = indexes.map((index) => {
+      const name = `CLAWD_REASONIX_PATH_${index}`;
+      env[name] = paths[index];
+      return `for %I in ("%${name}%") do @echo "%~sI"`;
+    }).join(" & ");
+    const execFileSync = options.execFileSync || require("child_process").execFileSync;
+    const output = execFileSync(path.win32.join(systemRoot, "System32", "cmd.exe"),
+      ["/d", "/u", "/v:off", "/s", "/c", `"${query}"`], {
+        env, cwd: systemRoot, encoding: "utf16le", timeout: 3000, maxBuffer: 32768,
+        windowsHide: true, windowsVerbatimArguments: true, stdio: ["ignore", "pipe", "pipe"],
+      });
+    const lines = String(output).trim().split(/\r?\n/).map((line) => line.trim());
+    if (lines.length !== indexes.length) return null;
+    for (let position = 0; position < indexes.length; position++) {
+      const index = indexes[position];
+      const line = lines[position];
+      if (!line.startsWith('"') || !line.endsWith('"')) return null;
+      const candidate = line.slice(1, -1);
+      if (!accepts[index](candidate)) return null;
+      const stat = fsImpl.statSync(candidate, { bigint: true });
+      const original = originalStats[position];
+      if (!stat.isFile() || stat.dev !== original.dev || stat.ino !== original.ino) return null;
+      paths[index] = candidate;
+    }
+    return paths;
+  } catch {
+    // Volumes can disable 8.3 aliases, and a short alias can still contain a
+    // shell-special character. Retain the proven encoded launcher in that case.
+    return null;
+  }
+}
+
 function buildReasonixHookCommand(nodeBin, hookScript, options = {}) {
-  // Older Reasonix releases pass Windows shell commands through Go's argv
-  // encoder, escaping embedded quotes in a way cmd.exe cannot execute.
-  // Upstream #6911 fixes the raw command line, but installed legacy CLI and
-  // desktop versions still need this wrapper. Preserve the pinned Node path
-  // and literal special characters instead of switching to bare PATH node.
-  //
-  // PowerShell normalizes a native child's non-zero exit code to 1 here. This is
-  // safe only while reasonix-hook.js is state-only and always exits 0. A future
-  // blocking hook that needs Reasonix's exit-2 DecisionBlock contract must add
-  // explicit native exit-code propagation instead of reusing this wrapper as-is.
   const platform = options.platform || process.platform;
   if (platform === "win32") {
+    const direct = resolveReasonixWindowsPaths(nodeBin, hookScript, options);
+    if (direct) {
+      // Short script aliases may hide the filename used by install/doctor/
+      // uninstall ownership checks. Keep that marker in an inert argument.
+      const script = direct[1].replace(/[\^&()]/g, "^$&");
+      return `${direct[0]} ${script} --clawd-reasonix-hook=${MARKER}`;
+    }
+    // Legacy Reasonix mangles embedded quotes through Go's argv encoder.
+    // Do not fall back to plain quoted or portable/PATH-node commands.
     return formatNodeHookCommand(nodeBin, hookScript, { ...options, windowsWrapper: "encoded" });
   }
   return formatNodeHookCommand(nodeBin, hookScript, options);
@@ -449,6 +512,7 @@ module.exports = {
   resolveReasonixConfigTargets,
   __test: {
     buildReasonixHookCommand,
+    resolveReasonixWindowsPaths,
     resolveLegacyReasonixHome,
     resolveReasonixHome,
     selectReasonixSettingsPath,

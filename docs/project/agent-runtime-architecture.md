@@ -690,7 +690,7 @@ Cursor 3.19.19 会把 stderr 非空标记为 Hook execution error，即使 exit 
 
 ## Reasonix Blocking Hook Budget
 
-Reasonix 的 `UserPromptSubmit` / `PreToolUse` 从外层命令启动开始限时 5 秒，超时会阻止本次提交 / 工具调用。Clawd 仍是 state-only observer：不增加宿主 timeout，不输出权限决定，失败或放弃上报时静默 exit 0。Windows 保留 EncodedCommand 的引号兼容路径。
+Reasonix 的 `UserPromptSubmit` / `PreToolUse` 从外层命令启动开始限时 5 秒，超时会阻止本次提交 / 工具调用。Clawd 仍是 state-only observer：不增加宿主 timeout，不输出权限决定，失败或放弃上报时静默 exit 0。Windows 优先用不含引号的绝对 Node / hook 路径直接启动，避免每次事件额外启动 PowerShell。含空格或特殊字符时，安装器只查询已有的 8.3 短路径，并用文件 dev / ino 核实仍指向原文件；不创建短路径、不改磁盘设置、不替换成 PATH Node。Node 路径必须无需 shell 转义，hook 路径中的 `^ & ( )` 显式转义，额外的 `--clawd-reasonix-hook=reasonix-hook.js` 参数保留所有权识别。没有安全短路径或验证失败时仍使用 EncodedCommand，以兼容旧版 Reasonix 的 Go → cmd 引号问题；该回退仍可能受慢启动影响。
 
 `hooks/reasonix-hook.js` 保留 2000ms stdin 等待；阻塞事件在脚本开始后最多等 2200ms，且 stdin 结束后最多再等 200ms，先到者生效，为外层启动和退出留余量。同步进程扫描仍只允许非阻塞事件；非阻塞事件保留 3500ms post-stdin allowance 和 15000ms 内部截止（Stop 另含排序延迟）。慢速本机 / 远程上报可能被放弃，不能为了补状态拖住用户的原生操作；该进程内计时不能保证任意 OS 调度或启动停顿都在宿主期限内。
 

@@ -30,6 +30,7 @@ async function main() {
   const delayMs = Number(args["delay-ms"] || 0);
   const launchFloorMs = Number(args["launch-floor-ms"] || 0);
   const stdinDelayMs = Number(args["stdin-delay-ms"] || 0);
+  const powerShellDelayMs = Number(args["powershell-delay-ms"] || 0);
   const repeat = Number(args.repeat || 1);
   const port = Number(args.port || 23337);
   const events = args.event && args.event !== "both" ? [args.event] : ["UserPromptSubmit", "PreToolUse"];
@@ -37,6 +38,8 @@ async function main() {
   if (!Number.isInteger(delayMs) || delayMs < 0 || delayMs > 3000) throw new Error("delay-ms must be 0..3000");
   if (!Number.isInteger(launchFloorMs) || launchFloorMs < 0 || launchFloorMs > 3000) throw new Error("launch-floor-ms must be 0..3000");
   if (!Number.isInteger(stdinDelayMs) || stdinDelayMs < 0 || stdinDelayMs > 1900) throw new Error("stdin-delay-ms must be 0..1900");
+  if (!Number.isInteger(powerShellDelayMs) || powerShellDelayMs < 0 || powerShellDelayMs > 3000) throw new Error("powershell-delay-ms must be 0..3000");
+  if (powerShellDelayMs && /[^A-Za-z0-9_:.\\\/~+-]/.test(consumer)) throw new Error("The PowerShell shim requires a quote-free consumer path");
   if (delayMs && launchFloorMs) throw new Error("Select delay-ms or launch-floor-ms, not both");
   if (!Number.isInteger(repeat) || repeat < 1 || repeat > 5) throw new Error("repeat must be 1..5");
   if (!Number.isInteger(port) || port < 23333 || port > 23337) throw new Error("port must be 23333..23337");
@@ -44,8 +47,13 @@ async function main() {
   for (const target of [consumer, hookPath]) if (!fs.statSync(target).isFile()) throw new Error(`Not a file: ${target}`);
 
   const { __test: installer } = require(path.join(repo, "hooks", "reasonix-install.js"));
-  const command = installer.buildReasonixHookCommand(process.execPath, hookPath, { platform: "win32" });
-  if (!command.includes("-EncodedCommand ")) throw new Error("Expected actual installer-produced Windows EncodedCommand");
+  const command = installer.buildReasonixHookCommand(process.execPath, hookPath, {
+    platform: "win32",
+    ...(powerShellDelayMs ? { powerShellBin: `${consumer} --clawd-powershell-shim` } : {}),
+  });
+  const { commandMatchesMarker } = require(path.join(repo, "hooks", "json-utils.js"));
+  if (!commandMatchesMarker(command, "reasonix-hook.js")) throw new Error("Expected actual installer-produced Reasonix hook command");
+  const launcher = command.includes("-EncodedCommand ") ? "encoded-powershell" : "direct-node";
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-native-1198-"));
   const server = http.createServer();
   const requests = [];
@@ -92,6 +100,11 @@ async function main() {
           TEMP: path.join(home, "tmp"), TMP: path.join(home, "tmp"), REASONIX_HOME: path.join(home, "reasonix"),
           NODE_OPTIONS: "",
         };
+        const powerShellProofPath = path.join(home, "powershell-delay-proof.json");
+        if (powerShellDelayMs) {
+          isolatedEnv.CLAWD_TEST_REASONIX_POWERSHELL_DELAY_MS = String(powerShellDelayMs);
+          isolatedEnv.CLAWD_TEST_REASONIX_POWERSHELL_PROOF = powerShellProofPath;
+        }
         const injectDelay = delayMs > 0 || launchFloorMs > 0 || stdinDelayMs > 0;
         if (injectDelay) {
           const preload = path.join(home, "startup-delay.cjs");
@@ -127,6 +140,10 @@ if (${stdinDelayMs} > 0) {
         for (const name of Object.keys(env)) if (name.startsWith("CLAWD_")) delete env[name];
         const requestStart = requests.length;
         env.CLAWD_TEST_REASONIX_LAUNCH_AT = String(Date.now());
+        if (powerShellDelayMs) {
+          env.CLAWD_TEST_REASONIX_POWERSHELL_DELAY_MS = String(powerShellDelayMs);
+          env.CLAWD_TEST_REASONIX_POWERSHELL_PROOF = powerShellProofPath;
+        }
         child = spawn(consumer, ["-home", home, "-event", event, "-expect", expect], { env, windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
         let stdout = "";
         let stderr = "";
@@ -150,8 +167,13 @@ if (${stdinDelayMs} > 0) {
           && (!delayMs || delayProof.elapsedMs >= delayMs)
           && (!stdinDelayMs || delayProof.stdinDeliveredAfterReadyMs >= stdinDelayMs)
         );
-        const ok = delayVerified && code === 0 && signal === null && stderr === "" && oneExpectedPost;
-        console.log(JSON.stringify({ mode, expected: expect, iteration, nodeVersion: process.version, hookPath, injectedStartupDelayMs: delayMs, launchFloorMs, stdinDelayMs, delayProof, requests: observed, consumer: result, harnessExitCode: code, harnessSignal: signal, harnessStderr: stderr, ok }));
+        const powerShellProof = powerShellDelayMs && fs.existsSync(powerShellProofPath)
+          ? JSON.parse(fs.readFileSync(powerShellProofPath, "utf8")) : null;
+        const launcherVerified = !powerShellDelayMs || (launcher === "encoded-powershell"
+          ? powerShellProof && powerShellProof.elapsedMs >= powerShellDelayMs
+          : powerShellProof === null);
+        const ok = delayVerified && launcherVerified && code === 0 && signal === null && stderr === "" && oneExpectedPost;
+        console.log(JSON.stringify({ mode, expected: expect, iteration, nodeVersion: process.version, hookPath, launcher, injectedStartupDelayMs: delayMs, powerShellDelayMs, powerShellProof, launchFloorMs, stdinDelayMs, delayProof, requests: observed, consumer: result, harnessExitCode: code, harnessSignal: signal, harnessStderr: stderr, ok }));
         if (!ok) failed = true;
       }
     }
