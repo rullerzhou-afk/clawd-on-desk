@@ -1909,6 +1909,10 @@ html, body {
   grid-template-columns: 58px minmax(0, 1fr);
   border-bottom: 1px solid var(--row-border);
 }
+.settings-detail-group {
+  /* Localized channel group names need more room than the short agent labels. */
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+}
 .agent-detail-group-label,
 .settings-detail-group-label {
   padding: 12px 0 0 14px;
@@ -1916,6 +1920,9 @@ html, body {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+.settings-detail-group-label {
+  padding-right: 14px;
 }
 .agent-detail-group-rows .row,
 .settings-detail-group-rows .row {
@@ -5131,6 +5138,16 @@ html, body {
 }
 .tg-approval-input {
   flex: 1 1 220px;
+}
+.tg-approval-completion-row {
+  flex-wrap: wrap;
+}
+.tg-approval-completion-row .row-text {
+  flex: 1 1 180px;
+}
+.tg-approval-completion-row .row-control {
+  max-width: 100%;
+  margin-left: auto;
 }
 .feishu-approval-timeout-row .row-control {
   margin-left: auto;
