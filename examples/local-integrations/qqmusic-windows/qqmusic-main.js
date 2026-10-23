@@ -11,6 +11,7 @@ module.exports=function initQQMusic(ctx, options={}){
   const controller=new QQMusicController({helperPath});
   const location={executable:options.executable||process.env.CLAWD_QQMUSIC_EXECUTABLE};
   if(!location.executable||!path.isAbsolute(location.executable)||path.basename(location.executable).toLowerCase()!=='qqmusic.exe'||!fs.statSync(location.executable).isFile())throw Error('Configure an absolute QQMusic.exe path before enabling this example');
+  location.executable=path.resolve(location.executable);
   const lyrics=require(path.join(helperRoot,'desktop-lyrics.cjs'))({helperRoot:nativeRoot,executable:location.executable});
   const library=require(path.join(helperRoot,'library-main.cjs'))({helperRoot:nativeRoot,executable:location.executable,readState:()=>controller.request('status'),storageRoot:path.join(app.getPath('userData'),'qqmusic'),requestJson:async body=>{
     const response=await net.fetch('https://u.y.qq.com/cgi-bin/musicu.fcg',{method:'POST',headers:{'Content-Type':'application/json','Referer':'https://y.qq.com/','User-Agent':'Mozilla/5.0'},body:JSON.stringify(body),credentials:'omit',signal:AbortSignal.timeout(18000)});
