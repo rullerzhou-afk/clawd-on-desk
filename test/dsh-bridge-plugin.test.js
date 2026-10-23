@@ -555,3 +555,105 @@ test("DSH plugin ignores projection changes for keys other than contextPressure"
   }
   assert.deepStrictEqual(posted, [], "non-contextPressure projection keys must not enqueue anything");
 });
+
+// A metadata-only title may not annotate a session Clawd does not hold yet, and
+// DSH never re-emits a title it already generated. The bridge therefore keeps
+// the title and rides it on the next state payload, which does create the row.
+test("DSH bridge re-attaches a known title to state payloads", async () => {
+  const { createSessionObservers } = await bridge();
+  const posted = [];
+  const observers = createSessionObservers({
+    enqueue: (payload) => { posted.push(payload); return true; },
+  });
+  const session = { id: "s-title", header: { cwd: "/repo" } };
+  observers.handleSessionEvent(session, { type: "session/title", data: { title: "Fix DSH title" }, seq: 1 });
+  observers.handleSessionEvent(session, { type: "tool/call", data: { name: "bash" }, seq: 2 });
+  const metadata = posted.filter((payload) => payload.metadata_only);
+  const states = posted.filter((payload) => !payload.metadata_only);
+  assert.strictEqual(metadata.length, 1);
+  assert.strictEqual(metadata[0].session_title, "Fix DSH title");
+  assert.strictEqual(states.length, 1);
+  assert.strictEqual(states[0].session_title, "Fix DSH title");
+  assert.strictEqual(states[0].event, "PreToolUse");
+});
+
+test("DSH bridge asks the projection once for a session it met after creation", async () => {
+  const { createSessionObservers } = await bridge();
+  const posted = [];
+  let snapshots = 0;
+  const observers = createSessionObservers({
+    enqueue: (payload) => { posted.push(payload); return true; },
+  });
+  observers.attachProjections({
+    sessionProjections: {
+      onChanged() { return () => {}; },
+      snapshot() {
+        snapshots += 1;
+        return { values: { title: "Resumed conversation" } };
+      },
+    },
+    effect() {},
+  });
+  // No session/created: this generation loaded after DSH created the session,
+  // so the only title source left is the current projection.
+  const session = { id: "s-resumed", header: { cwd: "/repo" } };
+  observers.handleSessionEvent(session, { type: "turn/start", seq: 3 });
+  observers.handleSessionEvent(session, { type: "tool/call", data: { name: "bash" }, seq: 4 });
+  assert.strictEqual(snapshots, 1, "the projection is read once per session, not per event");
+  const states = posted.filter((payload) => !payload.metadata_only);
+  assert.strictEqual(states[0].session_title, "Resumed conversation");
+  assert.strictEqual(states[1].session_title, "Resumed conversation");
+});
+
+test("DSH bridge omits session_title when no title is known and forgets it on dispose", async () => {
+  const { createSessionObservers } = await bridge();
+  const posted = [];
+  let snapshots = 0;
+  const observers = createSessionObservers({
+    enqueue: (payload) => { posted.push(payload); return true; },
+  });
+  observers.attachProjections({
+    sessionProjections: {
+      onChanged() { return () => {}; },
+      snapshot() { snapshots += 1; return { values: {} }; },
+    },
+    effect() {},
+  });
+  const session = { id: "s-untitled", header: { cwd: "/repo" } };
+  observers.handleSessionEvent(session, { type: "turn/start", seq: 1 });
+  observers.handleSessionEvent(session, { type: "turn/end", seq: 2 });
+  assert.strictEqual(snapshots, 1);
+  assert.ok(posted.filter((payload) => !payload.metadata_only)
+    .every((payload) => !Object.hasOwn(payload, "session_title")));
+
+  // A title learned later still lands, and disposal drops the cache so a
+  // recycled id cannot inherit a stale title.
+  observers.handleSessionEvent(session, { type: "session/title", data: { title: "Late title" }, seq: 3 });
+  observers.handleSessionDisposed(session);
+  posted.length = 0;
+  observers.handleSessionEvent(session, { type: "turn/start", seq: 4 });
+  assert.ok(posted.every((payload) => !Object.hasOwn(payload, "session_title")));
+});
+
+test("DSH bridge saves the title projection attempt until the service is attached", async () => {
+  const { createSessionObservers } = await bridge();
+  const posted = [];
+  const observers = createSessionObservers({
+    enqueue: (payload) => { posted.push(payload); return true; },
+  });
+  const session = { id: "s-late-projection", header: { cwd: "/repo" } };
+  // Events can arrive before ctx.inject() lands the projection service. That
+  // early event must not consume the one lookup the session is allowed.
+  observers.handleSessionEvent(session, { type: "turn/start", seq: 1 });
+  let snapshots = 0;
+  observers.attachProjections({
+    sessionProjections: {
+      onChanged() { return () => {}; },
+      snapshot() { snapshots += 1; return { values: { title: "Recovered later" } }; },
+    },
+    effect() {},
+  });
+  observers.handleSessionEvent(session, { type: "tool/call", data: { name: "bash" }, seq: 2 });
+  assert.strictEqual(snapshots, 1);
+  assert.strictEqual(posted.filter((payload) => !payload.metadata_only).at(-1).session_title, "Recovered later");
+});
