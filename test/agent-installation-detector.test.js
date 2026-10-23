@@ -685,8 +685,8 @@ describe("agent installation detector", () => {
     ["qoder", ".qoder", "state.json", "file"],
     ["zcode", ".zcode", path.join("v2", "credentials.json"), "file"],
     ["zcode", ".zcode", path.join("cli", "exec"), "dir"],
-    ["codebuddy", ".codebuddy", "logs", "dir"],
     ["codebuddy", ".codebuddy", "history.jsonl", "file"],
+    ["codebuddy", ".codebuddy", path.join("shell-snapshots", "snap-1"), "file"],
   ]) {
     const [agentId, relativeDir, artifact, kind] = fixture;
     it(`detects ${agentId} from a product-owned artifact (${artifact})`, () => {
@@ -721,6 +721,36 @@ describe("agent installation detector", () => {
       assert.strictEqual(entry.detectedInstalled, null, `${agentId} empty folder with no artifacts`);
       assert.strictEqual(entry.reason, "insufficient-evidence", `${agentId} empty folder reason`);
     }
+  });
+
+  // Regression (2026-10-23): WorkBuddy — a sibling Tencent AI assistant that
+  // shares the ~/.codebuddy space — writes logs/memwatch/*.log there without
+  // CodeBuddy being installed. Generic directory names must not count as
+  // CodeBuddy product evidence (the #895 failure shape, re-introduced by the
+  // original #1203 whitelist and fixed by narrowing it).
+  it("does not report CodeBuddy from generic directories written by sibling Tencent tools", () => {
+    const homeDir = makeHome();
+    mkdirp(path.join(homeDir, ".codebuddy"));
+    writeJson(path.join(homeDir, ".codebuddy", "settings.json"), {});
+    for (const generic of [
+      path.join("logs", "memwatch", "cli-memwatch-10224.log"),
+      "diagnostics",
+      "sessions",
+      "projects",
+      "debug",
+      "tasks",
+      "usage-data",
+      "traces",
+      "blobs",
+    ]) {
+      const p = path.join(homeDir, ".codebuddy", generic);
+      mkdirp(path.dirname(p));
+      if (path.extname(p)) writeText(p, "{}"); else mkdirp(p);
+    }
+
+    const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "codebuddy");
+    assert.strictEqual(entry.detectedInstalled, null, "generic sibling-tool artifacts are not product evidence");
+    assert.strictEqual(entry.reason, "insufficient-evidence");
   });
 
   it("fails an unreadable reporter config closed to insufficient evidence", () => {

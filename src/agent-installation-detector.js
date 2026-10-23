@@ -77,22 +77,21 @@ const HOOK_CONFIG_AGENT_PRODUCT_ARTIFACTS = Object.freeze({
     path.join("v2", "config.json"),
     path.join("cli", "exec"),
   ]),
+  // Regressed on a real host (2026-10-23): WorkBuddy — a separate Tencent AI
+  // assistant that shares the ~/.codebuddy space — writes logs/memwatch/*.log
+  // there without CodeBuddy ever being installed, so generic directory names
+  // in this list reported CodeBuddy as installed (the #895 failure shape
+  // again). Only CodeBuddy Code-specific names survive: files and directories
+  // whose layout no sibling tool is known to create. If another sibling tool
+  // starts writing these too, tighten further rather than widening.
   codebuddy: Object.freeze([
-    "projects",
-    "sessions",
-    "logs",
     "history.jsonl",
     "file-history",
-    "traces",
     "shell-snapshots",
     "local_storage",
-    "usage-data",
-    "debug",
-    "tasks",
-    "teams",
-    "blobs",
     "channels",
     "computer-use",
+    "teams",
   ]),
 });
 
