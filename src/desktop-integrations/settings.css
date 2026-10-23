@@ -1,0 +1,104 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: #f7f8f4;
+  color: #28322a;
+  font:
+    14px/1.5 system-ui,
+    sans-serif;
+}
+main {
+  max-width: 900px;
+  margin: auto;
+  padding: 26px;
+}
+h1 {
+  font-size: 23px;
+  margin: 0 0 8px;
+}
+p {
+  color: #687365;
+}
+.row,
+fieldset {
+  display: flex;
+  gap: 9px;
+  align-items: center;
+  background: #fff;
+  border: 1px solid #dce1d6;
+  border-radius: 8px;
+  padding: 13px;
+  margin: 10px 0;
+}
+.row label {
+  flex: 1;
+}
+.row input[type="text"],
+.row input[type="number"] {
+  flex: 2;
+  min-width: 50px;
+}
+input,
+textarea,
+button {
+  font: inherit;
+  border: 1px solid #c7d0c0;
+  border-radius: 5px;
+  padding: 7px;
+  background: #fff;
+  color: inherit;
+}
+input[type="checkbox"],
+input[type="radio"] {
+  accent-color: #65805c;
+}
+.actions {
+  display: flex;
+  gap: 9px;
+  margin-top: 20px;
+}
+button {
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+#save,
+#submit {
+  background: #e0ebd8;
+}
+.notice {
+  font-size: 12px;
+}
+fieldset {
+  display: block;
+}
+fieldset label {
+  display: block;
+  padding: 8px 0;
+}
+fieldset textarea {
+  display: block;
+  width: 100%;
+  margin: 9px 0;
+  min-height: 60px;
+}
+#error {
+  color: #9b3c30;
+}
+.app-row {
+  display: flex;
+  gap: 5px;
+  align-items: center;
+  margin: 8px 0;
+}
+.app-row input {
+  min-width: 0;
+  flex: 1;
+}
+.app-row input.path {
+  flex: 3;
+}

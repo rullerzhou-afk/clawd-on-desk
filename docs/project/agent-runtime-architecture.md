@@ -2,6 +2,26 @@
 
 This document holds the deeper runtime and integration notes that were previously in the root `AGENTS.md`.
 
+## Optional desktop integrations
+
+`src/desktop-integrations/runtime.js` is created by `menu.js` with the main-process
+context. `desktopIntegrations` is a validated `prefs.js` object; updates go through
+`settings-actions.js` and the sole settings controller, with the normal menu effect
+router. Its subscription closes obsolete modules when an opt-in or path changes.
+The settings page opens a separate sandboxed window through an owner-main-frame
+checked settings IPC. This module owns its windows, IPC handlers, subscriptions,
+loopback server and auxiliary processes; shutdown cancels pending work.
+
+QQ Music helpers are built from shipped source on explicit Windows x64 use into
+userData, never by rewriting packaged resources. WorkBuddy check-in reads existing
+Cockpit credentials only in the main process and does not write or refresh them.
+The ordinary-question MCP server uses a separate authenticated loopback endpoint
+and cancels on hidden/DND/disabled state. Its client-declared source label is not
+agent identity and must never enter permission routing. Agent capabilities,
+permission automation and external review downgrade-only rules remain authoritative.
+See [desktop integrations](../guides/desktop-integrations.md) for the user-facing
+contract, supported platforms and deactivation paths.
+
 Claude's live tool/model phase additionally uses `PostToolBatch` on the conservative
 2.1.280+ baseline. The hook sends only bounded tool IDs and `prompt_id`, omitting
 inputs, responses and process probes. `src/claude-tool-phase.js` keeps a bounded

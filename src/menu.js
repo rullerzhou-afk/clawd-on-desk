@@ -49,6 +49,7 @@ function joinGroups(groups) {
 module.exports = function initMenu(ctx) {
   // ── Translation helper (bound to ctx.lang via the shared i18n module) ──
   const t = createTranslator(() => ctx.lang);
+  const desktopIntegrations = require("./desktop-integrations/runtime").createDesktopIntegrations(ctx);
   const macDockVisibility = isMac ? createMacDockVisibilityCoordinator({
     app,
     dock: app.dock,
@@ -347,7 +348,7 @@ module.exports = function initMenu(ctx) {
       { label: t("quit"), click: () => requestAppQuit() },
     ];
 
-    const items = joinGroups([stateGroup, noiseGroup, workGroup, systemGroup, appGroup, quitGroup]);
+    const items = joinGroups([stateGroup, noiseGroup, workGroup, desktopIntegrations.menuItems(), systemGroup, appGroup, quitGroup]);
     ctx.tray.setContextMenu(Menu.buildFromTemplate(items));
   }
 
@@ -578,7 +579,7 @@ module.exports = function initMenu(ctx) {
       { label: t("quit"), click: () => requestAppQuit() },
     ];
 
-    const template = joinGroups([stateGroup, workGroup, displayGroup, appGroup, quitGroup]);
+    const template = joinGroups([stateGroup, workGroup, desktopIntegrations.menuItems(), displayGroup, appGroup, quitGroup]);
     ctx.contextMenu = Menu.buildFromTemplate(template);
   }
 
@@ -621,6 +622,7 @@ module.exports = function initMenu(ctx) {
   }
 
   return {
+    showDesktopIntegrationSettings: desktopIntegrations.showSettings,
     t,
     buildContextMenu,
     buildTrayMenu,

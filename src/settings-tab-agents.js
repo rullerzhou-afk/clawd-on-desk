@@ -43,6 +43,15 @@
     subtitle.className = "subtitle";
     subtitle.textContent = t("agentsSubtitle");
     parent.appendChild(subtitle);
+    if (typeof window.settingsAPI?.openDesktopIntegrations === "function") {
+      const desktopButton = document.createElement("button");
+      desktopButton.type = "button";
+      desktopButton.textContent = t("desktopIntegrations");
+      desktopButton.addEventListener("click", () => {
+        window.settingsAPI.openDesktopIntegrations().catch(err => ops.showToast(String(err?.message || "Unable to open desktop integrations"), {error:true}));
+      });
+      parent.appendChild(desktopButton);
+    }
 
     const metadata = runtime.agentMetadata || [];
     const agents = typeof sortAgentMetadataForSettings === "function"

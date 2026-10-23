@@ -53,6 +53,7 @@ docs/**
 !docs/guides/supported-agents.ja-JP.md
 !docs/guides/supported-agents.es.md
 !docs/guides/permission-external-review.md
+!docs/guides/desktop-integrations.md
 !docs/investigations/
 !docs/investigations/permission-hook-fail-deny-investigation.md
 !docs/investigations/codex-subagent-session-meta.md

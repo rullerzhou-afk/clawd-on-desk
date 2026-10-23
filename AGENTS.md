@@ -83,6 +83,8 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 
 ## Read These Docs
 
+- `docs/guides/desktop-integrations.md`：可选桌面工具的设置、生命周期与平台限制；`src/desktop-integrations/runtime.js` 接菜单和主进程，`settings-controller.js` 保持唯一设置写入者。普通 MCP 问答独立于原生权限路由，不能扩展 agent capability。
+
 - `docs/project/agent-runtime-architecture.md`：运行时架构、模块边界、启动与数据流、多 agent、permission bubble、终端聚焦和自动同步
 - `docs/project/theme-state-ui.md`：状态机、主题系统、settings、mini mode、素材规则、平台限制、待落地 UI 决策
 - `docs/project/release-process.md`：发版 checklist、release note 核对、tag 触发 GitHub 打包和资产确认

@@ -1,0 +1,106 @@
+* {
+  box-sizing: border-box;
+}
+body {
+  margin: 0;
+  background: #f7f8f3;
+  color: #27302d;
+  font:
+    14px/1.5 "Microsoft YaHei",
+    sans-serif;
+}
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 22px 24px 12px;
+  border-bottom: 1px solid #dfe3da;
+}
+h1 {
+  font-size: 21px;
+  margin: 0;
+}
+header p {
+  margin: 4px 0;
+  color: #6d766d;
+  font-size: 12px;
+}
+main {
+  padding: 18px 24px;
+}
+.actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+button {
+  font: inherit;
+  border: 1px solid #cdd4c8;
+  background: #fff;
+  color: inherit;
+  border-radius: 7px;
+  padding: 7px 11px;
+  cursor: pointer;
+}
+button:hover {
+  background: #edf1e8;
+}
+button:disabled {
+  opacity: 0.5;
+  cursor: wait;
+}
+.primary {
+  background: #dce9d5;
+  border-color: #b9cdb1;
+}
+#close {
+  border: 0;
+  background: transparent;
+  font-size: 24px;
+}
+#progress {
+  font-size: 13px;
+  min-height: 36px;
+  color: #536351;
+}
+#error {
+  color: #a1342a;
+  white-space: pre-wrap;
+}
+.account {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10px;
+  background: #fff;
+  border: 1px solid #e0e4da;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 9px 0;
+}
+.label {
+  font-weight: 600;
+}
+.detail {
+  color: #71806a;
+  font-size: 12px;
+  margin-top: 3px;
+  white-space: pre-wrap;
+}
+.state-checked {
+  border-left: 3px solid #6c9561;
+}
+.state-error,
+.state-auth {
+  border-left: 3px solid #b76a57;
+}
+.badge {
+  color: #6c8560;
+  font-size: 12px;
+  margin-left: 7px;
+}
+.note {
+  font-size: 12px;
+  color: #7d8579;
+  margin-top: 18px;
+}

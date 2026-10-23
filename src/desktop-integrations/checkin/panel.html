@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'"
+    />
+    <title>WorkBuddy 签到</title>
+    <link rel="stylesheet" href="panel.css" />
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>WorkBuddy 签到</h1>
+        <p>直接使用 Cockpit 中已有的账号</p>
+      </div>
+      <button id="close" aria-label="关闭">×</button>
+    </header>
+    <main>
+      <div class="actions">
+        <button id="current" class="primary">当前账号签到</button
+        ><button id="all">全部账号签到</button
+        ><button id="refresh">查询今日状态</button>
+      </div>
+      <p id="progress" role="status">已签到的账号会自动跳过。</p>
+      <p id="error" role="alert" hidden></p>
+      <div id="accounts"></div>
+      <p class="note">
+        仅在你点击时签到。账号登录由 Cockpit 管理；若登录失效，请在 Cockpit
+        中刷新登录后再试。
+      </p>
+    </main>
+    <script src="renderer.js"></script>
+  </body>
+</html>

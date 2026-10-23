@@ -4561,6 +4561,11 @@ function showResumeInput(t) {
 }
 
 const _menuCtx = {
+  getDesktopIntegrationSettings: () => _settingsController.get("desktopIntegrations"),
+  get permissionBubblesEnabled() { return _settingsController.get("permissionBubblesEnabled") !== false; },
+  saveDesktopIntegrationSettings: value => _settingsController.applyUpdate("desktopIntegrations", value),
+  subscribeDesktopIntegrationSettings: callback => _settingsController.subscribeKey("desktopIntegrations", callback),
+  desktopIntegrationSettingsAvailable: () => !_settingsController.isLocked(),
   get win() { return win; },
   get sessions() { return sessions; },
   cancelRoam: () => _roam.cancelRoam(),
@@ -5133,6 +5138,7 @@ quotaAlertsRuntime = createQuotaAlertsRuntime({
 });
 
 const settingsIpcRuntime = registerSettingsIpc({
+  openDesktopIntegrations: () => { _menu.showDesktopIntegrationSettings(); return {status:"ok"}; },
   ipcMain,
   app,
   BrowserWindow,

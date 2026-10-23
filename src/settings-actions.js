@@ -99,6 +99,7 @@ const {
   requireStringArray,
 } = require("./settings-validators");
 const { listIdleVisualOptions } = require("./idle-visual");
+const { validateDesktopIntegrations } = require("./desktop-integrations/settings");
 const {
   registerShortcut,
   resetShortcut,
@@ -280,6 +281,7 @@ const updateRegistry = {
   },
   savedPixelWidth: requireNonNegativeFiniteNumber("savedPixelWidth"),
   savedPixelHeight: requireNonNegativeFiniteNumber("savedPixelHeight"),
+  desktopIntegrations: validateDesktopIntegrations,
   settingsWindowBounds: (value) => {
     if (value === null || isValidSettingsWindowBounds(value)) return { status: "ok" };
     return {

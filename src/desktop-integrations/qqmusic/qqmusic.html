@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'self'"
+    />
+    <title>QQ 音乐</title>
+    <link rel="stylesheet" href="qqmusic.css" />
+  </head>
+  <body>
+    <header>
+      <span class="brand"><i></i>QQ 音乐 <small>桌宠控制</small></span
+      ><button id="close" aria-label="关闭控制面板">×</button>
+    </header>
+    <main>
+      <div class="track">
+        <span class="disc" aria-hidden="true">♫</span>
+        <div class="track-text">
+          <h1 id="title">正在连接 QQ 音乐…</h1>
+          <p id="artist">读取当前歌曲</p>
+        </div>
+      </div>
+      <div class="progress">
+        <output id="current-time">0:00</output
+        ><input
+          id="progress"
+          type="range"
+          min="0"
+          max="0"
+          step="1"
+          value="0"
+          disabled
+          aria-label="歌曲播放进度"
+        /><output id="total-time">0:00</output>
+      </div>
+      <p id="progress-note" hidden></p>
+      <div class="controls">
+        <button id="open" title="打开 QQ 音乐">打开</button>
+        <div class="playback">
+          <button id="previous" class="icon" aria-label="上一首" title="上一首">
+            ⏮</button
+          ><button
+            id="toggle"
+            class="primary"
+            aria-label="播放或暂停"
+            title="播放或暂停"
+          >
+            ▶</button
+          ><button id="next" class="icon" aria-label="下一首" title="下一首">
+            ⏭
+          </button>
+        </div>
+        <span id="status" class="status">连接中</span>
+      </div>
+      <div class="volume">
+        <button id="mute" title="静音或取消静音" aria-label="静音或取消静音">
+          静音</button
+        ><input
+          id="volume"
+          type="range"
+          min="0"
+          max="100"
+          step="1"
+          value="0"
+          aria-label="QQ 音乐独立音量"
+        /><output id="level">—</output>
+      </div>
+      <div class="lyrics">
+        <label><input id="lyrics" type="checkbox" disabled /> 桌面歌词</label
+        ><button id="lyrics-refresh">读取状态</button
+        ><span id="lyrics-status">尚未读取</span>
+      </div>
+      <div class="mode">
+        <label for="mode">播放模式</label
+        ><select id="mode" disabled>
+          <option value="">读取当前模式…</option>
+          <option value="shuffle">随机播放</option>
+          <option value="sequence">顺序播放</option>
+          <option value="single">单曲循环</option>
+          <option value="repeat">列表循环</option></select
+        ><button id="mode-refresh" title="读取播放模式">刷新</button>
+      </div>
+      <p id="message" role="status">音量仅作用于 QQ 音乐</p>
+      <section class="library" aria-label="播放队列和我的歌单">
+        <div class="library-tabs">
+          <button id="tab-queue" class="active">播放队列</button
+          ><button id="tab-playlists">我的歌单</button
+          ><button
+            id="library-refresh"
+            class="library-refresh"
+            title="刷新列表"
+          >
+            刷新
+          </button>
+        </div>
+        <div class="library-heading">
+          <button id="library-back" hidden>‹ 歌单</button
+          ><strong id="library-title">播放队列</strong
+          ><span id="library-count"></span
+          ><button id="playlist-play" hidden>播放全部</button>
+        </div>
+        <p id="queue-notice">
+          显示从桌宠播放的歌单；QQ 音乐内的临时队列改动尚不能读回。
+        </p>
+        <input
+          id="library-filter"
+          type="search"
+          placeholder="搜索歌名、歌手或歌单"
+          aria-label="搜索队列和歌单"
+        />
+        <div id="library-rows" class="library-rows" role="list"></div>
+        <button id="library-more" hidden>显示更多</button>
+        <p id="library-message" role="status">
+          选择个人歌单后，即可同步到 QQ 音乐播放。
+        </p>
+      </section>
+    </main>
+    <script src="qqmusic-renderer.js"></script>
+  </body>
+</html>

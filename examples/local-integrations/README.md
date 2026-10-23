@@ -1,26 +1,26 @@
-# 本机接入的源码整理 / Local integration prototypes
+# 桌面接入源码与验证
 
-这组源码来自 Windows 桌宠的个人定制版本，按 AGPL-3.0-only 贡献。这里保存可审阅、可继续移植的实现，**尚未接入上游启动、设置、打包或安装流程**，从本分支正常启动 Clawd 不会启用这些功能。
+原先的原型现已接入应用正式源码，包含最新的 **WorkBuddy 签到**。
 
-本次贡献以源码开发分支公开，未发应用 Release，也未改动上游 `main`。较大功能需按项目贡献指南先对齐方案，再分别提出实现 PR。
+- 实现入口：`src/desktop-integrations/runtime.js`，由 `src/menu.js` 正常初始化。
+- 使用入口：右键桌宠 → 桌面接入；Settings → Agents 也可打开。
+- 设置：`prefs.js` schema + `settings-controller.js`，默认关闭，可停用；路径由本机用户选择。
+- 打包：使用已有 Electron builder 源码收集规则，辅助程序从所附源码按需编译，无安装包重写。
+- 使用、隐私和移除说明：[桌面接入指南](../../docs/guides/desktop-integrations.md)。
+- 测试、打包和平台验收：[验证记录](VALIDATION.md)。
 
-| 功能 | 独立分支 | 源码目录 |
-| --- | --- | --- |
-| QQ 音乐控制、歌单、队列、播放模式、进度、歌词 | `contrib/windows-qqmusic` | `qqmusic-windows/` |
-| 普通问答 MCP 桥接 | `contrib/question-bridge` | `question-bridge/` |
-| 应用快捷打开、Cockpit Tools / CC Switch 状态、网关开关 | `contrib/desktop-tools` | `desktop-tools/` |
-| 可选 AI 外部审查命令示例 | `contrib/permission-review-example` | `permission-review/` |
+| 功能 | 现在的实现 |
+| --- | --- |
+| QQ 音乐控制、队列、歌单、模式、进度、歌词 | `src/desktop-integrations/qqmusic/` |
+| WorkBuddy 当前/全部账号签到 | `src/desktop-integrations/checkin/` |
+| 普通问答的窗口、取消和 MCP 传输 | `src/desktop-integrations/questions.js` + `hooks/desktop-question-mcp.cjs` |
+| 应用快捷打开/状态、喵云网关开关 | `src/desktop-integrations/runtime.js` + `tools/` |
+| 可选外部 AI 评审示例 | `hooks/examples/permission-ai-review.cjs`，接项目既有 downgrade-only 协议 |
 
-`contrib/local-desktop-integrations` 汇总上述源码，便于查看全部修改。每项各自有说明和验证范围；验证记录见 `VALIDATION.md`。
+这个 `examples/local-integrations/` 目录中的原型保留作历史参考，应用不会导入它们。此前四个独立分支也是原型快照；正式运行时、签到和设置接线以新的汇总分支为准。
 
-## 公开内容的边界
+贡献只含源码、合成测试数据和说明；没有个人账号/密钥/Token、歌单缓存、日志、安装包或编译生成的 EXE/DLL。ASAR 重写器、更新补丁 watcher 和 WorkBuddy 私有权限入口注入不在贡献中。
 
-- 只提交作者编写的源文件、合成测试数据及说明。个人账号、歌单缓存、配置、日志、截图、Token、安装包、备份、DLL 和 EXE 均不提交。
-- 安装目录 ASAR 重写、更新后自动重打补丁的 watcher、开机恢复任务不作为上游功能分发；正式集成应进入项目正常的源码和构建流程。
-- WorkBuddy 内部入口注入及其提问/权限适配未在这些分支中分发。上游当前只支持 WorkBuddy 状态与通知，权限归 WorkBuddy 原生沙箱/GUI；扩展权限必须先确定受支持接口和生命周期。
-- Claude/Codex/Copilot 的本机 hook 重写器不分发。外部评审示例只走现有 downgrade-only 接口，不授予会话信任、不替换原生安全审批，也不回答用户问题。
-- 上游已支持 `.workbuddy-ai` 与旧 `.workbuddy` 的安装与迁移，本机旧目录修复不重复提交。
+普通 MCP 问答等待实际选择，但不意味着所有 AI 原生对话框都会自动转发。权限仍遵循上游 capability registry，WorkBuddy 原生沙箱权限不通过普通问答审批。升级持久性依赖未来发布版本持续包含本模块，Fork 源码不会让尚未接纳它的官方安装包自动带上这些功能。
 
-## 后续上游适配
-
-正式集成需要通过 `settings-controller.js` 管理设置，按 capability registry 路由，提供显式启用/卸载、翻译、打包及真实 Windows GUI 验证。普通问答需有版本化接口、真实来源绑定与取消协议；Claude hook payload 变化还需真实 Claude 会话验证。不能把这里的隔离模块测试当作这些集成条件已完成。
+本次上传到个人 Fork 供验证与审阅，没有修改上游 main，也没有发布 Release。上游贡献前仍需按贡献指南对齐较大功能方案，并拆分审阅范围。
