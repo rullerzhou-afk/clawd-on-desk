@@ -156,7 +156,7 @@ function isCodexMemoryWorkerPayload(payload, options = {}) {
 // CODEX_INTERNAL_ORIGINATOR_OVERRIDE for the app-server process, which Codex
 // exports to hooks, while a terminal `codex` (or `codex exec --ephemeral`)
 // does not. This is a precondition, not a drop rule: the user-visible side chat
-// shares exactly these fields, so only the two fixed ambient-suggestion prompts
+// shares exactly these fields, so only audited fixed built-in prompts
 // below identify hidden work. An empty transcript plus that client-only
 // variable is the usable signal for "client ephemeral thread".
 function isCodexClientEphemeralPayload(payload, options = {}) {
@@ -177,6 +177,35 @@ function isCodexClientEphemeralPayload(payload, options = {}) {
 // Wire value the hook tags a recognized ambient-suggestion UserPromptSubmit
 // with; the server keys its per-sid suppression set on it.
 const CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS = "ambient_suggestions";
+const CODEX_INTERNAL_THREAD_TITLE_REFRESH = "title_refresh";
+
+function isCodexInternalThread(value) {
+  return value === CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS
+    || value === CODEX_INTERNAL_THREAD_TITLE_REFRESH;
+}
+
+// Desktop 26.1016's adaptive title refresh forks an ephemeral prediction thread.
+// Its fork omits the caller's features.hooks:false override. Match the complete
+// audited template, including canonical JSON encoding of the previous title;
+// never infer hidden work from no rollout, cwd, PID, or a generic title request.
+// Other prediction workers can submit ordinary user text: they are deliberately
+// not recognized here. Unknown/changed templates must remain visible.
+const TITLE_REFRESH_PREFIX = "Keep the current chat title ";
+const TITLE_REFRESH_SUFFIX = " if it still fits the conversation.\n"
+  + "If the focus has changed, write a more useful title in the user's language, up to 24 characters.\n"
+  + 'Reply only with JSON: {"title":"...","description":"a search summary, up to 100 characters"}. Do not use tools.';
+
+function isCodexTitleRefreshPrompt(prompt) {
+  if (typeof prompt !== "string" || !prompt.startsWith(TITLE_REFRESH_PREFIX)
+    || !prompt.endsWith(TITLE_REFRESH_SUFFIX)) return false;
+  const encodedTitle = prompt.slice(TITLE_REFRESH_PREFIX.length, -TITLE_REFRESH_SUFFIX.length);
+  try {
+    const title = JSON.parse(encodedTitle);
+    return typeof title === "string" && JSON.stringify(title) === encodedTitle;
+  } catch {
+    return false;
+  }
+}
 
 // The two fixed prompts Codex Desktop's ambient-suggestion workers submit (seen
 // verbatim across many generation and safety-review threads). Only the prefixes
@@ -196,7 +225,10 @@ function isCodexAmbientSuggestionPrompt(prompt) {
 
 module.exports = {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+  CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+  isCodexInternalThread,
   isCodexAmbientSuggestionPrompt,
+  isCodexTitleRefreshPrompt,
   isCodexClientEphemeralPayload,
   isCodexMemoryWorkerPayload,
 };

@@ -286,6 +286,82 @@ describe("server-route-state Codex ambient-suggestion marker", () => {
   });
 });
 
+describe("server-route-state Codex title refresh marker", () => {
+  const titleRaw = "codex:00000000-0000-4000-8000-000000000024";
+  const titleBody = (extra = {}) => JSON.stringify({
+    state: "thinking", event: "UserPromptSubmit", agent_id: "codex", hook_source: "codex-official",
+    session_id: titleRaw, codex_internal_thread: "title_refresh", source_pid: 42, ...extra,
+  });
+
+  it("passes only the exact local official title refresh marker", async () => {
+    const result = await callStatePost(titleBody());
+    assert.strictEqual(result.statusCode, 200);
+    assert.strictEqual(result.calls.updateSession.length, 1);
+    assert.strictEqual(result.calls.updateSession[0][3].codexInternalThread, "title_refresh");
+    for (const value of ["future_title_job", "title_refresh ", "TITLE_REFRESH", "", null, true, {}, ["title_refresh"]]) {
+      const response = await callStatePost(titleBody({ codex_internal_thread: value }));
+      assert.strictEqual(response.calls.updateSession.length, 1);
+      assert.strictEqual(response.calls.updateSession[0][3].codexInternalThread, undefined, JSON.stringify(value));
+    }
+  });
+
+  it("drops title refresh claims from other agents, nonofficial hooks, remote profiles and both WSL marker shapes", async () => {
+    const cases = [
+      { name: "other-agent", fields: { agent_id: "claude-code" } },
+      { name: "jsonl-source", fields: { hook_source: "codex-jsonl" } },
+      { name: "unverified-source", fields: { hook_source: "unverified" } },
+      { name: "wsl-distro", fields: { wsl_distro: "Ubuntu" } },
+      { name: "wsl-host", fields: { host: "wsl:Ubuntu" } },
+      { name: "host", fields: { host: "remote-host" } },
+      { name: "remote-profile", fields: {}, options: { remoteProfile: { profileId: "ssh-work", displayHost: "workbox" } } },
+    ];
+    for (const entry of cases) {
+      const response = await callStatePost(titleBody(entry.fields), { options: entry.options });
+      assert.strictEqual(response.calls.updateSession.length, 1, entry.name);
+      assert.strictEqual(response.calls.updateSession[0][3].codexInternalThread, undefined, entry.name);
+    }
+  });
+
+  it("routes a title thread lifecycle without hiding three real same-folder Desktop conversations or keeping it suppressed after SessionEnd", async () => {
+    const state = makeClaudePhaseStateRuntime({ processKill: () => true });
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => state,
+      updateSession: (...args) => state.updateSession(...args),
+    });
+    const ctx = { sessions: state.sessions, updateSession: runtime.updateSessionFromServer };
+    const send = (raw, event, phase, extra = {}) => callStatePost(JSON.stringify({
+      state: phase, event, agent_id: "codex", hook_source: "codex-official", session_id: raw,
+      turn_id: `turn-${raw}`, cwd: "C:\\same-project", source_pid: 42, agent_pid: 84,
+      codex_originator: "codex_work_desktop", ...extra,
+    }), { ctx });
+    try {
+      const peers = ["codex:route-real-a", "codex:route-real-b", "codex:route-real-c"];
+      for (const raw of peers) {
+        await send(raw, "UserPromptSubmit", "thinking");
+        await send(raw, "PreToolUse", "working");
+      }
+      const before = peers.map((raw) => JSON.stringify(state.sessions.get(localSessionKey(raw))));
+      await send(titleRaw, "UserPromptSubmit", "thinking", { codex_internal_thread: "title_refresh" });
+      for (const [event, phase] of [["Stop", "idle"], ["Interrupt", "idle"]]) {
+        const response = await send(titleRaw, event, phase);
+        assert.strictEqual(response.statusCode, 200);
+        assert.strictEqual(state.sessions.has(localSessionKey(titleRaw)), false, event);
+      }
+      peers.forEach((raw, index) => assert.strictEqual(JSON.stringify(state.sessions.get(localSessionKey(raw))), before[index]));
+      const snapshot = state.buildSessionSnapshot();
+      assert.strictEqual(snapshot.hudTotalNonIdle, 3);
+      assert.ok(snapshot.sessions.every((row) => !row.hiddenFromHud && row.state === "working"));
+
+      await send(titleRaw, "SessionEnd", "sleeping");
+      await send(titleRaw, "UserPromptSubmit", "thinking", { turn_id: "ordinary-user-after-teardown" });
+      assert.strictEqual(state.sessions.get(localSessionKey(titleRaw)).state, "thinking");
+      assert.strictEqual(state.sessions.size, 4, "a later genuine user conversation keeps its own identity");
+    } finally {
+      runtime.cleanup(); state.cleanup();
+    }
+  });
+});
+
 describe("server-route-state POST", () => {
   it("rejects a parsed old-turn compaction after HTTP hooks start a newer Codex turn", async () => {
     const CodexLogMonitor = require("../agents/codex-log-monitor");

@@ -41,6 +41,8 @@ const { readCodexThreadName } = require("./codex-session-index");
 const {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
   isCodexAmbientSuggestionPrompt,
+  isCodexTitleRefreshPrompt,
+  CODEX_INTERNAL_THREAD_TITLE_REFRESH,
   isCodexClientEphemeralPayload,
   isCodexMemoryWorkerPayload,
 } = require("./codex-internal-worker");
@@ -814,11 +816,11 @@ async function runCodexHook(payload, options = {}) {
   }
 
   // Codex Desktop runs ephemeral threads under its app-server: the hidden
-  // ambient-suggestion / safety-review workers and the user-visible side chat.
-  // They share every field, so treat only two fixed prompts as hidden work:
+  // ambient-suggestion / safety-review / title-refresh workers and visible side chats.
+  // They share every field, so only audited built-in prompts identify hidden work:
   //   - SessionStart is not shown (a thread should appear only once it acts),
   //     but still runs process resolution to prewarm the pid cache — see below.
-  //   - an ambient-suggestion UserPromptSubmit is tagged and posted; the server
+  //   - a recognized internal UserPromptSubmit is tagged and posted; the server
   //     then suppresses the whole sid.
   //   - every other state event (tools, PreCompact, Stop, SessionEnd) posts as
   //     usual, so the side chat still shows.
@@ -827,11 +829,14 @@ async function runCodexHook(payload, options = {}) {
   const clientEphemeral = isCodexClientEphemeralPayload(payload, { env });
   const isClientEphemeralSessionStart = !!(clientEphemeral
     && payload.hook_event_name === "SessionStart");
-  const codexInternalThread = clientEphemeral
-    && payload.hook_event_name === "UserPromptSubmit"
-    && isCodexAmbientSuggestionPrompt(payload.prompt)
-    ? CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS
-    : null;
+  let codexInternalThread = null;
+  if (clientEphemeral && payload.hook_event_name === "UserPromptSubmit") {
+    if (isCodexAmbientSuggestionPrompt(payload.prompt)) {
+      codexInternalThread = CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS;
+    } else if (isCodexTitleRefreshPrompt(payload.prompt)) {
+      codexInternalThread = CODEX_INTERNAL_THREAD_TITLE_REFRESH;
+    }
+  }
 
   const postState = options.postState || postStateToRunningServer;
   const buildStateAttempt = (preferredPort = null, processChainAttempt = observeAttempt()) => {

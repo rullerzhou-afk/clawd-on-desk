@@ -111,8 +111,15 @@ Codex 桌面端 app-server 下的临时线程（无 transcript 且 hook 环境�
 用户自己的侧边聊天，两者 hook 字段完全相同；终端里直接跑的 `codex exec --ephemeral`
 没有该变量，不受影响。`hooks/codex-internal-worker.js` 保留前提判定
 `isCodexClientEphemeralPayload`，并只按两个固定提示词开头认智能建议
-（`isCodexAmbientSuggestionPrompt`）：这类线程的 `SessionStart` 不显示，
-`UserPromptSubmit` 在 body 上加 `codex_internal_thread:"ambient_suggestions"` 标记照常 POST
+（`isCodexAmbientSuggestionPrompt`）。此外，`isCodexTitleRefreshPrompt` 精确匹配
+Desktop 26.1016 的自适应标题刷新三行模板（旧标题须为 `JSON.stringify` 编码的字符串，
+固定 24 字符目标及完整后缀），标记为 `codex_internal_thread:"title_refresh"`。
+该版本的预测 fork 未携带调用方的 `features.hooks:false`，因此标题刷新也可能发用户 hook。
+只凭没有 rollout、没有工具、目录名或共享 PID 均不得隐藏会话；其他预测线程可能使用
+原始用户文本，没有可安全识别的固定模板，本规则刻意不覆盖。完整模板改写后照常显示，
+不模糊匹配；用户侧边聊天若原样提交整个已识别模板，仍有与现有智能建议识别相同的误判边界。
+这类线程的 `SessionStart` 不显示，
+智能建议的 `UserPromptSubmit` 在 body 上加 `codex_internal_thread:"ambient_suggestions"` 标记照常 POST
 （不发提示词原文），其他状态事件照常 POST，所以侧边聊天正常显示。所有客户端临时线程的
 `SessionStart` 都不显示，但仍用 `lifecycle:"start"` 做一次常规进程解析预热 Windows pid
 缓存（不 POST、不读自动启动开关、不冷启动）：Windows 默认 legacy 模式下首次
