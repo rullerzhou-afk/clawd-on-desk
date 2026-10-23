@@ -811,9 +811,11 @@ function supportedDshRangeLabel() {
   return DSH_VERSION_FAMILIES.map((family) => family.range).join(" or ");
 }
 
-// The hash contract answers "which range should verify this installed
-// generation". A family marker uses its family range; a pre-family marker uses
-// its old exact range. Anything else is unlisted and returns null.
+// The admission contract answers "which family does this installed generation
+// belong to now". A family marker uses its family range and a listed pre-family
+// marker keeps its old exact contract; anything else is unlisted and returns
+// null. This decides admission only - the bytes are always verified with the
+// marker's own recorded range; see dshHashContractForMarker.
 function dshContractForMarker(marker) {
   if (
     !marker
@@ -829,6 +831,29 @@ function dshContractForMarker(marker) {
   const historical = HISTORICAL_DSH_CONTRACTS.find(
     (contract) => contract.supportedDshRange === marker.supportedDshRange
   );
+  if (historical && historical.version === marker.installedDshVersion) return historical;
+  return null;
+}
+
+// The digest contract answers "which range should verify these bytes". Bytes
+// cannot change the contract they were staged under, so verification uses the
+// marker's own recorded range — including a pre-family exact range whose
+// release is no longer listed. Hashing with anything else (the preferred
+// family, for instance) reports intact bytes as tampered.
+//
+// The recorded range is trusted only when the marker is coherent: a family
+// range (whose version may since have left that family), the exact range it
+// staged for, or a listed historical contract for that same version. A marker
+// that disagrees with itself gets no contract at all, so the preferred fallback
+// still reports it as unverifiable instead of letting it name its own terms.
+function dshHashContractForMarker(marker) {
+  if (!marker || typeof marker.supportedDshRange !== "string" || !marker.supportedDshRange) {
+    return null;
+  }
+  const range = marker.supportedDshRange;
+  if (dshFamilyForRange(range)) return { supportedDshRange: range };
+  if (range === `=${marker.installedDshVersion}`) return { supportedDshRange: range };
+  const historical = HISTORICAL_DSH_CONTRACTS.find((contract) => contract.supportedDshRange === range);
   if (historical && historical.version === marker.installedDshVersion) return historical;
   return null;
 }
@@ -1181,8 +1206,8 @@ async function inspectResolvedPackage(packageManifestPath, anchor) {
   const packageManifest = await readJson(realManifestPath);
   const packageDir = path.dirname(realManifestPath);
   const clawdManifest = await readJson(path.join(packageDir, MANIFEST_FILE));
-  const markerContract = dshContractForMarker(clawdManifest);
-  const actualBundleHash = await hashBridgeDirectory(packageDir, markerContract || PREFERRED_DSH_CONTRACT);
+  const hashContract = dshHashContractForMarker(clawdManifest);
+  const actualBundleHash = await hashBridgeDirectory(packageDir, hashContract || PREFERRED_DSH_CONTRACT);
   return { anchor, packageDir, packageManifest, clawdManifest, actualBundleHash };
 }
 
@@ -1246,8 +1271,8 @@ function inspectResolvedPackageSync(fsImpl, packageManifestPath, anchor) {
   const packageManifest = readJsonSync(fsImpl, realManifestPath);
   const packageDir = path.dirname(realManifestPath);
   const clawdManifest = readJsonSync(fsImpl, path.join(packageDir, MANIFEST_FILE));
-  const markerContract = dshContractForMarker(clawdManifest);
-  const actualBundleHash = hashBridgeDirectorySync(fsImpl, packageDir, markerContract || PREFERRED_DSH_CONTRACT);
+  const hashContract = dshHashContractForMarker(clawdManifest);
+  const actualBundleHash = hashBridgeDirectorySync(fsImpl, packageDir, hashContract || PREFERRED_DSH_CONTRACT);
   return { anchor, packageDir, packageManifest, clawdManifest, actualBundleHash };
 }
 
@@ -2532,7 +2557,8 @@ async function promoteGeneration(bundle, options = {}) {
   await fsp.mkdir(generationsDir, { recursive: true });
   const existing = await readJson(path.join(generationDir, MANIFEST_FILE));
   const existingContract = existing ? dshContractForMarker(existing) : null;
-  const existingHash = existing && existingContract ? await hashBridgeDirectory(generationDir, existingContract) : null;
+  const existingHashContract = existing ? dshHashContractForMarker(existing) : null;
+  const existingHash = existingHashContract ? await hashBridgeDirectory(generationDir, existingHashContract) : null;
   if (
     existing
     && existing.owner === MANAGED_OWNER
@@ -3237,8 +3263,9 @@ async function writeManualGenerationReference(generation, options = {}) {
   }
   const marker = await readJson(path.join(expectedGeneration, MANIFEST_FILE));
   const markerContract = dshContractForMarker(marker);
-  const actualHash = markerContract
-    ? await hashBridgeDirectory(expectedGeneration, markerContract)
+  const hashContract = dshHashContractForMarker(marker);
+  const actualHash = hashContract
+    ? await hashBridgeDirectory(expectedGeneration, hashContract)
     : null;
   if (
     !marker
@@ -5428,6 +5455,7 @@ module.exports = {
   WEB_PROFILE_NAME,
   DESKTOP_PROFILE_NAME,
   dshContractForMarker,
+  dshHashContractForMarker,
   dshContractForVersion,
   dshFamilyForVersion,
   dshTargetContract,
@@ -5504,6 +5532,7 @@ module.exports = {
     computeExpectedSourceHashesSync,
     digestBridgeFiles,
     dshContractForMarker,
+    dshHashContractForMarker,
     dshContractForVersion,
     dshFamilyForVersion,
     dshMarkerIdentity,

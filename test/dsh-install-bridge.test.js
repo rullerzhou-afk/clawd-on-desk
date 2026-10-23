@@ -186,6 +186,37 @@ function writeHistoricalGeneration(harness, version, sourceClawdVersion = "1.2.3
   return { contract, bundleHash, generationDir };
 }
 
+// Materialize a pre-family generation for a release that never reached the
+// verified-artifact list. Its marker names its own exact range, and those bytes
+// were only ever hashed under that range. `range` is overridable so a test can
+// write a marker whose recorded range disagrees with its version.
+function writeUnlistedExactGeneration(harness, version, options = {}) {
+  const { range, sourceClawdVersion = "0.15.0" } = options;
+  const exactRange = range || `=${version}`;
+  const hashContract = { supportedDshRange: exactRange };
+  const bundleHash = dshInstallTest.hashBridgeDirectorySync(fs, SOURCE_DIR, hashContract);
+  const generationDir = path.join(harness.managedRoot, "generations", bundleHash);
+  for (const target of [generationDir, packageDir(harness.profileDir)]) {
+    fs.mkdirSync(target, { recursive: true });
+    fs.cpSync(SOURCE_DIR, target, { recursive: true });
+    writeJson(path.join(target, "clawd-manifest.json"), {
+      owner: "clawd-on-desk",
+      schemaVersion: 1,
+      protocolVersion: 1,
+      packageName: BRIDGE_PACKAGE_NAME,
+      bundleHash,
+      sourceClawdVersion,
+      supportedDshRange: exactRange,
+      installedDshVersion: version,
+      installedDshVersionAssumedAtStaging: false,
+      sourceAuditBaselineCommit: "47f943859bef60e4160492346772ded9b24f765a",
+      installedAt: "2026-01-01T00:00:00.000Z",
+    });
+  }
+  installProfileLink(harness, generationDir);
+  return { exactRange, bundleHash, generationDir };
+}
+
 // Materialize a family generation with a chosen installed version, so tests
 // can exercise a version that is admitted but not on the verified list.
 function writeFamilyGeneration(harness, family, installedVersion) {
@@ -2039,7 +2070,11 @@ test("marker contracts accept both listed versions and reject unlisted or mismat
     dshContractForMarker({ installedDshVersion: "0.1.1-rc.2", supportedDshRange: "=0.1.0-rc.6" }),
     null,
   );
+  // Admission is unchanged: a release that never reached the verified list stays
+  // unlisted, whatever family its version would belong to. The digest is a
+  // separate contract, so bytes are not reported as tampered because of this.
   assert.strictEqual(dshContractForMarker({ installedDshVersion: "0.1.0-rc.7", supportedDshRange: "=0.1.0-rc.7" }), null);
+  assert.strictEqual(dshContractForMarker({ installedDshVersion: "0.3.0", supportedDshRange: "=0.3.0" }), null);
   assert.strictEqual(
     dshContractForMarker({ installedDshVersion: "0.2.1", supportedDshRange: FAMILY_02_RANGE }).supportedDshRange,
     FAMILY_02_RANGE,
@@ -2309,30 +2344,17 @@ test("an rc.6 generation is reused when the host moves within the 0.1 family", a
   assert.deepStrictEqual(fs.readFileSync(profileManifestPath), profileManifestBefore);
 });
 
-test("a marker staged for an unlisted DSH version reports version-unsupported", async (t) => {
+test("a marker staged for a DSH version outside every family reports version-unsupported", async (t) => {
   const harness = makeHarness();
   const cli = makeOfficialCli(harness);
   t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
-  await installDeepSeekHarnessBridge(installOptions(harness, cli));
+  writeUnlistedExactGeneration(harness, "0.3.0");
   const health = await inspectDeepSeekHarnessIntegration({
     dshHome: harness.dshHome,
     managedRoot: harness.managedRoot,
     resolveCommandForInspection: false,
   });
-  const manifestPath = path.join(harness.managedRoot, "generations", health.marker.bundleHash, "clawd-manifest.json");
-  const profileManifestPath = path.join(packageDir(harness.profileDir), "clawd-manifest.json");
-  for (const target of [manifestPath, profileManifestPath]) {
-    const manifest = readJson(target);
-    manifest.installedDshVersion = "0.1.0-rc.7";
-    manifest.supportedDshRange = "=0.1.0-rc.7";
-    writeJson(target, manifest);
-  }
-  const tampered = await inspectDeepSeekHarnessIntegration({
-    dshHome: harness.dshHome,
-    managedRoot: harness.managedRoot,
-    resolveCommandForInspection: false,
-  });
-  assert.strictEqual(tampered.status, "version-unsupported");
+  assert.strictEqual(health.status, "version-unsupported");
 
   const noCliOptions = installOptions(harness, cli, {
     commandInfo: null,
@@ -2342,17 +2364,43 @@ test("a marker staged for an unlisted DSH version reports version-unsupported", 
   const repair = await installDeepSeekHarnessBridge({ ...noCliOptions, operation: "explicit-repair" });
   assert.strictEqual(repair.status, "error");
   assert.strictEqual(repair.reason, "version-unsupported");
-  assert.strictEqual(repair.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(repair.detectedVersion, "0.3.0");
   assert.strictEqual(repair.manualCommand, undefined);
   const removed = await uninstallDeepSeekHarnessBridge(noCliOptions);
   assert.strictEqual(removed.status, "error");
   assert.strictEqual(removed.reason, "version-unsupported");
-  assert.strictEqual(removed.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(removed.detectedVersion, "0.3.0");
   assert.strictEqual(removed.manualCommand, undefined);
   assert.strictEqual(
     fs.existsSync(dshInstallTest.manualGenerationReferencePath({ managedRoot: harness.managedRoot })),
     false,
   );
+});
+
+test("an unlisted pre-family marker without a CLI stays version-unsupported", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  writeUnlistedExactGeneration(harness, "0.1.0-rc.7");
+  const noCliOptions = installOptions(harness, cli, {
+    commandInfo: null,
+    dshCommand: false,
+    dshVersion: undefined,
+  });
+  const repair = await installDeepSeekHarnessBridge({ ...noCliOptions, operation: "explicit-repair" });
+  assert.strictEqual(repair.status, "error");
+  // The digest no longer masks the real reason: the contract is unlisted, so the
+  // failure is admission, not "these bytes look tampered".
+  assert.strictEqual(repair.reason, "version-unsupported");
+  assert.strictEqual(repair.detectedVersion, "0.1.0-rc.7");
+  assert.strictEqual(repair.manualCommand, undefined);
+  const removed = await uninstallDeepSeekHarnessBridge(noCliOptions);
+  assert.strictEqual(removed.reason, "version-unsupported");
+  assert.strictEqual(
+    fs.existsSync(dshInstallTest.manualGenerationReferencePath({ managedRoot: harness.managedRoot })),
+    false,
+  );
+  assert.deepStrictEqual(cli.calls, []);
 });
 
 test("install rejects a malformed host token or a version below its family floor", async (t) => {
@@ -2604,6 +2652,47 @@ test("tampered historical bridge bytes fail integrity before migration", async (
   assert.strictEqual(result.status, "error");
   assert.strictEqual(result.reason, "generation-integrity-failed");
   assert.deepStrictEqual(cli.calls, []);
+});
+
+test("an unlisted pre-family marker is verified against its own range, not the preferred family", async (t) => {
+  const harness = makeHarness();
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  writeUnlistedExactGeneration(harness, "0.1.0-rc.7");
+  const marker = readJson(path.join(packageDir(harness.profileDir), "clawd-manifest.json"));
+  assert.strictEqual(marker.supportedDshRange, "=0.1.0-rc.7");
+  assert.strictEqual(dshContractForMarker(marker), null);
+
+  const inspectOptions = {
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    dshInstallRoot: null,
+  };
+  const intact = inspectDeepSeekHarnessDiskSync(inspectOptions);
+  // Owned and byte-intact, but not admitted: that is what should be reported.
+  assert.strictEqual(intact.status, "version-unsupported");
+  assert.strictEqual(intact.owned, true);
+
+  // The bytes are still checksummed: tampering is caught, so the status above
+  // means "stale generation", not "integrity checking was skipped".
+  fs.appendFileSync(path.join(packageDir(harness.profileDir), "lib", "index.js"), "\n// tampered\n", "utf8");
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync(inspectOptions).status, "generation-integrity-failed");
+});
+
+test("a marker whose recorded range disagrees with its version stays unverifiable", async (t) => {
+  const harness = makeHarness();
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  // The bytes really do match the range the marker names, but the marker claims
+  // a release that range never described. Neither contract may accept it, and
+  // the fallback must not quietly bless it.
+  writeUnlistedExactGeneration(harness, "0.1.0-rc.7", { range: "=0.2.0-rc.2" });
+  const marker = readJson(path.join(packageDir(harness.profileDir), "clawd-manifest.json"));
+  assert.strictEqual(dshContractForMarker(marker), null);
+  assert.strictEqual(dshInstallTest.dshHashContractForMarker(marker), null);
+  assert.strictEqual(inspectDeepSeekHarnessDiskSync({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    dshInstallRoot: null,
+  }).status, "generation-integrity-failed");
 });
 
 test("family markers whose installed version left the family are unlisted", async (t) => {

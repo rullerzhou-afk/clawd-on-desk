@@ -39,7 +39,10 @@ the contract of the host's family; Uninstall and manual `npx` commands pin the
 marker's own artifact when its version is listed, otherwise the family's newest
 verified artifact. Two hosts in the same family share one generation, and the
 marker keeps the version it was first staged for. Pre-family markers keep their
-old exact `=<version>` range for hash verification. Adding a new minor line
+old exact `=<version>` range for hash verification, and their bytes are always
+verified against that recorded range - even when the release never reached the
+verified list, where admission stays `version-unsupported` but the bytes are no
+longer misreported as tampered. Adding a new minor line
 means verifying and listing at least one artifact for it and adding a family
 row. The public seams were first
 audited against upstream commit `47f9438`, then rechecked in the compiled
