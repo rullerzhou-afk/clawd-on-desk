@@ -188,6 +188,20 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
     ? env.CODEX_HOME.trim()
     : null;
   const codexDir = explicitCodexHome || inheritedCodexHome || path.join(homeDir, ".codex");
+  // Same explicit/inherited split as Codex: an explicit target home must not
+  // pick up this process's CLAUDE_CONFIG_DIR, but an ambient cleanup removes
+  // hooks from the profile the installer actually wrote.
+  const explicitClaudeHome = typeof options.claudeHome === "string" && options.claudeHome.trim()
+    ? options.claudeHome.trim()
+    : (options.env && typeof options.env.CLAUDE_CONFIG_DIR === "string" && options.env.CLAUDE_CONFIG_DIR.trim()
+      ? options.env.CLAUDE_CONFIG_DIR.trim()
+      : null);
+  const inheritedClaudeHome = !explicitHomeDir
+    && typeof env.CLAUDE_CONFIG_DIR === "string"
+    && env.CLAUDE_CONFIG_DIR.trim()
+    ? env.CLAUDE_CONFIG_DIR.trim()
+    : null;
+  const claudeHome = explicitClaudeHome || inheritedClaudeHome || path.join(homeDir, ".claude");
   const copilotHome = resolveCopilotHomeForCleanup(homeDir, env, options);
   const openClawStateDir = options.openClawStateDir
     || env.OPENCLAW_STATE_DIR
@@ -209,7 +223,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
     byAgent: {
       "claude-code": {
         ...common,
-        settingsPath: path.join(homeDir, ".claude", "settings.json"),
+        settingsPath: path.join(claudeHome, "settings.json"),
       },
       "deepseek-harness": {
         ...common,
