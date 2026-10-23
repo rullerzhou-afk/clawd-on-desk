@@ -34,7 +34,7 @@ test('Music panel IPC rejects other windows and the pet shortcut accepts only it
   const context={module:{exports:{}},require:name=>name==='fs'?fakeFs:name==='electron'?electron:name==='./qqmusic-controller'?{QQMusicController:class{stop(){}}}:name.endsWith('location.json')?{executable:'QQMusic.exe'}:name.endsWith('desktop-lyrics.cjs')?()=>({request:async()=>({visible:false})}):name.endsWith('library-main.cjs')?()=>({request:async()=>({})}):require(name),
     __dirname,process:{platform:'win32',resourcesPath:path.resolve(__dirname,'../resources'),argv:[]}};
   vm.runInNewContext(fs.readFileSync(path.join(__dirname,'qqmusic-main.js'),'utf8'),context);
-  const control=context.module.exports({},{executable:process.execPath.replace(/node\.exe$/i,'QQMusic.exe')});
+  const control=context.module.exports({},{executable:process.execPath.replace(/node\.exe$/i,'QQMusic.exe').replaceAll('\\','/')});
   assert.equal((await handlers['qqmusic-command']({sender:{}},{action:'next'})).ok,false);
   listeners['qqmusic-open']({sender:{getURL:()=> 'https://example.com/hit.html'}});assert.equal(opened.length,0);
   control.show();assert.equal(opened.length,1);assert.equal(captured[0].webPreferences.nodeIntegration,false);assert.equal(captured[0].webPreferences.contextIsolation,true);assert.equal(captured[0].webPreferences.sandbox,true);
