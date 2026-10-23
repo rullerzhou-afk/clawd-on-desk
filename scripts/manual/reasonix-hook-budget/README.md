@@ -2,7 +2,8 @@
 
 This manual check uses the official Reasonix consumer at
 `b5b7cf49e6aed3b0f65ebc72a1c1602183aa7d49`: `Load` → `Runner` →
-`DefaultSpawner` → cmd → the actual Clawd-generated PowerShell command → Node.
+`DefaultSpawner` → cmd → the actual Clawd-generated command → Node (with
+PowerShell only when the installer selects its compatibility fallback).
 It fires `UserPromptSubmit` and `PreToolUse` directly, without a CLI session,
 model request, tool execution, or access to the user's Reasonix configuration.
 
@@ -162,6 +163,85 @@ This change was limited to the disposable test endpoint; proxy settings and
 the production Clawd integration remained untouched. It verifies the full
 CLI path with deterministic model replies, not a live provider or desktop
 animation, and does not replace the reporter's own slower-machine retest.
+
+## Follow-up check: 2026-10-22
+
+The reporter's later Node 22.22.2 receipts on main (including #1199) showed
+3493–4145ms before Node readiness and 5687–6333ms total with late stdin. That
+phase includes the complete wrapper/Node launch; it does not establish that
+PowerShell alone accounts for the delay. Our Windows 11 machine did **not**
+reproduce that delay naturally: baseline late-input checks passed in
+2292–2309ms. A controlled 3500ms pre-Node launch floor plus 1800ms late input
+reproduced both native timeout/block decisions with the unchanged main hook.
+
+The installer now avoids PowerShell when the exact absolute Node and hook can
+be expressed without quotes. It queries existing DOS short aliases once at
+installation, verifies their file identities, and escapes shell characters in
+the script argument. It neither enables 8.3 naming nor changes the selected
+Node executable. Missing/unsafe aliases retain the encoded fallback. This
+removes one launch layer on eligible paths; it does not make arbitrary
+multi-second Node/OS stalls safe or fix the fallback's slow-launch exposure.
+The issue remains open for the reporter's machine to retest.
+
+To isolate the removed launch layer, the native fixture now accepts
+`--powershell-delay-ms`: its test-only executable shim waits, records a receipt,
+and then invokes the original Windows PowerShell. The production installer
+selects whether that shim is used. Direct commands must produce no shim
+receipt. `--delay-ms` still injects an independent Node startup delay, while
+`--stdin-delay-ms` delays the actual input bytes. Build the updated `main.go`
+and use this revision's driver for both repositories:
+
+```powershell
+# oldRepo is main a114fd00 (already contains #1199); fixedRepo is this change.
+node $driver --consumer $consumer --repo $oldRepo --mode stream --powershell-delay-ms 2500 --delay-ms 1000 --stdin-delay-ms 1800 --expect block
+node $driver --consumer $consumer --repo $fixedRepo --mode stream --powershell-delay-ms 2500 --delay-ms 1000 --stdin-delay-ms 1800 --repeat 3 --expect pass
+```
+
+Windows 11 x64, Node 24.12.0, Go 1.26.3, the same pinned official consumer:
+
+| Control | Measured duration | Native outcome |
+| --- | ---: | --- |
+| Main, 2500ms PowerShell shim + 1000ms Node delay + 1800ms stdin, both events | about 5501ms | Both TimedOut + Block |
+| Candidate, same options, direct launch bypasses PowerShell shim, three runs/event | 3077–3093ms | All six pass, exit 0 |
+| Candidate, normal HTTP, both events | 87–98ms | Both pass, exit 0 |
+| Candidate, 2200ms Node delay + 1800ms stdin + streaming HTTP, both events | 4282ms | Both pass, exit 0 |
+
+Every row received exactly one real `/state` POST. The injected wait in the
+removed layer is deliberately absent in the candidate; these results must
+not be described as surviving the same 3500ms absolute pre-Node floor.
+The official timeout remains 5000ms, and production hook budgets are unchanged.
+
+Two complete sessions with installed Reasonix v1.13.1 also passed: direct
+launch (4336ms) and a deliberately unsafe short alias forcing encoded fallback
+(5055ms). Both used isolated homes, deterministic local model replies, a real
+`read_file`, all six state events, and exit 0 without hook errors. These are
+whole-session durations, not per-hook durations. The final focused Windows set
+passed all 54 tests (Node 24.12.0), including Doctor validation of the generated
+command. Another 166 related Doctor checks passed with one platform skip. The
+full macOS suite passed 13,321 tests with
+73 platform skips and no failures (Node 24.18.0). No paid model, user settings,
+live Clawd UI, or proxy configuration was changed. Node 22.22.2 was not run
+on this machine because the separate runtime download did not complete; the
+reporter's exact runtime/slow-host combination still needs a retest.
+
+### Windows CI regression follow-up
+
+The installation-detector test now explicitly selects the encoded fallback
+instead of assuming every Windows path needs it, and separately checks direct
+commands whose short filename needs the ownership marker. A Windows-only
+regression copies the real hooks into the default install directory layout,
+runs the actual short-name query with the installer's forward-slash path, and
+verifies both file identities, all generated event commands, Doctor parsing,
+and silent execution. It uses an independent backslash query to skip only
+when the volume/profile has no usable aliases; an installer fallback or query
+failure is a test failure when those aliases exist.
+
+On the same Windows 11 / Node 24.12.0 machine, the real-query regression ran
+without skipping. The complete repository suite then passed **13,411 tests**
+with **127 platform skips and zero failures** (57.3 seconds), using the normal
+`test/run-tests.js` entry point and all locked dependency versions. This
+supersedes the focused-only Windows coverage above; #1198 remains open for
+the reporter's exact runtime and slower host.
 
 ## Collect phase timings after a failed Windows retest
 

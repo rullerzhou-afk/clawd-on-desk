@@ -32,14 +32,16 @@ sessions.
 
 ## Setup
 
-The Settings tab walks you through three steps in order. Each step is gated
-until the previous one is saved, so the **Enable** switch and **Send test**
-button stay disabled until token and recipient are in place.
+Each Telegram card has three layers: a header with one status sentence and the
+**Enable** switch, a body that is either the two-step setup block or the
+connection / notification groups, and a footer with **Send test card**. Before
+the token and recipient are saved, the card only shows the setup block; the
+switch, the groups and the test link appear once setup is complete.
 
-1. **Step 1 — Bot Token.** Create a dedicated bot with
+1. **Bot token.** Create a dedicated bot with
    [@BotFather](https://t.me/botfather) using `/newbot`. Open Clawd Settings →
    **Permissions & approval** → **IM channels** → expand the **Telegram** card
-   and paste the token into step 1.
+   and paste the token into the first setup row.
 
    Do not reuse the token from an existing Telegram bridge. Telegram allows
    only one active `getUpdates` owner per bot token, so sharing a token can
@@ -51,27 +53,28 @@ button stay disabled until token and recipient are in place.
    apart without seeing the raw secret. The raw token never crosses the IPC
    boundary back to the UI.
 
-2. **Step 2 — Recipient.** Open [@userinfobot](https://t.me/userinfobot) in
+2. **Recipient.** Open [@userinfobot](https://t.me/userinfobot) in
    Telegram and send `/start` to get your numeric user id. Paste that number
-   into step 2 and save.
+   into the second setup row and save.
 
    Clawd uses this one number both as the allowed approver (only this user can
    tap Allow/Deny) and as the chat to deliver approval cards (private chat
    `chat_id` is the same as the user's id). Before testing, send `/start` to
    your own bot at least once so it can initiate the private chat.
 
-3. **Step 3 — Enable & Verify.** Flip **Enable Telegram approval**.
+3. **Enable & verify.** Turn on the switch in the **Telegram** card header.
 
    Clawd sends a standalone verification card. Tap either Allow or Deny in
    Telegram within 60 seconds. It is not attached to any agent permission
    request. A successful callback activates the native Telegram transport.
-   After activation, **Send test** remains available for an ordinary
+   After activation, the card footer offers **Send test card** for an ordinary
    connectivity check.
 
 ### Verification failures
 
 For a new or currently disabled setup, a failed verification returns the
-Enable switch to off and leaves an actionable red status on the Telegram card.
+header switch to off and leaves an actionable failed status sentence on the
+Telegram card.
 Legacy-upgrade users instead remain on the migration-required panel described
 below. Neither path silently enables Telegram or revives the retired transport.
 
@@ -99,7 +102,7 @@ outcome and error-class fields; those terminal lines do not include tokens, chat
 ids, proxy addresses, or Telegram response bodies.
 
 4. **Enable replies (optional).** Native Telegram must be active. Turn on
-   **Reply to completion notifications** in step 3. Recent completion
+   **Reply to completion notifications** in the **Notifications** group. Recent completion
    notifications from the current Clawd run can be used as reply targets.
 
    Upgrading from the earlier paste-only Direct Send beta turns this setting

@@ -8,8 +8,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
+	"syscall"
 	"time"
 
 	"reasonix/internal/ext/hook"
@@ -32,7 +35,37 @@ type output struct {
 	NoticeCount int     `json:"noticeCount"`
 }
 
+// Test-only replacement for the PowerShell executable. It adds a measured
+// startup cost, then runs the real PowerShell with unchanged arguments and
+// streams. The direct launcher never invokes this mode.
+func runPowerShellShim() {
+	ms, err := strconv.Atoi(os.Getenv("CLAWD_TEST_REASONIX_POWERSHELL_DELAY_MS"))
+	proof := os.Getenv("CLAWD_TEST_REASONIX_POWERSHELL_PROOF")
+	if err != nil || ms < 1 || ms > 3000 || !filepath.IsAbs(proof) {
+		fatal("invalid test-only PowerShell delay")
+	}
+	started := time.Now()
+	time.Sleep(time.Duration(ms) * time.Millisecond)
+	data, _ := json.Marshal(map[string]int64{"requestedMs": int64(ms), "elapsedMs": time.Since(started).Milliseconds()})
+	if err := os.WriteFile(proof, data, 0600); err != nil {
+		fatal(err.Error())
+	}
+	cmd := exec.Command(filepath.Join(os.Getenv("SystemRoot"), "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), os.Args[2:]...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		if code, ok := err.(*exec.ExitError); ok {
+			os.Exit(code.ExitCode())
+		}
+		fatal(err.Error())
+	}
+}
+
 func main() {
+	if len(os.Args) > 1 && os.Args[1] == "--clawd-powershell-shim" {
+		runPowerShellShim()
+		return
+	}
 	home := flag.String("home", "", "existing isolated test home")
 	event := flag.String("event", "", "UserPromptSubmit or PreToolUse")
 	expect := flag.String("expect", "pass", "pass or block (block must be a timeout)")

@@ -605,6 +605,7 @@ class FakeElement {
     const matches = [];
     const visit = (node) => {
       for (const child of node.children) {
+        if (!child || typeof child._matchesSelectorParts !== "function") continue;
         if (child._matchesSelectorParts(parts)) matches.push(child);
         visit(child);
       }
@@ -619,7 +620,7 @@ class FakeElement {
 
   contains(target) {
     if (target === this) return true;
-    return this.children.some((child) => child.contains(target));
+    return this.children.some((child) => child && typeof child.contains === "function" && child.contains(target));
   }
 
   getBoundingClientRect() {
@@ -2058,11 +2059,35 @@ function loadPermissionsTabForTest({
       }
       return Promise.resolve({ status: "ok" });
     },
+    getMobileConnectionInfo: () => Promise.resolve({
+      status: "ok",
+      port: 23380,
+      token: "tok",
+      lanIp: "192.168.0.23",
+      pairUrl: "http://192.168.0.23:23380/mobile/?token=tok",
+    }),
+    regenerateMobileToken: () => {
+      commands.push({ name: "regenerateMobileToken" });
+      return Promise.resolve({ status: "ok" });
+    },
+    resetMobileAccess: () => {
+      commands.push({ name: "resetMobileAccess" });
+      return Promise.resolve({ status: "ok" });
+    },
     ...settingsAPI,
   };
+  const clipboardWrites = [];
   const context = {
     console: consoleOverride,
     document,
+    navigator: {
+      clipboard: {
+        writeText: (value) => {
+          clipboardWrites.push(String(value));
+          return Promise.resolve();
+        },
+      },
+    },
     requestAnimationFrame: requestAnimationFrameOverride,
     setTimeout: (cb, ms) => {
       timers.push({ cb, ms, cleared: false });
@@ -2075,14 +2100,17 @@ function loadPermissionsTabForTest({
     globalThis: null,
     settingsAPI: api,
   };
+  context.confirm = confirm;
   context.window = context;
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(LANGUAGE_PICKER_JS, "utf8"), context);
   vm.runInContext(fs.readFileSync(FEISHU_APPROVAL_RECIPIENT, "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-mobile.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-permissions.js"), "utf8"), context);
   const buttonHelpers = loadSharedButtonHelpersForTest(document, api, () => core.helpers.t);
+  const sharedCoreHelpers = loadSettingsCoreForTest(api, { document }).helpers;
 
   const core = {
     state: {
@@ -2120,12 +2148,17 @@ function loadPermissionsTabForTest({
       buildButton: buttonHelpers.buildButton,
       setButtonState: buttonHelpers.setButtonState,
       buildSwitch: buttonHelpers.buildSwitch,
+      attachDescriptionDisclosure: sharedCoreHelpers.attachDescriptionDisclosure,
+      buildStatusLine: sharedCoreHelpers.buildStatusLine,
+      buildDetailGroup: sharedCoreHelpers.buildDetailGroup,
       buildSwitchRow: ({
         key,
         labelKey,
         descKey,
         descExtraKey = null,
         invert = false,
+        disabled = false,
+        onToggle = null,
       }) => {
         const row = document.createElement("div");
         row.className = "row";
@@ -2154,6 +2187,10 @@ function loadPermissionsTabForTest({
         const switchElement = document.createElement("div");
         switchElement.className = "switch";
         if (core.state.snapshot && core.state.snapshot[key] === true) switchElement.classList.add("on");
+        if (disabled) {
+          switchElement.classList.add("disabled");
+          switchElement.setAttribute("aria-disabled", "true");
+        }
         const control = {
           element: switchElement,
           setState(patch = {}) {
@@ -2163,8 +2200,21 @@ function loadPermissionsTabForTest({
             if (Object.prototype.hasOwnProperty.call(patch, "pending")) {
               switchElement.classList.toggle("pending", patch.pending === true);
             }
+            if (Object.prototype.hasOwnProperty.call(patch, "disabled")) {
+              switchElement.classList.toggle("disabled", patch.disabled === true);
+              switchElement.setAttribute("aria-disabled", patch.disabled === true ? "true" : "false");
+            }
           },
         };
+        switchElement.addEventListener("click", () => {
+          if (disabled) return;
+          const currentRaw = !!(core.state.snapshot && core.state.snapshot[key]);
+          const currentVisual = invert ? !currentRaw : currentRaw;
+          const nextVisual = !currentVisual;
+          const nextRaw = invert ? !nextVisual : nextVisual;
+          if (typeof onToggle !== "function") return;
+          Promise.resolve(onToggle({ currentRaw, currentVisual, nextRaw })).catch(() => {});
+        });
         controlElement.appendChild(switchElement);
         row.appendChild(controlElement);
         core.state.mountedControls.generalSwitches.set(key, {
@@ -2176,6 +2226,7 @@ function loadPermissionsTabForTest({
         return row;
       },
       showSettingsConfirmModal: showConfirmModal,
+      showSettingsDialog: showConfirmModal,
       buildSection: (title, rows) => {
         const section = document.createElement("section");
         section.className = "section";
@@ -2199,6 +2250,7 @@ function loadPermissionsTabForTest({
         desc = "",
         summary = null,
         headerContent,
+        headerAction = null,
         children = [],
         defaultCollapsed = false,
         className = "",
@@ -2251,6 +2303,12 @@ function loadPermissionsTabForTest({
           else summaryWrap.appendChild(summary);
           header.appendChild(summaryWrap);
         }
+        if (headerAction) {
+          const actionWrap = document.createElement("div");
+          actionWrap.className = "collapsible-group-header-action";
+          actionWrap.appendChild(headerAction);
+          header.appendChild(actionWrap);
+        }
         group.appendChild(header);
         for (const child of children) body.appendChild(child);
         group.appendChild(body);
@@ -2294,6 +2352,7 @@ function loadPermissionsTabForTest({
     core.state.mountedControls.permissionAutomationMode = null;
     core.state.mountedControls.agentPermissionModes.clear();
   };
+  context.ClawdSettingsTabMobile.init(core);
   context.ClawdSettingsTabPermissions.init(core);
   context.ClawdSettingsTabTelegramApproval.init(core);
   function render() {
@@ -2302,7 +2361,17 @@ function loadPermissionsTabForTest({
   }
   render();
 
-  return { core, content, document, updates, commands, render, renderRequests, timers };
+  return {
+    core,
+    content,
+    document,
+    updates,
+    commands,
+    render,
+    renderRequests,
+    timers,
+    clipboardWrites,
+  };
 }
 
 function createFeishuCredentialDraftLifecycleHarness({
@@ -3776,9 +3845,10 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     const card = harness.content.querySelector(".feishu-approval-channel-card");
-    const prerequisites = card.querySelector(".tg-approval-prereq-row");
-    assert.equal(collectText(prerequisites).includes("feishuApprovalApproverNotConfigured"), true);
-    assert.equal(collectText(prerequisites).includes("feishuApprovalLookupApproverNotFound"), false);
+    assert.equal(card.querySelector(".settings-status-text").textContent, "feishuApprovalCardMissingApprover");
+    assert.ok(card.querySelector(".channel-setup"), "an unconfigured card shows the setup block");
+    assert.equal(card.querySelector(".collapsible-group-header .switch"), null);
+    assert.equal(collectText(card).includes("feishuApprovalLookupApproverNotFound"), false);
 
     const input = card.querySelectorAll("input").at(-1);
     input.value = "person@example.com";
@@ -3878,11 +3948,9 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     harness.render();
     const card = harness.content.querySelector(".feishu-approval-channel-card");
-    const sw = card.querySelector(".switch");
-    assert.equal(sw.disabled, true);
-    assert.equal(sw.getAttribute("aria-disabled"), "true");
-    sw.dispatchEvent({ type: "click" });
-    sw.dispatchEvent({ type: "keydown", key: "Enter" });
+    assert.equal(card.querySelector(".switch"), null, "an unusable config has no header switch");
+    assert.equal(card.querySelector(".settings-status-text").textContent, "feishuApprovalLookupApproverProvenanceUnknown");
+    assert.ok(card.querySelector(".channel-setup"));
     assert.equal(harness.updates.length, 0);
   });
 
@@ -3930,15 +3998,13 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
       harness.render();
-      const sw = harness.content.querySelector(".feishu-approval-channel-card .switch");
-      assert.equal(sw.getAttribute("aria-disabled"), "true", `${setupReason}: Enable must be blocked`);
+      const card = harness.content.querySelector(".feishu-approval-channel-card");
+      assert.equal(card.querySelector(".switch"), null, `${setupReason}: no switch may render`);
       assert.equal(
-        sw.title,
+        card.querySelector(".settings-status-text").textContent,
         strings[expectedTitleKey].replaceAll("{brand}", "Lark"),
         `${setupReason}: feedback must use the stable localized reason`,
       );
-      sw.dispatchEvent({ type: "click" });
-      sw.dispatchEvent({ type: "keydown", key: " " });
       assert.equal(harness.updates.length, 0, `${setupReason}: no update may be sent`);
     }
 
@@ -4802,9 +4868,15 @@ describe("settings renderer browser environment", () => {
       "true",
       "the ordinary enable switch must not bypass migration verification",
     );
-    const ordinaryTest = harness.content.querySelectorAll("button")
-      .find((button) => button.textContent === "telegramApprovalSendTest");
-    assert.equal(ordinaryTest.disabled, true, "ordinary Send test must not become a second migration entry");
+    const card = harness.content.querySelector(".tg-approval-channel-card");
+    assert.equal(card.querySelector(".channel-foot-link"), null,
+      "ordinary Send test must not become a second migration entry");
+    assert.ok(card.querySelector(".channel-foot-hint"));
+    const body = card.querySelector(".collapsible-group-body");
+    const bodyChildren = body.children;
+    assert.ok(bodyChildren.indexOf(gate) < bodyChildren.findIndex((child) => (
+      child.classList.contains("settings-detail-group")
+    )), "the migration gate comes before the connection groups");
     const buttons = gate.querySelectorAll("button");
     const verify = buttons.find((button) => button.textContent === "telegramNativeMigrationVerify");
     assert.ok(verify);
@@ -4880,7 +4952,7 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       await Promise.resolve();
       harness.render();
-      const statusText = harness.content.querySelector(".tg-approval-channel-status-text").textContent;
+      const statusText = harness.content.querySelector(".settings-status-text").textContent;
       const gateText = harness.content.querySelector(".tg-native-migration-gate-result").textContent;
       assert.equal(statusText, statusKey);
       assert.equal(
@@ -4977,7 +5049,7 @@ describe("settings renderer browser environment", () => {
 
       assert.equal(harness.content.querySelector(".tg-native-migration-gate"), null);
       assert.equal(
-        harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+        harness.content.querySelector(".settings-status-text").textContent,
         expectedKey,
       );
     }
@@ -5032,7 +5104,7 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     assert.equal(
-      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      harness.content.querySelector(".settings-status-text").textContent,
       "telegramApprovalCardMissingRecipient",
     );
   });
@@ -5076,7 +5148,7 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     harness.render();
     assert.equal(
-      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      harness.content.querySelector(".settings-status-text").textContent,
       "telegramApprovalVerificationInvalidToken",
     );
     await Promise.resolve();
@@ -5090,7 +5162,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(harness.renderRequests.length > before, "Telegram status push should force a content render");
     harness.render();
     assert.equal(
-      harness.content.querySelector(".tg-approval-channel-status-text").textContent,
+      harness.content.querySelector(".settings-status-text").textContent,
       "telegramApprovalVerificationForbidden",
     );
   });
@@ -5475,23 +5547,10 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     harness.render();
 
-    const select = harness.content.querySelector(".tg-approval-output-choice");
+    const select = harness.content.querySelector(".tg-approval-completion-output");
     assert.deepStrictEqual(
       select.querySelectorAll("button").map((option) => option.dataset.value),
       ["off", "full"]
-    );
-    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
-    assert.match(
-      css,
-      /\.tg-approval-output-choice\s*\{[^}]*grid-template-columns:\s*repeat\(2,\s*minmax\(0,\s*1fr\)\);[^}]*gap:\s*10px;[^}]*background:\s*transparent;/s
-    );
-    assert.match(
-      css,
-      /\.tg-approval-output-choice button::after\s*\{[^}]*border-radius:\s*50%;/s
-    );
-    assert.match(
-      css,
-      /\.tg-approval-output-choice button\.active::after\s*\{[^}]*background:\s*var\(--accent\);/s
     );
     chooseSegmentedOption(select, "full");
     await Promise.resolve();
@@ -5535,7 +5594,7 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     confirmed.render();
 
-    const confirmedSelect = confirmed.content.querySelector(".tg-approval-output-choice");
+    const confirmedSelect = confirmed.content.querySelector(".tg-approval-completion-output");
     chooseSegmentedOption(confirmedSelect, "full");
     await Promise.resolve();
     await Promise.resolve();
@@ -5884,12 +5943,9 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     harness.render();
 
-    const testButton = harness.content.querySelectorAll("button")
-      .find((button) => button.textContent === "telegramApprovalSendTest");
-    assert.equal(testButton.disabled, true);
-    assert.match(testButton.title, /Native Telegram approval test/);
-
-    testButton.dispatchEvent({ type: "click" });
+    const card = harness.content.querySelector(".tg-approval-channel-card");
+    assert.equal(card.querySelector(".channel-foot-link"), null);
+    assert.equal(card.querySelector(".channel-foot-hint").textContent, "telegramApprovalTestAfterEnable");
     assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
   });
 
@@ -5929,12 +5985,9 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     harness.render();
-    const buttons = harness.content.querySelectorAll("button");
-    const testButton = buttons.find((button) => button.textContent === "telegramApprovalSendTest");
-    assert.equal(testButton.disabled, true);
-    assert.match(testButton.title, /target session key/);
-
-    testButton.dispatchEvent({ type: "click" });
+    const card = harness.content.querySelector(".tg-approval-channel-card");
+    assert.equal(card.querySelector(".channel-foot-link"), null);
+    assert.equal(card.querySelector(".channel-foot-hint").textContent, "telegramApprovalTestAfterEnable");
     assert.equal(commandCalls.some((call) => call.name === "telegramApproval.test"), false);
   });
 
@@ -6081,9 +6134,9 @@ describe("settings renderer browser environment", () => {
     assert.equal(card.querySelectorAll("button").find((button) => button.textContent === "feishuApprovalReplaceSecrets").disabled, true);
     assert.equal(card.querySelectorAll("button").filter((button) => button.dataset.idType).every((button) => button.disabled), true);
     assert.equal(card.querySelectorAll("input").every((input) => input.disabled), true);
-    assert.equal(card.querySelector(".switch").getAttribute("aria-disabled"), "true");
-    assert.equal(card.querySelector(".feishu-approval-timeout-select .language-picker-trigger").disabled, true);
-    assert.equal(card.querySelectorAll("button").find((button) => button.textContent === "feishuApprovalSendTest").disabled, true);
+    assert.equal(card.querySelector(".switch"), null, "an unconfigured Feishu card has no header switch");
+    assert.equal(card.querySelector(".feishu-approval-timeout-select"), null);
+    assert.equal(card.querySelector(".channel-foot-link"), null);
 
     const header = card.querySelector(".collapsible-group-header");
     header.dispatchEvent({ type: "click" });
@@ -7015,13 +7068,13 @@ describe("settings renderer browser environment", () => {
         language: "en",
         brand: "Feishu",
         label: "Feishu approver email or user ID",
-        hint: "Enter an email to resolve and save open_id automatically, or choose an ID type and paste an existing ID.",
+        hint: "Enter an email to look up open_id automatically; or pick a type and paste an ID.",
       },
       {
         language: "zh",
         brand: "飞书",
-        label: "飞书审批人邮箱或用户 ID",
-        hint: "输入邮箱可自动查询并保存 open_id；也可以选择 ID 类型并粘贴已有 ID。",
+        label: "审批人（飞书邮箱或用户 ID）",
+        hint: "填邮箱会自动查 open_id；也可以选类型直接贴 ID。",
       },
     ]) {
       const harness = loadPermissionsTabForTest({
@@ -7940,7 +7993,7 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     const card = harness.content.querySelector(".feishu-approval-channel-card");
-    const statusText = card.querySelector(".tg-approval-channel-status-text").textContent;
+    const statusText = card.querySelector(".settings-status-text").textContent;
     assert.equal(
       statusText,
       "The saved Lark App ID must start with cli_.",
@@ -7949,11 +8002,11 @@ describe("settings renderer browser environment", () => {
     assert.ok(!statusText.includes("Flip the switch"), "must not claim the setup is ready to enable");
     assert.ok(!statusText.includes("Feishu"), "a Lark user must not be shown Feishu copy");
 
-    // The tooltip explaining the dead test button must be translated too.
-    const testButton = card.querySelectorAll("button").find((b) => b.textContent === strings.feishuApprovalSendTest);
-    assert.equal(testButton.disabled, true, "an unusable config must not offer a test");
-    assert.equal(testButton.title, statusText, "the tooltip must give the same translated reason");
-    assert.ok(!testButton.title.includes("App ID format is invalid"), "the raw English diagnostic must not surface");
+    // The footer explains the same reason instead of offering a dead test.
+    assert.equal(card.querySelector(".channel-foot-link"), null, "an unusable config must not offer a test");
+    const hint = card.querySelector(".channel-foot-hint").textContent;
+    assert.equal(hint, statusText);
+    assert.ok(!hint.includes("App ID format is invalid"), "the raw English diagnostic must not surface");
   });
 
   it("shows a fixed localized secrets-save failure without raw rejection detail", async () => {
@@ -8047,19 +8100,15 @@ describe("settings renderer browser environment", () => {
       harness.render();
 
       const card = harness.content.querySelector(".feishu-approval-channel-card");
-      const statusText = card.querySelector(".tg-approval-channel-status-text").textContent;
-      assert.equal(statusText, "Save Lark app credentials below to continue.", `${label}: card must ask for credentials`);
+      const statusText = card.querySelector(".settings-status-text").textContent;
+      assert.equal(
+        statusText,
+        strings.feishuApprovalCardMissingSecrets.replace("{brand}", "Lark"),
+        `${label}: card must ask for credentials`,
+      );
       assert.ok(!statusText.includes("Flip the switch"), `${label}: must not claim ready to enable`);
-
-      // The enable switch must not be operable on an incomplete credential set.
-      const sw = card.querySelectorAll(".switch")[0];
-      assert.equal(sw.classList.contains("disabled"), true, `${label}: enable switch must be disabled`);
-      assert.equal(sw.getAttribute("aria-disabled"), "true", `${label}: switch must be marked disabled`);
-
-      // And step 3 must list app credentials as still missing.
-      const prereq = card.querySelector(".tg-approval-prereq-row");
-      assert.ok(prereq, `${label}: prerequisites row should render`);
-      assert.equal(prereq.querySelectorAll(".row-desc")[0].textContent, "Save the Lark App ID and App Secret before looking up an approver.", `${label}: prereq explains missing credentials`);
+      assert.equal(card.querySelector(".switch"), null, `${label}: no enable switch before setup is complete`);
+      assert.ok(card.querySelector(".channel-setup"), `${label}: the setup block renders`);
     }
   });
 
@@ -8094,7 +8143,7 @@ describe("settings renderer browser environment", () => {
     harness.render();
 
     const statusText = harness.content.querySelector(".feishu-approval-channel-card")
-      .querySelector(".tg-approval-channel-status-text").textContent;
+      .querySelector(".settings-status-text").textContent;
     assert.equal(statusText, strings.feishuApprovalCardReadyToEnable);
   });
 
@@ -8148,7 +8197,7 @@ describe("settings renderer browser environment", () => {
       secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
     });
     assert.equal(
-      configuredOff.card.querySelector(".tg-approval-channel-status-text").textContent,
+      configuredOff.card.querySelector(".settings-status-text").textContent,
       strings.slackNotifyCardReadyToEnable,
       "a usable disabled transport is ready to enable, not incomplete"
     );
@@ -8179,15 +8228,14 @@ describe("settings renderer browser environment", () => {
       secretInfo: { configured: true, webhookUrl: "", botToken: "xoxb-…" },
     });
     assert.equal(
-      tokenWithoutChannel.card.querySelector(".tg-approval-channel-status-text").textContent,
+      tokenWithoutChannel.card.querySelector(".settings-status-text").textContent,
       strings.slackNotifyCardMissingSecret
     );
-    const blockedSwitch = tokenWithoutChannel.card.querySelectorAll(".switch")[0];
-    assert.equal(blockedSwitch.classList.contains("disabled"), true);
-    assert.equal(blockedSwitch.getAttribute("aria-disabled"), "true");
-    const testButton = tokenWithoutChannel.card.querySelectorAll("button")
-      .find((button) => button.textContent === strings.slackNotifySendTest);
-    assert.equal(testButton.disabled, true, "bot-without-channel cannot send a test either");
+    assert.equal(tokenWithoutChannel.card.querySelector(".switch"), null,
+      "an unconfigured Slack card has no header switch");
+    assert.equal(tokenWithoutChannel.card.querySelector(".channel-foot-link"), null,
+      "bot-without-channel cannot send a test either");
+    assert.ok(tokenWithoutChannel.card.querySelector(".channel-setup"));
 
     const invalidButEnabled = await renderSlack({
       config: { enabled: true, channelId: "" },
@@ -8225,8 +8273,8 @@ describe("settings renderer browser environment", () => {
       secretInfo: { configured: true, webhookUrl: "https://hooks.slack.com/…", botToken: "" },
     });
     assert.equal(
-      running.card.querySelector(".tg-approval-channel-status-text").textContent,
-      strings.slackNotifyCardRunning
+      running.card.querySelector(".settings-status-text").textContent,
+      `${strings.slackNotifyCardRunning} · ${strings.slackNotifyTransportWebhook}`
     );
   });
 
@@ -8254,7 +8302,7 @@ describe("settings renderer browser environment", () => {
 
     assert.equal(
       harness.content.querySelector(".slack-notify-channel-card")
-        .querySelector(".tg-approval-channel-status-text").textContent,
+        .querySelector(".settings-status-text").textContent,
       strings.slackNotifyCardReadyToEnable
     );
   });
@@ -8361,7 +8409,7 @@ describe("settings renderer browser environment", () => {
         secretInputs: secretGrid.querySelectorAll("input"),
         secretSave: secretGrid.querySelectorAll("button").find((button) => button.textContent === strings.slackNotifySaveSecrets),
         channelInput: card.querySelector(".slack-notify-channel-row").querySelector("input"),
-        channelSave: card.querySelector(".slack-notify-channel-row").querySelector("button"),
+        channelSave: card.querySelector(".slack-notify-channel-row .row-control").querySelector("button"),
       };
     };
 
@@ -8502,7 +8550,7 @@ describe("settings renderer browser environment", () => {
       await Promise.resolve();
       harness.render();
       return harness.content.querySelector(".feishu-approval-channel-card")
-        .querySelector(".tg-approval-channel-status-text").textContent;
+        .querySelector(".settings-status-text").textContent;
     }
 
     // Our own timeout carries a code -> real copy, with the brand and the
@@ -8589,6 +8637,1073 @@ describe("settings renderer browser environment", () => {
       assert.deepStrictEqual(JSON.parse(JSON.stringify(toast.options)), { error: true });
       assert.ok(!toast.message.includes("Feishu"), `Lark user must not be shown Feishu copy: ${toast.message}`);
       assert.ok(!toast.message.includes("{brand}"), "no raw token may reach the user");
+    }
+  });
+
+
+  it("derives every Telegram channel status sentence and tone", async () => {
+    const cases = [
+      {
+        name: "missing both",
+        cfg: { allowedTgUserId: "", targetSessionKey: "" },
+        tokenInfo: { configured: false, masked: "" },
+        state: { status: "stopped", configured: false, tokenStored: false },
+        tone: "off",
+        text: "telegramApprovalCardMissingBoth",
+      },
+      {
+        name: "missing token",
+        cfg: { allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+        tokenInfo: { configured: false, masked: "" },
+        state: { status: "stopped", configured: false, tokenStored: false },
+        tone: "off",
+        text: "telegramApprovalCardMissingToken",
+      },
+      {
+        name: "missing recipient",
+        cfg: { allowedTgUserId: "", targetSessionKey: "" },
+        tokenInfo: { configured: true, masked: "1234" },
+        state: { status: "stopped", configured: false, tokenStored: true },
+        tone: "off",
+        text: "telegramApprovalCardMissingRecipient",
+      },
+      {
+        name: "save raced ahead of status",
+        cfg: { allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+        tokenInfo: { configured: true, masked: "1234" },
+        state: { status: "stopped", configured: false, tokenStored: true },
+        tone: "off",
+        text: "telegramApprovalCardReadyToEnable",
+      },
+      {
+        name: "ready",
+        cfg: { allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+        tokenInfo: { configured: true, masked: "1234" },
+        state: { status: "stopped", configured: true, tokenStored: true },
+        tone: "warn",
+        text: "telegramApprovalCardReadyToEnable",
+      },
+      {
+        name: "running",
+        cfg: { allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+        tokenInfo: { configured: true, masked: "1234" },
+        state: { status: "running", configured: true, tokenStored: true },
+        tone: "ok",
+        text: "telegramApprovalCardRunning",
+      },
+      {
+        name: "failed",
+        cfg: { allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+        tokenInfo: { configured: true, masked: "1234" },
+        state: {
+          status: "failed", configured: true, tokenStored: true,
+          errorCode: "401", failureOutcome: "failed",
+        },
+        tone: "bad",
+        text: "telegramApprovalVerificationInvalidToken",
+      },
+    ];
+    for (const entry of cases) {
+      const harness = loadPermissionsTabForTest({
+        snapshot: { tgApproval: { enabled: false, ...entry.cfg } },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "telegramApproval.status") return Promise.resolve({ status: "ok", state: entry.state });
+            if (name === "telegramApproval.tokenInfo") return Promise.resolve({ status: "ok", ...entry.tokenInfo });
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      const card = harness.content.querySelector(".tg-approval-channel-card");
+      const status = card.querySelector(".settings-status");
+      assert.equal(status.classList.contains(entry.tone), true, `${entry.name}: tone`);
+      assert.equal(card.querySelector(".settings-status-text").textContent, entry.text, `${entry.name}: text`);
+      assert.equal(card.querySelector(".tg-approval-channel-status-row"), null);
+    }
+  });
+
+  it("derives Feishu and Slack channel status sentences and tones", async () => {
+    const feishuCases = [
+      {
+        name: "missing both",
+        cfg: { approverId: "" },
+        secretInfo: { configured: false },
+        state: { status: "stopped", configured: false, configurationReady: false, setupReason: "missing-credentials", secretsConfigured: false },
+        tone: "off",
+        text: "feishuApprovalCardMissingBoth",
+      },
+      {
+        name: "missing secrets",
+        cfg: { approverId: "ou_1" },
+        secretInfo: { configured: false },
+        state: { status: "stopped", configured: false, configurationReady: false, setupReason: "missing-credentials", secretsConfigured: false },
+        tone: "off",
+        text: "feishuApprovalCardMissingSecrets",
+      },
+      {
+        name: "missing approver",
+        cfg: { approverId: "" },
+        secretInfo: { configured: true },
+        state: { status: "stopped", configured: false, configurationReady: false, setupReason: "missing-approver", secretsConfigured: true },
+        tone: "off",
+        text: "feishuApprovalCardMissingApprover",
+      },
+      {
+        name: "blocking reason",
+        cfg: { approverId: "ou_1" },
+        secretInfo: { configured: true },
+        state: { status: "stopped", configured: false, configurationReady: false, setupReason: "invalid-app-id" },
+        tone: "off",
+        text: "feishuApprovalLookupInvalidAppId",
+      },
+      {
+        name: "ready",
+        cfg: { approverId: "ou_1" },
+        secretInfo: { configured: true },
+        state: { status: "stopped", configured: true, configurationReady: true, setupReason: "" },
+        tone: "warn",
+        text: "feishuApprovalCardReadyToEnable",
+      },
+      {
+        name: "running",
+        cfg: { approverId: "ou_1" },
+        secretInfo: { configured: true },
+        state: { status: "running", configured: true, configurationReady: true, setupReason: "" },
+        tone: "ok",
+        text: "feishuApprovalCardRunning",
+      },
+      {
+        name: "failed",
+        cfg: { approverId: "ou_1" },
+        secretInfo: { configured: true },
+        state: {
+          status: "failed", configured: true, configurationReady: true,
+          errorCode: "connection-timeout", connectionTimeoutSeconds: 15,
+        },
+        tone: "bad",
+        text: "feishuApprovalErrorConnectionTimeout",
+      },
+    ];
+    for (const entry of feishuCases) {
+      const harness = loadPermissionsTabForTest({
+        snapshot: {
+          feishuApproval: {
+            enabled: false,
+            platform: "feishu",
+            idType: "open_id",
+            connectionTimeoutSeconds: 15,
+            ...entry.cfg,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "feishuApproval.status") return Promise.resolve({ status: "ok", state: entry.state });
+            if (name === "feishuApproval.secretInfo") {
+              return Promise.resolve({ status: "ok", ...entry.secretInfo });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      const card = harness.content.querySelector(".feishu-approval-channel-card");
+      const status = card.querySelector(".settings-status");
+      assert.equal(status.classList.contains(entry.tone), true, `${entry.name}: tone`);
+      const text = card.querySelector(".settings-status-text").textContent;
+      assert.equal(text, entry.text, `${entry.name}: text`);
+      assert.equal(card.querySelector(".tg-approval-channel-status-row"), null);
+    }
+
+    const locked = loadPermissionsTabForTest({
+      snapshot: {
+        feishuApproval: {
+          enabled: false, platform: "lark", idType: "open_id",
+          approverId: "ou_1", connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "feishuApproval.status") return Promise.resolve({ status: "ok", state: {
+            status: "stopped", enabled: false, configured: false,
+            configurationReady: false, reason: "disabled",
+            setupReason: "credential-platform-mismatch", secretsConfigured: true,
+          } });
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "lark", appId: "cli_saved" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    locked.render();
+    const lockedCard = locked.content.querySelector(".feishu-approval-channel-card");
+    assert.equal(
+      lockedCard.querySelector(".settings-status-text").textContent,
+      "feishuApprovalLookupCredentialPlatformMismatch",
+    );
+    assert.equal(lockedCard.querySelector(".collapsible-group-header-action"), null);
+
+    const slackCases = [
+      {
+        name: "missing",
+        cfg: { enabled: false },
+        state: { enabled: false, ready: false, transportConfigured: false, transport: null },
+        tone: "off",
+        text: "slackNotifyCardMissingSecret",
+      },
+      {
+        name: "ready",
+        cfg: { enabled: false },
+        state: { enabled: false, ready: false, transportConfigured: true, transport: "webhook" },
+        tone: "warn",
+        text: "slackNotifyCardReadyToEnable",
+      },
+      {
+        name: "running",
+        cfg: { enabled: true },
+        state: { enabled: true, ready: true, transportConfigured: true, transport: "webhook" },
+        tone: "ok",
+        text: "slackNotifyCardRunning · slackNotifyTransportWebhook",
+      },
+    ];
+    for (const entry of slackCases) {
+      const harness = loadPermissionsTabForTest({
+        snapshot: {
+          slackNotify: {
+            enabled: false, channelId: "C1", notifyOnDone: true,
+            notifyOnError: true, notifyOnPermission: true, outputMode: "off",
+            ...entry.cfg,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "slackNotify.status") return Promise.resolve({ status: "ok", state: entry.state });
+            if (name === "slackNotify.secretInfo") {
+              return Promise.resolve({ status: "ok", configured: true, webhookUrl: "hooks", botToken: "" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      const card = harness.content.querySelector(".slack-notify-channel-card");
+      assert.equal(card.querySelector(".settings-status").classList.contains(entry.tone), true, `${entry.name}: tone`);
+      assert.equal(card.querySelector(".settings-status-text").textContent, entry.text, `${entry.name}: text`);
+    }
+  });
+
+  it("only renders a channel enable switch once the channel is configured", async () => {
+    const unconfigured = loadPermissionsTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", configured: false, tokenStored: false } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: false, masked: "" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    unconfigured.render();
+    assert.equal(
+      unconfigured.content.querySelector(".tg-approval-channel-card .collapsible-group-header-action"),
+      null,
+    );
+
+    const configured = loadPermissionsTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", configured: true, tokenStored: true } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    configured.render();
+    const card = configured.content.querySelector(".tg-approval-channel-card");
+    const action = card.querySelector(".collapsible-group-header-action");
+    assert.ok(action);
+    const sw = action.querySelector(".switch");
+    assert.equal(sw.getAttribute("aria-label"), "telegramApprovalToggle");
+    const describedBy = sw.getAttribute("aria-describedby");
+    assert.ok(describedBy);
+    assert.equal(card.querySelector(".settings-status-text").id, describedBy);
+
+    const headerStrings = loadSettingsI18nForTest().en;
+    const feishu = loadPermissionsTabForTest({
+      snapshot: {
+        feishuApproval: {
+          enabled: false, platform: "feishu", idType: "open_id",
+          approverId: "ou_1", connectionTimeoutSeconds: 15,
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({ status: "ok", state: {
+              status: "stopped", configured: true, configurationReady: true, setupReason: "",
+            } });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_saved" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    feishu.core.helpers.t = (key) => (key in headerStrings ? headerStrings[key] : key);
+    await Promise.resolve();
+    await Promise.resolve();
+    feishu.render();
+    const feishuCard = feishu.content.querySelector(".feishu-approval-channel-card");
+    const feishuSwitch = feishuCard.querySelector(".collapsible-group-header-action .switch");
+    assert.ok(feishuSwitch);
+    assert.equal(
+      feishuSwitch.getAttribute("aria-label"),
+      headerStrings.feishuApprovalToggle.replace("{brand}", "Feishu"),
+    );
+    const feishuDescribedBy = feishuSwitch.getAttribute("aria-describedby");
+    assert.ok(feishuDescribedBy);
+    assert.equal(feishuCard.querySelector(".settings-status-text").id, feishuDescribedBy);
+
+    const slack = loadPermissionsTabForTest({
+      snapshot: {
+        slackNotify: {
+          enabled: false, channelId: "C1", notifyOnDone: true,
+          notifyOnError: true, notifyOnPermission: true, outputMode: "off",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, transportConfigured: true, transport: "webhook",
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "hooks", botToken: "" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    slack.render();
+    const slackCard = slack.content.querySelector(".slack-notify-channel-card");
+    const slackSwitch = slackCard.querySelector(".collapsible-group-header-action .switch");
+    assert.ok(slackSwitch);
+    assert.equal(slackSwitch.getAttribute("aria-label"), "slackNotifyToggle");
+    const slackDescribedBy = slackSwitch.getAttribute("aria-describedby");
+    assert.ok(slackDescribedBy);
+    assert.equal(slackCard.querySelector(".settings-status-text").id, slackDescribedBy);
+  });
+
+  it("renders only the start-setup block for unconfigured IM channels", async () => {
+    const harness = loadPermissionsTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" },
+        feishuApproval: { enabled: false, platform: "feishu", idType: "open_id", approverId: "", connectionTimeoutSeconds: 15 },
+        slackNotify: { enabled: false, channelId: "", notifyOnDone: true, notifyOnError: true, notifyOnPermission: true, outputMode: "off" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234" });
+          }
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", configured: false, tokenStored: true } });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const telegram = harness.content.querySelector(".tg-approval-channel-card");
+    assert.equal(telegram.querySelectorAll(".channel-setup-step").length, 2);
+    assert.equal(telegram.querySelector(".channel-setup-step .tg-approval-token-stored-row") !== null, true);
+    assert.ok(telegram.querySelectorAll("button").some((button) => button.textContent === "telegramApprovalReplaceToken"));
+    assert.equal(telegram.querySelector(".settings-detail-group"), null);
+    assert.equal(telegram.querySelector(".tg-approval-completion-output"), null);
+    assert.equal(telegram.querySelector(".tg-approval-direct-send-row"), null);
+    assert.equal(telegram.querySelector(".channel-foot-link"), null);
+
+    const feishu = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.equal(feishu.querySelectorAll(".channel-setup-step").length, 2);
+    assert.ok(feishu.querySelector(".feishu-approval-event-sub-row"), "the guide stays after the setup block");
+    assert.equal(feishu.querySelector(".settings-detail-group"), null);
+    assert.equal(feishu.querySelector(".feishu-approval-timeout-select"), null);
+    assert.equal(feishu.querySelector(".channel-foot-link"), null);
+
+    const slack = harness.content.querySelector(".slack-notify-channel-card");
+    assert.equal(slack.querySelectorAll(".channel-setup-step").length, 1);
+    assert.equal(slack.querySelectorAll(".channel-setup-step .row").length, 2);
+    assert.equal(slack.querySelector(".slack-notify-oneway-row"), null);
+    assert.equal(slack.querySelector(".channel-foot-link"), null);
+    assert.equal(slack.querySelectorAll(".settings-detail-group").length, 0);
+  });
+
+  it("renders grouped channels with connection, notifications and advanced groups", async () => {
+    const harness = loadPermissionsTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+        feishuApproval: {
+          enabled: false, platform: "feishu", idType: "open_id",
+          approverId: "ou_1", connectionTimeoutSeconds: 15,
+        },
+        slackNotify: {
+          enabled: false, channelId: "C1", notifyOnDone: true,
+          notifyOnError: true, notifyOnPermission: true, outputMode: "off",
+        },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", configured: true, tokenStored: true } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234" });
+          }
+          if (name === "feishuApproval.status") {
+            return Promise.resolve({ status: "ok", state: {
+              status: "stopped", configured: true, configurationReady: true, setupReason: "",
+            } });
+          }
+          if (name === "feishuApproval.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, credentialPlatform: "feishu", appId: "cli_saved" });
+          }
+          if (name === "slackNotify.status") {
+            return Promise.resolve({ status: "ok", state: {
+              enabled: false, ready: false, transportConfigured: true, transport: "webhook",
+            } });
+          }
+          if (name === "slackNotify.secretInfo") {
+            return Promise.resolve({ status: "ok", configured: true, webhookUrl: "hooks", botToken: "" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+
+    const groupLabels = (card) => card.querySelectorAll(".settings-detail-group-label")
+      .map((label) => label.textContent);
+    const telegram = harness.content.querySelector(".tg-approval-channel-card");
+    assert.deepStrictEqual(groupLabels(telegram), ["settingsGroupConnection", "settingsGroupNotifications"]);
+    assert.equal(telegram.querySelector(".channel-setup"), null);
+    const completion = telegram.querySelector(".tg-approval-completion-output");
+    assert.equal(completion.querySelector(".settings-segmented-radio-description"), null);
+    assert.deepStrictEqual(
+      completion.querySelectorAll("button").map((button) => button.textContent),
+      ["telegramApprovalCompletionOutput_off", "telegramApprovalCompletionOutput_full"],
+    );
+
+    const feishu = harness.content.querySelector(".feishu-approval-channel-card");
+    assert.deepStrictEqual(groupLabels(feishu), ["settingsGroupConnection", "settingsGroupAdvanced"]);
+    assert.ok(feishu.querySelector(".feishu-approval-timeout-select"), "the timeout select lives in Advanced");
+    const feishuChildren = feishu.querySelector(".collapsible-group-body").children;
+    const guideIndex = feishuChildren.findIndex((child) => child.classList.contains("feishu-approval-event-sub-row"));
+    const lastGroupIndex = feishuChildren.map((child) => child.classList.contains("settings-detail-group"))
+      .lastIndexOf(true);
+    assert.ok(guideIndex > lastGroupIndex, "the subscription guide follows the groups");
+
+    const slack = harness.content.querySelector(".slack-notify-channel-card");
+    assert.deepStrictEqual(groupLabels(slack), ["settingsGroupConnection", "settingsGroupNotifications"]);
+    const slackSwitches = slack.querySelectorAll(".settings-detail-group-rows .row .switch");
+    assert.equal(slackSwitches.length, 4);
+    assert.deepStrictEqual(slackSwitches.map((control) => {
+      const label = control.parentNode.parentNode.querySelector(".row-label");
+      const toggle = label.querySelector(".row-desc-toggle");
+      return toggle ? label.textContent.slice(0, -toggle.textContent.length) : label.textContent;
+    }), [
+      "slackNotifyEventDone",
+      "slackNotifyEventError",
+      "slackNotifyEventPermission",
+      "slackNotifyOutputMode",
+    ]);
+    assert.equal(slack.querySelector(".settings-detail-group-rows .row .row-desc-collapsed") !== null, true);
+  });
+
+  it("folds grouped descriptions behind one disclosure and leaves setup rows open", async () => {
+    const harness = loadPermissionsTabForTest({
+      snapshot: {
+        tgApproval: { enabled: false, allowedTgUserId: "123456789", targetSessionKey: "telegram:123456789" },
+      },
+      settingsAPI: {
+        command: (name) => {
+          if (name === "telegramApproval.status") {
+            return Promise.resolve({ status: "ok", state: { status: "stopped", configured: true, tokenStored: true } });
+          }
+          if (name === "telegramApproval.tokenInfo") {
+            return Promise.resolve({ status: "ok", configured: true, masked: "1234" });
+          }
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    const card = harness.content.querySelector(".tg-approval-channel-card");
+    const tokenRow = card.querySelector(".tg-approval-token-stored-row");
+    const tokenDesc = tokenRow.querySelector(".row-desc");
+    assert.equal(tokenDesc.classList.contains("row-desc-collapsed"), true);
+    const toggle = tokenRow.querySelector(".row-desc-toggle");
+    assert.ok(toggle);
+    const controls = String(toggle.getAttribute("aria-controls")).split(/\s+/).filter(Boolean);
+    assert.equal(controls.length, 1);
+    assert.equal(controls[0], tokenDesc.id);
+    toggle.dispatchEvent({ type: "click" });
+    assert.equal(tokenDesc.classList.contains("row-desc-collapsed"), false);
+    assert.equal(toggle.getAttribute("aria-expanded"), "true");
+
+    const setup = loadPermissionsTabForTest({
+      snapshot: { tgApproval: { enabled: false, allowedTgUserId: "", targetSessionKey: "" } },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    setup.render();
+    assert.equal(setup.content.querySelector(".channel-setup .row-desc-toggle"), null);
+  });
+
+  it("keeps the destructive reminder disclosure two-part on the local page", () => {
+    const harness = loadGeneralTabForTest({
+      tab: "permissions",
+      snapshot: { permissionAutomationMode: "off" },
+    });
+    harness.renderContent();
+    const row = harness.content.querySelectorAll(".row")
+      .find((candidate) => collectText(candidate).includes(harness.core.helpers.t("rowDestructiveActionReminder")));
+    assert.ok(row);
+    const toggle = row.querySelector(".row-desc-toggle");
+    assert.ok(toggle);
+    const ids = String(toggle.getAttribute("aria-controls")).split(/\s+/).filter(Boolean);
+    assert.equal(ids.length, 2);
+    const descs = row.querySelectorAll(".row-desc");
+    assert.equal(descs.every((desc) => desc.classList.contains("row-desc-collapsed")), true);
+    toggle.dispatchEvent({ type: "click" });
+    assert.equal(descs.every((desc) => desc.classList.contains("row-desc-collapsed")), false);
+  });
+
+  it("hides the per-tool block when Codex is not installed", () => {
+    const harness = loadGeneralTabForTest({
+      tab: "permissions",
+      snapshot: { agents: { codex: { integrationInstalled: false } } },
+    });
+    harness.renderContent();
+    assert.equal(harness.content.querySelector(".codex-approval-owner-row"), null);
+    assert.equal(
+      harness.content.querySelectorAll(".section-title").some((title) => title.textContent === harness.core.helpers.t("sectionPermissionPerTool")),
+      false,
+    );
+  });
+
+  it("renders the LAN card as one header switch, one group and one footer", async () => {
+    let confirmResult = false;
+    const harness = loadPermissionsTabForTest({
+      subtab: "lan",
+      snapshot: { mobilePreviewEnabled: false },
+      confirm: () => confirmResult,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    let card = harness.content.querySelector(".mobile-channel-card");
+    assert.equal(card.querySelector(".channel-header-row") !== null, true);
+    assert.equal(card.querySelector(".channel-beta-tag").textContent, "Beta");
+    assert.equal(card.querySelector(".settings-status-text").textContent, "mobileStatusOff");
+    assert.equal(card.querySelector(".collapsible-group-header .switch").classList.contains("on"), false);
+    assert.equal(card.querySelector(".settings-detail-group-rows .switch").classList.contains("disabled"), true);
+    assert.equal(card.querySelector(".channel-foot-hint").textContent, "mobilePairingHint");
+    assert.equal(card.querySelector(".mobile-conn-row"), null);
+    const groupingLabels = card.querySelectorAll(".settings-detail-group-label").map((label) => label.textContent);
+    assert.deepStrictEqual(groupingLabels, ["mobileGroupPhoneShows"]);
+    assert.equal(groupingLabels.includes("mobileGroupPairing"), false);
+
+    const enabled = loadPermissionsTabForTest({
+      subtab: "lan",
+      snapshot: { mobilePreviewEnabled: true, mobilePermissionPreviewEnabled: false },
+      confirm: () => confirmResult,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    enabled.render();
+    await Promise.resolve();
+    await Promise.resolve();
+    card = enabled.content.querySelector(".mobile-channel-card");
+    assert.equal(card.querySelector(".settings-status-text").textContent, "mobileStatusRunning");
+    assert.deepStrictEqual(
+      card.querySelectorAll(".settings-detail-group-label").map((label) => label.textContent),
+      ["mobileGroupPhoneShows", "mobileGroupPairing"],
+    );
+    const rows = card.querySelectorAll(".mobile-conn-row");
+    assert.equal(rows.length, 4);
+    assert.deepStrictEqual(
+      rows.map((row) => row.querySelector(".row-label").textContent),
+      ["mobileConnLanIp", "mobileConnPort", "mobileConnToken", "mobileConnUrl"],
+    );
+    const copy = rows[0].querySelector(".mobile-copy");
+    copy.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.deepStrictEqual(enabled.clipboardWrites, ["192.168.0.23"]);
+    assert.equal(copy.textContent, "mobileCopied");
+
+    const regenerate = card.querySelector(".mobile-regenerate");
+    const reset = card.querySelector(".mobile-reset");
+    assert.ok(regenerate && reset);
+    assert.equal(reset.classList.contains("danger"), true);
+    regenerate.dispatchEvent({ type: "click" });
+    reset.dispatchEvent({ type: "click" });
+    assert.equal(enabled.commands.some((call) => call.name === "regenerateMobileToken"), false);
+    assert.equal(enabled.commands.some((call) => call.name === "resetMobileAccess"), false);
+
+    confirmResult = true;
+    regenerate.dispatchEvent({ type: "click" });
+    reset.dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(enabled.commands.some((call) => call.name === "regenerateMobileToken"), true);
+    assert.equal(enabled.commands.some((call) => call.name === "resetMobileAccess"), true);
+  });
+
+
+  it("gates the Telegram test footer on ready, runtime and native readiness", async () => {
+    async function renderTelegram({ allowedTgUserId = "123456789", tokenConfigured = true, state, migration, testCommand }) {
+      const calls = [];
+      const harness = loadPermissionsTabForTest({
+        snapshot: {
+          tgApproval: {
+            enabled: false,
+            allowedTgUserId,
+            targetSessionKey: allowedTgUserId ? `telegram:${allowedTgUserId}` : "",
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            calls.push(name);
+            if (name === "telegramApproval.status") return Promise.resolve({ status: "ok", state });
+            if (name === "telegramApproval.tokenInfo") {
+              return Promise.resolve({ status: "ok", configured: tokenConfigured, masked: tokenConfigured ? "1234" : "" });
+            }
+            if (name === "telegramMigration.snapshot") {
+              return Promise.resolve({ status: "ok", snapshot: migration });
+            }
+            if (name === "telegramApproval.test") {
+              return testCommand ? testCommand() : Promise.resolve({ status: "ok" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return { harness, card: harness.content.querySelector(".tg-approval-channel-card"), calls };
+    }
+
+    const migrationActive = { state: "NATIVE_ACTIVE", transport: "native", ownerSnapshot: { nativePolling: true } };
+    const unavailableCases = [
+      {
+        name: "not ready",
+        args: {
+          allowedTgUserId: "",
+          tokenConfigured: false,
+          state: { status: "running", configured: true, transport: "native", tokenStored: false },
+          migration: migrationActive,
+        },
+      },
+      {
+        name: "runtime not ready",
+        args: {
+          state: { status: "running", configured: false, transport: "native", tokenStored: true },
+          migration: migrationActive,
+        },
+      },
+      {
+        name: "native not ready",
+        args: {
+          state: { status: "running", configured: true, transport: "off", tokenStored: true },
+          migration: migrationActive,
+        },
+      },
+    ];
+    for (const entry of unavailableCases) {
+      const rendered = await renderTelegram(entry.args);
+      assert.equal(rendered.card.querySelector(".channel-foot-link"), null, `${entry.name}: no link`);
+      assert.equal(rendered.card.querySelector(".channel-foot-hint").textContent, "telegramApprovalTestAfterEnable", `${entry.name}: hint`);
+    }
+
+    let testCalls = 0;
+    const available = await renderTelegram({
+      state: { status: "running", configured: true, transport: "native", tokenStored: true },
+      migration: migrationActive,
+      testCommand: () => {
+        testCalls += 1;
+        return Promise.resolve({ status: "ok" });
+      },
+    });
+    available.card.querySelector(".channel-foot-link").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(testCalls, 1, "one click sends exactly one test");
+
+    const pendingTest = createDeferred();
+    let pendingCalls = 0;
+    const pending = await renderTelegram({
+      state: { status: "running", configured: true, transport: "native", tokenStored: true },
+      migration: migrationActive,
+      testCommand: () => {
+        pendingCalls += 1;
+        return pendingTest.promise;
+      },
+    });
+    pending.card.querySelector(".channel-foot-link").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(pendingCalls, 1);
+    pending.harness.render();
+    const pendingLink = pending.harness.content
+      .querySelector(".tg-approval-channel-card .channel-foot-link");
+    assert.ok(pendingLink, "pending keeps the test link mounted");
+    assert.equal(pendingLink.disabled, true);
+    assert.equal(pendingLink.textContent, "telegramApprovalTesting");
+    pendingTest.resolve({ status: "ok" });
+    await Promise.resolve();
+  });
+
+  it("gates the Feishu test footer, pending states and hint priority", async () => {
+    const strings = loadSettingsI18nForTest().en;
+    async function renderFeishu({
+      config = {},
+      state,
+      secretInfo = { configured: true, credentialPlatform: "feishu", appId: "cli_saved" },
+      testCommand,
+      updateCommand,
+      lookupCommand,
+      realStrings = false,
+    }) {
+      const harness = loadPermissionsTabForTest({
+        snapshot: {
+          feishuApproval: {
+            enabled: false,
+            platform: "feishu",
+            idType: "open_id",
+            approverId: "ou_1",
+            connectionTimeoutSeconds: 15,
+            ...config,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "feishuApproval.status") return Promise.resolve({ status: "ok", state });
+            if (name === "feishuApproval.secretInfo") {
+              return Promise.resolve({ status: "ok", ...secretInfo });
+            }
+            if (name === "feishuApproval.test") {
+              return testCommand ? testCommand() : Promise.resolve({ status: "ok" });
+            }
+            if (name === "feishuApproval.updateConfig") {
+              return updateCommand ? updateCommand() : Promise.resolve({ status: "ok" });
+            }
+            if (name === "feishuApproval.saveApproverByEmail") {
+              return lookupCommand ? lookupCommand() : Promise.resolve({ status: "ok" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      if (realStrings) harness.core.helpers.t = (key) => (key in strings ? strings[key] : key);
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return { harness, card: harness.content.querySelector(".feishu-approval-channel-card") };
+    }
+
+    const readyState = {
+      status: "running", configured: true, configurationReady: true, setupReason: "",
+      credentialReady: true, credentialReason: "",
+    };
+    let testCalls = 0;
+    const available = await renderFeishu({
+      state: readyState,
+      testCommand: () => {
+        testCalls += 1;
+        return Promise.resolve({ status: "ok" });
+      },
+    });
+    available.card.querySelector(".channel-foot-link").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(testCalls, 1, "one click sends exactly one Feishu test");
+
+    const pendingTest = createDeferred();
+    const pendingByTest = await renderFeishu({
+      state: readyState,
+      testCommand: () => pendingTest.promise,
+    });
+    pendingByTest.card.querySelector(".channel-foot-link").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    pendingByTest.harness.render();
+    const testPendingLink = pendingByTest.harness.content
+      .querySelector(".feishu-approval-channel-card .channel-foot-link");
+    assert.ok(testPendingLink);
+    assert.equal(testPendingLink.disabled, true, "testPending disables the link");
+
+    const lookupPending = createDeferred();
+    const pendingByLookup = await renderFeishu({
+      state: readyState,
+      lookupCommand: () => lookupPending.promise,
+    });
+    const approverInput = pendingByLookup.card.querySelectorAll("input").at(-1);
+    approverInput.value = "person@example.com";
+    approverInput.dispatchEvent({ type: "input" });
+    pendingByLookup.card.querySelectorAll("button")
+      .find((button) => button.textContent === "feishuApprovalSaveApprover")
+      .dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    pendingByLookup.harness.render();
+    const lookupPendingLink = pendingByLookup.harness.content
+      .querySelector(".feishu-approval-channel-card .channel-foot-link");
+    assert.ok(lookupPendingLink);
+    assert.equal(lookupPendingLink.disabled, true, "networkLookupPending disables the link");
+    lookupPending.resolve({ status: "error", code: "lookup-cancelled" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const updatePending = createDeferred();
+    const pendingByUpdate = await renderFeishu({
+      state: readyState,
+      updateCommand: () => updatePending.promise,
+    });
+    pendingByUpdate.card.querySelector(".collapsible-group-header-action .switch")
+      .dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    pendingByUpdate.harness.render();
+    const updatePendingLink = pendingByUpdate.harness.content
+      .querySelector(".feishu-approval-channel-card .channel-foot-link");
+    assert.ok(updatePendingLink);
+    assert.equal(updatePendingLink.disabled, true, "configPersistencePending disables the link");
+    updatePending.resolve({ status: "ok" });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const hintCases = [
+      {
+        name: "platform mismatch",
+        config: { enabled: true },
+        state: {
+          status: "stopped", configured: false, configurationReady: false,
+          setupReason: "credential-platform-mismatch",
+        },
+        expected: strings.feishuApprovalLookupCredentialPlatformMismatch.replace("{brand}", "Feishu"),
+      },
+      {
+        name: "invalid secret",
+        state: {
+          status: "stopped", configured: false, configurationReady: true,
+          setupReason: "", reason: "invalid-secret",
+        },
+        expected: strings.feishuApprovalErrorInvalidSecret.replace("{brand}", "Feishu"),
+      },
+      {
+        name: "missing approver beats blocking reason",
+        config: { enabled: true, approverId: "" },
+        state: {
+          status: "stopped", configured: false, configurationReady: false,
+          setupReason: "missing-approver", reason: "missing-approver",
+        },
+        expected: strings.feishuApprovalCardMissingApprover,
+      },
+      {
+        name: "blocking reason beats failed connection",
+        state: {
+          status: "failed", configured: false, configurationReady: true,
+          setupReason: "", reason: "invalid-secret",
+          errorCode: "connection-timeout", connectionTimeoutSeconds: 15,
+        },
+        expected: strings.feishuApprovalErrorInvalidSecret.replace("{brand}", "Feishu"),
+      },
+      {
+        name: "failed connection",
+        state: {
+          status: "failed", configured: false, configurationReady: true,
+          setupReason: "", errorCode: "connection-timeout", connectionTimeoutSeconds: 15,
+        },
+        expected: strings.feishuApprovalErrorConnectionTimeout
+          .replace("{brand}", "Feishu")
+          .replace("{seconds}", "15"),
+      },
+      {
+        name: "configured but disabled",
+        state: {
+          status: "stopped", configured: false, configurationReady: true,
+          setupReason: "", reason: "disabled",
+        },
+        expected: strings.feishuApprovalTestAfterEnable,
+      },
+    ];
+    for (const entry of hintCases) {
+      const rendered = await renderFeishu({
+        config: entry.config || {},
+        state: entry.state,
+        realStrings: true,
+      });
+      assert.equal(rendered.card.querySelector(".channel-foot-link"), null, `${entry.name}: no link`);
+      assert.equal(rendered.card.querySelector(".channel-foot-hint").textContent, entry.expected, `${entry.name}: hint`);
+    }
+  });
+
+  it("gates the Slack test footer and keeps the transport note beside it", async () => {
+    async function renderSlack({ config = {}, state, secretInfo, testCommand }) {
+      const harness = loadPermissionsTabForTest({
+        snapshot: {
+          slackNotify: {
+            enabled: false,
+            channelId: "C1",
+            notifyOnDone: true,
+            notifyOnError: true,
+            notifyOnPermission: true,
+            outputMode: "off",
+            ...config,
+          },
+        },
+        settingsAPI: {
+          command: (name) => {
+            if (name === "slackNotify.status") return Promise.resolve({ status: "ok", state });
+            if (name === "slackNotify.secretInfo") {
+              return Promise.resolve({ status: "ok", ...secretInfo });
+            }
+            if (name === "slackNotify.test") {
+              return testCommand ? testCommand() : Promise.resolve({ status: "ok" });
+            }
+            return Promise.resolve({ status: "ok" });
+          },
+        },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      harness.render();
+      return { harness, card: harness.content.querySelector(".slack-notify-channel-card") };
+    }
+
+    const configuredSecret = { configured: true, webhookUrl: "hooks", botToken: "" };
+    const brokenTransport = await renderSlack({
+      config: { enabled: true },
+      state: { enabled: true, ready: false, transportConfigured: false, transport: null },
+      secretInfo: configuredSecret,
+    });
+    assert.equal(brokenTransport.card.querySelector(".channel-foot-link"), null);
+    assert.equal(brokenTransport.card.querySelector(".channel-foot-hint").textContent, "slackNotifyCardMissingSecret");
+
+    let testCalls = 0;
+    const available = await renderSlack({
+      state: { enabled: false, ready: false, transportConfigured: true, transport: "webhook" },
+      secretInfo: configuredSecret,
+      testCommand: () => {
+        testCalls += 1;
+        return Promise.resolve({ status: "ok" });
+      },
+    });
+    assert.equal(available.card.querySelector(".channel-foot-note").textContent, "slackNotifyTransportWebhook");
+    available.card.querySelector(".channel-foot-link").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    assert.equal(testCalls, 1, "one click sends exactly one Slack test");
+
+    const pendingTest = createDeferred();
+    const pending = await renderSlack({
+      state: { enabled: false, ready: false, transportConfigured: true, transport: "webhook" },
+      secretInfo: configuredSecret,
+      testCommand: () => pendingTest.promise,
+    });
+    pending.card.querySelector(".channel-foot-link").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    pending.harness.render();
+    const pendingLink = pending.harness.content
+      .querySelector(".slack-notify-channel-card .channel-foot-link");
+    assert.ok(pendingLink);
+    assert.equal(pendingLink.disabled, true);
+    pendingTest.resolve({ status: "ok" });
+    await Promise.resolve();
+  });
+
+  it("keeps the shared disclosure, status line and detail-group primitives generic", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const row = buildFakeSettingRow(document, {
+      label: "Label",
+      description: "Description",
+    });
+    const extra = document.createElement("span");
+    extra.className = "row-desc row-desc-extra";
+    extra.textContent = "Extra";
+    row.textElement.appendChild(extra);
+    core.helpers.attachDescriptionDisclosure(row.element, { includeExtra: true });
+    assert.equal(row.descriptionElement.classList.contains("row-desc-collapsed"), true);
+    assert.equal(extra.classList.contains("row-desc-collapsed"), true);
+    assert.equal(String(row.element.querySelector(".row-desc-toggle").getAttribute("aria-controls")).split(/\s+/).length, 2);
+
+    assert.equal(core.helpers.buildDetailGroup("Empty", []), null);
+    const group = core.helpers.buildDetailGroup("Group", [row.element]);
+    assert.equal(group.querySelector(".settings-detail-group-label").textContent, "Group");
+
+    const status = core.helpers.buildStatusLine({ tone: "warn", text: "Warn" });
+    assert.equal(status.element.classList.contains("warn"), true);
+    status.setStatus({ tone: "bad", text: "Bad" });
+    assert.equal(status.element.classList.contains("warn"), false);
+    assert.equal(status.element.classList.contains("bad"), true);
+    assert.equal(status.element.querySelector(".settings-status-text").textContent, "Bad");
+  });
+
+  it("removes the legacy channel markup from source and CSS", () => {
+    const telegram = fs.readFileSync(path.join(SRC_DIR, "settings-tab-telegram-approval.js"), "utf8");
+    const mobile = fs.readFileSync(path.join(SRC_DIR, "settings-tab-mobile.js"), "utf8");
+    const agents = fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8");
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    for (const token of [
+      "buildChannelStatusRow", "buildPrerequisitesRow", "buildFeishuPrerequisitesRow",
+      "buildSlackPrerequisitesRow", "buildSlackOneWayNoticeRow", "telegramApprovalCardKind_",
+      "tg-approval-channel-badge",
+    ]) {
+      assert.equal(telegram.includes(token), false, token);
+    }
+    assert.equal(mobile.includes("mobile-copy-btn"), false);
+    assert.equal(mobile.includes("innerHTML +="), false);
+    assert.equal(agents.includes("function attachDescriptionDisclosure"), false);
+    for (const token of [
+      ".tg-approval-channel-badge", ".channel-beta-note", ".tg-approval-prereq-row",
+      ".slack-notify-oneway-row", ".tg-approval-output-choice", ".mobile-action-btn",
+    ]) {
+      assert.equal(css.includes(token), false, token);
     }
   });
 
@@ -8724,6 +9839,7 @@ describe("settings renderer browser environment", () => {
     const staleStatus = createDeferred();
     const updatedStatus = createDeferred();
     const statusResponses = [staleStatus, updatedStatus];
+    let statusRequests = 0;
     const harness = loadPermissionsTabForTest({
       snapshot: {
         tgApproval: {
@@ -8735,6 +9851,7 @@ describe("settings renderer browser environment", () => {
       settingsAPI: {
         command: (name) => {
           if (name === "telegramApproval.status") {
+            statusRequests += 1;
             const next = statusResponses.shift();
             assert.ok(next, "unexpected Telegram status request");
             return next.promise;
@@ -8746,13 +9863,13 @@ describe("settings renderer browser environment", () => {
         },
       },
     });
+    assert.equal(statusRequests, 1, "the initial render owns the first status request");
 
-    // The send-test button is the last button on the tab; click it to force
-    // a status refresh that overlaps the in-flight initial status request.
-    const buttons = harness.content.querySelectorAll("button");
-    buttons[buttons.length - 1].dispatchEvent({ type: "click" });
+    // A forced refresh lands while the first request is still pending.
+    harness.core.tabs.permissions.refreshRuntimeStatus({ channel: "telegram" });
     await Promise.resolve();
     await Promise.resolve();
+    assert.equal(statusRequests, 1, "an in-flight status request coalesces the forced refresh");
     const beforeStatusResolve = harness.renderRequests.length;
 
     staleStatus.resolve({
@@ -8768,6 +9885,13 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     assert.equal(harness.renderRequests.length, beforeStatusResolve + 1);
+
+    // The forced refresh has drained; a fresh public refresh now issues the
+    // second status request, whose completion repaints once more.
+    harness.core.tabs.permissions.refreshRuntimeStatus({ channel: "telegram" });
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.equal(statusRequests, 2, "the public refresh starts a second status request");
 
     harness.render();
     updatedStatus.resolve({
@@ -10627,17 +11751,17 @@ describe("settings renderer browser environment", () => {
     const css = fs.readFileSync(SETTINGS_CSS, "utf8");
     assert.match(
       css,
-      /\.mobile-action-btn\s*\{[^}]*background:\s*var\(--panel-bg\);[^}]*color:\s*var\(--text-primary\);/s
+      /\.channel-foot-link\.danger\s*\{[^}]*color:\s*var\(--text-tertiary\);/s
     );
     assert.match(
       css,
-      /\.mobile-action-btn\.mobile-action-danger\s*\{[^}]*background:\s*var\(--danger-action\);[^}]*color:\s*#ffffff;/s
+      /\.channel-foot-link\.danger:hover\s*\{[^}]*color:\s*var\(--danger-action\);/s
     );
     assert.match(
       css,
-      /\.mobile-action-btn\.mobile-action-danger:hover:not\(:disabled\)\s*\{[^}]*background:\s*var\(--danger-action-hover\);/s
+      /\.channel-foot-link:hover\s*\{[^}]*color:\s*var\(--accent\);/s
     );
-    assert.ok(!css.includes(".mobile-action-btn:hover { background: var(--accent);"));
+    assert.ok(!css.includes(".mobile-action-btn"));
   });
 
   it("keeps warning acknowledgements in a wide-hitbox row with the safe action first", async () => {
@@ -16798,6 +17922,7 @@ describe("settings renderer browser environment", () => {
       const row = harness.content.querySelector(".codex-approval-owner-row");
       assert.ok(row);
       assert.ok(row.querySelector(".row-desc").textContent.includes(mode === "auto" ? "Auto" : "Intercept"));
+      assert.equal(row.querySelector("button").classList.contains("quiet"), true);
       const selected = [];
       harness.core.ops.selectTab = (tab) => selected.push(tab);
       row.querySelector("button").dispatchEvent({ type: "click" });
@@ -20626,8 +21751,11 @@ describe("settings renderer browser environment", () => {
     const mobileGroupIndex = css.indexOf("@media (max-width: 720px)", defaultGroupIndex);
     assert.ok(defaultGroupIndex >= 0 && mobileGroupIndex > defaultGroupIndex,
       "the narrow-window single-column rule must come after the default two-column rule");
-    const mobileBlock = css.slice(mobileGroupIndex, mobileGroupIndex + 160);
-    assert.match(mobileBlock, /\.agent-detail-group\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s);
+    const mobileBlock = css.slice(mobileGroupIndex);
+    assert.match(
+      mobileBlock,
+      /\.agent-detail-group,\s*\.settings-detail-group\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
+    );
   });
 });
 

@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
@@ -11,7 +12,7 @@ const {
   detectAgentInstallations,
 } = require("../src/agent-installation-detector");
 const { getAgentDescriptor } = require("../src/doctor-detectors/agent-descriptors");
-const { registerReasonixHooks } = require("../hooks/reasonix-install");
+const { registerReasonixHooks, __test: reasonixInstallTest } = require("../hooks/reasonix-install");
 const { registerZcodeHooks, unregisterZcodeHooks } = require("../hooks/zcode-install");
 const { registerQoderHooks, unregisterQoderHooks } = require("../hooks/qoder-install");
 const { registerCodeBuddyHooks, unregisterCodeBuddyHooks } = require("../hooks/codebuddy-install");
@@ -389,7 +390,9 @@ describe("agent installation detector", () => {
       platform: "win32",
       env: { APPDATA: appData },
       userHomeDir: homeDir,
-      nodeBin: "D:\\npm\\node.exe",
+      // An unresolved PATH Node always selects the compatibility fallback,
+      // independently of this machine's checkout path or short-name support.
+      nodeBin: "node",
       powerShellBin: "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
     });
     const raw = fs.readFileSync(settingsPath, "utf8");
@@ -406,6 +409,26 @@ describe("agent installation detector", () => {
     });
     const reasonix = byId(report, "reasonix");
 
+    assert.strictEqual(reasonix.clawdIntegration.detected, true);
+    assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
+  });
+
+  it("recognizes direct Windows Reasonix hooks when the script uses a short alias", () => {
+    const homeDir = makeHome();
+    const appData = path.join(homeDir, "AppData", "Roaming");
+    const settingsPath = path.join(appData, "reasonix", "settings.json");
+    const descriptor = getAgentDescriptor("reasonix");
+    const command = reasonixInstallTest.buildReasonixHookCommand(
+      "D:\\npm\\node.exe", "D:\\clawd\\hooks\\REASON~1.JS", { platform: "win32" },
+    );
+    assert.doesNotMatch(command, /-EncodedCommand /);
+    assert.match(command, /--clawd-reasonix-hook=reasonix-hook\.js$/);
+    writeJson(settingsPath, {
+      hooks: Object.fromEntries(descriptor.hookEvents.map((event) => [event, [{ match: "*", command }]])),
+    });
+
+    const report = detectAgentInstallations({ homeDir, platform: "win32", env: { APPDATA: appData }, now: 1 });
+    const reasonix = byId(report, "reasonix");
     assert.strictEqual(reasonix.clawdIntegration.detected, true);
     assert.strictEqual(reasonix.clawdIntegration.paths.configPath, settingsPath);
   });
@@ -480,7 +503,7 @@ describe("agent installation detector", () => {
           const targetPath = path.join(homeDir, "outside-artifact");
           writeText(targetPath, "product-owned");
           mkdirp(geminiDir);
-          fs.symlinkSync(targetPath, artifactPath);
+          linkForRejection(targetPath, artifactPath);
         }
 
         const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
@@ -648,7 +671,7 @@ describe("agent installation detector", () => {
         if (shape === "symlink") {
           const targetPath = path.join(homeDir, "outside.json");
           writeJson(targetPath, { language: "en" });
-          fs.symlinkSync(targetPath, configPath);
+          linkForRejection(targetPath, configPath);
         }
 
         const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
@@ -858,7 +881,7 @@ describe("agent installation detector", () => {
     const targetPath = path.join(symlinkHome, "outside.json5");
     writeText(targetPath, "{ gateway: { port: 18789 } }");
     mkdirp(path.dirname(configPath));
-    fs.symlinkSync(targetPath, configPath);
+    linkForRejection(targetPath, configPath);
     const symlink = byId(detectAgentInstallations({ homeDir: symlinkHome, now: 1, env: {} }), "openclaw");
     assert.strictEqual(symlink.detectedInstalled, null);
     assert.strictEqual(symlink.reason, "insufficient-evidence");

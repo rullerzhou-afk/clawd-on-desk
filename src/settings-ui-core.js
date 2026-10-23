@@ -613,6 +613,97 @@
   // Shared layout primitive for ordinary Settings rows. It deliberately owns
   // only structure and accessible relationships; feature tabs still own the
   // contents placed into the text and control slots.
+  // Folds a row's description behind a small (i) toggle. `includeExtra` also
+  // collapses .row-desc-extra notes under the same toggle (off by default, so
+  // existing callers keep their always-visible extra line).
+  function attachDescriptionDisclosure(row, { includeExtra = false } = {}) {
+    const text = row.querySelector(".row-text");
+    if (!text) return row;
+    const label = text.querySelector(".row-label");
+    if (!label) return row;
+    let desc = null;
+    for (const candidate of text.querySelectorAll(".row-desc")) {
+      if (!candidate.classList.contains("row-desc-extra")) {
+        desc = candidate;
+        break;
+      }
+    }
+    if (!desc) return row;
+    if (!desc.id) desc.id = createSettingsDomId("row-desc");
+    desc.classList.add("row-desc-collapsed");
+    const extras = includeExtra
+      ? Array.from(text.querySelectorAll(".row-desc-extra")).filter((candidate) => candidate !== desc)
+      : [];
+    for (const extra of extras) {
+      if (!extra.id) extra.id = createSettingsDomId("row-desc");
+      extra.classList.add("row-desc-collapsed");
+    }
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "row-desc-toggle";
+    toggle.textContent = "i";
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.setAttribute("aria-controls", [desc.id, ...extras.map((extra) => extra.id)].join(" "));
+    toggle.setAttribute("aria-label", t("rowDescToggle"));
+    toggle.title = desc.textContent;
+    toggle.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      const collapsed = desc.classList.toggle("row-desc-collapsed");
+      for (const extra of extras) extra.classList.toggle("row-desc-collapsed", collapsed);
+      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    });
+    label.appendChild(toggle);
+    return row;
+  }
+
+  // Small dot + one-line status used by card headers. It deliberately owns no
+  // probing and no mounted slot: channel cards fully repaint when status changes.
+  function buildStatusLine({ tone = "off", text = "" } = {}) {
+    const element = document.createElement("div");
+    element.className = "settings-status";
+    const dot = document.createElement("span");
+    dot.className = "settings-status-dot";
+    const textElement = document.createElement("span");
+    textElement.className = "settings-status-text";
+    textElement.textContent = text == null ? "" : String(text);
+    element.appendChild(dot);
+    element.appendChild(textElement);
+    const tones = new Set(["ok", "warn", "off", "bad"]);
+    let currentTone = tones.has(tone) ? tone : "off";
+    function applyTone(nextTone) {
+      element.classList.remove("ok", "warn", "off", "bad");
+      element.classList.add(nextTone);
+    }
+    applyTone(currentTone);
+    const control = {
+      element,
+      setStatus({ tone: nextTone = currentTone, text: nextText = "" } = {}) {
+        currentTone = tones.has(nextTone) ? nextTone : "off";
+        applyTone(currentTone);
+        textElement.textContent = nextText == null ? "" : String(nextText);
+        return control;
+      },
+    };
+    return control;
+  }
+
+  // One labelled column inside a card body. Empty groups are dropped so no
+  // header renders without rows.
+  function buildDetailGroup(label, rows) {
+    if (!rows || rows.length === 0) return null;
+    const group = document.createElement("div");
+    group.className = "settings-detail-group";
+    const labelElement = document.createElement("div");
+    labelElement.className = "settings-detail-group-label";
+    labelElement.textContent = label == null ? "" : String(label);
+    const body = document.createElement("div");
+    body.className = "settings-detail-group-rows";
+    for (const row of rows) body.appendChild(row);
+    group.appendChild(labelElement);
+    group.appendChild(body);
+    return group;
+  }
+
   function buildSettingRow(config = {}) {
     const element = document.createElement("div");
     element.className = ["row", config.className || ""].filter(Boolean).join(" ");
@@ -2995,6 +3086,9 @@
     t,
     buildButton,
     buildSettingRow,
+    attachDescriptionDisclosure,
+    buildStatusLine,
+    buildDetailGroup,
     buildFormField,
     buildTextInput,
     setTextInputState,

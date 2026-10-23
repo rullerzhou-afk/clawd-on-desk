@@ -3,6 +3,7 @@
 const { BrowserWindow, screen } = require("electron");
 const path = require("path");
 const { keepOutOfTaskbar } = require("./taskbar");
+const { hasTaggedFallbackRow } = require("./session-hud-tagged-fallback");
 const { clampTextScale, scaleHeight, applyZoomToWindow } = require("./text-scale");
 const ringGeom = require("./quota-ring-geometry");
 
@@ -17,6 +18,9 @@ const HUD_WIDTH_LABELS = 320;
 const HUD_WIDTH_LABELS_COMPACT = 260;
 const HUD_CONTEXT_USAGE_WIDTH_BUMP = 36;
 const HUD_LABELS_ONLY_WIDTH_TRIM = 36;
+// Room for a visible folder ellipsis, the preserved separator and a ten-digit
+// tag alongside status/context chips, folder actions and the pin.
+const HUD_TAGGED_FALLBACK_WIDTH_BUMP = 72;
 const HUD_ROW_HEIGHT = 28;
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
@@ -178,6 +182,16 @@ function computeHudLayout(snapshot, options = {}) {
   return { expanded, folded, rowCount };
 }
 
+// A tagged fallback row renders "<label> · <tag>"; the HUD window needs extra
+// width for those rows or the tag/status label collides with the pin. The
+// predicate is the SHARED one the renderer renders the row with — every
+// session carries a displaySessionTag, so checking that field alone would
+// widen every HUD for every user.
+function layoutHasTaggedFallback(layout) {
+  if (!layout) return false;
+  return hasTaggedFallbackRow([...(layout.expanded || []), ...(layout.folded || [])]);
+}
+
 // One coin per (source, provider) with drawable quota. The pet-attached quota
 // ring lives in its OWN window (quota-ring.html), sized and placed by
 // quota-ring-geometry; the HUD no longer carries a quota strip. Here we only
@@ -198,9 +212,12 @@ function computeHudReservedOffset(cardHeight) {
   return HUD_PET_GAP + h + HUD_WINDOW_SHELL.bottom + BUBBLE_GAP;
 }
 
-function getHudWidthScale(scale) {
+function getHudWidthScale(scale, hasTaggedFallback = false) {
   const s = clampTextScale(scale);
-  if (s <= 1) return s;
+  // Tags, chips and actions all retain their intrinsic widths. Preserve their
+  // CSS viewport as text grows; the ordinary compact-width curve can only
+  // reclaim room from a title that is allowed to shrink without a fixed tag.
+  if (s <= 1 || hasTaggedFallback) return s;
   return 1 + (s - 1) * HUD_WIDTH_GROWTH_RATIO;
 }
 
@@ -279,14 +296,22 @@ function computeSessionHudBounds({ hitRect, anchorRect, workArea, width = HUD_WI
   };
 }
 
-function getHudWidth(showElapsed = true, showStateLabels = true, showContextUsage = false) {
+function getHudWidth(showElapsed = true, showStateLabels = true, showContextUsage = false, hasTaggedFallback = false) {
   const base = showStateLabels === false
     ? (showElapsed === false ? HUD_WIDTH_COMPACT : HUD_WIDTH)
     : (showElapsed === false ? HUD_WIDTH_LABELS_COMPACT : HUD_WIDTH_LABELS);
+  let width;
   if (showStateLabels !== false && showContextUsage !== true) {
-    return Math.max(HUD_WIDTH_COMPACT, base - HUD_LABELS_ONLY_WIDTH_TRIM);
+    width = Math.max(HUD_WIDTH_COMPACT, base - HUD_LABELS_ONLY_WIDTH_TRIM);
+  } else {
+    width = showContextUsage === true ? base + HUD_CONTEXT_USAGE_WIDTH_BUMP : base;
   }
-  return showContextUsage === true ? base + HUD_CONTEXT_USAGE_WIDTH_BUMP : base;
+  // A tagged fallback row appends " · <tag>" to the title. The tag stays at
+  // its intrinsic width while the folder label ellipsizes, so the narrow
+  // label-only widths (notably showElapsed=false) no longer fit tag + status
+  // label + pin side by side. Widen the window for those rows instead of
+  // letting the row overflow under the pin.
+  return hasTaggedFallback ? width + HUD_TAGGED_FALLBACK_WIDTH_BUMP : width;
 }
 
 function deferMacFloatingVisibility(ctx, win) {
@@ -320,6 +345,7 @@ module.exports = function initSessionHud(ctx) {
     return clampTextScale(typeof ctx.getTextScale === "function" ? ctx.getTextScale() : 1);
   }
   let lastHudHeight = HUD_ROW_HEIGHT;
+  let lastHudLayout = null;
   let pollTimer = null;
   let clickRevealed = false;
   let visibleHoldUntil = 0;
@@ -402,12 +428,16 @@ module.exports = function initSessionHud(ctx) {
     const workArea = typeof ctx.getNearestWorkArea === "function"
       ? ctx.getNearestWorkArea(cx, cy)
       : { x: 0, y: 0, width: 1280, height: 800 };
+    const hasTaggedFallback = layoutHasTaggedFallback(
+      computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false })
+    );
     const width = getHudWidth(
       ctx.sessionHudShowElapsed !== false,
       ctx.sessionHudShowStateLabels !== false,
-      ctx.sessionHudShowContextUsage !== false
+      ctx.sessionHudShowContextUsage !== false,
+      hasTaggedFallback
     );
-    const widthScale = getHudWidthScale(scale);
+    const widthScale = getHudWidthScale(scale, hasTaggedFallback);
     // Must carry the SAME scale the visible HUD was laid out with — an
     // unscaled expectation makes the auto-hide hot zone smaller than the
     // real window, so the cursor "leaves" while still visually over it.
@@ -782,15 +812,17 @@ module.exports = function initSessionHud(ctx) {
 
     didFinishLoad = false;
     hudFlippedAbove = false;
+    const hasTaggedFallback = layoutHasTaggedFallback(lastHudLayout);
     const hudWidth = getHudWidth(
       ctx.sessionHudShowElapsed !== false,
       ctx.sessionHudShowStateLabels !== false,
-      ctx.sessionHudShowContextUsage !== false
+      ctx.sessionHudShowContextUsage !== false,
+      hasTaggedFallback
     );
     // Provisional CSS px → DIP size; syncSessionHud() replaces it with the
     // precise computeSessionHudBounds() result before the window is shown.
     const scale = getTextScale();
-    const widthScale = getHudWidthScale(scale);
+    const widthScale = getHudWidthScale(scale, hasTaggedFallback);
     hudWindow = new BrowserWindow({
       parent: ctx.win,
       width: computeHudOuterWidth(hudWidth, scale, widthScale),
@@ -864,13 +896,16 @@ module.exports = function initSessionHud(ctx) {
       : { x: 0, y: 0, width: 1280, height: 800 };
     const layout = computeHudLayout(snapshot, { showStateLabels: ctx.sessionHudShowStateLabels !== false });
     const height = computeHudHeight(layout.rowCount);
+    const hasTaggedFallback = layoutHasTaggedFallback(layout);
     const width = getHudWidth(
       ctx.sessionHudShowElapsed !== false,
       ctx.sessionHudShowStateLabels !== false,
-      ctx.sessionHudShowContextUsage !== false
+      ctx.sessionHudShowContextUsage !== false,
+      hasTaggedFallback
     );
-    const widthScale = getHudWidthScale(scale);
+    const widthScale = getHudWidthScale(scale, hasTaggedFallback);
     lastHudHeight = height;
+    lastHudLayout = layout;
     return computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale, widthScale });
   }
 
@@ -994,6 +1029,7 @@ module.exports = function initSessionHud(ctx) {
     ringWindow = null;
     ringDidFinishLoad = false;
     lastHudHeight = HUD_ROW_HEIGHT;
+    lastHudLayout = null;
     notifyReservedOffsetIfChanged();
   }
 
@@ -1023,6 +1059,7 @@ module.exports.__test = {
   countQuotaCoins,
   computeHudReservedOffset,
   isHudSession,
+  layoutHasTaggedFallback,
   getHudWidth,
   getHudWidthScale,
   computeHudOuterWidth,
@@ -1038,6 +1075,7 @@ module.exports.__test = {
     HUD_WIDTH_LABELS_COMPACT,
     HUD_CONTEXT_USAGE_WIDTH_BUMP,
     HUD_LABELS_ONLY_WIDTH_TRIM,
+    HUD_TAGGED_FALLBACK_WIDTH_BUMP,
     HUD_HEIGHT,
     HUD_ROW_HEIGHT,
     HUD_MAX_EXPANDED_ROWS,

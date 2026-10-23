@@ -37,6 +37,11 @@ class FakeElement {
   }
   querySelector() { return null; }
   querySelectorAll() { return []; }
+  addEventListener() {}
+  setAttribute() {}
+  removeAttribute() {}
+  get isConnected() { return true; }
+  classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
 }
 
 test("mobile consent surfaces token-reset phase failure in the command error", async () => {
@@ -89,6 +94,15 @@ test("mobile consent surfaces token-reset phase failure in the command error", a
         switchConfigs.set(config.key, config);
         return new FakeElement();
       },
+      attachDescriptionDisclosure: (row) => row,
+      buildDetailGroup: (_label, rows) => {
+        const group = new FakeElement();
+        for (const row of rows) group.appendChild(row);
+        return group;
+      },
+      buildButton: () => new FakeElement(),
+      setButtonState: () => {},
+      buildStatusLine: () => ({ element: new FakeElement(), setStatus() {} }),
       showSettingsDialog: async () => "reset",
     },
   };

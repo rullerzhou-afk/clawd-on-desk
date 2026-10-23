@@ -515,6 +515,49 @@ export function evaluateManagedLayoutGate(metaUrl, config = {}) {
  * @param {string} config.sessionIdPrefix  e.g. "opencode:"
  * @returns {function} the plugin entrypoint (default-exported by the entry)
  */
+export function resolveOpencodeServeAttachUrl(agentId, argv, value) {
+  if (agentId !== "opencode" || !Array.isArray(argv)) return null;
+  // The native release runs ["opencode", "serve", ...]; the Bun-compiled
+  // build observed on Windows runs ["bun", "<embedded>.js", "serve", ...].
+  // Only the first real command token counts, so a TUI directory argument can
+  // never be mistaken for serve mode.
+  const bundledScript = typeof argv[1] === "string" && /\.(?:c|m)?js$/i.test(argv[1]);
+  let commandIndex = bundledScript ? 2 : 1;
+  // OpenCode v1 accepts its global logging/boolean options before the command.
+  // Consume only known options and their values; scanning for any later "serve"
+  // would mistake an option value, TUI project, or another command's argument.
+  while (commandIndex < argv.length) {
+    const option = argv[commandIndex];
+    if (option === "--log-level" || option === "--logLevel") {
+      if (!/^(?:DEBUG|INFO|WARN|ERROR)$/.test(argv[commandIndex + 1])) return null;
+      commandIndex += 2;
+    } else if (/^--(?:log-level|logLevel)=(?:DEBUG|INFO|WARN|ERROR)$/.test(option)) {
+      commandIndex++;
+    } else if (/^--no-(?:print-logs|printLogs|pure)$/.test(option)) {
+      // Negated booleans never consume the following token in yargs.
+      commandIndex++;
+    } else if (/^--(?:print-logs|printLogs|pure)(?:=(?:true|false))?$/.test(option)) {
+      commandIndex++;
+      if (!option.includes("=") && ["true", "false"].includes(argv[commandIndex])) commandIndex++;
+    } else {
+      break;
+    }
+  }
+  if (argv[commandIndex] !== "serve") return null;
+  try {
+    const raw = String(value || "");
+    if (!raw || raw.length > 2048 || /[\s\u0000-\u001f\u007f]/u.test(raw)) return null;
+    const url = new URL(raw);
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password
+      || url.search || url.hash || url.pathname !== "/") return null;
+    if (url.hostname === "0.0.0.0") url.hostname = "127.0.0.1";
+    if (url.hostname === "[::]") url.hostname = "[::1]";
+    if (url.hostname !== "localhost" && url.hostname !== "[::1]"
+      && !/^127(?:\.\d{1,3}){3}$/.test(url.hostname)) return null;
+    return url.href;
+  } catch { return null; }
+}
+
 export function createOpencodeFamilyPlugin(config) {
   const { agentId, hookSource, logFileName, sessionIdPrefix } = config || {};
   for (const [key, value] of Object.entries({ agentId, hookSource, logFileName, sessionIdPrefix })) {
@@ -577,6 +620,7 @@ export function createOpencodeFamilyPlugin(config) {
   // outbound cwd consumes it only until the host's info-directory latch proves
   // map misses must fail closed.
   const _sessionInstanceDirectoryById = new Map();
+  const _attachTargetBySession = new Map();
   // Authoritative session title learned from session lifecycle info.
   // Shared by every handler returned from this factory product.
   const _sessionTitleById = new Map();
@@ -1089,6 +1133,7 @@ export function createOpencodeFamilyPlugin(config) {
       _sessionDirectoryById.delete(sessionId);
       _sessionInstanceDirectoryById.delete(sessionId);
       _sessionTitleById.delete(sessionId);
+      _attachTargetBySession.delete(sessionId);
       _lastStatePerSession.delete(sessionId);
     }
 
@@ -1218,6 +1263,11 @@ export function createOpencodeFamilyPlugin(config) {
     if (cwd.directory) outbound.cwd = cwd.directory;
     else delete outbound.cwd;
     outbound.agent_pid = process.pid;
+    if (AGENT_ID === "opencode" && logTag.startsWith("STATE")) {
+      const attach = _attachTargetBySession.get(normalizeSessionId(outbound.session_id));
+      outbound.opencode_attach_url = !outbound.headless && attach && !attach.instance.disposed
+        ? attach.url : null;
+    }
     const payload = JSON.stringify(outbound);
     return {
       body: outbound,
@@ -2898,6 +2948,7 @@ export function createOpencodeFamilyPlugin(config) {
       : "";
     const instanceToken = registerInstanceDirectory(instanceDirectory);
     const contextInstance = {
+      attachUrl: resolveOpencodeServeAttachUrl(AGENT_ID, process.argv, ctx && ctx.serverUrl),
       client: instanceClient, instanceToken, directory: instanceDirectory,
       historyRequests: new Set(), lifecycleRevision: 0, disposed: false,
       hydrationTimer: null, hydrationDrainQueued: false,
@@ -2982,6 +3033,14 @@ export function createOpencodeFamilyPlugin(config) {
           }
           captureSessionDirectory(event);
           captureSessionInstanceDirectory(event, instanceDirectory);
+          if (AGENT_ID === "opencode" && sid) {
+            const key = normalizeSessionId(sid);
+            const directory = resolveSessionDirectory(key).directory;
+            if (normalizeDirectoryOwnershipKey(directory) === normalizeDirectoryOwnershipKey(instanceDirectory)
+              && normalizeDirectoryOwnershipKey(instanceDirectory)) {
+              _attachTargetBySession.set(key, { url: contextInstance.attachUrl, instance: contextInstance });
+            }
+          }
           captureSessionTitle(event);
 
           if (sid && !_rootSessionId) {

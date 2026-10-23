@@ -134,6 +134,7 @@
     const control = document.createElement("div");
     control.className = "row-control";
     const button = helpers.buildButton({
+      tone: "quiet",
       size: "compact",
       label: t("codexApprovalSettingsLink"),
       className: "codex-approval-settings-btn",
@@ -271,19 +272,25 @@
   }
 
   function renderLocalBody(parent) {
+    const destructiveRow = helpers.buildSwitchRow({
+      key: "destructiveActionReminder",
+      labelKey: "rowDestructiveActionReminder",
+      descKey: "rowDestructiveActionReminderDesc",
+      descExtraKey: "rowDestructiveActionReminderNote",
+    });
+    helpers.attachDescriptionDisclosure(destructiveRow, { includeExtra: true });
     parent.appendChild(helpers.buildSection(t("sectionPermissionLocal"), [
       buildPermissionAutomationRow(),
-      helpers.buildSwitchRow({
-        key: "destructiveActionReminder",
-        labelKey: "rowDestructiveActionReminder",
-        descKey: "rowDestructiveActionReminderDesc",
-        descExtraKey: "rowDestructiveActionReminderNote",
-      }),
+      destructiveRow,
     ]));
 
-    parent.appendChild(helpers.buildSection(t("sectionPermissionPerTool"), [
-      buildCodexApprovalOwnerRow(),
-    ]));
+    // The per-tool block only makes sense for an agent that is actually wired
+    // in; without Codex there is no approval owner to redirect.
+    if (readers.readAgentIntegrationInstalled("codex")) {
+      parent.appendChild(helpers.buildSection(t("sectionPermissionPerTool"), [
+        buildCodexApprovalOwnerRow(),
+      ]));
+    }
   }
 
   function buildSubtabSwitcher() {

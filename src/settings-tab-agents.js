@@ -958,7 +958,7 @@
       onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
     });
     manageRow.classList.add("row-sub");
-    attachDescriptionDisclosure(manageRow);
+    helpers.attachDescriptionDisclosure(manageRow);
     const autoStartRow = helpers.buildSwitchRow({
       key: "autoStartWithClaude",
       labelKey: "rowStartWithClaude",
@@ -967,7 +967,7 @@
       disabled: !manageHooksEnabled,
     });
     autoStartRow.classList.add("row-sub");
-    attachDescriptionDisclosure(autoStartRow);
+    helpers.attachDescriptionDisclosure(autoStartRow);
     return [manageRow, autoStartRow];
   }
 
@@ -1341,46 +1341,6 @@
     modal.open(coreRef);
   }
 
-  // Wraps a card-body setting row: turns its description into an (i)
-  // disclosure. Only card-body rows call this; the card header never does, so
-  // TraeCode / MiniMax hints and any other always-visible note stay put.
-  let agentDescIdSeq = 0;
-
-  function attachDescriptionDisclosure(row) {
-    const text = row.querySelector(".row-text");
-    if (!text) return row;
-    const label = text.querySelector(".row-label");
-    if (!label) return row;
-    let desc = null;
-    for (const candidate of text.querySelectorAll(".row-desc")) {
-      if (!candidate.classList.contains("row-desc-extra")) {
-        desc = candidate;
-        break;
-      }
-    }
-    if (!desc) return row;
-    if (!desc.id) {
-      agentDescIdSeq += 1;
-      desc.id = `settings-agent-desc-${agentDescIdSeq}`;
-    }
-    desc.classList.add("row-desc-collapsed");
-    const toggle = document.createElement("button");
-    toggle.type = "button";
-    toggle.className = "row-desc-toggle";
-    toggle.textContent = "i";
-    toggle.setAttribute("aria-expanded", "false");
-    toggle.setAttribute("aria-controls", desc.id);
-    toggle.setAttribute("aria-label", t("agentDescToggle"));
-    toggle.title = desc.textContent;
-    toggle.addEventListener("click", (ev) => {
-      ev.stopPropagation();
-      const collapsed = desc.classList.toggle("row-desc-collapsed");
-      toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
-    });
-    label.appendChild(toggle);
-    return row;
-  }
-
   // Card body of a connected agent, in display order: Approvals → Alerts →
   // Connection → WSL → Quota → Info, then the quiet disconnect/remove block.
   // Groups with no rows are dropped, so no agent renders an empty label.
@@ -1504,7 +1464,7 @@
         descKey: "rowClaudeQuotaCollectionDesc",
       });
       claudeQuotaRow.classList.add("row-sub");
-      attachDescriptionDisclosure(claudeQuotaRow);
+      helpers.attachDescriptionDisclosure(claudeQuotaRow);
       quota.push(claudeQuotaRow);
     }
     if (agent.id === "codex") {
@@ -1514,7 +1474,7 @@
         descKey: "rowStartWithCodexDesc",
       });
       codexAutoStartRow.classList.add("row-sub");
-      attachDescriptionDisclosure(codexAutoStartRow);
+      helpers.attachDescriptionDisclosure(codexAutoStartRow);
       connection.push(codexAutoStartRow);
       // Startup nudge gate: warn (once per breakage) when the official hook —
       // now the ONLY Codex approval path — is disabled / needs review / inactive.
@@ -1524,7 +1484,7 @@
         descKey: "rowCodexHookHealthNotifyDesc",
       });
       codexHookNotifyRow.classList.add("row-sub");
-      attachDescriptionDisclosure(codexHookNotifyRow);
+      helpers.attachDescriptionDisclosure(codexHookNotifyRow);
       connection.push(codexHookNotifyRow);
     }
     if (agent.id === "kimi-cli") {
@@ -1717,7 +1677,7 @@
       controlClassName: "kimi-quota-row-control",
     });
     const row = rowParts.element;
-    attachDescriptionDisclosure(row);
+    helpers.attachDescriptionDisclosure(row);
     const note = document.createElement("span");
     note.className = "row-note kimi-quota-note";
     note.textContent = t("kimiQuotaStatusLoading");
@@ -2385,7 +2345,7 @@
         control.setDisabled(!readers.readAgentFlagValue(agent.id, "enabled"));
       },
     });
-    attachDescriptionDisclosure(row);
+    helpers.attachDescriptionDisclosure(row);
     return row;
   }
 
@@ -2515,7 +2475,7 @@
     // so the header must not claim the switch's label/description ids.
     if (!withSwitch) {
       row.appendChild(ctrl);
-      if (extraClass && extraClass.split(/\s+/).includes("row-sub")) attachDescriptionDisclosure(row);
+      if (extraClass && extraClass.split(/\s+/).includes("row-sub")) helpers.attachDescriptionDisclosure(row);
       return row;
     }
     const label = text.querySelector(".row-label");
@@ -2559,7 +2519,7 @@
     });
     ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
-    if (extraClass && extraClass.split(/\s+/).includes("row-sub")) attachDescriptionDisclosure(row);
+    if (extraClass && extraClass.split(/\s+/).includes("row-sub")) helpers.attachDescriptionDisclosure(row);
     return row;
   }
 
@@ -2596,7 +2556,7 @@
     ctrl.appendChild(input);
     row._settingsInput = input;
     row._settingsControl = ctrl;
-    attachDescriptionDisclosure(row);
+    helpers.attachDescriptionDisclosure(row);
     return row;
   }
 

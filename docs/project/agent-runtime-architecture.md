@@ -156,7 +156,20 @@ SessionStart / UserPromptSubmit，被 fence 拒掉的旧回合开始不解除；
 `session_index.jsonl`（沿用 512 KiB tail 上限）。新标题/改名以 `session_index:title`
 送入 `updateSessionMetadata(expectedAgentId: "codex")`，即使 rollout 未增长也刷新
 HUD/Dashboard；不创建会话、不改变状态/活跃时间/完成提醒/小结，不清空已有标题。
-尚未生成原生标题时仍使用既有文件夹 fallback；用户别名继续优先。
+尚未生成原生标题时，已知 Desktop originator 的本机 Codex 会话显示
+「文件夹 · 稳定短标签」；无可用文件夹时才回落到本地化的「Codex 对话 · 稳定短标签」。
+标签复用 canonical session id 的 10 位哈希，不写入 `sessionTitle`，Dashboard / 菜单
+复用同一 `displayTitle`。HUD 为分隔符和完整标签预留最小宽度；这类行的右侧信息
+用独立网格列保留状态/上下文及操作按钮，时间列先省略，且使用紧凑间距避免高字号裁切。
+短项目名与分隔符紧排，不将多余宽度塞进两者之间；带此类标签的 HUD 宽度随字号同比
+缩放，容纳完整标签、长状态文案、100% 上下文及操作按钮，并为长项目名保留省略号空间。
+不含此类标签的 HUD 保持既有紧凑宽度缩放。
+用户别名、索引标题和已有标题继续优先；CWD 和文件夹操作原样保留。CLI / 未知
+originator、headless（含已分类 child）、显式 CLI / exec / internal / subagent source、
+remote / WSL 不使用该 Desktop fallback。该标签不判断会话是否为用户侧聊或后台
+任务，不隐藏或合并行；不读 prompt、原生私有数据库，也不增加标题刷新通道。
+语言变更在更新 mirror 和广播字典后，复用 `emitSessionSnapshot({force:true})`
+刷新这些显示标签；同时修改别名只发一次，不通过 lifecycle 事件刷新活跃时间。
 monitor 当前标题与索引不一致时也会重发，覆盖索引恢复场景。
 一次快照构建最多读一次本机索引；无本机 Codex 会话时不读。
 标题通道跳过带 host 或 WSL 标记的会话；刷新覆盖仍在活动或退休记录中的会话
@@ -710,7 +723,7 @@ Cursor 3.19.19 会把 stderr 非空标记为 Hook execution error，即使 exit 
 
 ## Reasonix Blocking Hook Budget
 
-Reasonix 的 `UserPromptSubmit` / `PreToolUse` 从外层命令启动开始限时 5 秒，超时会阻止本次提交 / 工具调用。Clawd 仍是 state-only observer：不增加宿主 timeout，不输出权限决定，失败或放弃上报时静默 exit 0。Windows 保留 EncodedCommand 的引号兼容路径。
+Reasonix 的 `UserPromptSubmit` / `PreToolUse` 从外层命令启动开始限时 5 秒，超时会阻止本次提交 / 工具调用。Clawd 仍是 state-only observer：不增加宿主 timeout，不输出权限决定，失败或放弃上报时静默 exit 0。Windows 优先用不含引号的绝对 Node / hook 路径直接启动，避免每次事件额外启动 PowerShell。含空格或特殊字符时，安装器只查询已有的 8.3 短路径，并用文件 dev / ino 核实仍指向原文件；不创建短路径、不改磁盘设置、不替换成 PATH Node。Node 路径必须无需 shell 转义，hook 路径中的 `^ & ( )` 显式转义，额外的 `--clawd-reasonix-hook=reasonix-hook.js` 参数保留所有权识别。没有安全短路径或验证失败时仍使用 EncodedCommand，以兼容旧版 Reasonix 的 Go → cmd 引号问题；该回退仍可能受慢启动影响。
 
 `hooks/reasonix-hook.js` 保留 2000ms stdin 等待；阻塞事件在脚本开始后最多等 2200ms，且 stdin 结束后最多再等 200ms，先到者生效，为外层启动和退出留余量。同步进程扫描仍只允许非阻塞事件；非阻塞事件保留 3500ms post-stdin allowance 和 15000ms 内部截止（Stop 另含排序延迟）。慢速本机 / 远程上报可能被放弃，不能为了补状态拖住用户的原生操作；该进程内计时不能保证任意 OS 调度或启动停顿都在宿主期限内。
 

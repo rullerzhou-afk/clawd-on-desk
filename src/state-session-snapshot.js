@@ -2,7 +2,10 @@
 
 const crypto = require("crypto");
 const path = require("path");
+const { i18n } = require("./i18n");
+const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
 const { sessionAliasKey } = require("./session-alias");
+const { getOpencodeAttachTarget } = require("./opencode-attach-target");
 const { getSessionFocusTarget } = require("./session-focus");
 const {
   buildLatestLocalCodexProcessIds,
@@ -305,6 +308,28 @@ function sessionDisplayTitle(id, sessionLike, sessionAliases = {}, options = {})
   if (alias && typeof alias.title === "string" && alias.title) return alias.title;
   const title = getEffectiveSessionTitle(id, sessionLike, options);
   if (title) return title;
+  // An unnamed Desktop thread is still a separate session. Keep its project
+  // context plus a stable tag without borrowing prompt content as a chat name.
+  // Official child state is normalized to headless before reaching snapshots.
+  const source = sessionLike && sessionLike.codexSource;
+  const sourceName = typeof source === "string" ? source.trim().toLowerCase() : "";
+  if (sessionLike && sessionLike.agentId === "codex"
+    && isCodexDesktopOriginator(sessionLike.codexOriginator)
+    && !sessionLike.host && !isWslSourced(sessionLike)
+    && (!sessionLike.profileId || sessionLike.profileId === "local")
+    && !sessionLike.headless
+    && (source == null || typeof source === "string")
+    && !["cli", "codex-cli", "codex-tui", "exec", "internal", "subagent", "agent-subagent"].includes(sourceName)) {
+    const tag = buildDisplaySessionTag(id);
+    if (tag) {
+      const folder = normalizeTitle(sessionDisplayFolder(id, sessionLike));
+      if (folder) return `${folder} · ${tag}`;
+      const translated = typeof options.t === "function" ? options.t("sessionCodexUntitled") : null;
+      const template = typeof translated === "string" && translated.includes("{tag}")
+        ? translated : i18n.en.sessionCodexUntitled;
+      return template.replace("{tag}", tag);
+    }
+  }
   const folder = sessionDisplayFolder(id, sessionLike);
   if (folder) return folder;
   const rawSessionId = (sessionLike && sessionLike.rawSessionId) || id;
@@ -410,6 +435,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     // src/telegram-direct-send.js has to wait out before pasting.
     orcaPaneKey: (session && session.orcaPaneKey) || null,
     canFocus: focusTarget.canFocus === true,
+    canOpenInTerminal: !!getOpencodeAttachTarget(session, options.platform || process.platform),
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     wslDistro: (session && session.wslDistro) || null,
@@ -652,6 +678,7 @@ function sessionSnapshotSignature(snapshot) {
       sourcePid: entry.sourcePid,
       wtHwnd: entry.wtHwnd,
       canFocus: entry.canFocus,
+      canOpenInTerminal: entry.canOpenInTerminal,
       focusTarget: entry.focusTarget,
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,

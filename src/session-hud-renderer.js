@@ -1,6 +1,7 @@
 "use strict";
 
 const { canOfferLocalFolder, focusUnavailableReasonKey } = globalThis.ClawdSessionFocusUnavailable;
+const { taggedFallbackTag } = globalThis.ClawdSessionHudTaggedFallback;
 
 const HUD_MAX_EXPANDED_ROWS = 3;
 const HUD_MAX_EXPANDED_ROWS_LABELS = 5;
@@ -289,7 +290,26 @@ function createRowForSession(session, now) {
   const fullTitle = titleFor(session);
   const shortTitle = shortenHudTitle(fullTitle);
   title.className = feedbackText ? "title session-inline-feedback" : "title";
-  title.textContent = feedbackText || shortTitle;
+  const fallbackTag = !feedbackText && taggedFallbackTag(session);
+  if (fallbackTag) {
+    // Reserve the entire separator/tag, yielding project text and elapsed time
+    // first when the compact HUD cannot fit every secondary field.
+    title.classList.add("title-tagged-fallback");
+    left.classList.add("left-tagged-fallback");
+    row.classList.add("row-tagged-fallback");
+    const suffix = ` · ${fallbackTag}`;
+    const label = document.createElement("span");
+    label.className = "title-fallback-label";
+    label.textContent = fullTitle.slice(0, -suffix.length);
+    const tag = document.createElement("span");
+    tag.className = "title-fallback-tag";
+    tag.textContent = suffix;
+    title.appendChild(label);
+    title.appendChild(tag);
+    title.title = fullTitle;
+  } else {
+    title.textContent = feedbackText || shortTitle;
+  }
   if (feedbackText) {
     title.title = feedbackText;
     title.setAttribute("aria-live", "polite");
@@ -387,7 +407,16 @@ function createRowForSession(session, now) {
   }
 
   row.appendChild(left);
-  if (hasRightContent) row.appendChild(right);
+  if (hasRightContent) {
+    if (fallbackTag) {
+      // The elapsed column contributes zero to the grid's intrinsic floor;
+      // mandatory chips retain their complete width while time can ellipsize.
+      right.classList.add("right-tagged-fallback");
+      right.style.gridTemplateColumns = Array.from(right.children, (child) =>
+        child.className === "elapsed" ? "minmax(0, 1fr)" : "max-content").join(" ");
+    }
+    row.appendChild(right);
+  }
 
   row.addEventListener("click", () => {
     unreadSessions.delete(session.id);

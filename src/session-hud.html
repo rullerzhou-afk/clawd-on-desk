@@ -190,6 +190,23 @@ body { padding: 2px 3px 8px; }
   font-weight: 500;
 }
 
+.row.row-tagged-fallback { gap: 4px; }
+/* The tag must survive the squeeze, but the *label* is what gives way.
+   Giving .left a min-content floor reserved the widest possible
+   label+tag pair; paired with .right's own min-content floor the two
+   minimums could exceed a compact HUD window, so the row overflowed and
+   the status label was pushed under the pin. Keep the floor on the tag
+   column alone: .left stays shrinkable (min-width: 0 from the base
+   rule), the grid column keeps the tag at max-content, and the label
+   ellipsizes. Width the window for the tag instead of overflowing it. */
+.row .left.left-tagged-fallback { gap: 4px; }
+.title-tagged-fallback {
+  display: grid;
+  grid-template-columns: minmax(0, max-content) max-content;
+}
+.title-fallback-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.title-fallback-tag { flex: 0 0 auto; font-size: 10px; white-space: pre; }
+
 .chip-recovered {
   border: 1px dashed currentColor;
 }
@@ -226,6 +243,8 @@ body { padding: 2px 3px 8px; }
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+.right-tagged-fallback { display: grid; gap: 3px; }
 
 .state-chip {
   flex: 0 0 auto;
@@ -339,6 +358,7 @@ body { padding: 2px 3px 8px; }
 <body>
   <div id="hud" class="hud"></div>
   <script src="./session-focus-unavailable.js"></script>
+  <script src="./session-hud-tagged-fallback.js"></script>
   <script src="./session-hud-renderer.js"></script>
 </body>
 </html>
