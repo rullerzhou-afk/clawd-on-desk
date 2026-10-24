@@ -68,7 +68,7 @@ Prerequisites, Remote SSH, WSL, and macOS / Linux notes: **[setup guide](docs/gu
 
 ## Supported Agents
 
-> **Claude Code** · **Codex CLI** · **Copilot CLI** · **Gemini CLI** · **Antigravity CLI (agy)** · **Cursor Agent** · **CodeBuddy** · **WorkBuddy** · **Grok Build** · **Kiro CLI** · **KiroCrew** · **Kimi Code CLI (Kimi-CLI)** · **Qwen Code** · **ZCode** · **CodeWhale** · **opencode** · **MiMo Code** · **Pi** · **OMP** · **OpenClaw** · **Hermes Agent** · **Qoder** · **QoderWork** · **QwenWork (千问办公)** · **Reasonix CLI** · **DeepSeek Harness** · **TraeCode (Trae CN)** · **MiniMax Code**
+> **Claude Code** · **Codex CLI** · **Copilot CLI** · **Gemini CLI** · **Antigravity CLI (agy)** · **Cursor Agent** · **CodeBuddy** · **WorkBuddy** · **Grok Build** · **Kiro CLI** · **KiroCrew** · **Kimi Code CLI (Kimi-CLI)** · **Qwen Code** · **ZCode** · **CodeWhale** · **opencode** · **MiMo Code** · **Pi** · **OMP** · **OpenClaw** · **AutoClaw (智谱)** · **Hermes Agent** · **Qoder** · **QoderWork** · **QwenWork (千问办公)** · **Reasonix CLI** · **DeepSeek Harness** · **TraeCode (Trae CN)** · **MiniMax Code**
 
 Claude Code and Codex CLI are set up on first launch; install any other integration from **Settings → AI Coding Tools** and Clawd keeps it synced. Other local tools can report through the [custom HTTP agent](docs/guides/custom-agent-http.md) endpoint. Per-agent details are in **[supported agents](docs/guides/supported-agents.md)**, and gaps such as agents without permission bubbles are in **[known limitations](docs/guides/known-limitations.md)**.
 
