@@ -1473,7 +1473,7 @@ test("managed residue isolation preserves a foreign link swapped before unlink",
     __testManagedProfileResidueHooks: {
       beforeIsolateMove: async ({ linkDir }) => {
         await fs.promises.unlink(linkDir);
-        await fs.promises.symlink(foreign, linkDir, "dir");
+        await fs.promises.symlink(foreign, linkDir, process.platform === "win32" ? "junction" : "dir");
       },
     },
   }));

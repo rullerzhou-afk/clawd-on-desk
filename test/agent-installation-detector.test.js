@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
@@ -502,7 +503,7 @@ describe("agent installation detector", () => {
           const targetPath = path.join(homeDir, "outside-artifact");
           writeText(targetPath, "product-owned");
           mkdirp(geminiDir);
-          fs.symlinkSync(targetPath, artifactPath);
+          linkForRejection(targetPath, artifactPath);
         }
 
         const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
@@ -670,7 +671,7 @@ describe("agent installation detector", () => {
         if (shape === "symlink") {
           const targetPath = path.join(homeDir, "outside.json");
           writeJson(targetPath, { language: "en" });
-          fs.symlinkSync(targetPath, configPath);
+          linkForRejection(targetPath, configPath);
         }
 
         const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
@@ -880,7 +881,7 @@ describe("agent installation detector", () => {
     const targetPath = path.join(symlinkHome, "outside.json5");
     writeText(targetPath, "{ gateway: { port: 18789 } }");
     mkdirp(path.dirname(configPath));
-    fs.symlinkSync(targetPath, configPath);
+    linkForRejection(targetPath, configPath);
     const symlink = byId(detectAgentInstallations({ homeDir: symlinkHome, now: 1, env: {} }), "openclaw");
     assert.strictEqual(symlink.detectedInstalled, null);
     assert.strictEqual(symlink.reason, "insufficient-evidence");

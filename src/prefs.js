@@ -57,6 +57,7 @@ const {
   MAX_AUTO_CLOSE_SECONDS,
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
+const { normalizeDesktopIntegrations } = require("./desktop-integrations/settings");
 const { normalizeQuotaAlertThresholds } = require("./quota-alerts");
 const {
   TEXT_SCALE_MIN,
@@ -148,6 +149,7 @@ const SCHEMA = {
   preMiniY: { type: "number", default: 0, validate: (v) => Number.isFinite(v) },
   // Pure data prefs
   lang: { type: "string", default: "en", enum: ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"] },
+  desktopIntegrations: {type:"object", defaultFactory:()=>normalizeDesktopIntegrations({}), normalize:normalizeDesktopIntegrations},
   showTray: { type: "boolean", default: true },
   // Local activity recap is enabled by default for both fresh installs and
   // upgrades. It stores only bounded aggregate/ticket data under ~/.clawd;

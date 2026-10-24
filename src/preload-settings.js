@@ -126,6 +126,7 @@ ipcRenderer.on("officialTheme:progress", (_event, payload) => {
 });
 
 contextBridge.exposeInMainWorld("settingsAPI", {
+  openDesktopIntegrations: () => ipcRenderer.invoke("settings:desktop-integrations"),
   // Capability flag: true when a default Discord App ID is hardcoded (maintainer-
   // shipped), so the presence enable switch can be ready without a user-saved App ID.
   discordDefaultAppIdPresent,

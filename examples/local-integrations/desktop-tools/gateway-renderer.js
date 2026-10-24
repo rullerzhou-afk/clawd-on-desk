@@ -1,0 +1,4 @@
+const $=id=>document.getElementById(id);let pending=false;
+function render(result){if(!result.ok){$('error').textContent=result.error||'操作失败';return}const s=result.state;$('status').textContent=s.running?(s.healthy?'● 正在运行':'● 已启动，服务准备中'):'○ 已停止';$('detail').textContent=s.running?`本地端口 ${s.port}`:'启动后可在这里打开管理页面';$('start').disabled=s.running;$('stop').disabled=!s.running;$('open').disabled=!s.running;$('error').textContent=''}
+async function action(name){if(pending)return;pending=true;for(const b of document.querySelectorAll('button'))b.disabled=true;try{render(await window.gateway.command(name))}catch(error){$('error').textContent=error.message}finally{pending=false;$('refresh').disabled=false}}
+for(const name of ['start','stop','open'])$(name).onclick=()=>action(name);$('refresh').onclick=()=>action('status');window.gateway.onState(render);action('status');setInterval(()=>{if(!pending)action('status')},4000);

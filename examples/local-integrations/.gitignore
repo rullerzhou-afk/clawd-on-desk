@@ -1,0 +1,13 @@
+**/.native/
+**/node_modules/
+**/runtime-test-*/
+**/reviewer-sandbox/
+**/reviewer-sandbox-*/
+**/config.local.json
+**/desktop-lyrics-view.json
+**/qqmusic-library.json
+**/qqmusic-queue.json
+**/music-commands/
+**/*.log
+**/*.exe
+**/*.dll

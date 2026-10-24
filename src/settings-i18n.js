@@ -3,6 +3,7 @@
 (function initSettingsI18n(root) {
   const STRINGS = {
     en: {
+      desktopIntegrations: "Desktop integrations",
       generalTitle: "General",
       generalSubtitle: "Language, startup and power. Things you set once and leave alone.",
       petTitle: "Pet",
@@ -1223,6 +1224,7 @@
       aboutOpenExternalFailed: "Couldn't open the link in your browser.",
     },
     zh: {
+      desktopIntegrations: "桌面接入",
       generalTitle: "通用",
       generalSubtitle: "语言、启动和省电。设一次就不常动的东西。",
       petTitle: "桌宠",
@@ -2431,6 +2433,7 @@
       aboutOpenExternalFailed: "无法在浏览器中打开链接。",
     },
     "zh-TW": {
+      desktopIntegrations: "桌面整合",
       generalTitle: "一般",
       generalSubtitle: "語言、啟動與省電。設定一次就不常動的東西。",
       petTitle: "桌寵",
@@ -3643,6 +3646,7 @@
       aboutOpenExternalFailed: "無法開啟瀏覽器連結。",
     },
     ko: {
+      desktopIntegrations: "데스크톱 연동",
       generalTitle: "일반",
       generalSubtitle: "언어, 시작 및 전원. 한 번 설정하면 거의 바꾸지 않는 항목입니다.",
       petTitle: "펫",
@@ -4855,6 +4859,7 @@
       aboutOpenExternalFailed: "링크를 브라우저에서 열 수 없습니다.",
     },
     ja: {
+      desktopIntegrations: "デスクトップ連携",
       generalTitle: "一般",
       generalSubtitle: "言語、起動、省電力。一度設定したらあまり触らない項目です。",
       petTitle: "ペット",
@@ -6069,6 +6074,7 @@
       aboutOpenExternalFailed: "ブラウザでリンクを開けませんでした。",
     },
     "pt-BR": {
+      desktopIntegrations: "Integrações de desktop",
       generalTitle: "Geral",
       generalSubtitle: "Idioma, inicialização e energia. Coisas que você define uma vez e esquece.",
       petTitle: "Pet",
@@ -7279,6 +7285,7 @@
       aboutOpenExternalFailed: "Não foi possível abrir o link no seu navegador.",
     },
     es: {
+      desktopIntegrations: "Integraciones de escritorio",
       generalTitle: "General",
       generalSubtitle: "Idioma, inicio y energía. Cosas que configuras una vez y no vuelves a tocar.",
       petTitle: "Mascota",

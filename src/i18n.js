@@ -7,6 +7,7 @@
 // take effect without re-creating the translator.
 const i18n = {
   en: {
+    desktopIntegrations: "Desktop integrations",
     size: "Size",
     small: "Small (S)",
     medium: "Medium (M)",
@@ -541,6 +542,7 @@ const i18n = {
     feishuCardTestDetail: "This is a settings test card. It is not attached to any agent permission request.",
   },
   zh: {
+    desktopIntegrations: "桌面接入",
     size: "大小",
     small: "小 (S)",
     medium: "中 (M)",
@@ -1066,6 +1068,7 @@ const i18n = {
     feishuCardTestDetail: "这是设置页的测试卡片，不对应任何 agent 权限请求。",
   },
   "zh-TW": {
+    desktopIntegrations: "桌面整合",
     size: "大小",
     small: "小 (S)",
     medium: "中 (M)",
@@ -1594,6 +1597,7 @@ const i18n = {
     feishuCardTestDetail: "這是設定頁的測試卡片，不對應任何 agent 權限請求。",
   },
   ko: {
+    desktopIntegrations: "데스크톱 연동",
     size: "크기",
     small: "작은 (S)",
     medium: "보통 (M)",
@@ -2119,6 +2123,7 @@ const i18n = {
     feishuCardTestDetail: "설정 페이지의 테스트 카드입니다. 어떤 에이전트 권한 요청과도 연결되어 있지 않습니다.",
   },
   ja: {
+    desktopIntegrations: "デスクトップ連携",
     size: "サイズ",
     small: "小 (S)",
     medium: "中 (M)",
@@ -2644,6 +2649,7 @@ const i18n = {
     feishuCardTestDetail: "これは設定画面のテストカードです。エージェントの権限リクエストには関連付けられていません。",
   },
   "pt-BR": {
+    desktopIntegrations: "Integrações de desktop",
     size: "Tamanho",
     small: "Pequeno (S)",
     medium: "Médio (M)",
@@ -3169,6 +3175,7 @@ const i18n = {
     feishuCardTestDetail: "Este é um card de teste das configurações. Ele não está vinculado a nenhum pedido de permissão de agente.",
   },
   es: {
+    desktopIntegrations: "Integraciones de escritorio",
     size: "Tamaño",
     small: "Chico (S)",
     medium: "Mediano (M)",

@@ -60,13 +60,29 @@ async function assertProductionStack(win) {
     "cigarette SVG root did not fill object height within one device pixel");
 
   await win.webContents.executeJavaScript(`document.getElementById("cigarette").style.visibility = "hidden"`);
-  const baseline = await win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 });
+  const baseline = await capturePaintedPixel(win);
   await win.webContents.executeJavaScript(`document.getElementById("cigarette").style.visibility = "visible"`);
-  const stacked = await win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 });
+  const stacked = await capturePaintedPixel(win);
   assert(
     baseline.toDataURL() === stacked.toDataURL(),
     "transparent mouth object canvas obscured the real pet layer beneath it"
   );
+}
+
+async function capturePaintedPixel(win) {
+  // A hidden native window can have no Viz surface yet. Offscreen painting
+  // supplies a real compositor frame before capture; no visual assertion is
+  // retried or weakened when that surface is missing.
+  await new Promise((resolve, reject) => {
+    const painted = () => { clearTimeout(timer); resolve(); };
+    const timer = setTimeout(() => {
+      win.webContents.removeListener("paint", painted);
+      reject(new Error("cigarette compositor frame timed out"));
+    }, 5000);
+    win.webContents.once("paint", painted);
+    win.webContents.invalidate();
+  });
+  return win.webContents.capturePage({ x: 60, y: 45, width: 1, height: 1 }, { stayHidden: true, stayAwake: true });
 }
 
 async function inspect(win, seconds) {
@@ -192,7 +208,7 @@ async function main() {
     show: false,
     width: 160,
     height: 160,
-    webPreferences: { backgroundThrottling: false },
+    webPreferences: { backgroundThrottling: false, offscreen: true },
   });
   try {
     await win.loadFile(HTML);

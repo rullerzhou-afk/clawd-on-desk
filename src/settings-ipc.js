@@ -363,6 +363,12 @@ function registerSettingsIpc(options = {}) {
     disposers.push(() => ipcMain.removeHandler(channel));
   }
 
+  handle("settings:desktop-integrations", (event) => {
+    if (!isTrustedSettingsEvent(event)) return {status:"error",message:"Invalid settings window"};
+    if (typeof options.openDesktopIntegrations !== "function") return {status:"error",message:"Desktop integrations unavailable"};
+    return options.openDesktopIntegrations();
+  });
+
   function getDialogParent(event) {
     return getSettingsDialogParent(event, { BrowserWindow, getSettingsWindow });
   }

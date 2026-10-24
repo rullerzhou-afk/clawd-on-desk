@@ -17,6 +17,7 @@ const {
 } = require("./pet-accessory-state");
 
 const MENU_AFFECTING_KEYS = new Set([
+  "desktopIntegrations",
   "lang",
   "soundMuted",
   "bubbleFollowPet",

@@ -32,6 +32,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## Cockpit Tools protocol compatibility reference
+
+The WorkBuddy check-in adapter is independently authored JavaScript. Its account
+storage and network compatibility were checked against Cockpit Tools v1.3.62 by
+jlcodes99:
+
+- https://github.com/jlcodes99/cockpit-tools/blob/v1.3.62/src-tauri/src/commands/workbuddy.rs
+- https://github.com/jlcodes99/cockpit-tools/blob/v1.3.62/src-tauri/src/modules/codebuddy_cn_oauth.rs
+- https://github.com/jlcodes99/cockpit-tools/blob/v1.3.62/src-tauri/src/modules/secure_account_storage.rs
+
+No Cockpit binaries, Rust source, account files, keys or tokens are redistributed.
+The new adapter is contributed under this repository's AGPL-3.0-only license.
+
 ## Freesound Notification Sounds
 
 The default completion sound at `assets/sounds/complete.mp3` uses
