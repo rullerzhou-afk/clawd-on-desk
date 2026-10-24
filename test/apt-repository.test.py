@@ -50,11 +50,25 @@ class AptRepository(unittest.TestCase):
         home.mkdir(mode=0o700)
         os.environ["GNUPGHOME"] = str(home)
         os.environ["PATH"] += ":/usr/sbin:/sbin"
-        command("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "Clawd disposable test <test@example.invalid>", "rsa3072", "sign", "1d")
+        command("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "Clawd disposable test <test@example.invalid>", "rsa3072", "cert", "1d")
         keys = command("gpg", "--with-colons", "--list-keys").stdout.decode()
         cls.fingerprint = next(line.split(":")[9] for line in keys.splitlines() if line.startswith("fpr:"))
+        command("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-add-key", cls.fingerprint, "rsa3072", "sign", "1d")
+        try:
+            repo.validate_signing_subkey(cls.fingerprint)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Full primary secret must be rejected for production")
         cls.public = cls.base / "public.asc"
         cls.public.write_bytes(command("gpg", "--armor", "--export", cls.fingerprint).stdout)
+        subkeys = command("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--export-secret-subkeys", cls.fingerprint).stdout
+        command("gpgconf", "--kill", "gpg-agent")
+        signing_home = cls.base / "signing-only"
+        signing_home.mkdir(mode=0o700)
+        os.environ["GNUPGHOME"] = str(signing_home)
+        repo.run("gpg", "--batch", "--import", data=subkeys)
+        repo.validate_signing_subkey(cls.fingerprint)
         cls.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), functools.partial(QuietHandler, directory=str(cls.base)))
         cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
         cls.thread.start()
@@ -151,11 +165,28 @@ class AptRepository(unittest.TestCase):
         original = signed.read_bytes()
         try:
             signed.write_bytes(original.replace(b"Label: Clawd", b"Label: Forged", 1))
+            with self.assertRaises(subprocess.CalledProcessError):
+                self.stage(self.work / "forged-prior", self.url + "/published/apt")
             result = command("apt-get", "update", "--error-on=any", env=env, success=False)
             self.assertNotEqual(result.returncode, 0)
             self.assertIn("Candidate: 1.4.0", command("apt-cache", "policy", "clawd-on-desk", env=env).stdout.decode())
         finally:
             signed.write_bytes(original)
+
+    def test_wrong_key_cannot_authenticate_source(self):
+        other_home = self.work / "other-key"
+        other_home.mkdir(mode=0o700)
+        other_env = {**os.environ, "GNUPGHOME": str(other_home)}
+        command("gpg", "--batch", "--pinentry-mode", "loopback", "--passphrase", "", "--quick-generate-key", "Other test <other@example.invalid>", "rsa3072", "sign", "1d", env=other_env)
+        try:
+            wrong_key = command("gpg", "--armor", "--export", env=other_env).stdout
+            root, env = self.client()
+            (root / "etc/apt/keyrings/clawd-on-desk.asc").write_bytes(wrong_key)
+            result = command("apt-get", "update", "--error-on=any", env=env, success=False)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertNotIn("Candidate: 1.4.0", command("apt-cache", "policy", "clawd-on-desk", env=env).stdout.decode())
+        finally:
+            command("gpgconf", "--kill", "gpg-agent", env=other_env)
 
     def test_unrelated_higher_version_is_pinned_out(self):
         site = self.work / "hostile"

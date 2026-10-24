@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import platform
+import shutil
 import subprocess
 import tempfile
 import threading
@@ -17,6 +18,7 @@ import repository as repo
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path)
+    parser.add_argument("--preview-output", type=Path)
     args = parser.parse_args()
     if os.geteuid() != 0 or os.environ.get("CLAWD_APT_DISPOSABLE") != "1" or platform.machine() != "x86_64":
         raise SystemExit("Requires an explicitly disposable root amd64 CI machine")
@@ -42,13 +44,18 @@ def main():
             config.write_text(json.dumps(cfg))
             repo.build(types.SimpleNamespace(config=config, input=args.input, output=work / "site",
                 public_key=public, signing_key=fingerprint, previous_url=None, allow_initial=False))
+            if args.preview_output:
+                args.preview_output.mkdir(parents=True, exist_ok=False)
+                for name in ("index.html", "clawd-on-desk.asc", "dists/stable/manifest.json"):
+                    source = work / "site/apt" / name
+                    shutil.copyfile(source, args.preview_output / source.name)
             packages = sorted(json.loads((args.input / "manifest.json").read_text()), key=lambda p: repo.version(p["version"]))
             if len(packages) < 2:
                 raise ValueError("Real upgrade requires two published app versions")
             old, new = packages[-2:]
-            profile = Path("/home/clawd-apt-smoke/.clawd")
+            profile = Path("/home/clawd-apt-smoke/.config/Clawd on Desk")
             profile.mkdir(parents=True)
-            settings = profile / "settings.json"
+            settings = profile / "clawd-prefs.json"
             settings.write_text('{"aptSmokeSentinel":"preserve"}\n')
             expected = settings.read_bytes()
             subprocess.run(["apt-get", "update"], check=True)

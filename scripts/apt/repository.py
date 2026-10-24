@@ -134,6 +134,20 @@ def keyring(public_key, destination):
     run("gpg", "--batch", "--yes", "--dearmor", "--output", str(destination), str(public_key))
 
 
+def validate_signing_subkey(fingerprint):
+    if not re.fullmatch(r"[A-F0-9]{40}", fingerprint):
+        raise ValueError("Expected a full uppercase primary fingerprint")
+    keys = [line.split(":") for line in run("gpg", "--batch", "--with-colons", "--list-secret-keys", fingerprint).decode().splitlines()]
+    primaries = [key for key in keys if key[0] == "sec"]
+    primary_fingerprint = next((key[9] for key in keys if key[0] == "fpr"), None)
+    if primary_fingerprint != fingerprint:
+        raise ValueError("Use the primary fingerprint, not a signing-subkey fingerprint")
+    if len(primaries) != 1 or primaries[0][14] != "#":
+        raise ValueError("Production requires a secret subkey only; keep the primary secret offline")
+    if not any(key[0] == "ssb" and "s" in key[11] and key[14] != "#" and key[1] not in ("r", "e", "d") for key in keys):
+        raise ValueError("Missing usable signing subkey")
+
+
 def verify_signed(inrelease, trusted_key, directory):
     signed = directory / "verify.InRelease"
     clear = directory / "verify.Release"
@@ -310,7 +324,10 @@ def build(args):
         run("gpgv", "--keyring", str(delivered_trust), str(distribution / "Release.gpg"), str(distribution / "Release"))
         fingerprints = run("gpg", "--batch", "--show-keys", "--with-colons", str(extracted_key)).decode()
         primary = args.signing_key
-        if not re.fullmatch(r"[A-F0-9]{40}", primary) or not any(line.startswith("fpr:") and line.split(":")[9] == primary for line in fingerprints.splitlines()):
+        public_records = [line.split(":") for line in fingerprints.splitlines()]
+        public_primaries = [public_records[i + 1][9] for i, entry in enumerate(public_records[:-1])
+                            if entry[0] == "pub" and public_records[i + 1][0] == "fpr"]
+        if not re.fullmatch(r"[A-F0-9]{40}", primary) or primary not in public_primaries:
             raise ValueError("Expected signing fingerprint missing from delivered public key")
         replacements = {"VERSION": latest, "FINGERPRINT": primary, "BOOTSTRAP": source_package.name,
                         "BOOTSTRAP_SHA256": digest(source_package.read_bytes()), "URI": cfg["uri"]}
@@ -335,6 +352,8 @@ def main():
     download = commands.add_parser("download")
     download.add_argument("--output", required=True, type=Path)
     commands.add_parser("latest")
+    signing = commands.add_parser("validate-signing-key")
+    signing.add_argument("--fingerprint", required=True)
     stage = commands.add_parser("build")
     stage.add_argument("--input", type=Path, required=True)
     stage.add_argument("--output", type=Path, required=True)
@@ -348,6 +367,8 @@ def main():
         download_releases(args.output.resolve())
     elif args.command == "latest":
         print(releases()[0]["tag_name"][1:])
+    elif args.command == "validate-signing-key":
+        validate_signing_subkey(args.fingerprint)
     else:
         args.input = args.input.resolve()
         args.output = args.output.resolve()

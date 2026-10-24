@@ -46,7 +46,14 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
         run: python3 scripts/apt/repository.py download --output "$RUNNER_TEMP/apt-input"
       - name: Upgrade real released Clawd packages in this disposable runner
-        run: sudo env CLAWD_APT_DISPOSABLE=1 python3 scripts/apt/smoke-installed.py --input "$RUNNER_TEMP/apt-input"
+        run: sudo env CLAWD_APT_DISPOSABLE=1 python3 scripts/apt/smoke-installed.py --input "$RUNNER_TEMP/apt-input" --preview-output "$RUNNER_TEMP/apt-guide-preview"
+      - name: Save the generated guide for visual review (disposable test key)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-guide-preview-test-key-only
+          path: ${{ runner.temp }}/apt-guide-preview
+          retention-days: 7
+          if-no-files-found: error
 
   linux-packages:
     runs-on: ubuntu-latest
