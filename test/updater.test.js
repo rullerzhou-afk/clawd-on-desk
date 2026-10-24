@@ -101,6 +101,7 @@ function makeDeps(overrides = {}) {
   };
   return {
     app,
+    platform: "win32",
     dialog: {
       showMessageBox: async () => ({ response: 1 }),
     },
@@ -157,6 +158,99 @@ function makePendingReleaseResponse(queue) {
     return { on() { return this; }, setTimeout() {} };
   };
 }
+
+describe("Linux package update routing", () => {
+  function externalFixture({ marker = "deb", env = {}, context = {}, openExternal } = {}) {
+    const bubbles = [];
+    const opened = [];
+    let factoryCalls = 0;
+    const ctx = makeCtx({
+      showUpdateBubble: async (payload) => { bubbles.push(payload); return { action: "primary", source: "user" }; },
+      ...context,
+    });
+    const updater = initUpdater(ctx, makeDeps({
+      platform: "linux", resourcesPath: "/opt/Clawd/resources", env,
+      fsImpl: { existsSync: () => false, readFileSync: () => marker },
+      shell: { openExternal: async (url) => { opened.push(url); if (openExternal) await openExternal(url); } },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v1.4.0", html_url: "https://untrusted.invalid" }),
+      autoUpdaterFactory: () => { factoryCalls++; throw new Error("Unexpected updater construction"); },
+    }));
+    return { ctx, updater, bubbles, opened, factoryCalls: () => factoryCalls };
+  }
+
+  it("deb startup, manual/About, and tray checks only open the fixed APT guide and remain retryable", async () => {
+    const f = externalFixture({ env: { APPIMAGE: "/foreign.AppImage", APPDIR: "/tmp/foreign" } });
+    f.updater.setupAutoUpdater();
+    await f.updater.checkForUpdates(true);
+    assert.equal(f.factoryCalls(), 0);
+    assert.deepEqual(f.opened, ["https://rullerzhou-afk.github.io/clawd-on-desk/apt/"]);
+    const available = f.bubbles.find((b) => b.mode === "available");
+    assert.equal(available.actions[0].label, "Update with APT");
+    assert.match(available.message, /quit Clawd/);
+    assert.equal(f.updater.getUpdateCheckSnapshot().state, "available");
+    assert.equal(f.updater.getPendingUpdateVersion(), "v1.4.0");
+    assert.equal(f.updater.getUpdateMenuItem().enabled, true);
+    await f.updater.getUpdateMenuItem().click();
+    assert.equal(f.opened.length, 2);
+    assert.equal(f.factoryCalls(), 0);
+    assert.ok(!f.bubbles.some((b) => ["ready", "downloading", "success"].includes(b.mode)));
+  });
+
+  it("deb scheduler primary uses APT and silent mode defers the same prompt", async () => {
+    const f = externalFixture({ context: { doNotDisturb: true } });
+    f.updater.setupAutoUpdater();
+    await f.updater.handlePendingVersion("v1.4.0", { tag_name: "v1.4.0" });
+    assert.equal(f.bubbles.length, 0);
+    f.ctx.doNotDisturb = false;
+    await f.updater.onSilentModeExit();
+    // onSilentModeExit starts a deferred async prompt without returning it.
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(f.bubbles.filter((b) => b.mode === "available").length, 1);
+    assert.equal(f.bubbles[0].actions[0].label, "Update with APT");
+    assert.equal(f.opened.length, 1);
+    assert.equal(f.factoryCalls(), 0);
+  });
+
+  it("a browser-open error releases the active check for retry", async () => {
+    const f = externalFixture({ openExternal: async () => { throw new Error("No browser"); } });
+    await f.updater.checkForUpdates({ trigger: "manual", intent: "download" });
+    assert.equal(f.updater.getUpdateMenuItem().enabled, true);
+    assert.equal(f.factoryCalls(), 0);
+    assert.equal(f.updater.getPendingUpdateVersion(), "v1.4.0");
+  });
+
+  it("unknown Linux formats never guess DebUpdater or an inherited AppImage", async () => {
+    const f = externalFixture({ marker: "rpm", env: { APPIMAGE: "/other.AppImage", APPDIR: "/tmp/other" } });
+    f.updater.setupAutoUpdater();
+    await f.updater.checkForUpdates(true);
+    assert.deepEqual(f.opened, ["https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest"]);
+    assert.equal(f.factoryCalls(), 0);
+    assert.equal(f.bubbles.find((b) => b.mode === "available").actions[0].label, "Open Downloads");
+  });
+
+  it("verified AppImage keeps download and install-on-quit, even if a deb marker leaked into the mount", async () => {
+    const events = {};
+    const selected = [];
+    let downloads = 0;
+    const autoUpdater = {
+      on: (event, callback) => { events[event] = callback; },
+      checkForUpdates: async () => { await events["update-available"]({ version: "1.4.0" }); },
+      downloadUpdate: () => { downloads++; },
+    };
+    const updater = initUpdater(makeCtx({ showUpdateBubble: async () => "primary" }), makeDeps({
+      platform: "linux", resourcesPath: "/tmp/.mount_Clawd/resources",
+      env: { APPIMAGE: "/home/me/Clawd.AppImage", APPDIR: "/tmp/.mount_Clawd" },
+      fsImpl: { existsSync: () => false, readFileSync: () => "deb" },
+      autoUpdaterFactory: (options) => { selected.push(options.format); return autoUpdater; },
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v1.4.0" }),
+    }));
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    assert.deepEqual(selected, ["appimage"]);
+    assert.equal(downloads, 1);
+    assert.equal(autoUpdater.autoInstallOnAppQuit, true);
+  });
+});
 
 function makeHttpResponse({ statusCode, headers = {}, body = "" }) {
   return {

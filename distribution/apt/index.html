@@ -1,0 +1,106 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Clawd on Desk · APT setup</title>
+  <style>
+    :root{color-scheme:light;font:17px/1.65 system-ui,sans-serif;color:#302b29;background:#fcf8f1}
+    body{max-width:840px;margin:auto;padding:40px 24px 80px}nav{display:flex;justify-content:space-between;gap:20px;border-bottom:1px solid #d9cec2;padding-bottom:20px}
+    a{color:#a43c24;text-underline-offset:3px}h1{font-size:clamp(2rem,6vw,3.2rem);line-height:1.15;letter-spacing:-.04em;margin:44px 0 20px}h2{margin-top:44px;font-size:1.5rem}h3{margin-bottom:10px}
+    .lead{font-size:1.15rem;color:#5b514c}.badge{background:#efe4d6;border-radius:5px;padding:4px 10px;display:inline-block;font-size:.85rem}
+    pre{background:#302b29;color:#fff7ed;padding:18px;border-radius:8px;overflow:auto;font-size:.86rem;line-height:1.6}code{font-family:ui-monospace,monospace;overflow-wrap:anywhere}
+    .note{border-left:3px solid #bd6546;padding:8px 18px;background:#f4eadd}details{margin:22px 0}summary{cursor:pointer;font-weight:600}section+section{border-top:1px solid #d9cec2;margin-top:64px;padding-top:20px}footer{margin-top:56px;font-size:.9rem;color:#685c55}
+  </style>
+</head>
+<body>
+  <nav><strong>Clawd on Desk</strong><span><a href="#english">English</a> · <a href="#chinese">中文</a> · <a href="https://github.com/rullerzhou-afk/clawd-on-desk">GitHub</a></span></nav>
+  <section id="english">
+    <h1>Keep Clawd up to date<br>with APT.</h1>
+    <p class="lead">Add the official source once. Then use your system package manager for future <code>.deb</code> updates.</p>
+    <p class="badge">Published version: {{VERSION}} · amd64 / x86-64</p>
+    <p>For Debian 12/13 and Ubuntu 22.04/24.04 on 64-bit Intel or AMD machines. Check with <code>dpkg --print-architecture</code>: it must say <code>amd64</code>. AppImage users keep Clawd’s in-app updater and do not need this source.</p>
+
+    <h2>Already have the source?</h2>
+    <p>Quit Clawd, run these commands, then reopen it:</p>
+    <pre><code>sudo apt update
+sudo apt install --only-upgrade clawd-on-desk clawd-apt-source</code></pre>
+    <p>System update tools can also offer these updates. Adding this source does not enable unattended upgrades.</p>
+
+    <h2>One-time setup · new and existing users</h2>
+    <p>Existing <code>.deb</code> installations, including 1.3 and 1.4, can adopt this source directly. You do not need to make the old in-app updater work first. Your normal Clawd settings stay in your user profile.</p>
+    <h3>1. Quit Clawd</h3>
+    <p>An older version may ask to install an already downloaded update when quitting. Cancel that authorization prompt and continue below.</p>
+    <h3>2. Download and check the source package</h3>
+    <p>Download <a href="pool/main/{{BOOTSTRAP}}">{{BOOTSTRAP}}</a> to your Downloads folder. This small package contains the source configuration, a scoped public signing key, and package restrictions. It contains no install scripts.</p>
+    <pre><code>cd ~/Downloads
+printf '%s  %s\n' '{{BOOTSTRAP_SHA256}}' '{{BOOTSTRAP}}' | sha256sum --check</code></pre>
+    <p>Continue only if the check says <strong>OK</strong>. The HTTPS guide is the initial trust entry point; this checksum detects a changed download, not a compromise of this entire website.</p>
+    <h3>3. Add the source and install or upgrade Clawd</h3>
+    <pre><code>sudo apt install ./{{BOOTSTRAP}}
+sudo apt update
+sudo apt install clawd-on-desk</code></pre>
+    <h3>4. Reopen Clawd</h3>
+    <p>Future <code>.deb</code> notifications open this guide. Clawd will not run a privileged installer or install a <code>.deb</code> when you quit.</p>
+
+    <details><summary>Verify the signing key</summary>
+      <p>Primary fingerprint: <code>{{FINGERPRINT}}</code></p>
+      <p>Inspect the <a href="clawd-on-desk.asc">public key</a> with <code>gpg --show-keys --with-fingerprint clawd-on-desk.asc</code>. Compare the full fingerprint with the maintainer’s reviewed <a href="https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/guides/apt-maintenance.md">activation record</a> before first installation. APT uses this key only for this source via <code>Signed-By</code>; it is not added to global trust.</p>
+    </details>
+    <details><summary>Remove or temporarily disable the source</summary>
+      <pre><code>sudo apt purge clawd-apt-source
+sudo apt update</code></pre>
+      <p>This keeps Clawd installed. Use <strong>purge</strong>: plain <code>apt remove</code> retains the configuration and trust key, leaving the source active without future key updates. To pause updates, add <code>Enabled: no</code> to <code>/etc/apt/sources.list.d/clawd-on-desk.sources</code>. Package upgrades preserve that choice.</p>
+      <p>The pin in <code>/etc/apt/preferences.d/clawd-on-desk.pref</code> permits only <code>clawd-on-desk</code> and <code>clawd-apt-source</code>. Its restriction covers the entire <code>rullerzhou-afk.github.io</code> hostname, including other paths.</p>
+    </details>
+    <details><summary>New version missing, expired key, or source unavailable?</summary>
+      <p>A release notification may arrive before source publication completes. Check <code>apt-cache policy clawd-on-desk</code>, wait a few minutes, then retry <code>sudo apt update</code>. Refresh indexes if an older package URL returns 404.</p>
+      <p>If signature verification fails, stop and check this guide and the official repository for key renewal instructions. Do not use <code>trusted=yes</code>, disable signature checks, or ignore authentication errors. Before expiry, normal <code>clawd-apt-source</code> upgrades can deliver an overlapping key update; after expiry, download and verify a newly versioned source package through this guide.</p>
+      <p>You can keep the current app or temporarily disable the source. If you prefer manual updates, download the matching <code>.deb</code> from <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest">GitHub Releases</a> and install it with <code>sudo apt install ./Clawd-on-Desk-VERSION-amd64.deb</code> after quitting Clawd.</p>
+    </details>
+  </section>
+
+  <section id="chinese" lang="zh-CN">
+    <h1>用 APT 更新 Clawd</h1>
+    <p class="lead">只需接入一次官方软件源，之后即可通过系统包管理器更新 <code>.deb</code> 安装版。</p>
+    <p class="badge">已发布版本：{{VERSION}} · amd64 / x86-64</p>
+    <p>支持 Debian 12/13、Ubuntu 22.04/24.04 的 Intel / AMD 64 位系统。运行 <code>dpkg --print-architecture</code> 应显示 <code>amd64</code>。AppImage 继续使用应用内更新，无需添加此源。</p>
+    <h2>已经接入软件源</h2>
+    <p>先退出 Clawd，执行下面的命令，再重新打开：</p>
+    <pre><code>sudo apt update
+sudo apt install --only-upgrade clawd-on-desk clawd-apt-source</code></pre>
+    <p>系统更新工具也可以提示这些更新。添加软件源不会自动开启无人值守升级。</p>
+    <h2>首次接入 · 新用户和旧用户通用</h2>
+    <p>已安装 1.3、1.4 等旧版 <code>.deb</code> 的用户可以直接迁移，不必先修好旧版应用内更新。原有用户配置会保留。</p>
+    <h3>1. 退出 Clawd</h3>
+    <p>旧版可能在退出时请求安装此前下载的更新。取消该授权提示，再继续以下操作。</p>
+    <h3>2. 下载并校验软件源接入包</h3>
+    <p>将 <a href="pool/main/{{BOOTSTRAP}}">{{BOOTSTRAP}}</a> 保存到下载文件夹。这个小包只包含软件源配置、公钥和包范围限制，没有安装脚本。</p>
+    <pre><code>cd ~/Downloads
+printf '%s  %s\n' '{{BOOTSTRAP_SHA256}}' '{{BOOTSTRAP}}' | sha256sum --check</code></pre>
+    <p>只有显示 <strong>OK</strong> 才继续。若下载目录不同，请替换第一行。首次信任来自本 HTTPS 页面；校验值可以发现下载文件被修改，不能防范整个网站被攻破。</p>
+    <h3>3. 添加软件源并安装或更新 Clawd</h3>
+    <pre><code>sudo apt install ./{{BOOTSTRAP}}
+sudo apt update
+sudo apt install clawd-on-desk</code></pre>
+    <h3>4. 重新打开 Clawd</h3>
+    <p>以后 <code>.deb</code> 的更新提示会打开本指南，Clawd 不会自行运行提权安装器，也不会在退出时安装 <code>.deb</code> 更新。</p>
+    <details><summary>公钥核验与信任范围</summary>
+      <p>主密钥指纹：<code>{{FINGERPRINT}}</code></p>
+      <p>下载<a href="clawd-on-desk.asc">公钥</a>，运行 <code>gpg --show-keys --with-fingerprint clawd-on-desk.asc</code>，并与维护者审核过的<a href="https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/guides/apt-maintenance.md">启用记录</a>核对完整指纹。APT 通过 <code>Signed-By</code> 将此密钥限制于本软件源，不添加全局信任。</p>
+    </details>
+    <details><summary>移除或暂时停用软件源</summary>
+      <pre><code>sudo apt purge clawd-apt-source
+sudo apt update</code></pre>
+      <p>这会移除软件源和公钥，保留 Clawd 本体。必须使用 <strong>purge</strong>；普通 <code>apt remove</code> 会保留配置和信任，软件源仍启用，却无法再收到公钥更新。若只想暂停，在 <code>/etc/apt/sources.list.d/clawd-on-desk.sources</code> 中添加 <code>Enabled: no</code>，升级会保留这一设置。</p>
+      <p><code>/etc/apt/preferences.d/clawd-on-desk.pref</code> 只允许安装 <code>clawd-on-desk</code> 和 <code>clawd-apt-source</code>。限制覆盖整个 <code>rullerzhou-afk.github.io</code> 主机名，包括其下其他路径。</p>
+    </details>
+    <details><summary>找不到新版、密钥过期或软件源暂时不可用</summary>
+      <p>应用通知可能早于软件源发布。可用 <code>apt-cache policy clawd-on-desk</code> 查看候选版本，稍等几分钟再运行 <code>sudo apt update</code>。旧包地址返回 404 时，也应先刷新索引。</p>
+      <p>签名校验失败时请停止安装，查看本指南及官方仓库的密钥更新说明。不要使用 <code>trusted=yes</code>、关闭签名检查或忽略认证错误。密钥过期前，正常更新 <code>clawd-apt-source</code> 可获得交叠的新密钥；已过期时，请从本指南重新下载、核验并安装新版本接入包。</p>
+      <p>也可以暂时保留当前版本或停用软件源。若选择手动更新，从 <a href="https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest">GitHub Releases</a> 下载相应的 <code>.deb</code>，退出 Clawd 后用 <code>sudo apt install ./Clawd-on-Desk-VERSION-amd64.deb</code> 安装。</p>
+    </details>
+  </section>
+  <footer>Clawd on Desk · <a href="https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/guides/apt-maintenance.md">Maintainer documentation</a></footer>
+</body>
+</html>
