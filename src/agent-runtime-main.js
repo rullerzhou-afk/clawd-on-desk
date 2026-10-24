@@ -86,6 +86,8 @@ function createAgentRuntimeMain(options = {}) {
   const debugLog = typeof options.debugLog === "function" ? options.debugLog : () => {};
   const loadCodexLogMonitor = options.loadCodexLogMonitor || (() => require("../agents/codex-log-monitor"));
   const loadCodexAgent = options.loadCodexAgent || (() => require("../agents/codex"));
+  const loadAutoClawRuntimeMonitor = options.loadAutoClawRuntimeMonitor || (() => require("../agents/autoclaw-runtime-monitor"));
+  const loadAutoClawAgent = options.loadAutoClawAgent || (() => require("../agents/autoclaw"));
   const codexSubagentClassifier = options.codexSubagentClassifier || new DefaultCodexSubagentClassifier();
   const localCodexSubagentClassifier = createProfileScopedClassifier(codexSubagentClassifier, "local");
   const getServer = options.getServer || (() => null);
@@ -262,6 +264,7 @@ function createAgentRuntimeMain(options = {}) {
     : null;
 
   let codexMonitor = null;
+  let autoclawRuntimeMonitor = null;
   let disposed = false;
   const codexTurnFence = createCodexTurnFence({ now, debugLog });
   // Canonical session ids an official local Codex SessionEnd deleted. Bounded
@@ -826,12 +829,19 @@ function createAgentRuntimeMain(options = {}) {
     // Caller (Settings pre-commit enable/install, or startup) has already
     // decided to start; re-reading the persisted gate here races the settings
     // store write. Match the existing monitor.start() semantics.
-    if (agentId !== "codex" || disposed) return;
-    if (codexMonitor) codexMonitor.start();
-    startCodexArchiveTracker();
+    if (agentId === "codex" && !disposed) {
+      if (codexMonitor) codexMonitor.start();
+      startCodexArchiveTracker();
+      return;
+    }
+    if (agentId === "autoclaw" && !disposed) startAutoClawRuntimeMonitor();
   }
 
   function stopMonitorForAgent(agentId) {
+    if (agentId === "autoclaw") {
+      if (autoclawRuntimeMonitor) autoclawRuntimeMonitor.stop();
+      return;
+    }
     if (agentId !== "codex") return;
     if (codexMonitor) codexMonitor.stop();
     pendingCodexChildren.clear();
@@ -1209,11 +1219,54 @@ function createAgentRuntimeMain(options = {}) {
     return codexMonitor;
   }
 
+  // AutoClaw 2.x ("zwork harness") has no plugin surface: its state comes
+  // from a read-only poll of the app's runtime SQLite (see
+  // agents/autoclaw-runtime-monitor.js). Sessions are raw
+  // `autoclaw2:<uuid>` ids here — resolved through the same local session
+  // envelope as every other local monitor.
+  function startAutoClawRuntimeMonitor() {
+    if (autoclawRuntimeMonitor) {
+      if (isAgentEnabled("autoclaw")) autoclawRuntimeMonitor.start();
+      return autoclawRuntimeMonitor;
+    }
+    try {
+      const loaded = loadAutoClawRuntimeMonitor();
+      const Monitor = typeof loaded === "function" ? loaded : loaded.AutoClawRuntimeMonitor;
+      const autoclawAgent = loadAutoClawAgent();
+      autoclawRuntimeMonitor = new Monitor(autoclawAgent, (rawSessionId, state, event, extra) => {
+        const identity = resolveSessionIdentity(rawSessionId, "local");
+        const input = extra && typeof extra === "object" ? extra : {};
+        // Title-only updates reuse the metadata channel so a renamed
+        // conversation never re-fires a lifecycle event (and never
+        // double-counts recap completions).
+        if (input.titleOnly) {
+          const stateRuntime = getStateRuntime();
+          if (stateRuntime && typeof stateRuntime.updateSessionMetadata === "function") {
+            stateRuntime.updateSessionMetadata(identity.sessionId, {
+              sessionTitle: input.sessionTitle,
+            });
+          }
+          return;
+        }
+        updateSession(identity.sessionId, state, event, {
+          agentId: "autoclaw",
+          sessionTitle: input.sessionTitle,
+          cwd: input.cwd,
+        });
+      });
+      if (isAgentEnabled("autoclaw")) autoclawRuntimeMonitor.start();
+    } catch (err) {
+      logWarn("Clawd: AutoClaw runtime monitor not started:", err && err.message);
+    }
+    return autoclawRuntimeMonitor;
+  }
+
   function cleanup() {
     disposed = true;
     workBuddySessionTitleTracker.clear();
     clearRetiredWorkBuddySessions();
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
+    if (autoclawRuntimeMonitor && typeof autoclawRuntimeMonitor.stop === "function") autoclawRuntimeMonitor.stop();
     getStateRuntime()?.clearCodexSubagentActivities?.();
     stopCodexArchiveTracker();
     resetLocalCodexLifecycleTracking();
@@ -1233,6 +1286,7 @@ function createAgentRuntimeMain(options = {}) {
   return {
     getCodexSubagentClassifier: () => codexSubagentClassifier,
     startCodexLogMonitor,
+    startAutoClawRuntimeMonitor,
     startMonitorForAgent,
     stopMonitorForAgent,
     syncIntegrationForAgent,

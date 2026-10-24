@@ -60,3 +60,14 @@ for (const key of Object.keys(config.plugins.entries)) {
 - **gateway 只在启动时读插件集**：安装/更新后必须重启 AutoClaw（完整退出）。Settings/Doctor 目前只在安装器 stdout 和 Doctor 文案里提示，没有像 DSH 那样的常驻提示。
 - 图标为 AutoClaw.app 自带 `icon.icns` 提取（128px），非独立授权品牌素材；`fallback: false`，provenance 记录在 `assets/source/agent-icons/source-manifest.json`。
 - 用内嵌 gateway CLI 做诊断时必须显式 `OPENCLAW_STATE_DIR=~/.openclaw-autoclaw`，否则它默认读 `~/.openclaw`（独立 OpenClaw 的配置）。
+
+## AutoClaw 2.x（zwork harness）调查与轮询集成（2026-10-24）
+
+用户更新后跑的是独立 app `/Applications/AutoClaw2.app`（bundle id `com.zhipuai.autoclaw2`，v2.2.0，内部代号 **zwork**；userData `~/Library/Application Support/AutoClaw-official`，`~/.config/Zwork/` 仅办公插件桥发现文件）。v2.0.0 changelog"全新 Harness，不再断连"对应架构重写：
+
+- **1.x 的内嵌 OpenClaw gateway 被整体移除**：旧 gateway（openclaw 2026.6.8，18789）在 2.x 启动时干净退出（gateway.log `EXIT`）且不再被拉起；新版 bundle（`Contents/Resources/app/dist/main.cjs`，未打包 asar）中 `openclaw.plugin.json` / `plugins.entries` / `GatewayManager` / extensions 扫描关键词计数全为 0；`node_modules` 仅 @img；`vendor/` 为 bun/dotnet/node/ripgrep。agent 引擎直接跑在 Electron 主进程内（日志 `zwork.model.request.*`），18432 端口是 token/auth helper（`/get_token`、`/legal-jianwei-pdf`）。
+- 引擎是 Pi 系：harness 选项含 `piAgentDir`（默认 `~/.pi/agent`）、`piCompaction`、`sharedPiSkillsDir`（默认 `~/.agents/skills`，本机真实存在且被读取）、env `ZWORK_HARNESS_PI_USER_AGENT_DIRECTORY` 可覆盖。但**没有 Pi 式 extension 加载器**（无 jiti/.ts 加载特征）——不能复用 Pi extension 集成。
+- **可观测面**：主进程全程持写句柄的 `accounts/<hash>/runtime/runtime.sqlite`（WAL）。表结构（实测 schema）：`work_sessions`（session_id/title/workspace_id/updated_at/deleted_at/archived_at）、`work_runs`（run_id/session_id/status/created_at/updated_at；status 枚举 queued/running/waiting_approval/completed/failed/interrupted/stopping/stopped/cancelled/merged）、`work_events`（cursor 自增，type 如 run.started/run.completed/egress.decision）、`work_workspaces`（root_path→cwd）、`schema_migrations`。`work_runs.text`/`answer_preview`、`work_sessions.draft`、`work_events.payload_json` 是内容列，轮询一律不 SELECT。
+- **集成实现**：`agents/autoclaw-runtime-monitor.js` 只读轮询（`node:sqlite` readOnly；Electron 41 / Node 22.22 实测可用），SQL 白名单 + PRAGMA 门禁 + 纯函数状态机；接线 `src/agent-runtime-main.js`（`startAutoClawRuntimeMonitor`，gate `enabled` 启停）与 `src/main.js` 启动调用。session id `autoclaw2:<uuid>`，与 1.x 共用 agent id `autoclaw`。
+- **本机真机验证（2026-10-24）**：真实 DB 冒烟——inspect `{found:1, supported:true}`；首次 poll 对历史 completed 会话（"问候"）零事件（bootstrap 静默生效），cwd 正确取到 workspace root_path；单测 19 项状态机/发现/隐私全过；Clawd 重启后 monitor 静默启动（无 warn）。**端到端（用户发消息 → 桌宠动画/HUD）待用户确认。**
+- 已知限制：`waiting_approval` 无审批语义（state-only）；轮询延迟 ~1.5s；无工具级事件（`work_events` 样本尚少，后续真实使用中出现 tool 级 type 时可加粒度）；schema 私有无契约，版本漂移时 fail closed 跳过；Windows userData 名（预期 `%APPDATA%\AutoClaw-official`）未真机验证。
