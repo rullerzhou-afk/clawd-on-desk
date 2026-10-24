@@ -54,9 +54,9 @@ for (const key of Object.keys(config.plugins.entries)) {
 
 ## 残余风险 / 待办
 
-- **真实会话 `/state` 往返**：插件装载已实证，hook 事件是否在桌面端会话中触发（`session_start` / `model_call_started` / … → Clawd 动画与 HUD）需用户在 AutoClaw 发一条消息确认。
+- **真实会话 `/state` 往返（macOS 已验证）**：2026-10-22 用户在 AutoClaw 发送真实消息，Clawd 桌宠/HUD 正常响应——插件装载之外的最后一环在 macOS 闭环。
+- **Windows 未验证**：代码与 macOS 共用同一份（安装器/插件均为平台无关 Node），无需另写 Windows 版本；待验证的只有 Windows 上的路径布局（预期 `%USERPROFILE%\.openclaw-autoclaw\`，app.asar 的 `OPENCLAW_HOME_DIR` 常量与 macOS 同源）与 GatewayManager 行为（同一份 asar 代码，预期一致）。
 - **`plugins.allow`**：当前 AutoClaw 不设置 `plugins.allow`（日志 "plugins.allow is empty"），非内置插件自动装载。若未来版本启用 allow 列表，我们的插件需被列入（GatewayManager 的 `sanitizePluginAllowlist` 以 availablePlugins 为准，我们的 id 可用，但 Clawd 不主动写 allow——写了会让 gateway 只装 allow 内的插件，可能破坏 AutoClaw 自身插件）。
 - **gateway 只在启动时读插件集**：安装/更新后必须重启 AutoClaw（完整退出）。Settings/Doctor 目前只在安装器 stdout 和 Doctor 文案里提示，没有像 DSH 那样的常驻提示。
-- Windows 侧未验证：`~/.openclaw-autoclaw` 与 `extensions/` 在 Windows 上是否同为 `%USERPROFILE%\.openclaw-autoclaw\extensions` 待真机确认；staging/rename 逻辑与平台无关。
 - 图标为 AutoClaw.app 自带 `icon.icns` 提取（128px），非独立授权品牌素材；`fallback: false`，provenance 记录在 `assets/source/agent-icons/source-manifest.json`。
 - 用内嵌 gateway CLI 做诊断时必须显式 `OPENCLAW_STATE_DIR=~/.openclaw-autoclaw`，否则它默认读 `~/.openclaw`（独立 OpenClaw 的配置）。
