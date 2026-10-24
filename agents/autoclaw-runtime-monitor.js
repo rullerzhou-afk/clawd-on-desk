@@ -81,15 +81,17 @@ const RUNS_LIMIT = 1000;
 
 const USER_DATA_DIR_NAME = "AutoClaw-official";
 
-function userDataBaseDir(homeDir, platform) {
+function userDataBaseDir(homeDir, platform, env = process.env) {
   const home = homeDir || os.homedir();
   if (platform === "win32") {
-    return process.env.APPDATA || path.join(home, "AppData", "Roaming");
+    return (env && env.APPDATA) || path.join(home, "AppData", "Roaming");
   }
   if (platform === "darwin") {
     return path.join(home, "Library", "Application Support");
   }
-  return process.env.XDG_CONFIG_HOME || path.join(home, ".config");
+  // Electron resolves Linux userData under XDG_CONFIG_HOME; mirror that so
+  // discovery matches wherever AutoClaw's userData actually is.
+  return (env && env.XDG_CONFIG_HOME) || path.join(home, ".config");
 }
 
 // Electron userData roots the 2.x app may use. The default is the app's
@@ -106,7 +108,7 @@ function resolveAutoClawUserDataRoots(options = {}) {
   if (override) return [override];
 
   const base = options.baseDir
-    || userDataBaseDir(options.homeDir, options.platform || process.platform);
+    || userDataBaseDir(options.homeDir, options.platform || process.platform, env);
   const roots = new Set([path.join(base, USER_DATA_DIR_NAME)]);
   const fsImpl = options.fs || fs;
   try {

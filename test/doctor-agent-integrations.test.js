@@ -3154,7 +3154,9 @@ describe("checkAgentIntegrations", () => {
     db.exec("CREATE TABLE work_workspaces (workspace_id TEXT, root_path TEXT)");
     db.close();
 
-    const detail = runOne(descriptor);
+    // The fixture writes the macOS userData layout; pin the platform so the
+    // discovery base matches on any host.
+    const detail = runOne(descriptor, { platform: "darwin" });
 
     assert.strictEqual(detail.status, "ok");
     assert.strictEqual(detail.autoclawRuntimeDatabases, 1);
@@ -3171,7 +3173,7 @@ describe("checkAgentIntegrations", () => {
     fs.mkdirSync(dbDir, { recursive: true });
     fs.writeFileSync(path.join(dbDir, "runtime.sqlite"), "definitely not sqlite");
 
-    const detail = runOne(descriptor);
+    const detail = runOne(descriptor, { platform: "darwin" });
 
     assert.strictEqual(detail.status, "needs-review");
     assert.match(detail.detail, /schema is not understood/);

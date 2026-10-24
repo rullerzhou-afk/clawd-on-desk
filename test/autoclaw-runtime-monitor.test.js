@@ -150,18 +150,21 @@ describe("autoclaw runtime monitor privacy contract", () => {
 
 describe("autoclaw runtime database discovery", () => {
   it("maps platform defaults for the app userData root", () => {
+    // Env comes from the caller: a stray XDG_CONFIG_HOME / APPDATA on the
+    // host must not leak into explicit-homeDir lookups.
+    const env = {};
     assert.strictEqual(
-      userDataBaseDir("/home/u", "darwin"),
-      "/home/u/Library/Application Support"
+      userDataBaseDir("/home/u", "darwin", env),
+      path.join("/home/u", "Library", "Application Support")
     );
-    assert.strictEqual(userDataBaseDir("/home/u", "linux"), "/home/u/.config");
-    const savedAppData = process.env.APPDATA;
-    delete process.env.APPDATA;
-    try {
-      assert.strictEqual(userDataBaseDir("/home/u", "win32"), "/home/u/AppData/Roaming");
-    } finally {
-      if (savedAppData !== undefined) process.env.APPDATA = savedAppData;
-    }
+    assert.strictEqual(userDataBaseDir("/home/u", "linux", env), path.join("/home/u", ".config"));
+    assert.strictEqual(userDataBaseDir("/home/u", "win32", env), path.join("/home/u", "AppData", "Roaming"));
+    assert.strictEqual(userDataBaseDir("/home/u", "linux", { XDG_CONFIG_HOME: "/xdg" }), "/xdg");
+    assert.strictEqual(userDataBaseDir("/home/u", "win32", { APPDATA: "/appdata" }), "/appdata");
+    assert.strictEqual(
+      userDataBaseDir("/home/u", "darwin", { XDG_CONFIG_HOME: "/xdg" }),
+      path.join("/home/u", "Library", "Application Support")
+    );
   });
 
   it("honors the app's AUTOCLAW_USER_DATA_ROOT override", () => {
