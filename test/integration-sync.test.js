@@ -84,6 +84,11 @@ function makeRuntime(overrides = {}) {
       calls.push({ name: "openclaw-repair" });
       return { status: "ok", message: "done" };
     },
+    syncAutoClawPluginImpl: () => calls.push({ name: "autoclaw" }),
+    repairAutoClawPluginImpl: () => {
+      calls.push({ name: "autoclaw-repair" });
+      return { status: "ok", message: "done" };
+    },
     syncHermesPluginImpl: () => calls.push({ name: "hermes" }),
     syncQoderHooksImpl: () => calls.push({ name: "qoder" }),
     syncReasonixHooksImpl: () => calls.push({ name: "reasonix" }),
@@ -316,6 +321,7 @@ describe("integration sync runtime", () => {
       "pi",
       "omp",
       "openclaw",
+      "autoclaw",
       "hermes",
       "qoder",
       "reasonix",
@@ -387,6 +393,7 @@ describe("integration sync runtime", () => {
       "mimocode",
       "omp",
       "openclaw",
+      "autoclaw",
       "hermes",
       "qoder",
       "reasonix",

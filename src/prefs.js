@@ -481,6 +481,13 @@ const SCHEMA = {
       "pi": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "omp": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
       "openclaw": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },
+      // AutoClaw is state-only over its embedded OpenClaw gateway's plugin
+      // contract (~/.openclaw-autoclaw/openclaw.json). No PermissionRequest
+      // and no Notification hook, so both flags default off. Opt-in like every
+      // other non-default agent — agent-gate.js fail-opens a MISSING entry, so
+      // this default MUST exist or startup sync would write the plugin for any
+      // user who merely has an AutoClaw data directory.
+      "autoclaw": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
       "hermes": { integrationInstalled: false, enabled: false, permissionsEnabled: true, notificationHookEnabled: true },
       // Qoder is state-only (Phase 1) — permission bubbles default off.
       "qoder": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: true },

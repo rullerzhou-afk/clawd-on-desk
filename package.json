@@ -49,6 +49,8 @@
     "uninstall:omp-extension": "node hooks/omp-install.js --uninstall",
     "install:openclaw-plugin": "node hooks/openclaw-install.js",
     "uninstall:openclaw-plugin": "node hooks/openclaw-install.js --uninstall",
+    "install:autoclaw-plugin": "node hooks/autoclaw-install.js",
+    "uninstall:autoclaw-plugin": "node hooks/autoclaw-install.js --uninstall",
     "install:mimocode-plugin": "node hooks/mimocode-install.js",
     "uninstall:mimocode-plugin": "node hooks/mimocode-install.js --uninstall",
     "install:codex-hooks": "node hooks/codex-install.js",

@@ -28,6 +28,7 @@ function buildSettingsAgentOrderExports() {
     "pi",
     "omp",
     "openclaw",
+    "autoclaw",
     "hermes",
     "reasonix",
     "zcode",

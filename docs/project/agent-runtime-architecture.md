@@ -504,6 +504,12 @@ OpenClaw 状态同步（in-process plugin，state-only）：
     → fire-and-forget HTTP POST 127.0.0.1:23333/state
     → 同上状态机（agent_id: openclaw）
 
+AutoClaw 状态同步（内嵌 OpenClaw gateway 的独立 plugin，state-only）：
+  AutoClaw 桌面应用内嵌 OpenClaw gateway（state 目录 ~/.openclaw-autoclaw），事件词汇与 OpenClaw 相同
+    → hooks/autoclaw-plugin/index.js（hooks/openclaw-plugin/index.js 的逐行对齐 fork，仅身份常量不同）
+    → 映射与 POST 路径同上
+    → 同上状态机（agent_id: autoclaw）
+
 Hermes Agent 状态同步（Python plugin，Hermes SDK）：
   Hermes 触发 on_session_start / pre_llm_call / post_llm_call / pre_tool_call / post_tool_call / on_session_end / on_session_finalize / on_session_reset
     → hooks/hermes-plugin/__init__.py（plugin 跑在 Hermes worker 进程内）
@@ -737,6 +743,8 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/mimocode.js` — MiMo Code 事件映射 + 能力（plugin、permission、terminal focus），与 opencode 同源
 - `agents/pi.js` — Pi extension 事件映射 + 能力（extension，state-only，不接管 permission）
 - `agents/openclaw.js` — OpenClaw plugin 事件映射 + 能力（state-only，本地终端聚焦暂不支持）
+- `agents/autoclaw.js` — AutoClaw（智谱桌面端）事件映射 + 能力，复用 OpenClaw 插件合约（state-only）
+- `agents/autoclaw-runtime-monitor.js` — AutoClaw 2.x（zwork harness）只读轮询 monitor：发现 `AutoClaw-official/accounts/*/runtime/runtime.sqlite`，SQL 白名单 + PRAGMA schema 门禁 + 纯函数状态机，run 状态映射为 Clawd 事件
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus、permission；无 subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
@@ -753,7 +761,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 
 启动链路只会自动补齐 `integrationInstalled=true` 且 `enabled=true` 的缺失集成；若 prefs 文件不可读（`locked && recovered`），内存 snapshot 只是非权威 defaults fallback，整条 prefs-backed agent runtime gate 会 fail closed，本次进程不自动同步集成、不启动 monitor、不接受 state/permission ingress，也不恢复旧 session：
 
-- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / Hermes / DeepSeek Harness plugins 和 Pi / OMP extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`；DSH startup sync 不初始化缺失的 profile，只会把插件加进已初始化的桌面版 profile、并 repair 已 opt-in 的 marker-owned entry（被 DSH 关掉的插件只报 `plugin-disabled-in-dsh`，两步修复留给显式修复）
+- `server.js` 启动后异步同步已安装且已启用的 Claude / Codex / Copilot / Gemini / Antigravity / Cursor / CodeBuddy / WorkBuddy / Kiro / Kimi / Qwen / ZCode / CodeWhale / Qoder / QoderWork / QwenWork / Reasonix hooks、opencode / MiMo Code / OpenClaw / AutoClaw / Hermes / DeepSeek Harness plugins 和 Pi / OMP extension；Hermes 同步会先做无副作用安装探测，未安装时不创建 `~/.hermes`；DSH startup sync 不初始化缺失的 profile，只会把插件加进已初始化的桌面版 profile、并 repair 已 opt-in 的 marker-owned entry（被 DSH 关掉的插件只报 `plugin-disabled-in-dsh`，两步修复留给显式修复）
 - Claude hook 同步时还会扫 `DEPRECATED_CORE_HOOKS`（当前含 `WorktreeCreate`）清掉旧版本留下的过时 Clawd hook。常规所有权仍认 command 中的字面 `clawd-hook.js` marker；兼容 #852 的外部 env 间接形式时，只有“单条简单 Node 调用 + 精确 `CLAWD_HOOK_PATH` token + 唯一事件参数”，且 `settings.env.CLAWD_HOOK_PATH` 的跨平台 basename 恰为 `clawd-hook.js` 才视为 owned。复合命令、间接 env 值和第三方同事件 hook 均 fail closed。deprecated / versioned / HTTP-only / uninstall 路径删除全部 owned 命中；active state hook 则按子项位置折叠成一条，优先保留已 canonical 的命令并保留 mixed wrapper 的 matcher / 第三方 sibling。迁移不会改写 `settings.env`；严格的反注入规则只校验外部 env Node 候选，不会拒绝安装器已解析/保留的绝对路径（如含括号的 Windows 路径）。若 env-only 事件无法验证可用的绝对 Node 路径，会保留一条 env hook 而不是降级成裸 `node`；若已有 literal hook，则保留 literal 而不让不可迁移的 env duplicate 取代它
 
 Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=true, enabled=true` 一起提交；Uninstall 会调用 marker-scoped 卸载器，并把 `integrationInstalled=false, enabled=false` 一起提交。单独重新启用一个未安装 agent 只打开事件入口，不会写本机配置；手动安装命令主要用于调试、重装或远程机部署。
@@ -822,7 +830,7 @@ P0 spike（2026-04-26，Windows native Codex CLI）采到的实际 payload 边�
 
 ## Plugin Notes
 
-opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式集成的 agent；OpenClaw Phase 1 只上报状态，其他 agent 主要是 hook 脚本。
+opencode、MiMo Code、OpenClaw、AutoClaw、Hermes 和 DeepSeek Harness 是 plugin 形式集成的 agent；OpenClaw / AutoClaw Phase 1 只上报状态，其他 agent 主要是 hook 脚本。
 
 - 进程树 walk 从 `process.pid` 起步，不是 `ppid`
 - `task` 工具会直接新建 session，而不是产出 subtask part；只有 `session.created` 明确带 `event.properties.info.parentID` 的 session 才会被视为 child
@@ -875,6 +883,25 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - `model_call_ended` 成功后用 1500ms debounce 发 `Stop`；期间有新 model/tool/compaction 活动则取消。`failureKind=aborted|terminated` 也按非错误 `Stop` 处理，只有 timeout/connection 等失败发 `StopFailure`。
 - `session_end` 只在 `idle|daily|deleted|unknown` 时映射 `SessionEnd/sleeping`；`new|reset|compaction` 不让桌宠睡觉。
 - OpenClaw POST body 是 allowlist：`agent_id`、`session_id`、`state`、`event`、`cwd`、`agent_pid`、`tool_name`、`tool_use_id`、`hook_source`、`openclaw_*`、`error_present` 等；禁止透传 `params` / `result` / `error` 字符串 / `messages`。
+
+## AutoClaw Notes
+
+- AutoClaw（智谱）桌面应用内嵌 OpenClaw gateway（1.20.0 内嵌 openclaw 2026.6.8），gateway 是 app 的子进程、使用独立 state 目录 `~/.openclaw-autoclaw/`（app.asar 常量 `OPENCLAW_HOME_DIR`），实际读取的是 app 每次启动时由 `openclaw.json` 生成的 `openclaw.runtime.json`。真机证据见 `docs/investigations/autoclaw-e1-evidence.md`。
+- `hooks/autoclaw-plugin/` 是 `hooks/openclaw-plugin/index.js` 的逐行对齐 fork：只允许身份常量不同（`AGENT_ID: "autoclaw"`、`hook_source: "autoclaw-plugin"`、默认 state dir、`autoclaw:default` 会话回退、`autoclaw_run_id`/`autoclaw_call_id` payload 字段、`AUTOCLAW_STATE_DIR`/`AUTOCLAW_CONFIG_PATH` env）。`test/autoclaw-plugin.test.js` 用反向替换 parity 断言强制对齐，改任一文件必须镜像。manifest `id` 与 OpenClaw 相同（`clawd-on-desk`）。
+- **linked load path 在 AutoClaw 上不可用**：GatewayManager 在 `remote_config.refresh` 时删除不在可用集合里的 `plugins.entries` key，可用集合只来自 gateway stock、app bundled 和 `~/.openclaw-autoclaw/extensions/<dir>/`（用户扩展根，目录名与 manifest id 都算），`plugins.load.paths` 既不参与判定也不被清理，结果是插件“被发现但永不启用”。
+- `hooks/autoclaw-install.js` 因此把 `index.js` / `package.json` / `openclaw.plugin.json` 物化为 `~/.openclaw-autoclaw/extensions/clawd-on-desk/` 的 marker-owned 拷贝（`.clawd-managed.json` 记 owner/pluginId/agentId/filesSha256），staging 放在 state 根目录（extensions/ 内的半成品会被扫描成插件）再原子 rename；替换先挪旧目录到 `.clawd-autoclaw-removing-*` 再删。目录缺失/空 → 创建；标记合法 → 按字节比对决定重物化；无标记或标记损坏 → `extension-dir-foreign` fail closed、配置不写。配置只写 `plugins.entries["clawd-on-desk"].enabled=true`，不写 `load.paths`，并迁移掉第一版的 `autoclaw-plugin` basename 路径。无 CLI fallback；配置文件不存在（AutoClaw 未完成首次启动）返回 `autoclaw-not-found`，绝不 bootstrap。
+- Doctor 走 `autoclaw-extension` configMode（`checkAutoClawExtensionMode`）：配置缺失/非严格 JSON/include → not-connected / needs-review；拷贝缺失或 entry 缺失/disabled → not-connected；外来目录或 manifest 不合约（复用 `openclaw-entry-validator`）→ broken-path；文件与源不一致 → needs-review（Repair 重物化并提示重启）。
+- Phase 1 与 OpenClaw 同界：state-only、无权限气泡、无终端聚焦、无 startup recovery、`processNames` 全空。gateway 只在启动时读插件集，安装/更新后需完整退出并重开 AutoClaw。当前 AutoClaw 不设 `plugins.allow`（日志 "plugins.allow is empty; discovered non-bundled plugins may auto-load"），Clawd 也不写它。
+- 独立 OpenClaw（`~/.openclaw`）与 AutoClaw 是两个互不影响的目标：两个 gateway 各自加载各自的插件实例，分别以 `openclaw` / `autoclaw` 身份上报。
+
+### AutoClaw 2.x（zwork harness）只读轮询
+
+- AutoClaw 2.2.0（bundle id `com.zhipuai.autoclaw2`，内部代号 zwork，独立 app `AutoClaw2.app`、userData `~/Library/Application Support/AutoClaw-official`）在 v2.0.0 起换用"全新 Harness"：内嵌 OpenClaw gateway、`plugins.entries`、extensions 扫描与 GatewayManager 全部移除，agent 引擎（Pi 系，`piAgentDir` 默认 `~/.pi/agent`）直接跑在 Electron 主进程里；bundle 中没有任何第三方插件/hook 加载点，1.x 插件方案对 2.x 无效。
+- 2.x 唯一稳定的本地可读面是其 runtime SQLite：`<userData>/accounts/<hash>/runtime/runtime.sqlite`（主进程全程持 WAL 写句柄）。`agents/autoclaw-runtime-monitor.js` 以 `node:sqlite` readOnly 轮询（Electron 41 内置；WAL 下读者不阻塞宿主），并遵守隐私白名单：SQL 只有 work_sessions（session_id/title/workspace_id/updated_at/deleted/archived）、work_runs（run_id/session_id/status/created_at/updated_at）、work_workspaces（workspace_id/root_path）三条显式列名查询，**绝不读 text/answer_preview/model_context/attachments/draft/payload_json 等内容列**；表结构经 PRAGMA table_info 门禁，缺列即标记 unsupported 跳过（fail closed），不猜不崩。
+- 状态机（纯函数，测试注入 queryFn）：run `queued|stopping`→thinking/UserPromptSubmit、`running`→working/PreToolUse（每次 run 一次，recap 按此口径）、`waiting_approval`→attention/Notification（决定永远留在 AutoClaw 原生 UI）、`completed`→attention/Stop、`failed`→error/StopFailure、`interrupted/stopped/cancelled`→attention/Stop、`merged` 忽略；会话 deleted/archived→一次性 SessionEnd/sleeping。**首次见到即已终态的会话静默入库**（Clawd 重启不复活历史会话为 Done 行），活跃中的会话首次可见即上报；仅标题/cwd 变化走 titleOnly 元数据更新，不重发生命周期事件（Stop 不重复计数 recap）。
+- 会话 id 命名空间 `autoclaw2:<uuid>`，与 1.x 插件（OpenClaw session key / `autoclaw:default`）共用 agent id `autoclaw`、共用 recap 口径；两个承载方可并存同时跟踪。monitor 由 agent gate（`enabled`）启停（`startMonitorForAgent`/`stopMonitorForAgent`），main.js 启动时构造。
+- 安装检测把 runtime.sqlite 当 high-confidence product evidence（2.x-only 用户 Settings 显示已安装）；Doctor `autoclaw-extension` 模式在 1.x 不健康时回退 2.x 证据（存在且 schema 可读 → ok；存在但不理解 → needs-review），在 parentDir 缺失的 not-installed 短路之前也先看 2.x 证据。
+- 已知脆弱性：runtime schema 是私有契约，AutoClaw 更新可能改列——门禁保证"改了就不读"而不是"读错"；`waiting_approval` 只到 attention 粒度，无工具级事件；`AUTOCLAW_USER_DATA_ROOT` 是 app 自己的 userData 覆盖 env，发现逻辑同样尊重它。
 
 ## Terminal Focus And Remote
 

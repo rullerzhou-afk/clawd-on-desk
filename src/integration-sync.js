@@ -598,6 +598,39 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncAutoClawPlugin() {
+    try {
+      if (typeof ctx.syncAutoClawPluginImpl === "function") return ctx.syncAutoClawPluginImpl();
+      const { registerAutoClawPlugin } = require("../hooks/autoclaw-install.js");
+      const result = registerAutoClawPlugin({ silent: true });
+      if (result.installed && result.updated) {
+        console.log("Clawd: synced AutoClaw plugin");
+      }
+      return normalizeInstalledFlagResult(result, "AutoClaw", "autoclaw-not-found");
+    } catch (err) {
+      console.warn("Clawd: failed to sync AutoClaw plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync AutoClaw plugin" };
+    }
+  }
+
+  function repairAutoClawPlugin() {
+    try {
+      if (typeof ctx.repairAutoClawPluginImpl === "function") return ctx.repairAutoClawPluginImpl();
+      const { registerAutoClawPlugin } = require("../hooks/autoclaw-install.js");
+      const result = registerAutoClawPlugin({ silent: true });
+      if (result.status === "error" || result.installed === false) {
+        return {
+          status: "error",
+          message: result.message || result.reason || "Failed to repair AutoClaw plugin",
+        };
+      }
+      return { status: "ok", ...result, message: "AutoClaw plugin repaired" };
+    } catch (err) {
+      console.warn("Clawd: failed to repair AutoClaw plugin:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to repair AutoClaw plugin" };
+    }
+  }
+
   function syncHermesPlugin() {
     try {
       if (typeof ctx.syncHermesPluginImpl === "function") return ctx.syncHermesPluginImpl();
@@ -723,6 +756,7 @@ function createIntegrationSyncRuntime(options = {}) {
     pi: syncPiExtension,
     omp: syncOmpExtension,
     openclaw: syncOpenClawPlugin,
+    autoclaw: syncAutoClawPlugin,
     hermes: syncHermesPlugin,
     qoder: syncQoderHooks,
     reasonix: syncReasonixHooks,
@@ -737,6 +771,7 @@ function createIntegrationSyncRuntime(options = {}) {
     codex: repairCodexHooks,
     "deepseek-harness": repairDeepSeekHarnessPlugin,
     openclaw: repairOpenClawPlugin,
+    autoclaw: repairAutoClawPlugin,
     kirocrew: repairKiroCrewHooks,
   });
 

@@ -78,6 +78,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "pi",
   "omp",
   "openclaw",
+  "autoclaw",
   "hermes",
   "qoder",
   "reasonix",

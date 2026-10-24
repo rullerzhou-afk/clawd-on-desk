@@ -22,6 +22,7 @@ const mimocode = require("../../hooks/mimocode-install");
 const pi = require("../../hooks/pi-install");
 const omp = require("../../hooks/omp-install");
 const openclaw = require("../../hooks/openclaw-install");
+const autoclaw = require("../../hooks/autoclaw-install");
 const hermes = require("../../hooks/hermes-install");
 const qoder = require("../../hooks/qoder-install");
 const reasonix = require("../../hooks/reasonix-install");
@@ -360,6 +361,26 @@ const AGENT_DESCRIPTORS = Object.freeze([
     autoInstall: true,
     marker: openclaw.PLUGIN_DIR_NAME,
     pluginId: openclaw.PLUGIN_ID,
+    detection: "openclaw-plugin",
+  }),
+  Object.freeze({
+    // AutoClaw embeds an OpenClaw gateway with its own state dir, but its
+    // GatewayManager deletes unknown plugins.entries keys, so Clawd ships a
+    // marker-owned copy of the plugin into the user extension root instead of
+    // linking a load path. The entry contract (manifest id clawd-on-desk) is
+    // still the OpenClaw one.
+    agentId: "autoclaw",
+    agentName: agentName("autoclaw"),
+    eventSource: agentEventSource("autoclaw"),
+    parentDir: autoclaw.DEFAULT_STATE_DIR,
+    configPath: autoclaw.DEFAULT_CONFIG_PATH,
+    extensionsDir: autoclaw.DEFAULT_EXTENSIONS_DIR,
+    sourcePluginDir: autoclaw.resolvePluginDir(),
+    configMode: "autoclaw-extension",
+    autoInstall: true,
+    marker: autoclaw.EXTENSION_DIR_NAME,
+    markerFile: autoclaw.MARKER_FILE,
+    pluginId: autoclaw.PLUGIN_ID,
     detection: "openclaw-plugin",
   }),
   Object.freeze({

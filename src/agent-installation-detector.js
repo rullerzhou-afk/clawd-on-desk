@@ -13,6 +13,8 @@ const dsh = require("../hooks/dsh-install");
 const zcode = require("../hooks/zcode-install");
 const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
+const autoclaw = require("../hooks/autoclaw-install");
+const autoclawRuntimeMonitor = require("../agents/autoclaw-runtime-monitor");
 const grok = require("../hooks/grok-install");
 const qoder = require("../hooks/qoder-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
@@ -206,6 +208,17 @@ function resolveOpenClawPaths(options) {
   return { stateDir, configPath };
 }
 
+function resolveAutoClawPaths(options) {
+  const env = options.env || process.env;
+  const stateDir = typeof env.AUTOCLAW_STATE_DIR === "string" && env.AUTOCLAW_STATE_DIR.trim()
+    ? env.AUTOCLAW_STATE_DIR
+    : pathForHome(options.homeDir, ".openclaw-autoclaw");
+  const configPath = typeof env.AUTOCLAW_CONFIG_PATH === "string" && env.AUTOCLAW_CONFIG_PATH.trim()
+    ? env.AUTOCLAW_CONFIG_PATH
+    : path.join(stateDir, "openclaw.json");
+  return { stateDir, configPath };
+}
+
 function hermesCommandPaths(hermesHome, platform, env = {}) {
   if (platform === "win32") {
     const paths = [path.join(hermesHome, "hermes-agent", "venv", "Scripts", "hermes.exe")];
@@ -239,6 +252,15 @@ function resolveAgentPaths(descriptor, options) {
 
   if (descriptor.agentId === "openclaw") {
     const { stateDir, configPath } = resolveOpenClawPaths({ homeDir, env });
+    return finalizeAgentPaths(descriptor, {
+      parentDir: stateDir,
+      stateDir,
+      configPath,
+    }, options);
+  }
+
+  if (descriptor.agentId === "autoclaw") {
+    const { stateDir, configPath } = resolveAutoClawPaths({ homeDir, env });
     return finalizeAgentPaths(descriptor, {
       parentDir: stateDir,
       stateDir,
@@ -456,21 +478,29 @@ function detectOwnedHookConfigInstallation(descriptor, paths, options) {
   return insufficient(`${paths.parentDir} exists without accepted ${descriptor.agentName} product evidence`);
 }
 
-function openClawConfigHasProductContent(parsed) {
+function openClawFamilyConfigHasProductContent(parsed, installer) {
   if (Object.keys(parsed).some((key) => key !== "plugins")) return true;
   if (!isObject(parsed.plugins)) return false;
   if (Object.keys(parsed.plugins).some((key) => key !== "entries" && key !== "load")) return true;
 
   const entries = parsed.plugins.entries;
-  if (isObject(entries) && Object.keys(entries).some((key) => key !== openclaw.PLUGIN_ID)) return true;
+  if (isObject(entries) && Object.keys(entries).some((key) => key !== installer.PLUGIN_ID)) return true;
 
   const load = parsed.plugins.load;
   if (isObject(load) && Object.keys(load).some((key) => key !== "paths")) return true;
   if (isObject(load) && Array.isArray(load.paths)) {
-    const pluginDir = openclaw.resolvePluginDir();
-    if (load.paths.some((entry) => !openclaw.isManagedPluginPath(entry, pluginDir))) return true;
+    const pluginDir = installer.resolvePluginDir();
+    if (load.paths.some((entry) => !installer.isManagedPluginPath(entry, pluginDir))) return true;
   }
   return false;
+}
+
+function openClawConfigHasProductContent(parsed) {
+  return openClawFamilyConfigHasProductContent(parsed, openclaw);
+}
+
+function autoClawConfigHasProductContent(parsed) {
+  return openClawFamilyConfigHasProductContent(parsed, autoclaw);
 }
 
 function detectOpenClawInstallation(paths, options) {
@@ -492,6 +522,45 @@ function detectOpenClawInstallation(paths, options) {
 
   if (classified.status === "missing" && stateInfo.kind === "missing") return notFound();
   return insufficient(`${paths.stateDir} or ${paths.configPath} exists without accepted OpenClaw product evidence`);
+}
+
+function detectAutoClawInstallation(paths, options) {
+  const fsImpl = options.fs;
+  const env = options.env || {};
+  // AutoClaw 2.x ("zwork harness") is detected before the 1.x gateway
+  // config: its accounts/<hash>/runtime/runtime.sqlite is written by the app
+  // itself on first run and is the only carrier for 2.x-only users.
+  const runtimeDatabases = autoclawRuntimeMonitor.discoverRuntimeDatabasePaths({
+    fs: fsImpl,
+    homeDir: options.homeDir,
+    env,
+    platform: options.platform,
+  });
+  if (runtimeDatabases.length > 0) {
+    return installationResult(
+      true,
+      "high",
+      "product-artifact",
+      `${runtimeDatabases[0]} is an AutoClaw 2.x runtime database`
+    );
+  }
+
+  const hasExplicitConfig = typeof env.OPENCLAW_CONFIG_PATH === "string" && !!env.OPENCLAW_CONFIG_PATH.trim();
+  const stateInfo = lstatPath(fsImpl, paths.stateDir);
+
+  // Same symlink rule as OpenClaw: the embedded gateway's state root is
+  // app-authored, and a default config below a symlink is not exact evidence.
+  if (!hasExplicitConfig && stateInfo.kind === "symlink") {
+    return insufficient(`${paths.stateDir} is a symbolic link and was not followed for product detection`);
+  }
+
+  const classified = parseExactJsonObject(fsImpl, paths.configPath);
+  if (classified.status === "parsed" && autoClawConfigHasProductContent(classified.parsed)) {
+    return installationResult(true, "high", "config-file", `${paths.configPath} contains AutoClaw configuration`);
+  }
+
+  if (classified.status === "missing" && stateInfo.kind === "missing") return notFound();
+  return insufficient(`${paths.stateDir} or ${paths.configPath} exists without accepted AutoClaw product evidence`);
 }
 
 function detectGeminiInstallation(_descriptor, paths, options) {
@@ -616,6 +685,8 @@ function detectInstallation(descriptor, paths, options) {
       return notFound();
     case "openclaw":
       return detectOpenClawInstallation(paths, options);
+    case "autoclaw":
+      return detectAutoClawInstallation(paths, options);
     case "hermes":
       return detectHermesInstallation(paths, options);
     case "deepseek-harness":
