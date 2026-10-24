@@ -287,7 +287,7 @@ Other manual hook commands, run from the same checkout:
 
 Kiro registers hooks in custom agents under `~/.kiro/agents/` and creates a `clawd` agent. CodeBuddy's bare installer preserves an existing managed custom permission URL; explicit alternatives are `--permission-url local` or `--permission-url https://approval.example/permission`. General installer commands are also listed in [Agent Setup](#agent-setup).
 
-WorkBuddy has no verified standalone Linux/WSL CLI; use its macOS/Windows desktop integration. opencode, MiMo Code, Pi, and OpenClaw are not currently in the WSL Pair mapping and their WSL integration remains unverified. A general installer for one of these agents is not a verified WSL recipe.
+WorkBuddy has no verified standalone Linux/WSL CLI; use its macOS/Windows desktop integration. opencode, MiMo Code, Pi, OpenClaw, and AutoClaw are not currently in the WSL Pair mapping and their WSL integration remains unverified. A general installer for one of these agents is not a verified WSL recipe.
 
 If the complete source checkout is only on Windows, copy **all top-level JavaScript files** from its `hooks/` directory into WSL. Persistent hook agents in Pair also copy this complete set; Hermes uses the separate temporary payload described above. Do not maintain a hand-picked file list: hooks have direct and transitive dependencies.
 
