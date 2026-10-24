@@ -244,6 +244,23 @@ class AptRepository(unittest.TestCase):
         self.assertEqual((self.published / "apt/dists/stable/main/binary-amd64/Packages").read_bytes(),
                          repo.run("dpkg-scanpackages", "--multiversion", "pool", "/dev/null", cwd=self.published / "apt"))
 
+    def test_republication_retains_the_previous_bootstrap_version(self):
+        cfg = self.work / "upgrade.json"
+        cfg.write_text(json.dumps({**self.cfg, "bootstrap_version": "1.0.1"}))
+        upgraded = self.work / "upgraded"
+        self.stage(upgraded, self.url + "/published/apt", config=cfg)
+        repeated = self.work / "repeated"
+        previous_url = self.url + "/" + upgraded.relative_to(self.base).as_posix() + "/apt"
+        self.stage(repeated, previous_url, config=cfg)
+        for ver in ("1.0.0", "1.0.1"):
+            path = f"apt/pool/main/clawd-apt-source_{ver}_all.deb"
+            self.assertEqual((repeated / path).read_bytes(), (upgraded / path).read_bytes())
+        root, env = self.client(repeated)
+        command("apt-get", "update", "--error-on=any", env=env)
+        policy = command("apt-cache", "policy", "clawd-apt-source", env=env).stdout.decode()
+        self.assertIn("Candidate: 1.0.1", policy)
+        command("apt-get", "download", "clawd-apt-source=1.0.0", env=env, cwd=root / "downloads")
+
     def test_bootstrap_conffile_lifecycle_in_disposable_dpkg_root(self):
         root = self.work / "dpkg-root"
         (root / "var/lib/dpkg").mkdir(parents=True)

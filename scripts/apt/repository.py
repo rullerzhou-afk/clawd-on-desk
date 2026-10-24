@@ -298,9 +298,8 @@ def build(args):
             old_sources = [r for r in previous["manifest"]["packages"] if r["package"] == "clawd-apt-source"]
             if any(version(r["version"]) > version(cfg["bootstrap_version"]) for r in old_sources):
                 raise ValueError("Refusing published bootstrap version rollback")
-            for record in sorted(old_sources, key=lambda r: version(r["version"]), reverse=True)[:1]:
-                if record["version"] == cfg["bootstrap_version"]:
-                    continue
+            prior_sources = [r for r in old_sources if r["version"] != cfg["bootstrap_version"]]
+            for record in sorted(prior_sources, key=lambda r: version(r["version"]), reverse=True)[:1]:
                 filename = f"pool/main/clawd-apt-source_{record['version']}_all.deb"
                 if filename != record["filename"] or record["size"] > 1024 * 1024:
                     raise ValueError("Invalid prior bootstrap")
