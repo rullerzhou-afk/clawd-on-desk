@@ -703,7 +703,9 @@ describe("Antigravity hook installer", () => {
     const hooks = readJson(path.join(homeDir, ".gemini", "config", "hooks.json"));
     const decoded = decodeEncodedCommand(hooks[HOOK_GROUP_ID].PreInvocation[0].command);
     assert.ok(decoded.includes(`$psi.FileName = '${nodeBin}'`));
-    assert.ok(decoded.includes(`$psi.Arguments = '${path.resolve(__dirname, "..", "hooks", "antigravity-hook.js").replace(/\\/g, "/")} PreInvocation'`));
+    const script = path.resolve(__dirname, "..", "hooks", "antigravity-hook.js").replace(/\\/g, "/");
+    const scriptArg = /\s/.test(script) ? `"${script}"` : script;
+    assert.ok(decoded.includes(`$psi.Arguments = '${scriptArg.replace(/'/g, "''")} PreInvocation'`));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{}' )"));
   });
 

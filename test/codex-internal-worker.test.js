@@ -313,7 +313,7 @@ describe("issue #1073: Codex internal memory worker detection", () => {
       fs.mkdirSync(path.join(realHome, "memories"));
       withTempDir("codex-worker-link-", (linkParent) => {
         const linkHome = path.join(linkParent, "codex-link");
-        fs.symlinkSync(realHome, linkHome, "dir");
+        fs.symlinkSync(realHome, linkHome, process.platform === "win32" ? "junction" : "dir");
         const payload = { cwd: path.join(fs.realpathSync(realHome), "memories") };
         assert.strictEqual(
           isCodexMemoryWorkerPayload(payload, { env: { CODEX_HOME: linkHome }, homedir: linkParent }),
