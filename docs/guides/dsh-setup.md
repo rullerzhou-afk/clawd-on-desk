@@ -89,7 +89,14 @@ session.
 | turn ended | `Stop` / `attention` (or `StopFailure` / `error`) |
 | session disposed | `SessionEnd` / `sleeping` |
 
-DSH's `session/title` event supplies the Session HUD and Dashboard title. When
+DSH's `session/title` event supplies the Session HUD and Dashboard title. A
+title is published as metadata-only, which Clawd applies to an existing session
+and never uses to create one — so a title that arrives before the first state
+event (or before the desktop app reopens a conversation, where DSH emits no new
+title at all) would otherwise be lost. The plugin therefore remembers the title
+per session and re-attaches it to state payloads, and asks the `title` projection
+once for a session it met after creation; a session that has no title yet still
+falls back to the workspace name, as before. When
 the public session projection service is present, the plugin also follows
 `contextPressure` changes and reads its current value when a session is
 created. Clawd displays the same reference occupancy as DSH's ContextMeter:

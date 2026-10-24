@@ -21,6 +21,9 @@ const MAX_QUEUE_PER_SESSION = 32
 const DEFAULT_PERMISSION_TIMEOUT_MS = 10 * 60 * 1000
 const TITLE_MAX = 80
 const TEXT_MAX = 500
+// Bounded like the outbound queue: a long-lived host can meet many sessions, and
+// each remembered title is at most TITLE_MAX.
+const MAX_TRACKED_TITLES = 200
 
 const CRITICAL_EVENTS = new Set([
   'SessionStart',
@@ -357,6 +360,53 @@ export function createSessionObservers(sender, options = {}) {
     }
   }
 
+  // DSH publishes session/title as a metadata-only request, and Clawd only lets
+  // metadata annotate a session it already holds: a title that arrives before
+  // the first state event is dropped with no retry. The bridge therefore
+  // remembers the title per session and re-attaches it to state payloads, which
+  // are what create (and can recreate) the row. A session this plugin generation
+  // met after creation - a reload, or the desktop app reopening a conversation -
+  // is asked once for its current projection, because DSH never re-emits a title
+  // it already generated.
+  const sessionTitles = new Map()
+  const titleSnapshotAttempted = new Set()
+
+  function rememberSessionTitle(session, value) {
+    const id = canonicalSessionId(session?.id)
+    const title = boundedText(value, TITLE_MAX)
+    if (!title) return null
+    if (sessionTitles.size >= MAX_TRACKED_TITLES && !sessionTitles.has(id)) {
+      const oldest = sessionTitles.keys().next().value
+      if (oldest !== undefined) sessionTitles.delete(oldest)
+    }
+    sessionTitles.set(id, title)
+    return title
+  }
+
+  function snapshotSessionTitle(session) {
+    // Until the projection service is injected there is nothing to ask; do not
+    // spend the one attempt an early event would otherwise consume.
+    if (!projectionRegistry) return null
+    const id = canonicalSessionId(session?.id)
+    if (titleSnapshotAttempted.has(id)) return null
+    titleSnapshotAttempted.add(id)
+    try {
+      return rememberSessionTitle(
+        session,
+        projectionRegistry.snapshot(session, ['title'])?.values?.title
+      )
+    } catch {
+      // An optional projection must never block a state report.
+      return null
+    }
+  }
+
+  function forgetSessionTitle(session) {
+    const id = canonicalSessionId(session?.id)
+    sessionTitles.delete(id)
+    titleSnapshotAttempted.delete(id)
+  }
+
   const handleSessionCreated = safely((session) => {
     let metadata = null
     try {
@@ -364,6 +414,8 @@ export function createSessionObservers(sender, options = {}) {
     } catch {
       // An optional projection must never veto DSH session creation.
     }
+    rememberSessionTitle(session, metadata?.title)
+    rememberSessionTitle(session, metadata?.title)
     const contextUsage = contextUsageFromPressure(metadata?.contextPressure)
     sender.enqueue(statePayload(session, {
       event: 'SessionStart',
@@ -380,15 +432,25 @@ export function createSessionObservers(sender, options = {}) {
 
   const handleSessionEvent = safely((session, event) => {
     if (event?.type === 'session/title') {
-      const titlePayload = metadataPayload(session, { title: event?.data?.title })
+      const title = rememberSessionTitle(session, event?.data?.title)
+      const titlePayload = title ? metadataPayload(session, { title }) : null
       if (titlePayload) sender.enqueue(titlePayload)
     }
     const mapping = mapSessionEvent(event)
     if (!mapping) return
-    sender.enqueue(statePayload(session, mapping, { eventSeq: event?.seq }, carrier))
+    // A metadata-only title cannot create a row, so anything it cannot deliver
+    // yet has to ride this state payload instead.
+    const knownTitle = sessionTitles.get(canonicalSessionId(session?.id)) || snapshotSessionTitle(session)
+    sender.enqueue(statePayload(
+      session,
+      knownTitle ? { ...mapping, title: mapping.title || knownTitle } : mapping,
+      { eventSeq: event?.seq },
+      carrier
+    ))
   })
 
   const handleSessionDisposed = safely((session) => {
+    forgetSessionTitle(session)
     sender.enqueue(statePayload(session, {
       event: 'SessionEnd',
       state: 'sleeping',
