@@ -234,6 +234,11 @@ class AptRepository(unittest.TestCase):
         cfg.write_text(json.dumps({**self.cfg, "origin": "Changed"}))
         with self.assertRaisesRegex(ValueError, "identity changed"):
             self.stage(self.work / "identity", self.url + "/published/apt", config=cfg)
+        cfg.write_text(json.dumps({**self.cfg, "bootstrap_version": "0.9.0"}))
+        with self.assertRaisesRegex(ValueError, "bootstrap version rollback"):
+            self.stage(self.work / "old-bootstrap", self.url + "/published/apt", config=cfg)
+        self.assertEqual((self.published / "apt/dists/stable/main/binary-amd64/Packages").read_bytes(),
+                         repo.run("dpkg-scanpackages", "--multiversion", "pool", "/dev/null", cwd=self.published / "apt"))
 
     def test_bootstrap_conffile_lifecycle_in_disposable_dpkg_root(self):
         root = self.work / "dpkg-root"

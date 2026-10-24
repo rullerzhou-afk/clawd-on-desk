@@ -281,6 +281,8 @@ def build(args):
             if version(latest) < version(previous["manifest"]["latest"]):
                 raise ValueError("Refusing published version rollback")
             old_sources = [r for r in previous["manifest"]["packages"] if r["package"] == "clawd-apt-source"]
+            if any(version(r["version"]) > version(cfg["bootstrap_version"]) for r in old_sources):
+                raise ValueError("Refusing published bootstrap version rollback")
             for record in sorted(old_sources, key=lambda r: version(r["version"]), reverse=True)[:1]:
                 if record["version"] == cfg["bootstrap_version"]:
                     continue
