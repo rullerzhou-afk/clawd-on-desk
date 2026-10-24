@@ -89,9 +89,12 @@ session.
 | turn ended | `Stop` / `attention` (or `StopFailure` / `error`) |
 | session disposed | `SessionEnd` / `sleeping` |
 
-DSH's `session/title` event supplies the Session HUD and Dashboard title. When
-the public session projection service is present, the plugin also follows
-`contextPressure` changes and reads its current value when a session is
+DSH's `session/title` event supplies the Session HUD and Dashboard title, and
+the plugin also re-reads the folded `title` projection on every lifecycle event
+it reports. A title set or renamed while Clawd was not listening therefore
+arrives with the next event instead of leaving the row on the workspace folder
+name. When the public session projection service is present, the plugin also
+follows `contextPressure` changes and reads its current value when a session is
 created. Clawd displays the same reference occupancy as DSH's ContextMeter:
 `(projectedTokens ?? pressureTokens) / contextWindow`, rounded and capped at
 100%. It appears only after DSH has reported both usage and model capacity.
