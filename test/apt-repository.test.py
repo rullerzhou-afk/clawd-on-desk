@@ -212,6 +212,10 @@ class AptRepository(unittest.TestCase):
         self.assertNotEqual(command("apt-get", "--simulate", "install", "bash", env=env, success=False).returncode, 0)
 
     def test_reproducible_bootstrap_and_authenticated_prior_indexes(self):
+        with contextlib.redirect_stdout(None):
+            repo.verify_live(self.config, self.public)
+        with self.assertRaisesRegex(ValueError, "not activated"):
+            repo.verify_live(self.config, self.work / "missing-public.asc")
         target = self.work / "next"
         self.stage(target, self.url + "/published/apt")
         package = "apt/pool/main/clawd-apt-source_1.0.0_all.deb"

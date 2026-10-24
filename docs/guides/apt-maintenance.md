@@ -19,6 +19,8 @@ The proposed URL is `https://rullerzhou-afk.github.io/clawd-on-desk/apt/`. Both 
 7. Verify the deployed HTTPS URL and public key fingerprint. On a disposable supported amd64 system, follow the guide verbatim, confirm `apt update` authenticates, `apt-cache policy` selects the expected release, and install/upgrade an older real Clawd package. Confirm profile retention, sandbox permissions, AppArmor behavior and startup. Record deployment duration, cache headers, and a subsequent complete-snapshot transition with old by-hash URLs still working.
 8. Test the release dispatcher invokes the main workflow and that a tag ref cannot enter `apt-production`. Future publication can be recovered with manual `publish=true`, `initial=false`. Only after the source and guide work should an app version containing the APT button be released.
 
+Tagged app builds enforce this ordering with `repository.py verify-live`: the reviewed production public key must exist, the live repository must authenticate with it, and the guide must be reachable. Manual validation builds remain available before activation. If this gate fails, restore or activate the source before retrying the release; do not publish an app pointing users at a missing guide.
+
 ## Publication contract
 
 `apt-release-dispatch.yml` has `actions:write` only; it has no checkout, secrets or Pages permission and passes no release target. `publish-apt.yml` resolves targets itself, runs serially without canceling an active publish, and permits production only from the canonical main workflow and protected environment. The environment restriction must actually be configured; a YAML name alone is not protection.

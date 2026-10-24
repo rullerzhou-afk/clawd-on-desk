@@ -189,6 +189,21 @@ def release_identity(cfg):
     return dict(zip(IDENTITY, [cfg["origin"], cfg["label"], cfg["suite"], cfg["codename"], cfg["architecture"], cfg["component"]]))
 
 
+def verify_live(config, public_key):
+    cfg = json.loads(config.read_text())
+    if not public_key.is_file():
+        raise ValueError("APT is not activated: review and commit the production public key before releasing the app")
+    with tempfile.TemporaryDirectory(prefix="clawd-apt-live-") as temp:
+        work = Path(temp)
+        trust = work / "trusted.gpg"
+        keyring(public_key, trust)
+        previous = previous_snapshot(cfg["uri"], trust, cfg, work, allow_initial=False)
+        guide = fetch(cfg["uri"].rstrip("/") + "/", 1024 * 1024)
+        if not guide.strip():
+            raise ValueError("APT guide is empty")
+        print("APT ready: authenticated repository and guide; version " + previous["manifest"]["latest"])
+
+
 def source_templates(cfg):
     host = urllib.parse.urlsplit(cfg["uri"]).hostname
     return {
@@ -356,6 +371,9 @@ def main():
     commands.add_parser("latest")
     signing = commands.add_parser("validate-signing-key")
     signing.add_argument("--fingerprint", required=True)
+    live = commands.add_parser("verify-live")
+    live.add_argument("--config", type=Path, default=ROOT / "distribution/apt/config.json")
+    live.add_argument("--public-key", type=Path, default=ROOT / "distribution/apt/archive-key.asc")
     stage = commands.add_parser("build")
     stage.add_argument("--input", type=Path, required=True)
     stage.add_argument("--output", type=Path, required=True)
@@ -371,6 +389,8 @@ def main():
         print(releases()[0]["tag_name"][1:])
     elif args.command == "validate-signing-key":
         validate_signing_subkey(args.fingerprint)
+    elif args.command == "verify-live":
+        verify_live(args.config, args.public_key)
     else:
         args.input = args.input.resolve()
         args.output = args.output.resolve()
