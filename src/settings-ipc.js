@@ -95,6 +95,16 @@ const AGENT_DISCOVERY_DIALOG_STRINGS = {
   es: { file: "Elige el ejecutable de la herramienta", directory: "Elige la carpeta de instalación de la herramienta" },
 };
 
+const CLAUDE_PROFILE_DIALOG_STRINGS = {
+  en: "Choose a Claude config folder (CLAUDE_CONFIG_DIR)",
+  zh: "选择 Claude 配置目录（CLAUDE_CONFIG_DIR）",
+  "zh-TW": "選擇 Claude 設定目錄（CLAUDE_CONFIG_DIR）",
+  ko: "Claude 설정 폴더 선택 (CLAUDE_CONFIG_DIR)",
+  ja: "Claude の設定フォルダーを選択 (CLAUDE_CONFIG_DIR)",
+  "pt-BR": "Escolha a pasta de configuração do Claude (CLAUDE_CONFIG_DIR)",
+  es: "Elige la carpeta de configuración de Claude (CLAUDE_CONFIG_DIR)",
+};
+
 const REMOVE_THEME_DIALOG_STRINGS = {
   en: {
     delete: "Delete",
@@ -326,6 +336,10 @@ function registerSettingsIpc(options = {}) {
     || (() => ({ percent: 100 }));
   const getSizeContext = options.getSizeContext || (() => null);
   const getAllAgents = requiredDependency(options.getAllAgents, "getAllAgents");
+  const claudeProfiles = options.claudeProfiles || {
+    getStatus: () => ({ profileInstance: false, primaryConfigDir: null, running: {} }),
+    openSettings: () => false,
+  };
   const detectAgentInstallations = options.detectAgentInstallations || defaultDetectAgentInstallations;
   const readDshNotices = typeof options.readDshNotices === "function" ? options.readDshNotices : defaultReadDshNotices;
   const acknowledgeDshNotice = typeof options.acknowledgeDshNotice === "function"
@@ -1001,6 +1015,40 @@ function registerSettingsIpc(options = {}) {
       console.warn("Clawd: settings:list-agents failed:", err && err.message);
       return [];
     }
+  });
+
+  // Claude profile pets. Config folders are usually hidden (~/.claude-work),
+  // so the picker shows hidden files.
+  handle("settings:pick-claude-profile-dir", async (event) => {
+    const title = CLAUDE_PROFILE_DIALOG_STRINGS[getLang()] || CLAUDE_PROFILE_DIALOG_STRINGS.en;
+    try {
+      const result = await dialog.showOpenDialog(getDialogParent(event), {
+        title,
+        defaultPath: app.getPath("home"),
+        properties: ["openDirectory", "showHiddenFiles"],
+      });
+      if (!result || result.canceled || !Array.isArray(result.filePaths) || !result.filePaths[0]) {
+        return { status: "cancel" };
+      }
+      return { status: "ok", path: result.filePaths[0] };
+    } catch (err) {
+      return { status: "error", message: `Claude profile folder picker failed: ${err && err.message}` };
+    }
+  });
+
+  handle("settings:claude-profiles-status", () => {
+    try {
+      return claudeProfiles.getStatus();
+    } catch (err) {
+      return { profileInstance: false, primaryConfigDir: null, running: {} };
+    }
+  });
+
+  handle("settings:open-claude-profile-settings", (_event, id) => {
+    if (typeof id !== "string") return { status: "error", message: "profile id required" };
+    return claudeProfiles.openSettings(id)
+      ? { status: "ok" }
+      : { status: "error", message: "This profile pet is not running" };
   });
 
   handle("settings:pick-agent-discovery-path", async (event, payload) => {

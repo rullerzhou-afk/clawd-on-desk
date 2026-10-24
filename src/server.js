@@ -29,6 +29,7 @@ const {
   checkClaudeMaterializationFs,
   resolveClaudeHookPaths,
   CLAUDE_CORE_HOOK_EVENTS,
+  resolveClaudeHome,
   resolveClaudeSettingsPath,
 } = require("../hooks/install");
 const { inspectClaudeHookHealth, isExplicitRepairVerified } = require("./claude-hook-health");
@@ -78,10 +79,18 @@ module.exports = function initServer(ctx) {
 const createHttpServer = ctx.createHttpServer || http.createServer.bind(http);
 const setImmediateFn = ctx.setImmediate || setImmediate;
 const nowFn = typeof ctx.now === "function" ? ctx.now : Date.now;
-const clearRuntimeConfigFn = ctx.clearRuntimeConfig || clearRuntimeConfig;
-const getPortCandidatesFn = ctx.getPortCandidates || getPortCandidates;
-const readRuntimePortFn = ctx.readRuntimePort || readRuntimePort;
-const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
+// A Claude profile instance passes its own runtime file; every default runtime
+// seam below must then read, write and clear that file, never the shared one.
+const runtimePathOptions = typeof ctx.runtimeConfigPath === "string"
+  ? { runtimeConfigPath: ctx.runtimeConfigPath }
+  : {};
+const clearRuntimeConfigFn = ctx.clearRuntimeConfig
+  || (() => clearRuntimeConfig(runtimePathOptions.runtimeConfigPath));
+const getPortCandidatesFn = ctx.getPortCandidates
+  || ((preferredPort) => getPortCandidates(preferredPort, runtimePathOptions));
+const readRuntimePortFn = ctx.readRuntimePort || (() => readRuntimePort(runtimePathOptions));
+const writeRuntimeConfigFn = ctx.writeRuntimeConfig
+  || ((port, options = {}) => writeRuntimeConfig(port, { ...options, ...runtimePathOptions }));
 // #681. Injectable so tests never read the developer's real ~/.clawd/runtime.json
 // (whose contents depend on whether Clawd happens to be running right now).
 const readRuntimeIdentityFn = ctx.readRuntimeIdentity
@@ -854,6 +863,15 @@ function repairRuntimeStatus() {
 
 const claudeSettingsWatcher = createClaudeSettingsWatcher({
   ...ctx,
+  // Watch the same profile the installer writes. resolveClaudeHome honours
+  // CLAUDE_CONFIG_DIR, so a Clawd started for a non-default Claude profile
+  // must not repair ~/.claude while installing into another directory.
+  claudeSettingsDir: typeof ctx.claudeSettingsDir === "string"
+    ? ctx.claudeSettingsDir
+    : resolveClaudeHome(ctx.homeDir !== undefined ? { homeDir: ctx.homeDir } : {}),
+  claudeSettingsPath: typeof ctx.claudeSettingsPath === "string"
+    ? ctx.claudeSettingsPath
+    : claudeSettingsVerifyPath,
   // Same live-getter fix as integrationSyncCtx above — the periodic health
   // check's requireAutoStart (claude-settings-watcher.js's buildReport())
   // must track the CURRENT setting, not whatever it was when the watcher

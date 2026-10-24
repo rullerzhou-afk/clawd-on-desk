@@ -1,3 +1,4 @@
+const crypto = require("crypto");
 const fs = require("fs");
 const http = require("http");
 const os = require("os");
@@ -43,6 +44,75 @@ function normalizePort(value) {
 function defaultRuntimeConfigPath(options = {}) {
   const homeDir = typeof options.homeDir === "string" ? options.homeDir : os.homedir();
   return path.join(homeDir, ".clawd", "runtime.json");
+}
+
+// ── Claude profile instances ────────────────────────────────────────────────
+// A Clawd instance started for one Claude profile (CLAUDE_CONFIG_DIR) writes its
+// runtime file under ~/.clawd/profiles/<key>/ instead of the shared
+// ~/.clawd/runtime.json. Claude Code passes CLAUDE_CONFIG_DIR to its hook
+// processes, so Claude hooks can find their own instance without any change to
+// the installed hook command. Only Claude hooks opt into this: other agents
+// started from a shell that exports CLAUDE_CONFIG_DIR keep the shared file.
+const MAX_CLAUDE_PROFILE_DIR_LENGTH = 1024;
+
+function normalizeClaudeProfileDir(value, options = {}) {
+  if (typeof value !== "string") return null;
+  const raw = value.trim();
+  if (!raw || raw.length > MAX_CLAUDE_PROFILE_DIR_LENGTH) return null;
+  if (/[\u0000-\u001f\u007f-\u009f]/u.test(raw)) return null;
+  const pathApi = (options.platform || process.platform) === "win32" ? path.win32 : path;
+  if (!pathApi.isAbsolute(raw)) return null;
+  const normalized = pathApi.normalize(raw);
+  const stripped = normalized.replace(/[\\/]+$/, "");
+  return stripped && pathApi.isAbsolute(stripped) ? stripped : normalized;
+}
+
+function claudeProfileRuntimeKey(configDir, options = {}) {
+  const normalized = normalizeClaudeProfileDir(configDir, options);
+  if (!normalized) return null;
+  // Windows paths are case-insensitive; keep one key per directory.
+  const identity = (options.platform || process.platform) === "win32"
+    ? normalized.toLowerCase()
+    : normalized;
+  return crypto.createHash("sha256").update(identity, "utf8").digest("hex").slice(0, 16);
+}
+
+function claudeProfileRuntimeConfigPath(configDir, options = {}) {
+  const key = claudeProfileRuntimeKey(configDir, options);
+  if (!key) return null;
+  const homeDir = typeof options.homeDir === "string" ? options.homeDir : os.homedir();
+  return path.join(homeDir, ".clawd", "profiles", key, "runtime.json");
+}
+
+// kill(pid, 0) is a syscall, not a spawn; EPERM still means "exists". Kept
+// local because hooks/shared-process.js requires this module.
+function defaultIsProcessAlive(pid) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return !!(err && err.code === "EPERM");
+  }
+}
+
+// Options a Claude hook spreads into its POST/discovery options. Returns {} when
+// CLAUDE_CONFIG_DIR is unset or no instance is running for that profile, which
+// keeps today's shared-file routing. When a profile instance exists, the shared
+// port scan is disabled so a profile event can never land on another pet.
+function resolveClaudeProfileRuntimeOptions(options = {}) {
+  const env = options.env || process.env;
+  if (isRemoteHookMode({ env, remote: options.remote })) return {};
+  const raw = env && env.CLAUDE_CONFIG_DIR;
+  if (typeof raw !== "string" || !raw.trim()) return {};
+  const filePath = claudeProfileRuntimeConfigPath(raw, options);
+  if (!filePath) return {};
+  // A profile pet that crashed leaves its file behind. Only route to it while
+  // its owner is alive; otherwise the shared instance still shows the events.
+  const parsed = parseRuntimeConfig({ ...options, runtimeConfigPath: filePath });
+  if (!parsed.ok || !parsed.ownerPid) return {};
+  const isAlive = options.isProcessAlive || defaultIsProcessAlive;
+  if (!isAlive(parsed.ownerPid)) return {};
+  return { runtimeConfigPath: filePath, runtimeExclusive: true };
 }
 
 function defaultCodexAutoStartGatePath(options = {}) {
@@ -495,7 +565,7 @@ function getPortCandidates(preferredPort, options = {}) {
   const runtimePort = normalizePort(
     Object.prototype.hasOwnProperty.call(options, "runtimePort")
       ? options.runtimePort
-      : readRuntimePort()
+      : readRuntimePort(options)
   );
   const add = (value) => {
     const port = normalizePort(value);
@@ -507,7 +577,9 @@ function getPortCandidates(preferredPort, options = {}) {
   if (Array.isArray(preferredPort)) preferredPort.forEach(add);
   else add(preferredPort);
   add(runtimePort);
-  SERVER_PORTS.forEach(add);
+  // A Claude profile instance owns exactly one port. Scanning the shared range
+  // could deliver this profile's events to a different Clawd instance.
+  if (options.runtimeExclusive !== true) SERVER_PORTS.forEach(add);
   return ports;
 }
 
@@ -520,9 +592,12 @@ function splitPortCandidates(preferredPort, options = {}) {
   const runtimePort = normalizePort(
     Object.prototype.hasOwnProperty.call(options, "runtimePort")
       ? options.runtimePort
-      : readRuntimePort()
+      : readRuntimePort(options)
   );
-  const all = getPortCandidates(preferredPort, { runtimePort });
+  const all = getPortCandidates(preferredPort, {
+    runtimePort,
+    runtimeExclusive: options.runtimeExclusive === true,
+  });
   const direct = [];
   const fallback = [];
   const directSeen = new Set();
@@ -1394,6 +1469,10 @@ module.exports = {
   clearRuntimeConfig,
   defaultCodexAutoStartGatePath,
   defaultRuntimeConfigPath,
+  claudeProfileRuntimeConfigPath,
+  claudeProfileRuntimeKey,
+  normalizeClaudeProfileDir,
+  resolveClaudeProfileRuntimeOptions,
   isManagedPermissionUrl,
   isRemoteHookMode,
   isSshSecureMode,

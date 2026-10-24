@@ -70,6 +70,8 @@ const {
   PET_MOUTH_ACCESSORY_IDS,
 } = require("./pet-customization-catalog");
 
+const { normalizeClaudeProfiles } = require("./claude-profile-mode");
+
 const CURRENT_VERSION = 21;
 const DEFAULT_INTEGRATION_INSTALLED_IDS = Object.freeze(["claude-code", "codex"]);
 const DEFAULT_INTEGRATION_INSTALLED_SET = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
@@ -512,6 +514,13 @@ const SCHEMA = {
     type: "array",
     defaultFactory: () => [],
     normalize: normalizeCustomApplications,
+  },
+  // Extra Claude Code profiles (CLAUDE_CONFIG_DIR values), each shown by its
+  // own pet process. See src/claude-profile-mode.js.
+  claudeProfiles: {
+    type: "array",
+    defaultFactory: () => [],
+    normalize: (value) => normalizeClaudeProfiles(value),
   },
   dismissedAgentInstallHints: {
     type: "object",

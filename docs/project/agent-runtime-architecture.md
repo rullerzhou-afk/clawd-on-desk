@@ -590,6 +590,14 @@ WSL 状态同步（本机 loopback，但 PID 属于 Linux VM）：
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 
+## Claude Profile Instances
+
+- 每个额外的 Claude Code 配置档（`CLAUDE_CONFIG_DIR`）由一个独立的 Clawd 进程显示。主实例拥有 `claudeProfiles` pref，并通过 `src/claude-profile-instances.js` 启停子进程：启动时与 pref 提交后 reconcile，暂停 / 移除时 SIGTERM，主实例 before-quit 时全部停止；子进程收到 SIGTERM 走正常 `app.quit()`。slot 只决定首启默认位置，不触发重启。
+- 子进程在 `src/main.js` 顶部识别 `--clawd-profile-*` 参数（`src/claude-profile-mode.js`），在读取 userData / prefs / 单实例锁 / hook installer 之前设置 `userData = <主实例 userData>/profiles/<id>` 和 `CLAUDE_CONFIG_DIR`。参数存在但无效时直接退出，不能降级成第二个主实例。主实例的 `--user-data-dir` 会转发给子进程。
+- 子进程的 runtime.json、session recovery lease、account quota 缓存与 recap store 都在 `~/.clawd/profiles/<sha256(dir)[0:16]>/` 下。首启 prefs 只启用 Claude Code、主题 `clawd-work`，不写共享的 Codex auto-start gate，不安装编辑器扩展，不跑后台更新检查。
+- 路由：Claude Code 把 `CLAUDE_CONFIG_DIR` 传给 hook。`hooks/clawd-hook.js` 与 `hooks/claude-statusline.js` 调用 `resolveClaudeProfileRuntimeOptions()`：该配置档的 runtime 文件存在且 owner 进程存活时，只投递到该端口（`runtimeExclusive`，不扫描共享端口），否则沿用共享 runtime.json。其他 agent 和 remote hook 不参与此路由；hook 命令行不变，hook health 判定不受影响。
+- Claude settings watcher 与 installer 使用同一个 `resolveClaudeHome()` 目录；集成清理同样尊重 `CLAUDE_CONFIG_DIR`。
+
 ## Local Claude Session History
 
 - Windows 的 inactive recovery lease 在相同的交互式 v2 PID cache 仍存在、PID 匹配且两个进程仍存活时保留启动身份，供下一轮 cache-hit hook 重用；不会刷新时间或当作活动会话恢复。缓存丢失 / 不匹配、进程退出或缺失 Windows 启动身份时仍按 10 分钟清理；100 文件预算优先清理不再承载缓存身份的 inactive 记录，必要时仍可淘汰最旧的 inactive 记录。恢复活动行时继续独立校验当前进程启动身份，不以缓存存活代替 PID 复用校验。

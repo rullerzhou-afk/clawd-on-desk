@@ -4,7 +4,7 @@ This file is the entry point for coding agents working in this repository. Keep 
 
 ## Project Overview
 
-Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Grok Build、Kiro CLI、KiroCrew、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OMP (oh-my-pi)、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness、TraeCode (Trae CN)、MiniMax Code；内置 Clawd / Calico / Cloudling 三套主题，支持用户主题，并可经 Settings 从独立 `rullerzhou-afk/clawd-themes` 仓库下载可选官方主题（Hash Sage、Whale-chan，external theme 权限、可卸载）；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
+Clawd 是一个 Electron 桌宠：通过 hook、日志轮询、plugin 和 extension 感知 AI coding agent 的工作状态，并播放像素风动画。当前支持 Claude Code、Codex CLI、Copilot CLI、Gemini CLI、Antigravity CLI (agy)、Cursor Agent、CodeBuddy、WorkBuddy、Grok Build、Kiro CLI、KiroCrew、Kimi Code CLI (Kimi-CLI)、Qwen Code、ZCode、CodeWhale、opencode、MiMo Code、Pi、OMP (oh-my-pi)、OpenClaw、Hermes Agent、Qoder、QoderWork、QwenWork (千问办公)、Reasonix、DeepSeek Harness、TraeCode (Trae CN)、MiniMax Code；内置 Clawd / Clawd Work / Calico / Cloudling 四套主题，支持用户主题，并可经 Settings 从独立 `rullerzhou-afk/clawd-themes` 仓库下载可选官方主题（Hash Sage、Whale-chan，external theme 权限、可卸载）；平台覆盖 Windows、macOS、Linux，UI 支持 en / zh / zh-TW / ko / ja / pt-BR / es。
 
 ## Common Commands
 
@@ -92,6 +92,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `docs/guides/guide-theme-creation.md`：主题作者指南
 - `docs/guides/setup-guide.md`：安装、远程 SSH、各 agent 接入
 - `docs/guides/custom-agent-http.md`：自定义 HTTP Agent 的 state-only 接入合约和动态端口发现
+- `docs/guides/claude-profiles.md`：多个 Claude Code 配置档（`CLAUDE_CONFIG_DIR`）各自一只桌宠的用户说明与路由规则
 - `docs/guides/known-limitations.md`：用户向已知限制
 - `docs/guides/recap.md`：本地小结的指标口径、coverage、时区/DST、隐私存储与产品红线
 - `docs/guides/codex-wsl-clarification.md`：Codex / WSL 路径与 Node 说明
@@ -106,6 +107,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - 桌宠的渲染/输入双窗口由 `src/pet-window-runtime.js` 统一创建和定位；浮层排序与 topmost 行为在 `src/floating-window-runtime.js` / `src/topmost-runtime.js`
 - `src/state.js` 生成的 session snapshot 是 Dashboard、HUD/Orbit 与可选通知/presence/mobile consumer 的共享合约，改字段必须检查所有消费者
 - `src/integration-sync.js` 为已安装且启用的 agent 异步同步 hooks / plugins / extensions；Codex official hooks 为 primary，JSONL 轮询保留为 fallback
+- Claude 配置档：主实例按 `claudeProfiles` 为每个额外 `CLAUDE_CONFIG_DIR` 启动独立 Clawd 进程（`src/claude-profile-mode.js` / `src/claude-profile-instances.js`），各自 userData、端口和 `~/.clawd/profiles/<key>/` 运行时文件；只有 Claude hook / statusline 按 `CLAUDE_CONFIG_DIR` 路由到存活的配置档实例，且不扫描共享端口
 - Claude hook 恢复由 `src/claude-settings-watcher.js` 的目录 watcher + 低频只读巡检共同负责；repair 统一经过 `src/claude-hook-operations.js` 队列并复验，连续失败转 `manual-fix-required`。完整 gate、阈值与 source-missing 语义见 `docs/project/agent-runtime-architecture.md`
 - `src/agent-gate.js` 控制各 agent 的安装意图、启用状态、权限气泡开关和 wait-for-input notification 子开关
 - 设置系统主链路是 `src/prefs.js` → `src/settings-controller.js`（唯一写入者）→ `src/settings-store.js`；`settings-actions*` 负责校验和 pre-commit gates，`settings-effect-router.js` 负责 post-commit runtime effects 与广播
@@ -131,6 +133,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/dashboard-quick-mode.js` | 完整 Dashboard 的 1–9 键盘模式（**macOS/Windows only**）：quick 宿主、opacity/input parking、轮次栅栏与冻结数字映射；Windows 显式取消与页面失效的来源恢复在 `src/quick-select-origin-focus.js`，quick 宿主的退出清理挂在 `before-quit` |
 | `src/session-hud.js` + `src/session-hud-renderer.js` | 桌宠旁轻量会话 HUD、折叠行、点击跳转 |
 | `src/session-alias.js` | session alias key 规范化、TTL pruning、Kiro cwd scope |
+| `src/claude-profile-mode.js` + `src/claude-profile-instances.js` | Claude 配置档子实例的启动参数、隔离路径、首启默认值（Clawd Work、仅 Claude Code）与主实例侧的启停 |
 | `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner；`waitForThemeReloadSettled` 完成信号 |
 | `src/official-theme-catalog.js` / `-download.js` / `-installer.js` / `-main.js` | 官方可下载主题：严格 catalog/cache、Electron `net.request` 流式下载、受限流式 ZIP 解压与 marker-before-rename、main owner/IPC/共享 `theme` lock |
 | `src/prefs.js` | 偏好 schema、load/save/migrate/validate，设置持久化入口 |

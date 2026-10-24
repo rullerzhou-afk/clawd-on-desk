@@ -17,6 +17,8 @@
   ];
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
   const CUSTOM_TOOL_SCAN_STATUS_MIN_MS = 1200;
+  // Mirrors MAX_CLAUDE_PROFILES in src/claude-profile-mode.js (port pool).
+  const MAX_CLAUDE_PROFILES_UI = 3;
   let agentHintActionPending = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
@@ -1481,11 +1483,13 @@
     if (agent.id === "kimi-cli") {
       quota.push(...buildKimiQuotaRows());
     }
+    const profiles = agent.id === "claude-code" ? buildClaudeProfileRows() : [];
 
     const groups = [
       buildAgentDetailGroup("agentGroupApproval", approvals),
       buildAgentDetailGroup("agentGroupAlerts", alerts),
       buildAgentDetailGroup("agentGroupConnection", connection),
+      buildAgentDetailGroup("agentGroupClaudeProfiles", profiles),
       buildAgentDetailGroup("agentGroupWsl", buildAgentInstanceRows(agent)),
       buildAgentDetailGroup("agentGroupQuota", quota),
       buildAgentDetailGroup("agentGroupInfo", info),
@@ -1660,6 +1664,162 @@
   // Quota group for Kimi: one summary row whose button reveals the existing
   // quota card. The card itself is untouched; it just reports its state back so
   // the row's note and button always match the panel.
+  // Extra Claude profiles (CLAUDE_CONFIG_DIR), each shown by its own pet. The
+  // list is the committed `claudeProfiles` pref; running state comes from main.
+  function buildClaudeProfileRows() {
+    const api = window.settingsAPI;
+    if (!api || typeof api.getClaudeProfilesStatus !== "function") return [];
+    const rows = [];
+    const profiles = (state.snapshot && Array.isArray(state.snapshot.claudeProfiles))
+      ? state.snapshot.claudeProfiles
+      : [];
+
+    const intro = helpers.buildSettingRow({
+      labelKey: "claudeProfilesTitle",
+      descriptionKey: "claudeProfilesDesc",
+      className: "row-sub claude-profiles-intro",
+    });
+    helpers.attachDescriptionDisclosure(intro.element);
+    // Always-visible fact line under the title (.row-desc-extra stays out of
+    // the (i) fold); the control column is too narrow for a sentence.
+    const introNote = document.createElement("span");
+    introNote.className = "row-desc row-desc-extra claude-profiles-note";
+    intro.textElement.appendChild(introNote);
+    rows.push(intro.element);
+
+    const profileRows = new Map();
+    for (const profile of profiles) {
+      const row = helpers.buildSettingRow({
+        label: profile.label,
+        description: profile.configDir,
+        className: "row-sub claude-profile-row",
+        controlClassName: "claude-profile-row-control",
+      });
+      const status = document.createElement("span");
+      status.className = "row-note claude-profile-status";
+      status.textContent = profile.enabled ? t("claudeProfileStarting") : t("claudeProfilePaused");
+      row.controlElement.appendChild(status);
+
+      const openButton = helpers.buildButton({
+        labelKey: "claudeProfileOpenSettings",
+        size: "compact",
+        className: "claude-profile-open",
+        disabled: true,
+      });
+      openButton.addEventListener("click", async (event) => {
+        event.stopPropagation();
+        const result = await api.openClaudeProfileSettings(profile.id);
+        if (!result || result.status !== "ok") {
+          ops.showToast(t("toastSaveFailed") + ((result && result.message) || ""), { error: true });
+        }
+      });
+      row.controlElement.appendChild(openButton);
+
+      const toggleButton = helpers.buildButton({
+        labelKey: profile.enabled ? "claudeProfilePause" : "claudeProfileResume",
+        size: "compact",
+        className: "claude-profile-toggle",
+      });
+      toggleButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        runClaudeProfileCommand(toggleButton, "claudeProfiles.update", {
+          id: profile.id,
+          enabled: !profile.enabled,
+        });
+      });
+      row.controlElement.appendChild(toggleButton);
+
+      const removeButton = helpers.buildButton({
+        labelKey: "claudeProfileRemove",
+        tone: "danger",
+        size: "compact",
+        className: "claude-profile-remove",
+      });
+      removeButton.addEventListener("click", (event) => {
+        event.stopPropagation();
+        runClaudeProfileCommand(removeButton, "claudeProfiles.remove", { id: profile.id });
+      });
+      row.controlElement.appendChild(removeButton);
+      profileRows.set(profile.id, { profile, status, openButton });
+      rows.push(row.element);
+    }
+
+    const addRow = helpers.buildSettingRow({
+      labelKey: "claudeProfileAddTitle",
+      descriptionKey: "claudeProfileAddDesc",
+      className: "row-sub claude-profile-add-row",
+      controlClassName: "claude-profile-add-control",
+    });
+    const nameInput = helpers.buildTextInput({
+      className: "claude-profile-name-input",
+      size: "compact",
+      placeholder: t("claudeProfileNamePlaceholder"),
+      ariaLabel: t("claudeProfileNamePlaceholder"),
+      spellcheck: false,
+      stopPropagation: true,
+    });
+    addRow.controlElement.appendChild(nameInput);
+    const addButton = helpers.buildButton({
+      labelKey: "claudeProfileAdd",
+      tone: "accent",
+      size: "compact",
+      className: "claude-profile-add",
+    });
+    addButton.addEventListener("click", async (event) => {
+      event.stopPropagation();
+      const picked = await api.pickClaudeProfileDir();
+      if (!picked || picked.status !== "ok") {
+        if (picked && picked.status === "error") ops.showToast(t("toastSaveFailed") + picked.message, { error: true });
+        return;
+      }
+      await runClaudeProfileCommand(addButton, "claudeProfiles.add", {
+        configDir: picked.path,
+        label: nameInput.value,
+      }, "claudeProfileAdded");
+    });
+    addRow.controlElement.appendChild(addButton);
+    rows.push(addRow.element);
+
+    // Fill in the main-side facts once they arrive. A profile pet only explains
+    // which profile it shows; the list belongs to the main pet.
+    Promise.resolve(api.getClaudeProfilesStatus()).then((status) => {
+      if (!status) return;
+      if (status.profileInstance) {
+        introNote.textContent = t("claudeProfileThisPet").replace("{name}", status.profileLabel || "");
+        for (const row of rows.slice(1)) row.hidden = true;
+        return;
+      }
+      introNote.textContent = status.primaryConfigDir
+        ? t("claudeProfilePrimaryDir").replace("{dir}", status.primaryConfigDir)
+        : "";
+      for (const [id, entry] of profileRows) {
+        const isRunning = !!(status.running && status.running[id]);
+        entry.status.textContent = !entry.profile.enabled
+          ? t("claudeProfilePaused")
+          : t(isRunning ? "claudeProfileRunning" : "claudeProfileStopped");
+        helpers.setButtonState(entry.openButton, { disabled: !isRunning });
+      }
+      if (profiles.length >= MAX_CLAUDE_PROFILES_UI) helpers.setButtonState(addButton, { disabled: true });
+    }).catch(() => {});
+
+    return rows;
+  }
+
+  async function runClaudeProfileCommand(button, action, payload, successKey) {
+    helpers.setButtonState(button, { pending: true });
+    try {
+      const response = await window.settingsAPI.command(action, payload);
+      if (!response || response.status !== "ok") {
+        throw new Error((response && response.message) || `${action} failed`);
+      }
+      if (successKey) ops.showToast(t(successKey));
+      ops.requestRender({ content: true });
+    } catch (err) {
+      helpers.setButtonState(button, { pending: false });
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    }
+  }
+
   function buildKimiQuotaRows() {
     const rowParts = helpers.buildSettingRow({
       labelKey: "kimiQuotaTitle",

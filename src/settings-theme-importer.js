@@ -15,7 +15,7 @@ const MAX_THEME_ZIP_BYTES = 80 * 1024 * 1024;
 const MAX_THEME_ZIP_ENTRY_BYTES = 40 * 1024 * 1024;
 const MAX_THEME_UNZIPPED_BYTES = 160 * 1024 * 1024;
 const MAX_THEME_JSON_BYTES = 512 * 1024;
-const RESERVED_THEME_IDS = new Set(["clawd", "calico", "cloudling", "hash-sage", "whale-chan", "template"]);
+const RESERVED_THEME_IDS = new Set(["clawd", "clawd-work", "calico", "cloudling", "hash-sage", "whale-chan", "template"]);
 
 function isPathInsideDir(pathModule, rootDir, targetPath) {
   const root = pathModule.resolve(rootDir);

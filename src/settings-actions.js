@@ -122,6 +122,12 @@ const {
   repairAgentIntegration,
 } = require("./settings-actions-agents");
 const {
+  addClaudeProfile,
+  removeClaudeProfile,
+  updateClaudeProfile,
+  validateClaudeProfiles,
+} = require("./settings-actions-claude-profiles");
+const {
   ANIMATION_OVERRIDES_EXPORT_VERSION,
   ONESHOT_OVERRIDE_STATES,
   importAnimationOverrides,
@@ -732,6 +738,7 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  claudeProfiles: validateClaudeProfiles,
   customApplications(value) {
     if (!Array.isArray(value) || value.length > MAX_CUSTOM_APPLICATIONS) {
       return {
@@ -2730,6 +2737,9 @@ function setTextScaleForDisplay(payload, deps) {
 
 const commandRegistry = {
   addCustomApplication,
+  "claudeProfiles.add": addClaudeProfile,
+  "claudeProfiles.update": updateClaudeProfile,
+  "claudeProfiles.remove": removeClaudeProfile,
   removeTheme,
   installHooks,
   uninstallHooks,

@@ -1901,12 +1901,14 @@ html, body {
 }
 
 /* Card-body groups: label in a fixed left gutter, rows only name + control.
-   The dashed separators keep rows apart now that the descriptions are folded
-   behind the (i) toggle. */
+   The gutter fits the longest localized label ("Aprobaciones", ~83px at 11px
+   bold); longer ones wrap instead of running under the rows. The dashed
+   separators keep rows apart now that the descriptions are folded behind the
+   (i) toggle. */
 .agent-detail-group,
 .settings-detail-group {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
+  grid-template-columns: 112px minmax(0, 1fr);
   border-bottom: 1px solid var(--row-border);
 }
 .settings-detail-group {
@@ -1920,6 +1922,10 @@ html, body {
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+.agent-detail-group-label {
+  padding-right: 12px;
+  overflow-wrap: anywhere;
 }
 .settings-detail-group-label {
   padding-right: 14px;
@@ -1947,6 +1953,16 @@ html, body {
   .settings-detail-group-label {
     padding: 10px 14px 0;
   }
+}
+/* Claude profiles group: .row's display rule outranks the UA [hidden] rule,
+   and config-dir paths have no spaces to wrap at. */
+.claude-profile-row[hidden],
+.claude-profile-add-row[hidden] {
+  display: none;
+}
+.claude-profile-row .row-desc,
+.claude-profiles-note {
+  overflow-wrap: anywhere;
 }
 .row-desc-collapsed {
   display: none;

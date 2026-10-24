@@ -1739,6 +1739,8 @@ function loadAgentsTabForTest({
           agentGroupWsl: "WSL",
           agentGroupQuota: "Quota",
           agentGroupInfo: "Info",
+          claudeProfileThisPet: "This pet shows the Claude profile \"{name}\".",
+          claudeProfilePrimaryDir: "This pet uses {dir}.",
           agentDescToggle: "Details",
           agentDisconnectLink: "Disconnect {agent}…",
           agentDisconnectDetail: "Removes the hooks / plugin Clawd wrote into {agent}'s config; the card moves back to Discover and add.",
@@ -21747,7 +21749,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("buildAgentInstallHintBanner"));
     assert.ok(!css.includes(".agent-badge"));
 
-    const defaultGroupIndex = css.indexOf("grid-template-columns: 58px minmax(0, 1fr)");
+    const defaultGroupIndex = css.indexOf("grid-template-columns: 112px minmax(0, 1fr)");
     const mobileGroupIndex = css.indexOf("@media (max-width: 720px)", defaultGroupIndex);
     assert.ok(defaultGroupIndex >= 0 && mobileGroupIndex > defaultGroupIndex,
       "the narrow-window single-column rule must come after the default two-column rule");
@@ -21756,6 +21758,61 @@ describe("settings renderer browser environment", () => {
       mobileBlock,
       /\.agent-detail-group,\s*\.settings-detail-group\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
     );
+  });
+
+  function renderClaudeProfilesCard(status, claudeProfiles = []) {
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: { "claude-code": { integrationInstalled: true, enabled: true } },
+        claudeProfiles,
+      },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        getClaudeProfilesStatus: () => Promise.resolve(status),
+        pickClaudeProfileDir: () => Promise.resolve({ status: "cancel" }),
+        openClaudeProfileSettings: () => Promise.resolve({ status: "ok" }),
+      },
+    });
+    harness.core.runtime.agentInstallationHints = { checkedAt: 1, agents: [], customTools: [], skippedAgentIds: [] };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true });
+    return harness;
+  }
+
+  const flushProfileStatus = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+
+  it("profile pets show which profile they serve under the title and hide the list", async () => {
+    const harness = renderClaudeProfilesCard({ profileInstance: true, profileLabel: "work" });
+    await flushProfileStatus();
+    const intro = harness.content.querySelector(".claude-profiles-intro");
+    const note = intro.querySelector(".claude-profiles-note");
+    // The sentence lives in the text column; the fixed-width control column
+    // squeezed the title when it held the note.
+    assert.strictEqual(note.parentNode, intro.querySelector(".row-text"));
+    assert.strictEqual(intro.querySelector(".row-control").children.length, 0);
+    assert.ok(note.classList.contains("row-desc-extra"), "the note stays visible outside the (i) fold");
+    assert.match(note.textContent, /work/);
+    assert.strictEqual(harness.content.querySelector(".claude-profile-add-row").hidden, true);
+
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.claude-profile-add-row\[hidden\]\s*\{\s*display:\s*none;/,
+      ".row's display rule must not override [hidden]");
+  });
+
+  it("the main pet lists its own folder under the title and keeps the profile rows", async () => {
+    const work = { id: "work", label: "Work", configDir: "/u/.claude-work", enabled: true };
+    const harness = renderClaudeProfilesCard(
+      { profileInstance: false, primaryConfigDir: "/u/.claude", running: { work: true } },
+      [work],
+    );
+    await flushProfileStatus();
+    const note = harness.content.querySelector(".claude-profiles-intro .row-text .claude-profiles-note");
+    assert.match(note.textContent, /\/u\/\.claude/);
+    const row = harness.content.querySelector(".claude-profile-row");
+    assert.ok(!row.hidden);
+    assert.ok(!harness.content.querySelector(".claude-profile-add-row").hidden);
   });
 });
 

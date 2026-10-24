@@ -9,6 +9,8 @@ Clawd character artwork:
   The Clawd character is the property of Anthropic (https://www.anthropic.com).
   Clawd pixel art in this project is fan-created and may not be used for
   commercial purposes.
+  The "Clawd Work" theme (themes/clawd-work) is generated from this artwork by
+  tools/generate-clawd-work-theme.js and is covered by the same terms.
 
 Calico cat (三花猫) artwork:
   Copyright (c) 2026 鹿鹿 (rullerzhou-afk). All rights reserved.

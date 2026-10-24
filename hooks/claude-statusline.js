@@ -24,6 +24,7 @@ const {
   applyWslSourceFields,
   postStateToRunningServer,
   readHostPrefix,
+  resolveClaudeProfileRuntimeOptions,
 } = require("./server-config");
 const { readStdinJson } = require("./shared-process");
 const {
@@ -231,7 +232,12 @@ function postStateBody(body, deps, env) {
     // remote by buildStateBody; this override only controls transport timing.
     postState(
       JSON.stringify(body),
-      { timeoutMs: STATE_POST_TIMEOUT_MS, env, remote: false },
+      {
+        timeoutMs: STATE_POST_TIMEOUT_MS,
+        env,
+        remote: false,
+        ...resolveClaudeProfileRuntimeOptions({ env }),
+      },
       (posted) => resolve(!!posted)
     );
   });

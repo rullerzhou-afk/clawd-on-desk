@@ -5,11 +5,20 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
+const {
+  postStateToRunningServer,
+  readHostPrefix,
+  readRuntimeIdentity,
+  resolveClaudeProfileRuntimeOptions,
+  resolveWslDistro,
+} = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
-const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
+const {
+  getRecoveryDirForRuntimeConfig,
+  updateRecoveryLeaseFromStateBody,
+} = require("./session-recovery-lease");
 const { recordSessionHistoryFromStateBody } = require("./session-history");
 const { normalizeModelId } = require("./claude-rate-limits");
 const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./claude-tool-batch");
@@ -874,7 +883,10 @@ function main() {
   const eventAt = Date.now();
 
   const config = getPlatformConfig();
+  // A Clawd instance dedicated to this hook's CLAUDE_CONFIG_DIR, when running.
+  const profileRuntime = resolveClaudeProfileRuntimeOptions();
   const resolve = createPidResolver({
+    readRuntimeIdentity: () => readRuntimeIdentity(profileRuntime),
     agentNames: { win: new Set(["claude.exe"]), mac: new Set(["claude"]) },
     agentCmdlineCheck: (cmd) => cmd.includes("claude-code") || cmd.includes("@anthropic-ai"),
     // #681: Claude is the only adapter that derives anything from the agent's
@@ -910,14 +922,20 @@ function main() {
       // the HTTP request may fail but the next process can still recover the
       // same session id and last sustained state. This is best-effort and never
       // changes the hook's stdout or exit contract.
-      updateRecoveryLeaseFromStateBody(body, { eventAt });
+      updateRecoveryLeaseFromStateBody(body, {
+        eventAt,
+        // Profile instances restore only their own sessions after a restart.
+        ...(profileRuntime.runtimeConfigPath
+          ? { recoveryDir: getRecoveryDirForRuntimeConfig(profileRuntime.runtimeConfigPath) }
+          : {}),
+      });
       // The lease above is liveness-scoped and is erased once its PID dies,
       // which is every PID after a reboot. Keep a separate durable row so a
       // session interrupted by a restart can still be found and resumed.
       recordSessionHistoryFromStateBody(body, { eventAt });
       postStateToRunningServer(
         JSON.stringify(fitted.body),
-        { timeoutMs: statePostTimeoutMs },
+        { timeoutMs: statePostTimeoutMs, ...profileRuntime },
         () => process.exit(0)
       );
     })

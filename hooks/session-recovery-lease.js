@@ -96,6 +96,12 @@ function getRecoveryDir(options = {}) {
   return path.join(os.homedir(), ".clawd", LEASE_DIR_NAME);
 }
 
+// A Claude profile instance keeps its leases beside its own runtime file, so
+// each instance restores only the sessions that were routed to it.
+function getRecoveryDirForRuntimeConfig(runtimeConfigPath) {
+  return path.join(path.dirname(runtimeConfigPath), LEASE_DIR_NAME);
+}
+
 function ensureRecoveryDir(options = {}) {
   const dir = getRecoveryDir(options);
   try {
@@ -727,6 +733,7 @@ module.exports = {
   SUSTAINED_STATES,
   SUPPORTED_AGENT_IDS,
   getRecoveryDir,
+  getRecoveryDirForRuntimeConfig,
   getLeaseFilePath,
   getProcessStartIdentity,
   getProcessStartIdentities,

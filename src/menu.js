@@ -226,7 +226,7 @@ module.exports = function initMenu(ctx) {
       iconPath: path.join(__dirname, "../assets/icon.png"),
     });
     ctx.tray = new Tray(icon);
-    ctx.tray.setToolTip("Clawd Desktop Pet");
+    ctx.tray.setToolTip(ctx.trayTooltip || "Clawd Desktop Pet");
     buildTrayMenu();
   }
 

@@ -122,6 +122,10 @@ function createPetWindowRuntime(options = {}) {
   const getPrimaryWorkAreaSafe = options.getPrimaryWorkAreaSafe || (() => null);
   const getNearestWorkArea = options.getNearestWorkArea || (() => getPrimaryWorkAreaSafe() || SYNTHETIC_WORK_AREA);
   const getActiveTheme = options.getActiveTheme || (() => null);
+  // Claude profile pets start beside the primary pet instead of on top of it.
+  const defaultPlacementSlot = Number.isInteger(options.defaultPlacementSlot) && options.defaultPlacementSlot > 0
+    ? options.defaultPlacementSlot
+    : 0;
   const getCurrentState = options.getCurrentState || (() => null);
   const getCurrentSvg = options.getCurrentSvg || (() => null);
   const getCurrentHitBox = options.getCurrentHitBox || (() => null);
@@ -2481,7 +2485,7 @@ function createPetWindowRuntime(options = {}) {
     } else {
       const workArea = getPrimaryWorkAreaFallback();
       startBounds = {
-        x: workArea.x + workArea.width - size.width - 20,
+        x: workArea.x + workArea.width - (size.width + 20) * (defaultPlacementSlot + 1),
         y: workArea.y + workArea.height - size.height - 20,
         width: size.width,
         height: size.height,

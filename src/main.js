@@ -70,6 +70,39 @@ if (_xwaylandRelaunch) {
   console.error("Clawd: XWayland relaunch failed; continuing under native Wayland (issue #441).");
 }
 
+// ── Claude profile instance (src/claude-profile-mode.js) ──
+// A child started by the primary for another CLAUDE_CONFIG_DIR. Both overrides
+// must land before anything below reads userData (prefs, single-instance lock,
+// themes) or CLAUDE_CONFIG_DIR (hook installer, settings watcher, Doctor).
+const claudeProfileMode = require("./claude-profile-mode");
+const _claudeProfileArgs = claudeProfileMode.parseProfileModeArgs(process.argv);
+if (_claudeProfileArgs.error) {
+  console.error(`Clawd: refusing to start Claude profile instance (${_claudeProfileArgs.error})`);
+  app.exit(1);
+  return;
+}
+const _claudeProfileMode = _claudeProfileArgs.mode;
+const _claudeProfilePaths = _claudeProfileMode
+  ? claudeProfileMode.resolveProfilePaths(_claudeProfileMode, {
+    primaryUserDataDir: app.getPath("userData"),
+  })
+  : null;
+// Window titles and the tray tooltip name the profile so two pets' Settings
+// windows and tray icons can be told apart.
+function _withClaudeProfileLabel(text) {
+  return _claudeProfileMode ? `${text} — ${_claudeProfileMode.label}` : text;
+}
+if (_claudeProfileMode) {
+  app.setPath("userData", _claudeProfilePaths.userDataDir);
+  for (const key of Object.keys(process.env)) {
+    if (key.toLowerCase() === "claude_config_dir") delete process.env[key];
+  }
+  process.env.CLAUDE_CONFIG_DIR = _claudeProfileMode.configDir;
+  // The primary stops a profile pet with SIGTERM; quit through the normal path
+  // so before-quit clears this instance's runtime file and saves its prefs.
+  process.on("SIGTERM", () => app.quit());
+}
+
 const { clampTextScale, scaleWidth, scaleHeight, resolveTextScaleForKey } = require("./text-scale");
 const path = require("path");
 const fs = require("fs");
@@ -78,8 +111,10 @@ const { pathToFileURL } = require("url");
 const { EventEmitter } = require("events");
 const {
   applyWindowsAppUserModelId,
+  SETTINGS_WINDOW_LAUNCH_ARG,
   shouldOpenSettingsWindowFromArgv,
 } = require("./settings-window-icon");
+const { createClaudeProfileInstances } = require("./claude-profile-instances");
 const createSettingsWindowRuntime = require("./settings-window");
 const createRoamFenceLoader = require("./roam-fence");
 const createRoamFenceSettings = require("./roam-fence-settings");
@@ -354,6 +389,10 @@ const { writeCodexAutoStartGate } = require("../hooks/server-config");
 const { createCodexAutoStartGateEvaluator } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
+if (_claudeProfileMode && _initialPrefsLoad.fresh) {
+  // A new profile pet starts as the work avatar and only watches Claude Code.
+  _initialPrefsLoad.snapshot = claudeProfileMode.applyProfileModeDefaults(_initialPrefsLoad.snapshot);
+}
 // Recovery from readable invalid contents is writable only after the original
 // bytes are safely kept in .bak. That fallback is not user intent for this
 // process, and a backup failure locks persistence as well. Runtime gates stay
@@ -376,6 +415,8 @@ const _evaluateCodexAutoStartGate = createCodexAutoStartGateEvaluator({
 });
 
 function _persistCodexAutoStartGate(enabled) {
+  // The gate file is shared by every instance and Codex belongs to the primary.
+  if (_claudeProfileMode) return true;
   return writeCodexAutoStartGate(enabled === true);
 }
 
@@ -580,6 +621,8 @@ const _settingsController = createSettingsController({
       ? _server.repairRuntimeStatus()
       : false,
     restartClawd: _restartClawdNow,
+    isProfileInstance: !!_claudeProfileMode,
+    getPrimaryClaudeConfigDir: () => require("../hooks/install").resolveClaudeHome(),
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
     clearSessionAutomationByAgent: (id) =>
       sessionAutomationCoordinator ? sessionAutomationCoordinator.clearAgent(id) : [],
@@ -667,6 +710,37 @@ _settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
 });
+
+// Claude profile pets (src/claude-profile-instances.js). Only the primary
+// instance launches them; a profile pet never starts further pets.
+const claudeProfileInstances = _claudeProfileMode ? null : createClaudeProfileInstances({
+  isPackaged: app.isPackaged,
+  execPath: process.execPath,
+  appPath: app.getAppPath(),
+  appImagePath: process.env.APPIMAGE || null,
+  platform: process.platform,
+  settingsArg: SETTINGS_WINDOW_LAUNCH_ARG,
+  argv: process.argv,
+});
+let _claudeProfileInstancesStarted = false;
+function reconcileClaudeProfileInstances() {
+  if (!claudeProfileInstances || !_claudeProfileInstancesStarted) return;
+  claudeProfileInstances.reconcile(_settingsController.get("claudeProfiles"));
+}
+_settingsController.subscribeKey("claudeProfiles", () => reconcileClaudeProfileInstances());
+function getClaudeProfilesStatus() {
+  const profiles = _settingsController.get("claudeProfiles") || [];
+  const running = {};
+  for (const profile of profiles) {
+    running[profile.id] = !!(claudeProfileInstances && claudeProfileInstances.isRunning(profile.id));
+  }
+  return {
+    profileInstance: !!_claudeProfileMode,
+    profileLabel: _claudeProfileMode ? _claudeProfileMode.label : null,
+    primaryConfigDir: require("../hooks/install").resolveClaudeHome(),
+    running,
+  };
+}
 let _remoteSshInstallationIdentity = null;
 let _remoteSshInstallationIdentityPromise = null;
 
@@ -910,7 +984,7 @@ const settingsWindowRuntime = createSettingsWindowRuntime({
   ),
   getSavedBounds: () => _settingsController.get("settingsWindowBounds"),
   onSaveBounds: (bounds) => _settingsController.applyUpdate("settingsWindowBounds", bounds),
-  getTitle: () => translate("settingsWindowTitle"),
+  getTitle: () => _withClaudeProfileLabel(translate("settingsWindowTitle")),
   onBeforeCreate: () => bumpAnimationOverridePreviewPosterGeneration(),
   // A replaced or crashed Settings page cannot send its preview-ending IPC.
   onRendererReset: () => { void settingsSizePreviewSession.cleanup(); },
@@ -1143,6 +1217,7 @@ function setAccessoryMirrored(mirrored) {
 }
 
 const petWindowRuntime = createPetWindowRuntime({
+  defaultPlacementSlot: _claudeProfileMode ? _claudeProfileMode.slot : 0,
   // Every stranded-lock release entry (bring to primary display, send to
   // display, manual hide) funnels through releaseStrandedDragLock and hence
   // through this hook: one full cross-process cleanup instead of each caller
@@ -2362,6 +2437,7 @@ const recapRuntime = createRecapRuntime({
   powerMonitor,
   logWarn: console.warn,
   onRecorded: () => settingsWindowRuntime.notifyRecapChanged(),
+  ...(_claudeProfilePaths ? { root: _claudeProfilePaths.recapRoot } : {}),
 });
 
 const _stateCtx = {
@@ -2369,7 +2445,9 @@ const _stateCtx = {
   get win() { return win; },
   get hitWin() { return hitWin; },
   // Last-known account quota survives app restarts (state-account-quota.js).
-  accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
+  accountQuotaPersistPath: _claudeProfilePaths
+    ? _claudeProfilePaths.accountQuotaPersistPath
+    : require("./state-account-quota").DEFAULT_PERSIST_PATH,
   recapSink: recapRuntime,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
   get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
@@ -3008,6 +3086,7 @@ agentRuntime = createAgentRuntimeMain({
 
 // ── HTTP server — delegated to src/server.js ──
 const _serverCtx = {
+  ...(_claudeProfilePaths ? { runtimeConfigPath: _claudeProfilePaths.runtimeConfigPath } : {}),
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
@@ -4562,6 +4641,7 @@ function showResumeInput(t) {
 }
 
 const _menuCtx = {
+  trayTooltip: _withClaudeProfileLabel("Clawd Desktop Pet"),
   get win() { return win; },
   get sessions() { return sessions; },
   cancelRoam: () => _roam.cancelRoam(),
@@ -5134,6 +5214,10 @@ quotaAlertsRuntime = createQuotaAlertsRuntime({
 });
 
 const settingsIpcRuntime = registerSettingsIpc({
+  claudeProfiles: {
+    getStatus: getClaudeProfilesStatus,
+    openSettings: (id) => !!(claudeProfileInstances && claudeProfileInstances.openSettings(id)),
+  },
   ipcMain,
   app,
   BrowserWindow,
@@ -5476,6 +5560,7 @@ function createWindow() {
   startHttpServer().then((port) => {
     if (port == null) return;
     const restoredSessionIds = restoreSessionsFromRecoveryLeases(_state, {
+      ...(_claudeProfilePaths ? { recoveryDir: _claudeProfilePaths.recoveryDir } : {}),
       isAgentEnabled: (agentId) => (
         _runtimeAgentGate.isAgentEnabled(agentId)
         && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
@@ -6109,6 +6194,8 @@ if (!gotTheLock) {
     if (shouldOpenSettingsWindowFromArgv(process.argv)) {
       settingsWindowRuntime.open();
     }
+    _claudeProfileInstancesStarted = true;
+    reconcileClaudeProfileInstances();
     // First-run onboarding: anyone who has never seen the tutorial gets it once.
     // `tutorialSeen` is persisted but deliberately NOT migration-backfilled, so
     // existing users who update also see it once on their next launch, then the
@@ -6134,19 +6221,25 @@ if (!gotTheLock) {
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
 
-    // Auto-install VS Code/Cursor terminal-focus extension
-    try { installTerminalFocusExtension(); } catch (err) {
-      console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
+    // Editor extensions and background update checks are app-wide; only the
+    // primary instance runs them, never a Claude profile pet.
+    if (!_claudeProfileMode) {
+      // Auto-install VS Code/Cursor terminal-focus extension
+      try { installTerminalFocusExtension(); } catch (err) {
+        console.warn("Clawd: failed to auto-install terminal-focus extension:", err.message);
+      }
     }
 
     // Auto-updater: setup event handlers (user triggers check via tray menu)
     setupAutoUpdater();
-    // #329: reconcile any stale pending-update entry (e.g. user installed
-    // out-of-band on macOS) and start the background scheduler. Both are
-    // safe in dev mode — reconcile is a no-op when nothing is pending,
-    // and startUpdateScheduler() short-circuits on !app.isPackaged.
-    try { reconcilePendingOnStartup(); } catch (err) { updateLog(`reconcile failed: ${err && err.message}`); }
-    try { startUpdateScheduler(); } catch (err) { updateLog(`scheduler start failed: ${err && err.message}`); }
+    if (!_claudeProfileMode) {
+      // #329: reconcile any stale pending-update entry (e.g. user installed
+      // out-of-band on macOS) and start the background scheduler. Both are
+      // safe in dev mode — reconcile is a no-op when nothing is pending,
+      // and startUpdateScheduler() short-circuits on !app.isPackaged.
+      try { reconcilePendingOnStartup(); } catch (err) { updateLog(`reconcile failed: ${err && err.message}`); }
+      try { startUpdateScheduler(); } catch (err) { updateLog(`scheduler start failed: ${err && err.message}`); }
+    }
 
     // Deferred so any startup Codex hook sync has settled before we read the
     // on-disk hook state; unref'd so it never blocks a fast quit.
@@ -6156,6 +6249,8 @@ if (!gotTheLock) {
 
   app.on("before-quit", (event) => {
     quotaNotificationIpc.dispose();
+    // Profile pets live and die with the primary pet that launched them.
+    if (claudeProfileInstances && !isQuitting) claudeProfileInstances.stopAll();
     isQuitting = true;
     if (!appQuitDrainReady) {
       event.preventDefault();

@@ -66,6 +66,20 @@ describe("cleanupIntegrations", () => {
     }
   });
 
+  it("cleans Claude hooks from the profile named by CLAUDE_CONFIG_DIR", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-claude-profile-home");
+    const profileDir = path.join(os.tmpdir(), "clawd-claude-profile-home", ".claude-work");
+    assert.strictEqual(
+      buildCleanupOptionsForHome(homeDir, { env: {} }).byAgent["claude-code"].settingsPath,
+      path.join(homeDir, ".claude", "settings.json")
+    );
+    assert.strictEqual(
+      buildCleanupOptionsForHome(homeDir, { env: { CLAUDE_CONFIG_DIR: profileDir } })
+        .byAgent["claude-code"].settingsPath,
+      path.join(profileDir, "settings.json")
+    );
+  });
+
   it("builds explicit cleanup path overrides for every managed agent", () => {
     const homeDir = path.join(os.tmpdir(), "clawd-target-home");
     const inheritedLocalAppData = path.join(os.tmpdir(), "admin-local-appdata");

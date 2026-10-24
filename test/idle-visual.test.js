@@ -29,6 +29,7 @@ describe("listIdleVisualOptions", () => {
     const expected = {
       calico: ["calico-idle-follow.svg", "calico-idle.apng"],
       clawd: ["clawd-idle-follow.svg", "clawd-idle-look.svg", "clawd-idle-bubble.svg", "clawd-idle-reading.svg"],
+      "clawd-work": ["clawd-idle-follow.svg", "clawd-idle-look.svg", "clawd-idle-bubble.svg", "clawd-idle-reading.svg"],
       cloudling: ["cloudling-idle.svg", "cloudling-idle-reading.svg"],
       template: ["idle-follow.svg", "idle-look.gif"],
     };
