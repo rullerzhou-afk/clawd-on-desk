@@ -9,6 +9,7 @@ const { handleStatePost } = require("../src/server-route-state");
 const { makeSessionKey } = require("../src/session-key");
 const createGrokTurnFence = require("../src/grok-turn-fence");
 const initState = require("../src/state");
+const { createSessionResultCards } = require("../src/session-result-cards");
 const themeLoader = require("../src/theme-loader");
 themeLoader.init(path.join(__dirname, "..", "src"));
 const theme = themeLoader.loadTheme("clawd");
@@ -61,7 +62,10 @@ function makeRes() {
 
 function makeRuntime() {
   const setStates = [];
+  const cards = createSessionResultCards({ enabled: true });
   const ctx = {
+    onAcceptedSessionActivity: (input, entry) => cards.observe(input, entry),
+    broadcastSessionSnapshot: snapshot => cards.onSnapshot(snapshot),
     lang: "en",
     theme,
     doNotDisturb: false,
@@ -90,7 +94,7 @@ function makeRuntime() {
     stateCalls.push({ sessionId, state, event, opts });
     return api.updateSession(sessionId, state, event, opts);
   };
-  const runtime = { api, ctx, setStates, setState: ctx.setState, stateCalls, updateSession };
+  const runtime = { api, ctx, cards, setStates, setState: ctx.setState, stateCalls, updateSession };
   createdRuntimes.push(runtime);
   return runtime;
 }
@@ -147,6 +151,29 @@ function latestEvent(record) {
 }
 
 describe("Grok /state route integration", () => {
+  it("only accepted current-turn corrections retract result cards", async () => {
+    const fence = createGrokTurnFence();
+    const runtime = makeRuntime();
+    const send = (state, event, prompt_id) => post(grokBody(state, event, { prompt_id }), fence, runtime);
+    await send("thinking", "UserPromptSubmit", "A");
+    await send("attention", "Stop", "A");
+    assert.strictEqual(runtime.cards.list()[0].kind, "completed");
+    await send("idle", "StopCancelled", "A");
+    assert.strictEqual(runtime.cards.list().length, 0);
+    await send("attention", "Stop", "A");
+    assert.strictEqual(runtime.cards.list().length, 0);
+    await send("thinking", "UserPromptSubmit", "B");
+    await send("attention", "Stop", "B");
+    const b = runtime.cards.list()[0].id;
+    await send("idle", "StopCancelled", "A");
+    assert.strictEqual(runtime.cards.list()[0].id, b);
+    await send("thinking", "UserPromptSubmit", "C");
+    await send("error", "StopFailure", "C");
+    const c = runtime.cards.list()[0].id;
+    await send("idle", "StopCancelled", "C");
+    assert.strictEqual(runtime.cards.list()[0].id, c);
+    assert.strictEqual(runtime.cards.list()[0].kind, "failed");
+  });
   it("drops a late terminal for an older turn without touching state", async () => {
     const fence = createGrokTurnFence();
     const runtime = makeRuntime();

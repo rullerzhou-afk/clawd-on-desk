@@ -181,13 +181,19 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - `bubbleFollowPet` 只选择跟随桌宠或固定在主屏，不影响 permission、notification、update 的显示 gate。
 - 跟随模式读取 `bubbleFollowPreference=auto|left|right`。`auto` 保持下方优先；左右值是安全偏好，空间不足时按候选顺序回退，绝不强制放到工作区外。
 - 固定模式读取 `bubbleFixedCorner=top-left|top-right|bottom-left|bottom-right`，锚定 primary display 的 `workArea`。主屏查询不可用时回退桌宠所在显示器，再失败才使用 synthetic work area。
-- permission stack 先定位并避让可见 Session HUD；update bubble 随后读取真实可见 permission/HUD 外窗矩形再定位；Orbit 最后读取更新后的几何。
+- permission stack 先定位并避让可见 Session HUD；update bubble 随后读取真实可见 permission/HUD 外窗矩形再定位；会话结果卡再避让三者；Orbit 最后读取更新后的几何。
 - 跟随模式使用桌宠所在显示器的 text scale；固定模式使用主屏 text scale。窗口 bounds、CSS px → DIP 与 renderer zoom 必须基于同一个目标显示器。
 - 权限气泡默认是约 340 CSS px 的三行摘要卡；普通工具在摘要态保留原有 Allow/Deny、Always/suggestion 和会话授权快捷操作，长正文经「查看详情」进入约 500 CSS px 的详情卡。Plan 摘要同时保留「查看计划」和快速批准，反馈/回终端等次级操作在展开后出现；Ask 摘要只可「回答」。详情正文滚动，标题和全部决定区固定，不提供自由拖拽改尺寸。
 - 桌面同时最多一个权限详情卡，切换时其他气泡恢复摘要，但各自 BrowserWindow/DOM 不销毁，因此 Ask 选择、Other 文本、Plan 修改草稿、步骤和滚动位置保留；IME composition 未结束时拒绝切换详情。petHidden 只隐藏窗口，不清空详情 owner 或草稿。
 - 多气泡在当前工作区安全容纳时始终保持原来的逐窗栈与最老请求在上；一旦真实窗口几何无法完整落在工作区并避开 HUD，就按 agent + session 保留每个会话的代表卡，把其余请求收入一个固定高度的「还有 N 个待处理」入口。代表卡仍不够放时只继续减少非保护代表，已展开、正在输入/IME composition 或用户刚选中的请求不得被折叠。
 - 队列入口展开为单独的导航抽屉：抽屉打开时它是唯一可见的 permission surface，只列工具、摘要和「查看/回答/查看计划」，不承载 Allow/Deny。选择一项会恢复该请求原来的 BrowserWindow/DOM；IME composition 未结束时禁止打开抽屉或切换。主进程必须等待抽屉 renderer 对当前 revision 的 ACK 后才隐藏请求窗口；加载、崩溃或 ACK 超时均回退到原逐窗栈，不能产生权限决定。
 - petHidden 以隐藏动作当时的请求序号为切点：旧请求（包括队列）保持收起，隐藏期间的新请求仍可用同一套 overflow/queue 规则出现；恢复桌宠后再合并全部 pending。任意 permission surface 可见时自由漫游暂停，surface 消失后重新等待完整 8 秒，不能沿用拖拽已消耗的 4 秒阶段。macOS IME 编辑中的可见气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
+
+## Session result cards
+
+`sessionResultCardsEnabled` 是 Notifications 页独立、默认关闭的布尔项，不受三类旧气泡派生的 `hideBubbles` 或自动关闭秒数控制。全部旧气泡关闭、结果卡开启时，位置控制仍可用。只在内存中保留最近 100 个会话的未读结果；DND、petHidden、全屏抑制和 mini 过渡只收起窗口，不清记录。
+
+`session-result-window.js` 使用一个约 340 CSS px 的白色列表窗口，最多三张卡高度、超出滚动。定位复用 update bubble 的工作区与摆放算法，再拒绝越界或碰撞 fallback，逐级缩短列表；完全无空位时隐藏并等待几何变化。不新增另一套抽屉。窗口无自动计时关闭，renderer 只接收显示字段和不透明 id/generation；主进程独立验证 IPC 来源和实际导航结果。行为及已验证的接入范围见 `docs/guides/session-result-cards.md`。
 
 ## Mini Mode
 

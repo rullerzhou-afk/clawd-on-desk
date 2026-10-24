@@ -644,6 +644,10 @@ DND remains an interaction/visual gate and does not stop recap or coverage. Susp
 
 ## Runtime Ownership Boundaries
 
+Session result cards are a separate, memory-only projection in `src/session-result-cards.js`. `state.js` calls the narrow `onAcceptedSessionActivity` callback only after normal state arbitration or explicit completion promotion; accounting-only recap events and preserved late tool phases do not enter it. The callback retains semantic state and main/subagent provenance that the public session snapshot intentionally omits. Recap enablement and metric capabilities do not govern this projection. Snapshot fanout updates display names and live membership only; it never generates or acknowledges a result.
+
+The explicit initial semantic allowlist is Claude/Codex/Kimi/Grok completion and Claude/Kimi/Grok terminal failure. Local main-session provenance plus final event/badge matching is required. Bounded phase evidence survives card dismissal so repeated terminal events cannot re-create a reminder. `session-result-focus.js` revalidates navigation at click time; `session-result-window.js` owns its isolated renderer, sender/main-frame checks, generation-safe acknowledgement, visibility and cleanup. See `docs/guides/session-result-cards.md` for user behavior and platform limits.
+
 `src/main.js` 是 composition root，不再是各子系统的实现 owner。新增或修改行为时先进入对应 owner，避免把逻辑重新堆回 `main.js`：
 
 | Boundary | Owner |

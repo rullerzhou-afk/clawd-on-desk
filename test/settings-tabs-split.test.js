@@ -26,6 +26,7 @@ const TAB_FILES = {
 };
 
 const FROZEN_KEYS = [
+  "sessionResultCardsEnabled",
   "destructiveActionReminder",
   "size",
   "textScale",
@@ -95,6 +96,7 @@ const EXPECTED_KEYS = {
     "fullscreenAutoHide",
   ],
   notifications: [
+    "sessionResultCardsEnabled",
     "soundMuted",
     "soundVolume",
     "flashTaskbarOnComplete",
@@ -725,7 +727,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionRowLabels(notifications), [
       ["启用音效", "音量"],
       ["任务完成时闪烁系统托盘图标", "闪烁间隔", "闪烁时长"],
-      ["隐藏气泡", "权限 / 交互气泡", "通知气泡", "更新气泡", "气泡位置", "优先方向", "固定角落"],
+      ["保留会话结果卡", "隐藏气泡", "权限 / 交互气泡", "通知气泡", "更新气泡", "气泡位置", "优先方向", "固定角落"],
     ]);
 
     const sessions = createHarness({ tab: "sessions", snapshot: makeSnapshot({ lang: "zh" }) });
@@ -1019,6 +1021,14 @@ describe("settings tab split", () => {
     for (const control of [placement.modeControl, placement.followControl, placement.cornerControl]) {
       assert.ok(control.element.querySelectorAll("button").every((button) => button.disabled));
     }
+    const renderCount = notifications.renderCount();
+    notifications.apply("sessionResultCardsEnabled", true);
+    assert.strictEqual(notifications.renderCount(), renderCount);
+    assert.ok(placement.modeControl.element.querySelectorAll("button").every(button => !button.disabled));
+    assert.ok(placement.cornerControl.element.querySelectorAll("button").every(button => !button.disabled));
+    assert.ok(placement.followControl.element.querySelectorAll("button").every(button => button.disabled));
+    notifications.apply("sessionResultCardsEnabled", false);
+    assert.ok(placement.modeControl.element.querySelectorAll("button").every(button => button.disabled));
 
     const general = createHarness({
       tab: "general",

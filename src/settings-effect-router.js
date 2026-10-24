@@ -105,6 +105,7 @@ function createSettingsEffectRouter(options = {}) {
   const disableMobilePermissionObservation = options.disableMobilePermissionObservation || noop;
   const enqueueMobilePreviewReconcile = options.enqueueMobilePreviewReconcile || noop;
   const setRecapEnabled = options.setRecapEnabled || noop;
+  const syncSessionResultSettings = options.syncSessionResultSettings || noop;
   const now = options.now || (() => new Date());
 
   setPetAccessoryFloatingSurfaceRepositioner(repositionFloatingBubbles);
@@ -249,6 +250,9 @@ function createSettingsEffectRouter(options = {}) {
     }
 
     // 2. Reactive side effects.
+    if ("sessionResultCardsEnabled" in changes || "agents" in changes || "lang" in changes) {
+      safeCall(logWarn, "Clawd: session result settings sync failed:", syncSessionResultSettings);
+    }
     if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {
       safeCall(logWarn, "Clawd: syncPermissionShortcuts failed:", syncPermissionShortcuts);
     }

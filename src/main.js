@@ -485,6 +485,7 @@ let sessionAutomationCoordinator = null;
 let sessionAutomationStore = null;
 let systemWakeRecovery = null;
 let floatingWindowRuntime = null;
+let sessionResultWindow = null;
 let codexPetMain = null;
 let telegramApprovalIdentitySignature = "";
 let telegramDirectSendGateEnabled = null;
@@ -2027,6 +2028,7 @@ const topmostRuntime = createTopmostRuntime({
       : pendingPermissions.map((entry) => entry && entry.bubble).filter(Boolean)
   ),
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
+  getSessionResultWindow: () => sessionResultWindow?.getWindow(),
   getSessionHudWindow: () => getSessionHudWindow(),
   getQuotaRingWindow: () => getQuotaRingWindow(),
   getContextMenuOwner: () => contextMenuOwner,
@@ -2171,8 +2173,11 @@ const _permCtx = {
   repositionFloatingBubbles: () => repositionFloatingBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
   // permission.js still calls this legacy-shaped callback after the update
-  // bubble has moved; only Orbit needs the second geometry pass here.
-  repositionSessionHud: () => repositionQuotaRing(),
+  // bubble has moved; result cards and Orbit read its updated geometry.
+  repositionSessionHud: () => {
+    sessionResultWindow?.sync();
+    repositionQuotaRing();
+  },
   getTelegramApprovalClient: () => getTelegramApprovalClient(),
   getRemoteApprovalClients: () => {
     const client = getFeishuApprovalClient();
@@ -2243,7 +2248,10 @@ const _updateBubbleCtx = {
   getTextScale: (workArea) => getTextScaleForBubbleWorkArea(workArea),
   guardAlwaysOnTop,
   reapplyMacVisibility,
-  repositionQuotaRing: () => repositionQuotaRing(),
+  repositionQuotaRing: () => {
+    sessionResultWindow?.sync();
+    repositionQuotaRing();
+  },
   clipboard,
 };
 const _updateBubble = initUpdateBubble(_updateBubbleCtx);
@@ -2258,10 +2266,14 @@ floatingWindowRuntime = createFloatingWindowRuntime({
   getPendingPermissions: () => pendingPermissions,
   repositionPermissionBubbles: () => repositionBubbles(),
   repositionUpdateBubble: () => repositionUpdateBubble(),
+  repositionSessionResults: () => sessionResultWindow?.sync(),
   repositionSessionHud: () => repositionSessionHud(),
   repositionQuotaRing: () => repositionQuotaRing(),
   syncSessionHudVisibility: () => syncSessionHudVisibility(),
   syncUpdateBubbleVisibility: (hiddenOverride) => syncUpdateBubbleVisibility(hiddenOverride),
+  syncSessionResultVisibility: (hiddenOverride) => sessionResultWindow?.sync(hiddenOverride),
+  hideSessionResults: () => sessionResultWindow?.hide(),
+  setSessionResultsFullscreenSuppressed: (suppressed) => sessionResultWindow?.setFullscreenSuppressed(suppressed),
   suspendUpdateBubbleForPet: () => _updateBubble.suspendForPetHidden(),
   suspendUpdateBubbleForFullscreen: () => _updateBubble.suspendForFullscreen(),
   resumeUpdateBubbleFromFullscreen: () => _updateBubble.resumeFromFullscreen(),
@@ -2291,6 +2303,11 @@ function syncSessionHudVisibilityAndBubbles() {
 }
 
 // ── State machine — delegated to src/state.js ──
+const sessionResultCards = require("./session-result-cards").createSessionResultCards({
+  enabled: _settingsController.get("sessionResultCardsEnabled") === true,
+  isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
+  onChange: () => sessionResultWindow?.schedule(),
+});
 let showDashboard = () => {};
 let showQuickSelect = () => {};
 let broadcastDashboardSessionSnapshot = () => {};
@@ -2375,7 +2392,7 @@ const _stateCtx = {
   get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
-  set doNotDisturb(v) { doNotDisturb = v; },
+  set doNotDisturb(v) { doNotDisturb = v; sessionResultWindow?.schedule(); },
   get miniMode() { return _mini.getMiniMode(); },
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   get mouseOverPet() { return mouseOverPet; },
@@ -2419,7 +2436,9 @@ const _stateCtx = {
   buildContextMenu: () => buildContextMenu(),
   buildTrayMenu: () => buildTrayMenu(),
   debugLog: (msg) => sessionLog(msg),
+  onAcceptedSessionActivity: (input, entry) => sessionResultCards.observe(input, entry),
   broadcastSessionSnapshot: (snapshot) => {
+    sessionResultCards.onSnapshot(snapshot);
     quotaAlertsRuntime?.observeQuota();
     reconcilePowerSaveBlocker();
     broadcastDashboardSessionSnapshot(snapshot);
@@ -2725,6 +2744,40 @@ function focusTerminalSession(session, sessionId, requestSource) {
   });
 }
 
+const sessionResultFocus = require("./session-result-focus").createSessionResultFocus({
+  getSession: id => sessions.get(id),
+  openExternal: url => shell.openExternal(url),
+  focusTerminalSession,
+});
+sessionResultWindow = require("./session-result-window").createSessionResultWindow({
+  BrowserWindow, ipcMain, store: sessionResultCards, focus: sessionResultFocus,
+  getLang: () => lang,
+  isSuppressed: hiddenOverride => !app.isReady() || doNotDisturb
+    || (hiddenOverride === undefined ? petWindowRuntime.isPetEffectivelyHidden() : hiddenOverride)
+    || _mini.getMiniTransitioning(),
+  getLayout: () => {
+    if (!win || win.isDestroyed()) return null;
+    const petBounds = getPetWindowBounds();
+    const workArea = getBubbleWorkArea(bubbleFollowPet, petBounds);
+    const avoidRects = _perm.getVisibleBubbleBounds().slice();
+    avoidRects.push(...getVisibleSessionHudBounds());
+    const updateWindow = _updateBubble.getBubbleWindow();
+    if (updateWindow && !updateWindow.isDestroyed() && updateWindow.isVisible()) {
+      avoidRects.push(updateWindow.getBounds());
+    }
+    return {
+      workArea, petBounds, avoidRects,
+      scale: getTextScaleForBubbleWorkArea(workArea),
+      bubbleFollowPet, followPreference: bubbleFollowPreference, fixedCorner: bubbleFixedCorner,
+      anchorRect: getUpdateBubbleAnchorRect(petBounds), hitRect: getHitRectScreen(petBounds),
+    };
+  },
+  guardAlwaysOnTop, reapplyMacVisibility,
+  onGeometryChanged: () => repositionQuotaRing(),
+});
+sessionResultCards.onSnapshot(_state.buildSessionSnapshot());
+app.on("before-quit", () => sessionResultWindow.dispose());
+
 function focusDashboardSession(sessionId, options = {}) {
   if (!sessionId) return false;
   const requestSource = options.requestSource || "dashboard";
@@ -2976,6 +3029,7 @@ const _sessionHud = require("./session-hud")({
   getTextScale: () => getTextScaleForPetWindows(),
   getPermissionBubbleBounds: () => _perm.getVisibleBubbleBounds(),
   getUpdateBubbleWindow: () => _updateBubble.getBubbleWindow(),
+  getSessionResultBounds: () => sessionResultWindow?.getBounds(),
   guardAlwaysOnTop,
   reapplyMacVisibility,
   onReservedOffsetChange: () => repositionFloatingBubbles(),
@@ -4814,6 +4868,9 @@ const holidayAccessoryRuntime = createHolidayAccessoryRuntime({
 });
 
 const settingsEffectRouter = createSettingsEffectRouter({
+  syncSessionResultSettings: () => {
+    sessionResultCards.syncSettings(_settingsController.get("sessionResultCardsEnabled"));
+  },
   settingsController: _settingsController,
   recapRuntime,
   BrowserWindow,
@@ -5645,7 +5702,7 @@ const _miniCtx = {
   get win() { return win; },
   get currentSize() { return currentSize; },
   get doNotDisturb() { return doNotDisturb; },
-  set doNotDisturb(v) { doNotDisturb = v; },
+  set doNotDisturb(v) { doNotDisturb = v; sessionResultWindow?.schedule(); },
   get currentState() { return _state.getCurrentState(); },
   get mouseOverPet() { return mouseOverPet; },
   get dragLocked() { return petWindowRuntime.isDragLocked(); },

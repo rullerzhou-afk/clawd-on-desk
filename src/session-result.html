@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'none'; connect-src 'none'">
+  <title>Session results</title>
+  <link rel="stylesheet" href="session-result.css">
+  <script defer src="session-result-renderer.js"></script>
+</head>
+<body>
+  <main class="panel">
+    <header><h1 id="title"></h1><span id="count" class="count"></span></header>
+    <div id="cards" class="cards" aria-live="polite"></div>
+  </main>
+</body>
+</html>

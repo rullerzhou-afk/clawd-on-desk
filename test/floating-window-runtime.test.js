@@ -42,19 +42,20 @@ describe("floating-window-runtime", () => {
     assert.deepStrictEqual(calls, ["update", "ring", "permission", "update", "ring"]);
   });
 
-  it("keeps anchored surface ordering as HUD first, then permission/update bubbles", () => {
+  it("keeps anchored ordering as HUD, permission, update, results, then Orbit", () => {
     const calls = [];
     const runtime = createFloatingWindowRuntime({
       getPendingPermissions: () => [{ bubble: {} }],
       repositionSessionHud: () => calls.push("hud"),
       repositionPermissionBubbles: () => calls.push("permission"),
       repositionUpdateBubble: () => calls.push("update"),
+      repositionSessionResults: () => calls.push("results"),
       repositionQuotaRing: () => calls.push("ring"),
     });
 
     runtime.repositionAnchoredSurfaces();
 
-    assert.deepStrictEqual(calls, ["hud", "permission", "update", "ring"]);
+    assert.deepStrictEqual(calls, ["hud", "permission", "update", "results", "ring"]);
   });
 
   it("syncs Session HUD visibility before repositioning dependent bubbles", () => {

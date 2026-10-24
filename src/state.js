@@ -1427,6 +1427,17 @@ function recordRecapEventOnly(input) {
   return recordAcceptedRecapEvent(input, getLastSessionSnapshot());
 }
 
+// Read-only result projection, after source/phase/completion arbitration.
+// This is independent of recap recording and never observes accounting-only events.
+function notifyAcceptedSessionResult(input, snapshot) {
+  if (!input || typeof ctx.onAcceptedSessionActivity !== "function") return;
+  try {
+    ctx.onAcceptedSessionActivity(input, findSnapshotSession(snapshot, input.sessionId));
+  } catch (err) {
+    console.warn("session result observation failed:", err && err.message);
+  }
+}
+
 function getLastSessionSnapshot() {
   if (!lastSessionSnapshot) lastSessionSnapshot = buildSessionSnapshot();
   return lastSessionSnapshot;
@@ -2109,6 +2120,12 @@ function promoteCompletion(sessionId, completionPayload = undefined) {
   session.displayHint = null;
   session.awaitingInputSinceStop = true;
   const recapSnapshot = emitSessionSnapshot({ force: true }).snapshot;
+  notifyAcceptedSessionResult({
+    sessionId, agentId: session.agentId, profileId: session.profileId || "local",
+    host: session.host, wslDistro: session.wslDistro, headless: session.headless,
+    event: "Stop", state: "attention", occurredAt: completionOccurredAt,
+    snapshotEventAt: completionSnapshotEvent && completionSnapshotEvent.at,
+  }, recapSnapshot);
   recordAcceptedRecapEvent({
     occurredAt: completionOccurredAt,
     recapRecordingToken: completionPayload && completionPayload.recapRecordingToken,
@@ -2299,6 +2316,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     ? suppliedRecapOccurredAt
     : Date.now();
   let recapPendingInput = null;
+  let resultPendingInput = null;
   try {
   const {
     sourcePid = null,
@@ -2866,6 +2884,13 @@ function updateSession(sessionId, state, event, opts = {}) {
       subagentType,
       completionCandidate: !duplicateCompletionVisualAtEntry && isDoneEvent(event),
     };
+    resultPendingInput = {
+      sessionId, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local",
+      host: srcHost, wslDistro: srcWslDistro, headless: srcHeadless,
+      subagentId: normalizedSubagentId, subagentType, recapIsSubagent,
+      event, state: preservedState || state, occurredAt: recapOccurredAt,
+      snapshotEventAt: recapSnapshotEvent && recapSnapshotEvent.at,
+    };
   }
   const preserveCompletionAck =
     existing
@@ -3386,6 +3411,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       console.warn("reconcileAckFlag threw:", err);
     }
     const recapSnapshot = emitSessionSnapshot().snapshot;
+    notifyAcceptedSessionResult(resultPendingInput, recapSnapshot);
     if (recapPendingInput) recordAcceptedRecapEvent(recapPendingInput, recapSnapshot);
   }
 }

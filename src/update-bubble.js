@@ -770,6 +770,7 @@ module.exports = function initUpdateBubble(ctx) {
 };
 
 module.exports.registerUpdateBubbleIpc = registerUpdateBubbleIpc;
+module.exports.computeUpdateBubbleBounds = computeUpdateBubbleBounds;
 
 module.exports.__test = {
   computeAutoCloseRemainingMs,
