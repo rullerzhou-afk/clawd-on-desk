@@ -794,6 +794,24 @@ describe("state-session-snapshot builder", () => {
     assert.strictEqual(byId.get(scopedCodexSessionId).codexSource, "vscode");
   });
 
+  it("passes the reason a Linux terminal cannot be focused on to the renderers", () => {
+    const saved = { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP };
+    process.env.XDG_SESSION_TYPE = "wayland";
+    process.env.XDG_CURRENT_DESKTOP = "GNOME";
+    try {
+      const snapshot = buildSessionSnapshot(new Map([
+        ["terminal", session("working", { sourcePid: 123 })],
+      ]), { focusHostPlatform: "linux" });
+      assert.strictEqual(snapshot.sessions[0].canFocus, false);
+      assert.strictEqual(snapshot.sessions[0].focusUnavailableReason, "linux-wayland-window-raise");
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("offers the terminal jump for a herdr-hosted session with a Desktop originator (#1139)", () => {
     const snapshot = buildSessionSnapshot(new Map([
       ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {

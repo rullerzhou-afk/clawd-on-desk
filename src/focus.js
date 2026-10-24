@@ -7,6 +7,7 @@ const os = require("os");
 const crypto = require("crypto");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
+const { isKdeWaylandSession } = require("./session-focus");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -1247,6 +1248,7 @@ function scheduleOrcaPaneFocus(orcaPaneKey, cwd) {
 }
 
 const HERDR_CLI_TIMEOUT_MS = 3000;
+const KDE_DBUS_TIMEOUT_MS = 1500;
 
 function herdrCliCandidates() {
   // Same reason as orcaCliCandidates: a Finder-launched app only has launchd's
@@ -2318,6 +2320,136 @@ function focusMacAppViaSystemEvents(pidCandidates, onDone) {
   });
 }
 
+// KDE Plasma on Wayland (#1001): wmctrl and xdotool only see X11 windows, so
+// they cannot find a native Wayland terminal at all. KWin exposes window
+// activation to scripts loaded over D-Bus, which is what kdotool wraps; doing
+// the same here avoids depending on a tool distributions do not package.
+function gdbusCall(dest, objectPath, method, args, callback) {
+  execFile("gdbus", [
+    "call", "--session", "--dest", dest, "--object-path", objectPath, "--method", method, ...args,
+  ], { timeout: KDE_DBUS_TIMEOUT_MS, encoding: "utf8" }, callback);
+}
+
+// gdbus prints a reply as a GVariant tuple, e.g. `(uint32 4633,)` or `(0,)`.
+function parseGdbusInteger(stdout) {
+  const match = String(stdout || "").trim().match(/^\((?:[a-z]+\d*\s+)?(-?\d+),\)$/);
+  return match ? Number(match[1]) : null;
+}
+
+// e.g. `('~ : claude',)`; GVariant switches to double quotes when the string
+// itself holds a single quote.
+function parseGdbusString(stdout) {
+  const match = String(stdout || "").trim().match(/^\((['"])(.*)\1,\)$/s);
+  return match ? match[2].replace(/\\(.)/g, "$1") : null;
+}
+
+function readProcEnviron(pid) {
+  try {
+    const env = {};
+    for (const entry of fs.readFileSync(`/proc/${pid}/environ`, "utf8").split("\0")) {
+      const eq = entry.indexOf("=");
+      if (eq > 0) env[entry.slice(0, eq)] = entry.slice(eq + 1);
+    }
+    return env;
+  } catch {
+    return null;
+  }
+}
+
+// Konsole serves every window and tab from one process, so the source PID
+// names the application, not the tab. Konsole does export the D-Bus address of
+// each tab into the environment of the shell running in it.
+function findKonsoleSession(pids) {
+  for (const pid of pids) {
+    const env = readProcEnviron(pid);
+    if (!env) continue;
+    const service = env.KONSOLE_DBUS_SERVICE;
+    const windowPath = env.KONSOLE_DBUS_WINDOW;
+    const sessionMatch = /^\/Sessions\/(\d+)$/.exec(env.KONSOLE_DBUS_SESSION || "");
+    if (service && /^\/Windows\/\d+$/.test(windowPath || "") && sessionMatch) {
+      return { service, windowPath, sessionPath: env.KONSOLE_DBUS_SESSION, sessionId: sessionMatch[1] };
+    }
+  }
+  return null;
+}
+
+// Programs started from a Konsole tab (an IDE, another terminal) inherit its
+// KONSOLE_DBUS_* variables. Only trust them when the Konsole process that owns
+// the D-Bus name is an ancestor of the session.
+function selectKonsoleTab(pids, callback) {
+  const konsole = findKonsoleSession(pids);
+  if (!konsole) return callback({ reason: "no-konsole-session" });
+  gdbusCall("org.freedesktop.DBus", "/org/freedesktop/DBus", "org.freedesktop.DBus.GetConnectionUnixProcessID",
+    [konsole.service], (ownerErr, ownerOut) => {
+      const ownerPid = ownerErr ? null : parseGdbusInteger(ownerOut);
+      if (!ownerPid || !pids.includes(ownerPid)) return callback({ reason: "konsole-not-in-pid-chain" });
+      gdbusCall(konsole.service, konsole.windowPath, "org.kde.konsole.Window.setCurrentSession",
+        [konsole.sessionId], (selectErr) => {
+          if (selectErr) return callback({ reason: "konsole-tab-select-failed", konsolePid: ownerPid });
+          // With the tab selected, the window caption starts with that tab's
+          // title, which tells several Konsole windows apart.
+          gdbusCall(konsole.service, konsole.sessionPath, "org.kde.konsole.Session.title", ["1"],
+            (titleErr, titleOut) => callback({
+              reason: "konsole-tab-selected",
+              konsolePid: ownerPid,
+              caption: titleErr ? null : parseGdbusString(titleOut),
+            }));
+        });
+    });
+}
+
+function buildKwinActivateScript(pid, captionPrefix) {
+  return [
+    `const pid = ${JSON.stringify(pid)};`,
+    `const captionPrefix = ${JSON.stringify(captionPrefix || "")};`,
+    "const windows = workspace.windowList().filter((w) => w.pid === pid && w.normalWindow);",
+    "const target = windows.find((w) => captionPrefix && w.caption.startsWith(captionPrefix)) || windows[0];",
+    "if (target) {",
+    "  target.minimized = false;",
+    "  workspace.activeWindow = target;",
+    "}",
+    "",
+  ].join("\n");
+}
+
+// KWin runs the script inside the compositor, so the activation is not subject
+// to focus-stealing prevention. The script cannot report back over D-Bus,
+// which is why success here means "KWin ran it", not "a window matched".
+function activateKwinWindow(pid, captionPrefix, callback) {
+  const pluginName = `clawd-focus-${crypto.randomBytes(6).toString("hex")}`;
+  const scriptPath = path.join(os.tmpdir(), `${pluginName}.js`);
+  const finish = (reason) => {
+    fs.unlink(scriptPath, () => {});
+    callback(reason);
+  };
+  fs.writeFile(scriptPath, buildKwinActivateScript(pid, captionPrefix), "utf8", (writeErr) => {
+    if (writeErr) return finish("kwin-script-write-failed");
+    gdbusCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.loadScript", [scriptPath, pluginName],
+      (loadErr, loadOut) => {
+        const scriptId = loadErr ? null : parseGdbusInteger(loadOut);
+        if (scriptId === null || scriptId < 0) return finish("kwin-script-load-failed");
+        gdbusCall("org.kde.KWin", `/Scripting/Script${scriptId}`, "org.kde.kwin.Script.run", [], (runErr) => {
+          gdbusCall("org.kde.KWin", "/Scripting", "org.kde.kwin.Scripting.unloadScript", [pluginName], () => {
+            finish(runErr ? "kwin-script-run-failed" : "kwin-activate-requested");
+          });
+        });
+      });
+  });
+}
+
+// Selects the Konsole tab first, so the raised window already shows it and its
+// caption can pick the right window. Other terminals are raised by source PID.
+function focusKdeWaylandWindow(request, onDone) {
+  const pids = [...(request.pidChain || []), request.sourcePid]
+    .filter((pid, index, arr) => pid && arr.indexOf(pid) === index);
+  selectKonsoleTab(pids, (konsole) => {
+    activateKwinWindow(konsole.konsolePid || request.sourcePid, konsole.caption, (raiseReason) => {
+      logFocusResult(`branch=linux-kwin reason=${raiseReason} konsole=${konsole.reason}`);
+      if (onDone) onDone();
+    });
+  });
+}
+
 function focusTerminalWindowLegacy(request, onDone) {
   const { sourcePid } = request;
   const cwd = request.cwd;
@@ -2359,13 +2491,23 @@ function focusTerminalWindowLegacy(request, onDone) {
   }
 
   if (isLinux) {
+    if (isKdeWaylandSession()) {
+      focusKdeWaylandWindow(request, onDone);
+      return true;
+    }
     // Linux: try wmctrl (lookup by PID), then xdotool.
-    // Missing tools fail quietly so hooks never block the app.
+    // Missing tools fail quietly so hooks never block the app, but the outcome
+    // is logged: on a desktop neither tool can see, nothing else would tell.
+    const finish = (reason) => {
+      logFocusResult(`branch=linux-x11 reason=${reason}`);
+      if (onDone) onDone();
+    };
     const tryXdoTool = () => {
       execFile("xdotool", ["search", "--pid", String(sourcePid), "windowactivate", "--sync"], {
         timeout: 1200,
-      }, () => {
-        if (onDone) onDone();
+      }, (xdoErr) => {
+        if (!xdoErr) return finish("xdotool-activated");
+        finish(xdoErr.code === "ENOENT" ? "no-window-tool" : "no-window-found");
       });
     };
     execFile("wmctrl", ["-lp"], { timeout: 1000 }, (err, stdout) => {
@@ -2380,7 +2522,7 @@ function focusTerminalWindowLegacy(request, onDone) {
       if (!winId) return tryXdoTool();
       execFile("wmctrl", ["-i", "-a", winId], { timeout: 1000 }, (activateErr) => {
         if (activateErr) return tryXdoTool();
-        if (onDone) onDone();
+        finish("wmctrl-activated");
       });
     });
     return true;
@@ -2483,6 +2625,9 @@ return {
     buildGhosttyCwdProbeAndStoneScript,
     buildGhosttyStoneAndFocusScript,
     GHOSTTY_STEP_SETTLE_MS,
+    parseGdbusInteger,
+    parseGdbusString,
+    buildKwinActivateScript,
   },
 };
 
