@@ -465,12 +465,17 @@ function makeSnapshot(overrides = {}) {
   };
 }
 
+// `modelBrowserScroll` reproduces what a real browser does to a scrolled
+// container when its children are replaced: the emptied pane clamps scrollTop
+// to 0 and the focused control drops back to <body>. The default (false) keeps
+// the older FakeElement behavior the other tests were written against.
 function createHarness({
   tab,
   snapshot,
   settingsAPI = {},
   platform = "Win32",
   localStorage = null,
+  modelBrowserScroll = false,
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -480,7 +485,16 @@ function createHarness({
   const document = {
     body,
     activeElement: body,
-    createElement: (tagName) => new FakeElement(tagName),
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      // Focus has to live on the harness document, like a real browser, so
+      // requestRender() can see what was focused before a repaint.
+      element.focus = () => {
+        element.focused = true;
+        document.activeElement = element;
+      };
+      return element;
+    },
     getElementById(id) {
       if (id === "content") return content;
       return null;
@@ -600,6 +614,12 @@ function createHarness({
     contentRenderCount++;
     core.ops.clearMountedControls();
     content.innerHTML = "";
+    if (modelBrowserScroll) {
+      // A real pane is now empty: its offset clamps to the top and the focused
+      // control (removed with the old children) falls back to <body>.
+      content.scrollTop = 0;
+      document.activeElement = body;
+    }
     core.tabs[tab].render(content, core);
   }
   core.ops.installRenderHooks({ content: render });
@@ -615,6 +635,7 @@ function createHarness({
   return {
     core,
     content,
+    document,
     tab,
     settingsAPI: api,
     updateCalls,
@@ -1190,6 +1211,143 @@ describe("settings tab split", () => {
     assert.strictEqual(cancelCount(), 3, "leaving the tab also cancels the lookup");
   });
 
+  it("keeps the IM channels scroll position and switch focus when a switch saves", async () => {
+    const harness = createHarness({
+      tab: "permissions",
+      modelBrowserScroll: true,
+      snapshot: makeSnapshot({
+        slackNotify: {
+          enabled: true,
+          channelId: "C1234567890",
+          notifyOnDone: true,
+          notifyOnError: true,
+          notifyOnPermission: true,
+          outputMode: "off",
+        },
+      }),
+    });
+    const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
+    pills()[1].click();
+    await harness.settle();
+
+    harness.content.scrollTop = 640;
+    const switchFor = (labelKey) => harness.content.querySelectorAll(".switch")
+      .find((element) => element.getAttribute("aria-labelledby") === `settings-slack-${labelKey}-label`);
+    const doneSwitch = switchFor("slackNotifyEventDone");
+    assert.ok(doneSwitch, "the Slack notification switches render once the channel is enabled");
+    doneSwitch.focus();
+    assert.strictEqual(harness.document.activeElement, doneSwitch);
+    doneSwitch.click();
+    await harness.settle();
+    assert.ok(harness.updateCalls.some((call) => call.key === "slackNotify"),
+      "toggling the switch still persists through settingsAPI.update");
+
+    // Main answers with a settings-changed broadcast; that generic repaint used
+    // to drop the pane back to the top and lose the switch beneath the user.
+    harness.apply("slackNotify", {
+      ...harness.core.state.snapshot.slackNotify,
+      notifyOnDone: false,
+    });
+    await harness.settle();
+
+    assert.strictEqual(harness.content.scrollTop, 640,
+      "repainting the channel cards must not move the settings pane");
+    const focused = harness.document.activeElement;
+    assert.ok(harness.content.contains(focused), "focus returns to the rebuilt switch");
+    assert.strictEqual(focused.getAttribute("data-settings-focus-key"),
+      "remote-approval-slack-slackNotifyEventDone");
+  });
+
+  it("keeps the LAN card scroll position and switch focus across its toggles", async () => {
+    const harness = createHarness({
+      tab: "permissions",
+      modelBrowserScroll: true,
+      snapshot: makeSnapshot({
+        mobilePreviewEnabled: true,
+        mobilePermissionPreviewEnabled: true,
+      }),
+    });
+    const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
+    pills()[2].click();
+    await harness.settle();
+
+    const card = harness.content.querySelector(".mobile-channel-card");
+    const permissionSwitch = card.querySelector(".collapsible-group-body .switch");
+    harness.content.scrollTop = 520;
+    permissionSwitch.focus();
+    permissionSwitch.click();
+    await harness.settle();
+    assert.ok(harness.commandCalls.some((call) => call.action === "setMobilePermissionPreviewEnabled"),
+      "the permission-preview switch still saves through its command");
+    harness.apply("mobilePermissionPreviewEnabled", false);
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 520,
+      "repainting the LAN body must not move the settings pane");
+    assert.strictEqual(harness.document.activeElement.getAttribute("data-settings-focus-key"),
+      "remote-approval-mobile-body-0");
+
+    const currentCard = harness.content.querySelector(".mobile-channel-card");
+    const headerSwitch = currentCard.querySelectorAll(".switch")[0];
+    headerSwitch.focus();
+    headerSwitch.click();
+    await harness.settle();
+    assert.ok(harness.updateCalls.some((call) => call.key === "mobilePreviewEnabled"),
+      "the LAN header switch still saves through settingsAPI.update");
+    harness.apply("mobilePreviewEnabled", false);
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 520);
+    assert.strictEqual(harness.document.activeElement.getAttribute("data-settings-focus-key"),
+      "remote-approval-mobile-toggle-0");
+  });
+
+  it("still starts the content pane at the top when switching Permission sub-pages", async () => {
+    const harness = createHarness({ tab: "permissions" });
+    const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
+
+    pills()[1].click();
+    await harness.settle();
+    harness.content.scrollTop = 700;
+    pills()[2].click();
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 0, "channels to LAN starts at the top");
+
+    harness.content.scrollTop = 480;
+    pills()[0].click();
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 0, "LAN to local starts at the top");
+  });
+
+  it("routes every remote-body repaint through the scroll-preserving render", () => {
+    const source = fs.readFileSync(TELEGRAM_APPROVAL_TAB, "utf8");
+    const requestRenders = [...source.matchAll(/ops\.requestRender\(\{([^}]*)\}\)/g)];
+    assert.strictEqual(source.match(/ops\.requestRender\(\{ content: true \}\)/g), null,
+      "no content repaint may reintroduce the scroll-resetting default");
+    assert.ok(requestRenders.length >= 1);
+    for (const [, args] of requestRenders) {
+      assert.match(args, /preserveScroll:\s*true/, args);
+    }
+    assert.match(source,
+      /function requestBodyRender\(\) \{\s*ops\.requestRender\(\{ content: true, preserveScroll: true \}\);\s*\}/);
+    const bodyRepaints = source.match(/requestBodyRender\(\);/g) || [];
+    assert.ok(bodyRepaints.length >= 40,
+      `the IM/LAN body repaints should go through requestBodyRender (${bodyRepaints.length} found)`);
+    // Repaints triggered by settings-changed broadcasts are claimed here too, so
+    // applyChanges does not fall back to its scroll-dropping full repaint.
+    const bodyKeySet = source.match(
+      /const REMOTE_APPROVAL_BODY_KEYS = Object\.freeze\(\[([\s\S]*?)\]\);/
+    );
+    assert.ok(bodyKeySet, "the remote-body key set drives the broadcast-claim path");
+    const bodyKeys = [...bodyKeySet[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    assert.deepStrictEqual(bodyKeys, [
+      "tgApproval",
+      "feishuApproval",
+      "slackNotify",
+      "mobilePreviewEnabled",
+      "mobilePermissionPreviewEnabled",
+    ]);
+    assert.match(source, /data-settings-focus-key/);
+  });
+
   it("only repaints remote channel status while the IM or LAN body is visible", async () => {
     const harness = createHarness({ tab: "permissions", snapshot: makeSnapshot() });
     const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
@@ -1293,10 +1451,13 @@ describe("settings tab split", () => {
       ...nextSnapshot,
       feishuApproval: { ...nextSnapshot.feishuApproval, enabled: true },
     };
+    const repaintsBefore = harness.renderCount();
     assert.strictEqual(harness.core.tabs.permissions.patchInPlace(
       { feishuApproval: otherFieldSnapshot.feishuApproval },
       { previousSnapshot: nextSnapshot, snapshot: otherFieldSnapshot },
-    ), false, "the context is forwarded unchanged to the remote module");
+    ), true, "the remote module claims remote-body changes so it can preserve scroll");
+    assert.strictEqual(harness.renderCount(), repaintsBefore + 1,
+      "the claim still rebuilds the cards, it just keeps the pane where it was");
 
     assert.strictEqual(harness.core.tabs.permissions.patchInPlace(
       { textScale: 1.1 },

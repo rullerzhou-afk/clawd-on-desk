@@ -613,6 +613,151 @@
   // Shared layout primitive for ordinary Settings rows. It deliberately owns
   // only structure and accessible relationships; feature tabs still own the
   // contents placed into the text and control slots.
+  // ── Shared hover tooltip ───────────────────────────────────────────────────
+  // Native `title` tooltips are painted by the OS and clash with the rounded
+  // Settings surface, so disclosure hints use one shared in-page tooltip that
+  // settings.css styles. The node is created lazily on first hover and never
+  // takes pointer events, so it cannot swallow the mouseleave that hides it.
+  let settingsTooltip = null;
+  let settingsTooltipAnchor = null;
+  let settingsTooltipListenersBound = false;
+
+  function ensureSettingsTooltip() {
+    if (settingsTooltip) return settingsTooltip;
+    if (typeof document === "undefined" || typeof document.createElement !== "function") return null;
+    const host = document.body || document.documentElement;
+    if (!host || typeof host.appendChild !== "function") return null;
+    const tooltip = document.createElement("div");
+    tooltip.className = "settings-tooltip";
+    tooltip.setAttribute("role", "tooltip");
+    tooltip.setAttribute("aria-hidden", "true");
+    host.appendChild(tooltip);
+    settingsTooltip = tooltip;
+    return tooltip;
+  }
+
+  function settingsViewportSize() {
+    const view = typeof window === "undefined" ? null : window;
+    const root = document && document.documentElement ? document.documentElement : null;
+    const width = (view && Number(view.innerWidth)) || (root && Number(root.clientWidth)) || 0;
+    const height = (view && Number(view.innerHeight)) || (root && Number(root.clientHeight)) || 0;
+    return { width, height };
+  }
+
+  // Settings text zoom is a root CSS zoom (src/text-scale.js), not a zoom
+  // factor. Two consequences matter here: getBoundingClientRect and innerWidth
+  // report post-zoom (visual) pixels, while offsetWidth/offsetHeight and the
+  // left/top a fixed child renders at are unzoomed CSS pixels. Mixing the two
+  // spaces puts the hint far from its icon at any scale but 100%.
+  function settingsTextZoom() {
+    const asZoom = (value) => {
+      const numeric = Number.parseFloat(value);
+      return Number.isFinite(numeric) && numeric > 0 ? numeric : 0;
+    };
+    const root = document && document.documentElement ? document.documentElement : null;
+    if (root && typeof getComputedStyle === "function") {
+      const style = getComputedStyle(root);
+      if (style) {
+        const zoom = asZoom(style.zoom);
+        if (zoom) return zoom;
+        const custom = asZoom(style.getPropertyValue && style.getPropertyValue("--clawd-text-zoom"));
+        if (custom) return custom;
+      }
+    }
+    return 1;
+  }
+
+  function positionSettingsTooltip() {
+    const tooltip = settingsTooltip;
+    const anchor = settingsTooltipAnchor;
+    if (!tooltip || !anchor || typeof anchor.getBoundingClientRect !== "function") return false;
+    const rect = anchor.getBoundingClientRect();
+    if (!rect || !Number.isFinite(rect.top)) return false;
+    const zoom = settingsTextZoom();
+    tooltip.style.left = "0px";
+    tooltip.style.top = "0px";
+    const width = (Number(tooltip.offsetWidth) || 0) * zoom;
+    const height = (Number(tooltip.offsetHeight) || 0) * zoom;
+    const viewport = settingsViewportSize();
+    if (!width || !height || !viewport.width || !viewport.height) return false;
+    const edge = 8 * zoom;
+    const gap = 8 * zoom;
+    let left = rect.left + rect.width / 2 - width / 2;
+    left = Math.max(edge, Math.min(left, viewport.width - width - edge));
+    let top = rect.top - height - gap;
+    if (top < edge) top = rect.bottom + gap;
+    if (top + height > viewport.height - edge) {
+      top = Math.max(edge, viewport.height - height - edge);
+    }
+    tooltip.style.left = `${left / zoom}px`;
+    tooltip.style.top = `${top / zoom}px`;
+    return true;
+  }
+
+  function hideSettingsTooltip() {
+    settingsTooltipAnchor = null;
+    if (!settingsTooltip) return;
+    settingsTooltip.classList.remove("visible");
+    settingsTooltip.setAttribute("aria-hidden", "true");
+  }
+
+  function bindSettingsTooltipDismiss() {
+    if (settingsTooltipListenersBound) return;
+    settingsTooltipListenersBound = true;
+    const view = typeof window === "undefined" ? null : window;
+    if (view && typeof view.addEventListener === "function") {
+      // Capture covers the settings scroller and any nested scroller: a hint
+      // anchored in the old viewport is stale as soon as anything scrolls.
+      view.addEventListener("scroll", hideSettingsTooltip, true);
+      view.addEventListener("resize", hideSettingsTooltip, true);
+      view.addEventListener("blur", hideSettingsTooltip);
+    }
+    if (document && typeof document.addEventListener === "function") {
+      document.addEventListener("keydown", (event) => {
+        if (event && event.key === "Escape") hideSettingsTooltip();
+      }, true);
+    }
+  }
+
+  function showSettingsTooltip(anchor, text) {
+    const content = text == null ? "" : String(text).trim();
+    if (!anchor || !content) return;
+    const tooltip = ensureSettingsTooltip();
+    if (!tooltip) return;
+    settingsTooltipAnchor = anchor;
+    tooltip.textContent = content;
+    tooltip.classList.add("visible");
+    tooltip.setAttribute("aria-hidden", "false");
+    bindSettingsTooltipDismiss();
+    positionSettingsTooltip();
+  }
+
+  function populateDescriptionDisclosureIcon(toggle) {
+    toggle.textContent = "i";
+    const createSvgElement = typeof document.createElementNS === "function"
+      ? (tagName) => document.createElementNS("http://www.w3.org/2000/svg", tagName)
+      : (tagName) => document.createElement(tagName);
+    const svg = createSvgElement("svg");
+    svg.setAttribute("viewBox", "0 0 14 14");
+    svg.setAttribute("aria-hidden", "true");
+    svg.setAttribute("focusable", "false");
+    const ring = createSvgElement("circle");
+    ring.setAttribute("cx", "7");
+    ring.setAttribute("cy", "7");
+    ring.setAttribute("r", "6");
+    const dot = createSvgElement("circle");
+    dot.setAttribute("class", "row-desc-toggle-dot");
+    dot.setAttribute("cx", "7");
+    dot.setAttribute("cy", "4.35");
+    dot.setAttribute("r", "0.85");
+    const stem = createSvgElement("path");
+    stem.setAttribute("d", "M7 6.55v3.3");
+    svg.appendChild(ring);
+    svg.appendChild(dot);
+    svg.appendChild(stem);
+    toggle.appendChild(svg);
+  }
+
   // Folds a row's description behind a small (i) toggle. `includeExtra` also
   // collapses .row-desc-extra notes under the same toggle (off by default, so
   // existing callers keep their always-visible extra line).
@@ -641,13 +786,24 @@
     const toggle = document.createElement("button");
     toggle.type = "button";
     toggle.className = "row-desc-toggle";
-    toggle.textContent = "i";
+    populateDescriptionDisclosureIcon(toggle);
     toggle.setAttribute("aria-expanded", "false");
     toggle.setAttribute("aria-controls", [desc.id, ...extras.map((extra) => extra.id)].join(" "));
     toggle.setAttribute("aria-label", t("rowDescToggle"));
-    toggle.title = desc.textContent;
+    toggle.setAttribute("aria-describedby", desc.id);
+    // The hint only adds information while the description is folded away;
+    // once it is expanded the same text is already on screen.
+    const showHint = () => {
+      if (!desc.classList.contains("row-desc-collapsed")) return;
+      showSettingsTooltip(toggle, desc.textContent);
+    };
+    toggle.addEventListener("mouseenter", showHint);
+    toggle.addEventListener("focus", showHint);
+    toggle.addEventListener("mouseleave", hideSettingsTooltip);
+    toggle.addEventListener("blur", hideSettingsTooltip);
     toggle.addEventListener("click", (ev) => {
       ev.stopPropagation();
+      hideSettingsTooltip();
       const collapsed = desc.classList.toggle("row-desc-collapsed");
       for (const extra of extras) extra.classList.toggle("row-desc-collapsed", collapsed);
       toggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
@@ -2160,6 +2316,9 @@
     modal = false,
     preserveScroll = false,
   } = {}) {
+    // Any repaint can remove the element a hint is anchored to, and a removed
+    // node never fires mouseleave, so dismiss the hint first.
+    hideSettingsTooltip();
     const focusState = getActiveSettingsFocusState();
     if (sidebar && typeof renderHooks.sidebar === "function") renderHooks.sidebar();
     if (content && typeof renderHooks.content === "function") {

@@ -54,8 +54,61 @@
     return ({ zh: "zh-CN", "zh-TW": "zh-TW", ko: "ko-KR", ja: "ja-JP", "pt-BR": "pt-BR", es: "es" })[lang] || "en";
   }
 
+  // A local-year render asks for a few hundred formatted labels and numbers.
+  // Intl formatter construction is one to two orders of magnitude more
+  // expensive than format(), so keep one formatter per locale/options pair.
+  // The key set is bounded by the literals used in this file times the number
+  // of locales a long-lived window can switch through, and the cap keeps a
+  // pathological caller from growing it without bound.
+  const FORMATTER_CACHE_LIMIT = 64;
+  const FORMATTED_DATE_CACHE_LIMIT = 1024;
+  const dateFormatCache = new Map();
+  const numberFormatCache = new Map();
+  const formattedDateCache = new Map();
+  const optionKeyCache = new WeakMap();
+
+  const DATE_OPTIONS_TODAY_TITLE = Object.freeze({ year: "numeric", month: "long", day: "numeric", weekday: "short" });
+  const DATE_OPTIONS_WEEK_ENDPOINT = Object.freeze({ month: "short", day: "numeric" });
+  const DATE_OPTIONS_MONTH_TITLE = Object.freeze({ year: "numeric", month: "long" });
+  const DATE_OPTIONS_YEAR_TITLE = Object.freeze({ year: "numeric" });
+  const DATE_OPTIONS_CELL_WHEN = Object.freeze({ month: "short", day: "numeric", weekday: "short" });
+  const DATE_OPTIONS_WEEKDAY_NARROW = Object.freeze({ weekday: "narrow" });
+  const DATE_OPTIONS_MONTH_SHORT = Object.freeze({ month: "short" });
+  const DATE_OPTIONS_SINCE = Object.freeze({ year: "numeric", month: "short", day: "numeric" });
+  const NUMBER_OPTIONS_TWO_DIGIT = Object.freeze({ minimumIntegerDigits: 2, useGrouping: false });
+
+  function optionCacheKey(options) {
+    if (!options || typeof options !== "object") return "";
+    let key = optionKeyCache.get(options);
+    if (key === undefined) {
+      key = JSON.stringify(options);
+      optionKeyCache.set(options, key);
+    }
+    return key;
+  }
+
+  function createDateFormat(lang, options) {
+    return new Intl.DateTimeFormat(lang, { timeZone: "UTC", ...options });
+  }
+
+  function createNumberFormat(lang, options) {
+    return new Intl.NumberFormat(lang, options);
+  }
+
+  function cachedFormatter(cache, options, create) {
+    const lang = locale();
+    const key = `${lang}\0${optionCacheKey(options)}`;
+    let formatter = cache.get(key);
+    if (!formatter) {
+      if (cache.size >= FORMATTER_CACHE_LIMIT) cache.clear();
+      formatter = create(lang, options);
+      cache.set(key, formatter);
+    }
+    return formatter;
+  }
+
   function formatNumber(value, options) {
-    return new Intl.NumberFormat(locale(), options).format(value);
+    return cachedFormatter(numberFormatCache, options, createNumberFormat).format(value);
   }
 
   function replace(template, values) {
@@ -97,14 +150,22 @@
   }
 
   function formatDate(localDate, options) {
-    const date = parseLocalDate(localDate);
-    return date
-      ? new Intl.DateTimeFormat(locale(), { timeZone: "UTC", ...options }).format(date)
-      : String(localDate || "");
+    const raw = String(localDate || "");
+    const lang = locale();
+    const cacheKey = `${lang}\0${raw}\0${optionCacheKey(options)}`;
+    const cached = formattedDateCache.get(cacheKey);
+    if (cached !== undefined) return cached;
+    const date = parseLocalDate(raw);
+    const formatted = date
+      ? cachedFormatter(dateFormatCache, options, createDateFormat).format(date)
+      : raw;
+    if (formattedDateCache.size >= FORMATTED_DATE_CACHE_LIMIT) formattedDateCache.clear();
+    formattedDateCache.set(cacheKey, formatted);
+    return formatted;
   }
 
   function formatHour(hour) {
-    return `${formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false })}:00`;
+    return `${formatNumber(hour, NUMBER_OPTIONS_TWO_DIGIT)}:00`;
   }
 
   function requestData() {
@@ -141,6 +202,13 @@
     if (!view.refreshQueued || view.refreshInFlight) return;
     if (coreState.activeTab !== "recap") return;
     if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+    // A rebuild that starts mid-scroll lands inside the frame the user is
+    // waiting on, and the cards are rebuilt whole. Hold the refresh until the
+    // pane has been quiet for a moment instead of dropping frames.
+    if (scrollActivity.scrolling) {
+      scrollActivity.pendingRefresh = true;
+      return;
+    }
     if (["unavailable", "error"].includes(view.status)) {
       view.refreshQueued = false;
       view.status = "idle";
@@ -164,7 +232,11 @@
         view.status = "ready";
         view.data = result;
         if (coreState.activeTab === "recap") {
-          refreshBody();
+          if (mountedInteraction && mountedInteraction.patchDataInPlace(result)) {
+            syncRecordingDescription();
+          } else {
+            refreshBody();
+          }
         }
       }
     }).catch(() => {
@@ -179,6 +251,70 @@
   function applyDataChanged() {
     view.refreshQueued = true;
     refreshIfNeeded();
+  }
+
+  // Scroll activity of the Settings pane. The Recap page is the tallest page in
+  // Settings, and both of its live behaviours are hostile to a frame that is
+  // already busy scrolling: a card rebuild changes the whole subtree, and a cell
+  // hover popover is built and measured against the layout. Chromium re-resolves
+  // the hover target as content streams under a resting pointer, so during a
+  // scroll those mouseenter handlers can fire dozens of times per second.
+  // Both are therefore deferred to the quiet window after the scroll stops.
+  const SCROLL_QUIET_MS = 260;
+  const scrollActivity = {
+    scroller: null,
+    bound: false,
+    scrolling: false,
+    timer: null,
+    pendingRefresh: false,
+    pendingPeek: null,
+  };
+
+  function onContentScroll() {
+    if (scrollActivity.timer !== null) clearTimeout(scrollActivity.timer);
+    if (!scrollActivity.scrolling) {
+      scrollActivity.scrolling = true;
+      if (mountedInteraction) mountedInteraction.clearPeek();
+    }
+    scrollActivity.timer = setTimeout(() => {
+      scrollActivity.timer = null;
+      scrollActivity.scrolling = false;
+      if (scrollActivity.pendingRefresh) {
+        scrollActivity.pendingRefresh = false;
+        view.refreshQueued = true;
+        refreshIfNeeded();
+      }
+      if (scrollActivity.pendingPeek && mountedInteraction) {
+        const { cell, element, rowByKey } = scrollActivity.pendingPeek;
+        scrollActivity.pendingPeek = null;
+        mountedInteraction.showPeek(cell, element, rowByKey);
+      }
+    }, SCROLL_QUIET_MS);
+  }
+
+  function unbindScrollActivity() {
+    if (scrollActivity.timer !== null) clearTimeout(scrollActivity.timer);
+    scrollActivity.timer = null;
+    scrollActivity.scrolling = false;
+    scrollActivity.pendingRefresh = false;
+    scrollActivity.pendingPeek = null;
+    if (scrollActivity.bound && scrollActivity.scroller
+      && typeof scrollActivity.scroller.removeEventListener === "function") {
+      scrollActivity.scroller.removeEventListener("scroll", onContentScroll);
+    }
+    scrollActivity.scroller = null;
+    scrollActivity.bound = false;
+  }
+
+  function bindScrollActivity() {
+    if (typeof document === "undefined" || typeof document.getElementById !== "function") return;
+    const scroller = document.getElementById("content");
+    if (!scroller || typeof scroller.addEventListener !== "function") return;
+    if (scrollActivity.bound && scrollActivity.scroller === scroller) return;
+    unbindScrollActivity();
+    scrollActivity.scroller = scroller;
+    scrollActivity.bound = true;
+    scroller.addEventListener("scroll", onContentScroll, { passive: true });
   }
 
   function resetInteraction() {
@@ -289,53 +425,35 @@
     element.style.setProperty("--recap-bar-ratio", String(barRatio(value, maximum)));
   }
 
-  function coverageForDay(day) {
+  const EMPTY_DAY_METRICS = Object.freeze({
+    coverage: null,
+    coveredTotal: 0,
+    capacities: null,
+    hasShape: false,
+    targets: null,
+    expectedTotal: 0,
+  });
+
+  // Everything a cell needs from its local day, derived once per day instead of
+  // once per cell. A year grid renders 372 cells, and the old per-cell path
+  // allocated a 24-slot coverage array plus a 24-slot capacity array (and a
+  // closure) for every one of them. Hour-cell geometries (today/week) keep the
+  // per-hour arrays; day-cell geometries (month/year) only need the totals.
+  function dayMetrics(data, localDate, day, hourly) {
+    if (!hourly && (!day || !day.coverage || !Array.isArray(day.coverage.coverageMinutes))) {
+      return EMPTY_DAY_METRICS;
+    }
+    const hasShape = !!(day && (
+      Array.isArray(day.hourCapacities)
+      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
+    ));
     const minutes = day && day.coverage && Array.isArray(day.coverage.coverageMinutes)
       ? day.coverage.coverageMinutes
       : [];
-    return Array.from({ length: 24 }, (_, hour) => {
-      const value = Number(minutes[hour]);
-      return Number.isFinite(value) && value > 0 ? value : 0;
-    });
-  }
-
-  function hourCapacity(day, hour) {
-    const hasShape = !!(day && (
-      Array.isArray(day.hourCapacities)
-      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
-    ));
-    const capacities = [
-      day && Array.isArray(day.hourCapacities) ? day.hourCapacities[hour] : 0,
-      day && day.coverage && Array.isArray(day.coverage.hourCapacities)
-        ? day.coverage.hourCapacities[hour]
-        : 0,
-    ];
-    const capacity = Math.max(...capacities.map((value) => Number(value) || 0));
-    return { capacity, hasShape };
-  }
-
-  function hourKind(day, hour) {
-    const { capacity, hasShape } = hourCapacity(day, hour);
-    if (capacity > 60) return "fold";
-    if (hasShape && capacity === 0) return "gap";
-    if (capacity > 0 && capacity < 60) return "gap";
-    return "normal";
-  }
-
-  function expectedCoverage(data, localDate, hour, day) {
-    const hasShape = !!(day && (
-      Array.isArray(day.hourCapacities)
-      || (day.coverage && Array.isArray(day.coverage.hourCapacities))
-    ));
-    const capacities = Array.from({ length: 24 }, (_, index) => {
-      const known = Math.max(
-        Number(day && Array.isArray(day.hourCapacities) ? day.hourCapacities[index] : 0) || 0,
-        Number(day && day.coverage && Array.isArray(day.coverage.hourCapacities)
-          ? day.coverage.hourCapacities[index]
-          : 0) || 0
-      );
-      return hasShape ? known : 60;
-    });
+    const coverage = hourly ? new Array(24) : null;
+    const capacities = hourly ? new Array(24) : null;
+    const targets = hourly ? new Array(24) : null;
+    let coveredTotal = 0;
     const startedDate = data.recordingStartedDate || data.startDate || data.anchorDate;
     const startedHour = localDate === startedDate && Number.isInteger(data.recordingStartedLocalHour)
       ? data.recordingStartedLocalHour
@@ -343,26 +461,48 @@
     const endHour = localDate === data.anchorDate && Number.isInteger(data.currentLocalHour)
       ? data.currentLocalHour
       : 23;
-    function targetForHour(index) {
-      if (index < startedHour || index > endHour) return 0;
-      const capacity = capacities[index];
-      let eligibleStart = 0;
-      let eligibleEnd = capacity;
-      if (localDate === startedDate && index === startedHour && Number.isInteger(data.recordingStartedLocalMinute)) {
-        eligibleStart = Number.isInteger(data.recordingStartedHourElapsedMinutes)
-          ? data.recordingStartedHourElapsedMinutes
-          : data.recordingStartedLocalMinute;
+    const startedMinute = data.recordingStartedLocalMinute;
+    const startedElapsed = data.recordingStartedHourElapsedMinutes;
+    const currentMinute = data.currentLocalMinute;
+    const currentElapsed = data.currentHourElapsedMinutes;
+    let expectedTotal = 0;
+    for (let hour = 0; hour < 24; hour += 1) {
+      const coveredValue = Number(minutes[hour]);
+      const coveredMinutes = Number.isFinite(coveredValue) && coveredValue > 0 ? coveredValue : 0;
+      if (coverage) coverage[hour] = coveredMinutes;
+      coveredTotal += coveredMinutes;
+      const known = Math.max(
+        Number(day && Array.isArray(day.hourCapacities) ? day.hourCapacities[hour] : 0) || 0,
+        Number(day && day.coverage && Array.isArray(day.coverage.hourCapacities)
+          ? day.coverage.hourCapacities[hour]
+          : 0) || 0
+      );
+      const capacity = hasShape ? known : 60;
+      if (capacities) capacities[hour] = capacity;
+      let target = 0;
+      if (hour >= startedHour && hour <= endHour) {
+        let eligibleStart = 0;
+        let eligibleEnd = capacity;
+        if (localDate === startedDate && hour === startedHour && Number.isInteger(startedMinute)) {
+          eligibleStart = Number.isInteger(startedElapsed) ? startedElapsed : startedMinute;
+        }
+        if (localDate === data.anchorDate && hour === endHour && Number.isInteger(currentMinute)) {
+          eligibleEnd = Number.isInteger(currentElapsed) ? currentElapsed : currentMinute;
+        }
+        target = Math.max(0, Math.min(capacity, eligibleEnd) - Math.min(capacity, eligibleStart));
       }
-      if (localDate === data.anchorDate && index === endHour && Number.isInteger(data.currentLocalMinute)) {
-        eligibleEnd = Number.isInteger(data.currentHourElapsedMinutes)
-          ? data.currentHourElapsedMinutes
-          : data.currentLocalMinute;
-      }
-      return Math.max(0, Math.min(capacity, eligibleEnd) - Math.min(capacity, eligibleStart));
+      if (targets) targets[hour] = target;
+      expectedTotal += target;
     }
-    if (hour !== null) return targetForHour(hour);
-    return Array.from({ length: 24 }, (_, index) => targetForHour(index))
-      .reduce((sum, value) => sum + value, 0);
+    return { coverage, coveredTotal, capacities, hasShape, targets, expectedTotal };
+  }
+
+  function hourKind(metrics, hour) {
+    const capacity = metrics.capacities[hour];
+    if (capacity > 60) return "fold";
+    if (metrics.hasShape && capacity === 0) return "gap";
+    if (capacity > 0 && capacity < 60) return "gap";
+    return "normal";
   }
 
   function countsForHour(day, hour) {
@@ -399,7 +539,7 @@
     return counts;
   }
 
-  function classifyCell(data, localDate, hour, day, counts, kind, invalid = false) {
+  function classifyCell(data, localDate, hour, metricsFor, counts, kind, invalid = false) {
     const total = counts.reduce((sum, entry) => sum + entry.count, 0);
     if (invalid) return { state: "blank", total, counts, kind: "normal" };
     // A DST gap is not a zero, a future slot, or a pre-recording slot: this
@@ -408,7 +548,7 @@
     // example Lord Howe's 30-minute jump) still have real time in which
     // activity and coverage can occur, so they must continue through the
     // normal classification path.
-    if (kind === "gap" && hour !== null && hourCapacity(day, hour).capacity === 0) {
+    if (kind === "gap" && hour !== null && metricsFor().capacities[hour] === 0) {
       return { state: "gap", total: 0, counts: [], kind };
     }
     const anchorDate = data.anchorDate;
@@ -419,11 +559,11 @@
     // Historical local hours remain frozen after a timezone change. Existing
     // activity and coverage are evidence, even if today's clock is now behind.
     if (total > 0) return { state: "activity", total, counts, kind };
-    const coverage = coverageForDay(day);
-    const coveredMinutes = hour === null
-      ? coverage.reduce((sum, minutes) => sum + minutes, 0)
-      : coverage[hour];
-    const expectedMinutes = expectedCoverage(data, localDate, hour, day);
+    // The per-day metrics are only needed for the coverage path, so an active
+    // day never pays to derive them.
+    const metrics = metricsFor();
+    const coveredMinutes = hour === null ? metrics.coveredTotal : metrics.coverage[hour];
+    const expectedMinutes = hour === null ? metrics.expectedTotal : metrics.targets[hour];
     if (coveredMinutes > 0) {
       return {
         state: expectedMinutes > 0 && coveredMinutes >= expectedMinutes ? "covered" : "partial",
@@ -445,20 +585,31 @@
     return { state: "uncovered", total: 0, counts: [], kind };
   }
 
-  function createCell(data, localDate, hour, day, optionsValue = {}) {
+  function createCell(data, localDate, hour, day, metricsFor, optionsValue = {}) {
+    const getMetrics = () => metricsFor(localDate, day);
     const counts = hour === null ? countsForDay(day) : countsForHour(day, hour);
-    const kind = hour === null ? "normal" : hourKind(day, hour);
+    const kind = hour === null ? "normal" : hourKind(getMetrics(), hour);
     return {
       key: hour === null ? localDate : `${localDate}T${String(hour).padStart(2, "0")}`,
       localDate,
       hour,
       dayNumber: optionsValue.dayNumber || null,
-      ...classifyCell(data, localDate, hour, day, counts, kind, optionsValue.invalid === true),
+      ...classifyCell(data, localDate, hour, getMetrics, counts, kind, optionsValue.invalid === true),
     };
   }
 
   function buildTimelineModel(data, period) {
     const dayMap = new Map((data.days || []).map((day) => [day.localDate, day]));
+    const hourly = period === "today" || period === "week";
+    const metricsByDate = new Map();
+    function metricsFor(localDate, day) {
+      let metrics = metricsByDate.get(localDate);
+      if (!metrics) {
+        metrics = dayMetrics(data, localDate, day, hourly);
+        metricsByDate.set(localDate, metrics);
+      }
+      return metrics;
+    }
     const cells = [];
     let columns = 24;
     let rows = 1;
@@ -466,7 +617,7 @@
     if (period === "today") {
       const day = dayMap.get(data.anchorDate);
       for (let hour = 0; hour < 24; hour += 1) {
-        cells.push(createCell(data, data.anchorDate, hour, day));
+        cells.push(createCell(data, data.anchorDate, hour, day, metricsFor));
       }
     } else if (period === "week") {
       startDate = data.startDate;
@@ -475,7 +626,7 @@
         const localDate = addLocalDays(startDate, dayIndex);
         const day = dayMap.get(localDate);
         for (let hour = 0; hour < 24; hour += 1) {
-          cells.push(createCell(data, localDate, hour, day));
+          cells.push(createCell(data, localDate, hour, day, metricsFor));
         }
       }
     } else if (period === "month") {
@@ -489,13 +640,13 @@
       columns = 7;
       rows = Math.ceil((leading + dayCount) / 7);
       for (let index = 0; index < leading; index += 1) {
-        const blank = createCell(data, startDate, null, null, { invalid: true });
+        const blank = createCell(data, startDate, null, null, metricsFor, { invalid: true });
         blank.key = `month-leading-${index}`;
         cells.push(blank);
       }
       for (let dayNumber = 1; dayNumber <= dayCount; dayNumber += 1) {
         const localDate = `${String(year).padStart(4, "0")}-${String(month + 1).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-        cells.push(createCell(data, localDate, null, dayMap.get(localDate), { dayNumber }));
+        cells.push(createCell(data, localDate, null, dayMap.get(localDate), metricsFor, { dayNumber }));
       }
     } else {
       const year = Number(String(data.anchorDate).slice(0, 4));
@@ -506,10 +657,11 @@
         const dayCount = new Date(Date.UTC(year, month, 0)).getUTCDate();
         for (let dayNumber = 1; dayNumber <= 31; dayNumber += 1) {
           const localDate = `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(dayNumber).padStart(2, "0")}`;
-          cells.push(createCell(data, localDate, null, dayMap.get(localDate), {
-            dayNumber,
-            invalid: dayNumber > dayCount,
-          }));
+          cells.push(createCell(data, localDate, null,
+            dayNumber > dayCount ? null : dayMap.get(localDate), metricsFor, {
+              dayNumber,
+              invalid: dayNumber > dayCount,
+            }));
         }
       }
     }
@@ -538,6 +690,35 @@
     return formatNumber(value);
   }
 
+  function applyAgentRowMetrics(row, item, metricCountNodes) {
+    const metricEntries = [
+      ["recapMetricTurns", row.turnsCompleted],
+      ["recapMetricTools", row.toolCalls],
+      ["recapMetricSignals", row.activityEvents],
+    ];
+    const metricDescription = metricEntries.map(([labelKey, value]) => {
+      const accessibleValue = value === null
+        ? t("recapMetricUnavailableReason")
+        : metricText(value);
+      return `${t(labelKey)}: ${accessibleValue}`;
+    }).join(". ");
+    item.setAttribute("aria-label", `${replace(t("recapAgentHighlightAria"), {
+      agent: rowDisplayName(row),
+    })}. ${metricDescription}`);
+    for (let index = 0; index < metricEntries.length; index += 1) {
+      const [labelKey, value] = metricEntries[index];
+      const count = metricCountNodes[index];
+      count.textContent = metricText(value);
+      if (value === null) {
+        count.title = t("recapMetricUnavailableReason");
+        count.setAttribute("aria-label", `${t(labelKey)}: ${t("recapMetricUnavailableReason")}`);
+      } else {
+        delete count.title;
+        count.removeAttribute("aria-label");
+      }
+    }
+  }
+
   function buildAgentRows(summary, interaction) {
     const list = document.createElement("div");
     list.className = "recap-agent-list";
@@ -556,20 +737,6 @@
       item.tabIndex = 0;
       item.setAttribute("role", "button");
       item.setAttribute("aria-pressed", view.lockedRowKey === row.key ? "true" : "false");
-      const metricEntries = [
-        ["recapMetricTurns", row.turnsCompleted],
-        ["recapMetricTools", row.toolCalls],
-        ["recapMetricSignals", row.activityEvents],
-      ];
-      const metricDescription = metricEntries.map(([labelKey, value]) => {
-        const accessibleValue = value === null
-          ? t("recapMetricUnavailableReason")
-          : metricText(value);
-        return `${t(labelKey)}: ${accessibleValue}`;
-      }).join(". ");
-      item.setAttribute("aria-label", `${replace(t("recapAgentHighlightAria"), {
-        agent: rowDisplayName(row),
-      })}. ${metricDescription}`);
       item.style.setProperty("--recap-row-color", agentColorToken(row.agentId));
       const identity = document.createElement("div");
       identity.className = "recap-agent-identity";
@@ -589,20 +756,18 @@
       item.appendChild(identity);
       const metrics = document.createElement("dl");
       metrics.className = "recap-agent-metrics";
-      for (const [labelKey, value] of metricEntries) {
+      const metricCountNodes = [];
+      for (const labelKey of ["recapMetricTurns", "recapMetricTools", "recapMetricSignals"]) {
         const pair = document.createElement("div");
         const label = document.createElement("dt");
         label.textContent = t(labelKey);
         const count = document.createElement("dd");
-        count.textContent = metricText(value);
-        if (value === null) {
-          count.title = t("recapMetricUnavailableReason");
-          count.setAttribute("aria-label", `${t(labelKey)}: ${t("recapMetricUnavailableReason")}`);
-        }
         pair.appendChild(label);
         pair.appendChild(count);
         metrics.appendChild(pair);
+        metricCountNodes.push(count);
       }
+      applyAgentRowMetrics(row, item, metricCountNodes);
       item.appendChild(metrics);
       item.addEventListener("mouseenter", () => interaction.setHover(row.key));
       item.addEventListener("mouseleave", () => interaction.setHover(null));
@@ -617,6 +782,7 @@
         }
       });
       interaction.rowElements.set(row.key, item);
+      interaction.rowMetricNodes.set(row.key, metricCountNodes);
       list.appendChild(item);
     }
     return list;
@@ -624,20 +790,20 @@
 
   function periodTitle(data) {
     if (view.period === "today") {
-      return formatDate(data.anchorDate, { year: "numeric", month: "long", day: "numeric", weekday: "short" });
+      return formatDate(data.anchorDate, DATE_OPTIONS_TODAY_TITLE);
     }
     if (view.period === "week") {
       const end = addLocalDays(data.startDate, 6);
-      return `${formatDate(data.startDate, { month: "short", day: "numeric" })} — ${formatDate(end, { month: "short", day: "numeric" })}`;
+      return `${formatDate(data.startDate, DATE_OPTIONS_WEEK_ENDPOINT)} — ${formatDate(end, DATE_OPTIONS_WEEK_ENDPOINT)}`;
     }
     if (view.period === "month") {
-      return formatDate(`${data.anchorDate.slice(0, 7)}-01`, { year: "numeric", month: "long" });
+      return formatDate(`${data.anchorDate.slice(0, 7)}-01`, DATE_OPTIONS_MONTH_TITLE);
     }
-    return formatDate(`${data.anchorDate.slice(0, 4)}-01-01`, { year: "numeric" });
+    return formatDate(`${data.anchorDate.slice(0, 4)}-01-01`, DATE_OPTIONS_YEAR_TITLE);
   }
 
   function cellWhen(cell) {
-    const date = formatDate(cell.localDate, { month: "short", day: "numeric", weekday: "short" });
+    const date = formatDate(cell.localDate, DATE_OPTIONS_CELL_WHEN);
     return cell.hour === null ? date : `${date} ${formatHour(cell.hour)}`;
   }
 
@@ -684,9 +850,42 @@
       : t(keys[cell.state]);
   }
 
-  function buildTimeline(data, summary, interaction) {
+  function sameCellCounts(left, right) {
+    if (left.length !== right.length) return false;
+    for (let index = 0; index < left.length; index += 1) {
+      if (left[index].rowKey !== right[index].rowKey || left[index].count !== right[index].count) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function sameCellState(left, right) {
+    return left.key === right.key
+      && left.state === right.state
+      && left.total === right.total
+      && left.kind === right.kind
+      && left.dayNumber === right.dayNumber
+      && sameCellCounts(left.counts, right.counts);
+  }
+
+  function cellClassName(cell, anchorDate, extraClasses = []) {
+    const classes = ["recap-cell", `recap-cell-${cell.state}`];
+    if (view.period === "today") classes.push("recap-bar-slot");
+    if (cell.state !== "blank") {
+      if (cell.state === "activity") classes.push(`recap-depth-${depthOf(cell.total)}`);
+      if (cell.kind === "fold") classes.push("recap-cell-fold");
+      if (cell.dayNumber && view.period === "month" && cell.localDate === anchorDate) {
+        classes.push("recap-cell-current");
+      }
+    }
+    for (const extra of extraClasses) classes.push(extra);
+    return classes.join(" ");
+  }
+
+  function buildTimeline(data, interaction) {
     const model = buildTimelineModel(data, view.period);
-    const rowByKey = new Map(summary.rows.map((row) => [row.key, row]));
+    const rowByKey = interaction.rowByKey;
     const section = document.createElement("section");
     section.className = "recap-visual";
     interaction.visual = section;
@@ -713,29 +912,30 @@
     interaction.grid = grid;
     const serial = ++renderSerial;
     const cellElements = [];
+    const renderedCells = [];
     let renderedCellCount = 0;
     const todayBarMaximum = view.period === "today"
       ? Math.max(1, ...model.cells.map((cell) => cell.total))
       : 1;
+    interaction.todayBarMaximum = todayBarMaximum;
 
     function appendCell(cell, parent, rowIndex, columnIndex) {
       const element = document.createElement("div");
       element.id = `recap-cell-${serial}-${renderedCellCount}`;
       renderedCellCount += 1;
-      element.className = `recap-cell recap-cell-${cell.state}`;
-      if (view.period === "today") element.classList.add("recap-bar-slot");
       element.dataset.cellKey = cell.key;
       if (cell.state === "blank") {
+        element.className = cellClassName(cell, data.anchorDate);
         element.setAttribute("role", "presentation");
         element.setAttribute("aria-hidden", "true");
+        renderedCells.push({ cell, element, listIndex: -1 });
         parent.appendChild(element);
         return;
       }
       element.setAttribute("role", "gridcell");
       element.setAttribute("aria-rowindex", String(rowIndex));
       element.setAttribute("aria-colindex", String(columnIndex));
-      const label = cellAriaLabel(cell, rowByKey);
-      element.setAttribute("aria-label", label);
+      element.setAttribute("aria-label", cellAriaLabel(cell, rowByKey));
       if (view.period === "today") {
         element.dataset.barMaximum = String(todayBarMaximum);
         setTodayBarLevel(element, cell.total);
@@ -744,11 +944,8 @@
         fill.setAttribute("aria-hidden", "true");
         element.appendChild(fill);
       }
-      if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
-      if (cell.kind === "fold") element.classList.add("recap-cell-fold");
       if (cell.dayNumber && view.period === "month") {
         if (cell.localDate === data.anchorDate) {
-          element.classList.add("recap-cell-current");
           element.setAttribute("aria-current", "date");
         }
         const dayNumber = document.createElement("span");
@@ -757,13 +954,18 @@
         dayNumber.setAttribute("aria-hidden", "true");
         element.appendChild(dayNumber);
       }
-      element.addEventListener("mouseenter", () => interaction.showPeek(cell, element, rowByKey));
+      element.className = cellClassName(cell, data.anchorDate);
+      const cellIndex = cellElements.length;
+      // Share one bound mouseenter/mouseleave function across all 365 cells
+      // instead of allocating 365 closures per year render.
+      element.addEventListener("mouseenter", interaction.handleCellMouseEnter);
       element.addEventListener("mouseleave", interaction.clearPeek);
-      element.addEventListener("mousedown", () => {
-        interaction.selectGridCell(cellElements.findIndex((entry) => entry.element === element), false);
-      });
+      // The grid owns one delegated mousedown handler; record the index so the
+      // handler is O(1) instead of scanning every rendered cell.
+      interaction.cellIndexByElement.set(element, cellIndex);
       interaction.cellElements.set(cell.key, { cell, element });
       cellElements.push({ cell, element, rowIndex, columnIndex });
+      renderedCells.push({ cell, element, listIndex: cellIndex });
       parent.appendChild(element);
     }
 
@@ -778,7 +980,7 @@
       labels.setAttribute("aria-hidden", "true");
       for (let hour = 0; hour < 24; hour += 1) {
         const label = document.createElement("span");
-        label.textContent = hour % 3 === 0 ? formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false }) : "";
+        label.textContent = hour % 3 === 0 ? formatNumber(hour, NUMBER_OPTIONS_TWO_DIGIT) : "";
         labels.appendChild(label);
       }
       grid.appendChild(labels);
@@ -788,7 +990,7 @@
       hours.setAttribute("aria-hidden", "true");
       for (let hour = 0; hour < 24; hour += 1) {
         const label = document.createElement("span");
-        label.textContent = hour % 6 === 0 ? formatNumber(hour, { minimumIntegerDigits: 2, useGrouping: false }) : "";
+        label.textContent = hour % 6 === 0 ? formatNumber(hour, NUMBER_OPTIONS_TWO_DIGIT) : "";
         hours.appendChild(label);
       }
       grid.appendChild(hours);
@@ -799,7 +1001,7 @@
         const localDate = addLocalDays(model.startDate, dayIndex);
         const label = document.createElement("span");
         label.className = "recap-row-label";
-        label.textContent = formatDate(localDate, { weekday: "narrow" });
+        label.textContent = formatDate(localDate, DATE_OPTIONS_WEEKDAY_NARROW);
         label.setAttribute("aria-hidden", "true");
         row.appendChild(label);
         const band = document.createElement("div");
@@ -816,7 +1018,7 @@
       weekdays.setAttribute("aria-hidden", "true");
       for (let index = 0; index < 7; index += 1) {
         const label = document.createElement("span");
-        label.textContent = formatDate(addLocalDays("2026-08-24", index), { weekday: "narrow" });
+        label.textContent = formatDate(addLocalDays("2026-08-24", index), DATE_OPTIONS_WEEKDAY_NARROW);
         label.setAttribute("aria-hidden", "true");
         weekdays.appendChild(label);
       }
@@ -841,7 +1043,7 @@
         row.setAttribute("role", "row");
         const label = document.createElement("span");
         label.className = "recap-row-label";
-        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, { month: "short" });
+        label.textContent = formatDate(`${data.anchorDate.slice(0, 4)}-${String(monthIndex + 1).padStart(2, "0")}-01`, DATE_OPTIONS_MONTH_SHORT);
         label.setAttribute("aria-hidden", "true");
         row.appendChild(label);
         const band = document.createElement("div");
@@ -860,6 +1062,7 @@
     live.setAttribute("aria-atomic", "true");
     interaction.live = live;
     interaction.cellList = cellElements;
+    interaction.renderedCells = renderedCells;
     if (view.gridIndex === null) {
       const current = cellElements.findIndex(({ cell }) => cell.localDate === data.anchorDate
         && (cell.hour === null || cell.hour === data.currentLocalHour));
@@ -873,7 +1076,21 @@
       grid.classList.toggle("recap-keyboard-mode", keyboard);
       interaction.selectGridCell(view.gridIndex, keyboard);
     });
-    grid.addEventListener("mousedown", () => grid.classList.remove("recap-keyboard-mode"));
+    grid.addEventListener("mousedown", (event) => {
+      grid.classList.remove("recap-keyboard-mode");
+      // One delegated listener replaces one mousedown closure per cell. Walk up
+      // from the event target (a cell or one of its spans) to the owning cell
+      // and select it through the precomputed index.
+      let node = event.target;
+      while (node && node !== grid) {
+        const index = interaction.cellIndexByElement.get(node);
+        if (index !== undefined) {
+          interaction.selectGridCell(index, false);
+          return;
+        }
+        node = node.parentNode;
+      }
+    });
     grid.addEventListener("blur", () => {
       grid.classList.remove("recap-keyboard-mode");
       interaction.clearPeek();
@@ -931,7 +1148,7 @@
     title.textContent = periodTitle(data);
     const since = document.createElement("p");
     since.textContent = replace(t("recapRecordingSince"), {
-      date: formatDate(data.recordingStartedDate || data.anchorDate, { year: "numeric", month: "short", day: "numeric" }),
+      date: formatDate(data.recordingStartedDate || data.anchorDate, DATE_OPTIONS_SINCE),
     });
     titleWrap.appendChild(title);
     titleWrap.appendChild(since);
@@ -952,9 +1169,26 @@
     card.appendChild(lede);
 
     const interaction = {
+      card,
+      data,
+      period: view.period,
+      localeKey: locale(),
+      summaryRows: summary.rows,
+      titleNode: title,
+      sinceNode: since,
+      ledeNode: lede,
+      hintNode: hint,
       rowElements: new Map(),
+      rowMetricNodes: new Map(),
       cellElements: new Map(),
+      cellIndexByElement: new Map(),
       cellList: [],
+      renderedCells: [],
+      todayBarMaximum: 1,
+      rowByKey: new Map(summary.rows.map((row) => [row.key, row])),
+      highlightedKey: undefined,
+      highlightedCells: [],
+      hitCount: 0,
       grid: null,
       live: null,
       visual: null,
@@ -962,6 +1196,13 @@
       popover: null,
       peekElement: null,
       peekCell: null,
+      peekSegments: null,
+      handleCellMouseEnter: (event) => {
+        const target = event && (event.currentTarget || event.target);
+        const index = interaction.cellIndexByElement.get(target);
+        const entry = index !== undefined ? interaction.cellList[index] : null;
+        if (entry) interaction.showPeek(entry.cell, entry.element, interaction.rowByKey);
+      },
       setHover(key) {
         view.hoverRowKey = key;
         this.applyHighlight();
@@ -973,33 +1214,47 @@
       applyHighlight() {
         const activeKey = view.hoverRowKey || view.lockedRowKey;
         if (this.grid) this.grid.classList.toggle("recap-grid-dim", !!activeKey);
-        let hitCount = 0;
-        for (const { cell, element } of this.cellElements.values()) {
-          element.classList.remove("recap-cell-hit", "recap-depth-1", "recap-depth-2", "recap-depth-3");
-          element.style.removeProperty("--recap-cell-color");
-          const match = activeKey && cell.counts.find((entry) => entry.rowKey === activeKey);
-          if (match) {
-            hitCount += 1;
-            const row = summary.rows.find((candidate) => candidate.key === activeKey);
-            element.classList.add("recap-cell-hit", `recap-depth-${depthOf(match.count)}`);
-            element.style.setProperty("--recap-cell-color", agentColorToken(row ? row.agentId : match.agentId));
-          } else if (cell.state === "activity") {
-            element.classList.add(`recap-depth-${depthOf(cell.total)}`);
+        if (activeKey !== this.highlightedKey) {
+          // Restore the cells the previous highlight touched instead of
+          // clearing and re-applying classes on every rendered cell. On the
+          // year grid that turns a 372-cell class/style rewrite per hover into
+          // work proportional to the actual hit count.
+          for (const { cell, element } of this.highlightedCells) {
+            element.classList.remove("recap-cell-hit", "recap-depth-1", "recap-depth-2", "recap-depth-3");
+            element.style.removeProperty("--recap-cell-color");
+            if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
+            if (view.period === "today") setTodayBarLevel(element, cell.total);
           }
-          if (view.period === "today") setTodayBarLevel(element, match ? match.count : cell.total);
+          this.highlightedCells = [];
+          this.highlightedKey = activeKey;
+          let hitCount = 0;
+          if (activeKey) {
+            const row = this.rowByKey.get(activeKey);
+            const rowColor = row ? agentColorToken(row.agentId) : null;
+            for (const { cell, element } of this.cellElements.values()) {
+              const match = cell.counts.find((entry) => entry.rowKey === activeKey);
+              if (!match) continue;
+              hitCount += 1;
+              element.classList.add("recap-cell-hit", `recap-depth-${depthOf(match.count)}`);
+              element.style.setProperty("--recap-cell-color", rowColor || agentColorToken(match.agentId));
+              if (view.period === "today") setTodayBarLevel(element, match.count);
+              this.highlightedCells.push({ cell, element });
+            }
+          }
+          this.hitCount = hitCount;
         }
         for (const [key, element] of this.rowElements) {
           element.classList.toggle("active", key === activeKey);
           element.setAttribute("aria-pressed", view.lockedRowKey === key ? "true" : "false");
         }
         if (activeKey && this.live) {
-          const row = summary.rows.find((candidate) => candidate.key === activeKey);
+          const row = this.rowByKey.get(activeKey);
           const unitKey = view.period === "today" || view.period === "week"
             ? "recapCellUnitHour"
             : "recapCellUnitDay";
           this.live.textContent = replace(t("recapLookingAt"), {
             agent: row ? rowDisplayName(row) : "",
-            count: formatNumber(hitCount),
+            count: formatNumber(this.hitCount),
             unit: t(unitKey),
           });
         } else if (this.live) this.live.textContent = "";
@@ -1007,10 +1262,12 @@
       clearPeek: () => {
         if (interaction.peekTimer) clearTimeout(interaction.peekTimer);
         interaction.peekTimer = null;
+        if (interaction.peekSegments) {
+          interaction.peekSegments.remove();
+          interaction.peekSegments = null;
+        }
         if (interaction.peekElement) {
           interaction.peekElement.classList.remove("recap-cell-peek");
-          const segments = interaction.peekElement.querySelector(".recap-cell-segments");
-          if (segments) segments.remove();
           if (view.period === "today" && interaction.peekCell) {
             const activeKey = view.hoverRowKey || view.lockedRowKey;
             const match = activeKey
@@ -1023,10 +1280,18 @@
         }
         interaction.peekElement = null;
         interaction.peekCell = null;
+        scrollActivity.pendingPeek = null;
         if (interaction.popover) interaction.popover.remove();
         interaction.popover = null;
       },
       showPeek(cell, element, rowByKey) {
+        // Cells stream under a resting pointer while the pane scrolls; building
+        // and measuring a popover for every one of them is pure jank.
+        if (scrollActivity.scrolling) {
+          scrollActivity.pendingPeek = { cell, element, rowByKey };
+          return;
+        }
+        const immediatePopover = this.peekElement === element && Boolean(this.popover);
         this.clearPeek();
         const entries = cell.counts.slice().sort((left, right) => right.count - left.count);
         this.peekElement = element;
@@ -1045,8 +1310,9 @@
           }
           const segmentHost = element.querySelector(".recap-bar-fill") || element;
           segmentHost.appendChild(segments);
+          this.peekSegments = segments;
         }
-        this.peekTimer = setTimeout(() => {
+        const mountPopover = () => {
           this.peekTimer = null;
           if (this.peekElement !== element || !element.parentNode) return;
           const popover = document.createElement("div");
@@ -1097,24 +1363,111 @@
             popover.style.top = `${top}px`;
           }
           popover.classList.add("show");
-        }, 90);
+        };
+        if (immediatePopover) mountPopover();
+        else this.peekTimer = setTimeout(mountPopover, 90);
       },
       selectGridCell(index, announce) {
         if (!this.cellList.length) return;
+        const previous = this.cellList[view.gridIndex];
         view.gridIndex = Math.max(0, Math.min(index, this.cellList.length - 1));
-        this.cellList.forEach(({ element }, cellIndex) => {
-          element.classList.toggle("recap-cell-keyboard", cellIndex === view.gridIndex);
-        });
         const current = this.cellList[view.gridIndex].element;
+        if (previous && previous.element !== current) previous.element.classList.remove("recap-cell-keyboard");
+        if (!current.classList.contains("recap-cell-keyboard")) current.classList.add("recap-cell-keyboard");
         if (this.grid) this.grid.setAttribute("aria-activedescendant", current.id);
         if (announce && this.live) this.live.textContent = current.getAttribute("aria-label") || "";
-        if (announce) this.showPeek(this.cellList[view.gridIndex].cell, current,
-          new Map(summary.rows.map((row) => [row.key, row])));
+        if (announce) this.showPeek(this.cellList[view.gridIndex].cell, current, this.rowByKey);
+      },
+      patchDataInPlace(nextData) {
+        if (!mountedBody || mountedBody.inert || !this.card || this.card.parentNode !== mountedBody) return false;
+        if (!this.data || !nextData || this.period !== view.period) return false;
+        if (this.localeKey !== locale()) return false;
+        if (this.data.anchorDate !== nextData.anchorDate || this.data.startDate !== nextData.startDate) return false;
+        const nextSummary = summarize(nextData);
+        if (nextSummary.rows.length === 0 || nextSummary.rows.length !== this.summaryRows.length) return false;
+        for (let index = 0; index < nextSummary.rows.length; index += 1) {
+          if (nextSummary.rows[index].key !== this.summaryRows[index].key) return false;
+        }
+        const nextModel = buildTimelineModel(nextData, view.period);
+        if (nextModel.cells.length !== this.renderedCells.length) return false;
+        this.data = nextData;
+        this.summaryRows = nextSummary.rows;
+        this.rowByKey = new Map(nextSummary.rows.map((row) => [row.key, row]));
+        this.sinceNode.textContent = replace(t("recapRecordingSince"), {
+          date: formatDate(nextData.recordingStartedDate || nextData.anchorDate, DATE_OPTIONS_SINCE),
+        });
+        for (const row of nextSummary.rows) {
+          const item = this.rowElements.get(row.key);
+          const metricCountNodes = this.rowMetricNodes.get(row.key);
+          if (item && metricCountNodes) applyAgentRowMetrics(row, item, metricCountNodes);
+        }
+        const nextTodayBarMaximum = view.period === "today"
+          ? Math.max(1, ...nextModel.cells.map((cell) => cell.total))
+          : 1;
+        const barMaxChanged = view.period === "today" && nextTodayBarMaximum !== this.todayBarMaximum;
+        let anyCellChanged = false;
+        let peekCellChanged = false;
+        for (let index = 0; index < nextModel.cells.length; index += 1) {
+          const nextCell = nextModel.cells[index];
+          const slot = this.renderedCells[index];
+          const prevCell = slot.cell;
+          const cellChanged = !sameCellState(prevCell, nextCell);
+          if (!cellChanged && !barMaxChanged) continue;
+          anyCellChanged = true;
+          slot.cell = nextCell;
+          if (slot.listIndex >= 0) this.cellList[slot.listIndex].cell = nextCell;
+          const mapEntry = this.cellElements.get(nextCell.key);
+          if (mapEntry) mapEntry.cell = nextCell;
+          const element = slot.element;
+          if (element === this.peekElement && cellChanged) peekCellChanged = true;
+          if (cellChanged) {
+            const preserved = [];
+            if (element.classList.contains("recap-cell-keyboard")) preserved.push("recap-cell-keyboard");
+            if (element.classList.contains("recap-cell-peek")) preserved.push("recap-cell-peek");
+            element.className = cellClassName(nextCell, nextData.anchorDate, preserved);
+            if (nextCell.state !== "blank") {
+              element.setAttribute("aria-label", cellAriaLabel(nextCell, this.rowByKey));
+            }
+          }
+          if (view.period === "today" && nextCell.state !== "blank") {
+            element.dataset.barMaximum = String(nextTodayBarMaximum);
+            setTodayBarLevel(element, nextCell.total);
+          }
+        }
+        this.todayBarMaximum = nextTodayBarMaximum;
+        if (anyCellChanged) {
+          this.highlightedKey = undefined;
+          this.applyHighlight();
+          if (this.peekElement && this.peekElement.dataset && this.peekElement.dataset.cellKey) {
+            const peekEntry = this.cellElements.get(this.peekElement.dataset.cellKey);
+            if (peekEntry) {
+              if (peekCellChanged) {
+                this.showPeek(peekEntry.cell, this.peekElement, this.rowByKey);
+                if (!this.highlightedKey && this.live && this.peekElement.classList.contains("recap-cell-keyboard")) {
+                  this.live.textContent = this.peekElement.getAttribute("aria-label") || "";
+                }
+              } else {
+                this.peekCell = peekEntry.cell;
+              }
+            }
+          }
+          if (scrollActivity.pendingPeek && scrollActivity.pendingPeek.element && scrollActivity.pendingPeek.element.dataset) {
+            const pendingEntry = this.cellElements.get(scrollActivity.pendingPeek.element.dataset.cellKey);
+            if (pendingEntry) {
+              scrollActivity.pendingPeek = {
+                cell: pendingEntry.cell,
+                element: scrollActivity.pendingPeek.element,
+                rowByKey: this.rowByKey,
+              };
+            }
+          }
+        }
+        return true;
       },
     };
 
     card.appendChild(buildAgentRows(summary, interaction));
-    card.appendChild(buildTimeline(data, summary, interaction));
+    card.appendChild(buildTimeline(data, interaction));
     card.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       if (!view.lockedRowKey && !interaction.peekElement) return;
@@ -1232,6 +1585,7 @@
   function render(parent) {
     clearLoadingIndicator();
     clearInteraction();
+    bindScrollActivity();
     if (mountedHost) mountedHost.dispose();
     mountedHost = helpers.createSubpageHost({ disposeBody: clearInteraction });
     const header = document.createElement("div");
@@ -1264,6 +1618,18 @@
     parent.appendChild(buildRecordingControls());
   }
 
+  function syncRecordingDescription() {
+    // Recording state may change in the returned data without replacing controls.
+    const description = document.getElementById("recap-recording-description");
+    if (description) {
+      const paused = coreState.snapshot?.recapEnabled !== false && view.status === "ready"
+        && view.data?.recordingEnabled === false;
+      description.textContent = t(paused ? "recapRecordingPaused" : "recapRecordingDesc");
+      if (paused) description.setAttribute("role", "status");
+      else description.removeAttribute("role");
+    }
+  }
+
   function refreshBody({ retainContent = false } = {}) {
     if (coreState.activeTab !== "recap" || !mountedHost || !mountedBody) return;
     const pending = view.status === "loading" || view.status === "idle";
@@ -1282,15 +1648,7 @@
       }, 150);
     }
     if (!retain) mountedHost.render(mountedBody, renderDataBody);
-    // Recording state may change in the returned data without replacing controls.
-    const description = document.getElementById("recap-recording-description");
-    if (description) {
-      const paused = coreState.snapshot?.recapEnabled !== false && view.status === "ready"
-        && view.data?.recordingEnabled === false;
-      description.textContent = t(paused ? "recapRecordingPaused" : "recapRecordingDesc");
-      if (paused) description.setAttribute("role", "status");
-      else description.removeAttribute("role");
-    }
+    syncRecordingDescription();
   }
 
   function renderDataBody(parent) {
@@ -1335,6 +1693,7 @@
       onExit() {
         clearLoadingIndicator();
         clearInteraction();
+        unbindScrollActivity();
         // Bumping requestSeq drops an in-flight background refresh; queue it
         // again so returning to Recap fetches the data it would have shown.
         if (view.refreshInFlight) view.refreshQueued = true;
