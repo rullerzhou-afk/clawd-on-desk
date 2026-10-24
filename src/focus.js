@@ -2440,6 +2440,9 @@ return {
   initFocusHelper,
   killFocusHelper,
   focusTerminalWindow,
+  focusProcessAppWindow: request => require("./process-app-focus").focusProcessAppWindow(request, {
+    execFile, platform: process.platform, windowsActivationCode: PS_FOCUS_ADDTYPE,
+  }),
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
   cleanup,

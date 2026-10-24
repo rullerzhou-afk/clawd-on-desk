@@ -42,6 +42,7 @@ const {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
   isCodexAmbientSuggestionPrompt,
   isCodexClientEphemeralPayload,
+  codexClientEphemeralClaim,
   isCodexMemoryWorkerPayload,
 } = require("./codex-internal-worker");
 const {
@@ -506,6 +507,8 @@ function buildPermissionBody(payload, resolve, options = {}) {
   };
 
   if (description) body.tool_input_description = description;
+  const ephemeral = codexClientEphemeralClaim(payload, { env: options.env });
+  if (typeof ephemeral === "boolean") body.codex_client_ephemeral = ephemeral;
   if (typeof payload.cwd === "string" && payload.cwd) body.cwd = payload.cwd;
   if (typeof payload.turn_id === "string" && payload.turn_id) body.turn_id = payload.turn_id;
   if (typeof payload.permission_mode === "string" && payload.permission_mode) {
@@ -566,6 +569,8 @@ function buildStateBody(payload, resolve, options = {}) {
     hook_source: "codex-official",
   };
   if (options.codexInternalThread) body.codex_internal_thread = options.codexInternalThread;
+  const ephemeral = codexClientEphemeralClaim(payload, { env: options.env });
+  if (typeof ephemeral === "boolean") body.codex_client_ephemeral = ephemeral;
 
   const cwd = typeof payload.cwd === "string" ? payload.cwd : "";
   if (cwd) body.cwd = cwd;

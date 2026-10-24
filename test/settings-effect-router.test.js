@@ -90,6 +90,17 @@ function makeWindow(name, calls, options = {}) {
 }
 
 describe("settings-effect-router", () => {
+  it("refreshes HUD preference changes in both directions without lifecycle cleanup or permission decisions", () => {
+    const { calls, emit } = createHarness();
+    for (const value of [true, false]) {
+      calls.length = 0;
+      emit({ sessionHudHideCompletedCodexEphemeral: value });
+      assert.deepStrictEqual(calls, [
+        ["updateMirrors", { sessionHudHideCompletedCodexEphemeral: value }],
+        ["emitSessionSnapshot", { force: true }],
+      ]);
+    }
+  });
   it("updates mirrors before tray and dock side effects", () => {
     const calls = [];
     const mirror = {};

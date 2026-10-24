@@ -21,7 +21,8 @@ let sessionActionFeedbackTimer = null;
 const hudEl = document.getElementById("hud");
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
+  return !!session && !session.headless && session.state !== "sleeping"
+    && !session.hiddenFromHud && !session.hudHiddenByPreference;
 }
 
 function t(key) {

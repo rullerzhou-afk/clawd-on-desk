@@ -531,6 +531,26 @@ test("direct send never focuses remote, headless, sleeping, or permission-pendin
   }
 });
 
+test("known ephemeral Desktop metadata forbids queue and paste even with a stale store/PID", async () => {
+  const entry = codexDesktopEntry({ codexClientEphemeral: true, sourcePid: 731,
+    codexHome: "C:\\synthetic-store", transcriptPath: null });
+  const copied = [];
+  let executions = 0;
+  const queue = createCodexQueueDeliveryAdapter({ osPlatform: "win32", executableCandidates: ["synthetic-codex.exe"],
+    execFile() { executions++; throw new Error("ephemeral thread cannot execute queue"); } });
+  assert.equal(queue.canDeliver(entry), false);
+  const direct = createTelegramDirectSend({ isEnabled: () => true, getSessionSnapshot: () => ({ sessions: [entry] }),
+    focusSession: () => { throw new Error("ephemeral delivery cannot focus/paste"); },
+    deliveryAdapter: { deliver: () => { throw new Error("Console injection is forbidden"); } },
+    getDeliveryAdapter: () => queue,
+    fallbackAdapter: createClipboardFallbackDeliveryAdapter({ clipboard: { writeText: text => copied.push(text) } }), osPlatform: "win32",
+  });
+  direct.registerCompletionNotification({ messageId: 421, sessionId: entry.id });
+  const response = await direct.handleTextMessage({ text: "manual reply", replyToMessageId: 421 });
+  assert.equal(response.status, "fallback_copied");
+  assert.equal(executions, 0); assert.deepEqual(copied, ["manual reply"]);
+});
+
 test("direct send keeps Codex Desktop on the clipboard path even with a source pid", async () => {
   const focused = [];
   const pasted = [];

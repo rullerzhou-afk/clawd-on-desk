@@ -109,6 +109,7 @@ function isCodexQueueTarget(entry, options = {}) {
   const platform = options.platform || process.platform;
   return !!getCodexThreadId(entry)
     && !!entry
+    && entry.codexClientEphemeral !== true
     && !!normalizeCodexHome(entry.codexHome, platform)
     && !entry.host
     // A WSL hook can report a Codex Desktop originator while its rollout and

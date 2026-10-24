@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { isCodexCliOriginator } = require("./codex-originator");
 
 // Codex memory consolidation runs in an internal, ephemeral thread
 // (`SessionSource::Internal(MemoryConsolidation)`) whose cwd is pinned to
@@ -8,8 +9,8 @@ const path = require("path");
 // payload has no transcript_path, and openai/codex#40587 stopped forwarding
 // its Stop to user-level hooks. The payload carries no thread_source /
 // session source / thread_id either, which leaves "cwd under CODEX_HOME plus
-// an empty transcript" as the only usable identity. Keep this helper
-// dependency-free: codex-hook.js is deployed to dep-free remote hosts.
+// an empty transcript" as the only usable identity. Keep this helper free of
+// npm dependencies: codex-hook.js is deployed to dep-free remote hosts.
 //
 // This detector must never swallow a real session: a missed worker (a ghost
 // row that lingers) is far cheaper than dropping live events, so the rules
@@ -174,6 +175,20 @@ function isCodexClientEphemeralPayload(payload, options = {}) {
   return typeof originator === "string" && originator.trim() !== "";
 }
 
+// Optional focus metadata, not hidden-thread authorization. A later event with
+// no evidence must not erase an earlier ephemeral observation. A transcript is
+// positive persistence evidence even before the first write reaches disk.
+function codexClientEphemeralClaim(payload, options = {}) {
+  if (isCodexClientEphemeralPayload(payload, options)) {
+    // A CLI launched by Desktop may inherit the marker. Explicit CLI identity
+    // still owns its existing terminal focus route.
+    const source = typeof payload.source === "string" ? payload.source.trim().toLowerCase() : "";
+    return isCodexCliOriginator(payload.originator) || ["cli", "exec", "mcp"].includes(source) ? undefined : true;
+  }
+  if (payload && typeof payload.transcript_path === "string" && payload.transcript_path.trim()) return false;
+  return undefined;
+}
+
 // Wire value the hook tags a recognized ambient-suggestion UserPromptSubmit
 // with; the server keys its per-sid suppression set on it.
 const CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS = "ambient_suggestions";
@@ -198,5 +213,6 @@ module.exports = {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
   isCodexAmbientSuggestionPrompt,
   isCodexClientEphemeralPayload,
+  codexClientEphemeralClaim,
   isCodexMemoryWorkerPayload,
 };

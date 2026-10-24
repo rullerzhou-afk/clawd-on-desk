@@ -13,6 +13,7 @@ function normalizeOsPlatform(options) {
 }
 
 function getCodexThreadUrl(entry) {
+  if (entry && entry.codexClientEphemeral === true) return null;
   const originator = entry && (entry.codexOriginator || entry.originator);
   if (!isCodexDesktopOriginator(originator)) return null;
   const threadId = getCodexThreadId(entry);
@@ -80,6 +81,15 @@ function getSessionFocusTarget(entry, options = {}) {
   // shell carries both, and lives in the pane, not in the Desktop window.
   if (hasSupportedHerdrPaneTarget(entry, options)) return { canFocus: true, type: "terminal", url: null };
 
+  if (entry.agentId === "codex" && entry.codexClientEphemeral === true) {
+    const platform = normalizeOsPlatform(options) || process.platform;
+    return (platform === "win32" || platform === "darwin")
+      && Number.isSafeInteger(Number(entry.sourcePid)) && Number(entry.sourcePid) > 1
+      && !entry.host && !entry.wslDistro && entry.platform !== "wsl"
+      ? { canFocus: true, type: "codex-app", url: null }
+      : { canFocus: false, type: null, url: null };
+  }
+
   const codexThreadUrl = getCodexThreadUrl(entry);
   if (codexThreadUrl) {
     return { canFocus: true, type: "codex-thread", url: codexThreadUrl };
@@ -103,6 +113,9 @@ function getSessionFocusTarget(entry, options = {}) {
 // session still carries a sourcePid. Navigation callers continue to use the
 // regular target above and can open the thread URL normally.
 function getDirectSendFocusTarget(entry, options = {}) {
+  if (entry && entry.agentId === "codex" && entry.codexClientEphemeral === true) {
+    return { canFocus: false, type: "codex-app", url: null, reason: "codex_desktop_requires_manual_paste" };
+  }
   const isCodexDesktop = !!entry
     && entry.agentId === "codex"
     && isCodexDesktopOriginator(entry.codexOriginator || entry.originator);
@@ -143,11 +156,26 @@ function isFocusableLocalHudSession(entry, options = {}) {
 function getFocusableLocalHudSessionIds(snapshot, options = {}) {
   const sessions = Array.isArray(snapshot && snapshot.sessions) ? snapshot.sessions : [];
   return sessions
-    .filter((entry) => isFocusableLocalHudSession(entry, options))
+    .filter((entry) => isFocusableLocalHudSession(entry, options) && !entry.hudHiddenByPreference)
     .map((entry) => entry.id);
 }
 
+function mergeSessionFocusEntry(session, fallback, id) {
+  const entry = { ...(session || {}), ...(fallback || {}), id };
+  // A stale permission/notification snapshot cannot undo live persistence facts.
+  if (session && typeof session.codexClientEphemeral === "boolean") {
+    entry.codexClientEphemeral = session.codexClientEphemeral;
+  }
+  if (session && entry.codexClientEphemeral === true) {
+    for (const field of ["sourcePid", "agentPid", "pidChain", "agentId", "codexOriginator", "host", "wslDistro", "platform", "orcaPaneKey", "herdrPaneId", "herdrSocket"]) {
+      entry[field] = session[field];
+    }
+  }
+  return entry;
+}
+
 module.exports = {
+  mergeSessionFocusEntry,
   getCodexThreadId,
   getCodexThreadUrl,
   getDirectSendFocusTarget,

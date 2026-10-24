@@ -1,4 +1,5 @@
 "use strict";
+const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
 const { resolveCodexApprovalRoute } = require("./codex-approval-routing");
 
@@ -337,6 +338,10 @@ function buildCodexPermissionSessionOptions(data, remoteProfile, wslSourced) {
     agentId: "codex",
     hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
   };
+  const ephemeral = readCodexClientEphemeral(data,
+    data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE && !remoteProfile && !wslSourced && !data.host);
+  if (typeof ephemeral === "boolean") options.codexClientEphemeral = ephemeral;
+  if (ephemeral === false) options.transcriptPath = data.transcript_path;
 
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
@@ -1703,6 +1708,8 @@ function handlePermissionPost(req, res, options) {
           model: codexSessionOptions.model || null,
           codexOriginator: codexSessionOptions.codexOriginator || null,
           codexSource: codexSessionOptions.codexSource || null,
+          ...(typeof codexSessionOptions.codexClientEphemeral === "boolean"
+            ? { codexClientEphemeral: codexSessionOptions.codexClientEphemeral } : {}),
         };
         const abortHandler = () => {
           if (res.writableFinished) return;

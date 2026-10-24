@@ -204,6 +204,7 @@ const createMacHideController = require("./mac-hide");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  mergeSessionFocusEntry,
 } = require("./session-focus");
 const { focusCodexThreadTarget, focusDshDesktopTarget } = require("./session-focus-handoff");
 const { isSessionInProgress } = require("./state-session-snapshot");
@@ -1377,6 +1378,7 @@ let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectio
 let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
+let sessionHudHideCompletedCodexEphemeral = _settingsController.get("sessionHudHideCompletedCodexEphemeral");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let sessionStaleMs = _settingsController.get("sessionStaleMs");
 let workingStaleMs = _settingsController.get("workingStaleMs");
@@ -2078,7 +2080,17 @@ const _runtimeAgentGate = createRuntimeAgentGate({
   // but only a clean load after restart can re-open agent paths.
   isAuthoritative: () => !_initialPrefsRecovered && !_settingsController.hasReadFailure(),
 });
+let codexEphemeralHudRefreshQueued = false;
 const _permCtx = {
+  onPermissionsChanged: () => {
+    if (!sessionHudHideCompletedCodexEphemeral || codexEphemeralHudRefreshQueued) return;
+    codexEphemeralHudRefreshQueued = true;
+    queueMicrotask(() => {
+      codexEphemeralHudRefreshQueued = false;
+      try { _state.emitSessionSnapshot(); }
+      catch (err) { console.warn("Clawd: Codex ephemeral HUD permission refresh failed:", err); }
+    });
+  },
   get win() { return win; },
   get lang() { return lang; },
   get sessions() { return sessions; },
@@ -2466,6 +2478,7 @@ const _stateCtx = {
     return !!(entry && entry.disabled === true);
   },
   get sessionHudCleanupDetached() { return sessionHudCleanupDetached; },
+  get sessionHudHideCompletedCodexEphemeral() { return sessionHudHideCompletedCodexEphemeral; },
   getStaleConfig: () => ({
     sessionStaleMs,
     workingStaleMs,
@@ -2696,6 +2709,7 @@ const {
   initFocusHelper,
   killFocusHelper,
   focusTerminalWindow,
+  focusProcessAppWindow,
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
 } = _focus;
@@ -2738,8 +2752,15 @@ function focusDashboardSession(sessionId, options = {}) {
     return false;
   }
 
-  const focusEntry = { ...(session || {}), ...(fallbackEntry || {}), id };
+  const focusEntry = mergeSessionFocusEntry(session, fallbackEntry, id);
   const focusTarget = getSessionFocusTarget(focusEntry, { osPlatform: process.platform });
+  if (focusTarget.type === "codex-app") {
+    // Existing local process activation only: no protocol, resume or launcher.
+    Promise.resolve(focusProcessAppWindow({ sourcePid: focusEntry.sourcePid }))
+      .then(result => focusLog(`focus result branch=codex-app reason=${result.reason || "unknown"} source=${requestSource} sid=${id}`))
+      .catch(() => focusLog(`focus result branch=codex-app reason=process-focus-failed source=${requestSource} sid=${id}`));
+    return true;
+  }
   if (focusTarget.type === "codex-thread" && focusTarget.url) {
     focusCodexThreadTarget({
       shell,
@@ -4772,6 +4793,7 @@ const SETTINGS_MIRROR_SETTERS = {
   kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
+  sessionHudHideCompletedCodexEphemeral: (v) => { sessionHudHideCompletedCodexEphemeral = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
   codexWorkingStaleMs: (v) => { codexWorkingStaleMs = v; },

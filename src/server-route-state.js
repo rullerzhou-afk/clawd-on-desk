@@ -1,4 +1,5 @@
 "use strict";
+const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
@@ -510,6 +511,9 @@ function handleStatePost(req, res, options) {
       // around the full updateSession lifecycle machine.
       const metadataOnly = data.metadata_only === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      const codexClientEphemeral = readCodexClientEphemeral(data,
+        agentId === "codex" && hookSource === "codex-official"
+        && trustedProfileId === "local" && !host && !wslDistro);
       const attachMetadata = agentId === "opencode" && hookSource === "opencode-plugin"
         && trustedProfileId === "local" && !host && !wslDistro && !headless
         && Object.hasOwn(data, "opencode_attach_url")
@@ -1168,6 +1172,7 @@ function handleStatePost(req, res, options) {
             permissionGateId,
             preserveState,
             hookSource,
+            ...(typeof codexClientEphemeral === "boolean" ? { codexClientEphemeral } : {}),
             ...(codexInternalThread ? { codexInternalThread } : {}),
             ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
             ...(codexHookState.turnId ? { recapDedupeId: codexHookState.turnId } : {}),

@@ -440,6 +440,13 @@ describe("session HUD layout", () => {
     assert.strictEqual(rowCount, 2);
   });
 
+  it("excludes preference-suppressed rows from native HUD geometry and folded counts", () => {
+    const sessions = [mkSession("visible"), mkSession("completed-temporary", { hudHiddenByPreference: true })];
+    const layout = computeHudLayout({ sessions, orderedIds: ["completed-temporary", "visible"] });
+    assert.deepStrictEqual(layout.expanded.map(row => row.id), ["visible"]);
+    assert.strictEqual(layout.folded.length, 0); assert.strictEqual(layout.rowCount, 1);
+  });
+
   it("returns 0 rows for empty snapshot", () => {
     const { expanded, folded, rowCount } = computeHudLayout({ sessions: [] });
     assert.strictEqual(expanded.length, 0);

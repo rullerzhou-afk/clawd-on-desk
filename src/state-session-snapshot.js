@@ -365,6 +365,23 @@ function isSessionAwaitingActivity(session) {
     && session.awaitingActivity === true;
 }
 
+// An opt-in HUD presentation preference, not internal-source classification or
+// session retirement. Keep every canonical entry available to other consumers.
+function shouldHideCompletedCodexEphemeralFromHud(id, session, badge, options) {
+  if (options.sessionHudHideCompletedCodexEphemeral !== true || !session
+      || session.agentId !== "codex" || session.codexClientEphemeral !== true
+      || !isCodexDesktopOriginator(session.codexOriginator || session.originator)
+      || (session.profileId || "local") !== "local" || session.host
+      || session.wslDistro || session.platform === "wsl" || session.headless
+      || session.state !== "idle" || badge !== "done") return false;
+  if (session.transcriptPath != null
+      && (typeof session.transcriptPath !== "string" || session.transcriptPath.trim())) return false;
+  const events = Array.isArray(session.recentEvents) ? session.recentEvents : [];
+  if (!isDoneEvent(events.at(-1)?.event)) return false;
+  return !(options.pendingPermissionSessionIds instanceof Set
+    && options.pendingPermissionSessionIds.has(id));
+}
+
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, session, sessionAliases);
   const recentEvents = Array.isArray(session && session.recentEvents)
@@ -388,6 +405,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const hiddenByExistingReason = shouldAutoClearDetachedSession(session, badge, options)
     || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
   const hiddenFromHud = hiddenByExistingReason || isSessionAwaitingActivity(session);
+  const hudHiddenByPreference = shouldHideCompletedCodexEphemeralFromHud(id, session, badge, options);
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
     ? getSessionFocusTarget({ ...(session || {}), id }, {
@@ -418,6 +436,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     startupRecovered,
     badge,
     hiddenFromHud,
+    hudHiddenByPreference,
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
@@ -448,6 +467,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     provider: (session && session.provider) || null,
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
+    ...(session && typeof session.codexClientEphemeral === "boolean"
+      ? { codexClientEphemeral: session.codexClientEphemeral } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
@@ -542,7 +563,7 @@ function buildSessionSnapshot(sessions, options = {}) {
   const orderedIds = dashboardEntries.map((entry) => entry.id);
   const menuOrderedIds = menuEntries.map((entry) => entry.id);
   const hudEntries = dashboardEntries.filter((entry) =>
-    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud
+    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud && !entry.hudHiddenByPreference
   );
 
   const groupMap = new Map();
@@ -682,6 +703,7 @@ function sessionSnapshotSignature(snapshot) {
       focusTarget: entry.focusTarget,
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,
+      hudHiddenByPreference: !!entry.hudHiddenByPreference,
       host: entry.host,
       wslDistro: entry.wslDistro,
       platform: entry.platform,
@@ -689,6 +711,7 @@ function sessionSnapshotSignature(snapshot) {
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
+      codexClientEphemeral: entry.codexClientEphemeral,
       dshCarrier: entry.dshCarrier,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,
