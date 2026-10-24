@@ -40,7 +40,7 @@ Descarga el instalador más reciente desde **[GitHub Releases](https://github.co
 |---|---|
 | Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` o `-arm64.exe` |
 | macOS | `.dmg`, o `brew install --cask clawd-on-desk` |
-| Linux | `.AppImage` o `.deb` (Homebrew también funciona en x86_64) |
+| Linux | `.AppImage` (actualización desde la app), o `.deb` + [configuración y migración a APT](docs/guides/apt-setup.md) (Homebrew también funciona en x86_64) |
 
 Abre Clawd y empieza a reaccionar de inmediato: Claude Code y Codex se conectan en el primer arranque. Cualquier otro agente se instala con un clic en **Ajustes → Herramientas de IA para código**.
 

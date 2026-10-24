@@ -40,7 +40,7 @@
 |---|---|
 | Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` 또는 `-arm64.exe` |
 | macOS | `.dmg` 또는 `brew install --cask clawd-on-desk` |
-| Linux | `.AppImage` 또는 `.deb` (x86_64에서는 Homebrew도 가능) |
+| Linux | `.AppImage` (앱 내 업데이트) 또는 `.deb` + [APT 설정 및 이전 안내](docs/guides/apt-setup.md) (x86_64에서는 Homebrew도 가능) |
 
 Clawd를 실행하면 바로 반응하기 시작합니다. 첫 실행 때 Claude Code와 Codex가 자동으로 연결되고, 다른 에이전트는 **Settings → AI 코딩 도구**에서 클릭 한 번으로 설치합니다.
 

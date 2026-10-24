@@ -928,6 +928,7 @@ Remote SSH 有两条明确分开的 transport 路径：
 
 - Git 模式（非打包，主要是 macOS/Linux 源码运行）会 `git fetch` 比较 HEAD，有更新则 `git pull` + 必要时 `npm install`，然后 `app.relaunch()`
 - Windows NSIS 与 macOS DMG 打包模式走 `electron-updater`；均保持 `autoDownload=false`，用户确认后才下载
+- Linux 格式由 `src/update-install-format.js` 判断：绝对 APPIMAGE/APPDIR 且 resourcesPath 属于该挂载时，显式创建 AppImageUpdater；否则 `resources/package-type=deb` 走 APT 指南，其余格式手动下载。外来继承的 APPIMAGE 不足以证明归属。deb/未知格式在启动、托盘、About 和定时流程都不创建 electron-updater；打开指南仅保留 available/pending，不宣称安装完成。旧用户迁移与生产发布顺序见 `docs/guides/apt-maintenance.md`
 - macOS Release 同时发布 x64 / arm64 的 DMG 与 ZIP；DMG 用于首次/手动安装，Squirrel.Mac 只消费 ZIP。`latest-mac.yml` 必须同时列出两架构的 ZIP 与 DMG，且 top-level `path` 指向 x64 ZIP
 - macOS 下载完成后可选择立即重启，或稍后正常退出并重新打开；安装请求期间复用 update bubble 显示准备状态，ready/staging 错误必须作为真实错误显示，不能降级成“已是最新”
 - 旧版 DMG 没有 ZIP 更新载荷，不能自举到首个支持应用内更新的桥接版；现有用户仍需手动安装桥接版一次。单元/metadata/包结构验证不等于同一 Developer ID 的 A→B 真机升级证据

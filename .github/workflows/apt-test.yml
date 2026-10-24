@@ -31,7 +31,7 @@ jobs:
       - name: Install test tools
         run: |
           apt-get update
-          apt-get install -y --no-install-recommends ca-certificates git python3 gnupg dpkg-dev
+          apt-get install -y --no-install-recommends ca-certificates git python3 gnupg gpgv dpkg-dev
       - uses: actions/checkout@v4
       - name: Verify APT authentication, package policy, and dpkg lifecycle
         run: python3 test/apt-repository.test.py

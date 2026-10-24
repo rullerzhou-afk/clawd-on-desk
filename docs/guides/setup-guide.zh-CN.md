@@ -273,4 +273,4 @@ Windows Clawd 监听 `127.0.0.1:23333-23337` 范围内的回环端口。**Linux 
 - **Homebrew**：`brew install --cask clawd-on-desk` 会安装 x86_64 AppImage；目前没有 Linux ARM 的 cask 产物。之后可用 `brew upgrade --cask clawd-on-desk` 升级。
 - **安装包**：AppImage 和 `.deb` 可从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载。deb 安装后应用图标会出现在 GNOME 应用菜单。
 - **终端聚焦**：依赖 `wmctrl` 或 `xdotool`（有一个就行）。安装：`sudo apt install wmctrl` 或 `sudo apt install xdotool`。
-- **自动更新**：Clawd 不会自行更新 Linux 安装包。Homebrew 管理的安装可用 `brew upgrade --cask clawd-on-desk` 升级；直接安装的 AppImage / deb 仍需从 GitHub Releases 手动下载。源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
+- **更新**：AppImage 保留应用内下载、重启或退出安装。`.deb` 更新提示打开 [APT 接入与迁移指南](apt-setup.zh-CN.md)；首次添加软件源，之后退出 Clawd 再用 APT 更新，完成后重新打开。1.3/1.4 等旧用户无需先让旧版应用内更新成功，也可继续手动安装 `.deb`。Homebrew 管理的安装使用 `brew upgrade --cask clawd-on-desk`；源码运行保留应用内 Git 更新。

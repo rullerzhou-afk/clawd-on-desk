@@ -62,8 +62,15 @@ def main():
             assert settings.read_bytes() == expected
             files = repo.run("dpkg-query", "-L", "clawd-on-desk").decode().splitlines()
             sandbox = Path(next(p for p in files if p.endswith("/chrome-sandbox")))
-            assert sandbox.stat().st_uid == 0 and sandbox.stat().st_mode & 0o7777 == 0o4755
-            assert any(p.endswith("/resources/apparmor-profile") for p in files)
+            user_namespaces = Path("/proc/self/ns/user").is_symlink() and subprocess.run(
+                ["unshare", "--user", "true"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            expected_mode = 0o755 if user_namespaces else 0o4755
+            assert sandbox.stat().st_uid == 0 and sandbox.stat().st_mode & 0o7777 == expected_mode
+            apparmor = Path(next(p for p in files if p.endswith("/resources/apparmor-profile")))
+            enabled = subprocess.run(["apparmor_status", "--enabled"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+            if enabled and subprocess.run(["apparmor_parser", "--skip-kernel-load", "--debug", str(apparmor)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0:
+                assert Path("/etc/apparmor.d/clawd-on-desk").read_bytes() == apparmor.read_bytes()
+            print(f"Sandbox: root-owned mode {expected_mode:o}; AppArmor enabled={enabled}")
             subprocess.run(["apt-get", "remove", "-y", "clawd-apt-source"], check=True)
             subprocess.run(["apt-get", "update", "--error-on=any"], check=True)
             subprocess.run(["apt-get", "purge", "-y", "clawd-apt-source"], check=True)

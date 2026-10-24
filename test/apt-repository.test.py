@@ -29,6 +29,13 @@ def command(*args, env=None, cwd=None, success=True):
 
 
 class QuietHandler(http.server.SimpleHTTPRequestHandler):
+    def do_GET(self):
+        # These tests mutate signed fixtures within one filesystem timestamp
+        # second; force retrieval instead of a misleading conditional 304.
+        if "If-Modified-Since" in self.headers:
+            del self.headers["If-Modified-Since"]
+        super().do_GET()
+
     def log_message(self, *_):
         pass
 

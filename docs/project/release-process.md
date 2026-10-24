@@ -652,3 +652,9 @@ explicitly; do not replace it with a mutable major-version tag.
   version by hand.
 - After the catalog refreshes, run an independent Windows `winget install` or
   `winget upgrade` smoke test before documenting the command in the READMEs.
+
+## APT source and Linux migration
+
+The official APT channel is prepared by `apt-release-dispatch.yml` → main's `publish-apt.yml`. Follow [APT maintenance](../guides/apt-maintenance.md) for the reviewed key ceremony, main-only environment protection, prepare-only run, first deployment of existing releases, and recovery. The source is not considered active until its activation record contains a production fingerprint and successful HTTPS/APT evidence.
+
+Before releasing the app's APT button, deploy and verify the source and bilingual guide using existing stable assets. Add the provided migration notice to that first release's notes; do not modify old published release notes. Preserve both AppImage and `.deb` entries in `latest-linux.yml`, and verify their final archive markers with `scripts/apt/verify-package-formats.py`. A source-publication failure does not remove the last successful site; notifications can precede publication and must not imply the package is already available through APT.
