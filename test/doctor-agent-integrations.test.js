@@ -3087,6 +3087,10 @@ describe("checkAgentIntegrations", () => {
       markerFile: ".clawd-managed.json",
       pluginId: "clawd-on-desk",
     });
+    // The 2.x runtime fallback scans the machine-wide userData roots below
+    // this home; pinning it keeps the 1.x-only fixtures hermetic on machines
+    // that run AutoClaw 2.x.
+    descriptor.__testHomeDir = root;
     return { descriptor, sourcePluginDir, parentDir };
   }
 
@@ -3132,6 +3136,45 @@ describe("checkAgentIntegrations", () => {
     assert.strictEqual(detail.status, "ok");
     assert.strictEqual(detail.autoclawExtensionState, "owned");
     assert.strictEqual(detail.autoclawExtensionDir, path.join(descriptor.extensionsDir, "clawd-on-desk"));
+  });
+
+  it("falls back to AutoClaw 2.x runtime evidence when the 1.x config is absent", () => {
+    const { descriptor } = autoClawFixture();
+    descriptor.__testHomeDir = path.dirname(descriptor.parentDir);
+    const dbDir = path.join(
+      descriptor.__testHomeDir, "Library", "Application Support", "AutoClaw-official",
+      "accounts", "hash-a", "runtime"
+    );
+    fs.mkdirSync(dbDir, { recursive: true });
+    const dbPath = path.join(dbDir, "runtime.sqlite");
+    const { DatabaseSync } = require("node:sqlite");
+    const db = new DatabaseSync(dbPath);
+    db.exec("CREATE TABLE work_sessions (session_id TEXT, title TEXT, workspace_id TEXT, updated_at TEXT, deleted_at TEXT, archived_at TEXT)");
+    db.exec("CREATE TABLE work_runs (run_id TEXT, session_id TEXT, status TEXT, created_at TEXT, updated_at TEXT)");
+    db.exec("CREATE TABLE work_workspaces (workspace_id TEXT, root_path TEXT)");
+    db.close();
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "ok");
+    assert.strictEqual(detail.autoclawRuntimeDatabases, 1);
+    assert.match(detail.detail, /runtime database verified/);
+  });
+
+  it("reports an unreadable AutoClaw 2.x runtime database as needs-review", () => {
+    const { descriptor } = autoClawFixture();
+    descriptor.__testHomeDir = path.dirname(descriptor.parentDir);
+    const dbDir = path.join(
+      descriptor.__testHomeDir, "Library", "Application Support", "AutoClaw-official",
+      "accounts", "hash-a", "runtime"
+    );
+    fs.mkdirSync(dbDir, { recursive: true });
+    fs.writeFileSync(path.join(dbDir, "runtime.sqlite"), "definitely not sqlite");
+
+    const detail = runOne(descriptor);
+
+    assert.strictEqual(detail.status, "needs-review");
+    assert.match(detail.detail, /schema is not understood/);
   });
 
   it("reports a stale AutoClaw plugin copy as needs-review and a foreign dir as broken-path", () => {

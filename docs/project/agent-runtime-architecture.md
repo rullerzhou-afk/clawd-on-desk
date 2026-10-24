@@ -723,6 +723,7 @@ CodeBuddy direct HTTP `PermissionRequest` 不经过 Clawd command hook，因此�
 - `agents/pi.js` — Pi extension 事件映射 + 能力（extension，state-only，不接管 permission）
 - `agents/openclaw.js` — OpenClaw plugin 事件映射 + 能力（state-only，本地终端聚焦暂不支持）
 - `agents/autoclaw.js` — AutoClaw（智谱桌面端）事件映射 + 能力，复用 OpenClaw 插件合约（state-only）
+- `agents/autoclaw-runtime-monitor.js` — AutoClaw 2.x（zwork harness）只读轮询 monitor：发现 `AutoClaw-official/accounts/*/runtime/runtime.sqlite`，SQL 白名单 + PRAGMA schema 门禁 + 纯函数状态机，run 状态映射为 Clawd 事件
 - `agents/hermes.js` — Hermes Agent plugin 事件映射 + 能力（session、SessionEnd、terminal focus、permission；无 subagent）
 - `agents/registry.js` — agent 注册表：按 ID 或进程名查找 agent 配置
 - `agents/codex-log-monitor.js` — Codex JSONL fallback 增量轮询器（文件监视 + 增量读取 + 状态 / metadata fallback，不再做审批猜测）
@@ -871,6 +872,15 @@ opencode、MiMo Code、OpenClaw、AutoClaw、Hermes 和 DeepSeek Harness 是 plu
 - Doctor 走 `autoclaw-extension` configMode（`checkAutoClawExtensionMode`）：配置缺失/非严格 JSON/include → not-connected / needs-review；拷贝缺失或 entry 缺失/disabled → not-connected；外来目录或 manifest 不合约（复用 `openclaw-entry-validator`）→ broken-path；文件与源不一致 → needs-review（Repair 重物化并提示重启）。
 - Phase 1 与 OpenClaw 同界：state-only、无权限气泡、无终端聚焦、无 startup recovery、`processNames` 全空。gateway 只在启动时读插件集，安装/更新后需完整退出并重开 AutoClaw。当前 AutoClaw 不设 `plugins.allow`（日志 "plugins.allow is empty; discovered non-bundled plugins may auto-load"），Clawd 也不写它。
 - 独立 OpenClaw（`~/.openclaw`）与 AutoClaw 是两个互不影响的目标：两个 gateway 各自加载各自的插件实例，分别以 `openclaw` / `autoclaw` 身份上报。
+
+### AutoClaw 2.x（zwork harness）只读轮询
+
+- AutoClaw 2.2.0（bundle id `com.zhipuai.autoclaw2`，内部代号 zwork，独立 app `AutoClaw2.app`、userData `~/Library/Application Support/AutoClaw-official`）在 v2.0.0 起换用"全新 Harness"：内嵌 OpenClaw gateway、`plugins.entries`、extensions 扫描与 GatewayManager 全部移除，agent 引擎（Pi 系，`piAgentDir` 默认 `~/.pi/agent`）直接跑在 Electron 主进程里；bundle 中没有任何第三方插件/hook 加载点，1.x 插件方案对 2.x 无效。
+- 2.x 唯一稳定的本地可读面是其 runtime SQLite：`<userData>/accounts/<hash>/runtime/runtime.sqlite`（主进程全程持 WAL 写句柄）。`agents/autoclaw-runtime-monitor.js` 以 `node:sqlite` readOnly 轮询（Electron 41 内置；WAL 下读者不阻塞宿主），并遵守隐私白名单：SQL 只有 work_sessions（session_id/title/workspace_id/updated_at/deleted/archived）、work_runs（run_id/session_id/status/created_at/updated_at）、work_workspaces（workspace_id/root_path）三条显式列名查询，**绝不读 text/answer_preview/model_context/attachments/draft/payload_json 等内容列**；表结构经 PRAGMA table_info 门禁，缺列即标记 unsupported 跳过（fail closed），不猜不崩。
+- 状态机（纯函数，测试注入 queryFn）：run `queued|stopping`→thinking/UserPromptSubmit、`running`→working/PreToolUse（每次 run 一次，recap 按此口径）、`waiting_approval`→attention/Notification（决定永远留在 AutoClaw 原生 UI）、`completed`→attention/Stop、`failed`→error/StopFailure、`interrupted/stopped/cancelled`→attention/Stop、`merged` 忽略；会话 deleted/archived→一次性 SessionEnd/sleeping。**首次见到即已终态的会话静默入库**（Clawd 重启不复活历史会话为 Done 行），活跃中的会话首次可见即上报；仅标题/cwd 变化走 titleOnly 元数据更新，不重发生命周期事件（Stop 不重复计数 recap）。
+- 会话 id 命名空间 `autoclaw2:<uuid>`，与 1.x 插件（OpenClaw session key / `autoclaw:default`）共用 agent id `autoclaw`、共用 recap 口径；两个承载方可并存同时跟踪。monitor 由 agent gate（`enabled`）启停（`startMonitorForAgent`/`stopMonitorForAgent`），main.js 启动时构造。
+- 安装检测把 runtime.sqlite 当 high-confidence product evidence（2.x-only 用户 Settings 显示已安装）；Doctor `autoclaw-extension` 模式在 1.x 不健康时回退 2.x 证据（存在且 schema 可读 → ok；存在但不理解 → needs-review），在 parentDir 缺失的 not-installed 短路之前也先看 2.x 证据。
+- 已知脆弱性：runtime schema 是私有契约，AutoClaw 更新可能改列——门禁保证"改了就不读"而不是"读错"；`waiting_approval` 只到 attention 粒度，无工具级事件；`AUTOCLAW_USER_DATA_ROOT` 是 app 自己的 userData 覆盖 env，发现逻辑同样尊重它。
 
 ## Terminal Focus And Remote
 

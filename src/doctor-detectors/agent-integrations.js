@@ -42,6 +42,7 @@ const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
 const autoclawInstall = require("../../hooks/autoclaw-install");
+const autoclawRuntimeMonitor = require("../../agents/autoclaw-runtime-monitor");
 const { inspectDshTargetsSync } = require("../../hooks/dsh-install");
 const minimaxInstall = require("../../hooks/minimax-install");
 
@@ -2649,7 +2650,51 @@ function checkOpenClawPluginMode(descriptor, options) {
 // plugins.entries keys, and only plugins found in that user extension root
 // count as known), so Doctor verifies the copy's ownership and currency on
 // top of the entry — there is no load path to check.
+//
+// AutoClaw 2.x removed the 1.x gateway entirely; when a 2.x runtime database
+// exists it is the live carrier and its read-only monitor evidence decides
+// the row, with the 1.x check only winning while it is healthy (both apps
+// can coexist). Shared by the wrapper below and the parentDir pre-gate.
+function autoClawRuntimeEvidenceDetail(descriptor, options) {
+  const runtime = autoclawRuntimeMonitor.inspectAutoClawRuntimeDatabases({
+    fs: options.fs,
+    homeDir: options.homeDir,
+    env: options.env,
+    platform: options.platform,
+  });
+  if (runtime.found === 0) return null;
+  const parentDirExists = descriptor.parentDir
+    ? dirExists(options.fs, descriptor.parentDir)
+    : false;
+  if (!runtime.supported) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists,
+      configFileExists: fileExists(options.fs, descriptor.configPath),
+      configPath: descriptor.configPath,
+      detail: "AutoClaw 2.x runtime database was found but its schema is not understood by this Clawd build; the state monitor stays disabled for it",
+      autoclawRuntimeDatabases: runtime.found,
+    });
+  }
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists,
+    configFileExists: fileExists(options.fs, descriptor.configPath),
+    configPath: descriptor.configPath,
+    detail: `AutoClaw 2.x runtime database verified (${runtime.found} account${runtime.found === 1 ? "" : "s"}); Clawd polls it read-only for state`,
+    autoclawRuntimeDatabases: runtime.found,
+  });
+}
+
 function checkAutoClawExtensionMode(descriptor, options) {
+  const legacy = checkAutoClawLegacyExtensionMode(descriptor, options);
+  if (legacy.status === "ok") return legacy;
+  const runtimeDetail = autoClawRuntimeEvidenceDetail(descriptor, options);
+  if (runtimeDetail) return runtimeDetail;
+  return legacy;
+}
+
+function checkAutoClawLegacyExtensionMode(descriptor, options) {
   if (!fileExists(options.fs, descriptor.configPath)) {
     return makeDetail(descriptor, "not-connected", {
       level: "warning",
@@ -3139,6 +3184,12 @@ function checkAgent(descriptor, options) {
     ? dirExists(options.fs, effectiveDescriptor.parentDir)
     : false;
   if (!parentDirExists) {
+    // AutoClaw 2.x keeps no 1.x state dir; its runtime database is the only
+    // carrier evidence and must be reachable without the parent dir.
+    if (descriptor.agentId === "autoclaw") {
+      const runtimeDetail = autoClawRuntimeEvidenceDetail(descriptor, options);
+      if (runtimeDetail) return runtimeDetail;
+    }
     return makeDetail(descriptor, "not-installed", {
       level: "info",
       parentDirExists: false,
@@ -3345,6 +3396,7 @@ module.exports = {
     checkKiroDirMode,
     checkOpenClawPluginMode,
     checkAutoClawExtensionMode,
+    checkAutoClawLegacyExtensionMode,
     checkExtensionMode,
     checkPluginDirMode,
     checkAntigravityHooksMode,

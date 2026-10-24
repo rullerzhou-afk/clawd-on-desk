@@ -14,6 +14,7 @@ const zcode = require("../hooks/zcode-install");
 const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
 const autoclaw = require("../hooks/autoclaw-install");
+const autoclawRuntimeMonitor = require("../agents/autoclaw-runtime-monitor");
 const grok = require("../hooks/grok-install");
 const qoder = require("../hooks/qoder-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
@@ -526,7 +527,25 @@ function detectOpenClawInstallation(paths, options) {
 function detectAutoClawInstallation(paths, options) {
   const fsImpl = options.fs;
   const env = options.env || {};
-  const hasExplicitConfig = typeof env.AUTOCLAW_CONFIG_PATH === "string" && !!env.AUTOCLAW_CONFIG_PATH.trim();
+  // AutoClaw 2.x ("zwork harness") is detected before the 1.x gateway
+  // config: its accounts/<hash>/runtime/runtime.sqlite is written by the app
+  // itself on first run and is the only carrier for 2.x-only users.
+  const runtimeDatabases = autoclawRuntimeMonitor.discoverRuntimeDatabasePaths({
+    fs: fsImpl,
+    homeDir: options.homeDir,
+    env,
+    platform: options.platform,
+  });
+  if (runtimeDatabases.length > 0) {
+    return installationResult(
+      true,
+      "high",
+      "product-artifact",
+      `${runtimeDatabases[0]} is an AutoClaw 2.x runtime database`
+    );
+  }
+
+  const hasExplicitConfig = typeof env.OPENCLAW_CONFIG_PATH === "string" && !!env.OPENCLAW_CONFIG_PATH.trim();
   const stateInfo = lstatPath(fsImpl, paths.stateDir);
 
   // Same symlink rule as OpenClaw: the embedded gateway's state root is
