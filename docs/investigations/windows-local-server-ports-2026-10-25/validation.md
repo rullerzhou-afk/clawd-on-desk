@@ -33,4 +33,10 @@ The seven cross-language/client tests also passed on this Windows host. Real **P
 - In-flight CLI HTTP-hook configuration reload after a forced port change remains unverified. The saved port hint reduces normal restart drift, and the documentation states that an existing CLI session may need reload/restart.
 - Separate-home WSL dynamic-port discovery, Mobile Preview fallback and older-version cleanup are explicitly outside this change's supported scope.
 
-Claude reviewed the plan in two rounds. The implementation and test evidence do not replace the remaining real CLI/UI acceptance above. Full review exports and independent adjudications are retained locally; only this bounded validation record is published with the code.
+## Implementation review
+
+Claude reviewed the plan in two rounds and then reviewed implementation commit `e8952063f6ccbcff8a28e7446f5855d4f79fe507`: **PASS WITH NOTES**, with no evidenced P1/P2 blocker. This was a read-only review; the automated and Windows test results above were run by Codex.
+
+Codex independently confirmed and fixed both nonblocking notes: preserve logging of server errors after startup without restarting the bind loop, and let the Wayland smoke script read a dynamic runtime port and include that port in teardown checks and diagnostics. Follow-up validation: **57 targeted tests passed, 0 failed**, shell syntax passed, and isolated shell-function checks covered 11 runtime validation cases plus dynamic/legacy teardown detection. This does not constitute a packaged Wayland run.
+
+The implementation and test evidence do not replace the remaining real CLI/UI acceptance above. Full review exports and independent adjudications are retained locally; only this bounded validation record is published with the code.

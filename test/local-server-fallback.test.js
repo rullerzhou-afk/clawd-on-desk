@@ -37,7 +37,7 @@ function setup({ errors = {}, throws = [], candidates = config.SERVER_PORTS, hin
 }
 
 for (const code of ["EACCES", "EADDRINUSE"]) {
-  test(`${code}: all legacy ports unavailable uses the actual system port`, async () => {
+  test(`${code}: all legacy ports unavailable uses the actual system port`, async (t) => {
     const h = setup({ errors: Object.fromEntries(config.SERVER_PORTS.map(p => [p, code])) });
     assert.equal(await h.api.startHttpServer(), 45000);
     assert.deepEqual(h.calls, [...config.SERVER_PORTS, 0]);
@@ -45,8 +45,11 @@ for (const code of ["EACCES", "EADDRINUSE"]) {
     assert.deepEqual(h.hints, [45000]);
     assert.equal(h.api.getHookServerPort(), 45000);
     assert.equal(checkLocalServer(h.api).status, "pass");
-    h.server.emit("error", Object.assign(new Error(code), { code }));
+    const log = t.mock.method(console, "error", () => {});
+    const lateError = Object.assign(new Error(code), { code });
+    h.server.emit("error", lateError);
     assert.equal(h.calls.length, 6, "late errors cannot restart binding");
+    assert.deepEqual(log.mock.calls.map(call => call.arguments), [["HTTP server error:", lateError]]);
   });
 }
 

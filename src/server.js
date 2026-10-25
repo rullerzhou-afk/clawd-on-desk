@@ -1062,7 +1062,10 @@ function startHttpServer() {
       resolve(value);
     };
     const bindFailed = (err) => {
-      if (settled) return;
+      if (settled) {
+        console.error("HTTP server error:", err);
+        return;
+      }
       const failure = {
         stage: "bind", port: listenPorts[listenIndex],
         code: String(err && err.code || "UNKNOWN").slice(0, 48),
