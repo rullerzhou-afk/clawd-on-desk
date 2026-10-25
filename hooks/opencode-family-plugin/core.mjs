@@ -2,7 +2,7 @@
 //
 // Shared runtime for opencode-derived hosts (opencode, mimocode, …). Runs
 // inside the host process (Bun CLI/TUI or Node-based Desktop sidecar) and forwards session/tool events to
-// the Clawd HTTP server (127.0.0.1:23333-23337).
+// the Clawd loopback server (runtime.json, then legacy 23333-23337).
 //
 // This module is IMPORTED by the thin per-agent entries
 // (hooks/opencode-plugin/index.mjs, hooks/mimocode-plugin/index.mjs) and is
@@ -129,11 +129,28 @@ export function orcaPaneKeyFromEnv(env = process.env) {
 // scope so the strict permission-target checks cannot drift between the two
 // runtimes. Any change here must keep satisfying the
 // opencode-family-core.test.js owner-only / live-owner fail-closed matrix.
+function normalizeLocalPort(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]{0,4}$/.test(value))) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+// Yield the cache before reading disk. A failed cached request resumes here,
+// rereads runtime in the SAME delivery, then scans only the legacy ports.
+function* localPortCandidates(cached) {
+  const seen = new Set();
+  const first = normalizeLocalPort(cached);
+  if (first) { seen.add(first); yield first; }
+  for (const port of [readRuntimePort(), ...SERVER_PORTS]) {
+    if (port && !seen.has(port)) { seen.add(port); yield port; }
+  }
+}
+
 export function readRuntimePort() {
   try {
     const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    const port = Number(raw && raw.port);
-    if (Number.isInteger(port) && SERVER_PORTS.includes(port)) return port;
+    const port = normalizeLocalPort(raw && raw.port);
+    if (raw?.app === CLAWD_SERVER_ID && port) return port;
   } catch {}
   return null;
 }
@@ -154,10 +171,10 @@ export function readPermissionRuntimePort() {
     }
 
     const raw = JSON.parse(readFileSync(RUNTIME_CONFIG_PATH, "utf8"));
-    const port = Number(raw && raw.port);
+    const port = normalizeLocalPort(raw && raw.port);
     const ownerPid = raw && raw.ownerPid;
     if (raw?.app !== CLAWD_SERVER_ID) return null;
-    if (!Number.isInteger(port) || !SERVER_PORTS.includes(port)) return null;
+    if (!port) return null;
     if (!Number.isInteger(ownerPid) || ownerPid <= 0) return null;
     try {
       process.kill(ownerPid, 0);
@@ -723,21 +740,9 @@ export function createOpencodeFamilyPlugin(config) {
     });
   }
 
-  // Ordered: cached → runtime.json → full scan. Only touches runtime.json when
-  // the cache is empty (avoids a sync fs read on every successful POST).
+  // Lazy discovery preserves the successful-cache fast path.
   function getPortCandidates() {
-    const ordered = [];
-    const seen = new Set();
-    const add = (p) => {
-      if (p && !seen.has(p) && SERVER_PORTS.includes(p)) {
-        seen.add(p);
-        ordered.push(p);
-      }
-    };
-    add(_cachedPort);
-    if (_cachedPort == null) add(readRuntimePort());
-    SERVER_PORTS.forEach(add);
-    return ordered;
+    return localPortCandidates(_cachedPort);
   }
 
   function getPermissionPortCandidates() {
@@ -1285,7 +1290,7 @@ export function createOpencodeFamilyPlugin(config) {
     const candidates = urlPath === "/permission"
       ? getPermissionPortCandidates()
       : getPortCandidates();
-    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start candidates=[${candidates.join(",")}]`);
+    debugLog(`POST[${snapshot.reqId}] ${snapshot.logTag} cwdSource=${snapshot.cwdSource} start`);
 
     for (const port of candidates) {
       if (urlPath === STATE_PATH && !pruneStaleContextSnapshot(snapshot)) {
@@ -3324,20 +3329,9 @@ export function createOpencodeFamilyPluginV2(config) {
     });
   }
 
-  // Ordered: cached → runtime.json → full scan (same bargain as v1).
+  // Same lazy runtime rediscovery as v1.
   function getPortCandidates() {
-    const ordered = [];
-    const seen = new Set();
-    const add = (p) => {
-      if (p && !seen.has(p) && SERVER_PORTS.includes(p)) {
-        seen.add(p);
-        ordered.push(p);
-      }
-    };
-    add(_cachedPort);
-    if (_cachedPort == null) add(readRuntimePort());
-    SERVER_PORTS.forEach(add);
-    return ordered;
+    return localPortCandidates(_cachedPort);
   }
 
   function getPermissionPortCandidates() {

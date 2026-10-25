@@ -33,6 +33,13 @@ const {
 const HOOKS_DIR = path.join(__dirname, "..", "hooks");
 
 describe("wsl-deploy", () => {
+  it("explains separate-home dynamic-port discovery before any WSL mutation", async () => {
+    const result = await deployToWsl("Ubuntu", { isWindows:()=>true, localServerPort:45000 });
+    assert.equal(result.ok,false);
+    assert.equal(result.step,"dynamic-local-port");
+    assert.match(result.message,/separate Linux home/);
+    assert.match(result.message,/not a NAT/);
+  });
   describe("getAgentInstallScriptName", () => {
     it("maps claude-code to install.js", () => {
       assert.strictEqual(getAgentInstallScriptName("claude-code"), "install.js");

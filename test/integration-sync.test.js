@@ -495,7 +495,7 @@ describe("integration sync runtime", () => {
 
     assert.deepStrictEqual(calls, [{
       name: "codebuddy",
-      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" } },
+      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" }, port:24444 },
     }]);
   });
 
@@ -547,7 +547,7 @@ describe("integration sync runtime", () => {
 
     assert.deepStrictEqual(calls, [{
       name: "codebuddy",
-      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" } },
+      options: { permissionTarget: { mode: "custom", url: "https://approval.example.test/permission" }, port:24444 },
     }]);
   });
 
@@ -564,6 +564,7 @@ describe("integration sync runtime", () => {
     }, () => runtime.syncCodeBuddyHooks());
 
     assert.deepStrictEqual(received.permissionTarget, { mode: "local" });
+    assert.strictEqual(received.port,24444,"must use the live server port, not stale disk runtime");
   });
 
   it("syncIntegrationForAgent treats count-style zero writes as a missing local integration", () => {

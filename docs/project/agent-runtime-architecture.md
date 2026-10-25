@@ -2,6 +2,38 @@
 
 This document holds the deeper runtime and integration notes that were previously in the root `AGENTS.md`.
 
+## Local HTTP port lifecycle
+
+The local listener uses runtime → legacy 23333–23337 → saved dynamic hint →
+`listen(0, "127.0.0.1")`, retrying EADDRINUSE and EACCES with a bounded candidate
+list. `server.address().port` is authoritative. An out-of-range listener must
+publish runtime successfully before becoming active or scheduling integration
+sync; a publication failure closes it. A legacy listener retains the existing
+runtime-write warning because legacy discovery can still find it. Doctor keeps
+bounded bind diagnostics and distinguishes runtime publication failures.
+
+`src/local-server-port-hint.js` preserves only the last published dynamic port
+across normal exit. It is not a live identity and clients/installers never read
+it. Only main.js injects its IO into server.js; test servers default to no hint
+IO. The server getter supplies a dynamic port only while its own listener is
+active. Standalone HTTP-hook installers require a live runtime owner before
+using an out-of-range port. CodeBuddy sync passes the live listener explicitly.
+
+Native clients accept canonical 1–65535 runtime ports, with `app` validation;
+legacy scanning remains five ports. Cached plugin delivery rereads runtime in
+the same request after a cache miss. OpenCode's owner-only/live-owner permission
+and question targets stay strict, and Hermes secure mode stays pinned to its
+remote identity. Remote SSH identities and profiles still use the five-port
+allowlist, independently of local listener ports.
+
+Dynamic Claude/CodeBuddy HTTP hooks use the exact local ownership path
+`/permission/clawd-on-desk`. Install/uninstall classifiers match the raw URL;
+plain third-party dynamic `/permission` URLs remain foreign. The new local route
+shares the existing browser transport guard and permission handler. Remote
+ingress rejects it even with a valid nonce. This marker does not authenticate
+local callers. See known limitations for CLI snapshots, WSL separate homes,
+manual tunnels, mixed versions and the independent Mobile Preview listener.
+
 Claude's live tool/model phase additionally uses `PostToolBatch` on the conservative
 2.1.280+ baseline. The hook sends only bounded tool IDs and `prompt_id`, omitting
 inputs, responses and process probes. `src/claude-tool-phase.js` keeps a bounded

@@ -68,6 +68,8 @@ async function createPermissionIngressHarness({ render = false, ctxOverrides = {
     clearRuntimeConfig: () => true,
     readRuntimePort: () => null,
     readRuntimeIdentity: () => null,
+    readLocalServerPortHint: () => null,
+    writeLocalServerPortHint: () => true,
     windowsProcessChainModes: { "claude-code": "legacy" },
   });
   await api.startHttpServer();

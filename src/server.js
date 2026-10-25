@@ -6,6 +6,9 @@ const http = require("http");
 const crypto = require("crypto");
 const {
   DEFAULT_SERVER_PORT,
+  SERVER_PORTS,
+  LOCAL_PERMISSION_PATH,
+  normalizeLocalPort,
   defaultRuntimeConfigPath,
   buildPermissionUrl,
   clearRuntimeConfig,
@@ -82,6 +85,9 @@ const clearRuntimeConfigFn = ctx.clearRuntimeConfig || clearRuntimeConfig;
 const getPortCandidatesFn = ctx.getPortCandidates || getPortCandidates;
 const readRuntimePortFn = ctx.readRuntimePort || readRuntimePort;
 const writeRuntimeConfigFn = ctx.writeRuntimeConfig || writeRuntimeConfig;
+// Opt-in production IO: tests never read or overwrite the user's restart hint.
+const readPortHint = ctx.readLocalServerPortHint || (() => null);
+const writePortHint = ctx.writeLocalServerPortHint || (() => true);
 // #681. Injectable so tests never read the developer's real ~/.clawd/runtime.json
 // (whose contents depend on whether Clawd happens to be running right now).
 const readRuntimeIdentityFn = ctx.readRuntimeIdentity
@@ -151,6 +157,8 @@ const CLAUDE_HOOK_GUARD_NOTICE_TTL_MS = 30 * 60 * 1000;
 
 let httpServer = null;
 let activeServerPort = null;
+let bindAttempts = [];
+let startupFailure = null;
 let lastClaudeHookGuardNotice = null;
 // Separate the persisted user authorization from short transactional tail
 // suppression. During Settings OFF / integration uninstall the preference or
@@ -232,7 +240,9 @@ function getAgentIntegrationOptions(agentId) {
 }
 
 function getHookServerPort() {
-  return activeServerPort || readRuntimePortFn() || DEFAULT_SERVER_PORT;
+  if (activeServerPort) return activeServerPort;
+  const runtime = readRuntimePortFn();
+  return SERVER_PORTS.includes(runtime) ? runtime : DEFAULT_SERVER_PORT;
 }
 
 function getRuntimeStatus() {
@@ -245,7 +255,7 @@ function getRuntimeStatus() {
   const addressPort = address && typeof address === "object" && Number.isInteger(address.port)
     ? address.port
     : null;
-  const port = activeServerPort || addressPort || null;
+  const port = activeServerPort && activeServerPort === addressPort ? activeServerPort : null;
   const runtimePort = readRuntimePortFn();
   // #681: the runtime file is now the hook resolver's offline gate, so its
   // identity — not just its port — decides whether hooks can report process
@@ -257,6 +267,8 @@ function getRuntimeStatus() {
   return {
     listening: !!port && (!httpServer || httpServer.listening !== false),
     port,
+    bindAttempts: bindAttempts.map((attempt) => ({ ...attempt })),
+    startupFailure: startupFailure ? { ...startupFailure } : null,
     runtimePath: runtimeConfigFilePath(),
     runtimePort,
     runtimeFileExists: Number.isInteger(runtimePort),
@@ -997,7 +1009,7 @@ function routeHttpRequest(req, res, remoteProfile = null) {
     } else if (req.method === "POST" && req.url === "/question") {
       if (!remoteProfile && rejectUnsafeLocalHookRequest(req, res, "/question")) return;
       handleQuestionPost(req, res, { ctx, remoteProfile });
-    } else if (req.method === "POST" && req.url === "/permission") {
+    } else if (req.method === "POST" && (req.url === "/permission" || (!remoteProfile && req.url === LOCAL_PERMISSION_PATH))) {
       if (!remoteProfile && rejectUnsafeLocalHookRequest(req, res, "/permission")) return;
       handlePermissionPost(req, res, {
         ctx,
@@ -1028,17 +1040,20 @@ function startHttpServer() {
     routeHttpRequest(req, res, null);
   });
 
-  const listenPorts = getPortCandidatesFn();
+  activeServerPort = null;
+  bindAttempts = [];
+  startupFailure = null;
+  let hint = null;
+  try { hint = normalizeLocalPort(readPortHint()); } catch {}
+  if (hint < 1024 || SERVER_PORTS.includes(hint)) hint = null;
+  // Port 0 is a server-only last resort, never a client scan candidate.
+  const listenPorts = [...new Set([
+    ...getPortCandidatesFn().map(normalizeLocalPort).filter(Boolean).slice(0, 8),
+    ...(hint ? [hint] : []), 0,
+  ])];
   let listenIndex = 0;
-  // Resolves with the bound port once the server is actually listening, or
-  // null if every candidate port is occupied (or a non-EADDRINUSE bind error
-  // fires before listening). Callers that read the port synchronously to wire
-  // downstream connections — e.g. remote-ssh connect-on-launch, whose
-  // runtime.connect() builds the SSH reverse tunnel off getHookServerPort() —
-  // MUST await this. listen() is async, so activeServerPort is still null when
-  // startHttpServer() returns; acting before the 'listening' event would read
-  // a stale fallback port (readRuntimePort()/DEFAULT) and target the wrong
-  // local port whenever the bind drifted off the first candidate.
+  // Callers (including Remote SSH connect-on-launch) must await the actual
+  // listener and, for a dynamic port, successful runtime publication.
   return new Promise((resolve) => {
     let settled = false;
     const settle = (value) => {
@@ -1046,80 +1061,63 @@ function startHttpServer() {
       settled = true;
       resolve(value);
     };
-
-    httpServer.on("error", (err) => {
-      if (!activeServerPort && err.code === "EADDRINUSE" && listenIndex < listenPorts.length - 1) {
+    const bindFailed = (err) => {
+      if (settled) return;
+      const failure = {
+        stage: "bind", port: listenPorts[listenIndex],
+        code: String(err && err.code || "UNKNOWN").slice(0, 48),
+        message: String(err && err.message || "Bind failed").slice(0, 240),
+      };
+      bindAttempts.push(failure);
+      if ((failure.code === "EADDRINUSE" || failure.code === "EACCES") && listenIndex < listenPorts.length - 1) {
         listenIndex++;
-        httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
+        listen();
         return;
       }
-      if (!activeServerPort && err.code === "EADDRINUSE") {
-        const firstPort = listenPorts[0];
-        const lastPort = listenPorts[listenPorts.length - 1];
-        console.warn(`Ports ${firstPort}-${lastPort} are occupied — state sync and permission bubbles are disabled`);
-      } else {
-        console.error("HTTP server error:", err.message);
-      }
-      // Pre-listening failure: resolve null so startup callbacks can skip work
-      // that needs a live port. A post-listening runtime 'error' arrives after
-      // settle(port), so this is a no-op in that case.
+      startupFailure = failure;
+      console.warn(`Clawd local server failed (${failure.code}, port ${failure.port}): ${failure.message}`);
       settle(null);
-    });
-
+    };
+    const listen = () => {
+      try { httpServer.listen(listenPorts[listenIndex], "127.0.0.1"); }
+      catch (err) { bindFailed(err); }
+    };
+    httpServer.on("error", bindFailed);
     httpServer.on("listening", () => {
-      activeServerPort = listenPorts[listenIndex];
-      // #681: settle() is at the bottom of this handler, and this is an event
-      // callback with no main-process uncaughtException handler behind it — so a
-      // throw from here takes the Electron main process down, and under a host
-      // that does catch (the test runner) it instead strands startHttpServer's
-      // promise and every caller awaiting the port. writeRuntimeConfig owes a
-      // boolean contract (its mkdirSync used to sit outside its own try), but a
-      // ctx-injected implementation can throw for any reason. Report, never
-      // propagate.
+      if (settled) return;
+      let port = null;
+      try { port = normalizeLocalPort(httpServer.address().port); } catch {}
+      if (!port) {
+        try { httpServer.close(); } catch {}
+        bindFailed(new Error("Listener has no valid address port"));
+        return;
+      }
       let runtimeWritten = false;
-      try {
-        runtimeWritten = writeCurrentRuntimeConfig(activeServerPort) === true;
-      } catch (err) {
-        runtimeWritten = false;
-        console.warn("Failed to write the Clawd runtime file:", (err && err.message) || err);
-      }
+      try { runtimeWritten = writeCurrentRuntimeConfig(port) === true; }
+      catch (err) { console.warn("Failed to write the Clawd runtime file:", (err && err.message) || err); }
       if (!runtimeWritten) {
-        // Hooks fall back to probing the port range, so state/permission POSTs
-        // still land. What is lost is the resolver's offline gate input: with no
-        // readable runtime identity the hook fail-closes and OMITS process
-        // metadata (no terminal focus for new sessions) rather than snapshot the
-        // machine to guess it. Surfaced in Doctor → Local server.
-        // runtimeConfigFilePath(), not getRuntimeStatus().runtimePath: the status
-        // object reads the runtime file twice and probes the owner PID to build
-        // fields this log line discards, and each of those is a throw-capable
-        // ctx seam sitting above settle().
-        console.warn(
-          `Clawd runtime file was not written (${runtimeConfigFilePath()}) — `
-          + "hook process metadata will be omitted until this is repaired (see Doctor → Local server)"
-        );
+        const dynamic = !SERVER_PORTS.includes(port);
+        console.warn(`Clawd runtime file was not written (${runtimeConfigFilePath()}) — `
+          + (dynamic ? "dynamic listener closed; check Doctor → Local server"
+            : "hook process metadata will be omitted until this is repaired (see Doctor → Local server)"));
+        if (dynamic) {
+          startupFailure = { stage: "runtime", port, code: "RUNTIME_WRITE_FAILED" };
+          try { httpServer.close(); } catch {}
+          settle(null);
+          return;
+        }
       }
-      console.log(`Clawd state server listening on 127.0.0.1:${activeServerPort}`);
-      // Defer hook/plugin registration off the startup path. Each sync call
-      // reads+parses+writes a config JSON (50-150ms cumulative on slow disks),
-      // and they operate on independent files for independent agents, so
-      // none of them need to block the HTTP server from accepting traffic.
-      setImmediateFn(() => {
-        syncEnabledStartupIntegrations();
-      });
-      settle(activeServerPort);
+      activeServerPort = port;
+      if (runtimeWritten && !SERVER_PORTS.includes(port)) {
+        let saved = false;
+        try { saved = writePortHint(port) === true; } catch {}
+        if (!saved) console.warn("Clawd could not save its local server restart port hint");
+      }
+      console.log(`Clawd state server listening on 127.0.0.1:${port}`);
+      setImmediateFn(() => { syncEnabledStartupIntegrations(); });
+      settle(port);
     });
-
-    try {
-      httpServer.listen(listenPorts[listenIndex], "127.0.0.1");
-    } catch (err) {
-      // listen() can throw synchronously (bad args, certain Windows
-      // conditions). Honor the "resolves, never rejects" contract: log and
-      // resolve null so port-dependent startup work is skipped — same outcome
-      // as a pre-listening 'error' event, rather than rejecting and risking an
-      // unhandled rejection in a caller that forgot to .catch().
-      console.error("HTTP server listen threw:", err && err.message);
-      settle(null);
-    }
+    listen();
   });
 }
 
@@ -1133,6 +1131,7 @@ function cleanup() {
   clearRuntimeConfigFn();
   clearClaudeHookGuardStatus();
   localHookRejectTelemetry.clear();
+  activeServerPort = null;
   if (httpServer) httpServer.close();
 }
 
