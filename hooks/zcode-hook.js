@@ -294,8 +294,33 @@ function buildNoDecisionOutput() {
 // ZCode 3.5.x's hook stdout schema defines PermissionRequest as a strict union:
 // allow accepts optional
 // permissionUpdates/updatedPermissions/updatedInput, deny accepts optional
-// interrupt/message. We deliberately emit only the minimal legal forms —
-// Clawd never rewrites tool input or permission rules, and never interrupts.
+// interrupt/message. Clawd deliberately emits only the minimal legal forms and
+// never rewrites tool input or permission rules — the single exception is the
+// AskUserQuestion answer object (#1264), whose shape is re-validated below
+// before it reaches stdout because the server response is trusted less than
+// ZCode's schema.
+const ZCODE_ELICITATION_INPUT_MAX_QUESTIONS = 16;
+const ZCODE_ELICITATION_INPUT_MAX_ANSWERS = 16;
+const ZCODE_ELICITATION_INPUT_MAX_BYTES = 65536;
+
+function isZcodeElicitationUpdatedInput(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const questions = value.questions;
+  if (!Array.isArray(questions) || questions.length === 0
+    || questions.length > ZCODE_ELICITATION_INPUT_MAX_QUESTIONS) return false;
+  const answers = value.answers;
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) return false;
+  const keys = Object.keys(answers);
+  if (keys.length === 0 || keys.length > ZCODE_ELICITATION_INPUT_MAX_ANSWERS) return false;
+  if (!keys.every((key) => typeof key === "string" && key.length > 0
+    && typeof answers[key] === "string" && answers[key].length > 0)) return false;
+  try {
+    return Buffer.byteLength(JSON.stringify(value)) <= ZCODE_ELICITATION_INPUT_MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 function sanitizeZcodePermissionDecision(decision) {
   if (!decision || typeof decision !== "object") return null;
   const behavior = decision.behavior === "deny" ? "deny"
@@ -304,6 +329,12 @@ function sanitizeZcodePermissionDecision(decision) {
   const out = { behavior };
   if (behavior === "deny" && typeof decision.message === "string" && decision.message) {
     out.message = decision.message;
+  }
+  // #1264: the only updatedInput Clawd ever sends is the validated
+  // elicitation answer object; any other value (or a malformed one) keeps the
+  // minimal allow exactly as before.
+  if (behavior === "allow" && isZcodeElicitationUpdatedInput(decision.updatedInput)) {
+    out.updatedInput = decision.updatedInput;
   }
   return out;
 }
@@ -577,6 +608,7 @@ module.exports = {
   getZcodePlatformConfig,
   isWithinToolMatchBudgets,
   isZcodeAgentCommandLine,
+  isZcodeElicitationUpdatedInput,
   main,
   normalizeZcodeSessionId,
   normalizeToolMatchValue,

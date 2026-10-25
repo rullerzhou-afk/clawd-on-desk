@@ -74,9 +74,9 @@ ZCode uses config-file hooks under `~/.zcode/cli/config.json`:
 | PostToolUse | working |
 | PostToolUseFailure | error |
 | Stop | attention |
-| PermissionRequest | notification (fail-closed path only) |
+| PermissionRequest | notification (fail-closed path, no-capability drops) |
 
-`PermissionRequest` is a blocking permission approval since Phase 2: the hook waits on Clawd's local bubble or remote approval and answers a manual allow/deny via `hookSpecificOutput` on stdout. Permission automation deliberately defers for ZCode until its tool surface and session identity are audited. The `notification` mapping above only fires on the fail-closed path (missing/unknown tool name) or when Clawd is not running; a real decision never posts `/state`. ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. When Clawd yields no decision (timeout, disconnect, DND, bubbles off), the hook prints `{}` and ZCode's own permission flow takes over.
+`PermissionRequest` is a blocking permission approval since Phase 2: the hook waits on Clawd's local bubble or remote approval and answers a manual allow/deny via `hookSpecificOutput` on stdout. Permission automation deliberately defers for ZCode until its tool surface and session identity are audited. The `notification` mapping above fires on the fail-closed path (missing/unknown tool name), when Clawd is not running, and — since #1264 — server-side whenever Clawd drops a request it may not decide (no-capability interactions such as ZCode's real ExitPlanMode, or an AskUserQuestion whose shape has no answerable surface): the pet flashes the transient notification (~5s auto-return, no HUD row) instead of staying silent while ZCode waits on its native prompt. A shown bubble or remote card keeps posting `/state` as before. ZCode does not provide a `SessionEnd` hook in this integration, so completion relies on `Stop` plus Clawd's normal process-liveness and stale-session cleanup. When Clawd yields no decision (timeout, disconnect, DND, bubbles off), the hook prints `{}` and ZCode's own permission flow takes over.
 
 ## Grok Build Hook Events
 

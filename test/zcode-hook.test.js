@@ -226,6 +226,46 @@ describe("ZCode hook PermissionRequest path", () => {
       { behavior: "allow" });
   });
 
+  it("forwards only the validated elicitation answer object as updatedInput (#1264)", () => {
+    const answer = {
+      questions: [{ question: "Proceed with restart?" }],
+      answers: { "Proceed with restart?": "Restart now" },
+    };
+    assert.deepStrictEqual(
+      sanitizeZcodePermissionDecision({ behavior: "allow", updatedInput: answer }),
+      { behavior: "allow", updatedInput: answer }
+    );
+    assert.strictEqual(
+      sanitizeZcodePermissionOutput(
+        JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: answer } } })
+      ),
+      JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: answer } } })
+    );
+    // Anything that is not the elicitation answer shape keeps the minimal
+    // allow: arbitrary input rewrites, oversized payloads, empty answers,
+    // non-string values, and malformed containers.
+    for (const updatedInput of [
+      { command: "rm -rf /" },
+      { questions: [], answers: { q: "a" } },
+      { questions: [{ question: "q" }], answers: {} },
+      { questions: [{ question: "q" }], answers: { q: "" } },
+      { questions: [{ question: "q" }], answers: { q: 42 } },
+      { questions: [{ question: "q" }], answers: { q: "x".repeat(70000) } },
+      "answers",
+      null,
+    ]) {
+      assert.deepStrictEqual(
+        sanitizeZcodePermissionDecision({ behavior: "allow", updatedInput }),
+        { behavior: "allow" }
+      );
+    }
+    // deny never carries updatedInput even when it is a valid answer object.
+    assert.deepStrictEqual(
+      sanitizeZcodePermissionDecision({ behavior: "deny", updatedInput: answer }),
+      { behavior: "deny" }
+    );
+  });
+
   it("blocks on /permission with the long budget and skips the state post", async () => {
     let permissionCall = null;
     const result = await run({

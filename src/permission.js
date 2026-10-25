@@ -245,11 +245,53 @@ function buildQwenCodePermissionResponseBody(decisionOrBehavior, message) {
   return buildCodexPermissionResponseBody(decisionOrBehavior, message);
 }
 
-// ZCode's 3.5.x PermissionRequest schema accepts the same minimal union the
-// codex builder emits ({ behavior } allow / { behavior, message } deny).
-// End-to-end Allow/Deny is verified on macOS ZCode 3.8.1.
+// ZCode's PermissionRequest output schema (3.5.x through 3.16.3) is a strict
+// union: allow may carry optional permissionUpdates/updatedPermissions/
+// updatedInput, deny may carry interrupt/message. Clawd still never rewrites
+// tool input or permission rules — the ONLY updatedInput it ever sends is the
+// elicitation answer object built by buildElicitationUpdatedInput, and only
+// after this shape check (#1264). Everything else stays omitted.
+const ZCODE_ELICITATION_INPUT_MAX_QUESTIONS = 16;
+const ZCODE_ELICITATION_INPUT_MAX_ANSWERS = 16;
+const ZCODE_ELICITATION_INPUT_MAX_BYTES = 65536;
+
+function isZcodeElicitationUpdatedInput(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const questions = value.questions;
+  if (!Array.isArray(questions) || questions.length === 0
+    || questions.length > ZCODE_ELICITATION_INPUT_MAX_QUESTIONS) return false;
+  const answers = value.answers;
+  if (!answers || typeof answers !== "object" || Array.isArray(answers)) return false;
+  const keys = Object.keys(answers);
+  if (keys.length === 0 || keys.length > ZCODE_ELICITATION_INPUT_MAX_ANSWERS) return false;
+  if (!keys.every((key) => typeof key === "string" && key.length > 0
+    && typeof answers[key] === "string" && answers[key].length > 0)) return false;
+  try {
+    return Buffer.byteLength(JSON.stringify(value)) <= ZCODE_ELICITATION_INPUT_MAX_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 function buildZcodePermissionResponseBody(decisionOrBehavior, message) {
-  return buildCodexPermissionResponseBody(decisionOrBehavior, message);
+  const source = typeof decisionOrBehavior === "string"
+    ? { behavior: decisionOrBehavior, message }
+    : (decisionOrBehavior && typeof decisionOrBehavior === "object" ? decisionOrBehavior : null);
+  const decision = sanitizeCodexPermissionDecision(source, message);
+  if (!decision) return "{}";
+  if (
+    decision.behavior === "allow"
+    && source
+    && isZcodeElicitationUpdatedInput(source.updatedInput)
+  ) {
+    decision.updatedInput = source.updatedInput;
+  }
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: "PermissionRequest",
+      decision,
+    },
+  });
 }
 
 function sanitizeAntigravityPermissionDecision(decisionOrBehavior, message) {
@@ -4407,9 +4449,16 @@ function applyPermissionSuggestion(perm, index, options = {}) {
     if (behavior === "no-decision") {
       sendZcodeNoDecisionResponse(res, message || "fallback");
     } else {
+      // #1264: an AskUserQuestion answer travels as updatedInput
+      // ({questions, answers}); buildZcodePermissionResponseBody only puts
+      // shapes it can vouch for on the wire, so a stale or malformed field
+      // degrades to a plain allow.
       sendZcodePermissionResponse(res, {
         behavior: behavior === "deny" ? "deny" : "allow",
         message,
+        ...(behavior === "allow" && permEntry.resolvedUpdatedInput
+          ? { updatedInput: permEntry.resolvedUpdatedInput }
+          : {}),
       });
     }
     return;
@@ -5227,6 +5276,40 @@ function handleDecide(event, behavior) {
   if (perm.isZcode) {
     if (behavior === "allow" || behavior === "deny") {
       resolvePermissionEntry(perm, behavior);
+      return;
+    }
+    // ZCode's AskUserQuestion answer contract (#1264): the bubble/remote
+    // submit indexed answers, and the wire allow carries them as updatedInput
+    // ({questions, answers}) — ZCode 3.16.3 applies that as a modify, exactly
+    // like the Claude Code elicitation path.
+    if (
+      isValidInteraction(perm.interaction)
+      && perm.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+      && perm.interaction.capabilities.answerQuestions
+      && behavior
+      && typeof behavior === "object"
+      && behavior.type === "elicitation-submit"
+    ) {
+      const wireInput = perm.elicitationWireInput || perm.toolInput;
+      const validatedAnswers = validateAndRemapIndexedElicitationAnswers(
+        wireInput,
+        behavior.answers
+      );
+      if (!validatedAnswers.ok) {
+        permLog(`desktop zcode elicitation rejected: ${validatedAnswers.reason}`);
+        resolvePermissionEntry(
+          perm,
+          "no-decision",
+          validatedAnswers.reason,
+          resolutionOptions("cancelled", false)
+        );
+        return;
+      }
+      perm.resolvedUpdatedInput = buildElicitationUpdatedInput(
+        wireInput,
+        validatedAnswers.answers
+      );
+      resolvePermissionEntry(perm, "allow", undefined, resolvedDecisionOptions);
       return;
     }
     resolvePermissionEntry(perm, "no-decision", `Unsupported ZCode bubble action: ${String(behavior)}`);
