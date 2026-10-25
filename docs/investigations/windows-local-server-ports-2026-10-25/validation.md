@@ -26,10 +26,23 @@ The machine's normal Clawd range was not excluded. Read-only `netsh interface ip
 
 The seven cross-language/client tests also passed on this Windows host. Real **PowerShell 5.1.26100.9711** ran the production NSIS fallback script against isolated settings: it removed the two owned URLs and preserved all **nine** foreign variants, including plain dynamic `/permission`, trailing slash, query, fragment, dot segment, doubled slash, case variation and trailing newline/carriage return.
 
+## macOS real Claude approval
+
+Tested commit `104c268ebc61dfb35cdc6a1d891cc81cc1acec0a` on **macOS 26.6.2 arm64**, **Electron 41.10.4**, **Claude Code 2.1.296 / claude-opus-5-5**. Claude used the existing logged-in account through its normal configuration home; no credentials were copied. A temporary per-invocation settings file directed only this test session's Bash PermissionRequest to the test listener.
+
+The production server and permission modules ran with the actual `bubble.html`, preload and permission IPC handlers in a separate Electron harness. The harness supplied window geometry and disabled integration sync and runtime/hint file writes, so this validates the real approval round trip and rendering, not full packaged-app startup or persistence.
+
+1. The OS selected local port **65469**, outside the five legacy ports.
+2. Real Claude sent `POST /permission/clawd-on-desk` and waited. The production bubble visibly showed the exact Bash command to write one proof file in the dedicated temporary working directory.
+3. Codex expanded the details and clicked **Approve** through native desktop controls. No test helper or direct IPC call resolved the permission.
+4. The request completed with **HTTP 200**; Claude created the expected proof file with content `approved`, returned `APPROVAL_TEST_DONE`, and exited **0** with no permission denials. The bubble closed and no request remained pending.
+
+The screenshot and bounded observation record are retained locally. The test Electron instance was closed afterward; the existing desktop pet and its integration settings were not changed. The earlier separate-home CLI probe that stopped at login is superseded for this approval-interaction check.
+
 ## Remaining acceptance limits
 
 - The reporter's exact machine and excluded default range remain untested.
-- Packaged Electron UI and a human clicking a real Claude approval bubble have not been verified for this change. A separate-home real Claude CLI probe was attempted; it did not reach the model or send a hook request. Its login/API result is recorded locally; this is not counted as CLI acceptance.
+- Full packaged Electron UI remains unverified. The real Claude request, production approval bubble and native UI decision are verified in the isolated source harness described above.
 - In-flight CLI HTTP-hook configuration reload after a forced port change remains unverified. The saved port hint reduces normal restart drift, and the documentation states that an existing CLI session may need reload/restart.
 - Separate-home WSL dynamic-port discovery, Mobile Preview fallback and older-version cleanup are explicitly outside this change's supported scope.
 
