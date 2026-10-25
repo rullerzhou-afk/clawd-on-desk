@@ -39,10 +39,22 @@ The production server and permission modules ran with the actual `bubble.html`, 
 
 The screenshot and bounded observation record are retained locally. The test Electron instance was closed afterward; the existing desktop pet and its integration settings were not changed. The earlier separate-home CLI probe that stopped at login is superseded for this approval-interaction check.
 
-## Remaining acceptance limits
+## macOS full-app startup and restart
+
+Tested commit `1b08b25ee65db9f80c5ba053e11ac4c9bcde18da` with the unchanged production `src/main.js` in Electron, using a temporary home and application profile. The bootstrap only redirected filesystem paths and asserted source mode; the server, runtime/hint persistence, installers and startup integration sync were not stubbed. Only the isolated Claude integration was enabled.
+
+1. Port 23333 was already occupied; test-owned listeners occupied 23334–23337 without disturbing the existing listener. Full-app startup selected **57830**, published the real runtime record and saved the port hint.
+2. Actual startup sync replaced the isolated legacy Claude HTTP hook with `http://127.0.0.1:57830/permission/clawd-on-desk`. The state endpoint returned **200**, and native desktop inspection confirmed the rendered pet.
+3. A normal quit through the application menu exited **0**, removed runtime and retained the port hint.
+4. The second full-app launch reused **57830** and the same approval URL; the state endpoint returned **200** again. A normal quit through the pet menu again exited **0**, removed runtime and retained the hint.
+5. The user's daily Claude settings and Clawd runtime files had unchanged hashes throughout both launches. Test-owned listeners were closed and the temporary Electron app copy was removed after completion.
+
+The supervisor reported **PASS** for both launches and exits. Screenshots, startup logs and the bounded result record are retained locally. This verifies full source-app startup, real integration sync and normal restart persistence; it does not claim packaged-distribution validation or in-flight CLI hook reload.
+
+## Acceptance limits
 
 - The reporter's exact machine and excluded default range remain untested.
-- Full packaged Electron UI remains unverified. The real Claude request, production approval bubble and native UI decision are verified in the isolated source harness described above.
+- Full packaged Electron UI remains unverified. The separate checks above cover the real Claude approval round trip and full source-app startup/restart, respectively.
 - In-flight CLI HTTP-hook configuration reload after a forced port change remains unverified. The saved port hint reduces normal restart drift, and the documentation states that an existing CLI session may need reload/restart.
 - Separate-home WSL dynamic-port discovery, Mobile Preview fallback and older-version cleanup are explicitly outside this change's supported scope.
 
@@ -52,4 +64,4 @@ Claude reviewed the plan in two rounds and then reviewed implementation commit `
 
 Codex independently confirmed and fixed both nonblocking notes: preserve logging of server errors after startup without restarting the bind loop, and let the Wayland smoke script read a dynamic runtime port and include that port in teardown checks and diagnostics. Follow-up validation: **57 targeted tests passed, 0 failed**, shell syntax passed, and isolated shell-function checks covered 11 runtime validation cases plus dynamic/legacy teardown detection. This does not constitute a packaged Wayland run.
 
-The implementation and test evidence do not replace the remaining real CLI/UI acceptance above. Full review exports and independent adjudications are retained locally; only this bounded validation record is published with the code.
+The evidence is limited to the checks described above. Packaged-distribution testing and forced-port-change hook reload were not included in the agreed final smoke test. Full review exports and independent adjudications are retained locally; only this bounded validation record is published with the code.
