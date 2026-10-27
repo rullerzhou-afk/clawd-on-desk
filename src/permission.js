@@ -249,8 +249,10 @@ function buildQwenCodePermissionResponseBody(decisionOrBehavior, message) {
 // union: allow may carry optional permissionUpdates/updatedPermissions/
 // updatedInput, deny may carry interrupt/message. Clawd still never rewrites
 // tool input or permission rules — the ONLY updatedInput it ever sends is the
-// elicitation answer object built by buildElicitationUpdatedInput, and only
-// after this shape check (#1264). Everything else stays omitted.
+// elicitation answer object built by buildElicitationUpdatedInput: the
+// upstream input echoed plus an answers record whose keys are exactly the
+// question texts. This shape check gates the wire (#1264); everything else
+// stays omitted.
 const ZCODE_ELICITATION_INPUT_MAX_QUESTIONS = 16;
 const ZCODE_ELICITATION_INPUT_MAX_ANSWERS = 16;
 const ZCODE_ELICITATION_INPUT_MAX_BYTES = 65536;
@@ -260,11 +262,19 @@ function isZcodeElicitationUpdatedInput(value) {
   const questions = value.questions;
   if (!Array.isArray(questions) || questions.length === 0
     || questions.length > ZCODE_ELICITATION_INPUT_MAX_QUESTIONS) return false;
+  const questionTexts = new Set();
+  for (const question of questions) {
+    if (!question || typeof question !== "object" || Array.isArray(question)) return false;
+    const text = typeof question.question === "string" ? question.question : "";
+    if (!text) return false;
+    questionTexts.add(text);
+  }
   const answers = value.answers;
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) return false;
   const keys = Object.keys(answers);
   if (keys.length === 0 || keys.length > ZCODE_ELICITATION_INPUT_MAX_ANSWERS) return false;
   if (!keys.every((key) => typeof key === "string" && key.length > 0
+    && questionTexts.has(key)
     && typeof answers[key] === "string" && answers[key].length > 0)) return false;
   try {
     return Buffer.byteLength(JSON.stringify(value)) <= ZCODE_ELICITATION_INPUT_MAX_BYTES;
@@ -3276,6 +3286,10 @@ function buildPermissionBubblePayload(permEntry) {
     // converted into a retryable block by the plugin. Clarify elicitation is
     // different and can hand control to Hermes' native clarification UI.
     isHermes: permEntry.isHermes || false,
+    // ZCode question cards map "Go to terminal" to deny-and-focus too: the
+    // bubble action must hand the question back to ZCode's native prompt
+    // (no-decision), never wire an explicit deny for a question (#1264).
+    isZcode: permEntry.isZcode || false,
     // DSH has a downstream native web answerer. Its first-release bubble must
     // not render Go to Terminal because that action has no decision meaning.
     isDsh: permEntry.isDsh || false,
@@ -4309,6 +4323,21 @@ function applyPermissionSuggestion(perm, index, options = {}) {
   if (idx === -1) return;
   let planReviewUpdatedInput = null;
   let focusPlanReviewFallback = false;
+  if (
+    behavior === "allow"
+    && permEntry.isZcode
+    && permEntry.isElicitation === true
+    && !isZcodeElicitationUpdatedInput(permEntry.resolvedUpdatedInput)
+  ) {
+    // #1264: an elicitation answer that fails the wire shape check must not
+    // degrade to a bare allow — the question tool would run with no answers
+    // (e.g. a wire input over the 64 KiB answer budget passes the ingress
+    // budgets but not this one). Hand the question back to ZCode's native
+    // prompt instead, exactly like the Claude plan-review guard below.
+    permLog("zcode elicitation allow without a wire-shaped answer -> no-decision native fallback");
+    behavior = "no-decision";
+    message = "ZCode question answer did not fit the wire contract";
+  }
   if (
     behavior === "allow"
     && permEntry.agentId === "claude-code"

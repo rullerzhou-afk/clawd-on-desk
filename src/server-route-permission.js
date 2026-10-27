@@ -1997,8 +1997,7 @@ function handlePermissionPost(req, res, options) {
         // Optional external review (#995), settled before either the
         // remote-only or the local automatic-allow path can decide.
         const permissionReview = isPermissionReviewEnabled(ctx)
-          ? null
-          : await settlePermissionReview(ctx, res, {
+          ? await settlePermissionReview(ctx, res, {
             agentId: "zcode",
             recordRequestHookEvent,
             sessionId,
@@ -2017,18 +2016,33 @@ function handlePermissionPost(req, res, options) {
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendZcodePermissionNoDecision(res);
             },
-          });
+          })
+          : null;
         if (permissionReview === REVIEW_CANCELLED) return;
         if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
           recordRequestHookEvent.accepted();
           const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
-            res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
+            res, sessionId, toolName,
+            // Answerable questions carry the same elicitation fields as the
+            // local entry: the remote resolver keys submitted answers off
+            // elicitationWireInput, so a truncated toolInput copy would
+            // produce answer keys ZCode cannot match (#1264 review).
+            ...(zcodeElicitation
+              ? {
+                  toolInput: zcodeElicitation.displayInput,
+                  elicitationDetailInput: zcodeElicitation.detailDisplayInput,
+                  detailTruncated: zcodeElicitation.detailTruncated,
+                  elicitationWireInput: zcodeElicitation.wireInput,
+                  isElicitation: true,
+                }
+              : { toolInput }),
+            toolUseId, toolInputFingerprint,
             agentId: "zcode", isZcode: true, interaction, sessionAutomationIdentity,
             cwd: zcodeSessionOptions.cwd || "",
             host: zcodeSessionOptions.host || null,
             model: zcodeSessionOptions.model || null,
             ...trustedSessionFields(sessionIdentity),
-            ...permissionReminder,
+            ...(zcodeElicitation ? {} : permissionReminder),
             permissionReview,
           });
           if (remoteOnlyResult.handled) return;

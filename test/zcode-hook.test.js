@@ -211,11 +211,14 @@ describe("ZCode hook PermissionRequest path", () => {
       ),
       '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"no"}}}'
     );
+    // A present-but-invalid updatedInput cannot be vouched for: no decision
+    // (native prompt keeps the question) instead of a bare allow that would
+    // run an AskUserQuestion with no answers (#1264 review).
     assert.strictEqual(
       sanitizeZcodePermissionOutput(
         '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow","updatedInput":{"command":"evil"}}}}'
       ),
-      '{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}'
+      "{}"
     );
     // Malformed bodies never leak through.
     for (const raw of ["", "   ", "not json", "{}", "[]",
@@ -241,22 +244,36 @@ describe("ZCode hook PermissionRequest path", () => {
       ),
       JSON.stringify({ hookSpecificOutput: { hookEventName: "PermissionRequest", decision: { behavior: "allow", updatedInput: answer } } })
     );
-    // Anything that is not the elicitation answer shape keeps the minimal
-    // allow: arbitrary input rewrites, oversized payloads, empty answers,
-    // non-string values, and malformed containers.
+    // Absent or undefined updatedInput is the plain tool-approval allow.
+    assert.deepStrictEqual(
+      sanitizeZcodePermissionDecision({ behavior: "allow" }),
+      { behavior: "allow" }
+    );
+    assert.deepStrictEqual(
+      sanitizeZcodePermissionDecision({ behavior: "allow", updatedInput: undefined }),
+      { behavior: "allow" }
+    );
+    // Anything that is not the elicitation answer shape yields no decision —
+    // a bare allow would run the question with no answers: arbitrary input
+    // rewrites, empty questions/answers, non-string values, oversized
+    // payloads, answer keys that do not match a question text, and malformed
+    // containers.
     for (const updatedInput of [
       { command: "rm -rf /" },
       { questions: [], answers: { q: "a" } },
       { questions: [{ question: "q" }], answers: {} },
       { questions: [{ question: "q" }], answers: { q: "" } },
       { questions: [{ question: "q" }], answers: { q: 42 } },
+      { questions: [{ question: "q" }], answers: { "not-a-question": "a" } },
       { questions: [{ question: "q" }], answers: { q: "x".repeat(70000) } },
+      { questions: [{ header: "no question text" }], answers: {} },
+      { questions: "questions", answers: { q: "a" } },
       "answers",
       null,
     ]) {
-      assert.deepStrictEqual(
+      assert.strictEqual(
         sanitizeZcodePermissionDecision({ behavior: "allow", updatedInput }),
-        { behavior: "allow" }
+        null
       );
     }
     // deny never carries updatedInput even when it is a valid answer object.

@@ -187,12 +187,16 @@ describe("Codex permission response sanitizer", () => {
       updatedInput: answer,
     });
 
-    // Non-elicitation updatedInput shapes degrade to a plain allow.
+    // Non-elicitation updatedInput shapes degrade to a plain allow. A plain
+    // allow is right for an ordinary tool approval, and an elicitation entry
+    // never reaches this builder with a broken answer: resolvePermissionEntry
+    // downgrades it to no-decision before the wire (#1264 review).
     for (const updatedInput of [
       { command: "rm -rf /" },
       { questions: [], answers: { q: "a" } },
       { questions: [{ question: "q" }], answers: { q: "" } },
       { questions: [{ question: "q" }], answers: { q: 42 } },
+      { questions: [{ question: "q" }], answers: { "not-a-question": "a" } },
       { questions: [{ question: "q" }], answers: { q: "x".repeat(70000) } },
       null,
     ]) {

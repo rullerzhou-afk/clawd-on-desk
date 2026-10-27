@@ -308,11 +308,19 @@ function isZcodeElicitationUpdatedInput(value) {
   const questions = value.questions;
   if (!Array.isArray(questions) || questions.length === 0
     || questions.length > ZCODE_ELICITATION_INPUT_MAX_QUESTIONS) return false;
+  const questionTexts = new Set();
+  for (const question of questions) {
+    if (!question || typeof question !== "object" || Array.isArray(question)) return false;
+    const text = typeof question.question === "string" ? question.question : "";
+    if (!text) return false;
+    questionTexts.add(text);
+  }
   const answers = value.answers;
   if (!answers || typeof answers !== "object" || Array.isArray(answers)) return false;
   const keys = Object.keys(answers);
   if (keys.length === 0 || keys.length > ZCODE_ELICITATION_INPUT_MAX_ANSWERS) return false;
   if (!keys.every((key) => typeof key === "string" && key.length > 0
+    && questionTexts.has(key)
     && typeof answers[key] === "string" && answers[key].length > 0)) return false;
   try {
     return Buffer.byteLength(JSON.stringify(value)) <= ZCODE_ELICITATION_INPUT_MAX_BYTES;
@@ -330,10 +338,14 @@ function sanitizeZcodePermissionDecision(decision) {
   if (behavior === "deny" && typeof decision.message === "string" && decision.message) {
     out.message = decision.message;
   }
-  // #1264: the only updatedInput Clawd ever sends is the validated
-  // elicitation answer object; any other value (or a malformed one) keeps the
-  // minimal allow exactly as before.
-  if (behavior === "allow" && isZcodeElicitationUpdatedInput(decision.updatedInput)) {
+  // #1264: the only updatedInput Clawd ever sends is the validated elicitation
+  // answer object. A present-but-invalid updatedInput means the answer cannot
+  // be vouched for — answer "{}" (no decision) so ZCode's native prompt keeps
+  // the question, instead of a bare allow that would run it with no answers.
+  if (behavior === "allow"
+    && Object.prototype.hasOwnProperty.call(decision, "updatedInput")
+    && decision.updatedInput !== undefined) {
+    if (!isZcodeElicitationUpdatedInput(decision.updatedInput)) return null;
     out.updatedInput = decision.updatedInput;
   }
   return out;

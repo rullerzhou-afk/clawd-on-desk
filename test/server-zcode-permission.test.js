@@ -417,13 +417,135 @@ describe("ZCode /permission path", () => {
 
     // Bubbles off means no desktop window, not a full exit: the question card
     // still reaches the remote channel, driven by the answerQuestions
-    // capability (#1264).
+    // capability (#1264). The remote entry carries the elicitation fields so
+    // submitted answers key off the verbatim wire input, not a truncated copy.
     assert.strictEqual(res.writableEnded, false);
     assert.strictEqual(pendingPermissions.length, 1);
     assert.strictEqual(remoteStarts.length, 1);
-    assert.strictEqual(remoteStarts[0].isElicitation, undefined);
+    assert.strictEqual(remoteStarts[0].isElicitation, true);
     assert.strictEqual(remoteStarts[0].interaction.capabilities.answerQuestions, true);
+    assert.strictEqual(remoteStarts[0].elicitationWireInput.questions[0].question, "Ship now?");
+    assert.strictEqual(remoteStarts[0].toolInput.questions[0].question, "Ship now?");
     assert.strictEqual(updates.length, 1);
+    res.destroy();
+  });
+
+  it("stamps the not-inspected review hold without running the command (review configured)", async () => {
+    const { handler, pendingPermissions } = startServer({
+      getPermissionReviewConfig: () => ({ command: ["/bin/echo", "zcode-review-probe"], timeoutMs: 1000 }),
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // ZCode tool approvals never auto-allow (automation eligibility is
+    // false/false), so #995 candidacy fails and the command must not run —
+    // but the entry still carries the fail-closed not-inspected hold stamp
+    // so a later session grant cannot auto-resolve it unreviewed.
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.deepStrictEqual(pendingPermissions[0].permissionReview, {
+      configured: true,
+      hold: true,
+      tag: "not-inspected",
+      note: null,
+      warning: false,
+      exitCode: null,
+    });
+    res.destroy();
+  });
+
+  it("runs the review gate for answerable AskUserQuestion and stamps the hold", async () => {
+    const { handler, pendingPermissions } = startServer({
+      getPermissionReviewConfig: () => ({ command: ["/bin/echo", "zcode-review-probe"], timeoutMs: 1000 }),
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Ship now?",
+            options: [
+              { label: "Ship", description: "yes" },
+              { label: "Hold", description: "no" },
+            ],
+          },
+        ],
+      },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.deepStrictEqual(pendingPermissions[0].permissionReview, {
+      configured: true,
+      hold: true,
+      tag: "not-inspected",
+      note: null,
+      warning: false,
+      exitCode: null,
+    });
+    res.destroy();
+  });
+
+  it("leaves permissionReview null when no review command is configured", async () => {
+    const { handler, pendingPermissions } = startServer();
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(pendingPermissions[0].permissionReview, null);
+    res.destroy();
+  });
+
+  it("stamps the settings-error hold when the review config cannot be read", async () => {
+    const { handler, pendingPermissions } = startServer({
+      getPermissionReviewConfig() {
+        throw new Error("prefs unavailable");
+      },
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.deepStrictEqual(pendingPermissions[0].permissionReview, {
+      configured: true,
+      hold: true,
+      tag: "settings-error",
+      note: null,
+      warning: false,
+      exitCode: null,
+    });
     res.destroy();
   });
 
