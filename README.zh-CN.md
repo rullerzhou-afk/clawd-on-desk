@@ -40,7 +40,7 @@
 |---|---|
 | Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` 或 `-arm64.exe` |
 | macOS | `.dmg`，或 `brew install --cask clawd-on-desk` |
-| Linux | `.AppImage` 或 `.deb`（x86_64 也可用 Homebrew） |
+| Linux | `.AppImage`（应用内更新），或 `.deb` + [APT 接入与旧版迁移](docs/guides/apt-setup.zh-CN.md)（x86_64 也可用 Homebrew） |
 
 启动 Clawd 后它会立刻开始工作：首次启动自动接入 Claude Code 和 Codex。其他 agent 在 **设置 → AI 编程工具** 里一键安装。
 
@@ -111,7 +111,7 @@ Claude Code 和 Codex CLI 首次启动即接入；其他集成在 **设置 → A
 |---|---|
 | [功能特性](docs/guides/features.zh-CN.md) | 所有功能的详细说明 |
 | [安装指南](docs/guides/setup-guide.zh-CN.md) | 源码构建、agent 配置、Windows / macOS / Linux 说明 |
-| [权限处理](docs/guides/setup-guide.zh-CN.md#permission-handling-automation) | 每次询问、仅问题提示或自动放行 |
+| [权限处理](docs/guides/setup-guide.zh-CN.md#权限处理自动化) | 每次询问、仅问题提示或自动放行 |
 | [Remote SSH](docs/guides/guide-remote-ssh.zh-CN.md) | 远程服务器上的 agent 状态和权限气泡 |
 | [Codex + WSL](docs/guides/codex-wsl-clarification.zh-CN.md) | Clawd 对 WSL 中 Codex 的支持边界 |
 | [远程审批](docs/guides/telegram-approval.md) | Telegram，以及 [飞书 / Lark](docs/guides/feishu-lark-remote-approval.md) 和 [Slack 通知](docs/guides/slack-notifications.md) |
@@ -119,6 +119,7 @@ Claude Code 和 Codex CLI 首次启动即接入；其他集成在 **设置 → A
 | [自定义 HTTP agent](docs/guides/custom-agent-http.md) | 接入 Clawd 尚未集成的工具 |
 | [已知限制](docs/guides/known-limitations.zh-CN.md) | 各 agent 的功能差异 |
 | [主题创作](docs/guides/guide-theme-creation.md) | 制作并校验自己的主题 |
+| [贡献外部主题](docs/guides/contributing-themes.zh-CN.md) | 投稿、许可、审核收录与更新 |
 
 ## 社区
 

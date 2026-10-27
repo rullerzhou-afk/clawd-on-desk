@@ -3,7 +3,10 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 const { EventEmitter } = require("node:events");
+const fs = require("node:fs");
 const initPermission = require("../src/permission");
+const os = require("node:os");
+const path = require("node:path");
 
 const {
   CLAWD_SERVER_HEADER,
@@ -131,6 +134,7 @@ function callPermissionPost(body, overrides = {}) {
     const res = makeRes();
     const ctx = makeCtx(overrides.ctx);
     const recorder = [];
+    if (typeof overrides.onContext === "function") overrides.onContext(ctx);
     handlePermissionPost(makeReq(body, overrides.headers), res, {
       ctx,
       createRequestHookRecorder: (identity, data, route) => {
@@ -212,6 +216,14 @@ function callPermissionPostThroughAutomation(body, mode, options = {}) {
       });
     });
   });
+}
+
+async function waitForRoute(predicate, message, timeout = 5000) {
+  const started = Date.now();
+  while (!predicate()) {
+    if (Date.now() - started > timeout) throw new Error(message);
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
 }
 
 describe("Claude ExitPlanMode updatedInput compatibility", () => {
@@ -308,6 +320,161 @@ describe("server-route-permission helpers", () => {
 });
 
 describe("server-route-permission POST", () => {
+  it("rechecks each branch-specific gate after an external review", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-review-gates-"));
+    const cases = [
+      {
+        label: "qwen",
+        agentId: "qwen-code",
+        body: {
+          agent_id: "qwen-code", session_id: "qwen-code:review-gate",
+          tool_name: "Bash", tool_input: { command: "echo qwen" },
+        },
+        disabled: (ctx, marker) => {
+          ctx.isAgentPermissionsEnabled = (agentId) => !fs.existsSync(marker) || agentId !== "qwen-code";
+        },
+        done: (res) => res.statusCode === 204,
+      },
+      {
+        label: "opencode-v2",
+        agentId: "opencode",
+        body: {
+          agent_id: "opencode", hook_source: "opencode-plugin-v2",
+          session_id: "opencode:review-v2", request_id: "review-v2",
+          tool_name: "bash", tool_input: { command: "echo v2" },
+        },
+        disabled: (ctx, marker) => {
+          ctx.isAgentPermissionsEnabled = (agentId) => !fs.existsSync(marker) || agentId !== "opencode";
+        },
+        done: (res) => res.statusCode === 204,
+      },
+      {
+        label: "opencode-v1",
+        agentId: "opencode",
+        body: {
+          agent_id: "opencode", hook_source: "opencode-plugin",
+          session_id: "opencode:review-v1", request_id: "review-v1",
+          tool_name: "bash", tool_input: { command: "echo v1" },
+          bridge_url: "http://127.0.0.1:43210", bridge_token: "review-v1-token",
+        },
+        disabled: (ctx, marker) => {
+          ctx.isAgentPermissionsEnabled = (agentId) => !fs.existsSync(marker) || agentId !== "opencode";
+        },
+        done: (res) => res.ctx.pendingPermissions.length === 0
+          && res.ctx.calls.showPermissionBubble.length === 0
+          && res.ctx.calls.logs.some((line) => line.includes("family-bubbles-disabled")),
+      },
+      {
+        label: "copilot",
+        agentId: "copilot-cli",
+        body: {
+          agent_id: "copilot-cli", hook_source: "copilot-hook",
+          session_id: "copilot:review-gate", tool_name: "edit",
+          tool_input: { filePath: "a.txt" },
+        },
+        disabled: (ctx, marker) => {
+          ctx.isAgentPermissionsEnabled = (agentId) => !fs.existsSync(marker) || agentId !== "copilot-cli";
+        },
+        done: (res) => res.statusCode === 204,
+      },
+      {
+        label: "hermes",
+        agentId: "hermes",
+        body: {
+          agent_id: "hermes", session_id: "hermes:review-gate",
+          tool_name: "execute_bash", tool_input: { command: "echo hermes" },
+        },
+        disabled: (ctx, marker) => {
+          ctx.isAgentPermissionsEnabled = (agentId) => !fs.existsSync(marker) || agentId !== "hermes";
+        },
+        done: (res) => res.statusCode === 204,
+      },
+      {
+        label: "claude-subagent",
+        agentId: "claude-code",
+        body: {
+          agent_id: "0199f2c5-1bb8-7892-9e3b-1d6f4a1c2b3d", agent_type: "code-reviewer",
+          session_id: "claude:review-subagent", tool_name: "Bash",
+          tool_input: { command: "echo subagent" },
+        },
+        disabled: (ctx, marker) => {
+          ctx.isAgentSubagentPermissionsEnabled = () => !fs.existsSync(marker);
+        },
+        done: (res) => res.destroyed === true,
+      },
+    ];
+
+    try {
+      for (const testCase of cases) {
+        const marker = path.join(tempRoot, `${testCase.label}.started`);
+        const doneMarker = path.join(tempRoot, `${testCase.label}.done`);
+        const command = [
+          process.execPath,
+          "-e",
+          `require("fs").writeFileSync(${JSON.stringify(marker)}, "started");setTimeout(() => { require("fs").writeFileSync(${JSON.stringify(doneMarker)}, "done"); process.exit(0); }, 180);`,
+        ];
+        const ctxOverrides = {
+          getPermissionAutomationMode: () => "auto-tools",
+          getPermissionReviewConfig: () => ({ command, timeoutMs: 5000 }),
+        };
+        testCase.disabled(ctxOverrides, marker);
+        const res = await callPermissionPost(JSON.stringify(testCase.body), {
+          ctx: ctxOverrides,
+        });
+        await waitForRoute(() => fs.existsSync(marker), `${testCase.label} review did not start`);
+        await waitForRoute(() => fs.existsSync(doneMarker), `${testCase.label} review did not finish`);
+        await waitForRoute(() => testCase.done(res), `${testCase.label} did not return native fallback`);
+        assert.strictEqual(res.ctx.pendingPermissions.length, 0, testCase.label);
+        assert.strictEqual(res.ctx.calls.showPermissionBubble.length, 0, testCase.label);
+        assert.deepStrictEqual(
+          res.recorder.map((entry) => entry.outcome).filter(Boolean),
+          testCase.expectedOutcome || ["accepted"],
+          testCase.label
+        );
+      }
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("records DND exactly once when it changes during an external review", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-review-dnd-"));
+    const startedMarker = path.join(tempRoot, "started");
+    const doneMarker = path.join(tempRoot, "done");
+    const command = [
+      process.execPath,
+      "-e",
+      `require("fs").writeFileSync(${JSON.stringify(startedMarker)}, "started");setTimeout(() => { require("fs").writeFileSync(${JSON.stringify(doneMarker)}, "done"); process.exit(0); }, 180);`,
+    ];
+    try {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "qwen-code",
+        session_id: "qwen-code:review-dnd",
+        tool_name: "Bash",
+        tool_input: { command: "echo qwen" },
+      }), {
+        ctx: {
+          getPermissionAutomationMode: () => "auto-tools",
+        },
+        onContext: (ctx) => {
+          ctx.getPermissionReviewConfig = () => {
+            setTimeout(() => { ctx.doNotDisturb = true; }, 10);
+            return { command, timeoutMs: 5000 };
+          };
+        },
+      });
+
+      await waitForRoute(() => fs.existsSync(startedMarker), "DND review did not start");
+      await waitForRoute(() => fs.existsSync(doneMarker), "DND review did not finish");
+      await waitForRoute(() => res.recorder.some((entry) => entry.outcome), "DND review did not record an outcome");
+      assert.strictEqual(res.statusCode, 204);
+      assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["dnd"]);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
   it("stamps a valid tool-approval interaction on every entry-producing adapter", async () => {
     const cases = [
       { agentId: "claude-code", body: {} },
@@ -674,6 +841,43 @@ describe("server-route-permission POST", () => {
     assert.strictEqual(res.headers[CLAWD_SERVER_HEADER], CLAWD_SERVER_ID);
     assert.deepStrictEqual(res.recorder.map((entry) => entry.outcome).filter(Boolean), ["dnd"]);
     assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+  });
+
+  it("keeps Codex native fallback side effects split before external review", async () => {
+    const intercept = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:intercept-bubble-off",
+      wsl_distro: "Ubuntu",
+      tool_name: "Bash",
+      tool_input: { command: "echo native" },
+    }), {
+      ctx: {
+        getCodexPermissionMode: () => "intercept",
+        getBubblePolicy: () => ({ enabled: false, autoCloseMs: 0 }),
+      },
+    });
+    assert.strictEqual(intercept.statusCode, 204);
+    assert.deepStrictEqual(intercept.ctx.calls.updateSession, []);
+
+    const mcp = await callPermissionPost(JSON.stringify({
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:auto-mcp",
+      tool_name: "mcp__github__get_issue",
+      tool_input: { number: 1 },
+    }), {
+      ctx: {
+        getCodexPermissionMode: () => "auto",
+        getBubblePolicy: () => ({ enabled: true, autoCloseMs: 0 }),
+      },
+    });
+    assert.strictEqual(mcp.statusCode, 204);
+    assert.deepStrictEqual(mcp.ctx.calls.updateSession.map((args) => args.slice(0, 3)), [[
+      localSessionKey("codex:auto-mcp"),
+      "notification",
+      "PermissionRequest",
+    ]]);
   });
 
   it("passes Codex Desktop focus metadata through permission bubbles", async () => {
@@ -1756,6 +1960,63 @@ describe("server-route-permission POST", () => {
         },
       },
     ]]);
+  });
+
+  it("skips external review before a Claude per-agent permission gate fallback", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cc-review-gate-"));
+    const marker = path.join(tempRoot, "reviewed");
+    try {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "claude-code",
+        session_id: "claude:gate-off",
+        tool_name: "Bash",
+        tool_input: { command: "echo native" },
+      }), {
+        ctx: {
+          getPermissionAutomationMode: () => "auto-tools",
+          getPermissionReviewConfig: () => ({
+            command: [process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(marker)}, "called");process.exit(0);`],
+            timeoutMs: 5000,
+          }),
+          isAgentPermissionsEnabled: (agentId) => agentId !== "claude-code",
+        },
+      });
+      assert.strictEqual(res.destroyed, true);
+      assert.strictEqual(fs.existsSync(marker), false);
+      assert.deepStrictEqual(res.ctx.pendingPermissions, []);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("still reviews a Claude request for a global-bubble-off remote-only path", async () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-cc-review-remote-"));
+    const marker = path.join(tempRoot, "reviewed");
+    try {
+      const res = await callPermissionPost(JSON.stringify({
+        agent_id: "claude-code",
+        session_id: "claude:remote-review",
+        tool_name: "Bash",
+        tool_input: { command: "echo remote" },
+      }), {
+        ctx: {
+          hideBubbles: true,
+          getPermissionAutomationMode: () => "auto-tools",
+          getPermissionReviewConfig: () => ({
+            command: [process.execPath, "-e", `require("fs").writeFileSync(${JSON.stringify(marker)}, "called");process.exit(0);`],
+            timeoutMs: 5000,
+          }),
+          maybeStartRemoteApproval: () => true,
+        },
+      });
+      await waitForRoute(() => fs.existsSync(marker), "Claude remote-only review did not run");
+      await waitForRoute(() => res.ctx.pendingPermissions.length === 1, "Claude remote-only request was not queued");
+      assert.strictEqual(res.destroyed, false);
+      assert.deepStrictEqual(res.ctx.calls.showPermissionBubble, []);
+      assert.strictEqual(res.ctx.pendingPermissions[0].remoteOnly, true);
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it("resolves a remote-only entry from the session override before sending a remote card", async () => {

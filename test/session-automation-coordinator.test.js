@@ -103,7 +103,8 @@ test("the trust offer ignores an external review hold, but sweep and resolveIfAl
   const resolved = [];
   const store = createSessionAutomationStore({ maxRecords: 8 });
   const held = toolEntry({ reviewHold: true });
-  const ordinary = toolEntry({ reviewHold: false });
+  const ordinary = toolEntry({ reviewHold: true });
+  let showWarningCalls = 0;
   pending.push(held, ordinary);
   const coordinator = createSessionAutomationCoordinator({
     store,
@@ -122,30 +123,33 @@ test("the trust offer ignores an external review hold, but sweep and resolveIfAl
     beginConfirmation: () => true,
     endConfirmation: () => {},
     restoreBubble: () => {},
-    isWarningDismissed: () => true,
-    showWarning: async () => ({ confirmed: true }),
+    isWarningDismissed: () => false,
+    showWarning: async () => {
+      showWarningCalls++;
+      return { confirmed: true };
+    },
     makeGrantId: () => "grant-review",
   });
 
   assert.equal(coordinator.canOfferSessionTrust(held), true, "trust must still be offered on a held card");
   assert.equal(coordinator.canOfferSessionTrust(ordinary), true);
 
-  // Committing the grant keeps the held request pending and sweeps only the
-  // sibling whose gate cleared it.
+  // An existing grant can resolve the card that the user explicitly clicked,
+  // even while its review hold is present. The untouched sibling remains
+  // subject to the strict review gate.
   const result = store.compareAndSet(
     { agentId: "claude-code", sessionId: "local|claude-code|s1" },
     "auto-tools",
     { nextGrantId: "grant-review", displayLabel: "s1" }
   );
   assert.equal(result.status, "applied");
-  assert.equal(coordinator.sweep({ agentId: "claude-code", sessionId: "local|claude-code|s1" }), 1);
-  assert.deepEqual(resolved, [ordinary]);
-  assert.deepEqual(pending, [held], "a held request is never released by the grant");
-  assert.equal(
-    coordinator.resolveIfAllowed(held, { mode: "auto-tools" }),
-    false,
-    "and it stays unreleasable while the review holds it"
-  );
+  assert.equal((await coordinator.requestEntryTrust(held)).status, "equivalent");
+  assert.equal(showWarningCalls, 0, "an existing auto-tools grant must not show the trust warning");
+  assert.deepEqual(resolved, [held]);
+  assert.deepEqual(pending, [ordinary]);
+  assert.equal(coordinator.sweep({ agentId: "claude-code", sessionId: "local|claude-code|s1" }), 0);
+  assert.deepEqual(resolved, [held]);
+  assert.deepEqual(pending, [ordinary], "the other held card stays pending");
 });
 
 test("desktop trust applies one grant and safe-sweeps only eligible tool siblings", async () => {

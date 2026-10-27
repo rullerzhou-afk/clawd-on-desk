@@ -102,12 +102,32 @@ function sanitizeSvg(svgContent) {
 
 // htmlparser2 12 drops the closing "?" from processing-instruction data
 // ("?xml version=\"1.0\"" instead of "?xml version=\"1.0\"?"), and
-// dom-serializer writes the data back verbatim, so `<?xml ...?>` came out as
-// `<?xml ...>` and Chromium refused to parse the cached SVG.
+// dom-serializer writes the data back verbatim. Keep only a declaration in the
+// document's first non-whitespace position; stylesheet and other processing
+// instructions are not part of a trusted theme SVG.
 function restoreProcessingInstructionEnds(doc) {
-  for (const child of doc.children || []) {
-    if (child.type !== "directive" || typeof child.data !== "string") continue;
-    if (child.data.startsWith("?") && !child.data.endsWith("?")) child.data += "?";
+  let firstNonWhitespaceSeen = false;
+  const children = doc.children || [];
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    if (!firstNonWhitespaceSeen && child.type === "text" && /^\s*$/.test(child.data || "")) {
+      continue;
+    }
+
+    const data = typeof child.data === "string" ? child.data : "";
+    const isXmlDeclaration = !firstNonWhitespaceSeen
+      && child.type === "directive"
+      && /^\?xml(?:\s|$)/.test(data);
+    firstNonWhitespaceSeen = true;
+
+    if (isXmlDeclaration) {
+      if (!data.endsWith("?")) child.data += "?";
+      continue;
+    }
+    if (child.type === "directive" && data.startsWith("?")) {
+      children.splice(i, 1);
+      i--;
+    }
   }
 }
 

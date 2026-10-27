@@ -1,0 +1,63 @@
+name: 🎨 主题投稿（中文）
+description: 提出外部主题创意、提交可测试的主题或更新已有主题
+title: "[Theme] "
+labels:
+  - "area: themes"
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        请先阅读[外部主题贡献指南](https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/guides/contributing-themes.zh-CN.md)。投稿与讨论在本主仓库进行，审核通过的主题包由
+        clawd-themes 分发。只有想法也可以先讨论；投稿不保证收录，也不代表维护者会代为制作。社区主题进入下载列表的流程还在准备中，详见指南。
+  - type: dropdown
+    id: stage
+    attributes:
+      label: 投稿阶段
+      options:
+        - 想法或美术提案
+        - 可测试的主题
+        - 已有主题更新
+    validations:
+      required: true
+  - type: input
+    id: identity
+    attributes:
+      label: 名称与拟用 ID
+      placeholder: My Theme / my-theme
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: 设计与预览
+      description: 说明角色及与已有主题的差异，附预览图和代表动作；提案可附草图或参考图。
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: 文件与来源
+      description: 成品主题和更新请填写。提供源仓库、固定提交、主题目录与下载链接；还没有仓库可说明交付方式，提案请说明待制作的部分。
+    validations:
+      required: false
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: 状态与测试
+      description: 成品主题和更新请填写。列出状态、可选能力、主题版本、测试的 Clawd 版本和系统、校验结果及已知问题；未测请注明，提案可填尚未实现。
+    validations:
+      required: false
+  - type: textarea
+    id: rights
+    attributes:
+      label: 署名与许可
+      description: 写明作者、素材或参考来源、许可链接以及分发、预览、使用范围；使用生成工具请说明，尚待取得的许可也请注明。
+    validations:
+      required: true
+  - type: textarea
+    id: maintenance
+    attributes:
+      label: 维护与关联讨论
+      description: 成品主题和更新请填写。谁来维护，在哪里反馈？更新请关联原投稿；需要协作者时说明缺少的工作。
+    validations:
+      required: false

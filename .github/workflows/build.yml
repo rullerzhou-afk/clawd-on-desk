@@ -26,6 +26,9 @@ jobs:
         with:
           node-version-file: .nvmrc
       - run: npm run verify:release
+      - name: Require the APT migration endpoint before a tagged app release
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+        run: python3 scripts/apt/repository.py verify-live
 
   native-package-audit:
     needs: validate-release
@@ -464,6 +467,8 @@ jobs:
         if: ${{ github.event_name == 'workflow_dispatch' && inputs.artifact_validation_only }}
         run: xvfb-run -a node --test test/assert-no-retired-telegram-sidecar.test.js test/after-pack-koffi.test.js test/audit-packaged-native.test.js test/koffi-lockfile.test.js test/native-package-target.test.js test/package-koffi-smoke.test.js test/package-build-config.test.js test/mobile-preview-lifecycle.test.js test/mobile-preview-server.test.js test/pet-window-runtime.test.js test/topmost-runtime.test.js test/telegram-legacy-retirement.test.js test/telegram-migration-state.test.js test/telegram-migration-controller.test.js test/telegram-migration-user-data.test.js test/verify-updater-metadata.test.js test/win-foreground-terminal.test.js test/win-fullscreen-detect.test.js test/win-hit-window-activation.test.js test/appimage-apprun.test.js test/dependency-security-floor.test.js
       - run: npx electron-builder --linux --publish never
+      - name: Verify final Linux package update identities
+        run: python3 scripts/apt/verify-package-formats.py --dist dist
       - name: Verify final AppImage AppRun search paths
         run: node scripts/verify-appimage-apprun.js --artifact dist/*.AppImage --output dist/appimage-apprun-manifests/linux-x64.json
       - name: Assert retired Telegram sidecar is absent

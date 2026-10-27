@@ -140,8 +140,9 @@ channel id.
    segment is the credential. Treat the whole URL as a password: anyone holding
    it can post to that channel.
 
-2. **Save it in Clawd.** **Settings → Permissions & approval → IM channels → Slack**, paste into
-   step 1, then **Save**. For the bot transport also fill in the channel id.
+2. **Save it in Clawd.** **Settings → Permissions & approval → IM channels → Slack**, paste it
+   into the setup block's credential row, then **Save**. For the bot transport
+   also fill in the channel id.
 
    Clawd only accepts `https://hooks.slack.com/…`, compared by exact hostname —
    never a suffix or substring match — so `evil-slack.com` and
@@ -149,11 +150,13 @@ channel id.
    same reason: a 3xx would move the request, and on the bot transport the
    `Authorization` header, to a host the pin never vetted.
 
-3. **Choose what to send.** Step 3 has the enable switch and the per-event
-   switches. *Include assistant output* is off by default.
+3. **Turn it on and choose what to send.** Once credentials are saved, the
+   enable switch appears in the card header and the **Notifications** group shows
+   the per-event switches. *Include assistant output* is off by default.
 
-4. **Send a test.** Step 4 posts a test message so you can confirm it reaches the
-   channel you expect before relying on it.
+4. **Send a test.** The card footer's **Send test message** link posts a test
+   message so you can confirm it reaches the channel you expect before relying on
+   it.
 
 ## Where credentials are stored
 

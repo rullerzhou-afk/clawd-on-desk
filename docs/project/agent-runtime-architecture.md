@@ -2,6 +2,38 @@
 
 This document holds the deeper runtime and integration notes that were previously in the root `AGENTS.md`.
 
+## Local HTTP port lifecycle
+
+The local listener uses runtime → legacy 23333–23337 → saved dynamic hint →
+`listen(0, "127.0.0.1")`, retrying EADDRINUSE and EACCES with a bounded candidate
+list. `server.address().port` is authoritative. An out-of-range listener must
+publish runtime successfully before becoming active or scheduling integration
+sync; a publication failure closes it. A legacy listener retains the existing
+runtime-write warning because legacy discovery can still find it. Doctor keeps
+bounded bind diagnostics and distinguishes runtime publication failures.
+
+`src/local-server-port-hint.js` preserves only the last published dynamic port
+across normal exit. It is not a live identity and clients/installers never read
+it. Only main.js injects its IO into server.js; test servers default to no hint
+IO. The server getter supplies a dynamic port only while its own listener is
+active. Standalone HTTP-hook installers require a live runtime owner before
+using an out-of-range port. CodeBuddy sync passes the live listener explicitly.
+
+Native clients accept canonical 1–65535 runtime ports, with `app` validation;
+legacy scanning remains five ports. Cached plugin delivery rereads runtime in
+the same request after a cache miss. OpenCode's owner-only/live-owner permission
+and question targets stay strict, and Hermes secure mode stays pinned to its
+remote identity. Remote SSH identities and profiles still use the five-port
+allowlist, independently of local listener ports.
+
+Dynamic Claude/CodeBuddy HTTP hooks use the exact local ownership path
+`/permission/clawd-on-desk`. Install/uninstall classifiers match the raw URL;
+plain third-party dynamic `/permission` URLs remain foreign. The new local route
+shares the existing browser transport guard and permission handler. Remote
+ingress rejects it even with a valid nonce. This marker does not authenticate
+local callers. See known limitations for CLI snapshots, WSL separate homes,
+manual tunnels, mixed versions and the independent Mobile Preview listener.
+
 Claude's live tool/model phase additionally uses `PostToolBatch` on the conservative
 2.1.280+ baseline. The hook sends only bounded tool IDs and `prompt_id`, omitting
 inputs, responses and process probes. `src/claude-tool-phase.js` keeps a bounded
@@ -136,11 +168,35 @@ SessionStart / UserPromptSubmit，被 fence 拒掉的旧回合开始不解除；
 `session_index.jsonl`（沿用 512 KiB tail 上限）。新标题/改名以 `session_index:title`
 送入 `updateSessionMetadata(expectedAgentId: "codex")`，即使 rollout 未增长也刷新
 HUD/Dashboard；不创建会话、不改变状态/活跃时间/完成提醒/小结，不清空已有标题。
-尚未生成原生标题时仍使用既有文件夹 fallback；用户别名继续优先。
+尚未生成原生标题时，已知 Desktop originator 的本机 Codex 会话显示
+「文件夹 · 稳定短标签」；无可用文件夹时才回落到本地化的「Codex 对话 · 稳定短标签」。
+标签复用 canonical session id 的 10 位哈希，不写入 `sessionTitle`，Dashboard / 菜单
+复用同一 `displayTitle`。HUD 为分隔符和完整标签预留最小宽度；这类行的右侧信息
+用独立网格列保留状态/上下文及操作按钮，时间列先省略，且使用紧凑间距避免高字号裁切。
+短项目名与分隔符紧排，不将多余宽度塞进两者之间；带此类标签的 HUD 宽度随字号同比
+缩放，容纳完整标签、长状态文案、100% 上下文及操作按钮，并为长项目名保留省略号空间。
+不含此类标签的 HUD 保持既有紧凑宽度缩放。
+用户别名、索引标题和已有标题继续优先；CWD 和文件夹操作原样保留。CLI / 未知
+originator、headless（含已分类 child）、显式 CLI / exec / internal / subagent source、
+remote / WSL 不使用该 Desktop fallback。该标签不判断会话是否为用户侧聊或后台
+任务，不隐藏或合并行；不读 prompt、原生私有数据库，也不增加标题刷新通道。
+语言变更在更新 mirror 和广播字典后，复用 `emitSessionSnapshot({force:true})`
+刷新这些显示标签；同时修改别名只发一次，不通过 lifecycle 事件刷新活跃时间。
 monitor 当前标题与索引不一致时也会重发，覆盖索引恢复场景。
 一次快照构建最多读一次本机索引；无本机 Codex 会话时不读。
 标题通道跳过带 host 或 WSL 标记的会话；刷新覆盖仍在活动或退休记录中的会话
 （最多 50 个活动、100 个退休 rollout）。超出后与既有行为相同，标题等下一次快照广播或生命周期事件更新。
+
+本机 Codex 的 `update_plan` 优先由 official `PostToolUse` 的结构化 `tool_input` 提取为
+`planProgress`（completed / total / percent），包括 Code Mode 内调用；hook 只传计数，不传步骤文本。
+JSONL monitor 仍兼容直接 `function_call`，不解析或执行 Code Mode 脚本。同回合收到 official 计划后，
+缓存的 JSONL 计划（包括 null）不能覆盖它；新回合清空来源标记后恢复 fallback。
+HUD 在标题行下方显示进度条，Dashboard 使用独立可换行的进度行；没有有效计划时不显示。
+进度属于具体回合：`state.js` 私有 Map 保存 turn owner，原始 turn ID 不进入 session 或共享快照；
+新回合清空旧计划，同回合晚于 Stop 到达的进度只更新元数据，不重开回合、不延长活跃时间。
+PermissionRequest 更新聚焦信息时保留已接受的计划，不从审批事件接收新计划或改变 turn owner。
+启动恢复的待回答问题可在本机会话创建后补回同回合计划；普通元数据和问题恢复两条路径均
+检查本机来源，不能将本机 JSONL 计划写进同 key 的 WSL / remote 会话。
 
 Codex 压缩开始通过 official `PreCompact` hook 触发既有 `sweeping` 动画，
 同时覆盖 `manual` / `auto` trigger。`state.js` 按 conversation ID 保留私有显示持有记录，
@@ -291,8 +347,14 @@ WorkBuddy 状态与通知同步（Claude Code 兼容 hook，command）：
   绝不用别的库推断）；别的家目录里的同 ID 归档副本不参与判断；读不到数据库一律按“不知道”处理，绝不撤卡。
   Windows WorkBuddy 的进程快照使用有界 5 秒超时（其他 adapter 默认仍为 3 秒）：5.7.6 真机观测到约 4.17 秒的快照，3 秒会丢失主 PID、无法按应用退出撤卡。
   hook 先输出 `{}` 再探测；输出后的退出 backstop 为 7.5 秒，给快照后的 HTTP 上报留出时间。超过上限仍不返回降级 PID，按既有状态/超时逻辑处理。
+  Windows PID 缓存复用 shared-process 的 lifecycle context，按 `workbuddy + session_id + cwd` 隔离：SessionStart 刷新一次，UserPromptSubmit 只读，普通事件（含 Stop）命中时不取快照、未命中时补建，SessionEnd 只读并删除本会话缓存。
+  缺失 ID 仍直接丢弃；`default` ID 或缺失/无效 cwd 不读写缓存。首轮 prompt 早于 start 时可以暂缺 PID，随后 start / 普通事件恢复；Remote 不访问本地缓存，macOS 保持既有进程解析路径。
 
   WorkBuddy's native `Notification` subtypes `idle_prompt` and `auth_success` are acknowledged with `{}` locally, before process resolution or HTTP delivery. `idle_prompt` is a "send another message" reminder, observed on 5.2.6 about 60 seconds after Stop (5.6.2's per-turn host exits before it can fire, so it was not observed there); `auth_success` is the login-success toast, emitted by 5.6.2 at the start of every turn. Forwarding either would create or settle a session — a phantom idle row before the first UserPromptSubmit, or knocking a running turn back to idle. Permission, elicitation, needs-input, unknown and untyped notifications retain their existing behavior. This does not change SessionEnd/process-exit handling or resolve completed-session retention in #655.
+
+Qoder / Qoder CN hooks（同一个 `qoder` agent、state-only）：
+
+  `hooks/qoder-install.js` 同步所有已初始化的用户配置目录：国际版 `~/.qoder`、CN 版 `~/.qoder-cn`，分别尊重 `QODER_CONFIG_DIR` / `QODERCN_CONFIG_DIR`，不创建缺失版本的目录；显式 `settingsPath` 只操作该文件。Settings Uninstall 和 About cleanup 都移除两版里的 Clawd-owned entries，保留第三方 hooks 与其他配置；单个目录失败时继续处理另一目录并汇总报错。Doctor 逐一检查已有目录，任一版本缺失/损坏/禁用 hooks 都不能被另一版的健康结果掩盖；任一版本可安全修复时保留 Fix，尊重其他版本的 disabled 设置。CN 桌面版 Windows worker runtime 1.1.69 的 hook schema 与现有 adapter 相同，仍用 portable Windows command；本机运行时代码和 [CN CLI 配置文档](https://docs.qoder.cn/en/cli/settings)确认用户目录为 `.qoder-cn`，桌面 hooks 网页写成 `.qoder` 的说明与该实现不同。hook 的进程树解析识别 `Qoder CN.exe` / `qodercn` / `qoderclicn`，启动恢复只增加 CLI `qoderclicn`，桌面应用闲置不算活跃任务。2026-10-18 的真实 CN 任务日志确认 SessionStart / UserPromptSubmit / Stop 执行成功，用户确认开启 Clawd Qoder 接入后任务状态恢复；macOS/Linux CN 尚未实测。CN runtime 支持外部配置热重载，本次新增 hooks 已在未重启 worker 的新任务里执行。
 
 Qoder 会话标题（本机、state-only）：
   Hook 转发显式标题与 transcript 路径，保持 stdout 为 `{}` 和原生权限流程不变。
@@ -567,7 +629,7 @@ WSL 状态同步（本机 loopback，但 PID 属于 Linux VM）：
     → hooks/codex-hook.js POST /permission { tool_name, tool_input, tool_input_description, session_id, turn_id }
     → 默认 auto 模式：准确的本机 session / turn 记录确认 user reviewer 时才由 Clawd 展示 Allow / Deny；自动 reviewer、MCP / app 覆盖、远程 / WSL、无法确认或过期记录立即 no-decision，Codex 继续处理
     → 显式 intercept 模式：main.js 创建普通 Allow / Deny bubble，用户点击后 codex-hook.js stdout 输出官方 JSON decision
-    → 旧 native 偏好规范化为 auto；升级时旧 intercept / native 统一迁到 Auto 一次，之后重新选择的 Intercept 会保留。General 权限区提供 Agents → Codex 路由设置入口
+    → 旧 native 偏好规范化为 auto；升级时旧 intercept / native 统一迁到 Auto 一次，之后重新选择的 Intercept 会保留。Permissions & approval → On this machine → per tool 提供 Agents → Codex 路由设置入口
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
 
@@ -634,7 +696,7 @@ DND remains an interaction/visual gate and does not stop recap or coverage. Susp
 | 双窗口与浮层 | `src/pet-window-runtime.js` 创建/定位 render + hit window；`src/floating-window-runtime.js` / `src/topmost-runtime.js` 管浮层重排与 z-order |
 | Settings 写入与副作用 | `settings-controller` 是唯一写入者；`settings-actions*` 是 pre-commit gates；`settings-effect-router` 是 post-commit runtime effects |
 | Settings UI | `settings-ui-core` 持有 shared UI state，`settings-renderer` 是侧栏/tab shell，业务页在 `settings-tab-*` |
-| Quota reminders | `quota-alerts-runtime` reads source-separated account snapshots; `quota-alerts` owns bounded hashed dedup history; `quota-notifications` acknowledges native delivery. Controls live in General's Quota ring and use the Settings controller. |
+| Quota reminders | `quota-alerts-runtime` reads source-separated account snapshots; `quota-alerts` owns bounded hashed dedup history; `quota-notifications` acknowledges native delivery. Controls live in Sessions → Quota ring & reminders and use the Settings controller. |
 | Theme | `theme-loader` 是 stateless loader；`theme-runtime` 是唯一 active-theme owner |
 
 Quota reminders remain disabled until explicitly enabled. They use existing quota collection,
@@ -681,6 +743,12 @@ Cursor hook 的 stdin 等待由共享 reader 单独限时；800ms 状态发送 w
 Cursor 3.19.19 会把 stderr 非空标记为 Hook execution error，即使 exit 0 且 stdout 合法。helper 仅在同步加载 `node:sqlite` 期间过滤 Node 的固定 SQLite ExperimentalWarning，随后立即恢复 warning handler；不得全局关闭其他警告。
 
 没有可用名称时只在 `beforeSubmitPrompt` 使用 prompt 第一条非空行，沿用 Claude/Trae 的 secret-looking 过滤策略，先检查完整行再截断。hook 只上报 `session_title`，不发送 prompt 其余内容或数据库 record。`CLAWD_REMOTE` 路径不读取本机 Cursor 数据库。标题继续使用既有 `/state` → session snapshot → HUD/Dashboard 合约。
+
+## Reasonix Blocking Hook Budget
+
+Reasonix 的 `UserPromptSubmit` / `PreToolUse` 从外层命令启动开始限时 5 秒，超时会阻止本次提交 / 工具调用。Clawd 仍是 state-only observer：不增加宿主 timeout，不输出权限决定，失败或放弃上报时静默 exit 0。Windows 优先用不含引号的绝对 Node / hook 路径直接启动，避免每次事件额外启动 PowerShell。含空格或特殊字符时，安装器只查询已有的 8.3 短路径，并用文件 dev / ino 核实仍指向原文件；不创建短路径、不改磁盘设置、不替换成 PATH Node。Node 路径必须无需 shell 转义，hook 路径中的 `^ & ( )` 显式转义，额外的 `--clawd-reasonix-hook=reasonix-hook.js` 参数保留所有权识别。没有安全短路径或验证失败时仍使用 EncodedCommand，以兼容旧版 Reasonix 的 Go → cmd 引号问题；该回退仍可能受慢启动影响。
+
+`hooks/reasonix-hook.js` 保留 2000ms stdin 等待；阻塞事件在脚本开始后最多等 2200ms，且 stdin 结束后最多再等 200ms，先到者生效，为外层启动和退出留余量。同步进程扫描仍只允许非阻塞事件；非阻塞事件保留 3500ms post-stdin allowance 和 15000ms 内部截止（Stop 另含排序延迟）。慢速本机 / 远程上报可能被放弃，不能为了补状态拖住用户的原生操作；该进程内计时不能保证任意 OS 调度或启动停顿都在宿主期限内。
 
 ## Windows B1a Process Metadata Capability (#694)
 
@@ -803,7 +871,7 @@ opencode、MiMo Code、OpenClaw、Hermes 和 DeepSeek Harness 是 plugin 形式�
 - `task` 工具会直接新建 session，而不是产出 subtask part；只有 `session.created` 明确带 `event.properties.info.parentID` 的 session 才会被视为 child
 - opencode child session 作为 root 拥有的后台 headless 工作处理：不参与 HUD / focus / 多会话 fanout，`session.idle` 会降级为 `sleeping/SessionEnd`，root session 的 `session.idle` 才映射 `attention/Stop`；MiMo Code 与 opencode 同源，child session 行为一致
 - 由于 `permission.ask` hook 在 opencode 1.3.13 上未被调用，权限只能走 event hook + 反向 bridge；MiMo Code 同源，权限同样走 event hook + 反向 bridge
-- **opencode 2.x（#1039）**：core.mjs 内 `createOpencodeFamilyPluginV2` 产出零 import 的 `{id, setup}` 定义（v2 loader 拒绝函数 default export），由 `hooks/opencode-plugin-v2/` 薄入口与共享 core 组成第 5 个 bundle 文件，installer 仅在宿主探测确认为 v2 时注册进 **`plugins` 键**（v1 的 `plugin` 键不动；确认 v1 时清除自有 v2 条目，探测未知时不碰该键。v1 1.18.15 及之前拒绝未知的 `plugins` 键，1.18.16+ 才忽略）。事件词汇完全换代：`session.step/reasoning/text/tool/execution.*` 与 `session.renamed`，cwd 取事件信封 `location.directory`，未知事件一律忽略；`session.usage.updated` 是累计计费量，不能当上下文占用率，后者取 `session.step.ended` 的 step tokens。权限用 `ctx.permission.hook("evaluate")` 阻塞 POST `/permission`，决定是响应体 `{decision: allow|always|deny}`（服务端 `hook_source === "opencode-plugin-v2"` 子分支），204/超时/错误一律不改 effect 回原生 ask；allow 配置也进 hook 但绝不降级；v2 上无 reverse bridge。同会话的 `session.execution.interrupted/failed/succeeded` 或 `session.deleted` 会中止未完成的审批 POST。"Always allow" 是插件内 per-session 内存规则。插件在常驻共享 service 中运行：`source_pid`/进程树整组省略（终端跳转降级），更新后需 `opencode service restart`。历史 4 文件 generation 是合法 owned-stale 形态，register 自动迁移
+- **opencode 2.x（#1039）**：core.mjs 内 `createOpencodeFamilyPluginV2` 产出零 import 的 `{id, setup}` 定义（v2 loader 拒绝函数 default export），由 `hooks/opencode-plugin-v2/` 薄入口与共享 core 组成第 5 个 bundle 文件，installer 仅在宿主探测确认为 v2 时注册进 **`plugins` 键**，并清理 Clawd 自有的旧 `plugin` 条目；用户条目、tuple/options 和 v1 行为保持不变。确认 v1 时清除自有 v2 条目，探测未知时不碰该键。v1 1.18.15 及之前拒绝未知的 `plugins` 键，1.18.16+ 才忽略。事件词汇完全换代：`session.step/reasoning/text/tool/execution.*` 与 `session.renamed`，cwd 取事件信封 `location.directory`，未知事件一律忽略；`session.usage.updated` 是累计计费量，不能当上下文占用率，后者取 `session.step.ended` 的 step tokens。权限用 `ctx.permission.hook("evaluate")` 阻塞 POST `/permission`，决定是响应体 `{decision: allow|always|deny}`（服务端 `hook_source === "opencode-plugin-v2"` 子分支），204/超时/错误一律不改 effect 回原生 ask；allow 配置也进 hook 但绝不降级；v2 上无 reverse bridge。同会话的 `session.execution.interrupted/failed/succeeded` 或 `session.deleted` 会中止未完成的审批 POST。"Always allow" 是插件内 per-session 内存规则。插件在常驻共享 service 中运行：`source_pid`/进程树整组省略（终端跳转降级），更新后需 `opencode service restart`。历史 4 文件 generation 是合法 owned-stale 形态，register 自动迁移
 - plugin 内发出的 POST 必须 fire-and-forget，避免拖慢 TUI
 - 打包后需要把 `app.asar/` 重写为 `app.asar.unpacked/`
 - Hermes plugin 使用同步 POST，避免短命 `hermes -z` 进程退出前丢事件；Clawd 未启动时有短 cooldown，避免反复扫端口
@@ -903,6 +971,7 @@ Remote SSH 有两条明确分开的 transport 路径：
 
 - Git 模式（非打包，主要是 macOS/Linux 源码运行）会 `git fetch` 比较 HEAD，有更新则 `git pull` + 必要时 `npm install`，然后 `app.relaunch()`
 - Windows NSIS 与 macOS DMG 打包模式走 `electron-updater`；均保持 `autoDownload=false`，用户确认后才下载
+- Linux 格式由 `src/update-install-format.js` 判断：绝对 APPIMAGE/APPDIR 且 resourcesPath 属于该挂载时，显式创建 AppImageUpdater；否则 `resources/package-type=deb` 走 APT 指南，其余格式手动下载。外来继承的 APPIMAGE 不足以证明归属。deb/未知格式在启动、托盘、About 和定时流程都不创建 electron-updater；打开指南仅保留 available/pending，不宣称安装完成。旧用户迁移与生产发布顺序见 `docs/guides/apt-maintenance.md`
 - macOS Release 同时发布 x64 / arm64 的 DMG 与 ZIP；DMG 用于首次/手动安装，Squirrel.Mac 只消费 ZIP。`latest-mac.yml` 必须同时列出两架构的 ZIP 与 DMG，且 top-level `path` 指向 x64 ZIP
 - macOS 下载完成后可选择立即重启，或稍后正常退出并重新打开；安装请求期间复用 update bubble 显示准备状态，ready/staging 错误必须作为真实错误显示，不能降级成“已是最新”
 - 旧版 DMG 没有 ZIP 更新载荷，不能自举到首个支持应用内更新的桥接版；现有用户仍需手动安装桥接版一次。单元/metadata/包结构验证不等于同一 Developer ID 的 A→B 真机升级证据

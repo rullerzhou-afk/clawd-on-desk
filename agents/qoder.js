@@ -1,5 +1,5 @@
 // Qoder agent configuration
-// Hook-only integration via ~/.qoder/settings.json (Phase 1: state-only).
+// Hook-only integration via ~/.qoder/settings.json / ~/.qoder-cn/settings.json.
 //
 // Clawd observes Qoder's permission events (PermissionRequest / PermissionDenied)
 // as passive notifications but NEVER answers Qoder permission decisions — the
@@ -16,14 +16,14 @@ module.exports = {
   // deliberately watches only the CLI names — an idle open IDE must not look
   // like active agent work.
   processNames: {
-    win: ["qoder.exe", "qodercli.exe", "qoder-cli.exe"],
-    mac: ["qoder", "qodercli", "qoder-cli"],
-    linux: ["qoder", "qodercli", "qoder-cli"],
+    win: ["qoder.exe", "qodercli.exe", "qoder-cli.exe", "qoder cn.exe", "qodercn.exe", "qoderclicn.exe"],
+    mac: ["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"],
+    linux: ["qoder", "qodercli", "qoder-cli", "qoder cn", "qodercn", "qoderclicn"],
   },
   startupRecoveryProcessNames: {
-    win: ["qodercli.exe", "qoder-cli.exe"],
-    mac: ["qodercli", "qoder-cli"],
-    linux: ["qodercli", "qoder-cli"],
+    win: ["qodercli.exe", "qoder-cli.exe", "qoderclicn.exe"],
+    mac: ["qodercli", "qoder-cli", "qoderclicn"],
+    linux: ["qodercli", "qoder-cli", "qoderclicn"],
   },
   eventSource: "hook",
   eventMap: {

@@ -1642,8 +1642,7 @@ describe("renderer low-power idle mode", () => {
 
     assert.ok(rendererSource.includes('DEEP_SLEEP_PAUSE_STATES = new Set(["collapsing", "sleeping"])'));
     assert.ok(rendererSource.includes('LOW_POWER_OPTIONAL_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"])'));
-    assert.ok(rendererSource.includes("...LOW_POWER_OPTIONAL_PAUSE_STATES"));
-    assert.ok(rendererSource.includes("...DEEP_SLEEP_PAUSE_STATES"));
+    assert.doesNotMatch(rendererSource, /LOW_POWER_PAUSE_STATES\s*=\s*new Set/);
     assert.ok(tickSource.includes(`LOW_POWER_PAUSE_STATES = new Set(${expected})`));
   });
 

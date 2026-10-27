@@ -4136,6 +4136,132 @@ describe("updateSession()", () => {
     assert.ok(Number.isFinite(session.metadataUpdatedAt), "telemetry change must stamp metadataUpdatedAt");
   });
 
+  it("stores valid Codex plan progress as metadata, clears it on a new turn, and rejects other agents", () => {
+    api.updateSession("codex:plan", "working", "PreToolUse", { agentId: "codex", turnId: "A" });
+    const session = api.sessions.get("codex:plan");
+    session.updatedAt = 12345;
+    const recentEventsBefore = JSON.stringify(session.recentEvents);
+
+    assert.equal(api.updateSessionMetadata("codex:plan", {
+      expectedAgentId: "codex",
+      planProgress: { completed: 1, total: 3 },
+      planProgressTurnId: "A",
+    }), true);
+    assert.deepStrictEqual(session.planProgress, { completed: 1, total: 3, percent: 33 });
+    assert.equal(session.updatedAt, 12345);
+    assert.equal(JSON.stringify(session.recentEvents), recentEventsBefore);
+    assert.equal(Object.hasOwn(session, "codexTurnId"), false);
+    assert.equal(Object.hasOwn(session, "turnId"), false);
+    assert.doesNotMatch(JSON.stringify(api.buildSessionSnapshot()), /"codexTurnId"|"planProgressTurnId"/);
+    assert.equal(api.updateSessionMetadata("codex:plan", {
+      expectedAgentId: "claude-code",
+      planProgress: { completed: 3, total: 3 },
+      planProgressTurnId: "A",
+    }), false);
+    assert.equal(session.planProgress.percent, 33);
+
+    api.updateSession("codex:plan", "thinking", "event_msg:task_started", { agentId: "codex", turnId: "B" });
+    assert.equal(Object.hasOwn(api.sessions.get("codex:plan"), "codexTurnId"), false,
+      "Codex turn ownership must remain runtime-private, not on a session");
+    assert.equal(api.sessions.get("codex:plan").planProgress, null);
+    api.updateSessionMetadata("codex:plan", {
+      expectedAgentId: "codex",
+      planProgress: { completed: 2, total: 3 },
+      planProgressTurnId: "A",
+    });
+    assert.equal(api.sessions.get("codex:plan").planProgress, null);
+
+    api.updateSession("claude:plan", "working", "PreToolUse", {
+      agentId: "claude-code",
+      planProgress: { completed: 1, total: 2 },
+    });
+    assert.equal(api.sessions.get("claude:plan").planProgress, null);
+  });
+
+  it("keeps official plans authoritative through JSONL refreshes, permissions and Stop, only until the next turn", () => {
+    const sid = "codex:official-plan";
+    const opts = { agentId: "codex", turnId: "A" };
+    const plan = { completed: 1, total: 3, percent: 33 };
+    api.updateSession(sid, "thinking", "UserPromptSubmit", opts);
+    api.updateSession(sid, "working", "PostToolUse", {
+      ...opts, planProgress: plan, planProgressSource: "codex-official",
+    });
+    api.updateSession(sid, "notification", "PermissionRequest", opts);
+    for (const stale of [null, { completed: 0, total: 3 }]) {
+      api.updateSessionMetadata(sid, { expectedAgentId: "codex", planProgress: stale, planProgressTurnId: "A" });
+      api.updateSession(sid, "working", "response_item:function_call", { ...opts, planProgress: stale });
+      assert.deepStrictEqual(api.sessions.get(sid).planProgress, plan);
+    }
+    api.updateSession(sid, "working", "PostToolUse", {
+      ...opts, planProgress: { completed: 2, total: 3 }, planProgressSource: "codex-official",
+    });
+    api.updateSession(sid, "attention", "Stop", opts);
+    api.updateSessionMetadata(sid, { expectedAgentId: "codex", planProgress: null, planProgressTurnId: "A" });
+    assert.equal(api.sessions.get(sid).planProgress.percent, 67);
+    assert.doesNotMatch(JSON.stringify(api.buildSessionSnapshot()), /planProgressSource/);
+    api.updateSession(sid, "thinking", "UserPromptSubmit", { ...opts, turnId: "B" });
+    assert.equal(api.sessions.get(sid).planProgress, null);
+    api.updateSessionMetadata(sid, {
+      expectedAgentId: "codex", planProgress: { completed: 1, total: 2 }, planProgressTurnId: "B",
+    });
+    assert.equal(api.sessions.get(sid).planProgress.percent, 50, "JSONL remains the fallback for a new turn without plan hooks");
+    api.updateSession(sid, "working", "PostToolUse", {
+      ...opts, planProgress: { completed: 3, total: 3 }, planProgressSource: "codex-official",
+    });
+    assert.equal(api.sessions.get(sid).planProgress.percent, 50, "old official turns cannot replace the current plan");
+  });
+
+  for (const transientPermissionEvent of [false, true]) {
+    it(`preserves Codex plan progress through PermissionRequest (transient=${transientPermissionEvent})`, () => {
+      const sid = "codex:permission-plan";
+      const options = { agentId: "codex", turnId: "A", sourcePid: 42, cwd: "/repo" };
+      const plan = { completed: 1, total: 3, percent: 33 };
+      api.updateSession(sid, "working", "PreToolUse", options);
+      api.updateSessionMetadata(sid, {
+        expectedAgentId: "codex", planProgress: plan, planProgressTurnId: "A",
+      });
+
+      api.updateSession(sid, "notification", "PermissionRequest", {
+        ...options, transientPermissionEvent,
+        // A permission focus refresh cannot replace the accepted checklist
+        // or take turn ownership, even if it carries newer-looking metadata.
+        turnId: "B", planProgress: { completed: 3, total: 3 }, planProgressTurnId: "B",
+      });
+      assert.deepStrictEqual(api.sessions.get(sid).planProgress, plan);
+      assert.deepStrictEqual(api.buildSessionSnapshot().sessions.find((s) => s.id === sid).planProgress, plan);
+      assert.equal(api.sessions.get(sid).state, "working");
+      api.updateSession(sid, "working", "PostToolUse", options);
+      assert.deepStrictEqual(api.sessions.get(sid).planProgress, plan);
+
+      // An authoritative all-null focus result also rebuilds this record.
+      api.updateSession(sid, "notification", "PermissionRequest", {
+        agentId: "codex", replaceProcessMetadata: true, transientPermissionEvent,
+      });
+      assert.deepStrictEqual(api.sessions.get(sid).planProgress, plan);
+      assert.equal(api.sessions.get(sid).sourcePid, null);
+      api.updateSessionMetadata(sid, {
+        expectedAgentId: "codex", planProgress: { completed: 2, total: 3 }, planProgressTurnId: "B",
+      });
+      assert.deepStrictEqual(api.sessions.get(sid).planProgress, plan);
+
+      api.updateSession(sid, "thinking", "UserPromptSubmit", { ...options, turnId: "B" });
+      assert.equal(api.sessions.get(sid).planProgress, null);
+      api.updateSessionMetadata(sid, {
+        expectedAgentId: "codex", planProgress: plan, planProgressTurnId: "A",
+      });
+      assert.equal(api.sessions.get(sid).planProgress, null);
+    });
+  }
+
+  it("does not seed a new Codex permission row with unaccepted plan metadata", () => {
+    api.updateSession("codex:new-permission", "notification", "PermissionRequest", {
+      agentId: "codex", sourcePid: 42, cwd: "/repo", turnId: "A",
+      planProgress: { completed: 1, total: 3 }, planProgressTurnId: "A",
+    });
+    assert.equal(api.sessions.get("codex:new-permission").planProgress, null);
+    assert.equal(api.sessions.get("codex:new-permission").state, "idle");
+  });
+
   it("keeps a statusline window authoritative while transcript events refresh only used tokens", () => {
     update(api, {
       id: "s1",
@@ -4663,6 +4789,37 @@ describe("buildSessionSnapshot", () => {
     api = require("../src/state")(ctx);
   });
   afterEach(() => api.cleanup());
+
+  it("keeps the untitled Desktop project label across languages and retains a formal title without new activity", () => {
+    const id = "codex:00000000-0000-4000-8000-000000000009";
+    update(api, {
+      id, state: "working", event: "PreToolUse", agentId: "codex",
+      codexOriginator: "Codex Desktop", codexSource: "vscode", cwd: "/repo/project",
+    });
+    const live = api.sessions.get(id);
+    const before = JSON.stringify(live);
+    const initial = api.buildSessionSnapshot().sessions[0];
+    assert.strictEqual(initial.displayTitle, `project · ${initial.displaySessionTag}`);
+    assert.strictEqual(live.sessionTitle, null);
+    ctx.lang = "zh";
+    assert.strictEqual(api.buildSessionSnapshot().sessions[0].displayTitle, `project · ${initial.displaySessionTag}`);
+    assert.strictEqual(JSON.stringify(live), before, "language/display changes cannot refresh activity or persistence fields");
+
+    assert.strictEqual(api.updateSessionMetadata(id, { sessionTitle: "Native title", expectedAgentId: "codex" }), true);
+    const named = api.buildSessionSnapshot();
+    assert.strictEqual(named.sessions.length, 1);
+    assert.strictEqual(named.sessions[0].id, initial.id);
+    assert.strictEqual(named.sessions[0].displayTitle, "Native title");
+    assert.strictEqual(named.sessions[0].updatedAt, initial.updatedAt);
+    assert.deepStrictEqual(named.sessions[0].lastEvent, initial.lastEvent);
+    assert.strictEqual(named.sessions[0].state, initial.state);
+    assert.strictEqual(named.sessions[0].badge, initial.badge);
+    assert.strictEqual(named.sessions[0].cwd, initial.cwd);
+    assert.strictEqual(api.updateSessionMetadata(id, { sessionTitle: "", expectedAgentId: "codex" }), false);
+    assert.strictEqual(api.buildSessionSnapshot().sessions[0].displayTitle, "Native title");
+    assert.strictEqual(api.updateSessionMetadata("missing-desktop-thread", { sessionTitle: "Late title", expectedAgentId: "codex" }), false);
+    assert.strictEqual(api.sessions.size, 1);
+  });
 
   it("returns a JSON-serializable empty snapshot", () => {
     const snapshot = api.buildSessionSnapshot();

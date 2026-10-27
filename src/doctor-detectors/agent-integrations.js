@@ -2955,6 +2955,25 @@ function checkAgent(descriptor, options) {
   // while Reasonix mirrors its own compatibility loader by preferring an
   // existing current/legacy settings file before a bare home.
   const configTargets = Array.isArray(descriptor.configTargets) ? descriptor.configTargets : [];
+  if (descriptor.agentId === "qoder" && configTargets.length) {
+    // Both editions can be installed at once. A healthy international config
+    // must not hide missing/broken hooks in the CN config (or vice versa).
+    const checks = configTargets
+      .filter((target) => dirExists(options.fs, target.parentDir))
+      .map((target) => checkFileMode({ ...descriptor, ...target }, options));
+    if (checks.length) {
+      const detail = checks.find((check) => check.status !== "ok") || checks[0];
+      const fixable = checks.map((check) => withAgentFixAction(check, descriptor))
+        .find((check) => check.fixAction);
+      return {
+        ...detail,
+        detail: checks.map((check) => check.detail).join("; "),
+        configTargets: checks.map(({ configPath, status }) => ({ configPath, status })),
+        commandCount: checks.reduce((count, check) => count + (check.commandCount || 0), 0),
+        ...(fixable ? { fixAction: fixable.fixAction } : {}),
+      };
+    }
+  }
   const activeTarget = descriptor.preferExistingConfigFile
     ? configTargets.find((target) => fileExists(options.fs, target.configPath))
       || configTargets.find((target) => dirExists(options.fs, target.parentDir))

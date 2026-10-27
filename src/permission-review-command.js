@@ -288,15 +288,8 @@ function runPermissionReviewCommand(options = {}) {
 
     entry.child = child;
     entry.stop = () => {
-      timedOut = true;
       terminateReviewChild(child);
-      finish({
-        hold: true,
-        tag: "timeout",
-        exitCode: null,
-        note: null,
-        warning: false,
-      });
+      finish(cancelledReviewResult("app-quitting"));
     };
     activeReviews.add(entry);
 

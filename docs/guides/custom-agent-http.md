@@ -16,11 +16,11 @@ After registration, copy these values from the custom agent card:
 - **State endpoint** — the current local `/state` URL;
 - **Minimum JSON payload** — a ready-to-adapt request body.
 
-The card remains under **Detected locally** while its saved executable exists. Removing a discovery path only removes that scan source; it does not remove the registration. Use **Remove** on the agent card to delete the registration.
+The card stays under **Connected**; a missing executable is shown on its status line. Removing a discovery path only removes that scan source; it does not remove the registration. Expand the agent card, click **Remove…**, then use **Remove** in the revealed row to delete the registration.
 
 ## 2. Discover the runtime port
 
-Clawd binds only to `127.0.0.1` and chooses the first available port in `23333–23337`. Do not hard-code `23333`. While Clawd is running it writes:
+Clawd binds only to `127.0.0.1`. It prefers the previous runtime port and `23333–23337`; if those are unavailable, it tries a saved dynamic-port hint and then a port assigned by the operating system. Do not hard-code `23333`. While Clawd is running it writes:
 
 ```text
 ~/.clawd/runtime.json
@@ -35,7 +35,7 @@ The relevant shape is:
 }
 ```
 
-Read the file for every new sender process, verify `app === "clawd-on-desk"`, and use its `port`. The port may change after Clawd restarts. If the file is absent, malformed, or the connection is refused, treat Clawd as offline and continue the agent's normal work without blocking.
+Read the file for every new sender process, verify `app === "clawd-on-desk"`, validate `port` as an integer from 1 through 65535 (or its canonical decimal string), and use it. The port may change after Clawd restarts. If the file is absent, malformed, or the connection is refused, treat Clawd as offline and continue the agent's normal work without blocking.
 
 ## 3. POST a state event
 

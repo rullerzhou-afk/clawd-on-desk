@@ -817,26 +817,67 @@
     });
   }
 
+  // Three layers per channel card: a header with one status sentence and (once
+  // configured) the enable switch; a "start setup" block or the connection /
+  // notification groups; and a footer test link.
   function buildTelegramChannelCard() {
     const kind = deriveCardKind();
+    const cfg = currentConfig();
+    const { ready } = telegramSetupProgress();
+    const configured = ready || effectiveTelegramApprovalEnabled(cfg);
     // Default-collapse the card once native polling is running — the user no
     // longer needs to see the setup steps. localStorage persists any manual
     // expand/collapse from there.
     const migrationGate = buildTelegramMigrationGate();
     const defaultCollapsed = migrationGate ? false : kind === "running";
+    const header = buildChannelHeader(
+      t("telegramApprovalChannelName"),
+      deriveTelegramStatus(),
+      "settings-telegram-approval-enabled-label",
+    );
+
+    const children = [migrationGate];
+    if (!configured) {
+      children.push(buildChannelSetup({
+        steps: [
+          [buildTokenRow()],
+          [buildRecipientRow()],
+        ],
+        footText: t("telegramSetupFoot"),
+      }));
+    } else {
+      const tokenRow = buildTokenRow();
+      const recipientRow = buildRecipientRow();
+      const completionRow = buildCompletionOutputRow();
+      const directSendRow = buildDirectSendRow({ ready });
+      for (const row of [tokenRow, recipientRow, completionRow, directSendRow]) {
+        helpers.attachDescriptionDisclosure(row);
+      }
+      children.push(helpers.buildDetailGroup(t("settingsGroupConnection"), [
+        tokenRow,
+        recipientRow,
+      ]));
+      children.push(helpers.buildDetailGroup(t("settingsGroupNotifications"), [
+        completionRow,
+        directSendRow,
+      ]));
+      children.push(buildChannelTestFooter({
+        available: !(!ready || !telegramRuntimeReady() || !telegramNativeReady()),
+        pending: view.testPending,
+        hint: t("telegramApprovalTestAfterEnable"),
+        labelKey: "telegramApprovalSendTest",
+        pendingLabelKey: "telegramApprovalTesting",
+        onClick: sendTelegramTest,
+      }));
+    }
 
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.telegram",
-      headerContent: buildChannelHeader(t("telegramApprovalChannelName"), kind),
+      headerContent: header.element,
+      headerAction: configured ? buildTelegramEnabledSwitch({ ready, statusTextId: header.statusTextId }) : null,
       defaultCollapsed,
       className: "remote-approval-channel-card tg-approval-channel-card",
-      children: [
-        buildChannelStatusRow(kind),
-        migrationGate,
-        helpers.buildSection(t("telegramApprovalStep1Title"), [buildTokenRow()]),
-        helpers.buildSection(t("telegramApprovalStep2Title"), [buildRecipientRow()]),
-        buildStep3Section(),
-      ].filter(Boolean),
+      children: children.filter(Boolean),
     });
   }
 
@@ -921,26 +962,55 @@
 
   function buildFeishuChannelCard() {
     const kind = deriveFeishuCardKind();
+    const cfg = currentFeishuConfig();
+    const { ready } = feishuSetupProgress();
+    const configured = ready || cfg.enabled;
     const defaultCollapsed = kind === "running";
+    const header = buildChannelHeader(
+      t("feishuApprovalChannelName"),
+      deriveFeishuStatus(),
+      "settings-feishu-approval-enabled-label",
+    );
+
+    const children = [];
+    if (!configured) {
+      children.push(buildChannelSetup({
+        steps: [
+          [buildFeishuPlatformRow(), buildFeishuSecretsRow()],
+          [buildFeishuApproverRow(), buildFeishuApproverFallbackGuide()],
+        ],
+        footText: tBrand("feishuSetupFoot"),
+      }));
+      children.push(buildFeishuEventSubRow());
+    } else {
+      const platformRow = buildFeishuPlatformRow();
+      const secretsRow = buildFeishuSecretsRow();
+      const approverRow = buildFeishuApproverRow();
+      const timeoutRow = buildFeishuTimeoutRow();
+      for (const row of [platformRow, secretsRow, approverRow, timeoutRow]) {
+        helpers.attachDescriptionDisclosure(row);
+      }
+      // Order matters: Feishu only saves the long-connection subscription
+      // mode while a long connection is live, so the connection group (and its
+      // enable switch) comes before the callback-subscription guide.
+      children.push(helpers.buildDetailGroup(t("settingsGroupConnection"), [
+        platformRow,
+        secretsRow,
+        approverRow,
+        buildFeishuApproverFallbackGuide(),
+      ]));
+      children.push(helpers.buildDetailGroup(t("settingsGroupAdvanced"), [timeoutRow]));
+      children.push(buildFeishuEventSubRow());
+      children.push(buildFeishuTestFooter({ ready }));
+    }
 
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.feishu",
-      headerContent: buildChannelHeader(t("feishuApprovalChannelName"), kind),
+      headerContent: header.element,
+      headerAction: configured ? buildFeishuEnabledSwitch({ ready, statusTextId: header.statusTextId }) : null,
       defaultCollapsed,
       className: "remote-approval-channel-card feishu-approval-channel-card",
-      children: [
-        buildChannelStatusRow(kind, deriveFeishuCardMessage(kind)),
-        // Order matters: Feishu only saves the long-connection subscription
-        // mode while a long connection is live, so the enable switch (step 3)
-        // must come before the callback-subscription guide (step 4).
-        helpers.buildSection(t("feishuApprovalStep1Title"), [buildFeishuPlatformRow(), buildFeishuSecretsRow()]),
-        helpers.buildSection(t("feishuApprovalStep2Title"), [
-          buildFeishuApproverRow(),
-          buildFeishuApproverFallbackGuide(),
-        ]),
-        buildFeishuStep3Section(),
-        buildFeishuStep4Section(),
-      ],
+      children: children.filter(Boolean),
     });
   }
 
@@ -949,79 +1019,123 @@
   // "I'm away from the desk" is the same user intent and that is where the
   // approval console will land.
   function buildMobileChannelCard() {
-    const enabled = !!(state.snapshot && state.snapshot.mobilePreviewEnabled === true);
-    const kind = enabled ? "running" : "ready";
     const body = document.createElement("div");
     const mobile = root.ClawdSettingsTabMobile;
     if (mobile && typeof mobile.renderChannelBody === "function") {
       mobile.renderChannelBody(body);
     }
-    // Named for its trajectory (#208 approval console); the Beta badge + note
-    // make the current read-only-preview limitation explicit.
-    const header = buildChannelHeader(t("mobileChannelName"), kind);
-    const beta = document.createElement("span");
-    beta.className = "channel-beta-badge";
-    beta.textContent = "Beta";
-    header.insertBefore(beta, header.children[1] || null);
-    const note = document.createElement("div");
-    note.className = "channel-beta-note";
-    note.textContent = t("mobileBetaNote");
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.mobile",
-      headerContent: header,
+      headerContent: mobile && typeof mobile.buildChannelHeaderRow === "function"
+        ? mobile.buildChannelHeaderRow()
+        : buildChannelHeader(t("mobileChannelName"), deriveMobileStatus(), "settings-mobile-preview-enabled-label").element,
       // Never default-collapsed: while running the card shows the pair
       // URL/token the user needs on their phone.
       defaultCollapsed: false,
       className: "remote-approval-channel-card mobile-channel-card",
-      children: [
-        note,
-        buildChannelStatusRow(kind, t(enabled ? "mobileCardRunning" : "mobileCardReady")),
-        body,
-      ],
+      children: [body],
     });
   }
 
-  function buildChannelHeader(channelName, kind) {
+  // Card header: the channel name, its one-line status, and (via
+  // headerAction) the enable switch. Returns the status text id so the switch
+  // can point aria-describedby at the sentence it sits next to.
+  function buildChannelHeader(channelName, status, nameId = "") {
     const wrap = document.createElement("div");
-    wrap.className = "tg-approval-channel-header";
+    wrap.className = "channel-header";
 
     const nameEl = document.createElement("span");
-    nameEl.className = "tg-approval-channel-name";
+    nameEl.className = "channel-name";
+    if (nameId) nameEl.id = nameId;
     nameEl.textContent = channelName;
     wrap.appendChild(nameEl);
 
-    const badge = document.createElement("span");
-    badge.className = "tg-approval-channel-badge " + statusBadgeClass(kind);
-    const dot = document.createElement("span");
-    dot.className = "tg-approval-channel-badge-dot";
-    badge.appendChild(dot);
-    const badgeText = document.createElement("span");
-    badgeText.textContent = t("telegramApprovalCardKind_" + kind);
-    badge.appendChild(badgeText);
-    wrap.appendChild(badge);
-
-    return wrap;
-  }
-
-  function buildChannelStatusRow(kind, message) {
-    const row = document.createElement("div");
-    row.className = "tg-approval-channel-status-row " + statusBadgeClass(kind);
-    const text = document.createElement("span");
-    text.className = "tg-approval-channel-status-text";
-    text.textContent = message || deriveCardMessage(kind);
-    row.appendChild(text);
-    return row;
-  }
-
-  function statusBadgeClass(kind) {
-    switch (kind) {
-      case "running": return "tg-approval-badge-running";
-      case "starting": return "tg-approval-badge-starting";
-      case "failed": return "tg-approval-badge-failed";
-      case "ready": return "tg-approval-badge-ready";
-      case "incomplete":
-      default: return "tg-approval-badge-incomplete";
+    const statusLine = helpers.buildStatusLine(status);
+    const statusText = statusLine.element.querySelector(".settings-status-text");
+    if (statusText && !statusText.id) {
+      statusText.id = `settings-channel-status-${++channelStatusIdSeq}`;
     }
+    wrap.appendChild(statusLine.element);
+    return {
+      element: wrap,
+      statusTextId: statusText ? statusText.id : "",
+    };
+  }
+
+  let channelStatusIdSeq = 0;
+
+  // Shared three-layer building blocks for channel cards.
+  function buildChannelSetup({ steps = [], footText = "" } = {}) {
+    const setup = document.createElement("div");
+    setup.className = "channel-setup";
+    const title = document.createElement("div");
+    title.className = "channel-setup-title";
+    title.textContent = t("channelSetupTitle");
+    setup.appendChild(title);
+    for (const [index, stepRows] of steps.entries()) {
+      const stepEl = document.createElement("div");
+      stepEl.className = "channel-setup-step";
+      const num = document.createElement("span");
+      num.className = "channel-setup-num";
+      num.textContent = String(index + 1);
+      const body = document.createElement("div");
+      body.className = "channel-setup-body";
+      for (const row of stepRows) {
+        if (row) body.appendChild(row);
+      }
+      stepEl.appendChild(num);
+      stepEl.appendChild(body);
+      setup.appendChild(stepEl);
+    }
+    if (footText) {
+      const foot = document.createElement("div");
+      foot.className = "channel-setup-foot";
+      foot.textContent = footText;
+      setup.appendChild(foot);
+    }
+    return setup;
+  }
+
+  // Card footer layer: a quiet test link, or the sentence explaining why it is
+  // not available yet. `pending` keeps the link mounted but disabled.
+  function buildChannelTestFooter({
+    available,
+    pending,
+    hint,
+    note = "",
+    labelKey,
+    pendingLabelKey,
+    onClick,
+  }) {
+    const foot = document.createElement("div");
+    foot.className = "channel-foot";
+    if (!available) {
+      const hintEl = document.createElement("span");
+      hintEl.className = "channel-foot-hint";
+      hintEl.textContent = hint || "";
+      foot.appendChild(hintEl);
+      return foot;
+    }
+    if (note) {
+      const noteEl = document.createElement("span");
+      noteEl.className = "channel-foot-note";
+      noteEl.textContent = note;
+      foot.appendChild(noteEl);
+    }
+    const link = helpers.buildButton({
+      tone: "quiet",
+      size: "compact",
+      labelKey: pending ? pendingLabelKey : labelKey,
+      className: "channel-foot-link",
+      disabled: pending === true,
+      pending: pending === true,
+    });
+    link.addEventListener("click", () => {
+      if (pending || typeof onClick !== "function") return;
+      onClick();
+    });
+    foot.appendChild(link);
+    return foot;
   }
 
   // ── Status helpers ──
@@ -1062,6 +1176,43 @@
     return telegramMissingSetupMessage() || t("telegramApprovalCardReadyToEnable");
   }
 
+  function telegramSetupProgress() {
+    const tokenConfigured = !!(view.tokenInfo && view.tokenInfo.configured)
+      || !!(view.status && view.status.tokenStored === true);
+    const recipientConfigured = !!currentConfig().allowedTgUserId;
+    return {
+      tokenConfigured,
+      recipientConfigured,
+      ready: tokenConfigured && recipientConfigured,
+    };
+  }
+
+  function telegramRuntimeReady() {
+    return !!(view.status && view.status.configured === true);
+  }
+
+  function telegramNativeReady() {
+    const s = view.status || {};
+    return migrationState() === "NATIVE_ACTIVE"
+      && s.transport === "native"
+      && s.status === "running";
+  }
+
+  function deriveTelegramStatus() {
+    const kind = deriveCardKind();
+    if (kind === "running") return { tone: "ok", text: t("telegramApprovalCardRunning") };
+    if (kind === "starting") return { tone: "warn", text: t("telegramApprovalCardStarting") };
+    if (kind === "failed") return { tone: "bad", text: deriveCardMessage("failed") };
+    if (kind === "ready") return { tone: "warn", text: t("telegramApprovalCardReadyToEnable") };
+    // Saving the token refreshes tokenInfo before status can catch up, so the
+    // fields are complete while the kind is still incomplete; fall back to the
+    // ready sentence instead of rendering an empty status.
+    return {
+      tone: "off",
+      text: telegramMissingSetupMessage() || t("telegramApprovalCardReadyToEnable"),
+    };
+  }
+
   function deriveFeishuCardKind() {
     const s = feishuView.status || {};
     if (s.status === "running") return "running";
@@ -1087,6 +1238,29 @@
     // e.g. an App ID that isn't a self-built id. Say that instead of claiming
     // it's ready to enable.
     return feishuBlockingReasonMessage() || t("feishuApprovalCardReadyToEnable");
+  }
+
+  function feishuSetupStatusMessage(setupReason) {
+    if (setupReason === "missing-credentials" || setupReason === "missing-approver") {
+      return deriveFeishuCardMessage("incomplete");
+    }
+    return feishuSetupReasonMessage(setupReason);
+  }
+
+  function deriveFeishuStatus() {
+    const kind = deriveFeishuCardKind();
+    if (kind === "running") return { tone: "ok", text: tBrand("feishuApprovalCardRunning") };
+    if (kind === "starting") return { tone: "warn", text: tBrand("feishuApprovalCardStarting") };
+    if (kind === "failed") return { tone: "bad", text: feishuRuntimeErrorMessage() };
+    // setupReason explains disabled / credential-platform-mismatch cases that
+    // feishuBlockingReasonMessage() deliberately leaves blank. Missing-field
+    // reasons use the card's Missing chain so a fresh install reads like the
+    // other channels instead of the approver-lookup sentence.
+    const setupMessage = feishuSetupStatusMessage(feishuSetupProgress().setupReason);
+    if (kind === "ready") {
+      return { tone: "warn", text: setupMessage || t("feishuApprovalCardReadyToEnable") };
+    }
+    return { tone: "off", text: setupMessage || deriveFeishuCardMessage("incomplete") };
   }
 
   // ── Step 1: Bot Token ──
@@ -1293,79 +1467,23 @@
     return row;
   }
 
-  // ── Step 3: Enable + Test ──
-
-  function buildStep3Section() {
-    const tokenConfigured = !!(view.tokenInfo && view.tokenInfo.configured)
-      || (view.status && view.status.tokenStored === true);
-    const cfg = currentConfig();
-    const recipientConfigured = !!cfg.allowedTgUserId;
-    const ready = tokenConfigured && recipientConfigured;
-
-    const rows = [];
-    if (!ready) {
-      rows.push(buildPrerequisitesRow({ tokenConfigured, recipientConfigured }));
-    }
-    rows.push(buildEnabledRow({ ready }));
-    rows.push(buildCompletionOutputRow());
-    rows.push(buildDirectSendRow({ ready }));
-    rows.push(buildTestRow({ ready }));
-    return helpers.buildSection(t("telegramApprovalStep3Title"), rows);
-  }
-
-  function buildPrerequisitesRow({ tokenConfigured, recipientConfigured }) {
-    const row = document.createElement("div");
-    row.className = "row tg-approval-prereq-row";
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("telegramApprovalPrereqLabel");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    const missing = [];
-    if (!tokenConfigured) missing.push(t("telegramApprovalPrereqMissingToken"));
-    if (!recipientConfigured) missing.push(t("telegramApprovalPrereqMissingRecipient"));
-    desc.textContent = t("telegramApprovalPrereqDesc") + " " + missing.join("、");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-    return row;
-  }
-
-  function buildEnabledRow({ ready }) {
+  // Header enable switch. Disable rules are unchanged from the old in-card
+  // row: Telegram still requires ready, no migration debt, and either an
+  // effective enable or a migration snapshot.
+  function buildTelegramEnabledSwitch({ ready, statusTextId }) {
     const cfg = currentConfig();
     const effectiveEnabled = effectiveTelegramApprovalEnabled(cfg);
-    const row = document.createElement("div");
-    row.className = "row";
-    if (!ready) row.classList.add("tg-approval-row-disabled");
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.id = "settings-telegram-approval-enabled-label";
-    label.textContent = t("telegramApprovalToggle");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.id = "settings-telegram-approval-enabled-description";
-    desc.textContent = t("telegramApprovalToggleDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
     const migrationRequired = migrationState() === "NATIVE_MIGRATION_REQUIRED";
     const canToggle = ready
       && !migrationRequired
       && (effectiveEnabled || migrationSnapshot);
-    const switchControl = helpers.buildSwitch({
+    return helpers.buildSwitch({
       checked: effectiveEnabled,
       pending: view.configPending || migrationPending,
       disabled: !canToggle,
-      ariaLabelledBy: label.id,
-      ariaDescribedBy: desc.id,
+      ariaLabel: t("telegramApprovalToggle"),
+      ariaDescribedBy: statusTextId,
+      stopPropagation: true,
       onToggle: () => {
         const turningOff = effectiveEnabled === true;
         // Runtime ownership lives in the migration controller. OFF dispatches
@@ -1384,10 +1502,23 @@
           return;
         }
       },
+    }).element;
+  }
+
+  function sendTelegramTest() {
+    if (view.testPending) return;
+    view.testPending = true;
+    ops.requestRender({ content: true });
+    callCommand("telegramApproval.test").then((result) => {
+      view.testPending = false;
+      if (result && result.status === "ok") {
+        ops.showToast(t("telegramApprovalTestSent"));
+      } else {
+        ops.showToast((result && result.message) || t("telegramApprovalTestFailed"), { error: true });
+      }
+      view.status = null;
+      refreshStatus({ forceRender: true });
     });
-    ctrl.appendChild(switchControl.element);
-    row.appendChild(ctrl);
-    return row;
   }
 
   function buildDirectSendRow({ ready }) {
@@ -1432,33 +1563,21 @@
     const mode = ["off", "full"].includes(cfg.completionOutputMode)
       ? cfg.completionOutputMode
       : "off";
-    const row = document.createElement("div");
-    row.className = "row tg-approval-completion-output-row";
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("telegramApprovalCompletionOutput");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t("telegramApprovalCompletionOutputDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
+    const rowParts = helpers.buildSettingRow({
+      labelKey: "telegramApprovalCompletionOutput",
+      descriptionKey: "telegramApprovalCompletionOutputDesc",
+      className: "tg-approval-completion-row",
+    });
+    const row = rowParts.element;
     const picker = helpers.buildSegmentedRadio({
       id: "approval-completion-output",
       value: mode,
       options: ["off", "full"].map((value) => ({
         value,
         label: t("telegramApprovalCompletionOutput_" + value),
-        description: t("telegramApprovalCompletionOutput_" + value + "Desc"),
       })),
       ariaLabel: t("telegramApprovalCompletionOutput"),
-      className: "tg-approval-output-choice",
+      className: "tg-approval-completion-output",
       disabled: view.configPending,
       onChange(value) {
         const nextMode = ["off", "full"].includes(value) ? value : "off";
@@ -1491,63 +1610,7 @@
         return saveConfig({ ...cfg, completionOutputMode: nextMode }, { resetDraft: false });
       },
     });
-    ctrl.appendChild(picker.element);
-    row.appendChild(ctrl);
-    return row;
-  }
-
-  function buildTestRow({ ready }) {
-    const s = view.status || {};
-    const runtimeReady = s.configured === true;
-    const nativeReady = migrationState() === "NATIVE_ACTIVE"
-      && s.transport === "native"
-      && s.status === "running";
-    const testDisabled = view.testPending || !ready || !runtimeReady || !nativeReady;
-    const row = document.createElement("div");
-    row.className = "row";
-    if (!ready) row.classList.add("tg-approval-row-disabled");
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("telegramApprovalTest");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t("telegramApprovalTestDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const btn = helpers.buildButton({
-      labelKey: view.testPending ? "telegramApprovalTesting" : "telegramApprovalSendTest",
-      tone: "accent",
-      size: "compact",
-      disabled: testDisabled,
-      pending: view.testPending,
-    });
-    if (testDisabled && !view.testPending) {
-      btn.title = (s.message && String(s.message)) || t("telegramApprovalCardMissingBoth");
-    }
-    btn.addEventListener("click", () => {
-      if (testDisabled) return;
-      view.testPending = true;
-      ops.requestRender({ content: true });
-      callCommand("telegramApproval.test").then((result) => {
-        view.testPending = false;
-        if (result && result.status === "ok") {
-          ops.showToast(t("telegramApprovalTestSent"));
-        } else {
-          ops.showToast((result && result.message) || t("telegramApprovalTestFailed"), { error: true });
-        }
-        view.status = null;
-        refreshStatus({ forceRender: true });
-      });
-    });
-    ctrl.appendChild(btn);
-    row.appendChild(ctrl);
+    rowParts.controlElement.appendChild(picker.element);
     return row;
   }
 
@@ -2091,93 +2154,66 @@
     };
   }
 
-  function buildFeishuStep3Section() {
-    const { secretsConfigured, approverConfigured, ready, setupReason } = feishuSetupProgress();
-    const rows = [];
-    if (!ready) {
-      rows.push(buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured, setupReason }));
-    }
-    rows.push(buildFeishuEnabledRow({ ready }));
-    rows.push(buildFeishuTimeoutRow());
-    return helpers.buildSection(t("feishuApprovalStep3Title"), rows);
-  }
-
-  function buildFeishuStep4Section() {
-    const { ready } = feishuSetupProgress();
-    return helpers.buildSection(t("feishuApprovalStep4Title"), [
-      buildFeishuEventSubRow(),
-      buildFeishuTestRow({ ready }),
-    ]);
-  }
-
-  function buildFeishuPrerequisitesRow({ secretsConfigured, approverConfigured, setupReason }) {
-    const row = document.createElement("div");
-    row.className = "row tg-approval-prereq-row";
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("feishuApprovalPrereqLabel");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    const setupMessage = feishuSetupReasonMessage(setupReason);
-    if (setupMessage) {
-      desc.textContent = setupMessage;
-      text.appendChild(label);
-      text.appendChild(desc);
-      row.appendChild(text);
-      return row;
-    }
-    const missing = [];
-    if (!secretsConfigured) missing.push(t("feishuApprovalPrereqMissingSecrets"));
-    if (!approverConfigured) missing.push(t("feishuApprovalPrereqMissingApprover"));
-    desc.textContent = t("feishuApprovalPrereqDesc") + " " + missing.join(", ");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-    return row;
-  }
-
-  function buildFeishuEnabledRow({ ready }) {
+  function buildFeishuEnabledSwitch({ ready, statusTextId }) {
     const cfg = currentFeishuConfig();
     const blocked = feishuLookupPending() || feishuView.testPending || (!cfg.enabled && !ready);
-    const row = document.createElement("div");
-    row.className = "row";
-    if (!ready && !cfg.enabled) row.classList.add("tg-approval-row-disabled");
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.id = "settings-feishu-approval-enabled-label";
-    label.textContent = tBrand("feishuApprovalToggle");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.id = "settings-feishu-approval-enabled-description";
-    desc.textContent = tBrand("feishuApprovalToggleDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const switchControl = helpers.buildSwitch({
+    return helpers.buildSwitch({
       checked: cfg.enabled,
       pending: feishuView.configPersistencePending,
       disabled: blocked,
-      ariaLabelledBy: label.id,
-      ariaDescribedBy: desc.id,
+      ariaLabel: tBrand("feishuApprovalToggle"),
+      ariaDescribedBy: statusTextId,
+      stopPropagation: true,
       onToggle: () => {
         if (allFeishuControlsBlocked()) return;
         saveFeishuConfig({ enabled: !cfg.enabled }, { resetDraft: false });
       },
+    }).element;
+  }
+
+  function feishuTestHint() {
+    const s = feishuView.status || {};
+    return feishuSetupStatusMessage(feishuSetupProgress().setupReason)
+      || feishuBlockingReasonMessage()
+      || (s.status === "failed" ? feishuRuntimeErrorMessage() : "")
+      || t("feishuApprovalTestAfterEnable");
+  }
+
+  function buildFeishuTestFooter({ ready }) {
+    const s = feishuView.status || {};
+    const runtimeReady = s.configured === true;
+    return buildChannelTestFooter({
+      available: ready && runtimeReady,
+      pending: feishuView.testPending
+        || feishuLookupPending()
+        || feishuView.configPersistencePending,
+      hint: feishuTestHint(),
+      labelKey: "feishuApprovalSendTest",
+      pendingLabelKey: "feishuApprovalTesting",
+      onClick: sendFeishuTest,
     });
-    if (!cfg.enabled && !ready) {
-      switchControl.element.title = feishuSetupReasonMessage(feishuSetupProgress().setupReason);
-    }
-    ctrl.appendChild(switchControl.element);
-    row.appendChild(ctrl);
-    return row;
+  }
+
+  function sendFeishuTest() {
+    if (feishuView.testPending) return;
+    feishuView.testPending = true;
+    ops.requestRender({ content: true });
+    callCommand("feishuApproval.test").then((result) => {
+      feishuView.testPending = false;
+      if (result && result.status === "ok") {
+        ops.showToast(tBrand("feishuApprovalTestSent"));
+      } else {
+        const code = result && result.code;
+        const codeKey = FEISHU_TEST_ERROR_KEYS[code] || "";
+        let text = codeKey ? tBrand(codeKey) : ((result && result.message) || tBrand("feishuApprovalTestFailed"));
+        // Surface the SDK error for send failures — it usually names the
+        // culprit directly (e.g. invalid receive_id for a bad approver id).
+        if (code === "card-send-failed" && result.message) text += ` (${result.message})`;
+        ops.showToast(text, { error: true });
+      }
+      feishuView.status = null;
+      refreshFeishuStatus({ forceRender: true });
+    });
   }
 
   function buildFeishuTimeoutRow() {
@@ -2222,73 +2258,6 @@
     });
     mountedFeishuTimeoutControl = { row, picker };
     ctrl.appendChild(picker.element);
-    row.appendChild(ctrl);
-    return row;
-  }
-
-  function buildFeishuTestRow({ ready }) {
-    const s = feishuView.status || {};
-    const runtimeReady = s.configured === true;
-    const testDisabled = feishuView.testPending
-      || feishuLookupPending()
-      || feishuView.configPersistencePending
-      || !ready
-      || !runtimeReady;
-    const row = document.createElement("div");
-    row.className = "row";
-    if (!ready) row.classList.add("tg-approval-row-disabled");
-
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("feishuApprovalTest");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = tBrand("feishuApprovalTestDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const btn = helpers.buildButton({
-      labelKey: feishuView.testPending ? "feishuApprovalTesting" : "feishuApprovalSendTest",
-      tone: "accent",
-      size: "compact",
-      disabled: testDisabled,
-      pending: feishuView.testPending,
-    });
-    if (testDisabled && !feishuView.testPending) {
-      // Prefer the translated reason the button is dead; the raw English
-      // s.message is the last resort, not the first choice.
-      btn.title = feishuBlockingReasonMessage()
-        || (s.status === "failed" ? feishuRuntimeErrorMessage() : "")
-        || (s.message && String(s.message))
-        || t("feishuApprovalCardMissingBoth");
-    }
-    btn.addEventListener("click", () => {
-      if (testDisabled || feishuView.testPending) return;
-      feishuView.testPending = true;
-      ops.requestRender({ content: true });
-      callCommand("feishuApproval.test").then((result) => {
-        feishuView.testPending = false;
-        if (result && result.status === "ok") {
-          ops.showToast(tBrand("feishuApprovalTestSent"));
-        } else {
-          const code = result && result.code;
-          const codeKey = FEISHU_TEST_ERROR_KEYS[code] || "";
-          let text = codeKey ? tBrand(codeKey) : ((result && result.message) || tBrand("feishuApprovalTestFailed"));
-          // Surface the SDK error for send failures — it usually names the
-          // culprit directly (e.g. invalid receive_id for a bad approver id).
-          if (code === "card-send-failed" && result.message) text += ` (${result.message})`;
-          ops.showToast(text, { error: true });
-        }
-        feishuView.status = null;
-        refreshFeishuStatus({ forceRender: true });
-      });
-    });
-    ctrl.appendChild(btn);
     row.appendChild(ctrl);
     return row;
   }
@@ -2714,10 +2683,20 @@
     return "incomplete";
   }
 
-  function deriveSlackCardMessage(kind) {
-    if (kind === "running") return t("slackNotifyCardRunning");
-    if (kind === "ready") return t("slackNotifyCardReadyToEnable");
-    return t("slackNotifyCardMissingSecret");
+  function deriveSlackStatus() {
+    const kind = deriveSlackCardKind();
+    if (kind === "running") {
+      return { tone: "ok", text: `${t("slackNotifyCardRunning")} · ${slackTransportLine()}` };
+    }
+    if (kind === "ready") return { tone: "warn", text: t("slackNotifyCardReadyToEnable") };
+    return { tone: "off", text: t("slackNotifyCardMissingSecret") };
+  }
+
+  function deriveMobileStatus() {
+    const enabled = !!(state.snapshot && state.snapshot.mobilePreviewEnabled === true);
+    return enabled
+      ? { tone: "ok", text: t("mobileStatusRunning") }
+      : { tone: "off", text: t("mobileStatusOff") };
   }
 
   function slackSecretsConfigured() {
@@ -2737,50 +2716,64 @@
 
   function buildSlackChannelCard() {
     const kind = deriveSlackCardKind();
+    const cfg = currentSlackConfig();
+    const configured = slackTransportConfigured() || cfg.enabled;
     const defaultCollapsed = kind === "running";
+    const header = buildChannelHeader(
+      t("slackNotifyChannelName"),
+      deriveSlackStatus(),
+      "settings-slack-notify-enabled-label",
+    );
+
+    const children = [];
+    if (!configured) {
+      children.push(buildChannelSetup({
+        steps: [[buildSlackSecretsRow(), buildSlackChannelIdRow()]],
+        footText: t("slackSetupFoot"),
+      }));
+    } else {
+      const secretsRow = buildSlackSecretsRow();
+      const channelIdRow = buildSlackChannelIdRow();
+      const eventRows = [
+        buildSlackSwitchRow("slackNotifyEventDone", "slackNotifyEventDoneDesc", cfg.notifyOnDone, (value) =>
+          saveSlackConfig({ ...currentSlackConfig(), notifyOnDone: value })),
+        buildSlackSwitchRow("slackNotifyEventError", "slackNotifyEventErrorDesc", cfg.notifyOnError, (value) =>
+          saveSlackConfig({ ...currentSlackConfig(), notifyOnError: value })),
+        buildSlackSwitchRow("slackNotifyEventPermission", "slackNotifyEventPermissionDesc", cfg.notifyOnPermission, (value) =>
+          saveSlackConfig({ ...currentSlackConfig(), notifyOnPermission: value })),
+        buildSlackSwitchRow("slackNotifyOutputMode", "slackNotifyOutputModeDesc", cfg.outputMode === "full", (value) =>
+          saveSlackConfig({ ...currentSlackConfig(), outputMode: value ? "full" : "off" })),
+      ];
+      // Slack shows the privacy warning on the stored-credential note, so the
+      // credentials row folds both description segments into one (i) toggle.
+      helpers.attachDescriptionDisclosure(secretsRow, { includeExtra: true });
+      for (const row of [channelIdRow, ...eventRows]) {
+        helpers.attachDescriptionDisclosure(row);
+      }
+      children.push(helpers.buildDetailGroup(t("settingsGroupConnection"), [
+        secretsRow,
+        channelIdRow,
+      ]));
+      children.push(helpers.buildDetailGroup(t("settingsGroupNotifications"), eventRows));
+      children.push(buildChannelTestFooter({
+        available: slackTransportConfigured(),
+        pending: slackView.testPending,
+        hint: t("slackNotifyCardMissingSecret"),
+        note: slackTransportLine(),
+        labelKey: "slackNotifySendTest",
+        pendingLabelKey: "slackNotifyTesting",
+        onClick: sendSlackTest,
+      }));
+    }
+
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.slack",
-      headerContent: buildChannelHeader(t("slackNotifyChannelName"), kind),
+      headerContent: header.element,
+      headerAction: configured ? buildSlackEnabledSwitch({ statusTextId: header.statusTextId }) : null,
       defaultCollapsed,
       className: "remote-approval-channel-card slack-notify-channel-card",
-      children: [
-        buildChannelStatusRow(kind, deriveSlackCardMessage(kind)),
-        buildSlackOneWayNoticeRow(),
-        helpers.buildSection(t("slackNotifyStep1Title"), [buildSlackSecretsRow()]),
-        helpers.buildSection(t("slackNotifyStep2Title"), [buildSlackChannelIdRow()]),
-        buildSlackStep3Section(),
-        helpers.buildSection(t("slackNotifyStep4Title"), [buildSlackTestRow()]),
-      ],
+      children: children.filter(Boolean),
     });
-  }
-
-  // The Slack card sits next to Telegram/Feishu, which DO resolve approvals
-  // remotely — so the one difference that matters has to be stated up front,
-  // above the setup steps, not buried in a per-toggle description. The second
-  // line is the privacy warning: a channel post is readable by everyone in the
-  // channel and can carry the session title, folder, and host.
-  function buildSlackOneWayNoticeRow() {
-    const row = document.createElement("div");
-    // Not tg-approval-prereq-row: that one paints its text in the error color,
-    // and "Slack is notification-only" is a permanent property of the channel,
-    // not a misconfiguration the user can fix.
-    row.className = "row slack-notify-oneway-row";
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("slackNotifyOneWayLabel");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t("slackNotifyOneWayDesc");
-    const privacy = document.createElement("span");
-    privacy.className = "row-desc";
-    privacy.textContent = t("slackNotifyPrivacyDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    text.appendChild(privacy);
-    row.appendChild(text);
-    return row;
   }
 
   function buildSlackSecretInput(placeholderKey, secret, onEnter) {
@@ -2834,7 +2827,7 @@
     // Local removal is not revocation — say so where the button is.
     if (info && (info.webhookUrl || info.botToken)) {
       const note = document.createElement("span");
-      note.className = "row-desc";
+      note.className = "row-desc row-desc-extra";
       note.textContent = t("slackNotifyRevokeNote");
       text.insertBefore(note, rowParts.descriptionElement);
     }
@@ -3002,72 +2995,18 @@
     return row;
   }
 
-  function buildSlackStep3Section() {
-    const ready = slackTransportConfigured();
-    const rows = [];
-    if (!ready) rows.push(buildSlackPrerequisitesRow());
-    rows.push(buildSlackEnabledRow({ ready }));
-    rows.push(buildSlackSwitchRow("slackNotifyEventDone", "slackNotifyEventDoneDesc", currentSlackConfig().notifyOnDone, (value) =>
-      saveSlackConfig({ ...currentSlackConfig(), notifyOnDone: value })));
-    rows.push(buildSlackSwitchRow("slackNotifyEventError", "slackNotifyEventErrorDesc", currentSlackConfig().notifyOnError, (value) =>
-      saveSlackConfig({ ...currentSlackConfig(), notifyOnError: value })));
-    rows.push(buildSlackSwitchRow("slackNotifyEventPermission", "slackNotifyEventPermissionDesc", currentSlackConfig().notifyOnPermission, (value) =>
-      saveSlackConfig({ ...currentSlackConfig(), notifyOnPermission: value })));
-    rows.push(buildSlackSwitchRow("slackNotifyOutputMode", "slackNotifyOutputModeDesc", currentSlackConfig().outputMode === "full", (value) =>
-      saveSlackConfig({ ...currentSlackConfig(), outputMode: value ? "full" : "off" })));
-    return helpers.buildSection(t("slackNotifyStep3Title"), rows);
-  }
-
-  function buildSlackPrerequisitesRow() {
-    const row = document.createElement("div");
-    row.className = "row tg-approval-prereq-row";
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("slackNotifyPrereqLabel");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t("slackNotifyPrereqDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-    return row;
-  }
-
-  function buildSlackEnabledRow({ ready }) {
+  function buildSlackEnabledSwitch({ statusTextId }) {
     const cfg = currentSlackConfig();
-    const row = document.createElement("div");
-    row.className = "row";
-    const canToggle = ready || cfg.enabled;
-    if (!canToggle) row.classList.add("tg-approval-row-disabled");
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.id = "settings-slack-notify-enabled-label";
-    label.textContent = t("slackNotifyToggle");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.id = "settings-slack-notify-enabled-description";
-    desc.textContent = t("slackNotifyToggleDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const switchControl = helpers.buildSwitch({
+    const canToggle = slackTransportConfigured() || cfg.enabled;
+    return helpers.buildSwitch({
       checked: cfg.enabled,
       pending: slackView.configPending,
       disabled: !canToggle,
-      ariaLabelledBy: label.id,
-      ariaDescribedBy: desc.id,
+      ariaLabel: t("slackNotifyToggle"),
+      ariaDescribedBy: statusTextId,
+      stopPropagation: true,
       onToggle: () => saveSlackConfig({ ...cfg, enabled: !cfg.enabled }),
-    });
-    ctrl.appendChild(switchControl.element);
-    row.appendChild(ctrl);
-    return row;
+    }).element;
   }
 
   function buildSlackSwitchRow(labelKey, descKey, value, onToggle) {
@@ -3101,55 +3040,20 @@
     return row;
   }
 
-  function buildSlackTestRow() {
-    // A usable transport is enough to test — not the enable switch, and not
-    // merely "some credential is stored". Testing the connection is the step
-    // that comes before switching sending on.
-    const ready = slackTransportConfigured();
-    const testDisabled = slackView.testPending || !ready;
-    const row = document.createElement("div");
-    row.className = "row";
-    if (!ready) row.classList.add("tg-approval-row-disabled");
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("slackNotifyTest");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = `${t("slackNotifyTestDesc")} ${slackTransportLine()}`;
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const btn = helpers.buildButton({
-      labelKey: slackView.testPending ? "slackNotifyTesting" : "slackNotifySendTest",
-      tone: "accent",
-      size: "compact",
-      disabled: testDisabled,
-      pending: slackView.testPending,
+  function sendSlackTest() {
+    if (slackView.testPending) return;
+    slackView.testPending = true;
+    ops.requestRender({ content: true });
+    callCommand("slackNotify.test").then((result) => {
+      slackView.testPending = false;
+      if (result && result.status === "ok") {
+        ops.showToast(t("slackNotifyTestSent"));
+      } else {
+        ops.showToast(localizeSlackError(result), { error: true });
+      }
+      slackView.status = null;
+      refreshSlackStatus({ forceRender: true });
     });
-    if (testDisabled && !slackView.testPending) btn.title = t("slackNotifyCardMissingSecret");
-    btn.addEventListener("click", () => {
-      if (testDisabled) return;
-      slackView.testPending = true;
-      ops.requestRender({ content: true });
-      callCommand("slackNotify.test").then((result) => {
-        slackView.testPending = false;
-        if (result && result.status === "ok") {
-          ops.showToast(t("slackNotifyTestSent"));
-        } else {
-          ops.showToast(localizeSlackError(result), { error: true });
-        }
-        slackView.status = null;
-        refreshSlackStatus({ forceRender: true });
-      });
-    });
-    ctrl.appendChild(btn);
-    row.appendChild(ctrl);
-    return row;
   }
 
   function saveSlackConfig(next, options = {}) {

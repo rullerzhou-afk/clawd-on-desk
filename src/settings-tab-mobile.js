@@ -10,13 +10,10 @@
   let infoContainer = null;
   let permissionPreviewRow = null;
   let changeListenerRegistered = false;
+  let headerStatusIdSeq = 0;
 
   function t(key) {
     return helpers.t(key);
-  }
-
-  function escapeHtml(str) {
-    return helpers.escapeHtml(str);
   }
 
   function fetchMobileInfo() {
@@ -39,16 +36,132 @@
     );
   }
 
+  function buildStatusLine(enabled) {
+    return helpers.buildStatusLine(enabled
+      ? { tone: "ok", text: t("mobileStatusRunning") }
+      : { tone: "off", text: t("mobileStatusOff") });
+  }
+
+  // Card header for the LAN card: name + Beta tag + status sentence on the
+  // left, the mobilePreviewEnabled switch on the right. The switch lives inside
+  // the collapsible disclosure area, so clicks must not also fold the card.
+  function buildChannelHeaderRow() {
+    const enabled = !!(state && state.snapshot && state.snapshot.mobilePreviewEnabled === true);
+    const row = helpers.buildSwitchRow({
+      key: "mobilePreviewEnabled",
+      labelKey: "mobileChannelName",
+    });
+    row.classList.add("channel-header-row");
+    const text = row.querySelector(".row-text");
+    const label = text ? text.querySelector(".row-label") : null;
+    if (label) {
+      const beta = document.createElement("span");
+      beta.className = "channel-beta-tag";
+      beta.textContent = "Beta";
+      label.appendChild(beta);
+    }
+    if (text) {
+      const status = buildStatusLine(enabled);
+      const statusText = status.element.querySelector(".settings-status-text");
+      if (statusText && !statusText.id) {
+        statusText.id = `settings-mobile-status-${++headerStatusIdSeq}`;
+      }
+      text.appendChild(status.element);
+      const sw = row.querySelector(".switch");
+      if (sw && statusText) sw.setAttribute("aria-describedby", statusText.id);
+    }
+    const sw = row.querySelector(".switch");
+    if (sw) sw.addEventListener("click", (ev) => ev.stopPropagation());
+    return row;
+  }
+
+  // One pairing value: label + monospace value + a compact Copy button.
+  function buildConnectionRow(labelKey, value, valueClass = "") {
+    const row = document.createElement("div");
+    row.className = "row mobile-conn-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t(labelKey);
+    const valueEl = document.createElement("span");
+    valueEl.className = ["mobile-conn-value", valueClass].filter(Boolean).join(" ");
+    valueEl.textContent = value == null ? "" : String(value);
+    text.appendChild(label);
+    text.appendChild(valueEl);
+    row.appendChild(text);
+
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const copy = helpers.buildButton({
+      labelKey: "mobileCopy",
+      size: "compact",
+      className: "mobile-copy",
+    });
+    copy.addEventListener("click", () => {
+      if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") return;
+      navigator.clipboard.writeText(String(value == null ? "" : value)).then(() => {
+        helpers.setButtonState(copy, { labelKey: "mobileCopied" });
+        setTimeout(() => {
+          if (copy.isConnected === false) return;
+          helpers.setButtonState(copy, { labelKey: "mobileCopy" });
+        }, 1500);
+      });
+    });
+    control.appendChild(copy);
+    row.appendChild(control);
+    return row;
+  }
+
+  // Card footer layer for the LAN card: regenerate / reset stay quiet links.
+  function buildPairingFooter(container) {
+    const foot = document.createElement("div");
+    foot.className = "channel-foot";
+    const regenerate = helpers.buildButton({
+      labelKey: "mobileRegenerate",
+      tone: "quiet",
+      size: "compact",
+      className: "channel-foot-link mobile-regenerate",
+    });
+    regenerate.addEventListener("click", () => {
+      const confirmMsg = t("mobileRegenerateConfirm")
+        || "Regenerate token? All connected devices will be disconnected and will need to re-pair.";
+      if (!window.confirm(confirmMsg)) return;
+      if (!window.settingsAPI || typeof window.settingsAPI.regenerateMobileToken !== "function") return;
+      window.settingsAPI.regenerateMobileToken().then((result) => {
+        if (result && result.status === "ok") renderConnectionInfo(container);
+      });
+    });
+    const reset = helpers.buildButton({
+      labelKey: "mobileReset",
+      tone: "quiet",
+      size: "compact",
+      className: "channel-foot-link danger mobile-reset",
+    });
+    reset.addEventListener("click", () => {
+      const confirmMsg = t("mobileResetConfirm")
+        || "Reset mobile access? All connected devices will be disconnected and a new token will be generated.";
+      if (!window.confirm(confirmMsg)) return;
+      if (!window.settingsAPI || typeof window.settingsAPI.resetMobileAccess !== "function") return;
+      window.settingsAPI.resetMobileAccess().then((result) => {
+        if (result && result.status === "ok") renderConnectionInfo(container);
+      });
+    });
+    foot.appendChild(regenerate);
+    foot.appendChild(reset);
+    return foot;
+  }
+
   function renderConnectionInfo(container, attempt = 0) {
     container.innerHTML = "";
     const snapshot = (state && state.snapshot) || {};
     const enabled = snapshot.mobilePreviewEnabled === true;
-    if (!enabled) {
-      container.innerHTML = `<p class="mobile-info-loading">${escapeHtml(t("mobileDisabled") || "Enable the toggle above to start the LAN bridge.")}</p>`;
-      return;
-    }
+    if (!enabled) return;
 
-    container.innerHTML = `<div class="mobile-info-loading">${escapeHtml(t("mobileLoading") || "Loading...")}</div>`;
+    const loading = document.createElement("p");
+    loading.className = "mobile-info-loading";
+    loading.textContent = t("mobileLoading") || "Loading...";
+    container.appendChild(loading);
 
     fetchMobileInfo().then((info) => {
       if (!container.parentNode) return;
@@ -63,102 +176,30 @@
           }, MOBILE_INFO_RETRY_MS);
           return;
         }
-        container.innerHTML = `<p class="mobile-info-error">${escapeHtml(t("mobileError") || "Unable to load connection info.")}</p>`;
+        container.innerHTML = "";
+        const error = document.createElement("p");
+        error.className = "mobile-info-error";
+        error.textContent = t("mobileError") || "Unable to load connection info.";
+        container.appendChild(error);
         return;
       }
 
-      let html = '';
-
-      // Connection details
-      html += '<div class="mobile-conn-details">';
-      html += `<div class="mobile-conn-row"><span class="mobile-conn-label">LAN IP</span><span class="mobile-conn-value">${escapeHtml(info.lanIp)}</span>`;
-      html += `<button class="mobile-copy-btn" data-copy="${escapeHtml(info.lanIp)}">Copy</button></div>`;
-      html += `<div class="mobile-conn-row"><span class="mobile-conn-label">Port</span><span class="mobile-conn-value">${info.port}</span>`;
-      html += `<button class="mobile-copy-btn" data-copy="${String(info.port)}">Copy</button></div>`;
-      html += `<div class="mobile-conn-row"><span class="mobile-conn-label">Token</span><span class="mobile-conn-value mobile-token">${escapeHtml(info.token)}</span>`;
-      html += `<button class="mobile-copy-btn" data-copy="${escapeHtml(info.token)}">Copy</button></div>`;
-
-      // Pair URL
+      container.innerHTML = "";
+      container.appendChild(buildConnectionRow("mobileConnLanIp", info.lanIp));
+      container.appendChild(buildConnectionRow("mobileConnPort", info.port));
+      container.appendChild(buildConnectionRow("mobileConnToken", info.token, "mobile-token"));
       if (info.pairUrl) {
-        html += `<div class="mobile-conn-row"><span class="mobile-conn-label">URL</span><span class="mobile-conn-value mobile-pair-url">${escapeHtml(info.pairUrl)}</span>`;
-        html += `<button class="mobile-copy-btn" data-copy="${escapeHtml(info.pairUrl)}">Copy</button></div>`;
-      }
-
-      html += '</div>';
-
-      // Action buttons
-      html += '<div class="mobile-conn-actions">';
-      html += `<button class="mobile-action-btn" id="mobile-regenerate-btn">${escapeHtml(t("mobileRegenerate") || "Regenerate Token")}</button>`;
-      html += `<button class="mobile-action-btn mobile-action-danger" id="mobile-reset-btn">${escapeHtml(t("mobileReset") || "Reset Mobile Access")}</button>`;
-      html += '</div>';
-
-      container.innerHTML = html;
-
-      // Copy button handlers
-      container.querySelectorAll(".mobile-copy-btn").forEach((btn) => {
-        btn.addEventListener("click", () => {
-          const text = btn.getAttribute("data-copy");
-          if (navigator.clipboard) {
-            navigator.clipboard.writeText(text).then(() => {
-              btn.textContent = "Copied!";
-              setTimeout(() => { btn.textContent = "Copy"; }, 1500);
-            });
-          }
-        });
-      });
-
-      // Regenerate button handler
-      var regenBtn = container.querySelector("#mobile-regenerate-btn");
-      if (regenBtn) {
-        regenBtn.addEventListener("click", function() {
-          var confirmMsg = t("mobileRegenerateConfirm") || "Regenerate token? All connected devices will be disconnected and will need to re-pair.";
-          if (!window.confirm(confirmMsg)) return;
-          if (!window.settingsAPI || typeof window.settingsAPI.regenerateMobileToken !== "function") return;
-          window.settingsAPI.regenerateMobileToken().then(function(result) {
-            if (result && result.status === "ok") {
-              renderConnectionInfo(container);
-            }
-          });
-        });
-      }
-
-      // Reset button handler
-      var resetBtn = container.querySelector("#mobile-reset-btn");
-      if (resetBtn) {
-        resetBtn.addEventListener("click", function() {
-          var confirmMsg = t("mobileResetConfirm") || "Reset mobile access? All connected devices will be disconnected and a new token will be generated.";
-          if (!window.confirm(confirmMsg)) return;
-          if (!window.settingsAPI || typeof window.settingsAPI.resetMobileAccess !== "function") return;
-          window.settingsAPI.resetMobileAccess().then(function(result) {
-            if (result && result.status === "ok") {
-              renderConnectionInfo(container);
-            }
-          });
-        });
+        container.appendChild(buildConnectionRow("mobileConnUrl", info.pairUrl, "mobile-pair-url"));
       }
     });
   }
 
   // Body of the LAN approval card inside the Permissions tab's LAN approval
-  // sub-page (the card frame — header, status badge, collapse — is built by
+  // sub-page (the card frame — header, status sentence, collapse — is built by
   // settings-tab-telegram-approval.js next to the other channels).
   function renderChannelBody(container) {
-    const section = document.createElement("div");
-    section.className = "settings-tab-section";
-
-    const desc = document.createElement("p");
-    desc.className = "settings-tab-desc";
-    desc.textContent = t("mobileDesc") || "Connect your phone to monitor sessions remotely.";
-    section.appendChild(desc);
-
-    // Enable toggle
-    section.appendChild(helpers.buildSwitchRow({
-      key: "mobilePreviewEnabled",
-      labelKey: "mobileToggle",
-      descKey: "mobileToggleDesc",
-    }));
-
     const parentEnabled = !!(state.snapshot && state.snapshot.mobilePreviewEnabled === true);
+
     permissionPreviewRow = helpers.buildSwitchRow({
       key: "mobilePermissionPreviewEnabled",
       labelKey: "mobilePermissionToggle",
@@ -183,7 +224,7 @@
           actions: [
             { id: "reset", label: t("mobilePermissionConsentReset"), tone: "accent", defaultFocus: true },
             { id: "keep", label: t("mobilePermissionConsentKeep"), tone: "neutral" },
-            { id: "cancel", label: t("cancel"), tone: "neutral" },
+            { id: "cancel", label: t("permissionAutomationCancel"), tone: "neutral" },
           ],
         }).then(function(choice) {
           if (choice !== "reset" && choice !== "keep") {
@@ -211,21 +252,25 @@
         });
       },
     });
-    section.appendChild(permissionPreviewRow);
+    helpers.attachDescriptionDisclosure(permissionPreviewRow);
+    container.appendChild(helpers.buildDetailGroup(t("mobileGroupPhoneShows"), [permissionPreviewRow]));
 
-    const disclosure = document.createElement("p");
-    disclosure.className = "settings-tab-desc mobile-permission-disclosure";
-    disclosure.textContent = t("mobilePermissionDisclosure");
-    section.appendChild(disclosure);
-
-    // Connection info (re-renders on toggle)
-    infoContainer = document.createElement("div");
-    infoContainer.id = "mobile-connection-info";
-    section.appendChild(infoContainer);
-
-    container.appendChild(section);
-
-    renderConnectionInfo(infoContainer);
+    if (parentEnabled) {
+      infoContainer = document.createElement("div");
+      infoContainer.id = "mobile-connection-info";
+      container.appendChild(helpers.buildDetailGroup(t("mobileGroupPairing"), [infoContainer]));
+      container.appendChild(buildPairingFooter(infoContainer));
+      renderConnectionInfo(infoContainer);
+    } else {
+      infoContainer = null;
+      const foot = document.createElement("div");
+      foot.className = "channel-foot";
+      const hint = document.createElement("span");
+      hint.className = "channel-foot-hint";
+      hint.textContent = t("mobilePairingHint");
+      foot.appendChild(hint);
+      container.appendChild(foot);
+    }
 
     // Re-render connection info when toggle changes
     if (!changeListenerRegistered && window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
@@ -253,5 +298,5 @@
     // inside the Permissions tab's LAN approval sub-page.
   }
 
-  root.ClawdSettingsTabMobile = { init, renderChannelBody };
+  root.ClawdSettingsTabMobile = { init, renderChannelBody, buildChannelHeaderRow };
 })(globalThis);

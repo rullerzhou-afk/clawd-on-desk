@@ -6,6 +6,22 @@ const fs = require("fs");
 const path = require("path");
 const vm = require("vm");
 
+const i18nContext = {};
+i18nContext.globalThis = i18nContext;
+vm.runInNewContext(
+  fs.readFileSync(path.join(__dirname, "..", "src", "settings-i18n.js"), "utf8"),
+  i18nContext,
+  { filename: "settings-i18n.js" },
+);
+test("all language packs define permissionAutomationCancel", () => {
+  for (const [locale, dictionary] of Object.entries(i18nContext.ClawdSettingsI18n.STRINGS)) {
+    assert.ok(
+      Object.prototype.hasOwnProperty.call(dictionary, "permissionAutomationCancel"),
+      `${locale} should define permissionAutomationCancel`,
+    );
+  }
+});
+
 class FakeElement {
   constructor() {
     this.children = [];
@@ -21,6 +37,11 @@ class FakeElement {
   }
   querySelector() { return null; }
   querySelectorAll() { return []; }
+  addEventListener() {}
+  setAttribute() {}
+  removeAttribute() {}
+  get isConnected() { return true; }
+  classList = { add() {}, remove() {}, toggle() {}, contains() { return false; } };
 }
 
 test("mobile consent surfaces token-reset phase failure in the command error", async () => {
@@ -60,8 +81,8 @@ test("mobile consent surfaces token-reset phase failure in the command error", a
   vm.runInContext(source, context, { filename: "settings-tab-mobile.js" });
 
   const strings = {
+    ...i18nContext.ClawdSettingsI18n.STRINGS.en,
     mobilePermissionTokenResetFailure: "TOKEN RESET — RE-PAIR. ",
-    cancel: "Cancel",
   };
   const core = {
     runtime: {},
@@ -73,6 +94,15 @@ test("mobile consent surfaces token-reset phase failure in the command error", a
         switchConfigs.set(config.key, config);
         return new FakeElement();
       },
+      attachDescriptionDisclosure: (row) => row,
+      buildDetailGroup: (_label, rows) => {
+        const group = new FakeElement();
+        for (const row of rows) group.appendChild(row);
+        return group;
+      },
+      buildButton: () => new FakeElement(),
+      setButtonState: () => {},
+      buildStatusLine: () => ({ element: new FakeElement(), setStatus() {} }),
       showSettingsDialog: async () => "reset",
     },
   };

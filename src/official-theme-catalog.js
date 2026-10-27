@@ -1,5 +1,7 @@
 "use strict";
 
+const { themeAttribution } = require("./theme-attribution");
+
 // ── Official theme catalog ──
 //
 // The catalog is a small, strictly validated remote document that lists the
@@ -203,6 +205,7 @@ function validateRedirectUrl(rawUrl) {
 function validateCatalogEntry(entry) {
   const errors = [];
   if (!isPlainObject(entry)) return { errors: ["theme entry must be an object"] };
+  try { themeAttribution(entry); } catch (error) { errors.push(error.message); }
   const { id, version } = entry;
   if (typeof id !== "string" || !ID_PATTERN.test(id)) {
     errors.push(`theme id must match ${ID_PATTERN}, got ${JSON.stringify(id)}`);
@@ -297,6 +300,8 @@ function normalizeCatalogEntry(entry) {
   return {
     id: entry.id,
     version: entry.version,
+    category: themeAttribution(entry).category,
+    ...(entry.author === undefined ? {} : { author: entry.author }),
     name: normalizeLocalizedText(entry.name, entry.id),
     description: normalizeLocalizedText(entry.description, ""),
     minAppVersion: typeof entry.minAppVersion === "string" ? entry.minAppVersion : "0.0.0",

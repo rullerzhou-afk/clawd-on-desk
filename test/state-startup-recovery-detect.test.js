@@ -84,9 +84,12 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     assert.match(seenScript, /'pi\.exe'/);
     assert.match(seenScript, /'qodercli\.exe'/);
     assert.match(seenScript, /'qoder-cli\.exe'/);
+    assert.match(seenScript, /'qoderclicn\.exe'/);
     // Conservative: only the Qoder CLI counts as active agent work. The IDE
     // process (qoder.exe) must NOT trigger startup recovery.
     assert.doesNotMatch(seenScript, /'qoder\.exe'/);
+    assert.doesNotMatch(seenScript, /'qoder cn\.exe'/);
+    assert.doesNotMatch(seenScript, /'qodercn\.exe'/);
     assert.doesNotMatch(seenScript, /'cursor\.exe'/);
     assert.doesNotMatch(seenScript, /'qoderwork\.exe'/);
     assert.doesNotMatch(seenScript, /'workbuddy\.exe'/);
@@ -160,6 +163,7 @@ describe("detectRunningAgentProcesses() agent coverage", () => {
     assert.match(seenCommand, /pi-coding-agent/);
     assert.match(seenCommand, /pgrep -x 'qodercli'/);
     assert.match(seenCommand, /pgrep -x 'qoder-cli'/);
+    assert.match(seenCommand, /pgrep -x 'qoderclicn'/);
     // Kimi Code retitles itself kimi-code, cut to the length of its launch
     // command (`kimi -c` is listed as kimi-co). Its desktop app stays running
     // in the tray, so like the other desktop apps it is not active work.

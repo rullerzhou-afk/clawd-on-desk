@@ -126,6 +126,10 @@ function Test-ClawdPermissionUrl {
   param([string]$Url)
   if ([string]::IsNullOrWhiteSpace($Url)) { return $false }
 
+  # Exact raw marker, before Uri normalizes dot segments or backslashes.
+  if ($Url -cmatch '^http://127\.0\.0\.1:([1-9][0-9]{0,4})/permission/clawd-on-desk\z') {
+    return [int]$Matches[1] -le 65535
+  }
   try {
     $uri = [System.Uri]$Url
     return $uri.IsAbsoluteUri `

@@ -1,5 +1,7 @@
 "use strict";
 
+const { themeAttribution } = require("./theme-attribution");
+
 // ── Official theme installer ──
 //
 // Extracts a verified `.part` archive into a manager-owned staging directory,
@@ -62,7 +64,7 @@ function isPlainObject(value) {
 
 // ── Marker ──
 
-function buildMarker({ id, version, archiveSha256, sourceRepository, installedAt }) {
+function buildMarker({ id, version, archiveSha256, sourceRepository, installedAt, category, author }) {
   return {
     schemaVersion: MARKER_SCHEMA_VERSION,
     managedBy: MARKER_MANAGED_BY,
@@ -72,6 +74,8 @@ function buildMarker({ id, version, archiveSha256, sourceRepository, installedAt
     archiveSha256,
     sourceRepository,
     installedAt,
+    ...(category === undefined ? {} : { category }),
+    ...(author === undefined ? {} : { author }),
   };
 }
 
@@ -91,6 +95,7 @@ function normalizeMarker(value) {
   // source is not a managed official theme.
   if (value.sourceRepository !== OFFICIAL_SOURCE_REPOSITORY) return null;
   if (!isValidMarkerTimestamp(value.installedAt)) return null;
+  try { themeAttribution(value); } catch { return null; }
   return {
     schemaVersion: MARKER_SCHEMA_VERSION,
     managedBy: MARKER_MANAGED_BY,
@@ -100,6 +105,8 @@ function normalizeMarker(value) {
     archiveSha256: value.archiveSha256,
     sourceRepository: OFFICIAL_SOURCE_REPOSITORY,
     installedAt: value.installedAt,
+    ...(value.category === undefined ? {} : { category: value.category }),
+    ...(value.author === undefined ? {} : { author: value.author }),
   };
 }
 
@@ -152,7 +159,8 @@ function markersMatch(a, b) {
   return left.id === right.id
     && left.version === right.version
     && left.archiveSha256 === right.archiveSha256
-    && left.sourceRepository === right.sourceRepository;
+    && left.sourceRepository === right.sourceRepository
+    && JSON.stringify(themeAttribution(left)) === JSON.stringify(themeAttribution(right));
 }
 
 // ── ZIP entry validation ──

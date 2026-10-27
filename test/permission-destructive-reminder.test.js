@@ -2638,6 +2638,7 @@ describe("destructive reminder — wiring", () => {
     const tab = fs.readFileSync(path.join(SRC, "settings-tab-permissions.js"), "utf8");
     assert.match(tab, /descKey: "rowDestructiveActionReminderDesc"/);
     assert.match(tab, /descExtraKey: "rowDestructiveActionReminderNote"/);
+    assert.match(tab, /attachDescriptionDisclosure\(destructiveRow, \{ includeExtra: true \}\)/);
     const i18n = fs.readFileSync(path.join(SRC, "settings-i18n.js"), "utf8");
     const count = (needle) => i18n.split(needle).length - 1;
     assert.equal(count("rowDestructiveActionReminderDesc:"), 7, "one per locale");

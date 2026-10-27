@@ -19,7 +19,7 @@ hosts — an app created on one **cannot** be used on the other, and the
 credentials are not interchangeable.
 
 Clawd ships a single approval channel for both. Pick your platform in
-**Settings → Permissions & approval → IM channels → Feishu / Lark → step 1**:
+**Settings → Permissions & approval → IM channels → Feishu / Lark → setup block**:
 
 | | Feishu (China) | Lark (International) |
 |---|---|---|
@@ -44,32 +44,38 @@ Notes:
   turn would mean sending your App Secret to a platform you do not use, so Clawd
   asks instead of guessing.
 - If you pick the wrong platform, the long connection fails to establish and the
-  card reports it — re-check step 1 before touching your credentials.
+  card reports it — re-check the platform row before touching your credentials.
 
 ## Setup
 
-The settings card walks through four steps in order. Each step is gated until the
-previous one is saved, so **Enable** and **Send test** stay disabled until the
-platform, credentials, and approver are in place.
+The Feishu / Lark card has three layers: a header with one status sentence and
+(when configured) the **Enable** switch, a body that is either the two-step setup
+block or the connection / advanced groups, and a footer with **Send test card**.
+Before setup is complete, only the setup block (plus the collapsed subscription
+guide) renders.
 
-1. **Step 1 — Platform & App Credentials.** Choose Feishu or Lark, then create a
+1. **Platform & app credentials.** Choose Feishu or Lark, then create a
    self-built app on that platform's open platform (linked above) and paste its
-   **App ID** and **App Secret**. Verification Token and Encrypt Key are optional
-   — fill them in only if you enabled them in your app's event settings.
+   **App ID** and **App Secret** into the first setup step. Verification Token
+   and Encrypt Key are optional — fill them in only if you enabled them in your
+   app's event settings.
 
    Credentials are stored outside `clawd-prefs.json`, in `feishu-approval.env`
    in Clawd's user-data directory, with `0600` permissions where the OS supports
    it.
 
-2. **Step 2 — Approver.** Enter the user id that will receive and approve cards,
-   and choose its id type (see [Approver id types](#approver-id-types) below).
+2. **Approver.** Enter the user id that will receive and approve cards, and
+   choose its id type (see [Approver id types](#approver-id-types) below).
 
-3. **Step 3 — Enable.** Flip the switch. This opens the long connection. Do this
-   *before* step 4: the platform only lets you save the long-connection
-   subscription while a long connection is actually online.
+3. **Enable.** Turn on the switch in the card header. This opens the long
+   connection. Do this before subscribing the callback: the platform only lets
+   you save the long-connection subscription while a long connection is actually
+   online.
 
-4. **Step 4 — Event Subscription & Test.** Subscribe the card callback, then send
-   a test card.
+4. **Event subscription & test.** Expand the subscription guide (it sits after
+   the groups once configured), subscribe the card callback, then use **Send test
+   card** in the card footer. The **Advanced** group holds the long-connection
+   timeout.
 
 ## Required app configuration
 
@@ -141,7 +147,7 @@ Lark card, never as a Feishu card.
 - DND does not auto-decide. See the DND behavior described in
   [telegram-approval.md](telegram-approval.md) — the same principle applies:
   Clawd never makes the permission decision for you.
-- Long connection timeout is configurable in step 3. Reaching the timeout marks
+- Long connection timeout is configurable in the **Advanced** group. Reaching the timeout marks
   the connection failed in the UI; the SDK may still keep reconnecting in the
   background.
 
@@ -149,10 +155,9 @@ Lark card, never as a Feishu card.
 
 - **Card sends, but pressing a button does nothing.** The `card.action.trigger`
   callback is almost certainly not subscribed, or `_v1` was subscribed instead.
-  Re-check step 4. This was the original report in
+  Re-check the subscription guide. This was the original report in
   [#493](https://github.com/rullerzhou-afk/clawd-on-desk/issues/493).
-- **Long connection never establishes.** Check that the platform in step 1
-  matches where your app actually lives, then the App ID / App Secret, then your
-  network.
+- **Long connection never establishes.** Check that the platform row matches
+  where your app actually lives, then the App ID / App Secret, then your network.
 - **Sending the test card fails.** Check the approver user id and that its id
   type matches your app's callbacks, and that the bot has messaging permission.

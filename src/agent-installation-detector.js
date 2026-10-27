@@ -14,6 +14,7 @@ const zcode = require("../hooks/zcode-install");
 const codebuddy = require("../hooks/codebuddy-install");
 const openclaw = require("../hooks/openclaw-install");
 const grok = require("../hooks/grok-install");
+const qoder = require("../hooks/qoder-install");
 const { commandMatchesMarker } = require("../hooks/json-utils");
 const { identifyCustomApplication, isLaunchable } = require("./custom-applications");
 
@@ -220,6 +221,12 @@ function resolveAgentPaths(descriptor, options) {
   const homeDir = options.homeDir || os.homedir();
   const env = options.env || process.env;
   const platform = options.platform || process.platform;
+
+  if (descriptor.agentId === "qoder") {
+    const configTargets = qoder.resolveQoderConfigTargets({ homeDir, env, platform });
+    const primary = configTargets.find((target) => dirExists(options.fs || fs, target.parentDir)) || configTargets[0];
+    return finalizeAgentPaths(descriptor, { ...primary, configTargets }, options);
+  }
 
   if (descriptor.agentId === "copilot-cli") {
     const parentDir = copilot.resolveCopilotHome({ homeDir, env });
@@ -584,9 +591,14 @@ function detectInstallation(descriptor, paths, options) {
       if (dirExists(fsImpl, paths.parentDir)) return installationResult(true, "high", "parent-dir", `${paths.parentDir} exists`);
       return notFound();
     case "zcode":
-    case "qoder":
     case "codebuddy":
       return detectOwnedHookConfigInstallation(descriptor, paths, options);
+    case "qoder": {
+      const results = paths.configTargets.map((target) => detectOwnedHookConfigInstallation(descriptor, target, options));
+      return results.find((result) => result.detectedInstalled === true)
+        || results.find((result) => result.detectedInstalled === null)
+        || results[0];
+    }
     case "reasonix":
       for (const target of paths.configTargets || []) {
         if (dirExists(fsImpl, target.parentDir)) {

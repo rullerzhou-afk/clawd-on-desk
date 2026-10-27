@@ -1190,18 +1190,6 @@ html, body {
   color: var(--text-secondary);
   font-style: italic;
 }
-.agent-instance-section-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding-top: 6px;
-  padding-bottom: 2px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  border-bottom: none !important;
-}
 .agent-instance-row {
   padding-left: 48px;
 }
@@ -1514,7 +1502,7 @@ html, body {
   margin-top: 14px;
 }
 .agent-custom-tools-section {
-  margin-bottom: 14px;
+  margin-top: 14px;
 }
 .agent-custom-tools-section .section-title {
   color: var(--text-primary);
@@ -1525,15 +1513,29 @@ html, body {
   align-items: center;
   min-height: 22px;
 }
+.agent-detected-title {
+  justify-content: space-between;
+  gap: 10px;
+}
+.agent-detected-empty {
+  margin: 4px 0 14px;
+}
 .agent-section-recommended .section-title {
   color: var(--accent);
 }
 .agent-text-input-row {
-  align-items: flex-start;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+}
+.agent-text-input-row .row-text {
+  width: 100%;
+  flex: 1 1 auto;
 }
 .agent-text-input-control {
-  flex: 1 1 260px;
-  min-width: min(100%, 260px);
+  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
 }
 .agent-custom-tools-section .custom-tool-discovery-row {
   align-items: center;
@@ -1571,10 +1573,6 @@ html, body {
   margin-left: auto;
   min-width: 0;
 }
-.agent-custom-tools-section .custom-tool-scan-status {
-  display: block;
-  margin-top: 7px;
-}
 @media (max-width: 760px) {
   .agent-custom-tools-section .custom-tool-discovery-row {
     align-items: stretch;
@@ -1592,29 +1590,22 @@ html, body {
     flex-direction: column;
   }
 }
-/* Needs the extra .soft-btn to outrank the later `.soft-btn.accent` tinted
-   rule — at equal specificity source order wins and the primary action
-   renders as a washed-out outline button. */
-.agent-custom-tools-section .soft-btn.custom-tool-path-picker {
-  min-height: 34px;
-  padding: 7px 16px;
-  border-color: var(--accent);
-  background: var(--accent);
-  color: #ffffff;
-  font-weight: 700;
+.agent-rescan {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
-.agent-custom-tools-section .soft-btn.custom-tool-path-picker:hover:not(:disabled) {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
-}
-.custom-tool-scan {
-  min-height: 32px;
-  border-color: color-mix(in srgb, var(--accent) 48%, var(--border));
-  color: var(--accent);
+.agent-rescan-button {
+  min-height: 30px;
+  padding: 5px 12px;
+  border-color: var(--border);
+  font-size: 12px;
   font-weight: 600;
 }
-.custom-tool-scan:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--bg) 90%, var(--accent) 10%);
+.agent-rescan .agent-scan-status {
+  min-height: 18px;
+  font-style: normal;
+  font-variant-numeric: tabular-nums;
 }
 /* Subtab pills on the left, the Windows-only WSL rescan on the right. */
 .agents-subtabs {
@@ -1712,17 +1703,10 @@ html, body {
   font-size: 12px;
   font-weight: 600;
 }
-.custom-tool-scan-status {
-  flex: 0 0 auto;
-  min-height: 18px;
-  color: var(--text-secondary);
-  font-size: 11px;
-  font-variant-numeric: tabular-nums;
-}
-.custom-tool-scan-status.pending {
+.agent-scan-status.pending {
   color: var(--accent);
 }
-.custom-tool-scan-status.failed {
+.agent-scan-status.failed {
   color: var(--toast-error);
 }
 .custom-tool-result-row {
@@ -1857,71 +1841,182 @@ html, body {
     flex-wrap: wrap;
   }
 }
-.agent-badges {
-  display: inline-flex;
+.agent-status,
+.settings-status {
+  display: flex;
+  align-items: center;
   flex-wrap: wrap;
   gap: 6px;
-  margin-top: 6px;
-}
-.agent-badge {
-  display: inline-block;
-  font-size: 10px;
-  font-weight: 600;
+  margin-top: 4px;
+  font-size: 11.5px;
   color: var(--text-secondary);
-  background: rgba(0, 0, 0, 0.06);
-  padding: 2px 8px;
-  border-radius: 10px;
-  text-transform: uppercase;
+}
+.agent-status-dot,
+.settings-status-dot {
+  flex: 0 0 auto;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #187253;
+}
+.agent-status.warn,
+.settings-status.warn {
+  color: #9a6700;
+}
+.agent-status.warn .agent-status-dot,
+.settings-status.warn .settings-status-dot {
+  background: #9a6700;
+}
+.agent-status.off,
+.settings-status.off {
+  color: var(--text-tertiary);
+}
+.agent-status.off .agent-status-dot,
+.settings-status.off .settings-status-dot {
+  background: var(--text-tertiary);
+}
+.settings-status.bad {
+  color: var(--toast-error);
+}
+.settings-status.bad .settings-status-dot {
+  background: var(--toast-error);
+}
+.agent-status-fix {
+  padding: 0;
+  min-height: 0;
+  color: var(--accent);
+  font-size: 11.5px;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+@media (prefers-color-scheme: dark) {
+  .agent-status-dot,
+  .settings-status-dot { background: #8ce99a; }
+  .agent-status.warn,
+  .settings-status.warn,
+  .agent-status.warn .agent-status-dot,
+  .settings-status.warn .settings-status-dot { color: #f6c343; }
+  .agent-status.warn .agent-status-dot,
+  .settings-status.warn .settings-status-dot { background: #f6c343; }
+}
+
+/* Card-body groups: label in a fixed left gutter, rows only name + control.
+   The dashed separators keep rows apart now that the descriptions are folded
+   behind the (i) toggle. */
+.agent-detail-group,
+.settings-detail-group {
+  display: grid;
+  grid-template-columns: 58px minmax(0, 1fr);
+  border-bottom: 1px solid var(--row-border);
+}
+.settings-detail-group {
+  /* Localized channel group names need more room than the short agent labels. */
+  grid-template-columns: minmax(120px, max-content) minmax(0, 1fr);
+}
+.agent-detail-group-label,
+.settings-detail-group-label {
+  padding: 12px 0 0 14px;
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-weight: 700;
   letter-spacing: 0.04em;
 }
-@media (prefers-color-scheme: dark) {
-  .agent-badge { background: rgba(255, 255, 255, 0.08); }
+.settings-detail-group-label {
+  padding-right: 14px;
 }
-.agent-badge.accent {
-  background: rgba(217, 119, 87, 0.12);
+.agent-detail-group-rows .row,
+.settings-detail-group-rows .row {
+  padding: 10px 14px 10px 0;
+  border-bottom: 1px dashed var(--row-border);
+}
+.agent-detail-group-rows .row:last-child,
+.settings-detail-group-rows .row:last-child {
+  border-bottom: none;
+}
+.agent-detail-group-rows .row .row-label,
+.settings-detail-group-rows .row .row-label {
+  color: var(--text-primary);
+  font-size: 12.5px;
+}
+@media (max-width: 720px) {
+  .agent-detail-group,
+  .settings-detail-group {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .agent-detail-group-label,
+  .settings-detail-group-label {
+    padding: 10px 14px 0;
+  }
+}
+.row-desc-collapsed {
+  display: none;
+}
+.row-desc-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-left: 6px;
+  padding: 0;
+  border: 1px solid var(--text-tertiary);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 9.5px;
+  font-style: italic;
+  line-height: 1;
+  vertical-align: 1px;
+  cursor: pointer;
+}
+.row-desc-toggle:hover {
+  border-color: var(--accent);
   color: var(--accent);
 }
-.agent-badge.integration {
-  background: rgba(16, 120, 87, 0.1);
-  color: #187253;
+.row-note {
+  margin-right: 4px;
+  color: var(--text-tertiary);
+  font-size: 11px;
 }
-.agent-badge.integration.not-installed {
-  background: rgba(0, 0, 0, 0.05);
+
+/* "Disconnect …" footer: quiet link, consequence + real button only on click. */
+.agent-disconnect-row {
+  display: flex;
+  justify-content: flex-end;
+  padding: 8px 14px 10px;
+}
+.agent-disconnect-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 11.5px;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}
+.agent-disconnect-link:hover {
+  color: var(--danger-action);
+}
+.agent-disconnect-detail {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 0 14px 12px;
   color: var(--text-secondary);
+  font-size: 11px;
 }
-/* Registered custom AI whose executable is gone. Amber like hook-warning:
-   the agent is still connected and can still report state, but the binary it
-   was registered from is no longer where it was found. */
-.agent-badge.custom-missing {
-  background: rgba(180, 120, 20, 0.14);
-  color: #9a6700;
+.agent-disconnect-detail[hidden] {
+  display: none;
 }
-@media (prefers-color-scheme: dark) {
-  .agent-badge.custom-missing {
-    background: rgba(246, 195, 67, 0.16);
-    color: #f6c343;
-  }
-}
-/* Installed but the hook is broken/disabled/needs-review — amber warning.
-   Distinct from green (healthy) and muted (not installed). */
-.agent-badge.integration.hook-warning {
-  background: rgba(180, 120, 20, 0.14);
-  color: #9a6700;
-  cursor: help;
+.agent-disconnect-detail span {
+  min-width: 0;
 }
 @media (prefers-color-scheme: dark) {
-  .agent-badge.integration {
-    color: #8ce99a;
-    background: rgba(140, 233, 154, 0.12);
-  }
-  .agent-badge.integration.not-installed {
-    background: rgba(255, 255, 255, 0.08);
-    color: var(--text-secondary);
-  }
-  .agent-badge.integration.hook-warning {
-    background: rgba(246, 195, 67, 0.16);
-    color: #f6c343;
-  }
+  .agent-disconnect-link { color: var(--text-tertiary); }
 }
 .agent-integration-action {
   min-width: 72px;
@@ -2084,6 +2179,16 @@ html, body {
   align-items: stretch;
   flex-direction: column;
   gap: 10px;
+}
+
+.kimi-quota-panel[hidden] {
+  display: none;
+}
+
+.kimi-quota-row-control {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 
 .kimi-quota-heading {
@@ -2312,8 +2417,15 @@ html, body {
   transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
 }
 .codex-permission-mode-segmented button {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
   background: transparent;
   white-space: nowrap;
+}
+.codex-permission-mode-segmented .settings-segmented-radio-label {
+  text-align: center;
 }
 .codex-permission-mode-segmented button.active {
   background: transparent;
@@ -2480,6 +2592,14 @@ html, body {
   text-overflow: ellipsis;
   white-space: nowrap;
   min-width: 0;
+}
+.theme-card-author {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.4;
 }
 .theme-card-description {
   display: -webkit-box;
@@ -4812,120 +4932,125 @@ html, body {
   margin: 14px 0;
 }
 
-.tg-approval-channel-header {
+/* Channel card header: name, optional Beta word, one-line status. The enable
+   switch lives in the shared .collapsible-group-header-action slot. */
+.channel-header {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
 }
-.tg-approval-channel-name {
+.channel-name {
   font-size: 15px;
   font-weight: 600;
   color: var(--text-primary);
 }
-.tg-approval-channel-badge {
+.channel-beta-tag {
+  margin-left: 6px;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+.channel-header-row .row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* "Start setup" block used while a channel has no usable configuration. */
+.channel-setup {
+  margin: 12px 14px;
+  padding: 10px 12px 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+}
+.channel-setup-title {
+  padding-bottom: 6px;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+}
+.channel-setup-step {
+  display: flex;
+  gap: 10px;
+  padding: 10px 0 12px;
+  border-top: 1px solid var(--row-border);
+}
+.channel-setup-num {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  margin-top: 11px;
+  border: 1.5px solid var(--text-tertiary);
+  border-radius: 50%;
+  color: var(--text-tertiary);
+  font-size: 10.5px;
+  font-weight: 700;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 500;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--text-primary) 5%, var(--panel-bg));
-  color: var(--text-secondary);
+  justify-content: center;
 }
-.tg-approval-channel-badge-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--text-secondary);
+.channel-setup-body {
+  flex: 1;
+  min-width: 0;
 }
-/* Small "Beta" pill next to a channel name (LAN Approval card). */
-.channel-beta-badge {
-  padding: 1px 8px;
-  border-radius: 999px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  color: var(--accent);
-  border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--panel-bg));
-}
-/* Boxed limitation note at the top of a beta channel card. */
-.channel-beta-note {
-  margin: 10px 0 4px;
-  padding: 9px 12px;
-  border: 1px solid var(--border);
-  border-left: 3px solid var(--accent);
-  border-radius: 8px;
-  background: var(--panel-bg);
-  font-size: 12px;
-  color: var(--text-secondary);
+.channel-setup-foot {
+  margin: 0 -12px;
+  padding: 9px 12px 11px;
+  border-top: 1px solid var(--row-border);
+  border-radius: 0 0 10px 10px;
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  font-size: 11px;
   line-height: 1.5;
+  color: var(--text-tertiary);
 }
-@keyframes tg-approval-dot-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.35; }
-}
-.tg-approval-badge-ready {
-  border-color: color-mix(in srgb, var(--accent) 45%, transparent);
-  background: color-mix(in srgb, var(--accent) 10%, var(--panel-bg));
-  color: var(--text-primary);
-}
-.tg-approval-badge-ready .tg-approval-channel-badge-dot { background: var(--accent); }
-.tg-approval-badge-starting {
-  border-color: color-mix(in srgb, var(--accent) 35%, transparent);
-  background: color-mix(in srgb, var(--accent) 8%, var(--panel-bg));
-  color: var(--text-primary);
-}
-.tg-approval-badge-starting .tg-approval-channel-badge-dot {
-  background: var(--accent);
-  animation: tg-approval-dot-pulse 1.4s ease-in-out infinite;
-}
-.tg-approval-badge-running {
-  border-color: color-mix(in srgb, #22c55e 55%, transparent);
-  background: color-mix(in srgb, #22c55e 14%, var(--panel-bg));
-  color: var(--text-primary);
-}
-.tg-approval-badge-running .tg-approval-channel-badge-dot { background: #22c55e; }
-.tg-approval-badge-failed {
-  border-color: color-mix(in srgb, var(--toast-error) 55%, transparent);
-  background: color-mix(in srgb, var(--toast-error) 14%, var(--panel-bg));
-  color: var(--text-primary);
-}
-.tg-approval-badge-failed .tg-approval-channel-badge-dot { background: var(--toast-error); }
 
-.tg-approval-channel-status-row {
+/* Card footer: a quiet test link or the sentence explaining why it is absent. */
+.channel-foot {
   display: flex;
-  align-items: flex-start;
+  align-items: center;
+  justify-content: flex-end;
   gap: 10px;
-  padding: 12px 16px;
-  margin: 0 0 4px;
-  border-radius: 10px;
-  border: 1px solid var(--border);
-  background: color-mix(in srgb, var(--text-primary) 5%, var(--panel-bg));
+  padding: 8px 14px 10px;
 }
-.tg-approval-channel-status-row.tg-approval-badge-running {
-  border-color: color-mix(in srgb, #22c55e 35%, transparent);
-  background: color-mix(in srgb, #22c55e 8%, var(--panel-bg));
+.channel-foot-link {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text-tertiary);
+  font-family: inherit;
+  font-size: 11.5px;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+  cursor: pointer;
 }
-.tg-approval-channel-status-row.tg-approval-badge-failed {
-  border-color: color-mix(in srgb, var(--toast-error) 35%, transparent);
-  background: color-mix(in srgb, var(--toast-error) 8%, var(--panel-bg));
+.channel-foot-link:hover {
+  color: var(--accent);
 }
-.tg-approval-channel-status-row.tg-approval-badge-ready,
-.tg-approval-channel-status-row.tg-approval-badge-starting {
-  border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-  background: color-mix(in srgb, var(--accent) 6%, var(--panel-bg));
+.channel-foot-link.danger {
+  color: var(--text-tertiary);
+  border-color: transparent;
+  background: none;
 }
-.tg-approval-channel-status-text {
-  font-size: 13px;
-  color: var(--text-primary);
-  line-height: 1.45;
+.channel-foot-link.danger:hover {
+  color: var(--danger-action);
+}
+.channel-foot-hint,
+.channel-foot-note {
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+.channel-foot-note {
+  margin-right: auto;
+}
+.mobile-conn-row .mobile-conn-value {
+  display: block;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tg-native-migration-gate {
@@ -5022,92 +5147,15 @@ html, body {
 .tg-approval-input {
   flex: 1 1 220px;
 }
-.tg-approval-output-select {
-  min-width: 220px;
+.tg-approval-completion-row {
+  flex-wrap: wrap;
 }
-.tg-approval-completion-output-row {
-  align-items: flex-start;
-  flex-direction: column;
-  gap: 14px;
+.tg-approval-completion-row .row-text {
+  flex: 1 1 180px;
 }
-.tg-approval-completion-output-row .row-text {
-  width: 100%;
-}
-.tg-approval-completion-output-row .row-label {
-  font-size: 14px;
-  font-weight: 600;
-}
-.tg-approval-completion-output-row .row-desc {
-  margin-top: 4px;
-  line-height: 1.5;
-}
-.tg-approval-completion-output-row .row-control {
-  width: 100%;
-}
-.tg-approval-output-choice {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  width: 100%;
-  gap: 10px;
-  padding: 0;
-  background: transparent;
-}
-.tg-approval-output-choice button {
-  min-height: 96px;
-  justify-content: flex-start;
-  padding: 14px 42px 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  background: color-mix(in srgb, var(--panel-bg) 97%, var(--text-secondary) 3%);
-  color: var(--text-primary);
-  transition:
-    border-color 150ms ease,
-    background-color 150ms ease,
-    box-shadow 150ms ease;
-}
-.tg-approval-output-choice button::after {
-  content: "";
-  position: absolute;
-  top: 16px;
-  right: 16px;
-  width: 14px;
-  height: 14px;
-  border: 1.5px solid color-mix(in srgb, var(--text-secondary) 55%, transparent);
-  border-radius: 50%;
-  box-sizing: border-box;
-  background: var(--panel-bg);
-}
-.tg-approval-output-choice button:not(.active):not(:disabled):hover {
-  border-color: color-mix(in srgb, var(--text-secondary) 42%, var(--border));
-  background: color-mix(in srgb, var(--panel-bg) 93%, var(--text-secondary) 7%);
-}
-.tg-approval-output-choice button.active {
-  border-color: color-mix(in srgb, var(--accent) 62%, var(--border));
-  background: color-mix(in srgb, var(--panel-bg) 91%, var(--accent) 9%);
-  box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.tg-approval-output-choice button.active::after {
-  border-color: var(--accent);
-  background: var(--accent);
-  box-shadow: inset 0 0 0 3px var(--panel-bg);
-}
-.tg-approval-output-choice button.active .settings-segmented-radio-label {
-  color: var(--accent);
-}
-.tg-approval-output-choice .settings-segmented-radio-label {
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.35;
-}
-.tg-approval-output-choice .settings-segmented-radio-description {
-  margin-top: 6px;
-  font-size: 12px;
-  line-height: 1.5;
-}
-@media (prefers-reduced-motion: reduce) {
-  .tg-approval-output-choice button {
-    transition: none;
-  }
+.tg-approval-completion-row .row-control {
+  max-width: 100%;
+  margin-left: auto;
 }
 .feishu-approval-timeout-row .row-control {
   margin-left: auto;
@@ -5160,26 +5208,6 @@ html, body {
     width: 100%;
     min-width: 0;
   }
-  .tg-approval-output-choice {
-    grid-template-columns: 1fr;
-  }
-}
-
-.tg-approval-prereq-row .row-desc {
-  color: var(--toast-error);
-}
-/* Slack sits next to two channels that DO approve remotely, so its card leads
-   with what it cannot do plus the channel-visibility warning. Accent-tinted,
-   not error-red: this is a standing property of the channel, not a failure. */
-.slack-notify-oneway-row {
-  border-left: 2px solid var(--accent);
-  padding-left: 10px;
-}
-.slack-notify-oneway-row .row-label {
-  color: var(--accent);
-}
-.slack-notify-oneway-row .row-desc + .row-desc {
-  margin-top: 4px;
 }
 .tg-approval-row-disabled {
   opacity: 0.5;
@@ -5208,9 +5236,6 @@ html, body {
   font-size: 13px;
   padding: 10px 0;
 }
-.mobile-conn-details {
-  margin-top: 8px;
-}
 .mobile-conn-row {
   display: flex;
   align-items: center;
@@ -5219,12 +5244,6 @@ html, body {
   border-bottom: 1px solid var(--border);
 }
 .mobile-conn-row:last-of-type { border-bottom: none; }
-.mobile-conn-label {
-  font-size: 12px;
-  color: var(--text-secondary);
-  width: 60px;
-  flex-shrink: 0;
-}
 .mobile-conn-value {
   font-size: 13px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -5241,70 +5260,6 @@ html, body {
   font-size: 11px;
   color: var(--text-secondary);
 }
-.mobile-copy-btn {
-  font-size: 11px;
-  background: var(--sidebar-hover);
-  border: none;
-  border-radius: 4px;
-  padding: 3px 10px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  flex-shrink: 0;
-  transition: background 0.15s;
-}
-.mobile-copy-btn:hover { background: var(--accent); color: #fff; }
-.mobile-conn-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-}
-.mobile-action-btn {
-  min-height: 36px;
-  padding: 7px 16px;
-  border: 1px solid var(--border);
-  border-radius: 7px;
-  background: var(--panel-bg);
-  color: var(--text-primary);
-  font-size: 12px;
-  font-weight: 500;
-  cursor: pointer;
-  transition:
-    background-color 150ms ease,
-    border-color 150ms ease,
-    box-shadow 150ms ease;
-}
-.mobile-action-btn:hover:not(:disabled) {
-  border-color: color-mix(in srgb, var(--text-secondary) 38%, var(--border));
-  background: color-mix(in srgb, var(--panel-bg) 92%, var(--text-secondary) 8%);
-}
-.mobile-action-btn:focus-visible {
-  outline: 2px solid var(--accent);
-  outline-offset: 2px;
-}
-.mobile-action-btn:disabled {
-  opacity: 0.48;
-  cursor: not-allowed;
-}
-.mobile-action-btn.mobile-action-danger {
-  border-color: var(--danger-action);
-  background: var(--danger-action);
-  color: #ffffff;
-  box-shadow: 0 2px 6px color-mix(in srgb, var(--danger-action) 18%, transparent);
-}
-.mobile-action-btn.mobile-action-danger:hover:not(:disabled) {
-  border-color: var(--danger-action-hover);
-  background: var(--danger-action-hover);
-  color: #ffffff;
-}
-.mobile-action-btn.mobile-action-danger:focus-visible {
-  outline-color: var(--danger-action);
-}
-@media (prefers-reduced-motion: reduce) {
-  .mobile-action-btn {
-    transition: none;
-  }
-}
-
 /* Official theme cards */
 .theme-official-offline-banner {
   display: flex;

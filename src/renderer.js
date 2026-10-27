@@ -41,13 +41,6 @@ const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 // on a sleeping pose.
 const DEEP_SLEEP_PAUSE_STATES = new Set(["collapsing", "sleeping"]);
 const LOW_POWER_OPTIONAL_PAUSE_STATES = new Set(["idle", "mini-idle", "dozing"]);
-// Mirrors the set in src/tick.js (the main process keeps its own copy). Keep
-// this as the union of both policies even though the renderer now consults the
-// split sets directly.
-const LOW_POWER_PAUSE_STATES = new Set([
-  ...LOW_POWER_OPTIONAL_PAUSE_STATES,
-  ...DEEP_SLEEP_PAUSE_STATES,
-]);
 const LOW_POWER_BOUNDARY_EPSILON_MS = 80;
 const CLOUDLING_POINTER_BRIDGE_STATES = new Set(["idle", "mini-idle", "mini-peek"]);
 const CODEX_PET_VISUAL_BY_FILE = Object.freeze({

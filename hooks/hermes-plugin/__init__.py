@@ -228,15 +228,26 @@ def _append_log(record: Dict[str, Any], force: bool = False) -> None:
         pass
 
 
+def _normalize_local_port(value: Any) -> Optional[int]:
+    # Numeric JSON values are compared by value (JS cannot distinguish 45000.0
+    # from 45000); bool is never a port. Strings must be canonical ASCII decimal.
+    if isinstance(value, str):
+        if re.fullmatch(r"[1-9][0-9]{0,4}", value) is None:
+            return None
+        value = int(value)
+    if type(value) not in (int, float):
+        return None
+    if not 1 <= value <= 65535 or int(value) != value:
+        return None
+    return int(value)
+
+
 def _read_runtime_port() -> Optional[int]:
     try:
         data = json.loads(_runtime_path().read_text(encoding="utf-8"))
-        port = int(data.get("port"))
-        if port in SERVER_PORTS:
-            return port
+        return _normalize_local_port(data.get("port")) if data.get("app") == CLAWD_SERVER_ID else None
     except Exception:
         return None
-    return None
 
 
 def _read_remote_identity() -> Tuple[Optional[Dict[str, Any]], str]:
@@ -371,16 +382,26 @@ def _port_candidates(transport: Optional[Dict[str, Any]] = None) -> list[int]:
     seen = set()
 
     def add(port: Optional[int]) -> None:
-        if port in SERVER_PORTS and port not in seen:
+        if _normalize_local_port(port) is not None and port not in seen:
             seen.add(port)
             ports.append(int(port))
 
     add(_cached_port)
-    if _cached_port is None:
-        add(_read_runtime_port())
+    add(_read_runtime_port())
     for port in SERVER_PORTS:
         add(port)
     return ports
+
+
+def _delivery_port_candidates(transport: Dict[str, Any]):
+    # A cached success performs no file IO. Resuming after a failed request
+    # immediately rereads runtime; secure transport never consults local cache.
+    cached = None if transport.get("secure") else _normalize_local_port(_cached_port)
+    if cached is not None:
+        yield cached
+    for port in _port_candidates(transport):
+        if port != cached:
+            yield port
 
 
 def _secure_request_headers(transport: Dict[str, Any]) -> Dict[str, str]:
@@ -419,7 +440,7 @@ def _post_state(body: Dict[str, Any]) -> None:
         "Content-Length": str(len(payload)),
         **_secure_request_headers(transport),
     }
-    for port in _port_candidates(transport):
+    for port in _delivery_port_candidates(transport):
         req = request.Request(
             f"http://127.0.0.1:{port}/state",
             data=payload,
@@ -495,7 +516,7 @@ def _post_permission(tool_name: str, tool_input: dict, session_id: str, platform
         return None
 
     probe_headers = _secure_request_headers(probe_transport)
-    for port in _port_candidates(probe_transport):
+    for port in _delivery_port_candidates(probe_transport):
         # ── Short probe — verify Clawd is on this port before the long POST ──
         # Reuse the existing GET /state health route instead of inventing a
         # plugin-only /probe endpoint.  The server includes CLAWD_SERVER_HEADER

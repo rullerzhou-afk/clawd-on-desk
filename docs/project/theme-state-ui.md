@@ -43,6 +43,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 
 - 内置主题目录：`themes/clawd/`、`themes/calico/`、`themes/cloudling/`；`themes/template/` 是脚手架模板
 - 官方可下载主题：Clawd 主仓库**不**打包 Hash Sage、Whale-chan 等官方主题的素材；设置页从固定远端 catalog（`https://raw.githubusercontent.com/rullerzhou-afk/clawd-themes/main/catalog-v1.json`）读取主题信息、受限到 `<theme-id>-art.pages.dev/progress/` 的动画展示页，以及一个不超过 1 MiB 的版本化预览图。卡片显示“查看动画”与安装操作，不显示许可摘要或许可链接；完整许可仍保留在 catalog、仓库与主题包中。预览图与主题包都由 Electron main 下载到本地并校验固定 bytes/SHA-256 后才以 `file:` URL 交给 renderer；renderer 不直接加载远程图片。完整主题安装到 `<userData>/themes/<id>/`，并以 **external theme**（`isBuiltin=false`）加载，`trustedRuntime` 不生效。主题包下载/解压只在用户显式点击后发生，首版不做一键更新、backup/rollback 或断点续传。下载用 Electron main `net.request`（继承系统代理/证书，但**不能**像 Codex Pet 那样 pin DNS 结果），因此以「初始 URL 精确 repo/path + 每跳精确 CDN host allowlist + HTTPS/TLS + 无凭据 + 固定 bytes/SHA-256 + manual redirect/no-store/no-referrer」收窄请求面；catalog 无权扩展 host allowlist，未支持 host 返回稳定 `DOWNLOAD_HOST_UNSUPPORTED`。主仓库另附带一份目录快照 `src/official-theme-catalog-snapshot.json`（打包进安装包）。回落规则：网络拉取失败时，列表先用上一次成功加载的目录（内存 LKG 或磁盘缓存），都没有才用快照；第一次拉取有结果之前（`uninitialized`）不用快照；快照**不作安装依据**，安装只认经校验的网络/磁盘目录，保证卡片显示的版本和实际安装的版本同源。快照**不含任何主题素材或预览图**，要过 `parseCatalogText` 校验，参与版本不能回退的比较，只读不写盘，界面仍按 `offline` 显示并提供重试
+- 下载主题的来源标识：catalog 可选 `category: "official" | "community"`，省略按 official 兼容；社区条目必须有 `author`。设置页按分类分组、作者使用纯文本渲染。`officialTheme` / `managedOfficialTheme` 仍表示同一受管分发通道，不表示作品是官方创作；社区主题复用全部下载、外部主题权限和卸载 gate。安装 marker 保留 category / author，网络目录缺失或条目下架时使用该记录；历史无分类 marker 保持 official 默认。
 - 官方主题的 manager 专属目录：下载 `.part` 位于 `<userData>/theme-downloads/official/`，解压 staging 位于 `<userData>/theme-staging/official/`，均不在 `themes/` 下；manager 写入的 `.clawd-official-theme.json` marker 在 staging 内、最终同卷 `rename` 之前写入并复验。启动清理只遍历这两个专属目录的直接子级、只处理严格合法且超过 24 小时的孤儿
 - 主题目录的点号直接子目录（staging/backup/lock 等）永远不是主题：`theme-loader._scanThemesDir`、`theme-metadata.scanMetadata` 与 `_readThemeJson` 的按 id 直接读取用同一个「非点号直接子目录」判定，因此点目录既不会被扫描、也不会被选择或直接读取
 - 主题 mutation 的统一 domain lock：`setThemeSelection`、通用 `removeTheme`、内部 `officialTheme.commitInstall` / `officialTheme.uninstall` 共用 `lockKey = "theme"`；destructive fs 操作前在锁内复检 active/target/lstat/marker。`activateTheme` 在 fade sequencer 完成前就返回，因此卸载 active 主题必须等待 `waitForThemeReloadSettled()`；sequencer 在 runtime 切换后同步抛错时走无淡入淡出 fallback 并返回成功
@@ -63,7 +64,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖 head 槽；mouth 槽保持用户选择。日期窗口结束后恢复常驻 head 选择，不回写任一配饰偏好
 - `idleEasterEggs` 是条件式 idle 彩蛋池：每项声明文件、时长、概率、冷却时间和 head / mouth 的精确配饰组合。只有普通 idle、窗口可见、非 mini / roam / drag / 菜单 / 低功耗且两个槽仍匹配时才参与抽签；只有 renderer 确认该逻辑视觉最终 committed 后才从实际显示时刻开始计时长和冷却
 - 用户主题 SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越；内置 SVG 不走运行时 sanitizer，必须由仓库测试做静态安全审计
-- `rendering.objectChannelFiles` 可按 SVG basename 把需要 `contentDocument` 控制、且经逐素材 Electron 验证的少量精灵切到 document-backed `<object>` 通道；普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
+- `rendering.objectChannelFiles` 对 Clawd 内置主题固定覆盖 23 个需要 `contentDocument` 控制、且经逐素材 Electron 验证的 SVG；这 23 个文件也必须全部出现在 `discreteSampling` 中并按 24 步采样。普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
 - `trustedRuntime.scriptedSvgFiles` 只对 loader 判定为内置的主题生效；外部主题声明该字段会被忽略
 - 支持 SVG / GIF / APNG / WebP / PNG / JPG；动画周期由 `src/animation-cycle.js` 探测
 - 更新视觉遵循主题绑定：`checking` 可选走 `theme.updateVisuals.checking`，未声明时回退到当前主题的 `thinking`；发现新版本时会进入 `available -> notification`；`downloading / success / error` 继续分别走 `carrying / attention / error`
@@ -94,7 +95,7 @@ Pages mount only their active panel's content and retain ownership of rendering,
 exit cleanup, drafts, persistence and scrolling. An existing `panels` Map may be
 passed when rebuilding only the sidebar, preserving the mounted page.
 
-设置页按「它是什么东西」分 tab：通用（语言、文字大小、启动与系统）、桌宠（大小、走动、贴边、反应）、通知（声音、托盘闪烁、气泡）、会话（会话 HUD、额度环与提醒、超时清理、会话面板）、权限与审批（本机处理 / IM 渠道 / 局域网审批三个子页，远程渠道的身体由 `settings-tab-telegram-approval.js` 提供）。每个 tab 的 `patchInPlace` 只认自己渲染的键，别的 tab 的键一律返回 false 交给核心整页重画。新增开关放到它所属对象的 tab 里（例如新的气泡选项进「通知」，新的 HUD 子开关进「会话」），不要塞回「通用」。侧栏分组用 `SIDEBAR_TABS` 项的 `groupStart: true` 标记，渲染时加 `sidebar-item-group-start` 类画分隔线。
+设置页按「它是什么东西」分 tab：通用（语言、文字大小、启动与系统）、桌宠（大小、走动、贴边、反应）、通知（声音、托盘闪烁、气泡）、会话（会话 HUD、额度环与提醒、超时清理、会话面板）、权限与审批（本机处理 / IM 渠道 / 局域网审批三个子页，远程渠道的身体由 `settings-tab-telegram-approval.js` 提供；每张渠道卡分三层：卡头一句状态 + 启用开关，没配好只有「开始配置」块，配好后是「连接 / 通知 / 高级」分组加卡底「发送测试」）。每个 tab 的 `patchInPlace` 只认自己渲染的键，别的 tab 的键一律返回 false 交给核心整页重画。新增开关放到它所属对象的 tab 里（例如新的气泡选项进「通知」，新的 HUD 子开关进「会话」），不要塞回「通用」。侧栏分组用 `SIDEBAR_TABS` 项的 `groupStart: true` 标记，渲染时加 `sidebar-item-group-start` 类画分隔线。
 
 Tabs use manual activation: arrows/Home/End move focus; Enter/Space/click activate.
 Horizontal tabs leave Up/Down available for scrolling; the vertical sidebar uses

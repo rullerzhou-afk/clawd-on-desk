@@ -167,17 +167,22 @@ test("PR #1156 follow-up: a requested budget above 32 MiB cannot exceed the hard
 });
 test("PR #1156 follow-up: inode replacement with unchanged size and mtime invalidates the transcript", (t) => {
   const f = fixture(t);
-  const file = fs.realpathSync(f.file);
+  // Match the native canonical path used by the reader, including Windows
+  // short-name expansion and case normalization in CI temporary directories.
+  const file = fs.realpathSync.native(f.file);
+  if (process.platform === "win32") f.data.transcript_path = file.toUpperCase();
   const before = fs.statSync(file);
   const after = { ...before, ino: before.ino === 0 ? 1 : 0 };
   const stat = fs.statSync;
-  t.mock.method(fs, "statSync", (filePath, ...args) => {
+  const statMock = t.mock.method(fs, "statSync", (filePath, ...args) => {
     if (filePath === file) return after;
     return stat(filePath, ...args);
   });
   assert.notEqual(after.ino, before.ino);
   assert.deepEqual({ ...after, ino: before.ino }, { ...before });
-  assert.deepEqual(f.route(), { owner: "codex", reason: "transcript-changed" });
+  const route = f.route();
+  assert.equal(statMock.mock.calls.filter(call => call.arguments[0] === file).length, 1);
+  assert.deepEqual(route, { owner: "codex", reason: "transcript-changed" });
 });
 test("PR #1156 follow-up: a turn context split by a scan block is completed by the next block", (t) => {
   const context = line("turn_context", { turn_id: TURN, approvals_reviewer: "user", approval_policy: "on-request" });
@@ -212,4 +217,32 @@ test("PR #1156 follow-up: symlinked Codex session directories accept their real 
     f.data.transcript_path = path.join(storage, path.basename(f.file));
     assert.equal(f.route().owner, "clawd", name);
   }
+});
+
+
+test("approval evidence uses native canonical paths for home, session roots and transcript", (t) => {
+  const f = fixture(t);
+  const native = t.mock.method(fs.realpathSync, "native");
+  assert.equal(f.route().owner, "clawd");
+  const paths = native.mock.calls.map(call => call.arguments[0]);
+  assert.ok(paths.includes(f.home));
+  assert.ok(paths.includes(f.file));
+  assert.ok(paths.includes(path.join(fs.realpathSync.native(f.home), "sessions")));
+});
+
+test("Windows namespaced transcript paths preserve current-turn and containment checks", {
+  skip: process.platform !== "win32" ? "Uses real Windows namespaced filesystem paths." : false,
+}, (t) => {
+  const f = fixture(t);
+  f.data.transcript_path = path.toNamespacedPath(f.file);
+  assert.deepEqual(f.route({ codexHome: path.toNamespacedPath(f.home) }), {
+    owner: "clawd", reason: "current-human-reviewer",
+  });
+  f.data.turn_id = "wrong-turn";
+  assert.equal(f.route().owner, "codex");
+  f.data.turn_id = TURN;
+  const foreign = path.join(f.home, "foreign.jsonl");
+  fs.copyFileSync(f.file, foreign);
+  f.data.transcript_path = path.toNamespacedPath(foreign);
+  assert.deepEqual(f.route(), { owner: "codex", reason: "foreign-transcript" });
 });

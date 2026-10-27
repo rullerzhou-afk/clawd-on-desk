@@ -20,6 +20,45 @@ test("sanitizeSvg keeps the XML declaration well formed", () => {
   );
 });
 
+test("sanitizeSvg keeps only a leading XML declaration among top-level directives", () => {
+  const sanitized = sanitizeSvg([
+    '<?xml version="1.0" encoding="UTF-8"?>',
+    '<?xml-stylesheet type="text/css" href="https://bad.example/theme.css"?>',
+    '<?xml-foo value="should be removed"?>',
+    '<?xml version="1.1"?>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
+  ].join("\n"));
+
+  assert.ok(sanitized.startsWith('<?xml version="1.0" encoding="UTF-8"?>'), sanitized);
+  assert.ok(sanitized.includes("<svg"), sanitized);
+  assert.strictEqual((sanitized.match(/<\?xml/g) || []).length, 1, sanitized);
+  assert.ok(!sanitized.includes("xml-stylesheet"), sanitized);
+  assert.ok(!sanitized.includes("bad.example"), sanitized);
+  assert.ok(!sanitized.includes("xml-foo"), sanitized);
+  assert.ok(!sanitized.includes('version="1.1"'), sanitized);
+});
+
+test("sanitizeSvg removes a leading xml-stylesheet without an XML declaration", () => {
+  const sanitized = sanitizeSvg([
+    '<?xml-stylesheet type="text/css" href="https://bad.example/theme.css"?>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
+  ].join("\n"));
+
+  assert.ok(!sanitized.includes("xml-stylesheet"), sanitized);
+  assert.ok(!sanitized.includes("bad.example"), sanitized);
+  assert.ok(sanitized.includes("<svg"), sanitized);
+});
+
+test("sanitizeSvg removes a leading non-XML processing instruction", () => {
+  const sanitized = sanitizeSvg([
+    '<?xml-foo value="should be removed"?>',
+    '<svg xmlns="http://www.w3.org/2000/svg"><rect/></svg>',
+  ].join("\n"));
+
+  assert.ok(!sanitized.includes("xml-foo"), sanitized);
+  assert.ok(sanitized.includes("<svg"), sanitized);
+});
+
 test("sanitizeSvg strips unsafe script, href, and CSS URL surfaces", () => {
   const svg = [
     "<svg xmlns=\"http://www.w3.org/2000/svg\">",

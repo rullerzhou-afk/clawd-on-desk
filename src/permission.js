@@ -17,7 +17,6 @@ const { redactSecrets } = require("./secret-redact");
 const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
-const { timingSafeEqual } = crypto;
 const {
   CLAWD_SERVER_HEADER,
   CLAWD_SERVER_ID,
@@ -33,6 +32,10 @@ const {
   normalizeOpencodeFamilyBridgeUrl,
   isValidOpencodeFamilyBridgeToken,
 } = require("./opencode-family-bridge-url");
+const {
+  normalizeExternalFamilyPermissionIdentity,
+  opencodeFamilyBridgeTokensEqual,
+} = require("./opencode-family-permission-identity");
 const {
   PERMISSION_AUTOMATION_MODE,
   INTERACTION_INTENT,
@@ -5706,39 +5709,6 @@ function dismissInteractivePermissionWithoutDecision(perm, reason) {
   } else if (!isOpencodeFamilyEntry(perm) && perm.res && !perm.res.destroyed) {
     try { perm.res.destroy(); } catch {}
   }
-}
-
-function opencodeFamilyBridgeTokensEqual(expected, candidate) {
-  if (
-    !isValidOpencodeFamilyBridgeToken(expected)
-    || !isValidOpencodeFamilyBridgeToken(candidate)
-  ) return false;
-  const expectedBytes = Buffer.from(expected, "utf8");
-  const candidateBytes = Buffer.from(candidate, "utf8");
-  if (expectedBytes.length !== candidateBytes.length) return false;
-  try {
-    return timingSafeEqual(expectedBytes, candidateBytes);
-  } catch {
-    return false;
-  }
-}
-
-function normalizeExternalFamilyPermissionIdentity(identity) {
-  if (!identity || typeof identity !== "object") return null;
-  const agentId = typeof identity.agentId === "string" ? identity.agentId : "";
-  if (!getFamilyConfig(agentId)) return null;
-  const requestId = typeof identity.requestId === "string" && identity.requestId
-    ? identity.requestId
-    : null;
-  const sessionId = typeof identity.sessionId === "string" && identity.sessionId
-    ? identity.sessionId
-    : null;
-  const bridgeUrl = normalizeOpencodeFamilyBridgeUrl(identity.bridgeUrl);
-  const bridgeToken = isValidOpencodeFamilyBridgeToken(identity.bridgeToken)
-    ? identity.bridgeToken
-    : null;
-  if (!requestId || !sessionId || !bridgeUrl || !bridgeToken) return null;
-  return { agentId, requestId, sessionId, bridgeUrl, bridgeToken };
 }
 
 function boundedPermissionIdentityForLog(value) {

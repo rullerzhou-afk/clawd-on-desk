@@ -46,6 +46,10 @@ const {
   normalizeOpencodeFamilyBridgeUrl,
   isValidOpencodeFamilyBridgeToken,
 } = require("./opencode-family-bridge-url");
+const {
+  normalizeExternalFamilyPermissionIdentity,
+  opencodeFamilyBridgeTokensEqual,
+} = require("./opencode-family-permission-identity");
 const { resolveSessionIdentity } = require("./session-key");
 const {
   assessSessionAutomationIdentity,
@@ -181,6 +185,16 @@ function shouldClaimCodexPermissionForAutomation(ctx, data, probe) {
   if (shouldBypassCodexBubble(ctx)) return false;
   if (resolveCodexApprovalRoute(data).reason !== "nonlocal") return false;
   return ctx.wouldAutoAllowPermission(probe) === true;
+}
+
+function isCodexAutomationClaimShape(ctx, data) {
+  return !!(
+    data
+    && (data.tool_name === "Bash" || data.tool_name === "apply_patch")
+    && typeof ctx.getCodexPermissionMode === "function"
+    && ctx.getCodexPermissionMode() === "auto"
+    && resolveCodexApprovalRoute(data).reason === "nonlocal"
+  );
 }
 
 function shouldMuteCodexNativeNotificationSound(ctx) {
@@ -631,6 +645,39 @@ function tryRemoteOnlyApproval(ctx, fields) {
 
 const REVIEW_CANCELLED = Symbol("permission-review-cancelled");
 
+const inFlightOpencodeFamilyReviews = new Set();
+
+function registerInFlightOpencodeFamilyReview(identity) {
+  const normalized = normalizeExternalFamilyPermissionIdentity(identity);
+  if (!normalized) return null;
+  const record = { identity: normalized, resolvedExternally: false };
+  inFlightOpencodeFamilyReviews.add(record);
+  return record;
+}
+
+function markInFlightOpencodeFamilyReviewResolvedExternally(identity) {
+  const normalized = normalizeExternalFamilyPermissionIdentity(identity);
+  if (!normalized) return 0;
+  let marked = 0;
+  for (const record of inFlightOpencodeFamilyReviews) {
+    const candidate = record.identity;
+    if (
+      candidate.agentId !== normalized.agentId
+      || candidate.requestId !== normalized.requestId
+      || candidate.sessionId !== normalized.sessionId
+      || candidate.bridgeUrl !== normalized.bridgeUrl
+      || !opencodeFamilyBridgeTokensEqual(candidate.bridgeToken, normalized.bridgeToken)
+    ) continue;
+    record.resolvedExternally = true;
+    marked++;
+  }
+  return marked;
+}
+
+function unregisterInFlightOpencodeFamilyReview(record) {
+  if (record) inFlightOpencodeFamilyReviews.delete(record);
+}
+
 // Request-scoped external review (#995).
 //
 // The review is awaited before the permEntry exists, so the usual
@@ -640,31 +687,43 @@ const REVIEW_CANCELLED = Symbol("permission-review-cancelled");
 // request:
 //
 //   - `close` on the response aborts the child immediately;
-//   - after the await, DND / agent-disabled / bubble-toggle changes that
-//     happened in the meantime are re-checked, because the result was
-//     authorized for the state at accept time, not for the state now;
+//   - after the await, DND / agent-disabled and the caller's branch-specific
+//     gates are re-checked, because the result was authorized for the state at
+//     accept time, not for the state now;
 //   - a cancelled review never becomes a verdict. The caller's onCancelled
 //     fallback runs and no entry is created.
 //
 // `res` may be null (opencode v1): that branch has already answered 200 and
 // the response's `close` says nothing about the request, which lives in the
 // plugin's bridge until the reverse reply.
-// Only the gates evaluated BEFORE the review need re-checking. The bubble
-// toggles are intentionally absent: a mid-review flip is handled by the
-// branch's own post-review code (which can still route the entry to the
-// remote-only channel), so treating it as a cancellation here would be wrong.
-function reviewAuthorizationChanged(ctx, agentId) {
+// The global bubble toggle is intentionally not a generic cancellation: some
+// branches keep Telegram/Feishu remote-only approval alive when the desktop
+// window is disabled. Those branches pass their own narrower re-check below.
+function reviewAuthorizationChanged(ctx, agentId, branchAuthorizationChanged) {
   try {
     if (ctx.doNotDisturb) return "dnd";
     if (typeof ctx.isAgentEnabled === "function" && !ctx.isAgentEnabled(agentId)) return "agent-disabled";
   } catch (_err) {
     return "authorization-unreadable";
   }
+  if (typeof branchAuthorizationChanged === "function") {
+    try {
+      const changed = branchAuthorizationChanged();
+      if (changed) return typeof changed === "string" ? changed : "branch-authorization-changed";
+    } catch (_err) {
+      return "authorization-unreadable";
+    }
+  }
   return null;
 }
 
 async function settlePermissionReview(ctx, res, options = {}) {
-  const { onCancelled, ...reviewOptions } = options;
+  const {
+    onCancelled,
+    authorizationChanged,
+    recordRequestHookEvent,
+    ...reviewOptions
+  } = options;
   const controller = new AbortController();
   const abortForClose = () => {
     if (!controller.signal.aborted) controller.abort("client-disconnected");
@@ -693,12 +752,22 @@ async function settlePermissionReview(ctx, res, options = {}) {
     ? (result.reason || "cancelled")
     : (controller.signal.aborted ? "client-disconnected" : null);
   if (!reason && res && res.destroyed === true) reason = "client-disconnected";
-  const changed = reason ? null : reviewAuthorizationChanged(ctx, options.agentId);
+  const changed = reason
+    ? null
+    : reviewAuthorizationChanged(ctx, options.agentId, authorizationChanged);
   if (changed) reason = changed;
 
   if (!reason) return result.permissionReview;
   if (typeof ctx.permLog === "function") {
     ctx.permLog(`external review: request no longer actionable (${reason}) — discarding result tool=${options.toolName || "(missing)"} session=${options.sessionId} agent=${options.agentId || "unknown"}`);
+  }
+  if (recordRequestHookEvent && typeof recordRequestHookEvent === "object") {
+    const recordCancellation = reason === "dnd"
+      ? recordRequestHookEvent.droppedByDnd
+      : reason === "agent-disabled"
+        ? recordRequestHookEvent.droppedByDisabled
+        : recordRequestHookEvent.accepted;
+    if (typeof recordCancellation === "function") recordCancellation();
   }
   if (typeof onCancelled === "function") onCancelled(reason);
   return REVIEW_CANCELLED;
@@ -967,6 +1036,7 @@ function handlePermissionPost(req, res, options) {
           const permissionReview = isPermissionReviewEnabled(ctx)
             ? await settlePermissionReview(ctx, res, {
               agentId,
+              recordRequestHookEvent,
               sessionId,
               sessionAutomationIdentity,
               interaction,
@@ -978,13 +1048,15 @@ function handlePermissionPost(req, res, options) {
               // whose authorization changed mid-review (DND, agent disabled)
               // gets the same no-decision the pre-review gate would have sent.
               // A disconnected client has nobody left to answer.
+              authorizationChanged: () => shouldBypassFamilyBubble(ctx, agentId)
+                ? "family-bubbles-disabled"
+                : null,
               onCancelled: () => {
                 if (!res.headersSent && !res.destroyed) sendOpencodeV2PermissionNoDecision(res);
               },
             })
             : null;
           if (permissionReview === REVIEW_CANCELLED) {
-            recordRequestHookEvent.accepted();
             return;
           }
 
@@ -1102,7 +1174,18 @@ function handlePermissionPost(req, res, options) {
               bridgeToken,
             })
             : 0;
+          const reviewMarked = dismissed === 0
+            && markInFlightOpencodeFamilyReviewResolvedExternally({
+              agentId,
+              requestId,
+              sessionId: sessionIdentity.sessionId,
+              bridgeUrl,
+              bridgeToken,
+            }) > 0;
           ctx.permLog(`${agentId} permission lifecycle replied: request=${boundedPermissionLogValue(requestId)} matched=${dismissed}`);
+          if (reviewMarked) {
+            ctx.permLog(`${agentId} permission lifecycle replied during external review — request marked resolved; no stale bubble will be queued`);
+          }
           return;
         }
 
@@ -1183,20 +1266,49 @@ function handlePermissionPost(req, res, options) {
         // response's `close` says nothing about the request -- the request
         // lives in the plugin's bridge until the reverse reply, and its fate
         // is resolved through the entry's own lifecycle.
-        const permissionReview = isPermissionReviewEnabled(ctx)
-          ? await settlePermissionReview(ctx, null, {
+        const reviewEnabled = isPermissionReviewEnabled(ctx);
+        const reviewRegistration = reviewEnabled
+          ? registerInFlightOpencodeFamilyReview({
             agentId,
+            requestId,
             sessionId,
-            sessionAutomationIdentity,
-            interaction,
-            toolName,
-            toolInput: rawInput,
-            cwd: typeof data.cwd === "string" ? data.cwd : "",
-            permissionReminder: permissionReminder.permissionReminder,
+            bridgeUrl,
+            bridgeToken,
           })
           : null;
+        let permissionReview = null;
+        let resolvedExternally = false;
+        try {
+          permissionReview = reviewEnabled
+            ? await settlePermissionReview(ctx, null, {
+              agentId,
+              recordRequestHookEvent,
+              sessionId,
+              sessionAutomationIdentity,
+              interaction,
+              toolName,
+              toolInput: rawInput,
+              cwd: typeof data.cwd === "string" ? data.cwd : "",
+              permissionReminder: permissionReminder.permissionReminder,
+              authorizationChanged: () => (
+                !arePermissionBubblesEnabled(ctx) || shouldBypassFamilyBubble(ctx, agentId)
+                  ? "family-bubbles-disabled"
+                  : null
+              ),
+            })
+            : null;
+        } finally {
+          resolvedExternally = !!(
+            reviewRegistration && reviewRegistration.resolvedExternally === true
+          );
+          unregisterInFlightOpencodeFamilyReview(reviewRegistration);
+        }
         if (permissionReview === REVIEW_CANCELLED) {
+          return;
+        }
+        if (resolvedExternally) {
           recordRequestHookEvent.accepted();
+          ctx.permLog(`${agentId} permission review ended after native resolve — skipping stale bubble request=${boundedPermissionLogValue(requestId)}`);
           return;
         }
 
@@ -1431,6 +1543,19 @@ function handlePermissionPost(req, res, options) {
           return codexSessionOptions;
         };
 
+        const sendCodexNativePermissionFallback = (reason) => {
+          codexSessionOptions = resolveCodexSessionProcessMetadata();
+          const nativeSessionOptions = { ...codexSessionOptions };
+          if (shouldMuteCodexNativeNotificationSound(ctx)) {
+            nativeSessionOptions.muteNotificationSound = true;
+          }
+          nativeSessionOptions.transientPermissionEvent = true;
+          ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
+          ctx.permLog(`codex ${reason} -> no decision, native prompt fallback (tool=${toolName})`);
+          recordRequestHookEvent.accepted();
+          sendCodexPermissionNoDecision(res);
+        };
+
         if (ctx.doNotDisturb) {
           recordRequestHookEvent.droppedByDnd();
           ctx.permLog(`codex DND -> no decision, native prompt fallback (tool=${toolName})`);
@@ -1452,12 +1577,29 @@ function handlePermissionPost(req, res, options) {
           return;
         }
 
+        const codexBubbleBypass = shouldBypassCodexBubble(ctx);
+        const codexClaimShape = isCodexAutomationClaimShape(ctx, data);
+        if (!shouldInterceptCodexPermission(ctx, data) && (!codexClaimShape || codexBubbleBypass)) {
+          sendCodexNativePermissionFallback("native permission mode");
+          return;
+        }
+        if (codexBubbleBypass) {
+          recordRequestHookEvent.accepted();
+          const reason = !arePermissionBubblesEnabled(ctx)
+            ? "permission bubbles disabled"
+            : "codex bubbles disabled";
+          ctx.permLog(`${reason} -> no decision, native prompt fallback (tool=${toolName})`);
+          sendCodexPermissionNoDecision(res);
+          return;
+        }
+
         // Optional external review (#995). A held request must not be claimed
         // for a bubble-less automatic allow: wouldAutoAllowPermission() sees
         // the frozen stamp and answers false, so Codex keeps its native prompt.
         const permissionReview = isPermissionReviewEnabled(ctx)
           ? await settlePermissionReview(ctx, res, {
             agentId: "codex",
+            recordRequestHookEvent,
             sessionId,
             sessionAutomationIdentity,
             interaction,
@@ -1478,7 +1620,6 @@ function handlePermissionPost(req, res, options) {
           })
           : null;
         if (permissionReview === REVIEW_CANCELLED) {
-          recordRequestHookEvent.accepted();
           return;
         }
 
@@ -1500,16 +1641,7 @@ function handlePermissionPost(req, res, options) {
         if (codexAutomationClaim) {
           ctx.permLog(`codex auto mode: global automation claims delegated request (tool=${toolName})`);
         } else if (!shouldInterceptCodexPermission(ctx, data)) {
-          codexSessionOptions = resolveCodexSessionProcessMetadata();
-          const nativeSessionOptions = { ...codexSessionOptions };
-          if (shouldMuteCodexNativeNotificationSound(ctx)) {
-            nativeSessionOptions.muteNotificationSound = true;
-          }
-          nativeSessionOptions.transientPermissionEvent = true;
-          ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
-          ctx.permLog(`codex native permission mode -> no decision, native prompt fallback (tool=${toolName})`);
-          recordRequestHookEvent.accepted();
-          sendCodexPermissionNoDecision(res);
+          sendCodexNativePermissionFallback("native permission mode");
           return;
         }
 
@@ -1663,6 +1795,7 @@ function handlePermissionPost(req, res, options) {
         const permissionReview = isPermissionReviewEnabled(ctx)
           ? await settlePermissionReview(ctx, res, {
             agentId: "qwen-code",
+            recordRequestHookEvent,
             sessionId,
             sessionAutomationIdentity,
             interaction,
@@ -1670,6 +1803,9 @@ function handlePermissionPost(req, res, options) {
             toolInput: rawInput,
             cwd: qwenSessionOptions.cwd || "",
             permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => shouldBypassQwenCodeBubble(ctx)
+              ? "qwen-bubbles-disabled"
+              : null,
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendQwenCodePermissionNoDecision(res);
             },
@@ -1823,6 +1959,7 @@ function handlePermissionPost(req, res, options) {
           ? null
           : await settlePermissionReview(ctx, res, {
             agentId: "zcode",
+            recordRequestHookEvent,
             sessionId,
             sessionAutomationIdentity,
             interaction,
@@ -1830,6 +1967,12 @@ function handlePermissionPost(req, res, options) {
             toolInput: rawInput,
             cwd: zcodeSessionOptions.cwd || "",
             permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => (
+              typeof ctx.isAgentPermissionsEnabled === "function"
+              && !ctx.isAgentPermissionsEnabled("zcode")
+                ? "zcode-bubbles-disabled"
+                : null
+            ),
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendZcodePermissionNoDecision(res);
             },
@@ -2012,6 +2155,7 @@ function handlePermissionPost(req, res, options) {
         const permissionReview = isPermissionReviewEnabled(ctx)
           ? await settlePermissionReview(ctx, res, {
             agentId: "copilot-cli",
+            recordRequestHookEvent,
             sessionId,
             sessionAutomationIdentity,
             interaction,
@@ -2019,6 +2163,9 @@ function handlePermissionPost(req, res, options) {
             toolInput: rawInput,
             cwd: copilotSessionOptions.cwd || "",
             permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => shouldBypassCopilotBubble(ctx)
+              ? "copilot-bubbles-disabled"
+              : null,
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendCopilotPermissionNoDecision(res);
             },
@@ -2181,6 +2328,7 @@ function handlePermissionPost(req, res, options) {
           ? null
           : await settlePermissionReview(ctx, res, {
             agentId,
+            recordRequestHookEvent,
             sessionId,
             sessionAutomationIdentity,
             interaction,
@@ -2190,6 +2338,12 @@ function handlePermissionPost(req, res, options) {
               || (typeof data.cwd === "string" ? data.cwd : "")
               || "",
             permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => (
+              typeof ctx.isAgentPermissionsEnabled === "function"
+              && !ctx.isAgentPermissionsEnabled(agentId)
+                ? "dsh-bubbles-disabled"
+                : null
+            ),
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendDshPermissionNoDecision(res);
             },
@@ -2436,6 +2590,7 @@ function handlePermissionPost(req, res, options) {
         const permissionReview = isPermissionReviewEnabled(ctx)
           ? await settlePermissionReview(ctx, res, {
             agentId: "hermes",
+            recordRequestHookEvent,
             sessionId,
             sessionAutomationIdentity,
             interaction,
@@ -2443,6 +2598,9 @@ function handlePermissionPost(req, res, options) {
             toolInput: rawInput,
             cwd: hermesSessionOptions.cwd || "",
             permissionReminder: permissionReminder.permissionReminder,
+            authorizationChanged: () => shouldBypassHermesBubble(ctx)
+              ? "hermes-bubbles-disabled"
+              : null,
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendHermesPermissionNoDecision(res);
             },
@@ -2612,6 +2770,20 @@ function handlePermissionPost(req, res, options) {
         return;
       }
 
+      // The per-agent permission gate is a pre-review native fallback. The
+      // global bubble switch is deliberately not folded in here: when it is
+      // the only switch that is off, a configured remote-only reviewer still
+      // needs the request and the review result.
+      const ccAgentGateOff = !isDecisionInteraction(interaction)
+        && typeof ctx.isAgentPermissionsEnabled === "function"
+        && !ctx.isAgentPermissionsEnabled(permAgentId);
+      if (ccAgentGateOff) {
+        recordRequestHookEvent.accepted();
+        ctx.permLog(`${permAgentId} bubbles disabled → destroy connection, chat fallback before external review (tool=${toolName})`);
+        res.destroy();
+        return;
+      }
+
       // Optional external review (#995): settled here, once, before any path
       // below can auto-allow or hand the request to a remote channel. The
       // verdict is frozen on the entry; decision helpers stay synchronous.
@@ -2624,6 +2796,7 @@ function handlePermissionPost(req, res, options) {
       const permissionReview = isPermissionReviewEnabled(ctx)
         ? await settlePermissionReview(ctx, res, {
           agentId: permAgentId,
+          recordRequestHookEvent,
           sessionId,
           sessionAutomationIdentity,
           interaction,
@@ -2633,6 +2806,17 @@ function handlePermissionPost(req, res, options) {
             ? existingSession.cwd
             : (typeof data.cwd === "string" ? data.cwd : ""),
           permissionReminder: permissionReminder.permissionReminder,
+          authorizationChanged: () => {
+            if (
+              !isDecisionInteraction(interaction)
+              && typeof ctx.isAgentPermissionsEnabled === "function"
+              && !ctx.isAgentPermissionsEnabled(permAgentId)
+            ) return "agent-bubbles-disabled";
+            if (shouldBypassCCSubagentBubble(ctx, interaction, permAgentId, hookIdentity)) {
+              return "subagent-bubbles-disabled";
+            }
+            return null;
+          },
           // The Claude/CodeBuddy fallback is the native chat prompt: destroy
           // the connection so no decision is forged, then stop.
           onCancelled: () => {

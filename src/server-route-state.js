@@ -2,6 +2,7 @@
 
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
+const { normalizeOpencodeAttachUrl } = require("./opencode-attach-target");
 const {
   assessSessionAutomationIdentity,
 } = require("./session-automation-identity");
@@ -47,6 +48,7 @@ const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
 const { extractPermissionToolInput } = require("../hooks/kimi-hook");
 const { normalizeCodexUserInputWire } = require("../hooks/codex-user-input");
+const { isCodexPlanTool, normalizePlanProgress } = require("../hooks/codex-plan-progress");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const NATIVE_TERMINAL_ANSWER_OPTIONS = Object.freeze({
@@ -509,6 +511,11 @@ function handleStatePost(req, res, options) {
       // around the full updateSession lifecycle machine.
       const metadataOnly = data.metadata_only === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      const attachMetadata = agentId === "opencode" && hookSource === "opencode-plugin"
+        && trustedProfileId === "local" && !host && !wslDistro && !headless
+        && Object.hasOwn(data, "opencode_attach_url")
+        ? { opencodeAttachUrl: normalizeOpencodeAttachUrl(data.opencode_attach_url) }
+        : {};
       // The hook tags a recognized Codex Desktop ambient-suggestion thread.
       // Only a local, official Codex state event may carry it — remote/WSL and
       // other agents never do — and the value is re-validated at this trust
@@ -708,6 +715,9 @@ function handleStatePost(req, res, options) {
           // session_title_from_prompt, and neither sends it on a metadata-only
           // request, so any marker here is ignored.
           if (sessionTitle) metaUpdate.sessionTitle = sessionTitle;
+          if (Object.hasOwn(attachMetadata, "opencodeAttachUrl")) {
+            Object.assign(metaUpdate, attachMetadata, { expectedAgentId: "opencode", opencodeAttachSource: hookSource });
+          }
           // DSH metadata bypasses the lifecycle sequence fence, so it must
           // only ever annotate DSH's own session. Pass the expected owner so
           // updateSessionMetadata drops a colliding raw id owned by another
@@ -1139,6 +1149,15 @@ function handleStatePost(req, res, options) {
             displayHint: display_svg,
             sessionTitle,
             sessionTitleFromPrompt,
+            ...attachMetadata,
+            ...(agentId === "codex" && hookSource === "codex-official"
+              && event === "PostToolUse" && isCodexPlanTool(toolName) && codexHookState.turnId
+              && trustedProfileId === "local" && !effHost && !effWslDistro && data.wsl_sourced !== true && !effHeadless
+              && (!existingSession || existingSession.agentId === "codex")
+              && Object.hasOwn(data, "plan_progress")
+              ? { planProgress: normalizePlanProgress(data.plan_progress),
+                planProgressTurnId: codexHookState.turnId, planProgressSource: "codex-official" }
+              : {}),
             contextUsage,
             contextUsageOrigin: resolveStateContextUsageOrigin(agentId, contextUsage),
             assistantLastOutput,

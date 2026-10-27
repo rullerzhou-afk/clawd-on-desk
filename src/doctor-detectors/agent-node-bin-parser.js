@@ -212,6 +212,19 @@ function parseHookCommand(command, depth = 0) {
     };
   }
 
+  // Reasonix's quote-free Windows form has a trailing ownership argument,
+  // which is not the script. Decode cmd carets only for this exact generated
+  // shape; other agents may use a shell where a caret is a literal character.
+  const directReasonix = normalized.match(/^([A-Za-z]:[\\/][A-Za-z0-9_.\\/~+-]+) ([A-Za-z]:[\\/](?:[A-Za-z0-9_.\\/~$'@#{}+-]|\^[\^&()])+) --clawd-reasonix-hook=reasonix-hook\.js$/);
+  if (directReasonix) {
+    return {
+      ok: true,
+      nodeBin: directReasonix[1],
+      scriptPath: directReasonix[2].replace(/\^([\^&()])/g, "$1"),
+      normalizedCommand: normalized,
+    };
+  }
+
   const processStartInfoPair = parseProcessStartInfoNodePair(quotedSource);
   if (processStartInfoPair) {
     return {

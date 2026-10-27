@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {

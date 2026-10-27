@@ -37,6 +37,9 @@ docs/**
 !docs/guides/telegram-approval.md
 !docs/guides/feishu-lark-remote-approval.md
 !docs/guides/release-signing.md
+!docs/guides/apt-setup.md
+!docs/guides/apt-setup.zh-CN.md
+!docs/guides/apt-maintenance.md
 !docs/guides/codex-wsl-clarification.md
 !docs/guides/codex-wsl-clarification.zh-CN.md
 !docs/guides/codex-wsl-clarification.ko-KR.md
@@ -60,6 +63,13 @@ docs/**
 !docs/project/agent-runtime-architecture.md
 !docs/project/release-process.md
 !docs/project/theme-state-ui.md
+!docs/plans/
+!docs/plans/2026-10-24-apt-linux-updates.md
+!docs/investigations/apt-linux-updates-2026-10-24/
+!docs/investigations/apt-linux-updates-2026-10-24/adjudication.md
+!docs/investigations/apt-linux-updates-2026-10-24/pre-review-validation.md
+!docs/investigations/apt-linux-updates-2026-10-24/claude-plan-r1/
+!docs/investigations/apt-linux-updates-2026-10-24/claude-plan-r1/response-0001.md
 !docs/cloudling/
 !docs/cloudling/specs/
 !docs/cloudling/specs/core-states.md
@@ -85,6 +95,7 @@ docs/**
 !docs/releases/release-v1.1.0.md
 !docs/releases/release-v1.2.0.md
 !docs/releases/release-v1.3.0.md
+!docs/releases/release-v1.4.0.md
 
 # Temp files from testing
 .tmp_*
@@ -120,8 +131,12 @@ logs/
 
 # GIF recording tools (not part of main project)
 scripts/*
+!scripts/apt/
+scripts/apt/__pycache__/
+!scripts/apt/*.py
 # Deterministic source-backed macOS tray asset generator
 !scripts/generate-mac-tray-icons.js
+!scripts/generate-readme-contributors.js
 !scripts/update-official-theme-catalog-snapshot.js
 !scripts/manual/
 scripts/manual/*
@@ -132,6 +147,11 @@ scripts/manual/*
 !scripts/manual/remote-ssh-codespaces-546-readiness.js
 !scripts/manual/kimi-quota-phase0-smoke.js
 !scripts/manual/kimi-quota-phase0-smoke.ps1
+!scripts/manual/reasonix-hook-budget/
+scripts/manual/reasonix-hook-budget/*
+!scripts/manual/reasonix-hook-budget/main.go
+!scripts/manual/reasonix-hook-budget/run-consumer.cjs
+!scripts/manual/reasonix-hook-budget/README.md
 !scripts/remote-deploy.sh
 !scripts/run-clawdbot-stress.sh
 !scripts/monitor-clawd-resources.sh

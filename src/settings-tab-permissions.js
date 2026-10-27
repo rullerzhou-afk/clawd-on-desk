@@ -133,24 +133,26 @@
     row.appendChild(text);
     const control = document.createElement("div");
     control.className = "row-control";
-    const button = document.createElement("button");
-    button.type = "button";
-    button.className = "btn";
-    button.textContent = t("codexApprovalSettingsLink");
-    button.addEventListener("click", () => {
-      root.ClawdSettingsCore.runtime.agentsSubtab = readers.readAgentIntegrationInstalled("codex")
-        ? "connected" : "discover";
-      ops.selectTab("agents");
-      requestAnimationFrame(() => {
-        const target = state.mountedControls.agentPermissionModes.get("codex");
-        if (!target || !target.row || !document.body.contains(target.row)) return;
-        for (let parent = target.row.parentElement; parent; parent = parent.parentElement) {
-          if (typeof parent.expand === "function") parent.expand({ animate: false });
-        }
-        target.row.scrollIntoView({ block: "center" });
-        const active = target.row.querySelector("button.active");
-        if (active) active.focus({ preventScroll: true });
-      });
+    const button = helpers.buildButton({
+      tone: "quiet",
+      size: "compact",
+      label: t("codexApprovalSettingsLink"),
+      className: "codex-approval-settings-btn",
+      onClick: () => {
+        root.ClawdSettingsCore.runtime.agentsSubtab = readers.readAgentIntegrationInstalled("codex")
+          ? "connected" : "discover";
+        ops.selectTab("agents");
+        requestAnimationFrame(() => {
+          const target = state.mountedControls.agentPermissionModes.get("codex");
+          if (!target || !target.row || !document.body.contains(target.row)) return;
+          for (let parent = target.row.parentElement; parent; parent = parent.parentElement) {
+            if (typeof parent.expand === "function") parent.expand({ animate: false });
+          }
+          target.row.scrollIntoView({ block: "center" });
+          const active = target.row.querySelector("button.active");
+          if (active) active.focus({ preventScroll: true });
+        });
+      },
     });
     control.appendChild(button);
     row.appendChild(control);
@@ -270,19 +272,25 @@
   }
 
   function renderLocalBody(parent) {
+    const destructiveRow = helpers.buildSwitchRow({
+      key: "destructiveActionReminder",
+      labelKey: "rowDestructiveActionReminder",
+      descKey: "rowDestructiveActionReminderDesc",
+      descExtraKey: "rowDestructiveActionReminderNote",
+    });
+    helpers.attachDescriptionDisclosure(destructiveRow, { includeExtra: true });
     parent.appendChild(helpers.buildSection(t("sectionPermissionLocal"), [
       buildPermissionAutomationRow(),
-      helpers.buildSwitchRow({
-        key: "destructiveActionReminder",
-        labelKey: "rowDestructiveActionReminder",
-        descKey: "rowDestructiveActionReminderDesc",
-        descExtraKey: "rowDestructiveActionReminderNote",
-      }),
+      destructiveRow,
     ]));
 
-    parent.appendChild(helpers.buildSection(t("sectionPermissionPerTool"), [
-      buildCodexApprovalOwnerRow(),
-    ]));
+    // The per-tool block only makes sense for an agent that is actually wired
+    // in; without Codex there is no approval owner to redirect.
+    if (readers.readAgentIntegrationInstalled("codex")) {
+      parent.appendChild(helpers.buildSection(t("sectionPermissionPerTool"), [
+        buildCodexApprovalOwnerRow(),
+      ]));
+    }
   }
 
   function buildSubtabSwitcher() {

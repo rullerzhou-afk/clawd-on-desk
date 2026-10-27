@@ -1,0 +1,12 @@
+{
+  "uri": "https://rullerzhou-afk.github.io/clawd-on-desk/apt",
+  "origin": "Clawd-on-Desk",
+  "label": "Clawd-on-Desk",
+  "suite": "stable",
+  "codename": "stable",
+  "architecture": "amd64",
+  "component": "main",
+  "bootstrap_version": "1.0.0",
+  "source_date_epoch": 1792800000,
+  "site_limit_bytes": 734003200
+}

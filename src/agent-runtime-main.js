@@ -908,12 +908,38 @@ function createAgentRuntimeMain(options = {}) {
             stateRuntime.updateAccountQuota(null, accountQuotas);
           }
         };
-        const annotateCodexContextUsage = () => {
-          if (!sessionOptions.contextUsage) return false;
+        const annotateCodexMetadata = ({ includePlanProgress = true } = {}) => {
+          let planProgressAllowed = includePlanProgress
+            && Object.prototype.hasOwnProperty.call(sessionOptions, "planProgress");
+          const planTurnId = normalizeCodexTurnId(sessionOptions.planProgressTurnId);
+          const fenceSnapshot = codexTurnFence.getSnapshot(sessionId);
+          // Stop clears currentTurnId but retains the just-closed turn in the
+          // terminal latch. Plan metadata may update that turn, never reopen it.
+          const ownerTurnId = fenceSnapshot
+            && (fenceSnapshot.currentTurnId || (fenceSnapshot.terminalLatch && fenceSnapshot.terminalLatch.turnId));
+          if (planProgressAllowed) {
+            if (!planTurnId || (fenceSnapshot && ownerTurnId !== planTurnId)) {
+              planProgressAllowed = false;
+            }
+          }
           const stateRuntime = getStateRuntime();
+          // JSONL runs on this machine. Never annotate a WSL/remote Codex row
+          // that reused the same raw session ID as a local transcript.
+          const existing = stateRuntime?.sessions?.get(sessionId);
+          if (planProgressAllowed && existing && !isLocalCodexSessionRecord(existing)) {
+            planProgressAllowed = false;
+          }
+          if (!sessionOptions.contextUsage && !planProgressAllowed) return false;
           if (!stateRuntime || typeof stateRuntime.updateSessionMetadata !== "function") return false;
           return stateRuntime.updateSessionMetadata(sessionId, {
             contextUsage: sessionOptions.contextUsage,
+            ...(planProgressAllowed
+              ? {
+                planProgress: sessionOptions.planProgress,
+                planProgressTurnId: planTurnId,
+                expectedAgentId: "codex",
+              }
+              : {}),
           });
         };
         if (isCodexMonitorMetadataOnlyEvent(event, extra)) {
@@ -928,7 +954,7 @@ function createAgentRuntimeMain(options = {}) {
               });
             }
           } else {
-            annotateCodexContextUsage();
+            annotateCodexMetadata();
             annotateCodexAccountQuota();
           }
           return;
@@ -939,7 +965,7 @@ function createAgentRuntimeMain(options = {}) {
           agentId: "codex",
           profileId: sessionIdentity.profileId,
         })) {
-          annotateCodexContextUsage();
+          annotateCodexMetadata({ includePlanProgress: false });
           annotateCodexAccountQuota();
           return;
         }
@@ -950,7 +976,7 @@ function createAgentRuntimeMain(options = {}) {
         const tombstoned = hasCodexSessionEndTombstone(sessionId);
         const tombstoneTurnStart = tombstoned && isCodexJsonlTurnStart(event, extra);
         if (tombstoned && !tombstoneTurnStart) {
-          annotateCodexContextUsage();
+          annotateCodexMetadata({ includePlanProgress: false });
           annotateCodexAccountQuota();
           return;
         }
@@ -980,7 +1006,10 @@ function createAgentRuntimeMain(options = {}) {
           ) {
             recordCodexWebSearchRecapOnly(sessionIdentity, sessionOptions, event, extra);
           }
-          annotateCodexContextUsage();
+          annotateCodexMetadata({
+            includePlanProgress: ["closed-turn-id", "terminal-latch", "duplicate-terminal"]
+              .includes(fenceDecision.reason),
+          });
           annotateCodexAccountQuota();
           return;
         }
@@ -988,7 +1017,7 @@ function createAgentRuntimeMain(options = {}) {
         // for an already-closed turn is rejected above and must keep it.
         if (tombstoneTurnStart) clearCodexSessionEndTombstone(sessionId);
         if (shouldSuppressCodexLogEvent(sessionId, state, event, extra && extra.turnId, extra)) {
-          annotateCodexContextUsage();
+          annotateCodexMetadata();
           annotateCodexAccountQuota();
           return;
         }
@@ -1023,8 +1052,9 @@ function createAgentRuntimeMain(options = {}) {
             ...extra,
           });
           if (!shown) return;
+          const userInputOptions = buildCodexMonitorSessionOptions(extra, { includeHeadless: true });
           updateSession(sessionId, "notification", "CodexUserInputRequest", {
-            ...buildCodexMonitorSessionOptions(extra, { includeHeadless: true }),
+            ...userInputOptions,
             profileId: sessionIdentity.profileId,
             rawSessionId: sessionIdentity.rawSessionId,
             transientPermissionEvent: true,
@@ -1033,6 +1063,20 @@ function createAgentRuntimeMain(options = {}) {
             // this UI event must never enter recap with receipt time.
             recapSuppressed: true,
           });
+          // On startup, replay's metadata-only snapshot arrives before the
+          // pending question creates a session. Apply its matching-turn plan
+          // only after the question card exists and is still a local row.
+          const questionTurnId = normalizeCodexTurnId(userInputOptions.turnId);
+          const stateRuntime = getStateRuntime();
+          if (questionTurnId && questionTurnId === normalizeCodexTurnId(userInputOptions.planProgressTurnId)
+            && Object.prototype.hasOwnProperty.call(userInputOptions, "planProgress")
+            && isLocalCodexSessionRecord(stateRuntime?.sessions?.get(sessionId))) {
+            stateRuntime.updateSessionMetadata?.(sessionId, {
+              expectedAgentId: "codex",
+              planProgress: userInputOptions.planProgress,
+              planProgressTurnId: questionTurnId,
+            });
+          }
         },
         onUserInputResolved: (sid, callId, resolution = null) => {
           const sessionId = resolveSessionIdentity(sid, "local").sessionId;

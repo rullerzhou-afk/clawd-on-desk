@@ -26,7 +26,7 @@ npm install
 
 ## Agent 配置说明
 
-全新安装默认只安装并启用 Claude Code 和 Codex。其他本机 agent 需要先到 **Settings → AI 编程工具** 点该 agent 的 **Install / 安装**；安装且启用后，Clawd 才会在启动时继续同步对应 hook / plugin / extension。单独关闭 agent 只会停止事件入口，不会卸载文件；**Uninstall / 卸载** 只删除 Clawd 管理的 hook / plugin / extension 条目，并同时禁用该 agent。
+全新安装默认只安装并启用 Claude Code 和 Codex。其他本机 agent 需要先到 **Settings → AI 编程工具** 点该 agent 的 **Install / 安装**；安装且启用后，Clawd 才会在启动时继续同步对应 hook / plugin / extension。单独关闭 agent 只会停止事件入口，不会卸载文件；要卸载，展开卡片、点底部的 **Disconnect… / 断开…**，再点出现的 **Uninstall / 卸载**，它只删除 Clawd 管理的 hook / plugin / extension 条目，并同时禁用该 agent。没装的工具展开后有 **不装本机文件，只打开接收入口** 开关，给 SSH / WSL 里自己装 hooks 的场景用。
 
 **自定义 HTTP Agent** — Settings 可以注册其他本机可执行文件并分配稳定的 `custom-...` ID，但“注册”不会自动安装 hook，也不会让普通应用自动上报事件。自定义 Agent v1 仅支持状态：应用或你编写的 adapter 必须主动向 Clawd 运行时的 `/state` 地址 POST 生命周期事件；权限决定仍留在应用自己的界面中。动态端口发现、请求体、三平台示例以及禁用/移除语义见 [custom-agent-http.md](custom-agent-http.md)。
 
@@ -34,7 +34,7 @@ npm install
 
 ### Claude Code 使用信息：官方状态栏，不抓取网页
 
-本机 Claude 使用信息采集**默认关闭**。可在 **Settings → General → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
+本机 Claude 使用信息采集**默认关闭**。可在 **Settings → Sessions → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
 
 这里使用的是 Claude Code 官方扩展机制，不是私有或逆向接口。Claude Code 的[官方 statusline 文档](https://code.claude.com/docs/en/statusline)会向状态栏命令提供 `context_window.current_usage`、`context_window.context_window_size`，以及可用时的 `rate_limits`；命令在本机执行，不消耗额外 API token。
 
@@ -86,6 +86,8 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 
 **Kimi Code** — Clawd 用同一个集成同时支持两代 Kimi。新版 Kimi Code（TypeScript CLI）的 hooks 在 `~/.kimi-code/config.toml`，旧版 Kimi CLI（Python，上游已停更）的在 `~/.kimi/config.toml`；哪个目录存在 Clawd 就装哪个（两个都在就都装）。需要本机 Kimi 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 会在启动时持续同步 hooks。也可以手动执行 `npm run install:kimi-hooks`。在 Clawd 中 Kimi 采用 hook-only 集成：状态和权限提示都来自 hook 事件，不依赖日志轮询。在新版 Kimi Code 上，权限气泡由 CLI 原生的 `PermissionRequest`/`PermissionResult` hook 事件驱动——气泡会显示正在等待批准的具体命令，你在终端里作出选择后气泡立即消失，无需任何配置。如果你用过 Kimi Code 内置的旧版迁移，Clawd 下一次同步会自动把迁移过来的 hook 条目升级为新格式（旧的 env 前缀命令写法在 Windows 上无法执行）。旧版 `~/.kimi` 安装的权限提示**默认启用 suspect 启发式**：现行 kimi-cli 版本的 `PreToolUse` 从不携带显式审批字段（1.37 与 1.49 实测），旧的 explicit-only 默认值意味着提示卡根本不会出现。安装器会把模式以 `--permission-mode=suspect` 参数的形式持久化到每条 hook 的 `command` 里；此前选择过的模式——包括 `explicit`——在重新同步时始终原样保留，绝不会被翻转（用已停用的 `CLAWD_KIMI_PERMISSION_MODE=…` env 前缀形式装过的配置会连值一起迁移成参数形式）。想退出默认：在运行安装命令前设置 `CLAWD_KIMI_PERMISSION_MODE=explicit`（持久化），或在运行 kimi-cli 时临时设置该环境变量——运行时环境变量的优先级永远高于持久化参数。需要了解的代价：suspect 启发式下，*已免审*的门控命令若运行超过约 0.8 秒，会短暂弹出一张误报提示卡（卡片几秒后自动关闭；宠物会保持通知姿势直到该命令跑完）。嫌烦可在 **Settings → AI 编程工具** 里整体关闭 Kimi 的权限提示。注意：自动同步会按预期行重写 `command` 字段，你对该字段的手工修改会在下次启动时被静默还原。
 
+**Kimi Code 订阅额度（实验性）** — 展开 **Settings → AI 编程工具** 里的 Kimi Code 卡，在**额度**组点 **Connect Kimi key…** 展开输入；到 Kimi Console 创建专用 API Key 后粘贴并选择 **Connect**。额度读取仅在你手动连接、替换、重连或刷新时发生，不会在后台轮询。
+
 **Qwen Code** — hooks 配置在 `~/.qwen/settings.json`。需要本机 Qwen 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qwen-hooks`。Qwen Code 在 Clawd 中采用 hook-only 集成：状态更新和阻塞式 `PermissionRequest` 审批都来自 Qwen hook 事件。如果 Qwen settings 里有 `disableAllHooks: true`，Clawd 可以注册条目，但 Qwen 不会触发它们，直到用户移除该开关。
 
 **ZCode** — config-file hooks 配置在 `~/.zcode/cli/config.json` 的 `hooks.events.*`。需要本机 ZCode 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 会持续同步全部 7 个支持事件——6 个状态事件加上阻塞式 `PermissionRequest` 审批 hook（由 Clawd 本地气泡或远程审批产生人工 allow/deny；Clawd 无决定时由 ZCode 自己的权限流程接管）。在完成 ZCode 工具面与会话身份审计前，全局和 per-session 权限自动化都会 defer。也可以手动执行 `npm run install:zcode-hooks`。安装后请新建一个 ZCode 会话，让它读取当前 hook 配置。ZCode 只有在 `hooks.enabled: true` 时才执行 config-file hooks：字段缺失时 Clawd 会补 true，但用户显式设置的全局 `hooks.enabled: false` 或单项 hook `enabled: false` 都会保留，Doctor 只提示，不提供会覆盖该选择的 Fix。如果 ZCode 曾导入 Claude 配置，Clawd 只会从 ZCode 配置里删除明确引用自身 `clawd-hook.js` 的旧条目，绝不修改 `~/.claude/settings.json`。
@@ -94,7 +96,7 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 
 **Reasonix CLI** — hooks 配置在 `<Reasonix home>/settings.json`（macOS/Linux 为 `~/.reasonix/settings.json`，当前 Windows 版本为 `%APPDATA%\reasonix\settings.json`）。在 Windows 上，Clawd 也会跟随 Reasonix 的兼容回退读取旧的 `~/.reasonix/settings.json`；卸载时会从两处配置中分别删除 Clawd 管理的条目。需要本机 Reasonix 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步当前生效的 hooks。也可以手动执行 `npm run install:reasonix-hooks`。Phase 1 是 state-only：Clawd 只驱动生命周期、工具调用、通知、压缩和子代理结束动效，权限决策仍留在 Reasonix 自己的终端流程。
 
-**opencode** — 使用 `~/.config/opencode/` 下当前生效的 plugin 配置：`config.json` → `opencode.json` → `opencode.jsonc`，后者优先。需要本机 opencode 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。v1 入口保留在 `plugin` 键；仅探测到 opencode 2.x（`@opencode/cli`）时才写入 v2 的 `plugins` 键。探测到 v1 时会清除 Clawd 自有的 v2 条目，探测结果未知时不改该键，以免旧版（1.18.15 及之前）因未知键拒绝整个配置。若自动探测找不到已知宿主，确认实际会读取配置的主版本后，可在 Clawd 进程环境中设置 `CLAWD_OPENCODE_HOST=v1` 或 `v2`，再执行安装 / 修复。v2 插件运行在共享后台 service 中；安装或修复后运行 `opencode service restart` 加载新版本，其会话的“跳转终端”会降级。
+**opencode** — 使用 `~/.config/opencode/` 下当前生效的 plugin 配置：`config.json` → `opencode.json` → `opencode.jsonc`，后者优先。需要本机 opencode 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `node hooks/opencode-install.js`。确认是 opencode 2.x（`@opencode/cli`）宿主时，Clawd 只把入口写进 `plugins` 键，并移除 `plugin` 键里 Clawd 自己留下的条目。v1 宿主继续使用原有的 v1 注册路径，只清理 Clawd 自有的 v2 残留；探测不到版本时不改 v2 键，以免旧版（1.18.15 及之前）因未知键拒绝整个配置。若自动探测找不到已知宿主，确认实际会读取配置的主版本后，可在 Clawd 进程环境中设置 `CLAWD_OPENCODE_HOST=v1` 或 `v2`，再执行安装 / 修复。v2 插件运行在共享后台 service 中；安装或修复后运行 `opencode service restart` 加载新版本，其会话的“跳转终端”会降级。
 
 **MiMo Code** — 使用 `~/.config/mimocode/` 下当前生效的 plugin 配置：`config.json` → `mimocode.json` → 默认 `mimocode.jsonc`，后者优先。需要本机 MiMo Code 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步生效的 plugin entry。也可以手动执行 `npm run install:mimocode-plugin`。MiMo Code 与 opencode 使用同一套 plugin SDK 和 Allow / Always / Deny 权限行为；`task` 创建的子会话不参与可见的多会话动画聚合。
 
@@ -118,7 +120,7 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 - **所有权**：合并与卸载只处理 command 中带 `qwenwork-hook.js` marker 的条目。仅仅名为 `clawd` 的 hook 不会被动；Clawd hook 与第三方 hook 混在同一 entry 时，第三方 hook 原样保留。
 - **可选调试日志**：`CLAWD_QWENWORK_HOOK_DEBUG=1` 会往 `~/.clawd/qwenwork-hook-debug.jsonl` 追加事件与字段结构摘要（不含 prompt、tool input、路径）。再加 `CLAWD_QWENWORK_HOOK_DEBUG_RAW=1` 才会记录完整原始 payload——**此时该文件含敏感数据**，用完请删除。macOS/Linux 上文件按 `0600` 创建；若 hook 新建调试目录则使用 `0700`，已有的共享 `~/.clawd` 目录保持原权限不变。
 
-**Qoder** — hooks 写入 `~/.qoder/settings.json`。需要本机 Qoder 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qoder-hooks`。Phase 1 是 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察——Clawd 不弹权限气泡、不代答权限决策，权限流程由 Qoder 原生接管。启动恢复只识别 Qoder CLI 进程（`qodercli` / `qoder-cli`），闲置打开的 Qoder IDE 不会被当成进行中的 agent 工作。
+**Qoder / Qoder CN** — hooks 分别写入 `~/.qoder/settings.json` 和 `~/.qoder-cn/settings.json`；`QODER_CONFIG_DIR` / `QODERCN_CONFIG_DIR` 可覆盖各自的用户配置目录。两版共用 **Settings → AI 编程工具 → Qoder** 入口。安装且启用后，Clawd 会在启动时同步所有已初始化版本的 hooks，不创建未安装版本的目录；也可以手动执行 `npm run install:qoder-hooks`。卸载只移除两版中的 Clawd hooks；两版共存时 Doctor 会分别检查。接入仍为 state-only：hook 恒返回 `{}`，`PermissionRequest` / `PermissionDenied` 只作为通知观察，权限流程由 Qoder 原生接管。启动恢复只识别 CLI 进程（`qodercli` / `qoder-cli` / `qoderclicn`），闲置打开的 Qoder 或 Qoder CN 桌面应用不会被当成进行中的 agent 工作。
 
 ## 权限处理自动化
 
@@ -133,6 +135,8 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 ## Telegram 远程审批
 
 Clawd 可以把受支持、仍待处理的权限请求镜像到专用 Telegram bot；本地气泡仍然可用。通道失败或超时不会产生远程决定，也不会自动拒绝：有本地气泡时请求继续等待；只有 remote-only 且所有可用 client 都无决定时，才回到 agent 原生界面。设置、支持范围和迁移说明见 [telegram-approval.md](telegram-approval.md)。
+
+v0.14.0 退役了旧的 Go sidecar 传输通道。既有 legacy 用户会保留已保存的 bot token、允许用户与目标会话，但必须先在阻塞式 Settings 迁移面板中完成一次真实的 Telegram 验证回调，远程审批才会重新生效。检查失败或超时不会删除这些设置，也不会回退到已退役的运行时。
 
 ## 飞书 / Lark 远程审批
 
@@ -269,4 +273,4 @@ Windows Clawd 监听 `127.0.0.1:23333-23337` 范围内的回环端口。**Linux 
 - **Homebrew**：`brew install --cask clawd-on-desk` 会安装 x86_64 AppImage；目前没有 Linux ARM 的 cask 产物。之后可用 `brew upgrade --cask clawd-on-desk` 升级。
 - **安装包**：AppImage 和 `.deb` 可从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载。deb 安装后应用图标会出现在 GNOME 应用菜单。
 - **终端聚焦**：依赖 `wmctrl` 或 `xdotool`（有一个就行）。安装：`sudo apt install wmctrl` 或 `sudo apt install xdotool`。
-- **自动更新**：Clawd 不会自行更新 Linux 安装包。Homebrew 管理的安装可用 `brew upgrade --cask clawd-on-desk` 升级；直接安装的 AppImage / deb 仍需从 GitHub Releases 手动下载。源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
+- **更新**：AppImage 保留应用内下载、重启或退出安装。`.deb` 更新提示打开 [APT 接入与迁移指南](apt-setup.zh-CN.md)；首次添加软件源，之后退出 Clawd 再用 APT 更新，完成后重新打开。1.3/1.4 等旧用户无需先让旧版应用内更新成功，也可继续手动安装 `.deb`。Homebrew 管理的安装使用 `brew upgrade --cask clawd-on-desk`；源码运行保留应用内 Git 更新。

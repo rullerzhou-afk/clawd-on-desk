@@ -18,6 +18,7 @@ const {
   computeAutoHideHotZone,
   pointInHotZone,
   constants,
+  layoutHasTaggedFallback,
 } = sessionHud.__test;
 
 function mkSession(id, overrides = {}) {
@@ -58,6 +59,105 @@ describe("session HUD geometry", () => {
       result.bounds.width,
       constants.HUD_WIDTH_COMPACT + constants.HUD_WINDOW_SHELL.left + constants.HUD_WINDOW_SHELL.right
     );
+  });
+
+  // A tagged fallback row appends " · <tag>" to the title and keeps that tag at
+  // its intrinsic width while the folder label ellipsizes. Without extra window
+  // width the label-only widths (notably hudShowElapsed=false) could not fit
+  // tag + status label + pin, and the status label was pushed under the pin.
+  it("widens the HUD for tagged fallback rows across every show-toggle combination", () => {
+    for (const showElapsed of [true, false]) {
+      for (const showStateLabels of [true, false]) {
+        for (const showContextUsage of [true, false]) {
+          const plain = getHudWidth(showElapsed, showStateLabels, showContextUsage, false);
+          const tagged = getHudWidth(showElapsed, showStateLabels, showContextUsage, true);
+          assert.strictEqual(
+            tagged,
+            plain + constants.HUD_TAGGED_FALLBACK_WIDTH_BUMP,
+            `tagged rows must be wider for elapsed=${showElapsed} labels=${showStateLabels} context=${showContextUsage}`
+          );
+          assert.ok(tagged > plain, "a tagged row never gets less room than a plain one");
+        }
+      }
+    }
+  });
+
+  // The narrowest labeled configuration is the one that regressed: state labels
+  // on, elapsed and context usage off.
+  it("gives the tightest labeled configuration room for a tag, a status label and the pin", () => {
+    const narrowest = getHudWidth(false, true, false, true);
+    assert.ok(
+      narrowest >= constants.HUD_WIDTH_LABELS_COMPACT,
+      "the tightest tagged width must reach the full label width"
+    );
+  });
+
+  it("leaves untagged HUD widths unchanged", () => {
+    assert.strictEqual(getHudWidth(true, true, false, false), getHudWidth(true, true, false));
+    assert.strictEqual(getHudWidth(false, true, false, false), getHudWidth(false, true, false));
+  });
+
+  it("preserves the tagged row's CSS viewport when text grows", () => {
+    const width = getHudWidth(false, true, true, true);
+    for (const scale of [0.8, 1, 1.6]) {
+      const outer = computeHudOuterWidth(width, scale, getHudWidthScale(scale, true));
+      const shell = Math.round(constants.HUD_WINDOW_SHELL.left * scale)
+        + Math.round(constants.HUD_WINDOW_SHELL.right * scale);
+      assert.ok(Math.abs((outer - shell) / scale - width) <= 1,
+        "large text must not squeeze the fixed tag/chip/action columns");
+    }
+    assert.strictEqual(getHudWidthScale(1.6), 1.24, "ordinary rows retain compact width growth");
+  });
+
+  // Every session carries a displaySessionTag (the Telegram/Slack-style #tag),
+  // so the width predicate must use the same untitled-local-Codex rule the
+  // renderer renders the fallback row with — not bare tag presence. Otherwise
+  // every HUD of every user is 56 px wider as soon as any session is visible.
+  it("does not widen the HUD for titled or non-Codex sessions even though they all carry a tag", () => {
+    const taggedTitledCodex = {
+      agentId: "codex",
+      sessionTitle: "Fix login bug",
+      displayTitle: "Fix login bug",
+      displayFolder: "repo",
+      displaySessionTag: "2ce06946ef",
+    };
+    const taggedNonCodex = {
+      agentId: "claude-code",
+      displayTitle: "Refactor auth",
+      displayFolder: "repo",
+      displaySessionTag: "2ce06946ef",
+    };
+    const noTagAtAll = {
+      agentId: "codex",
+      displayTitle: "repo",
+      displayFolder: "repo",
+      displaySessionTag: "",
+    };
+    const layout = { expanded: [taggedTitledCodex, taggedNonCodex, noTagAtAll], folded: [] };
+    assert.strictEqual(layoutHasTaggedFallback(layout), false);
+  });
+
+  it("widens the HUD only for an untitled local Codex Desktop chat", () => {
+    const untitledDesktopChat = {
+      agentId: "codex",
+      hasAlias: false,
+      sessionTitle: "",
+      displayTitle: "repo · 2ce06946ef",
+      displayFolder: "repo",
+      displaySessionTag: "2ce06946ef",
+    };
+    const layout = { expanded: [untitledDesktopChat], folded: [] };
+    assert.strictEqual(layoutHasTaggedFallback(layout), true);
+
+    // An alias or a formal title on the same Codex session disables the
+    // fallback row, so it must disable the width bump too.
+    const aliased = { ...untitledDesktopChat, hasAlias: true, displayTitle: "My alias" };
+    const titled = { ...untitledDesktopChat, sessionTitle: "Real title", displayTitle: "Real title · 2ce06946ef" };
+    assert.strictEqual(layoutHasTaggedFallback({ expanded: [aliased], folded: [] }), false);
+    assert.strictEqual(layoutHasTaggedFallback({ expanded: [titled], folded: [] }), false);
+
+    // Folded rows count the same as expanded ones.
+    assert.strictEqual(layoutHasTaggedFallback({ expanded: [], folded: [untitledDesktopChat] }), true);
   });
 
   it("positions the visible HUD card below the pet hitbox with a fixed gap", () => {

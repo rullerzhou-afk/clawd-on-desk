@@ -9,8 +9,7 @@ const {
   resolveNodeBin,
   buildPermissionUrl,
   isManagedPermissionUrl,
-  DEFAULT_SERVER_PORT,
-  readRuntimePort,
+  resolveInstallServerPort,
 } = require("./server-config");
 const {
   readJsonFile,
@@ -225,7 +224,7 @@ function registerCodeBuddyHooks(options = {}) {
   }
 
   // Register PermissionRequest HTTP hook (blocking, for permission bubble)
-  const hookPort = readRuntimePort() || DEFAULT_SERVER_PORT;
+  const hookPort = resolveInstallServerPort(options.port);
   const permissionTarget = normalizePermissionTarget(options.permissionTarget);
   const permEvent = "PermissionRequest";
   if (!Array.isArray(settings.hooks[permEvent])) {

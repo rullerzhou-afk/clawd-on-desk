@@ -50,6 +50,7 @@ const {
   isCodexDesktopOriginator,
 } = require("./codex-originator");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
+const { planProgressFromToolInput } = require("./codex-plan-progress");
 
 const WINDOWS_STABLE_RUN_SIGNATURE = "clawd-codex-stable-windows-run-v1";
 
@@ -601,6 +602,13 @@ function buildStateBody(payload, resolve, options = {}) {
   const toolInput = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : null;
   const toolInputFingerprint = buildToolInputFingerprint(toolInput);
   if (toolName) body.tool_name = toolName;
+  // Code Mode does not record nested function calls in JSONL. The completed
+  // native hook still carries their structured inputs, after any PreToolUse
+  // rewrite; no JavaScript parsing or extra transcript storage is needed.
+  if (event === "PostToolUse" && body.turn_id) {
+    const progress = planProgressFromToolInput(toolName, toolInput);
+    if (progress !== undefined) body.plan_progress = progress;
+  }
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
 

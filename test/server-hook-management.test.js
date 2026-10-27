@@ -116,6 +116,7 @@ function makeFakeHttpFactory() {
       this.listenCalls.push({ port, host });
       this.emit("listening");
     };
+    server.address = function () { return { port: this.listenCalls.at(-1).port }; };
     server.close = function () {
       this.closed = true;
     };

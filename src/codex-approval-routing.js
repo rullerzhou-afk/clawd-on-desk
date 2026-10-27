@@ -63,10 +63,13 @@ function resolveCodexApprovalRoute(data = {}, options = {}) {
   try {
     const configuredHome = options.codexHome || process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
     if (!path.isAbsolute(configuredHome)) return delegate("nonabsolute-codex-home");
-    const home = fs.realpathSync(configuredHome);
-    const file = fs.realpathSync(data.transcript_path);
+    // Windows Codex supplies \\?\ paths. Node's JS realpath walker can
+    // fail on their drive root (EISDIR on "C:"); the native API resolves the
+    // same file/junction identity without weakening the containment checks.
+    const home = fs.realpathSync.native(configuredHome);
+    const file = fs.realpathSync.native(data.transcript_path);
     const roots = ["sessions", "archived_sessions"].flatMap((name) => {
-      try { return [fs.realpathSync(path.join(home, name))]; } catch { return []; }
+      try { return [fs.realpathSync.native(path.join(home, name))]; } catch { return []; }
     });
     if (!roots.some((root) => inside(root, file))) return delegate("foreign-transcript");
     fd = fs.openSync(file, "r");

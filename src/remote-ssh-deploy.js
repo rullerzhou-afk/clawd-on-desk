@@ -96,6 +96,7 @@ const HOOK_FILES = [
   "uninstall.js",
   "codex-hook.js",
   "codex-originator.js",
+  "codex-plan-progress.js",
   "codex-assistant-output.js",
   "codex-user-input.js",
   "codex-log-event.js",

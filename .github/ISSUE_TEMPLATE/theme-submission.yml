@@ -1,0 +1,80 @@
+name: 🎨 Theme submission (English)
+description: Propose an external theme, submit a working theme, or update one
+title: "[Theme] "
+labels:
+  - "area: themes"
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Read [Contributing external
+        themes](https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/guides/contributing-themes.md)
+        first. Submit and discuss here in the application repository; accepted packages are
+        distributed through clawd-themes. Ideas are welcome, but inclusion is reviewed and
+        production is not promised. Community listing is still being prepared; see the guide for its
+        current status.
+  - type: dropdown
+    id: stage
+    attributes:
+      label: Submission stage
+      options:
+        - Idea or artwork proposal
+        - Working theme
+        - Update to an existing theme
+    validations:
+      required: true
+  - type: input
+    id: identity
+    attributes:
+      label: Theme name and proposed ID
+      placeholder: My Theme / my-theme
+    validations:
+      required: true
+  - type: textarea
+    id: design
+    attributes:
+      label: Design and previews
+      description: >-
+        Describe the character and differences from existing themes. Attach a preview and
+        representative animations; proposals can include sketches or references.
+    validations:
+      required: true
+  - type: textarea
+    id: files
+    attributes:
+      label: Files and source
+      description: >-
+        For working themes and updates, please fill this in. Link the source repository, fixed
+        commit, theme directory, and downloadable files. Without a repository, explain delivery
+        options. For an idea, say what still needs to be made.
+    validations:
+      required: false
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: States and testing
+      description: >-
+        For working themes and updates, please fill this in. List states, optional features, theme
+        version, tested Clawd version and OS, validator results, and known issues. Mark untested
+        items; proposals may say not implemented.
+    validations:
+      required: false
+  - type: textarea
+    id: rights
+    attributes:
+      label: Credits and license
+      description: >-
+        Name creators, link asset and reference sources and LICENSE, and explain redistribution,
+        preview, and use permissions. Mention generation tools if used and any permission still to
+        obtain.
+    validations:
+      required: true
+  - type: textarea
+    id: maintenance
+    attributes:
+      label: Maintenance and related issues
+      description: >-
+        For working themes and updates, please fill this in. Who maintains the theme and where
+        should feedback go? Link prior submissions for updates and mention any collaboration needed.
+    validations:
+      required: false

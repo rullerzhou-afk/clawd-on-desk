@@ -251,6 +251,32 @@ describe("Codex official hook", () => {
     assert.equal(require("../agents/codex").eventMap.Interrupt, "idle");
   });
 
+  it("reports only bounded plan counts from completed native update_plan calls, including Code Mode", () => {
+    const payload = {
+      hook_event_name: "PostToolUse", session_id: "plan-session", turn_id: "turn-A",
+      tool_name: "update_plan", tool_use_id: "plan-call",
+      tool_input: { explanation: "private explanation", plan: [
+        { step: "private first step", status: "completed" },
+        { step: "private second step", status: "in_progress" },
+        { step: "private third step", status: "pending" },
+      ] },
+      tool_response: {},
+    };
+    for (const toolName of ["update_plan", "functions.update_plan"]) {
+      const body = buildStateBody({ ...payload, tool_name: toolName }, mockResolve);
+      assert.deepStrictEqual(body.plan_progress, { completed: 1, total: 3, percent: 33 });
+      assert.doesNotMatch(JSON.stringify(body), /private|explanation|"step"/);
+    }
+    for (const extra of [{ hook_event_name: "PreToolUse" }, { tool_name: "mcp__other__update_plan" },
+      { tool_name: "exec", tool_input: { input: "await tools.update_plan({plan: []})" } },
+      { turn_id: undefined }]) {
+      assert.equal(Object.hasOwn(buildStateBody({ ...payload, ...extra }, mockResolve), "plan_progress"), false);
+    }
+    for (const plan of [[], [{ status: "invented" }], Array(201).fill({ status: "completed" })]) {
+      assert.equal(buildStateBody({ ...payload, tool_input: { plan } }, mockResolve).plan_progress, null);
+    }
+  });
+
   it("includes foreground WT HWND only on foreground-safe state events", () => {
     const startBody = buildStateBody({
       hook_event_name: "SessionStart",

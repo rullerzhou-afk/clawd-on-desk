@@ -29,14 +29,16 @@ function externalAssetsSourceDir(themeDir) {
 
 // Bump when sanitizeSvg's output changes so cached SVGs are written again.
 // v3: the XML declaration keeps its closing "?" (v2 caches wrote `<?xml ...>`).
-const CACHE_META_VERSION = 3;
+// v4: only a leading XML declaration survives; other processing instructions
+// are removed from cached SVGs.
+const CACHE_META_VERSION = 4;
 
 function emptyCacheMeta() {
   return { version: CACHE_META_VERSION, svgs: {}, rasters: {} };
 }
 
 function normalizeCacheMeta(value) {
-  if (value && (value.version === CACHE_META_VERSION || value.version === 2)) {
+  if (value && (value.version === CACHE_META_VERSION || value.version === 3 || value.version === 2)) {
     const stale = value.version !== CACHE_META_VERSION;
     return {
       meta: {

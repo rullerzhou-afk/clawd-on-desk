@@ -717,7 +717,7 @@ describe("theme-loader external SVG sanitization", () => {
     assert.ok(sanitized.includes("<image"), "safe local image element should survive sanitization");
     assert.strictEqual(fs.readFileSync(cachedWebp, "utf8"), "fake-webp");
     assert.strictEqual(fs.readFileSync(cachedPng, "utf8"), "fake-png");
-    assert.strictEqual(cacheMeta.version, 3);
+    assert.strictEqual(cacheMeta.version, 4);
     assert.ok(cacheMeta.svgs["idle.svg"]);
     assert.ok(cacheMeta.rasters["spritesheet.webp"]);
     assert.ok(cacheMeta.rasters["nested/sheet.png"]);
@@ -799,7 +799,7 @@ describe("theme-loader external SVG sanitization", () => {
     const sanitized = fs.readFileSync(contextFor(theme).resolveAssetPath("idle.svg"), "utf8");
     const cacheMeta = JSON.parse(fs.readFileSync(path.join(cacheRoot, ".cache-meta.json"), "utf8"));
 
-    assert.strictEqual(cacheMeta.version, 3);
+    assert.strictEqual(cacheMeta.version, 4);
     assert.ok(cacheMeta.svgs["idle.svg"]);
     assert.ok(cacheMeta.rasters["spritesheet.webp"]);
     assert.ok(sanitized.includes("<image"));

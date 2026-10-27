@@ -784,6 +784,8 @@ The validator checks:
 
 ## Distribution
 
+To submit your theme for the downloadable catalog, follow [Contributing external themes](contributing-themes.md) ([中文版](contributing-themes.zh-CN.md)). Proposals and reviews start in the `clawd-on-desk` application repository; accepted packages are published separately through `clawd-themes`. You can also distribute independently using the options below.
+
 ### As a GitHub repository
 1. Create a repo with your theme folder structure
 2. Users clone/download to their themes directory

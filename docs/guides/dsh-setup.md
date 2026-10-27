@@ -280,7 +280,7 @@ leftover link before it adds the plugin again. Startup sync only reports
 
 ## Uninstall and ownership safety
 
-Use Settings → AI Coding Tools → Uninstall, or:
+Use Settings → AI Coding Tools → expand DeepSeek Harness → Disconnect… → Uninstall, or:
 
 ```bash
 npm run uninstall:dsh

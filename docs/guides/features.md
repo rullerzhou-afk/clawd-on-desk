@@ -22,7 +22,7 @@
 - **Global hotkeys** — `Ctrl+Shift+Y` to Allow, `Ctrl+Shift+N` to Deny the latest permission bubble (only registered while bubbles are visible)
 - **Stacking layout** — multiple permission requests stack upward from the bottom-right corner
 - **Auto-dismiss** — if you answer in the terminal first, the bubble disappears automatically
-- **Per-agent toggle** — open `Settings…` → `AI Coding Tools`, pick an agent, and turn off `Show pop-up bubbles` to keep prompts in that agent's own terminal/TUI
+- **Per-agent toggle** — open `Settings…` → `AI Coding Tools`, expand an agent card, and turn off `Permission prompts as Clawd bubbles` to keep prompts in that agent's own terminal/TUI
 
 ## Remote Notifications
 

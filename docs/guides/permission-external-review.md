@@ -7,8 +7,8 @@ session trust.
 
 ## Configuration
 
-The setting lives in `clawd-prefs.json` (Settings → General does not expose it
-yet). Quit Clawd, edit the file, and start it again:
+The setting lives in `clawd-prefs.json` (the Settings page has no entry for this
+command-only option yet). Quit Clawd, edit the file, and start it again:
 
 ```json
 {
@@ -88,20 +88,23 @@ Output is never parsed for an allow/deny decision.
 - **Request-scoped.** If the request goes away while the command runs — the
   agent drops the connection, the user presses Esc, the hook process is killed
   — the child is terminated and its result is discarded; no card is created.
-  DND or an agent-disable that lands mid-review is re-checked the same way,
-  because the result was authorized for the state at accept time.
+  DND, an agent-disable, or the branch-specific permission/family/subagent gate
+  that lands mid-review is re-checked the same way, because the result was
+  authorized for the state at accept time. A global bubble toggle remains a
+  remote-only exception where that branch supports Telegram/Feishu fallback.
 - **Fail closed.** A request that is pending when a session grant arrives is
   not swept unless it was explicitly cleared by exit `0`. An entry that never
   carried a verdict is treated as not reviewed.
 - **Session trust stays available.** "Don't ask again in this session" is a
   human action, so it is still offered when the configured command has not
-  cleared the current request. The grant applies to later requests, which are
-  reviewed normally; it does not release other pending requests whose gate did
-  not clear them.
+  cleared the current request. If an equivalent grant already exists, the
+  clicked card may resolve against it; other pending requests whose gate did
+  not clear them remain held. Later requests are reviewed normally.
 - **Bounded.** At most four reviews run at once; further requests pause for a
   human without starting a process. Captured stdout is capped at 64 KiB (stderr
   is drained and discarded), and stdin payloads above 1 MiB are refused.
-  In-flight reviews are terminated when Clawd quits.
+  In-flight reviews are terminated when Clawd quits and finish as
+  `cancelled/app-quitting`, so they cannot create a card during shutdown.
 - **Trusted configuration.** The value is command-only at the settings
   controller boundary: a generic renderer `settings:update` cannot introduce an
   executable. In this first release the prefs file is the only writer. The

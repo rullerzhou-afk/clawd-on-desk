@@ -125,6 +125,40 @@ afterEach(() => {
 });
 
 describe("official theme main", () => {
+  it("retains community attribution through install, catalog removal, offline restart, and uninstall", async () => {
+    const zip = hashSageFixture();
+    const entry = { ...buildZipEntry(zip), category: "community", author: "Artist / 画师" };
+    delete entry.showcase;
+    let catalog = makeCatalog(entry);
+    const { manager } = createHarness({ zip, entry, fetchCatalogText: async () => JSON.stringify(catalog) });
+    const before = (await manager.listOfficialThemes()).themes[0];
+    assert.strictEqual(before.officialThemeCategory, "community");
+    assert.strictEqual(before.officialThemeAuthor, entry.author);
+    assert.strictEqual(before.officialThemeShowcaseUrl, null);
+    assert.strictEqual((await manager.installTheme(entry.id)).status, "ok");
+    const marker = installerModule.readOfficialThemeMarker(path.join(tmp, "themes", entry.id));
+    assert.strictEqual(marker.category, "community");
+    assert.strictEqual(marker.author, entry.author);
+    assert.strictEqual(marker.sourceRepository, installerModule.OFFICIAL_SOURCE_REPOSITORY);
+
+    catalog = { schemaVersion: 1, catalogVersion: 2, themes: [] };
+    await manager.refreshCatalog({ force: true });
+    const removed = (await manager.listOfficialThemes()).themes[0];
+    assert.strictEqual(removed.officialThemeCategory, "community");
+    assert.strictEqual(removed.officialThemeAuthor, entry.author);
+    const decorated = manager.decorateThemeMetadata({ id: entry.id });
+    assert.strictEqual(decorated.officialThemeCategory, "community");
+    assert.strictEqual(decorated.officialThemeAuthor, entry.author);
+
+    const restarted = createHarness({ userDataDir: tmp, fetchCatalogText: async () => { throw new Error("offline"); } });
+    const offline = (await restarted.manager.listOfficialThemes()).themes[0];
+    assert.strictEqual(offline.officialThemeCategory, "community");
+    assert.strictEqual(offline.officialThemeAuthor, entry.author);
+    assert.strictEqual(offline.officialThemeCanUninstall, true);
+    assert.strictEqual((await restarted.controller.applyCommand("officialTheme.uninstall", { themeId: entry.id })).status, "ok");
+    assert.strictEqual(fs.existsSync(path.join(tmp, "themes", entry.id)), false);
+  });
+
   it("lists catalog entries as available before install", async () => {
     const { manager } = createHarness();
     const listing = await manager.listOfficialThemes();

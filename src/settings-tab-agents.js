@@ -10,6 +10,7 @@
   let readers = null;
   let helpers = null;
   let ops = null;
+  let coreRef = null;
   const CODEX_PERMISSION_MODE_OPTIONS = [
     { id: "auto", labelKey: "codexPermissionModeAuto" },
     { id: "intercept", labelKey: "codexPermissionModeIntercept" },
@@ -19,9 +20,7 @@
   let agentHintActionPending = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
-  let codexHookHealthRequestSeq = 0;
   const permissionModePending = new Set();
-  let claudeHookHealthRequestSeq = 0;
   let dshNoticesRequestSeq = 0;
   const dshNoticeContainers = new Set();
 
@@ -57,14 +56,10 @@
     for (const panel of switcher.control.panels.values()) parent.appendChild(panel);
     parent = switcher.control.panels.get(subtab);
 
-    // Each banner lives in the subtab it acts on: "install what we detected"
-    // is what the discover subtab is for, and "your integration outlived its
-    // agent" is about the connected list.
+    // Each banner lives in the subtab it acts on: "your integration outlived
+    // its agent" is about the connected list. Discover has no install banner:
+    // the detected section and every row already carry the same Install action.
     if (subtab === "discover") {
-      const recommendedHints = getRecommendedInstallHints();
-      if (recommendedHints.length > 0) {
-        parent.appendChild(buildAgentInstallHintBanner(recommendedHints));
-      }
       renderDiscoverSubtab(parent, categorized);
       return;
     }
@@ -102,18 +97,55 @@
   }
 
   function renderDiscoverSubtab(parent, categorized) {
-    if (categorized.recommended.length > 0) {
-      const section = helpers.buildSection(
-        t("agentSectionRecommended"),
-        buildAgentRows(categorized.recommended)
-      );
-      section.classList.add("agent-section", "agent-section-recommended");
-      parent.appendChild(section);
-    }
-    parent.appendChild(buildCustomToolsSection());
+    parent.appendChild(buildDetectedSection(categorized));
     if (categorized.unavailable.length > 0) {
       parent.appendChild(buildUnavailableSection(categorized.unavailable));
     }
+    parent.appendChild(buildCustomToolsSection());
+  }
+
+  // The actionable half of Discover: everything the detector found locally but
+  // that is not integrated yet. The title carries the same count as the subtab
+  // pill, and "Install all" only appears when there is more than one to batch.
+  function buildDetectedSection(categorized) {
+    const recommended = categorized.recommended;
+    const heading = document.createElement("h2");
+    heading.className = "section-title agent-detected-title";
+    const headingText = document.createElement("span");
+    headingText.textContent = `${t("agentSectionRecommended")} · ${recommended.length}`;
+    heading.appendChild(headingText);
+    if (recommended.length >= 2) {
+      const installAll = helpers.buildButton({
+        labelKey: agentHintActionPending ? "agentIntegrationWorking" : "agentInstallAllDetected",
+        size: "compact",
+        className: "agent-install-all",
+        disabled: !!agentHintActionPending,
+        pending: !!agentHintActionPending,
+      });
+      installAll.addEventListener("click", () => {
+        installRecommendedHints(recommended.map((agent) => agent.id));
+      });
+      heading.appendChild(installAll);
+    }
+
+    const rows = recommended.length > 0
+      ? buildAgentRows(recommended)
+      : [buildEmptyDetectedRow()];
+    const section = helpers.buildSection("", rows);
+    section.classList.add("agent-section", "agent-section-recommended");
+    section.insertBefore(heading, section.children[0] || null);
+    return section;
+  }
+
+  // Placeholder row for the Discover "Detected locally" section at N = 0.
+  function buildEmptyDetectedRow() {
+    const empty = document.createElement("div");
+    empty.className = "placeholder agent-detected-empty";
+    const desc = document.createElement("div");
+    desc.className = "placeholder-desc";
+    desc.textContent = t("agentDetectedEmpty");
+    empty.appendChild(desc);
+    return empty;
   }
 
   // A catalog of what Clawd supports, not a to-do list — collapsed by default
@@ -221,21 +253,6 @@
       }
     }
     return names.join(t("agentListSeparator"));
-  }
-
-  function getRecommendedInstallHints() {
-    const hints = runtime.agentInstallationHints;
-    const entries = hints && Array.isArray(hints.agents) ? hints.agents : [];
-    const dismissed = state.snapshot && state.snapshot.dismissedAgentInstallHints;
-    return entries.filter((entry) => {
-      if (!entry || typeof entry.agentId !== "string") return false;
-      if (!entry.detectedInstalled) return false;
-      if (!INSTALL_HINT_CONFIDENCES.has(entry.confidence)) return false;
-      if (!getAgentMetadata(entry.agentId)) return false;
-      if (readers.readAgentIntegrationInstalled(entry.agentId)) return false;
-      if (dismissed && dismissed[entry.agentId] === true) return false;
-      return true;
-    });
   }
 
   function getRecommendedCleanupHints() {
@@ -353,8 +370,52 @@
     if (current === "connected") {
       const wslScanControl = buildWslScanControl();
       if (wslScanControl) row.appendChild(wslScanControl);
+    } else {
+      row.appendChild(buildRescanControl());
     }
     return { row, control };
+  }
+
+  // Discover's mirror of "Scan WSL": one button plus the last-scan clock, on
+  // the right of the subtab row. It rescans every built-in and custom tool; the
+  // custom-tool card below is only for registering a new folder.
+  function buildRescanControl() {
+    const control = document.createElement("div");
+    control.className = "agent-rescan";
+    const status = document.createElement("span");
+    status.className = "agent-scan-status";
+    status.textContent = getCustomToolScanStatusText();
+    const scanButton = helpers.buildButton({
+      labelKey: "customToolRescan",
+      size: "compact",
+      className: "agent-rescan-button",
+    });
+    scanButton.addEventListener("click", async () => {
+      const scanStartedAt = Date.now();
+      helpers.setButtonState(scanButton, { pending: true });
+      status.classList.remove("failed");
+      status.classList.add("pending");
+      status.textContent = t("customToolScanStatusScanning");
+      try {
+        if (ops && typeof ops.fetchAgentInstallationHints === "function") {
+          await ops.fetchAgentInstallationHints({ force: true });
+        }
+        const remainingStatusMs = CUSTOM_TOOL_SCAN_STATUS_MIN_MS - (Date.now() - scanStartedAt);
+        if (remainingStatusMs > 0) {
+          await new Promise((resolve) => setTimeout(resolve, remainingStatusMs));
+        }
+        status.textContent = getCustomToolScanStatusText();
+      } catch (err) {
+        status.classList.add("failed");
+        status.textContent = t("customToolScanStatusFailed");
+      } finally {
+        status.classList.remove("pending");
+        helpers.setButtonState(scanButton, { pending: false });
+      }
+    });
+    control.appendChild(status);
+    control.appendChild(scanButton);
+    return control;
   }
 
   function buildCustomToolsSection() {
@@ -368,53 +429,19 @@
     const desc = document.createElement("span");
     desc.className = "row-desc";
     desc.textContent = t("rowCustomToolsDiscoveryPathsDesc");
-    const scanStatus = document.createElement("span");
-    scanStatus.className = "custom-tool-scan-status";
-    scanStatus.textContent = getCustomToolScanStatusText();
     text.appendChild(label);
     text.appendChild(desc);
-    text.appendChild(scanStatus);
     row.appendChild(text);
 
     const control = document.createElement("div");
     control.className = "custom-tool-discovery-control custom-tool-discovery-actions";
     const addButton = helpers.buildButton({
       labelKey: "customToolManualAdd",
-      tone: "accent",
       size: "compact",
       className: "custom-tool-path-picker",
     });
     addButton.addEventListener("click", () => addPickedCustomDiscoveryPath(addButton));
     control.appendChild(addButton);
-    const scanButton = helpers.buildButton({
-      labelKey: "customToolRescan",
-      size: "compact",
-      className: "custom-tool-scan",
-    });
-    scanButton.addEventListener("click", async () => {
-      const scanStartedAt = Date.now();
-      helpers.setButtonState(scanButton, { pending: true });
-      scanStatus.classList.remove("failed");
-      scanStatus.classList.add("pending");
-      scanStatus.textContent = t("customToolScanStatusScanning");
-      try {
-        if (ops && typeof ops.fetchAgentInstallationHints === "function") {
-          await ops.fetchAgentInstallationHints({ force: true });
-        }
-        const remainingStatusMs = CUSTOM_TOOL_SCAN_STATUS_MIN_MS - (Date.now() - scanStartedAt);
-        if (remainingStatusMs > 0) {
-          await new Promise((resolve) => setTimeout(resolve, remainingStatusMs));
-        }
-        scanStatus.textContent = getCustomToolScanStatusText();
-      } catch (err) {
-        scanStatus.classList.add("failed");
-        scanStatus.textContent = t("customToolScanStatusFailed");
-      } finally {
-        scanStatus.classList.remove("pending");
-        helpers.setButtonState(scanButton, { pending: false });
-      }
-    });
-    control.appendChild(scanButton);
     row.appendChild(control);
     const rows = [row, ...buildCustomToolResultRows()];
     // No section title: the subtab pill already names this half of the tab.
@@ -716,51 +743,6 @@
     });
   }
 
-  function buildAgentInstallHintBanner(hints) {
-    const agentIds = hints.map((entry) => entry.agentId);
-    const banner = document.createElement("section");
-    banner.className = "agent-hint-banner agent-install-hint-banner";
-
-    const text = document.createElement("div");
-    text.className = "agent-hint-text agent-install-hint-text";
-    const title = document.createElement("div");
-    title.className = "agent-hint-title agent-install-hint-title";
-    title.textContent = t("agentInstallHintTitle");
-    const desc = document.createElement("div");
-    desc.className = "agent-hint-desc agent-install-hint-desc";
-    desc.textContent = t("agentInstallHintDesc").replace("{agents}", formatAgentNames(agentIds));
-    text.appendChild(title);
-    text.appendChild(desc);
-    banner.appendChild(text);
-
-    const actions = document.createElement("div");
-    actions.className = "agent-hint-actions agent-install-hint-actions";
-    const installBtn = helpers.buildButton({
-      labelKey: agentHintActionPending
-        ? "agentIntegrationWorking"
-        : "agentInstallHintInstallRecommended",
-      tone: "accent",
-      size: "compact",
-      className: "agent-install-hint-install",
-      disabled: !!agentHintActionPending,
-      pending: !!agentHintActionPending,
-    });
-    installBtn.addEventListener("click", () => installRecommendedHints(agentIds));
-
-    const dismissBtn = helpers.buildButton({
-      labelKey: "agentInstallHintDismiss",
-      size: "compact",
-      className: "agent-install-hint-dismiss",
-      disabled: !!agentHintActionPending,
-    });
-    dismissBtn.addEventListener("click", () => dismissInstallHints(agentIds));
-
-    actions.appendChild(installBtn);
-    actions.appendChild(dismissBtn);
-    banner.appendChild(actions);
-    return banner;
-  }
-
   function buildAgentCleanupHintBanner(hints) {
     const agentIds = hints.map((entry) => entry.agentId);
     const banner = document.createElement("section");
@@ -867,27 +849,6 @@
     }
   }
 
-  function dismissInstallHints(agentIds) {
-    if (agentHintActionPending) return;
-    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
-      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
-      return;
-    }
-    agentHintActionPending = true;
-    ops.requestRender({ content: true });
-    window.settingsAPI.command("dismissAgentInstallHints", { agentIds }).then((result) => {
-      if (!result || result.status !== "ok") {
-        const msg = (result && result.message) || "unknown error";
-        ops.showToast(t("toastSaveFailed") + msg, { error: true });
-      }
-    }).catch((err) => {
-      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-    }).finally(() => {
-      agentHintActionPending = false;
-      ops.requestRender({ content: true });
-    });
-  }
-
   async function removeCleanupHints(agentIds) {
     if (agentHintActionPending) return;
     if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
@@ -970,17 +931,6 @@
     });
   }
 
-  function showClaudeHooksDisconnectConfirmModal() {
-    return helpers.showSettingsConfirmModal({
-      title: t("claudeHooksDisconnectConfirmTitle"),
-      detail: t("claudeHooksDisconnectConfirmDetail"),
-      actions: [
-        { id: "keep", label: t("claudeHooksDisconnectConfirmKeep"), tone: "neutral", defaultFocus: true },
-        { id: "disconnect", label: t("claudeHooksDisconnectConfirmAction"), tone: "danger" },
-      ],
-    });
-  }
-
   function confirmDisableClaudeHookManagement(nextRaw) {
     if (nextRaw) return window.settingsAPI.update("manageClaudeHooksAutomatically", true);
     return showClaudeHooksDisableConfirmModal().then((actionId) => {
@@ -990,30 +940,16 @@
     });
   }
 
-  function runDisconnectClaudeHooks() {
-    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
-      return Promise.resolve({ status: "error", message: "settings API unavailable" });
-    }
-    return showClaudeHooksDisconnectConfirmModal().then((actionId) => {
-      if (actionId !== "disconnect") return { status: "ok", noop: true };
-      return window.settingsAPI.command("uninstallHooks");
-    });
-  }
-
   function buildClaudeHookManagementRows() {
     const manageHooksEnabled = !!(state.snapshot && state.snapshot.manageClaudeHooksAutomatically);
     const manageRow = helpers.buildSwitchRow({
       key: "manageClaudeHooksAutomatically",
       labelKey: "rowManageClaudeHooks",
       descKey: "rowManageClaudeHooksDesc",
-      descExtraKey: "rowManageClaudeHooksOffNote",
       onToggle: ({ nextRaw }) => confirmDisableClaudeHookManagement(nextRaw),
-      actionButton: {
-        labelKey: "actionDisconnectClaudeHooks",
-        invoke: () => runDisconnectClaudeHooks(),
-      },
     });
     manageRow.classList.add("row-sub");
+    helpers.attachDescriptionDisclosure(manageRow);
     const autoStartRow = helpers.buildSwitchRow({
       key: "autoStartWithClaude",
       labelKey: "rowStartWithClaude",
@@ -1022,14 +958,19 @@
       disabled: !manageHooksEnabled,
     });
     autoStartRow.classList.add("row-sub");
+    helpers.attachDescriptionDisclosure(autoStartRow);
     return [manageRow, autoStartRow];
   }
 
   function buildAgentGroup(agent) {
     const masterRow = buildAgentMasterRow(agent);
-    const detailRows = buildAgentDetailRows(agent);
+    // Connected cards expand into grouped settings plus the disconnect block.
+    // Unintegrated cards expand into a short install note and the intake-only
+    // switch; they never reuse the connected card's approval/alert rows.
+    const detailRows = isAgentConnected(agent)
+      ? buildAgentDetailRows(agent)
+      : buildAgentDiscoverRows(agent);
     masterRow.classList.add("agent-summary-row");
-    if (detailRows.length === 0) return masterRow;
     return helpers.buildCollapsibleGroup({
       id: `agents:${agent.id}`,
       headerContent: masterRow,
@@ -1037,6 +978,41 @@
       defaultCollapsed: true,
       className: "agent-subgroup",
     });
+  }
+
+  function isAgentConnected(agent) {
+    return !!agent.custom || readers.readAgentIntegrationInstalled(agent.id);
+  }
+
+  // Body of an unintegrated card in Discover: one sentence, the intake-only
+  // switch, and any WSL instances. No greyed-out approval/alert sub-switches.
+  function buildAgentDiscoverRows(agent) {
+    const note = document.createElement("div");
+    note.className = "row row-sub agent-discover-note";
+    const noteText = document.createElement("div");
+    noteText.className = "row-text";
+    const noteLabel = document.createElement("span");
+    noteLabel.className = "row-label";
+    noteLabel.textContent = t("agentDiscoverBodyNote");
+    noteText.appendChild(noteLabel);
+    note.appendChild(noteText);
+
+    const intakeRow = buildAgentSwitchRow({
+      agent,
+      flag: "enabled",
+      extraClass: "row-sub",
+      buildText: (text) => {
+        const label = document.createElement("span");
+        label.className = "row-label";
+        label.textContent = t("rowAgentEnableWithoutInstall");
+        text.appendChild(label);
+        const desc = document.createElement("span");
+        desc.className = "row-desc";
+        desc.textContent = t("rowAgentEnableWithoutInstallDesc");
+        text.appendChild(desc);
+      },
+    });
+    return [note, intakeRow, ...buildAgentInstanceRows(agent)];
   }
 
   // Failure reasons a Repair run can actually resolve; anything else needs
@@ -1189,58 +1165,23 @@
     refreshDshNotices(container);
   }
 
+  // Card header: name + one status sentence + exactly one control. Connected
+  // cards keep their master switch; unintegrated cards get only Install. The
+  // control choice follows categorizeAgentsForSections: connected vs not.
   function buildAgentMasterRow(agent) {
-    let integrationBadge = null;
+    const connected = isAgentConnected(agent);
     return buildAgentSwitchRow({
       agent,
       flag: "enabled",
       extraClass: null,
       disabled: false,
+      withSwitch: connected,
       buildText: (text) => {
         const label = document.createElement("span");
         label.className = "row-label";
         label.textContent = agent.name || agent.id;
         text.appendChild(label);
-        const badges = document.createElement("span");
-        badges.className = "row-desc agent-badges";
-        const esKey = typeof getAgentEventSourceBadgeKey === "function"
-          ? getAgentEventSourceBadgeKey(agent)
-          : (agent.eventSource === "log-poll" ? "eventSourceLogPoll"
-            : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
-            : agent.eventSource === "extension" ? "eventSourceExtension"
-            : "eventSourceHook");
-        const esBadge = document.createElement("span");
-        esBadge.className = "agent-badge";
-        esBadge.textContent = t(esKey);
-        badges.appendChild(esBadge);
-        if (agent.custom) {
-          const registrationBadge = document.createElement("span");
-          registrationBadge.className = "agent-badge integration custom-registration";
-          registrationBadge.textContent = t("customToolRegistered");
-          badges.appendChild(registrationBadge);
-          // A registered custom AI stays in Connected even when its executable
-          // disappears, so the missing binary has to say so on the row itself —
-          // it used to be reported by the agent dropping into another section.
-          const customHint = getInstallationHint(agent.id, true);
-          if (customHint && customHint.detectedInstalled === false) {
-            const missingBadge = document.createElement("span");
-            missingBadge.className = "agent-badge custom-missing";
-            missingBadge.textContent = t(getCustomAgentUnavailableLabelKey(customHint));
-            badges.appendChild(missingBadge);
-          }
-        } else {
-          integrationBadge = document.createElement("span");
-          integrationBadge.className = "agent-badge integration";
-          badges.appendChild(integrationBadge);
-        }
-        if (agent.capabilities && agent.capabilities.permissionApproval) {
-          const permBadge = document.createElement("span");
-          permBadge.className = "agent-badge accent";
-          permBadge.textContent = t("badgePermissionBubble");
-          badges.appendChild(permBadge);
-        }
-        if (!agent.custom) syncAgentIntegrationBadge(integrationBadge, agent.id);
-        text.appendChild(badges);
+        text.appendChild(buildAgentStatusLine(agent).element);
         // TraeCode requires a manual enable step inside Trae that Clawd cannot
         // do for the user — surface it right on the card once the integration
         // is installed so nobody installs it and sees "nothing happens".
@@ -1261,126 +1202,154 @@
         buildDshNotices(agent, text);
       },
       buildExtraControls: (ctrl) => {
-        if (agent.custom) {
-          const button = helpers.buildButton({
-            labelKey: "customToolRemove",
-            tone: "danger",
-            size: "compact",
-            className: "custom-agent-remove",
-          });
-          button.addEventListener("click", async () => {
-            helpers.setButtonState(button, { pending: true });
-            try {
-              const result = await window.settingsAPI.command("removeCustomApplication", { id: agent.id });
-              if (!result || result.status !== "ok") throw new Error((result && result.message) || "remove failed");
-              await refreshCustomAgentUi();
-            } catch (err) {
-              ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-              helpers.setButtonState(button, { pending: false });
-            }
-          });
-          ctrl.appendChild(button);
-          return;
-        }
-        const button = buildAgentIntegrationActionButton(agent);
-        const meta = state.mountedControls.agentIntegrationActions.get(agent.id);
-        if (meta) {
-          meta.badge = integrationBadge;
-          meta.syncFromSnapshot();
-        }
-        ctrl.appendChild(button);
+        // Connected cards have no button here; Uninstall/Remove lives in the
+        // card's footer block. Only the not-yet-installed card carries Install.
+        if (connected) return;
+        ctrl.appendChild(buildAgentIntegrationActionButton(agent));
       },
     });
   }
 
-  function buildAgentDetailRows(agent) {
-    const rows = [];
-    const caps = agent.capabilities || {};
-    if (agent.custom) {
-      const payloadExample = JSON.stringify({
-        agent_id: agent.id,
-        session_id: "your-session-id",
-        state: "working",
-        event: "PreToolUse",
+  // Whole-sentence status keys keep CJK from inserting spaces around a
+  // placeholder; anything besides the four known sources falls back to Hook.
+  function getAgentStatusReceivesKey(agent) {
+    const sourceKey = typeof getAgentEventSourceBadgeKey === "function"
+      ? getAgentEventSourceBadgeKey(agent)
+      : (agent.eventSource === "log-poll" ? "eventSourceLogPoll"
+        : agent.eventSource === "plugin-event" ? "eventSourcePlugin"
+        : agent.eventSource === "extension" ? "eventSourceExtension"
+        : "eventSourceHook");
+    if (sourceKey === "eventSourcePlugin") return "agentStatusReceivesPlugin";
+    if (sourceKey === "eventSourceExtension") return "agentStatusReceivesExtension";
+    if (sourceKey === "eventSourceLogPoll") return "agentStatusReceivesLogPoll";
+    return "agentStatusReceivesHook";
+  }
+
+  // One status sentence under the card name. It is a capability summary:
+  // the approval half only reads capabilities, never the permission sub-switch.
+  // Returns { element, sync } so in-place agent broadcasts can recompute it.
+  function buildAgentStatusLine(agent) {
+    const element = document.createElement("div");
+    element.className = "agent-status";
+    const dot = document.createElement("span");
+    dot.className = "agent-status-dot";
+    const text = document.createElement("span");
+    text.className = "agent-status-text";
+    element.appendChild(dot);
+    element.appendChild(text);
+
+    let requestSeq = 0;
+
+    function clearHealth() {
+      element.classList.remove("warn", "off");
+      const fix = element.querySelector(".agent-status-fix");
+      if (fix) fix.remove();
+    }
+
+    function renderBase() {
+      clearHealth();
+      if (agent.custom) {
+        const hint = getInstallationHint(agent.id, true);
+        if (hint && hint.detectedInstalled === false) {
+          element.classList.add("warn");
+          text.textContent = t("agentStatusCustomMissing")
+            .replace("{reason}", t(getCustomAgentUnavailableLabelKey(hint)));
+        } else {
+          text.textContent = t("agentStatusCustom");
+        }
+        return;
+      }
+      const installed = readers.readAgentIntegrationInstalled(agent.id);
+      const enabled = readers.readAgentFlagValue(agent.id, "enabled");
+      if (installed && !enabled) {
+        element.classList.add("off");
+        text.textContent = t("agentStatusPaused");
+        return;
+      }
+      if (!installed) element.classList.add("off");
+      const capability = (agent.capabilities && agent.capabilities.permissionApproval)
+        ? t("agentStatusApprovalByPet")
+        : t("agentStatusStateOnly");
+      text.textContent = `${t(getAgentStatusReceivesKey(agent))} · ${capability}`;
+    }
+
+    function addFixLink() {
+      if (element.querySelector(".agent-status-fix")) return;
+      const fix = helpers.buildButton({
+        label: t("agentStatusFixLink"),
+        tone: "quiet",
+        size: "compact",
+        className: "agent-status-fix",
       });
-      const lastStateEvent = agent.lastStateEvent && Number.isFinite(agent.lastStateEvent.timestamp)
-        ? agent.lastStateEvent
-        : null;
-      const activityText = formatCustomAgentActivity(lastStateEvent);
-      for (const [labelKey, value] of [
-        ["customAgentRegisteredDesc", t("customAgentRegisteredExternal")],
-        ["customToolAgentId", agent.id],
-        ["customAgentStateEndpoint", agent.stateEndpoint || "http://127.0.0.1:<runtime-port>/state"],
-        ["customAgentPayloadExample", payloadExample],
-        ["customAgentActivity", activityText],
-        ["customToolExecutable", agent.executablePath],
-        ["customToolSourcePath", agent.sourcePath],
-      ]) {
-        const row = document.createElement("div");
-        row.className = "row row-sub custom-agent-detail";
-        const text = document.createElement("div");
-        text.className = "row-text";
-        const label = document.createElement("span");
-        label.className = "row-label";
-        label.textContent = t(labelKey);
-        const desc = document.createElement("span");
-        desc.className = "row-desc";
-        if (labelKey === "customAgentPayloadExample") desc.classList.add("custom-agent-payload");
-        if (labelKey === "customAgentActivity") {
-          desc.classList.add("custom-agent-activity");
-          desc.dataset.agentId = agent.id;
-        }
-        desc.textContent = value || "";
-        text.appendChild(label);
-        text.appendChild(desc);
-        row.appendChild(text);
-        if (["customToolAgentId", "customAgentStateEndpoint", "customAgentPayloadExample"].includes(labelKey)) {
-          const copyButton = helpers.buildButton({
-            labelKey: "customAgentCopy",
-            size: "compact",
-            className: "custom-agent-copy",
-          });
-          copyButton.addEventListener("click", async () => {
-            try {
-              if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
-                throw new Error("clipboard unavailable");
-              }
-              await navigator.clipboard.writeText(value || "");
-              ops.showToast(t("customAgentCopied"));
-            } catch (err) {
-              ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-            }
-          });
-          row.appendChild(copyButton);
-        }
-        rows.push(row);
+      fix.addEventListener("click", (ev) => {
+        ev.stopPropagation();
+        openDoctorModal();
+      });
+      element.appendChild(fix);
+    }
+
+    function applyHealth(health, seq) {
+      if (seq !== requestSeq) return;
+      if (element.isConnected === false) return;
+      if (!readers.readAgentIntegrationInstalled(agent.id)) return;
+      if (!readers.readAgentFlagValue(agent.id, "enabled")) return;
+      if (!health || health.healthy || !health.signature) return;
+      element.classList.remove("off");
+      element.classList.add("warn");
+      text.textContent = t(health.reasonKey);
+      addFixLink();
+    }
+
+    function sync() {
+      // Every sync invalidates in-flight probes: a paused card must not be
+      // repainted by a late "unhealthy" reply, and B beats A when replies race.
+      const seq = ++requestSeq;
+      renderBase();
+      if (agent.custom) return;
+      if (!readers.readAgentIntegrationInstalled(agent.id)) return;
+      if (!readers.readAgentFlagValue(agent.id, "enabled")) return;
+      if (agent.id === "codex") {
+        if (!window.doctor || typeof window.doctor.codexHookHealth !== "function") return;
+        window.doctor.codexHookHealth()
+          .then((health) => applyHealth(health, seq))
+          .catch(() => {});
+      } else if (agent.id === "claude-code") {
+        if (!window.doctor || typeof window.doctor.claudeHookHealth !== "function") return;
+        window.doctor.claudeHookHealth()
+          .then((health) => applyHealth(health, seq))
+          .catch(() => {});
       }
     }
-    if (agent.id === "claude-code") {
-      rows.push(...buildClaudeHookManagementRows());
-      // Quota collection belongs to the provider, not to the ring that draws
-      // it. This switch used to sit in General's quota-ring group while Kimi's
-      // equivalent sat here, so turning collection off meant a different tab
-      // depending on the provider, and no page could answer "who am I reading
-      // from". Every provider's collection opt-in now lives on its own card.
-      const claudeQuotaRow = helpers.buildSwitchRow({
-        key: "claudeQuotaCollectionEnabled",
-        labelKey: "rowClaudeQuotaCollection",
-        descKey: "rowClaudeQuotaCollectionDesc",
-      });
-      claudeQuotaRow.classList.add("row-sub");
-      rows.push(claudeQuotaRow);
+
+    state.mountedControls.agentStatusLines.set(agent.id, { element, sync, agentId: agent.id });
+    sync();
+    return { element, sync };
+  }
+
+  function openDoctorModal() {
+    const modal = typeof globalThis !== "undefined" ? globalThis.ClawdSettingsDoctorModal : null;
+    if (!modal || typeof modal.open !== "function" || !coreRef) return;
+    modal.open(coreRef);
+  }
+
+  // Card body of a connected agent, in display order: Approvals → Alerts →
+  // Connection → WSL → Quota → Info, then the quiet disconnect/remove block.
+  // Groups with no rows are dropped, so no agent renders an empty label.
+  function buildAgentDetailRows(agent) {
+    const caps = agent.capabilities || {};
+    const approvals = [];
+    const alerts = [];
+    const connection = [];
+    const quota = [];
+    const info = [];
+
+    if (agent.custom) {
+      info.push(...buildCustomAgentInfoRows(agent));
     }
+
     if (agent.id === "codex") {
-      const codexAutoStartRow = helpers.buildSwitchRow({
-        key: "autoStartWithCodex",
-        labelKey: "rowStartWithCodex",
-        descKey: "rowStartWithCodexDesc",
-      });
-      codexAutoStartRow.classList.add("row-sub");
-      rows.push(codexAutoStartRow);
-      rows.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
-      rows.push(buildAgentSwitchRow({
+      approvals.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
+      approvals.push(buildAgentSwitchRow({
         agent,
         flag: "nativeNotificationSoundEnabled",
         extraClass: "row-sub",
@@ -1395,22 +1364,17 @@
           desc.textContent = t("rowCodexNativeNotificationSoundDesc");
           text.appendChild(desc);
         },
+        buildExtraControls: (ctrl) => {
+          const note = document.createElement("span");
+          note.className = "row-note";
+          note.textContent = t("rowCodexNativeNotificationSoundNote");
+          ctrl.appendChild(note);
+        },
       }));
-      // Startup nudge gate: warn (once per breakage) when the official hook —
-      // now the ONLY Codex approval path — is disabled / needs review / inactive.
-      const codexHookNotifyRow = helpers.buildSwitchRow({
-        key: "codexHookHealthNotifyEnabled",
-        labelKey: "rowCodexHookHealthNotify",
-        descKey: "rowCodexHookHealthNotifyDesc",
-      });
-      codexHookNotifyRow.classList.add("row-sub");
-      rows.push(codexHookNotifyRow);
     }
-    if (agent.id === "kimi-cli") {
-      rows.push(buildKimiQuotaCard());
-    }
+
     if (caps.permissionApproval || caps.interactiveBubble) {
-      rows.push(buildAgentSwitchRow({
+      approvals.push(buildAgentSwitchRow({
         agent,
         flag: "permissionsEnabled",
         extraClass: "row-sub",
@@ -1429,7 +1393,7 @@
       // #451: only Claude Code marks subagent-origin permission requests
       // (agent_id in the common hook fields), so only it gets the sub-gate.
       if (agent.id === "claude-code") {
-        rows.push(buildAgentSwitchRow({
+        approvals.push(buildAgentSwitchRow({
           agent,
           flag: "subagentPermissionsEnabled",
           extraClass: "row-sub",
@@ -1447,8 +1411,20 @@
         }));
       }
     }
+
+    if (caps.httpHook && caps.customPermissionUrl) {
+      approvals.push(buildAgentTextInputRow({
+        agentId: agent.id,
+        command: "setAgentCustomPermissionUrl",
+        labelKey: "rowCodeBuddyCompatiblePermissionUrl",
+        descKey: "rowCodeBuddyCompatiblePermissionUrlDesc",
+        placeholderKey: "rowCodeBuddyCompatiblePermissionUrlPlaceholder",
+        value: () => readers.readAgentCustomPermissionUrl(agent.id),
+      }));
+    }
+
     if (caps.notificationHook) {
-      rows.push(buildAgentSwitchRow({
+      alerts.push(buildAgentSwitchRow({
         agent,
         flag: "notificationHookEnabled",
         extraClass: "row-sub",
@@ -1465,19 +1441,198 @@
         },
       }));
     }
-    if (caps.httpHook && caps.customPermissionUrl) {
-      rows.push(buildAgentTextInputRow({
-        agentId: agent.id,
-        command: "setAgentCustomPermissionUrl",
-        labelKey: "rowCodeBuddyCompatiblePermissionUrl",
-        descKey: "rowCodeBuddyCompatiblePermissionUrlDesc",
-        placeholderKey: "rowCodeBuddyCompatiblePermissionUrlPlaceholder",
-        value: () => readers.readAgentCustomPermissionUrl(agent.id),
-      }));
+
+    if (agent.id === "claude-code") {
+      connection.push(...buildClaudeHookManagementRows());
+      // Quota collection belongs to the provider, not to the ring that draws
+      // it. This switch used to sit in General's quota-ring group while Kimi's
+      // equivalent sat here, so turning collection off meant a different tab
+      // depending on the provider, and no page could answer "who am I reading
+      // from". Every provider's collection opt-in now lives on its own card.
+      const claudeQuotaRow = helpers.buildSwitchRow({
+        key: "claudeQuotaCollectionEnabled",
+        labelKey: "rowClaudeQuotaCollection",
+        descKey: "rowClaudeQuotaCollectionDesc",
+      });
+      claudeQuotaRow.classList.add("row-sub");
+      helpers.attachDescriptionDisclosure(claudeQuotaRow);
+      quota.push(claudeQuotaRow);
     }
-    // WSL instances: show detected agent installations across distros
-    rows.push(...buildAgentInstanceRows(agent));
+    if (agent.id === "codex") {
+      const codexAutoStartRow = helpers.buildSwitchRow({
+        key: "autoStartWithCodex",
+        labelKey: "rowStartWithCodex",
+        descKey: "rowStartWithCodexDesc",
+      });
+      codexAutoStartRow.classList.add("row-sub");
+      helpers.attachDescriptionDisclosure(codexAutoStartRow);
+      connection.push(codexAutoStartRow);
+      // Startup nudge gate: warn (once per breakage) when the official hook —
+      // now the ONLY Codex approval path — is disabled / needs review / inactive.
+      const codexHookNotifyRow = helpers.buildSwitchRow({
+        key: "codexHookHealthNotifyEnabled",
+        labelKey: "rowCodexHookHealthNotify",
+        descKey: "rowCodexHookHealthNotifyDesc",
+      });
+      codexHookNotifyRow.classList.add("row-sub");
+      helpers.attachDescriptionDisclosure(codexHookNotifyRow);
+      connection.push(codexHookNotifyRow);
+    }
+    if (agent.id === "kimi-cli") {
+      quota.push(...buildKimiQuotaRows());
+    }
+
+    const groups = [
+      buildAgentDetailGroup("agentGroupApproval", approvals),
+      buildAgentDetailGroup("agentGroupAlerts", alerts),
+      buildAgentDetailGroup("agentGroupConnection", connection),
+      buildAgentDetailGroup("agentGroupWsl", buildAgentInstanceRows(agent)),
+      buildAgentDetailGroup("agentGroupQuota", quota),
+      buildAgentDetailGroup("agentGroupInfo", info),
+    ].filter(Boolean);
+    groups.push(buildAgentDisconnectBlock(agent));
+    return groups;
+  }
+
+  // One labelled column of card-body rows. The label sits in the narrow left
+  // gutter; rows keep only name + control so the card stays scannable.
+  function buildAgentDetailGroup(labelKey, rows) {
+    if (!rows || rows.length === 0) return null;
+    const group = document.createElement("div");
+    group.className = "agent-detail-group";
+    const label = document.createElement("div");
+    label.className = "agent-detail-group-label";
+    label.textContent = t(labelKey);
+    const body = document.createElement("div");
+    body.className = "agent-detail-group-rows";
+    for (const row of rows) body.appendChild(row);
+    group.appendChild(label);
+    group.appendChild(body);
+    return group;
+  }
+
+  // Card-body "Info" group for a registered custom HTTP tool: its seven rows.
+  function buildCustomAgentInfoRows(agent) {
+    const rows = [];
+    const payloadExample = JSON.stringify({
+      agent_id: agent.id,
+      session_id: "your-session-id",
+      state: "working",
+      event: "PreToolUse",
+    });
+    const lastStateEvent = agent.lastStateEvent && Number.isFinite(agent.lastStateEvent.timestamp)
+      ? agent.lastStateEvent
+      : null;
+    const activityText = formatCustomAgentActivity(lastStateEvent);
+    for (const [labelKey, value] of [
+      ["customAgentRegisteredDesc", t("customAgentRegisteredExternal")],
+      ["customToolAgentId", agent.id],
+      ["customAgentStateEndpoint", agent.stateEndpoint || "http://127.0.0.1:<runtime-port>/state"],
+      ["customAgentPayloadExample", payloadExample],
+      ["customAgentActivity", activityText],
+      ["customToolExecutable", agent.executablePath],
+      ["customToolSourcePath", agent.sourcePath],
+    ]) {
+      const row = document.createElement("div");
+      row.className = "row row-sub custom-agent-detail";
+      const text = document.createElement("div");
+      text.className = "row-text";
+      const label = document.createElement("span");
+      label.className = "row-label";
+      label.textContent = t(labelKey);
+      const desc = document.createElement("span");
+      desc.className = "row-desc";
+      if (labelKey === "customAgentPayloadExample") desc.classList.add("custom-agent-payload");
+      if (labelKey === "customAgentActivity") {
+        desc.classList.add("custom-agent-activity");
+        desc.dataset.agentId = agent.id;
+      }
+      desc.textContent = value || "";
+      text.appendChild(label);
+      text.appendChild(desc);
+      row.appendChild(text);
+      if (["customToolAgentId", "customAgentStateEndpoint", "customAgentPayloadExample"].includes(labelKey)) {
+        const copyButton = helpers.buildButton({
+          labelKey: "customAgentCopy",
+          size: "compact",
+          className: "custom-agent-copy",
+        });
+        copyButton.addEventListener("click", async () => {
+          try {
+            if (!navigator.clipboard || typeof navigator.clipboard.writeText !== "function") {
+              throw new Error("clipboard unavailable");
+            }
+            await navigator.clipboard.writeText(value || "");
+            ops.showToast(t("customAgentCopied"));
+          } catch (err) {
+            ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+          }
+        });
+        row.appendChild(copyButton);
+      }
+      rows.push(row);
+    }
     return rows;
+  }
+
+  // Footer of every connected card: a quiet "Disconnect …" link that reveals
+  // the consequence and the original Uninstall (or Remove) button only on click.
+  function buildAgentDisconnectBlock(agent) {
+    const wrapper = document.createElement("div");
+    wrapper.className = "agent-disconnect";
+    const row = document.createElement("div");
+    row.className = "agent-disconnect-row";
+    const link = document.createElement("button");
+    link.type = "button";
+    link.className = "agent-disconnect-link";
+    link.textContent = agent.custom
+      ? t("agentRemoveCustomLink").replace("{agent}", agent.name || agent.id)
+      : t("agentDisconnectLink").replace("{agent}", agent.name || agent.id);
+    link.setAttribute("aria-expanded", "false");
+
+    const detail = document.createElement("div");
+    detail.className = "agent-disconnect-detail";
+    detail.hidden = true;
+    const explain = document.createElement("span");
+    explain.textContent = agent.custom
+      ? t("agentRemoveCustomDetail")
+      : t("agentDisconnectDetail").replace("{agent}", agent.name || agent.id);
+    detail.appendChild(explain);
+    detail.appendChild(agent.custom
+      ? buildCustomRemoveButton(agent)
+      : buildAgentIntegrationActionButton(agent, { tone: "danger" }));
+
+    link.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      detail.hidden = !detail.hidden;
+      link.setAttribute("aria-expanded", detail.hidden ? "false" : "true");
+    });
+    row.appendChild(link);
+    wrapper.appendChild(row);
+    wrapper.appendChild(detail);
+    return wrapper;
+  }
+
+  // Remove button revealed inside a custom card's disconnect block.
+  function buildCustomRemoveButton(agent) {
+    const button = helpers.buildButton({
+      labelKey: "customToolRemove",
+      tone: "danger",
+      size: "compact",
+      className: "custom-agent-remove",
+    });
+    button.addEventListener("click", async () => {
+      helpers.setButtonState(button, { pending: true });
+      try {
+        const result = await window.settingsAPI.command("removeCustomApplication", { id: agent.id });
+        if (!result || result.status !== "ok") throw new Error((result && result.message) || "remove failed");
+        await refreshCustomAgentUi();
+      } catch (err) {
+        ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+        helpers.setButtonState(button, { pending: false });
+      }
+    });
+    return button;
   }
 
   function kimiQuotaStatusText(status) {
@@ -1502,7 +1657,71 @@
     return t("kimiQuotaStatusLoading");
   }
 
-  function buildKimiQuotaCard() {
+  // Quota group for Kimi: one summary row whose button reveals the existing
+  // quota card. The card itself is untouched; it just reports its state back so
+  // the row's note and button always match the panel.
+  function buildKimiQuotaRows() {
+    const rowParts = helpers.buildSettingRow({
+      labelKey: "kimiQuotaTitle",
+      descriptionKey: "kimiQuotaDesc",
+      className: "row-sub kimi-quota-row",
+      controlClassName: "kimi-quota-row-control",
+    });
+    const row = rowParts.element;
+    helpers.attachDescriptionDisclosure(row);
+    const note = document.createElement("span");
+    note.className = "row-note kimi-quota-note";
+    note.textContent = t("kimiQuotaStatusLoading");
+    rowParts.controlElement.appendChild(note);
+    const action = helpers.buildButton({
+      labelKey: "kimiQuotaRowConnect",
+      size: "compact",
+      className: "kimi-quota-row-action",
+      disabled: true,
+    });
+    rowParts.controlElement.appendChild(action);
+
+    const panel = document.createElement("div");
+    panel.className = "kimi-quota-panel";
+    panel.hidden = true;
+    const card = buildKimiQuotaCard({
+      onStatus(status) {
+        const loaded = !!status.loaded;
+        const configured = !!status.configured;
+        const collectionEnabled = !!status.collectionEnabled;
+        if (!loaded) {
+          note.textContent = t("kimiQuotaStatusLoading");
+          helpers.setButtonState(action, {
+            labelKey: "kimiQuotaRowConnect",
+            disabled: true,
+            pending: false,
+          });
+          return;
+        }
+        if (!configured) {
+          note.textContent = t("kimiQuotaRowUnconfigured");
+        } else if (collectionEnabled) {
+          note.textContent = t("kimiQuotaRowConnected");
+        } else {
+          note.textContent = t("kimiQuotaRowDisconnected");
+        }
+        helpers.setButtonState(action, {
+          labelKey: (configured ? "kimiQuotaRowManage" : "kimiQuotaRowConnect"),
+          disabled: false,
+          pending: !!status.busy,
+        });
+      },
+    });
+    panel.appendChild(card);
+    action.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      panel.hidden = !panel.hidden;
+    });
+    return [row, panel];
+  }
+
+  function buildKimiQuotaCard(options = {}) {
+    const onStatus = typeof options.onStatus === "function" ? options.onStatus : null;
     const card = document.createElement("div");
     card.className = "row row-sub kimi-quota-card";
 
@@ -1750,6 +1969,7 @@
       statusLine.textContent = busy
         ? t("kimiQuotaStatusRefreshing")
         : kimiQuotaStatusText(currentStatus);
+      if (onStatus) onStatus({ loaded: statusLoaded, configured, collectionEnabled, busy });
     }
 
     async function reloadStatus() {
@@ -1883,14 +2103,6 @@
     const rows = [];
     const wslInstances = getWslAgentInstances(agent.id);
     if (wslInstances.length === 0) return rows;
-
-    const headerRow = document.createElement("div");
-    headerRow.className = "row-sub agent-instance-section-header";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("agentInstanceSection");
-    headerRow.appendChild(label);
-    rows.push(headerRow);
 
     for (const inst of wslInstances) {
       rows.push(buildWslInstanceRow(agent, inst));
@@ -2124,6 +2336,7 @@
         control.setDisabled(!readers.readAgentFlagValue(agent.id, "enabled"));
       },
     });
+    helpers.attachDescriptionDisclosure(row);
     return row;
   }
 
@@ -2134,65 +2347,6 @@
   function syncAgentSwitchDisabledState(meta, disabled) {
     meta.disabled = !!disabled;
     meta.control.setState({ disabled: !!disabled });
-  }
-
-  function syncAgentIntegrationBadge(badge, agentId) {
-    if (!badge) return;
-    const installed = readers.readAgentIntegrationInstalled(agentId);
-    badge.classList.toggle("not-installed", !installed);
-    badge.textContent = t(installed ? "agentIntegrationInstalled" : "agentIntegrationNotInstalled");
-    if (agentId === "codex") annotateCodexHookHealth(badge, installed);
-    if (agentId === "claude-code") annotateClaudeHookHealth(badge, installed);
-  }
-
-  // Codex approval awareness now depends ENTIRELY on the official PermissionRequest
-  // hook (JSONL no longer infers approvals). A hook that is registered but
-  // disabled / needs-review / mis-registered still reads as "Installed" from
-  // prefs, yet Codex never runs it — so the pet shows no approval prompts. Overlay
-  // an amber warning, sourced from the same check the Doctor uses (so they agree),
-  // with the specific reason in the tooltip. Async + best-effort: if the probe is
-  // unavailable or healthy, the badge keeps its base "Installed" state.
-  function annotateCodexHookHealth(badge, installed) {
-    if (!badge) return;
-    const seq = String(++codexHookHealthRequestSeq);
-    if (badge.dataset) badge.dataset.codexHookHealthSeq = seq;
-    badge.classList.remove("hook-warning");
-    badge.removeAttribute("title");
-    if (!installed || !window.doctor || typeof window.doctor.codexHookHealth !== "function") return;
-    window.doctor.codexHookHealth().then((health) => {
-      if (badge.isConnected === false) return;
-      if (badge.dataset && badge.dataset.codexHookHealthSeq !== seq) return;
-      if (!health || health.healthy || !health.signature) return;
-      if (!readers.readAgentIntegrationInstalled("codex")) return;
-      badge.classList.add("hook-warning");
-      badge.textContent = t("agentCodexHookNeedsAttention");
-      if (health.reasonKey) badge.title = t(health.reasonKey);
-    }).catch(() => {});
-  }
-
-  // Claude counterpart of annotateCodexHookHealth. When the managed hook is no
-  // longer being kept healthy (auto-repair exhausted, paused by the suspicious-
-  // shrink guard, or the source script is missing), the prefs "Installed" flag
-  // is stale — Claude isn't actually driving the pet. Overlay the same amber
-  // warning, sourced from the live watcher status the Doctor reads, with the
-  // specific reason in the tooltip. Async + best-effort: an unavailable or
-  // healthy probe keeps the badge's base "Installed" state.
-  function annotateClaudeHookHealth(badge, installed) {
-    if (!badge) return;
-    const seq = String(++claudeHookHealthRequestSeq);
-    if (badge.dataset) badge.dataset.claudeHookHealthSeq = seq;
-    badge.classList.remove("hook-warning");
-    badge.removeAttribute("title");
-    if (!installed || !window.doctor || typeof window.doctor.claudeHookHealth !== "function") return;
-    window.doctor.claudeHookHealth().then((health) => {
-      if (badge.isConnected === false) return;
-      if (badge.dataset && badge.dataset.claudeHookHealthSeq !== seq) return;
-      if (!health || health.healthy || !health.signature) return;
-      if (!readers.readAgentIntegrationInstalled("claude-code")) return;
-      badge.classList.add("hook-warning");
-      badge.textContent = t("agentClaudeHookNeedsAttention");
-      if (health.reasonKey) badge.title = t(health.reasonKey);
-    }).catch(() => {});
   }
 
   function syncAgentIntegrationAction(meta) {
@@ -2207,28 +2361,45 @@
       "aria-label",
       t(installed ? "agentIntegrationUninstall" : "agentIntegrationInstall")
     );
-    if (meta.badge) syncAgentIntegrationBadge(meta.badge, meta.agentId);
+    // The card header status line is the only other place that mirrors the
+    // installed flag, so an install/uninstall result has to recompute it too.
+    state.mountedControls.agentStatusLines.get(meta.agentId)?.sync();
   }
 
-  function buildAgentIntegrationActionButton(agent) {
+  function buildAgentIntegrationActionButton(agent, { tone } = {}) {
     const button = helpers.buildButton({
+      tone,
       size: "compact",
       className: "agent-integration-action",
     });
     const meta = {
       button,
       agentId: agent.id,
-      badge: null,
     };
     meta.syncFromSnapshot = () => syncAgentIntegrationAction(meta);
     syncAgentIntegrationAction(meta);
-    button.addEventListener("click", (ev) => {
+    button.addEventListener("click", async (ev) => {
       ev.stopPropagation();
       if (button.disabled) return;
       const installed = readers.readAgentIntegrationInstalled(agent.id);
       const command = installed ? "uninstallAgentIntegration" : "installAgentIntegration";
-      if (installed && typeof window.confirm === "function" && !window.confirm(t("agentIntegrationUninstallConfirm"))) {
-        return;
+      if (installed) {
+        const hasModalRoot = typeof document !== "undefined"
+          && typeof document.getElementById === "function"
+          && !!document.getElementById("modalRoot");
+        if (hasModalRoot && helpers && typeof helpers.showSettingsConfirmModal === "function") {
+          const actionId = await helpers.showSettingsConfirmModal({
+            title: t("agentIntegrationUninstallConfirmTitle"),
+            detail: t("agentIntegrationUninstallConfirm"),
+            actions: [
+              { id: "cancel", label: t("agentIntegrationUninstallCancel"), tone: "neutral", defaultFocus: true },
+              { id: "uninstall", label: t("agentIntegrationUninstall"), tone: "danger" },
+            ],
+          });
+          if (actionId !== "uninstall") return;
+        } else if (typeof window !== "undefined" && typeof window.confirm === "function" && !window.confirm(t("agentIntegrationUninstallConfirm"))) {
+          return;
+        }
       }
       helpers.setButtonState(button, {
         pending: true,
@@ -2265,7 +2436,15 @@
     return button;
   }
 
-  function buildAgentSwitchRow({ agent, flag, extraClass, disabled = false, buildText, buildExtraControls }) {
+  function buildAgentSwitchRow({
+    agent,
+    flag,
+    extraClass,
+    disabled = false,
+    withSwitch = true,
+    buildText,
+    buildExtraControls,
+  }) {
     const row = document.createElement("div");
     row.className = extraClass ? `row ${extraClass}` : "row";
 
@@ -2282,6 +2461,14 @@
     const stateId = readers.agentSwitchStateId(agent.id, flag);
     const override = state.transientUiState.agentSwitches.get(stateId);
     const committedVisual = readers.readAgentFlagValue(agent.id, flag);
+    // Unintegrated discovery cards have no master switch. The intake-only
+    // switch lives in the card body and is the only one registered for them,
+    // so the header must not claim the switch's label/description ids.
+    if (!withSwitch) {
+      row.appendChild(ctrl);
+      if (extraClass && extraClass.split(/\s+/).includes("row-sub")) helpers.attachDescriptionDisclosure(row);
+      return row;
+    }
     const label = text.querySelector(".row-label");
     const desc = text.querySelector(".row-desc");
     const controlId = `settings-agent-${agent.id}-${flag}`;
@@ -2323,6 +2510,7 @@
     });
     ctrl.appendChild(switchControl.element);
     row.appendChild(ctrl);
+    if (extraClass && extraClass.split(/\s+/).includes("row-sub")) helpers.attachDescriptionDisclosure(row);
     return row;
   }
 
@@ -2359,6 +2547,7 @@
     ctrl.appendChild(input);
     row._settingsInput = input;
     row._settingsControl = ctrl;
+    helpers.attachDescriptionDisclosure(row);
     return row;
   }
 
@@ -2405,6 +2594,9 @@
     for (const [, meta] of state.mountedControls.agentSwitches) {
       if (!meta || !document.body.contains(meta.element)) return false;
     }
+    for (const [, meta] of state.mountedControls.agentStatusLines) {
+      if (!meta || !document.body.contains(meta.element)) return false;
+    }
     for (const [, meta] of state.mountedControls.agentPermissionModes) {
       if (!meta || !meta.row || !document.body.contains(meta.row)) return false;
     }
@@ -2421,6 +2613,9 @@
         pending: false,
       });
     }
+    for (const [, meta] of state.mountedControls.agentStatusLines) {
+      meta.sync();
+    }
     for (const [, meta] of state.mountedControls.agentPermissionModes) {
       meta.syncFromSnapshot();
     }
@@ -2431,6 +2626,7 @@
   }
 
   function init(core) {
+    coreRef = core;
     state = core.state;
     runtime = core.runtime;
     readers = core.readers;

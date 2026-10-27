@@ -4,8 +4,10 @@ const path = require("path");
 const fs = require("fs");
 const electron = require("electron");
 const { redactSecrets } = require("./secret-redact");
+const { getUpdateInstallFormat } = require("./update-install-format");
 
 const RELEASES_LATEST_URL = "https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest";
+const APT_GUIDE_URL = "https://rullerzhou-afk.github.io/clawd-on-desk/apt/";
 const DEPENDENCY_INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 const UPDATE_ERROR_DETAIL_MAX_LENGTH = 8 * 1024;
 
@@ -132,6 +134,39 @@ function getErrorMessage(err) {
   return String(err.message || err).trim() || "Unknown error";
 }
 
+function extractErrorTechnicalDetails(err, meta = {}) {
+  const parts = [];
+  if (meta.detail) parts.push(String(meta.detail).trim());
+  if (err) {
+    if (typeof err === "string") {
+      const trimmed = err.trim();
+      if (!parts.includes(trimmed)) parts.push(trimmed);
+    } else {
+      const msg = String(err.message || "").trim();
+      if (msg && !parts.includes(msg)) parts.push(msg);
+
+      const tech = [];
+      if (err.code) tech.push(`Error Code: ${err.code}`);
+      if (err.statusCode || err.status || (err.response && err.response.status)) {
+        tech.push(`HTTP Status: ${err.statusCode || err.status || err.response.status}`);
+      }
+      if (err.errno) tech.push(`Errno: ${err.errno}`);
+      if (err.syscall) tech.push(`Syscall: ${err.syscall}`);
+      if (err.hostname || err.host) tech.push(`Host: ${err.hostname || err.host}`);
+      if (err.address) tech.push(`Address: ${err.address}`);
+      if (err.port) tech.push(`Port: ${err.port}`);
+      if (err.stderr) {
+        const stderrText = String(err.stderr).trim();
+        if (stderrText && !parts.join("\n").includes(stderrText)) {
+          tech.push(`Stderr:\n${stderrText}`);
+        }
+      }
+      if (tech.length > 0) parts.push(tech.join("\n"));
+    }
+  }
+  return parts.filter(Boolean).join("\n\n");
+}
+
 function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LENGTH) {
   let text = redactSecrets(value);
   const tokenBoundary = String.raw`(^|[\s"'(<\[{=:,;\x60])`;
@@ -231,6 +266,14 @@ function initUpdater(ctx, deps = {}) {
   const t = makeTranslate(ctx);
   const runtimePlatform = deps.platform || process.platform;
   const runtimeArch = deps.arch || process.arch;
+  const installFormat = getUpdateInstallFormat({
+    platform: runtimePlatform,
+    isPackaged: app.isPackaged,
+    resourcesPath: deps.resourcesPath || process.resourcesPath,
+    env: deps.env || process.env,
+    fsApi,
+  });
+  const usesExternalUpdate = installFormat === "deb" || installFormat === "manual";
 
   let updateStatus = "idle";
   let updateCheckSnapshot = Object.freeze({ state: "idle" });
@@ -283,13 +326,12 @@ function initUpdater(ctx, deps = {}) {
     const copy = UPDATE_ERROR_COPY[code] || UPDATE_ERROR_COPY.UNKNOWN;
     const message = t(`updateError${copy.suffix}Msg`, copy.message);
     const nextStep = t(`updateError${copy.suffix}Next`, copy.nextStep);
-    const rawDetail = [meta.detail, getErrorMessage(err)]
-      .filter((value, index, values) => value && values.indexOf(value) === index)
-      .join("\n\n");
+    const rawDetail = extractErrorTechnicalDetails(err, meta);
     const detail = sanitizeUpdateErrorDetail(rawDetail);
     const timestamp = new Date(now()).toISOString();
     const phase = meta.phase || "availability-check";
     const mode = meta.mode || (getRepoRoot() ? "git" : "packaged");
+    const suggestionLabel = t("updateErrorSuggestionLabel", "Repair suggestion (for reference only):");
     const report = {
       code,
       phase,
@@ -307,7 +349,8 @@ function initUpdater(ctx, deps = {}) {
     report.copyText = sanitizeUpdateErrorDetail([
       report.title,
       report.message,
-      report.nextStep,
+      "",
+      report.nextStep ? `[${suggestionLabel}] ${report.nextStep}` : null,
       "",
       `Code: ${report.code}`,
       `Phase: ${report.phase}`,
@@ -568,11 +611,16 @@ function initUpdater(ctx, deps = {}) {
       : buildUpdateErrorReport(candidate.error || candidate.reason || candidate.detail, candidate);
     publishUpdateCheckSnapshot("error", { error: report });
     pulseState("error");
+    const suggestionLabel = t("updateErrorSuggestionLabel", "Repair suggestion (for reference only):");
     return showBubble({
       mode: "error",
       title: report.title,
       message: report.message,
-      detail: [report.nextStep, `Code: ${report.code}`, report.detail].filter(Boolean).join("\n\n"),
+      detail: [
+        report.nextStep ? `${suggestionLabel}\n${report.nextStep}` : null,
+        `Code: ${report.code}`,
+        report.detail
+      ].filter(Boolean).join("\n\n"),
       copyText: report.copyText,
       copyFeedback: {
         copied: t("updateErrorCopied", "Copied"),
@@ -850,8 +898,7 @@ function initUpdater(ctx, deps = {}) {
     // pet does not get stuck masking working/thinking.
     pulseState("notification");
 
-    const primaryLabel = t("download", "Download");
-    const messageKey = t("updateAvailableMsg", "v{version} is available. Download and install now?");
+    const { primaryLabel, messageKey } = availableUpdateCopy(installFormat);
 
     const result = await awaitBubbleResult(showBubble({
       mode: "available",
@@ -900,11 +947,14 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function getAutoUpdater() {
+    if (usesExternalUpdate) return null;
     if (autoUpdaterInstance) return autoUpdaterInstance;
     try {
       autoUpdaterInstance = deps.autoUpdaterFactory
-        ? deps.autoUpdaterFactory()
-        : require("electron-updater").autoUpdater;
+        ? deps.autoUpdaterFactory({ format: installFormat })
+        : (installFormat === "appimage"
+          ? new (require("electron-updater").AppImageUpdater)()
+          : require("electron-updater").autoUpdater);
       autoUpdaterInstance.autoDownload = false;
       autoUpdaterInstance.autoInstallOnAppQuit = true;
       return autoUpdaterInstance;
@@ -914,16 +964,45 @@ function initUpdater(ctx, deps = {}) {
     }
   }
 
+  function availableUpdateCopy(mode) {
+    if (mode === "deb") return {
+      primaryLabel: t("updateWithApt", "Update with APT"),
+      messageKey: t("updateAptMsg", "v{version} is released. Open the APT guide, quit Clawd, then update and reopen it. The APT source may take a few minutes to catch up."),
+    };
+    if (mode === "manual") return {
+      primaryLabel: t("openUpdateDownloads", "Open Downloads"),
+      messageKey: t("updateManualLinuxMsg", "v{version} is released. Open the downloads page to update this installation manually."),
+    };
+    return { primaryLabel: mode === "git"
+      ? t("updateNow", "Update Now")
+      : t("download", "Download"),
+    messageKey: t("updateAvailableMsg", "v{version} is available. Download and install now?") };
+  }
+
+  async function openExternalUpdate(version) {
+    try {
+      await shell.openExternal(installFormat === "deb" ? APT_GUIDE_URL : RELEASES_LATEST_URL);
+      // Opening instructions is not an installation. Keep the version pending
+      // until startup reconciles it with the actually installed app version.
+      hideBubble();
+      dismissToResolvedState();
+      publishUpdateCheckSnapshot("available", { version });
+    } catch (err) {
+      void showErrorBubble(buildUpdateErrorReport(err, { phase: "open-guide", releaseConfirmed: true }));
+    } finally {
+      clearActiveCheck();
+      rebuildMenus();
+    }
+    return getUpdateCheckSnapshot();
+  }
+
   async function promptAvailableUpdate({ mode, version, onPrimary }) {
     const displayVersion = formatVersionForMessage(version);
-    const primaryLabel = mode === "git"
-      ? t("updateNow", "Update Now")
-      : t("download", "Download");
+    const { primaryLabel, messageKey } = availableUpdateCopy(mode);
     const action = await awaitBubbleAction(showBubble({
       mode: "available",
       title: t("updateAvailable", "Update Available"),
-      message: t("updateAvailableMsg", "v{version} is available. Download and install now?")
-        .replace("{version}", displayVersion),
+      message: messageKey.replace("{version}", displayVersion),
       version,
       actions: [
         { id: "primary", label: primaryLabel, variant: "primary" },
@@ -972,6 +1051,7 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function requestInstall(version) {
+    if (usesExternalUpdate) return openExternalUpdate(version);
     if (installRequested) return null;
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) {
@@ -1275,6 +1355,7 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function setupAutoUpdater() {
+    if (usesExternalUpdate) return;
     if (isRunningX64OnWindowsArm64()) {
       Promise.resolve()
         .then(fetchLatestRelease)
@@ -1434,7 +1515,7 @@ function initUpdater(ctx, deps = {}) {
     // the tray label reflects in-flight state.
     setOverlay("checking");
     rebuildMenus();
-    if (!downloadIntent) {
+    if (!downloadIntent && (manual || !usesExternalUpdate)) {
       await showInfoBubble(
         "checking",
         t("checkForUpdates", "Check for Updates"),
@@ -1490,6 +1571,25 @@ function initUpdater(ctx, deps = {}) {
     if (activeCheck) {
       activeCheck.version = latestVersion;
       activeCheck.releaseConfirmed = true;
+    }
+
+    if (usesExternalUpdate) {
+      setPendingUpdate(latestVersion, latestRelease);
+      publishUpdateCheckSnapshot("available", { version: latestVersion });
+      rebuildMenus();
+      if (downloadIntent) return openExternalUpdate(latestVersion);
+      if (!manual) {
+        clearActiveCheck();
+        dismissToResolvedState();
+        await handlePendingVersion(latestVersion, latestRelease);
+      } else {
+        setOverlay("available");
+        await promptAvailableUpdate({
+          mode: installFormat, version: latestVersion,
+          onPrimary: () => openExternalUpdate(latestVersion),
+        });
+      }
+      return getUpdateCheckSnapshot();
     }
 
     const autoUpdater = getAutoUpdater();

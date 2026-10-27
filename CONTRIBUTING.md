@@ -78,11 +78,11 @@ A new integration PR normally includes the adapter, the installer and uninstalle
 
 ## Themes
 
-Themes do not need to be merged into this repository. A theme is a folder with a `theme.json` and an `assets/` directory; users install it locally, and the full format is in `docs/guides/guide-theme-creation.md`. `npm run create-theme` scaffolds one. Share your theme as its own repository or release, and tell us in Discussions so we can list it.
+See the [theme creation guide](docs/guides/guide-theme-creation.md) for the format and local validation. To submit a theme for inclusion in **Settings → Theme**, read [Contributing external themes](docs/guides/contributing-themes.md) and open a [theme submission issue in this repository](https://github.com/rullerzhou-afk/clawd-on-desk/issues/new?template=theme-submission.yml). Ideas and artwork proposals are welcome; inclusion requires review.
 
-The three built-in themes (`clawd`, `calico`, `cloudling`) and the official downloadable themes (`hash-sage`, `whale-chan`, distributed from [`clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes)) have reserved ids. Changes to built-in artwork are reviewed carefully because they ship in every install.
+Keep artwork in the author's repository or releases. Accepted packages are distributed through [`clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes), without merging the assets into the application repository; community listing is still being prepared (see [Current status](docs/guides/contributing-themes.md#current-status)). The contribution guide covers deliverables, licenses, actual usability checks, updates, and independent sharing without catalog inclusion.
 
-Artwork must be your own or under a license compatible with this project. If it derives from third-party material, add the attribution to `NOTICE.md`.
+The built-in IDs (`clawd`, `calico`, `cloudling`), official downloadable IDs (`hash-sage`, `whale-chan`), `template`, and existing catalog IDs are unavailable for new submissions. External themes retain their own artwork licenses; provide credits, sources, and distribution permissions. Built-in artwork changes remain subject to separate review in this repository.
 
 ## Pull requests
 
@@ -107,4 +107,4 @@ Please do not open a public issue for a security problem such as a way to run co
 
 ## License
 
-By contributing, you agree that your contributions are licensed under the [GNU AGPL v3](LICENSE), the same license as the project. Third-party materials must be listed in `NOTICE.md`.
+By contributing application source code, you agree that it is licensed under the [GNU AGPL v3](LICENSE), the same license as the project. Artwork and external themes use their stated licenses; see the [README license notes](README.md#license). Third-party materials submitted to this repository must be listed in `NOTICE.md`.

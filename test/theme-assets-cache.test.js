@@ -83,7 +83,7 @@ describe("theme-assets-cache SVG and raster sync", () => {
     assert.ok(!sanitized.includes("<script"));
     assert.strictEqual(fs.readFileSync(path.join(cacheDir, "spritesheet.webp"), "utf8"), "fake-webp");
     assert.strictEqual(fs.readFileSync(path.join(cacheDir, "nested", "sheet.png"), "utf8"), "fake-png");
-    assert.strictEqual(cacheMeta.version, 3);
+    assert.strictEqual(cacheMeta.version, 4);
     assert.ok(cacheMeta.svgs["idle.svg"]);
     assert.ok(cacheMeta.rasters["spritesheet.webp"]);
     assert.ok(cacheMeta.rasters["nested/sheet.png"]);
@@ -107,7 +107,37 @@ describe("theme-assets-cache SVG and raster sync", () => {
     resolveExternalAssetsDir(fixture.themeId, fixture.themeDir, { themeCacheDir: fixture.themeCacheDir });
 
     assert.ok(fs.readFileSync(path.join(cacheDir, "idle.svg"), "utf8").startsWith('<?xml version="1.0" encoding="UTF-8"?>'));
-    assert.strictEqual(readCacheMeta(fixture.themeCacheDir, fixture.themeId).version, 3);
+    assert.strictEqual(readCacheMeta(fixture.themeCacheDir, fixture.themeId).version, 4);
+  });
+
+  it("invalidates v3 SVG caches so processing instructions are removed", () => {
+    const fixture = makeFixture("v3-cache", {
+      "idle.svg": [
+        '<?xml version="1.0" encoding="UTF-8"?>',
+        '<?xml-stylesheet href="https://bad.example/theme.css"?>',
+        '<svg xmlns="http://www.w3.org/2000/svg"/>',
+      ].join("\n"),
+    });
+    const stat = fs.statSync(path.join(fixture.assetsDir, "idle.svg"));
+    const cacheDir = path.join(fixture.themeCacheDir, fixture.themeId, "assets");
+    fs.mkdirSync(cacheDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(cacheDir, "idle.svg"),
+      '<?xml version="1.0" encoding="UTF-8"?>\n<?xml-stylesheet href="https://bad.example/theme.css"?>\n<svg/>',
+      "utf8"
+    );
+    fs.writeFileSync(path.join(fixture.themeCacheDir, fixture.themeId, ".cache-meta.json"), JSON.stringify({
+      version: 3,
+      svgs: { "idle.svg": { mtime: stat.mtimeMs, size: stat.size } },
+      rasters: {},
+    }), "utf8");
+
+    resolveExternalAssetsDir(fixture.themeId, fixture.themeDir, { themeCacheDir: fixture.themeCacheDir });
+
+    const sanitized = fs.readFileSync(path.join(cacheDir, "idle.svg"), "utf8");
+    assert.ok(!sanitized.includes("xml-stylesheet"), sanitized);
+    assert.ok(!sanitized.includes("bad.example"), sanitized);
+    assert.strictEqual(readCacheMeta(fixture.themeCacheDir, fixture.themeId).version, 4);
   });
 
   it("rejects missing SVG raster dependencies in strict mode", () => {
@@ -213,7 +243,7 @@ describe("theme-assets-cache SVG and raster sync", () => {
     const sanitized = fs.readFileSync(path.join(cacheAssetsDir, "idle.svg"), "utf8");
     const cacheMeta = readCacheMeta(fixture.themeCacheDir, fixture.themeId);
 
-    assert.strictEqual(cacheMeta.version, 3);
+    assert.strictEqual(cacheMeta.version, 4);
     assert.ok(cacheMeta.svgs["idle.svg"]);
     assert.ok(cacheMeta.rasters["spritesheet.webp"]);
     assert.ok(sanitized.includes("<image"));

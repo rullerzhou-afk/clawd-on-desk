@@ -166,6 +166,8 @@
     for (const key of [
       "officialTheme",
       "managedOfficialTheme",
+      "officialThemeCategory",
+      "officialThemeAuthor",
       "officialThemeState",
       "officialThemeVersion",
       "officialThemeInstalledVersion",
@@ -185,7 +187,8 @@
     const officialIds = new Set(officialThemes.map((theme) => theme && theme.id).filter(Boolean));
     const groups = {
       builtin: [],
-      official: officialThemes,
+      official: officialThemes.filter((theme) => theme.officialThemeCategory !== "community"),
+      community: officialThemes.filter((theme) => theme.officialThemeCategory === "community"),
       importedCodexPets: [],
       user: [],
     };
@@ -207,6 +210,7 @@
     return [
       { id: "builtin", title: t("themeGroupBuiltIn"), themes: groups.builtin },
       { id: "official", title: t("themeGroupOfficialThemes"), themes: groups.official },
+      { id: "community", title: t("themeGroupCommunityThemes"), themes: groups.community },
       { id: "imported-codex-pets", title: t("themeGroupImportedCodexPets"), themes: groups.importedCodexPets },
       { id: "user", title: t("themeGroupUserThemes"), themes: groups.user },
     ].filter((section) => section.themes.length > 0
@@ -1452,12 +1456,19 @@
     if (theme.officialTheme) {
       const badge = document.createElement("span");
       badge.className = "theme-card-badge accent";
-      badge.textContent = t("themeBadgeOfficial");
+      badge.textContent = t(theme.officialThemeCategory === "community" ? "themeBadgeCommunity" : "themeBadgeOfficial");
       name.appendChild(badge);
     }
     card.appendChild(name);
 
     if (theme.officialTheme) {
+      if (theme.officialThemeAuthor) {
+        const author = document.createElement("div");
+        author.className = "theme-card-author";
+        author.textContent = t("themeAuthor")(theme.officialThemeAuthor);
+        author.title = author.textContent;
+        card.appendChild(author);
+      }
       const descriptionText = localizeField(theme.officialThemeDescription || theme.description);
       if (descriptionText) {
         const description = document.createElement("div");

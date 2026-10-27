@@ -2080,6 +2080,310 @@ describe("agent-runtime-main", () => {
     ]);
   });
 
+  it("accepts a delayed same-turn plan after official Stop without reviving a completed row", () => {
+    const instances = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:late-plan";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = (state, event, turnId) => runtime.updateSessionFromServer(sessionId, state, event, {
+      agentId: "codex", hookSource: "codex-official",
+      profileId: "local", rawSessionId, turnId,
+    });
+    try {
+      const monitor = runtime.startCodexLogMonitor();
+      official("thinking", "UserPromptSubmit", "A");
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A", planProgress: { completed: 4, total: 5 }, planProgressTurnId: "A",
+      });
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 4, total: 5, percent: 80 });
+      official("attention", "Stop", "A");
+      const session = harness.state.sessions.get(sessionId);
+      assert.strictEqual(session.state, "idle");
+      const updatedAt = session.updatedAt;
+      const recentEvents = JSON.stringify(session.recentEvents);
+      const snapshot = runtime.getCodexTurnFenceSnapshot(sessionId);
+      assert.strictEqual(snapshot.currentTurnId, null);
+      assert.strictEqual(snapshot.terminalLatch.turnId, "A");
+      const soundCount = harness.sounds.length;
+
+      // A JSONL callback that arrives after Stop must be metadata-only, not
+      // accepted as a new PostToolUse or an artificial completion.
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A", planProgress: { completed: 5, total: 5 }, planProgressTurnId: "A",
+      });
+      assert.deepStrictEqual(session.planProgress, { completed: 5, total: 5, percent: 100 });
+      assert.strictEqual(session.state, "idle");
+      assert.strictEqual(session.updatedAt, updatedAt);
+      assert.strictEqual(JSON.stringify(session.recentEvents), recentEvents);
+      assert.strictEqual(harness.sounds.length, soundCount);
+      monitor.emit(rawSessionId, "idle", "event_msg:token_count", {
+        turnId: "A", planProgress: { completed: 5, total: 5 }, planProgressTurnId: "A",
+      });
+      assert.strictEqual(session.planProgress.percent, 100);
+      monitor.emit(rawSessionId, "idle", "event_msg:token_count", {
+        turnId: null, planProgress: { completed: 0, total: 5 }, planProgressTurnId: null,
+      });
+      assert.strictEqual(session.planProgress.percent, 100, "ID-less metadata is not trusted");
+
+      official("thinking", "UserPromptSubmit", "B");
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A", planProgress: { completed: 5, total: 5 }, planProgressTurnId: "A",
+      });
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "B", planProgress: { completed: 1, total: 3 }, planProgressTurnId: "B",
+      });
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 1, total: 3, percent: 33 });
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("keeps official structured plans through fallback refreshes and fences old-turn hooks", () => {
+    const instances = [];
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:structured-plan";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = (state, event, turnId, progress) => runtime.updateSessionFromServer(sessionId, state, event, {
+      agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId, turnId,
+      ...(progress === undefined ? {} : { planProgress: progress,
+        planProgressTurnId: turnId, planProgressSource: "codex-official" }),
+    });
+    const current = () => harness.state.sessions.get(sessionId);
+    try {
+      const monitor = runtime.startCodexLogMonitor();
+      official("thinking", "UserPromptSubmit", "A");
+      official("working", "PostToolUse", "A", { completed: 1, total: 3 });
+      monitor.emit(rawSessionId, "working", "response_item:custom_tool_call", {
+        turnId: "A", planProgress: null, planProgressTurnId: "A",
+      });
+      assert.deepStrictEqual(current().planProgress, { completed: 1, total: 3, percent: 33 });
+      official("working", "PostToolUse", "A", { completed: 3, total: 3 });
+      official("attention", "Stop", "A");
+      monitor.emit(rawSessionId, "idle", "event_msg:token_count", {
+        turnId: "A", planProgress: { completed: 1, total: 3 }, planProgressTurnId: "A",
+      });
+      assert.strictEqual(current().state, "idle");
+      assert.deepStrictEqual(current().planProgress, { completed: 3, total: 3, percent: 100 });
+      official("thinking", "UserPromptSubmit", "B");
+      assert.strictEqual(current().planProgress, null);
+      official("working", "PostToolUse", "A", { completed: 3, total: 3 });
+      assert.strictEqual(current().planProgress, null);
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "B", planProgress: { completed: 1, total: 2 }, planProgressTurnId: "B",
+      });
+      assert.deepStrictEqual(current().planProgress, { completed: 1, total: 2, percent: 50 });
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("does not restore a rejected old-turn plan into the current turn", () => {
+    const instances = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    try {
+      const rawSessionId = "codex:stale-plan";
+      const sessionId = localSessionKey(rawSessionId);
+      const official = (state, event, turnId) => runtime.updateSessionFromServer(sessionId, state, event, {
+        agentId: "codex",
+        hookSource: "codex-official",
+        profileId: "local",
+        rawSessionId,
+        turnId,
+      });
+      const monitor = runtime.startCodexLogMonitor();
+
+      official("thinking", "UserPromptSubmit", "A");
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A",
+        planProgress: { completed: 1, total: 2, percent: 50 },
+        planProgressTurnId: "A",
+      });
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 1, total: 2, percent: 50 });
+
+      official("attention", "Stop", "A");
+      official("thinking", "UserPromptSubmit", "B");
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+
+      monitor.emit(rawSessionId, "working", "response_item:function_call", {
+        turnId: "A",
+        planProgress: { completed: 1, total: 2, percent: 50 },
+        planProgressTurnId: "A",
+      });
+
+      assert.strictEqual(harness.state.sessions.get(sessionId).state, "thinking");
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+
+      monitor.emit(rawSessionId, "idle", "event_msg:token_count", {
+        turnId: "A",
+        planProgress: { completed: 1, total: 2, percent: 50 },
+        planProgressTurnId: "A",
+      });
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("never writes local JSONL plan metadata into a WSL Codex row with the same key", () => {
+    const instances = [];
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {}, isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:wsl-collision";
+    const sessionId = localSessionKey(rawSessionId);
+    try {
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+        agentId: "codex", hookSource: "codex-official",
+        profileId: "local", rawSessionId, wslDistro: "Ubuntu", turnId: "A",
+      });
+      assert.strictEqual(harness.state.sessions.get(sessionId).wslDistro, "Ubuntu");
+      const before = harness.state.sessions.get(sessionId).updatedAt;
+      runtime.startCodexLogMonitor().emit(rawSessionId, "idle", "event_msg:token_count", {
+        turnId: "A", planProgressTurnId: "A", planProgress: { completed: 2, total: 2 },
+      });
+      assert.strictEqual(harness.state.sessions.get(sessionId).planProgress, null);
+      assert.strictEqual(harness.state.sessions.get(sessionId).updatedAt, before);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  for (const [label, provenance] of [
+    ["WSL host", { host: "wsl:Ubuntu", wslDistro: "Ubuntu" }],
+    ["WSL marker", { wslDistro: "Ubuntu" }],
+    ["remote host", { host: "ssh:workstation" }],
+    ["remote profile", { profileId: "remote-workstation" }],
+  ]) {
+    it(`does not recover a local question's plan into an existing ${label} row`, () => {
+      const instances = [];
+      const harness = makeRealStateHarness();
+      const runtime = createAgentRuntimeMain({
+        loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+        loadCodexAgent: () => ({ id: "codex" }),
+        codexSubagentClassifier: {}, isAgentEnabled: () => true,
+        getStateRuntime: () => harness.state,
+        updateSession: (...args) => harness.state.updateSession(...args),
+        showCodexUserInputBubble: () => true,
+      });
+      const rawSessionId = "codex:question-collision";
+      const sessionId = localSessionKey(rawSessionId);
+      try {
+        runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+          agentId: "codex", hookSource: "codex-official", profileId: "local",
+          rawSessionId, turnId: "A", ...provenance,
+        });
+        const before = harness.state.sessions.get(sessionId).updatedAt;
+        runtime.startCodexLogMonitor().options.onUserInputRequest(rawSessionId, {
+          callId: "question-1",
+          questions: [{ id: "choice", header: "Choice", question: "Continue?", options: [] }],
+          autoResolutionMs: null,
+        }, {
+          turnId: "A", userInputReplay: true, sourcePid: 42, agentPid: 42, cwd: "/repo",
+          planProgress: { completed: 2, total: 4 }, planProgressTurnId: "A",
+        });
+        const session = harness.state.sessions.get(sessionId);
+        assert.equal(session.planProgress, null);
+        assert.equal(session.updatedAt, before);
+        for (const [key, value] of Object.entries(provenance)) assert.equal(session[key], value);
+      } finally {
+        runtime.cleanup();
+        harness.state.cleanup();
+      }
+    });
+  }
+
+  it("recovers a pending Codex question's matching plan after the session card is created", () => {
+    const instances = [];
+    const harness = makeRealStateHarness();
+    const shown = [];
+    const FakeMonitor = makeFakeMonitorClass(instances);
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => FakeMonitor,
+      loadCodexAgent: () => ({ id: "codex" }),
+      codexSubagentClassifier: {},
+      isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      showCodexUserInputBubble: (input) => { shown.push(input); return true; },
+    });
+    const rawSessionId = "codex:recovered-question";
+    const sessionId = localSessionKey(rawSessionId);
+    const extra = {
+      turnId: "question-turn", userInputReplay: true, sourcePid: 42, agentPid: 42, cwd: "/repo",
+      planProgress: { completed: 2, total: 4, percent: 50 },
+      planProgressTurnId: "question-turn",
+    };
+    const questions = [{ id: "choice", header: "Choice", question: "Continue?", options: [] }];
+    try {
+      const monitor = runtime.startCodexLogMonitor();
+      // Backfill's metadata-only event arrives before the card exists.
+      monitor.emit(rawSessionId, "idle", "event_msg:token_count", extra);
+      assert.strictEqual(harness.state.sessions.has(sessionId), false);
+      monitor.options.onUserInputRequest(rawSessionId, {
+        callId: "call1", questions, autoResolutionMs: null,
+      }, extra);
+      assert.strictEqual(shown.length, 1);
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 2, total: 4, percent: 50 });
+      assert.equal(Object.hasOwn(harness.state.sessions.get(sessionId), "codexTurnId"), false);
+      monitor.options.onUserInputRequest(rawSessionId, {
+        callId: "call-next", questions, autoResolutionMs: null,
+      }, { ...extra, planProgress: { completed: 3, total: 4 } });
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 3, total: 4, percent: 75 });
+      // A pending question referencing an older turn cannot take a newer
+      // checklist even though both events share the same session key.
+      monitor.options.onUserInputRequest(rawSessionId, {
+        callId: "call2", questions, autoResolutionMs: null,
+      }, { ...extra, turnId: "old-turn" });
+      assert.deepStrictEqual(harness.state.sessions.get(sessionId).planProgress,
+        { completed: 3, total: 4, percent: 75 });
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
   it("bypasses the local fence for remote official hooks and resets tracking on Codex clear", () => {
     const updates = [];
     const clearCalls = [];

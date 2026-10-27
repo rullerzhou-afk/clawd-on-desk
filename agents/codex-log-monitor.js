@@ -31,6 +31,7 @@ const {
 const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
 const { getCodexLogEventKey } = require("../hooks/codex-log-event");
 const { normalizeCodexTurnId } = require("../src/codex-turn-id");
+const { planProgressFromCall } = require("../hooks/codex-plan-progress");
 
 const MAX_TRACKED_FILES = 50;
 const MAX_RETIRED_TRACKED_FILES = 100;
@@ -896,6 +897,8 @@ class CodexLogMonitor {
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
       contextUsage: null,
+      planProgress: null,
+      planProgressTurnId: null,
       activeTurnId: null,
       turnBoundaryOpen: false,
       codexQuota: null,
@@ -1254,6 +1257,8 @@ class CodexLogMonitor {
         assistantLastOutput: retired ? retired.assistantLastOutput || null : null,
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
         contextUsage: retired ? retired.contextUsage || null : null,
+        planProgress: retired ? retired.planProgress || null : null,
+        planProgressTurnId: retired ? retired.planProgressTurnId || null : null,
         activeTurnId: retired ? retired.activeTurnId || null : null,
         turnBoundaryOpen: retired ? retired.turnBoundaryOpen === true : false,
         codexQuota: retired ? retired.codexQuota || null : null,
@@ -1568,6 +1573,8 @@ class CodexLogMonitor {
       tracked.assistantLastOutput = null;
       tracked.assistantLastOutputTruncated = false;
       tracked.contextUsage = null;
+      tracked.planProgress = null;
+      tracked.planProgressTurnId = null;
       tracked.activeTurnId = null;
       tracked.turnBoundaryOpen = false;
       tracked.codexQuota = null;
@@ -1684,6 +1691,20 @@ class CodexLogMonitor {
       if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) {
         finishTurnTerminal();
         return;
+      }
+    }
+
+    // A new turn invalidates the previous checklist. A terminal response does
+    // not imply that every declared plan step completed.
+    if (isTurnStart) {
+      tracked.planProgress = null;
+      tracked.planProgressTurnId = effectiveTurnId;
+    }
+    if (key === "response_item:function_call") {
+      const nextPlan = planProgressFromCall(payload);
+      if (nextPlan !== undefined) {
+        tracked.planProgress = nextPlan;
+        tracked.planProgressTurnId = effectiveTurnId;
       }
     }
 
@@ -1968,6 +1989,8 @@ class CodexLogMonitor {
       assistantLastOutput: tracked.assistantLastOutput || null,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
       contextUsage: tracked.contextUsage || null,
+      planProgress: tracked.planProgress || null,
+      planProgressTurnId: tracked.planProgressTurnId || null,
       activeTurnId: tracked.activeTurnId || null,
       turnBoundaryOpen: tracked.turnBoundaryOpen === true,
       codexQuota: tracked.codexQuota || null,
@@ -1991,6 +2014,7 @@ class CodexLogMonitor {
       ...(tracked.codexSparkQuota ? { codexSparkQuota: tracked.codexSparkQuota } : {}),
     };
     const hasQuota = Object.keys(quotaExtra).length > 0;
+    const hasPlanProgress = !!tracked.planProgress;
     // A pending question already gets its own card via
     // _emitPendingUserInputRequests, so a root session's redundant sustained-
     // state snapshot is skipped here. Subagents never get that card
@@ -2003,14 +2027,14 @@ class CodexLogMonitor {
     ) {
       // The question callback does not carry account quota. Seed the
       // session-independent store without replaying the sustained state.
-      if (hasQuota) {
+      if (hasQuota || hasPlanProgress) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count", quotaExtra);
       }
       return;
     }
     const snapshotState = tracked.lastState;
     if (!SUSTAINED_ACTIVE_STATES.has(snapshotState)) {
-      if (tracked.contextUsage || hasQuota) {
+      if (tracked.contextUsage || hasQuota || hasPlanProgress) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count", quotaExtra);
       }
       return;
@@ -2111,6 +2135,8 @@ class CodexLogMonitor {
   _emitUserInputRequest(tracked, request) {
     if (!this._onUserInputRequest || this._isTrackedSubagent(tracked)) return;
     const agentPid = this._resolveTrackedAgentPid(tracked);
+    const questionTurnId = normalizeCodexTurnId(request && request.activity && request.activity.turnId);
+    const planTurnId = normalizeCodexTurnId(tracked.planProgressTurnId);
     this._onUserInputRequest(tracked.sessionId, request, {
       ...(request.activity || { userInputReplay: true }),
       cwd: tracked.cwd,
@@ -2120,6 +2146,10 @@ class CodexLogMonitor {
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
       ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
+      // Never attach a plan from a newer turn to an older open question.
+      ...(questionTurnId && questionTurnId === planTurnId
+        ? { planProgress: tracked.planProgress || null, planProgressTurnId: planTurnId }
+        : {}),
       headless: false,
     });
   }
@@ -2134,15 +2164,18 @@ class CodexLogMonitor {
     };
   }
 
-  // contextUsage only, deliberately NOT either tracked account-quota
-  // provider: context usage is a per-session property (re-attaching the
-  // cached value to lifecycle events keeps the session card current), but
-  // account quota is not — a cached copy goes stale the moment another
-  // session reports, and blindly re-attaching it would replay old numbers
-  // into the account store on every lifecycle event (see token_count above).
-  _withTrackedContextUsage(tracked, extra = null) {
-    if (!tracked || !tracked.contextUsage) return extra;
-    return { ...(extra || {}), contextUsage: tracked.contextUsage };
+  // Context usage and plan progress belong to a session, so lifecycle events
+  // carry their current values. Account quota does not: a cached copy goes
+  // stale when another session reports, so it is emitted only with the record
+  // that captured it (see token_count above).
+  _withTrackedSessionMetadata(tracked, extra = null) {
+    if (!tracked) return extra;
+    return {
+      ...(extra || {}),
+      ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
+      planProgress: tracked.planProgress || null,
+      planProgressTurnId: tracked.planProgressTurnId || null,
+    };
   }
 
   _isTrackedSubagent(tracked) {
@@ -2178,7 +2211,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
-      ...this._withTrackedContextUsage(tracked, extra),
+      ...this._withTrackedSessionMetadata(tracked, extra),
       headless: this._isTrackedSubagent(tracked)
         ? true
         : (extra && Object.prototype.hasOwnProperty.call(extra, "headless") ? extra.headless : undefined),

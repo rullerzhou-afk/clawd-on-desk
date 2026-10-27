@@ -40,7 +40,7 @@ Download the latest installer from **[GitHub Releases](https://github.com/ruller
 |---|---|
 | Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` or `-arm64.exe` |
 | macOS | `.dmg`, or `brew install --cask clawd-on-desk` |
-| Linux | `.AppImage` or `.deb` (Homebrew also works on x86_64) |
+| Linux | `.AppImage` (in-app updates), or `.deb` with [APT setup / migration](docs/guides/apt-setup.md) (Homebrew also works on x86_64) |
 
 Launch Clawd and it starts reacting right away: Claude Code and Codex are connected on first launch. Every other agent is one click away in **Settings → AI Coding Tools**.
 
@@ -119,6 +119,7 @@ Community tool: [Live2Pet](https://github.com/receyuki/live2pet) by @receyuki tu
 | [Custom HTTP agents](docs/guides/custom-agent-http.md) | Connect a tool Clawd doesn't integrate with yet |
 | [Known limitations](docs/guides/known-limitations.md) | Per-agent feature gaps |
 | [Theme creation](docs/guides/guide-theme-creation.md) | Build and validate your own theme |
+| [Contributing themes](docs/guides/contributing-themes.md) | Submissions, licenses, catalog review, and updates |
 
 ## Community
 

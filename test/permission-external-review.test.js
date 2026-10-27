@@ -212,7 +212,9 @@ describe("external review command — process lifecycle", () => {
     stopActivePermissionReviews();
     const result = await pending;
     assert.strictEqual(result.hold, true);
-    assert.strictEqual(result.tag, "timeout");
+    assert.strictEqual(result.tag, "cancelled");
+    assert.strictEqual(result.cancelled, true);
+    assert.strictEqual(result.reason, "app-quitting");
   });
 });
 
@@ -681,6 +683,25 @@ describe("external review — route", () => {
     assert.deepStrictEqual(shown, []);
     assert.strictEqual(permission.pendingPermissions.length, 0);
     assert.strictEqual(res.body, "", "no allow may be written after DND lands");
+  });
+
+  it("cancels an app-quit review through the native fallback without creating a card", async () => {
+    const shown = [];
+    const request = postPermission(CLAUDE_BODY, {
+      ctxOverrides: {
+        getPermissionReviewConfig: () => ({
+          command: nodeCommand("setTimeout(()=>{}, 10000);"),
+          timeoutMs: 60000,
+        }),
+      },
+      show: (entry) => shown.push(entry),
+    });
+    setTimeout(() => stopActivePermissionReviews(), 100);
+    const { res, permission } = await request;
+    await waitFor(() => res.destroyed, 5000);
+    assert.deepStrictEqual(shown, []);
+    assert.strictEqual(permission.pendingPermissions.length, 0);
+    assert.strictEqual(res.body, "");
   });
 });
 

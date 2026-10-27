@@ -297,6 +297,7 @@ async function loadHud(sessions, openResult = { status: "ok" }) {
     clearTimeout: () => { feedbackTimeout = null; },
   });
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-focus-unavailable.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-hud-tagged-fallback.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "session-hud-renderer.js"), "utf8"), context);
   await flush();
   snapshotListener({ sessions, orderedIds: sessions.map((entry) => entry.id) });
