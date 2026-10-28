@@ -12,6 +12,7 @@
     "sessionHudCleanupDetached",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
+    "deepseekQuotaBaselineCny",
     "quotaMergeSources",
     "quotaAlertsEnabled",
     "quotaAlertThresholds",
@@ -26,6 +27,11 @@
     "workingStaleMs",
     "codexWorkingStaleMs",
     "detachedIdleStaleMs",
+  ]);
+  // Number-input rows handled by the shared buildNumberInputRow sync path.
+  const SESSION_NUMBER_INPUT_KEYS = new Set([
+    ...SESSION_CLEANUP_NUMBER_KEYS,
+    "deepseekQuotaBaselineCny",
   ]);
   const SESSION_CLEANUP_DEFAULTS = {
     sessionStaleMs: 600_000,
@@ -90,6 +96,18 @@
       descKey: "rowQuotaMergeSourcesDesc",
     });
     const displayModeRow = buildQuotaRingDisplayModeRow();
+    // DeepSeek has no subscription windows — its coin maps the
+    // prepaid balance against this user-chosen reference amount (CNY).
+    const deepseekBaselineRow = helpers.buildNumberInputRow({
+      key: "deepseekQuotaBaselineCny",
+      labelKey: "rowDeepseekQuotaBaseline",
+      descKey: "rowDeepseekQuotaBaselineDesc",
+      unitKey: "unitCny",
+      toDisplay: (value) => Math.round(value),
+      fromDisplay: (value) => Math.round(value),
+      min: 1,
+      max: 100000,
+    }).row;
     const providersBlock = buildQuotaRingProvidersBlock();
     // "Merge across machines" only matters with more than one reporting source
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
@@ -114,6 +132,7 @@
     const rows = [
       enabledRow,
       displayModeRow,
+      deepseekBaselineRow,
       providersBlock.element,
       mergeRow,
       alertsEnabledRow,
@@ -663,9 +682,9 @@
       const control = state.mountedControls.quotaAlertThresholds;
       if (!control || !document.body.contains(control.row)) return false;
     }
-    if (keys.some((key) => SESSION_CLEANUP_NUMBER_KEYS.has(key))) {
+    if (keys.some((key) => SESSION_NUMBER_INPUT_KEYS.has(key))) {
       for (const key of keys) {
-        if (!SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
+        if (!SESSION_NUMBER_INPUT_KEYS.has(key)) continue;
         const meta = state.mountedControls.sessionCleanupControls.get(key);
         if (!meta || !document.body.contains(meta.row)) return false;
       }
@@ -673,7 +692,7 @@
     for (const key of keys) {
       if (key === "quotaRingDisplayMode") continue;
       if (key === "quotaAlertThresholds") continue;
-      if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) continue;
+      if (SESSION_NUMBER_INPUT_KEYS.has(key)) continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
@@ -685,7 +704,7 @@
         );
         continue;
       }
-      if (SESSION_CLEANUP_NUMBER_KEYS.has(key)) {
+      if (SESSION_NUMBER_INPUT_KEYS.has(key)) {
         state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
       }

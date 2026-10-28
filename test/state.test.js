@@ -4827,7 +4827,7 @@ describe("buildSessionSnapshot", () => {
     // shape, then compare the rest exactly.
     const { quotaAgentIcons, ...rest } = snapshot;
     assert.deepStrictEqual(Object.keys(quotaAgentIcons).sort(), [
-      "antigravityQuota", "claudeQuota", "codexQuota", "kimiQuota",
+      "antigravityQuota", "claudeQuota", "codexQuota", "deepseekQuota", "kimiQuota",
     ]);
     assert.deepStrictEqual(rest, {
       sessions: [],

@@ -1927,6 +1927,19 @@ function clearLocalKimiQuota(options = {}) {
   return { cleared: cleared > 0, persisted };
 }
 
+// DeepSeek's prepaid balance is fetched by the main process from the DSH
+// desktop app's loopback balance route (see src/dsh-balance-runtime.js) and
+// committed here into the same account-wide store the hook reporters use.
+// DeepSeek is a balance, not a rolling rate-limit window, so the reported
+// bucket carries an exact ¥ amount next to the reference-based percentage.
+function commitLocalDshQuota(deepseekQuota) {
+  const result = accountQuota.updateDetailed(null, { deepseekQuota });
+  if (!result.accepted) return { accepted: false, persisted: false };
+  const persisted = accountQuota.flush();
+  if (result.changed) emitSessionSnapshot();
+  return { accepted: true, persisted: persisted === true };
+}
+
 // Distinct reporting sources that currently carry quota (this machine + WSL /
 // SSH remotes), UNmerged. The settings UI hides the "merge across machines"
 // switch when there is only one source, since merging is then a no-op.
@@ -4171,6 +4184,7 @@ return {
   clearLocalClaudeQuota,
   commitLocalKimiQuota,
   clearLocalKimiQuota,
+  commitLocalDshQuota,
   getQuotaSourceCount,
   clearPermissionNotification,
   promoteCompletion,

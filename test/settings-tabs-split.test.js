@@ -72,6 +72,7 @@ const FROZEN_KEYS = [
   "sessionStaleMs",
   "workingStaleMs",
   "codexWorkingStaleMs",
+  "deepseekQuotaBaselineCny",
   "detachedIdleStaleMs",
 ];
 
@@ -118,6 +119,7 @@ const EXPECTED_KEYS = {
     "sessionHudCleanupDetached",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
+    "deepseekQuotaBaselineCny",
     "quotaMergeSources",
     "quotaAlertsEnabled",
     "quotaAlertThresholds",
@@ -736,7 +738,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionRowLabels(sessions), [
       ["会话面板"],
       ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话"],
-      ["显示额度环", "额度显示方式", "在桌宠旁显示", "合并多机额度", "额度快用完时提醒", "提醒时机", "额度恢复时也提醒", "测试通知"],
+      ["显示额度环", "额度显示方式", "DSH 余额基准", "在桌宠旁显示", "合并多机额度", "额度快用完时提醒", "提醒时机", "额度恢复时也提醒", "测试通知"],
       ["超时清理", "会话超时（空闲）", "工作超时", "Codex 活跃任务超时", "终端关闭后清理延迟"],
     ]);
 
