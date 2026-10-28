@@ -12860,7 +12860,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(generalSource.includes('"actionResetSessionCleanup"'));
 
     // patchInPlace covers the new keys in BOTH the existence guard and the sync loop.
-    assert.ok(generalSource.match(/SESSION_CLEANUP_NUMBER_KEYS\.has\(key\)[\s\S]+sessionCleanupControls\.get\(key\)\.syncFromSnapshot\(\)/));
+    assert.ok(generalSource.match(/SESSION_NUMBER_INPUT_KEYS\.has\(key\)[\s\S]+sessionCleanupControls\.get\(key\)\.syncFromSnapshot\(\)/));
 
     // ui-core registers the helper and the mountedControls bag.
     assert.ok(uiCoreSource.includes("buildNumberInputRow"));

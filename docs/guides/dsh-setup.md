@@ -104,11 +104,20 @@ creating a card or changing its activity time. If DSH no longer reports both
 operands, Clawd clears the old percentage instead of displaying a stale one.
 The standard completion bell appears when a finished DSH session is unread.
 
-The quota coin is separate account telemetry. DSH does not currently expose
-a five-hour usage bucket through this plugin's public session APIs, so Clawd
-does not invent a DSH `5h` percentage. DeepSeek's
-[API balance](https://api-docs.deepseek.com/api/get-user-balance/) is an amount
-of money and cannot be represented as that rolling-window percentage.
+The quota coin is separate account telemetry and does not ride this plugin.
+DeepSeek has no five-hour usage bucket — its quota is a prepaid account balance
+— so Clawd does not invent a DSH `5h` percentage. Instead, while the DeepSeek
+Harness integration is enabled, the main process polls the balance route that
+the DSH desktop app's balance widget already serves on its loopback port
+(`/api/dsh-balance/balance`), discovers the dynamic port from the OS listener
+table, and draws a DeepSeek coin whose readout is the exact ¥ balance. The ring
+maps that balance against a configurable reference amount (**Settings →
+Sessions → DSH balance baseline**, default ¥50; `usedPercent = 1 - balance /
+baseline`), so a full ring means the balance is drained. There is no reset
+window, so quota reminders never fire for this provider. Discovery currently
+uses Windows' `netstat`; on macOS/Linux the coin stays absent until a
+cross-platform listener probe exists. No DSH plugin update, DSH restart, or API
+key is involved: this is the same number the DSH balance widget shows.
 
 For ordinary `approval/request`, the plugin prepends a blocking listener:
 

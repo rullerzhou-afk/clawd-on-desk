@@ -205,6 +205,15 @@ const SCHEMA = {
   quotaAlertsEnabled: { type: "boolean", default: false },
   quotaAlertThresholds: { type: "array", defaultFactory: () => [20, 10], normalize: normalizeQuotaAlertThresholds },
   quotaRecoveryAlertsEnabled: { type: "boolean", default: true },
+  // Reference balance (CNY) that maps the DeepSeek prepaid account balance onto
+  // the pet-side ring percentage (usedPercent = 1 - balance/base). Exposed as
+  // Settings → Sessions → "DSH balance baseline". A larger baseline makes the
+  // ring more sensitive; the raw ¥ amount is always shown as-is.
+  deepseekQuotaBaselineCny: {
+    type: "number",
+    default: 50,
+    validate: (v) => Number.isFinite(v) && v >= 1 && v <= 100000,
+  },
   // Empty by default, i.e. every connected provider draws — matching the
   // behaviour before this preference existed. Storing what is HIDDEN rather
   // than what is shown is the reason a newly connected provider appears on its

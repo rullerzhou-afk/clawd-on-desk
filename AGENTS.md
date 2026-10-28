@@ -122,6 +122,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/server.js` + `src/server-route-state.js` + `src/server-route-permission.js` | HTTP 服务、端口发现、`/state` / `/permission` 路由 |
 | `src/agent-runtime-main.js` + `src/integration-sync.js` | local monitor / official hook 仲裁、Codex turn fence、按 gate 的集成同步 |
 | `src/state.js` | 状态机、多会话合并、优先级、自动回退、睡眠/DND |
+| `src/dsh-balance-runtime.js` | DSH 预付余额轮询：从本机监听表发现 DSH 桌面版余额路由（`/api/dsh-balance/balance`），换算成 quota bucket 交给 `state.commitLocalDshQuota`；主进程唯一网络读取，无凭据、无 DSH 改动 |
 | `src/renderer.js` | 动画切换、SVG 预加载、眼球追踪渲染 |
 | `src/permission.js` + `src/permission-automation-policy.js` + `src/session-automation-coordinator.js` | 权限气泡、自动化策略、per-session 授权与决策回包；远程 client 由 `main.js` 注入 |
 | `src/pet-window-runtime.js` + `src/floating-window-runtime.js` + `src/topmost-runtime.js` | 双窗口 owner、浮层重排、z-order / fullscreen / focusability |
