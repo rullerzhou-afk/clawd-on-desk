@@ -226,6 +226,7 @@ function createHarness(overrides = {}) {
     getActiveTheme: () => activeTheme,
     getLang: overrides.getLang || (() => "en"),
     getSizeContext: overrides.getSizeContext,
+    getHardwareAccelerationDisabledAtStartup: overrides.getHardwareAccelerationDisabledAtStartup,
     roamFenceSettings,
     roamFencePicker,
     settingsSizePreviewSession,
@@ -753,6 +754,22 @@ test("settings IPC opens the tutorial from Settings", async () => {
   assert.deepStrictEqual(result, { status: "ok" });
   assert.deepStrictEqual(calls, [["showTutorial"]]);
   runtime.dispose();
+});
+
+test("settings IPC reports the GPU mode this process launched with (#1183)", async () => {
+  const off = createHarness();
+  assert.deepStrictEqual(
+    await off.ipcMain.invoke("settings:get-startup-render-state"),
+    { hardwareAccelerationDisabled: false },
+  );
+  off.runtime.dispose();
+
+  const on = createHarness({ getHardwareAccelerationDisabledAtStartup: () => true });
+  assert.deepStrictEqual(
+    await on.ipcMain.invoke("settings:get-startup-render-state"),
+    { hardwareAccelerationDisabled: true },
+  );
+  on.runtime.dispose();
 });
 
 test("mobile connection info reports starting until the LAN bridge has a port", async () => {

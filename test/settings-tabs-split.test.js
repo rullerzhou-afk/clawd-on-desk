@@ -766,6 +766,41 @@ describe("settings tab split", () => {
     ]);
   });
 
+  it("offers a restart only while the GPU switch differs from launch (#1183)", async () => {
+    const general = createHarness({
+      tab: "general",
+      platform: "Win32",
+      snapshot: makeSnapshot({ disableHardwareAcceleration: false }),
+      settingsAPI: {
+        getStartupRenderState: () => Promise.resolve({ hardwareAccelerationDisabled: false }),
+      },
+    });
+    await general.settle();
+    const row = () => general.core.state.mountedControls.generalSwitches
+      .get("disableHardwareAcceleration").row;
+    const restartButton = () => row().querySelectorAll("button")
+      .find((button) => button.textContent === "Restart Clawd") || null;
+    assert.ok(general.getSwitch("disableHardwareAcceleration"));
+    assert.strictEqual(restartButton(), null);
+
+    general.apply("disableHardwareAcceleration", true);
+    await general.settle();
+    assert.ok(restartButton(), "a pending GPU change shows the restart button");
+    assert.ok(row().querySelectorAll(".row-desc-extra")
+      .some((node) => node.textContent === "Not applied yet. Restart Clawd to switch."));
+
+    restartButton().click();
+    await general.settle();
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(general.commandCalls.filter((call) => call.action === "restartClawd"))),
+      [{ action: "restartClawd", payload: { confirmed: true } }],
+    );
+
+    general.apply("disableHardwareAcceleration", false);
+    await general.settle();
+    assert.strictEqual(restartButton(), null, "switching back to the launch value hides it");
+  });
+
   it("patches every independent sync branch in place for its own key", async () => {
     const textScaleContext = { percent: 100 };
     const general = createHarness({

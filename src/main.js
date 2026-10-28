@@ -360,8 +360,12 @@ const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
 // closed until restart in either case.
 const _initialPrefsRecovered = _initialPrefsLoad.recovered === true;
 // #1183: must run before app ready, so it reads the startup snapshot directly
-// instead of waiting for the settings controller.
-if (isWin && _initialPrefsLoad.snapshot && _initialPrefsLoad.snapshot.disableHardwareAcceleration === true) {
+// instead of waiting for the settings controller. Kept as a constant so
+// Settings can tell when the saved switch no longer matches this process.
+const _hardwareAccelerationDisabledAtStartup = isWin
+  && !!_initialPrefsLoad.snapshot
+  && _initialPrefsLoad.snapshot.disableHardwareAcceleration === true;
+if (_hardwareAccelerationDisabledAtStartup) {
   app.disableHardwareAcceleration();
 }
 const _initialPrefsRecoveryBackupFailed = _initialPrefsLoad.recoveryBackupFailed === true;
@@ -469,8 +473,9 @@ let _restartScheduled = false;
 function _restartClawdNow() {
   if (_restartScheduled) return;
   _restartScheduled = true;
-  // Triggered by Doctor's restart-clawd repair. relaunch() queues a fresh
-  // process; quit() then follows the normal shutdown path so before-quit
+  // Triggered by Doctor's restart-clawd repair and by the restartClawd command
+  // behind the #1183 GPU switch. relaunch() queues a fresh process; quit()
+  // then follows the normal shutdown path so before-quit
   // still flushes prefs and cleans up server/monitor resources.
   // setImmediate so the IPC reply for repairDoctorIssue lands in the
   // renderer before the main process starts closing windows.
@@ -5173,6 +5178,7 @@ const settingsIpcRuntime = registerSettingsIpc({
     ),
   }),
   getSizeContext: getSizeSliderContext,
+  getHardwareAccelerationDisabledAtStartup: () => _hardwareAccelerationDisabledAtStartup,
   sendToRenderer,
   getDoNotDisturb: () => doNotDisturb,
   getSoundMuted: () => soundMuted,

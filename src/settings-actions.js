@@ -139,6 +139,7 @@ const {
   manageClaudeHooksAutomatically,
   openAtLogin,
   repairLocalServer,
+  restartClawd,
   uninstallHooks,
 } = require("./settings-actions-system");
 const {
@@ -2749,6 +2750,7 @@ const commandRegistry = {
   uninstallAgentIntegration,
   repairLocalServer,
   repairDoctorIssue,
+  restartClawd,
   resizePet,
   registerShortcut,
   resetShortcut,

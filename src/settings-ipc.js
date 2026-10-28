@@ -348,6 +348,8 @@ function registerSettingsIpc(options = {}) {
   const getUpdateCheckSnapshot = options.getUpdateCheckSnapshot || (() => ({ state: "idle" }));
   const clearUpdateError = options.clearUpdateError || (() => ({ state: "idle" }));
   const copyUpdateError = options.copyUpdateError || (() => ({ status: "error", message: "clipboard unavailable" }));
+  const getHardwareAccelerationDisabledAtStartup =
+    options.getHardwareAccelerationDisabledAtStartup || (() => false);
   const showTutorial = options.showTutorial || (() => ({
     status: "error",
     message: "Tutorial is unavailable",
@@ -1142,6 +1144,12 @@ function registerSettingsIpc(options = {}) {
     if (!boundedText) return { status: "error", message: "empty update error report" };
     return copyUpdateError(boundedText);
   });
+
+  // #1183: the GPU switch only applies at launch; Settings compares this with
+  // the saved pref to offer a restart.
+  handle("settings:get-startup-render-state", () => ({
+    hardwareAccelerationDisabled: getHardwareAccelerationDisabledAtStartup() === true,
+  }));
 
   handle("settings:show-tutorial", async () => {
     try {

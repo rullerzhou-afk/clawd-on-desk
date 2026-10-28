@@ -200,6 +200,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   clearUpdateError: () => ipcRenderer.invoke("settings:clear-update-error"),
   copyUpdateError: (copyText) => ipcRenderer.invoke("settings:copy-update-error", copyText),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
+  getStartupRenderState: () => ipcRenderer.invoke("settings:get-startup-render-state"),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
   listOfficialThemes: () => ipcRenderer.invoke("settings:list-official-themes"),

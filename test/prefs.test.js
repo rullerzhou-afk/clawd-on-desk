@@ -2640,7 +2640,7 @@ describe("prefs.disableHardwareAcceleration (#1183)", () => {
     assert.ok(call < mainSource.indexOf("app.whenReady()"), "the call must precede app.whenReady()");
     assert.match(
       mainSource,
-      /if \(isWin && _initialPrefsLoad\.snapshot && _initialPrefsLoad\.snapshot\.disableHardwareAcceleration === true\) \{\s*app\.disableHardwareAcceleration\(\);/
+      /const _hardwareAccelerationDisabledAtStartup = isWin\s*&& !!_initialPrefsLoad\.snapshot\s*&& _initialPrefsLoad\.snapshot\.disableHardwareAcceleration === true;\s*if \(_hardwareAccelerationDisabledAtStartup\) \{\s*app\.disableHardwareAcceleration\(\);/
     );
   });
 });
