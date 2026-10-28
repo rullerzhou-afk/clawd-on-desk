@@ -23,6 +23,14 @@ function normalizeQuotaBucket(value) {
   const usedPercent = Number(value.usedPercent);
   if (!Number.isFinite(usedPercent)) return null;
   const out = { usedPercent: Math.max(0, Math.min(100, Math.round(usedPercent))) };
+  // A prepaid-balance provider (DeepSeek) carries the raw account
+  // amount so the renderer can print "¥10.91" beside the percentage gauge.
+  // These are inert passthrough fields for every rate-limit provider.
+  const amount = Number(value.amount);
+  if (Number.isFinite(amount) && amount >= 0) out.amount = Math.round(amount * 100) / 100;
+  if (typeof value.currency === "string" && /^[A-Z]{2,4}$/.test(value.currency)) {
+    out.currency = value.currency;
+  }
   const windowMinutes = Number(value.windowMinutes);
   if (Number.isFinite(windowMinutes) && windowMinutes > 0) {
     out.windowMinutes = Math.round(windowMinutes);

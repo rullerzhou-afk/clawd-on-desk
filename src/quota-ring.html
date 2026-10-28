@@ -136,6 +136,10 @@
      carry identity and window while color is only the backup. */
   --id-kimi-outer: #3b93f7;
   --id-kimi-inner: #e27aeb;
+  /* DeepSeek prepaid-balance coin. Emerald/violet pair: both sit clear of the
+     warm alert band and of every existing provider hue. */
+  --id-deepseek-outer: #34d399;
+  --id-deepseek-inner: #c084fc;
   --ink: #ffffff;
   --ink-soft: rgba(255, 255, 255, 0.74);
   --ink-faint: rgba(255, 255, 255, 0.6);
@@ -189,6 +193,12 @@ body { padding: 6px 6px 8px; }
   font-variant-numeric: tabular-nums;
   text-shadow: var(--halo);
 }
+/* A money amount ("¥10.91") is longer than the usual "100%";
+   shrink it so it stays inside the 44px readout column. */
+.readout .pct.is-amount {
+  font-size: 9.5px;
+  letter-spacing: -0.2px;
+}
 .readout .win {
   font-size: 8.5px;
   color: var(--ink-soft);
@@ -226,6 +236,8 @@ body { padding: 6px 6px 8px; }
 .coin .pv-antigravityQuota.rg-inner { --ring-id: var(--id-antigravity-inner); }
 .coin .pv-kimiQuota.rg-outer { --ring-id: var(--id-kimi-outer); }
 .coin .pv-kimiQuota.rg-inner { --ring-id: var(--id-kimi-inner); }
+.coin .pv-deepseekQuota.rg-outer { --ring-id: var(--id-deepseek-outer); }
+.coin .pv-deepseekQuota.rg-inner { --ring-id: var(--id-deepseek-inner); }
 
 .coin .track { stroke: var(--ring-track); }
 .coin .track.rg-outer,

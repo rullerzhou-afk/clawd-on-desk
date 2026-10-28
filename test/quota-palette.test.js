@@ -20,7 +20,7 @@ const dashboardHtml = fs.readFileSync(path.join(__dirname, "..", "src", "dashboa
 const quotaRingRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "quota-ring-renderer.js"), "utf8");
 const dashboardRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "dashboard-renderer.js"), "utf8");
 
-const PROVIDERS = ["claude", "codex", "antigravity", "kimi"];
+const PROVIDERS = ["claude", "codex", "antigravity", "kimi", "deepseek"];
 const SLOTS = ["outer", "inner"];
 
 function tokens(source, prefix) {

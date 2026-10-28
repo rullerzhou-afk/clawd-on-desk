@@ -35,6 +35,10 @@ const RING_PROVIDERS = [
   { key: "claudeQuota", label: "Claude", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
   { key: "codexQuota", label: "Codex", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
   { key: "kimiQuota", label: "Kimi", outer: ["kimiFiveHour"], inner: ["kimiWeekly"] },
+  // DeepSeek Harness prepaid balance. There is no rolling window,
+  // so this provider owns a single outer ring whose percentage is the balance
+  // against a reference amount (see src/dsh-balance-runtime.js).
+  { key: "deepseekQuota", label: "DeepSeek", outer: ["deepseekBalance"], inner: [] },
 ];
 
 // Layout constants in CSS px (scaled by textScale by the caller, exactly like
