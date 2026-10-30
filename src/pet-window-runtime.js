@@ -2331,6 +2331,22 @@ function createPetWindowRuntime(options = {}) {
     renderWin.setFocusable(false);
 
     if (isLinux) {
+      // Native window updates can reset the input region. Restore the
+      // output-only window's click-through after those updates have finished.
+      let clickThroughPending = false;
+      const restoreRenderClickThrough = () => {
+        if (clickThroughPending) return;
+        clickThroughPending = true;
+        setImmediate(() => {
+          clickThroughPending = false;
+          if (isLiveWindow(renderWin)) renderWin.setIgnoreMouseEvents(true);
+        });
+      };
+      for (const event of ["move", "resize", "show"]) {
+        renderWin.on(event, restoreRenderClickThrough);
+      }
+      restoreRenderClickThrough();
+
       applyLinuxAllWorkspaces(renderWin);
       // Output-only window: keep WM keyboard focus off it, or the sticky pet
       // wins mutter's MRU focus on every workspace switch (see
