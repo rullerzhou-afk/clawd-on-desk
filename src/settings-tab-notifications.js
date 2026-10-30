@@ -6,6 +6,7 @@
 (function initSettingsTabNotifications(root) {
   const NOTIFICATIONS_IN_PLACE_KEYS = new Set([
     "soundMuted",
+    "sessionResultCardsEnabled",
     "soundVolume",
     "flashTaskbarOnComplete",
     "flashIntervalMs",
@@ -148,7 +149,8 @@
     group.appendChild(cornerRow);
 
     syncConditionalVisibility = (followPet) => {
-      const globallyDisabled = !!(state.snapshot && state.snapshot.hideBubbles === true);
+      const globallyDisabled = !!(state.snapshot && state.snapshot.hideBubbles === true
+        && state.snapshot.sessionResultCardsEnabled !== true);
       followRow.hidden = !followPet;
       cornerRow.hidden = followPet;
       followRow.setAttribute("aria-hidden", followPet ? "false" : "true");
@@ -709,6 +711,11 @@
 
     parent.appendChild(helpers.buildSection(t("sectionBubbles"), [
       helpers.buildSwitchRow({
+        key: "sessionResultCardsEnabled",
+        labelKey: "rowSessionResultCards",
+        descKey: "rowSessionResultCardsDesc",
+      }),
+      helpers.buildSwitchRow({
         key: "hideBubbles",
         labelKey: "rowHideBubbles",
         descKey: "rowHideBubblesDesc",
@@ -750,7 +757,7 @@
       && !hasMountedBubblePolicyControls()) {
       return false;
     }
-    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
+    if ((keys.includes("hideBubbles") || keys.includes("sessionResultCardsEnabled") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
       && !getMountedBubblePlacement()) {
       return false;
     }
@@ -799,7 +806,7 @@
     }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !syncBubblePolicyControlsFromSnapshot()) return false;
-    if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
+    if ((keys.includes("hideBubbles") || keys.includes("sessionResultCardsEnabled") || keys.some((key) => BUBBLE_PLACEMENT_KEYS.has(key)))
       && !syncBubblePlacementFromSnapshot()) return false;
     return true;
   }

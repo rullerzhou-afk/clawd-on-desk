@@ -392,6 +392,8 @@ module.exports = function initSessionHud(ctx) {
   function collectRingAvoidRects(hudContentBounds) {
     const rects = [];
     if (hudContentBounds) rects.push(hudContentBounds);
+    const resultBounds = typeof ctx.getSessionResultBounds === "function" ? ctx.getSessionResultBounds() : null;
+    if (resultBounds) rects.push(resultBounds);
 
     if (typeof ctx.getPermissionBubbleBounds === "function") {
       try {

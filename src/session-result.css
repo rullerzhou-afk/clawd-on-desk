@@ -1,0 +1,25 @@
+* { box-sizing: border-box; }
+:root { color-scheme: light; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; font-size: 13px; color: #302d2a; }
+html, body { margin: 0; padding: 0; overflow: hidden; background: transparent; }
+.panel { margin: 4px; height: calc(100vh / var(--clawd-text-zoom, 1) - 8px); display: flex; flex-direction: column; border: 1px solid #d9d4cc; border-radius: 15px; background: #fff; overflow: hidden; box-shadow: 0 1px 4px #302d2a18; }
+header { display: flex; align-items: center; gap: 10px; padding: 13px 15px 11px; border-bottom: 1px solid #eeeae5; flex-shrink: 0; }
+h1 { margin: 0; font-size: 13px; font-weight: 650; }
+.count { margin-left: auto; border-radius: 12px; padding: 2px 8px; background: #f0ece7; font-size: 11px; color: #666057; }
+.cards { overflow-y: auto; min-height: 0; flex: 1; overscroll-behavior: contain; scrollbar-width: thin; }
+.card { padding: 14px 15px; border-bottom: 1px solid #eeeae5; }
+.card:last-child { border-bottom: none; }
+.card-heading { display: flex; gap: 8px; align-items: center; }
+.status-icon { width: 22px; height: 22px; flex-shrink: 0; display: grid; place-items: center; background: #e6f4ec; color: #25834e; border-radius: 50%; font-size: 13px; font-weight: 700; }
+.failed .status-icon { background: #fdeae5; color: #b84328; }
+h2 { margin: 0; font-size: 14px; font-weight: 650; flex: 1; line-height: 1.4; }
+.close { border: none; padding: 0; background: transparent; color: #8d877f; font-size: 20px; width: 26px; height: 26px; border-radius: 6px; cursor: pointer; }
+.close:hover { color: #403932; background: #f1eee9; }
+.meta { display: flex; gap: 8px; margin-top: 8px; color: #7b746c; font-size: 11px; }
+time { margin-left: auto; flex-shrink: 0; }
+.session-title { margin: 5px 0; font-size: 13px; font-weight: 550; line-height: 1.4; overflow-wrap: anywhere; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.body, .notice { margin: 5px 0 0; line-height: 1.5; font-size: 12px; color: #777068; overflow-wrap: anywhere; }
+.notice { color: #8b5d36; }
+.open { margin-top: 10px; padding: 6px 12px; border: 1px solid #d9d1c6; border-radius: 7px; background: #faf8f5; color: #514437; font: inherit; font-size: 12px; cursor: pointer; }
+.open:hover { background: #f0eae1; }
+.open:disabled { cursor: default; opacity: .5; }
+button:focus-visible { outline: 2px solid #92643b; outline-offset: 2px; }

@@ -16,6 +16,7 @@ function createFloatingWindowRuntime(options = {}) {
   const keepOutOfTaskbar = options.keepOutOfTaskbar || noop;
   const repositionPermissionBubbles = options.repositionPermissionBubbles || noop;
   const repositionUpdateBubble = options.repositionUpdateBubble || noop;
+  const repositionSessionResults = options.repositionSessionResults || noop;
   const repositionSessionHud = options.repositionSessionHud || noop;
   const repositionQuotaRing = options.repositionQuotaRing || noop;
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
@@ -30,8 +31,9 @@ function createFloatingWindowRuntime(options = {}) {
   function repositionFloatingBubbles() {
     if (getPendingList(getPendingPermissions).length) repositionPermissionBubbles();
     repositionUpdateBubble();
-    // Orbit reads both permission and update-bubble bounds. Reposition it last
-    // so it never avoids the previous update-bubble position.
+    repositionSessionResults();
+    // Orbit reads permission, update and result bounds. Reposition it last
+    // so it never avoids a previous floating-surface position.
     repositionQuotaRing();
   }
 
@@ -61,6 +63,7 @@ function createFloatingWindowRuntime(options = {}) {
     // the target state explicitly so update-bubble does not read the stale
     // getter and remain hidden after the pet returns.
     syncUpdateBubbleVisibility(false);
+    if (options.syncSessionResultVisibility) options.syncSessionResultVisibility(false);
   }
 
   function hideFloatingSurfacesForPet() {
@@ -75,11 +78,13 @@ function createFloatingWindowRuntime(options = {}) {
       }
     }
     suspendUpdateBubbleForPet();
+    if (options.hideSessionResults) options.hideSessionResults();
   }
 
   function setFullscreenSuppressedForPet(suppressed) {
     const target = suppressed === true;
     setPermissionSurfacesFullscreenSuppressed(target);
+    if (options.setSessionResultsFullscreenSuppressed) options.setSessionResultsFullscreenSuppressed(target);
     if (target) suspendUpdateBubbleForFullscreen();
     else resumeUpdateBubbleFromFullscreen();
   }
