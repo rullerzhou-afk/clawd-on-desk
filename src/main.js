@@ -5801,6 +5801,11 @@ const _roamCtx = {
       && p.bubble.isVisible()
       && p.bubble.__clawdMacImeEditing
   ),
+  // #1282: hold walks while an unknown borderless window covers the monitor
+  // (Win+Shift+S region select, Task View, IME/emoji panels). Verdict is the
+  // 1s foreground poll's last observation via topmost-runtime — no extra
+  // probing from roam's per-frame path.
+  isOverlayForeground: () => topmostRuntime.isForegroundOverlay(),
   hasVisiblePermissionBubbles: () => _perm.hasVisiblePermissionBubbles(),
   // #810: optional roam fence — validated async loader for
   // ~/.clawd/roam-area.json; roam reads its in-memory cache at target pick

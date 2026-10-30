@@ -96,6 +96,20 @@ module.exports = function initRoam(ctx) {
       ctx.isImeEditingActive()
     )
       return false;
+    // #1282: while an unknown borderless window covers the whole monitor (the
+    // Windows Win+Shift+S region-select overlay, Task View, IME/emoji
+    // panels), hold walks. A walk is a 16ms-native-write burst on the topmost
+    // pet/hit windows directly beneath such an overlay, and its gesture is
+    // drag-shaped — the interactive hit window churning under it (or stealing
+    // its foreground) ends the gesture before the mouse is released. Checked
+    // per-frame like the other gates, so an overlay appearing mid-stride
+    // cancels the walk. The verdict is the 1s foreground poll's last
+    // observation — no extra probing from this hot path.
+    if (
+      typeof ctx.isOverlayForeground === "function" &&
+      ctx.isOverlayForeground()
+    )
+      return false;
     return true;
   }
 

@@ -188,7 +188,7 @@ Settings 是独立 `BrowserWindow`，采用 5 层结构：
 - 桌面同时最多一个权限详情卡，切换时其他气泡恢复摘要，但各自 BrowserWindow/DOM 不销毁，因此 Ask 选择、Other 文本、Plan 修改草稿、步骤和滚动位置保留；IME composition 未结束时拒绝切换详情。petHidden 只隐藏窗口，不清空详情 owner 或草稿。
 - 多气泡在当前工作区安全容纳时始终保持原来的逐窗栈与最老请求在上；一旦真实窗口几何无法完整落在工作区并避开 HUD，就按 agent + session 保留每个会话的代表卡，把其余请求收入一个固定高度的「还有 N 个待处理」入口。代表卡仍不够放时只继续减少非保护代表，已展开、正在输入/IME composition 或用户刚选中的请求不得被折叠。
 - 队列入口展开为单独的导航抽屉：抽屉打开时它是唯一可见的 permission surface，只列工具、摘要和「查看/回答/查看计划」，不承载 Allow/Deny。选择一项会恢复该请求原来的 BrowserWindow/DOM；IME composition 未结束时禁止打开抽屉或切换。主进程必须等待抽屉 renderer 对当前 revision 的 ACK 后才隐藏请求窗口；加载、崩溃或 ACK 超时均回退到原逐窗栈，不能产生权限决定。
-- petHidden 以隐藏动作当时的请求序号为切点：旧请求（包括队列）保持收起，隐藏期间的新请求仍可用同一套 overflow/queue 规则出现；恢复桌宠后再合并全部 pending。任意 permission surface 可见时自由漫游暂停，surface 消失后重新等待完整 8 秒，不能沿用拖拽已消耗的 4 秒阶段。macOS IME 编辑中的可见气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。
+- petHidden 以隐藏动作当时的请求序号为切点：旧请求（包括队列）保持收起，隐藏期间的新请求仍可用同一套 overflow/queue 规则出现；恢复桌宠后再合并全部 pending。任意 permission surface 可见时自由漫游暂停，surface 消失后重新等待完整 8 秒，不能沿用拖拽已消耗的 4 秒阶段。macOS IME 编辑中的可见气泡冻结位置，blur 后只执行一次现有 floating-bubble 重排序列。未知边框窗口覆盖整屏时（Win+Shift+S 区域截图、任务视图、IME/表情面板，#1282）漫游同样暂停：判定复用 1 秒前台轮询的最近观测，不做额外探测，行走中即逐帧取消。
 
 ## Mini Mode
 
@@ -335,7 +335,7 @@ Mini 状态映射：
 ## Electron And Platform Notes
 
 - `win.setFocusable(false)`：渲染窗口永不抢焦点
-- Windows `hitWin`：原生 activation controller 可用时 Electron 始终 non-focusable；仅在非全屏前台时清除 `WS_EX_NOACTIVATE`，全屏时重新设置。生命周期内的 mouse-activation hook 防止 Chromium 返回 `MA_NOACTIVATEANDEAT`。controller / Koffi 或首次 hook 准备不可用时回退到旧的 Electron focusable 路径，优先保住桌面点击与拖拽，但不承诺全屏防抢焦点
+- Windows `hitWin`：原生 activation controller 可用时 Electron 始终 non-focusable；仅在既非全屏、也非未知覆盖式 overlay 前台时清除 `WS_EX_NOACTIVATE`，全屏或覆盖 overlay（Win+Shift+S 区域截图、任务视图、IME/表情面板等边框覆盖整屏窗口，#1282）时重新设置——这些手势是拖拽形态、失去前台即中断，桌宠点击不得抢走其前台。生命周期内的 mouse-activation hook 防止 Chromium 返回 `MA_NOACTIVATEANDEAT`。controller / Koffi 或首次 hook 准备不可用时回退到旧的 Electron focusable 路径，优先保住桌面点击与拖拽，但不承诺全屏防抢焦点
 - `win.showInactive()`：显示时不打断用户输入
 - 渲染 / 输入窗口都依赖 `backgroundThrottling: false`；unfocused 节流会放大眼球追踪和输入恢复的时序问题
 - 路径统一用 `path.join(__dirname, ...)`
@@ -347,7 +347,7 @@ Mini 状态映射：
 ## Known Limits
 
 - Windows 原生 activation controller 依赖打包目标内的 Koffi；不可用时不调用会扰动前台的 Electron `setFocusable(false)`，而以旧的 focusable 输入窗降级，桌面交互仍可用但全屏点击可能短暂抢前台
-- Windows 非全屏态会清除输入窗的 `WS_EX_NOACTIVATE`；点击桌宠可能短暂把 OS 前台归属切到 Clawd，即使 Electron `win.isFocused()` 仍为 false。mouse-activation hook 不消除这项既有的普通桌面限制
+- Windows 非全屏且无覆盖式 overlay 前台时会清除输入窗的 `WS_EX_NOACTIVATE`；点击桌宠可能短暂把 OS 前台归属切到 Clawd，即使 Electron `win.isFocused()` 仍为 false。mouse-activation hook 不消除这项既有的普通桌面限制。覆盖式 overlay（截图/任务视图等，#1282）期间位保持置位，但 overlay 出现到 1 秒轮询命中之间仍有残留激活窗口，未消除
 - 当前开发环境没有 macOS 手测机；所有 macOS 特定路径都只能做 code review + best-effort 推断，真正行为变化需要额外人工验证
 - 启动恢复依赖 `detectRunningClaudeProcesses()` 与后续 hook 事件
 - Windows 前台窗口锁通过 ALT trick + `koffi` FFI 绕过，仍有边缘失败可能

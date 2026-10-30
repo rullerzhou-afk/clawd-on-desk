@@ -7,6 +7,7 @@ const {
   createForegroundFullscreenProbe,
   rectCoversMonitor,
   isDesktopShellWindowClass,
+  isDesktopBackgroundWindowClass,
   isMaximizedNormalWindow,
   FULLSCREEN_TOLERANCE_PX,
 } = require("../src/win-fullscreen-detect");
@@ -141,6 +142,26 @@ describe("isDesktopShellWindowClass", () => {
 
   it("keeps the UWP app frame host as an app class", () => {
     assert.strictEqual(isDesktopShellWindowClass("ApplicationFrameWindow"), false);
+  });
+});
+
+describe("isDesktopBackgroundWindowClass", () => {
+  it("matches only the bare desktop background classes", () => {
+    assert.strictEqual(isDesktopBackgroundWindowClass("Progman"), true);
+    assert.strictEqual(isDesktopBackgroundWindowClass("WorkerW"), true);
+    assert.strictEqual(isDesktopBackgroundWindowClass("progman"), true);
+  });
+
+  it("does not match the #1017 shell hosts — those ARE covering overlays", () => {
+    assert.strictEqual(isDesktopBackgroundWindowClass("XamlExplorerHostIslandWindow"), false);
+    assert.strictEqual(isDesktopBackgroundWindowClass("Windows.UI.Core.CoreWindow"), false);
+  });
+
+  it("rejects normal app classes and unusable input", () => {
+    assert.strictEqual(isDesktopBackgroundWindowClass("Chrome_WidgetWin_1"), false);
+    assert.strictEqual(isDesktopBackgroundWindowClass(""), false);
+    assert.strictEqual(isDesktopBackgroundWindowClass(null), false);
+    assert.strictEqual(isDesktopBackgroundWindowClass(undefined), false);
   });
 });
 
@@ -296,6 +317,9 @@ describe("createForegroundFullscreenProbe", () => {
     probe();
     assert.deepStrictEqual(probe.getLastObservation(), {
       reliable: true, foregroundId: "4242", fullscreenId: null,
+      // #1282: a covering shell host is a foreign overlay even though it is
+      // deliberately not "fullscreen" for stand-down/auto-hide.
+      overlay: true,
     });
   });
 
@@ -437,6 +461,7 @@ describe("fullscreen probe identity (#935)", () => {
       reliable: true,
       foregroundId: "4242",
       fullscreenId: null,
+      overlay: false,
     });
   });
 
@@ -450,6 +475,7 @@ describe("fullscreen probe identity (#935)", () => {
       reliable: false,
       foregroundId: "4242",
       fullscreenId: null,
+      overlay: false,
     });
   });
 
@@ -489,5 +515,98 @@ describe("fullscreen probe identity (#935)", () => {
     assert.strictEqual(probe.isWindowIdAlive("not-an-address"), null);
     assert.strictEqual(probe.isWindowIdAlive("4242"), null);
     assert.strictEqual(callErrors, 1);
+  });
+});
+
+// #1282: alongside the fullscreen verdict, the probe classifies every
+// covers-monitor window as a "covering overlay" unless it is the bare desktop
+// background (Progman/WorkerW) or a maximized normal window. The Win+Shift+S
+// region-select overlay, Task View and the IME/emoji CoreWindows all land
+// there — they are deliberately NOT "fullscreen" (their classes are excluded
+// above), but their drag-shaped gestures die when the foreground moves, so
+// hit-window activation and roam stand down for them.
+describe("covering-overlay verdict (#1282)", () => {
+  const COVERING = {
+    hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+  };
+  const WIN11_SHELL_HOST_STYLE = 0x94000000;
+
+  it("classifies the snip overlay's CoreWindow as a covering overlay, not fullscreen", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        ...COVERING,
+        className: "Windows.UI.Core.CoreWindow", style: WIN11_SHELL_HOST_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), false);
+    assert.strictEqual(probe.getLastObservation().overlay, true);
+  });
+
+  it("classifies the Task View island as a covering overlay", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        ...COVERING,
+        className: "XamlExplorerHostIslandWindow", style: WIN11_SHELL_HOST_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), false);
+    assert.strictEqual(probe.getLastObservation().overlay, true);
+  });
+
+  it("does not classify the bare desktop background as an overlay", () => {
+    for (const className of ["Progman", "WorkerW"]) {
+      const probe = createForegroundFullscreenProbe({
+        isWin: true,
+        koffi: fakeKoffi({ ...COVERING, className, style: WIN11_SHELL_HOST_STYLE }),
+      });
+      assert.strictEqual(probe(), false);
+      assert.strictEqual(
+        probe.getLastObservation().overlay, false,
+        `${className} is an ordinary desktop state, not a covering gesture`,
+      );
+    }
+  });
+
+  it("does not classify a maximized normal window as an overlay (#871 refinement applies)", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({
+        ...COVERING,
+        className: "Chrome_WidgetWin_1", style: MAXIMIZED_NORMAL_STYLE,
+      }),
+    });
+    assert.strictEqual(probe(), false);
+    assert.strictEqual(probe.getLastObservation().overlay, false);
+  });
+
+  it("classifies a real fullscreen app as a covering overlay too", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({ ...COVERING, className: "UnrealWindow", style: BORDERLESS_STYLE }),
+    });
+    assert.strictEqual(probe(), "4242");
+    const observation = probe.getLastObservation();
+    assert.strictEqual(observation.fullscreenId, "4242");
+    assert.strictEqual(observation.overlay, true);
+  });
+
+  it("keeps the geometric answer (overlay) when the class read fails", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({ ...COVERING, className: null, style: BORDERLESS_STYLE }),
+    });
+    assert.strictEqual(probe(), "4242");
+    assert.strictEqual(probe.getLastObservation().overlay, true);
+  });
+
+  it("answers overlay:false for a window that does not cover the monitor", () => {
+    const probe = createForegroundFullscreenProbe({
+      isWin: true,
+      koffi: fakeKoffi({ hwnd: {}, hMonitor: {}, winRect: MAXIMIZED_RECT, monitorRect: MONITOR }),
+    });
+    assert.strictEqual(probe(), false);
+    assert.strictEqual(probe.getLastObservation().overlay, false);
   });
 });

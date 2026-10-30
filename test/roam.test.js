@@ -1118,6 +1118,90 @@ describe("roam pauses during IME editing (#640)", () => {
   });
 });
 
+describe("roam holds under a covering overlay (#1282)", () => {
+  beforeEach(() => {
+    const randomValues = [0.9, 0.9, 0.9, 0.1];
+    let randomIndex = 0;
+    mock.method(
+      Math,
+      "random",
+      () => randomValues[randomIndex++ % randomValues.length],
+    );
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("does not start a roam while a covering overlay is foreground", () => {
+    const ctx = makeCtx({ isOverlayForeground: () => true });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(200);
+
+    assert.equal(ctx._realBounds.x, 400, "pet must hold still under the overlay");
+    assert.equal(ctx._realBounds.y, 300, "pet must hold still under the overlay");
+    assert.equal(ctx._stateLog.length, 0, "no roam state change while the overlay is foreground");
+  });
+
+  it("cancels a walk mid-stride when the overlay appears and restores idle", () => {
+    let overlay = false;
+    const ctx = makeCtx({ isOverlayForeground: () => overlay });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8000); // pause timer fires, walk starts
+    mock.timers.tick(160); // a few frames in
+    const midWalk = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    assert.ok(
+      midWalk.x !== 400 || midWalk.y !== 300,
+      "walk should be underway",
+    );
+
+    overlay = true;
+    mock.timers.tick(64); // next frame hits the gate
+
+    assert.ok(
+      ctx._stateLog.some((e) => e.type === "setState" && e.state === "idle"),
+      "overlay gate must restore idle instead of freezing the walk pose",
+    );
+    const stopped = { x: ctx._realBounds.x, y: ctx._realBounds.y };
+    mock.timers.tick(320);
+    assert.deepEqual(
+      { x: ctx._realBounds.x, y: ctx._realBounds.y },
+      stopped,
+      "no further movement after the overlay gate cancels the walk",
+    );
+  });
+
+  it("walks normally again once the overlay is gone", () => {
+    let overlay = true;
+    const ctx = makeCtx({ isOverlayForeground: () => overlay });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+
+    roam.tick();
+    mock.timers.tick(8200);
+    assert.equal(ctx._realBounds.x, 400, "held still while the overlay is foreground");
+
+    overlay = false;
+    roam.tick(); // re-arms the walk schedule
+    mock.timers.tick(8000);
+    mock.timers.tick(160); // a few walk frames in (the t=0 frame still sits at the start)
+
+    assert.ok(
+      ctx._realBounds.x !== 400 || ctx._realBounds.y !== 300,
+      "walk starts after the overlay clears",
+    );
+  });
+});
+
 describe("roam pauses during settings size preview", () => {
   beforeEach(() => {
     mock.method(Math, "random", () => 0.9);

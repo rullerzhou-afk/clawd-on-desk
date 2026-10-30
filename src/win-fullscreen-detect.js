@@ -12,6 +12,16 @@
 // right now?" and, if so, stand down for that cycle — the pet naturally falls
 // behind the fullscreen content and pops back once the user exits fullscreen.
 //
+// #1282: the probe's observation additionally classifies the covers-monitor
+// case as a "covering overlay" — a borderless covering window that is neither
+// a maximized normal window nor the bare desktop background. The Win+Shift+S
+// region-select overlay, Task View and the IME/emoji CoreWindows all land
+// there: they are deliberately NOT "fullscreen" (their classes are excluded
+// below so stand-down/auto-hide never fire on them), but their in-progress
+// gestures die when the foreground moves, so consumers (hit-window
+// activation, roam) must stand down for them too. The verdict rides the
+// observation, so no extra FFI calls are added on the common path.
+//
 // Everything here is best-effort: if koffi/user32 is unavailable the factory
 // returns a probe that always answers false, so the watchdog keeps its current
 // behavior rather than ever hiding the pet because the FFI broke.
@@ -50,6 +60,19 @@ const DESKTOP_SHELL_WINDOW_CLASSES = new Set([
   "xamlexplorerhostislandwindow",
   "windows.ui.core.corewindow",
 ]);
+
+// #1282: the subset of shell classes that are the bare desktop background.
+// Progman / a WorkerW sibling are foreground whenever the user clicks the
+// desktop and stay that way while the desktop has focus — a normal desktop
+// state, not a covering gesture. The #1017 island/CoreWindow hosts, by
+// contrast, ARE covering overlays while they are foreground (Task View, the
+// Win+Shift+S region-select snip overlay, IME candidates, the emoji panel):
+// transient windows whose whole point is to own the screen for a gesture, and
+// whose gesture dies when the foreground moves.
+const DESKTOP_BACKGROUND_WINDOW_CLASSES = new Set([
+  "progman",
+  "workerw",
+]);
 // Ample for real class names; matches win-foreground-terminal.js.
 const CLASS_NAME_BUF_LEN = 256;
 
@@ -75,6 +98,12 @@ const WS_MAXIMIZE = 0x01000000;
 function isDesktopShellWindowClass(className) {
   return typeof className === "string"
     && DESKTOP_SHELL_WINDOW_CLASSES.has(className.toLowerCase());
+}
+
+// Win32 class-name comparison is case-insensitive.
+function isDesktopBackgroundWindowClass(className) {
+  return typeof className === "string"
+    && DESKTOP_BACKGROUND_WINDOW_CLASSES.has(className.toLowerCase());
 }
 
 // Pure style decision, exported for the same reason as rectCoversMonitor.
@@ -105,7 +134,7 @@ function rectCoversMonitor(winRect, monitorRect, tolerance = FULLSCREEN_TOLERANC
 function createForegroundFullscreenProbe(options = {}) {
   const isWin = options.isWin != null ? !!options.isWin : process.platform === "win32";
   const noop = () => false;
-  noop.getLastObservation = () => ({ reliable: false, foregroundId: null, fullscreenId: null });
+  noop.getLastObservation = () => ({ reliable: false, foregroundId: null, fullscreenId: null, overlay: false });
   noop.isWindowIdAlive = () => null;
   if (!isWin) return noop;
 
@@ -167,7 +196,7 @@ function createForegroundFullscreenProbe(options = {}) {
     if (typeof options.onError === "function") options.onError(err);
   }
 
-  let lastObservation = { reliable: false, foregroundId: null, fullscreenId: null };
+  let lastObservation = { reliable: false, foregroundId: null, fullscreenId: null, overlay: false };
 
   function getWindowId(hwnd) {
     if (!addressOf) return null;
@@ -190,8 +219,8 @@ function createForegroundFullscreenProbe(options = {}) {
     }
   }
 
-  function recordNotFullscreen(foregroundId, reliable = true) {
-    lastObservation = { reliable, foregroundId, fullscreenId: null };
+  function recordNotFullscreen(foregroundId, reliable = true, overlay = false) {
+    lastObservation = { reliable, foregroundId, fullscreenId: null, overlay };
     return false;
   }
 
@@ -216,12 +245,28 @@ function createForegroundFullscreenProbe(options = {}) {
       // the rare covers-monitor case, so the extra FFI call is off the common
       // path. A failed class read (0 length) keeps the geometric answer: the
       // pre-#719 behavior, erring toward "fullscreen" for a covering window.
+      // #1282: the class read also feeds the covering-overlay verdict below —
+      // an unknown class keeps the geometric answer there too, so a read
+      // failure still classifies the covering window as an overlay.
       const classBuf = new Uint16Array(CLASS_NAME_BUF_LEN);
       const classLen = GetClassNameW(hwnd, classBuf, CLASS_NAME_BUF_LEN);
       if (classLen > 0) {
         let className = "";
         for (let i = 0; i < classLen; i++) className += String.fromCharCode(classBuf[i]);
-        if (isDesktopShellWindowClass(className)) return recordNotFullscreen(foregroundId);
+        if (isDesktopShellWindowClass(className)) {
+          // #1282: the #1017 hosts (Task View island, IME/emoji CoreWindow,
+          // the Win+Shift+S snip overlay) are not "fullscreen" for the
+          // stand-down/auto-hide decisions above, but while they cover the
+          // monitor they are a foreign overlay: deactivation cancels their
+          // in-progress gesture, so hit-window activation and roam must stand
+          // down. The bare desktop background (Progman/WorkerW) is not — the
+          // pet lives on it, and a foreground desktop is an ordinary state.
+          return recordNotFullscreen(
+            foregroundId,
+            true,
+            !isDesktopBackgroundWindowClass(className),
+          );
+        }
       }
 
       // #871: last, separate a merely maximized window from a real fullscreen
@@ -233,16 +278,21 @@ function createForegroundFullscreenProbe(options = {}) {
         if (isMaximizedNormalWindow(style)) return recordNotFullscreen(foregroundId);
       }
       // Fullscreen: report the window's identity, not just the verdict (#935).
+      // #1282: every window reaching this point covers the monitor, is not a
+      // maximized normal window, and is either an app class or has an
+      // unreadable class — a covering overlay for the #1282 consumers either
+      // way (a real fullscreen app merely overlaps that verdict, which only
+      // ORs it with the fullscreen answer).
       if (foregroundId != null) {
-        lastObservation = { reliable: true, foregroundId, fullscreenId: foregroundId };
+        lastObservation = { reliable: true, foregroundId, fullscreenId: foregroundId, overlay: true };
         return foregroundId;
       }
-      lastObservation = { reliable: true, foregroundId: null, fullscreenId: true };
+      lastObservation = { reliable: true, foregroundId: null, fullscreenId: true, overlay: true };
       return true;
     } catch (err) {
       // Any FFI hiccup at call time: behave as "not fullscreen" so the
       // watchdog keeps the pet visible rather than hiding it on an error.
-      lastObservation = { reliable: false, foregroundId: null, fullscreenId: null };
+      lastObservation = { reliable: false, foregroundId: null, fullscreenId: null, overlay: false };
       if (typeof options.onCallError === "function") options.onCallError(err);
       return false;
     }
@@ -261,6 +311,7 @@ module.exports = {
   createForegroundFullscreenProbe,
   rectCoversMonitor,
   isDesktopShellWindowClass,
+  isDesktopBackgroundWindowClass,
   isMaximizedNormalWindow,
   FULLSCREEN_TOLERANCE_PX,
 };

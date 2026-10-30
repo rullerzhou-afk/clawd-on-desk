@@ -653,6 +653,73 @@ describe("topmost runtime Windows recovery", () => {
     assert.strictEqual(timers.intervals[0].cleared, true);
   });
 
+  it("focusable poll keeps the hit window non-activating under a covering overlay (#1282)", () => {
+    const timers = makeTimers();
+    const focusableCalls = [];
+    let observation = { reliable: true, foregroundId: "99", fullscreenId: null, overlay: true };
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => new FakeWindow(),
+      getHitWin: () => new FakeWindow(),
+      // The snip overlay is NOT "fullscreen" — its class is excluded from that
+      // verdict — so only the observation's overlay field can protect it.
+      isForegroundFullscreen: () => false,
+      getForegroundFullscreenObservation: () => observation,
+      setHitWinFocusable: (focusable) => focusableCalls.push(focusable),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startFocusablePoll();
+    // A click that steals the overlay's foreground cancels its in-progress
+    // drag (a Win+Shift+S selection dies before the mouse is released), so
+    // the hit window must go non-activating exactly like under a fullscreen
+    // app (#562's "focus is never stolen" rule, extended to overlays).
+    assert.deepStrictEqual(focusableCalls, [false]);
+
+    // Overlay gone → ordinary desktop activation semantics return.
+    observation = { reliable: true, foregroundId: "99", fullscreenId: null, overlay: false };
+    timers.intervals[0].fn();
+    assert.deepStrictEqual(focusableCalls, [false, true]);
+
+    // An unreliable observation never flips the policy by itself.
+    observation = { reliable: false, foregroundId: null, fullscreenId: null, overlay: true };
+    timers.intervals[0].fn();
+    assert.deepStrictEqual(focusableCalls, [false, true, true]);
+
+    runtime.stopFocusablePoll();
+  });
+
+  it("isForegroundOverlay exposes the last covering-overlay verdict for other cadences (#1282)", () => {
+    let observation = { reliable: true, foregroundId: "7", fullscreenId: null, overlay: true };
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      isForegroundFullscreen: () => false,
+      getForegroundFullscreenObservation: () => observation,
+    });
+    assert.strictEqual(runtime.isForegroundOverlay(), true);
+    observation = { reliable: false, foregroundId: null, fullscreenId: null, overlay: true };
+    assert.strictEqual(
+      runtime.isForegroundOverlay(), false,
+      "unreliable observations never read as an overlay",
+    );
+    observation = { reliable: true, foregroundId: "7", fullscreenId: null, overlay: false };
+    assert.strictEqual(runtime.isForegroundOverlay(), false);
+  });
+
+  it("isForegroundOverlay is false off Windows and when no observation source is wired", () => {
+    const offWin = createTopmostRuntime({
+      isWin: false,
+      isForegroundFullscreen: () => false,
+      getForegroundFullscreenObservation: () => ({
+        reliable: true, foregroundId: null, fullscreenId: null, overlay: true,
+      }),
+    });
+    assert.strictEqual(offWin.isForegroundOverlay(), false);
+    const unwired = createTopmostRuntime({ isWin: true, isForegroundFullscreen: () => false });
+    assert.strictEqual(unwired.isForegroundOverlay(), false);
+  });
+
   it("assembly: focusable poll drives the real Windows native-style controller without Electron focus calls", () => {
     const timers = makeTimers();
     const hitWin = new FakeWindow();

@@ -604,9 +604,24 @@ function createTopmostRuntime(options = {}) {
   // window where an early drag could still kick the game out (#562). Decoupled
   // from the overlay/topmost decision: focus is never stolen from a fullscreen
   // app, overlay or not. setHitWinFocusable is idempotent (no-op unchanged).
+  //
+  // #1282: a covering overlay that is deliberately NOT "fullscreen" (the
+  // Win+Shift+S region-select snip overlay, Task View, IME/emoji panels —
+  // their classes are excluded from the fullscreen verdict because stand-down
+  // and auto-hide must not fire on them) gets the same protection. Their
+  // gestures are drag-shaped and die on deactivation: with the hit window
+  // still activatable, a mouse-down that lands on the pet steals the
+  // foreground and kills the gesture mid-drag (a snip selection ends before
+  // the mouse is released). Unreliable observations keep today's behavior.
+  function readCoveringOverlay() {
+    if (!isWin) return false;
+    const observation = getForegroundFullscreenObservation();
+    return !!(observation && observation.reliable === true && observation.overlay === true);
+  }
+
   function syncHitWinFocusable(fullscreenObservation) {
     if (!isWin) return;
-    setHitWinFocusable(!fullscreenObservation);
+    setHitWinFocusable(!(fullscreenObservation || readCoveringOverlay()));
   }
 
   // #935: edge-triggered fullscreen auto-hide, riding the same 1s poll (the
@@ -817,6 +832,11 @@ function createTopmostRuntime(options = {}) {
     stopTopmostWatchdog,
     startFocusablePoll,
     stopFocusablePoll,
+    // #1282: the last focusable poll's covering-overlay verdict (≤1s stale).
+    // Consumers with their own cadence — roam's pause timer and per-frame
+    // gates — read this instead of re-probing, keeping one native observation
+    // per tick shared across decisions.
+    isForegroundOverlay: readCoveringOverlay,
     noteFullscreenAutoHideOverride,
     clearFullscreenAutoHideOverride,
     cleanup,
