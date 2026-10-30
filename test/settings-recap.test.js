@@ -127,6 +127,18 @@ test("recap card keeps day grids square, makes only today a bar chart, and expos
   assert.ok(!preload.includes("shareRecap"));
 });
 
+test("the settings scroller is announced as scroll-changing to the compositor", () => {
+  // First-scroll stutter on 足迹 was a one-time ~40ms scroll-layer preparation
+  // after the card repaint, not the cost of the 372 cells: hiding every cell
+  // left it unchanged, and a 24-cell page paid it too. The compositor hint moves
+  // that preparation into the settling phase.
+  const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
+  assert.match(css, /\.content\s*\{[^}]*will-change:\s*scroll-position;/);
+  const contentRule = css.match(/\.content\s*\{[^}]*\}/)[0];
+  assert.match(contentRule, /overflow-y:\s*auto;/);
+  assert.match(contentRule, /scrollbar-gutter:\s*stable;/);
+});
+
 test("today bar ratios use one honest linear scale", () => {
   const context = { globalThis: null };
   context.globalThis = context;
@@ -310,4 +322,16 @@ test("known agent colors match the approved palette and fallbacks are determinis
   assert.equal(color("gemini-cli"), "var(--recap-agent-gemini)");
   assert.equal(color("reasonix"), color("reasonix"));
   assert.match(color("reasonix"), /^var\(--recap-agent-fallback-\d+\)$/);
+});
+
+test("the year grid drops per-cell transitions so its scroll stays smooth", () => {
+  // Real-window A/B (scripted scroll on the running app, 125% scaling): the
+  // year grid's 372 animatable cells cost 130-141ms worst frames per scroll
+  // burst, while 月 / 周 / 今天 (34 / 168 / 24 cells) stayed at 10-15ms. Dropping
+  // only the cell transitions leaves layout, size, radius and the dashed state
+  // borders untouched and removes the dropped frames.
+  const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
+  assert.match(css, /\.recap-grid-year \.recap-cell\s*\{\s*transition:\s*none;\s*\}/);
+  assert.match(css, /\.recap-year-row \.recap-cell\s*\{\s*border-radius:\s*20%;\s*\}/);
+  assert.match(css, /\.recap-grid:not\(\.recap-grid-today\) \.recap-cell-not-started\s*\{\s*border:\s*1px dashed/);
 });

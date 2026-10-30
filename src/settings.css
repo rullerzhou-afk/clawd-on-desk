@@ -190,6 +190,13 @@ html, body {
   overflow-y: auto;
   scrollbar-gutter: stable;
   padding: 28px 36px;
+  /* The pane is always a scroller, and every tab repaint replaces its subtree.
+     Telling the compositor up front that the scroll position will change lets
+     it prepare the scrollable layer while the page is settling. Without it the
+     first scroll after a repaint pays a one-time ~40ms frame on the 足迹
+     page — and that cost is independent of what was painted (hiding every cell
+     leaves it unchanged, a 24-cell page pays it too). */
+  will-change: scroll-position;
 }
 .content::-webkit-scrollbar { width: 6px; }
 .content::-webkit-scrollbar-track { background: transparent; }
@@ -706,6 +713,20 @@ html, body {
 }
 .recap-year-row .recap-band { gap: 1.5px; }
 .recap-year-row .recap-cell { border-radius: 20%; }
+/* The year grid keeps 372 animatable cells otherwise, and on the real GPU path
+   that makes every scroll burst re-rasterise the grid: measured worst frames of
+   130-141ms while scrolling 今年, against 10-15ms in 月 / 周 / 今天 (whose cells
+   are far fewer). Dropping cell transitions and isolating the static 12x31 grid
+   into its own paint-contained composited layer lets the GPU rasterise the
+   rounded dashed cells once and translate the cached texture during scroll,
+   while keeping .recap-cell-popover outside the grid unclipped. */
+.recap-grid-year {
+  padding: 3px;
+  margin: -3px;
+  contain: layout style paint;
+  transform: translateZ(0);
+}
+.recap-grid-year .recap-cell { transition: none; }
 .recap-cell-peek { z-index: 8; }
 .recap-cell-segments {
   position: absolute;
@@ -1915,11 +1936,15 @@ html, body {
 }
 .agent-detail-group-label,
 .settings-detail-group-label {
-  padding: 12px 0 0 14px;
+  padding: 15px 0 0 14px;
   color: var(--text-tertiary);
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.04em;
+}
+.agent-detail-group:has(> .agent-detail-group-rows > .row:first-child .segmented) > .agent-detail-group-label,
+.settings-detail-group:has(> .settings-detail-group-rows > .row:first-child .segmented) > .settings-detail-group-label {
+  padding-top: 17px;
 }
 .settings-detail-group-label {
   padding-right: 14px;
@@ -1951,7 +1976,16 @@ html, body {
 .row-desc-collapsed {
   display: none;
 }
+.row-label:has(> .row-desc-toggle) {
+  display: flex;
+  align-items: center;
+}
+.row-label:has(> .row-desc-toggle) > .row-desc-toggle {
+  flex: 0 0 auto;
+}
 .row-desc-toggle {
+  position: relative;
+  top: 1.5px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -1959,20 +1993,81 @@ html, body {
   height: 14px;
   margin-left: 6px;
   padding: 0;
-  border: 1px solid var(--text-tertiary);
+  border: 0;
   border-radius: 50%;
   background: transparent;
   color: var(--text-tertiary);
-  font-family: Georgia, "Times New Roman", serif;
-  font-size: 9.5px;
-  font-style: italic;
-  line-height: 1;
-  vertical-align: 1px;
+  font-size: 0;
+  line-height: 0;
   cursor: pointer;
 }
+.tg-approval-token-stored-label > .row-desc-toggle {
+  top: 1px;
+  margin-left: 0;
+}
+.row-desc-toggle svg {
+  width: 14px;
+  height: 14px;
+  display: block;
+  flex: 0 0 auto;
+  overflow: visible;
+}
+.row-desc-toggle circle,
+.row-desc-toggle path {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.25;
+  stroke-linecap: round;
+}
+.row-desc-toggle .row-desc-toggle-dot {
+  fill: currentColor;
+  stroke: none;
+}
 .row-desc-toggle:hover {
-  border-color: var(--accent);
   color: var(--accent);
+}
+.row-desc-toggle:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+/* Shared in-page hover hint used by the row-description disclosures. */
+.settings-tooltip {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1200;
+  max-width: 280px;
+  padding: 7px 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-bg);
+  color: var(--text-primary);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.16), 0 2px 6px rgba(0, 0, 0, 0.08);
+  font-size: 12px;
+  line-height: 1.5;
+  text-align: left;
+  white-space: normal;
+  word-break: break-word;
+  pointer-events: none;
+  opacity: 0;
+  visibility: hidden;
+  transform: translateY(2px);
+  transition:
+    opacity 0.12s ease,
+    transform 0.12s ease,
+    visibility 0s linear 0.12s;
+}
+.settings-tooltip.visible {
+  opacity: 1;
+  visibility: visible;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .settings-tooltip {
+    transition: none;
+  }
 }
 .row-note {
   margin-right: 4px;
@@ -3624,6 +3719,14 @@ html, body {
   justify-content: center;
   text-align: center;
 }
+.settings-confirm-actions:has(> :nth-child(3)) {
+  display: flex;
+  flex-wrap: wrap;
+}
+.settings-confirm-actions:has(> :nth-child(3)) .soft-btn {
+  flex: 1 0 auto;
+  white-space: nowrap;
+}
 .settings-confirm-actions .soft-btn.settings-confirm-danger {
   color: #ffffff;
   background: var(--danger-action);
@@ -4982,19 +5085,28 @@ html, body {
   flex: 0 0 auto;
   width: 18px;
   height: 18px;
-  margin-top: 11px;
+  margin-top: 21px;
   border: 1.5px solid var(--text-tertiary);
   border-radius: 50%;
   color: var(--text-tertiary);
   font-size: 10.5px;
   font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+  padding: 0;
   display: inline-flex;
   align-items: center;
   justify-content: center;
 }
+.channel-setup-step:has(> .channel-setup-body > .tg-approval-token-stored-row:first-child) > .channel-setup-num {
+  margin-top: 23px;
+}
 .channel-setup-body {
   flex: 1;
   min-width: 0;
+}
+.channel-setup-body .row-label {
+  line-height: 18px;
 }
 .channel-setup-foot {
   margin: 0 -12px;
@@ -5197,8 +5309,16 @@ html, body {
 .feishu-approval-id-type button {
   flex: 1 1 0;
   min-width: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 8px;
+  line-height: 1.2;
+  text-align: center;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: 12px;
+}
+.feishu-approval-id-type .settings-segmented-radio-label {
+  text-align: center;
 }
 @media (max-width: 640px) {
   .feishu-approval-secrets-grid {

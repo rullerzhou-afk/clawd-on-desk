@@ -7714,6 +7714,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".feishu-approval-timeout-select"), select);
     assert.equal(getSelectedPickerValue(select), "30");
 
+    const renderRequestsBefore = harness.renderRequests.length;
     assert.equal(harness.core.tabs.permissions.patchInPlace(
       { feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false } },
       {
@@ -7723,7 +7724,14 @@ describe("settings renderer browser environment", () => {
           feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false },
         },
       }
-    ), false, "other Feishu configuration changes still require a full render");
+    ), true, "the remote module claims its own config changes before applyChanges repaints");
+    assert.equal(harness.renderRequests.length, renderRequestsBefore + 1,
+      "the claim still rebuilds the card");
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(harness.renderRequests.at(-1))),
+      { content: true, preserveScroll: true },
+      "the rebuild must keep the settings pane scroll position"
+    );
   });
 
   it("saves Feishu Enable through an authoritative field-level patch", async () => {
@@ -9716,6 +9724,63 @@ describe("settings renderer browser environment", () => {
     assert.equal(status.element.classList.contains("warn"), false);
     assert.equal(status.element.classList.contains("bad"), true);
     assert.equal(status.element.querySelector(".settings-status-text").textContent, "Bad");
+  });
+
+  it("replaces the native disclosure title with the shared in-page hint", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const row = buildFakeSettingRow(document, {
+      label: "Label",
+      description: "Folded description",
+    });
+    core.helpers.attachDescriptionDisclosure(row.element);
+    const toggle = row.element.querySelector(".row-desc-toggle");
+    assert.ok(toggle);
+    assert.equal(toggle.getAttribute("title"), undefined, "native OS tooltip must not be used");
+    assert.equal(toggle.getAttribute("aria-describedby"), row.descriptionElement.id);
+    const svg = toggle.querySelector("svg");
+    assert.ok(svg, "the disclosure renders a vector SVG icon");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 14 14");
+
+    toggle.dispatchEvent({ type: "mouseenter" });
+    const tooltip = document.body.children.find((child) => child.classList.contains("settings-tooltip"));
+    assert.ok(tooltip, "hovering the disclosure mounts the shared tooltip");
+    assert.equal(tooltip.textContent, "Folded description");
+    assert.equal(tooltip.classList.contains("visible"), true);
+    assert.equal(tooltip.getAttribute("aria-hidden"), "false");
+
+    toggle.dispatchEvent({ type: "click" });
+    assert.equal(tooltip.classList.contains("visible"), false);
+    assert.equal(row.descriptionElement.classList.contains("row-desc-collapsed"), false);
+    // Once the text is inline there is nothing left to hint.
+    toggle.dispatchEvent({ type: "mouseenter" });
+    assert.equal(tooltip.classList.contains("visible"), false);
+    assert.equal(document.body.children.includes(tooltip), true, "a single tooltip node is reused");
+  });
+
+  it("keeps three-action confirmation button labels unsplit on a single line", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const button = core.helpers.buildButton({ label: "重置令牌并启用（推荐）", size: "large" });
+    const label = button.querySelector(".settings-button-label");
+    assert.equal(label.textContent, "重置令牌并启用（推荐）");
+    assert.equal(label.children.length, 0, "button labels stay a single unsplit text run");
+
+    core.helpers.setButtonState(button, { label: "保留令牌并启用" });
+    assert.equal(label.textContent, "保留令牌并启用");
+    assert.equal(label.children.length, 0);
+
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.settings-confirm-actions:has\(>\s*:nth-child\(3\)\)\s*\{[\s\S]*?display:\s*flex;/);
+    assert.match(css, /\.settings-confirm-actions:has\(>\s*:nth-child\(3\)\)\s+\.soft-btn\s*\{[\s\S]*?white-space:\s*nowrap;/);
   });
 
   it("removes the legacy channel markup from source and CSS", () => {
