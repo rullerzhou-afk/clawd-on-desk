@@ -162,6 +162,7 @@ class CodexLogMonitor {
     this._config = agentConfig;
     this._onStateChange = onStateChange;
     this._onActivity = typeof options.onActivity === "function" ? options.onActivity : null;
+    this._bootTimeMs = Number.isFinite(options.bootTimeMs) ? options.bootTimeMs : null;
     this._classifier = options.classifier || new CodexSubagentClassifier();
     this._onUserInputRequest = typeof options.onUserInputRequest === "function"
       ? options.onUserInputRequest
@@ -833,6 +834,8 @@ class CodexLogMonitor {
       const record = parseCodexUserInputRecord(obj);
       if (!record) continue;
       if (record.phase === "request") {
+        if (!this._isAfterHostBoot(embeddedTimestampMs)) continue;
+        record._bootOccurredAt = embeddedTimestampMs;
         pending.set(record.callId, record);
         const ts = typeof obj.timestamp === "string" ? Date.parse(obj.timestamp) : NaN;
         pendingTimestampMs.set(record.callId, Number.isFinite(ts) ? ts : null);
@@ -1563,6 +1566,9 @@ class CodexLogMonitor {
 
   _clearUnpublishedReplayState(tracked) {
     if (!tracked) return;
+    // A replaced/rebaselined file cannot inherit another read's evidence that
+    // activity happened in this boot, even if its next replay has an open turn.
+    delete tracked.bootActivityAt;
     if (tracked.initializingUserInputs && tracked.pendingUserInputs instanceof Map) {
       tracked.pendingUserInputs.clear();
     }
@@ -1676,6 +1682,31 @@ class CodexLogMonitor {
       if (providerHint) tracked.codexQuotaProviderHint = providerHint;
     }
 
+    // Guardian assessments describe automatic approval/review. They cannot
+    // establish that a user turn resumed in this boot, or replace its last
+    // accepted phase before the startup snapshot chooses a state to publish.
+    if (this._bootTimeMs !== null && key === "event_msg:guardian_assessment") return;
+    const afterBoot = this._isAfterHostBoot(parsedOccurredAt);
+    if (!afterBoot && key !== "event_msg:token_count") {
+      // An optional delegated-turn observer may keep private start/terminal
+      // order for a real continuation after boot. It must not publish history.
+      if (isTurnStart || isTurnTerminal) {
+        this._observePreBootDelegatedTurn?.(tracked, key, effectiveTurnId, parsedOccurredAt);
+      }
+      // Keep file-order turn identity so a genuine write after this boot can
+      // continue the rollout, while history cannot create cards or questions.
+      const historicalState = this._config.logEventMap[key];
+      if (SUSTAINED_ACTIVE_STATES.has(historicalState)) tracked.lastState = historicalState;
+      if (isTurnTerminal) tracked.lastState = "idle";
+      finishTurnTerminal();
+      return;
+    }
+    if (afterBoot && Number.isFinite(parsedOccurredAt)
+      && (MODEL_PROGRESS_EVENTS.has(key) || (this._config.logEventMap[key] != null
+        && key !== "event_msg:token_count" && type !== "session_meta"))) {
+      tracked.bootActivityAt = parsedOccurredAt;
+    }
+
     // request_user_input/function_call_output correlation must survive the
     // timestamp guard below: Codex Desktop can rewrite event_msg:token_count
     // on focus long after the session went idle, which bumps the file's
@@ -1688,7 +1719,7 @@ class CodexLogMonitor {
     // storms on app restart from driving stale state transitions.
     if (obj && typeof obj.timestamp === "string") {
       const ts = Date.parse(obj.timestamp);
-      if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) {
+      if (afterBoot && !tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) {
         finishTurnTerminal();
         return;
       }
@@ -2015,6 +2046,17 @@ class CodexLogMonitor {
     };
     const hasQuota = Object.keys(quotaExtra).length > 0;
     const hasPlanProgress = !!tracked.planProgress;
+    if (!this._isAfterHostBoot(tracked.bootActivityAt)) {
+      if (tracked.contextUsage || hasQuota || hasPlanProgress) {
+        // Do not overwrite the private historical phase: a real postboot
+        // reasoning write can still continue that open turn after this read.
+        this._onStateChange(tracked.sessionId, "idle", "event_msg:token_count", {
+          ...this._withTrackedSessionMetadata(tracked, quotaExtra),
+          transcriptPath: tracked.filePath,
+        });
+      }
+      return;
+    }
     // A pending question already gets its own card via
     // _emitPendingUserInputRequests, so a root session's redundant sustained-
     // state snapshot is skipped here. Subagents never get that card
@@ -2134,6 +2176,7 @@ class CodexLogMonitor {
 
   _emitUserInputRequest(tracked, request) {
     if (!this._onUserInputRequest || this._isTrackedSubagent(tracked)) return;
+    if (!this._isAfterHostBoot(request.activity?.recapOccurredAt ?? request._bootOccurredAt)) return;
     const agentPid = this._resolveTrackedAgentPid(tracked);
     const questionTurnId = normalizeCodexTurnId(request && request.activity && request.activity.turnId);
     const planTurnId = normalizeCodexTurnId(tracked.planProgressTurnId);
@@ -2221,12 +2264,19 @@ class CodexLogMonitor {
   _emitLiveActivity(tracked, event, extra, state) {
     if (!this._onActivity || !tracked || this._isReplayActive(tracked)
       || !tracked.turnBoundaryOpen || !SUSTAINED_ACTIVE_STATES.has(state)
-      || !extra || !Number.isSafeInteger(extra.recapOccurredAt)) return;
+      || !extra || !Number.isSafeInteger(extra.recapOccurredAt)
+      || !this._isAfterHostBoot(extra.recapOccurredAt)) return;
     this._onActivity(tracked.sessionId, state, event, {
       turnId: extra.turnId || null,
       recapOccurredAt: extra.recapOccurredAt,
       headless: this._isTrackedSubagent(tracked),
+      transcriptPath: tracked.filePath,
     });
+  }
+
+  _isAfterHostBoot(occurredAt) {
+    return this._bootTimeMs === null
+      || (Number.isFinite(occurredAt) && occurredAt >= this._bootTimeMs);
   }
 }
 

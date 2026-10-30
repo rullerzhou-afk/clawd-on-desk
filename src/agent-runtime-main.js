@@ -316,6 +316,7 @@ function createAgentRuntimeMain(options = {}) {
       && (session.profileId || "local") === "local"
       && !session.host
       && !session.wslDistro
+      && String(session.platform || "").trim().toLowerCase() !== "wsl"
     );
   }
 
@@ -553,7 +554,8 @@ function createAgentRuntimeMain(options = {}) {
       && opts.hookSource === "codex-official"
       && opts.profileId === "local"
       && !opts.host
-      && !opts.wslDistro);
+      && !opts.wslDistro
+      && String(opts.platform || "").trim().toLowerCase() !== "wsl");
     if (isLocalOfficialCodexEvent) {
       if (opts.codexInternalThread === CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS) {
         // Hidden ambient-suggestion work: remember the sid so later official
@@ -576,7 +578,7 @@ function createAgentRuntimeMain(options = {}) {
     }
     if (opts && opts.agentId === "codex" && opts.hookSource === "codex-official") {
       markCodexOfficialHookSession(sessionId, opts.turnId);
-      if (opts.profileId === "local") {
+      if (isLocalOfficialCodexEvent) {
         recordCodexTurnIdCapture(sessionId, "official", event, opts.turnId);
         const fenceDecision = codexTurnFence.observe({
           sessionId,
@@ -607,6 +609,13 @@ function createAgentRuntimeMain(options = {}) {
     const sessionBeforeUpdate = event === "SessionEnd" && sessions && typeof sessions.get === "function"
       ? sessions.get(sessionId)
       : null;
+    if (isLocalOfficialCodexEvent && event === "SessionStart" && state === "idle"
+      && shouldHoldRetiredCodexInitialization(sessionId, opts, stateRuntime)) {
+      // agent-exit retired the row but not this open turn. Initialization is
+      // not new activity: retain its recovery tuple until real progress arrives.
+      debugLog(`codex-initialization defer-retired sid=${String(sessionId).replace(/[\r\n]/g, "_")}`);
+      return true;
+    }
     // Initialization can arrive after the fallback already accepted this turn.
     // Keep its real phase/clock; valid initialization metadata still belongs to
     // the conversation. New/closed owners and compaction keep their lifecycle path.
@@ -632,6 +641,19 @@ function createAgentRuntimeMain(options = {}) {
     enrichQoderSessionTitle(sessionId, event, opts);
     enrichWorkBuddySessionTitle(sessionId, event, opts);
     return result;
+  }
+
+  function shouldHoldRetiredCodexInitialization(sessionId, opts, stateRuntime) {
+    if (!isAgentEnabled("codex") || !stateRuntime
+      || typeof stateRuntime.hasRecoverableCodexProcessExit !== "function"
+      || stateRuntime.sessions?.has(sessionId)
+      || opts.headless || opts.subagentId || opts.subagentType || opts.recapIsSubagent) return false;
+    const owner = codexTurnFence.getSnapshot(sessionId);
+    const turnId = normalizeCodexTurnId(opts.turnId) || owner?.currentTurnId;
+    return !!owner && !owner.terminalLatch && !!turnId && owner.currentTurnId === turnId
+      && stateRuntime.hasRecoverableCodexProcessExit(sessionId, {
+        turnId, transcriptPath: opts.transcriptPath, allowMissingInitializerPath: true,
+      });
   }
 
   function shouldPreserveCodexInitialization(sessionId, opts, stateRuntime) {
@@ -808,18 +830,21 @@ function createAgentRuntimeMain(options = {}) {
     );
   }
 
-  function touchLocalCodexProgress(sessionId, activityState, activity) {
+  function touchLocalCodexProgress(sessionId, activityState, activity, event) {
     if (!activity || activity.headless === true
       || !CODEX_WORKING_LIKE_STATES.has(activityState)
       || !Number.isSafeInteger(activity.recapOccurredAt)
       || activity.recapOccurredAt < 0 || activity.recapOccurredAt > now() + 1500) return false;
     const state = getStateRuntime();
     const session = state?.sessions?.get(sessionId);
-    if (!isLocalCodexSessionRecord(session) || session.headless
-      || (session.state === "idle" && !Number.isFinite(session.codexWorkingTimeoutAt))) return false;
-    const lastActivityAt = session.state === "idle"
-      ? session.codexWorkingTimeoutActivityAt : session.updatedAt;
-    if (!Number.isFinite(lastActivityAt) || activity.recapOccurredAt < lastActivityAt) return false;
+    if (session && (!isLocalCodexSessionRecord(session) || session.headless
+      || String(session.platform || "").trim().toLowerCase() === "wsl"
+      || (session.state === "idle" && !Number.isFinite(session.codexWorkingTimeoutAt)))) return false;
+    if (session) {
+      const lastActivityAt = session.state === "idle"
+        ? session.codexWorkingTimeoutActivityAt : session.updatedAt;
+      if (!Number.isFinite(lastActivityAt) || activity.recapOccurredAt < lastActivityAt) return false;
+    }
     const snapshot = codexTurnFence.getSnapshot(sessionId);
     const turnId = normalizeCodexTurnId(activity.turnId);
     // Only the already accepted current turn can refresh/revive its row.
@@ -830,6 +855,20 @@ function createAgentRuntimeMain(options = {}) {
       sessionId, source: "jsonl", event: "CodexLiveProgress", state: activityState, turnId,
     });
     if (!decision.accept) return false;
+    if (event !== "event_msg:guardian_assessment" && now() - activity.recapOccurredAt <= 30000
+      && typeof state?.acceptCodexLiveProcessProgress === "function"
+      && state.acceptCodexLiveProcessProgress(sessionId, {
+        turnId, transcriptPath: activity.transcriptPath, activityState, now: activity.recapOccurredAt,
+      })) {
+      const restored = state.sessions?.get(sessionId);
+      // A process-exit restore also recreates presentation admission. Let an
+      // optional delegated-child monitor re-declare only its own live children.
+      if (!session && isLocalCodexSessionRecord(restored) && !restored.headless) {
+        codexMonitor?.refreshSubagentsOfParent?.(restored.rawSessionId || sessionId);
+      }
+      return true;
+    }
+    if (!session) return false;
     return typeof state.touchSessionActivity === "function" && state.touchSessionActivity(sessionId, {
       agentId: "codex", profileId: "local", localOnly: true, reviveIdle: true,
       activityState, onlyWorkingTimeout: true, now: activity.recapOccurredAt,
@@ -1026,12 +1065,17 @@ function createAgentRuntimeMain(options = {}) {
         annotateCodexAccountQuota();
       }, {
         classifier: localCodexSubagentClassifier,
+        // Only the local production monitor uses this host's boot boundary.
+        // Direct monitor fixtures can inject a deterministic value explicitly.
+        bootTimeMs: options.localCodexBootTimeMs,
         onActivity: (sid, activityState, _event, activity) => {
+          if (disposed || !isAgentEnabled("codex")) return;
           const sessionIdentity = resolveSessionIdentity(sid, "local");
           if (shouldSuppressCodexArchive(sessionIdentity.rawSessionId, {
             agentId: "codex", profileId: sessionIdentity.profileId,
-          }) || hasCodexSessionEndTombstone(sessionIdentity.sessionId)) return;
-          touchLocalCodexProgress(sessionIdentity.sessionId, activityState, activity);
+          }) || hasCodexSessionEndTombstone(sessionIdentity.sessionId)
+            || isCodexAmbientSuggestionSession(sessionIdentity.sessionId)) return;
+          touchLocalCodexProgress(sessionIdentity.sessionId, activityState, activity, _event);
         },
         onUserInputRequest: (sid, request, extra) => {
           const sessionIdentity = resolveSessionIdentity(sid, "local");
