@@ -495,6 +495,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     // src/telegram-direct-send.js has to wait out before pasting.
     orcaPaneKey: (session && session.orcaPaneKey) || null,
     canFocus: focusTarget.canFocus === true,
+    focusUnavailableReason: focusTarget.reason || null,
     canOpenInTerminal: !!getOpencodeAttachTarget(session, options.platform || process.platform),
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
