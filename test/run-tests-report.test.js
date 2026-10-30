@@ -29,6 +29,7 @@ test("CI test report: no override keeps the default invocation untouched", () =>
     assert.deepStrictEqual(resolveTestRunnerInvocation(env).args, [
       "--test",
       `--test-timeout=${DEFAULT_TEST_TIMEOUT_MS}`,
+      ...(process.platform === "win32" ? ["--test-concurrency=2"] : []),
       "test/*.test.js",
     ]);
   }
@@ -59,6 +60,7 @@ test("CI test report: report args sit before the glob and keep the timeout", () 
   assert.ok(args.includes(`--test-timeout=${DEFAULT_TEST_TIMEOUT_MS}`), "timeout must survive");
   assert.strictEqual(args[args.length - 1], "test/*.test.js", "the glob stays last");
   assert.deepStrictEqual(args.slice(2, args.length - 1), [
+    ...(process.platform === "win32" ? ["--test-concurrency=2"] : []),
     "--test-reporter=spec",
     "--test-reporter-destination=stdout",
     "--test-reporter=tap",
