@@ -1416,6 +1416,7 @@ let keepAwakeWhileWorking = _settingsController.get("keepAwakeWhileWorking");
 let petTint = _settingsController.get("petTint");
 let allowEdgePinningCached = _settingsController.get("allowEdgePinning");
 let disableMiniModeCached = _settingsController.get("disableMiniMode");
+let eyeTrackingEnabledCached = _settingsController.get("eyeTrackingEnabled");
 let keepSizeAcrossDisplaysCached = _settingsController.get("keepSizeAcrossDisplays");
 let fullscreenOverlayCached = _settingsController.get("fullscreenOverlay");
 let fullscreenAutoHideCached = _settingsController.get("fullscreenAutoHide");
@@ -2717,6 +2718,7 @@ const _tickCtx = {
   get idlePaused() { return idlePaused; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
   get lowPowerIdlePaused() { return lowPowerIdlePaused; },
+  get eyeTrackingEnabled() { return eyeTrackingEnabledCached; },
   get isAnimating() { return _mini.getIsAnimating(); },
   get miniSleepPeeked() { return _mini.getMiniSleepPeeked(); },
   set miniSleepPeeked(v) { _mini.setMiniSleepPeeked(v); },
@@ -4853,7 +4855,7 @@ const SETTINGS_MIRROR_SETTERS = {
   soundMuted: (v) => { soundMuted = v; }, soundVolume: (v) => { soundVolume = v; }, lowPowerIdleMode: (v) => { lowPowerIdleMode = v; },
   keepAwakeWhileWorking: (v) => { keepAwakeWhileWorking = v; },
   petTint: (v) => { petTint = v; },
-  allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
+  allowEdgePinning: (v) => { allowEdgePinningCached = v; }, disableMiniMode: (v) => { disableMiniModeCached = v; }, eyeTrackingEnabled: (v) => { eyeTrackingEnabledCached = v; }, keepSizeAcrossDisplays: (v) => { keepSizeAcrossDisplaysCached = v; resetKeepSizeFrozen(); },
   fullscreenOverlay: (v) => { fullscreenOverlayCached = v; },
   fullscreenAutoHide: (v) => {
     fullscreenAutoHideCached = v;
@@ -4932,6 +4934,10 @@ const settingsEffectRouter = createSettingsEffectRouter({
     }
   },
   reclampPetAfterEdgePinningChange,
+  // #1276: the tick owns gaze dedup state, so it also owns the enable/disable
+  // transition (resend on enable, park-at-center + pointer-bridge reset on
+  // disable). Runs after the mirror above already updated eyeTrackingEnabledCached.
+  applyEyeTrackingEnabledChange: (enabled) => _tick.handleEyeTrackingPreferenceChange(enabled === true),
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),

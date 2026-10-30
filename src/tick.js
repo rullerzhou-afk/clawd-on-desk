@@ -298,6 +298,11 @@ function runMainTickOnce() {
 
     const enteredIdle = idleNow && !idleWasActive;
     const cameFromWalk = enteredIdle && roamWasActive;
+    // #1276: eye tracking off parks the gaze forward. Only the follow IPC is
+    // suppressed — the rest of the idle machinery (sleep sequence, idle-look,
+    // pointer-over-pet) keeps running, and themes with a dizzy state still get
+    // cursor-circle detection, which needs the same eye-origin math below.
+    const eyeTrackingEnabled = ctx.eyeTrackingEnabled !== false;
     if (enteredIdle) {
       // Every idle entry starts a fresh visual, including after a walk has
       // interrupted an idle animation, eye tracking, or cursor spin.
@@ -344,7 +349,8 @@ function runMainTickOnce() {
     // ── Cursor-over-pet tracking (for mini peek + eye tracking, NOT for input routing) ──
     const pointerBridgeKey = getPointerBridgeKey();
     const suppressPassiveIpc = shouldSuppressPassiveIpc();
-    const needsPointerBridgeBounds = !!pointerBridgeKey
+    const needsPointerBridgeBounds = eyeTrackingEnabled
+      && !!pointerBridgeKey
       && !suppressPassiveIpc
       && (moved || ctx.forceEyeResend || pointerBridgeKey !== lastPointerBridgeKey);
     const needsBounds = ctx.miniMode || moved || ctx.forceEyeResend || miniIdleNow || needsPointerBridgeBounds;
@@ -388,7 +394,7 @@ function runMainTickOnce() {
       }
     }
 
-    sendPointerBridge(cursor, bounds);
+    if (eyeTrackingEnabled) sendPointerBridge(cursor, bounds);
 
     if (!idleNow && !miniIdleNow && !roamNow) return nextDelay();
 
@@ -516,10 +522,11 @@ function runMainTickOnce() {
     }
 
     const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle) || miniIdleNow;
-    if (!trackEyesNow) {
-      // Resting on a non-follow visual: the eye path below never runs, so
-      // consume the resend flag here — otherwise needsBounds stays true and
-      // getPetWindowBounds() fires every idle tick for nothing.
+    if (!trackEyesNow || (!eyeTrackingEnabled && !THEME_SUPPORTS_DIZZY)) {
+      // Resting on a non-follow visual (or eye tracking is off on a theme
+      // without dizzy): the eye path below never runs, so consume the resend
+      // flag here — otherwise needsBounds stays true and getPetWindowBounds()
+      // fires every idle tick for nothing.
       if (idleNow && !isMouseIdle && ctx.forceEyeResend) ctx.forceEyeResend = false;
       return nextDelay();
     }
@@ -566,7 +573,10 @@ function runMainTickOnce() {
     eyeDx = Math.max(-xClamp, Math.min(xClamp, eyeDx));
     eyeDy = Math.max(-yClamp, Math.min(yClamp, eyeDy));
 
-    if (skipDedup || eyeDx !== lastEyeDx || eyeDy !== lastEyeDy) {
+    // #1276: with eye tracking disabled the offsets are still computed above
+    // (dizzy detection consumes them) but never delivered, and the dedup
+    // baseline is left alone so re-enabling resends the live position.
+    if (eyeTrackingEnabled && (skipDedup || eyeDx !== lastEyeDx || eyeDy !== lastEyeDy)) {
       lastEyeDx = eyeDx;
       lastEyeDy = eyeDy;
       ctx.sendToRenderer("eye-move", eyeDx, eyeDy);
@@ -624,6 +634,27 @@ function resetIdleTimer() {
   mouseStillSince = Date.now();
 }
 
+// #1276: settings effect for the eyeTrackingEnabled toggle. Runs after the
+// main-process mirror already reflects the new value.
+function handleEyeTrackingPreferenceChange(enabled) {
+  // Resync the dedup baseline with what is actually on screen: the disable
+  // path parks the eyes at center, so the next enable must resend the live
+  // position even if the cursor has not moved since.
+  lastEyeDx = 0;
+  lastEyeDy = 0;
+  if (enabled) {
+    // The ctx setter also pulls the next tick forward via requestFastTick.
+    ctx.forceEyeResend = true;
+    return;
+  }
+  // Park the gaze forward: single-target/layered tracking recenters on a
+  // zero eye-move, and Cloudling-style pointer bridges settle their own
+  // followers via an explicit cursor-left payload (cached renderer-side, so
+  // re-entering idle stays forward).
+  ctx.sendToRenderer("eye-move", 0, 0);
+  ctx.sendToRenderer("cloudling-pointer", { x: 0, y: 0, inside: false });
+}
+
 function cleanup() {
   mainTickActive = false;
   if (mainTickTimer) { clearTimeout(mainTickTimer); mainTickTimer = null; }
@@ -654,6 +685,6 @@ Object.defineProperty(startMainTick, '_mouseStillSince', {
   get() { return mouseStillSince; },
 });
 
-return { startMainTick, resetIdleTimer, cleanup, refreshTheme, scheduleSoon, get _mouseStillSince() { return mouseStillSince; } };
+return { startMainTick, resetIdleTimer, cleanup, refreshTheme, scheduleSoon, handleEyeTrackingPreferenceChange, get _mouseStillSince() { return mouseStillSince; } };
 
 };
