@@ -71,6 +71,12 @@ const AGENT_METRIC_POLICIES = Object.freeze({
   //    denies tools on KiroCrew's approval path), and PostToolUse is a plain
   //    state ping, not a proven per-call tool boundary.
   kirocrew: policy(null, null, null),
+  // Command Code documents PreToolUse as firing before each tool call, but
+  // hooks run AFTER the native permission gate and no real model-backed turn
+  // has been observed yet (the validating account was out of quota), so no
+  // metric boundary is claimed. Enable PreToolUse tool-start counting only
+  // after a real turn confirms the delivery contract.
+  "command-code": policy(null, null, null),
 });
 
 function policy(sessionStart, turnCompleteEvents, toolCallEvents) {

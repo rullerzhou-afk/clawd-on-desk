@@ -35,12 +35,15 @@ on:
       - "hooks/traecode-*"
       - "agents/minimax.js"
       - "hooks/minimax-*"
+      - "agents/command-code.js"
+      - "hooks/command-code-*"
       - "src/state-stale-cleanup.js"
       - "src/state.js"
       - "src/integration-sync.js"
       - "src/doctor-detectors/agent-descriptors.js"
       - "test/traecode-*.test.js"
       - "test/minimax-*.test.js"
+      - "test/command-code-*.test.js"
       - "test/recap*.test.js"
       - "test/fixtures/recap-private-permissions-*.js"
       - "test/state-stale-cleanup.test.js"
@@ -143,6 +146,19 @@ jobs:
             test/server-hook-management.test.js \
             test/settings-renderer-browser-env.test.js \
             test/hook-adapter-offline-contract.test.js
+      - name: Run Command Code integration tests
+        run: |
+          node --test \
+            test/command-code-hook.test.js \
+            test/command-code-install.test.js \
+            test/registry.test.js \
+            test/integration-sync.test.js \
+            test/doctor-agent-descriptors.test.js \
+            test/doctor-agent-integrations.test.js \
+            test/server-hook-management.test.js \
+            test/hook-adapter-offline-contract.test.js \
+            test/hook-pid-cache-contexts.test.js \
+            test/state-agent-icons.test.js
       - name: Run recap unit tests
         run: >-
           node --test

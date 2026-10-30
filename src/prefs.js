@@ -512,6 +512,11 @@ const SCHEMA = {
       // default MUST exist or startup sync would write the hooks for any user
       // who merely has a ~/.kiro/crew directory.
       "kirocrew": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      // Command Code is state-only: its hook set has no PermissionRequest and
+      // no Notification event, and its PreToolUse hooks run after the native
+      // permission gate (so they cannot replace the approval prompt), so both
+      // flags default off. Opt-in like every other non-default agent.
+      "command-code": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
     }),
     normalize: normalizeAgents,
   },

@@ -482,6 +482,34 @@ MiniMax Code 状态同步（hook-only / state-only，本地插件目录）：
     清理只显示计数），删除失败留下的残留路径在界面上看不到。
   无原生会话标题字段：从首次 prompt 首行派生并保持首个标题（server 端 first-wins，同 traecode）。
 
+Command Code 状态同步（hook-only / state-only，settings.json）：
+  Command Code（npm 包 command-code，bin 别名 cmd / cmdc / command-code / commandcode）触发
+  SessionStart / PreToolUse / PostToolUse / Stop（官方文档的四个事件；没有 SessionEnd / Notification /
+  UserPromptSubmit / PermissionRequest / compaction）
+    → hooks/command-code-hook.js（hook 事件 → agents/command-code.js 映射 → HTTP POST）
+    → 同上状态机（agent_id: command-code，session_id 规范化为 command-code:<raw>；
+      缺 session_id 或 id 为 "default" 的事件直接应答 stdout，不进 /state）
+  Hook 注册到 ~/.commandcode/settings.json（Command Code 的 user-scope 设置文件；CLI 还会读项目级
+  .commandcode/settings.json，Clawd 永不写入）。所有权只认 command 里的 `command-code-hook.js` marker：
+  增量合并保留外来 entry 与混合 entry 里的第三方 handler；Clawd-only entry 重写为
+  `{ hooks: [{ type: "command", command, timeout: 5 }] }`，刻意不写 matcher——Stop / SessionStart 上带 matcher
+  的 hook 根本不会触发，工具事件上缺省 matcher 即匹配所有工具。卸载只摘掉 marker-owned handler，
+  Clawd 清空的 event 键与 hooks 容器一并删除，不在用户文件里留 `"SessionStart": []` 这类残留。
+  Windows command 用 portable 形态（windowsWrapper:"portable"）：Command Code 在 POSIX 走 /bin/bash -c、
+  Windows 走 cmd.exe /c，portable 形态两者都成立；旧 PowerShell -EncodedCommand 条目只做 Clawd-owned 原地迁移。
+  stdout 恒为 `{}`：Command Code 没有 PermissionRequest 事件；且权限气泡在机制上不可行——bundle 验证的执行顺序是
+  runTools → checkPermissions（原生 confirm 提示在这里）→ executeOne → beforeToolCall（PreToolUse command hooks
+  在这里才跑）→ 工具执行，hook 只能否决已批准的调用。Clawd 不注册 /permission、不进 permission automation
+  eligibility，Allow / Deny 全部留在 Command Code 原生权限流程。
+  进程识别：CLI 启动即 process.title = "command-code"（dist/cli.mjs 的 setStableProcessTitle），
+  macOS/Linux 按名字匹配；Windows 标题只改控制台、进程仍是 node.exe，靠 agentCmdlineCheck 匹配 argv 里的
+  command-code/dist/ 包目录。无 SessionEnd：会话按 agent-pid 退出清理（hook 解析到 CLI pid 时上报 agent_pid）
+  或服务端 stale 超时退役；hook payload 不含 prompt，HUD 标题回退为 cwd basename。
+  hook 先输出 `{}` 再跑同步进程树探测：2 秒安全计时只守 stdin，写 stdout 后改成 4 秒退出 backstop，覆盖 Windows
+  快照（共享默认 3 秒）之后的 HTTP 上报——否则超过 2 秒的快照会让 overdue 计时器在上报落 socket 前退出进程，事件静默丢失。
+  recap：四个事件的边界都未真机验证（验证时账号周额度用尽），policy 全部 opt out（null），额度恢复后复测再开。
+  不进 WSL Pair / Remote SSH / startup recovery（CLI 长驻、启动时存在不代表有 active turn）。
+
 Kimi Code CLI（Kimi-CLI）状态同步（hook-only，config.toml）：
   Kimi Code CLI（Kimi-CLI）触发事件
     → hooks/kimi-hook.js（hook 事件 → agents/kimi-cli.js 映射 → HTTP POST）

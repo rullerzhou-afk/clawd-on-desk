@@ -12,6 +12,7 @@ const { unregisterCopilotHooks } = require("./copilot-install");
 const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
 const { unregisterKiroHooks } = require("./kiro-install");
 const { unregisterKiroCrewHooks } = require("./kirocrew-install");
+const { unregisterCommandCodeHooks } = require("./command-code-install");
 const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
 const { unregisterZcodeHooks } = require("./zcode-install");
@@ -52,6 +53,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "codebuddy",
   "kiro-cli",
   "kirocrew",
+  "command-code",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -85,6 +87,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "grok-build": "Grok Build",
   "kiro-cli": "Kiro CLI",
   kirocrew: "KiroCrew",
+  "command-code": "Command Code",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
   zcode: "ZCode",
@@ -250,6 +253,12 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       kirocrew: {
         ...common,
         hooksPath: path.join(kirocrewHome, "hooks.json"),
+      },
+      // Command Code's user settings live at ~/.commandcode/settings.json
+      // (HOME / USERPROFILE resolution, same as the installer).
+      "command-code": {
+        ...common,
+        settingsPath: path.join(homeDir, ".commandcode", "settings.json"),
       },
       "kimi-cli": {
         ...common,
@@ -418,6 +427,7 @@ const AGENT_CLEANERS = Object.freeze({
   codebuddy: unregisterCodeBuddyHooks,
   "kiro-cli": unregisterKiroHooks,
   kirocrew: unregisterKiroCrewHooks,
+  "command-code": unregisterCommandCodeHooks,
   "kimi-cli": unregisterKimiHooks,
   "qwen-code": unregisterQwenCodeHooks,
   zcode: unregisterZcodeHooks,

@@ -41,6 +41,7 @@ describe("doctor agent descriptors", () => {
         "qwenwork",
         "deepseek-harness",
         "minimax",
+        "command-code",
       ]
     );
   });
@@ -417,6 +418,20 @@ describe("doctor agent descriptors", () => {
     assert.strictEqual(descriptor.autoInstall, true);
     assert.strictEqual(descriptor.marker, qwenwork.MARKER);
     assert.deepStrictEqual(descriptor.hookEvents, qwenwork.QWENWORK_HOOK_EVENTS);
+  });
+
+  it("checks Command Code hooks as a state-only nested settings file", () => {
+    const commandCode = require("../hooks/command-code-install");
+    const descriptor = getAgentDescriptor("command-code");
+
+    assert.strictEqual(descriptor.eventSource, "hook");
+    assert.strictEqual(descriptor.configMode, "file");
+    assert.strictEqual(descriptor.nested, true);
+    assert.strictEqual(descriptor.autoInstall, true);
+    assert.strictEqual(descriptor.parentDir, commandCode.DEFAULT_PARENT_DIR);
+    assert.strictEqual(descriptor.configPath, commandCode.DEFAULT_CONFIG_PATH);
+    assert.strictEqual(descriptor.marker, commandCode.MARKER);
+    assert.deepStrictEqual(descriptor.hookEvents, commandCode.COMMAND_CODE_HOOK_EVENTS);
   });
 
   it("checks WorkBuddy hooks as a state-only nested settings file", () => {

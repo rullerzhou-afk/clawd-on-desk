@@ -290,6 +290,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncCommandCodeHooks() {
+    try {
+      if (typeof ctx.syncCommandCodeHooksImpl === "function") return ctx.syncCommandCodeHooksImpl();
+      const { registerCommandCodeHooks } = require("../hooks/command-code-install.js");
+      const result = registerCommandCodeHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced Command Code hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "Command Code", "command-code-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync Command Code hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Command Code hooks" };
+    }
+  }
+
   function syncKiroHooks() {
     try {
       if (typeof ctx.syncKiroHooksImpl === "function") return ctx.syncKiroHooksImpl();
@@ -730,6 +745,7 @@ function createIntegrationSyncRuntime(options = {}) {
     traecode: syncTraeCodeHooks,
     qwenwork: syncQwenWorkHooks,
     minimax: syncMinimaxHooks,
+    "command-code": syncCommandCodeHooks,
   });
 
   const AGENT_INTEGRATION_REPAIRERS = Object.freeze({
@@ -893,6 +909,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncQoderWorkHooks,
     syncTraeCodeHooks,
     syncMinimaxHooks,
+    syncCommandCodeHooks,
     repairCodexHooks,
     repairOpenClawPlugin,
     syncIntegrationForAgent,

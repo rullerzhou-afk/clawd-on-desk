@@ -88,6 +88,10 @@ const ADAPTERS = [
   // session_id is required so the vacuity guard sees the one snapshot spawn
   // when Clawd is alive.
   { name: "minimax-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
+  // Command Code is state-only: every event emits {}. session_id is required
+  // so the resolver cache context is non-default and the vacuity guard sees
+  // the one snapshot spawn when Clawd is alive.
+  { name: "command-code-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "{}\n" },
 ];
 
 let hookHarness;
@@ -160,14 +164,14 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
     }
   });
 
-  it("covers every createPidResolver consumer in hooks/ (fails when an 18th adapter lands)", () => {
+  it("covers every createPidResolver consumer in hooks/ (fails when a 19th adapter lands)", () => {
     const consumers = fs.readdirSync(HOOKS_DIR)
       .filter((f) => f.endsWith("-hook.js"))
       .filter((f) => fs.readFileSync(path.join(HOOKS_DIR, f), "utf8").includes("createPidResolver("))
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 18, "traecode-hook.js, qwenwork-hook.js and minimax-hook.js joined the createPidResolver consumers");
+    assert.strictEqual(consumers.length, 19, "traecode-hook.js, qwenwork-hook.js, minimax-hook.js and command-code-hook.js joined the createPidResolver consumers");
   });
 });
 

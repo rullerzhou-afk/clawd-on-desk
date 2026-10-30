@@ -54,6 +54,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "traecode",
   "qwenwork",
   "minimax",
+  "command-code",
 ]);
 
 const INSTALLABLE_AGENT_IDS = new Set([
@@ -85,6 +86,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "traecode",
   "qwenwork",
   "minimax",
+  "command-code",
 ]);
 const SETTABLE_AGENT_FLAGS = AGENT_FLAGS.filter((flag) => flag !== "integrationInstalled");
 const CUSTOM_DISCOVERY_AGENT_IDS = new Set([...INSTALLABLE_AGENT_IDS, "custom"]);
