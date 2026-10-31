@@ -1023,6 +1023,8 @@ Remote SSH 有两条明确分开的 transport 路径：
 - Linux 格式由 `src/update-install-format.js` 判断：绝对 APPIMAGE/APPDIR 且 resourcesPath 属于该挂载时，显式创建 AppImageUpdater；否则 `resources/package-type=deb` 走 APT 指南，其余格式手动下载。外来继承的 APPIMAGE 不足以证明归属。deb/未知格式在启动、托盘、About 和定时流程都不创建 electron-updater；打开指南仅保留 available/pending，不宣称安装完成。旧用户迁移与生产发布顺序见 `docs/guides/apt-maintenance.md`
 - macOS Release 同时发布 x64 / arm64 的 DMG 与 ZIP；DMG 用于首次/手动安装，Squirrel.Mac 只消费 ZIP。`latest-mac.yml` 必须同时列出两架构的 ZIP 与 DMG，且 top-level `path` 指向 x64 ZIP
 - macOS 下载完成后可选择立即重启，或稍后正常退出并重新打开；安装请求期间复用 update bubble 显示准备状态，ready/staging 错误必须作为真实错误显示，不能降级成“已是最新”
+- 打包更新的已下载版本在当前进程内独立于气泡存活期保存，实际载荷与完整性检查仍由 `electron-updater` 管理，不把安装器路径写进 prefs。Later、自动关闭、策略隐藏或气泡替换不清除 ready；托盘仍可安装，About/手动检查重新显示安装选择，不重新查版本或下载，也不重播下载完成动画。统一的气泡自动关闭偏好和 `autoInstallOnAppQuit` 保持原语义。
+- ready 提示按下载记录与呈现代次隔离，旧 Promise 不能隐藏后来的进度/错误气泡或将新状态改回 idle；只有用户明确选择安装才调用 `quitAndInstall`。下载中、ready 或安装中，后台发现及迟到结果不能覆盖当前阶段。安装失败保留同进程的已下载事实供明确重试；这不是跨重启安装器缓存。
 - 旧版 DMG 没有 ZIP 更新载荷，不能自举到首个支持应用内更新的桥接版；现有用户仍需手动安装桥接版一次。单元/metadata/包结构验证不等于同一 Developer ID 的 A→B 真机升级证据
 - 托盘菜单里的 “Check for Updates” 可以手动触发
 

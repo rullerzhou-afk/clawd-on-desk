@@ -287,6 +287,11 @@ function initUpdater(ctx, deps = {}) {
   let repoRootCache;
   let autoUpdaterInstance = null;
   let installRequested = false;
+  // Same-process download fact. electron-updater owns the verified payload;
+  // a bubble closing must not discard it or invent a persisted installer path.
+  let downloadedUpdate = null;
+  let readyPrompt = null;
+  let readyPromptGeneration = 0;
   let overlayKind = null;
   let nativeArm64PromptDismissed = false;
   let nativeArm64PromptToken = 0;
@@ -366,7 +371,7 @@ function initUpdater(ctx, deps = {}) {
 
   function clearUpdateError() {
     if (updateStatus === "error") {
-      publishUpdateCheckSnapshot("idle");
+      publishUpdateCheckSnapshot(downloadedUpdate ? "ready" : "idle", downloadedUpdate || {});
       clearOverlay();
       rebuildMenus();
     }
@@ -545,6 +550,9 @@ function initUpdater(ctx, deps = {}) {
   }
 
   function showBubble(payload) {
+    // Replacement UI owns the presentation now. A settled, older ready
+    // promise must not hide it, clear its state or act on its default action.
+    if (payload.mode !== "ready") invalidateReadyPrompt();
     if (typeof ctx.showUpdateBubble !== "function") {
       return Promise.resolve(payload.defaultAction != null ? payload.defaultAction : null);
     }
@@ -842,8 +850,16 @@ function initUpdater(ctx, deps = {}) {
   // 'manual', intent: 'download' }) to re-establish the electron-updater
   // event context.
   async function quietDiscover() {
+    if (downloadedUpdate || installRequested) {
+      return { status: "ready", version: downloadedUpdate && downloadedUpdate.version };
+    }
+    if (updateStatus === "downloading") return { status: "busy" };
     try {
       const release = await fetchLatestRelease();
+      if (downloadedUpdate || installRequested) {
+        return { status: "ready", version: downloadedUpdate && downloadedUpdate.version };
+      }
+      if (updateStatus === "downloading") return { status: "busy" };
       const version = release && release.tag_name;
       if (!version) return { status: "no-update" };
       const current = app.getVersion();
@@ -879,7 +895,7 @@ function initUpdater(ctx, deps = {}) {
   //          only; do NOT pollute the dedupe store with a dismissal the
   //          user never made.
   async function handlePendingVersion(version, release, promptCtx = { trigger: "scheduled" }) {
-    if (!version) return;
+    if (!version || downloadedUpdate || installRequested || updateStatus === "downloading") return;
     const displayVersion = formatVersionForMessage(version);
 
     // Always record the pending version so the tray label / About hint
@@ -914,6 +930,7 @@ function initUpdater(ctx, deps = {}) {
       requireAction: true,
     }));
 
+    if (downloadedUpdate || installRequested || updateStatus === "downloading") return;
     if (result.action === "primary") {
       // Round-trip to re-establish the electron-updater event context.
       // checkForUpdates will normalize this into a manual download path
@@ -1013,6 +1030,7 @@ function initUpdater(ctx, deps = {}) {
       requireAction: true,
     }));
 
+    if (downloadedUpdate || installRequested) return null;
     if (action === "primary") return onPrimary();
     hideBubble();
     dismissToResolvedState();
@@ -1022,37 +1040,63 @@ function initUpdater(ctx, deps = {}) {
     return null;
   }
 
-  async function promptReadyUpdate(version, onPrimary) {
-    const displayVersion = formatVersionForMessage(version);
-    pulseSuccessState();
-    const action = await awaitBubbleAction(showBubble({
-      mode: "ready",
-      title: t("updateReady", "Update Ready"),
-      message: t(
-        "updateReadyMsg",
-        "v{version} has been downloaded. Restart now to finish updating, or choose Later to finish after you quit and reopen Clawd."
-      ).replace("{version}", displayVersion),
-      version,
-      actions: [
-        { id: "primary", label: t("restartNow", "Restart Now"), variant: "primary" },
-        { id: "later", label: t("restartLater", "Later"), variant: "secondary" },
-      ],
-      defaultAction: "later",
-      lang: ctx.lang || "en",
-      requireAction: true,
-    }));
+  function invalidateReadyPrompt() {
+    readyPromptGeneration += 1;
+    readyPrompt = null;
+  }
 
-    if (action === "primary") return onPrimary();
-    hideBubble();
-    dismissToResolvedState();
-    publishUpdateCheckSnapshot("idle");
-    rebuildMenus();
-    return null;
+  function promptReadyUpdate({ celebrate = false } = {}) {
+    const downloaded = downloadedUpdate;
+    if (!downloaded || installRequested) return Promise.resolve(null);
+    if (readyPrompt && readyPrompt.downloaded === downloaded) return readyPrompt.promise;
+    const prompt = { downloaded, generation: ++readyPromptGeneration, promise: null };
+    readyPrompt = prompt;
+    const version = downloaded.version;
+    const displayVersion = formatVersionForMessage(version);
+    if (celebrate) pulseSuccessState();
+    prompt.promise = (async () => {
+      const result = await awaitBubbleResult(showBubble({
+        mode: "ready",
+        title: t("updateReady", "Update Ready"),
+        message: t(
+          "updateReadyMsg",
+          "v{version} has been downloaded. Restart now to finish updating, or choose Later to finish after you quit and reopen Clawd."
+        ).replace("{version}", displayVersion),
+        version,
+        actions: [
+          { id: "primary", label: t("restartNow", "Restart Now"), variant: "primary" },
+          { id: "later", label: t("restartLater", "Later"), variant: "secondary" },
+        ],
+        defaultAction: "later",
+        lang: ctx.lang || "en",
+        requireAction: true,
+      }));
+
+      if (readyPrompt !== prompt || prompt.generation !== readyPromptGeneration
+          || downloadedUpdate !== downloaded || installRequested) return null;
+      if (result.source === "user" && result.action === "primary") {
+        return requestInstall(version);
+      }
+      // autoClose/policy already hide their own window. A closed presentation
+      // may have been replaced, so its continuation must not touch the new UI.
+      if (result.source !== "closed") {
+        if (result.source === "user") hideBubble();
+        dismissToResolvedState();
+      }
+      return null;
+    })().catch((err) => {
+      log(`Ready prompt failed: ${err && err.message}`);
+      return null;
+    }).finally(() => {
+      if (readyPrompt === prompt) readyPrompt = null;
+    });
+    return prompt.promise;
   }
 
   async function requestInstall(version) {
     if (usesExternalUpdate) return openExternalUpdate(version);
-    if (installRequested) return null;
+    if (installRequested || !downloadedUpdate || version !== downloadedUpdate.version) return null;
+    invalidateReadyPrompt();
     const autoUpdater = getAutoUpdater();
     if (!autoUpdater) {
       return showErrorBubble(buildUpdateErrorReport(new Error("AutoUpdater not available."), {
@@ -1083,6 +1127,7 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function maybePromptNativeArm64Installer(release, { manual = false, currentVersion = app.getVersion() } = {}) {
+    if (downloadedUpdate || installRequested) return false;
     if (!isRunningX64OnWindowsArm64()) return false;
     if (!manual && (nativeArm64PromptDismissed || isSilentMode())) return false;
     if (!manual && (activeCheck || updateStatus !== "idle")) return false;
@@ -1117,7 +1162,7 @@ function initUpdater(ctx, deps = {}) {
       requireAction: true,
     }));
 
-    if (promptToken !== nativeArm64PromptToken) return true;
+    if (promptToken !== nativeArm64PromptToken || downloadedUpdate || installRequested) return true;
 
     if (action === "primary") {
       shell.openExternal(asset.browser_download_url || RELEASES_LATEST_URL);
@@ -1367,6 +1412,7 @@ function initUpdater(ctx, deps = {}) {
     if (!autoUpdater) return;
 
     autoUpdater.on("update-available", async (info) => {
+      if (downloadedUpdate || installRequested || updateStatus === "downloading") return;
       const wasManual = isManualCheck();
       const wantsAutoPrimary = isDownloadIntent();
 
@@ -1383,6 +1429,7 @@ function initUpdater(ctx, deps = {}) {
       rebuildMenus();
 
       const onPrimary = async () => {
+        if (downloadedUpdate || installRequested || updateStatus === "downloading") return;
         publishUpdateCheckSnapshot("downloading", { version: info.version });
         setOverlay("downloading");
         rebuildMenus();
@@ -1391,6 +1438,7 @@ function initUpdater(ctx, deps = {}) {
           t("updateDownloading", "Downloading Update..."),
           t("updateDownloading", "Downloading Update...")
         );
+        if (downloadedUpdate || installRequested) return;
         autoUpdater.downloadUpdate();
       };
 
@@ -1411,6 +1459,7 @@ function initUpdater(ctx, deps = {}) {
     });
 
     autoUpdater.on("update-not-available", async () => {
+      if (downloadedUpdate || installRequested) return;
       const wasManual = isManualCheck();
       clearActiveCheck();
       publishUpdateCheckSnapshot("up-to-date", { version: app.getVersion() });
@@ -1423,17 +1472,21 @@ function initUpdater(ctx, deps = {}) {
     });
 
     autoUpdater.on("update-downloaded", async (info) => {
+      const version = String(info && info.version || "");
+      if (!version || installRequested) return;
+      if (downloadedUpdate && downloadedUpdate.version === version) return;
+      invalidateReadyPrompt();
+      downloadedUpdate = Object.freeze({ version });
       clearActiveCheck();
       installRequested = false;
-      publishUpdateCheckSnapshot("ready", { version: info.version });
+      publishUpdateCheckSnapshot("ready", downloadedUpdate);
       rebuildMenus();
       clearOverlay();
-      await promptReadyUpdate(info.version, async () => {
-        await requestInstall(info.version);
-      });
+      await promptReadyUpdate({ celebrate: true });
     });
 
     autoUpdater.on("error", async (err) => {
+      invalidateReadyPrompt();
       log(`ERROR: AutoUpdater error: ${err.message}`);
       const failedWhileDownloading = updateStatus === "downloading";
       const failedWhileReady = updateStatus === "ready";
@@ -1491,6 +1544,18 @@ function initUpdater(ctx, deps = {}) {
   }
 
   async function checkForUpdates(arg = true) {
+    const opts = normalizeCheckOpts(arg);
+    if (downloadedUpdate || installRequested) {
+      if (opts.trigger === "manual" && !installRequested) {
+        clearActiveCheck();
+        publishUpdateCheckSnapshot("ready", downloadedUpdate);
+        rebuildMenus();
+        // Do not hold the Settings IPC open while the user considers Restart
+        // Now. Repeated manual checks share the one active ready prompt.
+        void promptReadyUpdate();
+      }
+      return getUpdateCheckSnapshot();
+    }
     const hasActiveAvailableFlow = updateStatus === "available" && !!activeCheck;
     if (["checking", "downloading", "ready"].includes(updateStatus) || hasActiveAvailableFlow) {
       log(`Check skipped: already ${updateStatus}`);
@@ -1499,7 +1564,6 @@ function initUpdater(ctx, deps = {}) {
 
     invalidateNativeArm64Prompt();
 
-    const opts = normalizeCheckOpts(arg);
     const manual = opts.trigger === "manual";
     const downloadIntent = opts.intent === "download";
 
@@ -1529,6 +1593,7 @@ function initUpdater(ctx, deps = {}) {
       latestRelease = await fetchLatestRelease();
       latestVersion = latestRelease.tag_name;
     } catch (err) {
+      if (downloadedUpdate || installRequested) return getUpdateCheckSnapshot();
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
@@ -1543,6 +1608,8 @@ function initUpdater(ctx, deps = {}) {
       }
       return getUpdateCheckSnapshot();
     }
+
+    if (downloadedUpdate || installRequested) return getUpdateCheckSnapshot();
 
     if (compareVersions(currentVersion, latestVersion) <= 0 &&
         isRunningX64OnWindowsArm64() &&
@@ -1622,6 +1689,7 @@ function initUpdater(ctx, deps = {}) {
         }
       }
     } catch (err) {
+      if (downloadedUpdate || installRequested) return getUpdateCheckSnapshot();
       clearActiveCheck();
       rebuildMenus();
       clearOverlay();
