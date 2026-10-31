@@ -94,6 +94,7 @@ function createSettingsEffectRouter(options = {}) {
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
+  const applyEyeTrackingEnabledChange = options.applyEyeTrackingEnabledChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
@@ -403,6 +404,16 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
       safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
+    }
+    if ("eyeTrackingEnabled" in changes) {
+      // #1276: park the gaze forward (or force a resend when re-enabled) so
+      // the toggle applies without waiting for the next cursor move.
+      safeCall(
+        logWarn,
+        "Clawd: eyeTrackingEnabled change failed:",
+        applyEyeTrackingEnabledChange,
+        changes.eyeTrackingEnabled
+      );
     }
     if ("idleVisual" in changes) {
       safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);

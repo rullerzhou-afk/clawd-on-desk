@@ -11,6 +11,7 @@
     "petAlwaysOnTop",
     "allowEdgePinning",
     "disableMiniMode",
+    "eyeTrackingEnabled",
     "freeRoam",
     "roamConstrainAxis",
     "fullscreenAutoHide",
@@ -525,6 +526,14 @@
     // topmost band is maintained on every OS, so the opt-out is too.
     parent.appendChild(helpers.buildSection(t("sectionPetTopmost"), [
       buildPetAlwaysOnTopRow(),
+    ]));
+
+    parent.appendChild(helpers.buildSection(t("sectionPetGaze"), [
+      helpers.buildSwitchRow({
+        key: "eyeTrackingEnabled",
+        labelKey: "rowEyeTracking",
+        descKey: "rowEyeTrackingDesc",
+      }),
     ]));
 
     parent.appendChild(helpers.buildSection(t("sectionPetReactions"), [

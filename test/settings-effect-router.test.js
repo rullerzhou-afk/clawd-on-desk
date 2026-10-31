@@ -437,6 +437,21 @@ describe("settings-effect-router", () => {
     ]);
   });
 
+  it("delegates eye tracking changes to the injected tick transition (#1276)", () => {
+    const { calls, emit } = createHarness({
+      routerOptions: {
+        applyEyeTrackingEnabledChange: (enabled) => calls.push(["applyEyeTrackingEnabledChange", enabled]),
+      },
+    });
+
+    emit({ eyeTrackingEnabled: false });
+
+    assert.deepStrictEqual(calls, [
+      ["updateMirrors", { eyeTrackingEnabled: false }],
+      ["applyEyeTrackingEnabledChange", false],
+    ]);
+  });
+
   it("exits current mini mode when mini mode is disabled", () => {
     const { calls, emit } = createHarness({
       routerOptions: {
