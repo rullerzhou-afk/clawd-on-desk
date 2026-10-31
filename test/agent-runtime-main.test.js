@@ -14,6 +14,7 @@ const { digestCodexTurnId } = require("../src/codex-turn-id");
 const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS } = require("../src/state-stale-cleanup");
 const {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+  CODEX_INTERNAL_THREAD_TITLE_REFRESH,
 } = require("../hooks/codex-internal-worker");
 const themeLoader = require("../src/theme-loader");
 
@@ -1940,6 +1941,152 @@ describe("agent-runtime-main", () => {
     } finally {
       runtime.cleanup();
       harness.state.cleanup();
+    }
+  });
+
+  it("title refresh recognition leaves three real same-folder Desktop threads and their shared process independent", () => {
+    const harness = makeRealStateHarness();
+    const lifecycleEnds = [];
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      onCodexArchiveLifecycleEnd: (event) => lifecycleEnds.push(event),
+    });
+    const optsFor = (rawSessionId) => ({
+      agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId,
+      cwd: "C:\\project", sourcePid: 42, agentPid: 84,
+      codexOriginator: "codex_work_desktop", turnId: `turn-${rawSessionId}`,
+    });
+    try {
+      const peers = ["codex:real-a", "codex:real-b", "codex:real-c"];
+      for (const raw of peers) {
+        runtime.updateSessionFromServer(localSessionKey(raw), "thinking", "UserPromptSubmit", optsFor(raw));
+        runtime.updateSessionFromServer(localSessionKey(raw), "working", "PreToolUse", optsFor(raw));
+      }
+      const before = peers.map((raw) => JSON.stringify(harness.state.sessions.get(localSessionKey(raw))));
+      const raw = "codex:title-refresh", id = localSessionKey(raw), opts = optsFor(raw);
+      // A delayed recognition must remove only the row that slipped in earlier.
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", opts);
+      assert.strictEqual(harness.state.sessions.size, 4);
+      const completeBefore = harness.sounds.filter((name) => name === "complete").length;
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", {
+        ...opts, codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      for (const [state, event] of [["idle", "Stop"], ["idle", "Interrupt"], ["working", "PreToolUse"]]) {
+        runtime.updateSessionFromServer(id, state, event, opts);
+        assert.strictEqual(harness.state.sessions.has(id), false, `${event} cannot recreate the recognized title thread`);
+      }
+      peers.forEach((peer, index) => {
+        assert.strictEqual(JSON.stringify(harness.state.sessions.get(localSessionKey(peer))), before[index]);
+      });
+      const rows = harness.state.buildSessionSnapshot().sessions;
+      assert.strictEqual(rows.length, 3);
+      assert.ok(rows.every((row) => !row.hiddenFromHud && row.state === "working" && row.agentId === "codex"));
+      assert.strictEqual(harness.sounds.filter((name) => name === "complete").length, completeBefore);
+      assert.deepStrictEqual(lifecycleEnds, [], "title recognition is not an archive automation lifecycle");
+
+      runtime.updateSessionFromServer(id, "sleeping", "SessionEnd", opts);
+      assert.strictEqual(harness.state.sessions.has(id), false);
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", { ...opts, turnId: "next-real-user-turn" });
+      assert.strictEqual(harness.state.sessions.get(id).state, "thinking", "SessionEnd clears only that thread's suppression");
+      assert.strictEqual(harness.state.sessions.size, 4);
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  it("title refresh marker never hides unknown, nonofficial, remote, WSL or other-agent activity", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const cases = [
+      { name: "unknown", extra: { codexInternalThread: "future_title_job" } },
+      { name: "nonofficial", extra: { hookSource: "codex-jsonl" } },
+      { name: "remote-profile", extra: { profileId: "ssh-work", host: "workbox" } },
+      { name: "host-only", extra: { host: "workbox" } },
+      { name: "wsl-distro", extra: { wslDistro: "Ubuntu" } },
+      { name: "wsl-host", extra: { host: "wsl:Ubuntu" } },
+      { name: "other-agent", extra: { agentId: "claude-code" } },
+    ];
+    try {
+      for (const entry of cases) {
+        const rawSessionId = `codex:unhidden-${entry.name}`;
+        const opts = { agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId,
+          codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+          sourcePid: 42, codexOriginator: "codex_work_desktop", ...entry.extra };
+        const id = makeSessionKey({ profileId: opts.profileId, rawSessionId });
+        runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", opts);
+        assert.ok(harness.state.sessions.has(id), entry.name);
+        assert.strictEqual(harness.state.sessions.get(id).state, "thinking", entry.name);
+      }
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  it("a JSONL marker cannot recognize or clear title refresh suppression", () => {
+    const instances = [];
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }), codexSubagentClassifier: {}, isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    try {
+      const monitor = runtime.startCodexLogMonitor(), raw = "codex:jsonl-title-marker", id = localSessionKey(raw);
+      monitor.emit(raw, "thinking", "event_msg:task_started", {
+        turnId: "jsonl-real-turn", sourcePid: 42, agentPid: 84, codexOriginator: "codex_work_desktop",
+        codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+        codex_internal_thread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      assert.strictEqual(harness.state.sessions.get(id).state, "thinking", "JSONL cannot supply the official internal-thread marker");
+
+      const hiddenRaw = "codex:official-title-marker", hiddenId = localSessionKey(hiddenRaw);
+      const official = { agentId: "codex", profileId: "local", rawSessionId: hiddenRaw, hookSource: "codex-official" };
+      runtime.updateSessionFromServer(hiddenId, "thinking", "UserPromptSubmit", {
+        ...official, codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      // A foreign/nonofficial teardown cannot lift a local official suppression.
+      runtime.updateSessionFromServer(hiddenId, "sleeping", "SessionEnd", { ...official, hookSource: "codex-jsonl" });
+      runtime.updateSessionFromServer(hiddenId, "idle", "Stop", official);
+      assert.strictEqual(harness.state.sessions.has(hiddenId), false);
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  it("title refresh and ambient suppression share the existing 200-thread bound and cleanup reset", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const optsFor = (index) => ({ agentId: "codex", profileId: "local", hookSource: "codex-official",
+      rawSessionId: `codex:bounded-title-${index}`, sourcePid: 42, codexOriginator: "codex_work_desktop" });
+    try {
+      for (let index = 0; index <= 200; index++) {
+        const opts = optsFor(index);
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "thinking", "UserPromptSubmit", {
+          ...opts, codexInternalThread: index % 2
+            ? CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS : CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+        });
+      }
+      assert.strictEqual(harness.state.sessions.size, 0);
+      const oldest = optsFor(0), retained = optsFor(1), newest = optsFor(200);
+      for (const opts of [retained, newest]) {
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "thinking", "UserPromptSubmit", opts);
+        assert.strictEqual(harness.state.sessions.has(localSessionKey(opts.rawSessionId)), false);
+      }
+      runtime.updateSessionFromServer(localSessionKey(oldest.rawSessionId), "thinking", "UserPromptSubmit", oldest);
+      assert.ok(harness.state.sessions.has(localSessionKey(oldest.rawSessionId)), "only the oldest entry is evicted after 201 recognized threads");
+      runtime.cleanup();
+      runtime.updateSessionFromServer(localSessionKey(newest.rawSessionId), "thinking", "UserPromptSubmit", newest);
+      assert.ok(harness.state.sessions.has(localSessionKey(newest.rawSessionId)), "runtime cleanup clears the shared suppression set");
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
     }
   });
 
