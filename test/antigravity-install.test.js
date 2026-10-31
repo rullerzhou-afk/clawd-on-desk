@@ -840,10 +840,12 @@ describe("Antigravity statusline installer", () => {
     assert.strictEqual(result.changed, false);
   });
 
-  // Unlike hook commands (pinned to cmd via EncodedCommand), the statusline
-  // runner's shell is not pinned down, so the command must parse under
-  // Git Bash, PowerShell, AND cmd: command token unquoted, no `&` prefix.
-  it("win32: writes a shell-portable command (bare node) when the node path has spaces", () => {
+  // Antigravity CLI on Windows executes statusLine.command via Go's exec.Command("cmd", "/c", ...).
+  // In Go, args passed to exec.Command on Windows undergo syscall.EscapeArg, which escapes any
+  // internal double quotes into `\"`. Because cmd.exe /c does not unescape `\"`, Node.js receives
+  // literal quote characters in process.argv[1], which breaks module resolution.
+  // Therefore, neither the interpreter token nor the script path may be double-quoted.
+  it("win32: writes an unquoted command (bare node) when the node path has spaces", () => {
     const homeDir = makeTempStatuslineHome();
 
     registerAntigravityStatusline({
@@ -857,7 +859,8 @@ describe("Antigravity statusline installer", () => {
     const command = readJson(settingsPath).statusLine.command;
     assert.ok(!command.startsWith("& "), command);
     assert.ok(!command.startsWith('"'), command);
-    assert.ok(command.startsWith('node "'), command);
+    assert.ok(command.startsWith("node "), command);
+    assert.ok(!command.includes('"'), command);
     assert.ok(command.includes(STATUSLINE_MARKER));
   });
 
@@ -873,7 +876,8 @@ describe("Antigravity statusline installer", () => {
 
     const settingsPath = path.join(homeDir, ".gemini", "antigravity-cli", "settings.json");
     const command = readJson(settingsPath).statusLine.command;
-    assert.ok(command.startsWith('C:/nvm/v20.11.0/node.exe "'), command);
+    assert.ok(command.startsWith("C:/nvm/v20.11.0/node.exe "), command);
+    assert.ok(!command.includes('"'), command);
   });
 
   it("skips when Antigravity CLI settings directory is absent", () => {

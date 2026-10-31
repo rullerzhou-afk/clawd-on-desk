@@ -11,7 +11,7 @@ const {
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
-  buildPortableStatuslineCommand,
+  portableWindowsNodeToken,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
   quotePowerShellSingleArg,
@@ -456,14 +456,33 @@ function hasAntigravityStatuslineSettings(homeDir) {
   return fs.existsSync(path.join(homeDir, ".gemini", "antigravity-cli"));
 }
 
-// On Windows this must NOT use quoteWindowsProcessArg for the interpreter:
-// a quoted command token is a string literal under PowerShell and never
-// executes, and agy's statusline runner shell is not pinned down the way
-// its hook runner (cmd) is. buildPortableStatuslineCommand emits a form
-// that parses identically under Git Bash, PowerShell, and cmd.
+// Antigravity CLI on Windows executes statusLine.command via Go's exec.Command("cmd", "/c", ...).
+// In Go, args passed to exec.Command on Windows undergo syscall.EscapeArg, which escapes any
+// internal double quotes into `\"`. Because cmd.exe /c does not unescape `\"`, Node.js receives
+// literal quote characters in process.argv[1]. Node's path.win32.isAbsolute rejects paths starting
+// with `"` as not absolute, and resolves them relative to cwd (e.g. `cwd\"D:\path"`), crashing with
+// MODULE_NOT_FOUND.
+// Therefore, on Windows neither the interpreter token nor the script path may be double-quoted.
 function buildAntigravityStatuslineCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;
-  if (platform === "win32") return buildPortableStatuslineCommand(nodeBin, scriptPath, options);
+  if (platform === "win32") {
+    const nodeToken = portableWindowsNodeToken(nodeBin);
+    let script = String(scriptPath).replace(/\\/g, "/");
+    if (/\s/.test(script) && typeof options.resolveShortPath === "function") {
+      script = options.resolveShortPath(script);
+    } else if (/\s/.test(script) && process.platform === "win32") {
+      try {
+        const cp = require("child_process");
+        const out = cp.execSync(`cmd.exe /d /c "for %I in ("${script}") do @echo %~sI"`, {
+          encoding: "utf8",
+          windowsHide: true,
+          stdio: ["ignore", "pipe", "ignore"],
+        }).trim();
+        if (out && !/\s/.test(out)) script = out.replace(/\\/g, "/");
+      } catch {}
+    }
+    return `${nodeToken} ${script}`;
+  }
   return [nodeBin, scriptPath].map(quoteShellSingleArg).join(" ");
 }
 
