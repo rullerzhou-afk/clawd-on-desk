@@ -1192,4 +1192,41 @@ describe("agent installation detector", () => {
       assert.strictEqual(workbuddy.clawdIntegration.detected, false);
     });
   });
+
+  describe("AutoClaw 2.x runtime detection", () => {
+    function writeRuntimeDatabase(homeDir) {
+      const dbDir = path.join(
+        homeDir, "Library", "Application Support", "AutoClaw-official",
+        "accounts", "hash-a", "runtime"
+      );
+      mkdirp(dbDir);
+      const dbPath = path.join(dbDir, "runtime.sqlite");
+      const { DatabaseSync } = require("node:sqlite");
+      const db = new DatabaseSync(dbPath);
+      db.exec("CREATE TABLE work_sessions (session_id TEXT, title TEXT, workspace_id TEXT, updated_at TEXT, deleted_at TEXT, archived_at TEXT)");
+      db.exec("CREATE TABLE work_runs (run_id TEXT, session_id TEXT, status TEXT, created_at TEXT, updated_at TEXT)");
+      db.exec("CREATE TABLE work_workspaces (workspace_id TEXT, root_path TEXT)");
+      db.close();
+      return dbPath;
+    }
+
+    it("treats an AutoClaw 2.x runtime database as installed product evidence", () => {
+      const homeDir = makeHome();
+      writeRuntimeDatabase(homeDir);
+      const report = detectAgentInstallations({ homeDir, env: {}, platform: "darwin" });
+      const entry = byId(report, "autoclaw");
+      assert.strictEqual(entry.detectedInstalled, true);
+      assert.strictEqual(entry.reason, "product-artifact");
+      assert.match(entry.detail, /runtime database/);
+    });
+
+    it("does not let the 1.x-only autoclaw userData satisfy 2.x runtime detection", () => {
+      const homeDir = makeHome();
+      mkdirp(path.join(homeDir, "Library", "Application Support", "autoclaw"));
+      writeJson(path.join(homeDir, "Library", "Application Support", "autoclaw", "settings.json"), {});
+      const report = detectAgentInstallations({ homeDir, env: {}, platform: "darwin" });
+      const entry = byId(report, "autoclaw");
+      assert.strictEqual(entry.detectedInstalled, false);
+    });
+  });
 });

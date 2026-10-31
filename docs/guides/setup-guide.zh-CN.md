@@ -108,6 +108,8 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 
 **OpenClaw** — 使用 `~/.openclaw/openclaw.json` 里的 plugin 路径。需要本机 OpenClaw 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 plugin。也可以手动执行 `npm run install:openclaw-plugin`，由 OpenClaw CLI 处理首次安装。Phase 1 只做状态动画，面向本地 `openclaw tui --local` 会话；暂不接 OpenClaw 权限气泡，也不支持 OpenClaw 终端聚焦。
 
+**AutoClaw（智谱）** — Clawd 用同一个条目追踪两代 AutoClaw。**1.x** 内嵌 OpenClaw gateway（独立 state 目录 `~/.openclaw-autoclaw/`）：先启动一次 AutoClaw 让 gateway 配置生成，再从 **Settings → AI 编程工具** 安装（或 `npm run install:autoclaw-plugin`）。安装会把插件物化到 AutoClaw 的用户扩展根 `~/.openclaw-autoclaw/extensions/clawd-on-desk/`（带 `.clawd-managed.json` 所有权标记）——gateway 管理器只认这个根里的插件，linked 路径会被它删掉。安装器绝不创建 state 目录；Clawd 没有写入过的 `clawd-on-desk` 文件夹会阻止安装。**安装或更新插件后要完整退出并重开 AutoClaw**（内嵌 gateway 只在启动时读插件集）。**2.x**（全新 zwork harness，独立 app `AutoClaw2.app`）已没有那套 gateway——2.x 无需任何安装写入：启动过一次 AutoClaw 2，Clawd 就能发现它的 runtime 数据库并只读轮询会话状态。两代都只做状态（state-only）：不接权限气泡、不支持终端聚焦，`waiting_approval` 只会把桌宠点亮为「需要关注」，审批始终留在 AutoClaw 自己的界面。两代可同时追踪。真机证据见 `docs/investigations/autoclaw-e1-evidence.md`。
+
 **Hermes Agent** — 从 [hermes-agent.org](https://hermes-agent.org/) 或 [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) 安装 Hermes。需要本机 Hermes 追踪时，先到 **Settings → AI 编程工具** 安装 Clawd 集成；安装且 Hermes 存在后，Clawd 会把 plugin 复制到 Hermes 的托管 plugin 目录，并通过 `hermes plugins enable clawd-on-desk` 启用它。也可以手动执行 `npm run install:hermes-plugin` 强制同步，或执行 `npm run uninstall:hermes-plugin` 移除 Clawd 的 Hermes plugin。Hermes 支持状态、会话、终端聚焦和受支持的权限气泡；具体边界见 [known-limitations.zh-CN.md](known-limitations.zh-CN.md)。如果 Hermes 装在远端主机上，请改用 **Settings → 远程 SSH** 部署；Phase 1 范围和 gateway 重启规则见 [guide-remote-ssh.zh-CN.md](guide-remote-ssh.zh-CN.md)。
 
 **QwenWork（千问办公）** — agent id `qwenwork`；hooks 写入 `~/.QwenWorkCN/settings.json`（这是 QwenWork 真实的用户数据目录，不是它 hooks 文档里写的 `~/.qwenwork`）。需要本机 QwenWork 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `npm run install:qwenwork-hooks`，卸载用 `npm run uninstall:qwenwork-hooks`。
@@ -224,7 +226,7 @@ node hooks/install.js --statusline
 
 Kiro 会为 `~/.kiro/agents/` 中的自定义 agent 注册 hooks，并创建 `clawd` agent。CodeBuddy 裸跑安装器会保留已有的 managed 自定义权限 URL；显式替代参数是 `--permission-url local` 或 `--permission-url https://approval.example/permission`。通用安装命令也可从 [Agent 配置说明](#agent-配置说明) 找到。
 
-WorkBuddy 没有经过验证的独立 Linux/WSL CLI，请使用其 macOS/Windows 桌面集成。opencode、MiMo Code、Pi、OpenClaw 当前不在 WSL Pair 映射中，其 WSL 集成仍未验证；存在通用安装器不等于已有可验证的 WSL 教程。
+WorkBuddy 没有经过验证的独立 Linux/WSL CLI，请使用其 macOS/Windows 桌面集成。opencode、MiMo Code、Pi、OpenClaw、AutoClaw 当前不在 WSL Pair 映射中，其 WSL 集成仍未验证；存在通用安装器不等于已有可验证的 WSL 教程。
 
 如果完整源码仓库只在 Windows 上，可以将 `hooks/` 下**全部顶层 JavaScript 文件**复制到 WSL。Pair 的持久 hook agent 同样复制这个完整集合；Hermes 使用前述独立临时 payload。不要手动挑选文件：hooks 存在直接及传递依赖。
 

@@ -221,7 +221,13 @@ describe("orcaPaneKeyFromEnv / applyOrcaPaneKey", () => {
 
     // AGENTS.md:155 — OpenClaw's Phase 1 integration is state-only, with no
     // permission bubble and no terminal focus, so it has nothing to focus.
-    const stateOnly = new Set([path.join("openclaw-plugin", "index.js")]);
+    // AutoClaw embeds the same gateway behind its own desktop app and is
+    // state-only for the same reason (hooks/autoclaw-plugin is a line-aligned
+    // fork of openclaw-plugin).
+    const stateOnly = new Set([
+      path.join("openclaw-plugin", "index.js"),
+      path.join("autoclaw-plugin", "index.js"),
+    ]);
 
     const missing = [];
     for (const file of files) {

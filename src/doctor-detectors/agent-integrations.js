@@ -41,6 +41,8 @@ const { inspectManagedOpencode } = require("./opencode-managed-inspector");
 const { validateOpenClawEntry } = require("./openclaw-entry-validator");
 const { inspectGrokHookFile } = require("../../hooks/grok-install");
 const { hasIncludeDirective } = require("../../hooks/openclaw-install");
+const autoclawInstall = require("../../hooks/autoclaw-install");
+const autoclawRuntimeMonitor = require("../../agents/autoclaw-runtime-monitor");
 const { inspectDshTargetsSync } = require("../../hooks/dsh-install");
 const minimaxInstall = require("../../hooks/minimax-install");
 
@@ -2643,6 +2645,197 @@ function checkOpenClawPluginMode(descriptor, options) {
   });
 }
 
+// AutoClaw's embedded gateway loads Clawd from a materialized copy under
+// <state>/extensions/clawd-on-desk (its GatewayManager deletes unknown
+// plugins.entries keys, and only plugins found in that user extension root
+// count as known), so Doctor verifies the copy's ownership and currency on
+// top of the entry — there is no load path to check.
+//
+// AutoClaw 2.x removed the 1.x gateway entirely; when a 2.x runtime database
+// exists it is the live carrier and its read-only monitor evidence decides
+// the row, with the 1.x check only winning while it is healthy (both apps
+// can coexist). Shared by the wrapper below and the parentDir pre-gate.
+function autoClawRuntimeEvidenceDetail(descriptor, options) {
+  const runtime = autoclawRuntimeMonitor.inspectAutoClawRuntimeDatabases({
+    fs: options.fs,
+    homeDir: options.homeDir,
+    env: options.env,
+    platform: options.platform,
+  });
+  if (runtime.found === 0) return null;
+  const parentDirExists = descriptor.parentDir
+    ? dirExists(options.fs, descriptor.parentDir)
+    : false;
+  if (!runtime.supported) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists,
+      configFileExists: fileExists(options.fs, descriptor.configPath),
+      configPath: descriptor.configPath,
+      detail: "AutoClaw 2.x runtime database was found but its schema is not understood by this Clawd build; the state monitor stays disabled for it",
+      autoclawRuntimeDatabases: runtime.found,
+    });
+  }
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists,
+    configFileExists: fileExists(options.fs, descriptor.configPath),
+    configPath: descriptor.configPath,
+    detail: `AutoClaw 2.x runtime database verified (${runtime.found} account${runtime.found === 1 ? "" : "s"}); Clawd polls it read-only for state`,
+    autoclawRuntimeDatabases: runtime.found,
+  });
+}
+
+function checkAutoClawExtensionMode(descriptor, options) {
+  const legacy = checkAutoClawLegacyExtensionMode(descriptor, options);
+  if (legacy.status === "ok") return legacy;
+  const runtimeDetail = autoClawRuntimeEvidenceDetail(descriptor, options);
+  if (runtimeDetail) return runtimeDetail;
+  return legacy;
+}
+
+function checkAutoClawLegacyExtensionMode(descriptor, options) {
+  if (!fileExists(options.fs, descriptor.configPath)) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: false,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} missing (launch AutoClaw once so it writes its gateway config)`,
+    });
+  }
+
+  let settings;
+  try {
+    settings = readJson(options.fs, descriptor.configPath);
+  } catch (err) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `AutoClaw gateway config is not strict JSON; Clawd startup sync will skip direct edits (${err && err.message ? err.message : "parse failed"})`,
+    });
+  }
+
+  if (hasIncludeDirective(settings)) {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: "AutoClaw gateway config uses include directives; Clawd startup sync will not edit it directly",
+    });
+  }
+
+  const inspection = autoclawInstall.inspectAutoClawExtension({
+    fs: options.fs,
+    stateDir: descriptor.parentDir,
+    configPath: descriptor.configPath,
+    extensionsDir: descriptor.extensionsDir,
+    pluginDir: descriptor.sourcePluginDir,
+  });
+  const extensionDir = inspection.extensionDir;
+  if (!inspection.ok) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `AutoClaw plugin source is unavailable: ${inspection.reason}`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.reason,
+    });
+  }
+
+  if (inspection.state === "foreign") {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${extensionDir} exists without a Clawd ownership marker; remove or rename it before installing`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  const pluginConfig = settings
+    && settings.plugins
+    && settings.plugins.entries
+    && settings.plugins.entries[descriptor.pluginId || "clawd-on-desk"];
+  if (inspection.state === "missing" || inspection.state === "empty") {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${extensionDir} has no Clawd plugin files`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  if (!pluginConfig) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${descriptor.configPath} has no ${descriptor.pluginId || "clawd-on-desk"} plugin entry`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+  if (pluginConfig.enabled === false) {
+    return makeDetail(descriptor, "not-connected", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: "AutoClaw Clawd plugin is registered but disabled",
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  const validation = validateOpenClawEntry(extensionDir, { fs: options.fs });
+  if (!validation.ok) {
+    return makeDetail(descriptor, "broken-path", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `AutoClaw plugin copy is invalid: ${validation.reason}`,
+      openclawEntryIssue: validation.reason,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  if (inspection.state === "owned-stale") {
+    return makeDetail(descriptor, "needs-review", {
+      level: "warning",
+      parentDirExists: true,
+      configFileExists: true,
+      configPath: descriptor.configPath,
+      detail: `${extensionDir} differs from the current Clawd plugin; repair re-materializes it (restart AutoClaw afterwards)`,
+      autoclawExtensionDir: extensionDir,
+      autoclawExtensionState: inspection.state,
+    });
+  }
+
+  return makeDetail(descriptor, "ok", {
+    level: null,
+    parentDirExists: true,
+    configFileExists: true,
+    configPath: descriptor.configPath,
+    detail: `${extensionDir} verified and enabled in ${descriptor.configPath}`,
+    autoclawExtensionDir: extensionDir,
+    autoclawExtensionState: inspection.state,
+  });
+}
+
 function readJsonIfPresent(fsImpl, filePath) {
   try {
     return JSON.parse(fsImpl.readFileSync(filePath, "utf8"));
@@ -2991,6 +3184,12 @@ function checkAgent(descriptor, options) {
     ? dirExists(options.fs, effectiveDescriptor.parentDir)
     : false;
   if (!parentDirExists) {
+    // AutoClaw 2.x keeps no 1.x state dir; its runtime database is the only
+    // carrier evidence and must be reachable without the parent dir.
+    if (descriptor.agentId === "autoclaw") {
+      const runtimeDetail = autoClawRuntimeEvidenceDetail(descriptor, options);
+      if (runtimeDetail) return runtimeDetail;
+    }
     return makeDetail(descriptor, "not-installed", {
       level: "info",
       parentDirExists: false,
@@ -3017,6 +3216,8 @@ function checkAgent(descriptor, options) {
     detail = checkExtensionMode(descriptor, options);
   } else if (descriptor.configMode === "openclaw-plugin") {
     detail = checkOpenClawPluginMode(descriptor, options);
+  } else if (descriptor.configMode === "autoclaw-extension") {
+    detail = checkAutoClawExtensionMode(descriptor, options);
   } else if (descriptor.configMode === "plugin-dir") {
     detail = checkPluginDirMode(descriptor, options);
   } else if (descriptor.configMode === "minimax-plugin") {
@@ -3194,6 +3395,8 @@ module.exports = {
     checkFileMode,
     checkKiroDirMode,
     checkOpenClawPluginMode,
+    checkAutoClawExtensionMode,
+    checkAutoClawLegacyExtensionMode,
     checkExtensionMode,
     checkPluginDirMode,
     checkAntigravityHooksMode,

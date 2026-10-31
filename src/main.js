@@ -6220,6 +6220,7 @@ if (!gotTheLock) {
     // agent-gate snapshot — a user who disabled Codex at last shutdown
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
+    agentRuntime.startAutoClawRuntimeMonitor();
 
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {

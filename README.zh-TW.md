@@ -68,7 +68,7 @@ npm start
 
 ## 支援的 Agent
 
-> **Claude Code** · **Codex CLI** · **Copilot CLI** · **Gemini CLI** · **Antigravity CLI (agy)** · **Cursor Agent** · **CodeBuddy** · **WorkBuddy** · **Grok Build** · **Kiro CLI** · **KiroCrew** · **Kimi Code CLI（Kimi-CLI）** · **Qwen Code** · **ZCode** · **CodeWhale** · **opencode** · **MiMo Code** · **Pi** · **OMP** · **OpenClaw** · **Hermes Agent** · **Qoder** · **QoderWork** · **QwenWork（千問辦公）** · **Reasonix CLI** · **DeepSeek Harness** · **TraeCode (Trae CN)** · **MiniMax Code**
+> **Claude Code** · **Codex CLI** · **Copilot CLI** · **Gemini CLI** · **Antigravity CLI (agy)** · **Cursor Agent** · **CodeBuddy** · **WorkBuddy** · **Grok Build** · **Kiro CLI** · **KiroCrew** · **Kimi Code CLI（Kimi-CLI）** · **Qwen Code** · **ZCode** · **CodeWhale** · **opencode** · **MiMo Code** · **Pi** · **OMP** · **OpenClaw** · **AutoClaw (智譜)** · **Hermes Agent** · **Qoder** · **QoderWork** · **QwenWork（千問辦公）** · **Reasonix CLI** · **DeepSeek Harness** · **TraeCode (Trae CN)** · **MiniMax Code**
 
 Claude Code 和 Codex CLI 第一次啟動就會接上；其他整合在 **設定 → AI 程式設計工具** 中安裝，之後由 Clawd 保持同步。其他本機工具可以透過 [自訂 HTTP agent](docs/guides/custom-agent-http.md) 介面回報狀態。各 agent 的細節見 **[支援的 Agent](docs/guides/supported-agents.zh-TW.md)**，沒有權限對話框等差異見 **[已知限制](docs/guides/known-limitations.md)**。
 

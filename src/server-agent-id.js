@@ -29,6 +29,7 @@ const HOOK_SOURCE_AGENT_IDS = new Map([
   ["opencode-plugin-v2", "opencode"], // opencode 2.x `plugins`-key runtime (issue #1039)
   ["mimocode-plugin", "mimocode"],
   ["openclaw-plugin", "openclaw"],
+  ["autoclaw-plugin", "autoclaw"],
   ["codewhale-hook", "codewhale"],
   ["pi-extension", "pi"],
   ["omp-extension", "omp"],
