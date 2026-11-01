@@ -233,7 +233,7 @@ describe("updateRegistry pure-data validators", () => {
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
-      "quotaMergeSources", "freeRoam", "roamConstrainAxis",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis", "idleActivities",
       "petAlwaysOnTop",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
@@ -260,6 +260,14 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(calls, 1);
     assert.deepStrictEqual(entry.effect(false, {}), { status: "ok" });
     assert.deepStrictEqual(entry.effect(false), { status: "ok" });
+  });
+
+  it("accepts only supported idle activity frequencies", () => {
+    for (const value of ["low", "medium", "high"]) {
+      assert.strictEqual(updateRegistry.idleActivityFrequency(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.idleActivityFrequency("often").status, "error");
+    assert.strictEqual(updateRegistry.idleActivityFrequency(true).status, "error");
   });
 
   it("accepts only supported quota ring display modes", () => {

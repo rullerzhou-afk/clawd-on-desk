@@ -440,6 +440,9 @@ function runMainTickOnce() {
         && !isMouseIdle
         && !hasTriggeredYawn
         && !idleLookPlayed
+        // #1252: an idle activity owns the visual for its beat — do not start
+        // the idle-look playback on top of it.
+        && !(ctx.idleActivity && ctx.idleActivity.isAnimating())
         && elapsed >= MOUSE_IDLE_TIMEOUT
       ) {
         const choice = typeof ctx.getIdleVisualChoice === "function" ? ctx.getIdleVisualChoice() : null;
@@ -511,11 +514,22 @@ function runMainTickOnce() {
         return nextDelay();
       }
 
-      // Free roam tick: wander around when idle long enough
-      if (ctx.roam) ctx.roam.tick();
+      // #1252: decorative idle activities. tick() is a no-op unless the user
+      // opted in and the pet is still idle; skip it while the idle-look
+      // playback owns the visual so the two passive animations never overlap.
+      if (ctx.idleActivity && !isMouseIdle) ctx.idleActivity.tick();
+
+      // Free roam tick: wander around when idle long enough. A walking pet
+      // already has its own "roam" visual; an idle activity beat keeps the
+      // pet still, so the two must not run at once.
+      if (ctx.roam && !(ctx.idleActivity && ctx.idleActivity.isAnimating())) {
+        ctx.roam.tick();
+      }
     }
 
-    const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle) || miniIdleNow;
+    const idleActivityActive = !!(ctx.idleActivity && ctx.idleActivity.isAnimating());
+    const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW
+      && !isMouseIdle && !idleActivityActive) || miniIdleNow;
     if (!trackEyesNow) {
       // Resting on a non-follow visual: the eye path below never runs, so
       // consume the resend flag here — otherwise needsBounds stays true and
@@ -626,6 +640,7 @@ function resetIdleTimer() {
 
 function cleanup() {
   mainTickActive = false;
+  if (ctx.idleActivity) ctx.idleActivity.cancel();
   if (mainTickTimer) { clearTimeout(mainTickTimer); mainTickTimer = null; }
   nextMainTickAt = 0;
   if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
@@ -654,6 +669,14 @@ Object.defineProperty(startMainTick, '_mouseStillSince', {
   get() { return mouseStillSince; },
 });
 
-return { startMainTick, resetIdleTimer, cleanup, refreshTheme, scheduleSoon, get _mouseStillSince() { return mouseStillSince; } };
+return {
+  startMainTick,
+  resetIdleTimer,
+  cleanup,
+  refreshTheme,
+  scheduleSoon,
+  getIdleRestSvg: idleRestSvg,
+  get _mouseStillSince() { return mouseStillSince; },
+};
 
 };

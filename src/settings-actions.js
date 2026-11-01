@@ -580,6 +580,8 @@ const updateRegistry = {
   disableMiniMode: requireBoolean("disableMiniMode"),
   freeRoam: requireBoolean("freeRoam"),
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
+  idleActivities: requireBoolean("idleActivities"),
+  idleActivityFrequency: requireEnum("idleActivityFrequency", ["low", "medium", "high"]),
   keepSizeAcrossDisplays: {
     validate: requireBoolean("keepSizeAcrossDisplays"),
     effect(value, deps = {}) {

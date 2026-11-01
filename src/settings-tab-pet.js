@@ -13,6 +13,8 @@
     "disableMiniMode",
     "freeRoam",
     "roamConstrainAxis",
+    "idleActivities",
+    "idleActivityFrequency",
     "fullscreenAutoHide",
   ]);
 
@@ -28,6 +30,8 @@
 
   const ROAM_MOVEMENT_NATURAL = "natural";
   const ROAM_MOVEMENT_AXIS = "axis";
+  const IDLE_ACTIVITY_FREQUENCIES = ["low", "medium", "high"];
+  const IDLE_ACTIVITY_DEFAULT_FREQUENCY = "medium";
 
   function t(key) {
     return helpers.t(key);
@@ -126,6 +130,62 @@
     row.appendChild(text);
     row.appendChild(controlHost);
     state.mountedControls.roamMovementStyle = control;
+    return row;
+  }
+
+  function readIdleActivityFrequency() {
+    const value = state.snapshot && state.snapshot.idleActivityFrequency;
+    return IDLE_ACTIVITY_FREQUENCIES.includes(value)
+      ? value
+      : IDLE_ACTIVITY_DEFAULT_FREQUENCY;
+  }
+
+  async function saveIdleActivityFrequency(value) {
+    try {
+      const result = await window.settingsAPI.update("idleActivityFrequency", value);
+      if (result && result.status === "ok") return true;
+      const message = (result && result.message) || "unknown error";
+      ops.showToast(t("toastSaveFailed") + message, { error: true });
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+    }
+    return false;
+  }
+
+  function buildIdleActivityFrequencyRow() {
+    const row = document.createElement("div");
+    row.className = "row idle-activity-frequency-row";
+
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowIdleActivityFrequency");
+    const description = document.createElement("span");
+    description.className = "row-desc";
+    description.textContent = t("rowIdleActivityFrequencyDesc");
+    text.appendChild(label);
+    text.appendChild(description);
+
+    const controlHost = document.createElement("div");
+    controlHost.className = "row-control";
+    const control = helpers.buildSegmentedRadio({
+      id: "idle-activity-frequency",
+      value: readIdleActivityFrequency(),
+      disabled: !(state.snapshot && state.snapshot.idleActivities === true),
+      ariaLabel: t("rowIdleActivityFrequency"),
+      className: "idle-activity-frequency-segmented",
+      options: [
+        { value: "low", label: t("idleActivityFrequencyLow") },
+        { value: "medium", label: t("idleActivityFrequencyMedium") },
+        { value: "high", label: t("idleActivityFrequencyHigh") },
+      ],
+      onChange: saveIdleActivityFrequency,
+    });
+    controlHost.appendChild(control.element);
+    row.appendChild(text);
+    row.appendChild(controlHost);
+    state.mountedControls.idleActivityFrequency = control;
     return row;
   }
 
@@ -482,6 +542,20 @@
     return true;
   }
 
+  function getMountedIdleActivityFrequency() {
+    const control = state.mountedControls.idleActivityFrequency;
+    if (!control || !document.body.contains(control.element)) return null;
+    return control;
+  }
+
+  function syncIdleActivityFrequencyFromSnapshot() {
+    const control = getMountedIdleActivityFrequency();
+    if (!control) return false;
+    control.setValue(readIdleActivityFrequency());
+    control.setDisabled(!(state.snapshot && state.snapshot.idleActivities === true));
+    return true;
+  }
+
 
   function render(parent) {
     const h1 = document.createElement("h1");
@@ -504,6 +578,12 @@
 
     parent.appendChild(helpers.buildSection(t("sectionPetMovement"), [
       buildFreeRoamGroup(),
+      helpers.buildSwitchRow({
+        key: "idleActivities",
+        labelKey: "rowIdleActivities",
+        descKey: "rowIdleActivitiesDesc",
+      }),
+      buildIdleActivityFrequencyRow(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -546,6 +626,10 @@
       && !getMountedRoamMovementStyle()) {
       return false;
     }
+    if ((keys.includes("idleActivities") || keys.includes("idleActivityFrequency"))
+      && !getMountedIdleActivityFrequency()) {
+      return false;
+    }
     // #1275: adding or removing the restart note/button needs a new row.
     if (keys.includes("petAlwaysOnTop")
       && isPetAlwaysOnTopRestartPending() !== mountedPetAlwaysOnTopRestartPending) {
@@ -553,12 +637,14 @@
     }
     for (const key of keys) {
       if (key === "size" || key === "roamConstrainAxis") continue;
+      if (key === "idleActivityFrequency") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
     for (const key of keys) {
       if (key === "size") continue;
       if (key === "roamConstrainAxis") continue;
+      if (key === "idleActivityFrequency") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       state.transientUiState.generalSwitches.delete(key);
       meta.control.setState({
@@ -568,6 +654,8 @@
     }
     if ((keys.includes("freeRoam") || keys.includes("roamConstrainAxis"))
       && !syncRoamMovementStyleFromSnapshot()) return false;
+    if ((keys.includes("idleActivities") || keys.includes("idleActivityFrequency"))
+      && !syncIdleActivityFrequencyFromSnapshot()) return false;
     return true;
   }
 

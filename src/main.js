@@ -2743,6 +2743,7 @@ const _tickCtx = {
   getHitRectScreen,
   getAssetPointerPayload,
   get roam() { return _roam; },
+  get idleActivity() { return _idleActivity; },
 };
 const _tick = require("./tick")(_tickCtx);
 requestFastTick = (maxDelay) => _tick.scheduleSoon(maxDelay);
@@ -5869,6 +5870,65 @@ try {
   });
 } catch (err) {
   console.warn("Clawd: freeRoam subscribeKey failed:", err && err.message);
+}
+
+// ── Idle activities — decorative state beats while no agent is active (#1252) ──
+// The controller keeps the logical state at "idle" and only swaps the visual,
+// so every normal event path still wins. These gates mirror Free roam's plus
+// the ones that make a passive animation inappropriate (sleep, low power,
+// settings previews, hidden windows).
+function canPlayIdleActivity() {
+  if (!win || win.isDestroyed()) return false;
+  if (doNotDisturb || lowPowerIdlePaused || idlePaused || menuOpen) return false;
+  if (petWindowRuntime.isDragLocked()) return false;
+  if (_mini.getMiniMode() || _mini.getMiniTransitioning()) return false;
+  if (anySessionInProgress()) return false;
+  if (_perm.hasVisiblePermissionBubbles()) return false;
+  if (petWindowRuntime.isSettingsSizePreviewActive()) return false;
+  if (petWindowRuntime.isPetEffectivelyHidden()) return false;
+  if (typeof win.isVisible === "function" && !win.isVisible()) return false;
+  if (_state.isSettingsPreviewVisual()) return false;
+  // #640: hold still while the user types into a bubble text field (macOS IME).
+  if (pendingPermissions.some((entry) => entry
+    && entry.bubble
+    && !entry.bubble.isDestroyed()
+    && entry.bubble.isVisible()
+    && entry.bubble.__clawdMacImeEditing)) return false;
+  // Same sleep guard as Free roam: do not start a beat that the sleep
+  // sequence is about to interrupt.
+  const theme = getActiveTheme();
+  const sleepTimeoutMs = theme && theme.timings ? theme.timings.mouseSleepTimeout : null;
+  if (Number.isFinite(sleepTimeoutMs) && _tick
+    && Date.now() - _tick._mouseStillSince >= sleepTimeoutMs) return false;
+  return true;
+}
+
+function idleRestVisualFile() {
+  const choice = getIdleVisualChoice();
+  if (choice) return choice;
+  const theme = getActiveTheme();
+  const idleFiles = theme && theme.states && theme.states.idle;
+  return Array.isArray(idleFiles) && typeof idleFiles[0] === "string" ? idleFiles[0] : null;
+}
+
+const _idleActivity = require("./idle-activity").createIdleActivityController({
+  getTheme: () => getActiveTheme(),
+  getCurrentState: () => _state.getCurrentState(),
+  canPlay: canPlayIdleActivity,
+  getIdleRestSvg: idleRestVisualFile,
+  sendToRenderer,
+});
+_idleActivity.setEnabled(_settingsController.get("idleActivities") === true);
+_idleActivity.setFrequency(_settingsController.get("idleActivityFrequency"));
+try {
+  _settingsController.subscribeKey("idleActivities", (value) => {
+    _idleActivity.setEnabled(value === true);
+  });
+  _settingsController.subscribeKey("idleActivityFrequency", (value) => {
+    _idleActivity.setFrequency(value);
+  });
+} catch (err) {
+  console.warn("Clawd: idleActivity subscribeKey failed:", err && err.message);
 }
 
 // Convenience getters for mini state (used throughout main.js)
