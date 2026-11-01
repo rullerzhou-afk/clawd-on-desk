@@ -65,6 +65,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 能力缺失时走 `VISUAL_FALLBACK_STATES` 回退链
 - `thinking` / `working` / `juggling` 的视觉在每个 hook 事件都会经 `getSvgOverride` 重新解析。`states.thinking`、无 `workingTiers` 时的 `states.working`、无 `jugglingTiers` 时的 `states.juggling`，以及 tier 的 `files` 列出多个文件时随机抽一个；抽中结果由 `state-visual-resolver.js` 的 `createStableVisualPicker` 按状态保持：同一状态、同一候选列表下重复解析返回同一文件（否则每次工具调用都会换动画）。`applyState` 提交新状态时丢弃其他状态的抽签，候选列表变化（tier 随会话数 / 子代理数切换）或 `refreshTheme` 时重抽。tier 的 `files` 优先于 `file`；两者并存时 `file` 只供旧版本读取，并继续作为 Animation Override 的 tier 键。`displayHintMap` 命中时仍然优先
 - 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量；loader 保持 stateless，`src/theme-runtime.js` 是唯一 active-theme owner，主题 reload/sync/cache 不得另设模块级真相
+- 启动主题加载的读取重试（#1295）：Windows NSIS 更新后的首次启动可能与安装器 / 杀软竞态，瞬时锁住或尚未写完 `app.asar.unpacked` 里的 `theme.json`。`_readThemeJson` 支持 `readAttempts` + `retryDelaysMs` 选项（默认 1 次尝试，行为不变），只有 `main.js` 的模块顶层启动调用传 5 次（100/250/500/1000ms 退避），lenient 回退到 `clawd` 时转发重试预算但不转发 variant/overrides。每次尝试去掉 `existsSync`、直接 `readFileSync` 并捕获真实错误码（ENOENT/ENOTDIR 静默），最终失败仍 fail-closed 抛 `Default theme 'clawd' not found`，但消息携带最后一次底层 fs/parse 错误，用于诊断下一次同类报告
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
 - 配饰是两个独立的主题级槽：`petAccessory` 对应 head，`petMouthAccessory` 对应 mouth。renderer 中两者都是 pet media 的外部兄弟层，固定顺序为 `pet media → head → mouth`，因此 pet tint 不会染到配饰，mouth 也能稳定画在手或 head 配饰之上
