@@ -966,6 +966,7 @@ module.exports = {
   formatNodeHookCommand,
   resolveWslDistroEnv,
   buildPortableStatuslineCommand,
+  portableWindowsNodeToken,
   buildWindowsEncodedNodeHookCommand,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
