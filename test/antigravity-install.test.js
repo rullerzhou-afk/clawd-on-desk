@@ -840,11 +840,8 @@ describe("Antigravity statusline installer", () => {
     assert.strictEqual(result.changed, false);
   });
 
-  // Antigravity CLI on Windows executes statusLine.command via Go's exec.Command("cmd", "/c", ...).
-  // In Go, args passed to exec.Command on Windows undergo syscall.EscapeArg, which escapes any
-  // internal double quotes into `\"`. Because cmd.exe /c does not unescape `\"`, Node.js receives
-  // literal quote characters in process.argv[1], which breaks module resolution.
-  // Therefore, neither the interpreter token nor the script path may be double-quoted.
+  // On Windows, Antigravity CLI turns `"` in statusLine.command into literal
+  // quote characters in node's argv, so the command must not be double-quoted.
   it("win32: writes an unquoted command (bare node) when the node path has spaces", () => {
     const homeDir = makeTempStatuslineHome();
 
@@ -878,6 +875,62 @@ describe("Antigravity statusline installer", () => {
     const command = readJson(settingsPath).statusLine.command;
     assert.ok(command.startsWith("C:/nvm/v20.11.0/node.exe "), command);
     assert.ok(!command.includes('"'), command);
+  });
+
+  const SPACED_SCRIPT = "C:\\Program Files\\Clawd on Desk\\resources\\app.asar.unpacked\\hooks\\antigravity-statusline.js";
+
+  it("win32: shortens only the directory of a spaced script path, keeping the marker file name", () => {
+    const seen = [];
+    const command = __test.buildAntigravityStatuslineCommand("node", SPACED_SCRIPT, {
+      platform: "win32",
+      resolveShortDir: (dir) => {
+        seen.push(dir);
+        return "C:\\PROGRA~1\\CLAWDO~1\\RESOUR~1\\APPASA~1.UNP\\hooks";
+      },
+    });
+
+    assert.deepStrictEqual(seen, ["C:/Program Files/Clawd on Desk/resources/app.asar.unpacked/hooks"]);
+    assert.strictEqual(command, "node C:/PROGRA~1/CLAWDO~1/RESOUR~1/APPASA~1.UNP/hooks/antigravity-statusline.js");
+    assert.ok(command.includes(STATUSLINE_MARKER));
+  });
+
+  it("win32: keeps the long script path when no space-free short directory is available", () => {
+    for (const shortDir of [null, "C:\\Program Files\\Clawd on Desk\\hooks"]) {
+      const command = __test.buildAntigravityStatuslineCommand("node", SPACED_SCRIPT, {
+        platform: "win32",
+        resolveShortDir: () => shortDir,
+      });
+      assert.strictEqual(command, `node ${SPACED_SCRIPT.replace(/\\/g, "/")}`);
+    }
+  });
+
+  it("win32: does not resolve short names for a space-free script path", () => {
+    const command = __test.buildAntigravityStatuslineCommand("node", "D:\\clawd\\hooks\\antigravity-statusline.js", {
+      platform: "win32",
+      resolveShortDir: () => { throw new Error("should not be called"); },
+    });
+    assert.strictEqual(command, "node D:/clawd/hooks/antigravity-statusline.js");
+  });
+
+  it("resolveWindowsShortDir asks cmd for UTF-16 output and decodes non-ASCII names", () => {
+    let cmdLine = "";
+    let execOptions = null;
+    const shortDir = __test.resolveWindowsShortDir("C:/Users/张 三/Clawd on Desk/hooks", (cmd, opts) => {
+      cmdLine = cmd;
+      execOptions = opts;
+      return Buffer.from("C:\\Users\\张三~1\\CLAWDO~1\\hooks\r\n", "utf16le");
+    });
+
+    // A text `encoding` would make execSync decode the UTF-16 bytes itself and garble them.
+    assert.strictEqual(execOptions.encoding, undefined);
+    assert.ok(cmdLine.includes("/u"), cmdLine);
+    assert.ok(cmdLine.includes('("C:\\Users\\张 三\\Clawd on Desk\\hooks")'), cmdLine);
+    assert.strictEqual(shortDir, "C:\\Users\\张三~1\\CLAWDO~1\\hooks");
+  });
+
+  it("resolveWindowsShortDir returns null when cmd fails or prints nothing", () => {
+    assert.strictEqual(__test.resolveWindowsShortDir("C:/a b", () => { throw new Error("boom"); }), null);
+    assert.strictEqual(__test.resolveWindowsShortDir("C:/a b", () => Buffer.alloc(0)), null);
   });
 
   it("skips when Antigravity CLI settings directory is absent", () => {
