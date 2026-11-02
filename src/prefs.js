@@ -727,6 +727,9 @@ function validate(raw) {
   }
   normalizeCustomAgentGates(out);
   normalizeStaleTriple(out);
+  // File load/save fallback: preserve the older roam preference on conflict.
+  // Live-store exclusivity is enforced by settings-actions validators.
+  if (out.freeRoam && out.idleActivities) out.idleActivities = false;
   return out;
 }
 

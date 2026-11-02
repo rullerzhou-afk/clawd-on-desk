@@ -117,7 +117,6 @@
     const control = helpers.buildSegmentedRadio({
       id: "roam-movement-style",
       value: readRoamMovementStyle(),
-      disabled: !(state.snapshot && state.snapshot.freeRoam === true),
       ariaLabel: t("rowRoamMovementStyle"),
       className: "roam-movement-style-segmented",
       options: [
@@ -172,7 +171,6 @@
     const control = helpers.buildSegmentedRadio({
       id: "idle-activity-frequency",
       value: readIdleActivityFrequency(),
-      disabled: !(state.snapshot && state.snapshot.idleActivities === true),
       ariaLabel: t("rowIdleActivityFrequency"),
       className: "idle-activity-frequency-segmented",
       options: [
@@ -307,41 +305,95 @@
     return row;
   }
 
-  function buildFreeRoamGroup() {
-    const headerRow = helpers.buildSwitchRow({
-      key: "freeRoam",
-      labelKey: "rowFreeRoam",
-      descKey: "rowFreeRoamDesc",
-    });
-    headerRow.classList.add("free-roam-header-row");
-
-    const headerSwitch = headerRow.querySelector(".switch");
-    if (headerSwitch) headerSwitch.setAttribute("aria-label", t("rowFreeRoam"));
-    const headerAction = headerRow.querySelector(".row-control");
-    if (headerAction) headerAction.remove();
-
-    return helpers.buildCollapsibleGroup({
-      id: "pet:free-roam",
-      headerContent: headerRow,
-      headerAction,
-      disclosureLabel: t("rowFreeRoam"),
-      defaultCollapsed: true,
-      className: "free-roam-collapsible",
-      children: [buildOptionList("free-roam-option-list", [
-        buildRoamMovementStyleRow(),
-        buildRoamAreaRow(),
-      ])],
-    });
+  function readIdleBehavior(snapshot = state.snapshot) {
+    if (snapshot && snapshot.freeRoam === true) return "roam";
+    return snapshot && snapshot.idleActivities === true ? "activities" : "none";
   }
 
-  function buildOptionList(className, rows) {
-    const list = document.createElement("div");
-    list.className = `settings-option-list ${className || ""}`.trim();
-    for (const row of rows) {
-      row.classList.add("settings-option-item");
-      list.appendChild(row);
+  async function saveIdleBehavior(mode) {
+    try {
+      const result = await window.settingsAPI.command("setIdleBehavior", { mode });
+      if (result && result.status === "ok") return true;
+      const message = (result && result.message) || "unknown error";
+      ops.showToast(t("toastSaveFailed") + message, { error: true });
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
     }
-    return list;
+    return false;
+  }
+
+  function buildIdleBehaviorGroup() {
+    const group = document.createElement("div");
+    group.className = "idle-behavior-group";
+    const modeRow = document.createElement("div");
+    modeRow.className = "row idle-behavior-mode-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("rowIdleBehavior");
+    const description = document.createElement("span");
+    description.className = "row-desc";
+    text.appendChild(label);
+    text.appendChild(description);
+    const controlHost = document.createElement("div");
+    controlHost.className = "row-control";
+    const modeControl = helpers.buildSegmentedRadio({
+      id: "idle-behavior-mode",
+      value: readIdleBehavior(),
+      ariaLabel: t("rowIdleBehavior"),
+      className: "idle-behavior-mode-segmented",
+      options: [
+        { value: "none", label: t("idleBehaviorNone") },
+        { value: "roam", label: t("idleBehaviorRoam") },
+        { value: "activities", label: t("idleBehaviorActivities") },
+      ],
+      onChange(mode) {
+        return saveIdleBehavior(mode).then((accepted) => {
+          if (accepted) syncMode(mode);
+          return accepted;
+        });
+      },
+    });
+    controlHost.appendChild(modeControl.element);
+    modeRow.appendChild(text);
+    modeRow.appendChild(controlHost);
+    const movementRow = buildRoamMovementStyleRow();
+    const areaRow = buildRoamAreaRow();
+    const frequencyRow = buildIdleActivityFrequencyRow();
+    group.appendChild(modeRow);
+    group.appendChild(movementRow);
+    group.appendChild(areaRow);
+    group.appendChild(frequencyRow);
+
+    function syncMode(mode) {
+      const descriptionKeys = {
+        none: "idleBehaviorNoneDesc",
+        roam: "idleBehaviorRoamDesc",
+        activities: "idleBehaviorActivitiesDesc",
+      };
+      description.textContent = t(descriptionKeys[mode]);
+      for (const [row, visible] of [
+        [movementRow, mode === "roam"],
+        [areaRow, mode === "roam"],
+        [frequencyRow, mode === "activities"],
+      ]) {
+        row.hidden = !visible;
+        row.setAttribute("aria-hidden", visible ? "false" : "true");
+      }
+    }
+
+    state.mountedControls.idleBehavior = {
+      element: group,
+      modeControl,
+      syncFromSnapshot({ modeChanged = true } = {}) {
+        const mode = readIdleBehavior();
+        modeControl.setValue(mode);
+        if (modeChanged) syncMode(mode);
+      },
+    };
+    state.mountedControls.idleBehavior.syncFromSnapshot();
+    return group;
   }
 
 
@@ -538,7 +590,6 @@
     const control = getMountedRoamMovementStyle();
     if (!control) return false;
     control.setValue(readRoamMovementStyle());
-    control.setDisabled(!(state.snapshot && state.snapshot.freeRoam === true));
     return true;
   }
 
@@ -552,7 +603,6 @@
     const control = getMountedIdleActivityFrequency();
     if (!control) return false;
     control.setValue(readIdleActivityFrequency());
-    control.setDisabled(!(state.snapshot && state.snapshot.idleActivities === true));
     return true;
   }
 
@@ -577,13 +627,7 @@
     ]));
 
     parent.appendChild(helpers.buildSection(t("sectionPetMovement"), [
-      buildFreeRoamGroup(),
-      helpers.buildSwitchRow({
-        key: "idleActivities",
-        labelKey: "rowIdleActivities",
-        descKey: "rowIdleActivitiesDesc",
-      }),
-      buildIdleActivityFrequencyRow(),
+      buildIdleBehaviorGroup(),
       helpers.buildSwitchRow({
         key: "allowEdgePinning",
         labelKey: "rowAllowEdgePinning",
@@ -616,7 +660,7 @@
     ]));
   }
 
-  function patchInPlace(changes) {
+  function patchInPlace(changes, { previousSnapshot } = {}) {
     const keys = changes ? Object.keys(changes) : [];
     if (keys.length === 0) return false;
     if (!keys.every((key) => PET_IN_PLACE_KEYS.has(key))) return false;
@@ -630,6 +674,9 @@
       && !getMountedIdleActivityFrequency()) {
       return false;
     }
+    const idleBehavior = state.mountedControls.idleBehavior;
+    const behaviorChanged = keys.includes("freeRoam") || keys.includes("idleActivities");
+    if (behaviorChanged && (!idleBehavior || !document.body.contains(idleBehavior.element))) return false;
     // #1275: adding or removing the restart note/button needs a new row.
     if (keys.includes("petAlwaysOnTop")
       && isPetAlwaysOnTopRestartPending() !== mountedPetAlwaysOnTopRestartPending) {
@@ -637,20 +684,25 @@
     }
     for (const key of keys) {
       if (key === "size" || key === "roamConstrainAxis") continue;
-      if (key === "idleActivityFrequency") continue;
+      if (key === "idleActivityFrequency" || key === "freeRoam" || key === "idleActivities") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
     for (const key of keys) {
       if (key === "size") continue;
       if (key === "roamConstrainAxis") continue;
-      if (key === "idleActivityFrequency") continue;
+      if (key === "idleActivityFrequency" || key === "freeRoam" || key === "idleActivities") continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       state.transientUiState.generalSwitches.delete(key);
       meta.control.setState({
         checked: readers.readGeneralSwitchVisual(key, meta.invert),
         pending: false,
       });
+    }
+    if (behaviorChanged) {
+      // Compare authoritative snapshots: the control already changed optimistically.
+      const modeChanged = !previousSnapshot || readIdleBehavior(previousSnapshot) !== readIdleBehavior();
+      idleBehavior.syncFromSnapshot({ modeChanged });
     }
     if ((keys.includes("freeRoam") || keys.includes("roamConstrainAxis"))
       && !syncRoamMovementStyleFromSnapshot()) return false;

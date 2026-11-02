@@ -410,8 +410,12 @@ upgrade path.
 
 **Other desktop and notification sampling**
 
-- Free roam: enable it, wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
+- Free roam: select When idle → Free roam in Settings → Pet → Movement & position,
+  wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
   alignment, and cancels on mouse move, state change, drag, mini mode, and DND.
+- Idle behavior: switch among Stay put, Free roam, and Idle activities; confirm
+  only the selected mode’s details appear, detail values survive mode switches,
+  and switching away during an idle activity returns the pet to its idle visual.
 - Free roam constraints: exercise axis off/horizontal/vertical both with and
   without a valid fence, then use a small fence and invalid/missing fence input.
   Targets must remain reachable and on-screen, with invalid input falling back

@@ -512,7 +512,7 @@ describe("prefs.validate", () => {
       keepSizeAcrossDisplays: true,
       freeRoam: true,
       roamConstrainAxis: true,
-      idleActivities: true,
+      idleActivities: false,
       idleActivityFrequency: "high",
       savedPixelWidth: 286,
       savedPixelHeight: 286,
@@ -541,7 +541,7 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.freeRoam, true);
     assert.strictEqual(v.roamConstrainAxis, true);
-    assert.strictEqual(v.idleActivities, true);
+    assert.strictEqual(v.idleActivities, false);
     assert.strictEqual(v.idleActivityFrequency, "high");
     assert.strictEqual(v.savedPixelWidth, 286);
     assert.strictEqual(v.savedPixelHeight, 286);
@@ -2660,5 +2660,30 @@ describe("prefs.disableHardwareAcceleration (#1183)", () => {
       mainSource,
       /const _hardwareAccelerationDisabledAtStartup = isWin\s*&& !!_initialPrefsLoad\.snapshot\s*&& _initialPrefsLoad\.snapshot\.disableHardwareAcceleration === true;\s*if \(_hardwareAccelerationDisabledAtStartup\) \{\s*app\.disableHardwareAcceleration\(\);/
     );
+  });
+});
+
+describe("idle behavior file normalization", () => {
+  it("preserves roam when both behaviors are enabled", () => {
+    const snapshot = prefs.validate({ freeRoam: true, idleActivities: true });
+    assert.strictEqual(snapshot.freeRoam, true);
+    assert.strictEqual(snapshot.idleActivities, false);
+  });
+
+  it("preserves all three valid behavior pairs", () => {
+    for (const [freeRoam, idleActivities] of [[false, false], [true, false], [false, true]]) {
+      const snapshot = prefs.validate({ freeRoam, idleActivities });
+      assert.strictEqual(snapshot.freeRoam, freeRoam);
+      assert.strictEqual(snapshot.idleActivities, idleActivities);
+    }
+  });
+
+  it("defaults idle activities off for older files with only roam", () => {
+    const file = makeTempPath();
+    fs.writeFileSync(file, JSON.stringify({ version: prefs.CURRENT_VERSION, freeRoam: true }));
+    const snapshot = prefs.load(file).snapshot;
+    assert.strictEqual(snapshot.freeRoam, true);
+    assert.strictEqual(snapshot.idleActivities, prefs.getDefaults().idleActivities);
+    assert.strictEqual(snapshot.idleActivities, false);
   });
 });

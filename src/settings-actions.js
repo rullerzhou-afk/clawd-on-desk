@@ -578,9 +578,23 @@ const updateRegistry = {
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
-  freeRoam: requireBoolean("freeRoam"),
+  freeRoam(value, deps = {}) {
+    const base = requireBoolean("freeRoam")(value);
+    if (base.status !== "ok") return base;
+    if (value && deps.snapshot && deps.snapshot.idleActivities === true) {
+      return { status: "error", message: "freeRoam and idleActivities are mutually exclusive; use setIdleBehavior to switch." };
+    }
+    return { status: "ok" };
+  },
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
-  idleActivities: requireBoolean("idleActivities"),
+  idleActivities(value, deps = {}) {
+    const base = requireBoolean("idleActivities")(value);
+    if (base.status !== "ok") return base;
+    if (value && deps.snapshot && deps.snapshot.freeRoam === true) {
+      return { status: "error", message: "freeRoam and idleActivities are mutually exclusive; use setIdleBehavior to switch." };
+    }
+    return { status: "ok" };
+  },
   idleActivityFrequency: requireEnum("idleActivityFrequency", ["low", "medium", "high"]),
   keepSizeAcrossDisplays: {
     validate: requireBoolean("keepSizeAcrossDisplays"),
@@ -1415,6 +1429,19 @@ function setThemeSelection(payload, deps) {
     commit: { theme: themeId, themeVariant: nextVariantMap },
     customizationCapabilities: selection.customizationCapabilities,
   };
+}
+
+function setIdleBehavior(payload, deps = {}) {
+  const mode = typeof payload === "string" ? payload : payload && payload.mode;
+  if (!["none", "roam", "activities"].includes(mode)) {
+    return { status: "error", message: "setIdleBehavior.mode must be none, roam, or activities" };
+  }
+  const commit = { freeRoam: mode === "roam", idleActivities: mode === "activities" };
+  const snapshot = deps.snapshot || {};
+  if (snapshot.freeRoam === commit.freeRoam && snapshot.idleActivities === commit.idleActivities) {
+    return { status: "ok", noop: true };
+  }
+  return { status: "ok", commit };
 }
 
 // #509: default idle visual picker.
@@ -2816,6 +2843,7 @@ const commandRegistry = {
   setWideHitboxOverride,
   setThemeSelection,
   setIdleVisual,
+  setIdleBehavior,
   "officialTheme.commitInstall": officialThemeCommitInstall,
   "officialTheme.uninstall": officialThemeUninstall,
   "remoteSsh.add": remoteSshAddProfile,
