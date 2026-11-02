@@ -70,9 +70,12 @@ async function assertProductionStack(win) {
 }
 
 async function capturePaintedPixel(win) {
-  // A hidden native window can have no Viz surface yet. Offscreen painting
-  // supplies a real compositor frame before capture; no visual assertion is
-  // retried or weakened when that surface is missing.
+  // Allow a rendering cycle for visibility changes before invalidating.
+  await win.webContents.executeJavaScript(`new Promise((resolve) => {
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  })`);
+  // invalidate() may re-emit a cached frame. Wait for an offscreen paint surface
+  // before capturing the pixel; the visual assertion is never retried.
   await new Promise((resolve, reject) => {
     const painted = () => { clearTimeout(timer); resolve(); };
     const timer = setTimeout(() => {

@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const { spawn, spawnSync } = require("child_process");
+const { quotePowerShellSingleArg } = require("../hooks/json-utils");
 const {
   HOOK_GROUP_ID,
   MARKER,
@@ -705,7 +706,7 @@ describe("Antigravity hook installer", () => {
     assert.ok(decoded.includes(`$psi.FileName = '${nodeBin}'`));
     const script = path.resolve(__dirname, "..", "hooks", "antigravity-hook.js").replace(/\\/g, "/");
     const scriptArg = /\s/.test(script) ? `"${script}"` : script;
-    assert.ok(decoded.includes(`$psi.Arguments = '${scriptArg.replace(/'/g, "''")} PreInvocation'`));
+    assert.ok(decoded.includes(`$psi.Arguments = ${quotePowerShellSingleArg(`${scriptArg} PreInvocation`)}`));
     assert.ok(decoded.includes("[Console]::Out.WriteLine( '{}' )"));
   });
 
