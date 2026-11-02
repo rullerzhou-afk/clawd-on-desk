@@ -15,3 +15,12 @@ test("a worker override must be a bounded positive integer", () => {
     assert.deepEqual(resolveConcurrencyArgs({ CLAWD_TEST_CONCURRENCY: value }, "win32"), ["--test-concurrency=2"]);
   }
 });
+
+for (const platform of ["linux", "darwin"]) {
+  test(`a worker override applies on ${platform} and invalid values keep the platform default`, () => {
+    assert.deepEqual(resolveConcurrencyArgs({ CLAWD_TEST_CONCURRENCY: "4" }, platform), ["--test-concurrency=4"]);
+    for (const value of ["", "0", "-1", "1.5", "NaN", "257", "Infinity"]) {
+      assert.deepEqual(resolveConcurrencyArgs({ CLAWD_TEST_CONCURRENCY: value }, platform), []);
+    }
+  });
+}

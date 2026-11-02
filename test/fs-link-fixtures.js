@@ -3,11 +3,9 @@
 const fs = require("node:fs");
 const assert = require("node:assert/strict");
 
-// Exercise the actual lstat rejection boundary without requiring Developer Mode.
-// Windows junctions and file symlinks both report isSymbolicLink(); a junction
-// aimed at a file is intentionally unresolvable and must still be rejected.
-// POSIX keeps the live file symlink, covering rejection rather than following a
-// readable external file. Both platform variants keep the external data intact.
+// The Windows EPERM fallback only tests rejection of an unresolvable file junction.
+// Rejection without reading a valid external file is covered by real symlinks
+// on macOS/Linux and administrator-run Windows CI.
 function linkForRejection(target, link) {
   try {
     fs.symlinkSync(target, link);
