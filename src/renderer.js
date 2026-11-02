@@ -34,6 +34,11 @@ const DISCRETE_SAMPLING_MAX_RETRIES = 60;
 // sampler on the same document (a retry that raced the first pass, a duplicate
 // commit callback) would otherwise snap an already-snapped duration again.
 const discreteSampledDocuments = new WeakSet();
+const discreteSamplingFollowByDocument = new WeakMap();
+// The zoom cancelDisplayScaleForCompositor wrote into each SVG document.
+const displayScaleZoomByDocument = new WeakMap();
+// Same settle time main.js gives display-metrics-changed, which arrives in bursts too.
+const DISPLAY_SCALE_RELOAD_DEBOUNCE_MS = 400;
 const WAKE_OBJECT_RELOAD_RETRIES = 1;
 const LOW_POWER_PAUSE_STYLE_ID = "clawd-low-power-pause-svg";
 // Deep sleep can sit on screen all night, so those states always pause: the
@@ -58,7 +63,9 @@ const CODEX_PET_VISUAL_BY_FILE = Object.freeze({
 });
 let lowPowerIdleMode = false;
 let lowPowerIdlePauseTimer = null;
+let displayScaleReloadTimer = null;
 let lowPowerSvgPaused = false;
+let petHidden = false;
 let lastSystemWakeId = null;
 let lastSystemWakeStatus = null;
 let pendingSystemWakeId = null;
@@ -68,6 +75,7 @@ let _lowPowerStaticImageOverrides = {};
 let _petTintPayload = { id: "none", filter: "" };
 let _petTintSupported = false;
 const ACCESSORY_SLOT_NAMES = Object.freeze(["head", "mouth"]);
+const ACCESSORY_SMIL_RATE = 12;
 function createAccessorySlotRuntime(element) {
   return {
     element,
@@ -80,6 +88,8 @@ function createAccessorySlotRuntime(element) {
     assetLoadTimer: null,
     assetWaiters: [],
     raf: null,
+    followTimer: null,
+    smilTimer: null,
     lastLayout: null,
     followKey: null,
     pausedRoot: null,
@@ -269,16 +279,48 @@ function setSvgRootLowPowerPaused(root, paused) {
   }
 }
 
+function stopAccessorySmilClock(slot) {
+  if (slot.smilTimer == null) return;
+  clearInterval(slot.smilTimer);
+  slot.smilTimer = null;
+}
+
+function startAccessorySmilClock(slot, root) {
+  stopAccessorySmilClock(slot);
+  try {
+    if (!root.querySelectorAll("animate, animateTransform, animateMotion, set").length) return;
+    root.pauseAnimations();
+    // SVG time is single precision; accumulating small steps loses time as
+    // the document ages. A fresh anchor also excludes time spent hidden.
+    const anchorTime = root.getCurrentTime();
+    const anchorNow = performance.now();
+    slot.smilTimer = setInterval(() => {
+      try {
+        root.setCurrentTime(anchorTime + (performance.now() - anchorNow) / 1000);
+      } catch {
+        stopAccessorySmilClock(slot);
+      }
+    }, 1000 / ACCESSORY_SMIL_RATE);
+  } catch {
+    stopAccessorySmilClock(slot);
+  }
+}
+
 function setAccessorySvgLowPowerPaused(slotName, paused) {
   const slot = _accessorySlots[slotName];
   if (!slot || !slot.element || slot.element.tagName !== "OBJECT") return false;
   const root = getObjectSvgRoot(slot.element);
-  if (!root) return false;
+  if (!root) {
+    stopAccessorySmilClock(slot);
+    return false;
+  }
   const next = !!paused;
   if (slot.pausedRoot === root && slot.documentPaused === next) return true;
   if (!setSvgRootLowPowerPaused(root, next)) return false;
   slot.pausedRoot = root;
   slot.documentPaused = next;
+  if (next) stopAccessorySmilClock(slot);
+  else startAccessorySmilClock(slot, root);
   return true;
 }
 
@@ -286,7 +328,7 @@ function syncAccessorySvgLowPowerPaused(paused) {
   for (const slotName of ACCESSORY_SLOT_NAMES) {
     const slot = getAccessorySlot(slotName);
     const hidden = !!(slot && slot.element && slot.element.style.display === "none");
-    setAccessorySvgLowPowerPaused(slotName, paused || hidden);
+    setAccessorySvgLowPowerPaused(slotName, paused || petHidden || hidden);
   }
 }
 
@@ -792,6 +834,10 @@ function cancelAccessoryFollow(slotName) {
     cancelAnimationFrame(slot.raf);
     slot.raf = null;
   }
+  if (slot.followTimer != null) {
+    clearTimeout(slot.followTimer);
+    slot.followTimer = null;
+  }
   slot.followKey = null;
 }
 
@@ -840,7 +886,7 @@ function clearAccessoryRuntime(slotName, options = {}) {
   if (!options.clearAsset) return;
   clearAccessoryAssetLoadTimer(slotName);
   if (slot.element) {
-    setAccessorySvgLowPowerPaused(slotName, false);
+    // Clearing data on a hidden object can retain its document, so leave it paused.
     slot.element.onload = null;
     slot.element.onerror = null;
     try {
@@ -918,7 +964,7 @@ function ensureAccessoryAsset(slotName) {
     clearAccessoryAssetLoadTimer(slotName);
     slot.assetReady = true;
     slot.assetSettled = true;
-    if (lowPowerSvgPaused) setAccessorySvgLowPowerPaused(slotName, true);
+    if (lowPowerSvgPaused || petHidden) setAccessorySvgLowPowerPaused(slotName, true);
     refreshAccessoryLayout(slotName);
     flushAccessoryAssetWaiters(slotName);
   };
@@ -1024,6 +1070,21 @@ function computeStaticAccessoryLayout(context) {
   });
 }
 
+// getCTM() answers in the nested document's CSS pixels, and the root zoom makes
+// those 1 / zoom times as many as the page's.
+function scaleCtmToPagePixels(matrix, svgDoc) {
+  const zoom = displayScaleZoomByDocument.get(svgDoc);
+  if (!zoom) return matrix;
+  return {
+    a: matrix.a * zoom,
+    b: matrix.b * zoom,
+    c: matrix.c * zoom,
+    d: matrix.d * zoom,
+    e: matrix.e * zoom,
+    f: matrix.f * zoom,
+  };
+}
+
 function computeFollowAccessoryLayout(context) {
   if (!accessoryLayout || typeof accessoryLayout.computeDynamicAccessoryLayout !== "function") return null;
   const followTarget = context.descriptor.followTarget;
@@ -1036,6 +1097,7 @@ function computeFollowAccessoryLayout(context) {
     const doc = context.media.contentDocument;
     target = doc && doc.getElementById(followTarget.id);
     matrix = target && typeof target.getCTM === "function" ? target.getCTM() : null;
+    if (matrix) matrix = scaleCtmToPagePixels(matrix, doc);
   } catch {
     return null;
   }
@@ -1069,11 +1131,26 @@ function applyAccessoryLayout(context, layout) {
   }
   slot.element.style.filter = "none";
   // hideAccessory() pauses object-backed assets. Restore this document to the
-  // global low-power state before making it visible again.
-  setAccessorySvgLowPowerPaused(context.slotName, lowPowerSvgPaused);
+  // page's pause state before making it visible again.
+  setAccessorySvgLowPowerPaused(context.slotName, lowPowerSvgPaused || petHidden);
   slot.element.style.visibility = "visible";
   slot.element.style.display = "block";
   return true;
+}
+
+function getAccessoryFollowDelayMs(context) {
+  try {
+    const doc = context.media.contentDocument;
+    const sampled = doc && discreteSamplingFollowByDocument.get(doc);
+    if (!sampled || _useLayeredTracking) return null;
+    // Cursor tracking moves the body through a transition between grid points.
+    if (bodyTarget && bodyTarget.ownerDocument === doc && bodyTarget.getAnimations().length > 0) return null;
+    const { animation, stepMs } = sampled;
+    if (animation.playState !== "running" || !Number.isFinite(animation.startTime)) return null;
+    return stepMs - (animation.currentTime % stepMs);
+  } catch {
+    return null;
+  }
 }
 
 function accessoryFollowTick(slotName, expectedKey) {
@@ -1102,13 +1179,21 @@ function accessoryFollowTick(slotName, expectedKey) {
     return;
   }
   applyAccessoryLayout(context, layout);
-  slot.raf = requestAnimationFrame(() => accessoryFollowTick(slotName, expectedKey));
+  const delayMs = getAccessoryFollowDelayMs(context);
+  if (delayMs != null) {
+    slot.followTimer = setTimeout(() => {
+      slot.followTimer = null;
+      slot.raf = requestAnimationFrame(() => accessoryFollowTick(slotName, expectedKey));
+    }, delayMs);
+  } else {
+    slot.raf = requestAnimationFrame(() => accessoryFollowTick(slotName, expectedKey));
+  }
 }
 
 function startAccessoryFollow(context) {
   const { slotName, slot } = context;
   const follow = context.descriptor.followTarget;
-  if (!follow || shouldSuppressPassiveTrackingForLowPower()) return;
+  if (!follow || petHidden || shouldSuppressPassiveTrackingForLowPower()) return;
   const key = `${context.file}|${slot.payload.id}|${follow.id}`;
   cancelAccessoryFollow(slotName);
   slot.followKey = key;
@@ -1309,7 +1394,16 @@ if (window.electronAPI && typeof window.electronAPI.onLowPowerIdleModeChange ===
 }
 if (window.electronAPI && typeof window.electronAPI.onPetHiddenChange === "function") {
   window.electronAPI.onPetHiddenChange((hidden) => {
-    document.documentElement.classList.toggle("pet-hidden", !!hidden);
+    const next = !!hidden;
+    document.documentElement.classList.toggle("pet-hidden", next);
+    if (petHidden === next) return;
+    petHidden = next;
+    if (next) {
+      for (const slotName of ACCESSORY_SLOT_NAMES) cancelAccessoryFollow(slotName);
+    } else {
+      refreshAccessoryLayout();
+    }
+    syncAccessorySvgLowPowerPaused(lowPowerSvgPaused);
   });
 }
 
@@ -2002,6 +2096,36 @@ function alignDiscreteSamplingAnimations(animations, contentWindow, rate, isStil
       ready.then(applyStartTime, () => {});
     }
   }
+  // A mixed document can still move between grid points through an animation
+  // the sampler leaves alone, so only wholly sampled documents may follow it.
+  return sampleable.length === animations.length ? sampleable[0].animation : null;
+}
+
+/**
+ * Chromium only runs an SVG child's transform animation on the compositor when
+ * its effective zoom is exactly 1 (crbug.com/1186312), and the display scale
+ * counts towards that zoom. On any screen that isn't at 100% the animations
+ * fall back to the main thread, which then wakes on every display refresh no
+ * matter how few visual changes sampling leaves. A root zoom of
+ * 1 / devicePixelRatio cancels the scale, and the viewBox keeps the picture the
+ * same size. Without a viewBox the picture would shrink, so such a document
+ * stays on the main thread.
+ */
+function cancelDisplayScaleForCompositor(svgDoc) {
+  const scale = window.devicePixelRatio;
+  if (!(scale > 0) || scale === 1) return;
+  const root = svgDoc.documentElement;
+  if (!root || root.localName !== "svg" || !root.hasAttribute("viewBox")) return;
+  const zoom = 1 / scale;
+  root.style.zoom = String(zoom);
+  // Transforms that already painted keep the form the main thread uses, and
+  // would rotate about the SVG origin once composited. The document may have
+  // painted before its load event, so always rebuild its layout tree.
+  const display = root.style.display;
+  root.style.display = "none";
+  void root.getBoundingClientRect();
+  root.style.display = display;
+  displayScaleZoomByDocument.set(svgDoc, zoom);
 }
 
 /**
@@ -2013,7 +2137,8 @@ function alignDiscreteSamplingAnimations(animations, contentWindow, rate, isStil
  * Only files the theme opts into via
  * rendering.discreteSampling are touched, and only on the <object> channel (an
  * <img> playback exposes no contentDocument). SMIL animations are not CSS
- * animations and are deliberately out of scope.
+ * animations and are deliberately out of scope. Display scale is cancelled
+ * here too: sampling only saves main-thread work while animations composite.
  *
  * The contentDocument can still be transiently null at the commit point, so the
  * synchronous first attempt plus at most DISCRETE_SAMPLING_MAX_RETRIES retries
@@ -2064,6 +2189,8 @@ function applyDiscreteSampling(objectEl, file) {
 
     let animations = [];
     try {
+      // Before reading them: the rebuild replaces the document's animations.
+      cancelDisplayScaleForCompositor(contentDocument);
       animations = contentDocument.getAnimations();
     } catch {
       return;
@@ -2081,7 +2208,8 @@ function applyDiscreteSampling(objectEl, file) {
       }
     };
 
-    alignDiscreteSamplingAnimations(animations, contentWindow, rate, isSameDocument);
+    const animation = alignDiscreteSamplingAnimations(animations, contentWindow, rate, isSameDocument);
+    if (animation) discreteSamplingFollowByDocument.set(contentDocument, { animation, stepMs: 1000 / rate });
   };
 
   trySample(0);
@@ -2669,6 +2797,14 @@ function applyEyeMove(dx, dy) {
       shadowTarget.setAttribute("transform", `translate(${shiftX}, 0) scale(${scaleX}, 1)`);
     }
   }
+  for (const slotName of ACCESSORY_SLOT_NAMES) {
+    const slot = getAccessorySlot(slotName);
+    if (slot.followTimer == null) continue;
+    clearTimeout(slot.followTimer);
+    slot.followTimer = null;
+    const key = slot.followKey;
+    slot.raf = requestAnimationFrame(() => accessoryFollowTick(slotName, key));
+  }
 }
 
 // ── Layered tracking helpers ──
@@ -3094,6 +3230,57 @@ function recoverFromSystemWake(payload) {
   finishSystemWake(status);
 }
 
+function scheduleDisplayScaleReload() {
+  if (displayScaleReloadTimer) clearTimeout(displayScaleReloadTimer);
+  displayScaleReloadTimer = setTimeout(reloadSvgDocumentForDisplayScale, DISPLAY_SCALE_RELOAD_DEBOUNCE_MS);
+}
+
+function reloadSvgDocumentForDisplayScale() {
+  displayScaleReloadTimer = null;
+  // A swap in flight reads the scale when it commits. Look again afterwards, in
+  // case it gets cancelled and leaves this document on screen.
+  if (pendingNext || pendingSystemWakeId) {
+    scheduleDisplayScaleReload();
+    return;
+  }
+  const file = currentDisplayedSvg;
+  if (!_discreteSampling.has(file) || !clawdEl || clawdEl.tagName !== "OBJECT" || !clawdEl.isConnected) return;
+  const scale = window.devicePixelRatio;
+  try {
+    const svgDoc = clawdEl.contentDocument;
+    if (!svgDoc || displayScaleZoomByDocument.get(svgDoc) === (scale === 1 ? undefined : 1 / scale)) return;
+  } catch {
+    return;
+  }
+  // As after a system wake: a paused flag must not outlive the document it paused.
+  resumeCurrentSvgForLowPower();
+  scheduleLowPowerIdlePause();
+  detachEyeTracking();
+  swapToFile(file, currentDisplayedState, true, {
+    allowImageFallback: false,
+    forceDocumentReload: true,
+    onError: (reason) => {
+      // Whatever replaced this reload brings its own eye tracking, but it may
+      // have kept this document (a state returning to the displayed file).
+      if (reason === "superseded") {
+        scheduleDisplayScaleReload();
+        return;
+      }
+      if (clawdEl && clawdEl.tagName === "OBJECT" && clawdEl.isConnected
+        && tracksEyesForFile(currentDisplayedState, currentDisplayedSvg)) attachEyeTracking(clawdEl);
+    },
+  });
+}
+
+function watchDisplayScale() {
+  if (typeof window.matchMedia !== "function") return;
+  // The query only describes the scale it was built for, so rebuild it each time.
+  window.matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`).addEventListener("change", () => {
+    scheduleDisplayScaleReload();
+    watchDisplayScale();
+  }, { once: true });
+}
+
 window.electronAPI.onEyeMove((dx, dy) => {
   const effectiveDx = miniLeftFlip ? -dx : dx;
   lastEyeDx = effectiveDx;
@@ -3128,6 +3315,7 @@ window.electronAPI.onEyeMove((dx, dy) => {
 if (window.electronAPI && typeof window.electronAPI.onSystemWake === "function") {
   window.electronAPI.onSystemWake(recoverFromSystemWake);
 }
+watchDisplayScale();
 
 if (window.electronAPI && typeof window.electronAPI.onCloudlingPointer === "function") {
   window.electronAPI.onCloudlingPointer((payload) => {

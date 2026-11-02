@@ -38,7 +38,9 @@ Windows 的 hit window 在原生 activation controller 可用时按前台全屏�
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
 - Windows / macOS 显式开启的全屏自动隐藏（#935/#1275）会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
 - 桌宠隐藏期间（手动隐藏、macOS 应用隐藏、全屏自动隐藏，包括 macOS 用透明度隐藏的分支）自由漫步暂停：走到一半在下一帧取消，桌宠停在最后写入的位置，恢复显示后重新等待完整 8 秒。闲置和睡眠计时不受影响。
-- 桌宠隐藏期间页面整页 `visibility: hidden`（`html.pet-hidden`，规则在 `src/styles.css`），不再绘制。页面仍算可见，定时器、素材加载、视觉结算、提示音照常；配饰跟随和脚本 SVG 的 JS 循环不停，这部分开销还在。主进程在有效隐藏跨边沿时发 `pet-hidden-change`，页面加载后补发当前值（`syncRendererStateAfterLoad`）。
+- 桌宠隐藏期间页面整页 `visibility: hidden`（`html.pet-hidden`，规则在 `src/styles.css`），不再绘制。页面仍算可见，定时器、素材加载、视觉结算、提示音照常；配饰跟随循环停止、配饰 SVG 文档暂停，恢复显示时按当前姿势重算布局，再按低功耗状态恢复循环和文档。脚本 SVG 的 JS 循环不停，这部分开销还在。主进程在有效隐藏跨边沿时发 `pet-hidden-change`，页面加载后补发当前值（`syncRendererStateAfterLoad`）。
+- `rendering.discreteSampling` 里的 OBJECT 文件提交时，显示缩放不是 100% 就在 SVG 文档根写 `zoom = 1 / devicePixelRatio` 并重建布局树（根需有 `viewBox`；Chromium 只让有效缩放为 1 的 SVG 变换动画上合成线程）；配饰跟随把 `getCTM()` 乘回文档 zoom，换算成页面像素。显示缩放变化后抖动 400 ms 重载当前文档，动画重来一次；其他 OBJECT 文档（Codex 精灵图、Cloudling）和 `<img>` 通道不处理。
+- 配饰跟随在 `rendering.discreteSampling` 的格点上读取位置；文档里有不可采样的动画、光标过渡中或使用分层跟随时退回每帧读取。SMIL 配饰文档的时间线保持暂停，由定时器一秒推进 12 次。
 - macOS 全屏检测只认活动原生 Space（type 4，分屏也算），不识别播放器自行铺满窗口；多屏按活动 Space 判断。默认置顶且自动隐藏关闭时不加载或调用探针。手动「显示桌宠」覆盖当前全屏隐藏，下一次全屏 Space 恢复隐藏。
 - working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；官方可下载主题 Hash Sage（可选安装）为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作，Whale-chan（鲸鱼娘，可选安装）为今天也在努力呀 / 魔法添饭 / 雨天踩水
 - juggling 子动画：1 个 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作；Whale-chan：1+ → 魔法添饭）
@@ -63,6 +65,7 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 能力缺失时走 `VISUAL_FALLBACK_STATES` 回退链
 - `thinking` / `working` / `juggling` 的视觉在每个 hook 事件都会经 `getSvgOverride` 重新解析。`states.thinking`、无 `workingTiers` 时的 `states.working`、无 `jugglingTiers` 时的 `states.juggling`，以及 tier 的 `files` 列出多个文件时随机抽一个；抽中结果由 `state-visual-resolver.js` 的 `createStableVisualPicker` 按状态保持：同一状态、同一候选列表下重复解析返回同一文件（否则每次工具调用都会换动画）。`applyState` 提交新状态时丢弃其他状态的抽签，候选列表变化（tier 随会话数 / 子代理数切换）或 `refreshTheme` 时重抽。tier 的 `files` 优先于 `file`；两者并存时 `file` 只供旧版本读取，并继续作为 Animation Override 的 tier 键。`displayHintMap` 命中时仍然优先
 - 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量；loader 保持 stateless，`src/theme-runtime.js` 是唯一 active-theme owner，主题 reload/sync/cache 不得另设模块级真相
+- 启动主题加载的读取重试（#1295）：更新后首次启动的真实触发原因未证实，文件尚未写完或被占用只是候选。默认读一次，只有 `main.js` 启动调用传 5 次（100/250/500/1000ms 退避）；每个主题最多多等约 1.85 秒，请求主题与回退的 `clawd` 都读不到时约 3.7 秒。读不到、校验失败两条回退都转发预算，不转发 variant/overrides。最后一次尝试中，真实读取/解析错误优先于另一目录的文件不存在；确实不存在时保持 `Theme "x" not found`，有真实错误则附诊断；只要捕获到读取或解析错误，致命的 `Default theme 'clawd' not found` 就带诊断，包括文件不存在。打包版 asar 路径上的 `existsSync` 只看 asar 头，已有 entry 对应的物理文件缺失或被锁时仍可能为 true，因此直接读并检查错误码（ENOENT/ENOTDIR 静默）
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
 - 配饰是两个独立的主题级槽：`petAccessory` 对应 head，`petMouthAccessory` 对应 mouth。renderer 中两者都是 pet media 的外部兄弟层，固定顺序为 `pet media → head → mouth`，因此 pet tint 不会染到配饰，mouth 也能稳定画在手或 head 配饰之上
