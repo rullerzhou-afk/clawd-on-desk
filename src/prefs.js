@@ -353,6 +353,10 @@ const SCHEMA = {
   keepAwakeWhileWorking: { type: "boolean", default: false },
   allowEdgePinning: { type: "boolean", default: false },
   disableMiniMode: { type: "boolean", default: false },
+  // #1276: when false, the pet's eyes stop following the mouse cursor — idle
+  // and mini-idle gaze stays centered and Cloudling-style pointer bridges stop
+  // receiving pointer payloads. Dizzy (cursor-circle) detection is untouched.
+  eyeTrackingEnabled: { type: "boolean", default: true },
   // When true, moving the pet between displays does not trigger a
   // proportional pixel-size recomputation. The pet keeps its current
   // window size; the size slider still works (per-display proportional).
