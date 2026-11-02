@@ -1080,9 +1080,9 @@ if (codexPetMain.summaryHasActiveOrphan(_startupCodexPetSyncSummary, _requestedT
   );
   codexPetMain.setLastSyncSummary(_startupCodexPetSyncSummary);
 }
-// First launch after an NSIS update can race the installer / antivirus still
-// holding the freshly-unpacked theme files (#1295): give the startup read a
-// small bounded retry before the fatal "Default theme 'clawd' not found".
+// Theme files can be briefly unreadable on the first launch after an update
+// (#1295, exact trigger unconfirmed): give the startup read a small bounded
+// retry before the fatal "Default theme 'clawd' not found".
 const THEME_STARTUP_READ_ATTEMPTS = 5;
 const THEME_STARTUP_RETRY_DELAYS_MS = [100, 250, 500, 1000];
 const _loadedStartupTheme = themeRuntime.loadInitialTheme(_requestedThemeId, {
