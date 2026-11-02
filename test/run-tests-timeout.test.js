@@ -39,6 +39,7 @@ test("full-suite runner uses one top-level glob instead of a Windows-long filena
   assert.deepStrictEqual(invocation.args, [
     "--test",
     "--test-timeout=5000",
+    ...(process.platform === "win32" ? ["--test-concurrency=2"] : []),
     "test/*.test.js",
   ]);
   assert.strictEqual(invocation.cwd, path.join(__dirname, ".."));
