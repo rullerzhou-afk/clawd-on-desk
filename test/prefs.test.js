@@ -99,6 +99,9 @@ describe("prefs.getDefaults", () => {
     // is preserved until the user opts in via the General tab switch.
     assert.strictEqual(d.freeRoam, false);
     assert.strictEqual(d.roamConstrainAxis, false);
+    // #1252: idle activities are opt-in and default to the medium cadence.
+    assert.strictEqual(d.idleActivities, false);
+    assert.strictEqual(d.idleActivityFrequency, "medium");
     assert.strictEqual(d.sessionHudEnabled, true);
     assert.strictEqual(d.sessionHudShowStateLabels, true);
     assert.strictEqual(d.sessionHudShowElapsed, false);
@@ -336,6 +339,8 @@ describe("prefs.validate", () => {
       disableMiniMode: "yes",
       freeRoam: "yes",        // wrong type → default false
       roamConstrainAxis: 1,   // wrong type → default false
+      idleActivities: "yes",  // wrong type → default false
+      idleActivityFrequency: "often", // not in the enum → default "medium"
       savedPixelWidth: -1,
       savedPixelHeight: "286",
       savedPixelWorkArea: "bogus",
@@ -364,6 +369,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.disableMiniMode, false);
     assert.strictEqual(v.freeRoam, false);
     assert.strictEqual(v.roamConstrainAxis, false);
+    assert.strictEqual(v.idleActivities, false);
+    assert.strictEqual(v.idleActivityFrequency, "medium");
     assert.strictEqual(v.savedPixelWidth, 0);
     assert.strictEqual(v.savedPixelHeight, 0);
     assert.strictEqual(v.savedPixelWorkArea, null);
@@ -505,6 +512,8 @@ describe("prefs.validate", () => {
       keepSizeAcrossDisplays: true,
       freeRoam: true,
       roamConstrainAxis: true,
+      idleActivities: false,
+      idleActivityFrequency: "high",
       savedPixelWidth: 286,
       savedPixelHeight: 286,
       savedPixelWorkArea: { width: 1920, height: 1080 },
@@ -532,6 +541,8 @@ describe("prefs.validate", () => {
     assert.strictEqual(v.keepSizeAcrossDisplays, true);
     assert.strictEqual(v.freeRoam, true);
     assert.strictEqual(v.roamConstrainAxis, true);
+    assert.strictEqual(v.idleActivities, false);
+    assert.strictEqual(v.idleActivityFrequency, "high");
     assert.strictEqual(v.savedPixelWidth, 286);
     assert.strictEqual(v.savedPixelHeight, 286);
     assert.deepStrictEqual(v.savedPixelWorkArea, { width: 1920, height: 1080 });
@@ -2649,5 +2660,30 @@ describe("prefs.disableHardwareAcceleration (#1183)", () => {
       mainSource,
       /const _hardwareAccelerationDisabledAtStartup = isWin\s*&& !!_initialPrefsLoad\.snapshot\s*&& _initialPrefsLoad\.snapshot\.disableHardwareAcceleration === true;\s*if \(_hardwareAccelerationDisabledAtStartup\) \{\s*app\.disableHardwareAcceleration\(\);/
     );
+  });
+});
+
+describe("idle behavior file normalization", () => {
+  it("preserves roam when both behaviors are enabled", () => {
+    const snapshot = prefs.validate({ freeRoam: true, idleActivities: true });
+    assert.strictEqual(snapshot.freeRoam, true);
+    assert.strictEqual(snapshot.idleActivities, false);
+  });
+
+  it("preserves all three valid behavior pairs", () => {
+    for (const [freeRoam, idleActivities] of [[false, false], [true, false], [false, true]]) {
+      const snapshot = prefs.validate({ freeRoam, idleActivities });
+      assert.strictEqual(snapshot.freeRoam, freeRoam);
+      assert.strictEqual(snapshot.idleActivities, idleActivities);
+    }
+  });
+
+  it("defaults idle activities off for older files with only roam", () => {
+    const file = makeTempPath();
+    fs.writeFileSync(file, JSON.stringify({ version: prefs.CURRENT_VERSION, freeRoam: true }));
+    const snapshot = prefs.load(file).snapshot;
+    assert.strictEqual(snapshot.freeRoam, true);
+    assert.strictEqual(snapshot.idleActivities, prefs.getDefaults().idleActivities);
+    assert.strictEqual(snapshot.idleActivities, false);
   });
 });

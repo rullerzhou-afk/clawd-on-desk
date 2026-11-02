@@ -99,6 +99,7 @@ replace a packaged-app or real-host check.
 - **Windows/macOS/Linux:** fresh-install and launch the packaged app with a visible pet and no error dialog.
 - **Windows/macOS/Linux:** upgrade a real v1.4.0 installation to v1.5.0 and confirm the app launches and preserves the documented v1.4.0 settings; the prefs schema remains version 21, so this release performs no prefs migration.
 - **Windows; macOS on available architectures (after publishing, because drafts are not offered by the updater):** exercise a real v1.4.0 → v1.5.0 updater pair, including Restart Now and Later/quit/reopen, and record versions and asset hashes. On Windows, use the real desktop: in an SSH session the installer stalled before uninstalling the old version, while the same update finished in about 30 seconds on the desktop.
+- **Packaged native update flows:** after a download finishes, let the update bubble expire or choose Later. The tray must retain Update Ready; About/manual check must reopen the install choice without another release lookup or download. While downloading or ready, a scheduled discovery must not replace the current progress/ready stage. A pending ready bubble superseded by installation/error must not later hide the newer UI. Cover Windows NSIS, available macOS architectures and Linux AppImage separately; a simulated updater is not a real A→B installation check.
 - **All supported permission hosts:** verify manual native Allow/Deny fallback after Clawd DND, disabled bubbles, disconnect, shutdown, or no-decision paths; no timeout or remote failure may invent a decision.
 
 **v1.5.0 new behavior matrix — 37 required items**
@@ -410,8 +411,12 @@ upgrade path.
 
 **Other desktop and notification sampling**
 
-- Free roam: enable it, wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
+- Free roam: select When idle → Free roam in Settings → Pet → Movement & position,
+  wait idle, confirm the pet moves, keeps hitbox/HUD/bubble
   alignment, and cancels on mouse move, state change, drag, mini mode, and DND.
+- Idle behavior: switch among Stay put, Free roam, and Idle activities; confirm
+  only the selected mode’s details appear, detail values survive mode switches,
+  and switching away during an idle activity returns the pet to its idle visual.
 - Free roam constraints: exercise axis off/horizontal/vertical both with and
   without a valid fence, then use a small fence and invalid/missing fence input.
   Targets must remain reachable and on-screen, with invalid input falling back

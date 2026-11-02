@@ -2119,6 +2119,40 @@ html, body {
 .settings-segmented-radio.disabled button {
   cursor: not-allowed;
 }
+.idle-behavior-group {
+  display: grid;
+}
+.idle-behavior-group .row {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+}
+.idle-behavior-group .row[hidden] {
+  display: none;
+}
+.idle-behavior-group .row-control,
+.idle-behavior-group .settings-segmented-radio {
+  width: 100%;
+}
+.idle-behavior-mode-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.idle-behavior-group .roam-movement-style-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.idle-behavior-group .idle-activity-frequency-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.idle-behavior-group .settings-segmented-radio button {
+  align-items: center;
+  justify-content: center;
+  padding-inline: 8px;
+  text-align: center;
+  white-space: normal;
+}
 .bubble-placement-group {
   display: grid;
 }

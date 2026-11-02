@@ -1430,6 +1430,8 @@ function createPetWindowRuntime(options = {}) {
     const nextEffective = isPetEffectivelyHidden();
     const crossedEdge = nextEffective !== prevEffective;
     if (crossedEdge) {
+      // Sent before the window shows, so the page can start painting first.
+      sendToRenderer("pet-hidden-change", nextEffective);
       if (nextEffective) {
         hidePetWindows();
         if (options.syncFloatingSurfaces !== false) hideFloatingSurfacesForPet();

@@ -181,6 +181,14 @@ async function assertProductionRendererBootsMouthObject() {
     assert(result.assetFile === "cigarette.svg", "production renderer selected the wrong mouth asset");
     assert(result.width > 0 && result.height > 0, "production renderer gave the cigarette an empty layout");
     assert(result.rootWidth === "100%" && result.rootHeight === "100%", "production cigarette root did not fill its object");
+    const clock = await win.webContents.executeJavaScript(`new Promise((resolve) => {
+      const root = document.getElementById("clawd-mouth-accessory").contentDocument.documentElement;
+      const start = root.getCurrentTime();
+      const paused = root.animationsPaused();
+      setTimeout(() => resolve({ paused, stillPaused: root.animationsPaused(), elapsed: root.getCurrentTime() - start }), 500);
+    })`);
+    assert(clock.paused && clock.stillPaused, "production cigarette SMIL timeline was not held paused");
+    assert(clock.elapsed >= 0.2 && clock.elapsed <= 1.5, `production cigarette clock advanced by ${clock.elapsed} seconds`);
   } finally {
     if (!win.isDestroyed()) win.destroy();
   }

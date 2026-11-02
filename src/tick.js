@@ -94,6 +94,11 @@ function idleRestSvg() {
   return choice || SVG_IDLE_FOLLOW;
 }
 
+function restoreIdleVisual() {
+  ctx.sendToRenderer("state-change", "idle", idleRestSvg());
+  setTimeout(() => { ctx.forceEyeResend = true; }, 200);
+}
+
 function idleEasterEggKey(egg) {
   const requirements = egg && egg.requiresAccessories;
   return [
@@ -157,9 +162,7 @@ function finishIdleVisualPlayback(attempt) {
   isMouseIdle = false;
   idleLookVisualGeneration = null;
   idleLookAttempt = null;
-  const returnSvg = idleRestSvg();
-  ctx.sendToRenderer("state-change", "idle", returnSvg);
-  setTimeout(() => { ctx.forceEyeResend = true; }, 200);
+  restoreIdleVisual();
 }
 
 // ── Unified main tick (cursor polling for eye tracking + sleep + mini peek) ──
@@ -324,6 +327,7 @@ function runMainTickOnce() {
         lastCursorX = null;
         lastCursorY = null;
         mouseStillSince = Date.now();
+        if (ctx.idleActivity) ctx.idleActivity.noteIdleEntered();
       }
     }
 
@@ -446,6 +450,9 @@ function runMainTickOnce() {
         && !isMouseIdle
         && !hasTriggeredYawn
         && !idleLookPlayed
+        // #1252: an idle activity owns the visual for its beat — do not start
+        // the idle-look playback on top of it.
+        && !(ctx.idleActivity && ctx.idleActivity.isAnimating())
         && elapsed >= MOUSE_IDLE_TIMEOUT
       ) {
         const choice = typeof ctx.getIdleVisualChoice === "function" ? ctx.getIdleVisualChoice() : null;
@@ -517,11 +524,17 @@ function runMainTickOnce() {
         return nextDelay();
       }
 
-      // Free roam tick: wander around when idle long enough
+      // #1252: decorative idle activities. tick() is a no-op unless the user
+      // opted in and the pet is still idle; skip it while the idle-look
+      // playback owns the visual so the two passive animations never overlap.
+      if (ctx.idleActivity && !isMouseIdle) ctx.idleActivity.tick();
+
       if (ctx.roam) ctx.roam.tick();
     }
 
-    const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW && !isMouseIdle) || miniIdleNow;
+    const idleActivityActive = !!(ctx.idleActivity && ctx.idleActivity.isAnimating());
+    const trackEyesNow = (idleNow && ctx.currentSvg === SVG_IDLE_FOLLOW
+      && !isMouseIdle && !idleActivityActive) || miniIdleNow;
     if (!trackEyesNow || (!eyeTrackingEnabled && !THEME_SUPPORTS_DIZZY)) {
       // Resting on a non-follow visual (or eye tracking is off on a theme
       // without dizzy): the eye path below never runs, so consume the resend
@@ -657,6 +670,7 @@ function handleEyeTrackingPreferenceChange(enabled) {
 
 function cleanup() {
   mainTickActive = false;
+  if (ctx.idleActivity) ctx.idleActivity.cancel();
   if (mainTickTimer) { clearTimeout(mainTickTimer); mainTickTimer = null; }
   nextMainTickAt = 0;
   if (idleLookReturnTimer) { clearTimeout(idleLookReturnTimer); idleLookReturnTimer = null; }
@@ -685,6 +699,15 @@ Object.defineProperty(startMainTick, '_mouseStillSince', {
   get() { return mouseStillSince; },
 });
 
-return { startMainTick, resetIdleTimer, cleanup, refreshTheme, scheduleSoon, handleEyeTrackingPreferenceChange, get _mouseStillSince() { return mouseStillSince; } };
+return {
+  startMainTick,
+  resetIdleTimer,
+  cleanup,
+  refreshTheme,
+  scheduleSoon,
+  restoreIdleVisual,
+  handleEyeTrackingPreferenceChange,
+  get _mouseStillSince() { return mouseStillSince; },
+};
 
 };

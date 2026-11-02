@@ -61,6 +61,8 @@ const FROZEN_KEYS = [
   "eyeTrackingEnabled",
   "freeRoam",
   "roamConstrainAxis",
+  "idleActivities",
+  "idleActivityFrequency",
   "keepSizeAcrossDisplays",
   "fullscreenAutoHide",
   "petAlwaysOnTop",
@@ -100,6 +102,8 @@ const EXPECTED_KEYS = {
     "eyeTrackingEnabled",
     "freeRoam",
     "roamConstrainAxis",
+    "idleActivities",
+    "idleActivityFrequency",
     "fullscreenAutoHide",
   ],
   notifications: [
@@ -728,7 +732,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "窗口置顶", "眼睛跟随", "反应"]);
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
-      ["自由漫步", "移动方式", "活动范围", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["空闲时", "移动方式", "活动范围", "出现频率", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
       ["桌宠保持在最前"],
       ["跟随鼠标光标"],
       ["测试结果动画"],
@@ -854,7 +858,7 @@ describe("settings tab split", () => {
     await pet.settle();
     const sizeSlider = pet.content.querySelector(".size-slider");
     const roam = pet.core.state.mountedControls.roamMovementStyle;
-    const freeRoam = pet.getSwitch("freeRoam");
+    const idleBehavior = pet.core.state.mountedControls.idleBehavior;
     before = pet.renderCount();
     sizeContextUi = 70;
     pet.apply("size", 70);
@@ -864,7 +868,7 @@ describe("settings tab split", () => {
     pet.apply("roamConstrainAxis", true);
     assert.strictEqual(activeValue(roam.element), "axis");
     pet.apply("freeRoam", true);
-    assert.strictEqual(freeRoam.classList.contains("on"), true);
+    assert.strictEqual(activeValue(idleBehavior.modeControl.element), "roam");
     pet.apply("allowEdgePinning", false);
     assert.strictEqual(pet.getSwitch("allowEdgePinning").classList.contains("on"), false);
     assert.strictEqual(pet.renderCount(), before);

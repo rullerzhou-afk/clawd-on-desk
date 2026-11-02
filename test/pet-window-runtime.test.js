@@ -4408,6 +4408,122 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
   });
 });
 
+describe("hidden pet page: renderer notification", () => {
+  it("notifies once per manual hide/show edge", () => {
+    const h = createRuntime();
+    h.runtime.setPetHidden(true);
+    h.runtime.setPetHidden(true);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true]],
+    );
+
+    h.runtime.setPetHidden(false);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+  });
+
+  it("notifies once per fullscreen auto-hide edge", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setFullscreenAutoHidden(true);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true]],
+    );
+
+    h.runtime.setFullscreenAutoHidden(false);
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+  });
+
+  it("notifies only on effective edges when hide layers stack in either order", () => {
+    for (const [first, second] of [
+      ["setPetHidden", "setFullscreenAutoHidden"],
+      ["setFullscreenAutoHidden", "setPetHidden"],
+    ]) {
+      const h = createRuntime();
+      h.runtime[first](true);
+      h.runtime[second](true);
+      assert.deepStrictEqual(
+        h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+        [["sendToRenderer", "pet-hidden-change", true]],
+        `${first} then ${second} should notify only the first hide`,
+      );
+
+      h.runtime.setFullscreenAutoHidden(false);
+      assert.deepStrictEqual(
+        h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+        [["sendToRenderer", "pet-hidden-change", true]],
+        "removing the fullscreen layer leaves the manual hide in effect",
+      );
+
+      h.runtime.setPetHidden(false);
+      assert.deepStrictEqual(
+        h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+        [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+      );
+    }
+  });
+
+  it("notifies once when manual show clears the fullscreen layer", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+  });
+
+  it("does not notify when a mini transition defers the visibility change", () => {
+    const h = createRuntime({ miniTransitioning: true });
+    assert.deepStrictEqual(h.runtime.setPetHidden(true), { applied: false, deferred: true, changed: false });
+    assert.deepStrictEqual(h.runtime.setFullscreenAutoHidden(true), { applied: false, deferred: true, changed: false });
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [],
+    );
+  });
+
+  it("notifies on macOS while non-topmost windows use opacity", () => {
+    const h = createRuntime({ isWin: false, isMac: true, isLinux: false, getAlwaysOnTop: () => false });
+    h.runtime.setPetHidden(true);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+    assert.deepStrictEqual(
+      h.renderWin.calls.filter((c) => c[0] === "setOpacity"),
+      [["setOpacity", 0], ["setOpacity", 1]],
+    );
+    assert.ok(![...h.renderWin.calls, ...h.hitWin.calls].some((c) => c[0] === "hide" || c[0] === "showInactive"));
+  });
+
+  it("notifies before showing the render window", () => {
+    const h = createRuntime();
+    h.runtime.setPetHidden(true);
+    const showInactive = h.renderWin.showInactive;
+    let notifiedBeforeShow = false;
+    h.renderWin.showInactive = () => {
+      notifiedBeforeShow = h.calls.some((c) => (
+        c[0] === "sendToRenderer" && c[1] === "pet-hidden-change" && c[2] === false
+      ));
+      showInactive();
+    };
+
+    h.runtime.setPetHidden(false);
+    assert.equal(notifiedBeforeShow, true);
+  });
+});
+
 describe("manual show intent hook (#935 override latch)", () => {
   it("setPetHidden(false) reports intent even when it is a visible no-op", () => {
     const notes = [];
