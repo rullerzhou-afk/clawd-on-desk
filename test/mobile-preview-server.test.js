@@ -475,6 +475,20 @@ describe("Mobile Preview Server", () => {
     assert.ok(!("token" in info));
   });
 
+  it("exposes the pair QR SVG only to Settings, never on the public endpoint", async () => {
+    const info = server.getConnectionInfo();
+    assert.strictEqual(info.status, "ok");
+    assert.ok(typeof info.pairUrl === "string" && info.pairUrl.startsWith("http://"));
+    assert.strictEqual(info.pairQrSvg, require("../src/mobile-pair-qr").buildPairQrSvg(info.pairUrl));
+    assert.ok(info.pairQrSvg.startsWith("<svg"));
+
+    const res = await httpGet(port, "/api/connection-info");
+    const publicInfo = JSON.parse(res.body);
+    assert.ok(!("pairQrSvg" in publicInfo));
+    assert.ok(!("pairCode" in publicInfo));
+    assert.ok(!("pairUrl" in publicInfo));
+  });
+
   it("returns 404 for non-mobile paths", async () => {
     const res = await httpGet(port, "/other");
     assert.strictEqual(res.status, 404);

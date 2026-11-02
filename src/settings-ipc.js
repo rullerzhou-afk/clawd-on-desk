@@ -1184,7 +1184,8 @@ function registerSettingsIpc(options = {}) {
         return { status: "starting", message: "LAN bridge is starting" };
       }
       return { status: "ok", port: info.port, lanIp: info.lanIp,
-        pairUrl: info.pairUrl, pairCode: info.pairCode, pairExpiresAt: info.pairExpiresAt };
+        pairUrl: info.pairUrl, pairCode: info.pairCode, pairExpiresAt: info.pairExpiresAt,
+        pairQrSvg: info.pairQrSvg };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }

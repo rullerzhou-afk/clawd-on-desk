@@ -195,8 +195,53 @@ for (const enabling of [false, true]) {
 
 test("all language packs define pairing and partial-reset messages", () => {
   for (const [locale, strings] of Object.entries(i18nContext.ClawdSettingsI18n.STRINGS)) {
-    for (const key of ["mobileRefreshPairCode", "mobileConnPairCode", "mobileConnPairExpires", "mobilePartialResetFailure", "mobilePermissionPartialResetFailure", "mobileDismiss"]) {
+    for (const key of ["mobileRefreshPairCode", "mobileConnPairCode", "mobileConnPairExpires", "mobileConnQrHint", "mobilePartialResetFailure", "mobilePermissionPartialResetFailure", "mobileDismiss"]) {
       assert.equal(typeof strings[key], "string", `${locale}.${key}`); assert.ok(strings[key]);
+    }
+  }
+});
+
+test("connection info renders the pair QR block and degrades to text-only without it", async () => {
+  const svg = "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 41 41\"></svg>";
+  const baseInfo = { status: "ok", port: 23334, lanIp: "192.0.2.1", pairCode: "ABCD1234",
+    pairExpiresAt: 123456, pairUrl: "http://192.0.2.1:23334/mobile/?pair=ABCD1234" };
+  const strings = i18nContext.ClawdSettingsI18n.STRINGS.en;
+
+  for (const [expected, info] of [
+    [true, { ...baseInfo, pairQrSvg: svg }],
+    [false, baseInfo],
+    [false, { ...baseInfo, pairQrSvg: "javascript:alert(1)" }],
+  ]) {
+    const context = vm.createContext({
+      Promise, console, navigator: {},
+      document: { createElement: () => new FakeElement(), visibilityState: "visible" },
+      setTimeout() { return 1; }, clearTimeout() {},
+      window: { settingsAPI: {
+        getMobileConnectionInfo: async () => info,
+        getMobileDevices: async () => ({ status: "ok", devices: [], legacyActive: false }),
+      } },
+    });
+    context.globalThis = context;
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/settings-tab-mobile.js"), "utf8"), context);
+    context.ClawdSettingsTabMobile.init({ state: { snapshot: { mobilePreviewEnabled: true } }, helpers: {
+      t: (key) => strings[key] || key,
+      buildSwitchRow: () => new FakeElement(),
+      attachDescriptionDisclosure() {},
+      buildDetailGroup(_label, rows) { const el = new FakeElement(); rows.forEach((r) => el.appendChild(r)); return el; },
+      buildButton: () => new FakeElement(),
+      showSettingsDialog: async () => "cancel",
+    } });
+    const body = new FakeElement();
+    context.ClawdSettingsTabMobile.renderChannelBody(body);
+    await flushMobileUi();
+
+    const qrBlock = body.querySelectorAll(".mobile-pair-qr")[0] || null;
+    assert.equal(!!qrBlock, expected, `expected qr block: ${expected}`);
+    if (qrBlock) {
+      const holder = qrBlock.querySelectorAll(".mobile-pair-qr-holder")[0];
+      assert.ok(holder && holder.innerHTML.startsWith("<svg"), "qr holder must embed the main-process SVG");
+      const hint = qrBlock.querySelectorAll(".mobile-pair-qr-hint")[0];
+      assert.equal(hint && hint.textContent, strings.mobileConnQrHint);
     }
   }
 });

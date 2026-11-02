@@ -787,7 +787,8 @@ test("mobile connection info reports starting until the LAN bridge has a port", 
 
 test("mobile connection info returns pairing fields without token", async () => {
   const info = { status: "ok", port: 23334, lanIp: "192.0.2.1",
-    pairUrl: "http://192.0.2.1:23334/mobile/?pair=ABCD1234", pairCode: "ABCD1234", pairExpiresAt: 123456 };
+    pairUrl: "http://192.0.2.1:23334/mobile/?pair=ABCD1234", pairCode: "ABCD1234", pairExpiresAt: 123456,
+    pairQrSvg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>" };
   const { ipcMain, runtime } = createHarness({
     getLanWsServer: () => ({ getConnectionInfo: () => ({ ...info, token: "must-not-leak" }) }),
   });

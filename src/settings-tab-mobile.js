@@ -348,6 +348,24 @@
     }, 5000);
   }
 
+  // Scannable QR of the pair URL, shown above the text rows. The SVG arrives
+  // fully generated from the main process (same payload as the pairUrl row);
+  // when absent or malformed the card simply falls back to the text rows.
+  function buildPairQrBlock(svg) {
+    if (typeof svg !== "string" || !svg.startsWith("<svg")) return null;
+    const block = document.createElement("div");
+    block.className = "mobile-pair-qr";
+    const holder = document.createElement("div");
+    holder.className = "mobile-pair-qr-holder";
+    holder.innerHTML = svg;
+    const hint = document.createElement("span");
+    hint.className = "mobile-pair-qr-hint";
+    hint.textContent = t("mobileConnQrHint");
+    block.appendChild(holder);
+    block.appendChild(hint);
+    return block;
+  }
+
   function renderConnectionInfo(container, attempt = 0, refresh = false) {
     const revision = ++infoRevision;
     if (!refresh) { container.innerHTML = ""; lastInfo = null; }
@@ -386,6 +404,8 @@
       if (refresh && signature === lastInfo) return;
       lastInfo = signature;
       container.innerHTML = "";
+      const qrBlock = buildPairQrBlock(info.pairQrSvg);
+      if (qrBlock) container.appendChild(qrBlock);
       container.appendChild(buildConnectionRow("mobileConnLanIp", info.lanIp));
       container.appendChild(buildConnectionRow("mobileConnPort", info.port));
       if (info.pairCode) {

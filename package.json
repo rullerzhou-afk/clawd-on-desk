@@ -222,6 +222,7 @@
     "jsonc-parser": "^3.3.1",
     "koffi": "2.16.3",
     "markdown-it": "15.0.0",
+    "qrcode-generator": "^2.0.4",
     "ws": "^8.21.0",
     "yauzl": "^2.10.0"
   }
