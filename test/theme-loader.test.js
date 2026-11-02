@@ -1278,3 +1278,112 @@ describe("theme-loader variant loading", () => {
     ]);
   });
 });
+
+// Startup read retries (#1295): the first launch right after an NSIS update
+// can race the installer / antivirus still holding the freshly-unpacked theme
+// files. Only the startup caller in main.js opts into readAttempts — these
+// tests pin the retry, the diagnostics, and the unchanged single-probe
+// behavior every other caller keeps.
+describe("startup read retries (#1295)", () => {
+  // src/theme-loader.js does `require("fs")`, which is the same built-in
+  // module singleton as this file's require("node:fs") — patching
+  // fs.readFileSync here is visible to the loader. Non-matching paths are
+  // delegated untouched; only built-in probes are counted (the user-themes
+  // probe under <tmp>/userData is excluded).
+  function interceptBuiltinReads(themeId, { failFirst = 2 } = {}) {
+    const suffix = path.join("themes", themeId, "theme.json");
+    const busyErr = new Error("EBUSY: resource busy or locked, open");
+    busyErr.code = "EBUSY";
+    const realRead = fs.readFileSync.bind(fs);
+    let builtinAttempts = 0;
+    const mockFn = mock.method(fs, "readFileSync", (p, ...rest) => {
+      const file = String(p);
+      if (file.endsWith(suffix) && !file.includes("userData")) {
+        builtinAttempts += 1;
+        if (builtinAttempts <= failFirst) throw busyErr;
+      }
+      return realRead(p, ...rest);
+    });
+    return {
+      stop: () => mockFn.mock.restore(),
+      attempts: () => builtinAttempts,
+    };
+  }
+
+  it("recovers from a transiently unreadable built-in theme", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: 2 });
+    try {
+      const theme = themeLoader.loadTheme("clawd", { readAttempts: 5, retryDelaysMs: [0, 0, 0, 0] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("fatal default-theme error carries the underlying OS error after exhausting retries", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: Number.POSITIVE_INFINITY });
+    try {
+      assert.throws(
+        () => themeLoader.loadTheme("clawd", { readAttempts: 5, retryDelaysMs: [0, 0, 0, 0] }),
+        (err) => {
+          assert.match(err.message, /Default theme 'clawd' not found/);
+          assert.match(err.message, /EBUSY/);
+          return true;
+        }
+      );
+      assert.strictEqual(intercept.attempts(), 5);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("strict mode reports the OS error too", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: Number.POSITIVE_INFINITY });
+    try {
+      assert.throws(
+        () => themeLoader.loadTheme("clawd", { strict: true, readAttempts: 2, retryDelaysMs: [0] }),
+        (err) => {
+          assert.match(err.message, /Theme "clawd" not found/);
+          assert.match(err.message, /EBUSY/);
+          return true;
+        }
+      );
+      assert.strictEqual(intercept.attempts(), 2);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("lenient fallback to clawd forwards the retry budget", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: 2 });
+    try {
+      const theme = themeLoader.loadTheme("missing-theme", { readAttempts: 5, retryDelaysMs: [0, 0, 0, 0] });
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 3);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+
+  it("default opts keep the single-probe behavior for other callers", () => {
+    const fixture = makeFixture([{ id: "clawd", builtin: true, json: validThemeJson() }]);
+    const intercept = interceptBuiltinReads("clawd", { failFirst: 0 });
+    try {
+      const theme = themeLoader.loadTheme("doesNotExist");
+      assert.strictEqual(theme._id, "clawd");
+      assert.strictEqual(intercept.attempts(), 1);
+    } finally {
+      intercept.stop();
+      fixture.cleanup();
+    }
+  });
+});

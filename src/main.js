@@ -1080,9 +1080,16 @@ if (codexPetMain.summaryHasActiveOrphan(_startupCodexPetSyncSummary, _requestedT
   );
   codexPetMain.setLastSyncSummary(_startupCodexPetSyncSummary);
 }
+// First launch after an NSIS update can race the installer / antivirus still
+// holding the freshly-unpacked theme files (#1295): give the startup read a
+// small bounded retry before the fatal "Default theme 'clawd' not found".
+const THEME_STARTUP_READ_ATTEMPTS = 5;
+const THEME_STARTUP_RETRY_DELAYS_MS = [100, 250, 500, 1000];
 const _loadedStartupTheme = themeRuntime.loadInitialTheme(_requestedThemeId, {
   variant: _requestedVariantId,
   overrides: _requestedThemeOverrides,
+  readAttempts: THEME_STARTUP_READ_ATTEMPTS,
+  retryDelaysMs: THEME_STARTUP_RETRY_DELAYS_MS,
 });
 if (_loadedStartupTheme._id !== _requestedThemeId || _loadedStartupTheme._variantId !== _requestedVariantId) {
   const nextVariantMap = { ...(_settingsController.get("themeVariant") || {}) };
