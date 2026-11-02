@@ -54,8 +54,8 @@ const CODEX_TURN_CAPTURE_EVENTS = new Set([
 // row; the capacity mirrors the turn fence's session bound.
 const MAX_CODEX_SESSION_END_TOMBSTONES = 200;
 // Local Codex sids the hook recognized as hidden ambient/title-refresh threads.
-// Same bound as the SessionEnd tombstones; entries are active only across a
-// thread's lifetime and are removed by its SessionEnd.
+// Same bound as the SessionEnd tombstones; SessionEnd marks an entry ended
+// rather than removing it, and a fresh lifecycle releases it.
 const MAX_CODEX_INTERNAL_THREAD_SESSIONS = 200;
 
 function createProfileScopedClassifier(classifier, profileId) {
@@ -287,16 +287,16 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   // Canonical local Codex sids recognized as hidden ambient/title-refresh threads.
-  // Any official event from one is dropped (no row, no completion) until its
-  // SessionEnd clears the entry. Bounded FIFO like the tombstones.
-  const codexInternalThreadSessions = new Set();
+  // SessionEnd keeps an ended entry to drop late official events; SessionStart
+  // or an unmarked prompt releases it. Active/ended entries share a bounded FIFO.
+  const codexInternalThreadSessions = new Map();
 
   function rememberCodexInternalThreadSession(sessionId) {
     if (typeof sessionId !== "string" || !sessionId) return;
     codexInternalThreadSessions.delete(sessionId);
-    codexInternalThreadSessions.add(sessionId);
+    codexInternalThreadSessions.set(sessionId, "active");
     while (codexInternalThreadSessions.size > MAX_CODEX_INTERNAL_THREAD_SESSIONS) {
-      codexInternalThreadSessions.delete(codexInternalThreadSessions.values().next().value);
+      codexInternalThreadSessions.delete(codexInternalThreadSessions.keys().next().value);
     }
   }
 
@@ -304,6 +304,7 @@ function createAgentRuntimeMain(options = {}) {
     codexInternalThreadSessions.delete(sessionId);
   }
 
+  // Both active and ended entries are considered suppressed.
   function isCodexInternalThreadSession(sessionId) {
     return codexInternalThreadSessions.has(sessionId);
   }
@@ -607,15 +608,23 @@ function createAgentRuntimeMain(options = {}) {
         // events are dropped too, and retire any row opened before recognition.
         rememberCodexInternalThreadSession(sessionId);
         dismissCodexInternalThreadSession(sessionId);
-        debugLog(`codex-internal-thread recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")}`);
+        debugLog(`codex-internal-thread recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")} kind=${opts.codexInternalThread}`);
         return false;
       }
-      if (isCodexInternalThreadSession(sessionId)) {
-        // A recognized thread must not open a row from any of its other events.
-        // Its SessionEnd clears the entry and then flows through normally (a
-        // no-op without a row).
-        if (event === "SessionEnd") {
+      const internalThreadState = codexInternalThreadSessions.get(sessionId);
+      if (internalThreadState === "ended") {
+        // Only a fresh lifecycle releases an ended sid. Marked prompts above
+        // reactivate suppression instead, and late terminal/work events stay out.
+        if (event === "SessionStart" || event === "UserPromptSubmit") {
           forgetCodexInternalThreadSession(sessionId);
+        } else {
+          return false;
+        }
+      } else if (internalThreadState === "active") {
+        if (event === "SessionEnd") {
+          // Keep FIFO order, and let the first SessionEnd flow through normally
+          // (a no-op without a row).
+          codexInternalThreadSessions.set(sessionId, "ended");
         } else {
           return false;
         }
