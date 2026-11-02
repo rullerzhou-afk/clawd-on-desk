@@ -94,6 +94,11 @@ function idleRestSvg() {
   return choice || SVG_IDLE_FOLLOW;
 }
 
+function restoreIdleVisual() {
+  ctx.sendToRenderer("state-change", "idle", idleRestSvg());
+  setTimeout(() => { ctx.forceEyeResend = true; }, 200);
+}
+
 function idleEasterEggKey(egg) {
   const requirements = egg && egg.requiresAccessories;
   return [
@@ -157,9 +162,7 @@ function finishIdleVisualPlayback(attempt) {
   isMouseIdle = false;
   idleLookVisualGeneration = null;
   idleLookAttempt = null;
-  const returnSvg = idleRestSvg();
-  ctx.sendToRenderer("state-change", "idle", returnSvg);
-  setTimeout(() => { ctx.forceEyeResend = true; }, 200);
+  restoreIdleVisual();
 }
 
 // ── Unified main tick (cursor polling for eye tracking + sleep + mini peek) ──
@@ -319,6 +322,7 @@ function runMainTickOnce() {
         lastCursorX = null;
         lastCursorY = null;
         mouseStillSince = Date.now();
+        if (ctx.idleActivity) ctx.idleActivity.noteIdleEntered();
       }
     }
 
@@ -519,12 +523,7 @@ function runMainTickOnce() {
       // playback owns the visual so the two passive animations never overlap.
       if (ctx.idleActivity && !isMouseIdle) ctx.idleActivity.tick();
 
-      // Free roam tick: wander around when idle long enough. A walking pet
-      // already has its own "roam" visual; an idle activity beat keeps the
-      // pet still, so the two must not run at once.
-      if (ctx.roam && !(ctx.idleActivity && ctx.idleActivity.isAnimating())) {
-        ctx.roam.tick();
-      }
+      if (ctx.roam) ctx.roam.tick();
     }
 
     const idleActivityActive = !!(ctx.idleActivity && ctx.idleActivity.isAnimating());
@@ -675,7 +674,7 @@ return {
   cleanup,
   refreshTheme,
   scheduleSoon,
-  getIdleRestSvg: idleRestSvg,
+  restoreIdleVisual,
   get _mouseStillSince() { return mouseStillSince; },
 };
 

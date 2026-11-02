@@ -5830,6 +5830,7 @@ const _roamCtx = {
   isSizePreviewActive: () => petWindowRuntime.isSettingsSizePreviewActive(),
   isScreenCaptureOverlayForeground: () => _isForegroundFullscreen.getLastObservation().captureOverlay === true,
   isPetHidden: () => petWindowRuntime.isPetEffectivelyHidden(),
+  isIdleActivityPlaying: () => _idleActivity.isAnimating(),
   get miniTransitioning() { return _mini.getMiniTransitioning(); },
   applyState: (state, svgOverride, opts) => _state.applyState(state, svgOverride, opts),
   setState: (state, svgOverride, opts) => _state.setState(state, svgOverride, opts),
@@ -5910,19 +5911,12 @@ function canPlayIdleActivity() {
   return true;
 }
 
-function idleRestVisualFile() {
-  const choice = getIdleVisualChoice();
-  if (choice) return choice;
-  const theme = getActiveTheme();
-  const idleFiles = theme && theme.states && theme.states.idle;
-  return Array.isArray(idleFiles) && typeof idleFiles[0] === "string" ? idleFiles[0] : null;
-}
-
 const _idleActivity = require("./idle-activity").createIdleActivityController({
   getTheme: () => getActiveTheme(),
   getCurrentState: () => _state.getCurrentState(),
   canPlay: canPlayIdleActivity,
-  getIdleRestSvg: idleRestVisualFile,
+  restoreIdleVisual: () => _tick.restoreIdleVisual(),
+  isVisualGenerationCurrent,
   sendToRenderer,
 });
 _idleActivity.setEnabled(_settingsController.get("idleActivities") === true);

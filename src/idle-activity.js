@@ -2,33 +2,16 @@
 
 // src/idle-activity.js — opt-in idle activity mode (#1252)
 //
-// While the pet is idle (no agent session in progress), occasionally play one
-// of the theme's other state visuals (thinking / working / juggling / happy /
-// sweeping / carrying / …) for a few seconds, then hand the resting idle
-// visual back. The point is purely cosmetic: most themes ship a dozen state
-// animations, but a user who only runs Claude Desktop (or simply isn't running
-// an agent) never sees anything except idle, sleep and roam.
+// Most themes ship a dozen state animations, but users without an active agent
+// usually see only idle, sleep and roam. This opt-in mode occasionally shows
+// another state's visual for a few seconds.
 //
-// Design notes:
-//   • The logical state stays "idle" the whole time. The controller sends
-//     state-change straight to the renderer with an explicit SVG, exactly like
-//     tick.js's existing idle-animation playback, so no session, priority,
-//     roam or sleep state is touched. A real agent event replaces the visual
-//     through the normal applyState() path and immediately wins.
-//   • Scheduling is tick-driven, not timer-driven: tick.js calls tick() while
-//     the pet is idle, and a paused idle period simply stops calling it. Only
-//     the restore is timer-based, so the visual comes back on time even when a
-//     tick is slow.
-//   • Every start re-checks the environment (canPlay) — Do Not Disturb, low
-//     power idle, sleep, mini mode, drag, menus, permission bubbles, settings
-//     previews and hidden windows all hold the activity.
-//   • The pickable set is derived from the active theme's states, so custom
-//     themes with their own state names (happy, typing, building, …) work
-//     without a schema change. Alert-semantics states (error, notification)
-//     and the sleep/roam machinery are excluded.
-//   • Frequency only changes the gap between activities; the first activity
-//     after idle begins uses a shorter delay so the mode is actually visible
-//     before the mouse-idle sleep sequence ends.
+// The logical state stays idle throughout. Duration starts at committed display;
+// return to rest only while this beat still owns the visual, so reactions and
+// real state changes always win.
+// Starts are tick-driven and re-check canPlay. Each real idle entry gets the
+// shorter first delay; automatic walks preserve the existing idle period.
+// Picks come from the theme's states, excluding alerts and sleep/roam machinery.
 
 const IDLE_ACTIVITY_FREQUENCIES = Object.freeze({
   low: { first: [30_000, 45_000], repeat: [120_000, 180_000] },
@@ -104,7 +87,8 @@ function createIdleActivityController(options = {}) {
   const getTheme = options.getTheme || (() => null);
   const getCurrentState = options.getCurrentState || (() => "idle");
   const canPlay = options.canPlay || (() => true);
-  const getIdleRestSvg = options.getIdleRestSvg || (() => null);
+  const restoreIdleVisual = options.restoreIdleVisual || (() => {});
+  const isVisualGenerationCurrent = options.isVisualGenerationCurrent || (() => true);
   const sendToRenderer = options.sendToRenderer || (() => {});
   const random = typeof options.random === "function" ? options.random : Math.random;
   const now = typeof options.now === "function" ? options.now : Date.now;
@@ -133,14 +117,17 @@ function createIdleActivityController(options = {}) {
   function finish() {
     clearRestoreTimer();
     if (!playing) return;
+    const attempt = playing;
     playing = null;
-    // A real state change (agent event, reaction, sleep) has already taken the
-    // visual; only hand the resting idle sprite back when the pet is still
-    // logically idle.
-    if (getCurrentState() === "idle") {
-      const rest = getIdleRestSvg();
-      if (rest) sendToRenderer("state-change", "idle", rest);
+    if (getCurrentState() === "idle" && isVisualGenerationCurrent(attempt.visualGeneration)) {
+      restoreIdleVisual();
     }
+    if (enabled) schedule(false);
+  }
+
+  function abandon() {
+    clearRestoreTimer();
+    playing = null;
     if (enabled) schedule(false);
   }
 
@@ -157,9 +144,38 @@ function createIdleActivityController(options = {}) {
       nextAt = now() + RETRY_MS;
       return;
     }
-    playing = { state: state.state, svg, duration: pickDuration(theme, state.state, random) };
-    sendToRenderer("state-change", "idle", svg);
-    restoreTimer = setTimer(finish, playing.duration);
+    const attempt = {
+      state: state.state,
+      svg,
+      duration: pickDuration(theme, state.state, random),
+      visualGeneration: null,
+      committed: false,
+    };
+    playing = attempt;
+    const onLogicalSettlement = (settlement) => {
+      if (playing !== attempt) return;
+      if (
+        !settlement
+        || settlement.status !== "committed"
+        || !Number.isSafeInteger(settlement.visualGeneration)
+        || getCurrentState() !== "idle"
+        || !isVisualGenerationCurrent(settlement.visualGeneration)
+      ) {
+        abandon();
+        return;
+      }
+      // Timeout recovery can commit a newer generation than the original send.
+      attempt.visualGeneration = settlement.visualGeneration;
+      attempt.committed = true;
+      restoreTimer = setTimer(finish, attempt.duration);
+    };
+    const request = sendToRenderer("state-change", "idle", svg, { onLogicalSettlement });
+    const visualGeneration = request && request.visualGeneration;
+    if (!Number.isSafeInteger(visualGeneration)) {
+      abandon();
+      return;
+    }
+    attempt.visualGeneration = visualGeneration;
   }
 
   // Called by tick.js while the pet is idle. Scheduling is deliberately
@@ -187,7 +203,9 @@ function createIdleActivityController(options = {}) {
     if (next === enabled) return;
     enabled = next;
     if (!enabled) {
+      const shouldRestore = isAnimating() && getCurrentState() === "idle";
       cancel();
+      if (shouldRestore) restoreIdleVisual();
       return;
     }
     // Start the first-delay clock on the next idle tick.
@@ -209,7 +227,12 @@ function createIdleActivityController(options = {}) {
   }
 
   function isAnimating() {
-    return playing !== null;
+    return playing !== null
+      && (!playing.committed || isVisualGenerationCurrent(playing.visualGeneration));
+  }
+
+  function noteIdleEntered() {
+    nextAt = null;
   }
 
   return {
@@ -218,6 +241,7 @@ function createIdleActivityController(options = {}) {
     tick,
     cancel,
     isAnimating,
+    noteIdleEntered,
     get enabled() {
       return enabled;
     },

@@ -33,11 +33,13 @@ Windows 的 hit window 在原生 activation controller 可用时按前台全屏�
 - Codex `PreCompact` 为清扫额外建立按对话的显示持有，普通其他对话活动不会提前切回工作；完成或同对话恢复活动后释放，再按完成提示的最小显示时长回退。丢失完成最多持有 10 分钟，headless 不持有，DND/禁用动画/审批锁保持原有语义。
 - 睡眠序列：20s 鼠标静止 → idle-look → 60s → yawning(3s) → dozing → 10min → collapsing(0.8s) → sleeping；鼠标移动触发 waking(1.5s) → 恢复
 - 逻辑 `idle` 与静置视觉分离：Settings 可为当前主题选择一个常驻 idle 变体，但不改变状态优先级；thinking / working / permission / completion / sleep / reaction / roam 仍会覆盖它，结束后再回到所选视觉
+- 默认关闭的空闲小动作只借用主题的其他状态画面，逻辑状态始终为 `idle`；显示结算后才开始计算时长，结束时只有仍拥有该视觉 generation 才归还静置画面。每次真正进入 idle 重新等待首次延迟，自动漫步返回 idle 不重置。
 - 逻辑状态与真正显示的视觉也彼此分离：所有 state、reaction、随机 idle、低功耗替换和回退都先生成带 `visualGeneration` 的显示请求；renderer 结算后，main 才提交 `{ displayState, file, hitBox, source, visualGeneration }`。原生 hit window、配饰投影与 Presence 只读这份 committed visual，输入窗口仍即时读取逻辑状态做反应门控
 - DND 模式：跳过 dozing，直接 yawning → collapsing → sleeping；同时屏蔽 hook 事件
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
 - Windows / macOS 显式开启的全屏自动隐藏（#935/#1275）会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
 - 桌宠隐藏期间（手动隐藏、macOS 应用隐藏、全屏自动隐藏，包括 macOS 用透明度隐藏的分支）自由漫步暂停：走到一半在下一帧取消，桌宠停在最后写入的位置，恢复显示后重新等待完整 8 秒。闲置和睡眠计时不受影响。
+- 空闲小动作播放期间自由漫步暂停。
 - 桌宠隐藏期间页面整页 `visibility: hidden`（`html.pet-hidden`，规则在 `src/styles.css`），不再绘制。页面仍算可见，定时器、素材加载、视觉结算、提示音照常；配饰跟随循环停止、配饰 SVG 文档暂停，恢复显示时按当前姿势重算布局，再按低功耗状态恢复循环和文档。脚本 SVG 的 JS 循环不停，这部分开销还在。主进程在有效隐藏跨边沿时发 `pet-hidden-change`，页面加载后补发当前值（`syncRendererStateAfterLoad`）。
 - `rendering.discreteSampling` 里的 OBJECT 文件提交时，显示缩放不是 100% 就在 SVG 文档根写 `zoom = 1 / devicePixelRatio` 并重建布局树（根需有 `viewBox`；Chromium 只让有效缩放为 1 的 SVG 变换动画上合成线程）；配饰跟随把 `getCTM()` 乘回文档 zoom，换算成页面像素。显示缩放变化后抖动 400 ms 重载当前文档，动画重来一次；其他 OBJECT 文档（Codex 精灵图、Cloudling）和 `<img>` 通道不处理。
 - 配饰跟随在 `rendering.discreteSampling` 的格点上读取位置；文档里有不可采样的动画、光标过渡中或使用分层跟随时退回每帧读取。SMIL 配饰文档的时间线保持暂停，由定时器一秒推进 12 次。

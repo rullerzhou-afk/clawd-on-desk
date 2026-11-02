@@ -12817,6 +12817,36 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(high.classList.contains("active"), false);
   });
 
+  for (const scenario of [
+    { name: "a non-ok result", message: "disk full", reply: () => ({ status: "error", message: "disk full" }) },
+    { name: "a rejected request", message: "IPC unavailable", reply: () => Promise.reject(new Error("IPC unavailable")) },
+  ]) {
+    it(`shows an error when the idle activity frequency save returns ${scenario.name}`, async () => {
+      const calls = [], toasts = [];
+      const harness = loadGeneralTabForTest({
+        tab: "pet",
+        snapshot: makeGeneralSnapshot({ idleActivities: true, idleActivityFrequency: "medium" }),
+        settingsAPI: {
+          update: (key, value) => {
+            calls.push({ key, value });
+            return scenario.reply();
+          },
+        },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleActivityFrequency;
+      const high = control.element.querySelectorAll("button").find((button) => button.dataset.value === "high");
+      high.dispatchEvent({ type: "click", bubbles: false });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepStrictEqual(calls, [{ key: "idleActivityFrequency", value: "high" }]);
+      assert.equal(toasts.length, 1);
+      assert.equal(toasts[0].options.error, true);
+      assert.ok(String(toasts[0].message).includes(scenario.message));
+    });
+  }
+
   it("shows, selects, and resets the Free roam activity area", async () => {
     const calls = [];
     const harness = loadGeneralTabForTest({
