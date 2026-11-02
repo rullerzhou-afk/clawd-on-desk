@@ -666,6 +666,8 @@ function handleEyeTrackingPreferenceChange(enabled) {
   // re-entering idle stays forward).
   ctx.sendToRenderer("eye-move", 0, 0);
   ctx.sendToRenderer("cloudling-pointer", { x: 0, y: 0, inside: false });
+  // Resend the live pointer on re-enable even if the cursor has not moved.
+  lastPointerBridgePayload = null;
 }
 
 function cleanup() {
