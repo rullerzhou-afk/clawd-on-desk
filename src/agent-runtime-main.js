@@ -9,7 +9,7 @@ const {
 const { resolveSessionIdentity } = require("./session-key");
 const { bareCodexSessionId } = require("../hooks/codex-session-index");
 const {
-  CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+  isCodexInternalThread,
 } = require("../hooks/codex-internal-worker");
 const { digestCodexTurnId, normalizeCodexTurnId } = require("./codex-turn-id");
 const createCodexTurnFence = require("./codex-turn-fence");
@@ -53,10 +53,10 @@ const CODEX_TURN_CAPTURE_EVENTS = new Set([
 // SessionEnd actually deleted so those late rollout events cannot rebuild a
 // row; the capacity mirrors the turn fence's session bound.
 const MAX_CODEX_SESSION_END_TOMBSTONES = 200;
-// Local Codex sids the hook recognized as hidden ambient-suggestion threads.
+// Local Codex sids the hook recognized as hidden ambient/title-refresh threads.
 // Same bound as the SessionEnd tombstones; entries are active only across a
 // thread's lifetime and are removed by its SessionEnd.
-const MAX_CODEX_AMBIENT_SUGGESTION_SESSIONS = 200;
+const MAX_CODEX_INTERNAL_THREAD_SESSIONS = 200;
 
 function createProfileScopedClassifier(classifier, profileId) {
   const canonicalSessionId = (sessionId) =>
@@ -286,26 +286,26 @@ function createAgentRuntimeMain(options = {}) {
     return codexSessionEndTombstones.has(sessionId);
   }
 
-  // Canonical local Codex sids recognized as hidden ambient-suggestion threads.
+  // Canonical local Codex sids recognized as hidden ambient/title-refresh threads.
   // Any official event from one is dropped (no row, no completion) until its
   // SessionEnd clears the entry. Bounded FIFO like the tombstones.
-  const codexAmbientSuggestionSessions = new Set();
+  const codexInternalThreadSessions = new Set();
 
-  function rememberCodexAmbientSuggestionSession(sessionId) {
+  function rememberCodexInternalThreadSession(sessionId) {
     if (typeof sessionId !== "string" || !sessionId) return;
-    codexAmbientSuggestionSessions.delete(sessionId);
-    codexAmbientSuggestionSessions.add(sessionId);
-    while (codexAmbientSuggestionSessions.size > MAX_CODEX_AMBIENT_SUGGESTION_SESSIONS) {
-      codexAmbientSuggestionSessions.delete(codexAmbientSuggestionSessions.values().next().value);
+    codexInternalThreadSessions.delete(sessionId);
+    codexInternalThreadSessions.add(sessionId);
+    while (codexInternalThreadSessions.size > MAX_CODEX_INTERNAL_THREAD_SESSIONS) {
+      codexInternalThreadSessions.delete(codexInternalThreadSessions.values().next().value);
     }
   }
 
-  function forgetCodexAmbientSuggestionSession(sessionId) {
-    codexAmbientSuggestionSessions.delete(sessionId);
+  function forgetCodexInternalThreadSession(sessionId) {
+    codexInternalThreadSessions.delete(sessionId);
   }
 
-  function isCodexAmbientSuggestionSession(sessionId) {
-    return codexAmbientSuggestionSessions.has(sessionId);
+  function isCodexInternalThreadSession(sessionId) {
+    return codexInternalThreadSessions.has(sessionId);
   }
 
   const codexOfficialActivity = createCodexOfficialActivity({
@@ -406,20 +406,20 @@ function createAgentRuntimeMain(options = {}) {
     return state.dismissSession(sessionId) === true;
   }
 
-  // A recognized ambient-suggestion thread must never keep a row — its prompts
+  // A recognized internal thread must never keep a row — its prompts
   // are hidden background work, not the user's. If an earlier event opened one
   // before recognition landed, retire it like an archived task: dismiss without
   // a completion sound, recap entry or completion push.
-  function dismissCodexAmbientSuggestionSession(sessionId) {
+  function dismissCodexInternalThreadSession(sessionId) {
     const state = getStateRuntime();
     const sessions = state && state.sessions;
     const session = sessions && typeof sessions.get === "function" ? sessions.get(sessionId) : null;
     if (!isLocalCodexSessionRecord(session)) return false;
-    clearCodexNotifyBubbles(sessionId, "codex-ambient-suggestions");
-    clearCodexUserInputBubbles(sessionId, undefined, "codex-ambient-suggestions");
+    clearCodexNotifyBubbles(sessionId, "codex-internal-thread");
+    clearCodexUserInputBubbles(sessionId, undefined, "codex-internal-thread");
     const perm = getPermissionRuntime();
     if (perm && typeof perm.dismissPermissionsForSession === "function") {
-      perm.dismissPermissionsForSession(sessionId, "codex-ambient-suggestions");
+      perm.dismissPermissionsForSession(sessionId, "codex-internal-thread");
     }
     // Mirror archive retirement: reset per-session fence/activity so a reused
     // raw id is not shadowed by the retired row.
@@ -602,20 +602,20 @@ function createAgentRuntimeMain(options = {}) {
     if (isLocalOfficialCodexEvent && officialRawThreadId
       && resolveSessionIdentity(officialRawThreadId, "local").sessionId !== sessionId) return false;
     if (isLocalOfficialCodexEvent) {
-      if (opts.codexInternalThread === CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS) {
-        // Hidden ambient-suggestion work: remember the sid so later official
+      if (isCodexInternalThread(opts.codexInternalThread)) {
+        // Hidden built-in work: remember the sid so later official
         // events are dropped too, and retire any row opened before recognition.
-        rememberCodexAmbientSuggestionSession(sessionId);
-        dismissCodexAmbientSuggestionSession(sessionId);
-        debugLog(`codex-ambient-suggestions recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")}`);
+        rememberCodexInternalThreadSession(sessionId);
+        dismissCodexInternalThreadSession(sessionId);
+        debugLog(`codex-internal-thread recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")}`);
         return false;
       }
-      if (isCodexAmbientSuggestionSession(sessionId)) {
+      if (isCodexInternalThreadSession(sessionId)) {
         // A recognized thread must not open a row from any of its other events.
         // Its SessionEnd clears the entry and then flows through normally (a
         // no-op without a row).
         if (event === "SessionEnd") {
-          forgetCodexAmbientSuggestionSession(sessionId);
+          forgetCodexInternalThreadSession(sessionId);
         } else {
           return false;
         }
@@ -1227,7 +1227,7 @@ function createAgentRuntimeMain(options = {}) {
     codexTurnFence.clear();
     codexOfficialActivity.clear();
     codexSessionEndTombstones.clear();
-    codexAmbientSuggestionSessions.clear();
+    codexInternalThreadSessions.clear();
   }
 
   return {
