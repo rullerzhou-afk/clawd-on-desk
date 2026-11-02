@@ -54,8 +54,8 @@ const CODEX_TURN_CAPTURE_EVENTS = new Set([
 // row; the capacity mirrors the turn fence's session bound.
 const MAX_CODEX_SESSION_END_TOMBSTONES = 200;
 // Local Codex sids the hook recognized as hidden ambient/title-refresh threads.
-// Same bound as the SessionEnd tombstones; entries are active only across a
-// thread's lifetime and are removed by its SessionEnd.
+// Same bound as the SessionEnd tombstones; SessionEnd marks an entry ended
+// rather than removing it, and a fresh lifecycle releases it.
 const MAX_CODEX_INTERNAL_THREAD_SESSIONS = 200;
 
 function createProfileScopedClassifier(classifier, profileId) {
