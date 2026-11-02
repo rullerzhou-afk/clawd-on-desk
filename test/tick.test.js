@@ -670,6 +670,34 @@ describe("tick eye tracking preference (#1276)", () => {
     assert.equal(channels.eyeMoves.length, countAfterPark);
   });
 
+  it("resends the Cloudling pointer after disabling and re-enabling without cursor movement", () => {
+    const theme = cloneTheme(themeLoader.loadTheme("cloudling"));
+    const channels = { eyeMoves: [], pointers: [] };
+
+    pointerAwareCtx(theme, channels);
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(1);
+    assert.deepStrictEqual(channels.pointers, [{ x: 4, y: 5, inside: true }]);
+
+    ctx.eyeTrackingEnabled = false;
+    tickApi.handleEyeTrackingPreferenceChange(false);
+    mock.timers.tick(100);
+    assert.deepStrictEqual(channels.pointers, [
+      { x: 4, y: 5, inside: true },
+      { x: 0, y: 0, inside: false },
+    ]);
+
+    ctx.eyeTrackingEnabled = true;
+    tickApi.handleEyeTrackingPreferenceChange(true);
+    mock.timers.tick(100);
+    assert.deepStrictEqual(channels.pointers, [
+      { x: 4, y: 5, inside: true },
+      { x: 0, y: 0, inside: false },
+      { x: 4, y: 5, inside: true },
+    ]);
+  });
+
   it("handleEyeTrackingPreferenceChange(true) resends the live position without cursor movement", () => {
     const theme = cloneTheme(_defaultTheme);
     const channels = { eyeMoves: [], pointers: [] };
