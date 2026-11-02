@@ -362,6 +362,18 @@ const SCHEMA = {
   // #686: constrain roam movement to horizontal or vertical only (axis-aligned).
   // When enabled, each roam picks a random target that varies in only one axis.
   roamConstrainAxis: { type: "boolean", default: false },
+  // #1252: while no agent is active, occasionally play another animation from
+  // the theme's state set (thinking / working / happy / sweeping / …) for a
+  // few seconds. Off by default; purely cosmetic and never changes the
+  // logical session state.
+  idleActivities: { type: "boolean", default: false },
+  // How often an idle activity may play: low / medium / high. Only consulted
+  // while idleActivities is on.
+  idleActivityFrequency: {
+    type: "string",
+    default: "medium",
+    enum: ["low", "medium", "high"],
+  },
   // #562: Windows-only. When ON, the pet floats ON TOP of a foreground
   // fullscreen app (e.g. a borderless game) and stays draggable, instead of
   // standing down below it (#538). Default ON — most users want to glance at

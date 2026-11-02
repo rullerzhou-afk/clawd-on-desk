@@ -120,6 +120,53 @@ describe("roam module", () => {
     assert.equal(roam.enabled, false);
   });
 
+  it("holds an already queued walk during an idle activity and can schedule again afterward", () => {
+    let playing = false;
+    const ctx = makeCtx({ isIdleActivityPlaying: () => playing });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    playing = true;
+    mock.timers.tick(8000);
+    assert.equal(roam.isRoamAnimating(), false);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    playing = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.equal(roam.isRoamAnimating(), false);
+    mock.timers.tick(1);
+    assert.equal(roam.isRoamAnimating(), true);
+    assert.equal(ctx._stateLog[0].state, "roam");
+    roam.setEnabled(false);
+  });
+
+  it("cancels a queued walk on an idle activity tick and restarts with the full 8s delay", () => {
+    let playing = false;
+    const ctx = makeCtx({ isIdleActivityPlaying: () => playing });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+
+    playing = true;
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.equal(roam.isRoamAnimating(), false);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    playing = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.equal(roam.isRoamAnimating(), false);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    mock.timers.tick(1);
+    assert.equal(roam.isRoamAnimating(), true);
+    assert.equal(ctx._stateLog[0].state, "roam");
+    roam.setEnabled(false);
+  });
+
   it("holds for visible permission bubbles and restarts with the full 8s delay", () => {
     let bubbleVisible = true;
     const ctx = makeCtx({

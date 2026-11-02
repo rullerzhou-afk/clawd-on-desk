@@ -1321,6 +1321,8 @@ function makeGeneralSnapshot(overrides = {}) {
     allowEdgePinning: true,
     disableMiniMode: false,
     keepSizeAcrossDisplays: true,
+    idleActivities: false,
+    idleActivityFrequency: "medium",
     manageClaudeHooksAutomatically: true,
     openAtLogin: false,
     autoStartWithClaude: false,
@@ -12744,6 +12746,106 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(natural.disabled, true);
     assert.strictEqual(axis.disabled, true);
   });
+
+  it("mounts the idle activity toggle and its frequency control", async () => {
+    const updateCalls = [];
+    const initialSnapshot = makeGeneralSnapshot({ idleActivities: false });
+    const harness = loadGeneralTabForTest({
+      tab: "pet",
+      snapshot: initialSnapshot,
+      settingsAPI: {
+        update: (key, value) => {
+          updateCalls.push({ key, value });
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+    });
+    harness.renderContent();
+
+    const control = harness.core.state.mountedControls.idleActivityFrequency;
+    const row = harness.content.querySelector(".idle-activity-frequency-row");
+    const toggle = harness.getSwitch("idleActivities");
+    assert.ok(control && row, "the frequency row must mount");
+    assert.ok(toggle, "the idle activity switch must mount");
+    assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
+    const buttons = control.element.querySelectorAll("button");
+    const low = buttons.find((button) => button.dataset.value === "low");
+    const medium = buttons.find((button) => button.dataset.value === "medium");
+    const high = buttons.find((button) => button.dataset.value === "high");
+    assert.ok(low && medium && high, "all three cadences must be available");
+    assert.strictEqual(medium.classList.contains("active"), true);
+    assert.strictEqual(low.disabled, true, "frequency is disabled while the mode is off");
+    assert.strictEqual(high.disabled, true);
+
+    toggle.dispatchEvent({
+      type: "click",
+      bubbles: true,
+      cancelBubble: false,
+      stopPropagation() { this.cancelBubble = true; },
+    });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "idleActivities" && call.value === true),
+      "the switch must persist idleActivities=true",
+    );
+
+    const enabledSnapshot = { ...initialSnapshot, idleActivities: true };
+    const beforeRenderCount = harness.getContentRenderCount();
+    harness.core.ops.applyChanges({
+      changes: { idleActivities: true },
+      snapshot: enabledSnapshot,
+    });
+    assert.strictEqual(harness.core.state.mountedControls.idleActivityFrequency, control);
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(low.disabled, false);
+    assert.strictEqual(high.disabled, false);
+
+    high.dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((r) => setTimeout(r, 0));
+    assert.ok(
+      updateCalls.some((call) => call.key === "idleActivityFrequency" && call.value === "high"),
+      "choosing a cadence must persist idleActivityFrequency",
+    );
+    assert.strictEqual(high.classList.contains("active"), true);
+
+    harness.core.ops.applyChanges({
+      changes: { idleActivityFrequency: "low" },
+      snapshot: { ...enabledSnapshot, idleActivityFrequency: "low" },
+    });
+    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
+    assert.strictEqual(low.classList.contains("active"), true);
+    assert.strictEqual(high.classList.contains("active"), false);
+  });
+
+  for (const scenario of [
+    { name: "a non-ok result", message: "disk full", reply: () => ({ status: "error", message: "disk full" }) },
+    { name: "a rejected request", message: "IPC unavailable", reply: () => Promise.reject(new Error("IPC unavailable")) },
+  ]) {
+    it(`shows an error when the idle activity frequency save returns ${scenario.name}`, async () => {
+      const calls = [], toasts = [];
+      const harness = loadGeneralTabForTest({
+        tab: "pet",
+        snapshot: makeGeneralSnapshot({ idleActivities: true, idleActivityFrequency: "medium" }),
+        settingsAPI: {
+          update: (key, value) => {
+            calls.push({ key, value });
+            return scenario.reply();
+          },
+        },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleActivityFrequency;
+      const high = control.element.querySelectorAll("button").find((button) => button.dataset.value === "high");
+      high.dispatchEvent({ type: "click", bubbles: false });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepStrictEqual(calls, [{ key: "idleActivityFrequency", value: "high" }]);
+      assert.equal(toasts.length, 1);
+      assert.equal(toasts[0].options.error, true);
+      assert.ok(String(toasts[0].message).includes(scenario.message));
+    });
+  }
 
   it("shows, selects, and resets the Free roam activity area", async () => {
     const calls = [];

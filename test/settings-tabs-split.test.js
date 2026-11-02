@@ -60,6 +60,8 @@ const FROZEN_KEYS = [
   "disableMiniMode",
   "freeRoam",
   "roamConstrainAxis",
+  "idleActivities",
+  "idleActivityFrequency",
   "keepSizeAcrossDisplays",
   "fullscreenAutoHide",
   "petAlwaysOnTop",
@@ -98,6 +100,8 @@ const EXPECTED_KEYS = {
     "disableMiniMode",
     "freeRoam",
     "roamConstrainAxis",
+    "idleActivities",
+    "idleActivityFrequency",
     "fullscreenAutoHide",
   ],
   notifications: [
@@ -726,7 +730,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "窗口置顶", "反应"]);
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
-      ["自由漫步", "移动方式", "活动范围", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["自由漫步", "移动方式", "活动范围", "空闲小动作", "出现频率", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
       ["桌宠保持在最前"],
       ["测试结果动画"],
     ]);

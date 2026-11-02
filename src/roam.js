@@ -110,6 +110,12 @@ module.exports = function initRoam(ctx) {
       ctx.isPetHidden()
     )
       return false;
+    // An idle activity borrows the visual while the pet stays still.
+    if (
+      typeof ctx.isIdleActivityPlaying === "function" &&
+      ctx.isIdleActivityPlaying()
+    )
+      return false;
     return true;
   }
 

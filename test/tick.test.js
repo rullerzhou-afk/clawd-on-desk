@@ -83,6 +83,176 @@ function makeCtx(theme, statesSeen) {
   };
 }
 
+describe("tick idle activity coordination", () => {
+  let loader;
+  let tickApi;
+  let ctx;
+  let calls;
+  let activityTicks;
+  let idleEntries;
+  let cancels;
+  let playing;
+  let lastStateChangeAt;
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    loader = loadTickWithScreen(() => ({ x: 300, y: 260 }));
+    const theme = cloneTheme(_defaultTheme);
+    theme.timings.mouseIdleTimeout = 100;
+    theme.timings.mouseSleepTimeout = 100000;
+    theme.idleAnimations = [{ file: "clawd-idle-look.svg", duration: 500 }];
+    theme.idleEasterEggs = [];
+    ctx = makeCtx(theme, []);
+    calls = [];
+    activityTicks = 0;
+    idleEntries = 0;
+    cancels = 0;
+    playing = false;
+    let generation = 0;
+    ctx.sendToRenderer = (channel, state, svg, options) => {
+      calls.push([channel, state, svg]);
+      if (channel !== "state-change") return;
+      lastStateChangeAt = Date.now();
+      const request = { visualGeneration: ++generation };
+      if (options && options.onLogicalSettlement) {
+        options.onLogicalSettlement({ status: "committed", ...request });
+      }
+      return request;
+    };
+    ctx.isVisualGenerationCurrent = (value) => value === generation;
+    ctx.idleActivity = {
+      isAnimating: () => playing,
+      tick: () => { activityTicks++; },
+      noteIdleEntered: () => { idleEntries++; },
+      cancel: () => { cancels++; },
+    };
+  });
+
+  afterEach(() => {
+    if (tickApi) tickApi.cleanup();
+    tickApi = null;
+    loader.restore();
+    mock.timers.reset();
+  });
+
+  function start() {
+    tickApi = loader.initTick(ctx);
+    tickApi.startMainTick();
+    mock.timers.tick(1);
+  }
+
+  function advance(ms) {
+    for (let remaining = ms; remaining > 0; remaining -= 50) {
+      mock.timers.tick(Math.min(50, remaining));
+    }
+  }
+
+  function idleFiles() {
+    return calls.filter(([channel]) => channel === "state-change").map(([, , svg]) => svg);
+  }
+
+  for (const activityPresent of [false, true]) {
+    it(`keeps idle-look and eyes working with idle activities ${activityPresent ? "disabled" : "absent"}`, () => {
+      if (!activityPresent) delete ctx.idleActivity;
+      ctx.forceEyeResend = true;
+      start();
+      assert.ok(calls.some(([channel]) => channel === "eye-move"));
+      advance(900);
+      assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg", ctx.theme.states.idle[0]]);
+      if (activityPresent) assert.ok(activityTicks > 0);
+    });
+  }
+
+  it("suppresses idle-look and eye messages during an idle activity while still servicing roam", () => {
+    playing = true;
+    ctx.forceEyeResend = true;
+    let roamTicks = 0;
+    ctx.roam = { tick() { roamTicks++; } };
+    start();
+    advance(1000);
+    assert.deepStrictEqual(calls, []);
+    assert.ok(activityTicks > 0);
+    assert.ok(roamTicks > 0);
+    playing = false;
+    advance(500);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+  });
+
+  it("does not tick idle activities while idle-look owns the visual", () => {
+    start();
+    advance(100);
+    const ticksBeforeLook = activityTicks;
+    advance(300);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+    advance(300);
+    assert.equal(activityTicks, ticksBeforeLook);
+    advance(300);
+    assert.ok(activityTicks > ticksBeforeLook);
+  });
+
+  it("notifies each real idle entry but preserves the period after a walk", () => {
+    ctx.currentState = "working";
+    start();
+    assert.equal(idleEntries, 0);
+    function sample(state) {
+      ctx.currentState = state;
+      tickApi.scheduleSoon(0);
+      mock.timers.tick(1);
+    }
+    sample("idle");
+    assert.equal(idleEntries, 1);
+    sample("idle");
+    assert.equal(idleEntries, 1);
+    sample("roam");
+    sample("idle");
+    assert.equal(idleEntries, 1, "automatic walks are part of the same idle period");
+    sample("sleeping");
+    sample("idle");
+    assert.equal(idleEntries, 2);
+    sample("attention");
+    sample("idle");
+    assert.equal(idleEntries, 3);
+  });
+
+  it("restores the selected rest visual and requests eyes again after 200ms", () => {
+    ctx.getIdleVisualChoice = () => "clawd-idle-reading.svg";
+    tickApi = loader.initTick(ctx);
+    tickApi.restoreIdleVisual();
+    assert.deepStrictEqual(calls, [["state-change", "idle", "clawd-idle-reading.svg"]]);
+    assert.equal(ctx.forceEyeResend, false);
+    mock.timers.tick(199);
+    assert.equal(ctx.forceEyeResend, false);
+    mock.timers.tick(1);
+    assert.equal(ctx.forceEyeResend, true);
+  });
+
+  it("idle-look completion still restores rest and schedules the eye resend", () => {
+    ctx.getIdleVisualChoice = () => "clawd-idle-reading.svg";
+    start();
+    while (idleFiles().length === 0) advance(50);
+    const remaining = 500 - (Date.now() - lastStateChangeAt);
+    // Keep the main loop from consuming the flag before it is inspected.
+    ctx.win.isDestroyed = () => true;
+    mock.timers.tick(remaining - 1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg"]);
+    mock.timers.tick(1);
+    assert.deepStrictEqual(idleFiles(), ["clawd-idle-look.svg", "clawd-idle-reading.svg"]);
+    assert.equal(ctx.forceEyeResend, false);
+    mock.timers.tick(199);
+    assert.equal(ctx.forceEyeResend, false);
+    mock.timers.tick(1);
+    assert.equal(ctx.forceEyeResend, true);
+  });
+
+  it("cleanup cancels idle activities without requesting a rest visual", () => {
+    start();
+    tickApi.cleanup();
+    assert.equal(cancels, 1);
+    assert.deepStrictEqual(idleFiles(), []);
+    tickApi = null;
+  });
+});
+
 describe("optional mini hover visuals", () => {
   let loader;
   let tickApi;
