@@ -289,6 +289,7 @@ function initUpdater(ctx, deps = {}) {
   let installRequested = false;
   // Same-process download fact. electron-updater owns the verified payload;
   // a bubble closing must not discard it or invent a persisted installer path.
+  // Discard this record when the updater reports an error.
   let downloadedUpdate = null;
   let readyPrompt = null;
   let readyPromptGeneration = 0;
@@ -1497,6 +1498,10 @@ function initUpdater(ctx, deps = {}) {
         ? "install"
         : (failedWhileDownloading ? "download" : "availability-check");
       installRequested = false;
+      // macOS stages in Squirrel after update-downloaded; retry the download
+      // (served from electron-updater's cache while it is still there) to
+      // start staging again.
+      downloadedUpdate = null;
       clearActiveCheck();
       if (!shouldShowErrorBubble) {
         const report = buildUpdateErrorReport(err, {

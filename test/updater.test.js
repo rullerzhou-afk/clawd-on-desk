@@ -1815,20 +1815,38 @@ describe("downloaded update reuse after the ready bubble closes", () => {
     h.settle({ action: "later", source: "user" }); await completed;
   });
 
-  it("keeps an error replacing ready visible and reuses the staged installer for an explicit retry", async () => {
-    const h = readyFixture();
+  it("keeps an error replacing ready visible and checks and downloads again on retry", async () => {
+    const h = readyFixture({ platform: "darwin", deferredModes: ["available", "ready"] });
     const completed = h.downloaded();
     await h.handlers.error(new Error("fixture installation preparation failed"));
     await completed;
     assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "error");
     assert.strictEqual(h.bubbles.at(-1).mode, "error");
     assert.strictEqual(h.counts.hides, 0);
-    assert.strictEqual(h.updater.clearUpdateError().state, "ready");
+    assert.strictEqual(h.updater.clearUpdateError().state, "idle");
     await h.updater.checkForUpdates(true);
+    assert.strictEqual(h.counts.release, 1); assert.strictEqual(h.counts.checks, 1);
+    const available = h.handlers["update-available"]({ version: "0.5.11" });
     h.settle({ action: "primary", source: "user" });
-    await new Promise(resolve => setImmediate(resolve));
+    await available;
+    assert.strictEqual(h.counts.downloads, 1);
+    const retried = h.downloaded();
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "ready");
+    h.settle({ action: "primary", source: "user" });
+    await retried;
     assert.strictEqual(h.counts.installs, 1);
-    assert.strictEqual(h.counts.release, 0); assert.strictEqual(h.counts.downloads, 0);
+  });
+
+  it("checks again from the tray after an updater error without clearing it first", async () => {
+    const h = readyFixture({ platform: "darwin" });
+    const completed = h.downloaded();
+    await h.handlers.error(new Error("fixture installation preparation failed"));
+    await completed;
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "error");
+    await h.updater.getUpdateMenuItem().click();
+    assert.strictEqual(h.counts.installs, 0);
+    assert.strictEqual(h.counts.checks, 1); assert.strictEqual(h.counts.release, 1);
+    assert.strictEqual(h.counts.downloads, 0);
   });
 
   it("can retry an installer failure without another release check or download", async () => {
