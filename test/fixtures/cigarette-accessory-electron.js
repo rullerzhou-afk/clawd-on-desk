@@ -70,7 +70,7 @@ async function assertProductionStack(win) {
 }
 
 async function capturePaintedPixel(win) {
-  // Let visibility changes pass through style/layout and a paint commit first.
+  // Allow a rendering cycle for visibility changes before invalidating.
   await win.webContents.executeJavaScript(`new Promise((resolve) => {
     requestAnimationFrame(() => requestAnimationFrame(resolve));
   })`);
