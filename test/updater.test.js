@@ -1518,7 +1518,7 @@ describe("updater visual flow", () => {
 
     assert.strictEqual(quitAndInstallCalls, 0);
     assert.strictEqual(autoUpdater.autoInstallOnAppQuit, true);
-    assert.strictEqual(updater.getUpdateCheckSnapshot().state, "idle");
+    assert.strictEqual(updater.getUpdateCheckSnapshot().state, "ready");
     assert.match(bubbles[0].message, /quit and reopen Clawd/i);
   });
 
@@ -1634,6 +1634,214 @@ describe("updater visual flow", () => {
 
     assert.strictEqual(resetSoundCooldownCalls, 1);
     assert.ok(appliedStates.includes("attention"));
+  });
+});
+
+describe("downloaded update reuse after the ready bubble closes", () => {
+  function readyFixture({ platform = "win32", deferredRelease = false, deferredModes = ["ready"], install } = {}) {
+    const handlers = {}, bubbles = [], prompts = [], requests = [];
+    const counts = { release: 0, checks: 0, downloads: 0, installs: 0, hides: 0, celebrations: 0 };
+    let visiblePrompt = null;
+    const ctx = makeCtx({
+      showUpdateBubble(payload) {
+        if (visiblePrompt) visiblePrompt.resolve({ action: payload.defaultAction || null, source: "closed" });
+        bubbles.push(payload);
+        if (!deferredModes.includes(payload.mode)) return { action: payload.defaultAction || null, source: "autoClose" };
+        const prompt = { payload };
+        prompt.promise = new Promise(resolve => {
+          prompt.resolve = result => {
+            if (visiblePrompt === prompt) visiblePrompt = null;
+            resolve(result);
+          };
+        });
+        visiblePrompt = prompt;
+        prompts.push(prompt);
+        return prompt.promise;
+      },
+      hideUpdateBubble() { counts.hides += 1; },
+      resetSoundCooldown() { counts.celebrations += 1; },
+    });
+    const autoUpdater = {
+      autoDownload: true,
+      autoInstallOnAppQuit: false,
+      on(event, handler) { handlers[event] = handler; },
+      async checkForUpdates() { counts.checks += 1; return { updateInfo: { version: "0.5.11" } }; },
+      downloadUpdate() { counts.downloads += 1; },
+      quitAndInstall() {
+        counts.installs += 1;
+        if (install) return install({ counts, handlers });
+      },
+    };
+    const updater = initUpdater(ctx, makeDeps({
+      platform,
+      autoUpdaterFactory: () => autoUpdater,
+      httpsGetImpl(options, callback) {
+        counts.release += 1;
+        if (!deferredRelease) return makeLatestReleaseResponse({ tag_name: "v0.5.11" })(options, callback);
+        let rejectRequest;
+        requests.push({
+          resolve(release = { tag_name: "v0.5.11" }) { makeLatestReleaseResponse(release)(options, callback); },
+          reject(error) { rejectRequest(error); },
+        });
+        return { on(event, handler) { if (event === "error") rejectRequest = handler; return this; }, setTimeout() {} };
+      },
+    }));
+    updater.setupAutoUpdater();
+    return { updater, handlers, bubbles, prompts, requests, counts, autoUpdater,
+      downloaded: version => handlers["update-downloaded"]({ version: version || "0.5.11" }),
+      settle: result => visiblePrompt.resolve(result),
+      visible: () => visiblePrompt,
+    };
+  }
+
+  for (const source of ["user", "autoClose", "policy", "closed"]) {
+    it(`retains the downloaded installer after ${source} dismissal and reopens it without checking or downloading`, async () => {
+      const h = readyFixture();
+      const completed = h.downloaded();
+      h.settle({ action: "later", source });
+      await completed;
+      assert.deepStrictEqual(h.updater.getUpdateCheckSnapshot(), { state: "ready", version: "0.5.11" });
+      assert.strictEqual(h.updater.getUpdateMenuLabel(), "Update Ready");
+      assert.strictEqual(h.updater.getUpdateMenuItem().enabled, true);
+      assert.strictEqual(h.autoUpdater.autoInstallOnAppQuit, true);
+      assert.strictEqual(h.counts.installs, 0);
+
+      const first = await h.updater.checkForUpdates(true);
+      const second = await h.updater.checkForUpdates({ trigger: "manual", intent: "check" });
+      assert.strictEqual(first.state, "ready"); assert.strictEqual(second.state, "ready");
+      assert.strictEqual(h.bubbles.filter(p => p.mode === "ready").length, 2, "concurrent manual entries reuse one open prompt");
+      assert.strictEqual(h.counts.celebrations, 1, "reopening does not replay completion");
+      assert.strictEqual(h.counts.release, 0); assert.strictEqual(h.counts.checks, 0); assert.strictEqual(h.counts.downloads, 0);
+      h.settle({ action: "primary", source: "user" });
+      await new Promise(resolve => setImmediate(resolve));
+      await h.updater.getUpdateMenuItem().click();
+      assert.strictEqual(h.counts.installs, 1, "only an explicit install action requests the cached installer once");
+    });
+  }
+
+  it("never treats an automatic or replaced prompt's primary fallback as an installation decision", async () => {
+    for (const source of ["autoClose", "policy", "closed"]) {
+      const h = readyFixture({ platform: "darwin" });
+      const completed = h.downloaded();
+      h.settle({ action: "primary", source });
+      await completed;
+      assert.strictEqual(h.counts.installs, 0, source);
+      assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "ready");
+    }
+  });
+
+  it("deduplicates same-version download events and isolates an older ready continuation from a new version", async () => {
+    const h = readyFixture();
+    const old = h.downloaded("0.5.11");
+    await h.downloaded("0.5.11");
+    assert.strictEqual(h.prompts.length, 1);
+    assert.strictEqual(h.counts.celebrations, 1);
+    const current = h.downloaded("0.5.12");
+    await old;
+    assert.deepStrictEqual(h.updater.getUpdateCheckSnapshot(), { state: "ready", version: "0.5.12" });
+    assert.strictEqual(h.visible().payload.version, "0.5.12");
+    assert.strictEqual(h.counts.hides, 0, "the closed old prompt cannot hide the new one");
+    h.settle({ action: "later", source: "user" });
+    await current;
+  });
+
+  it("does not let scheduled discovery or late availability events replace a staged installer", async () => {
+    const h = readyFixture({ deferredRelease: true });
+    const discovery = h.updater.quietDiscover();
+    const completed = h.downloaded();
+    h.requests[0].resolve({ tag_name: "v0.5.12" });
+    assert.deepStrictEqual(await discovery, { status: "ready", version: "0.5.11" });
+    assert.deepStrictEqual(await h.updater.quietDiscover(), { status: "ready", version: "0.5.11" });
+    await h.updater.handlePendingVersion("v0.5.12", { tag_name: "v0.5.12" });
+    await h.handlers["update-available"]({ version: "0.5.12" });
+    await h.handlers["update-not-available"]();
+    assert.deepStrictEqual(h.bubbles.map(p => p.mode), ["ready"]);
+    assert.strictEqual(h.counts.release, 1); assert.strictEqual(h.counts.checks, 0); assert.strictEqual(h.counts.downloads, 0);
+    assert.strictEqual(h.updater.getPendingUpdateVersion(), "");
+    h.settle({ action: "later", source: "autoClose" }); await completed;
+  });
+
+  it("does not let background discovery or duplicate availability replace an in-progress download", async () => {
+    const h = readyFixture({ deferredModes: ["available"] });
+    const available = h.handlers["update-available"]({ version: "0.5.11" });
+    h.settle({ action: "primary", source: "user" });
+    await available;
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "downloading");
+    assert.strictEqual(h.counts.downloads, 1, "the first download must not be blocked by its own progress state");
+    assert.deepStrictEqual(await h.updater.quietDiscover(), { status: "busy" });
+    await h.updater.handlePendingVersion("v0.5.12", { tag_name: "v0.5.12" });
+    await h.handlers["update-available"]({ version: "0.5.12" });
+    assert.deepStrictEqual(h.bubbles.map(p => p.mode), ["available", "downloading"]);
+    assert.strictEqual(h.counts.release, 0); assert.strictEqual(h.counts.downloads, 1);
+    assert.deepStrictEqual(h.updater.getUpdateCheckSnapshot(), { state: "downloading", version: "0.5.11" });
+  });
+
+  it("ignores a quiet lookup result if an explicit download started while it was in flight", async () => {
+    const h = readyFixture({ deferredRelease: true, deferredModes: ["available"] });
+    const discovery = h.updater.quietDiscover();
+    const available = h.handlers["update-available"]({ version: "0.5.11" });
+    h.settle({ action: "primary", source: "user" });
+    await available;
+    h.requests[0].resolve({ tag_name: "v0.5.12" });
+    assert.deepStrictEqual(await discovery, { status: "busy" });
+    assert.strictEqual(h.counts.release, 1); assert.strictEqual(h.counts.downloads, 1);
+    assert.deepStrictEqual(h.bubbles.map(p => p.mode), ["available", "downloading"]);
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "downloading");
+  });
+
+  for (const outcome of ["success", "error"]) {
+    it(`ignores a manual lookup's late ${outcome} once download completion has established ready`, async () => {
+      const h = readyFixture({ deferredRelease: true });
+      const checking = h.updater.checkForUpdates(true);
+      await new Promise(resolve => setImmediate(resolve));
+      const completed = h.downloaded();
+      if (outcome === "success") h.requests[0].resolve();
+      else h.requests[0].reject(Object.assign(new Error("fixture offline"), { code: "ENETUNREACH" }));
+      assert.deepStrictEqual(await checking, { state: "ready", version: "0.5.11" });
+      assert.deepStrictEqual(h.bubbles.map(p => p.mode), ["checking", "ready"]);
+      assert.strictEqual(h.counts.checks, 0); assert.strictEqual(h.counts.downloads, 0);
+      h.settle({ action: "later", source: "user" }); await completed;
+    });
+  }
+
+  it("does not let an old available prompt hide or demote a later ready prompt", async () => {
+    const h = readyFixture({ deferredModes: ["available", "ready"] });
+    const available = h.handlers["update-available"]({ version: "0.5.11" });
+    const completed = h.downloaded();
+    await available;
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "ready");
+    assert.strictEqual(h.visible().payload.mode, "ready");
+    assert.strictEqual(h.counts.hides, 0);
+    h.settle({ action: "later", source: "user" }); await completed;
+  });
+
+  it("keeps an error replacing ready visible and reuses the staged installer for an explicit retry", async () => {
+    const h = readyFixture();
+    const completed = h.downloaded();
+    await h.handlers.error(new Error("fixture installation preparation failed"));
+    await completed;
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "error");
+    assert.strictEqual(h.bubbles.at(-1).mode, "error");
+    assert.strictEqual(h.counts.hides, 0);
+    assert.strictEqual(h.updater.clearUpdateError().state, "ready");
+    await h.updater.checkForUpdates(true);
+    h.settle({ action: "primary", source: "user" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(h.counts.installs, 1);
+    assert.strictEqual(h.counts.release, 0); assert.strictEqual(h.counts.downloads, 0);
+  });
+
+  it("can retry an installer failure without another release check or download", async () => {
+    const h = readyFixture({ install({ counts }) { if (counts.installs === 1) throw new Error("fixture temporary install failure"); } });
+    const completed = h.downloaded();
+    h.settle({ action: "primary", source: "user" });
+    await completed;
+    assert.strictEqual(h.updater.getUpdateCheckSnapshot().state, "error");
+    await h.updater.checkForUpdates(true);
+    h.settle({ action: "primary", source: "user" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(h.counts.installs, 2);
+    assert.strictEqual(h.counts.release, 0); assert.strictEqual(h.counts.checks, 0); assert.strictEqual(h.counts.downloads, 0);
   });
 });
 
@@ -1927,7 +2135,8 @@ describe("updater #329 background scheduler", () => {
 
     assert.strictEqual(downloadCalls, 1);
     assert.strictEqual(bubbles.filter((bubble) => bubble.mode === "downloading").length, 1);
-    assert.strictEqual(bubbles.filter((bubble) => bubble.mode === "available").length, 2);
+    assert.strictEqual(bubbles.filter((bubble) => bubble.mode === "available").length, 1);
+    assert.strictEqual(updater.getUpdateCheckSnapshot().state, "downloading");
   });
 
   it("formats pending update menu labels without duplicating the release tag v prefix", async () => {
