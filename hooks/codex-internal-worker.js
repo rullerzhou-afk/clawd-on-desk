@@ -185,10 +185,7 @@ function isCodexClientEphemeralPayload(payload, options = {}) {
 // positive persistence evidence even before the first write reaches disk.
 function codexClientEphemeralClaim(payload, options = {}) {
   if (isCodexClientEphemeralPayload(payload, options)) {
-    // A CLI launched by Desktop may inherit the marker. Explicit CLI identity
-    // still owns its existing terminal focus route.
-    const source = typeof payload.source === "string" ? payload.source.trim().toLowerCase() : "";
-    return isCodexCliOriginator(payload.originator) || ["cli", "exec", "mcp"].includes(source) ? undefined : true;
+    return true;
   }
   if (payload && typeof payload.transcript_path === "string" && payload.transcript_path.trim()) return false;
   return undefined;

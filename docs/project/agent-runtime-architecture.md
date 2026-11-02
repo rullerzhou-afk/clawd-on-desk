@@ -165,7 +165,9 @@ Desktop 26.1016 的自适应标题刷新三行模板（旧标题须为 `JSON.str
 缓存（不 POST、不读自动启动开关、不冷启动）：Windows 默认 legacy 模式下首次
 `UserPromptSubmit` 是 cache-only，不预热就拿不到 PID、第一轮没法跳转。服务端
 `src/agent-runtime-main.js` 用有界集合（200）记住被标记的本地 Codex sid，之后该 sid 的
-官方事件一律不建行、不播完成，已有行则按归档方式撤掉，直到它的 SessionEnd 把 sid 移出；
+官方事件一律不建行、不播完成，已有行则按归档方式撤掉。SessionEnd 仅将该 sid 标成已结束，
+仍占用同一 200 项 FIFO，迟到的官方事件继续丢弃；后续 SessionStart 或不带内部标记的
+UserPromptSubmit 才释放该 sid，带标记的提问则重新记为活跃；
 标记由 `src/server-route-state.js` 校验（仅本地 official codex）后经 `codexInternalThread`
 传入。若上游改写提示词文字，识别失效只会退化成「短暂出现、被 SessionEnd 收掉」，不会藏起
 用户对话。official `SessionEnd`（`CODEX_HOOK_EVENTS`，timeout 固定 3 秒）在线程拆除时发

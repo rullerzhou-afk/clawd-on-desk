@@ -71,6 +71,13 @@ describe("Codex Desktop title-refresh classification", () => {
     assert.equal(JSON.stringify(body).includes("Keep the current chat title"), false);
   });
 
+  it("PR #1253 follow-up: known boundary: a side chat without a transcript pasting the exact template gets title_refresh", async () => {
+    // Hooks cannot distinguish a no-transcript side chat from the built-in caller.
+    // An exact template paste is therefore an accepted false-positive boundary.
+    const body = await submit({ transcript_path: null });
+    assert.equal(body.codex_internal_thread, CODEX_INTERNAL_THREAD_TITLE_REFRESH);
+  });
+
   it("keeps a transcript-backed conversation which pastes the same template", async () => {
     const body = await submit({ transcript_path: "/missing/synthetic-rollout.jsonl" });
     assert.equal(body.codex_internal_thread, undefined);
