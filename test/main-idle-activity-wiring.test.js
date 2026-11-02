@@ -6,7 +6,7 @@ const path = require("node:path");
 const vm = require("node:vm");
 const { it } = require("node:test");
 
-const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+const source = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8").replace(/\r\n/g, "\n");
 
 it("wires tick to the idle activity controller", () => {
   const start = source.indexOf("const _tickCtx = {");
