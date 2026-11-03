@@ -66,6 +66,105 @@ describe("scheduleTmuxPaneFocus", () => {
     }, 700);
   });
 
+  it("Linux tmux server title: issues switch-client + select-window + select-pane", (t, done) => {
+    const { calls, mock } = makeMock({
+      ps: (args, cb) => {
+        if (args.join(" ").includes("pid=,comm=")) {
+          cb(null, "100 zsh\n200 tmux: server\n300 alacritty\n", "");
+          return;
+        }
+        cb(null, "", "");
+      },
+      "/usr/bin/tmux": (args, cb) => {
+        if (args.includes("list-panes")) {
+          cb(null, "100 @3 %7 work\n", "");
+          return;
+        }
+        cb(null, "", "");
+      },
+    });
+    const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
+    const focusInstance = initFocus({});
+    focusInstance.__test.__setTmuxBin("/usr/bin/tmux");
+    focusInstance.__test.scheduleTmuxPaneFocus([100, 200, 300], "/tmp/tmux-1000/default", "/dev/pts/7");
+
+    setTimeout(() => {
+      cleanup();
+      const tmuxCalls = calls.filter(c => c.cmd === "/usr/bin/tmux");
+      const switchClient = tmuxCalls.find(c => c.args.includes("switch-client"));
+      const selectWindow = tmuxCalls.find(c => c.args.includes("select-window"));
+      const selectPane = tmuxCalls.find(c => c.args.includes("select-pane"));
+      assert.ok(switchClient, "switch-client should run");
+      assert.deepStrictEqual(switchClient.args.slice(0, 2), ["-S", "/tmp/tmux-1000/default"], "switch-client uses full socket path");
+      assert.ok(switchClient.args.includes("-c"), "switch-client should specify target client");
+      assert.ok(switchClient.args.includes("/dev/pts/7"), "switch-client -c client tty");
+      assert.ok(switchClient.args.includes("work"), "switch-client -t work");
+      assert.ok(selectWindow, "select-window should run");
+      assert.ok(selectWindow.args.includes("@3"), "select-window -t @3");
+      assert.ok(selectPane, "select-pane should run");
+      assert.ok(selectPane.args.includes("%7"), "select-pane -t %7");
+      done();
+    }, 700);
+  });
+
+  it("macOS tmux path: issues switch-client + select-window + select-pane with an indented ps row", (t, done) => {
+    const { calls, mock } = makeMock({
+      ps: (args, cb) => {
+        if (args.join(" ").includes("pid=,comm=")) {
+          cb(null, "100 /bin/zsh\n  200 /opt/homebrew/bin/tmux\n300 alacritty\n", "");
+          return;
+        }
+        cb(null, "", "");
+      },
+      "/opt/homebrew/bin/tmux": (args, cb) => {
+        if (args.includes("list-panes")) {
+          cb(null, "100 @3 %7 work\n", "");
+          return;
+        }
+        cb(null, "", "");
+      },
+    });
+    const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "darwin" });
+    const focusInstance = initFocus({});
+    focusInstance.__test.__setTmuxBin("/opt/homebrew/bin/tmux");
+    focusInstance.__test.scheduleTmuxPaneFocus([100, 200, 300], "/tmp/tmux-1000/default", "/dev/ttys007");
+
+    setTimeout(() => {
+      cleanup();
+      const tmuxCalls = calls.filter(c => c.cmd === "/opt/homebrew/bin/tmux");
+      const switchClient = tmuxCalls.find(c => c.args.includes("switch-client"));
+      const selectWindow = tmuxCalls.find(c => c.args.includes("select-window"));
+      const selectPane = tmuxCalls.find(c => c.args.includes("select-pane"));
+      assert.ok(switchClient, "switch-client should run");
+      assert.deepStrictEqual(switchClient.args.slice(0, 2), ["-S", "/tmp/tmux-1000/default"], "switch-client uses full socket path");
+      assert.ok(switchClient.args.includes("-c"), "switch-client should specify target client");
+      assert.ok(switchClient.args.includes("/dev/ttys007"), "switch-client -c client tty");
+      assert.ok(switchClient.args.includes("work"), "switch-client -t work");
+      assert.ok(selectWindow, "select-window should run");
+      assert.ok(selectWindow.args.includes("@3"), "select-window -t @3");
+      assert.ok(selectPane, "select-pane should run");
+      assert.ok(selectPane.args.includes("%7"), "select-pane -t %7");
+      done();
+    }, 700);
+  });
+
+  it("does nothing when process names only contain tmux", (t, done) => {
+    const { calls, mock } = makeMock({
+      ps: (args, cb) => cb(null, "100 zsh\n200 tmuxinator\n300 not-tmux: x\n", ""),
+    });
+    const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
+    const focusInstance = initFocus({});
+    focusInstance.__test.__setTmuxBin("/usr/bin/tmux");
+    focusInstance.__test.scheduleTmuxPaneFocus([100, 200, 300]);
+
+    setTimeout(() => {
+      cleanup();
+      const tmuxCalls = calls.filter(c => c.cmd === "/usr/bin/tmux");
+      assert.strictEqual(tmuxCalls.length, 0, "No tmux CLI calls for tmuxinator or not-tmux: x");
+      done();
+    }, 700);
+  });
+
   it("does nothing when ps reports no tmux processes in chain", (t, done) => {
     const { calls, mock } = makeMock({
       ps: (args, cb) => cb(null, "100 zsh\n200 bash\n", ""),
