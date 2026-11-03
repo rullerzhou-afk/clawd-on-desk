@@ -373,7 +373,7 @@
       finished = true;
       if (fallbackTimer !== null) clearTimeout(fallbackTimer);
       if (lookupEpoch !== feishuView.lookupEpoch) return;
-      ops.requestRender({ content: true });
+      requestBodyRender();
     };
     // Let the already-mounted role=status survive one paint with its new text
     // before the fallback guide and ID-type controls rebuild the row.
@@ -486,6 +486,54 @@
     return state.activeTab === "permissions" && coreRef.runtime.permissionsSubtab !== "local";
   }
 
+  // Repaint of the mounted remote body. Every repaint from this module has to
+  // keep the settings pane where the user left it: the content render hook
+  // replaces the whole panel (settings-renderer.js `renderContent`), so without
+  // `preserveScroll` the pane snaps back to the top mid-edit. The same flag also
+  // restores keyboard focus, because requestRender re-finds the focused control
+  // by its data-settings-focus-key after the rebuild.
+  function requestBodyRender() {
+    ops.requestRender({ content: true, preserveScroll: true });
+  }
+
+  // Snapshot keys the two remote bodies render. Settings-changed broadcasts for
+  // these keys reach `applyChanges`, whose generic fallback repaints the whole
+  // tab *without* preserveScroll; claiming the change in patchInPlace() below
+  // lets this module repaint with the pane scroll intact instead.
+  const REMOTE_APPROVAL_BODY_KEYS = Object.freeze([
+    "tgApproval",
+    "feishuApproval",
+    "slackNotify",
+    "mobilePreviewEnabled",
+    "mobilePermissionPreviewEnabled",
+  ]);
+
+  function isRemoteApprovalBodyChangeSet(changes) {
+    const keys = changes && typeof changes === "object" ? Object.keys(changes) : [];
+    return keys.length > 0
+      && keys.every((key) => REMOTE_APPROVAL_BODY_KEYS.includes(key));
+  }
+
+  // Card switches survive a repaint as focus targets: requestRender looks the
+  // focused element up by this attribute after rebuilding the body.
+  function markBodyFocusTarget(element, focusKey) {
+    if (element && typeof element.setAttribute === "function") {
+      element.setAttribute("data-settings-focus-key", focusKey);
+    }
+    return element;
+  }
+
+  // The LAN card's controls are built by settings-tab-mobile.js, so this module
+  // cannot set their focus keys at creation time; label them once the card body
+  // exists, which is what a repaint needs to restore focus.
+  function markBodyFocusTargets(rootNode, prefix) {
+    const targets = rootNode && typeof rootNode.querySelectorAll === "function"
+      ? rootNode.querySelectorAll(".switch")
+      : [];
+    targets.forEach((target, index) => markBodyFocusTarget(target, `${prefix}-${index}`));
+    return rootNode;
+  }
+
   function refreshStatus({ forceRender = false } = {}) {
     if (view.statusLoading) {
       if (forceRender) view.statusForceRenderPending = true;
@@ -505,7 +553,7 @@
       const changed = updated && statusRenderKey(previousStatus) !== statusRenderKey(nextStatus);
       if (updated) view.status = result.state || null;
       if ((shouldForceRender || (updated && (!hadStatus || changed))) && isRemoteBodyVisible()) {
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
     });
   }
@@ -528,7 +576,7 @@
       const changed = updated && tokenInfoRenderKey(previous) !== tokenInfoRenderKey(next);
       if (updated) view.tokenInfo = next;
       if ((shouldForceRender || (updated && changed)) && isRemoteBodyVisible()) {
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
     });
   }
@@ -555,7 +603,7 @@
       scheduleFeishuStatusRefresh(nextStatus);
       const initialVisibleChange = !hadStatus && feishuStatusNeedsRender(nextStatus);
       if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && isRemoteBodyVisible()) {
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
     });
   }
@@ -606,7 +654,7 @@
       recomputeFeishuLookupPreflight();
       const initialVisibleChange = !previous && feishuSecretInfoNeedsRender(next);
       if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && isRemoteBodyVisible()) {
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
     });
   }
@@ -797,7 +845,7 @@
         migrationSnapshot = res.snapshot;
         if (migrationSnapshotRenderKey(migrationSnapshot) !== previousKey
           && isRemoteBodyVisible()) {
-          ops.requestRender({ content: true });
+          requestBodyRender();
         }
       }
     });
@@ -813,7 +861,7 @@
         ops.showToast(interpolate(t("telegramMigrationErrorToast"), "{code}", res.errorCode), { error: true });
       }
       refreshStatus({ forceRender: true });
-      ops.requestRender({ content: true });
+      requestBodyRender();
     });
   }
 
@@ -1024,11 +1072,14 @@
     if (mobile && typeof mobile.renderChannelBody === "function") {
       mobile.renderChannelBody(body);
     }
+    markBodyFocusTargets(body, "remote-approval-mobile-body");
+    const headerContent = mobile && typeof mobile.buildChannelHeaderRow === "function"
+      ? mobile.buildChannelHeaderRow()
+      : buildChannelHeader(t("mobileChannelName"), deriveMobileStatus(), "settings-mobile-preview-enabled-label").element;
+    markBodyFocusTargets(headerContent, "remote-approval-mobile-toggle");
     return helpers.buildCollapsibleGroup({
       id: "remote-approval.mobile",
-      headerContent: mobile && typeof mobile.buildChannelHeaderRow === "function"
-        ? mobile.buildChannelHeaderRow()
-        : buildChannelHeader(t("mobileChannelName"), deriveMobileStatus(), "settings-mobile-preview-enabled-label").element,
+      headerContent,
       // Never default-collapsed: while running the card shows the pair
       // URL/token the user needs on their phone.
       defaultCollapsed: false,
@@ -1302,7 +1353,7 @@
     });
     btn.addEventListener("click", () => {
       view.tokenEditing = true;
-      ops.requestRender({ content: true });
+      requestBodyRender();
     });
     ctrl.appendChild(btn);
     row.appendChild(ctrl);
@@ -1359,12 +1410,12 @@
         return;
       }
       view.tokenPending = true;
-      ops.requestRender({ content: true });
+      requestBodyRender();
       callCommand("telegramApproval.setToken", { token }).then((result) => {
         view.tokenPending = false;
         if (!result || result.status !== "ok") {
           ops.showToast((result && result.message) || t("telegramApprovalTokenSaveFailed"), { error: true });
-          ops.requestRender({ content: true });
+          requestBodyRender();
           return;
         }
         ops.showToast(t("telegramApprovalTokenSaved"));
@@ -1388,7 +1439,7 @@
       });
       cancelBtn.addEventListener("click", () => {
         view.tokenEditing = false;
-        ops.requestRender({ content: true });
+        requestBodyRender();
       });
       ctrl.appendChild(cancelBtn);
     }
@@ -1477,7 +1528,7 @@
     const canToggle = ready
       && !migrationRequired
       && (effectiveEnabled || migrationSnapshot);
-    return helpers.buildSwitch({
+    const control = helpers.buildSwitch({
       checked: effectiveEnabled,
       pending: view.configPending || migrationPending,
       disabled: !canToggle,
@@ -1497,18 +1548,19 @@
           return;
         }
         if (migrationSnapshot && canStartNativeFromSwitch()) {
-          ops.requestRender({ content: true });
+          requestBodyRender();
           migrationDispatch("USER_TEST_NATIVE");
           return;
         }
       },
-    }).element;
+    });
+    return markBodyFocusTarget(control.element, "remote-approval-telegram-toggle");
   }
 
   function sendTelegramTest() {
     if (view.testPending) return;
     view.testPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     callCommand("telegramApproval.test").then((result) => {
       view.testPending = false;
       if (result && result.status === "ok") {
@@ -1553,7 +1605,7 @@
         saveConfig({ ...cfg, r3DirectSendEnabled: cfg.r3DirectSendEnabled !== true }, { resetDraft: false });
       },
     });
-    ctrl.appendChild(switchControl.element);
+    ctrl.appendChild(markBodyFocusTarget(switchControl.element, "remote-approval-telegram-direct-send"));
     row.appendChild(ctrl);
     return row;
   }
@@ -1703,7 +1755,7 @@
       if (allFeishuControlsBlocked()) return;
       resetFeishuSecretDraft();
       feishuView.secretEditing = true;
-      ops.requestRender({ content: true });
+      requestBodyRender();
     });
     ctrl.appendChild(btn);
     row.appendChild(ctrl);
@@ -1807,7 +1859,7 @@
       cancelBtn.addEventListener("click", () => {
         if (allFeishuControlsBlocked()) return;
         clearFeishuSecretEditingState();
-        ops.requestRender({ content: true });
+        requestBodyRender();
       });
       ctrl.appendChild(cancelBtn);
     } else {
@@ -1819,7 +1871,7 @@
       clearBtn.addEventListener("click", () => {
         if (allFeishuControlsBlocked()) return;
         clearFeishuSecretEditingState();
-        ops.requestRender({ content: true });
+        requestBodyRender();
       });
       ctrl.appendChild(clearBtn);
     }
@@ -1936,7 +1988,7 @@
       onChange(value) {
         if (allFeishuControlsBlocked()) return false;
         setFeishuFormDraftValue("idType", value);
-        ops.requestRender({ content: true });
+        requestBodyRender();
         return true;
       },
     });
@@ -2007,7 +2059,7 @@
         feishuView.lookupResultErrorCode = "";
         feishuView.networkLookupPending = true;
         feishuView.lookupCancelPending = false;
-        ops.requestRender({ content: true });
+        requestBodyRender();
         callCommand("feishuApproval.saveApproverByEmail", {
           email: recipient.email,
         }).then((result) => {
@@ -2022,7 +2074,7 @@
               if (lookupEpoch !== feishuView.lookupEpoch) return;
               if (!refreshed) {
                 ops.showToast(tBrand("feishuApprovalPersistenceFailed"), { error: true });
-                ops.requestRender({ content: true });
+                requestBodyRender();
                 return;
               }
               resetFeishuFormDraft();
@@ -2157,7 +2209,7 @@
   function buildFeishuEnabledSwitch({ ready, statusTextId }) {
     const cfg = currentFeishuConfig();
     const blocked = feishuLookupPending() || feishuView.testPending || (!cfg.enabled && !ready);
-    return helpers.buildSwitch({
+    const control = helpers.buildSwitch({
       checked: cfg.enabled,
       pending: feishuView.configPersistencePending,
       disabled: blocked,
@@ -2168,7 +2220,8 @@
         if (allFeishuControlsBlocked()) return;
         saveFeishuConfig({ enabled: !cfg.enabled }, { resetDraft: false });
       },
-    }).element;
+    });
+    return markBodyFocusTarget(control.element, "remote-approval-feishu-toggle");
   }
 
   function feishuTestHint() {
@@ -2197,7 +2250,7 @@
   function sendFeishuTest() {
     if (feishuView.testPending) return;
     feishuView.testPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     callCommand("feishuApproval.test").then((result) => {
       feishuView.testPending = false;
       if (result && result.status === "ok") {
@@ -2273,21 +2326,21 @@
     }
     const lookupEpoch = feishuView.lookupEpoch;
     feishuView.lookupCancelPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     return callCommand("feishuApproval.cancelApproverLookup").then((result) => {
       const ok = !!(result && result.status === "ok");
       if (lookupEpoch !== feishuView.lookupEpoch) return ok;
       if (!ok) {
         feishuView.lookupCancelPending = false;
         ops.showToast(t("feishuApprovalLookupCancelFailed"), { error: true });
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
       return ok;
     }).catch(() => {
       if (lookupEpoch !== feishuView.lookupEpoch) return false;
       feishuView.lookupCancelPending = false;
       ops.showToast(t("feishuApprovalLookupCancelFailed"), { error: true });
-      ops.requestRender({ content: true });
+      requestBodyRender();
       return false;
     });
   }
@@ -2328,12 +2381,12 @@
       return Promise.resolve(false);
     }
     view.configPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     return window.settingsAPI.update("tgApproval", next).then((result) => {
       view.configPending = false;
       if (!result || result.status !== "ok") {
         ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
-        ops.requestRender({ content: true });
+        requestBodyRender();
         return false;
       }
       ops.showToast(t("telegramApprovalConfigSaved"));
@@ -2344,7 +2397,7 @@
     }).catch((err) => {
       view.configPending = false;
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-      ops.requestRender({ content: true });
+      requestBodyRender();
       return false;
     });
   }
@@ -2370,7 +2423,7 @@
       if (actionId !== "confirm") {
         feishuView.configPersistencePending = false;
         feishuView.configPersistenceKind = null;
-        ops.requestRender({ content: true });
+        requestBodyRender();
         return false;
       }
       feishuView.configPersistencePending = false;
@@ -2384,7 +2437,7 @@
     }).catch(() => {
       feishuView.configPersistencePending = false;
       feishuView.configPersistenceKind = null;
-      ops.requestRender({ content: true });
+      requestBodyRender();
       return false;
     });
   }
@@ -2396,7 +2449,7 @@
     const preserveMountedControl = options.preserveMountedControl === true;
     feishuView.configPersistencePending = true;
     feishuView.configPersistenceKind = options.kind || "ordinary";
-    if (!preserveMountedControl) ops.requestRender({ content: true });
+    if (!preserveMountedControl) requestBodyRender();
     let pending;
     try {
       pending = request();
@@ -2417,7 +2470,7 @@
         feishuView.configPersistencePending = false;
         feishuView.configPersistenceKind = null;
         ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
-        if (!preserveMountedControl) ops.requestRender({ content: true });
+        if (!preserveMountedControl) requestBodyRender();
         return false;
       }
       return refreshAuthoritativeFeishuSnapshot().then((refreshed) => {
@@ -2425,7 +2478,7 @@
         feishuView.configPersistenceKind = null;
         if (!refreshed) {
           ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
-          if (!preserveMountedControl) ops.requestRender({ content: true });
+          if (!preserveMountedControl) requestBodyRender();
           return false;
         }
         if (options.successKey !== false) {
@@ -2443,7 +2496,7 @@
       feishuView.configPersistencePending = false;
       feishuView.configPersistenceKind = null;
       ops.showToast(tBrand(options.failureKey || "feishuApprovalPersistenceFailed"), { error: true });
-      if (!preserveMountedControl) ops.requestRender({ content: true });
+      if (!preserveMountedControl) requestBodyRender();
       return false;
     });
   }
@@ -2482,16 +2535,28 @@
   }
 
   function patchInPlace(changes, context = {}) {
-    if (!changes || Object.keys(changes).length !== 1
-      || !Object.prototype.hasOwnProperty.call(changes, "feishuApproval")) return false;
-    const previous = context.previousSnapshot && context.previousSnapshot.feishuApproval;
-    const next = context.snapshot && context.snapshot.feishuApproval;
-    if (!configsMatchExceptTimeout(previous, next)) return false;
-    if (!mountedFeishuTimeoutControl
-      || !document.body.contains(mountedFeishuTimeoutControl.row)) return false;
-    mountedFeishuTimeoutControl.picker.setValue(
-      String(currentFeishuConfig().connectionTimeoutSeconds)
-    );
+    const keys = changes && typeof changes === "object" ? Object.keys(changes) : [];
+    if (keys.length === 0) return false;
+    if (keys.length === 1 && keys[0] === "feishuApproval") {
+      // Timeout-only edits are owned by the mounted picker; anything else about
+      // the Feishu config has to rebuild the card.
+      const previous = context.previousSnapshot && context.previousSnapshot.feishuApproval;
+      const next = context.snapshot && context.snapshot.feishuApproval;
+      if (configsMatchExceptTimeout(previous, next)
+        && mountedFeishuTimeoutControl
+        && document.body.contains(mountedFeishuTimeoutControl.row)) {
+        mountedFeishuTimeoutControl.picker.setValue(
+          String(currentFeishuConfig().connectionTimeoutSeconds)
+        );
+        return true;
+      }
+    }
+    if (!isRemoteApprovalBodyChangeSet(changes)) return false;
+    // The broadcast path would otherwise repaint through applyChanges without
+    // preserveScroll and bounce the pane to the top; do the rebuild here so the
+    // reading position survives. Nothing outside the remote cards depends on
+    // these keys, so a hidden body needs no repaint at all.
+    if (isRemoteBodyVisible()) requestBodyRender();
     return true;
   }
 
@@ -2628,7 +2693,7 @@
       if (updated) slackView.status = result.state || null;
       const initialVisibleChange = !hadStatus && slackStatusNeedsRender(nextStatus);
       if ((shouldForceRender || (updated && (initialVisibleChange || (hadStatus && changed)))) && isRemoteBodyVisible()) {
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
     });
   }
@@ -2656,7 +2721,7 @@
       if (updated) slackView.secretInfo = next;
       const initialVisibleChange = !previous && slackSecretInfoNeedsRender(next);
       if ((shouldForceRender || (updated && (initialVisibleChange || (previous && changed)))) && isRemoteBodyVisible()) {
-        ops.requestRender({ content: true });
+        requestBodyRender();
       }
     });
   }
@@ -2878,12 +2943,12 @@
         return;
       }
       slackView.secretPending = true;
-      ops.requestRender({ content: true });
+      requestBodyRender();
       callCommand("slackNotify.setSecrets", payload).then((result) => {
         slackView.secretPending = false;
         if (!result || result.status !== "ok") {
           ops.showToast(localizeSlackError(result), { error: true });
-          ops.requestRender({ content: true });
+          requestBodyRender();
           return;
         }
         ops.showToast(t("slackNotifySecretsSaved"));
@@ -2906,12 +2971,12 @@
   // could not be removed — or switched away from — without editing the file.
   function clearSlackSecret(field, toastKey) {
     slackView.secretPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     callCommand("slackNotify.setSecrets", { [field]: "" }).then((result) => {
       slackView.secretPending = false;
       if (!result || result.status !== "ok") {
         ops.showToast(localizeSlackError(result), { error: true });
-        ops.requestRender({ content: true });
+        requestBodyRender();
         return;
       }
       ops.showToast(t(toastKey));
@@ -2998,7 +3063,7 @@
   function buildSlackEnabledSwitch({ statusTextId }) {
     const cfg = currentSlackConfig();
     const canToggle = slackTransportConfigured() || cfg.enabled;
-    return helpers.buildSwitch({
+    const control = helpers.buildSwitch({
       checked: cfg.enabled,
       pending: slackView.configPending,
       disabled: !canToggle,
@@ -3006,7 +3071,8 @@
       ariaDescribedBy: statusTextId,
       stopPropagation: true,
       onToggle: () => saveSlackConfig({ ...cfg, enabled: !cfg.enabled }),
-    }).element;
+    });
+    return markBodyFocusTarget(control.element, "remote-approval-slack-toggle");
   }
 
   function buildSlackSwitchRow(labelKey, descKey, value, onToggle) {
@@ -3035,7 +3101,7 @@
       ariaDescribedBy: desc.id,
       onToggle: () => onToggle(!value),
     });
-    ctrl.appendChild(switchControl.element);
+    ctrl.appendChild(markBodyFocusTarget(switchControl.element, `remote-approval-slack-${labelKey}`));
     row.appendChild(ctrl);
     return row;
   }
@@ -3043,7 +3109,7 @@
   function sendSlackTest() {
     if (slackView.testPending) return;
     slackView.testPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     callCommand("slackNotify.test").then((result) => {
       slackView.testPending = false;
       if (result && result.status === "ok") {
@@ -3062,12 +3128,12 @@
       return Promise.resolve(false);
     }
     slackView.configPending = true;
-    ops.requestRender({ content: true });
+    requestBodyRender();
     return window.settingsAPI.update("slackNotify", next).then((result) => {
       slackView.configPending = false;
       if (!result || result.status !== "ok") {
         ops.showToast((result && result.message) || t("toastSaveFailed"), { error: true });
-        ops.requestRender({ content: true });
+        requestBodyRender();
         return false;
       }
       ops.showToast(t("slackNotifyConfigSaved"));
@@ -3077,7 +3143,7 @@
     }).catch((err) => {
       slackView.configPending = false;
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-      ops.requestRender({ content: true });
+      requestBodyRender();
       return false;
     });
   }
