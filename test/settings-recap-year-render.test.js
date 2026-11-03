@@ -197,6 +197,19 @@ function sampleView() {
   };
 }
 
+function sampleSharedCellView(claudeCount = 3) {
+  const data = sampleView();
+  const codex = data.days[0].rows[0];
+  codex.metrics.activityEvents = 30;
+  codex.hours[9] = 30;
+  const claude = sampleDay(data.anchorDate).rows[0];
+  claude.agentId = "claude-code";
+  claude.metrics.activityEvents = claudeCount;
+  claude.hours[9] = claudeCount;
+  data.days[0].rows.push(claude);
+  return data;
+}
+
 function createDocument() {
   const body = new FakeElement("body");
   // The Settings pane scroller: the tab binds one passive scroll listener to it
@@ -379,6 +392,77 @@ test("agent hover only rewrites the cells that actually match", async () => {
   } finally {
     touchedCells = null;
   }
+});
+
+test("agent hover replaces the shared cell depth and restores the total depth on leave", async () => {
+  const harness = mountRecapTab({ queryRecap: async () => sampleSharedCellView() });
+  await harness.settle();
+  harness.setPeriod("year");
+  await harness.settle();
+  const row = harness.content.querySelectorAll(".recap-agent-row")
+    .find((node) => node.querySelector("strong").textContent === "claude-code");
+  const cell = harness.content.querySelector(".recap-cell-activity");
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"]);
+
+  row.dispatchEvent({ type: "mouseenter" });
+  assert.equal(cell.classList.contains("recap-cell-hit"), true);
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-1"],
+    "the shared cell uses only the hovered agent's depth");
+
+  row.dispatchEvent({ type: "mouseleave" });
+  assert.equal(cell.classList.contains("recap-cell-hit"), false);
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"],
+    "leaving restores only the total depth");
+});
+
+test("switching agent rows directly keeps the shared cell depth exclusive", async () => {
+  const harness = mountRecapTab({ queryRecap: async () => sampleSharedCellView() });
+  await harness.settle();
+  harness.setPeriod("year");
+  await harness.settle();
+  const rows = harness.content.querySelectorAll(".recap-agent-row");
+  const codexRow = rows.find((node) => node.querySelector("strong").textContent === "Codex");
+  const claudeRow = rows.find((node) => node.querySelector("strong").textContent === "claude-code");
+  const cell = harness.content.querySelector(".recap-cell-activity");
+
+  codexRow.dispatchEvent({ type: "mouseenter" });
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"]);
+  claudeRow.dispatchEvent({ type: "mouseenter" });
+  assert.equal(cell.classList.contains("recap-cell-hit"), true);
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-1"],
+    "switching rows replaces the previous agent's depth");
+  codexRow.dispatchEvent({ type: "mouseenter" });
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"]);
+  codexRow.dispatchEvent({ type: "mouseleave" });
+});
+
+test("a live data refresh keeps the highlighted shared cell depth exclusive across levels", async () => {
+  let payload = sampleSharedCellView();
+  const harness = mountRecapTab({ queryRecap: async () => payload });
+  await harness.settle();
+  harness.setPeriod("year");
+  await harness.settle();
+  const initialCard = yearCard(harness);
+  const initialCells = harness.content.querySelectorAll(".recap-cell");
+  const row = harness.content.querySelectorAll(".recap-agent-row")
+    .find((node) => node.querySelector("strong").textContent === "claude-code");
+  const cell = harness.content.querySelector(".recap-cell-activity");
+  row.dispatchEvent({ type: "mouseenter" });
+  assert.equal(cell.classList.contains("recap-cell-hit"), true);
+
+  payload = sampleSharedCellView(12);
+  harness.core.tabs.recap.applyDataChanged();
+  await harness.settle();
+
+  assert.equal(yearCard(harness), initialCard);
+  assert.deepEqual(harness.content.querySelectorAll(".recap-cell"), initialCells,
+    "the live refresh patches the existing year grid cells in place");
+  assert.equal(cell.classList.contains("recap-cell-hit"), true);
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-2"],
+    "the highlighted agent's updated count replaces the total and previous depths");
+  row.dispatchEvent({ type: "mouseleave" });
+  assert.equal(cell.classList.contains("recap-cell-hit"), false);
+  assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"]);
 });
 
 test("a live data refresh waits for the settings pane to stop scrolling", async () => {

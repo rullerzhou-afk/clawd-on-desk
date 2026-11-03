@@ -1235,6 +1235,7 @@
               const match = cell.counts.find((entry) => entry.rowKey === activeKey);
               if (!match) continue;
               hitCount += 1;
+              element.classList.remove("recap-depth-1", "recap-depth-2", "recap-depth-3");
               element.classList.add("recap-cell-hit", `recap-depth-${depthOf(match.count)}`);
               element.style.setProperty("--recap-cell-color", rowColor || agentColorToken(match.agentId));
               if (view.period === "today") setTodayBarLevel(element, match.count);
