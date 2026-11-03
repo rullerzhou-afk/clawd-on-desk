@@ -181,12 +181,14 @@ function createMobileDeviceStore(options) {
     return { ...state.pairing };
   }
 
-  function createDevice(next, cid, origin, userAgent, pairCodeHash = null) {
+  function createDevice(next, cid, origin, userAgent, pairCodeHash = null, mode = null) {
     const browser = /Edg\//.test(userAgent) ? "Edge" : /Chrome\//.test(userAgent) ? "Chrome" : /Safari\//.test(userAgent) ? "Safari" : "Browser";
     const platform = /iPhone/.test(userAgent) ? "iPhone" : /iPad/.test(userAgent) ? "iPad" : /Android/.test(userAgent) ? "Android" : "Mobile";
     const device = {
       id: "d_" + crypto.randomBytes(8).toString("hex"),
-      name: `${platform} · ${browser}`,
+      // iOS home-screen PWAs report the exact same UA as Safari; the client's
+      // `mode=pwa` WS query param is the only way to tell them apart (#1299).
+      name: `${platform} · ${browser}${mode === "pwa" ? " · PWA" : ""}`,
       cid,
       origin,
       state: "pending",
