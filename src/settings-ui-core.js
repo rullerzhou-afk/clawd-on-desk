@@ -2277,6 +2277,7 @@
     return {
       render(panel, renderBody, { scrollTop } = {}) {
         if (disposed || !panel) return false;
+        hideSettingsTooltip();
         const currentRevision = ++revision;
         const focusState = getActiveSettingsFocusState();
         const scroller = document.getElementById("content");

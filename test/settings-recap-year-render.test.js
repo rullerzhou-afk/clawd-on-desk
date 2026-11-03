@@ -86,6 +86,8 @@ class FakeElement {
   }
   get textContent() { return this._textContent + this.children.map((child) => child.textContent).join(""); }
   set textContent(value) { this._textContent = value == null ? "" : String(value); this.children = []; }
+  get title() { return this.getAttribute("title") || ""; }
+  set title(value) { this.setAttribute("title", value); }
   appendChild(child) { child.parentNode = this; this.children.push(child); return child; }
   append(...children) { for (const child of children) this.appendChild(child); }
   remove() {
@@ -465,6 +467,101 @@ test("a live data refresh keeps the highlighted shared cell depth exclusive acro
   assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"]);
 });
 
+for (const period of ["year", "today"]) {
+  test(`live refresh restores current totals when an agent leaves a ${period} cell`, async () => {
+    function makePayload(removed = false) {
+      const data = sampleSharedCellView(removed ? 0 : 30);
+      const [codex, claude] = data.days[0].rows;
+      codex.metrics.activityEvents = 3;
+      codex.hours[9] = 3;
+      if (period === "today") {
+        claude.hours[10] = 12;
+        claude.metrics.activityEvents += 12;
+      } else {
+        const otherDay = sampleDay("2026-08-28");
+        otherDay.rows[0].agentId = "claude-code";
+        otherDay.rows[0].metrics.activityEvents = 12;
+        otherDay.rows[0].hours[9] = 12;
+        data.days.push(otherDay);
+      }
+      return data;
+    }
+    let payload = makePayload();
+    const harness = mountRecapTab({ queryRecap: async () => payload });
+    await harness.settle();
+    harness.setPeriod(period);
+    await harness.settle();
+    const card = yearCard(harness);
+    const key = period === "today" ? "2026-08-29T09" : "2026-08-29";
+    const cell = harness.content.querySelectorAll(".recap-cell").find((node) => node.dataset.cellKey === key);
+    const row = harness.content.querySelectorAll(".recap-agent-row")
+      .find((node) => node.querySelector("strong").textContent === "claude-code");
+    row.dispatchEvent({ type: "mouseenter" });
+    assert.equal(cell.classList.contains("recap-cell-hit"), true);
+    assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-3"]);
+
+    payload = makePayload(true);
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+
+    assert.equal(yearCard(harness), card, "the retained agent row allows an in-place refresh");
+    assert.equal(cell.classList.contains("recap-cell-hit"), false);
+    if (period === "today") {
+      assert.equal(cell.style.getPropertyValue("--recap-bar-ratio"), "0.25",
+        "the remaining 3 signals use the current maximum of 12");
+    }
+    assert.deepEqual(cell.className.match(/recap-depth-\d+/g), ["recap-depth-1"]);
+    row.dispatchEvent({ type: "mouseleave" });
+  });
+}
+
+test("live refresh removes the unavailable metric title when a count becomes supported", async () => {
+  let payload = sampleView();
+  payload.days[0].rows[0].metrics.turnsCompleted = null;
+  const harness = mountRecapTab({ queryRecap: async () => payload });
+  await harness.settle();
+  const card = yearCard(harness);
+  const count = harness.content.querySelector(".recap-agent-row").querySelector("dd");
+  assert.equal(count.textContent, "-");
+  assert.equal(count.title, "unavailable");
+  assert.equal(count.getAttribute("title"), "unavailable");
+
+  payload = sampleView();
+  harness.core.tabs.recap.applyDataChanged();
+  await harness.settle();
+
+  assert.equal(yearCard(harness), card);
+  assert.equal(count.textContent, "2");
+  assert.equal(count.title, "");
+  assert.equal(count.getAttribute("title"), undefined);
+  assert.equal(count.getAttribute("aria-label"), undefined);
+});
+
+for (const { field, period, nextDate } of [
+  { field: "anchorDate", period: "today", nextDate: "2026-08-30" },
+  { field: "startDate", period: "week", nextDate: "2026-08-24" },
+]) {
+  test(`live refresh rebuilds the card and title when ${field} changes`, async () => {
+    let payload = sampleView();
+    if (period === "week") payload.startDate = "2026-08-23";
+    const harness = mountRecapTab({ queryRecap: async () => payload });
+    await harness.settle();
+    harness.setPeriod(period);
+    await harness.settle();
+    const card = yearCard(harness);
+    const title = card.querySelector("h2").textContent;
+
+    payload = { ...payload, [field]: nextDate };
+    harness.core.tabs.recap.applyDataChanged();
+    await harness.settle();
+
+    const nextCard = yearCard(harness);
+    assert.notEqual(nextCard, card, "date boundaries require a fresh card");
+    assert.notEqual(nextCard.querySelector("h2").textContent, title);
+    assert.match(nextCard.querySelector("h2").textContent, period === "today" ? /August 30/ : /Aug 24/);
+  });
+}
+
 test("a live data refresh waits for the settings pane to stop scrolling", async () => {
   let payload = sampleView();
   let queries = 0;
@@ -508,6 +605,44 @@ test("cell hover hints are suppressed while the settings pane scrolls", async ()
   assert.equal(cell.querySelectorAll(".recap-cell-segments").length, 1,
     "a cell hovered when scrolling stops reveals its hint once the scroll settles");
   cell.dispatchEvent({ type: "mouseleave" });
+});
+
+test("Escape cancels a cell preview deferred by scrolling", async () => {
+  const harness = mountRecapTab({ queryRecap: async () => sampleView() });
+  await harness.settle();
+  const cell = harness.content.querySelector(".recap-cell-activity");
+  harness.pane.dispatchEvent({ type: "scroll" });
+  cell.dispatchEvent({ type: "mouseenter" });
+  assert.equal(harness.content.querySelectorAll(".recap-cell-peek").length, 0);
+  const event = { type: "keydown", key: "Escape", preventDefault() { this.defaultPrevented = true; } };
+  cell.dispatchEvent(event);
+
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(harness.content.querySelectorAll(".recap-cell-peek").length, 0);
+  assert.equal(harness.content.querySelectorAll(".recap-cell-segments").length, 0);
+  assert.equal(harness.content.querySelectorAll(".recap-cell-popover").length, 0);
+  assert.equal(event.defaultPrevented, true);
+  harness.core.tabs.recap.onExit();
+});
+
+test("leaving Footprints unbinds scrolling and cancels deferred refreshes and previews", async () => {
+  let queries = 0;
+  const harness = mountRecapTab({ queryRecap: async () => { queries += 1; return sampleView(); } });
+  await harness.settle();
+  const queriesAfterLoad = queries;
+  const cell = harness.content.querySelector(".recap-cell-activity");
+  assert.equal(harness.pane.eventListeners.scroll.length, 1);
+  harness.pane.dispatchEvent({ type: "scroll" });
+  harness.core.tabs.recap.applyDataChanged();
+  cell.dispatchEvent({ type: "mouseenter" });
+  harness.core.state.activeTab = "general";
+  harness.core.tabs.recap.onExit();
+
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.equal(harness.pane.eventListeners.scroll.length, 0);
+  assert.equal(queries, queriesAfterLoad);
+  assert.equal(harness.content.querySelector(".recap-cell-peek"), null);
+  assert.equal(harness.content.querySelector(".recap-cell-popover"), null);
 });
 
 test("a live data refresh on the year view patches only the changed day cell in place", async () => {

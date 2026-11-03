@@ -1952,9 +1952,11 @@ html, body {
   font-weight: 700;
   letter-spacing: 0.04em;
 }
-.agent-detail-group:has(> .agent-detail-group-rows > .row:first-child .segmented) > .agent-detail-group-label,
-.settings-detail-group:has(> .settings-detail-group-rows > .row:first-child .segmented) > .settings-detail-group-label {
-  padding-top: 17px;
+@media (width > 720px) {
+  .agent-detail-group:has(> .agent-detail-group-rows > .row:first-child .segmented) > .agent-detail-group-label,
+  .settings-detail-group:has(> .settings-detail-group-rows > .row:first-child .segmented) > .settings-detail-group-label {
+    padding-top: 17px;
+  }
 }
 .agent-detail-group-label {
   padding-right: 8px;
