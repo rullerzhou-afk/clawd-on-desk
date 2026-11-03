@@ -720,6 +720,7 @@ describe("Hook installer version compatibility", () => {
       sshRemote: true,
       remoteIdentity: secureRemoteIdentity(),
       nodeBin: "/usr/bin/node",
+      platform: "linux",
       claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
     });
 
