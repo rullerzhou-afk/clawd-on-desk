@@ -225,12 +225,20 @@ test("issue #1316: saved Windows Node detection accepts a native executable path
   assert.equal(store.profile.detectedRemoteNodeBin, "D:\\Node\\node.exe");
 });
 
-test("issue #1316: both Windows refusal hints have text in all seven Settings languages", () => {
+test("issue #1316: Windows deployment hints have text in all seven Settings languages", () => {
   require("../src/settings-i18n");
   const strings = globalThis.ClawdSettingsI18n.STRINGS;
   assert.deepEqual(Object.keys(strings), ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]);
   for (const language of Object.values(strings)) {
-    assert.ok(language.remoteSshErrWindowsRemotePending);
+    for (const key of [
+      "remoteSshWindowsPlatform", "remoteSshErrWindowsLocalClawdRunning", "remoteSshErrWindowsLocalClawdUnknown",
+      "remoteSshWindowsCodexSkipped", "remoteSshWindowsHermesSkipped", "remoteSshWindowsQuotaUnsupported",
+      "remoteSshErrWindowsProfileIsolatedUnsupported", "remoteSshErrRemoteHooksTakenOver", "remoteSshErrRemoteHooksUnverified",
+      "remoteSshErrWindowsNodeChanged", "remoteSshErrIdentityTxnPlatformMismatch", "remoteSshErrCopilotConfigBom",
+      "remoteSshErrWindowsPowerShellPath",
+    ]) assert.ok(typeof language[key] === "string" && language[key].trim(), key);
+    assert.equal(Object.hasOwn(language, "remoteSshErrWindowsRemotePending"), false);
+    assert.doesNotMatch(language.remoteSshErrWindowsCmdShell, /Git Bash/);
     assert.ok(language.remoteSshErrWindowsNodeMissing);
     assert.match(language.remoteSshErrWindowsNodeMissing, /14/);
   }
@@ -248,8 +256,6 @@ for (const [name, build] of Object.entries({
   monitorVerification: () => deploy.buildMonitorVerificationCommand(winLayout, "/usr/bin/node"),
   monitorStop: () => deploy.secureMonitorStopCommand(winLayout),
   wrapper: () => deploy.buildIsolatedWrapper(winLayout, "/usr/bin/claude", "CLAUDE_CONFIG_DIR", "C:\\Users\\remote\\.claude"),
-  health: () => runtime.buildProbeCommand(23333, "node", { profile: { ...windows, installId: "a".repeat(64) } }),
-  readiness: () => runtime.buildPersistentReadinessCommand(23333, "/usr/bin/node", { profile: windows, challenge: "a".repeat(32) }),
 })) {
   test(`issue #1316: POSIX ${name} builder rejects a Windows layout`, () => assert.throws(build, /POSIX remote layout required/));
 }

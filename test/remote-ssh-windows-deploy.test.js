@@ -230,7 +230,7 @@ for (const [label, discovered, expectedReason] of [
 ]) {
   test(`issue #1316: Windows Node resolution ${label} uses discovery instead of POSIX probes`, async () => {
     const f = recorder(() => ({ code: 0, stdout: JSON.stringify(discovered) }));
-    const result = await resolveRemoteNodeBin({ profile, spawn: f.spawn, buildSshArgs: () => ["remote.test"] });
+    const result = await resolveRemoteNodeBin({ profile, spawn: f.spawn, buildSshArgs: () => ["remote.test"], verifyCache: true });
     assert.equal(result.ok, !expectedReason);
     if (expectedReason) assert.equal(result.reason, expectedReason);
     else assert.equal(result.nodeBin, discovered.execPath);
@@ -421,4 +421,82 @@ test("issue #1316: Windows deployment rejects a POSIX snapshot home before any r
   assert.deepEqual(f.flags, []);
   assert.deepEqual(f.stages, []);
   assert.deepEqual(f.steps, []);
+});
+
+test("issue #1316: Windows deploy progress localizes platform, skipped agents and quota exactly once", async () => {
+  const f = deployment();
+  assert.equal((await deploy(f.options)).ok, true);
+  for (const [step, hint] of [
+    ["remote-shell", "remoteSshWindowsPlatform"], ["install-codex", "remoteSshWindowsCodexSkipped"],
+    ["install-hermes", "remoteSshWindowsHermesSkipped"], ["install-claude", "remoteSshWindowsQuotaUnsupported"],
+  ]) assert.equal(f.events.filter((event) => event.step === step && event.status === "ok" && event.hint === hint).length, 1, hint);
+});
+
+for (const [reason, hint] of [
+  ["local_clawd_conflict", "remoteSshErrWindowsLocalClawdRunning"],
+  ["runtime_owner_unknown", "remoteSshErrWindowsLocalClawdUnknown"],
+  ["runtime_invalid", "remoteSshErrWindowsLocalClawdUnknown"],
+  ["copilot_config_bom", "remoteSshErrCopilotConfigBom"],
+]) {
+  test(`issue #1316: Windows ${reason} reaches both failure result and progress hint`, async () => {
+    const f = deployment((call) => call.operation === "preflight" ? { code: 1, stderr: `${reason}: C:\\config` } : null);
+    const result = await deploy(f.options);
+    assert.equal(result.reason, reason);
+    assert.equal(result.hint, hint);
+    assert.equal(f.events.find((event) => event.status === "fail").hint, hint);
+  });
+}
+
+test("issue #1316: win-ops execPath exit 7 keeps ordinary refusal parsing and gets Node changed hint", async () => {
+  const f = deployment((call) => call.operation === "preflight" ? { code: 7, stderr: "Remote Node execPath changed; redeploy required\n" } : null);
+  const result = await deploy(f.options);
+  assert.equal(result.reason, "windows_node_changed");
+  assert.equal(result.hint, "remoteSshErrWindowsNodeChanged");
+});
+
+test("issue #1316: PowerShell installer path refusal gets a localized actionable hint", async () => {
+  const f = deployment((call) => call.operation === "runInstaller" ? {
+    code: 0, stdout: JSON.stringify({ ok: false, reason: "installer_failed",
+      stderrTail: 'Windows remote PowerShell hooks cannot use paths containing $, backtick or double quotes: C:\\bad$path' }),
+  } : null);
+  const result = await deploy(f.options);
+  assert.equal(result.reason, "windows_powershell_path_unsupported");
+  assert.equal(result.hint, "remoteSshErrWindowsPowerShellPath");
+  assert.equal(f.events.find((event) => event.status === "fail").hint, result.hint);
+});
+
+test("issue #1316: Windows isolated mode and unavailable Node failures include localized hints", async () => {
+  for (const [extra, hint] of [
+    [{ profile: { ...profile, runtimeMode: "profile-isolated" } }, "remoteSshErrWindowsProfileIsolatedUnsupported"],
+    [{ platformSnapshot: { ...snapshot, remoteNode: { ok: false } } }, "remoteSshErrWindowsNodeMissing"],
+  ]) {
+    const f = deployment(undefined, extra);
+    const result = await deploy(f.options);
+    assert.equal(result.hint, hint);
+    assert.equal(f.events.find((event) => event.status === "fail").hint, hint);
+  }
+});
+
+test("issue #1316: acquireLock exit 7 returns Node changed before acquiring any lease", async () => {
+  const f = deployment((call) => call.operation === "acquireLock" ? { code: 7, stderr: "Remote Node execPath changed; redeploy required" } : null);
+  const result = await deploy(f.options);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "windows_node_changed");
+  assert.equal(result.hint, "remoteSshErrWindowsNodeChanged");
+  assert.equal(result.recoveryCode, undefined);
+  assert.deepEqual(f.stages, ["acquire-attempted", "before-acquire"]);
+  assert.deepEqual(operations(f), ["acquireLock"]);
+  assert.equal(f.events.find((event) => event.step === "lock" && event.status === "fail").hint, result.hint);
+});
+
+test("issue #1316: releaseLock exit 7 still requires manual lock inspection", async () => {
+  const f = deployment((call) => call.operation === "releaseLock" ? { code: 7, stderr: "Remote Node execPath changed; redeploy required" } : null);
+  await assert.rejects(deploy(f.options), { recoveryCode: "manual_lock_inspection_required" });
+  assert.deepEqual(f.stages, ["acquire-attempted", "lock-owned"]);
+  assert.equal(f.events.some((event) => event.step === "lock-release" && event.status === "fail"), true);
+});
+
+test("issue #1316: a successful Windows deployment explicitly reports no Codex installer run", async () => {
+  const f = deployment();
+  assert.equal((await deploy(f.options)).codexHooksInstalled, false);
 });

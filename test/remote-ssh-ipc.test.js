@@ -331,16 +331,16 @@ test("issue #1316: complete local hooks allow platform discovery without duplica
   let probeCalls = 0;
   const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: rt,
     BrowserWindow: mockBrowserWindow().BrowserWindow, hooksDir: path.join(__dirname, "..", "hooks"),
-    probeRemotePlatformFn: async () => { probeCalls++; return { ok: true, remotePlatform: "win32" }; },
-    deployFn: () => assert.fail("Windows feature gate remains closed"),
+    probeRemotePlatformFn: async () => { probeCalls++; return require("../src/remote-ssh-platform").windowsPlatformFailure(); },
+    deployFn: () => assert.fail("missing Node must stop deployment"),
   });
   t.after(() => ipc.dispose());
-  assert.equal((await ipcMain.invoke("remoteSsh:deploy", "p1")).reason, "windows_remote_pending");
+  assert.equal((await ipcMain.invoke("remoteSsh:deploy", "p1")).reason, "windows_node_missing");
   assert.equal(probeCalls, 1);
   assert.equal(progress.filter((event) => event.step === "verify").length, 0);
 });
 
-test("issue #1316: real platform discovery rejects Windows before identity rotation or remote mutation", async () => {
+test("issue #1316: Windows discovery reaches identity rotation, secure deploy and the persisted Windows stamp", async () => {
   const ipcMain = mockIpcMain();
   const controller = actionBackedSettingsController([readyProfile]);
   const commands = [];
@@ -350,7 +350,15 @@ test("issue #1316: real platform discovery rejects Windows before identity rotat
   const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: mockRuntime(),
     BrowserWindow: mockBrowserWindow().BrowserWindow,
     probeRemotePlatformFn: require("../src/remote-ssh-platform").probeRemotePlatform,
-    deployFn: () => assert.fail("Windows must be gated before deploy"),
+    deployFn: async (options) => {
+      assert.equal(options.platformSnapshot.remotePlatform, "win32");
+      assert.equal(options.identityTxn.remotePlatform, "win32");
+      assert.equal(options.platformSnapshot.node.execPath, "C:\\Node\\node.exe");
+      for (const step of REMOTE_IDENTITY_STEP_NAMES) await options.deps.onIdentityStep(step, { status: "done", evidence: "verified" });
+      return { ok: true, transactionReady: true,
+        layout: require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({ remoteHome: "C:\\Users\\remote" }),
+        remoteNode: options.platformSnapshot.remoteNode };
+    },
     spawn(_tool, args) {
       const response = responses[commands.length];
       assert.ok(response);
@@ -363,15 +371,15 @@ test("issue #1316: real platform discovery rejects Windows before identity rotat
     },
   });
   const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
-  assert.equal(result.status, "error");
-  assert.equal(result.reason, "windows_remote_pending");
-  assert.equal(result.hint, "remoteSshErrWindowsRemotePending");
+  assert.equal(result.status, "ok");
   assert.equal(commands.length, 3);
   assert.equal(commands[0], "uname -s");
   assert.equal(commands[1], "ver");
   assert.equal(commands[2], require("../src/remote-ssh-node-launch").REMOTE_NODE_LAUNCH_COMMAND);
-  assert.equal(controller._commandCalls.some((call) => /beginIdentityRotation|markDeployed/.test(call.action)), false);
-  assert.equal(controller.getSnapshot().remoteSsh.profiles[0].identityTxn, undefined);
+  assert.equal(controller._commandCalls.find((call) => call.action === "remoteSsh.beginIdentityRotation").args.remotePlatform, "win32");
+  assert.equal(controller._commandCalls.find((call) => call.action === "remoteSsh.markDeployed").args.remotePlatform, "win32");
+  assert.equal(controller.getSnapshot().remoteSsh.profiles[0].remotePlatform, "win32");
+  assert.equal(controller.getSnapshot().remoteSsh.profiles[0].identityTxn.phase, "committed");
   ipc.dispose();
 });
 
@@ -380,7 +388,7 @@ test("issue #1316: Windows Node failures preserve the localized hint without rot
   const controller = actionBackedSettingsController([readyProfile]);
   const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: mockRuntime(),
     BrowserWindow: mockBrowserWindow().BrowserWindow,
-    probeRemotePlatformFn: async () => require("../src/remote-ssh-platform").windowsPlatformFailure(true),
+    probeRemotePlatformFn: async () => require("../src/remote-ssh-platform").windowsPlatformFailure(),
     deployFn: () => assert.fail("probe failure must stop deployment"),
     spawn: () => assert.fail("no remote mutation"),
   });
@@ -469,7 +477,7 @@ for (const editTiming of ["before reducer", "after reducer"]) {
 }
 
 for (const disconnectDuringProbe of [false, true]) {
-  test(`issue #1316: a serialized Windows refusal leaves monitor and reconnect paths untouched (${disconnectDuringProbe ? "disconnect" : "connected"})`, async () => {
+  test(`issue #1316: a serialized Windows Node refusal leaves monitor and reconnect paths untouched (${disconnectDuringProbe ? "disconnect" : "connected"})`, async () => {
     const ipcMain = mockIpcMain();
     const coordinator = serializedCoordinator();
     const events = [];
@@ -480,15 +488,15 @@ for (const disconnectDuringProbe of [false, true]) {
       BrowserWindow: mockBrowserWindow().BrowserWindow, transportCoordinator: coordinator,
       probeRemotePlatformFn: async () => {
         if (disconnectDuringProbe) coordinator.recordDisconnectIntent("p1");
-        return { ok: true, remotePlatform: "win32", shell: { shell: "windows-cmd" } };
+        return require("../src/remote-ssh-platform").windowsPlatformFailure();
       },
-      deployFn: () => assert.fail("Windows must be gated before deploy"),
+      deployFn: () => assert.fail("missing Node must stop deployment"),
       stopCodexMonitorFn: () => assert.fail("Windows refusal must not clean a monitor"),
       startCodexMonitorFn: async () => ({ ok: true }),
     });
     assert.equal((await ipcMain.invoke("remoteSsh:connect", { profileId: "p1" })).status, "ok");
     const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
-    assert.equal(result.reason, "windows_remote_pending");
+    assert.equal(result.reason, "windows_node_missing");
     assert.equal(events.filter((event) => event.type === "connect").length, 1);
     assert.equal(controller._commandCalls.some((call) => call.action === "remoteSsh.beginIdentityRotation"), false);
     ipc.dispose();
@@ -3549,7 +3557,7 @@ for (const enableProfileIsolation of [true, false]) {
     });
     t.after(() => ipc.dispose());
     assert.deepEqual(await ipcMain.invoke("remoteSsh:set-runtime-mode", { profileId: "p1", runtimeMode: "profile-isolated", confirmed: true }),
-      { status: "error", reason: "windows_profile_isolated_unsupported" });
+      { status: "error", reason: "windows_profile_isolated_unsupported", hint: "remoteSshErrWindowsProfileIsolatedUnsupported" });
     assert.equal(disconnects, 0); assert.equal(controller._commandCalls.length, 0);
   });
 }
@@ -3571,5 +3579,88 @@ for (const edited of [false, true]) {
     assert.equal((await ipcMain.invoke("remoteSsh:disconnect", { profileId: profile.id })).status, "ok");
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(monitorCalls, 1); assert.equal(sshCalls, 0);
+  });
+}
+
+test("issue #1316: Windows local Clawd conflict returns the same hint through IPC and progress", async (t) => {
+  const ipcMain = mockIpcMain(), rt = mockRuntime();
+  const progress = []; rt.on("progress", (event) => progress.push(event));
+  const controller = actionBackedSettingsController([readyProfile]);
+  const node = { platform: "win32", execPath: "C:\\Node\\node.exe", homedir: "C:\\Users\\remote", version: "v22.0.0" };
+  const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: rt,
+    BrowserWindow: mockBrowserWindow().BrowserWindow,
+    probeRemotePlatformFn: async () => ({ ok: true, remotePlatform: "win32", node, remoteNode: { ok: true, nodeBin: node.execPath, version: node.version } }),
+    spawn: () => assert.fail("in-memory transport only"),
+    deployFn: (options) => require("../src/remote-ssh-deploy").deploy({ ...options, deps: { ...options.deps,
+      transportWait: async (_spawn, _tool, _args, opts) => {
+        const operation = JSON.parse(opts.stdin).args.operation;
+        return operation === "preflight" ? { code: 1, stderr: "local_clawd_conflict: runtime.json" }
+          : { code: 0, stdout: JSON.stringify({ ok: true }) };
+      } } }),
+  });
+  t.after(() => ipc.dispose());
+  const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(result.reason, "local_clawd_conflict");
+  assert.equal(result.hint, "remoteSshErrWindowsLocalClawdRunning");
+  assert.equal(progress.find((event) => event.status === "fail").hint, result.hint);
+});
+
+test("issue #1316: platform transaction mismatch exposes the force-revoke hint in IPC and progress", async (t) => {
+  const ipcMain = mockIpcMain(), rt = mockRuntime();
+  const controller = mockSettingsController([readyProfile]);
+  const apply = controller.applyCommand;
+  controller.applyCommand = (action, args) => action === "remoteSsh.beginIdentityRotation"
+    ? { status: "error", reason: "identity_txn_platform_mismatch", message: "different platform" } : apply(action, args);
+  const progress = []; rt.on("progress", (event) => progress.push(event));
+  const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: rt,
+    BrowserWindow: mockBrowserWindow().BrowserWindow, deployFn: () => assert.fail("no deploy") });
+  t.after(() => ipc.dispose());
+  const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(result.hint, "remoteSshErrIdentityTxnPlatformMismatch");
+  assert.equal(progress.find((event) => event.status === "fail").hint, result.hint);
+});
+
+test("issue #1316: IPC retires the pending Windows gate", () => {
+  const source = fs.readFileSync(path.join(__dirname, "..", "src", "remote-ssh-ipc.js"), "utf8");
+  assert.doesNotMatch(source, /windows_remote_pending/);
+});
+
+for (const reason of ["windows_node_missing", "windows_node_changed", "windows_profile_isolated_unsupported",
+  "windows_platform_snapshot_required", "local_clawd_conflict", "runtime_invalid", "runtime_owner_unknown"]) {
+  for (const disconnectDuringProbe of [false, true]) {
+    test(`issue #1316: serialized ${reason} blocks resume and monitor cleanup (${disconnectDuringProbe ? "disconnect" : "connected"})`, async (t) => {
+      const ipcMain = mockIpcMain(), coordinator = serializedCoordinator(), events = [];
+      const rt = managedMockRuntime(events); rt._coordinator = coordinator;
+      const controller = mockSettingsController([{ ...readyProfile, autoStartCodexMonitor: true }]);
+      const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: rt,
+        BrowserWindow: mockBrowserWindow().BrowserWindow, transportCoordinator: coordinator,
+        probeRemotePlatformFn: async () => {
+          if (disconnectDuringProbe) coordinator.recordDisconnectIntent("p1");
+          return { ok: true, remotePlatform: "win32" };
+        },
+        deployFn: async () => ({ ok: false, reason, hint: require("../src/remote-ssh-platform").windowsFailureHint(reason) }),
+        stopCodexMonitorFn: () => assert.fail("blocked Windows deployment must not clean a monitor"),
+        startCodexMonitorFn: async () => ({ ok: true }),
+      });
+      t.after(() => ipc.dispose());
+      await ipcMain.invoke("remoteSsh:connect", { profileId: "p1" });
+      assert.equal((await ipcMain.invoke("remoteSsh:deploy", "p1")).reason, reason);
+      assert.equal(events.filter((event) => event.type === "connect").length, 1);
+    });
+  }
+}
+
+for (const installed of [false, true]) {
+  test(`issue #1316: deployment IPC forwards actual Codex installation ${installed}`, async (t) => {
+    const ipcMain = mockIpcMain();
+    const controller = mockSettingsController([readyProfile]);
+    const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: mockRuntime(),
+      BrowserWindow: mockBrowserWindow().BrowserWindow,
+      deployFn: async () => ({ ok: true, codexHooksInstalled: installed }),
+    });
+    t.after(() => ipc.dispose());
+    const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+    assert.equal(result.status, "ok");
+    assert.equal(result.codexHooksInstalled, installed);
   });
 }

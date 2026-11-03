@@ -3289,3 +3289,64 @@ test("issue #1316: POSIX platform snapshot overrides a previously deployed Windo
   assert.equal(result.layout.platform, "posix");
   assert.ok(recorded.calls[1].args.at(-1).startsWith("sh -c"));
 });
+
+test("issue #1316: POSIX node_unavailable failure never acquires a Windows hint", async () => {
+  const recorded = secureHappySpawn({ preflightFailure: { code: 1, stdout: JSON.stringify({ ok: false, reason: "node_unavailable" }) } });
+  const runtime = makeRuntimeStub();
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime, deps: deployDeps({ spawn: recorded.spawn }) });
+  assert.equal(result.reason, "node_unavailable");
+  assert.equal(result.hint, undefined);
+  assert.equal(runtime.events.find(({ payload }) => payload.status === "fail").payload.hint, null);
+});
+
+for (const mode of ["error event", "synchronous throw"]) {
+  for (const mutation of [false, true]) {
+    test(`issue #1316: deployment stdin ${mode} is contained for ${mutation ? "mutation" : "read-only"} input`, async () => {
+      const { Writable } = require("node:stream");
+      const child = makeFakeChild(); let killed = 0;
+      child.stdin = new Writable({ write(_data, _encoding, callback) {
+        callback(Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+      } });
+      if (mode === "synchronous throw") child.stdin.end = () => { throw Object.assign(new Error("stream destroyed"), { code: "ERR_STREAM_DESTROYED" }); };
+      child.kill = () => { killed++; queueMicrotask(() => child.emit("close", 0, null)); };
+      const pending = __test.spawnAndWait(() => child, "ssh", ["host", "program"], { stdin: "input", mutation });
+      if (mutation) await assert.rejects(pending, { code: "transport_unknown_result", recoveryCode: "manual_lock_inspection_required", drainVerified: true });
+      else {
+        const result = await pending;
+        assert.equal(result.code, -1);
+        assert.equal(result.stdinError, true);
+        assert.match(result.stderr, /EPIPE|ERR_STREAM_DESTROYED/);
+      }
+      assert.equal(killed, 1);
+    });
+  }
+}
+
+test("issue #1316: managed deployment stdin errors retain the mutation until close", async () => {
+  const { Writable } = require("node:stream");
+  const child = makeFakeChild(); let killed = 0, invalidated = 0;
+  child.stdin = new Writable({ write(_data, _encoding, callback) {
+    callback(Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+  } });
+  child.kill = () => { killed++; };
+  const pending = __test.spawnAndWait(null, "ssh", ["host", "mutate"], { stdin: "input", mutation: true,
+    runtime: { spawnManagedTransportChild: () => child, invalidateManagedOperation: () => { invalidated++; } } });
+  let settled = false; pending.catch(() => { settled = true; });
+  await new Promise((resolve) => setImmediate(resolve));
+  child.emit("exit", 255, null);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(killed, 0);
+  child.emit("close", 255, null);
+  await assert.rejects(pending, { code: "transport_unknown_result", recoveryCode: "manual_lock_inspection_required", drainVerified: true });
+  assert.equal(invalidated, 1);
+});
+
+for (const present of [false, true]) {
+  test(`issue #1316: successful POSIX deployment reports actual Codex installer run ${present}`, async () => {
+    const recorded = secureHappySpawn({ preflight: { ok: true, identity: true, claudePresent: false, codexPresent: present, copilotPresent: false } });
+    const result = await __test.secureDeploy({ ...secureFixture(), runtime: makeRuntimeStub(), deps: deployDeps({ spawn: recorded.spawn }) });
+    assert.equal(result.ok, true);
+    assert.equal(result.codexHooksInstalled, present);
+  });
+}

@@ -39,7 +39,7 @@ for (const [name, frame, message] of [
     let stderr = "";
     child.stderr.on("data", (chunk) => { stderr += chunk; });
     writeNodeFrame(child, frame);
-    assert.deepEqual(await closed, [1, null]);
+    assert.deepEqual(await closed, [name === "execPath mismatch" ? 7 : 1, null]);
     assert.match(stderr, message);
     assert.equal(stderr.trim().split(/\r?\n/).length, 1);
     assert.doesNotMatch(stderr, /\n\s+at /);
@@ -109,7 +109,7 @@ test("issue #1316: every operation checks execPath before executing, with Window
     const execPath = platform === "win32" ? "C:\\Node\\node.exe" : "/usr/bin/node";
     const frame = JSON.parse(buildNodeProgramFrame("effects.push('executed')", {}, execPath));
     const effects = [];
-    const run = (actual) => vm.runInNewContext(`(function(){${frame.code}})()`, { process: { platform, execPath: actual }, effects });
+    const run = (actual) => vm.runInNewContext(`(function(){${frame.code}})()`, { console: { error() {} }, process: { platform, execPath: actual, exit(code) { assert.equal(code, 7); throw new Error("execPath changed"); } }, effects });
     assert.throws(() => run(platform === "win32" ? "D:\\Other\\node.exe" : "/opt/node"), /execPath changed/);
     assert.deepEqual(effects, []);
     run(platform === "win32" ? execPath.toUpperCase() : execPath);

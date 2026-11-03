@@ -35,7 +35,7 @@
 // unchanged) and never sets the local integrationInstalled flag.
 //
 // Windows deployments require a platform snapshot and use framed native Node
-// operations. The IPC feature gate remains closed until runtime support lands.
+// operations, including native Windows health and readiness checks.
 
 const childProcess = require("child_process");
 const crypto = require("crypto");
@@ -49,8 +49,9 @@ const {
   buildRemoteNodeEvalCommand,
   discoverWindowsRemoteNode,
 } = require("./remote-ssh-node");
-const { REMOTE_NODE_LAUNCH_COMMAND } = require("./remote-ssh-node-launch");
+const { REMOTE_NODE_LAUNCH_COMMAND, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
 const { buildWindowsOperationFrame } = require("./remote-ssh-win-ops");
+const { windowsFailureHint } = require("./remote-ssh-platform");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
 const { detectRemoteShell } = require("./remote-ssh-shell-detect");
@@ -195,6 +196,7 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     let exitCode = null;
     let exitSignal = null;
     let processError = null;
+    let stdinError = null;
     let timedOut = false;
     let drainTimer = null;
     const timer = setTimeout(() => {
@@ -267,16 +269,6 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     if (child.stdout) child.stdout.on("data", (d) => { stdoutChunks.push(d); });
     if (child.stderr) child.stderr.on("data", (d) => { stderrChunks.push(d); });
 
-    if (stdin != null && child.stdin) {
-      try {
-        child.stdin.end(stdin);
-      } catch {
-        // Will surface as exit error.
-      }
-    } else if (child.stdin) {
-      try { child.stdin.end(); } catch {}
-    }
-
     child.on("error", (err) => { processError = err; });
     child.on("exit", (code, signal) => {
       exitCode = code;
@@ -314,17 +306,18 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         return;
       }
       const payload = {
-        code: exitCode === null ? code : exitCode,
+        code: stdinError ? -1 : (exitCode === null ? code : exitCode),
         signal: exitSignal === null ? signal : exitSignal,
         stdout,
-        stderr: stderr || (processError && processError.message) || "",
+        stderr: stderr || (stdinError && `${stdinError.code || "stdin_write_failed"}: ${stdinError.message}`) || (processError && processError.message) || "",
+        ...(stdinError ? { stdinError: true } : {}),
         ...(processError ? { spawnError: true } : {}),
         ...(timedOut ? { timedOut: true, drainVerified: true } : {}),
       };
       // A remote command can keep running after either kind of SSH transport
       // loses its result. The ordinary path has no coordinator context, but
       // must preserve the same lease/staging evidence as serialized transport.
-      const ambiguousMutation = mutation && (payload.timedOut === true || payload.signal != null || (
+      const ambiguousMutation = mutation && (stdinError !== null || payload.timedOut === true || payload.signal != null || (
         payload.code !== 0 && (
           payload.code === 255
           || (payload.code == null && !payload.spawnError)
@@ -357,6 +350,17 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         return;
       }
       finish(payload);
+    });
+    if (child.stdin) writeNodeFrameSafely(child, stdin, {
+      onError: (err) => {
+        if (done) return;
+        stdinError = err;
+        // Partial input cannot prove whether a remote mutation ran. Preserve
+        // managed close accounting and let the existing uncertainty fence act.
+        if (!managed) {
+          try { child.kill(); } catch {}
+        }
+      },
     });
   });
 }
@@ -1337,7 +1341,11 @@ async function runWindowsDeployOperation({ profile, spawn, runtime, layout, exec
   let detail;
   try { detail = JSON.parse(String(transport.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
   const refusal = /^([a-z][a-z0-9_]+): /m.exec(String(transport.stderr || ""));
-  const reason = (refusal && refusal[1]) || (detail && detail.reason) || "windows_operation_failed";
+  let reason = transport.code === 7 ? "windows_node_changed"
+    : (refusal && refusal[1]) || (detail && detail.reason) || "windows_operation_failed";
+  if (reason === "installer_failed" && detail && /^Windows remote PowerShell hooks cannot use paths containing \$, backtick or double quotes: /m.test(detail.stderrTail || "")) {
+    reason = "windows_powershell_path_unsupported";
+  }
   if (reason === "installer_result_unknown") throw windowsRecoveryError(runtime, reason);
   return {
     ok: transport.code === 0 && !!detail && typeof detail === "object" && !Array.isArray(detail)
@@ -1380,6 +1388,10 @@ async function acquireWindowsDeployLock(context) {
   if (result.code === 0 && result.detail && result.detail.ok === false && result.detail.reason === "lock_busy") {
     if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("before-acquire");
     return { ...result, reason: "lock_busy", message: "Another Clawd deployment owns this remote runtime; try again later." };
+  }
+  if (result.reason === "windows_node_changed") {
+    if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("before-acquire");
+    return { ...result, hint: "remoteSshErrWindowsNodeChanged" };
   }
   throw windowsRecoveryError(runtime, "lock_acquire_unknown");
 }
@@ -1503,7 +1515,8 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
         if (!installed.ok || installed.detail.verified !== true) return fail(progressStep, installed.message, installed.reason === "windows_operation_failed" ? "installer_verification_failed" : installed.reason, txnStep);
         await recordStep(txnStep, "done", `${script} settings readback verified secure managed command shape`);
       }
-      progress(progressStep, "ok", present ? null : "not applicable");
+      progress(progressStep, "ok", present ? null : "not applicable", txnStep === "installCodex" ? "remoteSshWindowsCodexSkipped"
+        : txnStep === "installClaude" ? "remoteSshWindowsQuotaUnsupported" : null);
     }
     if (!presence.claudePresent) {
       await recordStep("claudePermission", "not-applicable", "Claude config root absent before deploy; native approval remains");
@@ -1515,8 +1528,8 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
         ? "no managed PermissionRequest; Claude native approval retained" : "managed PermissionRequest URL contains transaction nonce");
     }
     await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts in phase 1");
-    progress("install-hermes", "ok", "not applicable");
-    return { ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true, isolation: null, hermes: null };
+    progress("install-hermes", "ok", "not applicable", "remoteSshWindowsHermesSkipped");
+    return { ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true, codexHooksInstalled: false, isolation: null, hermes: null };
   }, progress);
 }
 
@@ -1598,6 +1611,9 @@ async function secureDeploy({
     await onStep(name, { status, ...(evidence ? { evidence } : {}) });
   }
   async function fail(step, message, reason = null, identityStep = null, hint = null) {
+    if ((platformSnapshot ? platformSnapshot.remotePlatform : profile.remotePlatform) === "win32") {
+      hint = hint || windowsFailureHint(reason);
+    }
     const safeMessage = redactTransportDiagnostic(message, profile);
     progress(step, "fail", safeMessage, hint);
     if (identityStep) {
@@ -1615,7 +1631,7 @@ async function secureDeploy({
     ? platformSnapshot.shell
     : await detectShellFn({ profile, spawn, buildSshArgs, runtime });
   if (platformSnapshot && platformSnapshot.remotePlatform === "win32") {
-    progress("remote-shell", "ok", "Windows");
+    progress("remote-shell", "ok", "Windows", "remoteSshWindowsPlatform");
     return secureWindowsDeploy({ profile, installId, identityTxn, platformSnapshot, legacyMigrationConfirmed,
       runtime, spawn, hooksDir, leaseId, deps, progress, recordStep, fail });
   }
@@ -2234,6 +2250,7 @@ async function secureDeploy({
       layout,
       remoteNode: remoteNodeInfo,
       transactionReady: true,
+      codexHooksInstalled: componentPresence.codexPresent === true,
       isolation,
       hermes: hermesSummary,
     };

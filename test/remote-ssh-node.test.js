@@ -207,3 +207,85 @@ test("buildRemoteNodeEvalCommand keeps JavaScript opaque to a real POSIX shell",
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, literal);
 });
+
+const windowsProfile = { id: "win", host: "win-cache", remotePlatform: "win32",
+  detectedRemoteNodeBin: "C:\\Node\\node.exe", detectedRemoteNodeVersion: "v22.0.0" };
+const windowsDiscovery = { platform: "win32", execPath: windowsProfile.detectedRemoteNodeBin,
+  homedir: "C:\\Users\\remote", version: "v22.0.0" };
+
+test("issue #1316: Windows resolver uses trusted cache without SSH and verifies it on request", async () => {
+  clearRemoteNodeCache();
+  const cached = await resolveRemoteNodeBin({ profile: windowsProfile, buildSshArgs,
+    spawn: () => assert.fail("trusted cache must avoid SSH") });
+  assert.equal(cached.nodeBin, windowsProfile.detectedRemoteNodeBin);
+  const { spawn, calls } = makeRecordingSpawn([{ stdout: JSON.stringify(windowsDiscovery) }]);
+  const verified = await resolveRemoteNodeBin({ profile: windowsProfile, buildSshArgs, spawn, verifyCache: true });
+  assert.equal(verified.ok, true);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].args.at(-1), require("../src/remote-ssh-node-launch").REMOTE_NODE_LAUNCH_COMMAND);
+});
+
+test("issue #1316: Windows resolver bypasses cache explicitly and reports changed execPath at check-node", async () => {
+  clearRemoteNodeCache();
+  const { spawn, calls } = makeRecordingSpawn([{ stdout: JSON.stringify({ ...windowsDiscovery, execPath: "D:\\Node\\node.exe" }) }]);
+  const result = await resolveRemoteNodeBin({ profile: windowsProfile, buildSshArgs, spawn, useCache: false });
+  assert.equal(calls.length, 1);
+  assert.equal(result.reason, "windows_node_changed");
+  assert.equal(result.hint, "remoteSshErrWindowsNodeChanged");
+  assert.equal(result.step, "check-node");
+  assert.equal(getCachedRemoteNodeBin(windowsProfile), null);
+});
+
+for (const response of [{ code: 127 }, { stdout: JSON.stringify({ ...windowsDiscovery, version: "v12.0.0" }) }]) {
+  test(`issue #1316: Windows resolver discovery failure includes check-node (${response.code || "old version"})`, async () => {
+    clearRemoteNodeCache();
+    const { spawn } = makeRecordingSpawn([response]);
+    const result = await resolveRemoteNodeBin({ profile: windowsProfile, buildSshArgs, spawn, verifyCache: true });
+    assert.equal(result.ok, false);
+    assert.equal(result.step, "check-node");
+  });
+}
+
+test("issue #1316: Windows resolver cache comparison folds executable path case", async () => {
+  clearRemoteNodeCache();
+  require("../src/remote-ssh-node").setCachedRemoteNodeBin(windowsProfile, {
+    nodeBin: windowsProfile.detectedRemoteNodeBin.toUpperCase(), version: "v22.0.0", source: "cache",
+  });
+  const result = await resolveRemoteNodeBin({ profile: windowsProfile, buildSshArgs,
+    spawn: () => assert.fail("case-equivalent cache must not spawn SSH") });
+  assert.equal(result.ok, true);
+  assert.equal(result.nodeBin, windowsProfile.detectedRemoteNodeBin.toUpperCase());
+});
+
+test("issue #1316: Windows resolver rejects a non-string expected path even with a cached executable", async () => {
+  clearRemoteNodeCache();
+  require("../src/remote-ssh-node").setCachedRemoteNodeBin(windowsProfile, {
+    nodeBin: windowsProfile.detectedRemoteNodeBin, version: "v22.0.0", source: "cache",
+  });
+  const { spawn, calls } = makeRecordingSpawn([{ stdout: JSON.stringify(windowsDiscovery) }]);
+  const result = await resolveRemoteNodeBin({ profile: { ...windowsProfile, detectedRemoteNodeBin: 123 }, buildSshArgs, spawn });
+  assert.equal(calls.length, 1);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "windows_node_changed");
+  assert.equal(result.hint, "remoteSshErrWindowsNodeChanged");
+});
+
+for (const mode of ["error event", "synchronous throw"]) {
+  test(`issue #1316: Node discovery stdin ${mode} cannot escape the probe transport`, async () => {
+    const { Writable } = require("node:stream");
+    const { EventEmitter } = require("node:events");
+    const child = new EventEmitter(); child.stdout = new EventEmitter(); child.stderr = new EventEmitter();
+    child.stdin = new Writable({ write(_data, _encoding, callback) {
+      callback(Object.assign(new Error("broken pipe"), { code: "EPIPE" }));
+    } });
+    if (mode === "synchronous throw") child.stdin.end = () => { throw Object.assign(new Error("stream destroyed"), { code: "ERR_STREAM_DESTROYED" }); };
+    let killed = 0;
+    child.kill = () => { killed++; queueMicrotask(() => child.emit("close", 0, null)); };
+    const result = await require("../src/remote-ssh-node").runRemoteNodeFrame({ profile: windowsProfile,
+      buildSshArgs, spawn: () => child, frame: "program\n" });
+    assert.equal(result.code, -1);
+    assert.equal(result.stdinError, true);
+    assert.match(result.stderr, /EPIPE|ERR_STREAM_DESTROYED/);
+    assert.equal(killed, 1);
+  });
+}

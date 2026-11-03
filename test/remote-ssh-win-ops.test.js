@@ -311,7 +311,8 @@ test("issue #1316: a serialized Windows program checks execPath before any files
   assert.equal(frame.args.layout.platform, "win32");
   assert.throws(() => vm.runInNewContext(`(function(args){${frame.code}})(args)`, {
     args: frame.args,
-    process: { platform: "win32", execPath: "D:\\Node\\node.exe" },
+    console: { error() {} },
+    process: { platform: "win32", execPath: "D:\\Node\\node.exe", exit(code) { assert.equal(code, 7); throw new Error("execPath changed"); } },
     require: () => assert.fail("guard must run first"),
   }), /execPath changed/);
 });

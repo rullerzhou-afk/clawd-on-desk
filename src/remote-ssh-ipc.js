@@ -15,7 +15,7 @@
 
 const childProcess = require("child_process");
 const crypto = require("crypto");
-const { probeRemotePlatform, windowsPlatformFailure } = require("./remote-ssh-platform");
+const { probeRemotePlatform, windowsFailureHint } = require("./remote-ssh-platform");
 const {
   deploy,
   verifyLocalHookFiles,
@@ -329,8 +329,11 @@ function registerRemoteSshIpc(options = {}) {
         deployTargetFingerprint(requestedProfile),
         deployTargetFingerprint(latest),
       );
-      const platformBlocked = result && (result.reason === "windows_remote_pending"
-        || result.reason === "windows_node_missing");
+      const platformBlocked = result && (result.reason === "windows_node_missing"
+        || result.reason === "windows_node_changed"
+        || result.reason === "windows_profile_isolated_unsupported"
+        || result.reason === "windows_platform_snapshot_required"
+        || (result.hint && result.hint === windowsFailureHint(result.reason)));
       const shouldResume = !platformBlocked && policy && policy.resume === "if-desired"
         && !(primaryError && (primaryError.reason === "profile_changed"
           || primaryError.reason === "transport_inspection_failed"))
@@ -1197,7 +1200,7 @@ function registerRemoteSshIpc(options = {}) {
     const profile = findProfile(settingsController, id);
     if (!profile) return { status: "error", message: "profile not found" };
     if (profile.remotePlatform === "win32" && runtimeMode === "profile-isolated") {
-      return { status: "error", reason: "windows_profile_isolated_unsupported" };
+      return { status: "error", reason: "windows_profile_isolated_unsupported", hint: windowsFailureHint("windows_profile_isolated_unsupported") };
     }
     if (!profile.runtimeModeTxn
       && (profile.runtimeMode || "account-default") === runtimeMode) {
@@ -1474,9 +1477,7 @@ function registerRemoteSshIpc(options = {}) {
         || deployTargetDrift(deployTargetBeforeProbe, deployTargetFingerprint(currentTarget))) {
         return { status: "error", reason: "profile_changed", message: "SSH target changed during platform discovery; retry deployment." };
       }
-      const platformFailure = platformSnapshot.ok && platformSnapshot.remotePlatform === "win32"
-        ? windowsPlatformFailure()
-        : (!platformSnapshot.ok ? platformSnapshot : null);
+      const platformFailure = !platformSnapshot.ok ? platformSnapshot : null;
       if (platformFailure) {
         runtime.emit("progress", { profileId: profile.id, step: platformFailure.step, status: "fail", message: platformFailure.message, hint: platformFailure.hint });
         return { ...platformFailure, status: "error" };
@@ -1488,7 +1489,11 @@ function registerRemoteSshIpc(options = {}) {
       });
       if (transportContext) transportContext.assertActive();
       if (!begin || begin.status !== "ok") {
+        const hint = begin && begin.reason === "identity_txn_platform_mismatch"
+          ? windowsFailureHint(begin.reason) : null;
+        if (hint) runtime.emit("progress", { profileId: profile.id, step: "identity", status: "fail", message: begin.message, hint });
         return {
+          ...(hint ? { hint } : {}),
           status: "error",
           ...(begin && begin.reason ? { reason: begin.reason } : {}),
           message: (begin && begin.message) || "could not start secure identity transaction",
@@ -1636,7 +1641,7 @@ function registerRemoteSshIpc(options = {}) {
           }
         }
         refreshRuntimeProfile(profile.id);
-        return { status: "ok", hermes: result.hermes || null, ...(stampWarning || {}) };
+        return { status: "ok", codexHooksInstalled: result.codexHooksInstalled === true, hermes: result.hermes || null, ...(stampWarning || {}) };
       }
       return {
         status: "error",
@@ -1653,6 +1658,7 @@ function registerRemoteSshIpc(options = {}) {
         ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
         ...(err && err.recoveryCode ? { recoveryCode: err.recoveryCode } : {}),
         ...(err && err.resumeWarning ? { resumeWarning: err.resumeWarning } : {}),
+        ...(err && err.hint ? { hint: err.hint } : {}),
         message: (err && err.message) || "deploy threw",
       };
     } finally {

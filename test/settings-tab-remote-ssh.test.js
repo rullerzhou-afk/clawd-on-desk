@@ -278,3 +278,68 @@ test("settings-tab-remote-ssh.js can be evaluated without DOM (no top-level DOM 
   assert.ok(sandbox.globalThis.ClawdSettingsTabRemoteSsh, "tab module must register on globalThis");
   assert.equal(typeof sandbox.globalThis.ClawdSettingsTabRemoteSsh.init, "function");
 });
+
+function settingsStrings() {
+  const context = {};
+  vm.runInNewContext(fs.readFileSync(path.join(SRC_DIR, "settings-i18n.js"), "utf8"), context);
+  return context.ClawdSettingsI18n.STRINGS;
+}
+
+test("issue #1316: every platform mismatch hint names the exact emergency reset button", () => {
+  for (const [locale, strings] of Object.entries(settingsStrings())) {
+    assert.ok(strings.remoteSshErrIdentityTxnPlatformMismatch.includes(strings.remoteSshForceRevokeAll), locale);
+  }
+});
+
+function remoteSshTabHarness(profile, deployResult) {
+  class Element {
+    constructor(tag) {
+      this.tagName = tag; this.children = []; this.events = new Map(); this.className = "";
+      this.classList = { add: (name) => { this.className += " " + name; } };
+    }
+    appendChild(child) { this.children.push(child); return child; }
+    addEventListener(type, listener) { this.events.set(type, listener); }
+    click() { return this.events.get("click")?.({ stopPropagation() {} }); }
+  }
+  const document = { createElement: (tag) => new Element(tag) };
+  const strings = settingsStrings().en, toasts = [];
+  let statusListener;
+  const context = {
+    document, confirm: () => true,
+    window: { remoteSsh: { deploy: async () => deployResult, onStatusChanged: (listener) => { statusListener = listener; } } },
+  };
+  vm.runInNewContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8"), context);
+  const core = { state: { snapshot: { remoteSsh: { profiles: [profile] } }, activeTab: "remote-ssh" }, tabs: {},
+    helpers: { t: (key) => strings[key] || key,
+      buildButton: (options) => Object.assign(new Element("button"), options, { textContent: strings[options.labelKey] }),
+      setButtonState() {} },
+    ops: { requestRender() {}, showToast: (message) => toasts.push(message) } };
+  context.ClawdSettingsTabRemoteSsh.init(core);
+  const render = () => { const parent = new Element("main"); core.tabs["remote-ssh"].render(parent); return parent; };
+  const find = (node, predicate) => predicate(node) ? node : node.children.map((child) => find(child, predicate)).find(Boolean);
+  find(render(), (element) => element.className.split(" ").includes("remote-ssh-card")).click();
+  return { render, find, toasts, strings, pushStatus: (status) => statusListener(status) };
+}
+
+test("issue #1316: a platform mismatch with an uncommitted transaction shows the emergency reset button", () => {
+  const profile = { id: "p1", label: "Remote", host: "remote", identityTxn: { phase: "rotating" } };
+  const h = remoteSshTabHarness(profile);
+  h.pushStatus({ profileId: profile.id, status: "failed", reason: "identity_txn_platform_mismatch", hint: "remoteSshErrIdentityTxnPlatformMismatch" });
+  const button = h.find(h.render(), (element) => element.labelKey === "remoteSshForceRevokeAll");
+  assert.ok(button);
+  assert.equal(button.disabled, false);
+  assert.equal(button.textContent, h.strings.remoteSshForceRevokeAll);
+  profile.identityTxn.phase = "committed";
+  assert.equal(h.find(h.render(), (element) => element.labelKey === "remoteSshForceRevokeAll"), undefined);
+});
+
+for (const [platform, installed] of [["win32", false], ["posix", true], ["posix", false]]) {
+  test(`issue #1316: ${platform} success toast follows actual Codex installation ${installed}`, async () => {
+    const h = remoteSshTabHarness({ id: "p1", label: "Remote", host: "remote", remotePlatform: platform },
+      { status: "ok", codexHooksInstalled: installed });
+    h.find(h.render(), (element) => element.labelKey === "remoteSshDeploy").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(h.toasts.length, 1);
+    assert.equal(h.toasts[0], h.strings.remoteSshDeploySuccess + (installed ? " " + h.strings.codexHookReviewReminder : ""));
+  });
+}
