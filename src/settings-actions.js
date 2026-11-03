@@ -1588,6 +1588,7 @@ const REMOTE_SSH_TRUSTED_PROFILE_FIELDS = Object.freeze([
   "isolatedRuntime",
 ]);
 const REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS = Object.freeze([
+  "remotePlatform",
   "lastDeployedAt",
   "managedDeployTargets",
   "detectedRemoteNodeBin",
@@ -1609,10 +1610,10 @@ function preserveTrustedRemoteProfileFields(target, source) {
   }
 }
 
-function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
+function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now(), remotePlatform = "posix") {
   if (!input || typeof input !== "object") return null;
   const nodeBin = input.nodeBin || input.detectedRemoteNodeBin;
-  if (!isValidDetectedRemoteNodeBin(nodeBin)) return null;
+  if (!isValidDetectedRemoteNodeBin(nodeBin, remotePlatform)) return null;
 
   const out = {
     detectedRemoteNodeBin: nodeBin,
@@ -1635,7 +1636,7 @@ function normalizeRemoteNodeDetection(input, detectedAtFallback = Date.now()) {
 }
 
 function copyRemoteNodeDetection(target, source) {
-  if (!target || !source || !isValidDetectedRemoteNodeBin(source.detectedRemoteNodeBin)) return;
+  if (!target || !source || !isValidDetectedRemoteNodeBin(source.detectedRemoteNodeBin, target.remotePlatform || "posix")) return;
   target.detectedRemoteNodeBin = source.detectedRemoteNodeBin;
   if (isValidDetectedRemoteNodeVersion(source.detectedRemoteNodeVersion)) {
     target.detectedRemoteNodeVersion = source.detectedRemoteNodeVersion;
@@ -1738,6 +1739,7 @@ function remoteSshUpdateProfile(payload, deps) {
   const managedDeployTargets = normalizeManagedDeployTargets(prev.managedDeployTargets);
   if (managedDeployTargets.length) profile.managedDeployTargets = managedDeployTargets;
   if (drift === null) {
+    if (prev.remotePlatform !== undefined) profile.remotePlatform = prev.remotePlatform;
     if (Number.isFinite(prev.lastDeployedAt)) {
       profile.lastDeployedAt = prev.lastDeployedAt;
     }
@@ -1775,13 +1777,26 @@ function remoteSshBeginIdentityRotation(payload, deps) {
   const idx = next.profiles.findIndex((profile) => profile.id === id);
   if (idx === -1) return { status: "error", message: "remoteSsh.beginIdentityRotation: profile not found" };
   const current = next.profiles[idx];
+  const remotePlatform = payload.remotePlatform || "posix";
+  if (payload.expectedTarget && (
+    deployTargetDrift(deployTargetFingerprint(current), deployTargetFingerprint(payload.expectedTarget))
+    || (current.sshTransportMode || "auto") !== (payload.expectedTarget.sshTransportMode || "auto")
+  )) {
+    return { status: "error", reason: "profile_changed", message: "SSH target changed during platform discovery; retry deployment." };
+  }
+  if (remotePlatform !== "posix" && remotePlatform !== "win32") {
+    return { status: "error", message: "remoteSsh.beginIdentityRotation: invalid remote platform" };
+  }
   if (current.identityTxn && current.identityTxn.phase !== "committed") {
+    if ((current.identityTxn.remotePlatform || "posix") !== remotePlatform) {
+      return { status: "error", reason: "identity_txn_platform_mismatch", message: "The pending identity transaction belongs to another remote platform; resolve it before deploying." };
+    }
     return { status: "ok", noop: true, identityTxn: current.identityTxn };
   }
   // Randomness and time sources are main-process authority. Never accept
   // renderer-supplied options here, even though the IPC boundary also blocks
   // this internal command.
-  const txn = createIdentityTxn(current);
+  const txn = createIdentityTxn(current, { remotePlatform });
   next.profiles[idx] = { ...current, identityTxn: txn };
   return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
 }
@@ -2003,12 +2018,17 @@ function remoteSshMarkDeployed(payload, deps) {
     return { status: "ok", noop: true, reason: "profile_deleted" };
   }
   const current = next.profiles[idx];
-  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt);
+  const remotePlatform = payload.remotePlatform || "posix";
+  if (remotePlatform !== "posix" && remotePlatform !== "win32") {
+    return { status: "error", message: "remoteSsh.markDeployed: invalid remote platform" };
+  }
+  const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt, remotePlatform);
   const targetAtDeployStart = expectedTarget && typeof expectedTarget === "object"
     ? expectedTarget
     : current;
   const ownedTarget = sanitizeManagedDeployTarget({
     ...deployTargetFingerprint(targetAtDeployStart),
+    ...(payload.remotePlatform !== undefined ? { remotePlatform } : {}),
     ...(payload.sshTransportHint ? { sshTransportHint: payload.sshTransportHint } : {}),
     ...(remoteNode || {}),
     ...(isValidInstallId(payload.installId) && typeof payload.remoteHome === "string"
@@ -2057,6 +2077,7 @@ function remoteSshMarkDeployed(payload, deps) {
   // survive.
   const updatedProfile = {
     ...current,
+    ...(payload.remotePlatform !== undefined ? { remotePlatform } : {}),
     lastDeployedAt: deployedAt,
     managedDeployTargets: ownedTargets,
   };
@@ -2096,16 +2117,16 @@ function remoteSshMarkRemoteNode(payload, deps) {
   if (typeof id !== "string" || !id) {
     return { status: "error", message: "remoteSsh.markRemoteNode.id must be a non-empty string" };
   }
-  const remoteNode = normalizeRemoteNodeDetection(payload);
-  if (!remoteNode) {
-    return { status: "error", message: "remoteSsh.markRemoteNode.nodeBin must be an absolute POSIX path" };
-  }
   const next = _remoteSshSnapshot(deps);
   const idx = next.profiles.findIndex((p) => p.id === id);
+  const current = idx === -1 ? null : next.profiles[idx];
+  const remoteNode = normalizeRemoteNodeDetection(payload, Date.now(), (current && current.remotePlatform) || "posix");
+  if (!remoteNode) {
+    return { status: "error", message: `remoteSsh.markRemoteNode.nodeBin must be an absolute ${current && current.remotePlatform === "win32" ? "Windows" : "POSIX"} path` };
+  }
   if (idx === -1) {
     return { status: "ok", noop: true, reason: "profile_deleted" };
   }
-  const current = next.profiles[idx];
   if (expectedTarget && typeof expectedTarget === "object") {
     const drift = deployTargetDrift(
       deployTargetFingerprint(current),

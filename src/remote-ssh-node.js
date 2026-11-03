@@ -11,6 +11,8 @@
 const childProcess = require("child_process");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const { decodeShellBytes } = require("./remote-ssh-decode");
+const { isWindowsAbsolutePath } = require("./remote-ssh-layout");
+const { REMOTE_NODE_LAUNCH_COMMAND } = require("./remote-ssh-node-launch");
 
 const NODE_PROBE_TIMEOUT_MS = 60000;
 const NODE_PROBE_SENTINEL = "__CLAWD_REMOTE_NODE_PROBE__";
@@ -247,8 +249,10 @@ function isSupportedRemoteNodeVersion(value) {
   return Number.isInteger(major) && major >= MIN_REMOTE_NODE_MAJOR;
 }
 
-function isValidRemoteNodeBin(value) {
+function isValidRemoteNodeBin(value, platform = "posix") {
+  if (platform === "win32") return isWindowsAbsolutePath(value);
   return typeof value === "string"
+    && platform === "posix"
     && value.startsWith("/")
     && !/[\x00-\x1f\x7f]/.test(value);
 }
@@ -259,6 +263,7 @@ function remoteNodeCacheKey(profile) {
     host: profile.host || "",
     port: Number.isInteger(profile.port) ? profile.port : 22,
     identityFile: profile.identityFile || "",
+    ...(profile.remotePlatform === "win32" ? { remotePlatform: "win32" } : {}),
   });
 }
 
@@ -267,7 +272,7 @@ const REMOTE_NODE_CACHE_INVALID = { invalid: true };
 
 function getProfileRemoteNodeBin(profile) {
   if (!profile || typeof profile !== "object") return null;
-  if (!isValidRemoteNodeBin(profile.detectedRemoteNodeBin)) return null;
+  if (!isValidRemoteNodeBin(profile.detectedRemoteNodeBin, profile.remotePlatform || "posix")) return null;
   if (!isSupportedRemoteNodeVersion(profile.detectedRemoteNodeVersion)) return null;
   const out = {
     nodeBin: profile.detectedRemoteNodeBin,
@@ -300,7 +305,7 @@ function getCachedRemoteNodeBin(profile) {
 
 function setCachedRemoteNodeBin(profile, result) {
   const key = remoteNodeCacheKey(profile);
-  if (!key || !result || !isValidRemoteNodeBin(result.nodeBin)) return;
+  if (!key || !result || !isValidRemoteNodeBin(result.nodeBin, profile.remotePlatform || "posix")) return;
   if (!isSupportedRemoteNodeVersion(result.version)) return;
   remoteNodeCache.set(key, {
     nodeBin: result.nodeBin,
@@ -433,6 +438,12 @@ function formatExit(r) {
   return `code ${r.code == null ? "?" : r.code}`;
 }
 
+function runRemoteNodeFrame({ profile, spawn = childProcess.spawn, buildSshArgs, runtime, frame, timeoutMs }) {
+  return spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([REMOTE_NODE_LAUNCH_COMMAND]), {
+    runtime, stdin: frame, timeoutMs, role: "node-program",
+  });
+}
+
 module.exports = {
   NODE_PROBE_TIMEOUT_MS,
   NODE_PROBE_SENTINEL,
@@ -449,4 +460,6 @@ module.exports = {
   resolveRemoteNodeBin,
   buildRemoteHookNodeCommand,
   buildRemoteNodeEvalCommand,
+  runRemoteNodeFrame,
+  runRemoteNodeCommand: spawnAndWait,
 };

@@ -1,0 +1,82 @@
+"use strict";
+
+// Read-only deployment discovery. Recognized POSIX kernels retain the existing
+// shell/Node discovery path; ambiguous shells must rule out native Windows Node
+// before a deployment can acquire a lease or persist a new identity.
+const { detectRemoteShell } = require("./remote-ssh-shell-detect");
+const {
+  runRemoteNodeFrame,
+  runRemoteNodeCommand,
+  resolveRemoteNodeBin,
+  buildRemoteNodeEvalCommand,
+  isSupportedRemoteNodeVersion,
+  isValidRemoteNodeBin,
+} = require("./remote-ssh-node");
+const { buildNodeDiscoveryFrame } = require("./remote-ssh-node-launch");
+const { isValidRemoteHome } = require("./remote-ssh-profile");
+
+const POSIX_KERNEL_RE = /^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX)$/i;
+const WINDOWS_ENVIRONMENT_RE = /^(MINGW|MSYS|CYGWIN)/i;
+
+function windowsPlatformFailure(nodeMissing = false) {
+  return {
+    ok: false,
+    step: "remote-shell",
+    reason: nodeMissing ? "windows_node_missing" : "windows_remote_pending",
+    hint: nodeMissing ? "remoteSshErrWindowsNodeMissing" : "remoteSshErrWindowsRemotePending",
+    message: nodeMissing
+      ? "Node.js was not found on remote Windows (Node.js 14+ must be on PATH)."
+      : "Windows remote host support is coming soon.",
+  };
+}
+
+function parsePlatformProbe(stdout) {
+  try {
+    const value = JSON.parse(String(stdout).trim().split(/\r?\n/).at(-1));
+    const remotePlatform = value.platform === "win32" ? "win32" : "posix";
+    if (typeof value.platform !== "string" || !value.platform
+      || !isSupportedRemoteNodeVersion(value.version)
+      || !isValidRemoteNodeBin(value.execPath, remotePlatform)
+      || !isValidRemoteHome(value.homedir, remotePlatform)) return null;
+    return { remotePlatform, node: value };
+  } catch {
+    return null;
+  }
+}
+
+async function probeRemotePlatform(options) {
+  const { profile, spawn, buildSshArgs, runtime, deps = {} } = options;
+  const shell = await (deps.detectRemoteShell || detectRemoteShell)({ profile, spawn, buildSshArgs, runtime });
+  if (shell && shell.shell === "posix" && POSIX_KERNEL_RE.test(shell.os)) {
+    return { ok: true, remotePlatform: "posix", shell };
+  }
+  const knownWindows = !!(shell && (shell.shell === "windows-cmd" || WINDOWS_ENVIRONMENT_RE.test(shell.os)));
+  const result = await runRemoteNodeFrame({ ...options, frame: buildNodeDiscoveryFrame() });
+  const parsed = result.code === 0 ? parsePlatformProbe(result.stdout) : null;
+  // Non-win32 Node in MINGW/MSYS/CYGWIN intentionally keeps the old POSIX behavior.
+  if (parsed) return {
+    ok: true, ...parsed, shell,
+    remoteNode: { ok: true, nodeBin: parsed.node.execPath, version: parsed.node.version, source: "platform-probe" },
+  };
+  if (knownWindows) return windowsPlatformFailure(true);
+
+  // Keep login-shell discovery for custom POSIX environments whose PATH does
+  // not contain Node. A /c/... executable can still be native Windows Node.
+  const resolved = await (deps.resolveRemoteNodeBin || resolveRemoteNodeBin)({
+    profile, spawn, buildSshArgs, runtime, verifyCache: true,
+  });
+  if (!resolved.ok) return { ...resolved, ok: false, step: "check-node" };
+  const fallback = await (deps.spawnAndWait || runRemoteNodeCommand)(
+    spawn, "ssh", buildSshArgs(profile).concat([
+      buildRemoteNodeEvalCommand(resolved.nodeBin, "console.log(process.platform)"),
+    ]), { runtime },
+  );
+  const platform = String(fallback.stdout || "").trim();
+  if (fallback.code !== 0 || !/^[a-z][a-z0-9]*$/.test(platform)) {
+    return { ok: false, step: "check-node", message: "Remote Node platform could not be verified." };
+  }
+  if (platform === "win32") return windowsPlatformFailure();
+  return { ok: true, remotePlatform: "posix", shell, remoteNode: resolved };
+}
+
+module.exports = { probeRemotePlatform, parsePlatformProbe, windowsPlatformFailure };

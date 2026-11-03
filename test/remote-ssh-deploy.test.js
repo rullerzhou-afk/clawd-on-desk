@@ -374,6 +374,7 @@ test("secure deploy lock contention exits before every live mutation", async () 
 test("known lock contention restores the managed stage, while an ambiguous acquire quarantines", async () => {
   const fixture = secureFixture();
   const layout = {
+    platform: "posix",
     deployLockDir: "/home/remote/.clawd/deploy.lock",
     runtimeKey: fixture.profile.runtimeKey,
     layoutVersion: fixture.profile.layoutVersion,
@@ -461,6 +462,7 @@ test("verified deploy-lock release resets the managed lock stage", async () => {
   const pending = __test.releaseDeployLock({
     profile: secureFixture().profile,
     layout: {
+      platform: "posix",
       deployLockDir: "/home/remote/.clawd/deploy.lock",
       runtimeKey: "account-default",
       layoutVersion: 1,
@@ -493,6 +495,7 @@ test("deploy-lock release close 255 is a recovery error, never success", async (
   const pending = __test.releaseDeployLock({
     profile: secureFixture().profile,
     layout: {
+      platform: "posix",
       deployLockDir: "/home/remote/.clawd/deploy.lock",
       runtimeKey: "account-default",
       layoutVersion: 1,
@@ -900,6 +903,43 @@ function deployDeps(extra = {}) {
     ...extra,
   };
 }
+
+test("issue #1316: secure deployment exposes the Windows gate hint before running any command", async () => {
+  const runtime = makeRuntimeStub();
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime, platformSnapshot: {
+    ok: true, remotePlatform: "win32", shell: { shell: "windows-cmd", os: "windows" },
+  }, deps: deployDeps({ spawn: () => assert.fail("Windows deployment is closed") }) });
+  assert.equal(result.hint, "remoteSshErrWindowsRemotePending");
+  assert.equal(result.reason, "windows_remote_pending");
+  assert.equal(runtime.events.at(-1).payload.hint, result.hint);
+});
+
+test("issue #1316: direct unknown-shell deployment rejects native Windows Node before taking a lock", async () => {
+  const recorder = secureHappySpawn({ responses: { 2: { code: 0, stdout: "win32\n" } } });
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime: makeRuntimeStub(), deps: deployDeps({
+    spawn: recorder.spawn, detectRemoteShell: async () => ({ shell: "unknown" }),
+  }) });
+  assert.equal(result.hint, "remoteSshErrWindowsRemotePending");
+  assert.equal(recorder.calls.length, 3);
+  assert.equal(recorder.calls.some((call) => lastArg(call).startsWith("umask")), false);
+});
+
+test("issue #1316: ambiguous-shell deployment uses the Node from its trusted platform snapshot", async () => {
+  const recorder = makeRecordingSpawn((child, meta) => {
+    const command = String(meta.args.at(-1));
+    const response = command.startsWith("printf")
+      ? { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/remote\n" }
+      : { code: 73, stdout: "other-owner" };
+    queueMicrotask(() => { child.stdout.emit("data", Buffer.from(response.stdout)); child.emit("close", response.code, null); });
+  });
+  const result = await __test.secureDeploy({ ...secureFixture(), runtime: makeRuntimeStub(), platformSnapshot: {
+    ok: true, remotePlatform: "posix", shell: { shell: "unknown" },
+    remoteNode: { ok: true, nodeBin: "/opt/probed/node", version: "v20.0.0", source: "platform-probe" },
+  }, deps: deployDeps({ spawn: recorder.spawn, detectRemoteShell: () => assert.fail("snapshot must be reused") }) });
+  assert.equal(result.reason, "lock_busy");
+  assert.equal(recorder.calls.length, 2);
+  assert.equal(recorder.calls.some((call) => lastArg(call).startsWith("sh -c")), false);
+});
 
 function lastArg(call) {
   return String(call.args.at(-1));
@@ -1750,6 +1790,7 @@ function localEnableHarness({ agents = { hermes: { integrationInstalled: false, 
     commandCalls,
     agents: () => state.agents,
     register: (deployResult) => require("../src/remote-ssh-ipc").registerRemoteSshIpc({
+      probeRemotePlatformFn: async () => ({ ok: true, remotePlatform: "posix", shell: { shell: "posix", os: "Linux" } }),
       ipcMain,
       settingsController,
       remoteSshRuntime: runtime,

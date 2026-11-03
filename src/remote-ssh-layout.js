@@ -11,6 +11,9 @@ const RUNTIME_KEY_RE = /^[a-zA-Z0-9_-]{1,64}$/;
 const CONTROL_CHARS_RE = /[\x00-\x1f\x7f]/;
 
 function assertRemoteHome(remoteHome) {
+  if (isWindowsAbsolutePath(remoteHome)
+    && path.win32.normalize(remoteHome) === remoteHome
+    && remoteHome !== path.win32.parse(remoteHome).root) return;
   if (typeof remoteHome !== "string"
     || remoteHome.length === 0
     || CONTROL_CHARS_RE.test(remoteHome)
@@ -19,6 +22,37 @@ function assertRemoteHome(remoteHome) {
     || remoteHome === "/") {
     throw new TypeError("remoteHome must be a normalized absolute POSIX home path");
   }
+}
+
+function isWindowsAbsolutePath(value) {
+  return typeof value === "string"
+    && /^[a-zA-Z]:\\/.test(value)
+    && !CONTROL_CHARS_RE.test(value)
+    && !/[<>"|?*]/.test(value)
+    && !value.slice(2).includes(":");
+}
+
+function assertPosixRemoteLayout(layout) {
+  if (!layout || layout.platform !== "posix") {
+    throw new TypeError("POSIX remote layout required");
+  }
+}
+
+function toRemoteSftpPath(nativePath) {
+  return isWindowsAbsolutePath(nativePath)
+    ? `/${nativePath.replace(/\\/g, "/")}`
+    : nativePath;
+}
+
+function remoteLayoutDirectories(layout) {
+  return [
+    layout.claudeHooksDir,
+    ...(layout.platform === "posix" ? [layout.codexHome] : []),
+    layout.copilotHome,
+    layout.clawdStateDir,
+    ...(layout.binDir ? [layout.binDir] : []),
+    ...(layout.wrapperEvidenceDir ? [layout.wrapperEvidenceDir] : []),
+  ];
 }
 
 function assertRuntimeKey(runtimeKey) {
@@ -50,27 +84,29 @@ function normalizeRemoteRuntimeIdentity({ runtimeMode, runtimeKey } = {}) {
 
 function resolveRemoteRuntimeLayout({ runtimeMode, runtimeKey, remoteHome } = {}) {
   assertRemoteHome(remoteHome);
+  const platform = isWindowsAbsolutePath(remoteHome) ? "win32" : "posix";
+  const remotePath = platform === "win32" ? path.win32 : path.posix;
   const identity = normalizeRemoteRuntimeIdentity({ runtimeMode, runtimeKey });
   const isolated = identity.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED;
   const runtimeRoot = isolated
-    ? path.posix.join(remoteHome, ".clawd", "profiles", identity.runtimeKey)
+    ? remotePath.join(remoteHome, ".clawd", "profiles", identity.runtimeKey)
     : remoteHome;
   const claudeConfigDir = isolated
-    ? path.posix.join(runtimeRoot, "claude")
-    : path.posix.join(remoteHome, ".claude");
-  const claudeHooksDir = path.posix.join(claudeConfigDir, "hooks");
+    ? remotePath.join(runtimeRoot, "claude")
+    : remotePath.join(remoteHome, ".claude");
+  const claudeHooksDir = remotePath.join(claudeConfigDir, "hooks");
   const codexHome = isolated
-    ? path.posix.join(runtimeRoot, "codex")
-    : path.posix.join(remoteHome, ".codex");
+    ? remotePath.join(runtimeRoot, "codex")
+    : remotePath.join(remoteHome, ".codex");
   const copilotHome = isolated
-    ? path.posix.join(runtimeRoot, "copilot")
-    : path.posix.join(remoteHome, ".copilot");
+    ? remotePath.join(runtimeRoot, "copilot")
+    : remotePath.join(remoteHome, ".copilot");
   const clawdStateDir = isolated
-    ? path.posix.join(runtimeRoot, "clawd")
-    : path.posix.join(remoteHome, ".clawd");
-  const binDir = isolated ? path.posix.join(runtimeRoot, "bin") : null;
+    ? remotePath.join(runtimeRoot, "clawd")
+    : remotePath.join(remoteHome, ".clawd");
+  const binDir = isolated ? remotePath.join(runtimeRoot, "bin") : null;
   const wrapperEvidenceDir = isolated
-    ? path.posix.join(clawdStateDir, "wrapper-evidence")
+    ? remotePath.join(clawdStateDir, "wrapper-evidence")
     : null;
 
   const layout = {
@@ -81,37 +117,40 @@ function resolveRemoteRuntimeLayout({ runtimeMode, runtimeKey, remoteHome } = {}
     runtimeRoot,
     claudeConfigDir,
     claudeHooksDir,
-    claudeSettingsFile: path.posix.join(claudeConfigDir, "settings.json"),
+    claudeSettingsFile: remotePath.join(claudeConfigDir, "settings.json"),
     codexHome,
-    codexSessionsDir: path.posix.join(codexHome, "sessions"),
+    codexSessionsDir: remotePath.join(codexHome, "sessions"),
     copilotHome,
     clawdStateDir,
     binDir,
     wrapperEvidenceDir,
-    bootstrapOwnerFile: isolated ? path.posix.join(clawdStateDir, "bootstrap-owner.json") : null,
-    claudeWrapperFile: isolated ? path.posix.join(binDir, "claude") : null,
-    codexWrapperFile: isolated ? path.posix.join(binDir, "codex") : null,
-    copilotWrapperFile: isolated ? path.posix.join(binDir, "copilot") : null,
-    claudeWrapperEvidenceFile: isolated ? path.posix.join(wrapperEvidenceDir, "claude.used") : null,
-    codexWrapperEvidenceFile: isolated ? path.posix.join(wrapperEvidenceDir, "codex.used") : null,
-    copilotWrapperEvidenceFile: isolated ? path.posix.join(wrapperEvidenceDir, "copilot.used") : null,
-    identityFile: path.posix.join(claudeHooksDir, "clawd-remote.json"),
-    secureMarkerFile: path.posix.join(claudeHooksDir, "clawd-ssh-secure-v1"),
-    hostPrefixFile: path.posix.join(claudeHooksDir, "clawd-host-prefix"),
-    statuslineSidecarFile: path.posix.join(claudeHooksDir, "clawd-statusline-chain.json"),
-    lastLogFile: path.posix.join(clawdStateDir, "remote-last-error.log"),
+    bootstrapOwnerFile: isolated ? remotePath.join(clawdStateDir, "bootstrap-owner.json") : null,
+    claudeWrapperFile: isolated ? remotePath.join(binDir, "claude") : null,
+    codexWrapperFile: isolated ? remotePath.join(binDir, "codex") : null,
+    copilotWrapperFile: isolated ? remotePath.join(binDir, "copilot") : null,
+    claudeWrapperEvidenceFile: isolated ? remotePath.join(wrapperEvidenceDir, "claude.used") : null,
+    codexWrapperEvidenceFile: isolated ? remotePath.join(wrapperEvidenceDir, "codex.used") : null,
+    copilotWrapperEvidenceFile: isolated ? remotePath.join(wrapperEvidenceDir, "copilot.used") : null,
+    identityFile: remotePath.join(claudeHooksDir, "clawd-remote.json"),
+    secureMarkerFile: remotePath.join(claudeHooksDir, "clawd-ssh-secure-v1"),
+    hostPrefixFile: remotePath.join(claudeHooksDir, "clawd-host-prefix"),
+    statuslineSidecarFile: remotePath.join(claudeHooksDir, "clawd-statusline-chain.json"),
+    lastLogFile: remotePath.join(clawdStateDir, "remote-last-error.log"),
     // profile-isolated roots are bootstrapped under the old layout's lease
     // before the mode switch is persisted. Deploy itself therefore never has
     // to create a lock parent before acquiring this runtime-local lease.
     deployLockDir: isolated
-      ? path.posix.join(clawdStateDir, "remote-deploy.lock")
-      : path.posix.join(remoteHome, ".clawd-remote-deploy-account-default.lock"),
-    deployStagingDir: path.posix.join(clawdStateDir, "remote-deploy-staging"),
-    monitorPidFile: path.posix.join(clawdStateDir, "codex-monitor.pid"),
+      ? remotePath.join(clawdStateDir, "remote-deploy.lock")
+      : remotePath.join(remoteHome, ".clawd-remote-deploy-account-default.lock"),
+    deployStagingDir: remotePath.join(clawdStateDir, "remote-deploy-staging"),
+    monitorPidFile: remotePath.join(clawdStateDir, "codex-monitor.pid"),
     legacyMonitorPidFile: isolated
       ? null
-      : path.posix.join(remoteHome, ".clawd-codex-monitor.pid"),
+      : remotePath.join(remoteHome, ".clawd-codex-monitor.pid"),
   };
+  // Keep the enumerable POSIX layout contract stable for existing consumers.
+  // Spread or a JSON round trip drops platform; the POSIX assertion rejects it.
+  Object.defineProperty(layout, "platform", { value: platform });
   return Object.freeze(layout);
 }
 
@@ -141,4 +180,8 @@ module.exports = {
   normalizeRemoteRuntimeIdentity,
   resolveRemoteRuntimeLayout,
   collectRemoteLayoutPathSet,
+  isWindowsAbsolutePath,
+  assertPosixRemoteLayout,
+  toRemoteSftpPath,
+  remoteLayoutDirectories,
 };
