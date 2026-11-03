@@ -827,6 +827,51 @@ describe("state-session-snapshot builder", () => {
     }
   });
 
+  it("issue #1001: keeps pane targets focusable after a Wayland session snapshot", () => {
+    const saved = { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP };
+    process.env.XDG_SESSION_TYPE = "wayland";
+    process.env.XDG_CURRENT_DESKTOP = "GNOME";
+    try {
+      const sessions = new Map([
+        ["tmux-socket", session("working", { sourcePid: 123, tmuxSocket: "/tmp/tmux-1000/default" })],
+        ["tmux-client", session("working", { sourcePid: 124, tmuxClient: "/dev/pts/1" })],
+        ["herdr", session("working", { sourcePid: 125, herdrPaneId: "w1:p1" })],
+        ["editor", session("working", { sourcePid: 126, editor: "code" })],
+        ["plain", session("working", { sourcePid: 127 })],
+        ["bad-herdr", session("working", { sourcePid: 128, herdrPaneId: "--help:x" })],
+        ["remote", session("working", { sourcePid: 129, tmuxSocket: "/tmp/remote-tmux", host: "remote-box" })],
+        ["no-pid", session("working", { tmuxSocket: "/tmp/no-pid-tmux" })],
+        ["headless", session("working", { sourcePid: 130, tmuxClient: "/dev/pts/2", headless: true })],
+        ["sleeping", session("sleeping", { sourcePid: 131, herdrPaneId: "w1:p2" })],
+      ]);
+      for (const options of [{ focusHostPlatform: "linux", osPlatform: "win32" }, { osPlatform: "linux" }]) {
+        const snapshot = buildSessionSnapshot(sessions, options);
+        assert.deepStrictEqual(getFocusableLocalHudSessionIds(snapshot, { osPlatform: "linux" }).sort(), [
+          "editor", "herdr", "tmux-client", "tmux-socket",
+        ]);
+        const byId = new Map(snapshot.sessions.map((entry) => [entry.id, entry]));
+        for (const id of ["tmux-socket", "tmux-client", "herdr", "editor"]) {
+          assert.strictEqual(byId.get(id).canFocus, true, id);
+          assert.strictEqual(byId.get(id).hasPaneFocusTarget, true, id);
+        }
+        for (const id of ["plain", "bad-herdr"]) {
+          assert.strictEqual(byId.get(id).canFocus, false, id);
+          assert.strictEqual(byId.get(id).hasPaneFocusTarget, false, id);
+        }
+        for (const entry of snapshot.sessions) {
+          for (const field of ["tmuxSocket", "tmuxClient", "herdrPaneId"]) {
+            assert.strictEqual(Object.hasOwn(entry, field), false, `${entry.id}: ${field}`);
+          }
+        }
+      }
+    } finally {
+      for (const [key, value] of Object.entries(saved)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
+  });
+
   it("offers the terminal jump for a herdr-hosted session with a Desktop originator (#1139)", () => {
     const snapshot = buildSessionSnapshot(new Map([
       ["codex:019e115a-4df2-7ed0-b90e-8e6345aca777", session("working", {

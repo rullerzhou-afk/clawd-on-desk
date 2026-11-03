@@ -2438,6 +2438,40 @@ function activateKwinWindow(pid, captionPrefix, callback) {
   });
 }
 
+function focusX11Window(request, onDone) {
+  const { sourcePid } = request;
+  // Linux: try wmctrl (lookup by PID), then xdotool.
+  // Missing tools fail quietly so hooks never block the app, but the outcome
+  // is logged: on a desktop neither tool can see, nothing else would tell.
+  const finish = (reason) => {
+    logFocusResult(`branch=linux-x11 reason=${reason}`);
+    if (onDone) onDone();
+  };
+  const tryXdoTool = () => {
+    execFile("xdotool", ["search", "--pid", String(sourcePid), "windowactivate", "--sync"], {
+      timeout: 1200,
+    }, (xdoErr) => {
+      if (!xdoErr) return finish("xdotool-activated");
+      finish(xdoErr.code === "ENOENT" ? "no-window-tool" : "no-window-found");
+    });
+  };
+  execFile("wmctrl", ["-lp"], { timeout: 1000 }, (err, stdout) => {
+    if (err || !stdout) return tryXdoTool();
+    const lines = String(stdout).split(/\r?\n/);
+    const match = lines.find((line) => {
+      const parts = line.trim().split(/\s+/);
+      return parts.length >= 3 && Number(parts[2]) === Number(sourcePid);
+    });
+    if (!match) return tryXdoTool();
+    const winId = match.trim().split(/\s+/)[0];
+    if (!winId) return tryXdoTool();
+    execFile("wmctrl", ["-i", "-a", winId], { timeout: 1000 }, (activateErr) => {
+      if (activateErr) return tryXdoTool();
+      finish("wmctrl-activated");
+    });
+  });
+}
+
 // Selects the Konsole tab first, so the raised window already shows it and its
 // caption can pick the right window. Other terminals are raised by source PID.
 function focusKdeWaylandWindow(request, onDone) {
@@ -2446,6 +2480,8 @@ function focusKdeWaylandWindow(request, onDone) {
   selectKonsoleTab(pids, (konsole) => {
     activateKwinWindow(konsole.konsolePid || request.sourcePid, konsole.caption, (raiseReason) => {
       logFocusResult(`branch=linux-kwin reason=${raiseReason} konsole=${konsole.reason}`);
+      // KWin only confirms execution, not a window match, so submission alone does not trigger a retry.
+      if (raiseReason !== "kwin-activate-requested") return focusX11Window(request, onDone);
       if (onDone) onDone();
     });
   });
@@ -2496,36 +2532,7 @@ function focusTerminalWindowLegacy(request, onDone) {
       focusKdeWaylandWindow(request, onDone);
       return true;
     }
-    // Linux: try wmctrl (lookup by PID), then xdotool.
-    // Missing tools fail quietly so hooks never block the app, but the outcome
-    // is logged: on a desktop neither tool can see, nothing else would tell.
-    const finish = (reason) => {
-      logFocusResult(`branch=linux-x11 reason=${reason}`);
-      if (onDone) onDone();
-    };
-    const tryXdoTool = () => {
-      execFile("xdotool", ["search", "--pid", String(sourcePid), "windowactivate", "--sync"], {
-        timeout: 1200,
-      }, (xdoErr) => {
-        if (!xdoErr) return finish("xdotool-activated");
-        finish(xdoErr.code === "ENOENT" ? "no-window-tool" : "no-window-found");
-      });
-    };
-    execFile("wmctrl", ["-lp"], { timeout: 1000 }, (err, stdout) => {
-      if (err || !stdout) return tryXdoTool();
-      const lines = String(stdout).split(/\r?\n/);
-      const match = lines.find((line) => {
-        const parts = line.trim().split(/\s+/);
-        return parts.length >= 3 && Number(parts[2]) === Number(sourcePid);
-      });
-      if (!match) return tryXdoTool();
-      const winId = match.trim().split(/\s+/)[0];
-      if (!winId) return tryXdoTool();
-      execFile("wmctrl", ["-i", "-a", winId], { timeout: 1000 }, (activateErr) => {
-        if (activateErr) return tryXdoTool();
-        finish("wmctrl-activated");
-      });
-    });
+    focusX11Window(request, onDone);
     return true;
   }
 

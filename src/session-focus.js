@@ -62,22 +62,26 @@ function hasSupportedHerdrPaneTarget(entry, options = {}) {
   return osPlatform === "darwin" || osPlatform === "linux";
 }
 
-// wmctrl and xdotool only see X11 windows, and src/focus.js covers KDE Plasma
-// through KWin scripting. On any other Wayland desktop a native terminal window
-// cannot be raised at all (#1001).
+// wmctrl and xdotool only see X11 windows. KWin scripting requires Plasma 6's
+// /Scripting/Script<id> path and windowList()/activeWindow API; other Wayland
+// desktops and older Plasma versions cannot raise native terminal windows (#1001).
 function isKdeWaylandSession(env = process.env) {
   return env.XDG_SESSION_TYPE === "wayland"
-    && String(env.XDG_CURRENT_DESKTOP || "").split(":").some((name) => name.toUpperCase() === "KDE");
+    && String(env.XDG_CURRENT_DESKTOP || "").split(":").some((name) => name.toUpperCase() === "KDE")
+    && /^\d+$/.test(env.KDE_SESSION_VERSION || "")
+    && Number(env.KDE_SESSION_VERSION) >= 6;
 }
 
 function canRaiseLinuxTerminalWindow(env = process.env) {
   return env.XDG_SESSION_TYPE !== "wayland" || isKdeWaylandSession(env);
 }
 
-// A tmux pane or an editor terminal tab can still be selected when the window
+// A terminal pane or an editor terminal tab can still be selected when the window
 // itself cannot be raised.
-function hasLinuxTabTarget(entry) {
-  return !!(entry.tmuxSocket || entry.tmuxClient || entry.editor);
+function hasLinuxTabTarget(entry, options = {}) {
+  return !!(entry && (entry.hasPaneFocusTarget === true
+    || entry.tmuxSocket || entry.tmuxClient || entry.editor
+    || hasSupportedHerdrPaneTarget(entry, options)));
 }
 
 function getSessionFocusTarget(entry, options = {}) {
@@ -121,7 +125,7 @@ function getSessionFocusTarget(entry, options = {}) {
   if (entry.sourcePid) {
     if (normalizeOsPlatform(options) === "linux"
       && !canRaiseLinuxTerminalWindow(options.env || process.env)
-      && !hasLinuxTabTarget(entry)) {
+      && !hasLinuxTabTarget(entry, options)) {
       return { canFocus: false, type: null, url: null, reason: "linux-wayland-window-raise" };
     }
     return { canFocus: true, type: "terminal", url: null };
@@ -204,6 +208,7 @@ module.exports = {
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  hasLinuxTabTarget,
   isDshDesktopSession,
   isFocusableLocalHudSession,
   isKdeWaylandSession,

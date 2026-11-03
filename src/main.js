@@ -2848,7 +2848,7 @@ function focusDashboardSession(sessionId, options = {}) {
   if (focusEntry.platform === "webui") {
     focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
-    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
+    focusLog(`focus result branch=none reason=${focusTarget.reason || "no-source-pid"} source=${requestSource} sid=${id}`);
   }
   return false;
 }

@@ -4,6 +4,7 @@
 const { describe, it, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert");
 const fs = require("fs");
+const Module = require("module");
 const { spawn } = require("child_process");
 const { loadFocusWithMock } = require("./helpers/load-focus-with-mock");
 
@@ -58,10 +59,15 @@ async function waitForLog(logs, pattern) {
   assert.fail(`no log line matching ${pattern} in:\n${logs.join("\n")}`);
 }
 
-function withSessionEnv(sessionType, desktop) {
-  const saved = { XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE, XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP };
+function withSessionEnv(sessionType, desktop, version = "6") {
+  const saved = {
+    XDG_SESSION_TYPE: process.env.XDG_SESSION_TYPE,
+    XDG_CURRENT_DESKTOP: process.env.XDG_CURRENT_DESKTOP,
+    KDE_SESSION_VERSION: process.env.KDE_SESSION_VERSION,
+  };
   process.env.XDG_SESSION_TYPE = sessionType;
   process.env.XDG_CURRENT_DESKTOP = desktop;
+  process.env.KDE_SESSION_VERSION = version;
   return () => {
     for (const [key, value] of Object.entries(saved)) {
       if (value === undefined) delete process.env[key];
@@ -101,7 +107,9 @@ describe("KDE Plasma Wayland focus", () => {
     return child;
   }
 
-  it("selects the Konsole tab, then raises its window through a KWin script", async () => {
+  it("selects the Konsole tab, then raises its window through a KWin script", {
+    skip: process.platform !== "linux" ? "reads /proc/<pid>/environ of a real child process" : false,
+  }, async () => {
     const shell = konsoleShell();
     const konsolePid = process.pid;
     const { mock, calls, scripts } = mockExecFile(KONSOLE_REPLIES(konsolePid));
@@ -141,7 +149,9 @@ describe("KDE Plasma Wayland focus", () => {
     }
   });
 
-  it("ignores Konsole variables leaked to a process Konsole does not own", async () => {
+  it("ignores Konsole variables leaked to a process Konsole does not own", {
+    skip: process.platform !== "linux" ? "reads /proc/<pid>/environ of a real child process" : false,
+  }, async () => {
     // e.g. an IDE launched from a Konsole tab: its terminals inherit the variables.
     const shell = konsoleShell();
     const { mock, calls, scripts } = mockExecFile(KONSOLE_REPLIES(999999));
@@ -178,9 +188,47 @@ describe("KDE Plasma Wayland focus", () => {
     }
   });
 
-  it("logs when KWin refuses the script", async () => {
+  it("falls back to X11 when the KWin script cannot be written", async (t) => {
+    t.mock.method(fs, "writeFile", (file, data, encoding, cb) => cb(new Error("write failed")));
+    const { mock, calls } = mockExecFile({ xdotool: { stdout: "" } });
+    // Expose the callback-taking entry only in this test's module instance.
+    const focusPath = require.resolve("../src/focus");
+    const compile = Module.prototype._compile;
+    const expose = t.mock.method(Module.prototype, "_compile", function (source, filename) {
+      if (filename === focusPath) {
+        source = source.replace("  __test: {", "  __test: {\n    focusTerminalWindowLegacy,");
+      }
+      return compile.call(this, source, filename);
+    });
+    const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
+    expose.mock.restore();
+    const logs = [];
+    try {
+      const focus = initFocus({ focusLog: (msg) => logs.push(msg) });
+      let doneCount = 0;
+      focus.__test.focusTerminalWindowLegacy({ sourcePid: 4321, pidChain: [4321] }, () => {
+        assert.match(logs.at(-1), /branch=linux-x11 reason=xdotool-activated/);
+        doneCount++;
+      });
+
+      const line = await waitForLog(logs, /branch=linux-kwin/);
+      assert.match(line, /reason=kwin-script-write-failed/);
+      assert.match(await waitForLog(logs, /branch=linux-x11/), /reason=xdotool-activated/);
+      assert.deepStrictEqual(calls.slice(-2), [
+        { cmd: "wmctrl", args: ["-lp"] },
+        { cmd: "xdotool", args: ["search", "--pid", "4321", "windowactivate", "--sync"] },
+      ]);
+      assert.ok(!calls.some((call) => call.cmd === "gdbus"));
+      assert.strictEqual(doneCount, 1);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("falls back to X11 when KWin refuses the script", async () => {
     const replies = KONSOLE_REPLIES(1);
     replies["org.kde.kwin.Scripting.loadScript"] = { stdout: "(-1,)\n" };
+    replies.xdotool = { stdout: "" };
     const { mock, calls } = mockExecFile(replies);
     const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
     const logs = [];
@@ -190,6 +238,11 @@ describe("KDE Plasma Wayland focus", () => {
 
       const line = await waitForLog(logs, /branch=linux-kwin/);
       assert.match(line, /reason=kwin-script-load-failed/);
+      assert.match(await waitForLog(logs, /branch=linux-x11/), /reason=xdotool-activated/);
+      assert.deepStrictEqual(calls.slice(-2), [
+        { cmd: "wmctrl", args: ["-lp"] },
+        { cmd: "xdotool", args: ["search", "--pid", "4321", "windowactivate", "--sync"] },
+      ]);
       assert.ok(!gdbusMethods(calls).includes("org.kde.kwin.Script.run"));
       const scriptPath = gdbusCall(calls, "org.kde.kwin.Scripting.loadScript").args[8];
       await new Promise((resolve) => setTimeout(resolve, 20));
@@ -199,8 +252,32 @@ describe("KDE Plasma Wayland focus", () => {
     }
   });
 
-  it("logs when gdbus is not installed", async () => {
-    const { mock } = mockExecFile({});
+  it("falls back to X11 when the KWin script cannot run", async () => {
+    const replies = KONSOLE_REPLIES(1);
+    replies["org.kde.kwin.Script.run"] = { err: new Error("run failed") };
+    replies.xdotool = { stdout: "" };
+    const { mock, calls } = mockExecFile(replies);
+    const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
+    const logs = [];
+    try {
+      const focus = initFocus({ focusLog: (msg) => logs.push(msg) });
+      focus.focusTerminalWindow({ sourcePid: 4321, pidChain: [4321] });
+
+      const line = await waitForLog(logs, /branch=linux-kwin/);
+      assert.match(line, /reason=kwin-script-run-failed/);
+      assert.match(await waitForLog(logs, /branch=linux-x11/), /reason=xdotool-activated/);
+      assert.deepStrictEqual(calls.slice(-2), [
+        { cmd: "wmctrl", args: ["-lp"] },
+        { cmd: "xdotool", args: ["search", "--pid", "4321", "windowactivate", "--sync"] },
+      ]);
+      assert.ok(gdbusMethods(calls).includes("org.kde.kwin.Scripting.unloadScript"));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("falls back to X11 when gdbus is not installed", async () => {
+    const { mock, calls } = mockExecFile({});
     const { initFocus, cleanup } = loadFocusWithMock(mock, { platform: "linux" });
     const logs = [];
     try {
@@ -209,6 +286,11 @@ describe("KDE Plasma Wayland focus", () => {
 
       const line = await waitForLog(logs, /branch=linux-kwin/);
       assert.match(line, /reason=kwin-script-load-failed konsole=no-konsole-session/);
+      assert.match(await waitForLog(logs, /branch=linux-x11/), /reason=no-window-tool/);
+      assert.deepStrictEqual(calls.slice(-2), [
+        { cmd: "wmctrl", args: ["-lp"] },
+        { cmd: "xdotool", args: ["search", "--pid", "4321", "windowactivate", "--sync"] },
+      ]);
     } finally {
       cleanup();
     }
@@ -278,5 +360,61 @@ describe("gdbus and KWin script helpers", () => {
     const script = helpers.buildKwinActivateScript(42, "\"; workspace.activeWindow = null; \"");
     assert.doesNotThrow(() => new Function("workspace", script));
     assert.match(script, /const captionPrefix = "\\"; workspace\.activeWindow = null; \\"";/);
+  });
+
+  it("selects a normal window with the requested PID after unrelated windows", () => {
+    const target = { pid: 42, normalWindow: true, caption: "terminal" };
+    const workspace = {
+      windowList: () => [
+        { pid: 99, normalWindow: true, caption: "other terminal" },
+        { pid: 42, normalWindow: false, caption: "dialog" },
+        target,
+      ],
+      activeWindow: null,
+    };
+    new Function("workspace", helpers.buildKwinActivateScript(42, ""))(workspace);
+    assert.strictEqual(workspace.activeWindow, target);
+  });
+
+  it("selects the same-PID window whose caption starts with the requested prefix", () => {
+    const target = { pid: 42, normalWindow: true, caption: "project : claude — Konsole" };
+    const workspace = {
+      windowList: () => [
+        { pid: 42, normalWindow: true, caption: "other — project : claude — Konsole" },
+        { pid: 42, normalWindow: true, caption: "other : claude — Konsole" },
+        target,
+      ],
+      activeWindow: null,
+    };
+    new Function("workspace", helpers.buildKwinActivateScript(42, "project : claude"))(workspace);
+    assert.strictEqual(workspace.activeWindow, target);
+  });
+
+  it("selects the first same-PID window when no caption prefix matches", () => {
+    const first = { pid: 42, normalWindow: true, caption: "first terminal" };
+    const workspace = {
+      windowList: () => [first, { pid: 42, normalWindow: true, caption: "second terminal" }],
+      activeWindow: null,
+    };
+    new Function("workspace", helpers.buildKwinActivateScript(42, "missing title"))(workspace);
+    assert.strictEqual(workspace.activeWindow, first);
+  });
+
+  it("restores a minimized target window before activating it", () => {
+    const target = { pid: 42, normalWindow: true, minimized: true };
+    const workspace = { windowList: () => [target], activeWindow: null };
+    new Function("workspace", helpers.buildKwinActivateScript(42, ""))(workspace);
+    assert.strictEqual(target.minimized, false);
+    assert.strictEqual(workspace.activeWindow, target);
+  });
+
+  it("keeps the active window when no normal window has the requested PID", () => {
+    const previous = { pid: 99, normalWindow: true };
+    const workspace = {
+      windowList: () => [previous, { pid: 42, normalWindow: false }],
+      activeWindow: previous,
+    };
+    new Function("workspace", helpers.buildKwinActivateScript(42, ""))(workspace);
+    assert.strictEqual(workspace.activeWindow, previous);
   });
 });
