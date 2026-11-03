@@ -205,6 +205,18 @@ function createMobileDeviceStore(options) {
     return device;
   }
 
+  function renameDevice(id, name) {
+    if (typeof id !== "string" || !id || typeof name !== "string" || !name) return null;
+    const current = state.devices.find((d) => d.id === id);
+    if (!current || current.name === name) return null;
+    return commit((next) => {
+      const device = next.devices.find((d) => d.id === id);
+      if (!device) return null;
+      device.name = name;
+      return device;
+    });
+  }
+
   function invalidateLegacy() {
     const next = { token: crypto.randomBytes(16).toString("hex"), previous: null, graceUntil: null, rotatedAt: now(), rotationPending: false };
     try { write(writeToken, tokenPath, next); }
@@ -228,7 +240,7 @@ function createMobileDeviceStore(options) {
     acceptsLegacy: (token) => typeof token === "string" && legacyHashes.has(hash(token)),
     isPaused: () => paused,
     recordSeen: (id) => lastSeen.set(id, now()),
-    commit, createDevice, getPairing, refreshPairCode, invalidateLegacy, retryPersistence,
+    commit, createDevice, renameDevice, getPairing, refreshPairCode, invalidateLegacy, retryPersistence,
   };
 }
 

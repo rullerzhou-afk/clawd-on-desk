@@ -579,6 +579,14 @@ function initMobilePreviewServer(ctx) {
       const mode = url.searchParams.get("mode") === "pwa" ? "pwa" : null;
       rotationDevice = migrateLegacy(cid, req.headers["user-agent"] || "", mode);
     }
+    // Devices paired before the mode param existed keep an unsuffixed name;
+    // the first standalone reconnect renames them in place so revoke + re-pair
+    // is not required (#1299).
+    if (auth.kind === "device" && auth.device
+        && url.searchParams.get("mode") === "pwa"
+        && !auth.device.name.endsWith(" · PWA")) {
+      store.renameDevice(auth.device.id, auth.device.name + " · PWA");
+    }
 
     sendInitialSnapshots(ws);
     startHeartbeat();

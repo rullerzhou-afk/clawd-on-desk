@@ -173,6 +173,33 @@ test("home-screen PWAs get a distinguishing name suffix via the mode param (#129
   assert.equal(legacyPwa.server.listDevices()[0].name, "iPhone · Safari · PWA");
 });
 
+test("a standalone reconnect renames pre-mode devices in place (#1299)", async (t) => {
+  const f = await fixture(t);
+  // Paired before the suffix existed: no mode param, plain name.
+  const socket = f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const token = socket.rotation().newToken;
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  socket.close(1000);
+
+  // First standalone reconnect fixes the name without revoking or re-pairing.
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+
+  // Further standalone reconnects are a no-op: no extra write lands.
+  const before = fs.readFileSync(f.devicesPath, "utf8");
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+  assert.equal(fs.readFileSync(f.devicesPath, "utf8"), before);
+
+  // A regular Safari reconnect never renames.
+  const plain = await fixture(t);
+  const plainSocket = plain.connect({ pair: plain.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const plainToken = plainSocket.rotation().newToken;
+  plainSocket.close(1000);
+  plain.connect({ token: plainToken, proto: "2", cid: cid(1) });
+  assert.equal(plain.server.listDevices()[0].name, "iPhone · Safari");
+});
+
 test("legacy activity is false on fresh install, true on upgrade, false after revocation", async (t) => {
   const fresh = await fixture(t, { missingToken: true });
   assert.equal(fresh.server.isLegacyActive(), false);
