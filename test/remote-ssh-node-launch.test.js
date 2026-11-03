@@ -118,3 +118,13 @@ test("issue #1316: every operation checks execPath before executing, with Window
   }
   assert.throws(() => buildNodeProgramFrame("", {}, undefined), /probed Node execPath/);
 });
+
+test("issue #1316: loader reports a thrown string as one stderr line", async (t) => {
+  const child = launch(t);
+  const closed = once(child, "close");
+  let stderr = "";
+  child.stderr.on("data", (chunk) => { stderr += chunk; });
+  writeNodeFrame(child, buildNodeProgramFrame('throw "boom"', {}, process.execPath));
+  assert.deepEqual(await closed, [1, null]);
+  assert.equal(stderr, "boom\n");
+});

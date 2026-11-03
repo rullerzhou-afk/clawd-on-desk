@@ -1673,3 +1673,119 @@ describe("attachStdinDiag edge cases", () => {
     assert.deepStrictEqual(body.stdin_diag, { bytes: 30, timed_out: false, duration_ms: 2 });
   });
 });
+
+describe("issue #1316: explicit remote hook execution", () => {
+  function runHook(t, mode) {
+    const { spawnSync } = require("node:child_process");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-remote-flag-"));
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    const hooksDir = path.join(dir, "hooks");
+    fs.cpSync(path.resolve(__dirname, "../hooks"), hooksDir, { recursive: true });
+    const identity = {
+      version: 2, layoutVersion: 1, runtimeKey: "remote-a", profileId: "profile-a",
+      installId: "a".repeat(64), remotePort: 23334, routingNonce: "b".repeat(32), deployedAt: 1,
+    };
+    if (!["identity-missing", "identity-and-marker-missing", "local"].includes(mode)) {
+      fs.writeFileSync(path.join(hooksDir, "clawd-remote.json"), mode === "identity-corrupt" ? "{bad" : JSON.stringify(identity));
+    }
+    if (!["marker-missing", "identity-and-marker-missing", "local"].includes(mode)) {
+      fs.writeFileSync(path.join(hooksDir, "clawd-ssh-secure-v1"), mode === "marker-corrupt" ? "foreign" : "clawd-ssh-secure-v1");
+    }
+    fs.writeFileSync(path.join(hooksDir, "clawd-host-prefix"), "remote-host");
+    const capturePath = path.join(dir, "capture.js");
+    const capturesPath = path.join(dir, "captures.json");
+    const attemptsPath = path.join(dir, "attempts.json");
+    fs.writeFileSync(capturePath, `
+      const fs = require('fs');
+      const calls = [];
+      require(${JSON.stringify(path.join(hooksDir, "session-history.js"))}).recordSessionHistoryFromStateBody =
+        (_body, options) => calls.push({ helper: 'history', options });
+      require(${JSON.stringify(path.join(hooksDir, "session-recovery-lease.js"))}).updateRecoveryLeaseFromStateBody =
+        (_body, options) => calls.push({ helper: 'lease', options });
+      require(${JSON.stringify(path.join(hooksDir, "shared-process.js"))}).createPidResolver =
+        () => () => { calls.push({ helper: 'resolve' }); return {}; };
+      process.on('exit', () => fs.writeFileSync(${JSON.stringify(capturesPath)}, JSON.stringify(calls)));
+    `);
+    const env = { ...process.env };
+    for (const key of Object.keys(env)) if (key.startsWith("CLAWD_") || key === "NODE_OPTIONS") delete env[key];
+    Object.assign(env, {
+      HOME: dir, USERPROFILE: dir, CLAWD_POST_OUT: attemptsPath, CLAWD_POST_RECORDER_SUCCEED: "1",
+      CLAWD_RECORD_RUNTIME_READS: "1", GROK_HOOK_EVENT: "",
+    });
+    if (mode !== "local") {
+      // These valid-looking inherited paths must never override the flag's colocated paths.
+      const foreignDir = path.join(dir, "foreign");
+      fs.mkdirSync(foreignDir);
+      fs.writeFileSync(path.join(foreignDir, "identity.json"), JSON.stringify({ ...identity, remotePort: 23335 }));
+      Object.assign(env, {
+        CLAWD_REMOTE_IDENTITY_PATH: path.join(foreignDir, "identity.json"),
+        CLAWD_SSH_SECURE_MARKER_PATH: path.join(foreignDir, "marker"),
+        CLAWD_HOST_PREFIX_PATH: path.join(foreignDir, "host"),
+        CLAWD_REMOTE_LAST_LOG_PATH: path.join(foreignDir, "error.log"),
+      });
+    }
+    if (mode === "env-remote") {
+      Object.assign(env, {
+        CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1",
+        CLAWD_REMOTE_IDENTITY_PATH: path.join(hooksDir, "clawd-remote.json"),
+        CLAWD_SSH_SECURE_MARKER_PATH: path.join(hooksDir, "clawd-ssh-secure-v1"),
+        CLAWD_HOST_PREFIX_PATH: path.join(hooksDir, "clawd-host-prefix"),
+      });
+    }
+    const result = spawnSync(process.execPath, [
+      "--require", path.resolve(__dirname, "helpers/hook-post-recorder.js"),
+      "--require", capturePath, path.join(hooksDir, "clawd-hook.js"), "SessionStart",
+      ...(["local", "env-remote"].includes(mode) ? [] : ["--clawd-ssh-remote"]),
+    ], { env, input: JSON.stringify({ session_id: "remote-session", cwd: "C:\\Users\\test\\project" }), encoding: "utf8", timeout: 10000 });
+    assert.strictEqual(result.status, 0, result.stderr);
+    assert.strictEqual(result.stdout, "");
+    assert.strictEqual(result.stderr, "");
+    return {
+      dir, attempts: JSON.parse(fs.readFileSync(attemptsPath, "utf8")),
+      calls: JSON.parse(fs.readFileSync(capturesPath, "utf8")),
+    };
+  }
+
+  it("issue #1316: independent remote flag uses colocated secure identity and remote persistence options", (t) => {
+    const { attempts, calls } = runHook(t, "valid");
+    assert.strictEqual(attempts.length, 1);
+    assert.strictEqual(attempts[0].kind, "request");
+    assert.strictEqual(attempts[0].port, 23334);
+    assert.strictEqual(attempts[0].headers["x-clawd-routing-nonce"], "b".repeat(32));
+    assert.strictEqual(JSON.parse(attempts[0].body).host, "remote-host");
+    assert.deepStrictEqual(calls.map((call) => call.helper), ["lease", "history"]);
+    for (const call of calls) {
+      assert.strictEqual(call.options.remote, true);
+      assert.strictEqual(typeof call.options.eventAt, "number");
+    }
+  });
+
+  for (const mode of ["identity-missing", "identity-corrupt", "marker-missing", "marker-corrupt", "identity-and-marker-missing"]) {
+    it(`issue #1316: remote flag with ${mode} makes zero HTTP or local discovery attempts`, (t) => {
+      const { dir, attempts, calls } = runHook(t, mode);
+      assert.deepStrictEqual(attempts, []);
+      assert.deepStrictEqual(calls.map((call) => call.helper), ["lease", "history"]);
+      const log = fs.readFileSync(path.join(dir, ".clawd", "remote-last-error.log"), "utf8");
+      assert.match(log, /identity-(?:unreadable|invalid)\n$/);
+      assert.strictEqual(fs.existsSync(path.join(dir, "foreign", "error.log")), false);
+    });
+  }
+
+  it("issue #1316: remote env keeps secure routing and remote persistence without the flag", (t) => {
+    const { attempts, calls } = runHook(t, "env-remote");
+    assert.strictEqual(attempts.length, 1);
+    assert.strictEqual(attempts[0].port, 23334);
+    assert.strictEqual(attempts[0].headers["x-clawd-routing-nonce"], "b".repeat(32));
+    assert.deepStrictEqual(calls.map((call) => call.helper), ["lease", "history"]);
+    for (const call of calls) assert.strictEqual(call.options.remote, true);
+  });
+
+  it("issue #1316: local invocation keeps persistence options and local discovery", (t) => {
+    const { attempts, calls } = runHook(t, "local");
+    assert.ok(attempts.length > 0);
+    assert.ok(calls.some((call) => call.helper === "resolve"));
+    for (const call of calls.filter((call) => call.options)) {
+      assert.deepStrictEqual(Object.keys(call.options), ["eventAt"]);
+    }
+  });
+});

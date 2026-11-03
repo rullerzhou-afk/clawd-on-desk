@@ -24,6 +24,7 @@ const {
   postPermissionToRunningServer,
   readHostPrefix,
   applyWslSourceFields,
+  isRemoteHookRuntime,
 } = require("./server-config");
 const { createPidResolver, readStdinJson, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 
@@ -303,7 +304,7 @@ function buildPermissionBody(payload, resolve, options = {}) {
   };
   if (cwd) body.cwd = cwd;
 
-  if (process.env.CLAWD_REMOTE) {
+  if (isRemoteHookRuntime()) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
     applyWslSourceFields(body, { remote: true });
@@ -396,7 +397,7 @@ function buildStateBody(event, payload, resolve, options = {}) {
     readCopilotSessionTitle(sessionId);
   if (sessionTitle) body.session_title = sessionTitle;
 
-  if (process.env.CLAWD_REMOTE) {
+  if (isRemoteHookRuntime()) {
     const readHost = options.readHostPrefix || readHostPrefix;
     body.host = readHost();
     applyWslSourceFields(body, { remote: true });
@@ -521,7 +522,7 @@ function buildResolver() {
 function runStatePath(event, resolve, safeExit) {
   // Pre-resolve on sessionStart. Remote mode skips PID collection because
   // remote PIDs are meaningless on the local machine.
-  if (event === "sessionStart" && !process.env.CLAWD_REMOTE) resolve();
+  if (event === "sessionStart" && !isRemoteHookRuntime()) resolve();
 
   readStdinJson().then((payload) => {
     let body = null;

@@ -356,6 +356,48 @@ function unescapePowerShellSingleQuoted(text) {
   return String(text).replace(POWERSHELL_DOUBLED_SINGLE_QUOTE_RE, "$1");
 }
 
+// Only the installer's literal env assignments followed by one quoted Node
+// invocation are accepted. Composition and PowerShell interpolation fail closed.
+function parsePowerShellEnvCommand(command) {
+  if (typeof command !== "string" || /[\r\n\0]/.test(command)) return null;
+  let rest = command;
+  const env = {};
+  while (rest.startsWith("$env:")) {
+    const match = /^\$env:([A-Za-z_][A-Za-z0-9_]*)=('(?:''|[^'])*');[ \t]+/.exec(rest);
+    if (!match) return null;
+    const value = unescapePowerShellSingleQuoted(match[2].slice(1, -1));
+    if (quotePowerShellSingleArg(value) !== match[2]) return null;
+    env[match[1]] = value;
+    rest = rest.slice(match[0].length);
+  }
+  if (!rest.startsWith('& "')) return null;
+  rest = rest.slice(2);
+  const args = [];
+  while (rest) {
+    const match = /^"([^"`$\u201C\u201D\u201E]*)"(?:[ \t]+|$)/.exec(rest);
+    if (!match) return null;
+    args.push(match[1]);
+    rest = rest.slice(match[0].length);
+  }
+  return args.length ? { env, args } : null;
+}
+
+function normalizeHookScriptPath(value, platform = process.platform) {
+  if (typeof value !== "string") return "";
+  const normalized = value.replace(/\\/g, "/");
+  return platform === "win32" ? normalized.toLowerCase() : normalized;
+}
+
+function remoteHookScriptKey(hooksDir, name, platform = process.platform) {
+  return normalizeHookScriptPath(`${hooksDir.replace(/[\\/]+$/, "")}/${name}`, platform);
+}
+
+function getCliOptionValue(argv, flag) {
+  const index = argv.indexOf(flag);
+  const value = index >= 0 ? argv[index + 1] : undefined;
+  return typeof value === "string" && value && !value.startsWith("--") ? value : undefined;
+}
+
 function windowsPowerShellBin(options = {}) {
   if (options.powerShellBin) return options.powerShellBin;
   const root = (options.env && options.env.SystemRoot) || process.env.SystemRoot || "C:\\Windows";
@@ -972,5 +1014,9 @@ module.exports = {
   extractFirstQuotedToken,
   quotePowerShellSingleArg,
   unescapePowerShellSingleQuoted,
+  parsePowerShellEnvCommand,
+  normalizeHookScriptPath,
+  remoteHookScriptKey,
+  getCliOptionValue,
   windowsPowerShellBin,
 };

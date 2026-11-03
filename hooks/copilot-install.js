@@ -22,8 +22,12 @@ const {
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
   quotePowerShellSingleArg,
+  parsePowerShellEnvCommand,
+  normalizeHookScriptPath,
+  remoteHookScriptKey,
+  getCliOptionValue,
 } = require("./json-utils");
-const { resolveNodeBin } = require("./server-config");
+const { resolveNodeBin, ROUTING_NONCE_RE } = require("./server-config");
 
 const MARKER = "copilot-hook.js";
 
@@ -421,6 +425,29 @@ function registerCopilotHooks(options = {}) {
   return { added, updated, skipped, configChanged: changed, permissionSkippedDueToUserHook };
 }
 
+function unregisterRemoteOwnedCopilotHooks(options = {}) {
+  const { hooksDir, routingNonce } = options;
+  if (typeof hooksDir !== "string" || !hooksDir || typeof routingNonce !== "string" || !ROUTING_NONCE_RE.test(routingNonce)) {
+    throw new Error("Remote owned uninstall requires --hooks-dir and --routing-nonce");
+  }
+  const platform = options.platform || process.platform;
+  const script = remoteHookScriptKey(hooksDir, "copilot-hook.js", platform);
+  return unregisterCopilotHooks({
+    ...options,
+    ownsEntry: (entry) => {
+      if (!entry || typeof entry !== "object") return false;
+      const powershell = parsePowerShellEnvCommand(entry.powershell);
+      if (powershell && powershell.args.length === 3
+        && normalizeHookScriptPath(powershell.args[1], platform) === script) return true;
+      if (typeof entry.bash !== "string") return false;
+      // Only literal env prefixes and the exact three quoted invocation tokens.
+      const command = entry.bash.replace(/^(?:[A-Za-z_][A-Za-z0-9_]*=(?:1|'(?:[^']|'\\'')*') )*/, "");
+      const bash = /^"([^"`$]*)" "([^"`$]*)" "([^"`$]*)"$/.exec(command);
+      return !!bash && normalizeHookScriptPath(bash[2], platform) === script;
+    },
+  });
+}
+
 function unregisterCopilotHooks(options = {}) {
   const copilotDir = resolveCopilotHome(options);
   const hooksPath = options.hooksPath || path.join(copilotDir, "hooks", "hooks.json");
@@ -439,10 +466,11 @@ function unregisterCopilotHooks(options = {}) {
 
   let removed = 0;
   let changed = false;
+  const isManagedEntry = options.ownsEntry || entryHasMarker;
   for (const event of Object.keys(settings.hooks)) {
     const entries = settings.hooks[event];
     if (!Array.isArray(entries)) continue;
-    const next = entries.filter((entry) => !entryHasMarker(entry));
+    const next = entries.filter((entry) => !isManagedEntry(entry));
     if (next.length === entries.length) continue;
     removed += entries.length - next.length;
     changed = true;
@@ -478,6 +506,7 @@ module.exports = {
   buildCopilotHookEntry,
   registerCopilotHooks,
   unregisterCopilotHooks,
+  unregisterRemoteOwnedCopilotHooks,
 };
 
 // Lazy-getter exports for back-compat — values reflect current env at access time.
@@ -493,7 +522,12 @@ Object.defineProperty(module.exports, "DEFAULT_CONFIG_PATH", {
 // CLI: `node hooks/copilot-install.js [--remote]`.
 if (require.main === module) {
   try {
-    if (process.argv.includes("--uninstall")) unregisterCopilotHooks({});
+    if (process.argv.includes("--remote-uninstall-owned")) {
+      unregisterRemoteOwnedCopilotHooks({
+        hooksDir: getCliOptionValue(process.argv, "--hooks-dir"),
+        routingNonce: getCliOptionValue(process.argv, "--routing-nonce"),
+      });
+    } else if (process.argv.includes("--uninstall")) unregisterCopilotHooks({});
     else registerCopilotHooks({ remote: process.argv.includes("--remote") });
   } catch (err) {
     console.error(err.message);

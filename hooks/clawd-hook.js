@@ -5,7 +5,8 @@
 
 const crypto = require("crypto");
 const fs = require("fs");
-const { postStateToRunningServer, readHostPrefix, resolveWslDistro } = require("./server-config");
+const os = require("os");
+const { postStateToRunningServer, readHostPrefix, resolveWslDistro, applySshRemoteFlag, isRemoteHookRuntime } = require("./server-config");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
@@ -789,7 +790,7 @@ function buildStateBody(event, payload, resolve) {
     body.stop_hook_active = true;
   }
   const wslDistro = resolveWslDistro();
-  if (process.env.CLAWD_REMOTE) {
+  if (isRemoteHookRuntime()) {
     // Remote session: preserve existing host prefix, add WSL distro as
     // separate metadata. Do NOT override the SSH host.
     body.host = readHostPrefix();
@@ -863,6 +864,7 @@ function launchedByGrok(env = process.env) {
 }
 
 function main() {
+  applySshRemoteFlag({ argv: process.argv, env: process.env, scriptDir: __dirname, homedir: os.homedir() });
   // Grok scans ~/.claude/settings.json by default. Those Claude hooks must not
   // report a phantom claude-code session; Grok events go through grok-hook.js.
   if (launchedByGrok()) {
@@ -886,7 +888,7 @@ function main() {
 
   // Pre-resolve on SessionStart (runs during stdin buffering, not after)
   // Remote mode: skip PID collection — remote PIDs are meaningless on the local machine
-  if (event === "SessionStart" && !process.env.CLAWD_REMOTE) resolve();
+  if (event === "SessionStart" && !isRemoteHookRuntime()) resolve();
 
   readStdinJsonDetailed({ timeoutMs: STDIN_READ_TIMEOUT_MS })
     .then((stdinRead) => {
@@ -910,11 +912,12 @@ function main() {
       // the HTTP request may fail but the next process can still recover the
       // same session id and last sustained state. This is best-effort and never
       // changes the hook's stdout or exit contract.
-      updateRecoveryLeaseFromStateBody(body, { eventAt });
+      const persistenceOptions = isRemoteHookRuntime() ? { eventAt, remote: true } : { eventAt };
+      updateRecoveryLeaseFromStateBody(body, persistenceOptions);
       // The lease above is liveness-scoped and is erased once its PID dies,
       // which is every PID after a reboot. Keep a separate durable row so a
       // session interrupted by a restart can still be found and resumed.
-      recordSessionHistoryFromStateBody(body, { eventAt });
+      recordSessionHistoryFromStateBody(body, persistenceOptions);
       postStateToRunningServer(
         JSON.stringify(fitted.body),
         { timeoutMs: statePostTimeoutMs },

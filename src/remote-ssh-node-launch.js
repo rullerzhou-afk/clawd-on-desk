@@ -24,7 +24,7 @@ function loadNodeFrame() {
     }
   }
   function fail(err) {
-    console.error(err.message);
+    console.error(err && err.message ? err.message : String(err));
     process.exitCode = 1;
   }
   function end() {
