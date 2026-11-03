@@ -1196,6 +1196,9 @@ function registerRemoteSshIpc(options = {}) {
     }
     const profile = findProfile(settingsController, id);
     if (!profile) return { status: "error", message: "profile not found" };
+    if (profile.remotePlatform === "win32" && runtimeMode === "profile-isolated") {
+      return { status: "error", reason: "windows_profile_isolated_unsupported" };
+    }
     if (!profile.runtimeModeTxn
       && (profile.runtimeMode || "account-default") === runtimeMode) {
       return { status: "ok", noop: true };

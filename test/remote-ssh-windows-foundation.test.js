@@ -89,31 +89,71 @@ test("issue #1316: Node validation and cache separate explicit Windows and POSIX
   assert.equal(deploy.hasSecureRemoteOwnership({ ...windows, remotePlatform: "posix", installId: "a".repeat(64) }), false);
 });
 
-test("issue #1316: pending identity transactions bind Retry to the probed platform", () => {
+test("issue #1316: same-platform pending identity transactions reuse the original nonce and steps", () => {
   const store = settings(profile);
   const begin = (remotePlatform) => store.apply("remoteSsh.beginIdentityRotation", { id: "p1", remotePlatform });
   assert.equal(begin("win32").status, "ok");
   const winNonce = store.profile.identityTxn.toNonce;
   assert.equal(store.profile.remotePlatform, undefined);
-  assert.equal(begin("win32").noop, true);
+  const originalTxn = JSON.parse(JSON.stringify(store.profile.identityTxn));
+  const retry = begin("win32");
+  assert.equal(retry.noop, true);
+  assert.equal(retry.commit, undefined);
   assert.equal(store.profile.identityTxn.toNonce, winNonce);
   assert.equal(schema.sanitizeProfile(store.profile).identityTxn.remotePlatform, "win32");
-  const originalTxn = JSON.parse(JSON.stringify(store.profile.identityTxn));
-  assert.deepEqual(begin("posix"), {
-    status: "error", reason: "identity_txn_platform_mismatch",
-    message: "The pending identity transaction belongs to another remote platform; resolve it before deploying.",
-  });
   assert.deepEqual(store.profile.identityTxn, originalTxn);
   const { remotePlatform, ...oldTxn } = originalTxn;
   const oldStore = settings({ ...profile, identityTxn: oldTxn });
   assert.equal(oldStore.apply("remoteSsh.beginIdentityRotation", { id: "p1", remotePlatform: "posix" }).noop, true);
 });
 
-test("issue #1316: emergency identity recovery keeps the transaction's platform", () => {
+test("issue #1316: a platform mismatch without done steps rebuilds the pending identity transaction", () => {
+  const txn = identity.createIdentityTxn(profile, { remotePlatform: "win32", now: () => 100, randomBytes: () => Buffer.alloc(16, 1) });
+  const originalTxn = JSON.parse(JSON.stringify(txn));
+  const store = settings({ ...profile, identityTxn: txn });
+  const result = store.apply("remoteSsh.beginIdentityRotation", { id: "p1", remotePlatform: "posix" });
+  assert.equal(result.status, "ok");
+  assert.equal(result.noop, undefined);
+  assert.ok(result.commit);
+  assert.equal(result.identityTxn.remotePlatform, "posix");
+  assert.equal(store.profile.identityTxn.remotePlatform, "posix");
+  assert.notEqual(store.profile.identityTxn.toNonce, txn.toNonce);
+  assert.match(store.profile.identityTxn.toNonce, /^[a-f0-9]{32}$/);
+  assert.equal(store.profile.identityTxn.fromNonce, null);
+  assert.equal(store.profile.identityTxn.runtimeKey, txn.runtimeKey);
+  assert.equal(store.profile.identityTxn.layoutVersion, txn.layoutVersion);
+  assert.equal(store.profile.identityTxn.startedAt, txn.startedAt);
+  assert.equal(store.profile.identityTxn.previousExpiresAt, txn.startedAt + 1);
+  assert.ok(Object.values(store.profile.identityTxn.steps).every((step) => step.status === "pending"));
+  assert.equal(store.profile.remotePlatform, undefined);
+  assert.deepEqual(txn, originalTxn);
+});
+
+test("issue #1316: emergency identity recovery mints an unbound transaction and revokes previous nonces", () => {
   const txn = identity.createIdentityTxn(profile, { remotePlatform: "win32", now: () => 100, randomBytes: () => Buffer.alloc(16, 1) });
   assert.equal(txn.remotePlatform, "win32");
-  const emergency = identity.abortIdentityTxnToEmergencyNonce({ ...profile, remotePlatform: "posix", identityTxn: txn }, { now: () => 200, randomBytes: () => Buffer.alloc(16, 2) });
-  assert.equal(emergency.identityTxn.remotePlatform, "win32");
+  assert.equal(txn.toNonce, "01".repeat(16));
+  const emergency = identity.abortIdentityTxnToEmergencyNonce({
+    ...profile, remotePlatform: "posix", identityTxn: txn, routingNonce: "a".repeat(32),
+    previousNonce: "b".repeat(32), previousExpiresAt: 500, lastDeployedAt: 50, isolatedActive: true,
+  }, { now: () => 200, randomBytes: () => Buffer.alloc(16, 2) });
+  assert.equal(Object.hasOwn(emergency.identityTxn, "remotePlatform"), false);
+  assert.equal(emergency.remotePlatform, "posix");
+  assert.equal(emergency.identityTxn.toNonce, "02".repeat(16));
+  assert.equal(emergency.identityTxn.fromNonce, null);
+  assert.equal(emergency.identityTxn.runtimeKey, profile.runtimeKey);
+  assert.equal(emergency.identityTxn.layoutVersion, profile.layoutVersion);
+  assert.equal(emergency.identityTxn.phase, "rotating");
+  assert.equal(emergency.identityTxn.startedAt, 200);
+  assert.equal(emergency.identityTxn.previousExpiresAt, 201);
+  assert.ok(Object.values(emergency.identityTxn.steps).every((step) => step.status === "pending"));
+  assert.equal(emergency.routingNonce, undefined);
+  assert.equal(emergency.previousNonce, undefined);
+  assert.equal(emergency.previousExpiresAt, undefined);
+  assert.equal(emergency.lastDeployedAt, undefined);
+  assert.equal(emergency.isolatedActive, false);
+  assert.equal(txn.remotePlatform, "win32");
+  assert.equal(txn.toNonce, "01".repeat(16));
 });
 
 test("issue #1316: platform mismatch preserves an unfinished identity transaction and its steps", () => {

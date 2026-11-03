@@ -264,9 +264,8 @@ function abortIdentityTxnToEmergencyNonce(profile, {
     ...profile,
     isolatedActive: false,
     identityTxn: {
-      ...((profile.identityTxn && profile.identityTxn.remotePlatform) || profile.remotePlatform
-        ? { remotePlatform: (profile.identityTxn && profile.identityTxn.remotePlatform) || profile.remotePlatform }
-        : {}),
+      // Revocation is local only. Bind the replacement transaction to the
+      // platform discovered by the next deployment, not the retired target.
       runtimeKey: profile.runtimeKey,
       layoutVersion: profile.layoutVersion || REMOTE_LAYOUT_VERSION,
       phase: "rotating",

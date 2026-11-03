@@ -18,6 +18,7 @@ const path = require("path");
 const os = require("os");
 const {
   readJsonFile,
+  stripUtf8Bom,
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
@@ -272,6 +273,12 @@ function entryHasMarker(entry) {
   return false;
 }
 
+// Copilot ignores a BOM-prefixed hooks.json even though our JSON reader accepts it.
+function readCopilotHooksConfig(hooksPath) {
+  const text = fs.readFileSync(hooksPath, "utf8");
+  return { settings: JSON.parse(stripUtf8Bom(text)), hadBom: text.charCodeAt(0) === 0xfeff };
+}
+
 /**
  * Register Clawd hooks into <copilot-home>/hooks/hooks.json.
  *
@@ -317,8 +324,9 @@ function registerCopilotHooks(options = {}) {
     || "node";
 
   let settings = {};
+  let hadBom = false;
   try {
-    settings = readJsonFile(hooksPath);
+    ({ settings, hadBom } = readCopilotHooksConfig(hooksPath));
   } catch (err) {
     if (err.code !== "ENOENT") {
       throw new Error(`Failed to read hooks.json: ${err.message}`);
@@ -331,7 +339,7 @@ function registerCopilotHooks(options = {}) {
   let added = 0;
   let updated = 0;
   let skipped = 0;
-  let changed = false;
+  let changed = hadBom;
   let permissionSkippedDueToUserHook = false;
 
   // Pre-compute the cross-file safe-v1 signal once before the per-event
@@ -453,21 +461,22 @@ function unregisterCopilotHooks(options = {}) {
   const hooksPath = options.hooksPath || path.join(copilotDir, "hooks", "hooks.json");
 
   let settings = {};
+  let hadBom = false;
   try {
-    settings = readJsonFile(hooksPath);
+    ({ settings, hadBom } = readCopilotHooksConfig(hooksPath));
   } catch (err) {
     if (err.code === "ENOENT") return { removed: 0, changed: false, configChanged: false, hooksPath };
     throw new Error(`Failed to read hooks.json: ${err.message}`);
   }
 
-  if (!settings.hooks || typeof settings.hooks !== "object") {
+  if ((!settings.hooks || typeof settings.hooks !== "object") && !hadBom) {
     return { removed: 0, changed: false, configChanged: false, hooksPath };
   }
 
   let removed = 0;
-  let changed = false;
+  let changed = hadBom;
   const isManagedEntry = options.ownsEntry || entryHasMarker;
-  for (const event of Object.keys(settings.hooks)) {
+  for (const event of Object.keys(settings.hooks || {})) {
     const entries = settings.hooks[event];
     if (!Array.isArray(entries)) continue;
     const next = entries.filter((entry) => !isManagedEntry(entry));

@@ -3531,3 +3531,45 @@ test("dispose unregisters all handlers and detaches event listeners", () => {
   rt.emit("status-changed", { profileId: "p1", status: "idle" });
   assert.equal(sentMessages.length, 0);
 });
+
+for (const enableProfileIsolation of [true, false]) {
+  test(`issue #1316: Windows mode switch rejects before any drain or cleanup with isolation gate ${enableProfileIsolation}`, async (t) => {
+    const ipcMain = mockIpcMain();
+    const controller = mockSettingsController([{ ...readyProfile, remotePlatform: "win32", remoteHome: "C:\\Users\\remote" }]);
+    const runtime = mockRuntime();
+    let disconnects = 0;
+    runtime.disconnect = () => { disconnects++; return { status: "idle" }; };
+    runtime.suspendForOperation = () => assert.fail("must not drain");
+    const ipc = registerRemoteSshIpc({ ipcMain, settingsController: controller, remoteSshRuntime: runtime,
+      BrowserWindow: mockBrowserWindow().BrowserWindow, enableProfileIsolation,
+      spawn: () => assert.fail("must not spawn"),
+      uninstallRemoteIntegrationsFn: () => assert.fail("must not uninstall"),
+      bootstrapIsolatedRuntimeFn: () => assert.fail("must not bootstrap"),
+      finalizeRetiredRemoteLayoutFn: () => assert.fail("must not retire"),
+    });
+    t.after(() => ipc.dispose());
+    assert.deepEqual(await ipcMain.invoke("remoteSsh:set-runtime-mode", { profileId: "p1", runtimeMode: "profile-isolated", confirmed: true }),
+      { status: "error", reason: "windows_profile_isolated_unsupported" });
+    assert.equal(disconnects, 0); assert.equal(controller._commandCalls.length, 0);
+  });
+}
+for (const edited of [false, true]) {
+  test(`issue #1316: Windows disconnect skips real monitor transport after profile edit=${edited}`, async (t) => {
+    const ipcMain = mockIpcMain();
+    const profile = { ...readyProfile, remotePlatform: "win32", remoteHome: "C:\\Users\\remote", autoStartCodexMonitor: true };
+    if (edited) profile.host = "user@edited-host";
+    let monitorCalls = 0; let sshCalls = 0;
+    const ipc = registerRemoteSshIpc({ ipcMain, settingsController: mockSettingsController([profile]), remoteSshRuntime: mockRuntime(),
+      BrowserWindow: mockBrowserWindow().BrowserWindow,
+      spawn: () => { sshCalls++; throw new Error("no SSH expected"); },
+      stopCodexMonitorFn: async (options) => {
+        monitorCalls++;
+        return require("../src/remote-ssh-deploy").stopCodexMonitor(options);
+      },
+    });
+    t.after(() => ipc.dispose());
+    assert.equal((await ipcMain.invoke("remoteSsh:disconnect", { profileId: profile.id })).status, "ok");
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(monitorCalls, 1); assert.equal(sshCalls, 0);
+  });
+}

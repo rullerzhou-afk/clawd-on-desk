@@ -356,3 +356,279 @@ test("issue #1316: Windows operation transport sends only the fixed command and 
   assert.equal(JSON.parse(input).args.operation, "preflight");
   assert.equal(JSON.parse(input).code.includes("C:\\\\Old"), false);
 });
+
+function stagedHooks(f) {
+  const stage = path.win32.join(f.layout.deployStagingDir, f.owner.leaseId);
+  const hashes = {};
+  for (const name of ["first.js", "second.js", "third.js"]) {
+    f.put(path.win32.join(stage, name), name);
+    hashes[name] = crypto.createHash("sha256").update(name).digest("hex");
+  }
+  fs.mkdirSync(f.local(f.layout.claudeHooksDir), { recursive: true });
+  return { stage, hashes };
+}
+test("issue #1316: batch promotion verifies every file and removes only an empty stage", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  const { stage, hashes } = stagedHooks(f);
+  await f.run("promoteMany", { owner: f.owner, hashes });
+  assert.equal(fs.existsSync(f.local(stage)), false);
+  for (const name of Object.keys(hashes)) assert.equal(fs.readFileSync(f.local(path.win32.join(f.layout.claudeHooksDir, name)), "utf8"), name);
+});
+test("issue #1316: batch promotion stops before subsequent files after a hash mismatch", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  const { stage, hashes } = stagedHooks(f); hashes["second.js"] = "0".repeat(64);
+  await assert.rejects(f.run("promoteMany", { owner: f.owner, hashes }), { reason: "hash_mismatch" });
+  assert.equal(fs.existsSync(f.local(path.win32.join(f.layout.claudeHooksDir, "first.js"))), true);
+  for (const name of ["second.js", "third.js"]) {
+    assert.equal(fs.existsSync(f.local(path.win32.join(stage, name))), true);
+    assert.equal(fs.existsSync(f.local(path.win32.join(f.layout.claudeHooksDir, name))), false);
+  }
+});
+test("issue #1316: batch promotion preserves unknown staging contents", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  const { stage, hashes } = stagedHooks(f); const extra = path.win32.join(stage, "foreign.txt");
+  f.put(extra, "keep");
+  await assert.rejects(f.run("promoteMany", { owner: f.owner, hashes }), { reason: "staging_contents_unknown" });
+  assert.equal(fs.readFileSync(f.local(extra), "utf8"), "keep");
+});
+test("issue #1316: batch promotion refuses a lost lease before touching staging", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  const { stage, hashes } = stagedHooks(f);
+  await assert.rejects(f.run("promoteMany", { owner: { ...f.owner, leaseId: "d".repeat(32) }, hashes }), { reason: "lease_lost" });
+  assert.equal(fs.readdirSync(f.local(stage)).length, 3);
+});
+
+function fakeInstaller(f) {
+  const source = `
+if(require.main===module){
+  const fs=require('fs'),p=require('path');
+  if(process.env.TEST_OUTPUT){fs.mkdirSync(p.dirname(process.env.TEST_OUTPUT),{recursive:true});fs.writeFileSync(process.env.TEST_OUTPUT,process.env.TEST_CONFIG);}
+  console.log(JSON.stringify(Object.fromEntries(Object.entries(process.env).filter(([k])=>/^clawd_remote$/i.test(k)))));
+  console.error('installer stderr');
+  process.exitCode=Number(process.env.TEST_EXIT||0);
+}
+module.exports={CLAUDE_CORE_HOOK_EVENTS:['Stop','SessionStart'],COPILOT_STATE_HOOK_EVENTS:['sessionStart']};`;
+  for (const script of ["install.js", "copilot-install.js"]) f.put(path.win32.join(f.layout.claudeHooksDir, script), source);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "json-utils.js"), fs.readFileSync(path.join(__dirname, "..", "hooks", "json-utils.js"), "utf8"));
+  f.deps.require = (target) => require(f.local(target));
+  f.deps.execPath = "C:\\Node\\node.exe";
+  f.deps.env = { ...process.env, clawd_remote: "stale", ClAwD_ReMoTe: "stale", TEST_EXIT: "0" };
+  f.deps.spawnSync = (executable, argv, options) => {
+    assert.equal(executable, f.deps.execPath); assert.equal(options.windowsHide, true);
+    assert.equal(options.encoding, "utf8"); assert.equal(options.timeout, 45000);
+    assert.deepEqual(argv.slice(1), ["--remote"]);
+    return require("node:child_process").spawnSync(process.execPath, [f.local(argv[0]), ...argv.slice(1)], options);
+  };
+  return (verify, config, extraEnv = {}) => {
+    const claude = verify === "installClaude";
+    return f.run("runInstaller", { owner: f.owner, script: claude ? "install.js" : "copilot-install.js", argv: ["--remote"], verify,
+      env: { CLAWD_REMOTE: "1", TEST_OUTPUT: f.local(claude ? f.layout.claudeSettingsFile : path.win32.join(f.layout.copilotHome, "hooks", "hooks.json")), TEST_CONFIG: JSON.stringify(config), ...extraEnv } });
+  };
+}
+function claudeConfig(f, hook) {
+  const own = hook || { type: "command", command: f.deps.execPath.toUpperCase(), args: [path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js").toUpperCase(), "Stop", "--clawd-ssh-remote"] };
+  const sessionStart = JSON.parse(JSON.stringify(own));
+  if (Array.isArray(sessionStart.args)) sessionStart.args[1] = "SessionStart";
+  else if (sessionStart.command) sessionStart.command = sessionStart.command.replace('"Stop"', '"SessionStart"');
+  return { hooks: { Stop: [{ hooks: [{ type: "command", command: "foreign" }, own] }], SessionStart: [sessionStart] } };
+}
+function psCommand(f, script, event, flag = "") {
+  return `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; $env:CLAWD_REMOTE_IDENTITY_PATH='${f.layout.identityFile}'; & "${f.deps.execPath}" "${path.win32.join(f.layout.claudeHooksDir, script)}" "${event}"${flag ? ` "${flag}"` : ""}`;
+}
+test("issue #1316: native installer merges environment without duplicate case keys and verifies exec hooks", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  const run = fakeInstaller(f);
+  const result = await run("installClaude", claudeConfig(f));
+  assert.equal(result.ok, true); assert.equal(result.status, 0); assert.equal(result.verified, true);
+  assert.deepEqual(JSON.parse(result.stdoutTail), { CLAWD_REMOTE: "1" });
+  assert.match(result.stderrTail, /installer stderr/);
+});
+test("issue #1316: native installer verifies PowerShell Claude and Copilot through the uploaded parser", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const config = claudeConfig(f, { type: "command", shell: "powershell", command: psCommand(f, "clawd-hook.js", "Stop", "--clawd-ssh-remote") });
+  assert.equal((await run("installClaude", config)).verified, true);
+  const copilot = { hooks: { sessionStart: [{ powershell: psCommand(f, "copilot-hook.js", "sessionStart") }] } };
+  assert.equal((await run("installCopilot", copilot)).verified, true);
+  copilot.hooks.sessionStart[0].powershell = psCommand(f, "copilot-hook.js", "sessionStart").replace("CLAWD_SSH_REMOTE='1'", "CLAWD_SSH_REMOTE='0'");
+  assert.equal((await run("installCopilot", copilot)).verified, false);
+});
+test("issue #1316: native installer exit status and failed readback cannot record success", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const failed = await run("installClaude", claudeConfig(f), { TEST_EXIT: "9" });
+  assert.equal(failed.status, 9); assert.equal(failed.ok, false); assert.equal(failed.reason, "installer_failed");
+  for (const config of [{}, { hooks: {} }, claudeConfig(f, { type: "command", command: f.deps.execPath, args: ["foreign.js", "--clawd-ssh-remote"] }),
+    claudeConfig(f, { type: "command", command: "D:\\node.exe", args: [path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js"), "--clawd-ssh-remote"] }),
+    claudeConfig(f, { type: "command", command: f.deps.execPath, args: [path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js"), "x--clawd-ssh-remote"] })]) {
+    const result = await run("installClaude", config);
+    assert.equal(result.verified, false); assert.equal(result.ok, false); assert.equal(result.reason, "installer_verification_failed");
+  }
+});
+test("issue #1316: native installer refuses paths and lost leases before spawning", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  f.deps.spawnSync = () => assert.fail("must not spawn");
+  await assert.rejects(f.run("runInstaller", { owner: f.owner, script: "../other.js" }), { reason: "installer_script_invalid" });
+  await assert.rejects(f.run("runInstaller", { owner: { ...f.owner, leaseId: "d".repeat(32) }, script: "install.js" }), { reason: "lease_lost" });
+});
+test("issue #1316: native installer timeout remains an unknown mutation result", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  f.deps.spawnSync = () => ({ status: null, signal: "SIGTERM", error: error("ETIMEDOUT") });
+  await assert.rejects(f.run("runInstaller", { owner: f.owner, script: "install.js", argv: [], env: {} }), { reason: "installer_result_unknown" });
+});
+test("issue #1316: Windows permission readback distinguishes native and the exact identity nonce", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); f.put(f.layout.identityFile, f.identity);
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_config_invalid" });
+  f.put(f.layout.claudeSettingsFile, { hooks: {} });
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "native" });
+  for (const url of [`http://127.0.0.1:23333/permission/${f.identity.routingNonce}`, `http://127.0.0.1:23333/permission?nonce=${f.identity.routingNonce}`]) {
+    f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ hooks: [{ url }] }] } });
+    assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+  }
+  f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ url: "http://127.0.0.1:23333/permission?nonce=foreign" }] } });
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
+});
+test("issue #1316: Windows retirement is idempotent and rejects an orphan marker or foreign identity", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  assert.deepEqual(await f.run("finalizeIdentity", { owner: f.owner }), { ok: true });
+  f.put(f.layout.secureMarkerFile, "marker");
+  await assert.rejects(f.run("finalizeIdentity", { owner: f.owner }), { reason: "retirement_marker_without_identity" });
+  f.put(f.layout.identityFile, { ...f.identity, profileId: "other" });
+  await assert.rejects(f.run("finalizeIdentity", { owner: f.owner }), { reason: "ownership_conflict" });
+  f.put(f.layout.identityFile, f.identity);
+  await f.run("finalizeIdentity", { owner: f.owner });
+  assert.equal(fs.existsSync(f.local(f.layout.identityFile)), false);
+  assert.equal(fs.existsSync(f.local(f.layout.secureMarkerFile)), false);
+});
+
+test("issue #1316: installer readback rejects a state hook registered under the wrong event", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const config = claudeConfig(f);
+  config.hooks.SessionStart[0].args[1] = "Stop";
+  assert.equal((await run("installClaude", config)).verified, false);
+});
+test("issue #1316: agent config readback accepts a BOM while identity remains strict", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const config = claudeConfig(f);
+  assert.equal((await run("installClaude", config, { TEST_CONFIG: `\uFEFF${JSON.stringify(config)}` })).verified, true);
+  f.put(f.layout.identityFile, f.identity);
+  f.put(f.layout.claudeSettingsFile, '\uFEFF{"hooks":{}}');
+  assert.equal((await f.run("readClaudePermission", { owner: f.owner })).mode, "native");
+  f.put(f.layout.identityFile, `\uFEFF${JSON.stringify(f.identity)}`);
+  await assert.rejects(f.run("readIdentity"), { reason: "identity_invalid" });
+});
+
+test("issue #1316: Copilot installer readback rejects BOM with an explicit reason", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const config = { hooks: { sessionStart: [{ powershell: psCommand(f, "copilot-hook.js", "sessionStart") }] } };
+  assert.equal((await run("installCopilot", config)).verified, true);
+  await assert.rejects(run("installCopilot", config, { TEST_CONFIG: `\uFEFF${JSON.stringify(config)}` }), { reason: "copilot_config_bom" });
+});
+for (const field of ["node path", "script path", "remote flag"]) {
+  test(`issue #1316: exec installer readback rejects an incorrect ${field}`, async (t) => {
+    const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+    const hook = { type: "command", command: f.deps.execPath, args: [path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js"), "Stop", "--clawd-ssh-remote"] };
+    if (field === "node path") hook.command = "D:\\Node\\node.exe";
+    if (field === "script path") hook.args[0] = "C:\\Users\\other\\clawd-hook.js";
+    if (field === "remote flag") hook.args.pop();
+    const result = await run("installClaude", claudeConfig(f, hook));
+    assert.equal(result.ok, false); assert.equal(result.verified, false); assert.equal(result.reason, "installer_verification_failed");
+  });
+}
+test("issue #1316: exec installer readback accepts only case differences in the Node path", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const config = claudeConfig(f);
+  assert.equal(config.hooks.Stop[0].hooks[1].command, f.deps.execPath.toUpperCase());
+  const result = await run("installClaude", config);
+  assert.equal(result.ok, true); assert.equal(result.verified, true);
+});
+test("issue #1316: PowerShell installer readback rejects a missing remote flag", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const config = claudeConfig(f, { type: "command", shell: "powershell", command: psCommand(f, "clawd-hook.js", "Stop") });
+  const result = await run("installClaude", config);
+  assert.equal(result.ok, false); assert.equal(result.verified, false);
+});
+test("issue #1316: Copilot installer readback requires its identity path", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  const command = psCommand(f, "copilot-hook.js", "sessionStart").replace(/\$env:CLAWD_REMOTE_IDENTITY_PATH='[^']*'; /, "");
+  const result = await run("installCopilot", { hooks: { sessionStart: [{ powershell: command }] } });
+  assert.equal(result.ok, false); assert.equal(result.verified, false);
+});
+for (const verify of ["installClaude", "installCopilot"]) {
+  test(`issue #1316: ${verify} readback rejects an empty installer event contract`, async (t) => {
+    const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+    const load = f.deps.require;
+    f.deps.require = (target) => target.endsWith("json-utils.js") ? load(target) : { CLAUDE_CORE_HOOK_EVENTS: [], COPILOT_STATE_HOOK_EVENTS: [] };
+    const config = verify === "installClaude" ? claudeConfig(f) : { hooks: { sessionStart: [{ powershell: psCommand(f, "copilot-hook.js", "sessionStart") }] } };
+    const result = await run(verify, config);
+    assert.equal(result.ok, false); assert.equal(result.verified, false);
+  });
+}
+test("issue #1316: batch promotion rechecks the destination hash before the next file", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const { stage, hashes } = stagedHooks(f);
+  const originalFs = f.deps.fs;
+  const destination = path.win32.join(f.layout.claudeHooksDir, "first.js");
+  f.deps.fs = new Proxy(originalFs, { get(target, name) {
+    if (name === "readFileSync") return (file, ...args) => file === destination ? Buffer.from("changed after rename") : target.readFileSync(file, ...args);
+    return target[name];
+  } });
+  await assert.rejects(f.run("promoteMany", { owner: f.owner, hashes }), { reason: "hash_mismatch", path: destination });
+  assert.equal(fs.existsSync(f.local(destination)), true);
+  assert.equal(fs.existsSync(f.local(path.win32.join(stage, "second.js"))), true);
+  assert.equal(fs.existsSync(f.local(path.win32.join(f.layout.claudeHooksDir, "second.js"))), false);
+});
+for (const [name, digest] of [["../escape.js", "a".repeat(64)], ["sub\\escape.js", "a".repeat(64)], ["..", "a".repeat(64)], [".", "a".repeat(64)], ["file.js", "g".repeat(64)], ["file.js", "a".repeat(63)], ["file.js", null]]) {
+  test(`issue #1316: batch promotion rejects malformed manifest ${name}/${String(digest)} before moving files`, async (t) => {
+    const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const { stage, hashes } = stagedHooks(f);
+    const invalid = { ...hashes, [name]: digest };
+    const reason = name === "file.js" ? "hash_mismatch" : "path_invalid";
+    await assert.rejects(f.run("promoteMany", { owner: f.owner, hashes: invalid }), { reason });
+    assert.deepEqual(fs.readdirSync(f.local(stage)).sort(), Object.keys(hashes).sort());
+    assert.deepEqual(fs.readdirSync(f.local(f.layout.claudeHooksDir)), []);
+  });
+}
+
+for (const field of ["shell", "node path", "script path", "event name", "flag value", "argument count"]) {
+  test(`issue #1316: PowerShell installer readback rejects an incorrect ${field}`, async (t) => {
+    const f = fixture(t);
+    await f.run("acquireLock", { owner: f.owner });
+    const run = fakeInstaller(f);
+    let command = psCommand(f, "clawd-hook.js", "Stop", "--clawd-ssh-remote");
+    if (field === "node path") command = command.replace(f.deps.execPath, "D:\\Node\\node.exe");
+    if (field === "script path") command = command.replace(path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js"), path.win32.join(f.layout.claudeHooksDir, "other-hook.js"));
+    if (field === "flag value") command = command.replace("--clawd-ssh-remote", "--wrong-flag");
+    if (field === "argument count") command += ' "extra"';
+    const config = claudeConfig(f, { type: "command", shell: field === "shell" ? "cmd" : "powershell", command });
+    if (field === "event name") config.hooks.SessionStart[0].command = command;
+    const result = await run("installClaude", config);
+    assert.equal(result.ok, false);
+    assert.equal(result.verified, false);
+    assert.equal(result.reason, "installer_verification_failed");
+  });
+}
+test("issue #1316: PowerShell installer readback accepts case differences in native executable and script paths", async (t) => {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  const run = fakeInstaller(f);
+  const script = path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js");
+  const command = psCommand(f, "clawd-hook.js", "Stop", "--clawd-ssh-remote")
+    .replace(f.deps.execPath, f.deps.execPath.toUpperCase()).replace(script, script.toUpperCase());
+  const result = await run("installClaude", claudeConfig(f, { type: "command", shell: "powershell", command }));
+  assert.equal(result.ok, true);
+  assert.equal(result.verified, true);
+});
+for (const field of ["remote environment", "SSH environment", "identity path", "argument count", "event name"]) {
+  test(`issue #1316: Copilot installer readback rejects an incorrect ${field}`, async (t) => {
+    const f = fixture(t);
+    await f.run("acquireLock", { owner: f.owner });
+    const run = fakeInstaller(f);
+    let command = psCommand(f, "copilot-hook.js", "sessionStart");
+    if (field === "remote environment") command = command.replace("CLAWD_REMOTE='1'", "CLAWD_REMOTE='0'");
+    if (field === "SSH environment") command = command.replace("CLAWD_SSH_REMOTE='1'", "CLAWD_SSH_REMOTE='0'");
+    if (field === "identity path") command = command.replace(f.layout.identityFile, "C:\\Users\\foreign\\identity.json");
+    if (field === "argument count") command += ' "extra"';
+    if (field === "event name") command = command.replace('"sessionStart"', '"sessionEnd"');
+    const result = await run("installCopilot", { hooks: { sessionStart: [{ powershell: command }] } });
+    assert.equal(result.ok, false);
+    assert.equal(result.verified, false);
+    assert.equal(result.reason, "installer_verification_failed");
+  });
+}

@@ -12,7 +12,7 @@ const childProcess = require("child_process");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { isWindowsAbsolutePath } = require("./remote-ssh-layout");
-const { REMOTE_NODE_LAUNCH_COMMAND } = require("./remote-ssh-node-launch");
+const { REMOTE_NODE_LAUNCH_COMMAND, buildNodeDiscoveryFrame } = require("./remote-ssh-node-launch");
 
 const NODE_PROBE_TIMEOUT_MS = 60000;
 const NODE_PROBE_SENTINEL = "__CLAWD_REMOTE_NODE_PROBE__";
@@ -367,6 +367,12 @@ async function resolveRemoteNodeBin(options = {}) {
     throw new Error("resolveRemoteNodeBin requires buildSshArgs");
   }
 
+  if (profile.remotePlatform === "win32") {
+    const result = await discoverWindowsRemoteNode({ profile, spawn, buildSshArgs, runtime, timeoutMs });
+    if (result.ok) setCachedRemoteNodeBin(profile, result);
+    return result;
+  }
+
   const cached = useCache ? getCachedRemoteNodeBin(profile) : null;
   if (cached) {
     if (!verifyCache) {
@@ -391,6 +397,24 @@ async function resolveRemoteNodeBin(options = {}) {
   const probed = await probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs });
   if (probed.ok) setCachedRemoteNodeBin(profile, probed);
   return probed;
+}
+
+async function discoverWindowsRemoteNode(options) {
+  const runFrame = options.runFrame || runRemoteNodeFrame;
+  const result = await runFrame({ ...options, frame: buildNodeDiscoveryFrame(), mutation: false });
+  let node;
+  try { node = JSON.parse(String(result.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
+  if (result.code !== 0 || !node || node.platform !== "win32") {
+    return { ok: false, reason: "platform_changed", message: "Remote host is no longer a native Windows host." };
+  }
+  if (!isSupportedRemoteNodeVersion(node.version) || !isValidRemoteNodeBin(node.execPath, "win32")) {
+    return { ok: false, reason: "node_unavailable", message: "Windows remote hosts require Node.js 14 or newer and an absolute execPath." };
+  }
+  const expected = options.profile.detectedRemoteNodeBin;
+  if (typeof expected !== "string" || node.execPath.toLowerCase() !== expected.toLowerCase()) {
+    return { ok: false, reason: "windows_node_changed", message: "Remote Node execPath changed; probe the platform before deploying again." };
+  }
+  return { ok: true, nodeBin: node.execPath, version: node.version, source: "discovery", homedir: node.homedir, platform: node.platform };
 }
 
 function remoteHookPath(scriptName, hooksDir = null) {
@@ -458,6 +482,7 @@ module.exports = {
   getCachedRemoteNodeBin,
   setCachedRemoteNodeBin,
   resolveRemoteNodeBin,
+  discoverWindowsRemoteNode,
   buildRemoteHookNodeCommand,
   buildRemoteNodeEvalCommand,
   runRemoteNodeFrame,

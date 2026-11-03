@@ -34,11 +34,8 @@
 // identity transaction step of its own (REMOTE_IDENTITY_STEP_NAMES is
 // unchanged) and never sets the local integrationInstalled flag.
 //
-// remote-shell aborts the deploy when the remote default shell is cmd.exe:
-// every later step would fail anyway (`mkdir -p`, `~/...` expansion, the
-// POSIX `sh -c` invoked by buildRemoteHookNodeCommand), and the cmd.exe
-// stderr would land in the renderer as CP936/GBK mojibake — so it's both
-// a cheaper failure and a more actionable message to stop here.
+// Windows deployments require a platform snapshot and use framed native Node
+// operations. The IPC feature gate remains closed until runtime support lands.
 
 const childProcess = require("child_process");
 const crypto = require("crypto");
@@ -50,18 +47,22 @@ const {
   resolveRemoteNodeBin,
   buildRemoteHookNodeCommand,
   buildRemoteNodeEvalCommand,
+  discoverWindowsRemoteNode,
 } = require("./remote-ssh-node");
+const { REMOTE_NODE_LAUNCH_COMMAND } = require("./remote-ssh-node-launch");
+const { buildWindowsOperationFrame } = require("./remote-ssh-win-ops");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
-const { windowsPlatformFailure } = require("./remote-ssh-platform");
 const { detectRemoteShell } = require("./remote-ssh-shell-detect");
 const {
   normalizeRemoteRuntimeIdentity,
   resolveRemoteRuntimeLayout,
   assertPosixRemoteLayout,
+  remoteLayoutDirectories,
+  toRemoteSftpPath,
 } = require("./remote-ssh-layout");
 const { buildRemoteIdentityDocument } = require("./remote-ssh-identity");
-const { isValidRemoteHome } = require("./remote-ssh-profile");
+const { isValidRemoteHome, isValidHostPrefix } = require("./remote-ssh-profile");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const {
   HERMES_RESULT_SENTINEL,
@@ -1326,6 +1327,236 @@ function summarizeHermesTargets(targets) {
   return [actions, activation].filter(Boolean).join("; ");
 }
 
+// Windows programs use the deployment transport, including its mutation
+// uncertainty fence. runWindowsOperation is intentionally not used here.
+async function runWindowsDeployOperation({ profile, spawn, runtime, layout, execPath, operation, mutation = false, timeoutMs, transportWait = spawnAndWait, ...args }) {
+  const frame = buildWindowsOperationFrame({ layout, execPath, operation, ...args });
+  const transport = await transportWait(spawn, "ssh", buildSshArgs(profile).concat([REMOTE_NODE_LAUNCH_COMMAND]), {
+    stdin: frame, runtime, role: `windows-${operation}`, mutation, timeoutMs,
+  });
+  let detail;
+  try { detail = JSON.parse(String(transport.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
+  const refusal = /^([a-z][a-z0-9_]+): /m.exec(String(transport.stderr || ""));
+  const reason = (refusal && refusal[1]) || (detail && detail.reason) || "windows_operation_failed";
+  if (reason === "installer_result_unknown") throw windowsRecoveryError(runtime, reason);
+  return {
+    ok: transport.code === 0 && !!detail && typeof detail === "object" && !Array.isArray(detail)
+      && (detail.ok === true || (operation === "readIdentity" && Object.hasOwn(detail, "identity"))),
+    code: transport.code, detail, reason,
+    message: transport.stderr || (detail && detail.stderrTail) || `Windows ${operation} failed.`,
+  };
+}
+
+function windowsRecoveryError(runtime, code = "manual_lock_inspection_required") {
+  const err = Object.assign(new Error("Remote deployment lock requires manual inspection"), {
+    name: "TransportRecoveryError", code, recoveryCode: "manual_lock_inspection_required", drainVerified: true,
+  });
+  if (runtime && typeof runtime.invalidateManagedOperation === "function") {
+    try { runtime.invalidateManagedOperation(err); } catch {}
+  }
+  return err;
+}
+
+function windowsDeployContext({ profile, installId, layout, execPath, leaseId, spawn, runtime, transportWait, now = Date.now }) {
+  return {
+    profile, spawn, runtime, layout, execPath, transportWait,
+    owner: { leaseId, installId, profileId: profile.id, runtimeKey: layout.runtimeKey, layoutVersion: layout.layoutVersion, acquiredAt: now() },
+    expected: { installId, profileId: profile.id, runtimeKey: layout.runtimeKey, layoutVersion: layout.layoutVersion },
+  };
+}
+
+function createWindowsOperationRunner(context) {
+  return (operation, mutation, args = {}) => runWindowsDeployOperation({ ...context, operation, mutation, ...args });
+}
+
+async function acquireWindowsDeployLock(context) {
+  const { runtime } = context;
+  if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("acquire-attempted");
+  const result = await runWindowsDeployOperation({ ...context, operation: "acquireLock", mutation: true });
+  if (result.code === 0 && result.detail && result.detail.ok === true) {
+    if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("lock-owned");
+    return result;
+  }
+  if (result.code === 0 && result.detail && result.detail.ok === false && result.detail.reason === "lock_busy") {
+    if (runtime && typeof runtime.setManagedLockStage === "function") runtime.setManagedLockStage("before-acquire");
+    return { ...result, reason: "lock_busy", message: "Another Clawd deployment owns this remote runtime; try again later." };
+  }
+  throw windowsRecoveryError(runtime, "lock_acquire_unknown");
+}
+
+async function settleWindowsDeployLease(context, operation, progress = () => {}) {
+  let result;
+  let primaryError;
+  try { result = await operation(); } catch (err) { primaryError = err; }
+  let releaseError;
+  if (!requiresManualLockInspection(primaryError) && !requiresManualLockInspection(result) && managedTransportIsActive(context.runtime)) {
+    try {
+      const released = await runWindowsDeployOperation({ ...context, operation: "releaseLock", mutation: true });
+      if (!released.ok) throw windowsRecoveryError(context.runtime);
+      if (context.runtime && typeof context.runtime.setManagedLockStage === "function") context.runtime.setManagedLockStage("before-acquire");
+      progress("lock-release", "ok");
+    } catch (err) {
+      releaseError = err;
+      progress("lock-release", "fail", `Lock release requires manual inspection at ${context.layout.deployLockDir}`);
+    }
+  }
+  if (releaseError) {
+    const recoveryCode = releaseError.recoveryCode || "manual_lock_inspection_required";
+    if (primaryError) Object.assign(primaryError, { recoveryCode, recoveryError: releaseError.message });
+    else if (result && result.ok === false) return { ...result, recoveryCode, recoveryError: releaseError.message };
+    else throw Object.assign(releaseError, { recoveryCode });
+  }
+  if (primaryError) throw primaryError;
+  return result;
+}
+
+function windowsInstallerEnv(layout, permissionTransport) {
+  return {
+    CLAUDE_CONFIG_DIR: layout.claudeConfigDir, COPILOT_HOME: layout.copilotHome,
+    CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1", CLAWD_REMOTE_IDENTITY_PATH: layout.identityFile,
+    CLAWD_SSH_SECURE_MARKER_PATH: layout.secureMarkerFile, CLAWD_HOST_PREFIX_PATH: layout.hostPrefixFile,
+    CLAWD_REMOTE_LAST_LOG_PATH: layout.lastLogFile, CLAWD_STATUSLINE_SIDECAR_PATH: layout.statuslineSidecarFile,
+    CLAWD_REMOTE_PERMISSION_TRANSPORT: permissionTransport === "query" || permissionTransport === "native" ? permissionTransport : "path",
+  };
+}
+
+async function secureWindowsDeploy({ profile, installId, identityTxn, platformSnapshot, legacyMigrationConfirmed,
+  runtime, spawn, hooksDir, leaseId, deps, progress, recordStep, fail }) {
+  if (profile.runtimeMode === "profile-isolated") return fail("layout", "Profile-isolated runtimes are not supported on Windows remote hosts.", "windows_profile_isolated_unsupported");
+  if (profile.hostPrefix != null && !isValidHostPrefix(profile.hostPrefix)) {
+    return fail("host-prefix", "Host prefix contains characters that cannot be written to Windows hooks.", "host_prefix_invalid");
+  }
+  progress("layout", "start");
+  let layout;
+  try {
+    layout = resolveRemoteRuntimeLayout({ runtimeMode: profile.runtimeMode, runtimeKey: profile.runtimeKey, remoteHome: platformSnapshot.node.homedir });
+    if (layout.platform !== "win32") throw new Error("Windows remote home required");
+  } catch (err) { return fail("layout", err.message, "remote_home_invalid"); }
+  if (layout.runtimeKey !== identityTxn.runtimeKey || layout.layoutVersion !== identityTxn.layoutVersion) {
+    return fail("layout", "Identity transaction belongs to another remote runtime layout", "layout_drift");
+  }
+  progress("layout", "ok", layout.runtimeKey);
+  progress("check-node", "start");
+  const resolved = platformSnapshot.remoteNode;
+  if (!resolved || !resolved.ok) return fail("check-node", "A probed Windows Node execPath is required.", "node_unavailable");
+  const remoteNode = { nodeBin: resolved.nodeBin, version: resolved.version || null, source: resolved.source || null };
+  progress("check-node", "ok", resolved.version);
+  const context = windowsDeployContext({ profile, installId, layout, execPath: resolved.nodeBin, leaseId, spawn, runtime, transportWait: deps.transportWait, now: deps.now });
+  progress("lock", "start");
+  const lock = await acquireWindowsDeployLock(context);
+  if (!lock.ok) return fail("lock", lock.message, lock.reason);
+  progress("lock", "ok");
+  return settleWindowsDeployLease(context, async () => {
+    const run = createWindowsOperationRunner(context);
+    progress("preflight", "start");
+    const preflight = await run("preflight", false);
+    if (!preflight.ok) return fail("preflight", preflight.message, preflight.reason);
+    const presence = preflight.detail;
+    if (presence.identity !== true && (presence.legacyTraces > 0 || presence.legacyConfigTraces > 0) && legacyMigrationConfirmed !== true) {
+      return fail("preflight", "This remote runtime contains a legacy Clawd deployment with no verifiable owner. Confirm migration before changing it.", "legacy_deployment_confirmation_required");
+    }
+    progress("preflight", "ok");
+    // Windows has no legacy Codex monitor, isolated wrappers, or Hermes phase.
+    const stagingNative = path.win32.join(layout.deployStagingDir, leaseId);
+    const mkdir = await run("mkdir", true, { directories: [...remoteLayoutDirectories(layout), stagingNative] });
+    if (!mkdir.ok) return fail("mkdir", mkdir.message, mkdir.reason);
+    const identity = buildRemoteIdentityDocument({ profile: { ...profile, routingNonce: identityTxn.toNonce }, installId, deployedAt: identityTxn.startedAt });
+    // Each write couples its progress row with an identity step and readback evidence.
+    for (const [operation, step, txnStep, evidence, args] of [
+      ["writeIdentity", "identity", "identity", "identity read-back matched transaction", { identity }],
+      ["writeMarker", "secure-marker", "secureMarker", "marker atomically written and read back", {}],
+    ]) {
+      progress(step, "start");
+      const result = await run(operation, true, args);
+      if (!result.ok) return fail(step, result.message, result.reason, txnStep);
+      await recordStep(txnStep, "done", evidence);
+      progress(step, "ok");
+    }
+    progress("hook-files", "start");
+    const localFiles = HOOK_FILES.map((name) => path.join(hooksDir, name));
+    const upload = await spawnAndWait(spawn, "scp", buildScpArgs(profile).concat([...localFiles, buildScpRemoteTarget(profile.host, toRemoteSftpPath(stagingNative))]), {
+      timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true,
+    });
+    if (upload.code !== 0) return fail("hook-files", upload.stderr || "Hook staging upload failed", "hook_upload_failed", "hookFiles");
+    const hashes = Object.fromEntries(HOOK_FILES.map((name, i) => [name, crypto.createHash("sha256").update(fs.readFileSync(localFiles[i])).digest("hex")]));
+    const promoted = await run("promoteMany", true, { hashes });
+    if (!promoted.ok) return fail("hook-files", promoted.message, promoted.reason, "hookFiles");
+    await recordStep("hookFiles", "done", "uploaded hook hashes matched local files");
+    progress("hook-files", "ok");
+    if (profile.hostPrefix) {
+      const prefix = await run("writeHostPrefix", true, { text: profile.hostPrefix });
+      if (!prefix.ok) return fail("host-prefix", prefix.message, prefix.reason);
+    }
+    const env = windowsInstallerEnv(layout, profile.remotePermissionTransport);
+    for (const [txnStep, progressStep, script, present] of [
+      ["installClaude", "install-claude", "install.js", presence.claudePresent],
+      // Keep the identity step, but never run a Codex installer on Windows.
+      ["installCodex", "install-codex", "codex-install.js", false],
+      ["installCopilot", "install-copilot", "copilot-install.js", presence.copilotPresent],
+    ]) {
+      progress(progressStep, "start");
+      if (!present) {
+        await recordStep(txnStep, "not-applicable", txnStep === "installCodex"
+          ? "Codex is not supported on Windows remote hosts in phase 1" : `${script} target root absent before deploy`);
+      } else {
+        const installed = await run("runInstaller", true, { script, argv: ["--remote"], env, verify: txnStep, timeoutMs: 60000 });
+        if (!installed.ok || installed.detail.verified !== true) return fail(progressStep, installed.message, installed.reason === "windows_operation_failed" ? "installer_verification_failed" : installed.reason, txnStep);
+        await recordStep(txnStep, "done", `${script} settings readback verified secure managed command shape`);
+      }
+      progress(progressStep, "ok", present ? null : "not applicable");
+    }
+    if (!presence.claudePresent) {
+      await recordStep("claudePermission", "not-applicable", "Claude config root absent before deploy; native approval remains");
+    } else {
+      const permission = await run("readClaudePermission", false);
+      if (!permission.ok || !["native", "managed"].includes(permission.detail.mode)) return fail("claude-permission", permission.message, permission.reason, "claudePermission");
+      const native = permission.detail.mode === "native";
+      await recordStep("claudePermission", native ? "not-applicable" : "done", native
+        ? "no managed PermissionRequest; Claude native approval retained" : "managed PermissionRequest URL contains transaction nonce");
+    }
+    await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts in phase 1");
+    progress("install-hermes", "ok", "not applicable");
+    return { ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true, isolation: null, hermes: null };
+  }, progress);
+}
+
+// Revalidate historical Windows targets before acquiring a mutation lease.
+// POSIX deliberately retains its existing SSH command count and ordering.
+async function withWindowsRemoteLease({ profile, runtime, deps = {}, operation, requireIdentity = true }) {
+  const spawn = deps.spawn || childProcess.spawn;
+  const discovered = await discoverWindowsRemoteNode({ profile, spawn, buildSshArgs, runtime, runFrame: deps.runRemoteNodeFrame });
+  if (!discovered.ok) return { ...discovered, skipped: true };
+  if (typeof discovered.homedir !== "string" || path.win32.normalize(discovered.homedir).toLowerCase() !== String(profile.remoteHome).toLowerCase()) {
+    return { ok: false, skipped: true, reason: "platform_changed" };
+  }
+  let layout;
+  try {
+    layout = resolveRemoteRuntimeLayout({ runtimeMode: profile.runtimeMode, runtimeKey: profile.runtimeKey, remoteHome: profile.remoteHome });
+  } catch (err) { return { ok: false, skipped: true, reason: "layout_invalid", stderr: err.message }; }
+  if (layout.platform !== "win32" || layout.runtimeMode === "profile-isolated") return { ok: false, skipped: true, reason: "windows_profile_isolated_unsupported" };
+  const leaseId = (deps.randomBytes || crypto.randomBytes)(16).toString("hex");
+  const context = windowsDeployContext({ profile, installId: profile.installId, layout, execPath: discovered.nodeBin, leaseId, spawn, runtime, transportWait: deps.transportWait, now: deps.now });
+  const run = createWindowsOperationRunner(context);
+  // Missing identity must stop cleanup before even creating a deployment lock.
+  // Recheck under the lease below so this read never authorizes a later write.
+  if (requireIdentity) {
+    const read = await run("readIdentity", false);
+    if (!read.ok || !read.detail.identity) return { ok: false, skipped: true, reason: read.ok ? "ownership_identity_missing" : read.reason, stderr: read.message };
+  }
+  const lock = await acquireWindowsDeployLock(context);
+  if (!lock.ok) return { ok: false, skipped: true, reason: lock.reason, stderr: lock.message };
+  return settleWindowsDeployLease(context, async () => {
+    if (requireIdentity) {
+      const preflight = await run("preflight", false);
+      if (!preflight.ok) return { ok: false, skipped: true, reason: preflight.reason, stderr: preflight.message };
+      const read = await run("readIdentity", false);
+      if (!read.ok || !read.detail.identity) return { ok: false, skipped: true, reason: read.ok ? "ownership_identity_missing" : read.reason, stderr: read.message };
+      return operation({ spawn, layout, remoteNode: discovered.nodeBin, leaseId, runWindows: run, identity: read.detail.identity });
+    }
+    return operation({ layout, runWindows: run });
+  });
+}
+
 async function secureDeploy({
   profile,
   installId,
@@ -1383,10 +1614,13 @@ async function secureDeploy({
   const shell = platformSnapshot
     ? platformSnapshot.shell
     : await detectShellFn({ profile, spawn, buildSshArgs, runtime });
-  if ((platformSnapshot && platformSnapshot.remotePlatform === "win32")
-    || (!platformSnapshot && shell && shell.shell === "windows-cmd")) {
-    const failure = windowsPlatformFailure();
-    return fail(failure.step, failure.message, failure.reason, null, failure.hint);
+  if (platformSnapshot && platformSnapshot.remotePlatform === "win32") {
+    progress("remote-shell", "ok", "Windows");
+    return secureWindowsDeploy({ profile, installId, identityTxn, platformSnapshot, legacyMigrationConfirmed,
+      runtime, spawn, hooksDir, leaseId, deps, progress, recordStep, fail });
+  }
+  if (!platformSnapshot && (profile.remotePlatform === "win32" || (shell && shell.shell === "windows-cmd"))) {
+    return fail("remote-shell", "Probe the remote platform before deploying to Windows.", "windows_platform_snapshot_required");
   }
   progress("remote-shell", "ok", shell && shell.os);
 
@@ -1406,7 +1640,7 @@ async function secureDeploy({
 
   progress("check-node", "start");
   const resolved = (platformSnapshot && platformSnapshot.remoteNode) || await resolveRemoteNodeBin({
-    profile,
+    profile: platformSnapshot ? { ...profile, remotePlatform: platformSnapshot.remotePlatform } : profile,
     spawn,
     buildSshArgs,
     runtime,
@@ -1430,8 +1664,7 @@ async function secureDeploy({
       return fail("check-node", "Remote Node platform could not be verified.");
     }
     if (String(checked.stdout).trim() === "win32") {
-      const failure = windowsPlatformFailure();
-      return fail(failure.step, failure.message, failure.reason, null, failure.hint);
+      return fail("remote-shell", "Probe the remote platform before deploying to Windows.", "windows_platform_snapshot_required");
     }
   }
 
@@ -2078,6 +2311,9 @@ async function bootstrapIsolatedRuntime({
   runtime = null,
   deps = {},
 }) {
+  if (profile && profile.remotePlatform === "win32") {
+    return { ok: false, reason: "windows_profile_isolated_unsupported" };
+  }
   if (!profile || !profile.id || !INSTALL_ID_RE.test(installId || "")) {
     return { ok: false, skipped: true, reason: "secure_identity_required" };
   }
@@ -2325,6 +2561,9 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
       stderr: "Remote ownership metadata is incomplete; no remote mutation was attempted.",
     };
   }
+  if (profile.remotePlatform === "win32") {
+    return withWindowsRemoteLease({ profile, runtime, deps, operation });
+  }
   const spawn = deps.spawn || childProcess.spawn;
   let layout;
   try {
@@ -2506,7 +2745,19 @@ async function secureUninstallRemoteIntegrations({
     profile,
     runtime,
     deps,
-    operation: async ({ spawn, layout, remoteNode, leaseId }) => {
+    operation: async ({ spawn, layout, remoteNode, leaseId, runWindows, identity }) => {
+      if (layout.platform === "win32") {
+        const env = windowsInstallerEnv(layout, profile.remotePermissionTransport);
+        const argv = ["--remote-uninstall-owned", "--hooks-dir", layout.claudeHooksDir, "--routing-nonce", identity.routingNonce];
+        for (const script of ["install.js", "copilot-install.js"]) {
+          const result = await runWindows("runInstaller", true, { script, argv, env });
+          if (!result.ok) return { ok: false, reason: result.reason, stderr: result.message, layout };
+        }
+        const files = [...HOOK_FILES.map((name) => path.win32.join(layout.claudeHooksDir, name)), layout.hostPrefixFile, layout.lastLogFile,
+          ...(preserveIdentity ? [] : [layout.identityFile, layout.secureMarkerFile])];
+        const removed = await runWindows("removeFiles", true, { files });
+        return { ok: !!removed.ok, ...(removed.ok ? {} : { reason: removed.reason, stderr: removed.message }), layout };
+      }
       const envPrefix = buildRemoteInstallerEnv(layout, profile.remotePermissionTransport);
       const optionalInstaller = (script, argv, whenAbsent = "") => {
         const scriptPath = path.posix.join(layout.claudeHooksDir, script);
@@ -2588,6 +2839,14 @@ async function finalizeRetiredRemoteLayout({
       reason: "ownership_unverified",
       stderr: "Remote ownership metadata is incomplete; retirement could not be finalized.",
     };
+  }
+  if (profile.remotePlatform === "win32") {
+    return withWindowsRemoteLease({ profile, runtime, deps, requireIdentity: false,
+      operation: async ({ layout, runWindows }) => {
+        const result = await runWindows("finalizeIdentity", true);
+        return { ok: !!result.ok, ...(result.ok ? {} : { reason: result.reason, stderr: result.message }), layout };
+      },
+    });
   }
   const spawn = deps.spawn || childProcess.spawn;
   let layout;
@@ -2681,11 +2940,19 @@ async function finalizeRetiredRemoteLayout({
 }
 
 async function startCodexMonitor(options) {
+  if (isWindowsRemoteTarget(options)) return { ok: true, skipped: true, reason: "not-applicable" };
   return secureStartCodexMonitor(options || {});
 }
 
 async function stopCodexMonitor(options) {
+  if (isWindowsRemoteTarget(options)) return { ok: true, skipped: true, reason: "not-applicable" };
   return secureStopCodexMonitor(options || {});
+}
+
+function isWindowsRemoteTarget(options) {
+  return !!options && (options.platformSnapshot
+    ? options.platformSnapshot.remotePlatform === "win32"
+    : options.profile && options.profile.remotePlatform === "win32");
 }
 
 async function uninstallRemoteIntegrations(options) {
@@ -2716,6 +2983,7 @@ module.exports = {
   finalizeRetiredRemoteLayout,
   bootstrapIsolatedRuntime,
   __test: {
+    runWindowsDeployOperation,
     spawnAndWait,
     legacyDeploy,
     legacyStartCodexMonitor,

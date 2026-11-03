@@ -1278,3 +1278,45 @@ it("issue #1316: owned Copilot uninstall preserves different POSIX path case", (
   assert.strictEqual(result.removed, 1);
   assert.deepStrictEqual(readJson(hooksPath).hooks.sessionStart, [different]);
 });
+
+for (const remote of [false, true]) {
+  it(`issue #1316: current Windows Copilot hooks remove BOM without changing entries remote=${remote}`, () => {
+    const temp = makeTempHomeWithCopilot();
+    const options = { ...temp, platform: "win32", nodeBin: "C:\\Node\\node.exe", hookScript: "C:\\Users\\remote\\.claude\\hooks\\copilot-hook.js",
+      remote, sshRemote: remote, silent: true, env: {} };
+    registerCopilotHooks(options);
+    const original = readJson(temp.hooksPath);
+    original.custom = { keep: true };
+    original.hooks.sessionStart.push({ type: "command", powershell: "foreign-hook" });
+    fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original, null, 2)}`, "utf8");
+    const result = registerCopilotHooks(options);
+    assert.strictEqual(result.added, 0);
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(result.skipped, COPILOT_HOOK_EVENTS.length);
+    assert.strictEqual(result.configChanged, true);
+    assert.strictEqual(fs.readFileSync(temp.hooksPath, "utf8").startsWith("\uFEFF"), false);
+    assert.deepStrictEqual(readJson(temp.hooksPath), original);
+    assert.strictEqual(registerCopilotHooks(options).configChanged, false);
+  });
+}
+it("issue #1316: owned Copilot uninstall removes BOM even when every entry is foreign", () => {
+  const original = { version: 1, custom: { keep: true }, hooks: { sessionStart: [{ type: "command", powershell: "foreign-hook" }] } };
+  const temp = makeTempHomeWithCopilot(original);
+  fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original)}`, "utf8");
+  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ ...temp,
+    hooksDir: "C:\\Users\\remote\\.claude\\hooks", routingNonce: "a".repeat(32), platform: "win32", silent: true });
+  assert.strictEqual(result.removed, 0);
+  assert.strictEqual(result.configChanged, true);
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(fs.readFileSync(temp.hooksPath, "utf8").startsWith("\uFEFF"), false);
+  assert.deepStrictEqual(readJson(temp.hooksPath), original);
+});
+it("issue #1316: owned Copilot uninstall removes BOM from a config without a hooks object", () => {
+  const original = { version: 1, custom: "keep" };
+  const temp = makeTempHomeWithCopilot(original);
+  fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original)}`, "utf8");
+  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ ...temp,
+    hooksDir: "C:\\Users\\remote\\.claude\\hooks", routingNonce: "a".repeat(32), silent: true });
+  assert.strictEqual(result.configChanged, true);
+  assert.deepStrictEqual(readJson(temp.hooksPath), original);
+});
