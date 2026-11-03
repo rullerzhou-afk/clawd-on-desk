@@ -11,6 +11,9 @@ ownership-fenced cleanup required by the secure transport.
 - A local Clawd instance is running
 - Your machine can reach the remote host via the system `ssh`
 - Node.js is installed on the remote
+- For Windows 10/11 remote hosts, enable the built-in OpenSSH Server and put
+  Node.js 14+ on PATH. The default shell can be cmd, PowerShell, or Git Bash;
+  no shell change is needed
 - At least one supported remote agent is installed on the remote: Claude Code, Codex CLI, Copilot CLI, or Hermes Agent
 - For Hermes Agent, Hermes is already installed on the remote and its CLI is
   reachable as `<home>/hermes-agent/venv/bin/hermes`, as `~/.local/bin/hermes`
@@ -59,7 +62,8 @@ Clawd launches `~/.claude/hooks/codex-remote-monitor.js` as connection
 maintenance. On a serialized transport it finishes this one-shot maintenance
 before starting the persistent reverse tunnel; automatic tunnel reconnects do
 not replay the monitor mutation.
-The fallback is not needed when Codex official hooks are working.
+The fallback is not needed when Codex official hooks are working. It is not
+available on Windows remote hosts; Clawd skips it even if this option is enabled.
 
 ### Hermes Agent scope and activation
 
@@ -99,6 +103,32 @@ managed serialized transport is fully idle.
 The explicit single-session override is intentionally conservative and keyed
 to the effective destination. Change it only while Disconnected. Standard
 SSH targets retain the existing parallel-capable behavior.
+
+## Windows remote hosts
+
+Windows remote deployment supports **Claude Code and Copilot CLI** in
+`account-default` mode. Codex CLI, Hermes Agent, `profile-isolated` mode, and
+the Claude quota ring are not yet supported. Deployment skips the unsupported
+agents and leaves any existing Claude statusLine unchanged.
+
+Choose between remote deployment and running Clawd locally on that Windows
+computer. Deployment is refused while its local Clawd is running, or when its
+runtime record cannot establish that it has stopped. Quit that Clawd before
+clicking **Deploy / Repair Hooks**. Remote deployment also removes Clawd's
+Claude auto-start hook, so starting Claude does not launch the local desktop.
+
+Starting local Clawd later takes the hooks back for local use. The next
+**Connect** or reconnect checks the components installed by this deployment
+and reports that the remote hooks need repair if they were taken over.
+Takeover is not checked continuously after a successful connection. If local
+Clawd has **Launch at login** enabled, restarting Windows can automatically
+start it and take the hooks back. Quit it, then deploy again to return to
+remote use.
+
+File permissions rely on the Windows user profile directory's inherited ACLs;
+this does not isolate deployments that share the same Windows account.
+Copilot ignores a `hooks.json` containing a UTF-8 BOM. Clawd removes that BOM
+automatically during deployment and verifies the result.
 
 ## Key concepts
 
@@ -212,6 +242,23 @@ Node runtime, while the installed plugin itself runs under Hermes' own
 virtualenv Python. If the Hermes phase fails because the `hermes` CLI cannot be
 resolved, make it reachable as `<home>/hermes-agent/venv/bin/hermes`, as
 `~/.local/bin/hermes`, or as `hermes` on the non-login `PATH`, then redeploy.
+
+### Remote has no Node.js (Windows)
+
+Install Node.js 14+ on the Windows remote and make `node` available on PATH to
+the OpenSSH session, then run **Deploy / Repair Hooks** again. A Node version
+manager available only in an interactive shell is not enough. If the Node
+executable on PATH changes after deployment, deploy again to verify its new
+path. Changing the OpenSSH default shell is not required.
+
+### Remote hooks were taken over by local Clawd
+
+Quit Clawd on the Windows remote, then run **Deploy / Repair Hooks**. Local
+Clawd restores local hooks when it starts, including after Windows restarts
+if **Launch at login** is enabled. The warning appears on the next connection
+or reconnect, rather than during an already healthy connection. If Clawd cannot
+read or parse the hook configuration, it reports that verification failed;
+check file access and JSON before reconnecting or redeploying.
 
 ### Can I open the SSH tunnel manually?
 

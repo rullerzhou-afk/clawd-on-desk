@@ -1789,7 +1789,20 @@ function remoteSshBeginIdentityRotation(payload, deps) {
   }
   if (current.identityTxn && current.identityTxn.phase !== "committed") {
     if ((current.identityTxn.remotePlatform || "posix") !== remotePlatform) {
-      return { status: "error", reason: "identity_txn_platform_mismatch", message: "The pending identity transaction belongs to another remote platform; resolve it before deploying." };
+      if (Object.values(current.identityTxn.steps || {}).some((step) => step.status === "done" || step.status === "failed")) {
+        return { status: "error", reason: "identity_txn_platform_mismatch", message: "The pending identity transaction belongs to another remote platform; resolve it before deploying." };
+      }
+      const previousTxn = current.identityTxn;
+      // A platform retry continues the original rotation and its grace period.
+      // A null source stays revoked; the 1ms expiry is only a schema placeholder.
+      const txn = createIdentityTxn({ ...current, identityTxn: null, routingNonce: previousTxn.fromNonce }, {
+        remotePlatform,
+        now: () => previousTxn.startedAt,
+        previousNonceTtlMs: 1,
+      });
+      if (previousTxn.fromNonce) txn.previousExpiresAt = previousTxn.previousExpiresAt;
+      next.profiles[idx] = { ...current, identityTxn: txn };
+      return { status: "ok", commit: { remoteSsh: next }, identityTxn: txn };
     }
     return { status: "ok", noop: true, identityTxn: current.identityTxn };
   }
@@ -1859,6 +1872,9 @@ function remoteSshBeginRuntimeModeSwitch(payload, deps) {
     return { status: "error", message: "remoteSsh.beginRuntimeModeSwitch.runtimeMode is invalid" };
   }
   const current = next.profiles[idx];
+  if (current.remotePlatform === "win32" && runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED) {
+    return { status: "error", reason: "windows_profile_isolated_unsupported" };
+  }
   if (current.identityTxn && current.identityTxn.phase !== "committed") {
     return {
       status: "error",

@@ -24,7 +24,7 @@ function loadNodeFrame() {
     }
   }
   function fail(err) {
-    console.error(err.message);
+    console.error(err && err.message ? err.message : String(err));
     process.exitCode = 1;
   }
   function end() {
@@ -52,7 +52,7 @@ function buildNodeProgramFrame(code, args, execPath) {
     "const sameExecPath=process.platform==='win32'",
     "  ? actualExecPath.toLowerCase()===expectedExecPath.toLowerCase()",
     "  : actualExecPath===expectedExecPath;",
-    "if(!sameExecPath)throw new Error('Remote Node execPath changed; redeploy required');\n",
+    "if(!sameExecPath){console.error('Remote Node execPath changed; redeploy required');process.exit(7);}\n",
   ].join("\n");
   return encodeNodeFrame(guard + code, args);
 }
@@ -67,10 +67,29 @@ function writeNodeFrame(child, frame, { persistent = false } = {}) {
   else child.stdin.end(frame);
 }
 
+// Stream errors are emitted by stdin itself, independently of child errors.
+// Keep the listener after failure so cleanup cannot cause an unhandled error.
+function writeNodeFrameSafely(child, frame, { persistent = false, onError }) {
+  let failed = false;
+  const fail = (err) => {
+    if (failed) return;
+    failed = true;
+    onError(err);
+  };
+  try {
+    if (child.stdin && typeof child.stdin.on === "function") child.stdin.on("error", fail);
+    writeNodeFrame(child, frame, { persistent });
+  } catch (err) {
+    fail(err);
+  }
+  return !failed;
+}
+
 module.exports = {
   NODE_FRAME_LOADER,
   REMOTE_NODE_LAUNCH_COMMAND,
   buildNodeProgramFrame,
   buildNodeDiscoveryFrame,
   writeNodeFrame,
+  writeNodeFrameSafely,
 };

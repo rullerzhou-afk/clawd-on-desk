@@ -18,15 +18,27 @@ const { isValidRemoteHome } = require("./remote-ssh-profile");
 const POSIX_KERNEL_RE = /^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX)$/i;
 const WINDOWS_ENVIRONMENT_RE = /^(MINGW|MSYS|CYGWIN)/i;
 
-function windowsPlatformFailure(nodeMissing = false) {
+// Windows-specific hints are applied only after a native Windows snapshot.
+function windowsFailureHint(reason) {
   return {
-    ok: false,
-    step: "remote-shell",
-    reason: nodeMissing ? "windows_node_missing" : "windows_remote_pending",
-    hint: nodeMissing ? "remoteSshErrWindowsNodeMissing" : "remoteSshErrWindowsRemotePending",
-    message: nodeMissing
-      ? "Node.js was not found on remote Windows (Node.js 14+ must be on PATH)."
-      : "Windows remote host support is coming soon.",
+    windows_node_missing: "remoteSshErrWindowsNodeMissing",
+    node_unavailable: "remoteSshErrWindowsNodeMissing",
+    local_clawd_conflict: "remoteSshErrWindowsLocalClawdRunning",
+    runtime_owner_unknown: "remoteSshErrWindowsLocalClawdUnknown",
+    runtime_invalid: "remoteSshErrWindowsLocalClawdUnknown",
+    windows_profile_isolated_unsupported: "remoteSshErrWindowsProfileIsolatedUnsupported",
+    windows_node_changed: "remoteSshErrWindowsNodeChanged",
+    identity_txn_platform_mismatch: "remoteSshErrIdentityTxnPlatformMismatch",
+    copilot_config_bom: "remoteSshErrCopilotConfigBom",
+    windows_powershell_path_unsupported: "remoteSshErrWindowsPowerShellPath",
+  }[reason] || null;
+}
+
+function windowsPlatformFailure() {
+  return {
+    ok: false, step: "remote-shell", reason: "windows_node_missing",
+    hint: "remoteSshErrWindowsNodeMissing",
+    message: "Node.js was not found on remote Windows (Node.js 14+ must be on PATH).",
   };
 }
 
@@ -58,12 +70,12 @@ async function probeRemotePlatform(options) {
     ok: true, ...parsed, shell,
     remoteNode: { ok: true, nodeBin: parsed.node.execPath, version: parsed.node.version, source: "platform-probe" },
   };
-  if (knownWindows) return windowsPlatformFailure(true);
+  if (knownWindows) return windowsPlatformFailure();
 
   // Keep login-shell discovery for custom POSIX environments whose PATH does
   // not contain Node. A /c/... executable can still be native Windows Node.
   const resolved = await (deps.resolveRemoteNodeBin || resolveRemoteNodeBin)({
-    profile, spawn, buildSshArgs, runtime, verifyCache: true,
+    profile: { ...profile, remotePlatform: "posix" }, spawn, buildSshArgs, runtime, verifyCache: true,
   });
   if (!resolved.ok) return { ...resolved, ok: false, step: "check-node" };
   const fallback = await (deps.spawnAndWait || runRemoteNodeCommand)(
@@ -79,4 +91,4 @@ async function probeRemotePlatform(options) {
   return { ok: true, remotePlatform: "posix", shell, remoteNode: resolved };
 }
 
-module.exports = { probeRemotePlatform, parsePlatformProbe, windowsPlatformFailure };
+module.exports = { probeRemotePlatform, parsePlatformProbe, windowsPlatformFailure, windowsFailureHint };

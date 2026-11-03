@@ -65,7 +65,7 @@ it("issue #1293: exec selection gates platform, location, version, executable an
   for (const version of ["2.1.139", "2.1.159", "1.9.999"]) {
     assert.equal(select(NODE, {}, known(version)), false, version);
   }
-  for (const options of [{ platform: "darwin" }, { platform: "linux" }, { remote: true }, { wslDistro: "Ubuntu" }]) {
+  for (const options of [{ platform: "darwin" }, { platform: "linux" }, { remote: true, platform: "linux" }, { wslDistro: "Ubuntu" }]) {
     assert.equal(select(NODE, {}, known(), options), false, JSON.stringify(options));
   }
   for (const node of ["node", "node.exe", "C:\\bin\\node.cmd", "C:\\bin\\node.bat", "C:node.exe", "\\node.exe", "/usr/bin/node"]) {
@@ -208,7 +208,7 @@ for (const register of [registerHooks, registerHooksAsync]) {
       { platform: "darwin", nodeBin: "/opt/node", prefix: '"/opt/node"', quoted: true },
       { platform: "linux", nodeBin: "/usr/bin/node", prefix: '"/usr/bin/node"', quoted: true },
       { platform: "linux", remote: true, nodeBin: "/remote/node", prefix: 'CLAWD_REMOTE=1 "/remote/node"', quoted: true },
-      { platform: "win32", remote: true, nodeBin: NODE, prefix: `CLAWD_REMOTE=1 "${NODE}"`, quoted: true },
+      { platform: "darwin", remote: true, nodeBin: "/remote/node", prefix: 'CLAWD_REMOTE=1 "/remote/node"', quoted: true },
       { platform: "linux", wslDistro: "Ubuntu", nodeBin: "/usr/bin/node", prefix: "/usr/bin/node", quoted: false },
       { platform: "win32", wslDistro: "Ubuntu", nodeBin: NODE, prefix: `& "${NODE}"`, quoted: true },
     ];

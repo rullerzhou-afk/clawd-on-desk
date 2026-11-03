@@ -660,7 +660,7 @@ describe("Hook installer version compatibility", () => {
 
   it("keeps remote hooks bash-compatible while pinning secure identity", () => {
     const hook = __test.buildCommandHookSpec("node", "/tmp/clawd-hook.js", "Stop", {
-      platform: "win32",
+      platform: "linux",
       remote: true,
       sshRemote: true,
     });
@@ -720,6 +720,7 @@ describe("Hook installer version compatibility", () => {
       sshRemote: true,
       remoteIdentity: secureRemoteIdentity(),
       nodeBin: "/usr/bin/node",
+      platform: "linux",
       claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
     });
 
@@ -2985,7 +2986,7 @@ describe("Claude Code statusline installer", () => {
   });
 
   it("keeps remote deploy statusline collection enabled without an extra flag", () => {
-    assert.deepStrictEqual(parseClaudeInstallCliOptions(["--remote", "--chain-existing"]), {
+    assert.deepStrictEqual(parseClaudeInstallCliOptions(["--remote", "--chain-existing"], "linux"), {
       remote: true,
       chainExisting: true,
       installStatusline: true,
@@ -3962,3 +3963,432 @@ describe("Hook installer UTF-8 BOM compatibility (#657)", () => {
     }
   });
 });
+
+function exportHistoricalInstallClosure(t, dir, runGit) {
+  const { execFileSync } = require("node:child_process");
+  const git = runGit || ((args) => execFileSync("git", args, {
+    cwd: path.resolve(__dirname, ".."), encoding: "utf8", stdio: ["ignore", "pipe", "pipe"],
+  }));
+  try {
+    git(["cat-file", "-e", "cedc5f2e^{commit}"]);
+  } catch (err) {
+    t.skip(`Historical comparison needs cedc5f2e: ${err.message.split("\n")[0]}`);
+    return null;
+  }
+  const exported = new Set();
+  function exportFile(file) {
+    if (exported.has(file)) return;
+    const source = git(["show", `cedc5f2e:${file}`]);
+    const target = path.join(dir, file);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, source);
+    exported.add(file);
+    for (const match of source.matchAll(/require\(["'](\.\/[^"']+)["']\)/g)) {
+      const relative = path.posix.normalize(path.posix.join(path.posix.dirname(file), match[1]));
+      exportFile(path.posix.extname(relative) ? relative : `${relative}.js`);
+    }
+  }
+  exportFile("hooks/install.js");
+  return path.join(dir, "hooks/install.js");
+}
+
+describe("issue #1316: Windows remote Claude hook installation", () => {
+  const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+  const script = "C:/Users/Test User/.claude/hooks/clawd-hook.js";
+  const versionInfo = (version) => ({ version, status: version ? "known" : "unknown", source: "test" });
+
+  for (const register of [registerHooks, registerHooksAsync]) {
+    it(`issue #1316: ${register.name} keeps event and remote flag separate through Repair versions`, async () => {
+      const settingsPath = makeTempSettings({});
+      const options = {
+        platform: "win32", remote: true, sshRemote: true, nodeBin, env: {},
+        homeDir: path.dirname(settingsPath), settingsPath, silent: true,
+        remoteIdentity: secureRemoteIdentity({ filePath: "C:/Users/Test User/.claude/hooks/clawd-remote.json" }),
+        sourcePaths: { state: script, autoStart: script.replace("clawd-hook.js", "auto-start.js") },
+      };
+      await register({ ...options, claudeVersionInfo: versionInfo(null) });
+      assert.strictEqual(getManagedStateHookEntries(readSettings(settingsPath), "Stop")[0].shell, "powershell");
+      for (const version of ["2.1.160", null, "2.1.159"]) {
+        await register({ ...options, claudeVersionInfo: versionInfo(version) });
+        const hooks = getManagedStateHookEntries(readSettings(settingsPath), "Stop");
+        assert.strictEqual(hooks.length, 1);
+        if (version !== "2.1.159") {
+          assert.strictEqual(hooks[0].command, nodeBin);
+          assert.deepStrictEqual(hooks[0].args, [script, "Stop", "--clawd-ssh-remote"]);
+          assert.strictEqual(hooks[0].timeout, 10);
+        } else {
+          assert.strictEqual(hooks[0].shell, "powershell");
+          assert.match(hooks[0].command, /"Stop" "--clawd-ssh-remote"$/);
+        }
+      }
+    });
+  }
+
+  it("issue #1316: unknown fresh hosts and Grok installs retain PowerShell fallback", () => {
+    const dir = path.dirname(makeTempSettings({}));
+    const opts = { platform: "win32", remote: true, homeDir: dir, env: {} };
+    assert.strictEqual(__test.shouldUseClaudeExecForm(nodeBin, {}, versionInfo(null), opts), false);
+    assert.strictEqual(__test.shouldUseClaudeExecForm(nodeBin, {}, versionInfo("2.1.159"), opts), false);
+    assert.strictEqual(__test.shouldUseClaudeExecForm("node", {}, versionInfo("2.1.317"), opts), false);
+    fs.mkdirSync(path.join(dir, ".grok"));
+    assert.strictEqual(__test.shouldUseClaudeExecForm(nodeBin, {}, versionInfo("2.1.317"), opts), false);
+  });
+
+  for (const user of ["Test User", "O'Connell"]) {
+    it(`issue #1316: PowerShell fallback quotes remote env and paths for ${user}`, () => {
+      const { parsePowerShellEnvCommand, quotePowerShellSingleArg } = require("../hooks/json-utils");
+      const hooks = `C:\\Users\\${user}\\.claude\\hooks`;
+      const env = {
+        CLAWD_REMOTE_IDENTITY_PATH: `${hooks}\\clawd-remote.json`,
+        CLAWD_SSH_SECURE_MARKER_PATH: `${hooks}\\clawd-ssh-secure-v1`,
+        CLAWD_HOST_PREFIX_PATH: `${hooks}\\clawd-host-prefix`,
+        CLAWD_REMOTE_LAST_LOG_PATH: `C:\\Users\\${user}\\.clawd\\remote-last-error.log`,
+        CLAWD_STATUSLINE_SIDECAR_PATH: `${hooks}\\clawd-statusline-chain.json`,
+      };
+      const hookScript = `${hooks.replace(/\\/g, "/")}/clawd-hook.js`;
+      const hook = __test.buildCommandHookSpec(nodeBin, hookScript, "Stop", {
+        platform: "win32", remote: true, sshRemote: true, remoteIdentity: secureRemoteIdentity(), env,
+      });
+      assert.strictEqual(hook.shell, "powershell");
+      const expectedEnv = { CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1", ...env };
+      const prefix = Object.entries(expectedEnv).map(([key, value]) => `$env:${key}=${quotePowerShellSingleArg(value)}`).join("; ");
+      assert.strictEqual(hook.command, `${prefix}; & "${nodeBin}" "${hookScript}" "Stop" "--clawd-ssh-remote"`);
+      assert.deepStrictEqual(parsePowerShellEnvCommand(hook.command), {
+        env: expectedEnv, args: [nodeBin, hookScript, "Stop", "--clawd-ssh-remote"],
+      });
+    });
+  }
+
+  it("issue #1316: every remote POSIX event command equals cedc5f2e byte for byte", (t) => {
+    const dir = path.dirname(makeTempSettings({}));
+    const entryPath = exportHistoricalInstallClosure(t, dir);
+    if (!entryPath) return;
+    const old = require(entryPath).__test;
+    assert.strictEqual(require(path.join(dir, "hooks/server-config.js")).isRemoteHookRuntime, undefined);
+    assert.strictEqual(require(path.join(dir, "hooks/json-utils.js")).parsePowerShellEnvCommand, undefined);
+    const events = [...CLAUDE_CORE_HOOK_EVENTS, "PreCompact", "PostCompact", "StopFailure", "UserPromptExpansion", "PostToolBatch"];
+    for (const platform of ["darwin", "linux"]) {
+      for (const event of events) {
+        for (const sshRemote of [false, true]) {
+          const options = {
+            platform, remote: true, sshRemote, env: {}, async: true, timeout: 10,
+            remoteIdentityPath: "/home/Test User/O'Connell/hooks/clawd-remote.json",
+            secureMarkerPath: "/home/Test User/O'Connell/hooks/clawd-ssh-secure-v1",
+          };
+          const expected = old.buildCommandHookSpec("/usr/bin/node", "/home/Test User/hooks/clawd-hook.js", event, options);
+          const actual = __test.buildCommandHookSpec("/usr/bin/node", "/home/Test User/hooks/clawd-hook.js", event, options);
+          assert.deepStrictEqual(actual, expected, `${platform}/${event}/${sshRemote}`);
+          assert.deepStrictEqual(Buffer.from(actual.command), Buffer.from(expected.command));
+        }
+      }
+    }
+    for (const platform of ["win32", "darwin", "linux"]) {
+      for (const execForm of [false, true]) {
+        const options = { platform, execForm, async: true, timeout: 5 };
+        const node = platform === "win32" ? nodeBin : "/usr/bin/node";
+        const hook = platform === "win32" ? script : "/opt/app dir/clawd-hook.js";
+        assert.deepStrictEqual(__test.buildCommandHookSpec(node, hook, "Stop", options), old.buildCommandHookSpec(node, hook, "Stop", options));
+      }
+    }
+  });
+
+  it("issue #1316: remote Windows skips statusLine even when explicitly requested", () => {
+    for (const args of [["--remote"], ["--remote", "--statusline"], ["--remote", "--chain-existing", "--statusline"]]) {
+      assert.strictEqual(parseClaudeInstallCliOptions(args, "win32").installStatusline, false);
+    }
+    for (const platform of ["darwin", "linux"]) assert.strictEqual(parseClaudeInstallCliOptions(["--remote"], platform).installStatusline, true);
+    for (const platform of ["win32", "darwin", "linux"]) assert.strictEqual(parseClaudeInstallCliOptions(["--statusline"], platform).installStatusline, true);
+  });
+});
+
+function runRemoteClaudeCli(settingsPath, platform, args = ["--remote", "--statusline", "--chain-existing"]) {
+  const { spawnSync } = require("node:child_process");
+  const dir = path.dirname(settingsPath);
+  const identityPath = path.join(dir, "clawd-remote.json");
+  fs.writeFileSync(identityPath, JSON.stringify(secureRemoteIdentity({ routingNonce: "b".repeat(32) })));
+  const preload = path.join(dir, "cli-platform.js");
+  fs.writeFileSync(preload, `
+    Object.defineProperty(process, 'platform', { value: ${JSON.stringify(platform)} });
+    require('os').homedir = () => ${JSON.stringify(dir)};
+    require(${JSON.stringify(require.resolve("../hooks/server-config"))}).resolveNodeBin =
+      () => ${JSON.stringify(platform === "win32" ? "C:\\Program Files\\nodejs\\node.exe" : "/usr/bin/node")};
+    require('child_process').execFileSync = () => '2.1.317 (Claude Code)';
+  `);
+  const result = spawnSync(process.execPath, ["--require", preload, require.resolve("../hooks/install"), ...args], {
+    encoding: "utf8", timeout: 10000,
+    env: { ...process.env, NODE_OPTIONS: "", HOME: dir, USERPROFILE: dir, CLAUDE_CONFIG_DIR: dir,
+      CLAWD_REMOTE: "", CLAWD_SSH_REMOTE: platform === "win32" ? "1" : "",
+      CLAWD_REMOTE_IDENTITY_PATH: identityPath, CLAWD_WSL_DISTRO: "", WSL_DISTRO_NAME: "", GROK_HOME: "" },
+  });
+  assert.strictEqual(result.status, 0, result.stderr);
+  return result;
+}
+
+it("issue #1316: Windows remote CLI preserves statusLine and removes only Clawd auto-start siblings", () => {
+  const statusLine = { type: "command", command: 'node "C:/Local App/hooks/claude-statusline.js"', padding: 0 };
+  const thirdParty = { type: "command", command: '"C:/audit.exe" "SessionStart"', timeout: 7 };
+  const autoStarts = [
+    { type: "command", shell: "powershell", command: '& "C:/node.exe" "C:/Local App/hooks/auto-start.js"' },
+    { type: "command", command: "C:/node.exe", args: ["C:/Local App/hooks/auto-start.js"] },
+  ];
+  const settingsPath = makeTempSettings({ statusLine, hooks: { SessionStart: [{ matcher: "", hooks: [...autoStarts, thirdParty] }] } });
+  const recovery = path.join(path.dirname(settingsPath), "hooks", "clawd-statusline-chain.json");
+  fs.mkdirSync(path.dirname(recovery));
+  const originalRecovery = '{ "original": "preserve every byte" }\n';
+  fs.writeFileSync(recovery, originalRecovery);
+  const result = runRemoteClaudeCli(settingsPath, "win32");
+  const settings = readSettings(settingsPath);
+  assert.strictEqual(JSON.stringify(settings.statusLine), JSON.stringify(statusLine));
+  assert.strictEqual(fs.readFileSync(recovery, "utf8"), originalRecovery);
+  const hooks = getCommandHookEntries(settings, "SessionStart");
+  assert.ok(hooks.some((hook) => JSON.stringify(hook) === JSON.stringify(thirdParty)));
+  assert.strictEqual(hooks.filter((hook) => claudeHookHasMarker(hook, "auto-start.js")).length, 0);
+  assert.deepStrictEqual(getManagedStateHookEntries(settings, "Stop")[0].args, [getClaudeHookScriptPath(), "Stop", "--clawd-ssh-remote"]);
+  assert.match(result.stdout, /Removed Clawd auto-start hooks for Windows remote mode/);
+});
+
+it("issue #1316: POSIX remote CLI preserves existing auto-start and third-party siblings", () => {
+  const siblings = [
+    { type: "command", command: '"/usr/bin/node" "/opt/clawd/auto-start.js"' },
+    { type: "command", command: "/usr/bin/node", args: ["/opt/clawd/auto-start.js"] },
+    { type: "command", command: '"/opt/audit" "SessionStart"' },
+  ];
+  const settingsPath = makeTempSettings({ hooks: { SessionStart: [{ matcher: "", hooks: siblings }] } });
+  runRemoteClaudeCli(settingsPath, "linux", ["--remote"]);
+  const hooks = getCommandHookEntries(readSettings(settingsPath), "SessionStart");
+  for (const sibling of siblings) assert.ok(hooks.some((hook) => JSON.stringify(hook) === JSON.stringify(sibling)));
+});
+
+it("issue #1316: owned Claude uninstall removes only matching scripts, flags and HTTP nonce", () => {
+  const { unregisterRemoteOwnedHooks } = require("../hooks/install");
+  const hooksDir = "C:\\Users\\Remote User\\.claude\\hooks";
+  const script = "C:/Users/Remote User/.claude/hooks/clawd-hook.js";
+  const nonce = "a".repeat(32);
+  const exec = { type: "command", command: "C:/node.exe", args: [script.toUpperCase(), "Stop", "--clawd-ssh-remote"] };
+  const ps = __test.buildCommandHookSpec("C:/node.exe", script, "Stop", {
+    platform: "win32", remote: true, sshRemote: true, remoteIdentity: secureRemoteIdentity(), env: {},
+  });
+  const http = (url) => ({ type: "http", url, timeout: 600 });
+  const survivors = [
+    { ...exec, args: ["C:/Local App/clawd-hook.js", "Stop", "--clawd-ssh-remote"] },
+    { ...exec, args: [script, "Stop --clawd-ssh-remote"] },
+    { ...exec, args: [script, "Stop"] },
+    { ...ps, command: ps.command + "; Write-Host foreign" },
+    { ...ps, command: `garbage clawd-hook.js --clawd-ssh-remote` },
+    { type: "command", command: '& "C:/node.exe" "C:/Local App/auto-start.js"' },
+    { type: "command", command: '"C:/third-party.exe" "clawd-hook.js"' },
+    http(`http://127.0.0.1:23333/permission/${"b".repeat(32)}`),
+    http(`http://127.0.0.1:23333/permission?nonce=${"b".repeat(32)}`),
+    http(`https://example.test/permission/${nonce}`),
+    http("http://127.0.0.1:23333/permission/clawd-on-desk"),
+  ];
+  const statusLine = { type: "command", command: '"C:/local/statusline.exe"' };
+  const settingsPath = makeTempSettings({ statusLine, custom: "preserved", hooks: { Stop: [{ matcher: "*", hooks: [exec, ps, ...survivors] }],
+    PermissionRequest: [http(`http://127.0.0.1:23334/permission/${nonce}`), { hooks: [http(`http://127.0.0.1:23334/permission?nonce=${nonce}`)] }] } });
+  const sidecar = path.join(path.dirname(settingsPath), "clawd-statusline-chain.json");
+  fs.writeFileSync(sidecar, "preserve recovery bytes\n");
+  const options = { hooksDir, routingNonce: nonce, settingsPath, platform: "win32" };
+  const original = fs.readFileSync(settingsPath);
+  assert.throws(() => unregisterRemoteOwnedHooks({ ...options, routingNonce: "clawd-on-desk" }), /requires/);
+  assert.deepStrictEqual(fs.readFileSync(settingsPath), original);
+  assert.deepStrictEqual(unregisterRemoteOwnedHooks(options), { removed: 4, changed: true });
+  assert.deepStrictEqual(readSettings(settingsPath), { statusLine, custom: "preserved", hooks: { Stop: [{ matcher: "*", hooks: survivors }] } });
+  assert.strictEqual(fs.readFileSync(sidecar, "utf8"), "preserve recovery bytes\n");
+  const bytes = fs.readFileSync(settingsPath);
+  assert.deepStrictEqual(unregisterRemoteOwnedHooks(options), { removed: 0, changed: false });
+  assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+  const withOwnedHook = readSettings(settingsPath);
+  withOwnedHook.hooks.Stop[0].hooks.unshift(exec);
+  fs.writeFileSync(settingsPath, JSON.stringify(withOwnedHook, null, 2));
+  runRemoteClaudeCli(settingsPath, "win32", ["--remote-uninstall-owned", "--hooks-dir", hooksDir, "--routing-nonce", nonce]);
+  assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+});
+
+it("issue #1316: owned Claude uninstall preserves smart-quote command compositions without writing", () => {
+  const { unregisterRemoteOwnedHooks } = require("../hooks/install");
+  for (const quote of ["\u201c", "\u201d", "\u201e"]) {
+    for (const operator of [";", "|", "&&"]) {
+      const hook = { type: "command", shell: "powershell",
+        command: `& "node${quote} ${operator} Write-Output ${quote}foreign" "C:/remote/clawd-hook.js" "Stop" "--clawd-ssh-remote"` };
+      const settingsPath = makeTempSettings({ hooks: { Stop: [{ hooks: [hook] }] } });
+      const bytes = fs.readFileSync(settingsPath);
+      assert.deepStrictEqual(unregisterRemoteOwnedHooks({ settingsPath, hooksDir: "C:/remote", routingNonce: "a".repeat(32), platform: "win32" }),
+        { removed: 0, changed: false });
+      assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+    }
+  }
+});
+
+it("issue #1316: owned Claude uninstall preserves a lone right smart double quote without writing", () => {
+  const { parsePowerShellEnvCommand } = require("../hooks/json-utils");
+  const { unregisterRemoteOwnedHooks } = require("../hooks/install");
+  const command = '& "node\u201d ; Write-Output foreign" "C:/remote/clawd-hook.js" "Stop" "--clawd-ssh-remote"';
+  assert.strictEqual(command.includes("\u201c"), false);
+  assert.strictEqual(command.split("\u201d").length - 1, 1);
+  assert.strictEqual(parsePowerShellEnvCommand(command), null);
+  const settingsPath = makeTempSettings({ hooks: { Stop: [{ hooks: [{ type: "command", shell: "powershell", command }] }] } });
+  const bytes = fs.readFileSync(settingsPath);
+  assert.deepStrictEqual(unregisterRemoteOwnedHooks({ settingsPath, hooksDir: "C:/remote", routingNonce: "a".repeat(32), platform: "win32" }),
+    { removed: 0, changed: false });
+  assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+});
+
+for (const [name, hook] of [
+  ["missing remote flag", { shell: "powershell", command: '& "node" "C:/remote/clawd-hook.js" "Stop"' }],
+  ["different fourth argument", { shell: "powershell", command: '& "node" "C:/remote/clawd-hook.js" "Stop" "--other"' }],
+  ["another hooks directory", { shell: "powershell", command: '& "node" "C:/other/clawd-hook.js" "Stop" "--clawd-ssh-remote"' }],
+  ["missing PowerShell shell field", { command: '& "node" "C:/remote/clawd-hook.js" "Stop" "--clawd-ssh-remote"' }],
+  ["five invocation arguments", { shell: "powershell", command: '& "node" "C:/remote/clawd-hook.js" "Stop" "--clawd-ssh-remote" "extra"' }],
+]) {
+  it(`issue #1316: owned Claude uninstall preserves ${name}`, () => {
+    const { unregisterRemoteOwnedHooks } = require("../hooks/install");
+    const settingsPath = makeTempSettings({ hooks: { Stop: [{ hooks: [{ type: "command", ...hook }] }] } });
+    const bytes = fs.readFileSync(settingsPath);
+    assert.deepStrictEqual(unregisterRemoteOwnedHooks({ settingsPath, hooksDir: "C:/remote", routingNonce: "a".repeat(32), platform: "win32" }),
+      { removed: 0, changed: false });
+    assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+  });
+}
+
+for (const register of [registerHooks, registerHooksAsync]) {
+  it(`issue #1316: ${register.name} refuses PowerShell path interpolation before writing`, async () => {
+    for (const value of ["$HOME", "back`tick", 'double"quote', "left“quote", "right”quote", "low„quote"]) {
+      for (const field of ["nodeBin", "scriptPath"]) {
+        const unsafePath = `C:/Users/${value}/${field === "nodeBin" ? "node.exe" : "clawd-hook.js"}`;
+        const settingsPath = makeTempSettings({ keep: "original settings" });
+        const bytes = fs.readFileSync(settingsPath);
+        const options = {
+          platform: "win32", remote: true, sshRemote: true, env: {}, silent: true,
+          homeDir: path.dirname(settingsPath), settingsPath, remoteIdentity: secureRemoteIdentity(),
+          claudeVersionInfo: { status: "known", version: "2.1.159", source: "test" },
+          nodeBin: field === "nodeBin" ? unsafePath : "C:/Node/node.exe",
+          sourcePaths: { state: field === "scriptPath" ? unsafePath : "C:/remote/clawd-hook.js" },
+        };
+        await assert.rejects(async () => register(options), (err) => {
+          assert.match(err.message, /Windows remote PowerShell hooks cannot use paths/);
+          assert.ok(err.message.includes(unsafePath));
+          return true;
+        });
+        assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+      }
+    }
+  });
+
+  it(`issue #1316: ${register.name} keeps special path characters literal in remote exec form`, async () => {
+    for (const value of ["$HOME", "back`tick", 'double"quote', "left“quote", "right”quote", "low„quote"]) {
+      for (const field of ["nodeBin", "scriptPath"]) {
+        const unsafePath = `C:/Users/${value}/${field === "nodeBin" ? "node.exe" : "clawd-hook.js"}`;
+        const settingsPath = makeTempSettings({});
+        const nodeBin = field === "nodeBin" ? unsafePath : "C:/Node/node.exe";
+        const scriptPath = field === "scriptPath" ? unsafePath : "C:/remote/clawd-hook.js";
+        await register({
+          platform: "win32", remote: true, sshRemote: true, env: {}, silent: true,
+          homeDir: path.dirname(settingsPath), settingsPath, remoteIdentity: secureRemoteIdentity(),
+          claudeVersionInfo: { status: "known", version: "2.1.317", source: "test" }, nodeBin,
+          sourcePaths: { state: scriptPath },
+        });
+        const hook = getManagedStateHookEntries(readSettings(settingsPath), "Stop")[0];
+        assert.strictEqual(hook.command, nodeBin);
+        assert.deepStrictEqual(hook.args, [scriptPath, "Stop", "--clawd-ssh-remote"]);
+      }
+    }
+  });
+
+  it(`issue #1316: ${register.name} requires SSH secure mode and valid identity on Windows remotes`, async () => {
+    const settingsPath = makeTempSettings({ keep: "untouched" });
+    const bytes = fs.readFileSync(settingsPath);
+    const options = {
+      platform: "win32", remote: true, env: {}, silent: true, settingsPath,
+      homeDir: path.dirname(settingsPath), nodeBin: "C:/Node/node.exe",
+      sourcePaths: { state: "C:/remote/clawd-hook.js" },
+      claudeVersionInfo: { status: "known", version: "2.1.317", source: "test" },
+    };
+    await assert.rejects(async () => register(options), /Windows remote hooks require an SSH secure installation/);
+    assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+    const identityPath = path.join(path.dirname(settingsPath), "clawd-remote.json");
+    const secureOptions = { ...options, env: { CLAWD_SSH_REMOTE: "1" }, remoteIdentityPath: identityPath };
+    for (const content of [null, "{broken", JSON.stringify({ version: 2 })]) {
+      if (content !== null) fs.writeFileSync(identityPath, content);
+      await assert.rejects(async () => register(secureOptions), /Secure Remote SSH identity is required/);
+      assert.deepStrictEqual(fs.readFileSync(settingsPath), bytes);
+    }
+    fs.writeFileSync(identityPath, JSON.stringify(secureRemoteIdentity({ routingNonce: "b".repeat(32) })));
+    await register(secureOptions);
+    assert.deepStrictEqual(getManagedStateHookEntries(readSettings(settingsPath), "Stop")[0].args,
+      ["C:/remote/clawd-hook.js", "Stop", "--clawd-ssh-remote"]);
+  });
+}
+
+it("issue #1316: command builder rejects nonsecure Windows remotes in either form", () => {
+  for (const execForm of [false, true]) {
+    assert.throws(() => __test.buildCommandHookSpec("C:/Node/node.exe", "C:/remote/clawd-hook.js", "Stop", {
+      platform: "win32", remote: true, execForm, env: {},
+    }), /Windows remote hooks require an SSH secure installation/);
+  }
+});
+
+it("issue #1316: historical comparison explicitly skips unavailable commits without exporting files", () => {
+  const dir = path.dirname(makeTempSettings({}));
+  const before = fs.readdirSync(dir);
+  let reason;
+  const entry = exportHistoricalInstallClosure({ skip(message) { reason = message; } }, dir, () => {
+    throw new Error("fatal: Not a valid object name cedc5f2e");
+  });
+  assert.strictEqual(entry, null);
+  assert.match(reason, /Historical comparison needs cedc5f2e: fatal: Not a valid object name/);
+  assert.deepStrictEqual(fs.readdirSync(dir), before);
+});
+
+for (const [agent, script] of [["Claude", "../hooks/install"], ["Copilot", "../hooks/copilot-install"]]) {
+  for (const [name, makeArgs] of [
+    ["missing hooks-dir", (_dir, nonce) => ["--routing-nonce", nonce]],
+    ["an option as hooks-dir", (_dir, nonce) => ["--hooks-dir", "--routing-nonce", nonce]],
+    ["missing routing-nonce", (dir) => ["--hooks-dir", dir]],
+    ["an absent nonce value", (dir) => ["--hooks-dir", dir, "--routing-nonce"]],
+    ["invalid routing-nonce", (dir) => ["--hooks-dir", dir, "--routing-nonce", "bad"]],
+    ["uppercase routing-nonce", (dir) => ["--hooks-dir", dir, "--routing-nonce", "A".repeat(32)]],
+  ]) {
+    it(`issue #1316: ${agent} owned uninstall CLI rejects ${name} before reading configuration`, () => {
+      const { spawnSync } = require("node:child_process");
+      const dir = path.dirname(makeTempSettings({}));
+      const configPath = agent === "Claude" ? path.join(dir, "settings.json") : path.join(dir, "hooks", "hooks.json");
+      fs.mkdirSync(path.dirname(configPath), { recursive: true });
+      const hooksDir = path.join(dir, "remote-hooks");
+      const hook = agent === "Claude"
+        ? { type: "command", command: "node", args: [`${hooksDir}/clawd-hook.js`, "Stop", "--clawd-ssh-remote"] }
+        : { type: "command", powershell: `& "node" "${hooksDir}/copilot-hook.js" "sessionStart"` };
+      fs.writeFileSync(configPath, JSON.stringify({ hooks: { [agent === "Claude" ? "Stop" : "sessionStart"]: [hook] } }, null, 2));
+      const bytes = fs.readFileSync(configPath);
+      const probePath = path.join(dir, "config-probe.json");
+      const preloadPath = path.join(dir, "config-probe.cjs");
+      fs.writeFileSync(preloadPath, `
+        const fs = require('fs');
+        const path = require('path');
+        const config = ${JSON.stringify(configPath)};
+        const counts = { reads: 0, writes: 0 };
+        const read = fs.readFileSync;
+        fs.readFileSync = function(file, ...args) {
+          if (path.resolve(String(file)) === config) counts.reads++;
+          return read.call(this, file, ...args);
+        };
+        for (const name of ['writeFileSync', 'renameSync', 'unlinkSync']) {
+          const original = fs[name];
+          fs[name] = function(...args) {
+            if (args.some(arg => typeof arg === 'string' && path.resolve(arg) === config)) counts.writes++;
+            return original.apply(this, args);
+          };
+        }
+        process.on('exit', () => fs.writeFileSync(${JSON.stringify(probePath)}, JSON.stringify(counts)));
+      `);
+      const result = spawnSync(process.execPath, ["--require", preloadPath, require.resolve(script), "--remote-uninstall-owned",
+        ...makeArgs(hooksDir, "a".repeat(32))], {
+        encoding: "utf8", timeout: 10000,
+        env: { ...process.env, NODE_OPTIONS: "", HOME: dir, USERPROFILE: dir, CLAUDE_CONFIG_DIR: dir, COPILOT_HOME: dir },
+      });
+      assert.strictEqual(result.status, 1, result.stderr);
+      assert.match(result.stderr, /requires --hooks-dir and --routing-nonce/);
+      assert.deepStrictEqual(JSON.parse(fs.readFileSync(probePath, "utf8")), { reads: 0, writes: 0 });
+      assert.deepStrictEqual(fs.readFileSync(configPath), bytes);
+    });
+  }
+}

@@ -93,7 +93,7 @@ for (const platform of ["linux", "win32"]) {
       resolveRemoteNodeBin: async () => ({ ok: true, nodeBin: "/usr/local/bin/node", version: "v20.0.0" }),
     } });
     assert.equal(result.ok, platform !== "win32");
-    if (platform === "win32") assert.equal(result.hint, "remoteSshErrWindowsRemotePending");
+    if (platform === "win32") assert.equal(result.hint, "remoteSshErrWindowsNodeMissing");
     else assert.equal(result.remotePlatform, "posix");
     assert.match(recorder.calls[1].args.at(-1), /console\.log\(process\.platform\)/);
     assert.equal(recorder.calls.some((call) => /mkdir|mv |rm /.test(call.args.at(-1))), false);
@@ -122,4 +122,18 @@ test("issue #1316: non-win32 Node in a Windows shell environment preserves POSIX
     assert.equal(result.remoteNode.nodeBin, detected.execPath);
     assert.equal(recorder.calls.length, 1);
   }
+});
+
+test("issue #1316: unknown shell rediscovers login-shell POSIX Node after a Windows host migration", async () => {
+  require("../src/remote-ssh-node").clearRemoteNodeCache();
+  const old = { ...profile, remotePlatform: "win32", detectedRemoteNodeBin: windowsNode.execPath,
+    detectedRemoteNodeVersion: windowsNode.version };
+  const recorder = recordingSpawn([{ code: 127 }, { stdout: "CLAWD_REMOTE_NODE_BIN=/home/remote/.nvm/node\nCLAWD_REMOTE_NODE_VERSION=v22.0.0\nCLAWD_REMOTE_NODE_SOURCE=shell:/bin/bash\n" }, { stdout: "linux\n" }]);
+  const result = await probeRemotePlatform({ profile: old, buildSshArgs, spawn: recorder.spawn,
+    deps: { detectRemoteShell: async () => ({ shell: "unknown" }) } });
+  assert.equal(result.ok, true);
+  assert.equal(result.remotePlatform, "posix");
+  assert.equal(recorder.calls.length, 3);
+  assert.match(recorder.calls[1].args.at(-1), /^sh -c /);
+  assert.equal(result.remoteNode.nodeBin, "/home/remote/.nvm/node");
 });

@@ -1173,3 +1173,150 @@ describe("registerCopilotHooks", () => {
     assert.strictEqual(settings.hooks.permissionRequest[0].timeoutSec, PERMISSION_TIMEOUT_SEC);
   });
 });
+
+it("issue #1316: Windows remote Copilot keeps native env, Node and script paths quoted", () => {
+  const { parsePowerShellEnvCommand } = require("../hooks/json-utils");
+  const nodeBin = "C:\\Program Files\\nodejs\\node.exe";
+  const hookScript = "C:/Users/O'Connell User/.claude/hooks/copilot-hook.js";
+  const env = {
+    CLAWD_SSH_REMOTE: "1",
+    CLAWD_REMOTE_IDENTITY_PATH: "C:\\Users\\O'Connell User\\.claude\\hooks\\clawd-remote.json",
+    CLAWD_SSH_SECURE_MARKER_PATH: "C:\\Users\\O'Connell User\\.claude\\hooks\\clawd-ssh-secure-v1",
+    CLAWD_HOST_PREFIX_PATH: "C:\\Users\\O'Connell User\\.claude\\hooks\\clawd-host-prefix",
+    CLAWD_REMOTE_LAST_LOG_PATH: "C:\\Users\\O'Connell User\\.clawd\\remote-last-error.log",
+    COPILOT_HOME: "C:\\Users\\O'Connell User\\.copilot",
+  };
+  const { homeDir, hooksPath } = makeTempHomeWithCopilot({ version: 1, hooks: {} });
+  registerCopilotHooks({ platform: "win32", homeDir, hooksPath, nodeBin, hookScript, remote: true, env, silent: true });
+  for (const event of COPILOT_HOOK_EVENTS) {
+    const hook = readJson(hooksPath).hooks[event][0];
+    assert.deepStrictEqual(parsePowerShellEnvCommand(hook.powershell), {
+      env: { CLAWD_REMOTE: "1", ...env }, args: [nodeBin, hookScript, event],
+    });
+    assert.match(hook.powershell, /O''Connell User/);
+    assert.ok(hook.powershell.endsWith(`& "${nodeBin}" "${hookScript}" "${event}"`));
+  }
+});
+
+it("issue #1316: owned Copilot uninstall preserves local paths, lookalikes and foreign fields", () => {
+  const { unregisterRemoteOwnedCopilotHooks } = require("../hooks/copilot-install");
+  const hooksDir = "C:\\Users\\O'Connell User\\.claude\\hooks";
+  const script = "C:/Users/O'Connell User/.claude/hooks/copilot-hook.js";
+  const remote = buildCopilotHookEntry("C:/Program Files/node.exe", script, "sessionStart", {
+    remote: true, sshRemote: true, env: { CLAWD_REMOTE_IDENTITY_PATH: `${hooksDir}\\clawd-remote.json` },
+  });
+  const survivors = [
+    buildCopilotHookEntry("C:/node.exe", "C:/Local App/hooks/copilot-hook.js", "sessionStart"),
+    buildCopilotHookEntry("C:/node.exe", script + ".backup", "sessionStart"),
+    { powershell: `Write-Host "${script}"` },
+    { bash: `echo "${script}"` },
+    { command: `"node" "${script}"` },
+    { powershell: remote.powershell + "; echo foreign" },
+    { bash: remote.bash + " && echo foreign" },
+    { powershell: '& "audit.exe" "third-party"' },
+  ];
+  const { hooksPath, homeDir } = makeTempHomeWithCopilot({ version: 1, custom: "keep", hooks: {
+    sessionStart: [remote, { powershell: remote.powershell.toUpperCase().replace(/\$ENV:/g, "$env:") }, ...survivors],
+    agentStop: [{ bash: remote.bash }],
+  } });
+  const options = { hooksDir, routingNonce: "a".repeat(32), hooksPath, homeDir, platform: "win32", silent: true };
+  const result = unregisterRemoteOwnedCopilotHooks(options);
+  assert.strictEqual(result.removed, 3);
+  assert.deepStrictEqual(readJson(hooksPath), { version: 1, custom: "keep", hooks: { sessionStart: survivors } });
+  const bytes = fs.readFileSync(hooksPath);
+  assert.strictEqual(unregisterRemoteOwnedCopilotHooks(options).removed, 0);
+  assert.deepStrictEqual(fs.readFileSync(hooksPath), bytes);
+});
+
+it("issue #1316: Copilot owned uninstall CLI uses explicit hooks-dir and keeps local hooks", () => {
+  const { spawnSync } = require("node:child_process");
+  const dir = makeTempHomeWithoutCopilot().homeDir;
+  const copilotHome = path.join(dir, ".copilot");
+  const hooksDir = path.join(dir, "remote-hooks");
+  fs.mkdirSync(path.join(copilotHome, "hooks"), { recursive: true });
+  const hooksPath = path.join(copilotHome, "hooks", "hooks.json");
+  const own = buildCopilotHookEntry("/usr/bin/node", `${hooksDir}/copilot-hook.js`, "sessionStart", { remote: true });
+  const local = buildCopilotHookEntry("/usr/bin/node", "/local-app/copilot-hook.js", "sessionStart");
+  fs.writeFileSync(hooksPath, JSON.stringify({ hooks: { sessionStart: [own, local] } }));
+  const result = spawnSync(process.execPath, [require.resolve("../hooks/copilot-install"), "--remote-uninstall-owned", "--hooks-dir", hooksDir, "--routing-nonce", "a".repeat(32)], {
+    encoding: "utf8", env: { ...process.env, HOME: dir, USERPROFILE: dir, COPILOT_HOME: copilotHome, NODE_OPTIONS: "" }, timeout: 10000,
+  });
+  assert.strictEqual(result.status, 0, result.stderr);
+  assert.deepStrictEqual(readJson(hooksPath).hooks.sessionStart, [local]);
+});
+
+it("issue #1316: owned Copilot uninstall preserves four PowerShell arguments without writing", () => {
+  const { unregisterRemoteOwnedCopilotHooks } = require("../hooks/copilot-install");
+  const hook = { type: "command", powershell: '& "node" "C:/remote/copilot-hook.js" "sessionStart" "extra"' };
+  const { hooksPath, homeDir } = makeTempHomeWithCopilot({ hooks: { sessionStart: [hook] } });
+  const bytes = fs.readFileSync(hooksPath);
+  const result = unregisterRemoteOwnedCopilotHooks({ hooksDir: "C:/remote", routingNonce: "a".repeat(32), platform: "win32", hooksPath, homeDir, silent: true });
+  assert.strictEqual(result.removed, 0);
+  assert.strictEqual(result.changed, false);
+  assert.deepStrictEqual(fs.readFileSync(hooksPath), bytes);
+});
+
+for (const separator of ["/", "\\"]) {
+  it(`issue #1316: owned Copilot uninstall accepts a trailing ${separator === "/" ? "slash" : "backslash"}`, () => {
+    const { unregisterRemoteOwnedCopilotHooks } = require("../hooks/copilot-install");
+    const hook = { type: "command", powershell: '& "node" "C:/Remote User/Hooks/copilot-hook.js" "sessionStart"' };
+    const { hooksPath, homeDir } = makeTempHomeWithCopilot({ hooks: { sessionStart: [hook] } });
+    const result = unregisterRemoteOwnedCopilotHooks({ hooksDir: `C:\\Remote User\\Hooks${separator}`,
+      routingNonce: "a".repeat(32), platform: "win32", hooksPath, homeDir, silent: true });
+    assert.strictEqual(result.removed, 1);
+    assert.deepStrictEqual(readJson(hooksPath).hooks, {});
+  });
+}
+
+it("issue #1316: owned Copilot uninstall preserves different POSIX path case", () => {
+  const { unregisterRemoteOwnedCopilotHooks } = require("../hooks/copilot-install");
+  const same = { powershell: '& "node" "/srv/remote/hooks/copilot-hook.js" "sessionStart"' };
+  const different = { powershell: '& "node" "/srv/Remote/hooks/copilot-hook.js" "sessionStart"' };
+  const { hooksPath, homeDir } = makeTempHomeWithCopilot({ hooks: { sessionStart: [same, different] } });
+  const result = unregisterRemoteOwnedCopilotHooks({ hooksDir: "/srv/remote/hooks", routingNonce: "a".repeat(32),
+    platform: "linux", hooksPath, homeDir, silent: true });
+  assert.strictEqual(result.removed, 1);
+  assert.deepStrictEqual(readJson(hooksPath).hooks.sessionStart, [different]);
+});
+
+for (const remote of [false, true]) {
+  it(`issue #1316: current Windows Copilot hooks remove BOM without changing entries remote=${remote}`, () => {
+    const temp = makeTempHomeWithCopilot();
+    const options = { ...temp, platform: "win32", nodeBin: "C:\\Node\\node.exe", hookScript: "C:\\Users\\remote\\.claude\\hooks\\copilot-hook.js",
+      remote, sshRemote: remote, silent: true, env: {} };
+    registerCopilotHooks(options);
+    const original = readJson(temp.hooksPath);
+    original.custom = { keep: true };
+    original.hooks.sessionStart.push({ type: "command", powershell: "foreign-hook" });
+    fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original, null, 2)}`, "utf8");
+    const result = registerCopilotHooks(options);
+    assert.strictEqual(result.added, 0);
+    assert.strictEqual(result.updated, 0);
+    assert.strictEqual(result.skipped, COPILOT_HOOK_EVENTS.length);
+    assert.strictEqual(result.configChanged, true);
+    assert.strictEqual(fs.readFileSync(temp.hooksPath, "utf8").startsWith("\uFEFF"), false);
+    assert.deepStrictEqual(readJson(temp.hooksPath), original);
+    assert.strictEqual(registerCopilotHooks(options).configChanged, false);
+  });
+}
+it("issue #1316: owned Copilot uninstall removes BOM even when every entry is foreign", () => {
+  const original = { version: 1, custom: { keep: true }, hooks: { sessionStart: [{ type: "command", powershell: "foreign-hook" }] } };
+  const temp = makeTempHomeWithCopilot(original);
+  fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original)}`, "utf8");
+  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ ...temp,
+    hooksDir: "C:\\Users\\remote\\.claude\\hooks", routingNonce: "a".repeat(32), platform: "win32", silent: true });
+  assert.strictEqual(result.removed, 0);
+  assert.strictEqual(result.configChanged, true);
+  assert.strictEqual(result.changed, true);
+  assert.strictEqual(fs.readFileSync(temp.hooksPath, "utf8").startsWith("\uFEFF"), false);
+  assert.deepStrictEqual(readJson(temp.hooksPath), original);
+});
+it("issue #1316: owned Copilot uninstall removes BOM from a config without a hooks object", () => {
+  const original = { version: 1, custom: "keep" };
+  const temp = makeTempHomeWithCopilot(original);
+  fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original)}`, "utf8");
+  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ ...temp,
+    hooksDir: "C:\\Users\\remote\\.claude\\hooks", routingNonce: "a".repeat(32), silent: true });
+  assert.strictEqual(result.configChanged, true);
+  assert.deepStrictEqual(readJson(temp.hooksPath), original);
+});
