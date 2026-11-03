@@ -44,11 +44,18 @@ inspect raw pending permission entries.
 
 - **Consent**: session preview and permission preview are separate settings.
   Permission preview defaults to off and requires an explicit disclosure.
-- **Token**: a global 32-character hex token is stored in
-  `~/.clawd/mobile-token.json` and is required during WebSocket upgrade.
-- **All token holders**: there is no device roster or per-device permission
-  entitlement. When permission preview is enabled, every client holding the
-  current token can receive the same projection.
+- **Token**: every paired device has its own token. Device state is stored in
+  `~/.clawd/mobile-devices.json`; tokens are hashed except the staged next token.
+  Files and same-directory atomic-write temporary files use mode 0600 on POSIX;
+  writes are fsynced before rename (process-crash recovery, not a power-loss guarantee).
+- **Authorized devices**: all paired devices (including pending first connections)
+  and devices still holding the old shared token receive the same projection when
+  permission preview is enabled. There is no per-device permission entitlement.
+- **Legacy compatibility**: the old shared token in `~/.clawd/mobile-token.json`
+  stops rotating and remains valid until explicitly revoked. The previous token
+  still in grace at upgrade is retained indefinitely after its hash is persisted.
+  Old JavaScript does not send `proto=2`, never receives rotation messages or 4002,
+  and continues using the shared token. New JavaScript migrates using a saved cid.
 - **Transport**: traffic uses plaintext WebSocket with no TLS. Permission
   summaries and the token are not protected against network observation.
 - **Binding**: the server listens on `0.0.0.0:<port>`. This makes same-network
@@ -61,41 +68,120 @@ inspect raw pending permission entries.
 - **Rate limit**: at most 60 inbound client messages per 60 seconds per client.
 - **Max clients**: 10 concurrent WebSocket clients.
 
-Reset-token-and-enable is the recommended permission-preview setup because it
-invalidates all previously paired clients. Keeping the token is supported only
-as explicit consent for every existing and offline token holder.
+Reset-access-and-enable is the recommended permission-preview setup. Keeping
+access explicitly authorizes all paired devices, including those awaiting their
+first connection, and devices still holding the old shared token. Keeping access
+closes both data and pairing sockets with code 4001 and reason
+`Permission preview consent changed`; clients reconnect for fresh snapshots.
+Cached permission cards become stale while disconnected.
 
-When the user enables permission preview while keeping the token, the desktop
-closes current sockets with code 4001 and reason
-`Permission preview consent changed`. This is a consent-boundary refresh, not
-revocation: the PWA marks cached permission cards stale and reconnects with the
-unchanged token to receive authoritative snapshots. A reset uses code 1008,
-clears permission cards/notifications, stops reconnecting, and requires pairing
-with the new token.
+### Revocation and reset
+
+Settings → Permissions → LAN approval → Paired devices lists pending and active
+devices, with actions to revoke one device or the old shared token.
+
+These are synchronous desktop operations. Removing one device persists its
+removal before closing its connections with 1008 `device-revoked`. A migrated
+device may still hold the shared token (`mayHoldLegacy: true`), so revoke that
+shared token as well to fully cut off access.
+
+Revoking the shared token first overwrites `mobile-token.json` with an unheld
+random placeholder, then immediately invalidates legacy connections, then writes
+its dead hash and an empty grace list to the device file. Device tokens remain
+valid. Reset phone access uses the same first step, then writes an empty device
+list and a new pairing code, and only after that succeeds closes device/pairing
+connections with 1008 `access-reset`. Both files must be written successfully for
+reset to succeed. A failure in the first write leaves all credentials unchanged;
+a failure in the device-file write reports `partialReset: true`: the shared token
+is already invalid but device tokens remain valid. Permission preview is not
+enabled on a failed reset. If reset succeeds and saving preferences then fails,
+`tokenReset` / `rePairRequired` tell the UI that re-pairing is already necessary.
+
+Legacy validity is reconstructed from `mobile-token.json` on every startup; stale
+device-file grace hashes cannot resurrect a token removed from that file. A
+failed bookkeeping write may leave the unheld placeholder accepted after restart,
+but nobody was issued it. Downgrading to a desktop that still rotates the shared
+token and upgrading again recognizes that file's current token and eligible
+previous token.
 
 ## Connection and ordering
 
-```text
-Mobile                                      Desktop
-  |                                           |
-  | 1. Open /mobile/?host=&port=&token=      |
-  | 2. WS connect /ws?token=<hex>            |
-  |------------------------------------------>|
-  |                                           | validate token
-  |                                           | reject -> close 1008
-  |<------------------------------------------|
-  | 3. snapshot                              |
-  |<------------------------------------------|
-  | 4. permission_snapshot                   |
-  |<------------------------------------------|
-  | 5. state/session/permission deltas       |
-```
+Pair from `http://<lan-ip>:<port>/mobile/?pair=CODE`, or enter the displayed code
+in the PWA. The target is the page's own hostname and port; old `host` / `port`
+query parameters cannot redirect it. Old bookmarked `?token=` links still migrate.
 
-For a newly connected socket, the desktop adds the client and then sends
-`snapshot` followed immediately by `permission_snapshot` in one synchronous
-JavaScript turn. Later deltas on that same WebSocket follow those snapshots.
-WebSocket FIFO ordering is relied on only within one live socket; after a
-reconnect, the new authoritative snapshots replace the client's old state.
+| WebSocket parameter | Meaning |
+| --- | --- |
+| `token` | Device current/staged token or old shared token |
+| `proto=2` | Client supports device-token rotation; envelope stays `"v1"` |
+| `cid` | Installation ID matching `^c_[A-Za-z0-9_-]{22}$`, not a credential |
+| `pair` | Pairing code; requires `proto=2` and valid cid |
+
+A data connection authenticates, joins the broadcast set, then receives
+`snapshot` followed by `permission_snapshot` synchronously in one JavaScript
+turn, before deltas or any needed `token_rotate`. Reconnect snapshots replace
+cached state. Same-device connections can coexist; no connection replaces another
+merely for sharing a token. Ten data connections may be online concurrently.
+
+### Pairing
+
+Codes are eight Crockford base32 characters (40 bits), displayed as `K7Q2-9MXA`;
+input is case insensitive and ignores hyphens. Display codes expire after ten
+minutes, and refresh on claim, expiry or the desktop refresh button. A claim
+atomically creates a pending device with staged B and changes the display code.
+The claimed code remains bound to the original cid until B first authenticates,
+so a dropped reply or a storage failure can retry the same code and receive the
+same B even after ten minutes or a desktop restart. Other cids get 4004.
+Promotion clears the claimed code permanently. Pending devices do not expire or
+automatically evict; twenty devices including pending is the limit. At capacity,
+a bound pending claim can still retry; a new claim gets 4005 without consuming its
+code. Re-pairing an active cid creates a new device and does not delete the old one.
+
+Pairing sockets only receive `token_rotate`, never session or permission data.
+They use a separate four-socket limit and close after sixty seconds. Per IP,
+twenty failed pairing attempts in a rolling ten-minute window are allowed; the
+21st is rejected before checking the code. Guessing probability per IP per code
+window is approximately 20 / 2^40; plaintext network observers can see codes and
+tokens directly.
+
+### Client persistence
+
+New JavaScript uses `clawd-cid-v2` and
+`clawd-cred-v2 = {host, port, deviceId, gen, token, prevToken}`. It saves and
+reads back credentials before changing memory or acknowledging. Generation is
+compared only within the same device. Legacy migration writes only into empty
+credential storage; explicit pairing may replace another device. Delayed old
+device messages cannot overwrite a new pairing. First migration/pairing sets
+`prevToken: null`. A later device rotation saves only that device's previous token.
+
+A successful first write also attempts `clawd-v2-migrated = "1"`. Once present,
+old `clawd-history` is never read again; new JavaScript never writes it. Startup
+repairs a missing marker when credentials exist. Before re-pairing deletes
+credentials it must save and verify the marker, or leave credentials intact and
+report a storage error. Without working cid storage a legacy connection omits
+`proto=2`; pairing cannot start.
+
+On 1008, reread storage and retry a different latest token (at most three
+consecutive switches); a device may then try its own prevToken once. Only that
+attempt's snapshot may restore unchanged saved credentials to gen 0, with
+prevToken cleared, after a verified write. Otherwise show the pairing input;
+a spare URL pairing code can automatically re-pair. A storage event can recover
+an auth-failed tab. Connection status and retry-backoff reset happen on snapshot,
+not WebSocket open. Only a snapshot authenticated with the matching locally saved
+device token clears the URL. Legacy snapshots preserve the URL until migration
+completes. Pairing sockets never receive snapshots.
+
+### Close codes
+
+| Code | Reason | Client behavior |
+| --- | --- | --- |
+| 1008 | `invalid-token`, `device-revoked`, `legacy-revoked`, `access-reset` | Reread saved credentials, try own previous token once, then re-pair |
+| 1013 | `server-busy` | Data connection limit; backoff/retry |
+| 4001 | `Permission preview consent changed` | Reconnect for fresh consent-bound snapshots |
+| 4002 | `token-rotated` | Only proto2 device sockets still on the old token after promotion; reread/reconnect immediately |
+| 4003 | `retry-later`, `rate-limit` | Write failure, pairing/IP capacity, or >60 messages/minute; backoff/retry |
+| 4004 | `pair-rejected` | Invalid/expired/claimed code or missing pair parameters; input required, no automatic retry |
+| 4005 | `device-limit` | Twenty devices; clean up on desktop, no automatic retry |
 
 ## Message envelope
 
@@ -254,25 +340,29 @@ path. It is not a transport-delivery acknowledgement.
 
 ### `token_rotate`
 
-Automatic token rotation occurs approximately every 24 hours. The server
-persists a new token with a five-minute grace window for the previous token and
-sends connected or grace-authenticated clients:
+A proto2 device is eligible for rotation 24 hours after its current token was
+first promoted. The server persists staged B before sending it; A and B both
+remain valid until B first authenticates. Reconnects resend the same B and gen;
+new staged generations increment once per device. Each live socket receives the
+same staged generation at most once. Old JavaScript never receives this message.
 
 ```json
 {
   "version": "v1",
   "type": "token_rotate",
   "timestamp": 1717200006000,
-  "newToken": "fedcba9876543210fedcba9876543210",
-  "expiresAt": 1717200306000
+  "deviceId": "d_8f3a123456789abc",
+  "gen": 2,
+  "newToken": "fedcba9876543210fedcba9876543210"
 }
 ```
 
-Clients persist `newToken` and reply with `token_rotate_ack`. The server may
-retry an unacknowledged rotation and close a client with code 1008 when the
-rotation cannot be completed. Explicit regenerate/reset is different: it has no
-grace period, immediately invalidates the old token, and closes old clients with
-code 1008 so they must pair again.
+The client saves and verifies B, acknowledges, and reconnects with B. Only that
+authentication promotes B, sets its issue time to the promotion time, and closes
+proto2 sockets of that device still on A with 4002. ACK is informational logging
+only: it neither promotes B nor revokes A. There is no grace deadline or
+unacknowledged-message eviction. If staging fails, the existing socket stays
+connected and a later heartbeat can retry; promotion failure uses 4003.
 
 ## Client to server
 
@@ -307,19 +397,51 @@ the operating-system level does not grant those APIs to an insecure site.
 
 The desktop Settings panel reads connection information through Electron IPC.
 Before the bridge finishes listening it reports `status:"starting"`; once
-ready it reports LAN IP, port, token, and a pairing URL. The public
-`/api/connection-info` endpoint intentionally does not return the token.
+ready it reports `{status, port, lanIp, pairUrl, pairCode, pairExpiresAt}` with no
+token. The visible pairing area refreshes every five seconds. Refresh pairing
+code and reset phone access are separate commands. The public
+`/api/connection-info` returns only status, port and LAN IP, never tokens or codes.
+
+HTML uses versioned JS/CSS URLs. The new service worker uses network-first
+navigation and JS/CSS with cache fallback; navigation cache keys are always
+`/mobile/`, never URLs containing token or pair parameters. An already-installed
+old cache-first worker can still initially serve old JavaScript. Updates converge
+after the new worker activates and subsequent online loads; offline starts may
+take longer. A frozen old page remains compatible on its unrotated shared token.
+
+Safari home-screen applications do not copy/share Safari localStorage, so adding
+the PWA to the home screen creates a client needing pairing again. Safari's
+script-writable-storage eviction rule counts seven days of Safari use without
+site interaction, rather than seven calendar days; eviction requires re-pairing.
+Home-screen apps have separate storage, and WebKit's current tracking-prevention
+policy exempts their first-party domains from this limit.
 
 ## Limitations and future work
 
 - Plaintext WebSocket; no TLS or cryptographic LAN isolation.
 - The default plaintext LAN origin cannot rely on Service Workers, offline cache,
   or system notifications; the live in-page card works without those APIs.
-- One global token and one global consent setting; no device roster or
-  per-device permission-preview access.
+- One global consent setting; no per-device permission-preview entitlement.
+- PR A and the PR B device-list UI must ship in the same release. PR A alone does
+  not finish #487. No QR code or device-list UI is included in PR A.
+- The old shared token stops rotating and remains usable until revoked. Holders
+  can register again after an individual device is revoked.
+- Cross-tab localStorage read/write is not atomic. A controlled interleaving can
+  temporarily overwrite a newer generation, requiring reconnect or re-pairing;
+  it does not expand authorization.
+- Two tabs generating cid simultaneously can leave an extra pending device.
+  Clearing browser storage or replacing a device while re-pairing can also leave
+  device records requiring manual revocation. Pending devices are never evicted.
+- If every device-file write fails during the first upgrade run and the app then
+  restarts after the old grace deadline, its unpersisted previous token expires.
+- A corrupt device file is renamed and preserved; device credentials require
+  re-pairing. If preservation fails, device features pause, legacy access remains,
+  and the original file is not overwritten.
 - Best-effort redaction can miss sensitive content repeated in model prose.
 - Presentation means bubble content IPC was sent, not that a human saw it.
-- Maximum 10 concurrent PWA clients.
+- Maximum twenty devices including pending and ten concurrent data sockets.
+  Background frozen iOS pages can still pong and occupy all ten slots; the 11th
+  keeps receiving 1013 until a slot frees. This is unchanged from the old bridge.
 - Remote approval, elicitation answers, terminal control, transcript sync, and
   secure Internet relay remain out of scope. Any future decision protocol needs
   separate authorization, auditability, and fallback design; it is not implied

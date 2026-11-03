@@ -99,6 +99,7 @@ body { padding: 2px 3px 8px; }
 }
 
 .row {
+  position: relative;
   height: 28px;
   flex: 0 0 28px;
   display: flex;
@@ -111,6 +112,23 @@ body { padding: 2px 3px 8px; }
 
 .row-unfocusable {
   cursor: default;
+}
+
+/* Plan progress is a bottom overlay, never a flex chip stealing title width.
+   The parent row tooltip includes the localized full step count. */
+.plan-progress-track {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 0;
+  height: 2px;
+  background: rgba(37, 99, 235, 0.12);
+  pointer-events: none;
+}
+.plan-progress-fill {
+  height: 100%;
+  background: var(--done);
+  border-radius: 2px;
 }
 
 .row:hover {

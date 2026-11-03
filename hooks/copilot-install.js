@@ -21,6 +21,7 @@ const {
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
+  quotePowerShellSingleArg,
 } = require("./json-utils");
 const { resolveNodeBin } = require("./server-config");
 
@@ -147,7 +148,7 @@ function buildCopilotHookCommands(nodeBin, hookScript, eventName, options = {}) 
   // PowerShell needs `&` to invoke a quoted exe path as a command, otherwise
   // the quoted string is parsed as a literal.
   const powershell = remoteEnv
-    ? `${Object.entries(remoteEnv).map(([key, value]) => `$env:${key}='${String(value).replace(/'/g, "''")}'`).join("; ")}; & ${command}`
+    ? `${Object.entries(remoteEnv).map(([key, value]) => `$env:${key}=${quotePowerShellSingleArg(value)}`).join("; ")}; & ${command}`
     : `& ${command}`;
   return { bash, powershell };
 }

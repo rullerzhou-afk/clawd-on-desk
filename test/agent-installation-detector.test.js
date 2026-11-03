@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const { describe, it, afterEach } = require("node:test");
 const assert = require("node:assert");
@@ -198,6 +199,7 @@ describe("agent installation detector", () => {
     await require("../hooks/install.js").registerHooksAsync({
       silent: true,
       homeDir: claudeHome,
+      env: {},
       nodeBin: process.execPath,
       claudeVersionInfo: { version: "2.1.78", source: "test", status: "known" },
     });
@@ -502,7 +504,7 @@ describe("agent installation detector", () => {
           const targetPath = path.join(homeDir, "outside-artifact");
           writeText(targetPath, "product-owned");
           mkdirp(geminiDir);
-          fs.symlinkSync(targetPath, artifactPath);
+          linkForRejection(targetPath, artifactPath);
         }
 
         const gemini = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "gemini-cli");
@@ -670,7 +672,7 @@ describe("agent installation detector", () => {
         if (shape === "symlink") {
           const targetPath = path.join(homeDir, "outside.json");
           writeJson(targetPath, { language: "en" });
-          fs.symlinkSync(targetPath, configPath);
+          linkForRejection(targetPath, configPath);
         }
 
         const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), agentId);
@@ -877,13 +879,25 @@ describe("agent installation detector", () => {
 
     const symlinkHome = makeHome();
     const configPath = path.join(symlinkHome, ".openclaw", "openclaw.json");
-    const targetPath = path.join(symlinkHome, "outside.json5");
-    writeText(targetPath, "{ gateway: { port: 18789 } }");
+    const targetPath = path.join(symlinkHome, "outside.json");
+    writeJson(targetPath, { gateway: { port: 18789 } });
     mkdirp(path.dirname(configPath));
-    fs.symlinkSync(targetPath, configPath);
+    linkForRejection(targetPath, configPath);
     const symlink = byId(detectAgentInstallations({ homeDir: symlinkHome, now: 1, env: {} }), "openclaw");
     assert.strictEqual(symlink.detectedInstalled, null);
     assert.strictEqual(symlink.reason, "insufficient-evidence");
+  });
+
+  it("fails a symlinked OpenClaw state directory closed to insufficient evidence", () => {
+    const homeDir = makeHome();
+    const realDir = path.join(homeDir, "real-openclaw");
+    const stateDir = path.join(homeDir, ".openclaw");
+    writeJson(path.join(realDir, "openclaw.json"), { gateway: { port: 18789 } });
+    fs.symlinkSync(realDir, stateDir, process.platform === "win32" ? "junction" : "dir");
+
+    const entry = byId(detectAgentInstallations({ homeDir, now: 1, env: {} }), "openclaw");
+    assert.strictEqual(entry.detectedInstalled, null);
+    assert.strictEqual(entry.reason, "insufficient-evidence");
   });
 
   it("does not fall back to the default OpenClaw config when OPENCLAW_CONFIG_PATH is set", () => {

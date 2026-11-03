@@ -18,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 const CodexSubagentClassifier = require("./codex-subagent-classifier");
+const { normalizeDelegatedThread, readDelegatedParent, observeDelegatedChild, CHILD_ACTIVITY_TTL_MS } = require("./codex-delegated-child");
 const { bareCodexSessionId, readCodexThreadName, readCodexThreadNames } = require("../hooks/codex-session-index");
 const {
   clampAssistantOutputText,
@@ -31,6 +32,17 @@ const {
 const { parseCodexUserInputRecord } = require("../hooks/codex-user-input");
 const { getCodexLogEventKey } = require("../hooks/codex-log-event");
 const { normalizeCodexTurnId } = require("../src/codex-turn-id");
+const { normalizeCodexThreadId } = require("../src/codex-thread-id");
+const { planProgressFromCall } = require("../hooks/codex-plan-progress");
+
+function matchesSessionMetaIdentity(payload, sessionId) {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+  // Older Codex records omitted id. Keep that established metadata contract,
+  // but an explicitly identified inherited header belongs to its own thread.
+  if (!Object.prototype.hasOwnProperty.call(payload, "id")) return true;
+  const id = normalizeCodexThreadId(payload.id);
+  return !!id && id === normalizeCodexThreadId(sessionId);
+}
 
 const MAX_TRACKED_FILES = 50;
 const MAX_RETIRED_TRACKED_FILES = 100;
@@ -38,8 +50,13 @@ const MAX_PARTIAL_BYTES = 65536;
 const MAX_POLL_READ_BYTES = 4 * 1024 * 1024;
 const MAX_POLL_TOTAL_REQUEST_BYTES = 16 * 1024 * 1024;
 const MAX_POLL_FILE_ATTEMPTS = 64;
+// Counts candidates, including skips. After startup recovery, with at most
+// 16 active-dir discovery attempts, 64 - 16 - 24 leaves 24 cold attempts.
+const MAX_HOT_POLL_ATTEMPTS = 24;
 const MAX_ACTIVE_DIR_DISCOVERY_ATTEMPTS_PER_POLL = 16;
 const MAX_STARTUP_RECOVERY_DISCOVERY_OPERATIONS_PER_POLL = 16;
+const MAX_OBSERVED_GROWTH_FILES = 2048;
+const MAX_GROWTH_RECOVERIES_PER_POLL = 2;
 const MAX_REPLAY_WORK_ITEMS = 40;
 const MAX_BACKGROUND_REPLAY_WORK_ITEMS = 32;
 const MAX_DEFERRED_RECENT_PATHS = 192;
@@ -51,7 +68,7 @@ const REPLAY_RETRY_MAX_BACKOFF_MS = 5 * 60 * 1000;
 const RECOVERY_MAX_READ_ATTEMPTS = 8;
 const RECENT_DAY_DIR_CACHE_MS = 60 * 60 * 1000; // 1 hour
 // A rollout file is considered "active" if written within this window. Used by
-// both the untracked-file pickup gate in _poll and the _getActiveDayDirs scan
+// both the untracked-file pickup gate in _pollCandidate and the _getActiveDayDirs scan
 // so slow Codex desktop sessions (3–5 min write cadence) aren't dropped by one
 // path only to be rescued by the other.
 const ACTIVE_SESSION_WINDOW_MS = 5 * 60 * 1000;
@@ -160,6 +177,12 @@ class CodexLogMonitor {
   constructor(agentConfig, onStateChange, options = {}) {
     this._config = agentConfig;
     this._onStateChange = onStateChange;
+    this._onSubagentActivity = typeof options.onSubagentActivity === "function" ? options.onSubagentActivity : null;
+    this._delegatedNow = typeof options.now === "function" ? options.now : Date.now;
+    this._bootTimeMs = Number.isFinite(options.bootTimeMs) ? options.bootTimeMs : null;
+    this._publishedChildren = new Set();
+    this._delegatedChildren = new Map();
+    this._delegatedParentEnds = new Map();
     this._onActivity = typeof options.onActivity === "function" ? options.onActivity : null;
     this._classifier = options.classifier || new CodexSubagentClassifier();
     this._onUserInputRequest = typeof options.onUserInputRequest === "function"
@@ -169,19 +192,30 @@ class CodexLogMonitor {
       ? options.onUserInputResolved
       : null;
     this._interval = null;
-    // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastState }>
+    // Map<filePath, { offset, sessionId, cwd, lastEventTime, lastReadAt, lastState }>
     // offset is the byte immediately after the last committed newline. An
     // incomplete tail stays on disk and is reread after tracker eviction.
+    // lastReadAt is scheduling-only and is not saved when a tracker retires.
     this._tracked = new Map();
     this._retiredTracked = new Map();
     // Lightweight, process-lifetime tail positions outlive both rich tracker
     // LRUs. A long-running monitor may see more than their combined capacity;
     // forgetting the byte offset would replay that rollout when it next grows.
     this._readPositions = new Map();
+    // Stat-only discovery catches Windows append handles whose LastWriteTime
+    // stays frozen. First sight is just a baseline, never activity evidence.
+    this._observedFileGrowth = new Map();
     this._replayWork = new Map();
     this._deferredRecent = new Map();
     this._deferredBackground = new Map();
     this._pollCursor = 0;
+    // An independent hot cursor preserves cold rotation while hot work leads.
+    this._hotPollCursor = 0;
+    // Previous candidate snapshot; null makes the first poll a baseline.
+    this._seenPollFiles = null;
+    // New paths and byte-budget retries stay hot until content is read or
+    // their mtime ages out, including files still empty or only partly written.
+    this._pendingPriorityFiles = new Set();
     this._activeDayWalker = null;
     this._startupRecoveryCandidates = new Map();
     this._startupRecoveryWalker = null;
@@ -226,6 +260,9 @@ class CodexLogMonitor {
     this._startupRecoveryBytesScanned = 0;
     this._activeDayWalker = null;
     this._pollCursor = 0;
+    this._hotPollCursor = 0;
+    this._seenPollFiles = null;
+    this._pendingPriorityFiles.clear();
     // Initial scan
     this._poll();
     this._interval = setInterval(
@@ -235,6 +272,8 @@ class CodexLogMonitor {
   }
 
   stop() {
+    for (const child of [...this._publishedChildren]) this._releaseDelegatedChild(child);
+    this._delegatedChildren.clear();
     if (this._interval) {
       clearInterval(this._interval);
       this._interval = null;
@@ -242,11 +281,15 @@ class CodexLogMonitor {
     this._tracked.clear();
     this._retiredTracked.clear();
     this._readPositions.clear();
+    this._observedFileGrowth.clear();
     this._replayWork.clear();
     this._deferredRecent.clear();
     this._deferredBackground.clear();
     this._activeDayWalker = null;
     this._pollCursor = 0;
+    this._hotPollCursor = 0;
+    this._seenPollFiles = null;
+    this._pendingPriorityFiles.clear();
     this._startupRecoveryCandidates.clear();
     this._startupRecoveryWalker = null;
     this._startupRecoveryReady = false;
@@ -258,6 +301,7 @@ class CodexLogMonitor {
     const context = {
       remainingAttempts: MAX_POLL_FILE_ATTEMPTS,
       remainingRequestBytes: MAX_POLL_TOTAL_REQUEST_BYTES,
+      remainingGrowthRecoveries: MAX_GROWTH_RECOVERIES_PER_POLL,
     };
     const dirs = this._getSessionDirs(context);
     const startupObserved = !this._didInitialRecoveryScan
@@ -297,54 +341,39 @@ class CodexLogMonitor {
       seen.add(candidate.filePath);
       unique.push(candidate);
     }
-    if (unique.length > 0) {
-      const start = this._pollCursor % unique.length;
-      const ordered = unique.slice(start).concat(unique.slice(0, start));
-      let processed = 0;
-      for (const candidate of ordered) {
-        if (context.remainingAttempts <= 0) break;
-        const deferred = this._deferredRecent.get(candidate.filePath)
-          || this._deferredBackground.get(candidate.filePath);
-        if (deferred && Date.now() < deferred.notBefore) {
-          processed += 1;
-          continue;
-        }
-        const observedByStartup = startupObserved.has(candidate.filePath);
-        let stat = observedByStartup ? startupObserved.get(candidate.filePath) : null;
-        if (!observedByStartup) {
-          context.remainingAttempts -= 1;
-          try {
-            stat = fs.statSync(candidate.filePath);
-          } catch {
-            stat = null;
-          }
-        }
-        if (!stat) {
-          if (deferred) {
-            this._backoffDeferredStatFailure(deferred);
-          } else {
-            this._markReplayNoProgress(candidate.filePath, this._tracked.get(candidate.filePath));
-          }
-          processed += 1;
-          continue;
-        }
-        if (
-          candidate.source === "normal"
-          && !this._tracked.has(candidate.filePath)
-          && Date.now() - stat.mtimeMs > ACTIVE_SESSION_WINDOW_MS
-        ) {
-          processed += 1;
-          continue;
-        }
-        const result = this._pollFile(candidate.filePath, candidate.fileName, {
-          preStat: stat,
-          get remainingRequestBytes() { return context.remainingRequestBytes; },
-          set remainingRequestBytes(value) { context.remainingRequestBytes = value; },
-        });
-        if (result && result.kind === "budget") break;
-        processed += 1;
+    // The first directory snapshot is a baseline: history must not flood the
+    // hot queue on startup. Later arrivals may still be empty when first seen.
+    if (this._seenPollFiles) {
+      for (const filePath of seen) {
+        if (!this._seenPollFiles.has(filePath)) this._pendingPriorityFiles.add(filePath);
       }
-      this._pollCursor = (start + Math.max(1, processed)) % unique.length;
+    }
+    this._seenPollFiles = seen;
+    for (const filePath of this._pendingPriorityFiles) {
+      if (!seen.has(filePath)) this._pendingPriorityFiles.delete(filePath);
+    }
+    const hot = [];
+    const cold = [];
+    const now = Date.now();
+    for (const candidate of unique) {
+      const tracked = this._tracked.get(candidate.filePath);
+      // Event time is not a read clock: visits may read nothing, while reasoning
+      // records advance the read position without refreshing lastEventTime.
+      const recentlyRead = Number.isFinite(tracked?.lastReadAt)
+        && now - tracked.lastReadAt <= ACTIVE_SESSION_WINDOW_MS;
+      const isHot = recentlyRead || this._pendingPriorityFiles.has(candidate.filePath);
+      (isHot ? hot : cold).push(candidate);
+    }
+
+    // Capping hot work leaves cold files a share of the same attempt budget,
+    // so even frozen-mtime appends are eventually observed by stat.
+    const hotResult = this._pollCandidates(hot, this._hotPollCursor, MAX_HOT_POLL_ATTEMPTS, context, startupObserved);
+    this._hotPollCursor = hotResult.nextCursor;
+    // A hot byte-budget stop also pauses cold stats and frozen-mtime detection
+    // for this poll; the next poll starts again with a fresh byte budget.
+    if (!hotResult.hitByteBudget) {
+      const coldResult = this._pollCandidates(cold, this._pollCursor, cold.length, context, startupObserved);
+      this._pollCursor = coldResult.nextCursor;
     }
 
     if (this._startupRecoveryReady && !this._didInitialRecoveryScan && context.remainingAttempts > 0) {
@@ -352,6 +381,158 @@ class CodexLogMonitor {
     }
     this._pruneTrackedFilesIfNeeded();
     this._refreshSessionTitles();
+  }
+
+  _pollCandidates(candidates, cursor, limit, context, startupObserved) {
+    if (candidates.length === 0) return { nextCursor: 0, hitByteBudget: false };
+    const start = cursor % candidates.length;
+    let processed = 0;
+    let hitByteBudget = false;
+    while (processed < candidates.length && processed < limit && context.remainingAttempts > 0) {
+      const candidate = candidates[(start + processed) % candidates.length];
+      hitByteBudget = this._pollCandidate(candidate, context, startupObserved);
+      if (hitByteBudget) break;
+      processed += 1;
+    }
+    return { nextCursor: (start + Math.max(1, processed)) % candidates.length, hitByteBudget };
+  }
+
+  _pollCandidate(candidate, context, startupObserved) {
+    const deferred = this._deferredRecent.get(candidate.filePath)
+      || this._deferredBackground.get(candidate.filePath);
+    if (deferred && Date.now() < deferred.notBefore) return false;
+    const observedByStartup = startupObserved.has(candidate.filePath);
+    let stat = observedByStartup ? startupObserved.get(candidate.filePath) : null;
+    let statError = null;
+    if (!observedByStartup) {
+      context.remainingAttempts -= 1;
+      try {
+        stat = fs.statSync(candidate.filePath);
+      } catch (error) {
+        statError = error;
+        stat = null;
+      }
+    }
+    if (!stat) {
+      if (["ENOENT", "ENOTDIR"].includes(statError?.code)) {
+        this._observedFileGrowth.delete(candidate.filePath);
+        this._pendingPriorityFiles.delete(candidate.filePath);
+      }
+      if (deferred) {
+        this._backoffDeferredStatFailure(deferred);
+      } else {
+        this._markReplayNoProgress(candidate.filePath, this._tracked.get(candidate.filePath));
+      }
+      return false;
+    }
+    if (Date.now() - stat.mtimeMs > ACTIVE_SESSION_WINDOW_MS) {
+      this._pendingPriorityFiles.delete(candidate.filePath);
+    }
+    if (
+      candidate.source === "normal"
+      && !this._tracked.has(candidate.filePath)
+      && Date.now() - stat.mtimeMs > ACTIVE_SESSION_WINDOW_MS
+    ) {
+      const growth = this._observeFileGrowth(candidate.filePath, stat);
+      if (!growth || !growth.pendingGrowth) return false;
+      const retired = this._retiredTracked.get(candidate.filePath);
+      const position = this._readPositions.get(candidate.filePath);
+      if (!retired?.delegatedChild || position?.identity !== this._getFileIdentity(stat)
+        || stat.size < retired.offset) {
+        this._recoverGrownDelegatedFile(candidate, stat, context, growth);
+        return false;
+      }
+    }
+    const result = this._pollFile(candidate.filePath, candidate.fileName, {
+      preStat: stat,
+      get remainingRequestBytes() { return context.remainingRequestBytes; },
+      set remainingRequestBytes(value) { context.remainingRequestBytes = value; },
+    });
+    if (result && result.kind === "budget") {
+      // No bytes were read, so keep this candidate ahead of the cold queue.
+      this._pendingPriorityFiles.add(candidate.filePath);
+      return true;
+    }
+    const tracked = this._tracked.get(candidate.filePath);
+    if (tracked) {
+      const growth = this._observedFileGrowth.get(candidate.filePath);
+      if (growth) growth.pendingGrowth = false;
+      if (Number.isFinite(tracked.lastReadAt)) this._pendingPriorityFiles.delete(candidate.filePath);
+    }
+    return false;
+  }
+
+  _observeFileGrowth(filePath, stat) {
+    const identity = this._getFileIdentity(stat);
+    const size = Number(stat && stat.size);
+    if (!Number.isSafeInteger(size) || size < 0) return null;
+    const previous = this._observedFileGrowth.get(filePath);
+    if (previous && identity !== null && previous.identity === identity && size >= previous.size) {
+      previous.observations = 2;
+      if (size > previous.size) { previous.retryAt = 0; previous.retryLevel = 0; }
+      previous.pendingGrowth ||= size > previous.size;
+      previous.size = size;
+      return previous;
+    }
+    if (!previous && this._observedFileGrowth.size >= MAX_OBSERVED_GROWTH_FILES) {
+      // Retain a baseline through its second observation. A plain LRU would
+      // churn every entry before comparison when a directory exceeds the cap.
+      let evicted = false;
+      for (const [oldPath, entry] of this._observedFileGrowth) {
+        if (!entry.pendingGrowth && (entry.observations >= 2
+          || Date.now() - entry.firstSeenAt > ACTIVE_SESSION_WINDOW_MS)) {
+          this._observedFileGrowth.delete(oldPath); evicted = true; break;
+        }
+      }
+      if (!evicted) return null;
+    }
+    const baseline = { identity, size, observations: 1, firstSeenAt: Date.now(), pendingGrowth: false };
+    this._observedFileGrowth.set(filePath, baseline);
+    return baseline;
+  }
+
+  _recoverGrownDelegatedFile(candidate, stat, context, growth) {
+    const cost = recoveryReadBudgetCost(stat.size);
+    if (Date.now() < (growth.retryAt || 0) || context.remainingAttempts <= 0 || context.remainingGrowthRecoveries <= 0
+      || context.remainingRequestBytes < cost) return;
+    context.remainingAttempts -= 1;
+    context.remainingGrowthRecoveries -= 1;
+    context.remainingRequestBytes -= cost;
+    const recoveryEvidence = { settled: false };
+    const recovered = this._recoverStalePendingUserInput(candidate.filePath, candidate.fileName, stat,
+      { deferSideEffects: true, requireDelegatedChild: true, recoveryEvidence });
+    let postStat = null;
+    try { postStat = fs.statSync(candidate.filePath); } catch (error) {
+      if (["ENOENT", "ENOTDIR"].includes(error?.code)) this._observedFileGrowth.delete(candidate.filePath);
+      else this._backoffFileGrowthRecovery(growth);
+      return;
+    }
+    const status = this._recoverySnapshotStatus(stat, postStat);
+    if (status === "missing") { this._observedFileGrowth.delete(candidate.filePath); return; }
+    if (status === "changed") {
+      // Replacement/truncation is a new baseline, not append evidence.
+      this._observedFileGrowth.delete(candidate.filePath);
+      this._observeFileGrowth(candidate.filePath, postStat);
+      return;
+    }
+    if (!recovered) {
+      if (status !== "grew" && recoveryEvidence.settled) growth.pendingGrowth = false;
+      else this._backoffFileGrowthRecovery(growth);
+      return;
+    }
+    if (this._tracked.size >= MAX_TRACKED_FILES) this._pruneTrackedFilesIfNeeded(MAX_TRACKED_FILES - 1);
+    if (this._tracked.size >= MAX_TRACKED_FILES) return;
+    this._finalizeRecoveredTracker(recovered);
+    this._tracked.set(candidate.filePath, recovered);
+    this._readPositions.set(candidate.filePath, { offset: recovered.offset, identity: recovered.fileIdentity });
+    this._emitPendingUserInputRequests(recovered);
+    growth.pendingGrowth = false;
+  }
+
+  _backoffFileGrowthRecovery(growth) {
+    growth.retryLevel = Math.min(5, (growth.retryLevel || 0) + 1);
+    growth.retryAt = Date.now() + Math.min(REPLAY_RETRY_MAX_BACKOFF_MS,
+      REPLAY_RETRY_BASE_BACKOFF_MS * (2 ** (growth.retryLevel - 1)));
   }
 
   _refreshSessionTitles() {
@@ -724,6 +905,7 @@ class CodexLogMonitor {
   // earlier open request is moot even without a matching function_call_output
   // (Codex killed mid-turn, terminal closed, etc. leave exactly this shape).
   _recoverStalePendingUserInput(filePath, fileName, recoveryStat = null, options = {}) {
+    const settled = () => { if (options.recoveryEvidence) options.recoveryEvidence.settled = true; };
     let stat = recoveryStat;
     if (!stat) {
       try {
@@ -736,7 +918,7 @@ class CodexLogMonitor {
     const nowMs = Date.now();
     const tooOldForPendingRecovery = nowMs - stat.mtimeMs > RECOVERY_MAX_AGE_MS;
     const sessionId = this._extractSessionId(fileName);
-    if (!sessionId) return null;
+    if (!sessionId) { settled(); return null; }
 
     // Head: session_meta (cwd + subagent role) is always Codex's first
     // record. Fail closed (skip this file entirely) if we can't read a
@@ -749,11 +931,16 @@ class CodexLogMonitor {
     try {
       sessionMeta = JSON.parse(firstLine);
     } catch {
+      settled();
       return null;
     }
     if (sessionMeta.type !== "session_meta" || !sessionMeta.payload || typeof sessionMeta.payload !== "object") {
+      settled();
       return null;
     }
+    if (!matchesSessionMetaIdentity(sessionMeta.payload, `codex:${sessionId}`)) { settled(); return null; }
+    if (options.requireDelegatedChild === true
+      && !readDelegatedParent(sessionMeta.payload, `codex:${sessionId}`)) { settled(); return null; }
     const cwd = sessionMeta.payload.cwd || "";
     // classifySessionMeta legitimately returns "unknown" for a normal root
     // session — most session_meta records carry no explicit "I am root"
@@ -782,6 +969,7 @@ class CodexLogMonitor {
     } catch {}
     const readSnapshotStatus = this._recoverySnapshotStatus(stat, readPostStat);
     if (readSnapshotStatus === "missing" || readSnapshotStatus === "changed") return null;
+    settled();
     const tailBuf = tailRead.buf;
     // Find the last complete (newline-terminated) record in RAW BYTE space —
     // 0x0A can never appear inside a multi-byte UTF-8 sequence, so this index
@@ -896,6 +1084,8 @@ class CodexLogMonitor {
       assistantLastOutput: null,
       assistantLastOutputTruncated: false,
       contextUsage: null,
+      planProgress: null,
+      planProgressTurnId: null,
       activeTurnId: null,
       turnBoundaryOpen: false,
       codexQuota: null,
@@ -906,6 +1096,7 @@ class CodexLogMonitor {
     };
     if (deferSideEffects) {
       recovered._recoverySessionMeta = sessionMeta.payload;
+      recovered._recoverySessionMetaAt = Date.parse(sessionMeta.timestamp);
       if (recentlyActive) {
         recovered._recoveryRawLines = rawLines;
         recovered._recoveryTailIncludesHead = tailStart === 0;
@@ -913,7 +1104,7 @@ class CodexLogMonitor {
       return recovered;
     }
     if (!recentlyActive) {
-      this._applySessionMeta(sessionMeta.payload, recovered);
+      this._applySessionMeta(sessionMeta.payload, recovered, Date.parse(sessionMeta.timestamp));
       return recovered;
     }
 
@@ -921,7 +1112,7 @@ class CodexLogMonitor {
     // lifecycle events stay silent, while fresh token_count captures seed
     // the session-independent quota store. Head metadata was read separately
     // above so subagent/cwd classification does not depend on the tail window.
-    if (tailStart !== 0) this._applySessionMeta(sessionMeta.payload, recovered);
+    if (tailStart !== 0) this._applySessionMeta(sessionMeta.payload, recovered, Date.parse(sessionMeta.timestamp));
     for (const line of rawLines) {
       if (!line.trim()) continue;
       this._processLine(line, recovered);
@@ -951,16 +1142,18 @@ class CodexLogMonitor {
 
   _finalizeRecoveredTracker(recovered) {
     const sessionMeta = recovered._recoverySessionMeta;
+    const sessionMetaAt = recovered._recoverySessionMetaAt;
     const rawLines = recovered._recoveryRawLines;
     const tailIncludesHead = recovered._recoveryTailIncludesHead === true;
     delete recovered._recoverySessionMeta;
+    delete recovered._recoverySessionMetaAt;
     delete recovered._recoveryRawLines;
     delete recovered._recoveryTailIncludesHead;
     if (!Array.isArray(rawLines)) {
-      this._applySessionMeta(sessionMeta, recovered);
+      this._applySessionMeta(sessionMeta, recovered, sessionMetaAt);
       return;
     }
-    if (!tailIncludesHead) this._applySessionMeta(sessionMeta, recovered);
+    if (!tailIncludesHead) this._applySessionMeta(sessionMeta, recovered, sessionMetaAt);
     for (const line of rawLines) {
       if (!line.trim()) continue;
       this._processLine(line, recovered);
@@ -1250,10 +1443,13 @@ class CodexLogMonitor {
         hasEmittedState: retired ? retired.hasEmittedState === true : false,
         hadToolUse: retired ? retired.hadToolUse === true : false,
         isSubagent: retired ? retired.isSubagent === true : false,
+        delegatedChild: retired ? retired.delegatedChild || null : null,
         agentPid: retired ? retired.agentPid : null,
         assistantLastOutput: retired ? retired.assistantLastOutput || null : null,
         assistantLastOutputTruncated: retired ? retired.assistantLastOutputTruncated === true : false,
         contextUsage: retired ? retired.contextUsage || null : null,
+        planProgress: retired ? retired.planProgress || null : null,
+        planProgressTurnId: retired ? retired.planProgressTurnId || null : null,
         activeTurnId: retired ? retired.activeTurnId || null : null,
         turnBoundaryOpen: retired ? retired.turnBoundaryOpen === true : false,
         codexQuota: retired ? retired.codexQuota || null : null,
@@ -1288,6 +1484,7 @@ class CodexLogMonitor {
       this._readPositions.set(filePath, { offset: resumeOffset, identity: fileIdentity });
     } else if (this._isReplayActive(tracked) && !this._replayWork.has(filePath)) {
       if (!this._admitReplayWork(filePath, fileName, tracked, stat)) {
+        this._detachDelegatedChildOwner(tracked);
         this._tracked.delete(filePath);
         return { kind: "deferred", requestedBytes: 0, bytesRead: 0 };
       }
@@ -1367,6 +1564,7 @@ class CodexLogMonitor {
         && (readLen === MAX_POLL_READ_BYTES || scannedToSnapshotEnd);
       if (mayDiscard) {
         tracked.offset += bytesRead;
+        tracked.lastReadAt = Date.now();
         tracked.fileIdentity = openedIdentity;
         this._readPositions.set(filePath, { offset: tracked.offset, identity: openedIdentity });
         this._markReplayProgress(filePath);
@@ -1384,6 +1582,7 @@ class CodexLogMonitor {
     const committedBytes = lastNewline + 1;
     const text = buf.subarray(0, committedBytes).toString("utf8");
     tracked.offset += committedBytes;
+    tracked.lastReadAt = Date.now();
     tracked.fileIdentity = openedIdentity;
     this._readPositions.set(filePath, { offset: tracked.offset, identity: openedIdentity });
     this._markReplayProgress(filePath);
@@ -1529,6 +1728,7 @@ class CodexLogMonitor {
     );
     if (!item.hasValidatedSnapshot) {
       this._clearUnpublishedReplayState(tracked);
+      this._detachDelegatedChildOwner(tracked);
       this._tracked.delete(filePath);
       this._replayWork.delete(filePath);
       // This attach never reached an authoritative opened snapshot. Keeping
@@ -1558,6 +1758,11 @@ class CodexLogMonitor {
 
   _clearUnpublishedReplayState(tracked) {
     if (!tracked) return;
+    if (tracked.backfilling && tracked.delegatedChild) {
+      // A discarded replay has not earned a parent projection. Do not reset a
+      // shared child's newer live turn learned from another rollout file.
+      if (!tracked.delegatedChild.publishedTurnId && tracked.delegatedChild.owners.size <= 1) tracked.delegatedChild.turnId = null;
+    }
     if (tracked.initializingUserInputs && tracked.pendingUserInputs instanceof Map) {
       tracked.pendingUserInputs.clear();
     }
@@ -1568,6 +1773,8 @@ class CodexLogMonitor {
       tracked.assistantLastOutput = null;
       tracked.assistantLastOutputTruncated = false;
       tracked.contextUsage = null;
+      tracked.planProgress = null;
+      tracked.planProgressTurnId = null;
       tracked.activeTurnId = null;
       tracked.turnBoundaryOpen = false;
       tracked.codexQuota = null;
@@ -1619,6 +1826,20 @@ class CodexLogMonitor {
     } catch {
       return; // corrupted line, skip
     }
+    if (obj.type === "session_meta" && !matchesSessionMetaIdentity(obj.payload, tracked.sessionId)) return;
+    const parsedOccurredAt = obj && typeof obj.timestamp === "string"
+      ? Date.parse(obj.timestamp)
+      : NaN;
+    const delegated = tracked.delegatedChild;
+    // Proven delegated files may embed parent history after their own header.
+    // Do not let that history seed the child's ordinary turn/question/plan
+    // bookkeeping either. Roots and legacy headers without a birth stay on
+    // their established replay path; no wall-clock birth is invented.
+    if (obj.type !== "session_meta" && delegated && !delegated.invalid
+      && Number.isSafeInteger(parsedOccurredAt)
+      && ((Number.isSafeInteger(delegated.bornAt) && parsedOccurredAt < delegated.bornAt)
+        || parsedOccurredAt > this._delegatedNow() + 1500)) return;
+    if (tracked.delegatedChild && !tracked.delegatedChild.invalid) tracked.delegatedChild.owners.add(tracked);
 
     const type = obj.type;
     const payload = obj.payload;
@@ -1644,9 +1865,6 @@ class CodexLogMonitor {
       tracked.activeTurnId = null;
       tracked.turnBoundaryOpen = false;
     };
-    const parsedOccurredAt = obj && typeof obj.timestamp === "string"
-      ? Date.parse(obj.timestamp)
-      : NaN;
     const rawToolUseId = payload && typeof payload === "object"
       ? (payload.call_id || payload.tool_use_id || payload.id)
       : null;
@@ -1662,7 +1880,7 @@ class CodexLogMonitor {
     // Metadata is needed for future live writes even when the session_meta
     // record itself predates monitor start.
     if (type === "session_meta") {
-      this._applySessionMeta(payload, tracked);
+      this._applySessionMeta(payload, tracked, parsedOccurredAt);
     }
     if (type === "turn_context" && payload && typeof payload === "object") {
       const providerHint = resolveCodexModelQuotaProvider(payload.model);
@@ -1684,6 +1902,26 @@ class CodexLogMonitor {
       if (!tracked.backfilling && Number.isFinite(ts) && ts < this._startedAtMs - 1500) {
         finishTurnTerminal();
         return;
+      }
+    }
+
+    // A separate child-own fence. Never send a child's turn id through the
+    // parent's ordinary state callback/official-hook arbitration.
+    const child = tracked.delegatedChild;
+    const childPhase = observeDelegatedChild(child, key, recordTurnId || child?.turnId, parsedOccurredAt, this._delegatedNow());
+    if (childPhase && !tracked.backfilling) this._publishDelegatedChild(child, childPhase, parsedOccurredAt, childPhase === "stop");
+
+    // A new turn invalidates the previous checklist. A terminal response does
+    // not imply that every declared plan step completed.
+    if (isTurnStart) {
+      tracked.planProgress = null;
+      tracked.planProgressTurnId = effectiveTurnId;
+    }
+    if (key === "response_item:function_call") {
+      const nextPlan = planProgressFromCall(payload);
+      if (nextPlan !== undefined) {
+        tracked.planProgress = nextPlan;
+        tracked.planProgressTurnId = effectiveTurnId;
       }
     }
 
@@ -1826,9 +2064,58 @@ class CodexLogMonitor {
     finishTurnTerminal();
   }
 
-  _applySessionMeta(payload, tracked) {
-    if (!payload || typeof payload !== "object") return;
+  _applySessionMeta(payload, tracked, occurredAt = NaN) {
+    if (!matchesSessionMetaIdentity(payload, tracked.sessionId)) return;
     tracked.cwd = payload.cwd || "";
+    const childId = normalizeDelegatedThread(tracked.sessionId);
+    let parentId = readDelegatedParent(payload, tracked.sessionId);
+    const ancestors = new Set([childId]);
+    let ancestor = parentId;
+    while (ancestor) {
+      if (ancestors.has(ancestor)) {
+        for (const id of ancestors) {
+          const member = this._delegatedChildren.get(id);
+          if (member) { this._releaseDelegatedChild(member); member.invalid = true; }
+        }
+        parentId = null;
+        break;
+      }
+      ancestors.add(ancestor);
+      ancestor = this._delegatedChildren.get(ancestor)?.parentId;
+    }
+    if (tracked.delegatedChild && tracked.delegatedChild.parentId !== parentId) {
+      this._detachDelegatedChildOwner(tracked);
+      tracked.delegatedChild = null;
+    }
+    if (parentId && !tracked.delegatedChild) {
+      let child = this._delegatedChildren.get(childId);
+      if (child && child.parentId !== parentId) {
+        this._releaseDelegatedChild(child);
+        child.invalid = true; // Conflicting ownership for one immutable thread.
+      }
+      if (!child) {
+        if (this._delegatedChildren.size >= 200) {
+          const [id, oldest] = this._delegatedChildren.entries().next().value;
+          this._releaseDelegatedChild(oldest);
+          oldest.invalid = true;
+          this._delegatedChildren.delete(id);
+        }
+        child = { parentId, childId, turnId: null, publishedTurnId: null,
+          parentEndedAt: this._delegatedParentEnds.get(parentId) || null,
+          lastActivityAt: 0, closed: new Set(), owners: new Set() };
+        this._delegatedChildren.set(childId, child);
+      }
+      tracked.delegatedChild = child;
+    }
+    if (tracked.delegatedChild) tracked.delegatedChild.owners.add(tracked);
+    if (tracked.delegatedChild && Object.prototype.hasOwnProperty.call(payload, "id")
+      && Number.isSafeInteger(occurredAt) && occurredAt <= this._delegatedNow() + 1500) {
+      // A fork can embed its parent's entire rollout after its own header.
+      // Only the child's identified header establishes the delegated cutoff;
+      // missing/invalid timestamps retain legacy behavior without a fake now.
+      const child = tracked.delegatedChild;
+      child.bornAt = Number.isSafeInteger(child.bornAt) ? Math.min(child.bornAt, occurredAt) : occurredAt;
+    }
     tracked.codexOriginator = typeof payload.originator === "string" && payload.originator.trim()
       ? payload.originator.trim()
       : tracked.codexOriginator;
@@ -1949,6 +2236,7 @@ class CodexLogMonitor {
     if (this._replayWork.has(filePath)) return;
     this._tracked.delete(filePath);
     if (!filePath || !tracked) return;
+    this._detachDelegatedChildOwner(tracked);
     this._retiredTracked.delete(filePath);
     this._retiredTracked.set(filePath, {
       sessionId: tracked.sessionId,
@@ -1964,10 +2252,13 @@ class CodexLogMonitor {
       hasEmittedState: tracked.hasEmittedState === true,
       hadToolUse: tracked.hadToolUse === true,
       isSubagent: tracked.isSubagent === true,
+      delegatedChild: tracked.delegatedChild || null,
       agentPid: tracked.agentPid || null,
       assistantLastOutput: tracked.assistantLastOutput || null,
       assistantLastOutputTruncated: tracked.assistantLastOutputTruncated === true,
       contextUsage: tracked.contextUsage || null,
+      planProgress: tracked.planProgress || null,
+      planProgressTurnId: tracked.planProgressTurnId || null,
       activeTurnId: tracked.activeTurnId || null,
       turnBoundaryOpen: tracked.turnBoundaryOpen === true,
       codexQuota: tracked.codexQuota || null,
@@ -1983,6 +2274,11 @@ class CodexLogMonitor {
   }
 
   _emitBackfillSnapshot(tracked) {
+    const child = tracked.delegatedChild;
+    if (child && child.turnId
+      && this._delegatedNow() - child.lastActivityAt <= CHILD_ACTIVITY_TTL_MS) {
+      this._publishDelegatedChild(child, "start", child.lastActivityAt);
+    }
     // The backfill snapshot is the one non-capture emission that carries the
     // cached quota: it is how a restart re-seeds the account store with the
     // last-known (still freshness-gated) numbers parsed from history.
@@ -1991,6 +2287,7 @@ class CodexLogMonitor {
       ...(tracked.codexSparkQuota ? { codexSparkQuota: tracked.codexSparkQuota } : {}),
     };
     const hasQuota = Object.keys(quotaExtra).length > 0;
+    const hasPlanProgress = !!tracked.planProgress;
     // A pending question already gets its own card via
     // _emitPendingUserInputRequests, so a root session's redundant sustained-
     // state snapshot is skipped here. Subagents never get that card
@@ -2003,14 +2300,14 @@ class CodexLogMonitor {
     ) {
       // The question callback does not carry account quota. Seed the
       // session-independent store without replaying the sustained state.
-      if (hasQuota) {
+      if (hasQuota || hasPlanProgress) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count", quotaExtra);
       }
       return;
     }
     const snapshotState = tracked.lastState;
     if (!SUSTAINED_ACTIVE_STATES.has(snapshotState)) {
-      if (tracked.contextUsage || hasQuota) {
+      if (tracked.contextUsage || hasQuota || hasPlanProgress) {
         this._emitStateChange(tracked, "idle", "event_msg:token_count", quotaExtra);
       }
       return;
@@ -2111,6 +2408,8 @@ class CodexLogMonitor {
   _emitUserInputRequest(tracked, request) {
     if (!this._onUserInputRequest || this._isTrackedSubagent(tracked)) return;
     const agentPid = this._resolveTrackedAgentPid(tracked);
+    const questionTurnId = normalizeCodexTurnId(request && request.activity && request.activity.turnId);
+    const planTurnId = normalizeCodexTurnId(tracked.planProgressTurnId);
     this._onUserInputRequest(tracked.sessionId, request, {
       ...(request.activity || { userInputReplay: true }),
       cwd: tracked.cwd,
@@ -2120,6 +2419,10 @@ class CodexLogMonitor {
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
       ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
+      // Never attach a plan from a newer turn to an older open question.
+      ...(questionTurnId && questionTurnId === planTurnId
+        ? { planProgress: tracked.planProgress || null, planProgressTurnId: planTurnId }
+        : {}),
       headless: false,
     });
   }
@@ -2134,15 +2437,18 @@ class CodexLogMonitor {
     };
   }
 
-  // contextUsage only, deliberately NOT either tracked account-quota
-  // provider: context usage is a per-session property (re-attaching the
-  // cached value to lifecycle events keeps the session card current), but
-  // account quota is not — a cached copy goes stale the moment another
-  // session reports, and blindly re-attaching it would replay old numbers
-  // into the account store on every lifecycle event (see token_count above).
-  _withTrackedContextUsage(tracked, extra = null) {
-    if (!tracked || !tracked.contextUsage) return extra;
-    return { ...(extra || {}), contextUsage: tracked.contextUsage };
+  // Context usage and plan progress belong to a session, so lifecycle events
+  // carry their current values. Account quota does not: a cached copy goes
+  // stale when another session reports, so it is emitted only with the record
+  // that captured it (see token_count above).
+  _withTrackedSessionMetadata(tracked, extra = null) {
+    if (!tracked) return extra;
+    return {
+      ...(extra || {}),
+      ...(tracked.contextUsage ? { contextUsage: tracked.contextUsage } : {}),
+      planProgress: tracked.planProgress || null,
+      planProgressTurnId: tracked.planProgressTurnId || null,
+    };
   }
 
   _isTrackedSubagent(tracked) {
@@ -2159,6 +2465,128 @@ class CodexLogMonitor {
       return false;
     }
     return tracked.isSubagent === true;
+  }
+
+  _detachDelegatedChildOwner(tracked) {
+    const child = tracked && tracked.delegatedChild;
+    if (!child) return;
+    child.owners.delete(tracked);
+    if (!child.owners.size) this._releaseDelegatedChild(child);
+  }
+
+  _observePreBootDelegatedTurn(tracked, key, turnId, at) {
+    const child = tracked?.delegatedChild;
+    if (!Number.isFinite(this._bootTimeMs) || !Number.isSafeInteger(at) || at >= this._bootTimeMs
+      || !child || child.invalid || (Number.isSafeInteger(child.bornAt) && at < child.bornAt)
+      || !["event_msg:task_started", "event_msg:task_complete", "event_msg:turn_aborted"].includes(key)) return null;
+    // Only retain the child's own lifecycle ordering before the host boot
+    // boundary. This never publishes activity or grants postboot freshness;
+    // genuine new model/tool progress must still pass the normal live path.
+    return observeDelegatedChild(child, key, turnId || child.turnId, at, this._delegatedNow());
+  }
+
+  refreshSubagentsOfParent(rawThreadId) {
+    const parentId = normalizeDelegatedThread(rawThreadId);
+    if (!parentId || !this._onSubagentActivity) return 0;
+    const now = this._delegatedNow();
+    let refreshed = 0;
+    for (const child of this._delegatedChildren.values()) {
+      const at = child.lastActivityAt;
+      if (child.parentId !== parentId || child.invalid || !child.owners.size
+        || !child.turnId || child.closed.has(child.turnId)
+        || (child.parentEndedAt && child.latestStartAt <= child.parentEndedAt)
+        || !Number.isSafeInteger(at) || at > now + 1500 || now - at > CHILD_ACTIVITY_TTL_MS
+        || (Number.isFinite(this._bootTimeMs) && at < this._bootTimeMs)) continue;
+      // The parent row may have been recovered after state-side presentation
+      // was lost. Reassert only this proven open child generation, preserving
+      // its real activity time. Repeated starts are idempotent in presentation;
+      // no fake Stop, tool event or parent metadata change is needed.
+      child.publishedTurnId = child.turnId;
+      this._publishedChildren.add(child);
+      this._onSubagentActivity(parentId, {
+        childId: child.childId, turnId: child.turnId, phase: "start", occurredAt: at,
+      });
+      refreshed++;
+    }
+    return refreshed;
+  }
+
+  endSubagentTurn(rawThreadId, turnId) {
+    const child = this._delegatedChildren.get(normalizeDelegatedThread(rawThreadId));
+    const turn = normalizeCodexTurnId(turnId);
+    // A turn completion owns only this child's exact open generation. In
+    // particular, an id-less/late official Stop cannot end a newer child turn
+    // or any of the completing parent's independently running children.
+    if (!child || child.invalid || !turn || child.turnId !== turn || child.closed.has(turn)) return false;
+    const now = this._delegatedNow();
+    if (observeDelegatedChild(child, "event_msg:task_complete", turn, now, now) !== "stop") return false;
+    for (const owner of child.owners) {
+      if (owner.activeTurnId !== turn) continue;
+      owner.activeTurnId = null;
+      owner.turnBoundaryOpen = false;
+    }
+    this._releaseDelegatedChild(child, true);
+    return true;
+  }
+
+  endSubagent(rawThreadId) {
+    const child = this._delegatedChildren.get(normalizeDelegatedThread(rawThreadId));
+    if (!child) return;
+    // SessionEnd is authoritative across all duplicate file owners. Retirement
+    // is only the loss of one tracker and must not end another live owner.
+    if (child.turnId) {
+      const now = this._delegatedNow();
+      observeDelegatedChild(child, "event_msg:task_complete", child.turnId, now, now);
+    }
+    this._releaseDelegatedChild(child, true);
+  }
+
+  endSubagentsOfParent(rawThreadId) {
+    const parentId = normalizeDelegatedThread(rawThreadId);
+    if (!parentId) return;
+    const endedAt = this._delegatedNow();
+    // Survives monitor disable/re-enable. A later-discovered historical child
+    // cannot reopen the ended generation after the visible parent reappears.
+    this._delegatedParentEnds.delete(parentId);
+    this._delegatedParentEnds.set(parentId, endedAt);
+    while (this._delegatedParentEnds.size > 200) this._delegatedParentEnds.delete(this._delegatedParentEnds.keys().next().value);
+    for (const child of this._delegatedChildren.values()) {
+      if (child.parentId !== parentId) continue;
+      child.parentEndedAt = endedAt;
+      this.endSubagent(child.childId);
+    }
+  }
+
+  _publishDelegatedChild(child, phase, occurredAt, terminal = false) {
+    if (!child || !this._onSubagentActivity) return;
+    const turnId = phase === "stop" ? child.publishedTurnId : child.turnId;
+    const now = this._delegatedNow();
+    if (!turnId || occurredAt > now + 1500) return;
+    if (Number.isFinite(this._bootTimeMs) && occurredAt < this._bootTimeMs) return;
+    if (phase === "start" && child.publishedTurnId === turnId) return;
+    if (phase === "activity" && child.publishedTurnId !== turnId) {
+      if (now - occurredAt > CHILD_ACTIVITY_TTL_MS) return;
+      // Only a real, replay-accepted event in an open, non-closed child turn
+      // reaches here. It can recover a last-owner LRU retirement. SessionEnd
+      // closes the turn above, so old activity cannot take this path.
+      phase = "start";
+    }
+    if (phase === "start") {
+      if (child.publishedTurnId) this._releaseDelegatedChild(child);
+      child.publishedTurnId = turnId;
+      this._publishedChildren.add(child);
+    }
+    this._onSubagentActivity(child.parentId, { childId: child.childId, turnId, phase, occurredAt,
+      ...(terminal ? { terminal: true } : {}),
+    });
+    if (phase === "stop") {
+      child.publishedTurnId = null;
+      this._publishedChildren.delete(child);
+    }
+  }
+
+  _releaseDelegatedChild(child, terminal = false) {
+    if (child && child.publishedTurnId) this._publishDelegatedChild(child, "stop", this._delegatedNow(), terminal);
   }
 
   _emitStateChange(tracked, state, event, extra = null) {
@@ -2178,7 +2606,7 @@ class CodexLogMonitor {
       sessionTitle: tracked.sessionTitle,
       codexOriginator: tracked.codexOriginator || null,
       codexSource: tracked.codexSource || null,
-      ...this._withTrackedContextUsage(tracked, extra),
+      ...this._withTrackedSessionMetadata(tracked, extra),
       headless: this._isTrackedSubagent(tracked)
         ? true
         : (extra && Object.prototype.hasOwnProperty.call(extra, "headless") ? extra.headless : undefined),

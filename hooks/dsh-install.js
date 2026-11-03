@@ -7,7 +7,7 @@ const os = require("os");
 const path = require("path");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
-const { asarUnpackedPath } = require("./json-utils");
+const { asarUnpackedPath, quotePowerShellSingleArg } = require("./json-utils");
 const { resolveNodeBinAsync } = require("./server-config");
 const {
   readDshNotices,
@@ -211,10 +211,6 @@ function freezeDshOperationOptions(options = {}) {
   };
 }
 
-function quotePowerShellLiteral(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
 function quotePosixShellLiteral(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`;
 }
@@ -223,7 +219,7 @@ function buildManualDshCommand(argv, options = {}) {
   const platform = options.platform || process.platform;
   const dshHome = resolveCanonicalDshHome(options);
   if (platform === "win32") {
-    return `$env:DSH_HOME=${quotePowerShellLiteral(dshHome)}; & ${argv.map(quotePowerShellLiteral).join(" ")}`;
+    return `$env:DSH_HOME=${quotePowerShellSingleArg(dshHome)}; & ${argv.map(quotePowerShellSingleArg).join(" ")}`;
   }
   return `DSH_HOME=${quotePosixShellLiteral(dshHome)} ${argv.map(quotePosixShellLiteral).join(" ")}`;
 }

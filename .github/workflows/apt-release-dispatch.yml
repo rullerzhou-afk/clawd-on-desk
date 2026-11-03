@@ -1,0 +1,22 @@
+name: Request APT publication
+
+on:
+  release:
+    types: [released]
+
+# Release events execute YAML from the tag. This workflow intentionally has no
+# checkout, signing secret, Pages permission, or trusted release input.
+permissions:
+  actions: write
+
+jobs:
+  request:
+    if: github.repository == 'rullerzhou-afk/clawd-on-desk' && !github.event.release.prerelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Request the protected publisher on main
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run publish-apt.yml --repo rullerzhou-afk/clawd-on-desk --ref main -f publish=true
+

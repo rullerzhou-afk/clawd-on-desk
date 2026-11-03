@@ -57,7 +57,8 @@ function isScreenRect(rect) {
 }
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
+  return !!session && !session.headless && session.state !== "sleeping"
+    && !session.hiddenFromHud && !session.hudHiddenByPreference;
 }
 
 function snapshotHasVisibleSessions(snapshot) {

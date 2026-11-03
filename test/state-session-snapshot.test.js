@@ -249,6 +249,21 @@ describe("display session tags", () => {
 
     assert.notStrictEqual(sessionSnapshotSignature(snapshot), sessionSnapshotSignature(changed));
   });
+
+  it("exposes validated Codex plan progress and broadcasts changes", () => {
+    const build = (planProgress, agentId = "codex") => buildSessionSnapshot(new Map([
+      ["plan-session", session("working", { agentId, planProgress })],
+    ]), { statePriority: STATE_PRIORITY });
+    const current = build({ completed: 1, total: 3, percent: 33 });
+    const advanced = build({ completed: 2, total: 3, percent: 67 });
+    const invalid = build({ completed: 4, total: 3, percent: 133 });
+    const otherAgent = build({ completed: 1, total: 3, percent: 33 }, "claude-code");
+
+    assert.deepStrictEqual(current.sessions[0].planProgress, { completed: 1, total: 3, percent: 33 });
+    assert.notStrictEqual(sessionSnapshotSignature(current), sessionSnapshotSignature(advanced));
+    assert.equal("planProgress" in invalid.sessions[0], false);
+    assert.equal("planProgress" in otherAgent.sessions[0], false);
+  });
 });
 
 describe("isSessionInProgress state mapping", () => {

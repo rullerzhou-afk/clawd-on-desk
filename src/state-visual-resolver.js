@@ -65,9 +65,14 @@ function hasOwnVisualFiles(stateBindings, state) {
   return !!(entry && Array.isArray(entry.files) && entry.files.length > 0);
 }
 
+function getVisualState(state, stateSvgs = {}) {
+  return state === "executing" && !(Array.isArray(stateSvgs.executing) && stateSvgs.executing.length)
+    ? "working" : state;
+}
+
 function resolveVisualBinding(state, stateBindings, options = {}) {
   const pickFile = typeof options.pickStateFile === "function" ? options.pickStateFile : pickStateFile;
-  let cursor = state;
+  let cursor = state === "executing" && !hasOwnVisualFiles(stateBindings, state) ? "working" : state;
   let visited = null;
   for (let hops = 0; hops <= 3; hops += 1) {
     const entry = stateBindings && stateBindings[cursor];
@@ -171,7 +176,7 @@ function getPickVisualFile(options) {
 function getWorkingSvg(options = {}) {
   const count = countActiveSessionsByStates(
     options.sessions,
-    new Set(["working", "thinking", "juggling"])
+    new Set(["working", "executing", "thinking", "juggling"])
   );
   const stateSvgs = options.stateSvgs;
   return getPickVisualFile(options)("working", selectTieredStateFiles(
@@ -217,6 +222,15 @@ function getSvgOverride(state, options = {}) {
     if (hinted) return hinted;
     return getWorkingSvg(options);
   }
+  if (state === "executing") {
+    if (getVisualState(state, options.stateSvgs) === "executing") {
+      return getPickVisualFile(options)(state, options.stateSvgs.executing);
+    }
+    // Select the hint from the executing session, even while reusing working
+    // art/tiers. Another session's working hint must not replace it.
+    const hinted = getWinningSessionDisplayHint(options.sessions, state, options.displayHintMap);
+    return hinted || getWorkingSvg(options);
+  }
   if (state === "juggling") {
     const hinted = getWinningSessionDisplayHint(options.sessions, "juggling", options.displayHintMap);
     if (hinted) return hinted;
@@ -236,6 +250,7 @@ module.exports = {
   pickStateFile,
   createStableVisualPicker,
   hasOwnVisualFiles,
+  getVisualState,
   resolveVisualBinding,
   countActiveSessionsByStates,
   countLiveSubagents,

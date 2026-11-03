@@ -9,10 +9,9 @@ const os = require("os");
 const childProcess = require("child_process");
 const {
   buildPermissionUrl,
-  DEFAULT_SERVER_PORT,
   isManagedPermissionUrl,
   PERMISSION_PATH,
-  readRuntimePort,
+  resolveInstallServerPort,
   readRemoteIdentity,
   resolveRemoteIdentityPath,
   resolveSshSecureMarkerPath,
@@ -34,6 +33,8 @@ const {
   asarUnpackedPath,
   buildPortableStatuslineCommand,
   classifyManagedClaudeStateHookCommand,
+  getClaudeHookCommand,
+  claudeHookHasMarker,
   extractExistingNodeBin,
   findManagedClaudeEnvNodeBinCandidates,
 } = require("./json-utils");
@@ -99,6 +100,10 @@ const VERSIONED_HOOKS = [
   // Conservative supported baseline, not the first release of this event.
   { event: "PostToolBatch", minVersion: "2.1.280" },
 ];
+
+// Lowest Claude Code version verified with exec form on Windows; the docs
+// advertise args support starting in 2.1.139.
+const CLAUDE_EXEC_FORM_MIN_VERSION = "2.1.160";
 
 const CLAUDE_VERSION_PATTERN = /(\d+\.\d+\.\d+)/;
 const CLAUDE_PACKAGE_JSON_SEGMENTS = ["node_modules", "@anthropic-ai", "claude-code", "package.json"];
@@ -780,6 +785,33 @@ function preflightClaudeRuntime(options = {}) {
   return resolved;
 }
 
+function shouldUseClaudeExecForm(nodeBin, settings, versionInfo, options) {
+  if (options.platform !== "win32" || options.remote || options.wslDistro) return false;
+  if (
+    typeof nodeBin !== "string" || !/^(?:[A-Za-z]:[\\/]|\\\\)/.test(nodeBin)
+    || !/\.exe$/i.test(nodeBin)
+  ) return false;
+  const env = options.env || process.env;
+  const grokHome = typeof env.GROK_HOME === "string" ? env.GROK_HOME.trim() : "";
+  // Grok 1.0.30 reads Claude hooks but drops args, so exec form would leave a
+  // failing bare Node command in its scrollback. Keep PowerShell when present.
+  if ((grokHome && fs.existsSync(grokHome))
+    || fs.existsSync(path.join(options.homeDir || os.homedir(), ".grok"))) return false;
+  // The async probe caches known versions until Clawd restarts, so runtime downgrades need a restart.
+  if (versionInfo.status === "known") {
+    return !versionLessThan(versionInfo.version, CLAUDE_EXEC_FORM_MIN_VERSION);
+  }
+  // A transient detection failure must not flip an installed exec hook back
+  // to PowerShell. New hooks keep the legacy form until the version is known.
+  let existingExec = false;
+  for (const entries of Object.values(settings.hooks || {})) {
+    forEachCommandHook(entries, (hook) => {
+      if (Array.isArray(hook.args) && getClaudeHookCommand(hook) !== null) existingExec = true;
+    });
+  }
+  return existingExec;
+}
+
 function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   const platform = options.platform || process.platform;
   const argSuffix = args ? ` ${args}` : "";
@@ -816,6 +848,16 @@ function buildCommandHookSpec(nodeBin, scriptPath, args = "", options = {}) {
   }
 
   if (platform === "win32") {
+    // Prefer direct Node execution to avoid a PowerShell startup per event.
+    // Older/unknown hosts, Grok installs and Node shims retain the #147
+    // PowerShell fallback, which avoids Claude's Windows bash path failures.
+    if (options.execForm) {
+      return withHookOptions({
+        type: "command",
+        command: nodeBin,
+        args: [scriptPath, ...(args ? [args] : [])],
+      });
+    }
     return withHookOptions({
       type: "command",
       shell: "powershell",
@@ -925,13 +967,13 @@ function syncCommandHook(entries, marker, expectedHook) {
       changed = true;
       return;
     }
-    if (hook[field] === expectedHook[field]) return;
+    if (hookFieldEquals(hook[field], expectedHook[field])) return;
     hook[field] = expectedHook[field];
     changed = true;
   };
 
   forEachCommandHook(entries, (hook) => {
-    if (!hook.command.includes(marker)) return;
+    if (!claudeHookHasMarker(hook, marker)) return;
     found = true;
     syncField(hook, "type");
     if (hook.command !== expectedHook.command) {
@@ -939,20 +981,29 @@ function syncCommandHook(entries, marker, expectedHook) {
       changed = true;
     }
     syncField(hook, "shell");
+    syncField(hook, "args");
     syncField(hook, "async");
     syncField(hook, "timeout");
   });
   return { found, changed };
 }
 
-const STATE_HOOK_SYNC_FIELDS = Object.freeze(["type", "command", "shell", "async", "timeout"]);
+const STATE_HOOK_SYNC_FIELDS = Object.freeze(["type", "command", "args", "shell", "async", "timeout"]);
+
+function hookFieldEquals(current, expected) {
+  if (Array.isArray(expected)) {
+    return Array.isArray(current) && current.length === expected.length
+      && current.every((value, index) => value === expected[index]);
+  }
+  return current === expected;
+}
 
 function commandHookMatchesExpected(hook, expectedHook) {
   if (!hook || !expectedHook) return false;
   return STATE_HOOK_SYNC_FIELDS.every((field) => {
     const hasExpected = Object.prototype.hasOwnProperty.call(expectedHook, field);
     const hasCurrent = Object.prototype.hasOwnProperty.call(hook, field);
-    return hasExpected === hasCurrent && (!hasExpected || hook[field] === expectedHook[field]);
+    return hasExpected === hasCurrent && (!hasExpected || hookFieldEquals(hook[field], expectedHook[field]));
   });
 }
 
@@ -968,7 +1019,7 @@ function syncCommandHookFields(hook, expectedHook) {
       }
       continue;
     }
-    if (hook[field] !== expectedHook[field]) {
+    if (!hookFieldEquals(hook[field], expectedHook[field])) {
       hook[field] = expectedHook[field];
       changed = true;
     }
@@ -983,14 +1034,14 @@ function collectManagedStateHookRecords(entries, settings, event) {
     const entry = entries[entryIndex];
     if (!entry || typeof entry !== "object") continue;
     if (typeof entry.command === "string") {
-      const kind = classifyManagedClaudeStateHookCommand(entry.command, settings, event);
+      const kind = classifyManagedClaudeStateHookCommand(getClaudeHookCommand(entry, MARKER), settings, event);
       if (kind) records.push({ entryIndex, hookIndex: null, hook: entry, kind });
     }
     if (!Array.isArray(entry.hooks)) continue;
     for (let hookIndex = 0; hookIndex < entry.hooks.length; hookIndex++) {
       const hook = entry.hooks[hookIndex];
       if (!hook || typeof hook !== "object" || typeof hook.command !== "string") continue;
-      const kind = classifyManagedClaudeStateHookCommand(hook.command, settings, event);
+      const kind = classifyManagedClaudeStateHookCommand(getClaudeHookCommand(hook, MARKER), settings, event);
       if (kind) records.push({ entryIndex, hookIndex, hook, kind });
     }
   }
@@ -1105,7 +1156,8 @@ function removeMatchingCommandHooks(entries, predicate) {
       continue;
     }
 
-    if (typeof entry.command === "string" && predicate(entry.command)) {
+    const command = getClaudeHookCommand(entry);
+    if (typeof command === "string" && predicate(command)) {
       removed++;
       changed = true;
       continue;
@@ -1117,8 +1169,8 @@ function removeMatchingCommandHooks(entries, predicate) {
     }
 
     const nextHooks = entry.hooks.filter((hook) => {
-      if (!hook || typeof hook !== "object" || typeof hook.command !== "string") return true;
-      if (!predicate(hook.command)) return true;
+      const command = getClaudeHookCommand(hook);
+      if (typeof command !== "string" || !predicate(command)) return true;
       removed++;
       changed = true;
       return false;
@@ -1213,7 +1265,7 @@ function syncHttpHook(entries, expectedUrl) {
 }
 
 function getHookServerPort(explicitPort) {
-  return Number.isInteger(explicitPort) ? explicitPort : (readRuntimePort() || DEFAULT_SERVER_PORT);
+  return resolveInstallServerPort(explicitPort);
 }
 
 // HTTP hooks: PermissionRequest uses bidirectional HTTP hook for permission decisions.
@@ -1364,7 +1416,7 @@ function resolveConfiguredNodeBinSync(options, settings) {
   const resolved = options.nodeBin !== undefined ? options.nodeBin : resolveNodeBin();
   if (typeof resolved === "string" && resolved) return configuredNodeResolution(resolved);
 
-  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true, claude: true });
   if (existing) return configuredNodeResolution(existing);
 
   const envCandidate = validateEnvNodeCandidatesSync(
@@ -1435,6 +1487,9 @@ function registerHooks(options = {}) {
 
   // Detect CC version for versioned hooks filtering
   const versionInfo = options.claudeVersionInfo || getClaudeVersion();
+  const execForm = shouldUseClaudeExecForm(nodeBin, settings, versionInfo, {
+    platform, remote: options.remote, wslDistro, env: options.env, homeDir: options.homeDir,
+  });
   const { supported: supportedVersionedHooks, unsupported: unsupportedVersionedHooks } =
     getSupportedVersionedHooks(versionInfo);
   const supportedVersionedEvents = new Set(supportedVersionedHooks.map((hook) => hook.event));
@@ -1473,14 +1528,14 @@ function registerHooks(options = {}) {
       changed = true;  // format was normalized, need to persist
     }
 
-    // Local Windows hooks must use explicit PowerShell invocation because Claude
-    // Code defaults command hooks to bash on Windows. Remote hooks stay on the
-    // legacy POSIX/bash-compatible form; see buildCommandHookSpec().
+    // Local Windows uses exec form on verified hosts to skip shell startup;
+    // the #147 PowerShell fallback and POSIX/remote/WSL forms remain available.
     const desiredHook = buildCommandHookSpec(nodeBin, hookScript, event, {
       platform,
       remote: options.remote,
       sshRemote: options.sshRemote,
       wslDistro,
+      execForm,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
       remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
@@ -1526,6 +1581,7 @@ function registerHooks(options = {}) {
     const autoStartHook = buildCommandHookSpec(nodeBin, autoStartScript, "", {
       platform,
       wslDistro,
+      execForm,
       async: true,
       timeout: AUTO_START_HOOK_TIMEOUT_SECONDS,
     });
@@ -1690,7 +1746,7 @@ async function resolveConfiguredNodeBinAsync(options, settings) {
     return configuredNodeResolution(options.nodeBin);
   }
 
-  const existing = extractExistingNodeBin(settings, MARKER, { nested: true });
+  const existing = extractExistingNodeBin(settings, MARKER, { nested: true, claude: true });
   if (existing) {
     const access = options.access || fs.promises.access.bind(fs.promises);
     // Match the doctor validator and resolver: POSIX requires the execute
@@ -1768,6 +1824,9 @@ async function registerHooksAsync(options = {}) {
   let changed = false;
 
   const versionInfo = options.claudeVersionInfo || await getClaudeVersionAsync(options);
+  const execForm = shouldUseClaudeExecForm(nodeBin, settings, versionInfo, {
+    platform, remote: options.remote, wslDistro, env: options.env, homeDir: options.homeDir,
+  });
   const { supported: supportedVersionedHooks, unsupported: unsupportedVersionedHooks } =
     getSupportedVersionedHooks(versionInfo);
   const supportedVersionedEvents = new Set(supportedVersionedHooks.map((hook) => hook.event));
@@ -1807,6 +1866,7 @@ async function registerHooksAsync(options = {}) {
       remote: options.remote,
       sshRemote: options.sshRemote,
       wslDistro,
+      execForm,
       async: true,
       timeout: options.remote ? REMOTE_STATE_HOOK_TIMEOUT_SECONDS : STATE_HOOK_TIMEOUT_SECONDS,
       remoteIdentityPath: options.remoteIdentityPath || (remoteIdentity && remoteIdentity.filePath),
@@ -1850,6 +1910,7 @@ async function registerHooksAsync(options = {}) {
     const autoStartHook = buildCommandHookSpec(nodeBin, autoStartScript, "", {
       platform,
       wslDistro,
+      execForm,
       async: true,
       timeout: AUTO_START_HOOK_TIMEOUT_SECONDS,
     });
@@ -2134,9 +2195,9 @@ function isAutoStartRegistered(options = {}) {
     if (!Array.isArray(arr)) return false;
     return arr.some((entry) => {
       if (!entry || typeof entry !== "object") return false;
-      if (typeof entry.command === "string" && entry.command.includes(AUTO_START_MARKER)) return true;
+      if (claudeHookHasMarker(entry, AUTO_START_MARKER)) return true;
       if (Array.isArray(entry.hooks)) {
-        return entry.hooks.some((h) => h && typeof h.command === "string" && h.command.includes(AUTO_START_MARKER));
+        return entry.hooks.some((h) => claudeHookHasMarker(h, AUTO_START_MARKER));
       }
       return false;
     });
@@ -2757,6 +2818,7 @@ module.exports = {
     reconcileVersionedHooks,
     shouldReconcileVersionedHooks,
     buildCommandHookSpec,
+    shouldUseClaudeExecForm,
     buildRemoteHookEnvPrefix,
     isSshSecureRemoteInstall,
     parseClaudeInstallCliOptions,

@@ -226,6 +226,29 @@ describe("session HUD visual shell", () => {
     assert.match(sessionHudRenderer, /title\.title = fullTitle/);
   });
 
+  it("keeps session titles visible at 130%-160% HUD scaling by overlaying plan progress", () => {
+    // Existing max 58% right-column budget and title flex allocation must
+    // remain identical whether a plan exists or not. A second flex chip
+    // previously reduced the title all the way to zero at 160% scaling.
+    const rightRule = sessionHudHtml.match(/\.right\s*\{[^}]+\}/);
+    assert.ok(rightRule);
+    assert.match(rightRule[0], /max-width:\s*58%/);
+    const titleRule = sessionHudHtml.match(/\.title\s*\{[^}]+\}/);
+    assert.match(titleRule[0], /flex:\s*1 1 auto/);
+    const track = sessionHudHtml.match(/\.plan-progress-track\s*\{[^}]+\}/);
+    assert.ok(track, "the plan must use its own overlay track");
+    assert.match(track[0], /position:\s*absolute/);
+    assert.match(track[0], /pointer-events:\s*none/);
+    assert.match(sessionHudHtml, /\.row\s*\{\s*position:\s*relative/);
+    const planBranch = sessionHudRenderer.match(/if \(!feedbackText && session\.planProgress\)\s*\{[\s\S]*?row\.title =/);
+    assert.ok(planBranch);
+    assert.match(planBranch[0], /row\.appendChild\(track\)/);
+    assert.doesNotMatch(planBranch[0], /right\.appendChild\(/);
+    // No track width participates in Flexbox, so its addition cannot change
+    // the title's allocated space at 100%, 130% or 160% zoom.
+    assert.doesNotMatch(track[0], /flex:|min-width:|max-width:/);
+  });
+
   it("updates elapsed labels without rebuilding animated rows every second", () => {
     assert.match(sessionHudRenderer, /function updateElapsedLabels\(\)/);
     assert.match(sessionHudRenderer, /elapsed\.className = "elapsed"/);

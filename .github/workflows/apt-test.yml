@@ -1,0 +1,73 @@
+name: APT validation
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/*apt*'
+      - 'distribution/apt/**'
+      - 'scripts/apt/**'
+      - 'test/*apt*'
+      - 'src/updater.js'
+      - 'src/update-install-format.js'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: apt-test-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apt:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        image: ['debian:12', 'debian:13', 'ubuntu:22.04', 'ubuntu:24.04']
+    container: ${{ matrix.image }}
+    steps:
+      - name: Install test tools
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends ca-certificates git python3 gnupg gpgv dpkg-dev
+      - uses: actions/checkout@v4
+      - name: Verify APT authentication, package policy, and dpkg lifecycle
+        run: python3 test/apt-repository.test.py
+
+  installed-upgrade:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify the latest stable release assets
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 scripts/apt/repository.py download --output "$RUNNER_TEMP/apt-input"
+      - name: Upgrade real released Clawd packages in this disposable runner
+        run: sudo env CLAWD_APT_DISPOSABLE=1 python3 scripts/apt/smoke-installed.py --input "$RUNNER_TEMP/apt-input" --preview-output "$RUNNER_TEMP/apt-guide-preview"
+      - name: Save the generated guide for visual review (disposable test key)
+        uses: actions/upload-artifact@v4
+        with:
+          name: apt-guide-preview-test-key-only
+          path: ${{ runner.temp }}/apt-guide-preview
+          retention-days: 7
+          if-no-files-found: error
+
+  linux-packages:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - run: npm ci
+      - run: node --test test/updater.test.js test/update-install-format.test.js test/verify-updater-metadata.test.js
+      - run: npx electron-builder --linux --publish never
+      - name: Assert final Linux package identities
+        run: python3 scripts/apt/verify-package-formats.py --dist dist
+      - name: Verify retained AppImage and deb update metadata
+        run: node scripts/verify-updater-metadata.js --metadata dist/latest-linux.yml --artifact-root dist --contract linux --package-json package.json
+

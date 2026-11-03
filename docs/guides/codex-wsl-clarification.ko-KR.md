@@ -29,7 +29,7 @@ Windows와 WSL은 기본적으로 별도의 Codex home을 사용합니다. WSL�
 
 전체 저장소를 이용한 수동 설치, 모든 hook 파일 복사, 네트워크 문제 해결은 [WSL 설치 가이드(영문)](setup-guide.md#wsl-windows-subsystem-for-linux)를 참고하세요. `hooks/*.js`에서 파일을 임의로 골라 복사하지 마세요.
 
-Linux Node는 Windows Clawd의 `127.0.0.1:23333-23337` 서비스에 접근해야 합니다. WSL2 기본 NAT는 Windows 루프백 서비스를 Linux에 노출하지 않습니다. mirrored networking에는 Windows 11 22H2 이상이 필요합니다. [Microsoft 네트워크 가이드](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking)를 참고하세요. WSL1의 루프백 공유는 일반적인 네트워크 특성이지, 최신 Codex의 WSL1 지원을 뜻하지 않습니다. 연결 탐지만으로 모든 agent의 권한 승인 경로가 검증되는 것도 아닙니다. 설치 가이드에는 설치 시 고정되는 Claude 권한 URL의 별도 제한이 설명되어 있습니다.
+Linux Node는 Windows Clawd의 서비스에 접근해야 하며, 보통 `127.0.0.1:23333-23337`에 있습니다. 이 포트를 쓸 수 없으면 운영체제가 할당한 포트로 대체되고, 별도의 Linux home은 범위 밖 포트를 찾을 수 없으며 Pair가 이 제한을 알려 줍니다. WSL2 기본 NAT는 Windows 루프백 서비스를 Linux에 노출하지 않습니다. mirrored networking에는 Windows 11 22H2 이상이 필요합니다. [Microsoft 네트워크 가이드](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking)를 참고하세요. WSL1의 루프백 공유는 일반적인 네트워크 특성이지, 최신 Codex의 WSL1 지원을 뜻하지 않습니다. 연결 탐지만으로 모든 agent의 권한 승인 경로가 검증되는 것도 아닙니다. 설치 가이드에는 설치 시 고정되는 Claude 권한 URL의 별도 제한이 설명되어 있습니다.
 
 ## 세션 탐지와 검증의 한계
 

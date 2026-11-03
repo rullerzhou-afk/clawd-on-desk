@@ -1,4 +1,5 @@
 "use strict";
+const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
 const { resolveCodexApprovalRoute } = require("./codex-approval-routing");
 
@@ -337,6 +338,10 @@ function buildCodexPermissionSessionOptions(data, remoteProfile, wslSourced) {
     agentId: "codex",
     hookSource: CODEX_OFFICIAL_HOOK_SOURCE,
   };
+  const ephemeral = readCodexClientEphemeral(data,
+    data.hook_source === CODEX_OFFICIAL_HOOK_SOURCE && !remoteProfile && !wslSourced && !data.host);
+  if (typeof ephemeral === "boolean") options.codexClientEphemeral = ephemeral;
+  if (ephemeral === false) options.transcriptPath = data.transcript_path;
 
   if (sourcePid) options.sourcePid = sourcePid;
   if (agentPid) options.agentPid = agentPid;
@@ -1703,6 +1708,8 @@ function handlePermissionPost(req, res, options) {
           model: codexSessionOptions.model || null,
           codexOriginator: codexSessionOptions.codexOriginator || null,
           codexSource: codexSessionOptions.codexSource || null,
+          ...(typeof codexSessionOptions.codexClientEphemeral === "boolean"
+            ? { codexClientEphemeral: codexSessionOptions.codexClientEphemeral } : {}),
         };
         const abortHandler = () => {
           if (res.writableFinished) return;
@@ -1942,6 +1949,16 @@ function handlePermissionPost(req, res, options) {
         ) {
           recordRequestHookEvent.accepted();
           ctx.permLog(`zcode no-capability interaction (${interaction.intent}) -> no decision, native prompt fallback (tool=${toolName})`);
+          // #1264: the hook short-circuits before its /state POST on this
+          // path, so without this flash the pet stays fully silent while
+          // ZCode waits on its native prompt. Same transient PermissionRequest
+          // notification as the hook's fail-closed path: global ~5s flash,
+          // no HUD row, auto-return, DND-safe.
+          try {
+            ctx.updateSession(sessionId, "notification", "PermissionRequest", zcodeSessionOptions);
+          } catch (sessionErr) {
+            ctx.permLog(`zcode updateSession failed: ${sessionErr && sessionErr.message} -> no decision`);
+          }
           sendZcodePermissionNoDecision(res);
           return;
         }
@@ -1953,11 +1970,41 @@ function handlePermissionPost(req, res, options) {
         // out of ZCode's loop, including remote channels.
         const agentGateOff = typeof ctx.isAgentPermissionsEnabled === "function"
           && !ctx.isAgentPermissionsEnabled("zcode");
+        if (agentGateOff) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode bubbles disabled -> no decision, native prompt fallback (tool=${toolName})`);
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
+        // ZCode 3.16.3 answers AskUserQuestion over this same transport: the
+        // tool's input schema carries an optional `answers` record ("User
+        // answers collected by the permission component") and an allow decision
+        // with updatedInput is applied as a modify — the same contract the
+        // Claude Code elicitation path implements. Validate the question shape
+        // up front; unsupported shapes fall back to the native prompt with the
+        // same pet flash as the no-capability drop (#1264).
+        const isZcodeElicitation = interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION
+          && interaction.capabilities.answerQuestions === true;
+        const zcodeElicitation = isZcodeElicitation
+          ? prepareElicitationToolInput(rawInput)
+          : null;
+        if (zcodeElicitation && !zcodeElicitation.canAnswer) {
+          recordRequestHookEvent.accepted();
+          ctx.permLog(`zcode elicitation unsupported shape (${zcodeElicitation.reason}) -> no decision, native prompt fallback (tool=${toolName})`);
+          try {
+            ctx.updateSession(sessionId, "notification", "PermissionRequest", zcodeSessionOptions);
+          } catch (sessionErr) {
+            ctx.permLog(`zcode updateSession failed: ${sessionErr && sessionErr.message} -> no decision`);
+          }
+          sendZcodePermissionNoDecision(res);
+          return;
+        }
+
         // Optional external review (#995), settled before either the
         // remote-only or the local automatic-allow path can decide.
-        const permissionReview = agentGateOff || !isPermissionReviewEnabled(ctx)
-          ? null
-          : await settlePermissionReview(ctx, res, {
+        const permissionReview = isPermissionReviewEnabled(ctx)
+          ? await settlePermissionReview(ctx, res, {
             agentId: "zcode",
             recordRequestHookEvent,
             sessionId,
@@ -1976,28 +2023,37 @@ function handlePermissionPost(req, res, options) {
             onCancelled: () => {
               if (!res.headersSent && !res.destroyed) sendZcodePermissionNoDecision(res);
             },
-          });
+          })
+          : null;
         if (permissionReview === REVIEW_CANCELLED) return;
         if (!agentGateOff && !arePermissionBubblesEnabled(ctx)) {
           recordRequestHookEvent.accepted();
           const remoteOnlyResult = tryRemoteOnlyApproval(ctx, {
-            res, sessionId, toolName, toolInput, toolUseId, toolInputFingerprint,
+            res, sessionId, toolName,
+            // Answerable questions carry the same elicitation fields as the
+            // local entry: the remote resolver keys submitted answers off
+            // elicitationWireInput, so a truncated toolInput copy would
+            // produce answer keys ZCode cannot match (#1264 review).
+            ...(zcodeElicitation
+              ? {
+                  toolInput: zcodeElicitation.displayInput,
+                  elicitationDetailInput: zcodeElicitation.detailDisplayInput,
+                  detailTruncated: zcodeElicitation.detailTruncated,
+                  elicitationWireInput: zcodeElicitation.wireInput,
+                  isElicitation: true,
+                }
+              : { toolInput }),
+            toolUseId, toolInputFingerprint,
             agentId: "zcode", isZcode: true, interaction, sessionAutomationIdentity,
             cwd: zcodeSessionOptions.cwd || "",
             host: zcodeSessionOptions.host || null,
             model: zcodeSessionOptions.model || null,
             ...trustedSessionFields(sessionIdentity),
-            ...permissionReminder,
+            ...(zcodeElicitation ? {} : permissionReminder),
             permissionReview,
           });
           if (remoteOnlyResult.handled) return;
           ctx.permLog(`permission bubbles disabled, no remote approval available -> no decision, native prompt fallback (tool=${toolName})`);
-          sendZcodePermissionNoDecision(res);
-          return;
-        }
-        if (agentGateOff) {
-          recordRequestHookEvent.accepted();
-          ctx.permLog(`zcode bubbles disabled -> no decision, native prompt fallback (tool=${toolName})`);
           sendZcodePermissionNoDecision(res);
           return;
         }
@@ -2011,9 +2067,18 @@ function handlePermissionPost(req, res, options) {
           bubble: null,
           hideTimer: null,
           toolName,
-          toolInput,
-          ...permissionDetail,
-          ...permissionReminder,
+          toolInput: zcodeElicitation ? zcodeElicitation.displayInput : toolInput,
+          ...(zcodeElicitation
+            ? {
+                elicitationDetailInput: zcodeElicitation.detailDisplayInput,
+                detailTruncated: zcodeElicitation.detailTruncated,
+                elicitationWireInput: zcodeElicitation.wireInput,
+                isElicitation: true,
+              }
+            : {
+                ...permissionDetail,
+                ...permissionReminder,
+              }),
           permissionReview,
           toolUseId,
           toolInputFingerprint,

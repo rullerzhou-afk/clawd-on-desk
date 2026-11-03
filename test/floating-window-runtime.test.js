@@ -150,3 +150,29 @@ describe("floating-window-runtime", () => {
     ]);
   });
 });
+
+describe("#1275: fullscreen suppression scope", () => {
+  it("#1275: pet-only entry keeps approvals visible while suspending the update bubble", () => {
+    const calls = [];
+    const runtime = createFloatingWindowRuntime({
+      setPermissionSurfacesFullscreenSuppressed: (value) => calls.push(["permission", value]),
+      suspendUpdateBubbleForFullscreen: () => calls.push(["update", "suspend"]),
+    });
+    runtime.setFullscreenSuppressedForPet(true, { includePermissionSurfaces: false });
+    assert.deepStrictEqual(calls, [["update", "suspend"]]);
+  });
+
+  it("#1275: exit clears approvals even when the new scope excludes them", () => {
+    const calls = [];
+    const runtime = createFloatingWindowRuntime({
+      setPermissionSurfacesFullscreenSuppressed: (value) => calls.push(["permission", value]),
+      suspendUpdateBubbleForFullscreen: () => calls.push(["update", "suspend"]),
+      resumeUpdateBubbleFromFullscreen: () => calls.push(["update", "resume"]),
+    });
+    runtime.setFullscreenSuppressedForPet(true);
+    assert.deepStrictEqual(calls, [["permission", true], ["update", "suspend"]]);
+    calls.length = 0;
+    runtime.setFullscreenSuppressedForPet(false, { includePermissionSurfaces: false });
+    assert.deepStrictEqual(calls, [["permission", false], ["update", "resume"]]);
+  });
+});

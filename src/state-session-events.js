@@ -19,7 +19,7 @@ function pushRecentEvent(existing, state, event, options = {}) {
 }
 
 function pickDisplayHint(state, existing, incoming, displayHintMap) {
-  if (state !== "working" && state !== "thinking" && state !== "juggling") {
+  if (state !== "working" && state !== "executing" && state !== "thinking" && state !== "juggling") {
     return null;
   }
   if (incoming !== undefined) {

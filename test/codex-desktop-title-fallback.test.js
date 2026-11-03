@@ -144,9 +144,9 @@ describe("Codex Desktop untitled display fallback", () => {
 });
 
 // Run the real row builder with synthetic DOM elements; no Electron/GUI/input.
-function renderRow(entry, feedback = "", language = "zh") {
+function renderRow(entry, feedback = "", language = "zh", { unreadIds = [], wholeRow = false } = {}) {
   const source = fs.readFileSync(path.join(__dirname, "../src/session-hud-renderer.js"), "utf8");
-  const names = ["titleFor", "titleUnits", "shortenHudTitle", "createRowForSession"];
+  const names = ["titleFor", "titleUnits", "shortenHudTitle", "hasActiveSubagents", "showUnreadCompletion", "createRowForSession"];
   const functions = names.map((name) => {
     const match = source.match(new RegExp(`function ${name}\\([^]*?\\n\\}`));
     assert.ok(match, name);
@@ -158,17 +158,33 @@ function renderRow(entry, feedback = "", language = "zh") {
   });
   const context = {
     document: { createElement: element }, t: createTranslator(() => language),
-    HUD_TITLE_MAX_UNITS: 15, snapshot: { hudShowElapsed: false }, unreadSessions: new Set(),
+    HUD_TITLE_MAX_UNITS: 15, snapshot: { hudShowElapsed: false }, unreadSessions: new Set(unreadIds),
+    BELL_SVG: "<svg data-fixture-bell></svg>",
     sessionFeedbackText: () => feedback, stateChipInfo: () => null, usageChipInfo: () => null,
     // The shared width/row predicate lives in session-hud-tagged-fallback.js
     // (loaded by the page before the renderer); inject it directly.
     taggedFallbackTag: require("../src/session-hud-tagged-fallback.js").taggedFallbackTag,
   };
   vm.runInNewContext(`${functions}\nrow = createRowForSession(entry, 1234);`, Object.assign(context, { entry }));
+  if (wholeRow) return context.row;
   return context.row.children[0].children.find((child) => child.className.startsWith("title"));
 }
 
 describe("compact HUD fallback suffix", () => {
+  it("loads the row builder's real child/attention helpers and restores the unread bell after waiting", () => {
+    const entry = { id: idA, canFocus: true, badge: "done", displayTitle: "Fixture title",
+      state: "idle", effectiveState: "juggling", activeSubagentCount: 1 };
+    const build = overrides => renderRow({ ...entry, ...overrides }, "", "en", { wholeRow: true, unreadIds: [idA] });
+    const bells = row => row.children.flatMap(child => child.children)
+      .filter(child => child.className === "completion-bell unread-bell");
+    const busy = build({});
+    assert.equal(busy.children[0].children[0].className, "dot dot-running");
+    assert.equal(bells(busy).length, 0);
+    assert.equal(bells(build({ activeSubagentCount: 0, pendingAttention: true })).length, 0);
+    assert.equal(bells(build({ activeSubagentCount: 0, pendingAttention: false })).length, 1);
+    assert.equal(build({ badge: "interrupted" }).children[0].children[0].className, "dot dot-interrupted");
+  });
+
   it("renders the complete shared tag independently of ordinary title shortening", () => {
     const snapshot = buildSessionSnapshot(new Map([[idA, desktop()], [idB, desktop({ rawSessionId: rawB })]]), {
       ...options, t: createTranslator(() => "zh"),

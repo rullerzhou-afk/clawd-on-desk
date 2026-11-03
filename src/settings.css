@@ -1921,14 +1921,24 @@ html, body {
   .settings-status.warn .settings-status-dot { background: #f6c343; }
 }
 
-/* Card-body groups: label in a fixed left gutter, rows only name + control.
+/* Card-body groups: label in a left gutter, rows only name + control.
    The dashed separators keep rows apart now that the descriptions are folded
    behind the (i) toggle. */
 .agent-detail-group,
 .settings-detail-group {
   display: grid;
-  grid-template-columns: 58px minmax(0, 1fr);
   border-bottom: 1px solid var(--row-border);
+}
+/* The groups of one agent card share the label column through subgrid: it is
+   58px (CJK labels) and grows to the longest label of the card (en, es, pt-BR),
+   so every group's rows start on the same line. */
+.agent-detail-groups {
+  display: grid;
+  grid-template-columns: minmax(58px, max-content) minmax(0, 1fr);
+}
+.agent-detail-group {
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
 }
 .settings-detail-group {
   /* Localized channel group names need more room than the short agent labels. */
@@ -1945,6 +1955,9 @@ html, body {
 .agent-detail-group:has(> .agent-detail-group-rows > .row:first-child .segmented) > .agent-detail-group-label,
 .settings-detail-group:has(> .settings-detail-group-rows > .row:first-child .segmented) > .settings-detail-group-label {
   padding-top: 17px;
+}
+.agent-detail-group-label {
+  padding-right: 8px;
 }
 .settings-detail-group-label {
   padding-right: 14px;
@@ -1964,6 +1977,7 @@ html, body {
   font-size: 12.5px;
 }
 @media (max-width: 720px) {
+  .agent-detail-groups,
   .agent-detail-group,
   .settings-detail-group {
     grid-template-columns: minmax(0, 1fr);
@@ -2199,6 +2213,40 @@ html, body {
 }
 .settings-segmented-radio.disabled button {
   cursor: not-allowed;
+}
+.idle-behavior-group {
+  display: grid;
+}
+.idle-behavior-group .row {
+  align-items: stretch;
+  flex-direction: column;
+  gap: 10px;
+}
+.idle-behavior-group .row[hidden] {
+  display: none;
+}
+.idle-behavior-group .row-control,
+.idle-behavior-group .settings-segmented-radio {
+  width: 100%;
+}
+.idle-behavior-mode-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.idle-behavior-group .roam-movement-style-segmented {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+.idle-behavior-group .idle-activity-frequency-segmented {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+.idle-behavior-group .settings-segmented-radio button {
+  align-items: center;
+  justify-content: center;
+  padding-inline: 8px;
+  text-align: center;
+  white-space: normal;
 }
 .bubble-placement-group {
   display: grid;
@@ -5364,6 +5412,28 @@ html, body {
   border-bottom: 1px solid var(--border);
 }
 .mobile-conn-row:last-of-type { border-bottom: none; }
+.mobile-device-row {
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 8px 0;
+}
+.mobile-device-row .row-text {
+  flex: 1 1 12em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.mobile-device-row .row-control {
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: auto;
+}
+.mobile-device-revoke {
+  white-space: normal;
+  overflow-wrap: anywhere;
+  max-width: 100%;
+  height: auto;
+}
 .mobile-conn-value {
   font-size: 13px;
   font-family: ui-monospace, Menlo, Consolas, monospace;
@@ -5379,6 +5449,33 @@ html, body {
 .mobile-pair-url {
   font-size: 11px;
   color: var(--text-secondary);
+}
+.mobile-pair-qr {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.mobile-pair-qr-holder {
+  flex: none;
+  width: 160px;
+  height: 160px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+.mobile-pair-qr-holder svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.mobile-pair-qr-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  min-width: 0;
 }
 /* Official theme cards */
 .theme-official-offline-banner {

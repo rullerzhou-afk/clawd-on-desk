@@ -887,7 +887,8 @@
       case "idleAnimation": return `Idle random #${card.poolIndex || 1}`;
       case "roam": return "Free roam walk";
       case "thinking": return "UserPromptSubmit / PostCompact";
-      case "working": return `PreToolUse (${formatSessionRange(card.minSessions, card.maxSessions)})`;
+      case "working": return `Agent activity / tool results (${formatSessionRange(card.minSessions, card.maxSessions)})`;
+      case "executing": return "Claude Code tool handling (PreToolUse)";
       case "juggling": return `SubagentStart (${formatSubagentRange(card.minSessions, card.maxSessions)})`;
       case "error": return "PostToolUseFailure";
       case "attention": return "Stop";

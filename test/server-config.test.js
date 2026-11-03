@@ -147,7 +147,7 @@ describe("runtime.json identity (#681)", () => {
     });
 
     it("rejects a port outside the bindable range", () => {
-      for (const port of [0, 80, 23332, 23338, null, undefined, "nope", {}]) {
+      for (const port of [0, -1, 65536, 23333.5, null, undefined, "nope", {}, true, []]) {
         const file = writeRuntime({ app: "clawd-on-desk", port, ownerPid: 4242 });
         const r = serverConfig.readRuntimeIdentity({ runtimeConfigPath: file });
         assert.strictEqual(r.ok, false, `port ${JSON.stringify(port)} must be rejected`);
@@ -364,7 +364,7 @@ describe("runtime.json identity (#681)", () => {
     });
 
     it("returns false for an unbindable port without touching the filesystem", () => {
-      const result = serverConfig.writeRuntimeConfig(9999, {
+      const result = serverConfig.writeRuntimeConfig(65536, {
         runtimeConfigPath: path.join(makeTempHome(), "runtime.json"),
         fs: { mkdirSync: () => assert.fail("must reject the port before any fs call") },
       });

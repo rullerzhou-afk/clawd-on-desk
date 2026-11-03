@@ -54,13 +54,20 @@ const FROZEN_KEYS = [
   "permissionAutomationUnattendedWarningDismissed",
   "quotaMergeSources",
   "sessionHudCleanupDetached",
+  "sessionHudHideCompletedCodexEphemeral",
+  "sessionHudHideActiveCodexEphemeral",
   "allowEdgePinning",
   "disableMiniMode",
+  "eyeTrackingEnabled",
   "freeRoam",
   "roamConstrainAxis",
+  "idleActivities",
+  "idleActivityFrequency",
   "keepSizeAcrossDisplays",
   "fullscreenAutoHide",
+  "petAlwaysOnTop",
   "openAtLogin",
+  "disableHardwareAcceleration",
   "hideBubbles",
   "bubbleFollowPet",
   "bubbleFollowPreference",
@@ -83,15 +90,20 @@ const EXPECTED_KEYS = {
     "showTray",
     "showDock",
     "openAtLogin",
+    "disableHardwareAcceleration",
   ],
   pet: [
     "size",
     "keepSizeAcrossDisplays",
     "testReactionsEnabled",
+    "petAlwaysOnTop",
     "allowEdgePinning",
     "disableMiniMode",
+    "eyeTrackingEnabled",
     "freeRoam",
     "roamConstrainAxis",
+    "idleActivities",
+    "idleActivityFrequency",
     "fullscreenAutoHide",
   ],
   notifications: [
@@ -114,6 +126,8 @@ const EXPECTED_KEYS = {
     "sessionHudShowElapsed",
     "sessionHudShowContextUsage",
     "sessionHudCleanupDetached",
+    "sessionHudHideCompletedCodexEphemeral",
+    "sessionHudHideActiveCodexEphemeral",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
     "quotaMergeSources",
@@ -430,6 +444,7 @@ function makeSnapshot(overrides = {}) {
     roamConstrainAxis: false,
     testReactionsEnabled: false,
     fullscreenAutoHide: false,
+    petAlwaysOnTop: true,
     soundMuted: false,
     soundVolume: 0.5,
     flashTaskbarOnComplete: true,
@@ -447,6 +462,8 @@ function makeSnapshot(overrides = {}) {
     sessionHudShowElapsed: true,
     sessionHudShowContextUsage: true,
     sessionHudCleanupDetached: true,
+    sessionHudHideCompletedCodexEphemeral: false,
+    sessionHudHideActiveCodexEphemeral: false,
     sessionHudShowQuota: true,
     quotaRingDisplayMode: "used",
     quotaMergeSources: false,
@@ -547,7 +564,7 @@ function createHarness({
     },
     getPreviewSoundUrl: () => Promise.resolve(null),
     getMobileConnectionInfo: () => Promise.resolve({
-      status: "ok", port: 23334, token: "test-token", lanIp: "127.0.0.1",
+      status: "ok", port: 23334, pairCode: "ABCD1234", pairExpiresAt: 123456, lanIp: "127.0.0.1",
     }),
     getTextScaleContext: () => Promise.resolve({ percent: 100 }),
     getSizeContext: () => Promise.resolve({ ui: 50, synced: true, overMax: false }),
@@ -560,6 +577,8 @@ function createHarness({
   const context = {
     console,
     navigator: { platform },
+    setTimeout: () => 1,
+    clearTimeout() {},
     localStorage: localStorage || { getItem: () => null, setItem: () => {} },
     document,
     requestAnimationFrame: (cb) => {
@@ -731,10 +750,12 @@ describe("settings tab split", () => {
 
   it("renders the five pages in the planned section and row order", () => {
     const pet = createHarness({ tab: "pet", snapshot: makeSnapshot({ lang: "zh" }) });
-    assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "反应"]);
+    assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "窗口置顶", "眼睛跟随", "反应"]);
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
-      ["自由漫步", "移动方式", "活动范围", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["空闲时", "移动方式", "活动范围", "出现频率", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["桌宠保持在最前"],
+      ["跟随鼠标光标"],
       ["测试结果动画"],
     ]);
 
@@ -754,7 +775,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(sessions), ["会话 HUD", "额度环与提醒", "高级"]);
     assert.deepStrictEqual(sectionRowLabels(sessions), [
       ["会话面板"],
-      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话"],
+      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话", "收起已完成的 Codex 临时会话", "收起活动中的 Codex 临时会话"],
       ["显示额度环", "额度显示方式", "在桌宠旁显示", "合并多机额度", "额度快用完时提醒", "提醒时机", "额度恢复时也提醒", "测试通知"],
       ["超时清理", "会话超时（空闲）", "工作超时", "Codex 活跃任务超时", "终端关闭后清理延迟"],
     ]);
@@ -783,6 +804,41 @@ describe("settings tab split", () => {
       ["语言", "文字大小"],
       ["开机自启", "在菜单栏显示", "在 Dock 显示", "低功耗 idle", "工作时阻止休眠"],
     ]);
+  });
+
+  it("offers a restart only while the GPU switch differs from launch (#1183)", async () => {
+    const general = createHarness({
+      tab: "general",
+      platform: "Win32",
+      snapshot: makeSnapshot({ disableHardwareAcceleration: false }),
+      settingsAPI: {
+        getStartupRenderState: () => Promise.resolve({ hardwareAccelerationDisabled: false }),
+      },
+    });
+    await general.settle();
+    const row = () => general.core.state.mountedControls.generalSwitches
+      .get("disableHardwareAcceleration").row;
+    const restartButton = () => row().querySelectorAll("button")
+      .find((button) => button.textContent === "Restart Clawd") || null;
+    assert.ok(general.getSwitch("disableHardwareAcceleration"));
+    assert.strictEqual(restartButton(), null);
+
+    general.apply("disableHardwareAcceleration", true);
+    await general.settle();
+    assert.ok(restartButton(), "a pending GPU change shows the restart button");
+    assert.ok(row().querySelectorAll(".row-desc-extra")
+      .some((node) => node.textContent === "Not applied yet. Restart Clawd to switch."));
+
+    restartButton().click();
+    await general.settle();
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(general.commandCalls.filter((call) => call.action === "restartClawd"))),
+      [{ action: "restartClawd", payload: { confirmed: true } }],
+    );
+
+    general.apply("disableHardwareAcceleration", false);
+    await general.settle();
+    assert.strictEqual(restartButton(), null, "switching back to the launch value hides it");
   });
 
   it("patches every independent sync branch in place for its own key", async () => {
@@ -823,7 +879,7 @@ describe("settings tab split", () => {
     await pet.settle();
     const sizeSlider = pet.content.querySelector(".size-slider");
     const roam = pet.core.state.mountedControls.roamMovementStyle;
-    const freeRoam = pet.getSwitch("freeRoam");
+    const idleBehavior = pet.core.state.mountedControls.idleBehavior;
     before = pet.renderCount();
     sizeContextUi = 70;
     pet.apply("size", 70);
@@ -833,7 +889,7 @@ describe("settings tab split", () => {
     pet.apply("roamConstrainAxis", true);
     assert.strictEqual(activeValue(roam.element), "axis");
     pet.apply("freeRoam", true);
-    assert.strictEqual(freeRoam.classList.contains("on"), true);
+    assert.strictEqual(activeValue(idleBehavior.modeControl.element), "roam");
     pet.apply("allowEdgePinning", false);
     assert.strictEqual(pet.getSwitch("allowEdgePinning").classList.contains("on"), false);
     assert.strictEqual(pet.renderCount(), before);
@@ -978,6 +1034,8 @@ describe("settings tab split", () => {
       "sessionHudShowElapsed",
       "sessionHudShowContextUsage",
       "sessionHudCleanupDetached",
+      "sessionHudHideCompletedCodexEphemeral",
+      "sessionHudHideActiveCodexEphemeral",
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), true, key);
     }
@@ -994,6 +1052,8 @@ describe("settings tab split", () => {
       "sessionHudShowElapsed",
       "sessionHudShowContextUsage",
       "sessionHudCleanupDetached",
+      "sessionHudHideCompletedCodexEphemeral",
+      "sessionHudHideActiveCodexEphemeral",
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), false, key);
     }
@@ -1721,5 +1781,102 @@ describe("settings tab split", () => {
       }
       assert.strictEqual(localHarness.core.state.transientUiState.generalSwitches.has("soundMuted"), false);
     }
+  });
+});
+
+describe("#1275: pet visibility settings", () => {
+  for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
+    it(`#1275: fullscreen auto-hide row on ${platform}`, () => {
+      const h = createHarness({ tab: "pet", platform });
+      assert.strictEqual(!!h.getSwitch("fullscreenAutoHide"), platform !== "Linux x86_64");
+    });
+  }
+
+  for (const launch of [true, false]) {
+    it(`#1275: Mac topmost launch=${launch} offers restart only while saved value differs`, async () => {
+      const h = createHarness({
+        tab: "pet",
+        platform: "MacIntel",
+        snapshot: makeSnapshot({ petAlwaysOnTop: launch }),
+        settingsAPI: { getStartupRenderState: () => Promise.resolve({ petAlwaysOnTop: launch }) },
+      });
+      await h.settle();
+      const row = () => h.core.state.mountedControls.generalSwitches.get("petAlwaysOnTop").row;
+      const restartButton = () => row().querySelectorAll("button")
+        .find((button) => button.textContent === "Restart Clawd") || null;
+      assert.strictEqual(restartButton(), null);
+      assert.strictEqual(row().querySelector(".row-desc").textContent,
+        h.core.helpers.t("rowPetAlwaysOnTopDescMac"));
+      assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+
+      h.apply("petAlwaysOnTop", !launch);
+      await h.settle();
+      assert.ok(restartButton());
+      assert.strictEqual(row().querySelector(".row-desc-extra").textContent,
+        h.core.helpers.t("rowDisableHardwareAccelerationRestartPending"));
+      restartButton().click();
+      await h.settle();
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(h.commandCalls)), [
+        { action: "restartClawd", payload: { confirmed: true } },
+      ]);
+
+      h.apply("petAlwaysOnTop", launch);
+      await h.settle();
+      assert.strictEqual(restartButton(), null);
+      assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    });
+  }
+
+  it("#1275: both restart-pending transitions refuse patchInPlace before changing controls", async () => {
+    const h = createHarness({
+      tab: "pet",
+      platform: "MacIntel",
+      snapshot: makeSnapshot({ petAlwaysOnTop: true }),
+      settingsAPI: { getStartupRenderState: () => Promise.resolve({ petAlwaysOnTop: true }) },
+    });
+    await h.settle();
+    for (const value of [false, true]) {
+      const control = h.getSwitch("petAlwaysOnTop");
+      const before = control.classList.contains("on");
+      h.core.state.snapshot = { ...h.core.state.snapshot, petAlwaysOnTop: value };
+      assert.strictEqual(h.core.tabs.pet.patchInPlace({ petAlwaysOnTop: value }), false);
+      assert.strictEqual(control.classList.contains("on"), before);
+      h.render();
+      assert.strictEqual(h.getSwitch("petAlwaysOnTop").classList.contains("on"), value);
+    }
+  });
+
+  it("#1275: missing startup topmost stays unknown and never offers a restart", async () => {
+    const h = createHarness({
+      tab: "pet",
+      platform: "MacIntel",
+      snapshot: makeSnapshot({ petAlwaysOnTop: true }),
+      settingsAPI: { getStartupRenderState: () => Promise.resolve({ hardwareAccelerationDisabled: false }) },
+    });
+    await h.settle();
+    const row = () => h.core.state.mountedControls.generalSwitches.get("petAlwaysOnTop").row;
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    assert.ok(!row().querySelectorAll("button").some((button) => button.textContent === "Restart Clawd"));
+    h.apply("petAlwaysOnTop", false);
+    await h.settle();
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    assert.ok(!row().querySelectorAll("button").some((button) => button.textContent === "Restart Clawd"));
+  });
+
+  it("#1275: Windows uses the immediate-effect description with no restart prompt", async () => {
+    const h = createHarness({
+      tab: "pet",
+      platform: "Win32",
+      snapshot: makeSnapshot({ petAlwaysOnTop: false }),
+      settingsAPI: { getStartupRenderState: () => Promise.resolve({ petAlwaysOnTop: true }) },
+    });
+    await h.settle();
+    const row = () => h.core.state.mountedControls.generalSwitches.get("petAlwaysOnTop").row;
+    assert.strictEqual(row().querySelector(".row-desc").textContent,
+      h.core.helpers.t("rowPetAlwaysOnTopDesc"));
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    h.apply("petAlwaysOnTop", true);
+    await h.settle();
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
   });
 });

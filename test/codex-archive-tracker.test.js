@@ -138,7 +138,7 @@ describe("codex archive tracker", () => {
     const id = uuidFor(8);
     fs.writeFileSync(path.join(archiveDir, rolloutName(id)), `${sessionMetaLine(id)}\n`);
     const linkedRoot = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-archive-link-"));
-    fs.symlinkSync(archiveDir, path.join(linkedRoot, "archived_sessions"), "dir");
+    fs.symlinkSync(archiveDir, path.join(linkedRoot, "archived_sessions"), process.platform === "win32" ? "junction" : "dir");
     const linked = createCodexArchiveTracker({ codexHome: linkedRoot, getLiveCandidateIds: () => [id] });
     try {
       await linked.scanNow();

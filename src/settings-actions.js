@@ -139,6 +139,7 @@ const {
   manageClaudeHooksAutomatically,
   openAtLogin,
   repairLocalServer,
+  restartClawd,
   uninstallHooks,
 } = require("./settings-actions-system");
 const {
@@ -426,6 +427,8 @@ const updateRegistry = {
   sessionHudShowStateLabels: requireBoolean("sessionHudShowStateLabels"),
   sessionHudShowElapsed: requireBoolean("sessionHudShowElapsed"),
   sessionHudShowContextUsage: requireBoolean("sessionHudShowContextUsage"),
+  sessionHudHideCompletedCodexEphemeral: requireBoolean("sessionHudHideCompletedCodexEphemeral"),
+  sessionHudHideActiveCodexEphemeral: requireBoolean("sessionHudHideActiveCodexEphemeral"),
   sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
   quotaRingDisplayMode: requireEnum("quotaRingDisplayMode", ["used", "remaining"]),
   quotaAlertsEnabled: requireBoolean("quotaAlertsEnabled"),
@@ -575,8 +578,25 @@ const updateRegistry = {
   detachedIdleStaleMs: requireIntegerInRange("detachedIdleStaleMs", 5_000, 300_000),
   allowEdgePinning: requireBoolean("allowEdgePinning"),
   disableMiniMode: requireBoolean("disableMiniMode"),
-  freeRoam: requireBoolean("freeRoam"),
+  eyeTrackingEnabled: requireBoolean("eyeTrackingEnabled"),
+  freeRoam(value, deps = {}) {
+    const base = requireBoolean("freeRoam")(value);
+    if (base.status !== "ok") return base;
+    if (value && deps.snapshot && deps.snapshot.idleActivities === true) {
+      return { status: "error", message: "freeRoam and idleActivities are mutually exclusive; use setIdleBehavior to switch." };
+    }
+    return { status: "ok" };
+  },
   roamConstrainAxis: requireBoolean("roamConstrainAxis"),
+  idleActivities(value, deps = {}) {
+    const base = requireBoolean("idleActivities")(value);
+    if (base.status !== "ok") return base;
+    if (value && deps.snapshot && deps.snapshot.freeRoam === true) {
+      return { status: "error", message: "freeRoam and idleActivities are mutually exclusive; use setIdleBehavior to switch." };
+    }
+    return { status: "ok" };
+  },
+  idleActivityFrequency: requireEnum("idleActivityFrequency", ["low", "medium", "high"]),
   keepSizeAcrossDisplays: {
     validate: requireBoolean("keepSizeAcrossDisplays"),
     effect(value, deps = {}) {
@@ -590,6 +610,8 @@ const updateRegistry = {
   },
   fullscreenOverlay: requireBoolean("fullscreenOverlay"),
   fullscreenAutoHide: requireBoolean("fullscreenAutoHide"),
+  petAlwaysOnTop: requireBoolean("petAlwaysOnTop"),
+  disableHardwareAcceleration: requireBoolean("disableHardwareAcceleration"),
   mobilePreviewEnabled: {
     validate: requireBoolean("mobilePreviewEnabled"),
     lockKey: "mobilePreview",
@@ -970,7 +992,7 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
 
   const snapshot = deps.snapshot || {};
   if (snapshot.mobilePermissionPreviewEnabled === enabled) {
-    // Check before rotating so a double click cannot invalidate the token twice.
+    // Check before resetting so a double click cannot revoke access twice.
     return { status: "ok", noop: true };
   }
   if (!enabled) {
@@ -996,7 +1018,10 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
     // Reset is deliberately before the Settings commit: a reset failure must
     // leave disclosure disabled. The controller preserves these phase fields
     // if the later preference persistence fails.
-    deps.resetMobileAccess();
+    try { deps.resetMobileAccess(); }
+    catch (err) {
+      return { status: "error", message: err.message, partialReset: err.legacyRevoked === true };
+    }
     return {
       status: "ok",
       tokenReset: true,
@@ -1007,7 +1032,7 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
   if (typeof deps.disconnectMobilePreviewClients !== "function") {
     return { status: "error", message: "mobile client reconnect is unavailable" };
   }
-  // Keeping the token authorizes all existing holders, but currently-open
+  // Keeping access authorizes paired devices and legacy holders; currently-open
   // sockets must still cross an explicit reconnect boundary before the broader
   // projection can begin flowing.
   deps.disconnectMobilePreviewClients();
@@ -1019,23 +1044,54 @@ function setMobilePermissionPreviewEnabled(payload, deps = {}) {
   };
 }
 
-function regenerateMobileToken(_payload, deps = {}) {
-  if (typeof deps.regenerateMobileToken !== "function") {
-    return { status: "error", message: "mobile token regeneration is unavailable" };
+function refreshMobilePairCode(_payload, deps = {}) {
+  if (typeof deps.refreshMobilePairCode !== "function") {
+    return { status: "error", message: "mobile pairing is unavailable" };
   }
-  return { status: "ok", token: deps.regenerateMobileToken() };
+  try { deps.refreshMobilePairCode(); return { status: "ok" }; }
+  catch (err) { return { status: "error", message: err.message }; }
 }
 
 function resetMobileAccess(_payload, deps = {}) {
   if (typeof deps.resetMobileAccess !== "function") {
     return { status: "error", message: "mobile access reset is unavailable" };
   }
-  return { status: "ok", token: deps.resetMobileAccess() };
+  try { deps.resetMobileAccess(); return { status: "ok" }; }
+  catch (err) { return { status: "error", message: err.message, partialReset: err.legacyRevoked === true }; }
+}
+
+function revokeMobileDevice(payload, deps = {}) {
+  if (!payload || typeof payload.id !== "string" || payload.id.length !== 18 || !/^d_[a-f0-9]{16}$/.test(payload.id)) {
+    return { status: "error", message: "Invalid mobile device ID" };
+  }
+  if (typeof deps.revokeMobileDevice !== "function") {
+    return { status: "error", message: "mobile device revocation is unavailable" };
+  }
+  try {
+    const result = deps.revokeMobileDevice(payload.id);
+    return { status: "ok", mayHoldLegacy: result.mayHoldLegacy === true };
+  } catch (err) {
+    return { status: "error", message: err.message };
+  }
+}
+
+function revokeMobileLegacy(_payload, deps = {}) {
+  if (typeof deps.revokeMobileLegacy !== "function") {
+    return { status: "error", message: "mobile legacy revocation is unavailable" };
+  }
+  try {
+    deps.revokeMobileLegacy();
+    return { status: "ok" };
+  } catch (err) {
+    return { status: "error", message: err.message, partialRevoke: err.legacyRevoked === true };
+  }
 }
 
 setMobilePermissionPreviewEnabled.lockKey = "mobilePreview";
-regenerateMobileToken.lockKey = "mobilePreview";
+refreshMobilePairCode.lockKey = "mobilePreview";
 resetMobileAccess.lockKey = "mobilePreview";
+revokeMobileDevice.lockKey = "mobilePreview";
+revokeMobileLegacy.lockKey = "mobilePreview";
 
 function setBubbleCategoryEnabled(payload, deps) {
   if (!payload || typeof payload !== "object") {
@@ -1374,6 +1430,19 @@ function setThemeSelection(payload, deps) {
     commit: { theme: themeId, themeVariant: nextVariantMap },
     customizationCapabilities: selection.customizationCapabilities,
   };
+}
+
+function setIdleBehavior(payload, deps = {}) {
+  const mode = typeof payload === "string" ? payload : payload && payload.mode;
+  if (!["none", "roam", "activities"].includes(mode)) {
+    return { status: "error", message: "setIdleBehavior.mode must be none, roam, or activities" };
+  }
+  const commit = { freeRoam: mode === "roam", idleActivities: mode === "activities" };
+  const snapshot = deps.snapshot || {};
+  if (snapshot.freeRoam === commit.freeRoam && snapshot.idleActivities === commit.idleActivities) {
+    return { status: "ok", noop: true };
+  }
+  return { status: "ok", commit };
 }
 
 // #509: default idle visual picker.
@@ -2748,6 +2817,7 @@ const commandRegistry = {
   uninstallAgentIntegration,
   repairLocalServer,
   repairDoctorIssue,
+  restartClawd,
   resizePet,
   registerShortcut,
   resetShortcut,
@@ -2758,8 +2828,10 @@ const commandRegistry = {
   setKimiQuotaCollectionEnabled,
   setPermissionAutomationMode,
   setMobilePermissionPreviewEnabled,
-  "mobilePreview.regenerateToken": regenerateMobileToken,
+  "mobilePreview.refreshPairCode": refreshMobilePairCode,
   "mobilePreview.resetAccess": resetMobileAccess,
+  "mobilePreview.revokeDevice": revokeMobileDevice,
+  "mobilePreview.revokeLegacy": revokeMobileLegacy,
   setBubbleCategoryEnabled,
   "sessionCleanup.setTriple": setSessionCleanupTriple,
   setSessionAlias,
@@ -2772,6 +2844,7 @@ const commandRegistry = {
   setWideHitboxOverride,
   setThemeSelection,
   setIdleVisual,
+  setIdleBehavior,
   "officialTheme.commitInstall": officialThemeCommitInstall,
   "officialTheme.uninstall": officialThemeUninstall,
   "remoteSsh.add": remoteSshAddProfile,

@@ -40,7 +40,7 @@
 |---|---|
 | Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` 或 `-arm64.exe` |
 | macOS | `.dmg`，或 `brew install --cask clawd-on-desk` |
-| Linux | `.AppImage` 或 `.deb`（x86_64 也可用 Homebrew） |
+| Linux | `.AppImage`（应用内更新），或 `.deb` + [APT 接入与旧版迁移](docs/guides/apt-setup.zh-CN.md)（x86_64 也可用 Homebrew） |
 
 启动 Clawd 后它会立刻开始工作：首次启动自动接入 Claude Code 和 Codex。其他 agent 在 **设置 → AI 编程工具** 里一键安装。
 

@@ -255,6 +255,18 @@ test("mini animation cards include optional peek states only when the theme decl
   }
 });
 
+test("execution animation card exists only for themes that author the state", () => {
+  for (const own of [false, true]) {
+    const theme = makeTheme("/tmp");
+    if (own) theme.states.executing = ["working.svg"];
+    const h = createRuntimeHarness({ activeTheme: theme });
+    try {
+      const cards = h.runtime.buildAnimationOverrideSections().flatMap(section => section.cards);
+      assert.equal(cards.some(card => card.stateKey === "executing"), own);
+    } finally { h.cleanup(); }
+  }
+});
+
 test("animation override IPC registers owned channels, delegates, and disposes", async () => {
   const ipcMain = new FakeIpcMain();
   const calls = [];

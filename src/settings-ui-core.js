@@ -92,6 +92,8 @@
       soundVolume: null,
       textScale: null,
       roamMovementStyle: null,
+      idleBehavior: null,
+      idleActivityFrequency: null,
       bubblePlacement: null,
       quotaAlertThresholds: null,
       roamArea: null,
@@ -2197,6 +2199,8 @@
     state.mountedControls.soundVolume = null;
     state.mountedControls.textScale = null;
     state.mountedControls.roamMovementStyle = null;
+    state.mountedControls.idleBehavior = null;
+    state.mountedControls.idleActivityFrequency = null;
     state.mountedControls.bubblePlacement = null;
     state.mountedControls.quotaRingDisplayMode = null;
     state.mountedControls.quotaAlertThresholds = null;

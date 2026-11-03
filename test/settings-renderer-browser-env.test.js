@@ -1321,6 +1321,8 @@ function makeGeneralSnapshot(overrides = {}) {
     allowEdgePinning: true,
     disableMiniMode: false,
     keepSizeAcrossDisplays: true,
+    idleActivities: false,
+    idleActivityFrequency: "medium",
     manageClaudeHooksAutomatically: true,
     openAtLogin: false,
     autoStartWithClaude: false,
@@ -2062,12 +2064,14 @@ function loadPermissionsTabForTest({
     getMobileConnectionInfo: () => Promise.resolve({
       status: "ok",
       port: 23380,
-      token: "tok",
+      pairCode: "ABCD1234",
+      pairExpiresAt: 123456,
       lanIp: "192.168.0.23",
-      pairUrl: "http://192.168.0.23:23380/mobile/?token=tok",
+      pairUrl: "http://192.168.0.23:23380/mobile/?pair=ABCD1234",
     }),
-    regenerateMobileToken: () => {
-      commands.push({ name: "regenerateMobileToken" });
+    getMobileDevices: () => Promise.resolve({ status: "ok", devices: [], legacyActive: false }),
+    refreshMobilePairCode: () => {
+      commands.push({ name: "refreshMobilePairCode" });
       return Promise.resolve({ status: "ok" });
     },
     resetMobileAccess: () => {
@@ -4103,7 +4107,7 @@ describe("settings renderer browser environment", () => {
     });
     const parent = new FakeElement("main");
     core.tabs.animOverrides.render(parent, core);
-    assert.strictEqual(parent.querySelector(".anim-override-trigger").textContent, "PreToolUse (2+ sessions)");
+    assert.strictEqual(parent.querySelector(".anim-override-trigger").textContent, "Agent activity / tool results (2+ sessions)");
   });
 
   it("loads browser scripts in dependency order and keeps CommonJS helpers out of settings.html", () => {
@@ -9236,7 +9240,7 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("renders the LAN card as one header switch, one group and one footer", async () => {
+  it("renders pairing and paired-device groups below the LAN card controls", async () => {
     let confirmResult = false;
     const harness = loadPermissionsTabForTest({
       subtab: "lan",
@@ -9254,6 +9258,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(card.querySelector(".settings-detail-group-rows .switch").classList.contains("disabled"), true);
     assert.equal(card.querySelector(".channel-foot-hint").textContent, "mobilePairingHint");
     assert.equal(card.querySelector(".mobile-conn-row"), null);
+    assert.equal(card.querySelectorAll("div").some((node) => node.id === "mobile-devices"), false);
     const groupingLabels = card.querySelectorAll(".settings-detail-group-label").map((label) => label.textContent);
     assert.deepStrictEqual(groupingLabels, ["mobileGroupPhoneShows"]);
     assert.equal(groupingLabels.includes("mobileGroupPairing"), false);
@@ -9266,19 +9271,20 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     enabled.render();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
     card = enabled.content.querySelector(".mobile-channel-card");
     assert.equal(card.querySelector(".settings-status-text").textContent, "mobileStatusRunning");
     assert.deepStrictEqual(
       card.querySelectorAll(".settings-detail-group-label").map((label) => label.textContent),
-      ["mobileGroupPhoneShows", "mobileGroupPairing"],
+      ["mobileGroupPhoneShows", "mobileGroupPairing", "mobileGroupDevices"],
     );
+    const deviceList = card.querySelectorAll("div").find((node) => node.id === "mobile-devices");
+    assert.equal(deviceList.textContent, "mobileDevicesEmpty");
     const rows = card.querySelectorAll(".mobile-conn-row");
-    assert.equal(rows.length, 4);
+    assert.equal(rows.length, 5);
     assert.deepStrictEqual(
       rows.map((row) => row.querySelector(".row-label").textContent),
-      ["mobileConnLanIp", "mobileConnPort", "mobileConnToken", "mobileConnUrl"],
+      ["mobileConnLanIp", "mobileConnPort", "mobileConnPairCode", "mobileConnPairExpires", "mobileConnUrl"],
     );
     const copy = rows[0].querySelector(".mobile-copy");
     copy.dispatchEvent({ type: "click" });
@@ -9286,23 +9292,53 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(enabled.clipboardWrites, ["192.168.0.23"]);
     assert.equal(copy.textContent, "mobileCopied");
 
-    const regenerate = card.querySelector(".mobile-regenerate");
+    const refresh = card.querySelector(".mobile-refresh-pair-code");
     const reset = card.querySelector(".mobile-reset");
-    assert.ok(regenerate && reset);
+    assert.ok(refresh && reset);
     assert.equal(reset.classList.contains("danger"), true);
-    regenerate.dispatchEvent({ type: "click" });
     reset.dispatchEvent({ type: "click" });
-    assert.equal(enabled.commands.some((call) => call.name === "regenerateMobileToken"), false);
+    assert.equal(enabled.commands.some((call) => call.name === "refreshMobilePairCode"), false);
     assert.equal(enabled.commands.some((call) => call.name === "resetMobileAccess"), false);
 
     confirmResult = true;
-    regenerate.dispatchEvent({ type: "click" });
+    refresh.dispatchEvent({ type: "click" });
     reset.dispatchEvent({ type: "click" });
     await Promise.resolve();
-    assert.equal(enabled.commands.some((call) => call.name === "regenerateMobileToken"), true);
+    assert.equal(enabled.commands.some((call) => call.name === "refreshMobilePairCode"), true);
     assert.equal(enabled.commands.some((call) => call.name === "resetMobileAccess"), true);
   });
 
+
+  it("offers Copy for pairing values except the expiry time", async () => {
+    const harness = loadPermissionsTabForTest({
+      subtab: "lan",
+      snapshot: { mobilePreviewEnabled: true },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const rows = harness.content.querySelectorAll(".mobile-conn-row");
+    assert.equal(rows.length, 5);
+    const copiedValues = [];
+    for (const row of rows) {
+      const label = row.querySelector(".row-label").textContent;
+      const buttons = row.querySelectorAll(".mobile-copy");
+      if (label === "mobileConnPairExpires") {
+        assert.equal(buttons.length, 0, "expiry time should have no Copy button");
+      } else {
+        assert.equal(buttons.length, 1, `${label} should retain its Copy button`);
+        copiedValues.push(row.querySelector(".mobile-conn-value").textContent);
+        buttons[0].dispatchEvent({ type: "click" });
+        await Promise.resolve();
+        assert.equal(buttons[0].textContent, "mobileCopied");
+      }
+    }
+    assert.deepStrictEqual(harness.clipboardWrites, copiedValues);
+    assert.equal(copiedValues.length, 4);
+  });
 
   it("gates the Telegram test footer on ready, runtime and native readiness", async () => {
     async function renderTelegram({ allowedTgUserId = "123456789", tokenConfigured = true, state, migration, testCommand }) {
@@ -12614,167 +12650,213 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("renders Free roam movement style as a dependent segmented choice", async () => {
-    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
-    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
-    assert.ok(generalSource.includes("function buildFreeRoamGroup()"));
-    assert.ok(generalSource.includes('id: "pet:free-roam"'));
-    assert.ok(generalSource.includes('className: "free-roam-collapsible"'));
-    assert.ok(generalSource.includes("defaultCollapsed: true"));
-    assert.ok(generalSource.includes("function buildRoamMovementStyleRow()"));
-    assert.ok(generalSource.includes('"row roam-movement-style-row"'));
-    assert.ok(generalSource.includes('"roamConstrainAxis"'));
-    for (const key of [
-      "rowRoamMovementStyle",
-      "rowRoamMovementStyleDesc",
-      "roamMovementNatural",
-      "roamMovementAxis",
-      "rowRoamArea",
-      "roamAreaLoading",
-      "roamAreaEntire",
-      "roamAreaCustom",
-      "roamAreaUnavailable",
-      "roamAreaPetTooLarge",
-      "roamAreaChoose",
-      "roamAreaReset",
-      "roamAreaSaved",
-      "roamAreaResetDone",
-    ]) {
-      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      const matchCount = matches ? matches.length : 0;
-      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
-        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
-    }
+  const idleBehaviorCases = [
+    { mode: "none", freeRoam: false, idleActivities: false, description: "Stay in place, look around, and doze." },
+    { mode: "roam", freeRoam: true, idleActivities: false, description: "Wander freely around the desktop when idle. Movement stops when you move the mouse." },
+    { mode: "activities", freeRoam: false, idleActivities: true, description: "While no agent is active, occasionally play another animation from the theme." },
+    { mode: "roam", freeRoam: true, idleActivities: true, description: "Wander freely around the desktop when idle. Movement stops when you move the mouse." },
+  ];
 
-    const updateCalls = [];
-    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: true, freeRoam: false });
+  function assertIdleBehavior(harness, scenario) {
+    const group = harness.content.querySelector(".idle-behavior-group");
+    const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+    assert.strictEqual(control.getValue(), scenario.mode);
+    assert.strictEqual(group.querySelector(".idle-behavior-mode-row .row-desc").textContent, scenario.description);
+    for (const [selector, visible] of [
+      [".roam-movement-style-row", scenario.mode === "roam"],
+      [".roam-area-row", scenario.mode === "roam"],
+      [".idle-activity-frequency-row", scenario.mode === "activities"],
+    ]) {
+      const row = group.querySelector(selector);
+      assert.strictEqual(row.hidden, !visible, selector);
+      assert.strictEqual(row.getAttribute("aria-hidden"), visible ? "false" : "true", selector);
+      for (const button of row.querySelectorAll("button")) {
+        assert.strictEqual(button.disabled, false, "detail controls remain usable whenever shown");
+      }
+    }
+  }
+
+  for (const scenario of idleBehaviorCases) {
+    it(`renders idle behavior ${scenario.mode} for roam=${scenario.freeRoam}, activities=${scenario.idleActivities}`, () => {
+      const harness = loadGeneralTabForTest({ tab: "pet", snapshot: makeGeneralSnapshot(scenario) });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+      assert.strictEqual(control.element.querySelector("button").getAttribute("data-settings-choice-group"), "idle-behavior-mode");
+      assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
+      assert.strictEqual(control.element.getAttribute("aria-label"), "When idle");
+      assert.deepStrictEqual(control.element.querySelectorAll("button").map((button) => button.textContent),
+        ["Stay put", "Free roam", "Idle activities"]);
+      assert.strictEqual(harness.getSwitch("freeRoam"), null);
+      assert.strictEqual(harness.getSwitch("idleActivities"), null);
+      assertIdleBehavior(harness, scenario);
+    });
+  }
+
+  it("lays out idle behavior choices at full width and hides inactive detail rows", () => {
+    const css = fs.readFileSync(path.join(SRC_DIR, "settings.css"), "utf8").replace(/\r\n/g, "\n");
+    assert.match(css, /\.idle-behavior-group \.row\[hidden\]\s*\{\s*display: none;/);
+    assert.match(css, /\.idle-behavior-mode-segmented\s*\{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+    assert.match(css, /\.idle-behavior-group \.settings-segmented-radio\s*\{\s*width: 100%/);
+    assert.match(css, /\.idle-behavior-group \.settings-segmented-radio button\s*\{[^}]*white-space: normal/);
+  });
+
+  it("saves each idle behavior through the paired command and keeps detail values", async () => {
+    const calls = [];
     const harness = loadGeneralTabForTest({
       tab: "pet",
-      snapshot: initialSnapshot,
-      settingsAPI: {
-        update: (key, value) => {
-          updateCalls.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
-      },
+      snapshot: makeGeneralSnapshot({ freeRoam: false, idleActivities: false, roamConstrainAxis: true, idleActivityFrequency: "high" }),
+      settingsAPI: { command: async (name, payload) => { calls.push({ name, payload: { mode: payload.mode } }); return { status: "ok" }; } },
     });
     harness.renderContent();
-
-    const control = harness.core.state.mountedControls.roamMovementStyle;
-    const row = harness.content.querySelector(".roam-movement-style-row");
-    const group = harness.content.querySelector(".free-roam-collapsible");
-    const header = group.querySelector(".collapsible-group-header");
-    const disclosure = group.querySelector(".collapsible-group-disclosure");
-    const freeRoamSwitch = harness.getSwitch("freeRoam");
-    assert.ok(control && row, "the dependent movement-style row must mount");
-    assert.ok(group, "Free roam must render as a collapsible group");
-    assert.strictEqual(group.dataset.groupId, "pet:free-roam");
-    assert.strictEqual(group.classList.contains("collapsed"), true, "Free roam details default closed");
-    assert.strictEqual(header.getAttribute("role"), undefined, "the shared header must not wrap both interactive controls");
-    assert.strictEqual(disclosure.getAttribute("role"), "button");
-    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "false");
-    assert.strictEqual(disclosure.getAttribute("aria-label"), "Expand section: Free roam");
-    assert.strictEqual(disclosure.contains(freeRoamSwitch), false, "the switch must be a sibling of the disclosure button");
-    assert.strictEqual(header.contains(disclosure), true);
-    assert.strictEqual(header.contains(freeRoamSwitch), true);
-    assert.strictEqual(freeRoamSwitch.getAttribute("role"), "switch");
-    assert.strictEqual(freeRoamSwitch.getAttribute("aria-label"), "Free roam");
-    assert.ok(
-      group.querySelector(".collapsible-group-body").contains(row),
-      "movement style must live inside the collapsible body",
-    );
-    assert.ok(row.classList.contains("settings-option-item"), "movement style must use the nested-card style");
-    assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
-    const buttons = control.element.querySelectorAll("button");
-    const natural = buttons.find((button) => button.dataset.value === "natural");
-    const axis = buttons.find((button) => button.dataset.value === "axis");
-    assert.ok(natural && axis, "both movement styles must be available");
-    assert.strictEqual(axis.classList.contains("active"), true, "stored axis choice remains visible");
-    assert.strictEqual(natural.classList.contains("active"), false);
-    assert.strictEqual(axis.disabled, true, "style is disabled while Free roam is off");
-    assert.strictEqual(natural.disabled, true);
-
-    // The header master switch updates Free roam without also opening the
-    // sibling disclosure. No propagation workaround is needed.
-    freeRoamSwitch.dispatchEvent({
-      type: "click",
-      bubbles: true,
-      cancelBubble: false,
-      stopPropagation() { this.cancelBubble = true; },
-    });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      updateCalls.some((call) => call.key === "freeRoam" && call.value === true),
-      "the header switch must persist freeRoam=true",
-    );
-    assert.strictEqual(group.classList.contains("collapsed"), true);
-
-    disclosure.dispatchEvent({ type: "click", bubbles: true });
-    assert.strictEqual(group.classList.contains("collapsed"), false);
-    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "true");
-    assert.strictEqual(disclosure.getAttribute("aria-label"), "Collapse section: Free roam");
-
-    // Enabling the parent patches the mounted child in place and preserves its
-    // stored axis selection instead of resetting the preference.
-    const beforeRenderCount = harness.getContentRenderCount();
-    const enabledSnapshot = { ...initialSnapshot, freeRoam: true };
-    harness.core.ops.applyChanges({
-      changes: { freeRoam: true },
-      snapshot: enabledSnapshot,
-    });
-    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
-    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
-    assert.strictEqual(axis.disabled, false);
-    assert.strictEqual(natural.disabled, false);
-    assert.strictEqual(axis.classList.contains("active"), true);
-
-    // Natural maps back to the existing boolean false; no prefs migration or
-    // new runtime setting is introduced by the presentation change.
-    natural.dispatchEvent({ type: "click", bubbles: false });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === false),
-      "Natural must persist roamConstrainAxis=false",
-    );
-    assert.strictEqual(natural.classList.contains("active"), true);
-    assert.strictEqual(axis.classList.contains("active"), false);
-
-    // Axis maps to the existing boolean true through the same user-click path.
-    axis.dispatchEvent({ type: "click", bubbles: false });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === true),
-      "Axis must persist roamConstrainAxis=true",
-    );
-    assert.strictEqual(axis.classList.contains("active"), true);
-    assert.strictEqual(natural.classList.contains("active"), false);
-
-    // Authoritative broadcasts keep the same control mounted and can replace
-    // the optimistic value without rebuilding General.
-    const naturalSnapshot = { ...enabledSnapshot, roamConstrainAxis: false };
-    harness.core.ops.applyChanges({
-      changes: { roamConstrainAxis: false },
-      snapshot: naturalSnapshot,
-    });
-    const axisSnapshot = { ...naturalSnapshot, roamConstrainAxis: true };
-    harness.core.ops.applyChanges({
-      changes: { roamConstrainAxis: true },
-      snapshot: axisSnapshot,
-    });
-    assert.strictEqual(axis.classList.contains("active"), true);
-    assert.strictEqual(natural.classList.contains("active"), false);
-
-    // Turning the parent off disables the child but preserves the stored style.
-    harness.core.ops.applyChanges({
-      changes: { freeRoam: false },
-      snapshot: { ...axisSnapshot, freeRoam: false },
-    });
-    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
-    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
-    assert.strictEqual(axis.classList.contains("active"), true);
-    assert.strictEqual(natural.disabled, true);
-    assert.strictEqual(axis.disabled, true);
+    const mounted = harness.core.state.mountedControls;
+    const mode = mounted.idleBehavior.modeControl;
+    const movement = mounted.roamMovementStyle;
+    const frequency = mounted.idleActivityFrequency;
+    const before = harness.getContentRenderCount();
+    for (const index of [1, 2, 0, 2, 1]) {
+      const scenario = idleBehaviorCases[index];
+      mode.element.querySelectorAll("button").find((button) => button.dataset.value === scenario.mode)
+        .dispatchEvent({ type: "click", bubbles: false });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepStrictEqual(calls.at(-1), { name: "setIdleBehavior", payload: { mode: scenario.mode } });
+      assertIdleBehavior(harness, scenario);
+      harness.core.ops.applyChanges({
+        changes: { freeRoam: scenario.freeRoam, idleActivities: scenario.idleActivities },
+        snapshot: { ...harness.core.state.snapshot, freeRoam: scenario.freeRoam, idleActivities: scenario.idleActivities },
+      });
+      assert.strictEqual(movement.getValue(), "axis");
+      assert.strictEqual(frequency.getValue(), "high");
+      assert.strictEqual(mounted.idleBehavior.modeControl, mode);
+      assert.strictEqual(mounted.roamMovementStyle, movement);
+      assert.strictEqual(mounted.idleActivityFrequency, frequency);
+      assert.strictEqual(harness.getContentRenderCount(), before);
+    }
   });
+
+  for (const scenario of [
+    { name: "an error result", message: "disk full", reply: () => ({ status: "error", message: "disk full" }) },
+    { name: "a rejected promise", message: "IPC unavailable", reply: () => Promise.reject(new Error("IPC unavailable")) },
+  ]) {
+    it(`rolls back the idle behavior choice and shows a toast on ${scenario.name}`, async () => {
+      const calls = [], toasts = [];
+      const harness = loadGeneralTabForTest({
+        tab: "pet", snapshot: makeGeneralSnapshot(idleBehaviorCases[1]),
+        settingsAPI: { command: (name, payload) => { calls.push({ name, payload: { mode: payload.mode } }); return scenario.reply(); } },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+      control.element.querySelectorAll("button").find((button) => button.dataset.value === "activities")
+        .dispatchEvent({ type: "click", bubbles: false });
+      assert.strictEqual(control.getValue(), "activities", "choice changes optimistically before the reply");
+      await new Promise((resolve) => setImmediate(resolve));
+      assertIdleBehavior(harness, idleBehaviorCases[1]);
+      assert.deepStrictEqual(calls, [{ name: "setIdleBehavior", payload: { mode: "activities" } }]);
+      assert.strictEqual(toasts.length, 1);
+      assert.strictEqual(toasts[0].options.error, true);
+      assert.ok(toasts[0].message.includes(scenario.message));
+    });
+  }
+
+  it("patches idle behavior broadcasts in place, including mixed and hidden detail updates", async () => {
+    const calls = [];
+    const harness = loadGeneralTabForTest({
+      tab: "pet", snapshot: makeGeneralSnapshot(idleBehaviorCases[0]),
+      settingsAPI: { update: async (key, value) => { calls.push({ key, value }); return { status: "ok" }; } },
+    });
+    harness.renderContent();
+    const mounted = harness.core.state.mountedControls;
+    const group = mounted.idleBehavior.element;
+    const mode = mounted.idleBehavior.modeControl;
+    const movement = mounted.roamMovementStyle;
+    const frequency = mounted.idleActivityFrequency;
+    const before = harness.getContentRenderCount();
+    function apply(changes) {
+      harness.core.ops.applyChanges({ changes, snapshot: { ...harness.core.state.snapshot, ...changes } });
+      assert.strictEqual(harness.getContentRenderCount(), before);
+      assert.strictEqual(harness.content.querySelector(".idle-behavior-group"), group);
+      assert.strictEqual(mounted.idleBehavior.modeControl, mode);
+      assert.strictEqual(mounted.roamMovementStyle, movement);
+      assert.strictEqual(mounted.idleActivityFrequency, frequency);
+    }
+    apply({ roamConstrainAxis: true, idleActivityFrequency: "high" });
+    assert.strictEqual(movement.getValue(), "axis");
+    assert.strictEqual(frequency.getValue(), "high");
+    for (const index of [1, 2, 0, 1]) {
+      const scenario = idleBehaviorCases[index];
+      apply({ freeRoam: scenario.freeRoam, idleActivities: scenario.idleActivities, allowEdgePinning: false });
+      assertIdleBehavior(harness, scenario);
+      assert.strictEqual(harness.getSwitch("allowEdgePinning").classList.contains("on"), false);
+      assert.strictEqual(movement.getValue(), "axis");
+      assert.strictEqual(frequency.getValue(), "high");
+    }
+    movement.element.querySelectorAll("button").find((button) => button.dataset.value === "natural")
+      .dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(calls.at(-1), { key: "roamConstrainAxis", value: false });
+    apply({ roamConstrainAxis: false });
+    assert.strictEqual(movement.getValue(), "natural");
+    apply({ freeRoam: false, idleActivities: true });
+    frequency.element.querySelectorAll("button").find((button) => button.dataset.value === "low")
+      .dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(calls.at(-1), { key: "idleActivityFrequency", value: "low" });
+    apply({ idleActivityFrequency: "low" });
+    assert.strictEqual(frequency.getValue(), "low");
+  });
+
+  it("uses snapshot mode changes when a broadcast arrives before the optimistic save resolves", async () => {
+    let resolveSave;
+    const harness = loadGeneralTabForTest({
+      tab: "pet", snapshot: makeGeneralSnapshot(idleBehaviorCases[0]),
+      settingsAPI: { command: () => new Promise((resolve) => { resolveSave = resolve; }) },
+    });
+    harness.renderContent();
+    const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+    const before = harness.getContentRenderCount();
+    control.element.querySelectorAll("button").find((button) => button.dataset.value === "roam")
+      .dispatchEvent({ type: "click", bubbles: false });
+    assert.strictEqual(control.getValue(), "roam");
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: true, idleActivities: false },
+      snapshot: { ...harness.core.state.snapshot, freeRoam: true, idleActivities: false },
+    });
+    assertIdleBehavior(harness, idleBehaviorCases[1]);
+    assert.strictEqual(harness.getContentRenderCount(), before);
+    assert.strictEqual(harness.core.state.mountedControls.idleBehavior.modeControl, control);
+    resolveSave({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  for (const scenario of [
+    { name: "a non-ok result", message: "disk full", reply: () => ({ status: "error", message: "disk full" }) },
+    { name: "a rejected request", message: "IPC unavailable", reply: () => Promise.reject(new Error("IPC unavailable")) },
+  ]) {
+    it(`shows an error when the idle activity frequency save returns ${scenario.name}`, async () => {
+      const calls = [], toasts = [];
+      const harness = loadGeneralTabForTest({
+        tab: "pet",
+        snapshot: makeGeneralSnapshot({ idleActivities: true, idleActivityFrequency: "medium" }),
+        settingsAPI: {
+          update: (key, value) => {
+            calls.push({ key, value });
+            return scenario.reply();
+          },
+        },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleActivityFrequency;
+      const high = control.element.querySelectorAll("button").find((button) => button.dataset.value === "high");
+      high.dispatchEvent({ type: "click", bubbles: false });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepStrictEqual(calls, [{ key: "idleActivityFrequency", value: "high" }]);
+      assert.equal(toasts.length, 1);
+      assert.equal(toasts[0].options.error, true);
+      assert.ok(String(toasts[0].message).includes(scenario.message));
+    });
+  }
 
   it("shows, selects, and resets the Free roam activity area", async () => {
     const calls = [];
@@ -12808,7 +12890,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(control && harness.content.querySelector(".roam-area-row"));
     assert.strictEqual(control.description.textContent, "Custom area · 60% × 60% of each display");
     assert.strictEqual(control.resetButton.style.display, "");
-    assert.ok(harness.content.querySelector(".free-roam-option-list").contains(control.row));
+    assert.ok(harness.content.querySelector(".idle-behavior-group").contains(control.row));
 
     control.chooseButton.dispatchEvent({ type: "click", bubbles: false });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -21417,6 +21499,19 @@ describe("settings renderer browser environment", () => {
     for (const group of harness.content.querySelectorAll(".agent-detail-group")) {
       assert.ok(group.querySelector(".agent-detail-group-rows").children.length > 0);
     }
+
+    // The groups of one card sit in a single wrapper (the shared label column);
+    // the disconnect footer stays outside it, full width.
+    for (const card of [claude, codex, kimi, custom]) {
+      const wrappers = card.querySelectorAll(".agent-detail-groups");
+      assert.strictEqual(wrappers.length, 1);
+      assert.deepStrictEqual(
+        wrappers[0].children.map((child) => child.className),
+        wrappers[0].children.map(() => "agent-detail-group"),
+      );
+      assert.strictEqual(wrappers[0].querySelectorAll(".agent-disconnect").length, 0);
+      assert.strictEqual(card.querySelectorAll(".agent-disconnect").length, 1);
+    }
   });
 
   it("folds descriptions behind an (i) toggle only inside card-body rows", () => {
@@ -21812,7 +21907,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("buildAgentInstallHintBanner"));
     assert.ok(!css.includes(".agent-badge"));
 
-    const defaultGroupIndex = css.indexOf("grid-template-columns: 58px minmax(0, 1fr)");
+    const defaultGroupIndex = css.indexOf("grid-template-columns: minmax(58px, max-content) minmax(0, 1fr)");
     const mobileGroupIndex = css.indexOf("@media (max-width: 720px)", defaultGroupIndex);
     assert.ok(defaultGroupIndex >= 0 && mobileGroupIndex > defaultGroupIndex,
       "the narrow-window single-column rule must come after the default two-column rule");

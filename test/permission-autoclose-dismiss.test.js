@@ -111,6 +111,18 @@ function makePermEntry(overrides = {}) {
 }
 
 describe("permission autoclose: no-decision dismiss semantics", () => {
+  it("reports the normalized outcome without changing Claude's wire decision", () => {
+    for (const behavior of ["allow", "deny", "no-decision"]) {
+      const resolved = [];
+      const runtime = initPermission(makeCtx({ onPermissionResolved: (_, meta) => resolved.push(meta) }));
+      const entry = makePermEntry({ agentId: "claude-code" });
+      runtime.pendingPermissions.push(entry);
+      runtime.resolvePermissionEntry(entry, behavior);
+      assert.equal(resolved[0].behavior, behavior);
+      if (behavior === "no-decision") assert.equal(entry.res.captured.destroyCalls, 1);
+      else assert.equal(JSON.parse(entry.res.captured.body).hookSpecificOutput.decision.behavior, behavior);
+    }
+  });
   it("subtracts completed and active confirmation pauses from real elapsed time", () => {
     const entry = {
       createdAt: 1_000,
@@ -282,7 +294,7 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
     assert.deepEqual(changes, ["resolved"]);
     assert.deepEqual(resolved, [{
       entry: permEntry,
-      meta: { reason: "resolved", hasPendingForSession: false },
+      meta: { reason: "resolved", hasPendingForSession: false, behavior: "allow" },
     }]);
     assert.equal(pendingPermissions.indexOf(permEntry), -1);
   });
@@ -301,7 +313,7 @@ describe("permission autoclose: no-decision dismiss semantics", () => {
 
     assert.deepEqual(resolved, [{
       entry: first,
-      meta: { reason: "resolved", hasPendingForSession: true },
+      meta: { reason: "resolved", hasPendingForSession: true, behavior: "allow" },
     }]);
     assert.deepEqual(pendingPermissions, [second]);
   });

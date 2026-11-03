@@ -212,10 +212,10 @@ function createIntegrationSyncRuntime(options = {}) {
       const permissionTarget = options.permissionTarget && typeof options.permissionTarget === "object"
         ? options.permissionTarget
         : { mode: "local" };
-      const syncOptions = { ...options, permissionTarget };
+      const syncOptions = { ...options, permissionTarget, port: getHookServerPort() };
       if (typeof ctx.syncCodeBuddyHooksImpl === "function") return ctx.syncCodeBuddyHooksImpl(syncOptions);
       const { registerCodeBuddyHooks } = require("../hooks/codebuddy-install.js");
-      const result = registerCodeBuddyHooks({ silent: true, permissionTarget });
+      const result = registerCodeBuddyHooks({ ...syncOptions, silent: true });
       if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
         console.log(`Clawd: synced CodeBuddy hooks (added ${result.added}, updated ${result.updated})`);
       }

@@ -665,6 +665,7 @@ describe("opencode-family lifecycle route → real runtime", () => {
     assert.deepStrictEqual(harness.resolved.map(({ meta }) => meta), [{
       reason: "resolved-externally",
       hasPendingForSession: false,
+      behavior: "no-decision",
     }]);
     assertSecretAbsentFromLifecycleLogs(harness, "token_route");
     harness.api.cleanup();

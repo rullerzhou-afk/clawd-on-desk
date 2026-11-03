@@ -62,6 +62,11 @@ function createThemeContext(theme, options = {}) {
 
   function getRendererConfig() {
     if (!theme) return null;
+    const eyeTrackingStates = theme.eyeTracking.enabled ? [...theme.eyeTracking.states] : [];
+    if (!(Array.isArray(theme.states.executing) && theme.states.executing.length)
+      && eyeTrackingStates.includes("working") && !eyeTrackingStates.includes("executing")) {
+      eyeTrackingStates.push("executing");
+    }
     const trustedScriptedSvgFiles = theme._builtin && theme.trustedRuntime
       ? (theme.trustedRuntime.scriptedSvgFiles || [])
       : [];
@@ -90,7 +95,7 @@ function createThemeContext(theme, options = {}) {
       // roam-walk bob compensation. Multi-entry bindings count as dedicated
       // even if one entry reuses the idle file.
       hasRoamVisual: hasDedicatedRoamVisual(theme),
-      eyeTrackingStates: theme.eyeTracking.enabled ? theme.eyeTracking.states : [],
+      eyeTrackingStates,
       trustedScriptedSvgFiles: [...trustedScriptedSvgFiles],
       rendering: theme.rendering || { svgChannel: "auto" },
       petTintSupported: !!(theme._capabilities && theme._capabilities.petTint),

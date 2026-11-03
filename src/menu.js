@@ -424,6 +424,15 @@ module.exports = function initMenu(ctx) {
       callback: () => {
         ctx.menuOpen = false;
         if (owner && !owner.isDestroyed()) owner.hide();
+        // #1260 backstop: the normal renderer path ends any active drag
+        // before asking for this menu, so a lock still held at close time
+        // was stranded by the menu's modal loop swallowing the closing
+        // pointerup. Release through the shared recovery entry — it also
+        // pushes force-drag-release so the renderer unwinds its gesture
+        // state and the input window re-syncs.
+        if (ctx.dragLocked && typeof ctx.releaseStrandedDragLock === "function") {
+          ctx.releaseStrandedDragLock();
+        }
         // ctx.petHidden guard: the menu's own Hide item may have just hidden
         // the pet, and the click handler can fire on either side of this close
         // callback — an unconditional showInactive() would resurrect a window
@@ -437,7 +446,11 @@ module.exports = function initMenu(ctx) {
           if (isMac) {
             ctx.reapplyMacVisibility();
           } else if (isWin) {
-            ctx.win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+            if (ctx.petAlwaysOnTop === false) {
+              ctx.raisePetWindows();
+            } else {
+              ctx.win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
+            }
           }
         }
       },

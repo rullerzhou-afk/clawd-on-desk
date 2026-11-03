@@ -1134,15 +1134,16 @@ function renderElicitationTerminalFallback(data) {
   const btn = document.createElement("button");
   btn.className = "btn-suggestion";
   btn.textContent = bubbleText(currentLang, "goToTerminal");
-  btn.addEventListener("click", () => {
-    btn.textContent = "...";
-    disableAll();
-    // Claude elicitation requires an explicit deny response to hand control
-    // back to its terminal prompt. Hermes clarify instead treats deny as
-    // cancellation; deny-and-focus is normalized to a bodyless no-decision,
-    // which lets Hermes open its native clarification UI.
-    window.bubbleAPI.decide(data && data.isHermes ? "deny-and-focus" : "deny");
-  });
+    btn.addEventListener("click", () => {
+      btn.textContent = "...";
+      disableAll();
+      // Claude elicitation requires an explicit deny response to hand control
+      // back to its terminal prompt. Hermes clarify and ZCode questions treat
+      // deny as cancellation; deny-and-focus is normalized to a bodyless
+      // no-decision, which lets Hermes open its native clarification UI and
+      // ZCode keep its native question prompt.
+      window.bubbleAPI.decide(data && (data.isHermes || data.isZcode) ? "deny-and-focus" : "deny");
+    });
   footerSecondary.appendChild(btn);
   footerSecondary.classList.toggle("visible", currentExpanded);
 }

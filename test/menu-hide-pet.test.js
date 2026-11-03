@@ -421,3 +421,32 @@ describe("show/hide pet intent is captured at menu build time", () => {
     assert.deepStrictEqual(visCalls, [false], "click must hide, matching the label");
   });
 });
+
+describe("#1275: Windows menu close respects pet topmost", () => {
+  for (const pref of [false, true, undefined]) {
+    it(`#1275: Windows menu close with petAlwaysOnTop=${pref}`, () => {
+      const electron = fakeElectron();
+      electron.BrowserWindow = function BrowserWindow() {
+        return {
+          isDestroyed: () => false,
+          loadURL() {}, on() {}, setBounds() {}, show() {}, focus() {}, hide() {},
+        };
+      };
+      const initMenu = loadMenuWithElectron(electron, { keepOutOfTaskbar() {} }, "win32");
+      const calls = [];
+      const ctx = buildBaseCtx({
+        petAlwaysOnTop: pref,
+        raisePetWindows: () => calls.push(["raise"]),
+        win: {
+          isDestroyed: () => false,
+          showInactive: () => calls.push(["show"]),
+          setAlwaysOnTop: (...args) => calls.push(["topmost", ...args]),
+        },
+      });
+      initMenu(ctx).popupMenuAt({ popup: ({ callback }) => callback() });
+      assert.deepStrictEqual(calls, pref === false
+        ? [["show"], ["raise"]]
+        : [["show"], ["topmost", true, "pop-up-menu"]]);
+    });
+  }
+});

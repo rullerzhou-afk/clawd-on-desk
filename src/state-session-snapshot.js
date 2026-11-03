@@ -1,4 +1,5 @@
 "use strict";
+const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
 const path = require("path");
@@ -13,6 +14,7 @@ const {
 } = require("./state-session-dedupe");
 const { bareCodexSessionId, readCodexThreadName, readCodexThreadNames } = require("../hooks/codex-session-index");
 const { isWslSourced } = require("./remote-process-metadata");
+const { normalizePlanProgress } = require("../hooks/codex-plan-progress");
 
 // ── Session source derivation ────────────────────────────────────────
 
@@ -365,6 +367,47 @@ function isSessionAwaitingActivity(session) {
     && session.awaitingActivity === true;
 }
 
+// An opt-in HUD presentation preference, not internal-source classification or
+// session retirement. Keep every canonical entry available to other consumers.
+function shouldHideCodexEphemeralFromHud(id, session, badge, options = {}) {
+  const hideCompleted = options.sessionHudHideCompletedCodexEphemeral === true
+    && session?.state === "idle" && badge === "done";
+  const hideActive = options.sessionHudHideActiveCodexEphemeral === true
+    && (session?.state === "thinking" || session?.state === "working");
+  if (!hideCompleted && !hideActive) return false;
+  const originator = session && (session.codexOriginator || session.originator);
+  const source = typeof session?.codexSource === "string" ? session.codexSource.trim().toLowerCase() : "";
+  if (!session
+      || session.agentId !== "codex" || session.codexClientEphemeral !== true
+      // Native macOS hooks can report typed ephemeral without an originator.
+      // This display fact must not manufacture Desktop dedupe/automation identity.
+      || (originator && !isCodexDesktopOriginator(originator))
+      || ["cli", "exec", "mcp", "internal", "subagent", "agent-subagent"].includes(source)
+      || (session.profileId || "local") !== "local" || session.host
+      || session.wslDistro || String(session.platform || "").trim().toLowerCase() === "wsl" || session.headless
+      || session.subagentId || session.subagentType || session.recapIsSubagent) return false;
+  if (session.transcriptPath != null
+      && (typeof session.transcriptPath !== "string" || session.transcriptPath.trim())) return false;
+  const events = Array.isArray(session.recentEvents) ? session.recentEvents : [];
+  const lastEvent = events.at(-1)?.event;
+  if (hideCompleted && !isDoneEvent(lastEvent)) return false;
+  // A request can arrive before the pending-permission snapshot catches up.
+  // Never collapse the active row while it is asking the user for a decision.
+  if (hideActive && (session.requiresCompletionAck === true
+      || hasSubagentHoldEvidence(session)
+      || ["PermissionRequest", "CodexUserInputRequest", "Elicitation", "Notification", "StopFailure", "PostToolUseFailure", "ApiError", "Interrupt"].includes(lastEvent))) return false;
+  return !(options.pendingPermissionSessionIds instanceof Set
+    && options.pendingPermissionSessionIds.has(id));
+}
+
+// Share the strict active-only policy with the pet without applying the
+// independent completed-row HUD option to completion animations.
+function shouldHideActiveCodexEphemeral(id, session, options = {}) {
+  return shouldHideCodexEphemeralFromHud(id, session, deriveSessionBadge(session), {
+    ...options, sessionHudHideCompletedCodexEphemeral: false,
+  });
+}
+
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, session, sessionAliases);
   const recentEvents = Array.isArray(session && session.recentEvents)
@@ -381,13 +424,28 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     ? options.resolveAgentDisplayName
     : () => "";
   const agentId = (session && session.agentId) || null;
+  const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
+  const presentation = agentId === "codex" && !session.headless && !session.host && !session.wslDistro
+    && session.platform !== "wsl"
+    && (session.profileId || "local") === "local" && typeof options.getSessionPresentation === "function"
+    ? options.getSessionPresentation(id) : null;
+  const activeSubagentCount = Number.isSafeInteger(presentation?.activeSubagentCount)
+    && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
+    ? presentation.activeSubagentCount : 0;
+  const pendingAttention = presentation?.pendingAttention === true;
+  const effectiveState = pendingAttention ? "notification"
+    : activeSubagentCount > 0 && presentation.effectiveState === "juggling" ? "juggling" : state;
   // Existing hidden reasons also disable focus (there is nothing to jump to).
   // The awaiting-activity marker is different: it only hides the HUD row, so the
   // Dashboard can still list the conversation and open it on demand.
   const hiddenByExistingReason = shouldAutoClearDetachedSession(session, badge, options)
     || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
-  const hiddenFromHud = hiddenByExistingReason || isSessionAwaitingActivity(session);
+  // Positive delegated-work / pending-attention facts keep the parent visible,
+  // but do not prove a focus target or change the shared process dedupe policy.
+  const hiddenFromHud = (hiddenByExistingReason && activeSubagentCount === 0 && !pendingAttention)
+    || isSessionAwaitingActivity(session);
+  const hudHiddenByPreference = shouldHideCodexEphemeralFromHud(id, session, badge, options);
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
     ? getSessionFocusTarget({ ...(session || {}), id }, {
@@ -415,9 +473,11 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
     state,
+    ...(presentation ? { effectiveState, activeSubagentCount, pendingAttention } : {}),
     startupRecovered,
     badge,
     hiddenFromHud,
+    hudHiddenByPreference,
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
@@ -448,6 +508,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     provider: (session && session.provider) || null,
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
+    ...(planProgress ? { planProgress } : {}),
+    ...(session && typeof session.codexClientEphemeral === "boolean"
+      ? { codexClientEphemeral: session.codexClientEphemeral } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
@@ -475,6 +538,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
             ? automationIdentity.reason
             : "identity-not-verified"
         ),
+    // Keep this final so a HUD-only preference field added by another feature
+    // cannot overwrite the verified activity/attention visibility veto.
+    ...(activeSubagentCount > 0 || pendingAttention ? { hudHiddenByPreference: false } : {}),
   };
 }
 
@@ -542,7 +608,7 @@ function buildSessionSnapshot(sessions, options = {}) {
   const orderedIds = dashboardEntries.map((entry) => entry.id);
   const menuOrderedIds = menuEntries.map((entry) => entry.id);
   const hudEntries = dashboardEntries.filter((entry) =>
-    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud
+    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud && !entry.hudHiddenByPreference
   );
 
   const groupMap = new Map();
@@ -666,6 +732,9 @@ function sessionSnapshotSignature(snapshot) {
       rawSessionId: entry.rawSessionId,
       displaySessionTag: entry.displaySessionTag,
       state: entry.state,
+      effectiveState: entry.effectiveState,
+      activeSubagentCount: entry.activeSubagentCount,
+      pendingAttention: entry.pendingAttention,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,
       hasAlias: entry.hasAlias,
@@ -682,6 +751,7 @@ function sessionSnapshotSignature(snapshot) {
       focusTarget: entry.focusTarget,
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,
+      hudHiddenByPreference: !!entry.hudHiddenByPreference,
       host: entry.host,
       wslDistro: entry.wslDistro,
       platform: entry.platform,
@@ -689,6 +759,8 @@ function sessionSnapshotSignature(snapshot) {
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
+      planProgress: entry.planProgress || null,
+      codexClientEphemeral: entry.codexClientEphemeral,
       dshCarrier: entry.dshCarrier,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,
@@ -720,6 +792,7 @@ module.exports = {
   shouldAutoClearDetachedSession,
   AWAITING_ACTIVITY_AGENTS,
   isSessionAwaitingActivity,
+  shouldHideActiveCodexEphemeral,
   getSessionAliasEntry,
   getEffectiveSessionTitle,
   sessionDisplayFolder,

@@ -34,7 +34,7 @@ npm install
 
 ### Claude Code 使用信息：官方状态栏，不抓取网页
 
-本机 Claude 使用信息采集**默认关闭**。可在 **Settings → Sessions → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
+本机 Claude 使用信息采集**默认关闭**。可在 **Settings → AI 编程工具 → Claude Code → 读取本机 Claude 的额度和上下文用量** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
 
 这里使用的是 Claude Code 官方扩展机制，不是私有或逆向接口。Claude Code 的[官方 statusline 文档](https://code.claude.com/docs/en/statusline)会向状态栏命令提供 `context_window.current_usage`、`context_window.context_window_size`，以及可用时的 `rate_limits`；命令在本机执行，不消耗额外 API token。
 
@@ -42,7 +42,7 @@ npm install
 
 1. 一次正常 Claude Code 交互后，Claude Code 自己把官方 statusline JSON 通过 stdin 交给已配置命令。
 2. Clawd 读取输入 token 用量与上报的上下文窗口大小，并在 Claude Code 提供时读取订阅额度；终端中仍会显示一条简短、可见的状态栏。
-3. Clawd 只把规范化后的上下文快照和可用额度发送到自身的 `127.0.0.1:23333-23337` loopback 服务。显式部署的 SSH profile 则通过用户配置的反向 SSH 隧道回到本机 Clawd。
+3. Clawd 只把规范化后的上下文快照和可用额度发送到自身的 loopback 服务，端口以 `~/.clawd/runtime.json` 为准（通常是 `127.0.0.1:23333-23337`）。显式部署的 SSH profile 则通过用户配置的反向 SSH 隧道回到本机 Clawd。
 
 此功能**不会**额外请求 Anthropic、抓取 `claude.ai`、调用 `/usage`，也不会读取 Claude 的认证 cookie/token。转发内容只有规范化的 token 数、窗口大小，以及可用额度的百分比/重置时间，不包含 prompt 或 transcript 正文。即使 context window 可用，`rate_limits` 仍可能缺失。
 
@@ -206,7 +206,7 @@ node hooks/install.js
 node hooks/install.js --statusline
 ```
 
-已有第三方 statusline 会被保留，除非你显式选择串联，详见 [Agent 配置说明](#agent-配置说明)。只有 Windows 端 **Collect local Claude usage** 开启时，Clawd 才会接收 WSL Claude 的上下文/配额元数据；关闭后，相应 POST 虽返回成功，但不会摄入数据。Pair 本身不安装 statusline，仅提供 transcript fallback，不保证自定义 provider 的权威上下文窗口。Windows 启动同步无法移除 WSL 独立 home 中的 statusline。
+已有第三方 statusline 会被保留，除非你显式选择串联，详见 [Agent 配置说明](#agent-配置说明)。只有 Windows 端 **读取本机 Claude 的额度和上下文用量** 开启时，Clawd 才会接收 WSL Claude 的上下文/配额元数据；关闭后，相应 POST 虽返回成功，但不会摄入数据。Pair 本身不安装 statusline，仅提供 transcript fallback，不保证自定义 provider 的权威上下文窗口。Windows 启动同步无法移除 WSL 独立 home 中的 statusline。
 
 其他 hook agent 的手动命令也从同一仓库执行：
 
@@ -246,11 +246,11 @@ Claude 的旧 `--remote` 用法仍受支持。它还会安装 statusline、设�
 
 ### 网络与排障
 
-Windows Clawd 监听 `127.0.0.1:23333-23337` 范围内的回环端口。**Linux Node → Windows Clawd** 通常需要 WSL2 mirrored networking；默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored 模式要求 Windows 11 22H2 或更高版本。Microsoft 的 [WSL 网络文档](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) 说明了 `%USERPROFILE%\.wslconfig` 中的 `networkingMode=mirrored` 与重启步骤；重启 WSL 会停止其中运行的会话。WSL1 共享回环地址，但这一网络事实不代表当前 Codex 支持 WSL1。
+Windows Clawd 在回环地址上监听，通常在 `127.0.0.1:23333-23337` 范围内；这些端口不可用时会退回由系统分配的端口。**Linux Node → Windows Clawd** 通常需要 WSL2 mirrored networking；默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored 模式要求 Windows 11 22H2 或更高版本。Microsoft 的 [WSL 网络文档](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) 说明了 `%USERPROFILE%\.wslconfig` 中的 `networkingMode=mirrored` 与重启步骤；重启 WSL 会停止其中运行的会话。WSL1 共享回环地址，但这一网络事实不代表当前 Codex 支持 WSL1。
 
 **Codex 共享 home 的 Windows interop** 使用 Windows `node.exe` 执行 hook，访问 Windows 回环服务，因此该传输路径不要求 mirrored networking。共享 `CODEX_HOME` 本身并不决定使用 interop：由 WSL 拥有的原生 launcher 仍使用 Linux Node 和 Linux 网络路径。修改网络前先核对 [三种路径对照](codex-wsl-clarification.zh-CN.md#配置与执行路径)。
 
-普通 WSL **状态事件**会在 23333–23337 中发现服务。Claude 的 HTTP **PermissionRequest** URL 在安装时固定写入，不会在权限请求触发时逐端口探测。安装器使用显式端口或有效的本地 `~/.clawd/runtime.json`，否则回退 23333。独立 WSL home 通常没有 Windows 的 runtime 记录，所以 Pair 和手动安装通常都注册 23333。如果 Windows Clawd 实际监听 23334 或更高端口，可能出现状态正常而权限气泡不可达。请对照 Windows 的实际 runtime 端口与 WSL Claude 配置中的 URL；状态探测成功不能验证权限 URL。WSL 权限端口自动同步仍是后续待解决的限制。
+普通 WSL **状态事件**会在 23333–23337 中发现服务。独立的 Linux home 读不到 Windows 的 runtime 文件，因此即使启用 mirrored networking，也发现不了范围之外的 Windows 监听端口；Pair 会在部署前报告这个发现限制。Windows Node interop 会读取 Windows 的 runtime 文件，支持动态端口。Claude 的 HTTP **PermissionRequest** URL 在安装时固定写入，不会在权限请求触发时逐端口探测。安装器使用显式端口或有效的本地 `~/.clawd/runtime.json`，否则回退 23333。独立 WSL home 通常没有 Windows 的 runtime 记录，所以 Pair 和手动安装通常都注册 23333。如果 Windows Clawd 实际监听 23334 或更高端口，可能出现状态正常而权限气泡不可达。请对照 Windows 的实际 runtime 端口与 WSL Claude 配置中的 URL；状态探测成功不能验证权限 URL。WSL 权限端口自动同步仍是后续待解决的限制。
 
 如果新会话没有出现，依次检查所选发行版、agent 启用状态、已注册命令及其 Node 路径，再看连通性结果。安装、可达和真实会话到达是三个独立检查。
 
@@ -273,4 +273,4 @@ Windows Clawd 监听 `127.0.0.1:23333-23337` 范围内的回环端口。**Linux 
 - **Homebrew**：`brew install --cask clawd-on-desk` 会安装 x86_64 AppImage；目前没有 Linux ARM 的 cask 产物。之后可用 `brew upgrade --cask clawd-on-desk` 升级。
 - **安装包**：AppImage 和 `.deb` 可从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases) 下载。deb 安装后应用图标会出现在 GNOME 应用菜单。
 - **终端聚焦**：依赖 `wmctrl` 或 `xdotool`（有一个就行）。安装：`sudo apt install wmctrl` 或 `sudo apt install xdotool`。
-- **自动更新**：Clawd 不会自行更新 Linux 安装包。Homebrew 管理的安装可用 `brew upgrade --cask clawd-on-desk` 升级；直接安装的 AppImage / deb 仍需从 GitHub Releases 手动下载。源码运行时，“检查更新”会执行 `git pull` + `npm install`（依赖有变化时）并自动重启。
+- **更新**：AppImage 保留应用内下载、重启或退出安装。`.deb` 更新提示打开 [APT 接入与迁移指南](apt-setup.zh-CN.md)；首次添加软件源，之后退出 Clawd 再用 APT 更新，完成后重新打开。1.3/1.4 等旧用户无需先让旧版应用内更新成功，也可继续手动安装 `.deb`。Homebrew 管理的安装使用 `brew upgrade --cask clawd-on-desk`；源码运行保留应用内 Git 更新。

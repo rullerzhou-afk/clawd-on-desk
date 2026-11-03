@@ -1655,8 +1655,8 @@ describe("attachStdinDiag", () => {
 });
 
 describe("clawd-hook stdin timeout budget (#583)", () => {
-  it("uses a 2s stdin window — safe only because install.js registers async:true + timeout:5", () => {
-    assert.strictEqual(CLAWD_HOOK_STDIN_TIMEOUT_MS, 2000);
+  it("issue #1293: uses a 4.5s local fallback for delayed SessionStart stdin", () => {
+    assert.strictEqual(CLAWD_HOOK_STDIN_TIMEOUT_MS, 4500);
   });
 });
 

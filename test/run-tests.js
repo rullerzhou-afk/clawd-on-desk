@@ -58,11 +58,24 @@ function resolveTestRunnerInvocation(env = process.env) {
     args: [
       "--test",
       ...resolveTimeoutArgs(env),
+      ...resolveConcurrencyArgs(env),
       ...resolveReporterArgs(env),
       "test/*.test.js",
     ],
     cwd: path.join(__dirname, ".."),
   };
+}
+
+// Each Windows test worker may launch PowerShell, Electron and native child
+// processes. CPU-count fan-out can break the real 5s hook contract under load.
+// Bound workers rather than increasing those deadlines or skipping assertions.
+function resolveConcurrencyArgs(env = process.env, platform = process.platform) {
+  const raw = String(env.CLAWD_TEST_CONCURRENCY ?? "").trim();
+  const configured = /^\d+$/.test(raw) ? Number(raw) : NaN;
+  if (Number.isSafeInteger(configured) && configured > 0 && configured <= 256) {
+    return [`--test-concurrency=${configured}`];
+  }
+  return platform === "win32" ? ["--test-concurrency=2"] : [];
 }
 
 module.exports = {
@@ -71,6 +84,7 @@ module.exports = {
   resolveReportFilePath,
   resolveReporterArgs,
   resolveTestRunnerInvocation,
+  resolveConcurrencyArgs,
 };
 
 // Requiring this file must not scan the directory or exit the process.

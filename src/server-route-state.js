@@ -1,4 +1,5 @@
 "use strict";
+const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
 const path = require("path");
 const { resolveSessionIdentity } = require("./session-key");
@@ -15,7 +16,7 @@ const {
 } = require("../hooks/server-config");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
 const {
-  CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+  isCodexInternalThread,
 } = require("../hooks/codex-internal-worker");
 const {
   assessWindowsProcessChainRequest,
@@ -48,6 +49,7 @@ const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
 const { CODEX_QUOTA_FIELDS } = require("../hooks/codex-rate-limits");
 const { extractPermissionToolInput } = require("../hooks/kimi-hook");
 const { normalizeCodexUserInputWire } = require("../hooks/codex-user-input");
+const { isCodexPlanTool, normalizePlanProgress } = require("../hooks/codex-plan-progress");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const NATIVE_TERMINAL_ANSWER_OPTIONS = Object.freeze({
@@ -510,22 +512,25 @@ function handleStatePost(req, res, options) {
       // around the full updateSession lifecycle machine.
       const metadataOnly = data.metadata_only === true;
       const hookSource = typeof data.hook_source === "string" ? data.hook_source : null;
+      const codexClientEphemeral = readCodexClientEphemeral(data,
+        agentId === "codex" && hookSource === "codex-official"
+        && trustedProfileId === "local" && !host && !wslDistro);
       const attachMetadata = agentId === "opencode" && hookSource === "opencode-plugin"
         && trustedProfileId === "local" && !host && !wslDistro && !headless
         && Object.hasOwn(data, "opencode_attach_url")
         ? { opencodeAttachUrl: normalizeOpencodeAttachUrl(data.opencode_attach_url) }
         : {};
-      // The hook tags a recognized Codex Desktop ambient-suggestion thread.
+      // The hook tags recognized Codex Desktop ambient/title-refresh threads.
       // Only a local, official Codex state event may carry it — remote/WSL and
       // other agents never do — and the value is re-validated at this trust
       // boundary rather than trusted from the hook.
-      const codexInternalThread = data.codex_internal_thread === CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS
+      const codexInternalThread = isCodexInternalThread(data.codex_internal_thread)
         && agentId === "codex"
         && hookSource === "codex-official"
         && trustedProfileId === "local"
         && !host
         && !wslDistro
-        ? CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS
+        ? data.codex_internal_thread
         : null;
       const clearDshContextUsage = metadataOnly
         && agentId === "deepseek-harness"
@@ -756,6 +761,9 @@ function handleStatePost(req, res, options) {
           return;
         }
       }
+      // executing is a server-derived Claude hint, never an inbound claim.
+      // Keep this independent of whether the current theme supplies its art.
+      if (state === "executing") state = "working";
       if (ctx.STATE_SVGS[state]) {
         const sid = session_id || "default";
         const codexHookState = resolveCodexOfficialHookState(
@@ -1149,6 +1157,14 @@ function handleStatePost(req, res, options) {
             sessionTitle,
             sessionTitleFromPrompt,
             ...attachMetadata,
+            ...(agentId === "codex" && hookSource === "codex-official"
+              && event === "PostToolUse" && isCodexPlanTool(toolName) && codexHookState.turnId
+              && trustedProfileId === "local" && !effHost && !effWslDistro && data.wsl_sourced !== true && !effHeadless
+              && (!existingSession || existingSession.agentId === "codex")
+              && Object.hasOwn(data, "plan_progress")
+              ? { planProgress: normalizePlanProgress(data.plan_progress),
+                planProgressTurnId: codexHookState.turnId, planProgressSource: "codex-official" }
+              : {}),
             contextUsage,
             contextUsageOrigin: resolveStateContextUsageOrigin(agentId, contextUsage),
             assistantLastOutput,
@@ -1168,6 +1184,7 @@ function handleStatePost(req, res, options) {
             permissionGateId,
             preserveState,
             hookSource,
+            ...(typeof codexClientEphemeral === "boolean" ? { codexClientEphemeral } : {}),
             ...(codexInternalThread ? { codexInternalThread } : {}),
             ...(codexHookState.turnId ? { turnId: codexHookState.turnId } : {}),
             ...(codexHookState.turnId ? { recapDedupeId: codexHookState.turnId } : {}),

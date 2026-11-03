@@ -45,7 +45,7 @@ Fresh installs enable and install only Claude Code and Codex by default. For oth
 
 ### Claude Code usage: official status line, not scraping
 
-Local Claude usage collection is **off by default**. You can opt in under **Settings → AI Coding Tools → Claude Code → Collect local Claude usage**. With an empty status-line slot, enabling it adds Clawd's visible `statusLine.command` to `~/.claude/settings.json`.
+Local Claude usage collection is **off by default**. You can opt in under **Settings → AI Coding Tools → Claude Code → Read local Claude quota and context usage**. With an empty status-line slot, enabling it adds Clawd's visible `statusLine.command` to `~/.claude/settings.json`.
 
 This uses Claude Code's documented extension mechanism, not a private or reverse-engineered endpoint. Claude Code's [official status-line documentation](https://code.claude.com/docs/en/statusline) provides `context_window.current_usage`, `context_window.context_window_size`, and (when available) `rate_limits` in the JSON sent to a status-line command. It also states that the command runs locally without consuming API tokens.
 
@@ -53,7 +53,7 @@ The data path is:
 
 1. After a normal Claude Code interaction, Claude Code itself sends its documented status-line JSON to the configured command over stdin.
 2. Clawd reads the reported input-token usage and context-window size, plus subscription quota when Claude Code supplies it, and renders a short, visible terminal status line.
-3. Clawd sends the normalized context snapshot and available quota only to its own loopback service at `127.0.0.1:23333-23337`. For an explicitly deployed SSH profile, that loopback connection travels through the user-configured reverse SSH tunnel back to the local Clawd app.
+3. Clawd sends the normalized context snapshot and available quota only to its own loopback service at the port in `~/.clawd/runtime.json` (normally `127.0.0.1:23333-23337`). For an explicitly deployed SSH profile, that loopback connection travels through the user-configured reverse SSH tunnel back to the local Clawd app.
 
 For this feature, Clawd does **not** make an additional request to Anthropic, scrape `claude.ai`, invoke `/usage`, or read Claude authentication cookies/tokens. It forwards only normalized token counts/window size and available quota percentages/reset times—not prompt or transcript content. Quota availability still follows Claude Code's contract: `rate_limits` may be absent even though context-window data is present.
 
@@ -267,7 +267,7 @@ node hooks/install.js
 node hooks/install.js --statusline
 ```
 
-The statusline installer preserves an existing third-party statusline unless you explicitly opt into chaining; see [Agent Setup](#agent-setup). The Windows app accepts WSL Claude context/quota metadata only while **Collect local Claude usage** is enabled. With that switch off, metadata POSTs are successful no-ops. Pair itself does not install the statusline and supplies transcript fallback rather than an authoritative custom-provider context window. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
+The statusline installer preserves an existing third-party statusline unless you explicitly opt into chaining; see [Agent Setup](#agent-setup). The Windows app accepts WSL Claude context/quota metadata only while **Read local Claude quota and context usage** is enabled. With that switch off, metadata POSTs are successful no-ops. Pair itself does not install the statusline and supplies transcript fallback rather than an authoritative custom-provider context window. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
 
 Other manual hook commands, run from the same checkout:
 
@@ -307,11 +307,11 @@ Claude's legacy `--remote` remains supported. It also installs the statusline, s
 
 ### Networking and troubleshooting
 
-Windows Clawd listens on loopback in `127.0.0.1:23333-23337`. **Linux Node → Windows Clawd** normally requires WSL2 mirrored networking; default NAT does not expose the Windows loopback listener to Linux. Mirrored mode requires Windows 11 22H2 or later. Microsoft documents `networkingMode=mirrored` in `%USERPROFILE%\.wslconfig` and the restart procedure in [WSL networking](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking); restarting WSL stops its running sessions. WSL1 shares loopback, but this network fact does not imply current Codex support for WSL1.
+Windows Clawd listens on loopback, normally in `127.0.0.1:23333-23337`, with an operating-system-assigned fallback if those ports are unavailable. **Linux Node → Windows Clawd** normally requires WSL2 mirrored networking; default NAT does not expose the Windows loopback listener to Linux. Mirrored mode requires Windows 11 22H2 or later. Microsoft documents `networkingMode=mirrored` in `%USERPROFILE%\.wslconfig` and the restart procedure in [WSL networking](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking); restarting WSL stops its running sessions. WSL1 shares loopback, but this network fact does not imply current Codex support for WSL1.
 
 **Codex shared-home Windows interop** runs the hook with Windows `node.exe` and uses Windows loopback, so that transport does not require mirrored networking. A shared `CODEX_HOME` alone does not select interop: a WSL-owned native launcher still uses Linux Node and the Linux network path. Check the [three-path comparison](codex-wsl-clarification.md#configuration-and-execution-paths) before changing network settings.
 
-Ordinary WSL **state events** discover the service across ports 23333–23337. Claude's HTTP **PermissionRequest** URL is fixed when installed; it does not scan ports when a permission request fires. The installer uses an explicit port or a valid local `~/.clawd/runtime.json`, otherwise 23333. A separate WSL home normally has no Windows runtime record, so both Pair and manual installation normally register 23333. If Windows Clawd listens on 23334 or above, state updates may work while permission bubbles do not. Compare Windows' actual runtime port with the URL in WSL's Claude settings; a successful state probe does not validate the permission URL. Automatic WSL permission-port synchronization remains a follow-up limitation.
+Ordinary WSL **state events** discover the service across ports 23333–23337. A separate Linux home cannot read the Windows runtime file, so it cannot discover an out-of-range Windows listener even with mirrored networking. Pair reports this discovery limitation before deployment. Windows Node interop reads the Windows runtime file and supports dynamic ports. Claude's HTTP **PermissionRequest** URL is fixed when installed; it does not scan ports when a permission request fires. The installer uses an explicit port or a valid local `~/.clawd/runtime.json`, otherwise 23333. A separate WSL home normally has no Windows runtime record, so both Pair and manual installation normally register 23333. If Windows Clawd listens on 23334 or above, state updates may work while permission bubbles do not. Compare Windows' actual runtime port with the URL in WSL's Claude settings; a successful state probe does not validate the permission URL. Automatic WSL permission-port synchronization remains a follow-up limitation.
 
 If a new session does not appear, check the selected distro, the agent's enabled state, the registered command and its Node executable, then the connectivity result. Installation, reachability, and receipt of a real session are separate checks.
 
@@ -334,4 +334,4 @@ If a new session does not appear, check the selected distro, the agent's enabled
 - **Homebrew**: `brew install --cask clawd-on-desk` installs the x86_64 AppImage. There is no Linux ARM cask artifact. Upgrade later with `brew upgrade --cask clawd-on-desk`.
 - **Packages**: AppImage and `.deb` are available from [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases). After deb install, the app icon appears in GNOME's app menu.
 - **Terminal focus**: uses `wmctrl` or `xdotool` (whichever is available). Install one for session terminal jumping to work: `sudo apt install wmctrl` or `sudo apt install xdotool`.
-- **Auto-update**: Clawd does not self-update Linux packages. Upgrade Homebrew-managed installs with `brew upgrade --cask clawd-on-desk`; directly installed AppImage and deb packages require a manual download from GitHub Releases. When running from a cloned repo, "Check for Updates" performs `git pull` + `npm install` (if dependencies changed) and restarts the app automatically.
+- **Updates**: AppImage keeps in-app downloads and restart/quit installation. `.deb` update prompts open the [APT setup and migration guide](apt-setup.md); add the source once, quit Clawd before using APT, then reopen it. Existing 1.3/1.4 users can migrate without a successful old in-app update. Manual `.deb` installation remains available. Upgrade Homebrew-managed installs with `brew upgrade --cask clawd-on-desk`; source checkouts retain the in-app Git update path.

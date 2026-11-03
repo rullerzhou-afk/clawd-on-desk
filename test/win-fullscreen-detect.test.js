@@ -22,11 +22,49 @@ function fakeKoffi(behavior) {
     address(ptr) {
       return behavior.addressOf ? behavior.addressOf(ptr) : 4242n;
     },
-    load() {
+    load(dll) {
+      if (behavior.loadedDlls) behavior.loadedDlls.push(dll);
       return {
         func(signature) {
+          if (behavior.processFuncUnavailable && signature.includes(behavior.processFuncUnavailable)) {
+            throw new Error("process binding unavailable");
+          }
           if (signature.includes("GetForegroundWindow")) {
-            return () => behavior.hwnd;
+            return () => {
+              if (behavior.foregroundThrows) throw new Error("GetForegroundWindow exploded");
+              return behavior.hwnd;
+            };
+          }
+          if (signature.includes("GetWindowThreadProcessId")) {
+            return (_hwnd, pidOut) => {
+              pidOut[0] = behavior.pid === undefined ? 42 : behavior.pid;
+              return 1;
+            };
+          }
+          if (signature.includes("OpenProcess")) {
+            return (...args) => {
+              if (behavior.processCalls) behavior.processCalls.push(["OpenProcess", ...args]);
+              if (behavior.openProcessThrows) throw new Error("OpenProcess exploded");
+              return behavior.openProcess === false ? null : "process-handle";
+            };
+          }
+          if (signature.includes("QueryFullProcessImageNameW")) {
+            return (handle, flags, nameOut, sizeOut) => {
+              if (behavior.processCalls) behavior.processCalls.push(["QueryFullProcessImageNameW", handle, flags]);
+              if (behavior.queryImageThrows) throw new Error("QueryFullProcessImageNameW exploded");
+              if (behavior.queryImage === false) return false;
+              const name = behavior.imagePath || "C:\\Apps\\Other.exe";
+              for (let i = 0; i < name.length; i++) nameOut[i] = name.charCodeAt(i);
+              sizeOut[0] = name.length;
+              return true;
+            };
+          }
+          if (signature.includes("CloseHandle")) {
+            return (handle) => {
+              if (behavior.processCalls) behavior.processCalls.push(["CloseHandle", handle]);
+              if (behavior.closeHandleThrows) throw new Error("CloseHandle exploded");
+              return behavior.closeHandle !== false;
+            };
           }
           if (signature.includes("IsWindow(")) {
             return (hwnd) => {
@@ -91,6 +129,176 @@ const WS_MAXIMIZE = 0x01000000;
 const MAXIMIZED_NORMAL_STYLE = WS_MAXIMIZE | WS_CAPTION | WS_THICKFRAME;
 // Borderless fullscreen: the caption is dropped, which is what distinguishes it.
 const BORDERLESS_STYLE = 0;
+
+describe("issue #1282: screen capture overlay observation", () => {
+  function captureBehavior(overrides = {}) {
+    return {
+      hwnd: {}, hMonitor: {}, winRect: FULLSCREEN_RECT, monitorRect: MONITOR,
+      className: "XamlWindow", imagePath: "C:\\WindowsApps\\SnippingTool.exe",
+      processCalls: [],
+      ...overrides,
+    };
+  }
+
+  for (const className of ["XamlWindow", "xAMLwINDOW"]) {
+    it(`issue #1282: marks fullscreen ${className} owned by Snipping Tool case-insensitively`, () => {
+      const behavior = captureBehavior({ className, imagePath: "C:\\WindowsApps\\sNIPPINGtOOL.EXE" });
+      const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242", captureOverlay: true,
+      });
+      assert.deepStrictEqual(behavior.processCalls, [
+        ["OpenProcess", 0x1000, false, 42],
+        ["QueryFullProcessImageNameW", "process-handle", 0],
+        ["CloseHandle", "process-handle"],
+      ]);
+      behavior.imagePath = "C:\\WindowsApps\\Other.exe";
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242",
+      }, "process identity must be queried again rather than cached");
+    });
+  }
+
+  it("issue #1282: marks the fullscreen observation without a window address", () => {
+    const koffi = fakeKoffi(captureBehavior());
+    delete koffi.address;
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi });
+    assert.strictEqual(probe(), true);
+    assert.deepStrictEqual(probe.getLastObservation(), {
+      reliable: true, foregroundId: null, fullscreenId: true, captureOverlay: true,
+    });
+  });
+
+  it("issue #1282: keeps other XamlWindow processes fullscreen without the marker", () => {
+    const behavior = captureBehavior({ imagePath: "C:\\Apps\\Other.exe" });
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+    assert.strictEqual(probe(), "4242");
+    assert.deepStrictEqual(probe.getLastObservation(), {
+      reliable: true, foregroundId: "4242", fullscreenId: "4242",
+    });
+    assert.deepStrictEqual(behavior.processCalls.at(-1), ["CloseHandle", "process-handle"]);
+  });
+
+  for (const className of ["OtherWindow", null]) {
+    it(`issue #1282: does not open a process for window class ${className}`, () => {
+      const behavior = captureBehavior({ className });
+      const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242",
+      });
+      assert.deepStrictEqual(behavior.processCalls, []);
+    });
+  }
+
+  for (const [miss, value, closesHandle] of [
+    ["pid", 0, false], ["openProcess", false, false], ["queryImage", false, true],
+  ]) {
+    it(`issue #1282: ${miss} miss preserves fullscreen without reporting a call error`, () => {
+      const behavior = captureBehavior({ [miss]: value });
+      const errors = [];
+      const probe = createForegroundFullscreenProbe({
+        isWin: true, koffi: fakeKoffi(behavior), onCallError: (err) => errors.push(err),
+      });
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242",
+      });
+      assert.deepStrictEqual(errors, []);
+      assert.deepStrictEqual(behavior.processCalls.filter(([name]) => name === "CloseHandle"),
+        closesHandle ? [["CloseHandle", "process-handle"]] : []);
+      if (miss === "pid") assert.deepStrictEqual(behavior.processCalls, []);
+    });
+  }
+
+  for (const [failure, closesHandle] of [
+    ["openProcessThrows", false], ["queryImageThrows", true],
+  ]) {
+    it(`issue #1282: ${failure} preserves fullscreen and reports a call error`, () => {
+      const behavior = captureBehavior({ [failure]: true });
+      const errors = [];
+      const probe = createForegroundFullscreenProbe({
+        isWin: true, koffi: fakeKoffi(behavior), onCallError: (err) => errors.push(err),
+      });
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242",
+      });
+      assert.strictEqual(errors.length, 1);
+      assert.ok(errors[0] instanceof Error);
+      assert.deepStrictEqual(behavior.processCalls.filter(([name]) => name === "CloseHandle"),
+        closesHandle ? [["CloseHandle", "process-handle"]] : []);
+    });
+  }
+
+  for (const closeBehavior of [{ closeHandle: false }, { closeHandleThrows: true }]) {
+    it(`issue #1282: ${Object.keys(closeBehavior)[0]} is best-effort and preserves capture detection`, () => {
+      const behavior = captureBehavior(closeBehavior);
+      const errors = [];
+      const probe = createForegroundFullscreenProbe({
+        isWin: true, koffi: fakeKoffi(behavior), onCallError: (err) => errors.push(err),
+      });
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242", captureOverlay: true,
+      });
+      assert.deepStrictEqual(errors, []);
+      assert.deepStrictEqual(behavior.processCalls.at(-1), ["CloseHandle", "process-handle"]);
+    });
+  }
+
+  for (const binding of ["GetWindowThreadProcessId", "OpenProcess", "QueryFullProcessImageNameW", "CloseHandle"]) {
+    it(`issue #1282: an unavailable ${binding} binding only disables the capture marker`, () => {
+      const errors = [];
+      const behavior = captureBehavior({ processFuncUnavailable: binding });
+      const probe = createForegroundFullscreenProbe({
+        isWin: true, koffi: fakeKoffi(behavior), onError: (err) => errors.push(err),
+      });
+      assert.strictEqual(errors.length, 1);
+      assert.strictEqual(probe(), "4242");
+      assert.deepStrictEqual(probe.getLastObservation(), {
+        reliable: true, foregroundId: "4242", fullscreenId: "4242",
+      });
+      assert.deepStrictEqual(behavior.processCalls, []);
+    });
+  }
+
+  it("issue #1282: a captioned maximized Snipping Tool window is not fullscreen", () => {
+    const behavior = captureBehavior({ style: MAXIMIZED_NORMAL_STYLE });
+    const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+    assert.strictEqual(probe(), false);
+    assert.deepStrictEqual(probe.getLastObservation(), {
+      reliable: true, foregroundId: "4242", fullscreenId: null,
+    });
+    assert.deepStrictEqual(behavior.processCalls, []);
+  });
+
+  for (const [next, reliable, foregroundId] of [
+    [{ winRect: MAXIMIZED_RECT }, true, "4242"],
+    [{ hwnd: null }, false, null],
+    [{ foregroundThrows: true }, false, null],
+  ]) {
+    it(`issue #1282: clears a previous capture marker after ${Object.keys(next)[0]}`, () => {
+      const behavior = captureBehavior();
+      const probe = createForegroundFullscreenProbe({ isWin: true, koffi: fakeKoffi(behavior) });
+      assert.strictEqual(probe(), "4242");
+      assert.strictEqual(probe.getLastObservation().captureOverlay, true);
+      Object.assign(behavior, next);
+      assert.strictEqual(probe(), false);
+      assert.deepStrictEqual(probe.getLastObservation(), { reliable, foregroundId, fullscreenId: null });
+    });
+  }
+
+  it("issue #1282: does not load kernel32 off Windows", () => {
+    const behavior = captureBehavior({ loadedDlls: [] });
+    const probe = createForegroundFullscreenProbe({ isWin: false, koffi: fakeKoffi(behavior) });
+    assert.strictEqual(probe(), false);
+    assert.deepStrictEqual(behavior.loadedDlls, []);
+  });
+});
 
 describe("rectCoversMonitor", () => {
   it("treats an exact monitor-covering window as fullscreen", () => {

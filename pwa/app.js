@@ -7,6 +7,7 @@
     error:        { icon: "error",        color: "#ef4444", priority: 0, label: "错误" },
     attention:    { icon: "attention",    color: "#b45309", priority: 1, label: "需要关注" },
     working:      { icon: "working",      color: "#22c55e", priority: 2, label: "工作中" },
+    executing:    { icon: "working",      color: "#22c55e", priority: 2, label: "工具处理中" },
     juggling:     { icon: "juggling",     color: "#22c55e", priority: 2, label: "多任务" },
     thinking:     { icon: "thinking",     color: "#3b82f6", priority: 3, label: "思考中" },
     notification: { icon: "notification", color: "#d97757", priority: 4, label: "通知" },
@@ -32,7 +33,6 @@
   };
 
 
-  var MAX_HISTORY = 5;
   var MAX_LOG_LINES = 200;
   var _logBuffer = [];
 
@@ -171,7 +171,7 @@
       var label = data.title || data.agentId || "Agent";
       if (s === "error" || s === "attention") {
         this._notify(config.label, label + " - " + config.label, s);
-      } else if ((prev === "working" || prev === "thinking") && s === "idle") {
+      } else if ((prev === "working" || prev === "executing" || prev === "thinking") && s === "idle") {
         this._notify("任务完成", label + " 已完成任务", "idle");
       }
     }
@@ -309,75 +309,350 @@
 
   class ConnectionManager {
     constructor() {
-      this.ws = null; this.config = null;
-      this.reconnectDelay = 1000; this.maxReconnectDelay = 30000;
-      this.reconnectTimer = null; this.state = "disconnected";
+      this.ws = null;
+      this.config = null;
+      this.reconnectDelay = 1000;
+      this.maxReconnectDelay = 30000;
+      this.reconnectTimer = null;
+      this.state = "disconnected";
       this.retryCount = 0;
       this.authBlocked = false;
-      this.onStateChange = null; this.onMessage = null; this.onDisconnected = null; this.onAccessReset = null;
+      this.onStateChange = null;
+      this.onMessage = null;
+      this.onDisconnected = null;
+      this.onAccessReset = null;
       this._hiddenAt = 0;
+      this.latestSwitches = 0;
+      this.prevTried = false;
+      this.backupPair = null;
+      this.storageOk = false;
+      this._prepareCid();
       this._bindVisibility();
+      this._bindStorage();
+    }
+
+    _prepareCid() {
+      try {
+        var cid = localStorage.getItem("clawd-cid-v2");
+        if (!/^c_[A-Za-z0-9_-]{22}$/.test(cid || "")) {
+          var bytes = new Uint8Array(16);
+          window.crypto.getRandomValues(bytes);
+          var binary = "";
+          for (var i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+          cid = "c_" + window.btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+          localStorage.setItem("clawd-cid-v2", cid);
+          if (localStorage.getItem("clawd-cid-v2") !== cid) throw new Error("Storage verification failed");
+        }
+        this.cid = cid;
+        this.storageOk = true;
+      } catch {
+        this.cid = null;
+        this.storageOk = false;
+      }
+    }
+
+    _readCredential() {
+      try {
+        var value = JSON.parse(localStorage.getItem("clawd-cred-v2") || "null");
+        if (!value || typeof value.host !== "string" || !Number.isInteger(value.port)
+            || !/^d_[a-f0-9]{16}$/.test(value.deviceId) || !Number.isInteger(value.gen) || value.gen < 0
+            || typeof value.token !== "string" || !value.token
+            || !(value.prevToken === null || typeof value.prevToken === "string")) return null;
+        if (this.config && (value.host !== this.config.host || value.port !== this.config.port)) return null;
+        return value;
+      } catch { return null; }
+    }
+
+    _sameCredential(a, b) {
+      return !!a && !!b && a.host === b.host && a.port === b.port && a.deviceId === b.deviceId
+        && a.gen === b.gen && a.token === b.token && a.prevToken === b.prevToken;
+    }
+
+    _markMigrated() {
+      try {
+        if (localStorage.getItem("clawd-v2-migrated") !== "1") localStorage.setItem("clawd-v2-migrated", "1");
+        return localStorage.getItem("clawd-v2-migrated") === "1";
+      } catch { return false; }
+    }
+
+    _writeCredential(value) {
+      try {
+        localStorage.setItem("clawd-cred-v2", JSON.stringify(value));
+        if (!this._sameCredential(this._readCredential(), value)) return false;
+      } catch { return false; }
+      this._markMigrated();
+      return true;
+    }
+
+    start() {
+      var location = window.location;
+      var params = new URLSearchParams(location.search);
+      this.config = { host: location.hostname, port: Number(location.port || (location.protocol === "https:" ? 443 : 80)) };
+      this.backupPair = params.get("pair");
+      var saved = this._readCredential();
+      if (saved) {
+        this._markMigrated();
+        this.connect(saved);
+      } else if (this.backupPair !== null) {
+        this.rePair(this.backupPair);
+      } else {
+        var token = params.get("token");
+        if (!token) {
+          var migrated = true;
+          try { migrated = localStorage.getItem("clawd-v2-migrated") === "1"; } catch {}
+          if (!migrated) {
+            try {
+              var entries = JSON.parse(localStorage.getItem("clawd-history") || "[]");
+              var target = this.config;
+              var entry = entries.find(function(item) { return item.host === target.host && Number(item.port) === target.port; });
+              if (entry) token = entry.token;
+            } catch {}
+          }
+        }
+        if (token) this.connect({ host: this.config.host, port: this.config.port, token: token });
+        else this._showPairing("输入电脑设置页上的配对码");
+      }
     }
 
     connect(config) {
       this.config = config;
       this.authBlocked = false;
-      this.retryCount = 0;
-      this.reconnectDelay = 1000;
       clearTimeout(this.reconnectTimer);
-      this._saveToHistory(config);
       this._doConnect();
     }
 
-    _doConnect() {
+    rePair(code) {
+      this._prepareCid();
+      if (!this.storageOk || !this._markMigrated()) {
+        this._storageError();
+        return;
+      }
+      try {
+        localStorage.removeItem("clawd-cred-v2");
+        if (localStorage.getItem("clawd-cred-v2") !== null) throw new Error("Storage verification failed");
+      } catch {
+        this._storageError();
+        return;
+      }
+      this.backupPair = null;
+      this.latestSwitches = 0;
+      this.prevTried = false;
+      this.connect({ host: this.config.host, port: this.config.port, pair: String(code).trim().toUpperCase().replace(/-/g, "") });
+    }
+
+    _selectCredential(prevAttempt) {
+      var saved = this._readCredential();
+      // Keep the one-shot previous token even while storage still holds the primary that failed.
+      if (prevAttempt) {
+        return { kind: "device", deviceId: prevAttempt.deviceId, token: prevAttempt.prevToken, prevAttempt: prevAttempt };
+      }
+      if (this.config.pair !== undefined) return { kind: "pair", pair: this.config.pair };
+      if (saved) {
+        this.config = saved;
+        return { kind: "device", deviceId: saved.deviceId, token: saved.token };
+      }
+      return { kind: "legacy", token: this.config.token };
+    }
+
+    _doConnect(prevAttempt) {
       if (!this.config || this.authBlocked) return;
-      // Tear down old socket — clear callbacks first to prevent stale events
+      // Tear down callbacks first so events from an old socket cannot change this connection.
       var old = this.ws;
       if (old) {
-        old.onopen = old.onmessage = old.onclose = old.onerror = null;
-        try { old.close(); } catch {}
+        old.onopen = null;
+        old.onmessage = null;
+        old.onclose = null;
+        old.onerror = null;
+        try { old.close(1000); } catch {}
       }
-      var url = "ws://" + this.config.host + ":" + this.config.port + "/ws?token=" + this.config.token;
+      this._prepareCid();
+      var used = this._selectCredential(prevAttempt);
+      if (used.kind === "pair" && !this.storageOk) {
+        this._storageError();
+        return;
+      }
+      if (used.kind !== "pair" && !used.token) {
+        this._showPairing("请输入配对码");
+        return;
+      }
+      this.used = used;
+      var scheme = window.location.protocol === "https:" ? "wss://" : "ws://";
+      var host = this.config.host.indexOf(":") !== -1 ? "[" + this.config.host.replace(/^\[|\]$/g, "") + "]" : this.config.host;
+      var url = scheme + host + ":" + this.config.port + "/ws?";
+      url += used.kind === "pair" ? "pair=" + encodeURIComponent(used.pair) : "token=" + encodeURIComponent(used.token);
+      if (this.storageOk) url += "&proto=2&cid=" + encodeURIComponent(this.cid);
       this._setState("connecting");
       log("Connecting to " + this.config.host + ":" + this.config.port + "...");
       var socket;
-      try { socket = new WebSocket(url); } catch (err) { log("WS create failed: " + err.message); this._scheduleReconnect(); return; }
+      try { socket = new WebSocket(url); }
+      catch {
+        log("WS create failed");
+        this._scheduleReconnect();
+        return;
+      }
       this.ws = socket;
       var self = this;
-      var connected = false;
+      var receivedSnapshot = false;
       socket.onopen = function() {
-        if (socket !== self.ws) return; // stale socket — ignore
-        connected = true; self.retryCount = 0; self.reconnectDelay = 1000;
-        self._setState("connected"); log("Connected"); showToast("已连接到桌面端", "success");
-        // Dismiss any persistent toasts (e.g. retry hint)
-        var persisted = document.querySelectorAll(".toast-persist");
-        for (var i = 0; i < persisted.length; i++) { persisted[i].remove(); }
-        // Strip query params from URL so stale ?token= from QR codes
-        // won't overwrite a rotated token in history on next auto-connect.
-        if (window.location.search) { history.replaceState(null, "", window.location.pathname); }
+        // Open precedes server authentication; only a snapshot confirms a data connection.
       };
       socket.onmessage = function(event) {
-        if (socket !== self.ws) return;
-        try { var msg = JSON.parse(event.data); if (self.onMessage) self.onMessage(msg); } catch {}
+        if (socket !== self.ws) return; // stale socket — ignore
+        try {
+          var msg = JSON.parse(event.data);
+          if (msg.type === "token_rotate") {
+            self._rotate(msg, used);
+            return;
+          }
+          if (msg.type === "snapshot") {
+            if (used.kind === "pair") return;
+            self._snapshot(used, !receivedSnapshot);
+            receivedSnapshot = true;
+          }
+          if (self.onMessage) self.onMessage(msg);
+        } catch {}
       };
       socket.onclose = function(event) {
         if (socket !== self.ws) return; // stale socket — ignore
-        if (event.code === 1008) {
-          self.authBlocked = true;
-          clearTimeout(self.reconnectTimer);
-          self.reconnectTimer = null;
-          if (self.onAccessReset) self.onAccessReset(event);
-          self._setState("auth_failed");
-          var accessReset = /access[-_\s]?reset|reset|regenerat/i.test(event.reason || "");
-          log(accessReset ? "Mobile access reset" : "Auth failed");
-          showToast(accessReset ? "桌面端已重置访问权限，请重新配对" : "Token 已过期，请重新连接", "error");
-          return;
-        }
-        if (connected) log("Disconnected (code: " + event.code + ")");
-        if (self.onDisconnected) self.onDisconnected();
-        self._scheduleReconnect();
+        self._handleClose(event, used);
       };
       socket.onerror = function() {};
+    }
+
+    _handleClose(event, used) {
+      log("Disconnected (code: " + event.code + ")");
+      if (event.code === 1008) {
+        this._authFailed(used, event);
+        return;
+      }
+      if (this.onDisconnected) this.onDisconnected();
+      if (event.code === 4002) {
+        this._doConnect();
+        return;
+      }
+      if (event.code === 4004 || event.code === 4005) {
+        this.backupPair = null;
+        this.authBlocked = true;
+        this._setState("auth_failed");
+        this._showPairing(event.code === 4005 ? "电脑上已配对的设备满了，请先在电脑上清理" : "配对码无效、已过期或已被使用");
+        return;
+      }
+      this._scheduleReconnect();
+    }
+
+    _rotate(msg, used) {
+      if (!/^d_[a-f0-9]{16}$/.test(msg.deviceId) || !Number.isInteger(msg.gen) || msg.gen < 1
+          || typeof msg.newToken !== "string" || !msg.newToken) return;
+      var saved = this._readCredential();
+      // Reuse preserves a peer's saved generation and prevToken when it already stored this token (v3 §4.4).
+      var reuse = false;
+      if (used.kind === "device") {
+        if (!saved || saved.deviceId !== used.deviceId) return;
+        if (msg.deviceId !== used.deviceId || msg.gen <= saved.gen) return;
+      } else if (used.kind === "legacy") {
+        if (saved) {
+          if (saved.deviceId !== msg.deviceId || saved.token !== msg.newToken) return;
+          reuse = true;
+        }
+      } else {
+        // This page's explicit pairing can replace another device so a stale peer cannot block it (v3 §4.4).
+        if (saved && saved.deviceId === msg.deviceId) {
+          if (saved.token === msg.newToken) reuse = true;
+          else if (msg.gen <= saved.gen) return;
+        }
+      }
+      var value = reuse ? saved : {
+        host: this.config.host,
+        port: this.config.port,
+        deviceId: msg.deviceId,
+        gen: msg.gen,
+        token: msg.newToken,
+        prevToken: used.kind === "device" ? used.token : null,
+      };
+      if (!reuse && !this._writeCredential(value)) {
+        if (used.kind === "pair") {
+          this.authBlocked = true;
+          this._setState("auth_failed");
+          this._showPairing("无法保存配对，这个浏览器现在不能保存配对信息");
+          this.ws.onclose = null;
+          this.ws.close(1000);
+        }
+        return;
+      }
+      this.config = value;
+      log("Token rotated");
+      this.prevTried = false;
+      this.send({ type: "token_rotate_ack" });
+      this._doConnect();
+    }
+
+    _snapshot(used, firstSnapshot) {
+      if (used.kind === "pair") return;
+      if (used.prevAttempt) {
+        var current = this._readCredential();
+        if (this._sameCredential(current, used.prevAttempt)) {
+          var restored = { host: current.host, port: current.port, deviceId: current.deviceId, gen: 0, token: used.token, prevToken: null };
+          if (this._writeCredential(restored)) this.config = restored;
+        }
+      }
+      this.retryCount = 0;
+      this.reconnectDelay = 1000;
+      this.latestSwitches = 0;
+      if (firstSnapshot) {
+        this._setState("connected");
+        log("Connected");
+        showToast("已连接到桌面端", "success");
+        var persisted = document.querySelectorAll(".toast-persist");
+        for (var i = 0; i < persisted.length; i++) persisted[i].remove();
+      }
+      var saved = this._readCredential();
+      if (used.kind === "device" && saved && saved.deviceId === used.deviceId && saved.token === used.token) {
+        if (window.location.search) history.replaceState(null, "", window.location.pathname);
+        this.backupPair = null;
+      }
+      var form = document.getElementById("pair-form");
+      if (form) form.classList.add("hidden");
+    }
+
+    _authFailed(used, event) {
+      var saved = this._readCredential();
+      // The primary already failed before a one-shot previous-token attempt.
+      if (saved && saved.token !== used.token && this.latestSwitches < 3
+          && !(used.prevAttempt && this._sameCredential(saved, used.prevAttempt))) {
+        this.latestSwitches++;
+        this.config = saved;
+        this._doConnect();
+        return;
+      }
+      if (used.kind === "device" && saved && saved.deviceId === used.deviceId && saved.prevToken && !this.prevTried) {
+        this.prevTried = true;
+        this._doConnect(saved);
+        return;
+      }
+      this.authBlocked = true;
+      clearTimeout(this.reconnectTimer);
+      this.reconnectTimer = null;
+      if (this.onAccessReset) this.onAccessReset(event);
+      this._setState("auth_failed");
+      this._showPairing("凭据无效或已被撤销，请重新配对");
+      if (this.backupPair !== null) this.rePair(this.backupPair);
+    }
+
+    _setState(state) {
+      this.state = state;
+      if (state === "auth_failed") log("Auth failed");
+      if (this.onStateChange) this.onStateChange(state);
+    }
+
+    _showPairing(message) {
+      var form = document.getElementById("pair-form");
+      var hint = document.getElementById("pair-hint");
+      if (form) form.classList.remove("hidden");
+      if (hint) hint.textContent = message;
+    }
+
+    _storageError() {
+      this._showPairing("这个浏览器现在不能保存配对信息（可能是无痕模式，或者禁止了网站数据）");
     }
 
     send(data) { if (this.ws && this.ws.readyState === WebSocket.OPEN) this.ws.send(typeof data === "string" ? data : JSON.stringify(data)); }
@@ -386,35 +661,27 @@
       if (!this.config || this.authBlocked) return;
       this.retryCount++;
       this._setState("reconnecting");
-      // After several retries, give actionable feedback (don't stop — just inform)
-      if (this.retryCount === 5) {
-        showToast("仍在重连…请检查地址、端口或桌面端是否已开启", "info", true);
-      }
+      // After several retries, give actionable feedback without stopping retries.
+      if (this.retryCount === 5) showToast("仍在重连…请检查地址、端口或桌面端是否已开启", "info", true);
       var self = this;
-      this.reconnectTimer = setTimeout(function() { self.reconnectDelay = Math.min(self.reconnectDelay * 2, self.maxReconnectDelay); self._doConnect(); }, this.reconnectDelay);
+      this.reconnectTimer = setTimeout(function() {
+        self.reconnectDelay = Math.min(self.reconnectDelay * 2, self.maxReconnectDelay);
+        self._doConnect();
+      }, this.reconnectDelay);
     }
 
-    _setState(state) { this.state = state; if (this.onStateChange) this.onStateChange(state); }
-
-    _saveToHistory(config) {
-      var history = []; try { history = JSON.parse(localStorage.getItem("clawd-history") || "[]"); } catch {}
-      var entry = { host: config.host, port: config.port, token: config.token, timestamp: Date.now() };
-      var filtered = history.filter(function(h) { return h.host !== config.host || h.port !== config.port; });
-      filtered.unshift(entry);
-      localStorage.setItem("clawd-history", JSON.stringify(filtered.slice(0, MAX_HISTORY)));
-    }
-
-    getHistory() { try { return JSON.parse(localStorage.getItem("clawd-history") || "[]"); } catch { return []; } }
-    deleteHistory(index) { var h = this.getHistory(); h.splice(index, 1); localStorage.setItem("clawd-history", JSON.stringify(h)); }
-
-    _updateHistoryToken(host, port, newToken) {
-      var history = this.getHistory();
-      for (var i = 0; i < history.length; i++) {
-        if (history[i].host === host && history[i].port === port) {
-          history[i].token = newToken;
-        }
-      }
-      localStorage.setItem("clawd-history", JSON.stringify(history));
+    _bindStorage() {
+      var self = this;
+      window.addEventListener("storage", function(event) {
+        if (event.key !== "clawd-cred-v2" || !self.config || !self.authBlocked) return;
+        var saved = self._readCredential();
+        if (!saved) return;
+        self.config = saved;
+        self.authBlocked = false;
+        self.latestSwitches = 0;
+        self.prevTried = false;
+        self._doConnect();
+      });
     }
 
     _bindVisibility() {
@@ -426,11 +693,9 @@
         }
         if (!self.config || self.authBlocked) return;
         var hiddenFor = self._hiddenAt ? Date.now() - self._hiddenAt : 0;
-        // Short tab switch: trust OPEN. Background > 30s: force reconnect (zombie guard)
+        // Background > 30s: force reconnect (zombie guard).
         if (hiddenFor < 30000 && self.ws && self.ws.readyState === WebSocket.OPEN) return;
         log("Page visible after " + Math.round(hiddenFor / 1000) + "s, reconnecting...");
-        self.retryCount = 0;
-        self.reconnectDelay = 1000;
         clearTimeout(self.reconnectTimer);
         self._doConnect();
       });
@@ -825,23 +1090,19 @@
       this._bindConnection();
       this.renderer.startStaleCleanup();
 
-      if ("serviceWorker" in navigator) navigator.serviceWorker.register("/mobile/sw.js").catch(function() {});
+      if (navigator.serviceWorker) navigator.serviceWorker.register("/mobile/sw.js").catch(function() {});
       this._autoConnect();
     }
 
     _autoConnect() {
-      var params = new URLSearchParams(window.location.search);
-      var urlHost = params.get("host");
-      var urlPort = params.get("port");
-      var urlToken = params.get("token");
-      if (urlHost && urlPort && urlToken) {
-        this.connection.connect({ host: urlHost, port: parseInt(urlPort, 10), token: urlToken });
-        return;
-      }
-      var history = this.connection.getHistory();
-      if (history.length > 0) { this.connection.connect(history[0]); return; }
-      // M1: no auto-connect without token. User must open via clawd:// URL (from Settings page)
-      // or manually enter host/port/token in the connection history.
+      var self = this;
+      var form = document.getElementById("pair-form");
+      if (form) form.addEventListener("submit", function(event) {
+        event.preventDefault();
+        var input = document.getElementById("pair-code");
+        if (input && input.value.trim()) self.connection.rePair(input.value);
+      });
+      this.connection.start();
     }
 
     _bindNav() {
@@ -907,16 +1168,7 @@
             log("Permission request dismissed: " + (msg.reason || "unknown"));
           }
         }
-        else if (msg.type === "token_rotate") {
-          var newToken = msg.newToken;
-          if (newToken && self.connection.config) {
-            self.connection.config.token = newToken;
-            self.connection._updateHistoryToken(self.connection.config.host, self.connection.config.port, newToken);
-            self.connection.send({ type: "token_rotate_ack" });
-            log("Token rotated");
-            showToast("令牌已更新", "success");
-          }
-        }
+
       };
     }
 

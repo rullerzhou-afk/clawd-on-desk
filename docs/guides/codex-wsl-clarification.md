@@ -29,7 +29,7 @@ The second and third rows are distinct ownership branches in [codex-install-util
 
 See the [WSL setup guide](setup-guide.md#wsl-windows-subsystem-for-linux) for manual installation from a full checkout, complete hook-file copying, and network troubleshooting. Do not use a hand-picked subset of `hooks/*.js`.
 
-For Linux Node, Windows Clawd listens on `127.0.0.1:23333-23337`. WSL2's default NAT does not expose that Windows loopback listener to Linux. Mirrored networking requires Windows 11 22H2 or later; see [Microsoft's networking guide](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking). WSL1's shared loopback is a general networking fact, not support for modern Codex on WSL1. A network probe also does not validate every agent's permission transport; the setup guide describes Claude's separate, install-time permission URL limitation.
+For Linux Node, Windows Clawd normally listens on `127.0.0.1:23333-23337`, with an operating-system-assigned fallback if those ports are unavailable; a separate Linux home cannot discover an out-of-range port, and Pair reports that limitation. WSL2's default NAT does not expose that Windows loopback listener to Linux. Mirrored networking requires Windows 11 22H2 or later; see [Microsoft's networking guide](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking). WSL1's shared loopback is a general networking fact, not support for modern Codex on WSL1. A network probe also does not validate every agent's permission transport; the setup guide describes Claude's separate, install-time permission URL limitation.
 
 ## Session discovery and verification limits
 

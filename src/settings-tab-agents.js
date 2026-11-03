@@ -1490,8 +1490,17 @@
       buildAgentDetailGroup("agentGroupQuota", quota),
       buildAgentDetailGroup("agentGroupInfo", info),
     ].filter(Boolean);
-    groups.push(buildAgentDisconnectBlock(agent));
-    return groups;
+    const body = [];
+    if (groups.length > 0) {
+      // The groups share one label column (CSS subgrid), so a long localized
+      // label widens it for the whole card instead of running into the rows.
+      const list = document.createElement("div");
+      list.className = "agent-detail-groups";
+      for (const group of groups) list.appendChild(group);
+      body.push(list);
+    }
+    body.push(buildAgentDisconnectBlock(agent));
+    return body;
   }
 
   // One labelled column of card-body rows. The label sits in the narrow left

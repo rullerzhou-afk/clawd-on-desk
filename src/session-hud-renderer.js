@@ -21,7 +21,8 @@ let sessionActionFeedbackTimer = null;
 const hudEl = document.getElementById("hud");
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
+  return !!session && !session.headless && session.state !== "sleeping"
+    && !session.hiddenFromHud && !session.hudHiddenByPreference;
 }
 
 function t(key) {
@@ -111,6 +112,7 @@ function orderedHudSessions(currentSnapshot) {
 const STATE_CHIP_MAP = {
   thinking: { key: "sessionThinking", cls: "chip-thinking" },
   working: { key: "sessionWorking", cls: "chip-working" },
+  executing: { key: "sessionExecuting", cls: "chip-working" },
   juggling: { key: "sessionJuggling", cls: "chip-juggling" },
 };
 
@@ -127,15 +129,26 @@ function makeChipInfo(entry) {
   return entry ? { label: t(entry.key), cls: entry.cls } : null;
 }
 
+function hasActiveSubagents(session) {
+  return Number.isSafeInteger(session && session.activeSubagentCount) && session.activeSubagentCount > 0;
+}
+
+function showUnreadCompletion(session) {
+  return !hasActiveSubagents(session) && !session.pendingAttention && session.badge === "done" && unreadSessions.has(session.id);
+}
+
 function stateChipInfo(session) {
   if (snapshot.hudShowStateLabels === false) {
     return session && session.startupRecovered
       ? { label: t("sessionRecovered"), cls: "chip-recovered" }
       : null;
   }
+  if (session.badge === "interrupted") return { label: t("sessionBadgeInterrupted"), cls: "chip-interrupted" };
+  if (session.pendingAttention) return makeChipInfo(EVENT_CHIP_MAP.PermissionRequest);
   const rawEvent = session && session.lastEvent && session.lastEvent.rawEvent;
   const eventChip = makeChipInfo(EVENT_CHIP_MAP[rawEvent]);
-  if (eventChip && session.badge !== "done" && session.badge !== "interrupted") return eventChip;
+  if (eventChip && (hasActiveSubagents(session) || (session.badge !== "done" && session.badge !== "interrupted"))) return eventChip;
+  if (hasActiveSubagents(session)) return makeChipInfo(STATE_CHIP_MAP[session.effectiveState] || STATE_CHIP_MAP.juggling);
 
   if (session.badge === "running") {
     const stateChip = makeChipInfo(STATE_CHIP_MAP[session.state]);
@@ -266,7 +279,7 @@ function createRowForSession(session, now) {
   left.className = "left";
 
   const dot = document.createElement("span");
-  dot.className = `dot dot-${session.badge || "idle"}`;
+  dot.className = `dot dot-${hasActiveSubagents(session) && session.badge !== "interrupted" ? "running" : (session.badge || "idle")}`;
   left.appendChild(dot);
 
   if (session.iconUrl) {
@@ -323,7 +336,7 @@ function createRowForSession(session, now) {
   right.className = "right";
   let hasRightContent = false;
 
-  if (!feedbackText && session.badge === "done" && unreadSessions.has(session.id)) {
+  if (!feedbackText && showUnreadCompletion(session)) {
     const bell = document.createElement("span");
     bell.className = "completion-bell unread-bell";
     bell.innerHTML = BELL_SVG;
@@ -416,6 +429,25 @@ function createRowForSession(session, now) {
         child.className === "elapsed" ? "minmax(0, 1fr)" : "max-content").join(" ");
     }
     row.appendChild(right);
+  }
+
+  if (!feedbackText && session.planProgress) {
+    const plan = session.planProgress;
+    const progressText = t("codexPlanProgress")
+      .replace("{completed}", plan.completed)
+      .replace("{total}", plan.total)
+      .replace("{percent}", plan.percent);
+    // An absolute 2px overlay uses no horizontal flex space, including at
+    // 160% HUD scale. The full steps/percentage stay available on hover.
+    const track = document.createElement("div");
+    track.className = "plan-progress-track";
+    track.setAttribute("aria-label", progressText);
+    const fill = document.createElement("div");
+    fill.className = "plan-progress-fill";
+    fill.style.width = String(Math.max(0, Math.min(100, plan.percent))) + "%";
+    track.appendChild(fill);
+    row.appendChild(track);
+    row.title = row.title ? row.title + " · " + progressText : progressText;
   }
 
   row.addEventListener("click", () => {

@@ -1,4 +1,4 @@
-const CACHE_NAME = "clawd-mobile-v7";
+const CACHE_NAME = "clawd-mobile-v8";
 const STATIC_ASSETS = [
   "/mobile/",
   "/mobile/index.html",
@@ -27,25 +27,22 @@ self.addEventListener("activate", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  // WS 请求不拦截
-  if (event.request.url.includes("/ws")) return;
-
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      if (cached) return cached;
-      return fetch(event.request).then((response) => {
-        if (response.ok && response.type === "basic") {
-          const clone = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
-        }
-        return response;
-      });
-    }).catch(() => {
-      if (event.request.destination === "document") {
-        return caches.match("/mobile/index.html");
-      }
-    })
-  );
+  const url = new URL(event.request.url);
+  if (url.origin !== self.location.origin || !url.pathname.startsWith("/mobile/") || event.request.method !== "GET") return;
+  const navigation = event.request.mode === "navigate";
+  const networkFirst = navigation || /\.(js|css)$/.test(url.pathname);
+  // Navigation credentials must never become cache keys.
+  const key = navigation ? "/mobile/" : networkFirst ? url.pathname : event.request;
+  const fromNetwork = () => fetch(event.request).then((response) => {
+    if (response.ok && response.type === "basic") {
+      const copy = response.clone();
+      event.waitUntil(caches.open(CACHE_NAME).then((cache) => cache.put(key, copy)));
+    }
+    return response;
+  });
+  event.respondWith(networkFirst
+    ? fromNetwork().catch(() => caches.match(key))
+    : caches.match(key).then((cached) => cached || fromNetwork()));
 });
 
 // 通知点击：聚焦到已有窗口

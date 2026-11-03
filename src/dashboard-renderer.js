@@ -1304,6 +1304,16 @@ function appendModel(main, session) {
   main.appendChild(row);
 }
 
+function appendPlanProgress(main, session) {
+  if (!session.planProgress) return;
+  const plan = session.planProgress;
+  const text = t("codexPlanProgress")
+    .replace("{completed}", plan.completed)
+    .replace("{total}", plan.total)
+    .replace("{percent}", plan.percent);
+  main.appendChild(createText("div", "plan-progress-row", text));
+}
+
 function appendContextUsage(main, session) {
   const text = contextUsageText(session);
   if (!text) return;
@@ -1421,6 +1431,7 @@ function createCard(session, now) {
   main.className = "main";
   main.appendChild(createTitle(session));
   appendMeta(main, session, now);
+  appendPlanProgress(main, session);
   appendPath(main, session);
   appendModel(main, session);
   appendEvent(main, session, now);
@@ -1436,7 +1447,9 @@ function createCard(session, now) {
     const button = document.createElement("button");
     button.type = "button";
     const focusTargetType = session.focusTarget && session.focusTarget.type;
-    button.textContent = focusTargetType === "codex-thread"
+    button.textContent = focusTargetType === "codex-app"
+      ? t("dashboardOpenCodexApp")
+      : focusTargetType === "codex-thread"
       ? t("dashboardOpenCodexSession")
       : focusTargetType === "dsh-desktop"
         ? t("dashboardOpenDshDesktop")

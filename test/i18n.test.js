@@ -98,6 +98,13 @@ describe("i18n locales", () => {
     }
   });
 
+  it("localizes structured Codex plan progress in every runtime locale", () => {
+    for (const lang of SUPPORTED_LANGS) {
+      assert.deepStrictEqual(placeholders(i18n[lang].codexPlanProgress), ["{completed}", "{percent}", "{total}"], lang);
+      assert.ok(i18n[lang].codexPlanProgress.trim(), lang);
+    }
+  });
+
   it("localizes the DSH desktop open action in every supported language", () => {
     assert.deepStrictEqual(
       Object.fromEntries(SUPPORTED_LANGS.map((lang) => [lang, i18n[lang].dashboardOpenDshDesktop])),
@@ -132,6 +139,27 @@ describe("i18n locales", () => {
 
   it("uses the requested Simplified Chinese desktop-pet recovery wording", () => {
     assert.strictEqual(i18n.zh.bringPetToPrimaryDisplay, "将桌宠拉回主屏");
+  });
+
+  it("localizes idle behavior choices and descriptions in every Settings locale", () => {
+    const strings = loadSettingsI18nStrings();
+    const keys = ["rowIdleBehavior", "idleBehaviorNone", "idleBehaviorRoam", "idleBehaviorActivities",
+      "idleBehaviorNoneDesc", "idleBehaviorRoamDesc", "idleBehaviorActivitiesDesc"];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const key of keys) {
+        assert.strictEqual(typeof strings[lang][key], "string", `${lang}.${key}`);
+        assert.ok(strings[lang][key].trim(), `${lang}.${key}`);
+      }
+      for (const key of ["rowFreeRoam", "rowFreeRoamDesc", "rowIdleActivities", "rowIdleActivitiesDesc"]) {
+        assert.strictEqual(Object.hasOwn(strings[lang], key), false, `${lang}.${key} is obsolete`);
+      }
+    }
+    assert.deepStrictEqual(keys.map((key) => strings.zh[key]), [
+      "空闲时", "原地待机", "自由漫步", "小动作", "只在原地待机、东张西望和打盹。",
+      "空闲时在桌面上自由走动，移动鼠标即停止。", "没有 Agent 在运行时，偶尔播放主题里的其他动画。",
+    ]);
+    assert.deepStrictEqual(keys.slice(0, 4).map((key) => strings.en[key]),
+      ["When idle", "Stay put", "Free roam", "Idle activities"]);
   });
 
   it("keeps Settings locale keysets aligned with English", () => {
