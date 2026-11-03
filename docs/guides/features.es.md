@@ -22,7 +22,7 @@
 - **Atajos globales** — `Ctrl+Shift+Y` permite y `Ctrl+Shift+N` deniega el globo de permisos más reciente (solo se registran mientras hay globos visibles)
 - **Diseño apilado** — varias solicitudes de permisos se apilan hacia arriba desde la esquina inferior derecha
 - **Cierre automático** — si respondes primero en la terminal, el globo desaparece automáticamente
-- **Interruptor por agente** — abre `Ajustes…` → `Herramientas de IA para código`, elige un agente y desactiva `Mostrar globos emergentes` para conservar las solicitudes en la terminal/TUI del propio agente
+- **Interruptor por agente** — abre `Ajustes…` → `Herramientas de IA para código`, elige un agente y desactiva `Solicitudes de permiso como globos de Clawd` para conservar las solicitudes en la terminal/TUI del propio agente
 
 ## Notificaciones remotas
 

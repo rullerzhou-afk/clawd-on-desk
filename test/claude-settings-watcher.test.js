@@ -1168,6 +1168,8 @@ describe("createClaudeSettingsWatcher — UTF-8 BOM compatibility (#657)", () =>
           repairPromise = registerHooksAsync({
             silent: true,
             settingsPath,
+            homeDir: tmpDir,
+            env: {},
             port: 23333,
             nodeBin: process.execPath,
             platform: process.platform,

@@ -473,6 +473,37 @@ test("DSH plugin sends projection pressure, missing operands, and title updates 
   ]);
 });
 
+test("DSH lifecycle events re-supply the current folded title after a missed SessionStart", async () => {
+  const { createSessionObservers } = await bridge();
+  const posted = [];
+  const observers = createSessionObservers({
+    enqueue: (payload) => { posted.push(payload); return true; },
+  });
+  let title = "Prompted while Clawd was closed";
+  observers.attachProjections({
+    sessionProjections: {
+      onChanged() { return () => {}; },
+      snapshot(_session, keys) { return { values: keys?.includes("title") ? { title } : {} }; },
+    },
+    effect() {},
+  });
+  const session = { id: "s1", header: { cwd: "/repo" } };
+  // Clawd restarted mid-session: no session/created, so the title was never posted.
+  observers.handleSessionEvent(session, { type: "turn/start" });
+  assert.strictEqual(posted.at(-1).event, "UserPromptSubmit");
+  assert.strictEqual(posted.at(-1).session_title, "Prompted while Clawd was closed");
+  // DSH renames it: the event title and the projection agree, and the next
+  // unrelated lifecycle event carries the new title too.
+  title = "Renamed in DSH";
+  observers.handleSessionEvent(session, { type: "session/title", data: { title } });
+  observers.handleSessionEvent(session, { type: "turn/end" });
+  assert.strictEqual(posted.at(-1).event, "Stop");
+  assert.strictEqual(posted.at(-1).session_title, "Renamed in DSH");
+  observers.handleSessionDisposed(session);
+  assert.strictEqual(posted.at(-1).event, "SessionEnd");
+  assert.strictEqual(posted.at(-1).session_title, "Renamed in DSH");
+});
+
 test("DSH plugin seeds a new session from the projection snapshot without waiting for onChanged", async () => {
   const { createSessionObservers } = await bridge();
   const session = { id: "restored", header: { cwd: "/repo" } };

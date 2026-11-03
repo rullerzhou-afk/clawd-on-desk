@@ -1788,3 +1788,80 @@ describe("sessionCleanup.setTriple via applyCommand", () => {
     assert.strictEqual(ctrl.get("workingStaleMs"), 300_000);
   });
 });
+
+describe("idle behavior controller boundary", () => {
+  function makeController(extra = {}) {
+    return createSettingsController({ prefsPath: makeTempPath(), ...extra });
+  }
+
+  for (const [first, second] of [["freeRoam", "idleActivities"], ["idleActivities", "freeRoam"]]) {
+    it(`rejects enabling ${second} while ${first} is enabled without committing`, () => {
+      const ctrl = makeController();
+      assert.strictEqual(ctrl.applyUpdate(first, true).status, "ok");
+      const before = ctrl.getSnapshot();
+      const events = [];
+      ctrl.subscribe((event) => events.push(event));
+      assert.strictEqual(ctrl.applyUpdate(second, true).status, "error");
+      assert.deepStrictEqual(ctrl.getSnapshot(), before);
+      assert.strictEqual(events.length, 0);
+    });
+  }
+
+  for (const method of ["applyBulk", "hydrate"]) {
+    it(`${method} rejects a conflicting pair atomically`, () => {
+      const ctrl = makeController();
+      const before = ctrl.getSnapshot();
+      const events = [];
+      ctrl.subscribe((event) => events.push(event));
+      assert.strictEqual(ctrl[method]({ soundMuted: true, freeRoam: true, idleActivities: true }).status, "error");
+      assert.deepStrictEqual(ctrl.getSnapshot(), before);
+      assert.strictEqual(events.length, 0);
+    });
+  }
+
+  it("setIdleBehavior persists and broadcasts only complete target pairs", async () => {
+    const p = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath: p });
+    const events = [];
+    ctrl.subscribe(({ changes, snapshot }) => events.push({
+      changes, freeRoam: snapshot.freeRoam, idleActivities: snapshot.idleActivities,
+    }));
+    for (const mode of ["roam", "activities", "none"]) {
+      const target = { freeRoam: mode === "roam", idleActivities: mode === "activities" };
+      const count = events.length;
+      assert.strictEqual((await ctrl.applyCommand("setIdleBehavior", { mode })).status, "ok");
+      assert.strictEqual(events.length, count + 1);
+      assert.strictEqual(events.at(-1).freeRoam, target.freeRoam);
+      assert.strictEqual(events.at(-1).idleActivities, target.idleActivities);
+      for (const key of Object.keys(target)) {
+        assert.strictEqual(ctrl.get(key), target[key]);
+        assert.strictEqual(prefs.load(p).snapshot[key], target[key]);
+      }
+    }
+    assert.deepStrictEqual(events[1].changes, { freeRoam: false, idleActivities: true });
+  });
+
+  it("rejects another command that attempts a conflicting commit", async () => {
+    const ctrl = makeController({ commands: {
+      invalidIdleBehavior: () => ({ status: "ok", commit: { freeRoam: true, idleActivities: true } }),
+    } });
+    const before = ctrl.getSnapshot();
+    assert.strictEqual((await ctrl.applyCommand("invalidIdleBehavior")).status, "error");
+    assert.deepStrictEqual(ctrl.getSnapshot(), before);
+  });
+
+  it("setIdleBehavior leaves memory and subscribers untouched on save failure", async () => {
+    const ctrl = makeController({
+      prefs: { save() { throw new Error("disk full"); } },
+      loadResult: { snapshot: { ...prefs.getDefaults(), freeRoam: true }, locked: false },
+    });
+    const before = ctrl.getSnapshot();
+    const events = [];
+    ctrl.subscribe((event) => events.push(event));
+    const result = await ctrl.applyCommand("setIdleBehavior", { mode: "activities" });
+    assert.strictEqual(result.status, "error");
+    assert.match(result.message, /disk full/);
+    assert.deepStrictEqual(ctrl.getSnapshot(), before);
+    assert.strictEqual(events.length, 0);
+  });
+});

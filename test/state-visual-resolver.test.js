@@ -84,6 +84,20 @@ describe("state-visual-resolver bindings", () => {
 });
 
 describe("state-visual-resolver SVG overrides", () => {
+  it("executing uses its own art or the complete working tier/hint fallback", () => {
+    const options = {
+      sessions: new Map([["a", session("executing")], ["b", session("working")]]),
+      theme: { workingTiers: [{ minSessions: 2, files: ["two.svg"] }] },
+      stateSvgs: { working: ["one.svg"] }, displayHintMap: { design: "design.svg" },
+    };
+    assert.strictEqual(getSvgOverride("executing", options), "two.svg");
+    options.sessions.get("a").displayHint = "design";
+    assert.strictEqual(getSvgOverride("executing", options), "design.svg");
+    options.stateSvgs.executing = ["execute.svg"];
+    assert.strictEqual(getSvgOverride("executing", options), "execute.svg");
+    assert.strictEqual(resolveVisualBinding("executing", buildStateBindings({ states: { working: ["one.svg"] } })), "one.svg");
+  });
+
   it("counts active working sessions and selects tiered files", () => {
     const sessions = new Map([
       ["a", session("working")],

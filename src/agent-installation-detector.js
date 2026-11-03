@@ -63,37 +63,42 @@ const GEMINI_PRODUCT_ARTIFACT_FILES = Object.freeze([
 //   local_storage/, usage-data/, debug/, tasks/, teams/, blobs/, channels/,
 //   computer-use/ and file-history/ as "maintained automatically by
 //   CodeBuddy Code". Clawd only ever writes ~/.codebuddy/settings.json.
+// Pin the documented file/directory kinds as well as the names: a directory
+// named credentials.json or a file named logs is not that product artifact.
+// null retains the existing kind compatibility where the contract is unpinned;
+// in particular, do not infer Qoder .auth's kind from the leading dot/name.
+// Artifact symlinks retain their existing acceptance policy independently.
 const HOOK_CONFIG_AGENT_PRODUCT_ARTIFACTS = Object.freeze({
-  qoder: Object.freeze([
-    ".auth",
-    "projects",
-    "logs",
-    "bin",
-    "state.json",
-  ]),
-  zcode: Object.freeze([
-    path.join("v2", "credentials.json"),
-    path.join("v2", "telemetry-state.json"),
-    path.join("v2", "config.json"),
-    path.join("cli", "exec"),
-  ]),
-  codebuddy: Object.freeze([
-    "projects",
-    "sessions",
-    "logs",
-    "history.jsonl",
-    "file-history",
-    "traces",
-    "shell-snapshots",
-    "local_storage",
-    "usage-data",
-    "debug",
-    "tasks",
-    "teams",
-    "blobs",
-    "channels",
-    "computer-use",
-  ]),
+  qoder: Object.freeze({
+    ".auth": null,
+    projects: "dir",
+    logs: "dir",
+    bin: "dir",
+    "state.json": "file",
+  }),
+  zcode: Object.freeze({
+    [path.join("v2", "credentials.json")]: "file",
+    [path.join("v2", "telemetry-state.json")]: "file",
+    [path.join("v2", "config.json")]: "file",
+    [path.join("cli", "exec")]: "dir",
+  }),
+  codebuddy: Object.freeze({
+    projects: "dir",
+    sessions: "dir",
+    logs: "dir",
+    "history.jsonl": "file",
+    "file-history": "dir",
+    traces: "dir",
+    "shell-snapshots": "dir",
+    local_storage: "dir",
+    "usage-data": "dir",
+    debug: "dir",
+    tasks: "dir",
+    teams: "dir",
+    blobs: "dir",
+    channels: "dir",
+    "computer-use": "dir",
+  }),
 });
 
 function dirExists(fsImpl, dirPath) {
@@ -441,10 +446,12 @@ function detectOwnedHookConfigInstallation(descriptor, paths, options) {
   // runtime data that only the product itself creates. An empty or Clawd-only
   // settings file no longer hides a genuinely used product, while a folder
   // that only appeared because some tool created it empty stays insufficient.
-  for (const artifact of HOOK_CONFIG_AGENT_PRODUCT_ARTIFACTS[descriptor.agentId] || []) {
+  for (const [artifact, expectedKind] of Object.entries(HOOK_CONFIG_AGENT_PRODUCT_ARTIFACTS[descriptor.agentId] || {})) {
     const artifactPath = path.join(paths.parentDir, artifact);
     const artifactInfo = lstatPath(fsImpl, artifactPath);
-    if (artifactInfo.kind === "dir" || artifactInfo.kind === "file" || artifactInfo.kind === "symlink") {
+    if (artifactInfo.kind === "symlink"
+      || artifactInfo.kind === expectedKind
+      || (expectedKind === null && (artifactInfo.kind === "dir" || artifactInfo.kind === "file"))) {
       return installationResult(
         true,
         "high",

@@ -2668,6 +2668,473 @@ describe("CodexLogMonitor", () => {
     assert.ok(callsByPoll[1].some((filePath) => !first.has(filePath)));
   });
 
+  function makeColdRollouts(count, firstIndex = 0, dir = dateDir) {
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    return Array.from({ length: count }, (_, index) => {
+      const filePath = path.join(dir, uniqueRolloutName(firstIndex + index));
+      fs.writeFileSync(filePath, "");
+      fs.utimesSync(filePath, old, old);
+      return filePath;
+    });
+  }
+
+  function preparePollingMonitor(onStateChange = () => {}, options = {}) {
+    monitor = new CodexLogMonitor(makeConfig(tmpDir), onStateChange, { codexDir: tmpDir, ...options });
+    // Isolate scheduling from the independent startup and old-directory walks.
+    monitor._didInitialRecoveryScan = true;
+    monitor._activeDayDirsCache = [];
+    monitor._activeDayDirsCacheAt = Date.now();
+  }
+
+  function pollRolloutStats() {
+    const originalStatSync = fs.statSync;
+    const visited = [];
+    fs.statSync = (filePath, ...args) => {
+      if (typeof filePath === "string" && filePath.startsWith(tmpDir + path.sep)
+        && path.basename(filePath).startsWith("rollout-") && filePath.endsWith(".jsonl")) visited.push(filePath);
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      monitor._poll();
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+    return visited;
+  }
+
+  function readHotRollouts(count) {
+    return Array.from({ length: count }, (_, index) => {
+      const filePath = path.join(dateDir, uniqueRolloutName(1000 + index));
+      fs.writeFileSync(filePath, JSON.stringify({ type: "session_meta", payload: { cwd: "/hot" } }) + "\n");
+      monitor._pollFile(filePath, path.basename(filePath));
+      return filePath;
+    });
+  }
+
+  function skipColdFileNextPoll(filePath) {
+    const files = fs.readdirSync(dateDir);
+    monitor._pollCursor = (files.indexOf(path.basename(filePath)) + 1) % files.length;
+  }
+
+  function delegatedRolloutText() {
+    const timestamp = new Date().toISOString();
+    return [
+      JSON.stringify({ timestamp, type: "session_meta", payload: {
+        cwd: "/child", source: { subagent: { thread_spawn: {
+          parent_thread_id: "00000000-0000-4000-8000-000000000099",
+        } } },
+      } }),
+      JSON.stringify({ timestamp, type: "event_msg", payload: { type: "task_started", turn_id: "child-turn" } }),
+    ].join("\n") + "\n";
+  }
+
+  it("rollout polling: reads and publishes a hot append next poll at any cold cursor", () => {
+    makeColdRollouts(200);
+    const events = [];
+    preparePollingMonitor((sid, state, event) => events.push({ sid, state, event }));
+    const [hot] = readHotRollouts(1);
+    monitor._poll();
+    const files = fs.readdirSync(dateDir);
+    const afterHot = (files.indexOf(path.basename(hot)) + 1) % files.length;
+
+    for (const cursor of [afterHot, (afterHot + 65) % files.length, (afterHot + 130) % files.length]) {
+      monitor._pollCursor = cursor;
+      events.length = 0;
+      fs.appendFileSync(hot, JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }) + "\n");
+      const visited = pollRolloutStats();
+      assert.strictEqual(visited.filter((filePath) => filePath === hot).length, 1);
+      assert.ok(events.some((entry) => entry.event === "event_msg:task_started"));
+    }
+  });
+
+  it("rollout polling: discovers a new delegated rollout and publishes start next poll", () => {
+    makeColdRollouts(200);
+    const children = [];
+    preparePollingMonitor(() => {}, { onSubagentActivity: (parentId, entry) => children.push({ parentId, ...entry }) });
+    monitor._poll();
+    const child = path.join(dateDir, uniqueRolloutName(9000));
+    const timestamp = new Date().toISOString();
+    fs.writeFileSync(child, [
+      JSON.stringify({ timestamp, type: "session_meta", payload: {
+        cwd: "/child", source: { subagent: { thread_spawn: {
+          parent_thread_id: "019d23d4-f1a9-7633-b9c7-758327137228", depth: 1,
+        } } },
+      } }),
+      JSON.stringify({ timestamp, type: "event_msg", payload: { type: "task_started", turn_id: "new-child-turn" } }),
+    ].join("\n") + "\n");
+    const files = fs.readdirSync(dateDir);
+    monitor._pollCursor = (files.indexOf(path.basename(child)) + 1) % files.length;
+
+    assert.ok(pollRolloutStats().includes(child));
+    assert.ok(children.some((entry) => entry.phase === "start"));
+  });
+
+  it("rollout polling: drops missing priority paths but retains transient stat failures", () => {
+    preparePollingMonitor();
+    monitor._poll();
+    const failures = new Map(["ENOENT", "ENOTDIR", "EBUSY"].map((code, index) => {
+      const filePath = path.join(dateDir, uniqueRolloutName(9000 + index));
+      // Keep each entry visible to readdir, as a dangling symlink would be.
+      fs.writeFileSync(filePath, "");
+      return [filePath, code];
+    }));
+    const originalStatSync = fs.statSync;
+    fs.statSync = (filePath, ...args) => {
+      if (failures.has(filePath)) throw Object.assign(new Error("simulated stat failure"), { code: failures.get(filePath) });
+      return originalStatSync(filePath, ...args);
+    };
+    try {
+      const visited = pollRolloutStats();
+      for (const [filePath, code] of failures) {
+        assert.strictEqual(visited.filter((entry) => entry === filePath).length, 1);
+        assert.strictEqual(monitor._pendingPriorityFiles.has(filePath), code === "EBUSY", code);
+      }
+    } finally {
+      fs.statSync = originalStatSync;
+    }
+  });
+
+  it("rollout polling: caps hot attempts at 24 and rotates all 30 within two polls", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    const hot = new Set(readHotRollouts(30));
+    monitor._poll();
+    const visitedHot = new Set();
+    for (let round = 0; round < 2; round++) {
+      const visited = pollRolloutStats().filter((filePath) => hot.has(filePath));
+      assert.strictEqual(visited.length, 24, "hot work must use its capped share");
+      for (const filePath of visited) visitedHot.add(filePath);
+    }
+    assert.strictEqual(visitedHot.size, 30);
+  });
+
+  it("rollout polling: keeps all 40 new paths hot until their first attempt", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    monitor._poll();
+    const added = new Set(makeColdRollouts(40, 1000));
+    const visitedNew = new Set();
+    for (let round = 0; round < 2; round++) {
+      // Already-attempted old-mtime paths may be visited again by cold polling.
+      const visited = pollRolloutStats().filter((filePath) => added.has(filePath) && !visitedNew.has(filePath));
+      assert.ok(visited.length <= 24);
+      if (round === 0) assert.strictEqual(visited.length, 24);
+      for (const filePath of visited) visitedNew.add(filePath);
+    }
+    assert.strictEqual(visitedNew.size, 40);
+    assert.ok([...added].every((filePath) => !monitor._tracked.has(filePath)),
+      "old-mtime newcomers must only establish a growth baseline");
+  });
+
+  it("rollout polling: baselines existing paths and continues the cold cursor on poll two", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    const first = pollRolloutStats();
+    const second = pollRolloutStats();
+    assert.strictEqual(first.length, 64);
+    assert.strictEqual(second.length, 64);
+    assert.strictEqual(new Set([...first, ...second]).size, 128,
+      "existing paths must stay cold while their cursor advances");
+  });
+
+  it("rollout polling: skips deferred backoff without reducing cold stat attempts", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    monitor._poll();
+    const blocked = new Set(fs.readdirSync(dateDir).slice(0, 80).map((file) => path.join(dateDir, file)));
+    for (const filePath of blocked) {
+      monitor._enqueueDeferred(filePath, path.basename(filePath), fs.statSync(filePath), "recent",
+        { notBefore: Date.now() + 60_000 });
+    }
+    monitor._pollCursor = 0;
+
+    const visited = pollRolloutStats();
+    assert.strictEqual(visited.length, 64, "skipping deferred candidates must leave the stat budget available");
+    assert.strictEqual(new Set(visited).size, 64);
+    assert.ok(visited.every((filePath) => !blocked.has(filePath)));
+  });
+
+  it("rollout polling: keeps a budget-blocked new path hot for the next poll", () => {
+    makeColdRollouts(200);
+    const events = [];
+    preparePollingMonitor((sid, state, event) => events.push({ sid, state, event }));
+    const hot = readHotRollouts(4);
+    monitor._poll();
+    const quantum = " ".repeat(4 * 1024 * 1024 - 1) + "\n";
+    for (const filePath of hot) fs.appendFileSync(filePath, quantum);
+    const added = path.join(dateDir, uniqueRolloutName(9000));
+    fs.writeFileSync(added, JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }) + "\n");
+    const hotPaths = new Set([...hot, added]);
+    const hotOrder = fs.readdirSync(dateDir).map((file) => path.join(dateDir, file))
+      .filter((filePath) => hotPaths.has(filePath));
+    // Read the four full quanta first, leaving the newcomer no byte budget.
+    monitor._hotPollCursor = (hotOrder.indexOf(added) + 1) % hotOrder.length;
+    events.length = 0;
+
+    assert.ok(pollRolloutStats().includes(added));
+    assert.strictEqual(monitor._tracked.get(added).offset, 0);
+    assert.ok(monitor._replayWork.has(added));
+    assert.deepStrictEqual(events, []);
+    // The unread newcomer keeps its existing pending priority. Park the cold
+    // cursor past its replay so the next poll must use that priority.
+    monitor._pollCursor = 1;
+
+    assert.ok(pollRolloutStats().includes(added));
+    assert.strictEqual(monitor._tracked.get(added).offset, fs.statSync(added).size);
+    assert.ok(events.some((entry) => entry.event === "event_msg:task_started"));
+  });
+
+  it("rollout polling: promotes a budget-blocked tracked cold path for the next poll", () => {
+    makeColdRollouts(200);
+    const events = [];
+    preparePollingMonitor((sid, state, event) => events.push({ sid, state, event }));
+    const cold = path.join(dateDir, uniqueRolloutName(9000));
+    fs.writeFileSync(cold, JSON.stringify({ type: "session_meta", payload: { cwd: "/cold" } }) + "\n");
+    monitor._pollFile(cold, path.basename(cold));
+    monitor._poll();
+    const hot = new Set(readHotRollouts(4));
+    const quantum = " ".repeat(4 * 1024 * 1024 - 1) + "\n";
+    for (const filePath of hot) fs.appendFileSync(filePath, quantum);
+    fs.appendFileSync(cold, JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }) + "\n");
+    const old = Date.now() - 10 * 60 * 1000;
+    fs.utimesSync(cold, new Date(old), new Date(old));
+    monitor._tracked.get(cold).lastReadAt = old;
+    const offset = monitor._tracked.get(cold).offset;
+    const coldOrder = fs.readdirSync(dateDir).map((file) => path.join(dateDir, file))
+      .filter((filePath) => !hot.has(filePath));
+    monitor._pollCursor = coldOrder.indexOf(cold);
+    events.length = 0;
+
+    // Four hot quanta exactly exhaust the budget, so the first cold path stops
+    // before reading and must acquire priority for its next attempt.
+    assert.ok(pollRolloutStats().includes(cold));
+    assert.strictEqual(monitor._tracked.get(cold).offset, offset);
+    assert.deepStrictEqual(events, []);
+
+    assert.ok(pollRolloutStats().includes(cold));
+    assert.strictEqual(monitor._tracked.get(cold).offset, fs.statSync(cold).size);
+    assert.ok(events.some((entry) => entry.event === "event_msg:task_started"));
+  });
+
+  for (const initial of ["empty", "partial"]) {
+    it(`rollout polling: keeps an initially ${initial} rollout hot until its first records arrive`, () => {
+      makeColdRollouts(200);
+      const children = [];
+      preparePollingMonitor(() => {}, { onSubagentActivity: (parentId, entry) => children.push({ parentId, ...entry }) });
+      monitor._poll();
+      const added = path.join(dateDir, uniqueRolloutName(9000));
+      const content = delegatedRolloutText();
+      const prefixLength = initial === "empty" ? 0 : Math.floor(content.indexOf("\n") / 2);
+      fs.writeFileSync(added, content.slice(0, prefixLength));
+      assert.ok(pollRolloutStats().includes(added));
+      assert.strictEqual(monitor._tracked.get(added).offset, 0);
+      assert.deepStrictEqual(children, []);
+
+      skipColdFileNextPoll(added);
+      fs.appendFileSync(added, content.slice(prefixLength));
+      assert.ok(pollRolloutStats().includes(added));
+      assert.ok(children.some((entry) => entry.phase === "start"));
+    });
+  }
+
+  it("rollout polling: removes an already old empty newcomer from priority after one stat", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    monitor._poll();
+    const [added] = makeColdRollouts(1, 9000);
+
+    assert.ok(pollRolloutStats().includes(added));
+    assert.strictEqual(monitor._tracked.has(added), false, "old mtime must only establish a growth baseline");
+    skipColdFileNextPoll(added);
+    assert.ok(!pollRolloutStats().includes(added), "old empty paths must return to cold rotation");
+  });
+
+  it("rollout polling: ages an unread empty newcomer out of priority after five minutes", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    monitor._poll();
+    const added = path.join(dateDir, uniqueRolloutName(9000));
+    fs.writeFileSync(added, "");
+    assert.ok(pollRolloutStats().includes(added));
+    const later = fs.statSync(added).mtimeMs + 5 * 60 * 1000 + 1;
+    const originalNow = Date.now;
+    Date.now = () => later;
+    try {
+      monitor._activeDayDirsCacheAt = later;
+      assert.ok(pollRolloutStats().includes(added), "an aged pending path needs one final stat to expire");
+      skipColdFileNextPoll(added);
+      assert.ok(!pollRolloutStats().includes(added), "an empty path must not reserve priority indefinitely");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("rollout polling: repeated EOF visits do not renew the five-minute read window", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    const [hot] = readHotRollouts(1);
+    monitor._poll();
+    const readAt = monitor._tracked.get(hot).lastReadAt;
+    const originalNow = Date.now;
+    let now = readAt;
+    Date.now = () => now;
+    try {
+      for (let minute = 1; minute <= 4; minute++) {
+        now = readAt + minute * 60 * 1000;
+        monitor._activeDayDirsCacheAt = now;
+        assert.ok(pollRolloutStats().includes(hot));
+      }
+      now = readAt + 5 * 60 * 1000 + 1;
+      monitor._activeDayDirsCacheAt = now;
+      skipColdFileNextPoll(hot);
+      assert.ok(!pollRolloutStats().includes(hot), "EOF must not make an inactive rollout stay hot");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("rollout polling: discarded oversized content without a newline establishes read heat", () => {
+    makeColdRollouts(200);
+    const events = [];
+    preparePollingMonitor((sid, state, event) => events.push({ sid, state, event }));
+    const hot = path.join(dateDir, uniqueRolloutName(9000));
+    fs.writeFileSync(hot, "x".repeat(65537));
+    assert.strictEqual(monitor._pollFile(hot, path.basename(hot)).kind, "discarded");
+    monitor._poll();
+
+    skipColdFileNextPoll(hot);
+    fs.appendFileSync(hot, JSON.stringify({ type: "event_msg", payload: { type: "task_started" } }) + "\n");
+    assert.ok(pollRolloutStats().includes(hot));
+    assert.ok(events.some((entry) => entry.event === "event_msg:task_started"));
+  });
+
+  it("rollout polling: a hot byte-budget stop prevents cold stats in the same poll", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    const hot = new Set(readHotRollouts(5));
+    monitor._poll();
+    const order = fs.readdirSync(dateDir).map((file) => path.join(dateDir, file))
+      .filter((filePath) => hot.has(filePath));
+    const quantum = " ".repeat(4 * 1024 * 1024 - 1) + "\n";
+    for (const filePath of order.slice(0, 4)) fs.appendFileSync(filePath, quantum);
+    const blocked = order[4];
+    const offset = monitor._tracked.get(blocked).offset;
+    fs.appendFileSync(blocked, "\n");
+    monitor._hotPollCursor = 0;
+
+    const visited = pollRolloutStats();
+    assert.strictEqual(monitor._tracked.get(blocked).offset, offset, "the fifth quantum must hit the byte budget");
+    assert.strictEqual(visited.length, 5, "cold files must wait after a hot byte-budget stop");
+    assert.ok(visited.every((filePath) => hot.has(filePath)));
+  });
+
+  it("rollout polling: deferred backoff retains pending priority until the request is due", () => {
+    makeColdRollouts(200);
+    const children = [];
+    preparePollingMonitor(() => {}, { onSubagentActivity: (parentId, entry) => children.push({ parentId, ...entry }) });
+    monitor._poll();
+    const added = path.join(dateDir, uniqueRolloutName(9000));
+    fs.writeFileSync(added, delegatedRolloutText());
+    monitor._enqueueDeferred(added, path.basename(added), fs.statSync(added), "recent",
+      { notBefore: Date.now() + 60_000 });
+    for (let round = 0; round < 2; round++) {
+      assert.ok(!pollRolloutStats().includes(added));
+      assert.ok(monitor._pendingPriorityFiles.has(added), "backoff is not a completed priority attempt");
+    }
+
+    monitor._deferredRecent.get(added).notBefore = Date.now() - 1;
+    monitor._pollCursor = 1;
+    assert.ok(pollRolloutStats().includes(added));
+    assert.ok(children.some((entry) => entry.phase === "start"));
+    assert.strictEqual(monitor._pendingPriorityFiles.has(added), false);
+  });
+
+  it("rollout polling: visits every cold path despite 30 continuously hot paths", () => {
+    const cold = new Set(makeColdRollouts(300));
+    preparePollingMonitor();
+    readHotRollouts(30);
+    const visitedCold = new Set();
+    const rounds = Math.ceil(cold.size / (64 - 24)) + 1;
+    for (let round = 0; round < rounds; round++) {
+      for (const filePath of pollRolloutStats()) {
+        if (cold.has(filePath)) visitedCold.add(filePath);
+      }
+    }
+    assert.strictEqual(visitedCold.size, cold.size);
+  });
+
+  it("rollout polling: shares 64 attempts with 16 discovery stats without duplicate candidate visits", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    readHotRollouts(30);
+    const oldDir = path.join(tmpDir, "2000", "01", "01");
+    fs.mkdirSync(oldDir, { recursive: true });
+    const discovery = new Set(makeColdRollouts(16, 5000, oldDir));
+    monitor._recentDayDirsCache = [dateDir];
+    monitor._recentDayDirsCacheAt = Date.now();
+    monitor._recentDayDirsDateKey = monitor._getLocalDateKey();
+    monitor._activeDayWalker = {
+      years: ["2000"], yearIndex: 0, months: ["01"], monthIndex: 0,
+      days: ["01"], dayIndex: 0, files: [...discovery].map((filePath) => path.basename(filePath)),
+      fileIndex: 0, found: new Set(), complete: false,
+    };
+
+    const visited = pollRolloutStats();
+    assert.strictEqual(visited.filter((filePath) => discovery.has(filePath)).length, 16);
+    assert.strictEqual(visited.length, 64);
+    assert.strictEqual(new Set(visited).size, visited.length);
+    assert.ok(visited.some((filePath) => !discovery.has(filePath)));
+  });
+
+  it("rollout polling: expires read heat after five minutes even when event time is fresh", () => {
+    makeColdRollouts(200);
+    preparePollingMonitor();
+    const [hot] = readHotRollouts(1);
+    monitor._poll();
+    const files = fs.readdirSync(dateDir);
+    monitor._pollCursor = (files.indexOf(path.basename(hot)) + 1) % files.length;
+    const originalNow = Date.now;
+    const later = Date.now() + 5 * 60 * 1000 + 1;
+    Date.now = () => later;
+    try {
+      monitor._activeDayDirsCacheAt = later;
+      monitor._tracked.get(hot).lastEventTime = later;
+      assert.ok(!pollRolloutStats().includes(hot), "expired heat must use the cold cursor");
+    } finally {
+      Date.now = originalNow;
+    }
+  });
+
+  it("rollout polling: preserves hot replay quanta and deferred notBefore and source", () => {
+    preparePollingMonitor();
+    monitor._poll();
+    const replay = path.join(dateDir, uniqueRolloutName(1000));
+    fs.writeFileSync(replay, "x".repeat(1023) + "\n");
+    fs.truncateSync(replay, 5 * 1024 * 1024);
+    const [deferred] = makeColdRollouts(1, 1001);
+    fs.writeFileSync(deferred, JSON.stringify({ type: "session_meta", payload: { cwd: "/deferred" } }) + "\n");
+    const old = new Date(Date.now() - 10 * 60 * 1000);
+    fs.utimesSync(replay, old, old);
+    fs.utimesSync(deferred, old, old);
+    monitor._pollFile(replay, path.basename(replay));
+    monitor._enqueueDeferred(deferred, path.basename(deferred), fs.statSync(deferred), "background",
+      { notBefore: Date.now() + 60_000 });
+    const offset = monitor._tracked.get(replay).offset;
+
+    const first = pollRolloutStats();
+    assert.strictEqual(first.filter((filePath) => filePath === replay).length, 1);
+    assert.ok(monitor._tracked.get(replay).offset > offset);
+    assert.ok(!first.includes(deferred), "hot discovery must honor deferred backoff before stat");
+    assert.strictEqual(monitor._tracked.has(deferred), false);
+
+    monitor._deferredBackground.get(deferred).notBefore = Date.now() - 1;
+    monitor._pollCursor = 0;
+    const second = pollRolloutStats();
+    assert.strictEqual(second.filter((filePath) => filePath === deferred).length, 1);
+    assert.strictEqual(monitor._tracked.get(deferred).offset, fs.statSync(deferred).size,
+      "a due deferred source must bypass the normal old-mtime pickup gate");
+  });
+
   it("deduplicates one admitted replay that is also found by normal discovery", () => {
     const testFile = path.join(dateDir, TEST_FILENAME);
     fs.writeFileSync(testFile, "x".repeat(1023) + "\n");
@@ -3939,8 +4406,8 @@ describe("CodexLogMonitor", () => {
       events.push({ sid, state, event });
     });
 
-    // Exercise the public polling seam throughout: first consume the target,
-    // then force it out of both the 50 active and 100 retired tracker LRUs.
+    // Consume the target through polling, then read every filler explicitly
+    // so directory order cannot keep the target in either tracker LRU.
     monitor._poll();
     for (let i = 0; i < 150; i++) {
       const suffix = String(i + 1).padStart(12, "0");
@@ -3949,10 +4416,7 @@ describe("CodexLogMonitor", () => {
         path.join(dateDir, fileName),
         `{"type":"session_meta","payload":{"cwd":"/filler-${i}"}}\n`
       );
-    }
-    for (let i = 0; i < 10; i++) {
-      monitor._poll();
-      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+      monitor._pollFile(path.join(dateDir, fileName), fileName);
     }
 
     assert.strictEqual(monitor._tracked.has(testFile), false);
@@ -4005,10 +4469,7 @@ describe("CodexLogMonitor", () => {
         path.join(dateDir, fileName),
         `{"type":"session_meta","payload":{"cwd":"/filler-${i}"}}\n`
       );
-    }
-    for (let i = 0; i < 10; i++) {
-      monitor._poll();
-      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
+      monitor._pollFile(path.join(dateDir, fileName), fileName);
     }
 
     assert.strictEqual(monitor._tracked.has(testFile), false);
@@ -4052,11 +4513,9 @@ describe("CodexLogMonitor", () => {
       const suffix = String(i + 601).padStart(12, "0");
       const fileName = `rollout-2026-03-25T15-14-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
       fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
+      monitor._pollFile(path.join(dateDir, fileName), fileName);
     }
-    for (let i = 0; i < 10; i++) {
-      monitor._poll();
-      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
-    }
+
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     events.length = 0;
@@ -4087,11 +4546,9 @@ describe("CodexLogMonitor", () => {
       const suffix = String(i + 201).padStart(12, "0");
       const fileName = `rollout-2026-03-25T15-12-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
       fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
+      monitor._pollFile(path.join(dateDir, fileName), fileName);
     }
-    for (let i = 0; i < 10; i++) {
-      monitor._poll();
-      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
-    }
+
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     events.length = 0;
@@ -4126,11 +4583,9 @@ describe("CodexLogMonitor", () => {
       const suffix = String(i + 401).padStart(12, "0");
       const fileName = `rollout-2026-03-25T15-13-51-019d23d4-f1a9-7633-b9c7-${suffix}.jsonl`;
       fs.writeFileSync(path.join(dateDir, fileName), '{"type":"session_meta","payload":{}}\n');
+      monitor._pollFile(path.join(dateDir, fileName), fileName);
     }
-    for (let i = 0; i < 10; i++) {
-      monitor._poll();
-      if (!monitor._tracked.has(testFile) && !monitor._retiredTracked.has(testFile)) break;
-    }
+
     assert.strictEqual(monitor._tracked.has(testFile), false);
     assert.strictEqual(monitor._retiredTracked.has(testFile), false);
     events.length = 0;

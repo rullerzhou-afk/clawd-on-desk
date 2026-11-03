@@ -1,6 +1,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { isCodexCliOriginator } = require("./codex-originator");
 
 // Codex memory consolidation runs in an internal, ephemeral thread
 // (`SessionSource::Internal(MemoryConsolidation)`) whose cwd is pinned to
@@ -8,8 +9,8 @@ const path = require("path");
 // payload has no transcript_path, and openai/codex#40587 stopped forwarding
 // its Stop to user-level hooks. The payload carries no thread_source /
 // session source / thread_id either, which leaves "cwd under CODEX_HOME plus
-// an empty transcript" as the only usable identity. Keep this helper
-// dependency-free: codex-hook.js is deployed to dep-free remote hosts.
+// an empty transcript" as the only usable identity. Keep this helper free of
+// npm dependencies: codex-hook.js is deployed to dep-free remote hosts.
 //
 // This detector must never swallow a real session: a missed worker (a ghost
 // row that lingers) is far cheaper than dropping live events, so the rules
@@ -156,11 +157,16 @@ function isCodexMemoryWorkerPayload(payload, options = {}) {
 // CODEX_INTERNAL_ORIGINATOR_OVERRIDE for the app-server process, which Codex
 // exports to hooks, while a terminal `codex` (or `codex exec --ephemeral`)
 // does not. This is a precondition, not a drop rule: the user-visible side chat
-// shares exactly these fields, so only the two fixed ambient-suggestion prompts
+// shares exactly these fields, so only audited fixed built-in prompts
 // below identify hidden work. An empty transcript plus that client-only
 // variable is the usable signal for "client ephemeral thread".
 function isCodexClientEphemeralPayload(payload, options = {}) {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+
+  // A CLI launched by Desktop can inherit its environment. Explicit CLI
+  // identity remains authoritative even when it has no persistent rollout.
+  const source = typeof payload.source === "string" ? payload.source.trim().toLowerCase() : "";
+  if (isCodexCliOriginator(payload.originator) || ["cli", "exec", "mcp"].includes(source)) return false;
 
   // An ephemeral thread never writes a rollout. A non-empty string, or any
   // other non-null value, means this is not one and must be left alone.
@@ -171,12 +177,52 @@ function isCodexClientEphemeralPayload(payload, options = {}) {
 
   const env = options.env || process.env;
   const originator = env && env.CODEX_INTERNAL_ORIGINATOR_OVERRIDE;
-  return typeof originator === "string" && originator.trim() !== "";
+  return typeof originator === "string" && originator.trim() !== "" && !isCodexCliOriginator(originator);
+}
+
+// Optional focus metadata, not hidden-thread authorization. A later event with
+// no evidence must not erase an earlier ephemeral observation. A transcript is
+// positive persistence evidence even before the first write reaches disk.
+function codexClientEphemeralClaim(payload, options = {}) {
+  if (isCodexClientEphemeralPayload(payload, options)) {
+    return true;
+  }
+  if (payload && typeof payload.transcript_path === "string" && payload.transcript_path.trim()) return false;
+  return undefined;
 }
 
 // Wire value the hook tags a recognized ambient-suggestion UserPromptSubmit
 // with; the server keys its per-sid suppression set on it.
 const CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS = "ambient_suggestions";
+const CODEX_INTERNAL_THREAD_TITLE_REFRESH = "title_refresh";
+
+function isCodexInternalThread(value) {
+  return value === CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS
+    || value === CODEX_INTERNAL_THREAD_TITLE_REFRESH;
+}
+
+// Desktop 26.1016's adaptive title refresh forks an ephemeral prediction thread.
+// Its fork omits the caller's features.hooks:false override. Match the complete
+// audited template, including canonical JSON encoding of the previous title;
+// never infer hidden work from no rollout, cwd, PID, or a generic title request.
+// Other prediction workers can submit ordinary user text: they are deliberately
+// not recognized here. Unknown/changed templates must remain visible.
+const TITLE_REFRESH_PREFIX = "Keep the current chat title ";
+const TITLE_REFRESH_SUFFIX = " if it still fits the conversation.\n"
+  + "If the focus has changed, write a more useful title in the user's language, up to 24 characters.\n"
+  + 'Reply only with JSON: {"title":"...","description":"a search summary, up to 100 characters"}. Do not use tools.';
+
+function isCodexTitleRefreshPrompt(prompt) {
+  if (typeof prompt !== "string" || !prompt.startsWith(TITLE_REFRESH_PREFIX)
+    || !prompt.endsWith(TITLE_REFRESH_SUFFIX)) return false;
+  const encodedTitle = prompt.slice(TITLE_REFRESH_PREFIX.length, -TITLE_REFRESH_SUFFIX.length);
+  try {
+    const title = JSON.parse(encodedTitle);
+    return typeof title === "string" && JSON.stringify(title) === encodedTitle;
+  } catch {
+    return false;
+  }
+}
 
 // The two fixed prompts Codex Desktop's ambient-suggestion workers submit (seen
 // verbatim across many generation and safety-review threads). Only the prefixes
@@ -196,7 +242,11 @@ function isCodexAmbientSuggestionPrompt(prompt) {
 
 module.exports = {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+  CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+  isCodexInternalThread,
   isCodexAmbientSuggestionPrompt,
+  isCodexTitleRefreshPrompt,
   isCodexClientEphemeralPayload,
+  codexClientEphemeralClaim,
   isCodexMemoryWorkerPayload,
 };

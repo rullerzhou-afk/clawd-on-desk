@@ -35,6 +35,7 @@ function makeWindow(bounds = { x: 10, y: 20, width: 100, height: 100 }) {
     setAlwaysOnTop: (...args) => calls.push(["setAlwaysOnTop", ...args]),
     setVisibleOnAllWorkspaces: (...args) => calls.push(["setVisibleOnAllWorkspaces", ...args]),
     setFocusable: (value) => calls.push(["setFocusable", value]),
+    setOpacity: (value) => calls.push(["setOpacity", value]),
     showInactive: () => calls.push(["showInactive"]),
     hide: () => calls.push(["hide"]),
     loadFile: (file) => calls.push(["loadFile", file]),
@@ -150,7 +151,8 @@ function createRuntime(overrides = {}) {
     getCurrentSvg: () => "idle.svg",
     getCurrentHitBox: () => overrides.hitBox || null,
     getMiniMode: () => overrides.miniMode || false,
-    getMiniTransitioning: () => overrides.miniTransitioning || false,
+    getMiniTransitioning: () => typeof overrides.miniTransitioning === "function"
+      ? overrides.miniTransitioning() : (overrides.miniTransitioning || false),
     getMiniContainedSeam: () => overrides.miniContainedSeam || null,
     getMiniPeekOffset: () => 0,
     getCurrentPixelSize: () => overrides.currentPixelSize || { width: 100, height: 100 },
@@ -186,6 +188,7 @@ function createRuntime(overrides = {}) {
       : {}),
     reassertWinTopmost: (...args) => calls.push(["reassertWinTopmost", ...args]),
     scheduleHwndRecovery: () => calls.push(["scheduleHwndRecovery"]),
+    ...(overrides.getAlwaysOnTop ? { getAlwaysOnTop: overrides.getAlwaysOnTop } : {}),
     ...(overrides.cloakInspector ? { cloakInspector: overrides.cloakInspector } : {}),
     ...(overrides.noteManualPetShow ? { noteManualPetShow: overrides.noteManualPetShow } : {}),
     ...(overrides.isMiniAnimating ? { isMiniAnimating: overrides.isMiniAnimating } : {}),
@@ -222,6 +225,110 @@ function createRuntime(overrides = {}) {
     setHitWin: (win) => { hitWin = win; },
   };
 }
+
+describe("macOS hit-window native drift recovery", () => {
+  function setup(extra = {}) {
+    const clock = createFakeClock();
+    const logs = [];
+    const h = createRuntime({ isWin: false, isMac: true, clock, edgeLog: (s) => logs.push(s), ...extra });
+    h.runtime.syncHitWin();
+    const target = { ...h.hitWin.bounds };
+    clock.advance(2000);
+    h.hitWin.calls.length = 0;
+    return { h, clock, target, logs };
+  }
+
+  it("repairs a same-target native drift on an ordinary sync", () => {
+    const { h, target } = setup();
+    h.hitWin.bounds.y += 363;
+    assert.deepEqual(h.runtime.syncHitWin(), { applied: true, deferred: false });
+    assert.deepEqual(h.hitWin.bounds, target);
+  });
+
+  it("repairs a late move event after all topology checks have completed", () => {
+    const { h, clock, target } = setup();
+    h.runtime.handleDisplayMetricsChanged();
+    clock.advance(5000);
+    h.hitWin.bounds.y += 363;
+    h.runtime.onHitNativeGeometryEvent();
+    clock.advance(250);
+    assert.deepEqual(h.hitWin.bounds, target);
+    clock.advance(5000);
+    assert.equal(clock.pendingCount(), 0);
+  });
+
+  it("catches a delayed native move without a move event and stops polling", () => {
+    const { h, clock, target } = setup();
+    h.runtime.handleDisplayMetricsChanged();
+    clock.advance(400);
+    h.hitWin.bounds.y += 363;
+    clock.advance(400);
+    assert.deepEqual(h.hitWin.bounds, target);
+    clock.advance(5000);
+    assert.equal(clock.pendingCount(), 0);
+    const count = h.hitWin.calls.length;
+    clock.advance(60000);
+    assert.equal(h.hitWin.calls.length, count);
+  });
+
+  it("bounds rejected native writes even with repeated sync and native echoes", () => {
+    const { h, clock, target, logs } = setup();
+    h.hitWin.bounds.y += 363;
+    h.hitWin.setBounds = (rect) => {
+      h.hitWin.calls.push(["setBounds", rect]);
+      h.runtime.onHitNativeGeometryEvent();
+    };
+    h.runtime.onHitNativeGeometryEvent();
+    clock.advance(10000);
+    for (let i = 0; i < 20; i++) h.runtime.syncHitWin();
+    assert.equal(h.hitWin.calls.filter(([name]) => name === "setBounds").length, 2);
+    assert.deepEqual(h.runtime.syncHitWin(), { applied: false, deferred: false });
+    assert.equal(logs.filter((s) => s.includes("action=mac-repair-limit")).length, 1);
+    assert.equal(clock.pendingCount(), 0);
+    // A new topology may make a previously rejected location writable.
+    h.hitWin.setBounds = (rect) => { h.hitWin.bounds = { ...rect }; };
+    h.runtime.handleDisplayMetricsChanged();
+    clock.advance(5000);
+    assert.deepEqual(h.hitWin.bounds, target);
+  });
+
+  for (const kind of ["drag", "mini", "peek", "preview", "roam"]) {
+    it(`defers native repair during ${kind}, then derives the latest target on release`, () => {
+      let active = false;
+      const { h, clock } = setup({
+        miniTransitioning: () => active && kind === "mini",
+        isMiniAnimating: () => active && kind === "peek",
+        isRoamAnimating: () => active && kind === "roam",
+      });
+      active = true;
+      if (kind === "drag") h.runtime.setDragLocked(true);
+      if (kind === "preview") h.runtime.beginSettingsSizePreviewProtection();
+      h.hitWin.bounds.y += 363;
+      h.runtime.onHitNativeGeometryEvent();
+      clock.advance(5000);
+      assert.equal(h.hitWin.calls.filter(([name]) => name === "setBounds").length, 0);
+      // The render may change during the protected period. Recovery must
+      // not replay the old hit rect.
+      h.renderWin.bounds.x += 50;
+      active = false;
+      if (kind === "drag") h.runtime.setDragLocked(false);
+      else if (kind === "preview") h.runtime.endSettingsSizePreviewProtection();
+      else h.runtime.releaseReconcileProtection();
+      clock.advance(500);
+      assert.deepEqual(h.hitWin.bounds, h.renderWin.bounds);
+      assert.equal(clock.pendingCount(), 0);
+    });
+  }
+
+  it("does not keep topology timers alive after the windows are destroyed", () => {
+    const { h, clock } = setup();
+    h.runtime.handleDisplayMetricsChanged();
+    h.hitWin.destroyed = true;
+    h.renderWin.destroyed = true;
+    clock.advance(5000);
+    assert.equal(clock.pendingCount(), 0);
+  });
+});
 
 describe("macOS physical edge pinning (#241)", () => {
   const dockDisplay = {
@@ -3160,6 +3267,42 @@ describe("pet-window-runtime", () => {
     assert.equal(harness.runtime.getViewportOffsetY(), 25);
   });
 
+  it("creates the pet body in the normal band when the master always-on-top pref is off (#1275)", () => {
+    const instances = [];
+    const harness = createRuntime({ getAlwaysOnTop: () => false });
+
+    harness.runtime.createRenderWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      size: { width: 120, height: 120 },
+      initialWindowBounds: { x: 40, y: 0, width: 120, height: 120 },
+      initialVirtualBounds: { x: 40, y: 0, width: 120, height: 120 },
+      preloadPath: "preload.js",
+      loadFilePath: "index.html",
+      themeConfig: { ok: true },
+      setRenderWindow: harness.setRenderWin,
+      isQuitting: () => false,
+    });
+    harness.runtime.createHitWindow({
+      BrowserWindow: makeBrowserWindow(instances),
+      preloadPath: "preload-hit.js",
+      loadFilePath: "hit.html",
+      hitThemeConfig: { ok: true },
+    });
+
+    assert.equal(instances[0].options.alwaysOnTop, false, "render window constructor");
+    assert.equal(instances[1].options.alwaysOnTop, false, "hit window constructor");
+    assert.equal(
+      instances[0].calls.find((call) => call[0] === "setAlwaysOnTop"),
+      undefined,
+      "no Windows topmost-level write for the render window"
+    );
+    assert.equal(
+      instances[1].calls.find((call) => call[0] === "setAlwaysOnTop"),
+      undefined,
+      "no Windows topmost-level write for the hit window"
+    );
+  });
+
   it("flushes runtime prefs once during Windows session end", () => {
     const instances = [];
     const harness = createRuntime();
@@ -3672,6 +3815,83 @@ describe("pet-window-runtime", () => {
     const setBoundsCalls = renderWin.calls.filter((call) => call[0] === "setBounds");
     assert.equal(setBoundsCalls.length, 0);
   });
+
+  for (const handlerName of [
+    "handleDisplayMetricsChanged",
+    "handleDisplayRemoved",
+    "handleDisplayAdded",
+  ]) {
+    it(`${handlerName} reasserts a macOS hit window that the OS moved away from an unchanged render window`, () => {
+      const renderWin = makeWindow({ x: 200, y: 100, width: 100, height: 100 });
+      const hitWin = makeWindow({ x: 200, y: 100, width: 100, height: 100 });
+      const harness = createRuntime({
+        isWin: false,
+        isMac: true,
+        renderWin,
+        hitWin,
+        effectivePixelSize: { width: 100, height: 100 },
+        currentPixelSize: { width: 100, height: 100 },
+      });
+
+      // Seed the same-target optimization, then reproduce AppKit moving only
+      // the transparent input window during an unplug/scale transition. No
+      // native move event is required for the regression: the topology
+      // handler itself must invalidate the stale requested-rect cache.
+      harness.runtime.syncHitWin();
+      renderWin.calls.length = 0;
+      hitWin.calls.length = 0;
+      hitWin.bounds = { x: 200, y: 160, width: 100, height: 100 };
+
+      harness.runtime[handlerName]();
+
+      assert.deepEqual(
+        renderWin.calls.filter((call) => call[0] === "setBounds"),
+        [],
+        "an already-correct visual window should not be needlessly rewritten"
+      );
+      assert.deepEqual(
+        hitWin.calls.filter((call) => call[0] === "setBounds"),
+        [["setBounds", { x: 200, y: 100, width: 100, height: 100 }]],
+        "the native hit window must be realigned even though its derived target did not change"
+      );
+    });
+  }
+
+  for (const handlerName of ["handleDisplayMetricsChanged", "handleDisplayRemoved", "handleDisplayAdded"]) {
+    it(`${handlerName} preserves pointer capture and repairs stale hit geometry on the release sync`, () => {
+      const harness = createRuntime({ isWin: false, isMac: true });
+      harness.runtime.syncHitWin();
+      const target = { ...harness.hitWin.bounds };
+      harness.hitWin.bounds.y += 363;
+      harness.hitWin.calls.length = 0;
+      harness.runtime.setDragLocked(true);
+      harness.runtime[handlerName]();
+      assert.equal(harness.hitWin.calls.filter(([name]) => name === "setBounds").length, 0);
+      harness.runtime.setDragLocked(false);
+      harness.runtime.syncHitWin();
+      assert.deepEqual(harness.hitWin.bounds, target);
+      harness.hitWin.calls.length = 0;
+      harness.runtime.syncHitWin();
+      assert.equal(harness.hitWin.calls.filter(([name]) => name === "setBounds").length, 0,
+        "normal steady-state sync must retain the same-target optimization");
+    });
+
+    for (const protection of ["miniTransitioning", "isMiniAnimating"]) {
+      it(`${handlerName} defers stale-hit repair during ${protection}`, () => {
+        const harness = createRuntime({
+          isWin: false, isMac: true,
+          ...(protection === "isMiniAnimating" ? { isMiniAnimating: () => true } : { miniTransitioning: true }),
+        });
+        harness.runtime.syncHitWin();
+        harness.hitWin.bounds.y += 363;
+        harness.hitWin.calls.length = 0;
+        harness.renderWin.calls.length = 0;
+        harness.runtime[handlerName]();
+        assert.equal(harness.hitWin.calls.filter(([name]) => name === "setBounds").length, 0);
+        assert.equal(harness.renderWin.calls.filter(([name]) => name === "setBounds").length, 0);
+      });
+    }
+  }
 
   it("brings the pet to primary display and flushes runtime prefs", () => {
     const harness = createRuntime({
@@ -4188,6 +4408,122 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
   });
 });
 
+describe("hidden pet page: renderer notification", () => {
+  it("notifies once per manual hide/show edge", () => {
+    const h = createRuntime();
+    h.runtime.setPetHidden(true);
+    h.runtime.setPetHidden(true);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true]],
+    );
+
+    h.runtime.setPetHidden(false);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+  });
+
+  it("notifies once per fullscreen auto-hide edge", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setFullscreenAutoHidden(true);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true]],
+    );
+
+    h.runtime.setFullscreenAutoHidden(false);
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+  });
+
+  it("notifies only on effective edges when hide layers stack in either order", () => {
+    for (const [first, second] of [
+      ["setPetHidden", "setFullscreenAutoHidden"],
+      ["setFullscreenAutoHidden", "setPetHidden"],
+    ]) {
+      const h = createRuntime();
+      h.runtime[first](true);
+      h.runtime[second](true);
+      assert.deepStrictEqual(
+        h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+        [["sendToRenderer", "pet-hidden-change", true]],
+        `${first} then ${second} should notify only the first hide`,
+      );
+
+      h.runtime.setFullscreenAutoHidden(false);
+      assert.deepStrictEqual(
+        h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+        [["sendToRenderer", "pet-hidden-change", true]],
+        "removing the fullscreen layer leaves the manual hide in effect",
+      );
+
+      h.runtime.setPetHidden(false);
+      assert.deepStrictEqual(
+        h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+        [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+      );
+    }
+  });
+
+  it("notifies once when manual show clears the fullscreen layer", () => {
+    const h = createRuntime();
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+  });
+
+  it("does not notify when a mini transition defers the visibility change", () => {
+    const h = createRuntime({ miniTransitioning: true });
+    assert.deepStrictEqual(h.runtime.setPetHidden(true), { applied: false, deferred: true, changed: false });
+    assert.deepStrictEqual(h.runtime.setFullscreenAutoHidden(true), { applied: false, deferred: true, changed: false });
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [],
+    );
+  });
+
+  it("notifies on macOS while non-topmost windows use opacity", () => {
+    const h = createRuntime({ isWin: false, isMac: true, isLinux: false, getAlwaysOnTop: () => false });
+    h.runtime.setPetHidden(true);
+    h.runtime.setPetHidden(false);
+    assert.deepStrictEqual(
+      h.calls.filter((c) => c[0] === "sendToRenderer" && c[1] === "pet-hidden-change"),
+      [["sendToRenderer", "pet-hidden-change", true], ["sendToRenderer", "pet-hidden-change", false]],
+    );
+    assert.deepStrictEqual(
+      h.renderWin.calls.filter((c) => c[0] === "setOpacity"),
+      [["setOpacity", 0], ["setOpacity", 1]],
+    );
+    assert.ok(![...h.renderWin.calls, ...h.hitWin.calls].some((c) => c[0] === "hide" || c[0] === "showInactive"));
+  });
+
+  it("notifies before showing the render window", () => {
+    const h = createRuntime();
+    h.runtime.setPetHidden(true);
+    const showInactive = h.renderWin.showInactive;
+    let notifiedBeforeShow = false;
+    h.renderWin.showInactive = () => {
+      notifiedBeforeShow = h.calls.some((c) => (
+        c[0] === "sendToRenderer" && c[1] === "pet-hidden-change" && c[2] === false
+      ));
+      showInactive();
+    };
+
+    h.runtime.setPetHidden(false);
+    assert.equal(notifiedBeforeShow, true);
+  });
+});
+
 describe("manual show intent hook (#935 override latch)", () => {
   it("setPetHidden(false) reports intent even when it is a visible no-op", () => {
     const notes = [];
@@ -4349,5 +4685,120 @@ describe("pet-window theme config transport", () => {
     assert.ok(!source.includes('"--theme-config=" +'));
     assert.ok(!source.includes('"--hit-theme-config=" +'));
     assert.ok(source.includes("32,767"));
+  });
+});
+
+describe("#1275: non-topmost Mac pet visibility preserves Space membership", () => {
+  for (const setter of ["setPetHidden", "setFullscreenAutoHidden"]) {
+    it(`#1275: Mac with topmost off uses only opacity for ${setter} and restores input`, () => {
+      const h = createRuntime({
+        isWin: false,
+        isMac: true,
+        isLinux: false,
+        getAlwaysOnTop: () => false,
+      });
+
+      h.runtime[setter](true);
+      assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+      assert.deepEqual(h.renderWin.calls, [["setOpacity", 0]]);
+      assert.deepEqual(h.hitWin.calls, [["setIgnoreMouseEvents", true]]);
+
+      h.renderWin.calls.length = 0;
+      h.hitWin.calls.length = 0;
+      h.runtime[setter](false);
+      assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+      assert.deepEqual(h.renderWin.calls, [["setOpacity", 1]]);
+      assert.deepEqual(h.hitWin.calls, [["setIgnoreMouseEvents", false]]);
+    });
+
+    for (const platform of ["darwin", "win32"]) {
+      it(`#1275: ${platform} with topmost ${platform === "darwin" ? "on" : "off"} keeps hide/show for ${setter}`, () => {
+        const h = createRuntime({
+          isWin: platform === "win32",
+          isMac: platform === "darwin",
+          isLinux: false,
+          getAlwaysOnTop: () => platform === "darwin",
+        });
+
+        h.runtime[setter](true);
+        assert.deepEqual(h.renderWin.calls, [["hide"]]);
+        assert.deepEqual(h.hitWin.calls, [["hide"], ["setIgnoreMouseEvents", true]]);
+
+        h.renderWin.calls.length = 0;
+        h.hitWin.calls.length = 0;
+        h.runtime[setter](false);
+        assert.deepEqual(h.renderWin.calls, [["showInactive"]]);
+        assert.deepEqual(h.hitWin.calls, [["showInactive"], ["setIgnoreMouseEvents", false]]);
+      });
+    }
+
+    it(`#1275: bring-to-primary clears ${setter} before restoring the non-topmost Mac pet`, () => {
+      const h = createRuntime({
+        isWin: false,
+        isMac: true,
+        isLinux: false,
+        getAlwaysOnTop: () => false,
+      });
+      h.runtime[setter](true);
+      h.renderWin.calls.length = 0;
+      const hiddenAtOpacityWrites = [];
+      const setOpacity = h.renderWin.setOpacity;
+      h.renderWin.setOpacity = (value) => {
+        hiddenAtOpacityWrites.push(h.runtime.isPetEffectivelyHidden());
+        setOpacity(value);
+      };
+
+      h.runtime.bringPetToPrimaryDisplay();
+
+      assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+      assert.deepEqual(hiddenAtOpacityWrites, [false]);
+      assert.deepEqual(
+        h.renderWin.calls.filter(([name]) => ["hide", "showInactive", "setOpacity"].includes(name)),
+        [["setOpacity", 1]],
+      );
+      assert.ok(!h.hitWin.calls.some(([name]) => name === "hide" || name === "showInactive"));
+    });
+  }
+
+  it("#1275: stacked manual and fullscreen hides restore opacity and input only after both clear", () => {
+    const h = createRuntime({
+      isWin: false,
+      isMac: true,
+      isLinux: false,
+      getAlwaysOnTop: () => false,
+    });
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(true);
+    h.runtime.setFullscreenAutoHidden(false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    assert.deepEqual(h.renderWin.calls, [["setOpacity", 0]]);
+    assert.deepEqual(h.hitWin.calls, [["setIgnoreMouseEvents", true]]);
+
+    h.runtime.setPetHidden(false);
+    assert.deepEqual(h.renderWin.calls, [["setOpacity", 0], ["setOpacity", 1]]);
+    assert.deepEqual(h.hitWin.calls, [["setIgnoreMouseEvents", true], ["setIgnoreMouseEvents", false]]);
+  });
+
+  it("#1275: recovery leaves a hidden non-topmost Mac pet transparent", () => {
+    for (const setter of ["setPetHidden", "setFullscreenAutoHidden"]) {
+      const inspector = makeCloakInspector({ flag: 1 });
+      const h = createRuntime({
+        isWin: false,
+        isMac: true,
+        isLinux: false,
+        getAlwaysOnTop: () => false,
+        cloakInspector: inspector,
+      });
+      h.runtime[setter](true);
+      h.renderWin.calls.length = 0;
+      h.hitWin.calls.length = 0;
+
+      assert.equal(h.runtime.recoverIfCloaked(), "hidden");
+      assert.equal(h.runtime.recoverVisiblePetAfterRendererLoad(), "unsupported");
+      assert.deepEqual(inspector.calls, []);
+      assert.deepEqual(h.renderWin.calls, []);
+      assert.deepEqual(h.hitWin.calls, []);
+      assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    }
   });
 });

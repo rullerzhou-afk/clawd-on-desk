@@ -18,6 +18,8 @@ const {
 const prefs = require("../src/prefs");
 const { createSettingsController } = require("../src/settings-controller");
 const { commandRegistry } = require("../src/settings-actions");
+const { initMobilePreviewServer } = require("../src/network/mobile-preview-server");
+const { createMobileDeviceStore, atomicWrite } = require("../src/network/mobile-device-store");
 
 class FakeIpcMain {
   constructor() {
@@ -226,6 +228,8 @@ function createHarness(overrides = {}) {
     getActiveTheme: () => activeTheme,
     getLang: overrides.getLang || (() => "en"),
     getSizeContext: overrides.getSizeContext,
+    getHardwareAccelerationDisabledAtStartup: overrides.getHardwareAccelerationDisabledAtStartup,
+    getPetAlwaysOnTopAtStartup: overrides.getPetAlwaysOnTopAtStartup,
     roamFenceSettings,
     roamFencePicker,
     settingsSizePreviewSession,
@@ -755,41 +759,40 @@ test("settings IPC opens the tutorial from Settings", async () => {
   runtime.dispose();
 });
 
+test("settings IPC reports the GPU mode this process launched with (#1183)", async () => {
+  const off = createHarness();
+  assert.deepStrictEqual(
+    await off.ipcMain.invoke("settings:get-startup-render-state"),
+    { hardwareAccelerationDisabled: false, petAlwaysOnTop: true },
+  );
+  off.runtime.dispose();
+
+  const on = createHarness({ getHardwareAccelerationDisabledAtStartup: () => true });
+  assert.deepStrictEqual(
+    await on.ipcMain.invoke("settings:get-startup-render-state"),
+    { hardwareAccelerationDisabled: true, petAlwaysOnTop: true },
+  );
+  on.runtime.dispose();
+});
+
 test("mobile connection info reports starting until the LAN bridge has a port", async () => {
-  const token = "0123456789abcdef0123456789abcdef";
   const { ipcMain, runtime } = createHarness({
-    getLanWsServer: () => ({
-      getPort: () => null,
-      getToken: () => token,
-    }),
+    getLanWsServer: () => ({ getConnectionInfo: () => ({ status: "starting", port: null, lanIp: "192.0.2.1" }) }),
   });
-
-  const result = await ipcMain.invoke("settings:mobile-connection-info");
-
-  assert.deepStrictEqual(result, {
-    status: "starting",
-    message: "LAN bridge is starting",
+  assert.deepStrictEqual(await ipcMain.invoke("settings:mobile-connection-info"), {
+    status: "starting", message: "LAN bridge is starting",
   });
   runtime.dispose();
 });
 
-test("mobile connection info returns a ready pair URL only when port and token are available", async () => {
-  const token = "0123456789abcdef0123456789abcdef";
+test("mobile connection info returns pairing fields without token", async () => {
+  const info = { status: "ok", port: 23334, lanIp: "192.0.2.1",
+    pairUrl: "http://192.0.2.1:23334/mobile/?pair=ABCD1234", pairCode: "ABCD1234", pairExpiresAt: 123456,
+    pairQrSvg: "<svg xmlns=\"http://www.w3.org/2000/svg\"></svg>" };
   const { ipcMain, runtime } = createHarness({
-    getLanWsServer: () => ({
-      getPort: () => 23334,
-      getToken: () => token,
-    }),
+    getLanWsServer: () => ({ getConnectionInfo: () => ({ ...info, token: "must-not-leak" }) }),
   });
-
-  const result = await ipcMain.invoke("settings:mobile-connection-info");
-
-  assert.strictEqual(result.status, "ok");
-  assert.strictEqual(result.port, 23334);
-  assert.strictEqual(result.token, token);
-  assert.ok(result.pairUrl.includes("port=23334"));
-  assert.ok(result.pairUrl.includes(`token=${token}`));
-  assert.ok(!result.pairUrl.includes("port=null"));
+  assert.deepStrictEqual(await ipcMain.invoke("settings:mobile-connection-info"), info);
   runtime.dispose();
 });
 
@@ -916,7 +919,7 @@ test("settings:update cannot bypass the Feishu command-only boundary", async () 
   runtime.dispose();
 });
 
-test("mobile token and access IPC routes delegate only to locked controller commands", async () => {
+test("mobile pairing and access IPC routes delegate only to locked controller commands", async () => {
   const delegated = [];
   const { ipcMain, runtime } = createHarness({
     settingsController: {
@@ -929,22 +932,141 @@ test("mobile token and access IPC routes delegate only to locked controller comm
     },
   });
 
-  assert.deepStrictEqual(await ipcMain.invoke("settings:regenerate-mobile-token"), {
+  assert.deepStrictEqual(await ipcMain.invoke("settings:refresh-mobile-pair-code"), {
     status: "ok",
-    name: "mobilePreview.regenerateToken",
+    name: "mobilePreview.refreshPairCode",
   });
   assert.deepStrictEqual(await ipcMain.invoke("settings:reset-mobile-access"), {
     status: "ok",
     name: "mobilePreview.resetAccess",
   });
   assert.deepStrictEqual(delegated, [
-    ["mobilePreview.regenerateToken", {}],
+    ["mobilePreview.refreshPairCode", {}],
     ["mobilePreview.resetAccess", {}],
   ]);
-  assert.strictEqual(commandRegistry["mobilePreview.regenerateToken"].lockKey, "mobilePreview");
+  assert.strictEqual(commandRegistry["mobilePreview.refreshPairCode"].lockKey, "mobilePreview");
   assert.strictEqual(commandRegistry["mobilePreview.resetAccess"].lockKey, "mobilePreview");
   runtime.dispose();
 });
+
+test("mobile devices IPC returns display data and reports read errors", async () => {
+  const devices = [{ id: "d_0123456789abcdef", name: "iPhone · Safari", state: "pending" }];
+  const { ipcMain, runtime } = createHarness({
+    getLanWsServer: () => ({ listDevices: () => devices, isLegacyActive: () => true }),
+  });
+  assert.deepStrictEqual(await ipcMain.invoke("settings:mobile-devices"), { status: "ok", devices, legacyActive: true });
+  runtime.dispose();
+  for (const server of [null, { listDevices() { throw new Error("read failed"); } }]) {
+    const harness = createHarness({ getLanWsServer: () => server });
+    const result = await harness.ipcMain.invoke("settings:mobile-devices");
+    assert.equal(result.status, "error");
+    assert.match(result.message, server ? /read failed/ : /not available/);
+    harness.runtime.dispose();
+  }
+});
+
+for (const origin of ["pair", "legacy"]) {
+  for (const failure of ["none", "devices", "invalid-id"]) {
+    test(`device revoke IPC via real controller: ${origin}, ${failure}`, async (t) => {
+      const f = createMobileRevocationHarness(t, origin);
+      const before = f.server.listDevices();
+      f.fail(failure);
+      const id = failure === "invalid-id" ? "d_../../invalid" : f.id;
+      const result = await f.ipcMain.invoke("settings:revoke-mobile-device", id);
+      assert.equal(result.status, failure === "none" ? "ok" : "error");
+      if (failure === "none") {
+        assert.equal(result.mayHoldLegacy, origin === "legacy");
+        assert.deepEqual(f.server.listDevices(), []);
+      } else {
+        assert.deepEqual(f.server.listDevices(), before);
+        assert.match(result.message, failure === "invalid-id" ? /Invalid mobile device ID/ : /Failed to revoke/);
+      }
+      f.assertNoPreferenceChanges();
+    });
+  }
+}
+
+for (const failure of ["none", "token", "devices"]) {
+  test(`legacy revoke IPC via real controller: ${failure}`, async (t) => {
+    const f = createMobileRevocationHarness(t);
+    const before = f.server.listDevices();
+    f.fail(failure);
+    const result = await f.ipcMain.invoke("settings:revoke-mobile-legacy");
+    assert.deepStrictEqual(result, failure === "none" ? { status: "ok", message: undefined } : {
+      status: "error",
+      message: failure === "token" ? "Failed to persist legacy revocation" : "Failed to persist mobile device reset",
+      partialRevoke: failure === "devices",
+    });
+    assert.equal(f.server.isLegacyActive(), failure === "token");
+    assert.deepEqual(f.server.listDevices(), before);
+    f.assertNoPreferenceChanges();
+  });
+}
+
+test("device revocation commands share the mobile lock and reject malformed IDs before calling the server", async (t) => {
+  const f = createMobileRevocationHarness(t);
+  assert.equal(commandRegistry["mobilePreview.revokeDevice"].lockKey, "mobilePreview");
+  assert.equal(commandRegistry["mobilePreview.revokeLegacy"].lockKey, "mobilePreview");
+  let calls = 0;
+  for (const id of [null, undefined, 1, {}, "d_ABCDEF0123456789", "d_0123456789abcdef\n", "d_0123456789abcde", "d_0123456789abcdef0"]) {
+    const result = commandRegistry["mobilePreview.revokeDevice"]({ id }, {
+      revokeMobileDevice() { calls++; },
+    });
+    assert.equal(result.status, "error");
+  }
+  assert.equal(calls, 0);
+  assert.equal((await f.controller.applyCommand("mobilePreview.revokeDevice", null)).status, "error");
+});
+
+function createMobileRevocationHarness(t, origin = "legacy") {
+  const dir = makeTempDir();
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const tokenPath = path.join(dir, "mobile-token.json");
+  atomicWrite(tokenPath, { token: "a".repeat(32) });
+  const store = createMobileDeviceStore({ tokenPath, now: () => 1000000, log() {} });
+  const device = store.commit((next) => store.createDevice(next, "c_" + "1".repeat(22), origin, "iPhone Safari/17"));
+  let failure = "none";
+  let saves = 0;
+  let commits = 0;
+  const server = initMobilePreviewServer({
+    tokenPath,
+    log() {},
+    writeTokenState(file, value) {
+      if (failure === "token") return false;
+      return atomicWrite(file, value);
+    },
+    writeDeviceState(file, value) {
+      if (failure === "devices") return false;
+      return atomicWrite(file, value);
+    },
+  });
+  t.after(() => server.cleanup());
+  const controller = createSettingsController({
+    prefsPath: path.join(dir, "prefs.json"),
+    loadResult: { snapshot: prefs.getDefaults(), locked: false },
+    prefs: { save() { saves++; } },
+    injectedDeps: {
+      revokeMobileDevice: server.revokeDevice,
+      revokeMobileLegacy: server.revokeLegacy,
+    },
+  });
+  const snapshot = controller.getSnapshot();
+  controller.subscribe(() => { commits++; });
+  const harness = createHarness({ settingsController: controller, getLanWsServer: () => server });
+  t.after(() => harness.runtime.dispose());
+  return {
+    ...harness,
+    controller,
+    server,
+    id: device.id,
+    fail(value) { failure = value; },
+    assertNoPreferenceChanges() {
+      assert.equal(saves, 0);
+      assert.equal(commits, 0);
+      assert.deepStrictEqual(controller.getSnapshot(), snapshot);
+    },
+  };
+}
 
 test("settings IPC delegates Codex Pet theme channels and decorates metadata", async () => {
   const codexCalls = [];
@@ -1768,4 +1890,16 @@ test("official theme uninstall reports unpacked space and labels archive-only fa
   assert.doesNotMatch(dialogs[2].detail, /\?\s*MB|frees about/i);
 
   harness.runtime.dispose();
+});
+
+
+test("#1275: startup render state reports both pet topmost launch values", async () => {
+  for (const launch of [false, true]) {
+    const h = createHarness({ getPetAlwaysOnTopAtStartup: () => launch });
+    assert.deepStrictEqual(await h.ipcMain.invoke("settings:get-startup-render-state"), {
+      hardwareAccelerationDisabled: false,
+      petAlwaysOnTop: launch,
+    });
+    h.runtime.dispose();
+  }
 });

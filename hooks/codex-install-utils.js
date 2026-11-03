@@ -20,6 +20,8 @@ const {
   commandMatchesMarker,
   extractExistingNodeBin,
   formatNodeHookCommand,
+  quotePowerShellSingleArg,
+  unescapePowerShellSingleQuoted,
 } = require("./json-utils");
 
 function resolveCodexHome(options = {}) {
@@ -86,10 +88,6 @@ function resolveStableCodexDir(options = {}) {
     return path.dirname(path.resolve(options.hooksPath.trim()));
   }
   return resolveCodexHome(options);
-}
-
-function quotePowerShellLiteral(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function quotePosixLiteral(value) {
@@ -476,8 +474,8 @@ function buildStableCodexHookCommand(launcherPath, platform = process.platform) 
     // (desiredCommandWindows / buildCodexHookCommand) and codex-hook.js reads
     // the sidecar itself. This branch remains only for recognizing/removing
     // legacy entries and for non-executing compatibility tests.
-    const runFile = quotePowerShellLiteral(launcherPath);
-    const signature = quotePowerShellLiteral(CODEX_STABLE_WINDOWS_RUN_SIGNATURE);
+    const runFile = quotePowerShellSingleArg(launcherPath);
+    const signature = quotePowerShellSingleArg(CODEX_STABLE_WINDOWS_RUN_SIGNATURE);
     // Codex already evaluates commandWindows in PowerShell. Read the mutable
     // UTF-8/Base64 data sidecar with .NET APIs, so non-ASCII user/profile
     // paths stay data and never depend on Windows PowerShell 5.1's legacy
@@ -502,7 +500,7 @@ function extractStableCodexHookLauncherPath(command, platform = process.platform
   if (platform === "win32") {
     const match = text.match(/ReadAllLines\(\s*'((?:''|[^'])+)'/i);
     if (!match) return null;
-    const manifestPath = match[1].replace(/''/g, "'");
+    const manifestPath = unescapePowerShellSingleQuoted(match[1]);
     return manifestPath.replace(/\\/g, "/").endsWith("codex-hook.js.windows.run")
       ? manifestPath
       : null;
@@ -755,10 +753,6 @@ function quotePosixEnvValue(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
 }
 
-function quotePowerShellEnvValue(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
-}
-
 function filterCommandEnvEntries(env) {
   if (!env || typeof env !== "object") return [];
   return Object.entries(env)
@@ -771,7 +765,7 @@ function withCommandEnv(command, env, platform = process.platform) {
 
   if (platform === "win32") {
     const prefix = entries
-      .map(([key, value]) => `$env:${key}=${quotePowerShellEnvValue(value)}`)
+      .map(([key, value]) => `$env:${key}=${quotePowerShellSingleArg(value)}`)
       .join("; ");
     return `${prefix}; ${command}`;
   }

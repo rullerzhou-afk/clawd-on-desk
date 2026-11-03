@@ -22,6 +22,13 @@ const {
 themeLoader.init(path.join(__dirname, "..", "src"));
 const integrationTheme = themeLoader.loadTheme("clawd");
 
+function createMobilePreviewFixture(options) {
+  const token = "ab".repeat(16);
+  fs.writeFileSync(options.tokenPath, JSON.stringify({ token }), { mode: 0o600 });
+  const mobile = initMobilePreviewServer(options);
+  return { mobile, token };
+}
+
 async function withTempTranscript(run) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-qoder-title-"));
   const transcriptPath = path.join(dir, "session.jsonl");
@@ -705,10 +712,11 @@ describe("Qoder session title tracker", () => {
       assert.strictEqual(entry.sessionTitle, "Renamed fixture title");
       assert.strictEqual(entry.displayTitle, "Pinned alias");
 
-      mobile = initMobilePreviewServer({ sessions: state.sessions, tokenPath });
+      const fixture = createMobilePreviewFixture({ sessions: state.sessions, tokenPath });
+      mobile = fixture.mobile;
       const port = await mobile.start();
       mobile.onSnapshot();
-      ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${mobile.getToken()}`);
+      ws = new WebSocket(`ws://127.0.0.1:${port}/ws?token=${fixture.token}`);
       const messagePromise = waitForMessage(ws, "snapshot");
       await waitForOpen(ws);
       const mobileSnapshot = await messagePromise;
@@ -720,5 +728,42 @@ describe("Qoder session title tracker", () => {
       if (state) state.cleanup();
       fs.rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+
+it("Qoder mobile fixture authenticates with its saved legacy credential", async () => {
+  await withTempTranscript(async (_transcript, dir) => {
+    let socketServer;
+    const fixture = createMobilePreviewFixture({
+      sessions: new Map([["qoder:test", { sessionTitle: "Qoder title", agentId: "qoder" }]]),
+      tokenPath: path.join(dir, "mobile-token.json"),
+      createHttpServer() {
+        const server = new EventEmitter();
+        server.listen = () => { server.listening = true; queueMicrotask(() => server.emit("listening")); };
+        server.close = (done) => { server.listening = false; if (done) done(); };
+        return server;
+      },
+      createWebSocketServer() {
+        socketServer = new EventEmitter();
+        socketServer.close = (done) => done && done();
+        return socketServer;
+      },
+    });
+    try {
+      await fixture.mobile.start();
+      const ws = new EventEmitter();
+      const messages = [];
+      let closeCode;
+      ws.send = (value) => messages.push(JSON.parse(value));
+      ws.close = (code) => { closeCode = code; ws.emit("close"); };
+      socketServer.emit("connection", ws, {
+        url: "/ws?token=" + fixture.token,
+        socket: { remoteAddress: "127.0.0.1" }, headers: {},
+      });
+      assert.strictEqual(closeCode, undefined);
+      assert.strictEqual(messages[0].type, "snapshot");
+      assert.strictEqual(messages[0].sessions["qoder:test"].title, "Qoder title");
+    } finally { await fixture.mobile.cleanup(); }
   });
 });

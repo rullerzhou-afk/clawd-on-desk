@@ -18,11 +18,11 @@ const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./clau
 // processAlive, or isWin directly.
 
 const TRANSCRIPT_TAIL_BYTES = 262144; // 256 KB
-// #583: claude-code registers this hook with async:true and a 5s timeout
-// (hooks/install.js), so a 2s stdin window never stalls the agent. Do NOT
-// raise the shared default in shared-process.js instead — other agent hooks
-// run ~800ms stdout safety timers that must win against a slow stdin read.
-const STDIN_READ_TIMEOUT_MS = 2000;
+// #1293: Exec form starts Node earlier; without a preceding process snapshot,
+// SessionStart can wait ~0.7s for stdin on a fast machine. 4.5s is a local
+// fallback limit; EOF ends normal reads immediately. Keep the shared 400ms
+// default unchanged because other agents have shorter stdout safety timers (#583).
+const STDIN_READ_TIMEOUT_MS = 4500;
 const ASSISTANT_OUTPUT_MAX = 2200;
 // Observed in Claude Code 2.1.150 StopFailure hook schema (tyq enum).
 // Unknown values from future versions fall back to "unknown".

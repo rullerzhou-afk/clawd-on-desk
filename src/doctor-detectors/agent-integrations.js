@@ -1673,7 +1673,7 @@ function checkFileMode(descriptor, options) {
   } else {
     detail = validateCommandList(
       descriptor,
-      findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested, flatArray: !!descriptor.flatArray }),
+      findHookCommands(settings, descriptor.marker, { nested: !!descriptor.nested, flatArray: !!descriptor.flatArray, claude: descriptor.agentId === "claude-code" }),
       options
     );
   }

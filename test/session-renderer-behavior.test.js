@@ -701,6 +701,17 @@ test("Dashboard keeps session automation failure feedback visible after rerender
   );
 });
 
+test("completed temporary chat preference changes HUD rows while Dashboard keeps the same sessions", async () => {
+  const rows = [session("active", { state: "working" }),
+    session("completed-temporary", { badge: "done", hudHiddenByPreference: true })];
+  const hud = await loadHud(rows);
+  assert.strictEqual(byClass(hud.root, "row").length, 1);
+  const dashboard = await loadDashboard(rows);
+  assert.strictEqual(byClass(dashboard.root, "card").length, 2);
+  hud.pushSnapshot(rows.map(row => ({ ...row, hudHiddenByPreference: false })));
+  assert.strictEqual(byClass(hud.root, "row").length, 2);
+});
+
 test("HUD unfocusable click explains why and offers folder only for local non-webui", async () => {
   const { root } = await loadHud([
     session("local"),

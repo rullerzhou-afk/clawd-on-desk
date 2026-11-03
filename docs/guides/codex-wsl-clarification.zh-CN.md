@@ -29,7 +29,7 @@ Windows 与 WSL 默认使用独立的 Codex home。可以在 WSL 中设置 `CODE
 
 从完整仓库手动安装、复制全部 hook 文件和网络排障步骤见 [WSL 安装指南](setup-guide.zh-CN.md#wslwindows-subsystem-for-linux)。不要从 `hooks/*.js` 中手动挑选文件。
 
-Linux Node 需要访问 Windows Clawd 的 `127.0.0.1:23333-23337` 服务；WSL2 默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored networking 要求 Windows 11 22H2 或更高版本，参见 [Microsoft 网络指南](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking)。WSL1 共享回环地址只是通用网络事实，不表示现代 Codex 支持 WSL1。网络探测也不能验证所有 agent 的权限链路；安装指南另有 Claude 权限 URL 在安装时固定的限制说明。
+Linux Node 需要访问 Windows Clawd 的服务，通常在 `127.0.0.1:23333-23337`，这些端口不可用时会退回由系统分配的端口；独立的 Linux home 发现不了范围之外的端口，Pair 会报告这个限制。WSL2 默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored networking 要求 Windows 11 22H2 或更高版本，参见 [Microsoft 网络指南](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking)。WSL1 共享回环地址只是通用网络事实，不表示现代 Codex 支持 WSL1。网络探测也不能验证所有 agent 的权限链路；安装指南另有 Claude 权限 URL 在安装时固定的限制说明。
 
 ## 会话发现与验证边界
 

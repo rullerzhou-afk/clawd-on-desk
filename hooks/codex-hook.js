@@ -41,7 +41,10 @@ const { readCodexThreadName } = require("./codex-session-index");
 const {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
   isCodexAmbientSuggestionPrompt,
+  isCodexTitleRefreshPrompt,
+  CODEX_INTERNAL_THREAD_TITLE_REFRESH,
   isCodexClientEphemeralPayload,
+  codexClientEphemeralClaim,
   isCodexMemoryWorkerPayload,
 } = require("./codex-internal-worker");
 const {
@@ -50,6 +53,7 @@ const {
   isCodexDesktopOriginator,
 } = require("./codex-originator");
 const { fitStateBodyToByteBudget } = require("./state-payload-size");
+const { planProgressFromToolInput } = require("./codex-plan-progress");
 
 const WINDOWS_STABLE_RUN_SIGNATURE = "clawd-codex-stable-windows-run-v1";
 
@@ -506,6 +510,8 @@ function buildPermissionBody(payload, resolve, options = {}) {
   };
 
   if (description) body.tool_input_description = description;
+  const ephemeral = codexClientEphemeralClaim(payload, { env: options.env });
+  if (typeof ephemeral === "boolean") body.codex_client_ephemeral = ephemeral;
   if (typeof payload.cwd === "string" && payload.cwd) body.cwd = payload.cwd;
   if (typeof payload.turn_id === "string" && payload.turn_id) body.turn_id = payload.turn_id;
   if (typeof payload.permission_mode === "string" && payload.permission_mode) {
@@ -566,6 +572,8 @@ function buildStateBody(payload, resolve, options = {}) {
     hook_source: "codex-official",
   };
   if (options.codexInternalThread) body.codex_internal_thread = options.codexInternalThread;
+  const ephemeral = codexClientEphemeralClaim(payload, { env: options.env });
+  if (typeof ephemeral === "boolean") body.codex_client_ephemeral = ephemeral;
 
   const cwd = typeof payload.cwd === "string" ? payload.cwd : "";
   if (cwd) body.cwd = cwd;
@@ -601,6 +609,13 @@ function buildStateBody(payload, resolve, options = {}) {
   const toolInput = payload.tool_input && typeof payload.tool_input === "object" ? payload.tool_input : null;
   const toolInputFingerprint = buildToolInputFingerprint(toolInput);
   if (toolName) body.tool_name = toolName;
+  // Code Mode does not record nested function calls in JSONL. The completed
+  // native hook still carries their structured inputs, after any PreToolUse
+  // rewrite; no JavaScript parsing or extra transcript storage is needed.
+  if (event === "PostToolUse" && body.turn_id) {
+    const progress = planProgressFromToolInput(toolName, toolInput);
+    if (progress !== undefined) body.plan_progress = progress;
+  }
   if (toolUseId) body.tool_use_id = toolUseId;
   if (toolInputFingerprint) body.tool_input_fingerprint = toolInputFingerprint;
 
@@ -814,11 +829,11 @@ async function runCodexHook(payload, options = {}) {
   }
 
   // Codex Desktop runs ephemeral threads under its app-server: the hidden
-  // ambient-suggestion / safety-review workers and the user-visible side chat.
-  // They share every field, so treat only two fixed prompts as hidden work:
+  // ambient-suggestion / safety-review / title-refresh workers and visible side chats.
+  // They share every field, so only audited built-in prompts identify hidden work:
   //   - SessionStart is not shown (a thread should appear only once it acts),
   //     but still runs process resolution to prewarm the pid cache — see below.
-  //   - an ambient-suggestion UserPromptSubmit is tagged and posted; the server
+  //   - a recognized internal UserPromptSubmit is tagged and posted; the server
   //     then suppresses the whole sid.
   //   - every other state event (tools, PreCompact, Stop, SessionEnd) posts as
   //     usual, so the side chat still shows.
@@ -827,11 +842,14 @@ async function runCodexHook(payload, options = {}) {
   const clientEphemeral = isCodexClientEphemeralPayload(payload, { env });
   const isClientEphemeralSessionStart = !!(clientEphemeral
     && payload.hook_event_name === "SessionStart");
-  const codexInternalThread = clientEphemeral
-    && payload.hook_event_name === "UserPromptSubmit"
-    && isCodexAmbientSuggestionPrompt(payload.prompt)
-    ? CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS
-    : null;
+  let codexInternalThread = null;
+  if (clientEphemeral && payload.hook_event_name === "UserPromptSubmit") {
+    if (isCodexAmbientSuggestionPrompt(payload.prompt)) {
+      codexInternalThread = CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS;
+    } else if (isCodexTitleRefreshPrompt(payload.prompt)) {
+      codexInternalThread = CODEX_INTERNAL_THREAD_TITLE_REFRESH;
+    }
+  }
 
   const postState = options.postState || postStateToRunningServer;
   const buildStateAttempt = (preferredPort = null, processChainAttempt = observeAttempt()) => {

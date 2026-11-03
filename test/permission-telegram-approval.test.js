@@ -160,6 +160,7 @@ describe("permission telegram remote approval", () => {
     assert.deepEqual(resolved[0].meta, {
       reason: "resolved",
       hasPendingForSession: false,
+      behavior: "allow",
     });
     const body = JSON.parse(entry.res.captured.body);
     assert.deepEqual(body.hookSpecificOutput.decision, { behavior: "allow" });

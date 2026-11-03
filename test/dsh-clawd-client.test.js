@@ -83,11 +83,11 @@ test("DSH permission parser recognizes only allow/deny and treats 204 as next()"
   assert.deepStrictEqual(parsePermissionResult({ ok: false, aborted: true }), { kind: "cancelled" });
 });
 
-test("DSH discovery contract is loopback-only and fixed to the Clawd port range", async () => {
+test("DSH discovery scans only legacy ports and accepts explicit dynamic ports", async () => {
   const { __test } = await client();
   assert.deepStrictEqual([...__test.ports], [23333, 23334, 23335, 23336, 23337]);
   assert.strictEqual(__test.validPort(23333), true);
-  assert.strictEqual(__test.validPort(8080), false);
+  assert.strictEqual(__test.validPort(8080), true);
   assert.match(__test.runtimePath.replace(/\\/g, "/"), /\/\.clawd\/runtime\.json$/);
 });
 

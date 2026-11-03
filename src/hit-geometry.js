@@ -68,11 +68,16 @@ function usesObjectChannel(theme, state, file, options = {}) {
   const eyeStates = theme.eyeTracking && theme.eyeTracking.enabled
     ? (theme.eyeTracking.states || [])
     : [];
+  // Match theme-context's renderer alias so legacy object/image layouts use
+  // the same geometry while executing reuses the working visual.
+  const executingTracksWorking = state === "executing" && eyeStates.includes("working")
+    && !(theme.states && Array.isArray(theme.states.executing) && theme.states.executing.length);
   const trustedFiles = theme._builtin && theme.trustedRuntime && Array.isArray(theme.trustedRuntime.scriptedSvgFiles)
     ? theme.trustedRuntime.scriptedSvgFiles
     : [];
   const basename = basenameOnly(file);
   return eyeStates.includes(state)
+    || executingTracksWorking
     || objectChannelFiles.includes(basename)
     || trustedFiles.includes(basename)
     || selectedAccessoryNeedsFollow(theme, state, basename, options.accessoryPayloads);

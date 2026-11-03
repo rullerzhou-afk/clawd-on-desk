@@ -12,6 +12,7 @@
     "showTray",
     "showDock",
     "openAtLogin",
+    "disableHardwareAcceleration",
   ]);
 
   let state = null;
@@ -19,6 +20,10 @@
   let helpers = null;
   let ops = null;
   let i18n = null;
+  // #1183: what this process launched with (null until main answers).
+  let hardwareAccelerationDisabledAtStartup = null;
+  let startupRenderStateRequested = false;
+  let mountedHardwareAccelerationRestartPending = false;
 
   const LANGUAGE_OPTIONS = ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"];
 
@@ -47,6 +52,42 @@
     return definitions.map((definition) => helpers.buildSwitchRow(definition));
   }
 
+
+  function requestStartupRenderState() {
+    if (startupRenderStateRequested) return;
+    if (!window.settingsAPI || typeof window.settingsAPI.getStartupRenderState !== "function") return;
+    startupRenderStateRequested = true;
+    window.settingsAPI.getStartupRenderState()
+      .then((result) => {
+        hardwareAccelerationDisabledAtStartup = !!(result && result.hardwareAccelerationDisabled === true);
+        if (state.activeTab === "general") ops.requestRender({ content: true });
+      })
+      .catch(() => {});
+  }
+
+  function isHardwareAccelerationRestartPending() {
+    const saved = !!(state.snapshot && state.snapshot.disableHardwareAcceleration);
+    return hardwareAccelerationDisabledAtStartup !== null
+      && saved !== hardwareAccelerationDisabledAtStartup;
+  }
+
+  function buildHardwareAccelerationRow() {
+    requestStartupRenderState();
+    const restartPending = isHardwareAccelerationRestartPending();
+    mountedHardwareAccelerationRestartPending = restartPending;
+    return helpers.buildSwitchRow({
+      key: "disableHardwareAcceleration",
+      labelKey: "rowDisableHardwareAcceleration",
+      descKey: "rowDisableHardwareAccelerationDesc",
+      descExtraKey: restartPending ? "rowDisableHardwareAccelerationRestartPending" : null,
+      actionButton: restartPending
+        ? {
+          labelKey: "doctorRestartButton",
+          invoke: () => window.settingsAPI.command("restartClawd", { confirmed: true }),
+        }
+        : null,
+    });
+  }
 
   function buildTutorialReplayHint() {
     const wrap = document.createElement("p");
@@ -475,6 +516,9 @@
         labelKey: "rowKeepAwakeWhileWorking",
         descKey: "rowKeepAwakeWhileWorkingDesc",
       }),
+      // #1183: Windows-only, like the switch it backs (main.js reads it at
+      // startup only on win32).
+      ...(i18n && i18n.IS_WIN ? [buildHardwareAccelerationRow()] : []),
     ]));
   }
 
@@ -485,6 +529,12 @@
     if (keys.includes("textScale") || keys.includes("textScaleByDisplay")) {
       const tc = state.mountedControls.textScale;
       if (!tc || !document.body.contains(tc.row)) return false;
+    }
+    // The restart button and note live inside the row; adding or removing
+    // them needs a re-render.
+    if (keys.includes("disableHardwareAcceleration")
+      && isHardwareAccelerationRestartPending() !== mountedHardwareAccelerationRestartPending) {
+      return false;
     }
     if (keys.some((key) => key === "showTray" || key === "showDock")
       && (!i18n || !i18n.IS_MAC

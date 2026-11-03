@@ -200,6 +200,7 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   clearUpdateError: () => ipcRenderer.invoke("settings:clear-update-error"),
   copyUpdateError: (copyText) => ipcRenderer.invoke("settings:copy-update-error", copyText),
   showTutorial: () => ipcRenderer.invoke("settings:show-tutorial"),
+  getStartupRenderState: () => ipcRenderer.invoke("settings:get-startup-render-state"),
   openExternal: (url) => ipcRenderer.invoke("settings:open-external", url),
   listThemes: () => ipcRenderer.invoke("settings:list-themes"),
   listOfficialThemes: () => ipcRenderer.invoke("settings:list-official-themes"),
@@ -222,7 +223,10 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   confirmRemoveTheme: (themeId) =>
     ipcRenderer.invoke("settings:confirm-remove-theme", themeId),
   getMobileConnectionInfo: () => ipcRenderer.invoke("settings:mobile-connection-info"),
-  regenerateMobileToken: () => ipcRenderer.invoke("settings:regenerate-mobile-token"),
+  getMobileDevices: () => ipcRenderer.invoke("settings:mobile-devices"),
+  revokeMobileDevice: (id) => ipcRenderer.invoke("settings:revoke-mobile-device", id),
+  revokeMobileLegacy: () => ipcRenderer.invoke("settings:revoke-mobile-legacy"),
+  refreshMobilePairCode: () => ipcRenderer.invoke("settings:refresh-mobile-pair-code"),
   resetMobileAccess: () => ipcRenderer.invoke("settings:reset-mobile-access"),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);

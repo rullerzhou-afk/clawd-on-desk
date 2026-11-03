@@ -976,6 +976,10 @@ function createSettingsAnimationOverridesMain(options = {}) {
       thinking.sectionId = "work";
       workCards.push(thinking);
     }
+    if (hasOwnStateFiles("executing")) {
+      const executing = buildStateCard("executing", "executing", themeOverrideMap, { sectionId: "work" });
+      if (executing) workCards.push(executing);
+    }
     workCards.push(...buildTierCardGroup(
       "workingTiers",
       "working",

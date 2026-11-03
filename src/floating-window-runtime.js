@@ -77,9 +77,11 @@ function createFloatingWindowRuntime(options = {}) {
     suspendUpdateBubbleForPet();
   }
 
-  function setFullscreenSuppressedForPet(suppressed) {
+  function setFullscreenSuppressedForPet(suppressed, { includePermissionSurfaces = true } = {}) {
     const target = suppressed === true;
-    setPermissionSurfacesFullscreenSuppressed(target);
+    // #1275: lowering the Mac pet must not hide approvals in a fullscreen
+    // terminal. Always clear suppression on exit, even if the pref changed.
+    if (!target || includePermissionSurfaces) setPermissionSurfacesFullscreenSuppressed(target);
     if (target) suspendUpdateBubbleForFullscreen();
     else resumeUpdateBubbleFromFullscreen();
   }

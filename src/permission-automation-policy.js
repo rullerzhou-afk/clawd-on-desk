@@ -247,6 +247,23 @@ function classifyPermissionInteraction({
       && trustedAgentId === "hermes"
     );
   if (isQuestion) {
+    // ZCode 3.16.3 carries a real human-question protocol over this same
+    // transport: the AskUserQuestion input schema has an optional `answers`
+    // record ("User answers collected by the permission component") and an
+    // allow decision with updatedInput is applied as a modify, so Clawd can
+    // submit the user's choice verbatim — the same contract the Claude Code
+    // elicitation path implements. Manual answers only: zcode's tool taxonomy
+    // is not automation-audited, so both automation modes stay off and the
+    // unattended auto-answer never fires for zcode.
+    if (
+      decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
+      && trustedAgentId === "zcode"
+    ) {
+      return makeInteraction(INTERACTION_INTENT.HUMAN_QUESTION, {
+        answerQuestions: true,
+        nativeFallback: true,
+      });
+    }
     const canAnswerQuestions = (
       decisionToolKind === DECISION_TOOL_KIND.ASK_USER_QUESTION
       && (trustedAgentId === "claude-code" || trustedAgentId === "hermes")

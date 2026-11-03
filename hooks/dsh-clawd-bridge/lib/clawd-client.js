@@ -18,7 +18,7 @@ let discoveryPromise = null
 let retryAfter = 0
 
 function validPort(value) {
-  return Number.isInteger(value) && PORTS.includes(value)
+  return Number.isInteger(value) && value >= 1 && value <= 65535
 }
 
 function finishOnce(resolve) {
@@ -115,10 +115,16 @@ function request(port, method, pathname, body, options = {}) {
   })
 }
 
+function normalizeLocalPort(value) {
+  if (typeof value !== "number" && (typeof value !== "string" || !/^[1-9][0-9]{0,4}$/.test(value))) return null;
+  const port = Number(value);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
 async function runtimePort() {
   try {
     const parsed = JSON.parse(await fs.readFile(RUNTIME_PATH, 'utf8'))
-    return parsed?.app === SERVER_ID && validPort(parsed.port) ? parsed.port : null
+    return parsed?.app === SERVER_ID ? normalizeLocalPort(parsed.port) : null
   } catch {
     return null
   }

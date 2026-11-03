@@ -500,7 +500,8 @@ h1 {
 .path,
 .model-row,
 .event-row,
-.context-usage-row {
+.context-usage-row,
+.plan-progress-row {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -708,6 +709,13 @@ h1 {
 .context-usage-row {
   color: var(--muted);
   font-variant-numeric: tabular-nums;
+}
+
+.plan-progress-row {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: normal;
+  overflow-wrap: anywhere;
 }
 
 .badge {

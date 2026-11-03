@@ -163,22 +163,32 @@ function _scanThemesDir(dir, builtin, themes, seen) {
  * Unknown variant ids always fall back to "default" (even in strict mode) —
  * a missing variant is a UX concern, not a theme-breaking condition.
  *
+ * Reads once by default. The retry budget applies per theme read, so an
+ * unreadable requested theme and fallback "clawd" can each use the budget.
+ *
  * @param {string} themeId
- * @param {{ strict?: boolean, variant?: string, overrides?: object|null }} [opts]
+ * @param {{ strict?: boolean, variant?: string, overrides?: object|null, readAttempts?: number, retryDelaysMs?: number[] }} [opts]
  * @returns {object} merged theme config
  */
 function loadTheme(themeId, opts = {}) {
+  // The retry budget carries over to either fallback read; variant/overrides
+  // are keyed per theme and must not leak onto "clawd".
+  const retryOpts = { readAttempts: opts.readAttempts, retryDelaysMs: opts.retryDelaysMs };
   const strict = !!opts.strict;
   const requestedVariant = typeof opts.variant === "string" && opts.variant ? opts.variant : "default";
   const userOverrides = _isPlainObject(opts.overrides) ? opts.overrides : null;
-  const { raw, isBuiltin, themeDir } = _readThemeJson(themeId);
+  const { raw, isBuiltin, themeDir, lastError } = _readThemeJson(themeId, retryOpts);
 
   if (!raw) {
-    const msg = `Theme "${themeId}" not found`;
+    const diag = _formatReadDiagnostic(lastError);
+    const msg = `Theme "${themeId}" not found${_isMissingFileError(lastError) ? "" : diag}`;
     if (strict) throw new Error(msg);
     console.error(`[theme-loader] ${msg}`);
-    if (themeId !== "clawd") return loadTheme("clawd");
-    throw new Error("Default theme 'clawd' not found");
+    if (themeId !== "clawd") {
+      return loadTheme("clawd", retryOpts);
+    }
+    // A missing default is fatal: retain diagnostics even for ENOENT/ENOTDIR.
+    throw new Error(`Default theme 'clawd' not found${diag}`);
   }
 
   const errors = validateTheme(raw);
@@ -186,7 +196,7 @@ function loadTheme(themeId, opts = {}) {
     const msg = `Theme "${themeId}" validation errors: ${errors.join("; ")}`;
     if (strict) throw new Error(msg);
     console.error(`[theme-loader] ${msg}`);
-    if (themeId !== "clawd") return loadTheme("clawd");
+    if (themeId !== "clawd") return loadTheme("clawd", retryOpts);
   }
 
   // Resolve variant + apply patch BEFORE mergeDefaults so that geometry
@@ -276,28 +286,105 @@ function _resolveSoundOverrideFiles(themeId, userOverrides) {
 }
 
 /**
- * Read theme.json from built-in or user themes directory.
+ * Sync sleep that never throws. Atomics.wait parks the main thread without
+ * spinning; the busy-wait fallback covers hosts without SharedArrayBuffer.
+ * Only reached from the startup retry path (see _readThemeJson).
  */
-function _readThemeJson(themeId) {
+function _sleepSync(ms) {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* busy-wait */ }
+  }
+}
+
+/**
+ * Human-readable suffix for a "not found" error. Node fs error messages
+ * already embed the failing path; parse errors get the path spelled out.
+ */
+function _formatReadDiagnostic(lastError) {
+  if (!lastError) return "";
+  if (lastError.stage === "parse") {
+    return ` (last read error: theme.json failed to parse at ${lastError.path}: ${lastError.message})`;
+  }
+  return ` (last read error: ${lastError.message})`;
+}
+
+function _isMissingFileError(error) {
+  return !!error && (error.code === "ENOENT" || error.code === "ENOTDIR");
+}
+
+// A real failure outranks "not in this root". Between equals the built-in
+// probe ran first and stays, so a missing default theme names the built-in path.
+function _preferReadError(current, next) {
+  if (!current) return next;
+  return _isMissingFileError(current) && !_isMissingFileError(next) ? next : current;
+}
+
+/**
+ * Read theme.json from built-in or user themes directory.
+ *
+ * Pass `readAttempts` (>1) plus `retryDelaysMs` to re-probe when the read
+ * comes back empty. Only the startup loader in main.js opts in: the theme
+ * file can be briefly unreadable on the first launch after an update
+ * (#1295, exact trigger unconfirmed). The most useful fs/parse error from
+ * the last attempt is returned as `lastError` so the fatal "not found"
+ * can carry a real OS diagnostic instead of a bare missing-file claim.
+ */
+function _readThemeJson(themeId, opts = {}) {
   // Manager-owned scratch directories (staging/backup) are dotted direct
   // children of the themes dir. They must never be readable as a theme by id,
   // even though they may contain a perfectly valid theme.json.
   if (!isScannableThemeDirName(themeId)) {
-    return { raw: null, isBuiltin: false, themeDir: null };
+    return { raw: null, isBuiltin: false, themeDir: null, lastError: null };
   }
+  const attempts = Number.isInteger(opts.readAttempts) && opts.readAttempts >= 1
+    ? opts.readAttempts
+    : 1;
+  const delays = Array.isArray(opts.retryDelaysMs) ? opts.retryDelaysMs : [];
+  let lastError = null;
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    const result = _readThemeJsonOnce(themeId);
+    if (result.raw) return result;
+    if (result.lastError) lastError = result.lastError;
+    if (attempt < attempts) _sleepSync(delays[attempt - 1]);
+  }
+  return { raw: null, isBuiltin: false, themeDir: null, lastError };
+}
+
+/**
+ * Single probe of built-in then user themes. Distinguishes a genuinely
+ * absent theme.json (silent, same as the old existsSync probe) from real fs
+ * errors (EBUSY/EPERM/... — logged) and parse failures — all surfaced via
+ * `lastError` instead of collapsing into "not found".
+ */
+function _readThemeJsonOnce(themeId) {
+  let lastError = null;
   // Built-in first
   if (builtinThemesDir) {
     const builtinPath = path.resolve(builtinThemesDir, themeId, "theme.json");
     if (!_isPathInsideDir(builtinThemesDir, builtinPath)) {
       console.error(`[theme-loader] Path traversal detected for built-in theme "${themeId}"`);
-      return { raw: null, isBuiltin: false, themeDir: null };
+      return { raw: null, isBuiltin: false, themeDir: null, lastError: null };
     }
-    if (fs.existsSync(builtinPath)) {
+    let rawText;
+    try {
+      rawText = fs.readFileSync(builtinPath, "utf8");
+    } catch (e) {
+      if (!_isMissingFileError(e)) {
+        console.error(`[theme-loader] Failed to read built-in theme "${themeId}":`, e.message);
+      }
+      lastError = { stage: "read", code: e.code || null, message: e.message, path: builtinPath };
+    }
+    if (rawText !== undefined) {
       try {
-        const raw = JSON.parse(fs.readFileSync(builtinPath, "utf8"));
-        return { raw, isBuiltin: true, themeDir: path.dirname(builtinPath) };
+        const raw = JSON.parse(rawText);
+        return { raw, isBuiltin: true, themeDir: path.dirname(builtinPath), lastError: null };
       } catch (e) {
         console.error(`[theme-loader] Failed to parse built-in theme "${themeId}":`, e.message);
+        lastError = { stage: "parse", code: null, message: e.message, path: builtinPath };
       }
     }
   }
@@ -305,22 +392,32 @@ function _readThemeJson(themeId) {
   // User themes
   if (userThemesDir) {
     const userPath = path.resolve(userThemesDir, themeId, "theme.json");
-    if (fs.existsSync(userPath)) {
-      // Path traversal check: resolved path must be within userThemesDir
-      if (!_isPathInsideDir(userThemesDir, userPath)) {
-        console.error(`[theme-loader] Path traversal detected for theme "${themeId}"`);
-        return { raw: null, isBuiltin: false, themeDir: null };
+    // Path traversal check: resolved path must be within userThemesDir
+    if (!_isPathInsideDir(userThemesDir, userPath)) {
+      console.error(`[theme-loader] Path traversal detected for theme "${themeId}"`);
+      return { raw: null, isBuiltin: false, themeDir: null, lastError: null };
+    }
+    let rawText;
+    try {
+      rawText = fs.readFileSync(userPath, "utf8");
+    } catch (e) {
+      if (!_isMissingFileError(e)) {
+        console.error(`[theme-loader] Failed to read user theme "${themeId}":`, e.message);
       }
+      lastError = _preferReadError(lastError, { stage: "read", code: e.code || null, message: e.message, path: userPath });
+    }
+    if (rawText !== undefined) {
       try {
-        const raw = JSON.parse(fs.readFileSync(userPath, "utf8"));
-        return { raw, isBuiltin: false, themeDir: path.dirname(userPath) };
+        const raw = JSON.parse(rawText);
+        return { raw, isBuiltin: false, themeDir: path.dirname(userPath), lastError: null };
       } catch (e) {
         console.error(`[theme-loader] Failed to parse user theme "${themeId}":`, e.message);
+        lastError = _preferReadError(lastError, { stage: "parse", code: null, message: e.message, path: userPath });
       }
     }
   }
 
-  return { raw: null, isBuiltin: false, themeDir: null };
+  return { raw: null, isBuiltin: false, themeDir: null, lastError };
 }
 
 /**

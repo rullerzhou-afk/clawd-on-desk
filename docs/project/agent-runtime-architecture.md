@@ -2,6 +2,38 @@
 
 This document holds the deeper runtime and integration notes that were previously in the root `AGENTS.md`.
 
+## Local HTTP port lifecycle
+
+The local listener uses runtime → legacy 23333–23337 → saved dynamic hint →
+`listen(0, "127.0.0.1")`, retrying EADDRINUSE and EACCES with a bounded candidate
+list. `server.address().port` is authoritative. An out-of-range listener must
+publish runtime successfully before becoming active or scheduling integration
+sync; a publication failure closes it. A legacy listener retains the existing
+runtime-write warning because legacy discovery can still find it. Doctor keeps
+bounded bind diagnostics and distinguishes runtime publication failures.
+
+`src/local-server-port-hint.js` preserves only the last published dynamic port
+across normal exit. It is not a live identity and clients/installers never read
+it. Only main.js injects its IO into server.js; test servers default to no hint
+IO. The server getter supplies a dynamic port only while its own listener is
+active. Standalone HTTP-hook installers require a live runtime owner before
+using an out-of-range port. CodeBuddy sync passes the live listener explicitly.
+
+Native clients accept canonical 1–65535 runtime ports, with `app` validation;
+legacy scanning remains five ports. Cached plugin delivery rereads runtime in
+the same request after a cache miss. OpenCode's owner-only/live-owner permission
+and question targets stay strict, and Hermes secure mode stays pinned to its
+remote identity. Remote SSH identities and profiles still use the five-port
+allowlist, independently of local listener ports.
+
+Dynamic Claude/CodeBuddy HTTP hooks use the exact local ownership path
+`/permission/clawd-on-desk`. Install/uninstall classifiers match the raw URL;
+plain third-party dynamic `/permission` URLs remain foreign. The new local route
+shares the existing browser transport guard and permission handler. Remote
+ingress rejects it even with a valid nonce. This marker does not authenticate
+local callers. See known limitations for CLI snapshots, WSL separate homes,
+manual tunnels, mixed versions and the independent Mobile Preview listener.
+
 Claude's live tool/model phase additionally uses `PostToolBatch` on the conservative
 2.1.280+ baseline. The hook sends only bounded tool IDs and `prompt_id`, omitting
 inputs, responses and process probes. `src/claude-tool-phase.js` keeps a bounded
@@ -53,6 +85,12 @@ alone no longer makes the whole turn unconfirmable; thinking still requires a
 correlated batch and the existing gates.
 
 ## Data Flow
+
+本机 Windows 在 Claude Code ≥ 2.1.160、Node 为绝对 `.exe` 路径，且 `GROK_HOME` 与 `~/.grok` 均不存在时，状态与 auto-start hook 使用 `command + args` exec form 直启 Node，省去每事件的 PowerShell 启动。Grok 1.0.30 读取这份配置时丢掉 args，因此发现 Grok 目录就保留或写回 #147 的 PowerShell 写法；版本未知时沿用已有 exec，否则保留旧写法，已知旧版本回退 PowerShell。
+
+门槛看可探测的 CLI 版本；Windows 已实测桌面端自带的 2.1.160、VS Code 自带的 2.1.276 / 2.1.296，以及 2.1.289，exec form 均送达全部触发事件（文档中 args 从 2.1.139 起支持）。Cursor 3.19 导入 Claude hook 时只取 command、丢掉 args，失败不拦操作；Cursor 事件走 Clawd 自己的 Cursor hook，`cursor-agent` 默认未启用。
+
+macOS/Linux、Remote SSH、WSL 保持原写法。exec form 归属只认 `args[0]` 的精确脚本文件名，同步/卸载、watcher 与 Doctor 共用读取规则。Claude stdin 的本地兜底上限为 4.5 秒，正常读取在 EOF 立即结束；其他 agent 的共享默认等待不变。async hook 进入后台后不受 timeout 限制，SessionStart 的 stdin 计时从同步进程快照之后开始；缓存未命中时，Windows 进程快照仍可能启动隐藏的 PowerShell。没有终端祖先的宿主（如桌面端）中，PowerShell 写法的 `source_pid` 是已退出的 wrapper，PID 缓存每个事件都失效、需重新快照；exec form 的 `source_pid` 稳定、缓存可命中，实测送达约 890 ms → 85 ms。
 
 ```text
 Claude Code 状态同步（command hook，非阻塞）：
@@ -109,16 +147,27 @@ resolveDisplayState 恢复真实显示。手动拖拽、设置预览、DND 与 M
 Codex 桌面端 app-server 下的临时线程（无 transcript 且 hook 环境有非空
 `CODEX_INTERNAL_ORIGINATOR_OVERRIDE`）既包含隐藏的「智能建议」后台线程，也包含
 用户自己的侧边聊天，两者 hook 字段完全相同；终端里直接跑的 `codex exec --ephemeral`
-没有该变量，不受影响。`hooks/codex-internal-worker.js` 保留前提判定
+通常没有该变量；从 Desktop 拉起的 CLI 可能继承它，所以明确的 CLI originator 或
+`source=cli/exec/mcp` 优先，不进入客户端临时线程过滤、标题标记或 SessionStart 静默预热。
+`hooks/codex-internal-worker.js` 保留前提判定
 `isCodexClientEphemeralPayload`，并只按两个固定提示词开头认智能建议
-（`isCodexAmbientSuggestionPrompt`）：这类线程的 `SessionStart` 不显示，
-`UserPromptSubmit` 在 body 上加 `codex_internal_thread:"ambient_suggestions"` 标记照常 POST
+（`isCodexAmbientSuggestionPrompt`）。此外，`isCodexTitleRefreshPrompt` 精确匹配
+Desktop 26.1016 的自适应标题刷新三行模板（旧标题须为 `JSON.stringify` 编码的字符串，
+固定 24 字符目标及完整后缀），标记为 `codex_internal_thread:"title_refresh"`。
+该版本的预测 fork 未携带调用方的 `features.hooks:false`，因此标题刷新也可能发用户 hook。
+只凭没有 rollout、没有工具、目录名或共享 PID 均不得隐藏会话；其他预测线程可能使用
+原始用户文本，没有可安全识别的固定模板，本规则刻意不覆盖。完整模板改写后照常显示，
+不模糊匹配；用户侧边聊天若原样提交整个已识别模板，仍有与现有智能建议识别相同的误判边界。
+这类线程的 `SessionStart` 不显示，
+智能建议的 `UserPromptSubmit` 在 body 上加 `codex_internal_thread:"ambient_suggestions"` 标记照常 POST
 （不发提示词原文），其他状态事件照常 POST，所以侧边聊天正常显示。所有客户端临时线程的
 `SessionStart` 都不显示，但仍用 `lifecycle:"start"` 做一次常规进程解析预热 Windows pid
 缓存（不 POST、不读自动启动开关、不冷启动）：Windows 默认 legacy 模式下首次
 `UserPromptSubmit` 是 cache-only，不预热就拿不到 PID、第一轮没法跳转。服务端
 `src/agent-runtime-main.js` 用有界集合（200）记住被标记的本地 Codex sid，之后该 sid 的
-官方事件一律不建行、不播完成，已有行则按归档方式撤掉，直到它的 SessionEnd 把 sid 移出；
+官方事件一律不建行、不播完成，已有行则按归档方式撤掉。SessionEnd 仅将该 sid 标成已结束，
+仍占用同一 200 项 FIFO，迟到的官方事件继续丢弃；后续 SessionStart 或不带内部标记的
+UserPromptSubmit 才释放该 sid，带标记的提问则重新记为活跃；
 标记由 `src/server-route-state.js` 校验（仅本地 official codex）后经 `codexInternalThread`
 传入。若上游改写提示词文字，识别失效只会退化成「短暂出现、被 SessionEnd 收掉」，不会藏起
 用户对话。official `SessionEnd`（`CODEX_HOOK_EVENTS`，timeout 固定 3 秒）在线程拆除时发
@@ -131,6 +180,55 @@ SessionEnd 分支删行、取消 exit probe、结束 automation lifecycle，但�
 不建会话，quota / context 照常摄入；解除墓碑只看 fences 接受的新回合开始或该 sid 的官方
 SessionStart / UserPromptSubmit，被 fence 拒掉的旧回合开始不解除；SessionEnd 不清 turn fence。
 新增该 hook 需要用户在 Codex `/hooks` 里重新批准后才生效。
+
+本机 Codex 临时线程的导航：official hook 将已有的客户端临时线程判定作为可选布尔
+`codex_client_ephemeral` 上报（非空客户端 originator 环境、无 transcript；显式 CLI 身份除外），
+state / permission 路由仅接受本机 official Codex，映射为 `codexClientEphemeral`。
+该字段本身不授予隐藏，也不改变状态或会话分组；HUD/宠物的可选收起规则见下文。省略保留已知事实；没有正向
+持久化证据的 false 不清除 true，同线程的有效 official rollout 路径可确认已持久化。
+snapshot 签名包含它；旧审批/通知 fallback 不能覆盖 live 会话的事实或进程/面板目标。
+已确认临时线程不生成 `codex://threads` 恢复 URL；新 `codex-app` 路径仅 Windows/macOS，
+只激活经 OS 映像、真实父链和启动时间核验的现有 Codex GUI，不运行 resume / CLI / CMD、
+不按目录/标题/历史窗口缓存猜测。Windows 支持已验证的版本化 app-server → MSIX Codex GUI
+布局。macOS 从 GUI 直接父进程的外层 `.app/Contents/MacOS/<executable>` 解析应用包，
+app-server 的 `codex` 映像须位于同一外层包的 `Contents/Resources/` 内；支持内嵌
+`codex-cli/CodexCLI.app/Contents/MacOS/codex`，不硬编码外层应用名。
+GUI 必须是该外层包的直接主可执行路径，嵌套 helper 不能冒充 GUI；包外 CLI、
+非直接父链或无法验证的布局及 Linux 新路径不可聚焦。
+macOS 无 transcript 的真实 hook 可以只带 typed 临时标记而没有 originator；保留其
+`sourcePid=GUI` / `agentPid=app-server`，聚焦时用 agentPid 核验 server 映像与 GUI 直接父链，
+并要求 sourcePid 等于该 server 或核验出的 GUI。只有旧 sourcePid 已指向 server 时可缺 agentPid；
+不为导航改写 originator，因此不扩大 Desktop 去重或自动化身份。
+macOS 激活前再次核对 server/GUI 的 PID、出生时间、映像及直接父关系；一致后仅以单个
+argv 将已验证的外层包传给 `/usr/bin/open`，经 LaunchServices 提交激活，沿用 Dock 的
+重新打开语义以恢复最小化窗口，不依赖 System Events 或 Automation 授权。
+身份改变、复核或 `open` 失败直接返回失败，不降级到 URI、CLI 或粘贴；提交激活也不宣称前台已确认。
+激活应用不证明选择了具体侧边聊天，也不允许自动粘贴；已确认临时线程拒绝 queue，
+Direct Send 保持原生手动粘贴边界。未知的旧会话和持久化会话保留既有首次 URI 聚焦。
+
+`sessionHudHideCompletedCodexEphemeral` 与 `sessionHudHideActiveCodexEphemeral` 是两个独立、
+默认关闭的显示偏好，均不识别后台来源，也不结束任务。共同门槛是本机、明确
+`codexClientEphemeral=true` 且无持久 transcript；typed 标记可用于缺省 originator 的 macOS 行，
+显式 CLI / unknown originator、CLI / exec / mcp / internal / subagent 来源、headless、remote 与 WSL
+不按这些偏好收起。不能从标题、目录、缺少 rollout 或数据库记录自行推断临时线程。
+
+- 完成偏好只收起 idle、badge=Done 且最新事件为完成的行，取消/失败行不适用。
+  同会话 pending permission / 原生问题 / 通知卡始终可见。该规则也会收起已完成的普通侧边聊天，
+  但不屏蔽完成动画；单独开启它时，后续真实工作会恢复该行。
+- 活动偏好只收起 thinking/working 行，也可能包含真正运行的普通侧边聊天。
+  pending 权限/问题、最新请求或错误/中断提示、完成确认及已识别子代理活动不按此规则收起。
+  活动偏好不依赖完成偏好：只开活动偏好时，临时会话工作期间收起，完成后重新显示；
+  两者都开时，符合各自门槛的活动行与完成行都收起。清扫及其他强提示不属于活动过滤范围。
+
+HUD 原生几何、renderer、HUD 快捷导航和 HUD 统计统一消费独立 snapshot 字段
+`hudHiddenByPreference`，不复用 `hiddenFromHud`。活动偏好还复用同一 active-only 判定，
+为宠物状态和 SVG 层级生成只读会话投影；已收起的临时活动不再驱动思考/工作动画，
+也不能仅凭该活动唤醒被动 sleep/Mini 状态。已有子代理/待输入呈现投影须先应用再过滤，
+避免丢掉真实子代理和审批提示。完成偏好不进入宠物过滤。
+两者都不删除或改写 canonical 会话，不改变系统 keep-awake、Dashboard、Telegram、Discord、
+额度、审批决定、完成确认、小结或活动时间。开关变化经 controller/effect router 重发 snapshot，
+活动开关还在 mirror 更新后重新选择宠物呈现；pending 卡增删经合并微任务重算。
+关闭相应选项立即恢复仍存活且不被另一个选项收起的行。老 hook 没有 typed 临时标记时维持原显示。
 
 本机 Codex 会话标题：现有 JSONL monitor 每轮为已观察到生命周期的会话合并读取一次
 `session_index.jsonl`（沿用 512 KiB tail 上限）。新标题/改名以 `session_index:title`
@@ -154,6 +252,17 @@ monitor 当前标题与索引不一致时也会重发，覆盖索引恢复场景
 一次快照构建最多读一次本机索引；无本机 Codex 会话时不读。
 标题通道跳过带 host 或 WSL 标记的会话；刷新覆盖仍在活动或退休记录中的会话
 （最多 50 个活动、100 个退休 rollout）。超出后与既有行为相同，标题等下一次快照广播或生命周期事件更新。
+
+本机 Codex 的 `update_plan` 优先由 official `PostToolUse` 的结构化 `tool_input` 提取为
+`planProgress`（completed / total / percent），包括 Code Mode 内调用；hook 只传计数，不传步骤文本。
+JSONL monitor 仍兼容直接 `function_call`，不解析或执行 Code Mode 脚本。同回合收到 official 计划后，
+缓存的 JSONL 计划（包括 null）不能覆盖它；新回合清空来源标记后恢复 fallback。
+HUD 在标题行下方显示进度条，Dashboard 使用独立可换行的进度行；没有有效计划时不显示。
+进度属于具体回合：`state.js` 私有 Map 保存 turn owner，原始 turn ID 不进入 session 或共享快照；
+新回合清空旧计划，同回合晚于 Stop 到达的进度只更新元数据，不重开回合、不延长活跃时间。
+PermissionRequest 更新聚焦信息时保留已接受的计划，不从审批事件接收新计划或改变 turn owner。
+启动恢复的待回答问题可在本机会话创建后补回同回合计划；普通元数据和问题恢复两条路径均
+检查本机来源，不能将本机 JSONL 计划写进同 key 的 WSL / remote 会话。
 
 Codex 压缩开始通过 official `PreCompact` hook 触发既有 `sweeping` 动画，
 同时覆盖 `manual` / `auto` trigger。`state.js` 按 conversation ID 保留私有显示持有记录，
@@ -461,6 +570,7 @@ opencode 托管 generation 注册（#1026）：
   失败时，hash 槽仍已释放，residualPaths/warning 指向隔离目录，后续安装可重新物化。对旧版本已经留下的半残
   canonical 目录，Repair 只在 released owner 的 bounded history 精确证明该 entry 且 effective config 无活动 Clawd
   entry 时，将其原子隔离为 `.recovery-*` 后继续；active/foreign/unproven residual 仍 fail closed，不覆盖可疑 bytes。
+  Windows NSIS 默认升级时向旧卸载器传 `--updated`，跳过集成清理；真卸载和显式 `--delete-app-data` 仍会清理。
   configPath-only 调用（Windows NSIS cleanup）仍扫配置，返回
   managedFilesRemoved:false + managed-root-unknown warning。Settings Uninstall 以 registrationRemoved
   true/false|null 判定是否提交 integrationInstalled:false；残留文件只 warning。
@@ -928,8 +1038,11 @@ Remote SSH 有两条明确分开的 transport 路径：
 
 - Git 模式（非打包，主要是 macOS/Linux 源码运行）会 `git fetch` 比较 HEAD，有更新则 `git pull` + 必要时 `npm install`，然后 `app.relaunch()`
 - Windows NSIS 与 macOS DMG 打包模式走 `electron-updater`；均保持 `autoDownload=false`，用户确认后才下载
+- Linux 格式由 `src/update-install-format.js` 判断：绝对 APPIMAGE/APPDIR 且 resourcesPath 属于该挂载时，显式创建 AppImageUpdater；否则 `resources/package-type=deb` 走 APT 指南，其余格式手动下载。外来继承的 APPIMAGE 不足以证明归属。deb/未知格式在启动、托盘、About 和定时流程都不创建 electron-updater；打开指南仅保留 available/pending，不宣称安装完成。旧用户迁移与生产发布顺序见 `docs/guides/apt-maintenance.md`
 - macOS Release 同时发布 x64 / arm64 的 DMG 与 ZIP；DMG 用于首次/手动安装，Squirrel.Mac 只消费 ZIP。`latest-mac.yml` 必须同时列出两架构的 ZIP 与 DMG，且 top-level `path` 指向 x64 ZIP
 - macOS 下载完成后可选择立即重启，或稍后正常退出并重新打开；安装请求期间复用 update bubble 显示准备状态，ready/staging 错误必须作为真实错误显示，不能降级成“已是最新”
+- 打包更新的已下载版本在当前进程内独立于气泡存活期保存，实际载荷与完整性检查仍由 `electron-updater` 管理，不把安装器路径写进 prefs。Later、自动关闭、策略隐藏或气泡替换不清除 ready；托盘仍可安装，About/手动检查重新显示安装选择，不重新查版本或下载，也不重播下载完成动画。统一的气泡自动关闭偏好和 `autoInstallOnAppQuit` 保持原语义。
+- ready 提示按下载记录与呈现代次隔离，旧 Promise 不能隐藏后来的进度/错误气泡或将新状态改回 idle；只有用户明确选择安装才调用 `quitAndInstall`。下载中、ready 或安装中，后台发现及迟到结果不能覆盖当前阶段。`quitAndInstall` 同步抛错时保留同进程的下载记录，可用同一暂存包重试；`electron-updater` 报 error（包括 macOS 上 Squirrel 在 `update-downloaded` 之后暂存失败）时一律清掉记录，重试重新走检查和下载：同一版本的缓存还在时 `electron-updater` 直接复用、不重新下载，否则正常重下；之后 Squirrel 重新开始暂存。这不是跨重启安装器缓存。
 - 旧版 DMG 没有 ZIP 更新载荷，不能自举到首个支持应用内更新的桥接版；现有用户仍需手动安装桥接版一次。单元/metadata/包结构验证不等于同一 Developer ID 的 A→B 真机升级证据
 - 托盘菜单里的 “Check for Updates” 可以手动触发
 

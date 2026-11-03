@@ -182,6 +182,7 @@ function captureSessionIdentity(entry) {
     orcaPaneKey: normalizeSessionId(entry.orcaPaneKey) || null,
     codexOriginator: normalizeOriginatorIdentity(entry.codexOriginator || entry.originator),
     codexHome: normalizeStringIdentity(entry.codexHome),
+    codexClientEphemeral: typeof entry.codexClientEphemeral === "boolean" ? entry.codexClientEphemeral : null,
   };
 }
 
@@ -212,6 +213,7 @@ function mappingIdentityMatches(entry, mapping) {
     orcaPaneKey: normalizeSessionId(mapping.orcaPaneKey) || null,
     codexOriginator: normalizeOriginatorIdentity(mapping.codexOriginator),
     codexHome: normalizeStringIdentity(mapping.codexHome),
+    codexClientEphemeral: typeof mapping.codexClientEphemeral === "boolean" ? mapping.codexClientEphemeral : null,
   };
   for (const field of Object.keys(expected)) {
     if (expected[field] != null && current[field] !== expected[field]) return false;
@@ -1100,6 +1102,7 @@ function createTelegramDirectSend({
     orcaPaneKey,
     codexOriginator,
     codexHome,
+    codexClientEphemeral,
     notificationContext,
   } = {}) {
     const key = normalizeMessageId(messageId);
@@ -1166,6 +1169,8 @@ function createTelegramDirectSend({
       orcaPaneKey: normalizeSessionId(identityValue("orcaPaneKey", orcaPaneKey)) || null,
       codexOriginator: normalizeOriginatorIdentity(identityValue("codexOriginator", codexOriginator)),
       codexHome: normalizeStringIdentity(identityValue("codexHome", codexHome)),
+      codexClientEphemeral: typeof identityValue("codexClientEphemeral", codexClientEphemeral) === "boolean"
+        ? identityValue("codexClientEphemeral", codexClientEphemeral) : null,
       generation: mappingGeneration,
       sequence,
       expiresAt: now() + Math.max(1, mappingTtlMs),

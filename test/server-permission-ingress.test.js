@@ -32,7 +32,7 @@ test("local permission rejects browser requests before parsing or recording", as
 
 test("local state and permission share the native hook transport guard", async (t) => {
   const h = await setup(t);
-  for (const path of ["/state", "/permission"]) {
+  for (const path of ["/state", "/permission", "/permission/clawd-on-desk"]) {
     for (const [headers, status] of [
       [{ Origin: "https://untrusted.example" }, 403],
       [{ Host: "rebound.example" }, 403],

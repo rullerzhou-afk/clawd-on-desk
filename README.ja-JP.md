@@ -40,7 +40,7 @@
 |---|---|
 | Windows | `Clawd-on-Desk-Setup-<version>-x64.exe` または `-arm64.exe` |
 | macOS | `.dmg`、または `brew install --cask clawd-on-desk` |
-| Linux | `.AppImage` または `.deb`（x86_64 では Homebrew も可） |
+| Linux | `.AppImage`（アプリ内更新）、または `.deb` + [APT 設定・移行ガイド](docs/guides/apt-setup.md)（x86_64 では Homebrew も可） |
 
 Clawd を起動すればすぐに反応し始めます。初回起動時に Claude Code と Codex が自動で接続され、ほかのエージェントは **Settings → AI コーディングツール** からワンクリックでインストールできます。
 

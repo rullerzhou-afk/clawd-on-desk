@@ -120,6 +120,53 @@ describe("roam module", () => {
     assert.equal(roam.enabled, false);
   });
 
+  it("holds an already queued walk during an idle activity and can schedule again afterward", () => {
+    let playing = false;
+    const ctx = makeCtx({ isIdleActivityPlaying: () => playing });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    playing = true;
+    mock.timers.tick(8000);
+    assert.equal(roam.isRoamAnimating(), false);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    playing = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.equal(roam.isRoamAnimating(), false);
+    mock.timers.tick(1);
+    assert.equal(roam.isRoamAnimating(), true);
+    assert.equal(ctx._stateLog[0].state, "roam");
+    roam.setEnabled(false);
+  });
+
+  it("cancels a queued walk on an idle activity tick and restarts with the full 8s delay", () => {
+    let playing = false;
+    const ctx = makeCtx({ isIdleActivityPlaying: () => playing });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+
+    playing = true;
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.equal(roam.isRoamAnimating(), false);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    playing = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.equal(roam.isRoamAnimating(), false);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    mock.timers.tick(1);
+    assert.equal(roam.isRoamAnimating(), true);
+    assert.equal(ctx._stateLog[0].state, "roam");
+    roam.setEnabled(false);
+  });
+
   it("holds for visible permission bubbles and restarts with the full 8s delay", () => {
     let bubbleVisible = true;
     const ctx = makeCtx({
@@ -1115,6 +1162,238 @@ describe("roam pauses during IME editing (#640)", () => {
       stopped,
       "no further movement after the editing gate cancels the walk",
     );
+  });
+});
+
+describe("issue #1282: roam pauses during screen capture", () => {
+  beforeEach(() => {
+    mock.method(Math, "random", () => 0.9);
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("issue #1282: does not start while capture is foreground and waits 8s after it ends", () => {
+    let capture = true;
+    const ctx = makeCtx({ isScreenCaptureOverlayForeground: () => capture });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(12000);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    capture = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("issue #1282: cancels an active walk, releases reconcile protection and resumes after 8s", () => {
+    let capture = false;
+    let releases = 0;
+    const ctx = makeCtx({
+      isScreenCaptureOverlayForeground: () => capture,
+      releaseReconcileProtection: () => { releases++; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), true);
+    const writes = ctx._appliedBounds.length;
+
+    capture = true;
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), false);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    assert.strictEqual(releases, 1);
+    assert.deepStrictEqual(ctx._stateLog.at(-1), {
+      type: "setState", state: "idle", svgOverride: undefined, options: { bypassMinDisplay: true },
+    });
+    mock.timers.tick(1000);
+    assert.strictEqual(ctx._appliedBounds.length, writes);
+
+    capture = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("issue #1282: a pending walk rechecks capture when its timer expires", () => {
+    let capture = false;
+    const ctx = makeCtx({ isScreenCaptureOverlayForeground: () => capture });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    capture = true;
+    mock.timers.tick(8000);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+    roam.tick();
+    capture = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+});
+
+describe("hidden pet: roam holds still", () => {
+  beforeEach(() => {
+    mock.method(Math, "random", () => 0.9);
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  });
+
+  afterEach(() => {
+    mock.timers.reset();
+    mock.reset();
+  });
+
+  it("hidden pet: does not start while hidden and waits 8s after showing", () => {
+    let hidden = true;
+    const ctx = makeCtx({ isPetHidden: () => hidden });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(12000);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    hidden = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("hidden pet: cancels an active walk on the next frame and resumes after 8s", () => {
+    let hidden = false;
+    let releases = 0;
+    const ctx = makeCtx({
+      isPetHidden: () => hidden,
+      releaseReconcileProtection: () => { releases++; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), true);
+    const writes = ctx._appliedBounds.length;
+    const stopped = { ...ctx._appliedBounds.at(-1) };
+
+    hidden = true;
+    mock.timers.tick(16);
+    assert.strictEqual(roam.isRoamAnimating(), false);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    assert.strictEqual(releases, 1);
+    assert.deepStrictEqual(ctx._stateLog.at(-1), {
+      type: "setState", state: "idle", svgOverride: undefined, options: { bypassMinDisplay: true },
+    });
+    mock.timers.tick(1000);
+    assert.strictEqual(ctx._appliedBounds.length, writes);
+    assert.deepStrictEqual(ctx._appliedBounds.at(-1), stopped);
+    assert.deepStrictEqual(ctx.getPetWindowBounds(), stopped);
+
+    hidden = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("hidden pet: a pending walk rechecks hiding and restarts with the full 8s delay", () => {
+    let hidden = false;
+    const ctx = makeCtx({ isPetHidden: () => hidden });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    hidden = true;
+    mock.timers.tick(8000);
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+
+    roam.tick();
+    hidden = false;
+    roam.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("hidden pet: replaces the 4s pause after a completed walk with 8s after showing", () => {
+    let hidden = false;
+    const ctx = makeCtx({ isPetHidden: () => hidden });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    roam.tick();
+    mock.timers.tick(8000);
+    assert.strictEqual(roam.isRoamAnimating(), true);
+    for (let i = 0; i < 2000 && roam.isRoamAnimating(); i++) {
+      mock.timers.tick(16);
+    }
+    assert.strictEqual(roam.isRoamAnimating(), false);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+
+    hidden = true;
+    roam.tick();
+    hidden = false;
+    roam.tick();
+    mock.timers.tick(3999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(4000);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+  });
+
+  it("hidden pet: repeated hidden ticks do not change state, bounds or reconcile releases", () => {
+    let releases = 0;
+    const ctx = makeCtx({
+      isPetHidden: () => true,
+      releaseReconcileProtection: () => { releases++; },
+    });
+    const roam = roamModule(ctx);
+    roam.setEnabled(true);
+    for (let i = 0; i < 12; i++) {
+      roam.tick();
+      mock.timers.tick(1000);
+    }
+    assert.deepStrictEqual(ctx._stateLog, []);
+    assert.deepStrictEqual(ctx._appliedBounds, []);
+    assert.strictEqual(releases, 0);
+  });
+
+  it("hidden pet: a false predicate keeps the same 8s start as an omitted predicate", () => {
+    const ctx = makeCtx({ isPetHidden: () => false });
+    const withoutPredicate = makeCtx();
+    const roam = roamModule(ctx);
+    const roamWithoutPredicate = roamModule(withoutPredicate);
+    roam.setEnabled(true);
+    roamWithoutPredicate.setEnabled(true);
+    roam.tick();
+    roamWithoutPredicate.tick();
+    mock.timers.tick(7999);
+    assert.strictEqual(ctx.getCurrentState(), "idle");
+    assert.strictEqual(withoutPredicate.getCurrentState(), "idle");
+    mock.timers.tick(1);
+    assert.strictEqual(ctx.getCurrentState(), "roam");
+    assert.strictEqual(withoutPredicate.getCurrentState(), "roam");
+    assert.deepStrictEqual(ctx._stateLog, withoutPredicate._stateLog);
+    assert.deepStrictEqual(ctx._appliedBounds, withoutPredicate._appliedBounds);
   });
 });
 

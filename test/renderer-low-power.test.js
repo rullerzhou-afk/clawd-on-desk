@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it } = require("node:test");
+const { beforeEach, describe, it } = require("node:test");
 const assert = require("node:assert");
 const fs = require("node:fs");
 const path = require("node:path");
@@ -103,6 +103,7 @@ function loadPreloadWithElectron({
 class FakeElement {
   constructor(tagName) {
     this.tagName = tagName.toUpperCase();
+    this.localName = tagName.toLowerCase();
     this.style = {
       setProperty(name, value) { this[name] = String(value); },
       removeProperty(name) { delete this[name]; },
@@ -170,6 +171,14 @@ class FakeElement {
     return this.attributes.get(name) || "";
   }
 
+  hasAttribute(name) {
+    return this.attributes.has(name);
+  }
+
+  getBoundingClientRect() {
+    return { x: this.offsetLeft, y: this.offsetTop, width: this.offsetWidth, height: this.offsetHeight };
+  }
+
   appendChild(child) {
     child.parentNode = this;
     child.offsetParent = this;
@@ -208,6 +217,7 @@ class FakeElement {
       if (selector.includes("img.clawd-img")
           && child.tagName === "IMG"
           && child.classList.contains("clawd-img")) return true;
+      if (selector.split(",").some((name) => name.trim() === child.localName)) return true;
       return false;
     });
   }
@@ -215,6 +225,7 @@ class FakeElement {
 
 function createRendererHarness(options = {}) {
   const timers = [];
+  let now = 0;
   const audioInstances = [];
   const electronCalls = [];
   const warnings = [];
@@ -289,6 +300,7 @@ function createRendererHarness(options = {}) {
 
   const document = {
     hidden: false,
+    documentElement: new FakeElement("html"),
     getElementById(id) {
       return elementsById.get(id) || null;
     },
@@ -309,6 +321,7 @@ function createRendererHarness(options = {}) {
     },
   });
   const windowListeners = new Map();
+  const mediaQueries = [];
   const context = {
     document,
     window: {
@@ -322,12 +335,32 @@ function createRendererHarness(options = {}) {
         ...(options.themeConfig || {}),
       },
       electronAPI,
+      devicePixelRatio: options.devicePixelRatio ?? 1,
+      matchMedia: options.withoutMatchMedia ? undefined : (query) => {
+        const mediaQuery = { query, listeners: [] };
+        mediaQueries.push(mediaQuery);
+        return {
+          addEventListener(event, callback, listenerOptions) {
+            assert.strictEqual(event, "change");
+            mediaQuery.listeners.push({ callback, once: listenerOptions && listenerOptions.once });
+          },
+        };
+      },
       getComputedStyle: (el) => ({ opacity: el.style.opacity || "1" }),
       addEventListener(event, callback) {
         windowListeners.set(event, callback);
       },
     },
     console: { warn: (...args) => warnings.push(args.map(String).join(" ")) },
+    performance: { now: () => now },
+    setInterval(callback, ms) {
+      const timer = { callback, ms, cleared: false, interval: true };
+      timers.push(timer);
+      return timer;
+    },
+    clearInterval(timer) {
+      if (timer) timer.cleared = true;
+    },
     setTimeout(callback, ms) {
       const timer = { callback, ms, cleared: false };
       timers.push(timer);
@@ -337,7 +370,9 @@ function createRendererHarness(options = {}) {
       if (timer) timer.cleared = true;
     },
     requestAnimationFrame(callback) {
-      return context.setTimeout(callback, 16);
+      const timer = context.setTimeout(callback, 16);
+      timer.raf = true;
+      return timer;
     },
     cancelAnimationFrame(timer) {
       context.clearTimeout(timer);
@@ -394,6 +429,15 @@ globalThis.__rendererTest = {
   applyPetTintToAllMedia,
   normalizeAccessoryPayload,
   refreshAccessoryLayout,
+  setAccessorySvgLowPowerPaused,
+  clearAccessoryRuntime,
+  cancelAccessoryFollow,
+  hideAccessory,
+  accessoryFollowTick,
+  applyEyeMove,
+  setBodyTargetForTest(value) { bodyTarget = value; },
+  setUseLayeredTrackingForTest(value) { _useLayeredTracking = value; },
+  setPendingSystemWakeId(value) { pendingSystemWakeId = value; },
   get pendingNext() { return pendingNext; },
   get pendingSvgFile() { return pendingSvgFile; },
   get activeSwapToken() { return activeSwapToken; },
@@ -432,8 +476,21 @@ globalThis.__rendererTest = {
     electronHandlers,
     api: context.__rendererTest,
     activeTimers: () => timers.filter((timer) => !timer.cleared),
+    advanceTime(ms) { now += ms; },
     documentListeners,
     windowListeners,
+    mediaQueries,
+    changeDisplayScale(scale) {
+      context.window.devicePixelRatio = scale;
+      // Only queries whose old resolution stopped matching emit a change.
+      for (const mediaQuery of [...mediaQueries]) {
+        if (mediaQuery.query === `(resolution: ${scale}dppx)`) continue;
+        for (const listener of [...mediaQuery.listeners]) {
+          if (listener.once) mediaQuery.listeners.splice(mediaQuery.listeners.indexOf(listener), 1);
+          listener.callback();
+        }
+      }
+    },
   };
 }
 
@@ -449,7 +506,7 @@ function drainActiveTimers(harness, predicate, limit = 100) {
   return count;
 }
 
-function attachFakeSvgDocument(objectEl, { withEyes = false, animations = null } = {}) {
+function attachFakeSvgDocument(objectEl, { withEyes = false, animations = null, withSmil = false } = {}) {
   const root = new FakeElement("svg");
   const elements = new Map();
   const svgDoc = {
@@ -468,8 +525,17 @@ function attachFakeSvgDocument(objectEl, { withEyes = false, animations = null }
   root.ownerDocument = svgDoc;
   root.pauseCalls = 0;
   root.unpauseCalls = 0;
-  root.pauseAnimations = () => { root.pauseCalls++; };
-  root.unpauseAnimations = () => { root.unpauseCalls++; };
+  root.paused = false;
+  root.smilTime = 0;
+  root.setTimeCalls = [];
+  root.pauseAnimations = () => { root.pauseCalls++; root.paused = true; };
+  root.unpauseAnimations = () => { root.unpauseCalls++; root.paused = false; };
+  root.getCurrentTime = () => Math.fround(root.smilTime);
+  root.setCurrentTime = (time) => {
+    root.setTimeCalls.push(time);
+    root.smilTime = Math.fround(time);
+  };
+  if (withSmil) root.appendChild(new FakeElement("animate"));
   if (animations) {
     svgDoc.getAnimations = () => animations;
   }
@@ -904,6 +970,7 @@ describe("renderer discrete animation sampling", () => {
       this.playState = playState;
       this.playbackRate = playbackRate;
       this.startTime = startTime;
+      this.currentTime = 0;
       this.ready = Promise.resolve();
       this.effect = {
         // iterationStart belongs to EffectTiming, not to Animation.
@@ -926,10 +993,10 @@ describe("renderer discrete animation sampling", () => {
     );
   }
 
-  function attachAnimationDocument(objectEl, animations) {
+  function attachAnimationDocument(objectEl, animations, options = {}) {
     objectEl.contentWindow.CSSAnimation = FakeCSSAnimation;
     objectEl.contentWindow.CSSTransition = FakeCSSTransition;
-    attachFakeSvgDocument(objectEl, { animations });
+    return attachFakeSvgDocument(objectEl, { animations, ...options });
   }
 
   function commitObject(harness, file, animations) {
@@ -951,14 +1018,16 @@ describe("renderer discrete animation sampling", () => {
     return pending;
   }
 
-  function samplingHarness(files, transitions) {
+  function samplingHarness(files, transitions, options = {}) {
     return createRendererHarness({
+      ...options,
       themeConfig: {
         rendering: {
           objectChannelFiles: files,
           discreteSampling: Object.fromEntries(files.map((file) => [file, 24])),
         },
         ...(transitions ? { transitions } : {}),
+        ...options.themeConfig,
       },
     });
   }
@@ -1343,6 +1412,664 @@ describe("renderer discrete animation sampling", () => {
     assert.deepStrictEqual(freshAnimation.calls.map((call) => call.easing), ["steps(288, end)"]);
     assert.strictEqual(objectEl.isConnected, true, "the 500ms fade timer was not advanced");
   });
+
+  describe("accessory follow sampling", () => {
+    const stepMs = 1000 / 24;
+
+    function followHarness({ sampled = true, animations = [makeAnimation(12000)] } = {}) {
+      const descriptor = {
+        staticFrame: { cx: 50, baseY: 40, width: 20 },
+        followTarget: { id: "anchor", frame: { cx: 8, baseY: 6, width: 4 } },
+      };
+      const harness = createRendererHarness({
+        initialObjectData: "",
+        themeConfig: {
+          idleFollowSvg: "follow.svg",
+          eyeTracking: { states: [] },
+          viewBox: { x: 0, y: 0, width: 100, height: 100 },
+          rendering: { objectChannelFiles: ["follow.svg"], discreteSampling: sampled ? { "follow.svg": 24 } : {} },
+          accessorySupported: true,
+          accessoryPayload: { id: "cowboy-hat", assetFile: "cowboy-hat.svg", aspect: 16 / 7, widthScale: 1, offsetY: 0 },
+          accessoryAttachments: { files: { "follow.svg": descriptor } },
+        },
+      });
+      const objectEl = harness.api.pendingNext;
+      const attached = attachAnimationDocument(objectEl, animations, { withEyes: true });
+      let reads = 0;
+      attached.elements.set("anchor", { getCTM() { reads++; return { a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 }; } });
+      objectEl.listeners.get("load")();
+      harness.accessory.onload();
+      return { ...harness, ...attached, objectEl, animations, slot: harness.api.accessorySlots.head, reads: () => reads };
+    }
+
+    function fire(timer) {
+      assert.ok(timer && !timer.cleared, "expected a queued callback");
+      timer.cleared = true;
+      timer.callback();
+    }
+
+    it("reads on the first frame then waits for each next grid point", () => {
+      const harness = followHarness();
+      harness.animations[0].currentTime = 10;
+      assert.ok(harness.slot.raf, "the first read stays immediate");
+      assert.strictEqual(harness.slot.followTimer, null);
+      const before = harness.reads();
+      fire(harness.slot.raf);
+      assert.strictEqual(harness.reads(), before + 1);
+      assert.strictEqual(harness.slot.raf, null);
+      approx(harness.slot.followTimer.ms, stepMs - 10);
+      assert.strictEqual(harness.activeTimers().filter((timer) => timer.raf || timer === harness.slot.followTimer).length, 1);
+      fire(harness.slot.followTimer);
+      assert.strictEqual(harness.slot.followTimer, null);
+      assert.ok(harness.slot.raf);
+      harness.animations[0].currentTime = stepMs + 2;
+      fire(harness.slot.raf);
+      approx(harness.slot.followTimer.ms, stepMs - 2);
+      assert.strictEqual(harness.slot.raf, null);
+    });
+
+    it("keeps unlisted and unrecorded documents on every frame", () => {
+      for (const unrecorded of [false, true]) {
+        const harness = followHarness({ sampled: unrecorded });
+        if (unrecorded) {
+          // The object is unchanged but this replacement document was never sampled.
+          const fresh = attachAnimationDocument(harness.objectEl, [makeAnimation(12000)]);
+          fresh.elements.set("anchor", { getCTM: () => ({ a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 }) });
+        }
+        for (let i = 0; i < 3; i++) {
+          fire(harness.slot.raf);
+          assert.ok(harness.slot.raf);
+          assert.strictEqual(harness.slot.followTimer, null);
+        }
+      }
+    });
+
+    it("keeps documents with finite or initially paused animations on every frame", () => {
+      for (const other of [makeAnimation(3800, { iterations: 1 }), makeAnimation(12000, { playState: "paused" })]) {
+        const harness = followHarness({ animations: [makeAnimation(12000), other] });
+        fire(harness.slot.raf);
+        assert.ok(harness.slot.raf);
+        assert.strictEqual(harness.slot.followTimer, null);
+        other.playState = "finished";
+        fire(harness.slot.raf);
+        assert.ok(harness.slot.raf, "an unsampleable document never acquires a cadence later");
+      }
+    });
+
+    it("tracks body transitions every frame and returns to the grid when they end", () => {
+      const harness = followHarness();
+      const body = new FakeElement("g");
+      body.ownerDocument = harness.svgDoc;
+      let transitions = [{}];
+      body.getAnimations = () => transitions;
+      harness.api.setBodyTargetForTest(body);
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      transitions = [];
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.followTimer);
+      fire(harness.slot.followTimer);
+      body.ownerDocument = {};
+      transitions = [{}];
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.followTimer, "a body from another document must not suppress sampling");
+    });
+
+    it("uses the grid without a body target and every frame for layered tracking", () => {
+      const harness = followHarness();
+      harness.api.setUseLayeredTrackingForTest(true);
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      harness.api.setUseLayeredTrackingForTest(false);
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.followTimer);
+    });
+
+    it("wakes a waiting timer once when applying an eye move", () => {
+      const harness = followHarness();
+      fire(harness.slot.raf);
+      const timer = harness.slot.followTimer;
+      harness.api.applyEyeMove(2, 1);
+      assert.strictEqual(timer.cleared, true);
+      assert.strictEqual(harness.slot.followTimer, null);
+      const frame = harness.slot.raf;
+      assert.ok(frame);
+      harness.api.applyEyeMove(3, 1);
+      assert.strictEqual(harness.slot.raf, frame);
+      assert.strictEqual(harness.activeTimers().filter((entry) => entry.raf).length, 1);
+      fire(frame);
+      const nextTimer = harness.slot.followTimer;
+      harness.api.attachEyeTracking(harness.objectEl);
+      assert.strictEqual(nextTimer.cleared, true, "attachment also applies the last eye move");
+      assert.ok(harness.slot.raf);
+      harness.api.cancelAccessoryFollow("head");
+      harness.api.applyEyeMove(0, 0);
+      assert.strictEqual(harness.slot.raf, null, "a stopped slot stays stopped");
+    });
+
+    it("retries shortly when the frame still observes time before the grid point", () => {
+      const harness = followHarness();
+      harness.animations[0].currentTime = stepMs - 0.2;
+      fire(harness.slot.raf);
+      approx(harness.slot.followTimer.ms, 0.2);
+      fire(harness.slot.followTimer);
+      fire(harness.slot.raf);
+      approx(harness.slot.followTimer.ms, 0.2);
+    });
+
+    it("falls back while the representative is paused or lacks a start and rereads its resumed time", () => {
+      for (const unavailable of ["paused", "start"]) {
+        const harness = followHarness();
+        const animation = harness.animations[0];
+        if (unavailable === "paused") animation.playState = "paused";
+        else animation.startTime = null;
+        fire(harness.slot.raf);
+        assert.ok(harness.slot.raf);
+        assert.strictEqual(harness.slot.followTimer, null);
+        animation.playState = "running";
+        animation.startTime = 400;
+        animation.currentTime = stepMs * 4 + 7;
+        fire(harness.slot.raf);
+        approx(harness.slot.followTimer.ms, stepMs - 7);
+      }
+    });
+
+    it("does not enumerate document animations while following and uses a replacement representative", () => {
+      const harness = followHarness();
+      harness.svgDoc.getAnimations = () => { throw new Error("follow must not enumerate animations"); };
+      harness.animations[0].currentTime = 9;
+      fire(harness.slot.raf);
+      approx(harness.slot.followTimer.ms, stepMs - 9);
+      const freshAnimation = makeAnimation(12000);
+      freshAnimation.currentTime = 23;
+      const fresh = attachAnimationDocument(harness.objectEl, [freshAnimation]);
+      fresh.elements.set("anchor", { getCTM: () => ({ a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 }) });
+      harness.api.applyDiscreteSampling(harness.objectEl, "follow.svg");
+      fresh.svgDoc.getAnimations = () => { throw new Error("follow must use the sampled representative"); };
+      fire(harness.slot.followTimer);
+      fire(harness.slot.raf);
+      approx(harness.slot.followTimer.ms, stepMs - 23);
+    });
+
+    it("falls back when the document cannot be read", () => {
+      const harness = followHarness();
+      // Geometry can be read first; a later nested-document access can fail.
+      let accesses = 0;
+      Object.defineProperty(harness.objectEl, "contentDocument", { get() {
+        if (++accesses === 1) return harness.svgDoc;
+        throw new Error("document unavailable");
+      } });
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+    });
+
+    it("clears waiting follow timers on refresh, hide, page hiding and low power", () => {
+      for (const action of ["cancel", "refresh", "hide", "petHidden", "documentHidden", "lowPower"]) {
+        const harness = followHarness();
+        fire(harness.slot.raf);
+        const timer = harness.slot.followTimer;
+        assert.ok(timer);
+        const before = harness.reads();
+        if (action === "cancel") harness.api.cancelAccessoryFollow("head");
+        if (action === "refresh") harness.api.refreshAccessoryLayout("head");
+        if (action === "hide") harness.api.hideAccessory("head");
+        if (action === "petHidden") harness.electronHandlers.onPetHiddenChange(true);
+        if (action === "documentHidden") {
+          harness.context.document.hidden = true;
+          harness.documentListeners.get("visibilitychange")();
+        }
+        if (action === "lowPower") harness.api.setLowPowerSvgPaused(true);
+        assert.strictEqual(timer.cleared, true, action);
+        assert.strictEqual(harness.slot.followTimer, null, action);
+        assert.strictEqual(harness.activeTimers().includes(timer), false);
+        assert.strictEqual(drainActiveTimers(harness, (entry) => entry === timer), 0, "a canceled timeout cannot queue another frame");
+        if (action === "refresh") {
+          assert.strictEqual(harness.reads(), before + 1);
+          assert.strictEqual(harness.activeTimers().filter((entry) => entry.raf).length, 1);
+        } else {
+          assert.strictEqual(harness.slot.raf, null, action);
+          assert.strictEqual(harness.reads(), before, action);
+        }
+      }
+    });
+
+    it("refreshes a mismatched key without running two follow loops", () => {
+      const harness = followHarness();
+      const frame = harness.slot.raf;
+      harness.slot.followKey = "stale";
+      fire(frame);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      assert.strictEqual(harness.activeTimers().filter((entry) => entry.raf).length, 1);
+      fire(harness.slot.raf);
+      assert.strictEqual(harness.slot.raf, null);
+      assert.ok(harness.slot.followTimer);
+    });
+  });
+
+  describe("display scale compositor", () => {
+    const FILE = "sweeping.svg";
+
+    function scaleHarness(scale = 1.5, themeConfig = {}) {
+      return samplingHarness([FILE, "other.svg"], null, {
+        devicePixelRatio: scale,
+        themeConfig: { idleFollowSvg: FILE, eyeTrackingStates: ["idle", "dozing"], ...themeConfig },
+      });
+    }
+
+    function attachScaleDocument(objectEl, options = {}) {
+      const animation = makeAnimation(12000);
+      const retiredAnimation = makeAnimation(12000);
+      const attached = attachAnimationDocument(objectEl, [retiredAnimation], { withEyes: true });
+      const { root, svgDoc, elements } = attached;
+      root.localName = options.localName || "svg";
+      if (options.viewBox !== false) root.setAttribute("viewBox", "0 0 100 100");
+      root.style.zoom = "";
+      root.style.display = options.display || "";
+      const calls = [];
+      root.style = new Proxy(root.style, {
+        set(target, key, value) {
+          if (key === "zoom" || key === "display") calls.push(`${key}:${value}`);
+          target[key] = value;
+          return true;
+        },
+      });
+      let animations = [retiredAnimation];
+      root.getBoundingClientRect = () => {
+        calls.push("geometry");
+        // Rebuilding layout replaces the animation objects; sampling the old
+        // list would leave the animations actually on screen untouched.
+        animations = [animation];
+        return { width: 220, height: 220 };
+      };
+      svgDoc.getAnimations = () => { calls.push("animations"); return animations; };
+      const pageMatrix = { a: 2, b: 0.2, c: -0.1, d: 2, e: 10, f: 12 };
+      elements.set("body", {
+        getCTM() {
+          const zoom = Number(root.style.zoom) || 1;
+          return Object.fromEntries(Object.entries(pageMatrix).map(([key, value]) => [key, value / zoom]));
+        },
+      });
+      return { ...attached, calls, animation, retiredAnimation };
+    }
+
+    function commitScaleObject(harness, file = FILE, state = "idle", options = {}) {
+      harness.api.setCurrentState(state);
+      harness.api.swapToFile(file, state, true);
+      const objectEl = harness.api.pendingNext;
+      const attached = attachScaleDocument(objectEl, options);
+      objectEl.listeners.get("load")();
+      return { objectEl, ...attached };
+    }
+
+    function fireTimer(harness, ms) {
+      const timer = harness.activeTimers().find((entry) => entry.ms === ms);
+      assert.ok(timer, `expected an active ${ms}ms timer`);
+      timer.cleared = true;
+      timer.callback();
+      return timer;
+    }
+
+    function finishReload(harness) {
+      const objectEl = harness.api.pendingNext;
+      assert.ok(objectEl, "a new document is loading");
+      const attached = attachScaleDocument(objectEl);
+      objectEl.listeners.get("load")();
+      return { objectEl, ...attached };
+    }
+
+    function followConfig() {
+      return {
+        viewBox: { x: 0, y: 0, width: 100, height: 100 },
+        accessorySupported: true,
+        accessoryPayload: { id: "cowboy-hat", assetFile: "cowboy-hat.svg", aspect: 16 / 7, widthScale: 1, offsetY: 0 },
+        accessoryAttachments: {
+          files: {
+            [FILE]: {
+              staticFrame: { cx: 50, baseY: 40, width: 20 },
+              followTarget: { id: "body", frame: { cx: 8, baseY: 6, width: 4 } },
+            },
+          },
+        },
+      };
+    }
+
+    it("leaves a 100% document's zoom and layout untouched", () => {
+      const harness = scaleHarness(1);
+      const attached = commitScaleObject(harness);
+      assert.strictEqual(attached.root.style.zoom, "");
+      assert.deepStrictEqual(attached.calls, ["animations"]);
+      assert.strictEqual(attached.retiredAnimation.calls.length, 1);
+    });
+
+    it("rebuilds layout before reading and sampling fresh animations at 150%", () => {
+      const harness = scaleHarness();
+      const attached = commitScaleObject(harness);
+      assert.strictEqual(attached.root.style.zoom, String(1 / 1.5));
+      assert.deepStrictEqual(attached.calls, [
+        `zoom:${1 / 1.5}`, "display:none", "geometry", "display:", "animations",
+      ]);
+      assert.deepStrictEqual(attached.animation.calls.map((timing) => timing.easing), ["steps(288, end)"]);
+      assert.deepStrictEqual(attached.retiredAnimation.calls, []);
+      harness.api.applyDiscreteSampling(attached.objectEl, FILE);
+      assert.strictEqual(attached.calls.length, 5, "a document is rebuilt and sampled only once");
+    });
+
+    it("restores an existing inline display value", () => {
+      const attached = commitScaleObject(scaleHarness(), FILE, "idle", { display: "inline" });
+      assert.strictEqual(attached.root.style.display, "inline");
+      assert.deepStrictEqual(attached.calls.slice(1, 4), ["display:none", "geometry", "display:inline"]);
+    });
+
+    it("skips unlisted objects, missing viewBox, non-SVG roots and images", () => {
+      const harness = scaleHarness();
+      const unlisted = commitScaleObject(harness, "unlisted.svg");
+      assert.deepStrictEqual(unlisted.calls, []);
+      for (const options of [{ viewBox: false }, { localName: "html" }]) {
+        const attached = commitScaleObject(harness, FILE, "idle", options);
+        assert.strictEqual(attached.root.style.zoom, "");
+        assert.deepStrictEqual(attached.calls, ["animations"]);
+        assert.strictEqual(attached.retiredAnimation.calls.length, 1, "sampling still runs without scale cancellation");
+      }
+      harness.api.swapToFile(FILE, "working", false);
+      const img = harness.api.pendingNext;
+      const imageDoc = attachScaleDocument(img);
+      img.listeners.get("load")();
+      assert.strictEqual(harness.api.clawdEl.tagName, "IMG");
+      assert.deepStrictEqual(imageDoc.calls, []);
+    });
+
+    it("waits for a late contentDocument and writes zoom once", () => {
+      const harness = scaleHarness();
+      const objectEl = commitObjectWithoutDocument(harness, FILE);
+      const attached = attachScaleDocument(objectEl);
+      fireTimer(harness, 16);
+      harness.api.applyDiscreteSampling(objectEl, FILE);
+      assert.deepStrictEqual(attached.calls, [
+        `zoom:${1 / 1.5}`, "display:none", "geometry", "display:", "animations",
+      ]);
+      assert.strictEqual(attached.animation.calls.length, 1);
+    });
+
+    it("applies zoom, rebuilds layout and samples on the three-second no-load fallback", () => {
+      const harness = scaleHarness();
+      harness.api.swapToFile(FILE, "idle", true);
+      const pending = harness.api.pendingNext;
+      const attached = attachScaleDocument(pending);
+      assert.deepStrictEqual(attached.calls, []);
+      fireTimer(harness, 3000);
+      assert.strictEqual(harness.api.pendingNext, null);
+      assert.strictEqual(harness.api.clawdEl, pending);
+      assert.strictEqual(harness.api.currentDisplayedSvg, FILE);
+      assert.strictEqual(attached.root.style.zoom, String(1 / 1.5));
+      assert.deepStrictEqual(attached.calls, [
+        `zoom:${1 / 1.5}`, "display:none", "geometry", "display:", "animations",
+      ]);
+      assert.deepStrictEqual(attached.animation.calls.map((timing) => timing.easing), ["steps(288, end)"]);
+      assert.deepStrictEqual(attached.retiredAnimation.calls, []);
+    });
+
+    it("preserves all accessory matrix components before and after zoom", () => {
+      for (const scale of [1, 1.5]) {
+        const harness = scaleHarness(scale, followConfig());
+        harness.accessory.onload();
+        const attached = commitScaleObject(harness);
+        const committedMatrix = { ...harness.api.accessorySlots.head.lastLayout.matrix };
+        fireTimer(harness, 16);
+        assert.deepStrictEqual({ ...harness.api.accessorySlots.head.lastLayout.matrix }, committedMatrix);
+        // A display change before reload must keep using this document's zoom.
+        harness.context.window.devicePixelRatio = 2;
+        fireTimer(harness, 1000 / 24);
+        fireTimer(harness, 16);
+        assert.deepStrictEqual({ ...harness.api.accessorySlots.head.lastLayout.matrix }, committedMatrix);
+        assert.strictEqual(attached.root.style.zoom, scale === 1 ? "" : String(1 / scale));
+      }
+      const harness = scaleHarness(1.5, followConfig());
+      harness.accessory.onload();
+      const attached = commitScaleObject(harness, FILE, "idle", { viewBox: false });
+      const matrix = { ...harness.api.accessorySlots.head.lastLayout.matrix };
+      fireTimer(harness, 16);
+      assert.deepStrictEqual({ ...harness.api.accessorySlots.head.lastLayout.matrix }, matrix);
+      assert.strictEqual(attached.root.style.zoom, "", "a document without a zoom entry keeps its CTM");
+    });
+
+    it("reloads the same file and non-idle displayed state after settling, detaching eyes first", () => {
+      const harness = scaleHarness(1.5, { eyeTrackingStates: ["mini-idle"] });
+      const old = commitScaleObject(harness, FILE, "mini-idle");
+      harness.api.setCurrentState("working");
+      assert.ok(harness.api.eyeTarget);
+      harness.changeDisplayScale(2);
+      assert.strictEqual(harness.api.pendingNext, null, "wait for display changes to settle");
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.eyeTarget, null, "the old document's eyes are detached before loading");
+      assert.strictEqual(harness.api.pendingSvgFile, FILE);
+      assert.strictEqual(harness.api.pendingNext.tagName, "OBJECT");
+      assert.strictEqual(harness.api.pendingNext.__clawdPendingState, "mini-idle");
+      assert.notStrictEqual(harness.api.pendingNext, old.objectEl);
+      const fresh = finishReload(harness);
+      assert.strictEqual(fresh.root.style.zoom, "0.5");
+      assert.strictEqual(harness.api.currentDisplayedState, "mini-idle");
+      harness.changeDisplayScale(1);
+      fireTimer(harness, 400);
+      const unscaled = finishReload(harness);
+      assert.strictEqual(unscaled.root.style.zoom, "");
+      assert.deepStrictEqual(unscaled.calls, ["animations"]);
+    });
+
+    it("reloads hidden documents without clearing the hidden class", () => {
+      const harness = scaleHarness();
+      const old = commitScaleObject(harness);
+      harness.electronHandlers.onPetHiddenChange(true);
+      assert.ok(harness.context.document.documentElement.classList.contains("pet-hidden"));
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      const fresh = finishReload(harness);
+      assert.notStrictEqual(fresh.objectEl, old.objectEl);
+      assert.strictEqual(fresh.root.style.zoom, "0.5");
+      assert.ok(harness.context.document.documentElement.classList.contains("pet-hidden"));
+    });
+
+    it("debounces bursts and skips a scale that returns to the document's zoom", () => {
+      const harness = scaleHarness();
+      commitScaleObject(harness);
+      const token = harness.api.activeSwapToken;
+      harness.changeDisplayScale(1.25);
+      harness.changeDisplayScale(2);
+      harness.changeDisplayScale(1.75);
+      assert.strictEqual(harness.api.pendingNext, null);
+      assert.strictEqual(harness.activeTimers().filter((timer) => timer.ms === 400).length, 1);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.activeSwapToken, token + 1);
+      const fresh = finishReload(harness);
+      harness.changeDisplayScale(2);
+      harness.changeDisplayScale(1.75);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.clawdEl, fresh.objectEl);
+      assert.strictEqual(harness.api.pendingNext, null);
+      assert.strictEqual(harness.api.activeSwapToken, token + 1);
+    });
+
+    it("does not reload images, unlisted files or already matching documents", () => {
+      for (const channel of ["image", "unlisted", "matching", "100%"]) {
+        const harness = scaleHarness(channel === "100%" ? 1 : 1.5);
+        if (channel === "image") {
+          harness.api.swapToFile(FILE, "idle", false);
+          harness.api.pendingNext.listeners.get("load")();
+        } else {
+          commitScaleObject(harness, channel === "unlisted" ? "unlisted.svg" : FILE);
+        }
+        const token = harness.api.activeSwapToken;
+        // One change away and back still produces a change notification.
+        harness.changeDisplayScale(2);
+        if (channel === "matching") harness.changeDisplayScale(1.5);
+        if (channel === "100%") harness.changeDisplayScale(1);
+        fireTimer(harness, 400);
+        assert.strictEqual(harness.api.pendingNext, null, channel);
+        assert.strictEqual(harness.api.activeSwapToken, token, channel);
+      }
+    });
+
+    it("rechecks a pending swap after it commits or is cancelled", () => {
+      for (const cancelled of [false, true]) {
+        const harness = scaleHarness();
+        commitScaleObject(harness);
+        harness.api.swapToFile("other.svg", "idle", true);
+        const pending = harness.api.pendingNext;
+        harness.changeDisplayScale(2);
+        fireTimer(harness, 400);
+        assert.strictEqual(harness.api.pendingNext, pending, "a pending swap owns the next document");
+        if (cancelled) {
+          harness.electronHandlers.onStateChange("idle", FILE);
+          assert.strictEqual(harness.api.pendingNext, null);
+          fireTimer(harness, 400);
+          assert.strictEqual(harness.api.pendingSvgFile, FILE, "the unchanged old document still needs a reload");
+        } else {
+          attachScaleDocument(pending);
+          pending.listeners.get("load")();
+          const token = harness.api.activeSwapToken;
+          fireTimer(harness, 400);
+          assert.strictEqual(harness.api.pendingNext, null, "the committed document already has the new zoom");
+          assert.strictEqual(harness.api.activeSwapToken, token);
+        }
+      }
+    });
+
+    it("uses the latest scale when an accessory waiter commits without another reload", () => {
+      const harness = scaleHarness(1.5, followConfig());
+      harness.api.swapToFile(FILE, "idle", true);
+      const pending = harness.api.pendingNext;
+      const attached = attachScaleDocument(pending);
+      pending.listeners.get("load")();
+      assert.strictEqual(harness.api.pendingNext, pending);
+      assert.strictEqual(pending.__clawdWaitingForAccessory, true);
+      assert.deepStrictEqual(attached.calls, [], "the waiting document has not been sampled");
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.pendingNext, pending);
+      harness.accessory.onload();
+      assert.strictEqual(harness.api.pendingNext, null);
+      assert.strictEqual(harness.api.clawdEl, pending);
+      assert.strictEqual(attached.root.style.zoom, "0.5");
+      assert.strictEqual(attached.animation.calls.length, 1);
+      const token = harness.api.activeSwapToken;
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.pendingNext, null);
+      assert.strictEqual(harness.api.clawdEl, pending);
+      assert.strictEqual(harness.api.activeSwapToken, token, "the committed zoom already matches the scale");
+    });
+
+    it("waits for system wake completion even after its object committed", () => {
+      const harness = scaleHarness();
+      commitScaleObject(harness);
+      // Wake readiness can still be pending after pendingNext has been cleared.
+      harness.api.setPendingSystemWakeId("wake");
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.pendingNext, null);
+      harness.api.setPendingSystemWakeId(null);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.pendingSvgFile, FILE);
+    });
+
+    it("resumes low-power documents and accessory following before pausing the fresh document", () => {
+      const harness = scaleHarness(1.5, followConfig());
+      harness.accessory.onload();
+      const old = commitScaleObject(harness);
+      harness.api.setLowPowerIdleMode(true);
+      fireTimer(harness, 5000);
+      assert.strictEqual(harness.api.lowPowerSvgPaused, true);
+      assert.ok(old.svgDoc.getElementById("clawd-low-power-pause-svg"));
+      assert.strictEqual(harness.api.accessorySlots.head.raf, null);
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.lowPowerSvgPaused, false);
+      assert.strictEqual(old.svgDoc.getElementById("clawd-low-power-pause-svg"), null);
+      assert.ok(harness.api.accessorySlots.head.raf, "following resumes while loading");
+      const fresh = finishReload(harness);
+      assert.strictEqual(fresh.svgDoc.getElementById("clawd-low-power-pause-svg"), null);
+      assert.ok(harness.api.accessorySlots.head.raf);
+      fireTimer(harness, 5000);
+      assert.ok(fresh.svgDoc.getElementById("clawd-low-power-pause-svg"));
+      assert.strictEqual(harness.api.accessorySlots.head.raf, null);
+      assert.deepStrictEqual(
+        harness.electronCalls.filter((call) => call.name === "setLowPowerIdlePaused").map((call) => call.args[0]),
+        [true, false, true],
+      );
+    });
+
+    it("keeps the old object, eyes and a fresh low-power timer when reload fails", () => {
+      const harness = scaleHarness();
+      const old = commitScaleObject(harness);
+      harness.api.setLowPowerIdleMode(true);
+      const oldTimer = harness.activeTimers().find((timer) => timer.ms === 5000);
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      const pending = harness.api.pendingNext;
+      pending.listeners.get("error")();
+      assert.strictEqual(harness.api.pendingNext, null, "failed scale reload never falls back to an image");
+      assert.strictEqual(harness.api.clawdEl, old.objectEl);
+      assert.strictEqual(harness.api.eyeTarget, old.elements.get("eyes-js"));
+      assert.strictEqual(oldTimer.cleared, true);
+      fireTimer(harness, 5000);
+      assert.strictEqual(harness.api.lowPowerSvgPaused, true);
+      assert.ok(old.svgDoc.getElementById("clawd-low-power-pause-svg"));
+    });
+
+    it("superseded reloads leave eyes detached and recheck the winning document", () => {
+      const harness = scaleHarness();
+      const old = commitScaleObject(harness);
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      harness.api.swapToFile("other.svg", "dozing", true);
+      assert.strictEqual(harness.api.eyeTarget, null, "superseding does not reattach the old eyes");
+      const fresh = finishReload(harness);
+      assert.notStrictEqual(fresh.objectEl, old.objectEl);
+      assert.strictEqual(harness.api.eyeTarget, fresh.elements.get("eyes-js"));
+      const token = harness.api.activeSwapToken;
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.pendingNext, null);
+      assert.strictEqual(harness.api.activeSwapToken, token);
+    });
+
+    it("retries a superseded reload when state returns to the displayed file", () => {
+      const harness = scaleHarness();
+      const old = commitScaleObject(harness);
+      harness.changeDisplayScale(2);
+      fireTimer(harness, 400);
+      harness.api.swapToFile("other.svg", "idle", true);
+      assert.strictEqual(harness.api.eyeTarget, null);
+      harness.electronHandlers.onStateChange("idle", FILE);
+      assert.strictEqual(harness.api.clawdEl, old.objectEl);
+      assert.strictEqual(harness.api.pendingNext, null);
+      fireTimer(harness, 400);
+      assert.strictEqual(harness.api.pendingSvgFile, FILE);
+      assert.strictEqual(finishReload(harness).root.style.zoom, "0.5");
+    });
+
+    it("rebuilds resolution queries and responds to a second change", () => {
+      const harness = scaleHarness(1);
+      commitScaleObject(harness);
+      assert.deepStrictEqual(harness.mediaQueries.map((query) => query.query), ["(resolution: 1dppx)"]);
+      harness.changeDisplayScale(1.5);
+      assert.strictEqual(harness.mediaQueries.at(-1).query, "(resolution: 1.5dppx)");
+      fireTimer(harness, 400);
+      finishReload(harness);
+      harness.changeDisplayScale(2);
+      assert.strictEqual(harness.mediaQueries.at(-1).query, "(resolution: 2dppx)");
+      fireTimer(harness, 400);
+      assert.strictEqual(finishReload(harness).root.style.zoom, "0.5");
+    });
+
+    it("boots without matchMedia", () => {
+      const harness = samplingHarness([FILE], null, { withoutMatchMedia: true });
+      const attached = commitScaleObject(harness);
+      assert.strictEqual(harness.api.clawdEl, attached.objectEl);
+      assert.strictEqual(harness.mediaQueries.length, 0);
+    });
+  });
 });
 
 describe("renderer displayed-visual settlement", () => {
@@ -1631,6 +2358,55 @@ describe("renderer test-result reactions", () => {
     } finally {
       harness.restore();
     }
+  });
+});
+
+describe("hidden pet page", () => {
+  it("hidden pet page: sets the html class idempotently from hidden notifications", () => {
+    const harness = createRendererHarness();
+    const root = harness.context.document.documentElement;
+    for (const hidden of [true, true, false, false]) {
+      harness.electronHandlers.onPetHiddenChange(hidden);
+      assert.strictEqual(root.classList.contains("pet-hidden"), hidden);
+    }
+  });
+
+  it("hidden pet page: leaves low-power pause feedback and SVG styles alone", () => {
+    const harness = createRendererHarness();
+    const svg = attachFakeSvgDocument(harness.clawd);
+    const scriptedPauses = [];
+    harness.clawd.contentWindow.__clawdSetLowPowerPaused = (paused) => scriptedPauses.push(paused);
+    harness.api.setCurrentState("idle");
+
+    harness.electronHandlers.onPetHiddenChange(true);
+    harness.electronHandlers.onPetHiddenChange(false);
+
+    assert.strictEqual(harness.electronCalls.some((call) => call.name === "setLowPowerIdlePaused"), false);
+    assert.strictEqual(svg.svgDoc.getElementById("clawd-low-power-pause-svg"), null);
+    assert.strictEqual(svg.root.pauseCalls, 0);
+    assert.strictEqual(svg.root.unpauseCalls, 0);
+    assert.strictEqual(harness.api.lowPowerSvgPaused, false);
+    assert.deepStrictEqual(scriptedPauses, []);
+  });
+
+  it("hidden pet page: preload forwards pet-hidden-change to the callback", () => {
+    const harness = loadPreloadWithElectron();
+    try {
+      const seen = [];
+      harness.electronAPI.onPetHiddenChange((hidden) => seen.push(hidden));
+      harness.emitFromMain("pet-hidden-change", true);
+      harness.emitFromMain("pet-hidden-change", false);
+      assert.deepStrictEqual(seen, [true, false]);
+    } finally {
+      harness.restore();
+    }
+  });
+
+  it("hidden pet page: loaded CSS hides the html root and all descendants with important priority", () => {
+    const css = readNormalized(path.join(__dirname, "..", "src", "styles.css"));
+    assert.match(css, /html\.pet-hidden\s*,\s*html\.pet-hidden\s+\*\s*\{\s*visibility:\s*hidden\s*!important\s*;\s*\}/);
+    const html = readNormalized(path.join(__dirname, "..", "src", "index.html"));
+    assert.match(html, /<link\b[^>]*rel="stylesheet"[^>]*href="styles\.css"[^>]*>/);
   });
 });
 
@@ -3415,8 +4191,8 @@ describe("renderer pet accessory wardrobe", () => {
       },
     });
 
-    assert.strictEqual(mouthSvg.root.unpauseCalls, 1);
-    assert.strictEqual(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"), null);
+    assert.strictEqual(mouthSvg.root.unpauseCalls, 0);
+    assert.ok(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"));
     assert.strictEqual(harness.mouthAccessory.data, "");
   });
 
@@ -3481,6 +4257,536 @@ describe("renderer pet accessory wardrobe", () => {
     harness.api.pendingNext.listeners.get("load")();
     assert.strictEqual(harness.mouthAccessory.style.display, "block");
     assert.strictEqual(mouthSvg.root.unpauseCalls, unpauseBefore + 1);
+  });
+
+  describe("accessory SMIL clock", () => {
+    function smokeHarness({ withSmil = true, hidden = false, time = 0 } = {}) {
+      const config = dualSlotConfig();
+      if (hidden) config.accessorySlots.mouth.attachments.files["first.svg"] = { visibility: "hidden" };
+      const harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+      const attached = attachFakeSvgDocument(harness.mouthAccessory, { withSmil });
+      attached.root.smilTime = time;
+      harness.api.pendingNext.listeners.get("load")();
+      harness.accessory.onload();
+      harness.mouthAccessory.onload();
+      return { ...harness, ...attached, slot: harness.api.accessorySlots.mouth };
+    }
+
+    function tick(harness, ms) {
+      harness.advanceTime(ms);
+      for (const timer of harness.activeTimers().filter((entry) => entry.interval)) timer.callback();
+    }
+
+    it("holds SMIL paused and advances one 12 Hz clock from a single-precision anchor", () => {
+      const harness = smokeHarness({ time: 2 ** 22 });
+      assert.strictEqual(harness.root.paused, true);
+      assert.strictEqual(harness.slot.documentPaused, false);
+      assert.strictEqual(harness.activeTimers().filter((timer) => timer.interval).length, 1);
+      assert.strictEqual(harness.slot.smilTimer.ms, 1000 / 12);
+      const anchor = harness.root.getCurrentTime();
+      for (let i = 1; i <= 12; i++) {
+        tick(harness, 1000 / 12);
+        assert.ok(Math.abs(harness.root.setTimeCalls.at(-1) - (anchor + i / 12)) < 1e-8);
+      }
+      assert.strictEqual(harness.root.getCurrentTime(), Math.fround(anchor + 1));
+      tick(harness, 355);
+      assert.ok(Math.abs(harness.root.setTimeCalls.at(-1) - (anchor + 1.355)) < 1e-8, "late callbacks use elapsed wall time");
+    });
+
+    it("leaves documents without SMIL on the existing pause and unpause path", () => {
+      const harness = smokeHarness({ withSmil: false });
+      assert.strictEqual(harness.slot.smilTimer, null);
+      assert.strictEqual(harness.activeTimers().some((timer) => timer.interval), false);
+      assert.strictEqual(harness.root.pauseCalls, 1);
+      assert.strictEqual(harness.root.unpauseCalls, 1);
+      harness.api.setAccessorySvgLowPowerPaused("mouth", true);
+      assert.strictEqual(harness.root.pauseCalls, 2);
+      harness.api.setAccessorySvgLowPowerPaused("mouth", false);
+      assert.strictEqual(harness.root.unpauseCalls, 2);
+      assert.strictEqual(harness.slot.smilTimer, null);
+    });
+
+    it("stops while hidden or in low power and resumes from the stopped time without catching up", () => {
+      for (const lowPower of [false, true]) {
+        const harness = smokeHarness({ time: 3 });
+        tick(harness, 250);
+        const stopped = harness.root.getCurrentTime();
+        const timer = harness.slot.smilTimer;
+        if (lowPower) harness.api.setLowPowerSvgPaused(true);
+        else harness.electronHandlers.onPetHiddenChange(true);
+        assert.strictEqual(timer.cleared, true);
+        assert.strictEqual(harness.slot.smilTimer, null);
+        assert.strictEqual(harness.root.paused, true);
+        tick(harness, 120000);
+        assert.strictEqual(harness.root.getCurrentTime(), stopped);
+        if (lowPower) harness.api.setLowPowerSvgPaused(false);
+        else harness.electronHandlers.onPetHiddenChange(false);
+        assert.strictEqual(harness.root.getCurrentTime(), stopped);
+        assert.strictEqual(harness.root.paused, true);
+        assert.strictEqual(harness.slot.documentPaused, false);
+        tick(harness, 500);
+        assert.strictEqual(harness.root.setTimeCalls.at(-1), stopped + 0.5);
+        assert.strictEqual(harness.activeTimers().filter((entry) => entry.interval).length, 1);
+      }
+    });
+
+    it("never starts a clock for a slot declared hidden by the theme", () => {
+      const harness = smokeHarness({ hidden: true });
+      assert.strictEqual(harness.slot.smilTimer, null);
+      assert.strictEqual(harness.root.paused, true);
+      harness.api.refreshAccessoryLayout("mouth");
+      harness.api.setLowPowerSvgPaused(true);
+      harness.api.setLowPowerSvgPaused(false);
+      assert.strictEqual(harness.slot.smilTimer, null);
+      assert.strictEqual(harness.activeTimers().some((timer) => timer.interval), false);
+      assert.strictEqual(harness.root.unpauseCalls, 0);
+    });
+
+    it("keeps the same clock through repeated layouts and following cancellation", () => {
+      const harness = smokeHarness();
+      const timer = harness.slot.smilTimer;
+      const pauses = harness.root.pauseCalls;
+      harness.api.refreshAccessoryLayout("mouth");
+      harness.api.refreshAccessoryLayout("mouth");
+      harness.api.cancelAccessoryFollow("mouth");
+      assert.strictEqual(harness.slot.smilTimer, timer);
+      assert.strictEqual(timer.cleared, false);
+      assert.strictEqual(harness.root.pauseCalls, pauses);
+      assert.strictEqual(harness.activeTimers().filter((entry) => entry.interval).length, 1);
+      tick(harness, 500);
+      assert.strictEqual(harness.root.setTimeCalls.at(-1), 0.5);
+    });
+
+    it("replaces the old document clock on the same object with only the new clock", () => {
+      for (const withSmil of [true, false]) {
+        const harness = smokeHarness();
+        tick(harness, 200);
+        const timer = harness.slot.smilTimer;
+        const oldCalls = harness.root.setTimeCalls.length;
+        const fresh = attachFakeSvgDocument(harness.mouthAccessory, { withSmil });
+        fresh.root.smilTime = 8;
+        harness.api.refreshAccessoryLayout("mouth");
+        assert.strictEqual(timer.cleared, true);
+        assert.strictEqual(harness.activeTimers().filter((entry) => entry.interval).length, withSmil ? 1 : 0);
+        tick(harness, 500);
+        assert.strictEqual(harness.root.setTimeCalls.length, oldCalls);
+        if (withSmil) assert.strictEqual(fresh.root.setTimeCalls.at(-1), 8.5);
+      }
+    });
+
+    it("stops the clock when the nested document disappears or cannot be read", () => {
+      for (const throws of [false, true]) {
+        const harness = smokeHarness();
+        const timer = harness.slot.smilTimer;
+        if (throws) Object.defineProperty(harness.mouthAccessory, "contentDocument", { get() { throw new Error("unavailable"); } });
+        else harness.mouthAccessory.contentDocument = null;
+        assert.strictEqual(harness.api.setAccessorySvgLowPowerPaused("mouth", false), false);
+        assert.strictEqual(timer.cleared, true);
+        assert.strictEqual(harness.slot.smilTimer, null);
+      }
+    });
+
+    it("stops a clock whose nested timeline throws", () => {
+      const harness = smokeHarness();
+      const timer = harness.slot.smilTimer;
+      harness.root.setCurrentTime = () => { throw new Error("retired document"); };
+      assert.doesNotThrow(() => tick(harness, 100));
+      assert.strictEqual(timer.cleared, true);
+      assert.strictEqual(harness.slot.smilTimer, null);
+    });
+
+    it("leaves a retained mouth document paused with no clock after clearing resources", () => {
+      const harness = smokeHarness();
+      tick(harness, 250);
+      const unpauses = harness.root.unpauseCalls;
+      const timer = harness.slot.smilTimer;
+      const stopped = harness.root.getCurrentTime();
+      harness.api.clearAccessoryRuntime("mouth", { clearAsset: true });
+      assert.strictEqual(harness.mouthAccessory.data, "");
+      assert.strictEqual(harness.mouthAccessory.contentDocument, harness.svgDoc, "the fake object retains its document");
+      assert.strictEqual(timer.cleared, true);
+      assert.strictEqual(harness.slot.smilTimer, null);
+      assert.strictEqual(harness.root.unpauseCalls, unpauses);
+      assert.strictEqual(harness.root.paused, true);
+      assert.ok(harness.svgDoc.getElementById("clawd-low-power-pause-svg"));
+      tick(harness, 1000);
+      assert.strictEqual(harness.root.getCurrentTime(), stopped);
+    });
+
+    it("restarts the SMIL clock when rewearing the same retained mouth document", () => {
+      const harness = smokeHarness({ time: 4 });
+      tick(harness, 250);
+      const stopped = harness.root.getCurrentTime();
+      const oldClock = harness.slot.smilTimer;
+      const config = dualSlotConfig();
+      const payloads = {
+        head: config.accessorySlots.head.payload,
+        mouth: { id: "none" },
+      };
+      harness.electronHandlers.onPetAccessorySlotsChange({
+        themeId: "clawd", accessoryGeneration: 6, payloads,
+      });
+      assert.strictEqual(harness.mouthAccessory.data, "");
+      assert.strictEqual(harness.mouthAccessory.contentDocument, harness.svgDoc);
+      assert.strictEqual(harness.root.paused, true);
+      assert.strictEqual(oldClock.cleared, true);
+      assert.strictEqual(harness.slot.smilTimer, null);
+      tick(harness, 1000);
+      assert.strictEqual(harness.root.getCurrentTime(), stopped);
+
+      harness.electronHandlers.onPetAccessorySlotsChange({
+        themeId: "clawd", accessoryGeneration: 7,
+        payloads: { ...payloads, mouth: config.accessorySlots.mouth.payload },
+      });
+      assert.strictEqual(harness.mouthAccessory.data, "../assets/accessories/cigarette.svg");
+      assert.strictEqual(harness.slot.assetReady, false);
+      harness.mouthAccessory.onload();
+      assert.strictEqual(harness.mouthAccessory.contentDocument, harness.svgDoc);
+      assert.strictEqual(harness.root.paused, true);
+      assert.ok(harness.slot.smilTimer);
+      assert.notStrictEqual(harness.slot.smilTimer, oldClock);
+      assert.strictEqual(harness.activeTimers().filter((timer) => timer.interval).length, 1);
+      tick(harness, 500);
+      assert.strictEqual(harness.root.setTimeCalls.at(-1), stopped + 0.5);
+      assert.strictEqual(harness.root.getCurrentTime(), stopped + 0.5);
+    });
+
+    it("clears both slots' follow frames, follow timers and SMIL clocks before unloading", () => {
+      class FakeCSSAnimation {
+        constructor() {
+          this.playState = "running";
+          this.playbackRate = 1;
+          this.startTime = 0;
+          this.currentTime = 0;
+          this.effect = {
+            getComputedTiming: () => ({ duration: 12000, iterations: Infinity }),
+            updateTiming() {},
+          };
+        }
+      }
+
+      for (const phase of ["frame", "timer"]) {
+        const config = dualSlotConfig();
+        config.rendering = {
+          objectChannelFiles: ["first.svg"],
+          discreteSampling: { "first.svg": 24 },
+        };
+        for (const slotName of ["head", "mouth"]) {
+          config.accessorySlots[slotName].attachments.files["first.svg"] = {
+            staticFrame: { cx: 50, baseY: 40, width: 20 },
+            followTarget: { id: "anchor", frame: { cx: 8, baseY: 6, width: 4 } },
+          };
+        }
+        const harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+        const pet = harness.api.pendingNext;
+        pet.contentWindow.CSSAnimation = FakeCSSAnimation;
+        const petSvg = attachFakeSvgDocument(pet, { animations: [new FakeCSSAnimation()] });
+        petSvg.elements.set("anchor", {
+          getCTM: () => ({ a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 }),
+        });
+        const mouthSvg = attachFakeSvgDocument(harness.mouthAccessory, { withSmil: true });
+        pet.listeners.get("load")();
+        harness.accessory.onload();
+        harness.mouthAccessory.onload();
+        if (phase === "timer") {
+          assert.strictEqual(drainActiveTimers(harness, (timer) => timer.raf, 2), 2);
+        }
+        const slots = Object.values(harness.api.accessorySlots);
+        for (const slot of slots) {
+          assert.ok(phase === "frame" ? slot.raf : slot.followTimer);
+          assert.strictEqual(phase === "frame" ? slot.followTimer : slot.raf, null);
+        }
+        assert.ok(harness.api.accessorySlots.mouth.smilTimer);
+        const queued = slots.flatMap((slot) => [slot.raf, slot.followTimer, slot.smilTimer]).filter(Boolean);
+
+        harness.windowListeners.get("beforeunload")();
+
+        for (const slot of slots) {
+          assert.strictEqual(slot.raf, null);
+          assert.strictEqual(slot.followTimer, null);
+          assert.strictEqual(slot.smilTimer, null);
+        }
+        assert.ok(queued.every((timer) => timer.cleared));
+        assert.strictEqual(drainActiveTimers(harness, (timer) => queued.includes(timer)), 0);
+        assert.strictEqual(harness.activeTimers().some((timer) => timer.raf || timer.interval), false);
+        assert.strictEqual(mouthSvg.root.paused, true);
+      }
+    });
+  });
+
+  describe("hidden pet accessories", () => {
+    let harness;
+    let config;
+    let petSvg;
+    let mouthSvg;
+    let matrix;
+    let ctmCalls;
+
+    beforeEach(() => {
+      config = dualSlotConfig();
+      matrix = { a: 2, b: 0, c: 0, d: 2, e: 10, f: 12 };
+      ctmCalls = { head: 0, mouth: 0 };
+      for (const slotName of ["head", "mouth"]) {
+        const descriptor = {
+          staticFrame: { cx: 50, baseY: 40, width: 20 },
+          followTarget: {
+            id: `${slotName}-anchor`,
+            frame: { cx: 8, baseY: 6, width: 4 },
+          },
+        };
+        config.accessorySlots[slotName].attachments.files = {
+          "first.svg": descriptor,
+          "working.svg": descriptor,
+          "hidden.svg": { visibility: "hidden" },
+        };
+      }
+      harness = createRendererHarness({ initialObjectData: "", themeConfig: config });
+      petSvg = attachFakeSvgDocument(harness.api.pendingNext);
+      for (const slotName of ["head", "mouth"]) {
+        petSvg.elements.set(`${slotName}-anchor`, {
+          getCTM() {
+            ctmCalls[slotName]++;
+            return { ...matrix };
+          },
+        });
+      }
+      harness.api.pendingNext.listeners.get("load")();
+      harness.accessory.onload();
+      mouthSvg = attachFakeSvgDocument(harness.mouthAccessory);
+      harness.mouthAccessory.onload();
+      harness.api.setCurrentState("idle");
+    });
+
+    it("cancels both follow frames and pauses the mouth document when hidden", (t) => {
+      const requestFrame = t.mock.method(harness.context, "requestAnimationFrame");
+      const frames = Object.values(harness.api.accessorySlots).map((slot) => slot.raf);
+      assert.ok(frames.every(Boolean));
+      const pausesBefore = mouthSvg.root.pauseCalls;
+      const callsBefore = { ...ctmCalls };
+
+      harness.electronHandlers.onPetHiddenChange(true);
+
+      assert.strictEqual(harness.context.document.hidden, false);
+      for (const slotName of ["head", "mouth"]) {
+        assert.strictEqual(harness.api.accessorySlots[slotName].raf, null);
+      }
+      assert.ok(frames.every((frame) => frame.cleared));
+      assert.strictEqual(mouthSvg.root.pauseCalls, pausesBefore + 1);
+      assert.ok(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"));
+      drainActiveTimers(harness, (timer) => timer.ms === 16, 5);
+      assert.deepStrictEqual(ctmCalls, callsBefore);
+      assert.strictEqual(requestFrame.mock.callCount(), 0);
+      assert.ok(Object.values(harness.api.accessorySlots).every((slot) => slot.raf === null));
+      assert.strictEqual(harness.electronCalls.some((call) => call.name === "setLowPowerIdlePaused"), false);
+    });
+
+    it("lays out a new state and file once while hidden without resuming accessories", () => {
+      harness.electronHandlers.onPetHiddenChange(true);
+      const callsBefore = { ...ctmCalls };
+      const unpausesBefore = mouthSvg.root.unpauseCalls;
+      const positionsBefore = Object.values(harness.api.accessorySlots).map((slot) => slot.lastLayout.matrix.e);
+      matrix.e += 19;
+
+      harness.api.swapToFile("working.svg", "working", true);
+      const next = harness.api.pendingNext;
+      next.contentDocument = petSvg.svgDoc;
+      next.listeners.get("load")();
+
+      assert.strictEqual(harness.api.currentDisplayedSvg, "working.svg");
+      assert.strictEqual(harness.api.currentDisplayedState, "working");
+      for (const [index, slotName] of ["head", "mouth"].entries()) {
+        const slot = harness.api.accessorySlots[slotName];
+        assert.strictEqual(ctmCalls[slotName], callsBefore[slotName] + 1);
+        assert.strictEqual(slot.lastLayout.matrix.e, positionsBefore[index] + 19);
+        assert.strictEqual(slot.raf, null);
+      }
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, true);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore);
+    });
+
+    it("removes the hidden class and refreshes the current pose before resuming in the same task", () => {
+      harness.electronHandlers.onPetHiddenChange(true);
+      const callsBefore = { ...ctmCalls };
+      const positionsBefore = Object.values(harness.api.accessorySlots).map((slot) => slot.lastLayout.matrix.e);
+      const unpausesBefore = mouthSvg.root.unpauseCalls;
+      const hiddenDuringLayout = [];
+      for (const slotName of ["head", "mouth"]) {
+        const target = petSvg.elements.get(`${slotName}-anchor`);
+        const getCTM = target.getCTM;
+        target.getCTM = () => {
+          hiddenDuringLayout.push(harness.context.document.documentElement.classList.contains("pet-hidden"));
+          return getCTM();
+        };
+      }
+      matrix.e += 23;
+
+      harness.electronHandlers.onPetHiddenChange(false);
+
+      assert.deepStrictEqual(hiddenDuringLayout, [false, false]);
+      assert.strictEqual(harness.context.document.documentElement.classList.contains("pet-hidden"), false);
+      for (const [index, slotName] of ["head", "mouth"].entries()) {
+        const slot = harness.api.accessorySlots[slotName];
+        assert.strictEqual(ctmCalls[slotName], callsBefore[slotName] + 1);
+        assert.strictEqual(slot.lastLayout.matrix.e, positionsBefore[index] + 23);
+        assert.ok(slot.raf && !slot.raf.cleared);
+      }
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, false);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore + 1);
+      assert.strictEqual(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"), null);
+    });
+
+    it("refreshes on show during low-power pause and resumes only after low-power recovery", () => {
+      harness.electronHandlers.onPetHiddenChange(true);
+      harness.api.setLowPowerIdleMode(true);
+      harness.api.setLowPowerSvgPaused(true);
+      const callsBefore = { ...ctmCalls };
+      const unpausesBefore = mouthSvg.root.unpauseCalls;
+      const headPosition = harness.api.accessorySlots.head.lastLayout.matrix.e;
+      matrix.e += 29;
+
+      harness.electronHandlers.onPetHiddenChange(false);
+
+      assert.strictEqual(harness.context.document.documentElement.classList.contains("pet-hidden"), false);
+      assert.strictEqual(harness.api.accessorySlots.head.lastLayout.matrix.e, headPosition + 29);
+      for (const slotName of ["head", "mouth"]) {
+        assert.strictEqual(ctmCalls[slotName], callsBefore[slotName] + 1);
+        assert.strictEqual(harness.api.accessorySlots[slotName].raf, null);
+      }
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, true);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore);
+
+      harness.api.setLowPowerSvgPaused(false);
+
+      assert.ok(Object.values(harness.api.accessorySlots).every((slot) => slot.raf && !slot.raf.cleared));
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, false);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore + 1);
+    });
+
+    it("keeps accessories paused when low-power recovers while the page is hidden", () => {
+      harness.api.setLowPowerIdleMode(true);
+      harness.api.setLowPowerSvgPaused(true);
+      harness.electronHandlers.onPetHiddenChange(true);
+      const unpausesBefore = mouthSvg.root.unpauseCalls;
+
+      harness.api.setLowPowerSvgPaused(false);
+
+      assert.strictEqual(harness.api.lowPowerSvgPaused, false);
+      assert.ok(Object.values(harness.api.accessorySlots).every((slot) => slot.raf === null));
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, true);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore);
+      assert.ok(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"));
+
+      harness.electronHandlers.onPetHiddenChange(false);
+
+      assert.ok(Object.values(harness.api.accessorySlots).every((slot) => slot.raf && !slot.raf.cleared));
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, false);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore + 1);
+    });
+
+    it("pauses an accessory loaded while hidden before computing its first layout", () => {
+      harness.electronHandlers.onPetHiddenChange(true);
+      harness.electronHandlers.onPetAccessorySlotsChange({
+        themeId: "clawd",
+        accessoryGeneration: 6,
+        payloads: {
+          head: config.accessorySlots.head.payload,
+          mouth: { ...config.accessorySlots.mouth.payload, assetFile: "cigarette-new.svg" },
+        },
+      });
+      mouthSvg = attachFakeSvgDocument(harness.mouthAccessory);
+      const pausesDuringLayout = [];
+      const target = petSvg.elements.get("mouth-anchor");
+      const getCTM = target.getCTM;
+      target.getCTM = () => {
+        pausesDuringLayout.push(mouthSvg.root.pauseCalls);
+        return getCTM();
+      };
+
+      harness.mouthAccessory.onload();
+
+      assert.deepStrictEqual(pausesDuringLayout, [1]);
+      assert.strictEqual(mouthSvg.root.pauseCalls, 1);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, 0);
+      assert.ok(Object.values(harness.api.accessorySlots).every((slot) => slot.raf === null));
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, true);
+
+      harness.electronHandlers.onPetHiddenChange(false);
+
+      assert.strictEqual(mouthSvg.root.unpauseCalls, 1);
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, false);
+      assert.ok(Object.values(harness.api.accessorySlots).every((slot) => slot.raf && !slot.raf.cleared));
+    });
+
+    it("ignores duplicate hidden notifications including the initial false replay", (t) => {
+      const syncPause = t.mock.method(harness.context, "syncAccessorySvgLowPowerPaused");
+      let previousHidden = false;
+      for (const hidden of [false, true, true, false, false]) {
+        const callsBefore = { ...ctmCalls };
+        const syncsBefore = syncPause.mock.callCount();
+        const pausesBefore = mouthSvg.root.pauseCalls;
+        const unpausesBefore = mouthSvg.root.unpauseCalls;
+        const framesBefore = Object.values(harness.api.accessorySlots).map((slot) => slot.raf);
+
+        harness.electronHandlers.onPetHiddenChange(hidden);
+
+        if (hidden === previousHidden) {
+          assert.deepStrictEqual(ctmCalls, callsBefore);
+          assert.strictEqual(syncPause.mock.callCount(), syncsBefore);
+          assert.strictEqual(mouthSvg.root.pauseCalls, pausesBefore);
+          assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore);
+          assert.deepStrictEqual(Object.values(harness.api.accessorySlots).map((slot) => slot.raf), framesBefore);
+        }
+        previousHidden = hidden;
+      }
+    });
+
+    it("does not restart accessories on resize or visibility restore while hidden", (t) => {
+      const requestFrame = t.mock.method(harness.context, "requestAnimationFrame");
+      harness.electronHandlers.onPetHiddenChange(true);
+      const unpausesBefore = mouthSvg.root.unpauseCalls;
+      for (const refresh of [
+        () => harness.windowListeners.get("resize")({ type: "resize" }),
+        () => {
+          harness.context.document.hidden = true;
+          harness.documentListeners.get("visibilitychange")();
+          harness.context.document.hidden = false;
+          harness.documentListeners.get("visibilitychange")();
+        },
+      ]) {
+        const callsBefore = { ...ctmCalls };
+        matrix.f += 7;
+        refresh();
+        for (const slotName of ["head", "mouth"]) {
+          assert.strictEqual(ctmCalls[slotName], callsBefore[slotName] + 1);
+          assert.strictEqual(harness.api.accessorySlots[slotName].raf, null);
+        }
+        assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, true);
+        assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore);
+      }
+      assert.strictEqual(requestFrame.mock.callCount(), 0);
+    });
+
+    it("keeps a theme-hidden slot paused when the page is shown", () => {
+      harness.electronHandlers.onPetHiddenChange(true);
+      harness.api.swapToFile("hidden.svg", "working", true);
+      const next = harness.api.pendingNext;
+      next.contentDocument = petSvg.svgDoc;
+      next.listeners.get("load")();
+      const unpausesBefore = mouthSvg.root.unpauseCalls;
+
+      harness.electronHandlers.onPetHiddenChange(false);
+
+      for (const slotName of ["head", "mouth"]) {
+        const slot = harness.api.accessorySlots[slotName];
+        assert.strictEqual(slot.element.style.display, "none");
+        assert.strictEqual(slot.element.style.visibility, "hidden");
+        assert.strictEqual(slot.lastLayout, null);
+        assert.strictEqual(slot.raf, null);
+      }
+      assert.strictEqual(harness.api.accessorySlots.mouth.documentPaused, true);
+      assert.strictEqual(mouthSvg.root.unpauseCalls, unpausesBefore);
+      assert.ok(mouthSvg.svgDoc.getElementById("clawd-low-power-pause-svg"));
+    });
   });
 
   it("keeps sibling objects outside tint and pet-media swap cleanup", () => {

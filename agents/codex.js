@@ -46,7 +46,9 @@ module.exports = {
     // Official PermissionRequest is the real approval path.
     interactiveBubble: true,
     sessionEnd: true, // official SessionEnd fires on thread teardown; task_complete still marks individual turns done
-    subagent: false,
+    // Local JSONL thread_spawn relationships drive presentation only. Official
+    // hooks/remote monitoring and permission provenance remain independent.
+    subagent: true,
   },
   logConfig: {
     sessionDir: "~/.codex/sessions",

@@ -48,7 +48,7 @@ describe("mobile permission preview consent commands", () => {
     assert.strictEqual(updateRegistry.mobilePreviewEnabled.lockKey, "mobilePreview");
     for (const name of [
       "setMobilePermissionPreviewEnabled",
-      "mobilePreview.regenerateToken",
+      "mobilePreview.refreshPairCode",
       "mobilePreview.resetAccess",
     ]) {
       assert.strictEqual(commandRegistry[name].lockKey, "mobilePreview", name);
@@ -233,7 +233,8 @@ describe("updateRegistry pure-data validators", () => {
       "hideBubbles", "permissionBubblesEnabled", "lowPowerIdleMode",
       "testReactionsEnabled",
       "allowEdgePinning", "disableMiniMode", "codexHookHealthNotifyEnabled",
-      "quotaMergeSources", "freeRoam", "roamConstrainAxis",
+      "quotaMergeSources", "freeRoam", "roamConstrainAxis", "idleActivities",
+      "petAlwaysOnTop",
     ]) {
       assert.strictEqual(updateRegistry[key](true, deps).status, "ok", `${key}(true)`);
       assert.strictEqual(updateRegistry[key](false, deps).status, "ok", `${key}(false)`);
@@ -259,6 +260,14 @@ describe("updateRegistry pure-data validators", () => {
     assert.strictEqual(calls, 1);
     assert.deepStrictEqual(entry.effect(false, {}), { status: "ok" });
     assert.deepStrictEqual(entry.effect(false), { status: "ok" });
+  });
+
+  it("accepts only supported idle activity frequencies", () => {
+    for (const value of ["low", "medium", "high"]) {
+      assert.strictEqual(updateRegistry.idleActivityFrequency(value).status, "ok");
+    }
+    assert.strictEqual(updateRegistry.idleActivityFrequency("often").status, "error");
+    assert.strictEqual(updateRegistry.idleActivityFrequency(true).status, "error");
   });
 
   it("accepts only supported quota ring display modes", () => {
@@ -2175,6 +2184,19 @@ describe("doctor repair commands", () => {
     assert.match(r.message, /restartClawd/);
   });
 
+  it("exposes restartClawd as a confirmed command for the GPU switch (#1183)", async () => {
+    const calls = [];
+    const deps = { restartClawd: () => calls.push("restart") };
+
+    const refused = await commandRegistry.restartClawd({}, deps);
+    assert.strictEqual(refused.status, "error");
+    assert.deepStrictEqual(calls, []);
+
+    const r = await commandRegistry.restartClawd({ confirmed: true }, deps);
+    assert.strictEqual(r.status, "ok");
+    assert.deepStrictEqual(calls, ["restart"]);
+  });
+
   it("rejects Doctor theme repair so Doctor does not reset user themes", async () => {
     const calls = [];
     const r = await commandRegistry.repairDoctorIssue({ type: "theme-health" }, {
@@ -3629,5 +3651,52 @@ describe("version validator", () => {
     assert.strictEqual(updateRegistry.version(0, deps).status, "error");
     assert.strictEqual(updateRegistry.version(-1, deps).status, "error");
     assert.strictEqual(updateRegistry.version("1", deps).status, "error");
+  });
+});
+
+describe("idle behavior validation and command", () => {
+  for (const [key, other] of [["freeRoam", "idleActivities"], ["idleActivities", "freeRoam"]]) {
+    it(`${key} validates booleans and rejects the conflicting enabled mode`, () => {
+      const validate = updateRegistry[key];
+      assert.strictEqual(typeof validate, "function");
+      assert.strictEqual(validate(true).status, "ok");
+      assert.strictEqual(validate(true, { snapshot: { [other]: false } }).status, "ok");
+      const conflict = validate(true, { snapshot: { [other]: true } });
+      assert.strictEqual(conflict.status, "error");
+      assert.match(conflict.message, /mutually exclusive.*setIdleBehavior/);
+      for (const otherValue of [false, true]) {
+        assert.strictEqual(validate(false, { snapshot: { [other]: otherValue } }).status, "ok");
+        for (const value of [null, undefined, "true", 1, {}, []]) {
+          assert.strictEqual(validate(value, { snapshot: { [other]: otherValue } }).status, "error");
+        }
+      }
+    });
+  }
+
+  const targets = {
+    none: { freeRoam: false, idleActivities: false },
+    roam: { freeRoam: true, idleActivities: false },
+    activities: { freeRoam: false, idleActivities: true },
+  };
+  for (const [mode, target] of Object.entries(targets)) {
+    it(`setIdleBehavior commits the ${mode} pair for string and object payloads`, () => {
+      for (const payload of [mode, { mode }]) {
+        for (const freeRoam of [false, true]) {
+          for (const idleActivities of [false, true]) {
+            const result = commandRegistry.setIdleBehavior(payload, { snapshot: { freeRoam, idleActivities } });
+            assert.deepStrictEqual(result, freeRoam === target.freeRoam && idleActivities === target.idleActivities
+              ? { status: "ok", noop: true }
+              : { status: "ok", commit: target });
+          }
+        }
+        assert.deepStrictEqual(commandRegistry.setIdleBehavior(payload), { status: "ok", commit: target });
+      }
+    });
+  }
+
+  it("setIdleBehavior rejects missing and invalid modes", () => {
+    for (const payload of [undefined, null, {}, [], true, 1, "", "invalid", { mode: "invalid" }, { mode: false }]) {
+      assert.strictEqual(commandRegistry.setIdleBehavior(payload).status, "error");
+    }
   });
 });

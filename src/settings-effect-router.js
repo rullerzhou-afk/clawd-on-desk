@@ -94,12 +94,14 @@ function createSettingsEffectRouter(options = {}) {
   const syncSessionHudVisibility = options.syncSessionHudVisibility || noop;
   const handleSessionHudPinnedChanged = options.handleSessionHudPinnedChanged || noop;
   const reclampPetAfterEdgePinningChange = options.reclampPetAfterEdgePinningChange || noop;
+  const applyEyeTrackingEnabledChange = options.applyEyeTrackingEnabledChange || noop;
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
   const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const refreshDisplayedVisual = options.refreshDisplayedVisual || noop;
+  const refreshPetPresentation = options.refreshPetPresentation || noop;
   const rebuildAllMenus = options.rebuildAllMenus || noop;
   const reconcilePowerSaveBlocker = options.reconcilePowerSaveBlocker || noop;
   const disableMobilePermissionObservation = options.disableMobilePermissionObservation || noop;
@@ -356,6 +358,15 @@ function createSettingsEffectRouter(options = {}) {
         warn(logWarn, "Clawd: quota merge mode re-emit failed:", err);
       }
     }
+    if ("sessionHudHideCompletedCodexEphemeral" in changes || "sessionHudHideActiveCodexEphemeral" in changes) {
+      // Rebuild the snapshot immediately;
+      // never run lifecycle cleanup, acknowledge completion or touch approvals.
+      safeCall(logWarn, "Clawd: Codex ephemeral HUD preference refresh failed:",
+        emitSessionSnapshot, { force: true });
+      if ("sessionHudHideActiveCodexEphemeral" in changes) {
+        safeCall(logWarn, "Clawd: Codex ephemeral pet preference refresh failed:", refreshPetPresentation);
+      }
+    }
     if ("sessionHudCleanupDetached" in changes && changes.sessionHudCleanupDetached === true) {
       try {
         cleanStaleSessions();
@@ -393,6 +404,16 @@ function createSettingsEffectRouter(options = {}) {
     }
     if ("disableMiniMode" in changes && changes.disableMiniMode && getMiniMode()) {
       safeCall(logWarn, "Clawd: disableMiniMode exit failed:", exitMiniMode);
+    }
+    if ("eyeTrackingEnabled" in changes) {
+      // #1276: park the gaze forward (or force a resend when re-enabled) so
+      // the toggle applies without waiting for the next cursor move.
+      safeCall(
+        logWarn,
+        "Clawd: eyeTrackingEnabled change failed:",
+        applyEyeTrackingEnabledChange,
+        changes.eyeTrackingEnabled
+      );
     }
     if ("idleVisual" in changes) {
       safeCall(logWarn, "Clawd: idle visual refresh failed:", refreshIdleVisual);

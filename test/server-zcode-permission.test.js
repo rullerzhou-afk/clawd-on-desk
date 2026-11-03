@@ -17,7 +17,8 @@ function makeFakeHttp() {
   function createHttpServer(handler) {
     capturedHandler = handler;
     const server = new EventEmitter();
-    server.listen = function () { this.emit("listening"); };
+    server.listen = function (port) { this.boundPort = port; this.emit("listening"); };
+    server.address = function () { return { port: this.boundPort }; };
     server.close = function () {};
     return server;
   }
@@ -305,15 +306,22 @@ describe("ZCode /permission path", () => {
 
     // ZCode 3.5.3 ships a real ExitPlanMode; without a reviewed decision-tool
     // contract it has no allow/answer/plan capability, so neither the bubble
-    // nor a remote card may decide — hand it back to the native UI.
+    // nor a remote card may decide — hand it back to the native UI. #1264:
+    // the drop still flashes the transient PermissionRequest notification so
+    // the pet is not silent while ZCode waits on its native prompt.
     assert.strictEqual(res.statusCode, 204);
     assert.strictEqual(pendingPermissions.length, 0);
     assert.strictEqual(shown.length, 0);
-    assert.strictEqual(updates.length, 0);
+    assert.strictEqual(updates.length, 1);
+    assert.deepStrictEqual(updates[0].slice(0, 3), [
+      localSessionKey("zcode:s1"),
+      "notification",
+      "PermissionRequest",
+    ]);
   });
 
-  it("never offers decisions for AskUserQuestion (no answerQuestions capability)", async () => {
-    const { handler, pendingPermissions } = startServer();
+  it("falls back with the pet flash for an AskUserQuestion payload without a questions array", async () => {
+    const { handler, pendingPermissions, updates } = startServer();
 
     const res = await callPermission(handler, {
       agent_id: "zcode",
@@ -322,8 +330,223 @@ describe("ZCode /permission path", () => {
       tool_input: { question: "continue?" },
     });
 
+    // ZCode 3.16.3's AskUserQuestion is answerable over the PermissionRequest
+    // transport, but a payload without a well-formed questions array has no
+    // answerable surface — no decision, native prompt fallback, pet flash.
     assert.strictEqual(res.statusCode, 204);
     assert.strictEqual(pendingPermissions.length, 0);
+    assert.strictEqual(updates.length, 1);
+  });
+
+  it("opens an answerable elicitation bubble for a well-formed AskUserQuestion", async () => {
+    const { handler, pendingPermissions, updates, shown } = startServer();
+    const questions = [
+      {
+        question: "Proceed with restart?",
+        header: "Restart",
+        multiSelect: false,
+        options: [
+          { label: "Restart now", description: "Reboot the dev server" },
+          { label: "Wait", description: "Keep the current process" },
+        ],
+      },
+    ];
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "AskUserQuestion",
+      tool_input: { questions },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(shown.length, 1);
+    const entry = pendingPermissions[0];
+    assert.strictEqual(entry.isZcode, true);
+    assert.strictEqual(entry.isElicitation, true);
+    assert.strictEqual(entry.interaction.capabilities.answerQuestions, true);
+    assert.strictEqual(entry.toolInput.questions[0].question, "Proceed with restart?");
+    assert.strictEqual(entry.toolInput.questions[0].options[0].label, "Restart now");
+    assert.strictEqual(entry.elicitationWireInput.questions[0].question, "Proceed with restart?");
+    assert.deepStrictEqual(entry.elicitationWireInput.questions, questions);
+    assert.strictEqual(updates.length, 1);
+    assert.deepStrictEqual(updates[0].slice(0, 3), [
+      localSessionKey("zcode:s1"),
+      "notification",
+      "PermissionRequest",
+    ]);
+
+    res.destroy();
+  });
+
+  it("keeps remote-only approval alive for a well-formed AskUserQuestion when bubbles are disabled", async () => {
+    const remoteStarts = [];
+    const { handler, pendingPermissions, updates } = startServer({
+      getBubblePolicy: () => ({ enabled: false, autoCloseMs: null }),
+      maybeAutoResolveSessionPermission: () => false,
+      maybeStartRemoteApproval: (entry) => {
+        remoteStarts.push(entry);
+        return true;
+      },
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Ship now?",
+            options: [
+              { label: "Ship", description: "yes" },
+              { label: "Hold", description: "no" },
+            ],
+          },
+        ],
+      },
+    });
+    const res = makeRes();
+
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // Bubbles off means no desktop window, not a full exit: the question card
+    // still reaches the remote channel, driven by the answerQuestions
+    // capability (#1264). The remote entry carries the elicitation fields so
+    // submitted answers key off the verbatim wire input, not a truncated copy.
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(remoteStarts.length, 1);
+    assert.strictEqual(remoteStarts[0].isElicitation, true);
+    assert.strictEqual(remoteStarts[0].interaction.capabilities.answerQuestions, true);
+    assert.strictEqual(remoteStarts[0].elicitationWireInput.questions[0].question, "Ship now?");
+    assert.strictEqual(remoteStarts[0].toolInput.questions[0].question, "Ship now?");
+    assert.strictEqual(updates.length, 1);
+    res.destroy();
+  });
+
+  it("stamps the not-inspected review hold without running the command (review configured)", async () => {
+    const { handler, pendingPermissions } = startServer({
+      getPermissionReviewConfig: () => ({ command: ["/bin/echo", "zcode-review-probe"], timeoutMs: 1000 }),
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    // ZCode tool approvals never auto-allow (automation eligibility is
+    // false/false), so #995 candidacy fails and the command must not run —
+    // but the entry still carries the fail-closed not-inspected hold stamp
+    // so a later session grant cannot auto-resolve it unreviewed.
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.deepStrictEqual(pendingPermissions[0].permissionReview, {
+      configured: true,
+      hold: true,
+      tag: "not-inspected",
+      note: null,
+      warning: false,
+      exitCode: null,
+    });
+    res.destroy();
+  });
+
+  it("runs the review gate for answerable AskUserQuestion and stamps the hold", async () => {
+    const { handler, pendingPermissions } = startServer({
+      getPermissionReviewConfig: () => ({ command: ["/bin/echo", "zcode-review-probe"], timeoutMs: 1000 }),
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "AskUserQuestion",
+      tool_input: {
+        questions: [
+          {
+            question: "Ship now?",
+            options: [
+              { label: "Ship", description: "yes" },
+              { label: "Hold", description: "no" },
+            ],
+          },
+        ],
+      },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.deepStrictEqual(pendingPermissions[0].permissionReview, {
+      configured: true,
+      hold: true,
+      tag: "not-inspected",
+      note: null,
+      warning: false,
+      exitCode: null,
+    });
+    res.destroy();
+  });
+
+  it("leaves permissionReview null when no review command is configured", async () => {
+    const { handler, pendingPermissions } = startServer();
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.strictEqual(pendingPermissions[0].permissionReview, null);
+    res.destroy();
+  });
+
+  it("stamps the settings-error hold when the review config cannot be read", async () => {
+    const { handler, pendingPermissions } = startServer({
+      getPermissionReviewConfig() {
+        throw new Error("prefs unavailable");
+      },
+    });
+
+    const req = makeReq({
+      agent_id: "zcode",
+      session_id: "zcode:s1",
+      tool_name: "Bash",
+      tool_input: { command: "npm test" },
+    });
+    const res = makeRes();
+    handler(req, res);
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.strictEqual(res.writableEnded, false);
+    assert.strictEqual(pendingPermissions.length, 1);
+    assert.deepStrictEqual(pendingPermissions[0].permissionReview, {
+      configured: true,
+      hold: true,
+      tag: "settings-error",
+      note: null,
+      warning: false,
+      exitCode: null,
+    });
+    res.destroy();
   });
 
   it("rolls back to no-decision when updateSession throws (no pending leak)", async () => {

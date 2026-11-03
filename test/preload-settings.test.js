@@ -43,6 +43,19 @@ function loadPreload() {
   return { exposed, ipcHandlers, invokes };
 }
 
+test("settings preload exposes device listing and revocation IPC", async () => {
+  const { exposed, invokes } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  await api.getMobileDevices();
+  await api.revokeMobileDevice("d_0123456789abcdef");
+  await api.revokeMobileLegacy();
+  assert.deepEqual(invokes, [
+    ["settings:mobile-devices"],
+    ["settings:revoke-mobile-device", "d_0123456789abcdef"],
+    ["settings:revoke-mobile-legacy"],
+  ]);
+});
+
 test("settings preload keeps every Feishu approver operation on the generic command IPC", async () => {
   const { exposed, invokes } = loadPreload();
   const settingsAPI = exposed.get("settingsAPI");

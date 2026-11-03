@@ -7,6 +7,7 @@ const os = require("os");
 const crypto = require("crypto");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
+const { quotePowerShellSingleArg } = require("../hooks/json-utils");
 const { isKdeWaylandSession } = require("./session-focus");
 
 const isMac = process.platform === "darwin";
@@ -240,7 +241,7 @@ function normalizeHwndString(value) {
 }
 
 function psSingleQuotedString(value) {
-  return `'${String(value || "").replace(/'/g, "''")}'`;
+  return quotePowerShellSingleArg(value || "");
 }
 
 function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates, orcaHosted = false) {
@@ -2582,6 +2583,9 @@ return {
   initFocusHelper,
   killFocusHelper,
   focusTerminalWindow,
+  focusProcessAppWindow: request => require("./process-app-focus").focusProcessAppWindow(request, {
+    execFile, platform: process.platform, windowsActivationCode: PS_FOCUS_ADDTYPE,
+  }),
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
   cleanup,

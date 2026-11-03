@@ -44,6 +44,10 @@ const NON_RELOADABLE_RENDER_GONE_REASONS = new Set([
 const RECONCILE_QUIET_MS = 100;
 const SETTLE_MS = 400;
 const HIT_QUIET_MS = 250;
+// Topology events and AppKit's window moves need not arrive in the same
+// order. These are bounded verification passes, not a permanent poll.
+const HIT_TOPOLOGY_CHECK_DELAYS_MS = [250, 500, 1000];
+const MAC_HIT_REPAIR_LIMIT = 2;
 
 // I5: below this width/height the hit rect is degenerate (menu mini-entry's
 // fully-offscreen preload stage, or a 1-5px transition sliver) — don't try to
@@ -116,6 +120,11 @@ function createPetWindowRuntime(options = {}) {
   const windowsHitWindowFocusable = isWin && options.windowsHitWindowFocusable === true;
   const linuxWindowType = options.linuxWindowType;
   const topmostLevel = options.topmostLevel;
+  // #1275: master always-on-top preference. Gates the creation-time topmost
+  // writes and the size-preview restore so a pref-off pet is born (and
+  // stays) in the normal band; the runtime-level reassert paths gate
+  // themselves in topmost-runtime.js.
+  const getAlwaysOnTop = options.getAlwaysOnTop || (() => true);
   const getRenderWindow = options.getRenderWindow || (() => null);
   const getHitWindow = options.getHitWindow || (() => null);
   const getSettingsWindow = options.getSettingsWindow || (() => null);
@@ -353,6 +362,11 @@ function createPetWindowRuntime(options = {}) {
   // forever (write derived -> WM clamps -> adopt -> next sync re-derives the
   // same target -> write derived again -> ...).
   let lastAdoptedHitOutcome = null;
+  let macHitRepairTarget = null;
+  let macHitRepairAttempts = 0;
+  let macHitRepairLimitLogged = false;
+  let hitReconcileDirty = false;
+  let hitTopologyTimer = null;
 
   // I5 applyHitInputState() single-writer state.
   let hitGeometrySuppressed = false;
@@ -951,6 +965,10 @@ function createPetWindowRuntime(options = {}) {
   // synchronous reconcile here would read geometry that hasn't landed yet);
   // it just requeues the normal debounced quiet-point path.
   function releaseReconcileProtection() {
+    if (hitReconcileDirty) {
+      hitReconcileDirty = false;
+      scheduleHitReconcile();
+    }
     if (!reconcileDirty && deferredSweepGen < 0) return;
     reconcileDirty = false;
     scheduleReconcile();
@@ -1358,6 +1376,13 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function showPetWindows() {
+    // #1275: these windows stayed shown; showInactive would raise the pet
+    // above the ordinary window that was covering it.
+    if (isMac && !getAlwaysOnTop()) {
+      const win = getRenderWindow();
+      if (isLiveWindow(win)) win.setOpacity(1);
+      return;
+    }
     const win = getRenderWindow();
     if (isLiveWindow(win)) {
       uncloakIfAbnormal(win);
@@ -1373,6 +1398,14 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function hidePetWindows() {
+    // #1275: hiding a non-topmost Mac window leaves it on just one Space
+    // after fullscreen exits (observed on-device). Keep both windows shown;
+    // opacity hides the body and applyHitInputState makes the input pass through.
+    if (isMac && !getAlwaysOnTop()) {
+      const win = getRenderWindow();
+      if (isLiveWindow(win)) win.setOpacity(0);
+      return;
+    }
     const win = getRenderWindow();
     if (isLiveWindow(win)) win.hide();
     const hitWin = getHitWindow();
@@ -1397,6 +1430,8 @@ function createPetWindowRuntime(options = {}) {
     const nextEffective = isPetEffectivelyHidden();
     const crossedEdge = nextEffective !== prevEffective;
     if (crossedEdge) {
+      // Sent before the window shows, so the page can start painting first.
+      sendToRenderer("pet-hidden-change", nextEffective);
       if (nextEffective) {
         hidePetWindows();
         if (options.syncFloatingSurfaces !== false) hideFloatingSurfacesForPet();
@@ -1907,13 +1942,48 @@ function createPetWindowRuntime(options = {}) {
     if (hitConfirmTimer) { clearTimeoutFn(hitConfirmTimer); hitConfirmTimer = null; }
   }
 
+  // A display topology change can make AppKit/WindowServer relocate the
+  // transparent hit window independently of the render window (notably when
+  // a display disappears or a display's scale/resolution changes). The next
+  // derived target can still equal lastRequestedHitRect, so syncHitWin()'s
+  // normal same-target optimization would otherwise leave the native hit
+  // window at its OS-adjusted position. Drop every hit-side write/reconcile
+  // cache here so the topology handler's next sync performs a definitive
+  // setBounds() against the current visual geometry. If a drag owns pointer
+  // capture, syncHitWin() still defers the write; the invalidated cache then
+  // guarantees the drag-release sync cannot mistake the stale rect for a
+  // settled one.
+  function invalidateHitGeometryForTopologyChange() {
+    lastRequestedHitRect = null;
+    lastHitWorkArea = null;
+    lastHitClampBounds = null;
+    hitRetriedRect = null;
+    hitGeometryDrift = null;
+    lastAdoptedHitOutcome = null;
+    if (hitQuietTimer) { clearTimeoutFn(hitQuietTimer); hitQuietTimer = null; }
+    resetHitReconcileObservation();
+    macHitRepairTarget = null;
+    macHitRepairAttempts = 0;
+    macHitRepairLimitLogged = false;
+    if (hitTopologyTimer) { clearTimeoutFn(hitTopologyTimer); hitTopologyTimer = null; }
+    if (isMac) scheduleHitTopologyCheck(0);
+  }
+
+  function scheduleHitTopologyCheck(index) {
+    if (index >= HIT_TOPOLOGY_CHECK_DELAYS_MS.length) return;
+    hitTopologyTimer = setTimeoutFn(() => {
+      hitTopologyTimer = null;
+      if (!isLiveWindow(getHitWindow()) || !isLiveWindow(getRenderWindow())) return;
+      runHitReconcile();
+      scheduleHitTopologyCheck(index + 1);
+    }, HIT_TOPOLOGY_CHECK_DELAYS_MS[index]);
+  }
+
   // What syncHitWin() reports back. "deferred" is a normal outcome — a drag is
   // holding the pointer, the windows are not up yet, or the rect is a
   // transient sliver — and callers that care about the new geometry should
-  // retry rather than warn. "failed" means the rect could not be resolved at
-  // all; with today's guards that is unreachable (every clip step returns a
-  // rect, and bounds are non-null once the windows are live), so it is defence
-  // in depth for callers that inject their own sync, not a live path.
+  // retry rather than warn. "failed" means no rect could be resolved, or
+  // macOS kept a mismatched native rect after the bounded repair budget.
   const APPLIED_HIT_SYNC = Object.freeze({ applied: true, deferred: false });
   const DEFERRED_HIT_SYNC = Object.freeze({ applied: false, deferred: true });
   const FAILED_HIT_SYNC = Object.freeze({ applied: false, deferred: false });
@@ -1980,15 +2050,44 @@ function createPetWindowRuntime(options = {}) {
 
     const target = { x, y, width: w, height: h };
     const wasSuppressed = hitGeometrySuppressed;
+    // A cached request is not proof that AppKit kept the native window
+    // there. Read back on macOS even when the derived target is unchanged.
+    // The repair budget belongs to a target/topology, NOT a move event or a
+    // successful readback: write echoes must not re-arm a rejected write.
+    let repairNativeDrift = false;
+    let nativeRepairFailed = false;
+    if (isMac) {
+      if (!sameRect(macHitRepairTarget, target)) {
+        macHitRepairTarget = { ...target };
+        macHitRepairAttempts = 0;
+        macHitRepairLimitLogged = false;
+      }
+      const settled = lastAdoptedHitOutcome && sameRect(target, lastAdoptedHitOutcome.derived)
+        ? lastAdoptedHitOutcome.actual : target;
+      if (sameRect(lastRequestedHitRect, settled) && !sameRect(hitWin.getBounds(), settled)) {
+        if (macHitRepairAttempts < MAC_HIT_REPAIR_LIMIT) {
+          macHitRepairAttempts += 1;
+          repairNativeDrift = true;
+          logReconcileEvent("hit", settled, hitWin.getBounds(), "repair-mac-drift", "n/a", "n/a",
+            `attempt=${macHitRepairAttempts}`);
+        } else {
+          nativeRepairFailed = true;
+          if (!macHitRepairLimitLogged) {
+            macHitRepairLimitLogged = true;
+            logReconcileEvent("hit", settled, hitWin.getBounds(), "mac-repair-limit", "n/a", "n/a");
+          }
+        }
+      }
+    }
     // PR #751 Codex review #6 (rework batch B-3): if this derived target
     // matches whatever derivation last led to an adopted WM-clamped outcome,
     // keep that outcome as settled fact rather than re-initiating a write to
     // the derived value runHitReconcile() already established gets clamped
     // away — recovering from suppression always needs a real write, so that
     // still takes the normal path even if the derivation happens to match.
-    if (!wasSuppressed && lastAdoptedHitOutcome && sameRect(target, lastAdoptedHitOutcome.derived)) {
+    if (!wasSuppressed && !repairNativeDrift && lastAdoptedHitOutcome && sameRect(target, lastAdoptedHitOutcome.derived)) {
       lastRequestedHitRect = { ...lastAdoptedHitOutcome.actual };
-    } else if (wasSuppressed || !sameRect(lastRequestedHitRect, target)) {
+    } else if (wasSuppressed || repairNativeDrift || !sameRect(lastRequestedHitRect, target)) {
       // PR #751 second-review C-3 (Codex B3): lastHitWorkArea/lastHitClampBounds
       // are the write basis runHitReconcile() judges THIS rect against later
       // (A-2's own point: judge against what was true when written, not
@@ -2008,6 +2107,8 @@ function createPetWindowRuntime(options = {}) {
       hitRetriedRect = null;
       lastAdoptedHitOutcome = null;
       resetHitReconcileObservation();
+      // Also verify a repair when AppKit emits no move/resize event.
+      if (isMac) scheduleHitReconcile();
     }
     // Update shape if hitbox dimensions changed (e.g. after resize).
     if (w !== hitShapeWidth || h !== hitShapeHeight) {
@@ -2026,7 +2127,7 @@ function createPetWindowRuntime(options = {}) {
     // change hitboxes without moving the window, so the overlap answer can
     // flip right here. Cheap + edge-triggered inside.
     syncImeEditingPetDodge();
-    return APPLIED_HIT_SYNC;
+    return nativeRepairFailed ? FAILED_HIT_SYNC : APPLIED_HIT_SYNC;
   }
 
   // §4.3.11's hit-side reconcile. Debounced on its own (longer) quiet period
@@ -2082,6 +2183,19 @@ function createPetWindowRuntime(options = {}) {
   //     hitRetriedRect comment below.
   function runHitReconcile() {
     const hitWin = getHitWindow();
+    if (isMac) {
+      if (!isLiveWindow(hitWin) || !isLiveWindow(getRenderWindow())) return;
+      if (dragLocked || getMiniTransitioning() || isMiniAnimating()
+        || settingsSizePreviewSyncFrozen || isRoamAnimating()) {
+        hitReconcileDirty = true;
+        return;
+      }
+      hitReconcileDirty = false;
+      // Derive from the current visual geometry, never replay the stale
+      // pre-drag/pre-theme target. Linux keeps its separate WM grab policy.
+      syncHitWin();
+      return;
+    }
     if (!isLiveWindow(hitWin) || !lastRequestedHitRect) return;
     const actual = hitWin.getBounds();
 
@@ -2219,7 +2333,7 @@ function createPetWindowRuntime(options = {}) {
       y: initialWindowBounds.y,
       frame: false,
       transparent: true,
-      alwaysOnTop: true,
+      alwaysOnTop: getAlwaysOnTop(),
       resizable: false,
       skipTaskbar: true,
       hasShadow: false,
@@ -2239,6 +2353,22 @@ function createPetWindowRuntime(options = {}) {
     renderWin.setFocusable(false);
 
     if (isLinux) {
+      // Native window updates can reset the input region. Restore the
+      // output-only window's click-through after those updates have finished.
+      let clickThroughPending = false;
+      const restoreRenderClickThrough = () => {
+        if (clickThroughPending) return;
+        clickThroughPending = true;
+        setImmediate(() => {
+          clickThroughPending = false;
+          if (isLiveWindow(renderWin)) renderWin.setIgnoreMouseEvents(true);
+        });
+      };
+      for (const event of ["move", "resize", "show"]) {
+        renderWin.on(event, restoreRenderClickThrough);
+      }
+      restoreRenderClickThrough();
+
       applyLinuxAllWorkspaces(renderWin);
       // Output-only window: keep WM keyboard focus off it, or the sticky pet
       // wins mutter's MRU focus on every workspace switch (see
@@ -2264,7 +2394,7 @@ function createPetWindowRuntime(options = {}) {
       });
     }
 
-    if (isWin) renderWin.setAlwaysOnTop(true, topmostLevel);
+    if (isWin && getAlwaysOnTop()) renderWin.setAlwaysOnTop(true, topmostLevel);
     if (isWin) {
       let sessionEndFlushed = false;
       const flushForSessionEnd = () => {
@@ -2331,7 +2461,7 @@ function createPetWindowRuntime(options = {}) {
       y: initialHitWindowBounds.y,
       frame: false,
       transparent: true,
-      alwaysOnTop: true,
+      alwaysOnTop: getAlwaysOnTop(),
       resizable: false,
       skipTaskbar: true,
       hasShadow: false,
@@ -2368,7 +2498,7 @@ function createPetWindowRuntime(options = {}) {
     applyLinuxAllWorkspaces(hitWin);
     hitWin.showInactive();
     keepOutOfTaskbar(hitWin);
-    if (isWin) hitWin.setAlwaysOnTop(true, topmostLevel);
+    if (isWin && getAlwaysOnTop()) hitWin.setAlwaysOnTop(true, topmostLevel);
     reapplyMacVisibility();
     hitWin.loadFile(optionsArg.loadFilePath);
     if (isWin && typeof optionsArg.guardAlwaysOnTop === "function") {
@@ -2566,7 +2696,9 @@ function createPetWindowRuntime(options = {}) {
     settingsSizePreviewIgnoringHit = false;
     applyHitInputState();
     const hitWin = getHitWindow();
-    if (isLiveWindow(hitWin) && typeof hitWin.setAlwaysOnTop === "function") {
+    // #1275: with the master pref off, reassertWinTopmost below demotes
+    // instead of re-topping — don't fight it with a direct level write here.
+    if (isLiveWindow(hitWin) && getAlwaysOnTop() && typeof hitWin.setAlwaysOnTop === "function") {
       hitWin.setAlwaysOnTop(true, topmostLevel);
     }
     reassertWinTopmost();
@@ -2604,6 +2736,7 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayMetricsChanged() {
     invalidateDisplaysCache();
+    invalidateHitGeometryForTopologyChange();
     // PR #751 second-review C-4 (Codex B4): all three topology events now
     // clear the observed-inset table + any pending candidate (previously
     // only this one did — see main.js's own immediate, non-debounced call
@@ -2650,6 +2783,7 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayRemoved() {
     invalidateDisplaysCache();
+    invalidateHitGeometryForTopologyChange();
     // PR #751 second-review C-4 (Codex B4): see handleDisplayMetricsChanged()'s
     // own comment above — display-removed used to leave the inset table
     // untouched entirely, unlike metrics-changed.
@@ -2680,6 +2814,7 @@ function createPetWindowRuntime(options = {}) {
 
   function handleDisplayAdded() {
     invalidateDisplaysCache();
+    invalidateHitGeometryForTopologyChange();
     // PR #751 second-review C-4 (Codex B4): see handleDisplayMetricsChanged()'s
     // own comment above — display-added used to leave the inset table
     // untouched entirely, unlike metrics-changed.

@@ -7,7 +7,7 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
   <link rel="manifest" href="/mobile/manifest.json">
-  <link rel="stylesheet" href="/mobile/style.css">
+  <link rel="stylesheet" href="/mobile/style.css?v=__CLAWD_APP_VERSION__">
   <title>Clawd Mobile</title>
 </head>
 <body>
@@ -21,6 +21,12 @@
 
   <!-- Page: Sessions -->
   <main id="page-sessions" class="page">
+    <form id="pair-form" class="hidden">
+      <label for="pair-code">输入配对码</label>
+      <input id="pair-code" name="pair-code" type="text" placeholder="K7Q2-9MXA" autocomplete="off" autocapitalize="characters" spellcheck="false" required>
+      <button type="submit">配对</button>
+      <p id="pair-hint" role="status"></p>
+    </form>
     <div id="permission-banner-container" class="hidden" aria-live="polite"></div>
     <div id="session-list"></div>
   </main>
@@ -45,7 +51,7 @@
   <!-- Toast -->
   <div id="toast-container"></div>
 
-  <script src="/mobile/icons.js"></script>
-  <script src="/mobile/app.js"></script>
+  <script src="/mobile/icons.js?v=__CLAWD_APP_VERSION__"></script>
+  <script src="/mobile/app.js?v=__CLAWD_APP_VERSION__"></script>
 </body>
 </html>

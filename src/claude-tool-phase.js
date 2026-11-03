@@ -12,13 +12,16 @@ const POST_EVENTS = new Set(["PostToolUse", "PostToolUseFailure"]);
 const TERMINAL_EVENTS = new Set(["Stop", "StopFailure", "ApiError", "SessionEnd"]);
 
 // A phase hint is weaker than permissions, completion, or subagent lifecycle.
-// This ledger only authorizes a main-session batch boundary; its caller owns
+// This ledger authorizes batch boundaries and fresh tool-start hints; its caller owns
 // those stronger gates. Existing hooks are admitted normally; proven old
 // evidence may preserve the phase without dropping message/lifecycle handling.
 // accept=false drops only a batch hint. preservePhase retains normal metadata
 // and exact permission cleanup. thinking is a gated presentation hint;
 // errorCue retains a real failure, and countToolCall admits a first delayed Pre
 // solely to recap accounting without refreshing session state or liveness.
+// freshStart is a one-event hint, never a count of still-running tools: rejected
+// and cancelled calls need not send a result. Permission fallbacks suppress it
+// until a proven new prompt or accepted batch, including when Pre arrives late.
 function createClaudeToolPhaseLedger(options = {}) {
   const maxSessions = Number.isSafeInteger(options.maxSessions) && options.maxSessions > 0
     ? Math.min(options.maxSessions, MAX_SESSIONS)
@@ -46,6 +49,8 @@ function createClaudeToolPhaseLedger(options = {}) {
       promptId: null,
       open: false,
       unconfirmable: false,
+      suppressExecuting: false,
+      suppressNextAdoption: false,
       tools: new Map(),
       earlyBatches: [],
       queuedBatches: new Map(),
@@ -81,13 +86,41 @@ function createClaudeToolPhaseLedger(options = {}) {
     return { accept: true, preservePhase: true, retired, reason };
   }
 
+  function normalizedSessionId(value) {
+    const id = typeof value === "string" ? value.trim() : "";
+    return id && id.length <= 1024 && !/[\u0000-\u001f\u007f]/u.test(id) ? id : null;
+  }
+
+  function suppressExecution(rawSessionId) {
+    const sessionId = normalizedSessionId(rawSessionId);
+    if (!sessionId) return;
+    const record = records.get(sessionId) || makeRecord();
+    record.suppressExecuting = true;
+    if (!record.open) record.suppressNextAdoption = true;
+    touch(sessionId, record);
+  }
+
+  function adoptPrompt(record, promptId) {
+    // An HTTP permission response may beat the first async command hook.
+    // This also happens after Stop when a queued turn has no Submit hook:
+    // the previous prompt is closed, so the result may belong to the next
+    // identity we adopt. Preserve its suppression through that adoption.
+    if (promptId) {
+      if (record.promptId && promptId !== record.promptId && !record.suppressNextAdoption) {
+        record.suppressExecuting = false;
+      }
+      record.suppressNextAdoption = false;
+    }
+    record.promptId = promptId;
+  }
+
   function observe(rawInput = {}) {
     const input = rawInput && typeof rawInput === "object" ? rawInput : {};
     const isBatch = input.event === "PostToolBatch";
     const isChild = typeof input.subagentId === "string" && !!input.subagentId.trim();
 
-    const sessionId = typeof input.sessionId === "string" ? input.sessionId.trim() : "";
-    if (!sessionId || sessionId.length > 1024 || /[\u0000-\u001f\u007f]/u.test(sessionId)) {
+    const sessionId = normalizedSessionId(input.sessionId);
+    if (!sessionId) {
       return { accept: !isBatch, reason: "no-session" };
     }
     if (isChild) {
@@ -147,7 +180,7 @@ function createClaudeToolPhaseLedger(options = {}) {
       }
       const queued = record.queuedBatches.get(promptId) || [];
       retireCurrent(record);
-      record.promptId = promptId;
+      adoptPrompt(record, promptId);
       record.earlyBatches = queued;
       record.open = true;
       record.unconfirmable = !promptId;
@@ -171,7 +204,7 @@ function createClaudeToolPhaseLedger(options = {}) {
       }
       const queued = record.queuedBatches.get(promptId) || [];
       retireCurrent(record);
-      record.promptId = promptId;
+      adoptPrompt(record, promptId);
       record.earlyBatches = queued;
       record.open = true;
       record.unconfirmable = false;
@@ -247,10 +280,13 @@ function createClaudeToolPhaseLedger(options = {}) {
       }
       for (const id of ids) record.tools.get(id).batchSettled = true;
       record.earlyBatches = record.earlyBatches.filter(batch => !ids.some(id => batch.has(id)));
+      record.suppressExecuting = false;
+      record.suppressNextAdoption = false;
       return { accept: true, thinking: true, reason: "batch-settled" };
     }
 
     const knownTool = toolUseId ? record.tools.get(toolUseId) : null;
+    if (isPost && knownTool) knownTool.resultObserved = true;
     if (knownTool && knownTool.batchSettled) {
       if (isPre) {
         const countToolCall = knownTool.preObserved !== true;
@@ -284,13 +320,16 @@ function createClaudeToolPhaseLedger(options = {}) {
       return { accept: true, reason: "uncorrelated-tool" };
     }
     const earlyBatchTool = record.earlyBatches.some(batch => batch.has(toolUseId));
+    const freshStart = event === "PreToolUse" && !record.unconfirmable
+      && !record.suppressExecuting && !earlyBatchTool
+      && (!knownTool || (!knownTool.preObserved && !knownTool.resultObserved));
     if (isPre || earlyBatchTool) {
       if (!knownTool) {
         if (record.tools.size >= maxTools) {
           record.unconfirmable = true;
           return { accept: true, reason: "tool-capacity" };
         }
-        record.tools.set(toolUseId, { batchSettled: false, preObserved: isPre });
+        record.tools.set(toolUseId, { batchSettled: false, preObserved: isPre, resultObserved: isPost });
       }
       if (isPre) record.tools.get(toolUseId).preObserved = true;
       if (!record.unconfirmable) {
@@ -307,11 +346,14 @@ function createClaudeToolPhaseLedger(options = {}) {
           if (otherUnsettled) return event === "PostToolUseFailure"
             ? { accept: true, preservePhase: true, errorCue: true, reason: "settled-tool-failure" }
             : preservePhase("settled-tool-tail");
+          record.suppressExecuting = false;
+          record.suppressNextAdoption = false;
           return { accept: true, thinking: true, errorCue: event === "PostToolUseFailure",
             reason: "reordered-batch-settled" };
         }
       }
-      return { accept: true, reason: isPre ? "tool-start" : "early-batch-result" };
+      return { accept: true, reason: isPre ? "tool-start" : "early-batch-result",
+        ...(freshStart ? { freshStart: true } : {}) };
     }
     if (!knownTool) {
       // A fast tool's result can beat its own Pre; real turns have shown this.
@@ -323,7 +365,7 @@ function createClaudeToolPhaseLedger(options = {}) {
         record.unconfirmable = true;
         return { accept: true, reason: "tool-capacity" };
       }
-      record.tools.set(toolUseId, { batchSettled: false, preObserved: false });
+      record.tools.set(toolUseId, { batchSettled: false, preObserved: false, resultObserved: true });
       return { accept: true, reason: "result-before-start" };
     }
     return { accept: true, reason: "tool-result" };
@@ -331,6 +373,7 @@ function createClaudeToolPhaseLedger(options = {}) {
 
   return {
     observe,
+    suppressExecution,
     clear() { records.clear(); },
     get size() { return records.size; },
   };

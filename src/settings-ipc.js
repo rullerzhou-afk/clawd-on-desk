@@ -348,6 +348,9 @@ function registerSettingsIpc(options = {}) {
   const getUpdateCheckSnapshot = options.getUpdateCheckSnapshot || (() => ({ state: "idle" }));
   const clearUpdateError = options.clearUpdateError || (() => ({ state: "idle" }));
   const copyUpdateError = options.copyUpdateError || (() => ({ status: "error", message: "clipboard unavailable" }));
+  const getHardwareAccelerationDisabledAtStartup =
+    options.getHardwareAccelerationDisabledAtStartup || (() => false);
+  const getPetAlwaysOnTopAtStartup = options.getPetAlwaysOnTopAtStartup || (() => true);
   const showTutorial = options.showTutorial || (() => ({
     status: "error",
     message: "Tutorial is unavailable",
@@ -1143,6 +1146,13 @@ function registerSettingsIpc(options = {}) {
     return copyUpdateError(boundedText);
   });
 
+  // #1183/#1275: Settings compares launch values with saved preferences to
+  // offer a restart for GPU mode and macOS pet topmost changes.
+  handle("settings:get-startup-render-state", () => ({
+    hardwareAccelerationDisabled: getHardwareAccelerationDisabledAtStartup() === true,
+    petAlwaysOnTop: getPetAlwaysOnTopAtStartup(),
+  }));
+
   handle("settings:show-tutorial", async () => {
     try {
       const result = await showTutorial();
@@ -1169,42 +1179,42 @@ function registerSettingsIpc(options = {}) {
     try {
       const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
       if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
-      const port = lanWsServer.getPort();
-      const tok = lanWsServer.getToken();
-      if (!Number.isInteger(port) || port <= 0 || typeof tok !== "string" || !tok) {
+      const info = lanWsServer.getConnectionInfo();
+      if (!Number.isInteger(info.port) || info.port <= 0 || typeof info.lanIp !== "string" || !info.lanIp) {
         return { status: "starting", message: "LAN bridge is starting" };
       }
-      const os = require("os");
-      let lanIp = "127.0.0.1";
-      const interfaces = os.networkInterfaces();
-      const wlanPattern = /WLAN|Wi-?Fi|Wireless|无线/i;
-      // 1) 优先找 WLAN 接口
-      for (const name of Object.keys(interfaces)) {
-        if (wlanPattern.test(name)) {
-          for (const iface of interfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) { lanIp = iface.address; break; }
-          }
-          if (lanIp !== "127.0.0.1") break;
-        }
-      }
-      // 2) fallback：第一个非 internal IPv4
-      if (lanIp === "127.0.0.1") {
-        for (const name of Object.keys(interfaces)) {
-          for (const iface of interfaces[name]) {
-            if (iface.family === "IPv4" && !iface.internal) { lanIp = iface.address; break; }
-          }
-          if (lanIp !== "127.0.0.1") break;
-        }
-      }
-      const pairUrl = `http://${lanIp}:${port}/mobile/?host=${lanIp}&port=${port}&token=${tok}`;
-      return { status: "ok", port, token: tok, lanIp, pairUrl };
+      return { status: "ok", port: info.port, lanIp: info.lanIp,
+        pairUrl: info.pairUrl, pairCode: info.pairCode, pairExpiresAt: info.pairExpiresAt,
+        pairQrSvg: info.pairQrSvg };
     } catch (err) {
       return { status: "error", message: (err && err.message) || String(err) };
     }
   });
 
-  handle("settings:regenerate-mobile-token", async () => {
-    return settingsController.applyCommand("mobilePreview.regenerateToken", {});
+  handle("settings:refresh-mobile-pair-code", async () => {
+    return settingsController.applyCommand("mobilePreview.refreshPairCode", {});
+  });
+
+  handle("settings:mobile-devices", async () => {
+    try {
+      const lanWsServer = options.getLanWsServer ? options.getLanWsServer() : null;
+      if (!lanWsServer) return { status: "error", message: "LAN bridge not available" };
+      return {
+        status: "ok",
+        devices: lanWsServer.listDevices(),
+        legacyActive: lanWsServer.isLegacyActive(),
+      };
+    } catch (err) {
+      return { status: "error", message: (err && err.message) || String(err) };
+    }
+  });
+
+  handle("settings:revoke-mobile-device", async (_event, id) => {
+    return settingsController.applyCommand("mobilePreview.revokeDevice", { id });
+  });
+
+  handle("settings:revoke-mobile-legacy", async () => {
+    return settingsController.applyCommand("mobilePreview.revokeLegacy", {});
   });
 
   handle("settings:reset-mobile-access", async () => {

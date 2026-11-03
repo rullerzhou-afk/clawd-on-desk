@@ -54,13 +54,20 @@ const FROZEN_KEYS = [
   "permissionAutomationUnattendedWarningDismissed",
   "quotaMergeSources",
   "sessionHudCleanupDetached",
+  "sessionHudHideCompletedCodexEphemeral",
+  "sessionHudHideActiveCodexEphemeral",
   "allowEdgePinning",
   "disableMiniMode",
+  "eyeTrackingEnabled",
   "freeRoam",
   "roamConstrainAxis",
+  "idleActivities",
+  "idleActivityFrequency",
   "keepSizeAcrossDisplays",
   "fullscreenAutoHide",
+  "petAlwaysOnTop",
   "openAtLogin",
+  "disableHardwareAcceleration",
   "hideBubbles",
   "bubbleFollowPet",
   "bubbleFollowPreference",
@@ -83,15 +90,20 @@ const EXPECTED_KEYS = {
     "showTray",
     "showDock",
     "openAtLogin",
+    "disableHardwareAcceleration",
   ],
   pet: [
     "size",
     "keepSizeAcrossDisplays",
     "testReactionsEnabled",
+    "petAlwaysOnTop",
     "allowEdgePinning",
     "disableMiniMode",
+    "eyeTrackingEnabled",
     "freeRoam",
     "roamConstrainAxis",
+    "idleActivities",
+    "idleActivityFrequency",
     "fullscreenAutoHide",
   ],
   notifications: [
@@ -114,6 +126,8 @@ const EXPECTED_KEYS = {
     "sessionHudShowElapsed",
     "sessionHudShowContextUsage",
     "sessionHudCleanupDetached",
+    "sessionHudHideCompletedCodexEphemeral",
+    "sessionHudHideActiveCodexEphemeral",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
     "quotaMergeSources",
@@ -430,6 +444,7 @@ function makeSnapshot(overrides = {}) {
     roamConstrainAxis: false,
     testReactionsEnabled: false,
     fullscreenAutoHide: false,
+    petAlwaysOnTop: true,
     soundMuted: false,
     soundVolume: 0.5,
     flashTaskbarOnComplete: true,
@@ -447,6 +462,8 @@ function makeSnapshot(overrides = {}) {
     sessionHudShowElapsed: true,
     sessionHudShowContextUsage: true,
     sessionHudCleanupDetached: true,
+    sessionHudHideCompletedCodexEphemeral: false,
+    sessionHudHideActiveCodexEphemeral: false,
     sessionHudShowQuota: true,
     quotaRingDisplayMode: "used",
     quotaMergeSources: false,
@@ -465,12 +482,17 @@ function makeSnapshot(overrides = {}) {
   };
 }
 
+// `modelBrowserScroll` reproduces what a real browser does to a scrolled
+// container when its children are replaced: the emptied pane clamps scrollTop
+// to 0 and the focused control drops back to <body>. The default (false) keeps
+// the older FakeElement behavior the other tests were written against.
 function createHarness({
   tab,
   snapshot,
   settingsAPI = {},
   platform = "Win32",
   localStorage = null,
+  modelBrowserScroll = false,
 } = {}) {
   const body = new FakeElement("body");
   const content = new FakeElement("main");
@@ -480,7 +502,16 @@ function createHarness({
   const document = {
     body,
     activeElement: body,
-    createElement: (tagName) => new FakeElement(tagName),
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      // Focus has to live on the harness document, like a real browser, so
+      // requestRender() can see what was focused before a repaint.
+      element.focus = () => {
+        element.focused = true;
+        document.activeElement = element;
+      };
+      return element;
+    },
     getElementById(id) {
       if (id === "content") return content;
       return null;
@@ -533,7 +564,7 @@ function createHarness({
     },
     getPreviewSoundUrl: () => Promise.resolve(null),
     getMobileConnectionInfo: () => Promise.resolve({
-      status: "ok", port: 23334, token: "test-token", lanIp: "127.0.0.1",
+      status: "ok", port: 23334, pairCode: "ABCD1234", pairExpiresAt: 123456, lanIp: "127.0.0.1",
     }),
     getTextScaleContext: () => Promise.resolve({ percent: 100 }),
     getSizeContext: () => Promise.resolve({ ui: 50, synced: true, overMax: false }),
@@ -546,6 +577,8 @@ function createHarness({
   const context = {
     console,
     navigator: { platform },
+    setTimeout: () => 1,
+    clearTimeout() {},
     localStorage: localStorage || { getItem: () => null, setItem: () => {} },
     document,
     requestAnimationFrame: (cb) => {
@@ -600,6 +633,12 @@ function createHarness({
     contentRenderCount++;
     core.ops.clearMountedControls();
     content.innerHTML = "";
+    if (modelBrowserScroll) {
+      // A real pane is now empty: its offset clamps to the top and the focused
+      // control (removed with the old children) falls back to <body>.
+      content.scrollTop = 0;
+      document.activeElement = body;
+    }
     core.tabs[tab].render(content, core);
   }
   core.ops.installRenderHooks({ content: render });
@@ -615,6 +654,7 @@ function createHarness({
   return {
     core,
     content,
+    document,
     tab,
     settingsAPI: api,
     updateCalls,
@@ -710,10 +750,12 @@ describe("settings tab split", () => {
 
   it("renders the five pages in the planned section and row order", () => {
     const pet = createHarness({ tab: "pet", snapshot: makeSnapshot({ lang: "zh" }) });
-    assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "反应"]);
+    assert.deepStrictEqual(sectionTitles(pet), ["大小", "走动与位置", "窗口置顶", "眼睛跟随", "反应"]);
     assert.deepStrictEqual(sectionRowLabels(pet), [
       ["大小", "跨显示器保持大小"],
-      ["自由漫步", "移动方式", "活动范围", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["空闲时", "移动方式", "活动范围", "出现频率", "允许贴靠屏幕边缘", "关闭极简模式", "全屏时自动隐藏"],
+      ["桌宠保持在最前"],
+      ["跟随鼠标光标"],
       ["测试结果动画"],
     ]);
 
@@ -733,7 +775,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(sessions), ["会话 HUD", "额度环与提醒", "高级"]);
     assert.deepStrictEqual(sectionRowLabels(sessions), [
       ["会话面板"],
-      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话"],
+      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话", "收起已完成的 Codex 临时会话", "收起活动中的 Codex 临时会话"],
       ["显示额度环", "额度显示方式", "在桌宠旁显示", "合并多机额度", "额度快用完时提醒", "提醒时机", "额度恢复时也提醒", "测试通知"],
       ["超时清理", "会话超时（空闲）", "工作超时", "Codex 活跃任务超时", "终端关闭后清理延迟"],
     ]);
@@ -762,6 +804,41 @@ describe("settings tab split", () => {
       ["语言", "文字大小"],
       ["开机自启", "在菜单栏显示", "在 Dock 显示", "低功耗 idle", "工作时阻止休眠"],
     ]);
+  });
+
+  it("offers a restart only while the GPU switch differs from launch (#1183)", async () => {
+    const general = createHarness({
+      tab: "general",
+      platform: "Win32",
+      snapshot: makeSnapshot({ disableHardwareAcceleration: false }),
+      settingsAPI: {
+        getStartupRenderState: () => Promise.resolve({ hardwareAccelerationDisabled: false }),
+      },
+    });
+    await general.settle();
+    const row = () => general.core.state.mountedControls.generalSwitches
+      .get("disableHardwareAcceleration").row;
+    const restartButton = () => row().querySelectorAll("button")
+      .find((button) => button.textContent === "Restart Clawd") || null;
+    assert.ok(general.getSwitch("disableHardwareAcceleration"));
+    assert.strictEqual(restartButton(), null);
+
+    general.apply("disableHardwareAcceleration", true);
+    await general.settle();
+    assert.ok(restartButton(), "a pending GPU change shows the restart button");
+    assert.ok(row().querySelectorAll(".row-desc-extra")
+      .some((node) => node.textContent === "Not applied yet. Restart Clawd to switch."));
+
+    restartButton().click();
+    await general.settle();
+    assert.deepStrictEqual(
+      JSON.parse(JSON.stringify(general.commandCalls.filter((call) => call.action === "restartClawd"))),
+      [{ action: "restartClawd", payload: { confirmed: true } }],
+    );
+
+    general.apply("disableHardwareAcceleration", false);
+    await general.settle();
+    assert.strictEqual(restartButton(), null, "switching back to the launch value hides it");
   });
 
   it("patches every independent sync branch in place for its own key", async () => {
@@ -802,7 +879,7 @@ describe("settings tab split", () => {
     await pet.settle();
     const sizeSlider = pet.content.querySelector(".size-slider");
     const roam = pet.core.state.mountedControls.roamMovementStyle;
-    const freeRoam = pet.getSwitch("freeRoam");
+    const idleBehavior = pet.core.state.mountedControls.idleBehavior;
     before = pet.renderCount();
     sizeContextUi = 70;
     pet.apply("size", 70);
@@ -812,7 +889,7 @@ describe("settings tab split", () => {
     pet.apply("roamConstrainAxis", true);
     assert.strictEqual(activeValue(roam.element), "axis");
     pet.apply("freeRoam", true);
-    assert.strictEqual(freeRoam.classList.contains("on"), true);
+    assert.strictEqual(activeValue(idleBehavior.modeControl.element), "roam");
     pet.apply("allowEdgePinning", false);
     assert.strictEqual(pet.getSwitch("allowEdgePinning").classList.contains("on"), false);
     assert.strictEqual(pet.renderCount(), before);
@@ -957,6 +1034,8 @@ describe("settings tab split", () => {
       "sessionHudShowElapsed",
       "sessionHudShowContextUsage",
       "sessionHudCleanupDetached",
+      "sessionHudHideCompletedCodexEphemeral",
+      "sessionHudHideActiveCodexEphemeral",
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), true, key);
     }
@@ -973,6 +1052,8 @@ describe("settings tab split", () => {
       "sessionHudShowElapsed",
       "sessionHudShowContextUsage",
       "sessionHudCleanupDetached",
+      "sessionHudHideCompletedCodexEphemeral",
+      "sessionHudHideActiveCodexEphemeral",
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), false, key);
     }
@@ -1190,6 +1271,143 @@ describe("settings tab split", () => {
     assert.strictEqual(cancelCount(), 3, "leaving the tab also cancels the lookup");
   });
 
+  it("keeps the IM channels scroll position and switch focus when a switch saves", async () => {
+    const harness = createHarness({
+      tab: "permissions",
+      modelBrowserScroll: true,
+      snapshot: makeSnapshot({
+        slackNotify: {
+          enabled: true,
+          channelId: "C1234567890",
+          notifyOnDone: true,
+          notifyOnError: true,
+          notifyOnPermission: true,
+          outputMode: "off",
+        },
+      }),
+    });
+    const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
+    pills()[1].click();
+    await harness.settle();
+
+    harness.content.scrollTop = 640;
+    const switchFor = (labelKey) => harness.content.querySelectorAll(".switch")
+      .find((element) => element.getAttribute("aria-labelledby") === `settings-slack-${labelKey}-label`);
+    const doneSwitch = switchFor("slackNotifyEventDone");
+    assert.ok(doneSwitch, "the Slack notification switches render once the channel is enabled");
+    doneSwitch.focus();
+    assert.strictEqual(harness.document.activeElement, doneSwitch);
+    doneSwitch.click();
+    await harness.settle();
+    assert.ok(harness.updateCalls.some((call) => call.key === "slackNotify"),
+      "toggling the switch still persists through settingsAPI.update");
+
+    // Main answers with a settings-changed broadcast; that generic repaint used
+    // to drop the pane back to the top and lose the switch beneath the user.
+    harness.apply("slackNotify", {
+      ...harness.core.state.snapshot.slackNotify,
+      notifyOnDone: false,
+    });
+    await harness.settle();
+
+    assert.strictEqual(harness.content.scrollTop, 640,
+      "repainting the channel cards must not move the settings pane");
+    const focused = harness.document.activeElement;
+    assert.ok(harness.content.contains(focused), "focus returns to the rebuilt switch");
+    assert.strictEqual(focused.getAttribute("data-settings-focus-key"),
+      "remote-approval-slack-slackNotifyEventDone");
+  });
+
+  it("keeps the LAN card scroll position and switch focus across its toggles", async () => {
+    const harness = createHarness({
+      tab: "permissions",
+      modelBrowserScroll: true,
+      snapshot: makeSnapshot({
+        mobilePreviewEnabled: true,
+        mobilePermissionPreviewEnabled: true,
+      }),
+    });
+    const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
+    pills()[2].click();
+    await harness.settle();
+
+    const card = harness.content.querySelector(".mobile-channel-card");
+    const permissionSwitch = card.querySelector(".collapsible-group-body .switch");
+    harness.content.scrollTop = 520;
+    permissionSwitch.focus();
+    permissionSwitch.click();
+    await harness.settle();
+    assert.ok(harness.commandCalls.some((call) => call.action === "setMobilePermissionPreviewEnabled"),
+      "the permission-preview switch still saves through its command");
+    harness.apply("mobilePermissionPreviewEnabled", false);
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 520,
+      "repainting the LAN body must not move the settings pane");
+    assert.strictEqual(harness.document.activeElement.getAttribute("data-settings-focus-key"),
+      "remote-approval-mobile-body-0");
+
+    const currentCard = harness.content.querySelector(".mobile-channel-card");
+    const headerSwitch = currentCard.querySelectorAll(".switch")[0];
+    headerSwitch.focus();
+    headerSwitch.click();
+    await harness.settle();
+    assert.ok(harness.updateCalls.some((call) => call.key === "mobilePreviewEnabled"),
+      "the LAN header switch still saves through settingsAPI.update");
+    harness.apply("mobilePreviewEnabled", false);
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 520);
+    assert.strictEqual(harness.document.activeElement.getAttribute("data-settings-focus-key"),
+      "remote-approval-mobile-toggle-0");
+  });
+
+  it("still starts the content pane at the top when switching Permission sub-pages", async () => {
+    const harness = createHarness({ tab: "permissions" });
+    const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
+
+    pills()[1].click();
+    await harness.settle();
+    harness.content.scrollTop = 700;
+    pills()[2].click();
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 0, "channels to LAN starts at the top");
+
+    harness.content.scrollTop = 480;
+    pills()[0].click();
+    await harness.settle();
+    assert.strictEqual(harness.content.scrollTop, 0, "LAN to local starts at the top");
+  });
+
+  it("routes every remote-body repaint through the scroll-preserving render", () => {
+    const source = fs.readFileSync(TELEGRAM_APPROVAL_TAB, "utf8");
+    const requestRenders = [...source.matchAll(/ops\.requestRender\(\{([^}]*)\}\)/g)];
+    assert.strictEqual(source.match(/ops\.requestRender\(\{ content: true \}\)/g), null,
+      "no content repaint may reintroduce the scroll-resetting default");
+    assert.ok(requestRenders.length >= 1);
+    for (const [, args] of requestRenders) {
+      assert.match(args, /preserveScroll:\s*true/, args);
+    }
+    assert.match(source,
+      /function requestBodyRender\(\) \{\s*ops\.requestRender\(\{ content: true, preserveScroll: true \}\);\s*\}/);
+    const bodyRepaints = source.match(/requestBodyRender\(\);/g) || [];
+    assert.ok(bodyRepaints.length >= 40,
+      `the IM/LAN body repaints should go through requestBodyRender (${bodyRepaints.length} found)`);
+    // Repaints triggered by settings-changed broadcasts are claimed here too, so
+    // applyChanges does not fall back to its scroll-dropping full repaint.
+    const bodyKeySet = source.match(
+      /const REMOTE_APPROVAL_BODY_KEYS = Object\.freeze\(\[([\s\S]*?)\]\);/
+    );
+    assert.ok(bodyKeySet, "the remote-body key set drives the broadcast-claim path");
+    const bodyKeys = [...bodyKeySet[1].matchAll(/"([^"]+)"/g)].map((match) => match[1]);
+    assert.deepStrictEqual(bodyKeys, [
+      "tgApproval",
+      "feishuApproval",
+      "slackNotify",
+      "mobilePreviewEnabled",
+      "mobilePermissionPreviewEnabled",
+    ]);
+    assert.match(source, /data-settings-focus-key/);
+  });
+
   it("only repaints remote channel status while the IM or LAN body is visible", async () => {
     const harness = createHarness({ tab: "permissions", snapshot: makeSnapshot() });
     const pills = () => harness.content.querySelector(".settings-tabs").querySelectorAll("button");
@@ -1293,15 +1511,26 @@ describe("settings tab split", () => {
       ...nextSnapshot,
       feishuApproval: { ...nextSnapshot.feishuApproval, enabled: true },
     };
+    const repaintsBefore = harness.renderCount();
     assert.strictEqual(harness.core.tabs.permissions.patchInPlace(
       { feishuApproval: otherFieldSnapshot.feishuApproval },
       { previousSnapshot: nextSnapshot, snapshot: otherFieldSnapshot },
-    ), false, "the context is forwarded unchanged to the remote module");
+    ), true, "the remote module claims remote-body changes so it can preserve scroll");
+    assert.strictEqual(harness.renderCount(), repaintsBefore + 1,
+      "the claim still rebuilds the cards, it just keeps the pane where it was");
 
     assert.strictEqual(harness.core.tabs.permissions.patchInPlace(
       { textScale: 1.1 },
       { previousSnapshot, snapshot: { ...nextSnapshot, textScale: 1.1 } },
     ), false);
+    for (const key of ["tgApproval", "feishuApproval", "slackNotify", "mobilePreviewEnabled", "mobilePermissionPreviewEnabled"]) {
+      const beforeMixedChange = harness.renderCount();
+      assert.strictEqual(harness.core.tabs.permissions.patchInPlace(
+        { [key]: nextSnapshot[key], textScale: 1.1 },
+        { previousSnapshot: nextSnapshot, snapshot: { ...nextSnapshot, textScale: 1.1 } },
+      ), false, `${key} mixed with a page-wide change must use the generic render`);
+      assert.strictEqual(harness.renderCount(), beforeMixedChange);
+    }
   });
 
   it("keeps the sidebar, deep-link whitelist, and icons in sync", () => {
@@ -1560,5 +1789,102 @@ describe("settings tab split", () => {
       }
       assert.strictEqual(localHarness.core.state.transientUiState.generalSwitches.has("soundMuted"), false);
     }
+  });
+});
+
+describe("#1275: pet visibility settings", () => {
+  for (const platform of ["MacIntel", "Win32", "Linux x86_64"]) {
+    it(`#1275: fullscreen auto-hide row on ${platform}`, () => {
+      const h = createHarness({ tab: "pet", platform });
+      assert.strictEqual(!!h.getSwitch("fullscreenAutoHide"), platform !== "Linux x86_64");
+    });
+  }
+
+  for (const launch of [true, false]) {
+    it(`#1275: Mac topmost launch=${launch} offers restart only while saved value differs`, async () => {
+      const h = createHarness({
+        tab: "pet",
+        platform: "MacIntel",
+        snapshot: makeSnapshot({ petAlwaysOnTop: launch }),
+        settingsAPI: { getStartupRenderState: () => Promise.resolve({ petAlwaysOnTop: launch }) },
+      });
+      await h.settle();
+      const row = () => h.core.state.mountedControls.generalSwitches.get("petAlwaysOnTop").row;
+      const restartButton = () => row().querySelectorAll("button")
+        .find((button) => button.textContent === "Restart Clawd") || null;
+      assert.strictEqual(restartButton(), null);
+      assert.strictEqual(row().querySelector(".row-desc").textContent,
+        h.core.helpers.t("rowPetAlwaysOnTopDescMac"));
+      assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+
+      h.apply("petAlwaysOnTop", !launch);
+      await h.settle();
+      assert.ok(restartButton());
+      assert.strictEqual(row().querySelector(".row-desc-extra").textContent,
+        h.core.helpers.t("rowDisableHardwareAccelerationRestartPending"));
+      restartButton().click();
+      await h.settle();
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(h.commandCalls)), [
+        { action: "restartClawd", payload: { confirmed: true } },
+      ]);
+
+      h.apply("petAlwaysOnTop", launch);
+      await h.settle();
+      assert.strictEqual(restartButton(), null);
+      assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    });
+  }
+
+  it("#1275: both restart-pending transitions refuse patchInPlace before changing controls", async () => {
+    const h = createHarness({
+      tab: "pet",
+      platform: "MacIntel",
+      snapshot: makeSnapshot({ petAlwaysOnTop: true }),
+      settingsAPI: { getStartupRenderState: () => Promise.resolve({ petAlwaysOnTop: true }) },
+    });
+    await h.settle();
+    for (const value of [false, true]) {
+      const control = h.getSwitch("petAlwaysOnTop");
+      const before = control.classList.contains("on");
+      h.core.state.snapshot = { ...h.core.state.snapshot, petAlwaysOnTop: value };
+      assert.strictEqual(h.core.tabs.pet.patchInPlace({ petAlwaysOnTop: value }), false);
+      assert.strictEqual(control.classList.contains("on"), before);
+      h.render();
+      assert.strictEqual(h.getSwitch("petAlwaysOnTop").classList.contains("on"), value);
+    }
+  });
+
+  it("#1275: missing startup topmost stays unknown and never offers a restart", async () => {
+    const h = createHarness({
+      tab: "pet",
+      platform: "MacIntel",
+      snapshot: makeSnapshot({ petAlwaysOnTop: true }),
+      settingsAPI: { getStartupRenderState: () => Promise.resolve({ hardwareAccelerationDisabled: false }) },
+    });
+    await h.settle();
+    const row = () => h.core.state.mountedControls.generalSwitches.get("petAlwaysOnTop").row;
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    assert.ok(!row().querySelectorAll("button").some((button) => button.textContent === "Restart Clawd"));
+    h.apply("petAlwaysOnTop", false);
+    await h.settle();
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    assert.ok(!row().querySelectorAll("button").some((button) => button.textContent === "Restart Clawd"));
+  });
+
+  it("#1275: Windows uses the immediate-effect description with no restart prompt", async () => {
+    const h = createHarness({
+      tab: "pet",
+      platform: "Win32",
+      snapshot: makeSnapshot({ petAlwaysOnTop: false }),
+      settingsAPI: { getStartupRenderState: () => Promise.resolve({ petAlwaysOnTop: true }) },
+    });
+    await h.settle();
+    const row = () => h.core.state.mountedControls.generalSwitches.get("petAlwaysOnTop").row;
+    assert.strictEqual(row().querySelector(".row-desc").textContent,
+      h.core.helpers.t("rowPetAlwaysOnTopDesc"));
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
+    h.apply("petAlwaysOnTop", true);
+    await h.settle();
+    assert.strictEqual(row().querySelector(".row-desc-extra"), null);
   });
 });

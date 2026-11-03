@@ -180,6 +180,9 @@ describe("state stale cleanup decisions", () => {
   });
 
   it("handles working stale timeout source exit and idle downgrade", () => {
+    assert.deepStrictEqual(decision(session({ agentId: "claude-code",
+      state: "executing", updatedAt: 1000000 - WORKING_STALE_MS - 1,
+    })).result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
     assert.deepStrictEqual(decision(session({
       state: "working",
       updatedAt: 1000000 - WORKING_STALE_MS - 1,

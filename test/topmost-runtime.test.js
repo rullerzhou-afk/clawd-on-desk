@@ -21,6 +21,9 @@ class FakeWindow extends EventEmitter {
     this.visible = options.visible !== false;
     this.bounds = options.bounds || null;
     this.calls = [];
+    // #1275: track the always-on-top level so demote paths can be exercised
+    // through the same isAlwaysOnTop() guard the production code reads.
+    this.alwaysOnTopState = options.alwaysOnTop !== false;
   }
 
   isDestroyed() {
@@ -31,8 +34,13 @@ class FakeWindow extends EventEmitter {
     return this.visible;
   }
 
+  isAlwaysOnTop() {
+    return this.alwaysOnTopState;
+  }
+
   setAlwaysOnTop(...args) {
     this.calls.push(["setAlwaysOnTop", ...args]);
+    this.alwaysOnTopState = !!args[0];
   }
 
   setVisibleOnAllWorkspaces(...args) {
@@ -94,6 +102,148 @@ function makeTimers() {
     },
   };
 }
+
+describe("issue #1282: stand down for foreground screen capture", () => {
+  function makeCaptureRuntime(overrides = {}) {
+    const state = { fullscreen: "4242", captureOverlay: true, overlay: true, alwaysOnTop: true, autoHide: false, ...overrides };
+    const timers = makeTimers();
+    const windows = Object.fromEntries(
+      ["pet", "hit", "permission", "update", "hud", "quota"].map((name) => [name, new FakeWindow()])
+    );
+    const focusable = [];
+    const hidden = [];
+    const positions = [];
+    let recoveryCalls = 0;
+    let autoHidden = false;
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      isMac: false,
+      getWin: () => windows.pet,
+      getHitWin: () => windows.hit,
+      getPendingPermissions: () => [{ bubble: windows.permission }],
+      getUpdateBubbleWindow: () => windows.update,
+      getSessionHudWindow: () => windows.hud,
+      getQuotaRingWindow: () => windows.quota,
+      isForegroundFullscreen: () => state.fullscreen,
+      getForegroundFullscreenObservation: () => ({ captureOverlay: state.captureOverlay }),
+      getFullscreenOverlay: () => state.overlay,
+      getAlwaysOnTop: () => state.alwaysOnTop,
+      getFullscreenAutoHide: () => state.autoHide,
+      isFullscreenAutoHidden: () => autoHidden,
+      setFullscreenAutoHidden: (value) => { hidden.push(value); autoHidden = value; },
+      setHitWinFocusable: (value) => focusable.push(value),
+      recoverCloakedPet: () => { recoveryCalls++; },
+      keepOutOfTaskbar: (win) => win.calls.push(["setSkipTaskbar", true]),
+      getPetWindowBounds: () => ({ x: 10, y: 20, width: 100, height: 100 }),
+      applyPetWindowPosition: (...args) => positions.push(args),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    runtime.startTopmostWatchdog();
+    return {
+      state, runtime, windows, timers, focusable, hidden, positions,
+      watchdogTick: () => timers.intervals.find(({ ms }) => ms === createTopmostRuntime.TOPMOST_WATCHDOG_MS).fn(),
+      get recoveryCalls() { return recoveryCalls; },
+    };
+  }
+
+  it("issue #1282: skips pet and floating topmost writes while preserving taskbar maintenance and permissions", () => {
+    const fixture = makeCaptureRuntime();
+    fixture.runtime.startFocusablePoll();
+    fixture.watchdogTick();
+
+    for (const name of ["pet", "hit", "update", "hud", "quota"]) {
+      assert.deepStrictEqual(fixture.windows[name].calls, [["setSkipTaskbar", true]], name);
+    }
+    assert.deepStrictEqual(fixture.windows.permission.calls, [
+      ["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL], ["setSkipTaskbar", true],
+    ]);
+    assert.strictEqual(fixture.recoveryCalls, 0);
+    assert.deepStrictEqual(fixture.focusable, [false]);
+  });
+
+  for (const manualShow of [false, true]) {
+    it(`issue #1282: reassert and both pet guards stand down with manual show ${manualShow}`, () => {
+      const fixture = makeCaptureRuntime({ autoHide: manualShow, overlay: !manualShow });
+      const { runtime, windows, timers, positions } = fixture;
+      if (manualShow) {
+        runtime.startFocusablePoll();
+        runtime.noteFullscreenAutoHideOverride();
+      }
+      runtime.reassertWinTopmost();
+      runtime.guardAlwaysOnTop(windows.pet);
+      runtime.guardAlwaysOnTop(windows.hit);
+      windows.pet.emit("always-on-top-changed", null, false);
+      windows.hit.emit("always-on-top-changed", null, false);
+      assert.deepStrictEqual(windows.pet.calls, []);
+      assert.deepStrictEqual(windows.hit.calls, []);
+      assert.deepStrictEqual(positions, []);
+      assert.deepStrictEqual(timers.timeouts, []);
+    });
+  }
+
+  it("issue #1282: explicit non-fullscreen reassert ignores a stale capture marker", () => {
+    const { runtime, windows } = makeCaptureRuntime();
+    runtime.reassertWinTopmost(false);
+    for (const win of [windows.pet, windows.hit]) {
+      assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL]]);
+    }
+  });
+
+  it("issue #1282: master topmost off demotes the pet while floating surfaces still skip", () => {
+    const { windows, watchdogTick } = makeCaptureRuntime({ alwaysOnTop: false });
+    watchdogTick();
+    for (const win of [windows.pet, windows.hit]) {
+      assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false], ["setSkipTaskbar", true]]);
+    }
+    for (const name of ["update", "hud", "quota"]) {
+      assert.deepStrictEqual(windows[name].calls, [["setSkipTaskbar", true]], name);
+    }
+  });
+
+  it("issue #1282: floating surfaces skip capture even with fullscreen overlay disabled", () => {
+    const { windows, watchdogTick } = makeCaptureRuntime({ overlay: false });
+    watchdogTick();
+    for (const name of ["pet", "hit", "update", "hud", "quota"]) {
+      assert.deepStrictEqual(windows[name].calls, [["setSkipTaskbar", true]], name);
+    }
+  });
+
+  it("issue #1282: ordinary fullscreen keeps overlay mode topmost behavior", () => {
+    const { windows, watchdogTick } = makeCaptureRuntime({ captureOverlay: false });
+    watchdogTick();
+    for (const [name, win] of Object.entries(windows)) {
+      assert.deepStrictEqual(win.calls, [
+        ["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL], ["setSkipTaskbar", true],
+      ], name);
+    }
+  });
+
+  it("issue #1282: the next watchdog pass restores topmost when the capture marker disappears", () => {
+    const fixture = makeCaptureRuntime();
+    fixture.watchdogTick();
+    for (const win of Object.values(fixture.windows)) win.calls.length = 0;
+    fixture.state.captureOverlay = false;
+    fixture.watchdogTick();
+    for (const [name, win] of Object.entries(fixture.windows)) {
+      assert.deepStrictEqual(win.calls, [
+        ["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL], ["setSkipTaskbar", true],
+      ], name);
+    }
+    assert.strictEqual(fixture.recoveryCalls, 1);
+  });
+
+  for (const captureOverlay of [true, false]) {
+    it(`issue #1282: fullscreen auto-hide remains active with capture marker ${captureOverlay}`, () => {
+      const fixture = makeCaptureRuntime({ autoHide: true, captureOverlay });
+      fixture.runtime.startFocusablePoll();
+      assert.deepStrictEqual(fixture.hidden, [true]);
+      assert.deepStrictEqual(fixture.focusable, [false]);
+    });
+  }
+});
 
 describe("topmost runtime Windows recovery", () => {
   it("reasserts the pet and hit windows at the Windows topmost level", () => {
@@ -1873,5 +2023,415 @@ describe("fullscreen auto-hide sync (#935)", () => {
     h.tick();
     assert.deepStrictEqual(h.setCalls, [true, true]);
     assert.equal(h.state.autoHidden, true);
+  });
+});
+
+describe("topmost runtime master always-on-top pref (#1275)", () => {
+  it("reassertWinTopmost demotes the pet body when the master pref is off", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getAlwaysOnTop: () => false,
+    });
+
+    runtime.reassertWinTopmost();
+
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false]]);
+    assert.equal(win.alwaysOnTopState, false);
+    assert.equal(hitWin.alwaysOnTopState, false);
+  });
+
+  it("reassertWinTopmost demotion is idempotent and keeps the hit layer above the render layer", () => {
+    const order = [];
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    for (const [name, w] of [["render", win], ["hit", hitWin]]) {
+      const original = w.setAlwaysOnTop.bind(w);
+      w.setAlwaysOnTop = (...args) => {
+        order.push(name);
+        original(...args);
+      };
+    }
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getAlwaysOnTop: () => false,
+    });
+
+    runtime.reassertWinTopmost();
+    runtime.reassertWinTopmost();
+
+    // Render demotes first, hit second — the later demotion inserts at the
+    // top of the normal band, so the transparent hit layer stays above.
+    assert.deepStrictEqual(order, ["render", "hit"]);
+    // The second pass writes nothing: a level change per tick would spam
+    // always-on-top-changed events and fight the guard.
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false]]);
+  });
+
+  it("reassertWinTopmost demotes even while a fullscreen app is foreground (pref wins over #538)", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getAlwaysOnTop: () => false,
+      isForegroundFullscreen: () => true,
+    });
+
+    runtime.reassertWinTopmost();
+
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false]]);
+  });
+
+  it("watchdog demotes the pet body when the pref is off and keeps floating surfaces topmost", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const permissionBubble = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getPendingPermissions: () => [{ bubble: permissionBubble }],
+      getAlwaysOnTop: () => false,
+      isForegroundFullscreen: () => false,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+
+    runtime.startTopmostWatchdog();
+    timers.intervals[0].fn();
+
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false]]);
+    // Permission bubbles are deliberate interruptions — unaffected.
+    assert.deepStrictEqual(permissionBubble.calls, [
+      ["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL],
+    ]);
+
+    timers.intervals[0].fn();
+
+    // Second tick writes nothing extra (isAlwaysOnTop() already false).
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(permissionBubble.calls.length, 2);
+  });
+
+  it("guardAlwaysOnTop lets the pet body lose topmost when the pref is off", () => {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => new FakeWindow(),
+      getAlwaysOnTop: () => false,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    runtime.guardAlwaysOnTop(win);
+
+    win.emit("always-on-top-changed", null, false);
+
+    assert.deepStrictEqual(win.calls, []);
+    assert.equal(timers.timeouts.length, 0, "no HWND recovery may be scheduled for a demoted pet");
+  });
+
+  it("guardAlwaysOnTop still re-tops floating surfaces when the pref is off", () => {
+    const win = new FakeWindow();
+    const bubble = new FakeWindow();
+    const runtime = createTopmostRuntime({
+      isWin: true,
+      getWin: () => win,
+      getHitWin: () => new FakeWindow(),
+      getAlwaysOnTop: () => false,
+    });
+    runtime.guardAlwaysOnTop(bubble);
+
+    bubble.emit("always-on-top-changed", null, false);
+
+    assert.deepStrictEqual(bubble.calls, [
+      ["setAlwaysOnTop", true, createTopmostRuntime.WIN_TOPMOST_LEVEL],
+    ]);
+  });
+
+  it("#1275: macOS reapplyMacVisibility drops the pet body to the normal level when the pref is off", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const permissionBubble = new FakeWindow();
+    const stationaryCalls = [];
+    const runtime = createTopmostRuntime({
+      isMac: true,
+      isWin: false,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getPendingPermissions: () => [{ bubble: permissionBubble }],
+      applyStationaryCollectionBehavior: (window) => {
+        stationaryCalls.push(window);
+        return true;
+      },
+      getAlwaysOnTop: () => false,
+    });
+
+    runtime.reapplyMacVisibility();
+
+    // #1275: stay out of the private Space and preserve the Dock setting.
+    assert.deepStrictEqual(win.calls, [
+      ["setAlwaysOnTop", false],
+      ["setVisibleOnAllWorkspaces", true, { skipTransformProcessType: true }],
+    ]);
+    assert.deepStrictEqual(hitWin.calls, [
+      ["setAlwaysOnTop", false],
+      ["setVisibleOnAllWorkspaces", true, { skipTransformProcessType: true }],
+    ]);
+    assert.deepStrictEqual(stationaryCalls, [permissionBubble],
+      "floating surfaces keep the full topmost treatment");
+  });
+
+  it("#1275: macOS applyPetAlwaysOnTopPreference leaves both windows unchanged", () => {
+    for (const alwaysOnTop of [false, true]) {
+      const win = new FakeWindow();
+      const hitWin = new FakeWindow();
+      const runtime = createTopmostRuntime({
+        isMac: true,
+        isWin: false,
+        getWin: () => win,
+        getHitWin: () => hitWin,
+        applyStationaryCollectionBehavior: () => assert.fail("no private-Space writes"),
+        getAlwaysOnTop: () => alwaysOnTop,
+      });
+
+      runtime.applyPetAlwaysOnTopPreference();
+
+      assert.deepStrictEqual(win.calls, []);
+      assert.deepStrictEqual(hitWin.calls, []);
+    }
+  });
+
+  it("macOS syncImeEditingPetDodge is inert when the pref is off (restore would re-delegate above)", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    // A text-input bubble overlapping the pet would normally trigger the #640
+    // dodge; with the pref off there is nothing to dodge and, worse, the
+    // dodge's restore leg would re-delegate the pet above ordinary windows.
+    const bubble = new FakeWindow({ bounds: { x: 0, y: 0, width: 400, height: 300 } });
+    bubble.__clawdMacTextInputBubble = true;
+    const dodgeReports = [];
+    const runtime = createTopmostRuntime({
+      isMac: true,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getPetWindowBounds: () => ({ x: 10, y: 10, width: 200, height: 200 }),
+      getHitRectScreen: (bounds) => bounds,
+      getPendingPermissions: () => [{ bubble }],
+      applyStationaryCollectionBehavior: () => true,
+      deDelegateWindowFromStationarySpace: () => true,
+      setImeEditingPetDodge: (value) => dodgeReports.push(value),
+      getAlwaysOnTop: () => false,
+    });
+
+    runtime.syncImeEditingPetDodge();
+
+    assert.deepStrictEqual(win.calls, [], "no de-delegation or fade while the pref is off");
+    assert.deepStrictEqual(hitWin.calls, []);
+    assert.deepStrictEqual(dodgeReports, []);
+  });
+
+  it("applyPetAlwaysOnTopPreference demotes and restores directly on platforms without a maintenance loop", () => {
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    let alwaysOnTop = false;
+    const runtime = createTopmostRuntime({
+      isWin: false,
+      isMac: false,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getAlwaysOnTop: () => alwaysOnTop,
+    });
+
+    runtime.applyPetAlwaysOnTopPreference();
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false]]);
+
+    alwaysOnTop = true;
+    runtime.applyPetAlwaysOnTopPreference();
+    assert.deepStrictEqual(win.calls, [["setAlwaysOnTop", false], ["setAlwaysOnTop", true]]);
+    assert.deepStrictEqual(hitWin.calls, [["setAlwaysOnTop", false], ["setAlwaysOnTop", true]]);
+  });
+});
+
+describe("#1275: macOS fullscreen auto-hide", () => {
+  function createHarness({ isWin = false, isMac = true, pref = false } = {}) {
+    const timers = makeTimers();
+    const win = new FakeWindow();
+    const hitWin = new FakeWindow();
+    const state = { pref, fullscreen: false, hidden: false, probes: 0 };
+    const visibility = [];
+    const focusable = [];
+    const runtime = createTopmostRuntime({
+      isWin,
+      isMac,
+      getWin: () => win,
+      getHitWin: () => hitWin,
+      getFullscreenAutoHide: () => state.pref,
+      isForegroundFullscreen: () => { state.probes++; return state.fullscreen; },
+      isFullscreenAutoHidden: () => state.hidden,
+      setFullscreenAutoHidden: (value) => { state.hidden = value; visibility.push(value); },
+      setHitWinFocusable: (value) => focusable.push(value),
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    return { state, win, hitWin, runtime, timers, visibility, focusable,
+      tick: () => timers.intervals[0].fn() };
+  }
+
+  it("#1275: default Mac settings poll without probing or writing windows", () => {
+    const h = createHarness();
+    h.state.fullscreen = "mac-space:528";
+    h.runtime.startFocusablePoll();
+    assert.strictEqual(h.timers.intervals.length, 1);
+    assert.strictEqual(h.timers.intervals[0].ms, 1000);
+    h.tick();
+    assert.strictEqual(h.state.probes, 0);
+    assert.deepStrictEqual(h.visibility, []);
+    assert.deepStrictEqual(h.focusable, []);
+    assert.deepStrictEqual(h.win.calls, []);
+    assert.deepStrictEqual(h.hitWin.calls, []);
+    h.runtime.cleanup();
+    assert.strictEqual(h.timers.intervals[0].cleared, true);
+  });
+
+  it("#1275: Mac auto-hide enters fullscreen, restores on exit and clears when disabled", () => {
+    const h = createHarness({ pref: true });
+    h.runtime.startFocusablePoll();
+    h.state.fullscreen = "mac-space:528";
+    h.tick();
+    assert.deepStrictEqual(h.visibility, [true]);
+    h.state.fullscreen = false;
+    h.tick();
+    assert.deepStrictEqual(h.visibility, [true, false]);
+    h.state.fullscreen = "mac-space:533";
+    h.tick();
+    h.state.pref = false;
+    h.tick();
+    assert.deepStrictEqual(h.visibility, [true, false, true, false]);
+    const probes = h.state.probes;
+    h.tick();
+    assert.strictEqual(h.state.probes, probes);
+    assert.deepStrictEqual(h.focusable, []);
+  });
+
+  it("#1275: manual show survives the same Mac fullscreen Space and hides in the next one", () => {
+    const h = createHarness({ pref: true });
+    h.state.fullscreen = "mac-space:528";
+    h.runtime.startFocusablePoll();
+    assert.deepStrictEqual(h.visibility, [true]);
+    h.runtime.noteFullscreenAutoHideOverride();
+    h.state.hidden = false;
+    h.tick();
+    assert.strictEqual(h.state.hidden, false);
+    h.state.fullscreen = false;
+    h.tick();
+    h.state.fullscreen = "mac-space:528";
+    h.tick();
+    assert.strictEqual(h.state.hidden, false);
+    h.state.fullscreen = false;
+    h.tick();
+    h.state.fullscreen = "mac-space:533";
+    h.tick();
+    assert.strictEqual(h.state.hidden, true);
+    assert.deepStrictEqual(h.visibility, [true, true]);
+  });
+
+  it("#1275: Linux never starts fullscreen polling", () => {
+    const h = createHarness({ isWin: false, isMac: false, pref: true });
+    h.runtime.startFocusablePoll();
+    assert.strictEqual(h.timers.intervals.length, 0);
+    assert.strictEqual(h.state.probes, 0);
+    assert.deepStrictEqual(h.visibility, []);
+  });
+
+  it("#1275: the Windows poll still probes and updates focusability with auto-hide off", () => {
+    // #1275: isWin is also used by fixtures on a Mac host, where isMac defaults true.
+    const h = createHarness({ isWin: true, isMac: true });
+    h.state.fullscreen = "123";
+    h.runtime.startFocusablePoll();
+    assert.strictEqual(h.state.probes, 1);
+    assert.deepStrictEqual(h.focusable, [false]);
+    h.state.fullscreen = false;
+    h.tick();
+    assert.strictEqual(h.state.probes, 2);
+    assert.deepStrictEqual(h.focusable, [false, true]);
+    assert.deepStrictEqual(h.visibility, []);
+  });
+});
+
+describe("#1275: raise the non-topmost Windows pet windows together", () => {
+  for (const { label, isWin, isMac, alwaysOnTop, expected } of [
+    { label: "Windows with topmost off", isWin: true, isMac: false, alwaysOnTop: false, expected: ["render", "input"] },
+    { label: "Windows with topmost on", isWin: true, isMac: false, alwaysOnTop: true, expected: [] },
+    { label: "Mac with topmost off", isWin: false, isMac: true, alwaysOnTop: false, expected: [] },
+    { label: "Linux with topmost off", isWin: false, isMac: false, alwaysOnTop: false, expected: [] },
+  ]) {
+    it(`#1275: raisePetWindows on ${label}`, () => {
+      const calls = [];
+      const win = new FakeWindow();
+      const hitWin = new FakeWindow();
+      win.moveTop = () => calls.push("render");
+      hitWin.moveTop = () => calls.push("input");
+      const runtime = createTopmostRuntime({
+        isWin,
+        isMac,
+        getAlwaysOnTop: () => alwaysOnTop,
+        getWin: () => win,
+        getHitWin: () => hitWin,
+      });
+
+      runtime.raisePetWindows();
+
+      assert.deepStrictEqual(calls, expected);
+      assert.deepStrictEqual(win.calls, []);
+      assert.deepStrictEqual(hitWin.calls, []);
+    });
+  }
+
+  it("#1275: raisePetWindows skips destroyed windows and still raises the live partner", () => {
+    for (const [renderDestroyed, inputDestroyed, expected] of [
+      [true, false, ["input"]],
+      [false, true, ["render"]],
+      [true, true, []],
+    ]) {
+      const calls = [];
+      const win = new FakeWindow({ destroyed: renderDestroyed });
+      const hitWin = new FakeWindow({ destroyed: inputDestroyed });
+      win.moveTop = () => {
+        assert.strictEqual(win.isDestroyed(), false);
+        calls.push("render");
+      };
+      hitWin.moveTop = () => {
+        assert.strictEqual(hitWin.isDestroyed(), false);
+        calls.push("input");
+      };
+      const runtime = createTopmostRuntime({
+        isWin: true,
+        isMac: false,
+        getAlwaysOnTop: () => false,
+        getWin: () => win,
+        getHitWin: () => hitWin,
+      });
+
+      assert.doesNotThrow(() => runtime.raisePetWindows());
+      assert.deepStrictEqual(calls, expected);
+    }
   });
 });
