@@ -713,7 +713,7 @@
         count.title = t("recapMetricUnavailableReason");
         count.setAttribute("aria-label", `${t(labelKey)}: ${t("recapMetricUnavailableReason")}`);
       } else {
-        delete count.title;
+        count.removeAttribute("title");
         count.removeAttribute("aria-label");
       }
     }
@@ -1219,7 +1219,8 @@
           // clearing and re-applying classes on every rendered cell. On the
           // year grid that turns a 372-cell class/style rewrite per hover into
           // work proportional to the actual hit count.
-          for (const { cell, element } of this.highlightedCells) {
+          for (const { cell: previousCell, element } of this.highlightedCells) {
+            const cell = this.cellElements.get(previousCell.key).cell;
             element.classList.remove("recap-cell-hit", "recap-depth-1", "recap-depth-2", "recap-depth-3");
             element.style.removeProperty("--recap-cell-color");
             if (cell.state === "activity") element.classList.add(`recap-depth-${depthOf(cell.total)}`);
@@ -1471,7 +1472,7 @@
     card.appendChild(buildTimeline(data, interaction));
     card.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
-      if (!view.lockedRowKey && !interaction.peekElement) return;
+      if (!view.lockedRowKey && !interaction.peekElement && !scrollActivity.pendingPeek) return;
       event.preventDefault();
       view.lockedRowKey = null;
       interaction.clearPeek();

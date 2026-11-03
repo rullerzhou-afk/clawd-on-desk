@@ -21986,6 +21986,30 @@ const choiceOptions = () => [
 const settleChoice = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("Settings tabs and segmented choice contracts", () => {
+  it("dismisses the shared hint before replacing its subpage anchor", () => {
+    const document = createChoiceDocument();
+    const core = loadSettingsCoreForTest({}, { document });
+    const panel = document.createElement("div");
+    document.body.appendChild(panel);
+    const host = core.helpers.createSubpageHost();
+    host.render(panel, (body) => {
+      const row = buildFakeSettingRow(document, { label: "Label", description: "Folded description" });
+      core.helpers.attachDescriptionDisclosure(row.element);
+      body.appendChild(row.element);
+    });
+    const anchor = panel.querySelector(".row-desc-toggle");
+    anchor.dispatchEvent({ type: "mouseenter" });
+    const tooltip = document.body.querySelector(".settings-tooltip");
+    assert.equal(tooltip.classList.contains("visible"), true);
+
+    host.render(panel, () => {
+      assert.equal(tooltip.classList.contains("visible"), false);
+      assert.equal(tooltip.getAttribute("aria-hidden"), "true");
+    });
+    assert.equal(anchor.isConnected, false);
+    host.dispose();
+  });
+
   it("replaces only subpage bodies, restores lost focus and invalidates disposed scroll work", () => {
     const document = createChoiceDocument();
     const frames = [];

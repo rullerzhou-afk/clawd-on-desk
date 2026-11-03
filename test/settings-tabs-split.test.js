@@ -1523,6 +1523,14 @@ describe("settings tab split", () => {
       { textScale: 1.1 },
       { previousSnapshot, snapshot: { ...nextSnapshot, textScale: 1.1 } },
     ), false);
+    for (const key of ["tgApproval", "feishuApproval", "slackNotify", "mobilePreviewEnabled", "mobilePermissionPreviewEnabled"]) {
+      const beforeMixedChange = harness.renderCount();
+      assert.strictEqual(harness.core.tabs.permissions.patchInPlace(
+        { [key]: nextSnapshot[key], textScale: 1.1 },
+        { previousSnapshot: nextSnapshot, snapshot: { ...nextSnapshot, textScale: 1.1 } },
+      ), false, `${key} mixed with a page-wide change must use the generic render`);
+      assert.strictEqual(harness.renderCount(), beforeMixedChange);
+    }
   });
 
   it("keeps the sidebar, deep-link whitelist, and icons in sync", () => {

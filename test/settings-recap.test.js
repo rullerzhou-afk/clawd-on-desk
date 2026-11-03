@@ -139,6 +139,15 @@ test("the settings scroller is announced as scroll-changing to the compositor", 
   assert.match(contentRule, /scrollbar-gutter:\s*stable;/);
 });
 
+test("segmented group label spacing only increases on wide settings panes", () => {
+  const css = fs.readFileSync(path.join(SRC, "settings.css"), "utf8");
+  const wideRule = css.match(/@media \(width > 720px\)\s*\{\s*([^{}]+\{[^{}]+\})\s*\}/)?.[1] || "";
+  assert.match(wideRule, /\.agent-detail-group:has\(> \.agent-detail-group-rows > \.row:first-child \.segmented\) > \.agent-detail-group-label,/);
+  assert.match(wideRule, /\.settings-detail-group:has\(> \.settings-detail-group-rows > \.row:first-child \.segmented\) > \.settings-detail-group-label/);
+  assert.match(wideRule, /padding-top:\s*17px;/);
+  assert.match(css, /@media \(max-width:\s*720px\)\s*\{[^}]*\}\s*\.agent-detail-group-label,\s*\.settings-detail-group-label\s*\{\s*padding:\s*10px 14px 0;/);
+});
+
 test("today bar ratios use one honest linear scale", () => {
   const context = { globalThis: null };
   context.globalThis = context;
