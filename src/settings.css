@@ -5330,6 +5330,33 @@ html, body {
   font-size: 11px;
   color: var(--text-secondary);
 }
+.mobile-pair-qr {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--border);
+}
+.mobile-pair-qr-holder {
+  flex: none;
+  width: 160px;
+  height: 160px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #fff;
+}
+.mobile-pair-qr-holder svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.mobile-pair-qr-hint {
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.5;
+  min-width: 0;
+}
 /* Official theme cards */
 .theme-official-offline-banner {
   display: flex;

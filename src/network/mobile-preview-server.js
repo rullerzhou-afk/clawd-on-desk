@@ -13,6 +13,7 @@ const os = require("os");
 const WebSocket = require("ws");
 const { createMobileDeviceStore, hash, CID_RE, MAX_DEVICES, newPairing } = require("./mobile-device-store");
 const { sessionDisplayFolder } = require("../state-session-snapshot");
+const { buildPairQrSvg } = require("../mobile-pair-qr");
 
 const APP_VERSION = require("../../package.json").version;
 const PROTOCOL_VERSION = "v1";
@@ -422,11 +423,13 @@ function initMobilePreviewServer(ctx) {
   function getConnectionInfo() {
     const { code, expiresAt } = store.getPairing();
     const lanIp = getLocalIP();
+    const pairUrl = activePort ? `http://${lanIp}:${activePort}/mobile/?pair=${code}` : null;
     return {
       status: activePort ? "ok" : "starting",
       port: activePort,
       lanIp,
-      pairUrl: activePort ? `http://${lanIp}:${activePort}/mobile/?pair=${code}` : null,
+      pairUrl,
+      pairQrSvg: pairUrl ? buildPairQrSvg(pairUrl) : null,
       pairCode: code,
       pairExpiresAt: expiresAt,
     };
