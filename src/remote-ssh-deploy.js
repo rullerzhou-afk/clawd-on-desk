@@ -53,12 +53,15 @@ const {
 } = require("./remote-ssh-node");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
+const { windowsPlatformFailure } = require("./remote-ssh-platform");
 const { detectRemoteShell } = require("./remote-ssh-shell-detect");
 const {
   normalizeRemoteRuntimeIdentity,
   resolveRemoteRuntimeLayout,
+  assertPosixRemoteLayout,
 } = require("./remote-ssh-layout");
 const { buildRemoteIdentityDocument } = require("./remote-ssh-identity");
+const { isValidRemoteHome } = require("./remote-ssh-profile");
 const { quoteForPosixShellArg } = require("./remote-ssh-quote");
 const {
   HERMES_RESULT_SENTINEL,
@@ -134,6 +137,16 @@ function resolveHooksDir({ app, isPackaged } = {}) {
   }
   // dev path: src/remote-ssh-deploy.js → ../hooks
   return path.join(__dirname, "..", "hooks");
+}
+
+function verifyLocalHookFiles({ hooksDir, isPackaged } = {}) {
+  const sourceDir = hooksDir || resolveHooksDir({ isPackaged });
+  const missing = HOOK_FILES
+    .map((name) => path.join(sourceDir, name))
+    .filter((file) => !fs.existsSync(file));
+  return missing.length
+    ? { ok: false, step: "verify", message: `Missing files: ${missing.join(", ")}`, reason: null }
+    : { ok: true };
 }
 
 function spawnAndWait(spawn, command, args, opts = {}) {
@@ -553,6 +566,7 @@ function compactJson(value) {
 }
 
 function assertLeaseCommand(layout, leaseId, remoteNode) {
+  assertPosixRemoteLayout(layout);
   const js = [
     "const fs=require('fs');",
     `const p=${JSON.stringify(path.posix.join(layout.deployLockDir, "owner"))};`,
@@ -563,10 +577,12 @@ function assertLeaseCommand(layout, leaseId, remoteNode) {
 }
 
 function fencedCommand(layout, leaseId, remoteNode, command) {
+  assertPosixRemoteLayout(layout);
   return `${assertLeaseCommand(layout, leaseId, remoteNode)} && (\n${command}\n)`;
 }
 
 async function resolveRemoteHome({ profile, spawn, runtime }) {
+  if (profile.remotePlatform === "win32") throw new TypeError("POSIX remote layout required");
   const command = "printf 'CLAWD_REMOTE_HOME=%s\\n' \"$HOME\"";
   const result = await spawnAndWait(
     spawn,
@@ -585,6 +601,7 @@ async function resolveRemoteHome({ profile, spawn, runtime }) {
       runtimeKey: profile.runtimeKey,
       remoteHome: match[1],
     });
+    assertPosixRemoteLayout(layout);
     return { ok: true, layout };
   } catch (err) {
     return { ok: false, message: err && err.message };
@@ -600,6 +617,7 @@ async function acquireDeployLock({
   runtime,
   now = Date.now,
 }) {
+  assertPosixRemoteLayout(layout);
   if (runtime && typeof runtime.setManagedLockStage === "function") {
     runtime.setManagedLockStage("acquire-attempted");
   }
@@ -673,6 +691,7 @@ async function acquireDeployLock({
 }
 
 async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, runtime }) {
+  assertPosixRemoteLayout(layout);
   const lock = quoteForPosixShellArg(layout.deployLockDir);
   const command = `${assertLeaseCommand(layout, leaseId, remoteNode)} && rm -rf ${lock}`;
   const result = await spawnAndWait(
@@ -712,6 +731,7 @@ async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, 
 // hermesPresent is deliberately narrow (config.yaml or the venv CLI): an empty
 // ~/.hermes left over from an uninstall is not a Hermes installation.
 function buildHermesPreflightLines(layout) {
+  assertPosixRemoteLayout(layout);
   const hermesHome = resolveRemoteHermesHome(layout);
   if (!hermesHome) {
     // Phase 1 scope: profile-isolated runtimes report the phase as not
@@ -760,6 +780,7 @@ function buildHermesPreflightLines(layout) {
 }
 
 function buildOwnershipPreflightScript({ profile, layout, installId }) {
+  assertPosixRemoteLayout(layout);
   const expected = {
     installId,
     profileId: profile.id,
@@ -850,6 +871,7 @@ async function runOwnershipPreflight({
 }
 
 function buildLegacyMonitorCleanupScript(layout) {
+  assertPosixRemoteLayout(layout);
   if (!layout || layout.runtimeMode !== "account-default" || !layout.legacyMonitorPidFile) {
     throw new TypeError("legacy monitor cleanup is account-default only");
   }
@@ -911,12 +933,14 @@ async function cleanupLegacyMonitor({
 // profile-isolated runtimes get null — the Hermes phase is not applicable
 // there and no HERMES_HOME is exported to the remote installers.
 function resolveRemoteHermesHome(layout) {
+  assertPosixRemoteLayout(layout);
   if (!layout || layout.runtimeMode !== "account-default") return null;
   if (typeof layout.remoteHome !== "string" || !layout.remoteHome) return null;
   return path.posix.join(layout.remoteHome, ".hermes");
 }
 
 function buildRemoteInstallerEnv(layout, remotePermissionTransport = "path") {
+  assertPosixRemoteLayout(layout);
   const hermesHome = resolveRemoteHermesHome(layout);
   return [
     `CLAUDE_CONFIG_DIR=${quoteForPosixShellArg(layout.claudeConfigDir)}`,
@@ -939,6 +963,7 @@ function buildRemoteInstallerEnv(layout, remotePermissionTransport = "path") {
 }
 
 function buildInstallerVerificationCommand(txnStep, layout, remoteNode) {
+  assertPosixRemoteLayout(layout);
   const specs = {
     installClaude: {
       file: layout.claudeSettingsFile,
@@ -989,6 +1014,7 @@ function buildInstallerVerificationCommand(txnStep, layout, remoteNode) {
 }
 
 function buildMonitorVerificationCommand(layout, remoteNode) {
+  assertPosixRemoteLayout(layout);
   const script = [
     "const fs=require('fs'),cp=require('child_process');",
     `const pidFile=${JSON.stringify(layout.monitorPidFile)};`,
@@ -1044,6 +1070,7 @@ async function probeRemoteCliCapabilities({
   runtime,
   minimums = ISOLATED_CLI_MINIMUMS,
 }) {
+  assertPosixRemoteLayout(layout);
   const script = [
     "const cp=require('child_process'),fs=require('fs'),p=require('path');",
     "const names=['claude','codex','copilot'];",
@@ -1110,6 +1137,7 @@ function buildWrapperEvidence(executablePath, envName, envValue) {
 }
 
 function buildIsolatedWrapper(layout, executablePath, envName, envValue, evidenceFile) {
+  assertPosixRemoteLayout(layout);
   const evidenceTmp = `${evidenceFile}.tmp.$$`;
   const evidence = buildWrapperEvidence(executablePath, envName, envValue);
   return [
@@ -1302,6 +1330,7 @@ async function secureDeploy({
   profile,
   installId,
   identityTxn,
+  platformSnapshot,
   legacyMigrationConfirmed = false,
   runtime,
   deps = {},
@@ -1337,36 +1366,38 @@ async function secureDeploy({
   async function recordStep(name, status, evidence) {
     await onStep(name, { status, ...(evidence ? { evidence } : {}) });
   }
-  async function fail(step, message, reason = null, identityStep = null) {
+  async function fail(step, message, reason = null, identityStep = null, hint = null) {
     const safeMessage = redactTransportDiagnostic(message, profile);
-    progress(step, "fail", safeMessage);
+    progress(step, "fail", safeMessage, hint);
     if (identityStep) {
       try { await recordStep(identityStep, "failed", String(safeMessage || "failed").slice(0, 500)); } catch {}
     }
-    return { ok: false, step, message: safeMessage, reason };
+    return { ok: false, step, message: safeMessage, reason, ...(hint ? { hint } : {}) };
   }
 
-  const missing = HOOK_FILES
-    .map((name) => path.join(hooksDir, name))
-    .filter((file) => !fs.existsSync(file));
-  if (missing.length) return fail("verify", `Missing files: ${missing.join(", ")}`);
+  const verification = verifyLocalHookFiles({ hooksDir });
+  if (!verification.ok) return fail(verification.step, verification.message, verification.reason);
   progress("verify", "ok");
 
   progress("remote-shell", "start");
-  const shell = await detectShellFn({ profile, spawn, buildSshArgs, runtime });
-  if (shell && shell.shell === "windows-cmd") {
-    return fail(
-      "remote-shell",
-      "Remote default shell is Windows cmd.exe. Remote SSH needs a POSIX shell.",
-      "windows_cmd_shell",
-    );
+  const shell = platformSnapshot
+    ? platformSnapshot.shell
+    : await detectShellFn({ profile, spawn, buildSshArgs, runtime });
+  if ((platformSnapshot && platformSnapshot.remotePlatform === "win32")
+    || (!platformSnapshot && shell && shell.shell === "windows-cmd")) {
+    const failure = windowsPlatformFailure();
+    return fail(failure.step, failure.message, failure.reason, null, failure.hint);
   }
   progress("remote-shell", "ok", shell && shell.os);
 
   progress("layout", "start");
-  const homeResult = await resolveRemoteHome({ profile, spawn, runtime });
+  const homeResult = await resolveRemoteHome({
+    profile: platformSnapshot ? { ...profile, remotePlatform: platformSnapshot.remotePlatform } : profile,
+    spawn, runtime,
+  });
   if (!homeResult.ok) return fail("layout", homeResult.message, "remote_home_invalid");
   layout = homeResult.layout;
+  assertPosixRemoteLayout(layout);
   if (layout.runtimeKey !== identityTxn.runtimeKey
     || layout.layoutVersion !== identityTxn.layoutVersion) {
     return fail("layout", "Identity transaction belongs to another remote runtime layout", "layout_drift");
@@ -1374,7 +1405,7 @@ async function secureDeploy({
   progress("layout", "ok", layout.runtimeKey);
 
   progress("check-node", "start");
-  const resolved = await resolveRemoteNodeBin({
+  const resolved = (platformSnapshot && platformSnapshot.remoteNode) || await resolveRemoteNodeBin({
     profile,
     spawn,
     buildSshArgs,
@@ -1389,6 +1420,20 @@ async function secureDeploy({
     source: resolved.source || null,
   };
   progress("check-node", "ok", resolved.version || null);
+
+  // Direct callers that do not go through IPC have no trusted platform snapshot.
+  if (!platformSnapshot && (!shell || !/^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX)$/i.test(shell.os))) {
+    const checked = await spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([
+      buildRemoteNodeEvalCommand(remoteNode, "console.log(process.platform)"),
+    ]), { runtime });
+    if (checked.code !== 0 || !String(checked.stdout || "").trim()) {
+      return fail("check-node", "Remote Node platform could not be verified.");
+    }
+    if (String(checked.stdout).trim() === "win32") {
+      const failure = windowsPlatformFailure();
+      return fail(failure.step, failure.message, failure.reason, null, failure.hint);
+    }
+  }
 
   progress("lock", "start");
   const lock = await acquireDeployLock({
@@ -2266,8 +2311,7 @@ async function legacyUninstallRemoteIntegrations({ profile, runtime = null, deps
 function hasSecureRemoteOwnership(profile) {
   return !!profile
     && INSTALL_ID_RE.test(profile.installId || "")
-    && typeof profile.remoteHome === "string"
-    && profile.remoteHome.startsWith("/")
+    && isValidRemoteHome(profile.remoteHome, profile.remotePlatform || "posix")
     && typeof profile.runtimeKey === "string"
     && Number.isInteger(profile.layoutVersion);
 }
@@ -2292,6 +2336,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
   } catch (err) {
     return { ok: false, skipped: true, reason: "layout_invalid", stderr: err && err.message };
   }
+  assertPosixRemoteLayout(layout);
   let remoteNode = deps.nodeBin;
   if (!remoteNode) {
     const resolved = await resolveRemoteNodeBin({
@@ -2390,6 +2435,7 @@ async function withOwnedRemoteLease({ profile, runtime, deps = {}, operation }) 
 }
 
 function secureMonitorStopCommand(layout) {
+  assertPosixRemoteLayout(layout);
   const pidFile = quoteForPosixShellArg(layout.monitorPidFile);
   const marker = quoteForPosixShellArg(path.posix.join(layout.claudeHooksDir, "codex-remote-monitor.js"));
   return [
@@ -2554,6 +2600,7 @@ async function finalizeRetiredRemoteLayout({
   } catch (err) {
     return { ok: false, reason: "layout_invalid", stderr: err && err.message };
   }
+  assertPosixRemoteLayout(layout);
   let remoteNode = deps.nodeBin;
   if (!remoteNode) {
     const resolved = await resolveRemoteNodeBin({
@@ -2661,6 +2708,7 @@ function summarizeStderr(text) {
 module.exports = {
   HOOK_FILES,
   resolveHooksDir,
+  verifyLocalHookFiles,
   deploy,
   startCodexMonitor,
   stopCodexMonitor,
@@ -2696,5 +2744,7 @@ module.exports = {
     buildRemoteInstallerEnv,
     fencedCommand,
     hasSecureRemoteOwnership,
+    secureMonitorStopCommand,
+    resolveRemoteHome,
   },
 };

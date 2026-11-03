@@ -42,7 +42,7 @@ const {
 } = require("./remote-ssh-node");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { acceptedRoutingNonces } = require("./remote-ssh-identity");
-const { resolveRemoteRuntimeLayout } = require("./remote-ssh-layout");
+const { resolveRemoteRuntimeLayout, assertPosixRemoteLayout } = require("./remote-ssh-layout");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
 const { appendRemoteSshConfigArgs } = require("./remote-ssh-local-config");
 
@@ -308,6 +308,7 @@ function buildProbeCommand(remoteForwardPort, nodeBin = "node", options = {}) {
         remoteHome: profile.remoteHome,
       });
     } catch {}
+    if (layout) assertPosixRemoteLayout(layout);
     if (!layout) {
       securePrefix = "process.exit(5);";
     } else {
@@ -357,6 +358,7 @@ function buildPersistentReadinessCommand(remoteForwardPort, nodeBin, options = {
   } catch {
     layout = null;
   }
+  if (layout) assertPosixRemoteLayout(layout);
   const marker = `__CLAWD_REMOTE_READY__:${options.challenge}`;
   const windowMs = Number.isFinite(options.probeWindowMs)
     ? Math.max(1000, Math.min(60000, Math.trunc(options.probeWindowMs)))
