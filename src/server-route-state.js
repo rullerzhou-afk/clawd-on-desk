@@ -26,6 +26,25 @@ const {
 const { isWslSourced, stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const { resolveDshCarrier } = require("./dsh-carrier");
 const {
+  CLAUDE_WRAP_UP_TOOL_NAME,
+  normalizeClaudeTurnAsk,
+  createClaudeTurnAskTracker,
+} = require("./claude-turn-ask");
+
+// #1326: one tracker per server ctx, so the per-session "stopped since the last
+// prompt" memory survives across /state requests (the real server reuses one
+// ctx) while unit tests that build a fresh ctx never share state.
+const claudeTurnAskTrackers = new WeakMap();
+function getClaudeTurnAskTracker(ctx) {
+  if (!ctx || typeof ctx !== "object") return createClaudeTurnAskTracker();
+  let tracker = claudeTurnAskTrackers.get(ctx);
+  if (!tracker) {
+    tracker = createClaudeTurnAskTracker();
+    claudeTurnAskTrackers.set(ctx, tracker);
+  }
+  return tracker;
+}
+const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
 } = require("./server-permission-utils");
@@ -1115,6 +1134,38 @@ function handleStatePost(req, res, options) {
             stateSweepBehaviorFor,
             "Plan dialog dismissed in terminal"
           );
+        }
+        // #1326: Claude Desktop's end-of-turn question box. Main-thread Claude
+        // Code events only; the show/clear/ignore rules (including the
+        // post-Stop phantom guard) live in claude-turn-ask.js.
+        if (hasExplicitPermissionLifecycleSession
+          && agentId === "claude-code"
+          && !subagentId
+          && !isRetiredClaudePhase) {
+          const claudeTurnAsk = event === "PreToolUse" && toolName === CLAUDE_WRAP_UP_TOOL_NAME
+            ? normalizeClaudeTurnAsk(data.claude_turn_ask)
+            : null;
+          const turnAskAction = getClaudeTurnAskTracker(ctx).decide({
+            sessionId: sid,
+            event,
+            toolName,
+            hasAsk: !!claudeTurnAsk,
+          });
+          if (turnAskAction === "show" && typeof ctx.showClaudeTurnAskBubble === "function") {
+            ctx.showClaudeTurnAskBubble({
+              sessionId: sid,
+              toolUseId,
+              ask: claudeTurnAsk.ask,
+              recap: claudeTurnAsk.recap,
+              actions: claudeTurnAsk.actions,
+              sourcePid: effectiveProcessMetadata.sourcePid,
+              agentPid: effectiveProcessMetadata.agentPid,
+              cwd,
+              host,
+            });
+          } else if (turnAskAction === "clear" && typeof ctx.clearClaudeTurnAskBubbles === "function") {
+            ctx.clearClaudeTurnAskBubbles(sid, `claude-turn-ask:${event}`);
+          }
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
         let sessionUpdateApplied = true;

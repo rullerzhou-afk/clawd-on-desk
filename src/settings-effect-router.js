@@ -84,6 +84,7 @@ function createSettingsEffectRouter(options = {}) {
   const dismissInteractivePermissionBubbles = options.dismissInteractivePermissionBubbles || noop;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || noop;
+  const clearClaudeTurnAskBubbles = options.clearClaudeTurnAskBubbles || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
   const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
@@ -271,6 +272,7 @@ function createSettingsEffectRouter(options = {}) {
       try {
         clearCodexNotifyBubbles(undefined, "settings-policy-disabled");
         clearCodexUserInputBubbles(undefined, undefined, "settings-policy-disabled");
+        clearClaudeTurnAskBubbles(undefined, "settings-policy-disabled");
         clearKimiNotifyBubbles(undefined, "settings-policy-disabled");
       } catch (err) {
         warn(logWarn, "Clawd: clear notification bubbles failed:", err);

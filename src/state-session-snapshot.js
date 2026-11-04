@@ -426,10 +426,19 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const agentId = (session && session.agentId) || null;
   const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
-  const presentation = agentId === "codex" && !session.headless && !session.host && !session.wslDistro
+  const canPresent = !session.headless && !session.host && !session.wslDistro
     && session.platform !== "wsl"
-    && (session.profileId || "local") === "local" && typeof options.getSessionPresentation === "function"
-    ? options.getSessionPresentation(id) : null;
+    && (session.profileId || "local") === "local" && typeof options.getSessionPresentation === "function";
+  let presentation = null;
+  if (canPresent && agentId === "codex") {
+    presentation = options.getSessionPresentation(id);
+  } else if (canPresent && agentId === "claude-code") {
+    // #1326: a Claude session only takes the pending-attention part (Claude
+    // Desktop's wrap_up question card), so its row shows the same "needs input"
+    // state as a Codex question. Without a card the snapshot shape is unchanged.
+    const candidate = options.getSessionPresentation(id);
+    if (candidate && candidate.pendingAttention === true) presentation = { pendingAttention: true };
+  }
   const activeSubagentCount = Number.isSafeInteger(presentation?.activeSubagentCount)
     && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
     ? presentation.activeSubagentCount : 0;

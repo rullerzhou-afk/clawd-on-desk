@@ -318,6 +318,76 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(harness.focused[0][0], "codex-expand");
   });
 
+  // #1326: Claude Desktop's end-of-turn question box (mcp__ccd_turn__wrap_up).
+  const CLAUDE_TURN_ASK = {
+    sessionId: "claude-a",
+    toolUseId: "toolu_wrap",
+    ask: "Fix the parser now?",
+    recap: "Two parser tests fail.",
+    actions: [{ label: "Fix it", message: "Fix the two failing parser tests." }, { label: "Not now" }],
+    sourcePid: 42,
+    cwd: "/repo",
+  };
+
+  it("keeps the Claude wrap_up question as a read-only native-question card", () => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    assert.strictEqual(api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), true);
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const entry = api.pendingPermissions[0];
+
+    assert.strictEqual(entry.isClaudeTurnAskNotify, true);
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.strictEqual(entry.res, null, "never holds an HTTP decision channel");
+    assert.deepStrictEqual(entry.toolInput.questions, [{
+      question: "Fix the parser now?",
+      options: [
+        { label: "Fix it", description: "Fix the two failing parser tests." },
+        { label: "Not now" },
+      ],
+    }]);
+    assert.strictEqual(entry.autoExpireTimer, null, "a pending question must not auto-expire");
+    assert.strictEqual(api.buildPermissionBubblePayload(entry).isClaudeTurnAskNotify, true);
+    assert.strictEqual(api.refreshPassiveNotifyAutoClose(), 0);
+    assert.strictEqual(
+      api.maybeStartRemoteApproval(entry),
+      false,
+      "Clawd cannot answer it, so remote approval must never pick it up"
+    );
+
+    api.handleDecide({ sender: { __window: entry.bubble } }, "codex-user-input-focus");
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    assert.deepStrictEqual(harness.focused.map((args) => args[0]), ["claude-a"]);
+  });
+
+  it("refreshes one Claude wrap_up card per session and clears it by session", () => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK);
+    api.showClaudeTurnAskBubble({ ...CLAUDE_TURN_ASK, ask: "Push the fix?", toolUseId: "toolu_wrap_2" });
+    api.showClaudeTurnAskBubble({ ...CLAUDE_TURN_ASK, sessionId: "claude-b" });
+    assert.strictEqual(api.pendingPermissions.length, 2);
+    const refreshed = api.pendingPermissions.find((entry) => entry.sessionId === "claude-a");
+    assert.strictEqual(refreshed.toolInput.questions[0].question, "Push the fix?");
+    assert.strictEqual(refreshed.claudeTurnAskToolUseId, "toolu_wrap_2");
+
+    assert.strictEqual(api.clearClaudeTurnAskBubbles("claude-a", "test"), 1);
+    assert.deepStrictEqual(api.pendingPermissions.map((entry) => entry.sessionId), ["claude-b"]);
+    assert.strictEqual(api.clearClaudeTurnAskBubbles(undefined, "test"), 1);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("does not show the Claude wrap_up card when Claude bubbles or notifications are off", () => {
+    const disabled = createPermissionHarness({ agentPermissionsEnabled: false });
+    assert.strictEqual(disabled.api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), false);
+    assert.strictEqual(disabled.api.pendingPermissions.length, 0);
+
+    const quiet = createPermissionHarness();
+    quiet.setNotificationAutoCloseMs(0);
+    assert.strictEqual(quiet.api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), false);
+    assert.strictEqual(quiet.api.pendingPermissions.length, 0);
+  });
+
   it("dismisses a stale remote Codex expansion without focusing a local terminal", () => {
     const harness = createPermissionHarness();
     const { api } = harness;

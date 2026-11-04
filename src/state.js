@@ -4097,13 +4097,23 @@ function disposeKimiPermissionSession(sessionId) {
   stopKimiPermissionPoll(sessionId);
 }
 
+// Sessions with a passive question/approval card the user still has to act on.
+// Named for Codex (its only source until #1326), it also counts Claude
+// Desktop's wrap_up question card so that session's HUD row shows the same
+// "needs input" state. The pet projection stays Codex-only: codex-subagent-
+// presentation's isLocalParent() ignores non-Codex sessions.
 function getCodexPendingAttentionIds() {
   const ids = new Set();
   for (const entry of ctx.pendingPermissions || []) {
-    if (entry?.agentId !== "codex" || !entry.sessionId || entry.headless || entry.host || entry.wslDistro
+    if (!entry?.sessionId || entry.headless || entry.host || entry.wslDistro
       || entry.platform === "wsl" || (entry.profileId && entry.profileId !== "local")
       || (entry.res && (entry.res.destroyed || entry.res.writableEnded))) continue;
-    if (entry.isCodex === true || entry.isCodexNotify === true || entry.isCodexUserInputNotify === true) ids.add(entry.sessionId);
+    if (entry.agentId === "codex"
+      && (entry.isCodex === true || entry.isCodexNotify === true || entry.isCodexUserInputNotify === true)) {
+      ids.add(entry.sessionId);
+    } else if (entry.agentId === "claude-code" && entry.isClaudeTurnAskNotify === true) {
+      ids.add(entry.sessionId);
+    }
   }
   return ids;
 }
