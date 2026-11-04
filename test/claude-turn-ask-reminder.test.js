@@ -1,0 +1,139 @@
+"use strict";
+
+// #1326 follow-up: opt-in reminder for an unanswered Claude Desktop wrap_up
+// question.
+
+const { describe, it } = require("node:test");
+const assert = require("node:assert/strict");
+
+const {
+  DEFAULT_REMINDER_MINUTES,
+  reminderDelayMsFromMinutes,
+  createClaudeTurnAskReminder,
+} = require("../src/claude-turn-ask-reminder");
+
+function makeFakeTimers() {
+  let now = 0;
+  let nextId = 1;
+  const timers = new Map();
+  return {
+    setTimeout(fn, ms) {
+      const id = { id: nextId++ };
+      timers.set(id, { fn, at: now + ms });
+      return id;
+    },
+    clearTimeout(id) { timers.delete(id); },
+    advance(ms) {
+      now += ms;
+      for (const [id, timer] of [...timers]) {
+        if (timer.at <= now) {
+          timers.delete(id);
+          timer.fn();
+        }
+      }
+    },
+    get size() { return timers.size; },
+  };
+}
+
+function makeReminder({ enabled = true, delayMs = 60_000 } = {}) {
+  const timers = makeFakeTimers();
+  const reminded = [];
+  const state = { enabled };
+  const reminder = createClaudeTurnAskReminder({
+    isEnabled: () => state.enabled,
+    getDelayMs: () => delayMs,
+    onRemind: (payload) => reminded.push(payload),
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+  });
+  return { reminder, timers, reminded, state };
+}
+
+const QUESTION = { sessionId: "s1", ask: "Fix the parser now?", actions: [{ label: "Fix it" }] };
+
+describe("createClaudeTurnAskReminder", () => {
+  it("reminds once, with the question, after the configured delay", () => {
+    const { reminder, timers, reminded } = makeReminder();
+    assert.equal(reminder.track(QUESTION), true);
+    timers.advance(59_999);
+    assert.equal(reminded.length, 0);
+    timers.advance(1);
+    assert.deepStrictEqual(reminded, [QUESTION]);
+    timers.advance(10 * 60_000);
+    assert.equal(reminded.length, 1, "one reminder per question");
+    assert.equal(reminder._size(), 0);
+  });
+
+  it("does not remind once the session moved on", () => {
+    const { reminder, timers, reminded } = makeReminder();
+    reminder.track(QUESTION);
+    assert.equal(reminder.resolve("s1"), true);
+    timers.advance(60_000);
+    assert.equal(reminded.length, 0);
+    assert.equal(timers.size, 0, "the timer is cleared, not left to no-op");
+  });
+
+  it("checks the setting when the timer fires", () => {
+    const { reminder, timers, reminded, state } = makeReminder({ enabled: false });
+    reminder.track(QUESTION);
+    state.enabled = true;
+    timers.advance(60_000);
+    assert.equal(reminded.length, 1, "turning it on applies to a question already waiting");
+
+    reminder.track({ ...QUESTION, ask: "Again?" });
+    state.enabled = false;
+    timers.advance(60_000);
+    assert.equal(reminded.length, 1, "turning it off silences a question already waiting");
+  });
+
+  it("restarts the countdown when the same session asks again", () => {
+    const { reminder, timers, reminded } = makeReminder();
+    reminder.track(QUESTION);
+    timers.advance(40_000);
+    reminder.track({ ...QUESTION, ask: "Push the fix?" });
+    timers.advance(40_000);
+    assert.equal(reminded.length, 0, "the first question's timer was replaced");
+    timers.advance(20_000);
+    assert.deepStrictEqual(reminded.map((payload) => payload.ask), ["Push the fix?"]);
+  });
+
+  it("keeps sessions independent and ignores payloads without a session", () => {
+    const { reminder, timers, reminded } = makeReminder();
+    reminder.track(QUESTION);
+    reminder.track({ ...QUESTION, sessionId: "s2" });
+    reminder.resolve("s1");
+    assert.equal(reminder.track({ ask: "no session" }), false);
+    timers.advance(60_000);
+    assert.deepStrictEqual(reminded.map((payload) => payload.sessionId), ["s2"]);
+  });
+
+  it("swallows a failing onRemind and clears everything on dispose", () => {
+    const timers = makeFakeTimers();
+    const reminder = createClaudeTurnAskReminder({
+      isEnabled: () => true,
+      getDelayMs: () => 1000,
+      onRemind: () => { throw new Error("bubble unavailable"); },
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+    });
+    reminder.track(QUESTION);
+    assert.doesNotThrow(() => timers.advance(1000));
+
+    reminder.track(QUESTION);
+    reminder.track({ ...QUESTION, sessionId: "s2" });
+    reminder.dispose();
+    assert.equal(reminder._size(), 0);
+    assert.equal(timers.size, 0);
+  });
+});
+
+describe("reminderDelayMsFromMinutes", () => {
+  it("clamps to 1–120 minutes and falls back to the default for bad input", () => {
+    assert.equal(reminderDelayMsFromMinutes(5), 5 * 60_000);
+    assert.equal(reminderDelayMsFromMinutes(0), 60_000);
+    assert.equal(reminderDelayMsFromMinutes(500), 120 * 60_000);
+    assert.equal(reminderDelayMsFromMinutes(undefined), DEFAULT_REMINDER_MINUTES * 60_000);
+    assert.equal(reminderDelayMsFromMinutes(2.5), DEFAULT_REMINDER_MINUTES * 60_000);
+  });
+});

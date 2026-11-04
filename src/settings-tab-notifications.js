@@ -13,6 +13,8 @@
     "hideBubbles",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
+    "claudeTurnAskReminder",
+    "claudeTurnAskReminderMinutes",
     "updateBubbleAutoCloseSeconds",
     "bubbleFollowPet",
     "bubbleFollowPreference",
@@ -727,6 +729,26 @@
         descKey: "bubbleNotificationDesc",
         secondsKey: "notificationBubbleAutoCloseSeconds",
       }),
+      // #1326 follow-up: opt-in reminder for an unanswered Claude Desktop
+      // end-of-turn question.
+      helpers.buildSwitchRow({
+        key: "claudeTurnAskReminder",
+        labelKey: "rowClaudeTurnAskReminder",
+        descKey: "rowClaudeTurnAskReminderDesc",
+      }),
+      helpers.buildNumberInputRow({
+        key: "claudeTurnAskReminderMinutes",
+        labelKey: "rowClaudeTurnAskReminderMinutes",
+        descKey: "rowClaudeTurnAskReminderMinutesDesc",
+        unitKey: "unitMinutes",
+        toDisplay: (minutes) => minutes,
+        fromDisplay: (v) => {
+          const n = parseInt(v, 10);
+          return Number.isFinite(n) ? Math.max(1, Math.min(120, n)) : 5;
+        },
+        min: 1,
+        max: 120,
+      }).row,
       buildBubbleCategoryControl({
         category: "update",
         labelKey: "bubbleUpdateLabel",

@@ -1151,8 +1151,8 @@ function handleStatePost(req, res, options) {
             toolName,
             hasAsk: !!claudeTurnAsk,
           });
-          if (turnAskAction === "show" && typeof ctx.showClaudeTurnAskBubble === "function") {
-            ctx.showClaudeTurnAskBubble({
+          if (turnAskAction === "show") {
+            const turnAskPayload = {
               sessionId: sid,
               toolUseId,
               ask: claudeTurnAsk.ask,
@@ -1162,9 +1162,16 @@ function handleStatePost(req, res, options) {
               agentPid: effectiveProcessMetadata.agentPid,
               cwd,
               host,
-            });
-          } else if (turnAskAction === "clear" && typeof ctx.clearClaudeTurnAskBubbles === "function") {
-            ctx.clearClaudeTurnAskBubbles(sid, `claude-turn-ask:${event}`);
+            };
+            if (typeof ctx.showClaudeTurnAskBubble === "function") ctx.showClaudeTurnAskBubble(turnAskPayload);
+            // Opt-in "still unanswered" reminder; the countdown runs even if the
+            // card is dismissed, until the session actually moves on.
+            if (typeof ctx.trackClaudeTurnAskReminder === "function") ctx.trackClaudeTurnAskReminder(turnAskPayload);
+          } else if (turnAskAction === "clear") {
+            if (typeof ctx.clearClaudeTurnAskBubbles === "function") {
+              ctx.clearClaudeTurnAskBubbles(sid, `claude-turn-ask:${event}`);
+            }
+            if (typeof ctx.resolveClaudeTurnAskReminder === "function") ctx.resolveClaudeTurnAskReminder(sid);
           }
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());

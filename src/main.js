@@ -130,6 +130,7 @@ const { formatLocalTimestamp } = require("./log-timestamp");
 const { launchClaudeSession, openTerminalAt } = require("./launch-claude");
 const { dialog: electronDialog } = require("electron");
 const initPermission = require("./permission");
+const { createClaudeTurnAskReminder, reminderDelayMsFromMinutes } = require("./claude-turn-ask-reminder");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
 const { registerPermissionIpc } = initPermission;
 const telegramApprovalSettings = require("./telegram-approval-settings");
@@ -3083,6 +3084,17 @@ agentRuntime = createAgentRuntimeMain({
 });
 
 // ── HTTP server — delegated to src/server.js ──
+// #1326 follow-up: re-show an unanswered Claude Desktop wrap_up question (with
+// a sound) once it has waited the configured minutes, if the user opted in.
+const claudeTurnAskReminder = createClaudeTurnAskReminder({
+  isEnabled: () => _settingsController.get("claudeTurnAskReminder") === true,
+  getDelayMs: () => reminderDelayMsFromMinutes(_settingsController.get("claudeTurnAskReminderMinutes")),
+  onRemind: (payload) => {
+    if (showClaudeTurnAskBubble(payload)) playSound("confirm");
+  },
+});
+app.on("will-quit", () => claudeTurnAskReminder.dispose());
+
 const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
@@ -3169,6 +3181,8 @@ const _serverCtx = {
   clearCodexUserInputBubbles,
   showClaudeTurnAskBubble,
   clearClaudeTurnAskBubbles,
+  trackClaudeTurnAskReminder: (payload) => claudeTurnAskReminder.track(payload),
+  resolveClaudeTurnAskReminder: (sessionId) => claudeTurnAskReminder.resolve(sessionId),
   handleTestResult: (result, context) => handleTestResult(result, context),
   maybeStartRemoteApproval,
   replyOpencodeFamilyPermission,

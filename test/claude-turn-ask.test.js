@@ -157,7 +157,7 @@ describe("clawd-hook forwards the wrap_up question", () => {
 // One ctx shared across requests, like the real server, so the per-session
 // tracker state carries from one hook event to the next.
 function createRouteHarness() {
-  const calls = { shown: [], cleared: [] };
+  const calls = { shown: [], cleared: [], tracked: [], resolved: [] };
   const ctx = {
     STATE_SVGS: {
       idle: "x.svg", thinking: "x.svg", working: "x.svg", juggling: "x.svg", error: "x.svg",
@@ -176,6 +176,8 @@ function createRouteHarness() {
     handleTestResult: () => {},
     showClaudeTurnAskBubble: (input) => { calls.shown.push(input); return true; },
     clearClaudeTurnAskBubbles: (...args) => calls.cleared.push(args),
+    trackClaudeTurnAskReminder: (payload) => calls.tracked.push(payload),
+    resolveClaudeTurnAskReminder: (sessionId) => calls.resolved.push(sessionId),
   };
   const recorder = {
     acceptedUnlessDnd() {}, droppedByDisabled() {}, droppedByDnd() {},
@@ -266,6 +268,22 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
     before = calls.cleared.length;
     await post("SessionEnd", { reason: "other" });
     assert.strictEqual(calls.cleared.length, before + 1);
+  });
+
+  it("starts the reminder countdown with the card and stops it only when the session moves on", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit");
+    const resolvedBefore = calls.resolved.length;
+    await post("PreToolUse", WRAP_UP_PRE);
+    assert.equal(calls.tracked.length, 1);
+    assert.deepStrictEqual(calls.tracked[0], calls.shown[0], "the reminder re-shows the same card");
+
+    await post("Stop");
+    await post("PreToolUse", { tool_name: "AskUserQuestion", tool_use_id: "toolu_phantom" });
+    assert.equal(calls.resolved.length, resolvedBefore, "Stop and post-Stop phantoms keep the countdown");
+
+    await post("UserPromptSubmit", { prompt: "继续" });
+    assert.deepStrictEqual(calls.resolved.slice(resolvedBefore), [SID]);
   });
 
   it("ignores wrap_up from a subagent", async () => {
