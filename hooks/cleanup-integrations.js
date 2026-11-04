@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 "use strict";
 
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -140,6 +141,44 @@ function buildTargetEnv(homeDir, options = {}) {
   return env;
 }
 
+// Clawd's own prefs folder for a user home, matching Electron's userData.
+function resolveClawdUserDataDir(homeDir, env, options = {}) {
+  if (typeof options.clawdUserDataDir === "string" && options.clawdUserDataDir.trim()) {
+    return options.clawdUserDataDir.trim();
+  }
+  const platform = options.platform || process.platform;
+  if (platform === "win32") {
+    return path.join(env.APPDATA || path.join(homeDir, "AppData", "Roaming"), "clawd-on-desk");
+  }
+  if (platform === "darwin") return path.join(homeDir, "Library", "Application Support", "clawd-on-desk");
+  const xdg = typeof env.XDG_CONFIG_HOME === "string" && env.XDG_CONFIG_HOME.trim()
+    ? env.XDG_CONFIG_HOME.trim()
+    : path.join(homeDir, ".config");
+  return path.join(xdg, "clawd-on-desk");
+}
+
+// Extra Claude config folders the user added in Settings. The in-app cleanup
+// passes them through the hook queue; the standalone uninstaller reads them
+// from clawd-prefs.json and simply skips them when that file is unreadable.
+function resolveExtraClaudeSettingsPaths(homeDir, env, primaryClaudeHome, options = {}) {
+  let entries = options.claudeConfigDirs;
+  if (!Array.isArray(entries)) {
+    try {
+      const prefsPath = path.join(resolveClawdUserDataDir(homeDir, env, options), "clawd-prefs.json");
+      const prefs = JSON.parse(fs.readFileSync(prefsPath, "utf8"));
+      const claude = prefs && prefs.agents && prefs.agents["claude-code"];
+      entries = claude && Array.isArray(claude.configDirs) ? claude.configDirs : [];
+    } catch {
+      entries = [];
+    }
+  }
+  const { normalizeClaudeConfigDirEntries, sameClaudeConfigDir } = require("./claude-config-dirs");
+  const platformOptions = { platform: options.platform || process.platform };
+  return normalizeClaudeConfigDirEntries(entries, platformOptions)
+    .filter((entry) => !sameClaudeConfigDir(entry.dir, primaryClaudeHome, platformOptions))
+    .map((entry) => path.join(entry.dir, "settings.json"));
+}
+
 function resolveCopilotHomeForCleanup(homeDir, env, options = {}) {
   if (typeof options.copilotHome === "string" && options.copilotHome.trim()) {
     return options.copilotHome.trim();
@@ -224,6 +263,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
       "claude-code": {
         ...common,
         settingsPath: path.join(claudeHome, "settings.json"),
+        extraSettingsPaths: resolveExtraClaudeSettingsPaths(homeDir, env, claudeHome, options),
       },
       "deepseek-harness": {
         ...common,
@@ -401,15 +441,29 @@ function unregisterAntigravityIntegration(options = {}) {
 }
 
 function unregisterClaudeIntegration(options = {}) {
-  const hooks = unregisterClaudeHooks(options);
-  const statusline = unregisterClaudeStatusline(options);
-  return {
-    removed: removedCountFromResult(hooks) + removedCountFromResult(statusline),
-    changed: changedFromResult(hooks) || changedFromResult(statusline),
-    backupPaths: [...backupPathsFromResult(hooks), ...backupPathsFromResult(statusline)],
+  const { extraSettingsPaths, ...primaryOptions } = options;
+  const hooks = unregisterClaudeHooks(primaryOptions);
+  const statusline = unregisterClaudeStatusline(primaryOptions);
+  // Extra Claude config folders only ever receive the hook set.
+  const configDirs = (Array.isArray(extraSettingsPaths) ? extraSettingsPaths : []).map((settingsPath) => ({
+    settingsPath,
+    hooks: unregisterClaudeHooks({ ...primaryOptions, settingsPath }),
+  }));
+  const extraHooks = configDirs.map((entry) => entry.hooks);
+  const out = {
+    removed: removedCountFromResult(hooks) + removedCountFromResult(statusline)
+      + extraHooks.reduce((sum, result) => sum + removedCountFromResult(result), 0),
+    changed: changedFromResult(hooks) || changedFromResult(statusline) || extraHooks.some(changedFromResult),
+    backupPaths: [
+      ...backupPathsFromResult(hooks),
+      ...backupPathsFromResult(statusline),
+      ...extraHooks.flatMap(backupPathsFromResult),
+    ],
     hooks,
     statusline,
   };
+  if (configDirs.length > 0) out.configDirs = configDirs;
+  return out;
 }
 
 function unregisterCodexIntegration(options = {}) {

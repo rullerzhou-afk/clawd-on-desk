@@ -2,6 +2,7 @@
 // Extracted from main.js L1337-1528
 
 const fs = require("fs");
+const path = require("path");
 const http = require("http");
 const crypto = require("crypto");
 const {
@@ -42,6 +43,11 @@ const {
   createClaudeSettingsWatcher,
 } = require("./claude-settings-watcher");
 const { createIntegrationSyncRuntime } = require("./integration-sync");
+const {
+  effectiveClaudeConfigDirs,
+  normalizeClaudeConfigDir,
+  sameClaudeConfigDir,
+} = require("../hooks/claude-config-dirs");
 const { createClaudeHookOperations } = require("./claude-hook-operations");
 const {
   sendStateHealthResponse,
@@ -416,9 +422,9 @@ function claudeHookSourceMissing(resolved, { requireAutoStart = false } = {}) {
   }
 }
 
-function readClaudeSettingsRawForVerify() {
+function readClaudeSettingsRawForVerify(settingsPath = claudeSettingsVerifyPath) {
   try {
-    return claudeFsApi.readFileSync(claudeSettingsVerifyPath, "utf-8");
+    return claudeFsApi.readFileSync(settingsPath, "utf-8");
   } catch {
     return "";
   }
@@ -441,7 +447,7 @@ function buildClaudeHookReportForVerify(overrides = {}) {
       message: (resolved && resolved.message) || "Claude hook path resolution failed",
     };
   }
-  return inspectClaudeHookHealth(readClaudeSettingsRawForVerify(), {
+  return inspectClaudeHookHealth(readClaudeSettingsRawForVerify(overrides.settingsPath), {
     expectedPermissionUrl: buildPermissionUrl(getHookServerPort()),
     expectedHookScriptPath: resolved.target.state,
     expectedAutoStartScriptPath: resolved.target.autoStart,
@@ -453,6 +459,105 @@ function buildClaudeHookReportForVerify(overrides = {}) {
     platform: claudeHookPlatformForHealth,
     fs: claudeFsApi,
   });
+}
+
+// ── Extra Claude config folders (#1250) ──
+// Claude Code picks its profile folder from CLAUDE_CONFIG_DIR. The folder this
+// process resolves (claudeSettingsVerifyPath's parent) stays the primary one and
+// keeps every existing behaviour, statusline included. Folders listed in
+// prefs.agents["claude-code"].configDirs additionally get the hook set, so
+// sessions from both profiles reach the one pet. The statusline stays
+// primary-only: it carries account quota, and two profiles are usually two
+// accounts that would overwrite each other's numbers.
+const claudePrimaryConfigDir = path.dirname(claudeSettingsVerifyPath);
+// Config folders are paths on this machine, so they use the host's path
+// rules even when hook commands are rendered for another platform.
+const claudeConfigDirPlatform = process.platform;
+
+function readClaudeConfigDirEntries(meta) {
+  if (meta && Array.isArray(meta.configDirs)) return meta.configDirs;
+  if (typeof ctx.getClaudeConfigDirs !== "function") return [];
+  try {
+    const entries = ctx.getClaudeConfigDirs();
+    return Array.isArray(entries) ? entries : [];
+  } catch {
+    return [];
+  }
+}
+
+function claudeConfigDirOptions() {
+  return {
+    primaryDir: claudePrimaryConfigDir,
+    platform: claudeConfigDirPlatform,
+    homeDir: ctx.homeDir,
+    env: ctx.processEnv || process.env,
+  };
+}
+
+function getEffectiveClaudeConfigDirs(meta) {
+  return effectiveClaudeConfigDirs(readClaudeConfigDirEntries(meta), claudeConfigDirOptions());
+}
+
+function getExtraClaudeConfigDirs(meta) {
+  // Remote/WSL hook installs target one remote home; profiles there are out
+  // of scope.
+  if (ctx.remote) return [];
+  return getEffectiveClaudeConfigDirs(meta).filter((entry) => !entry.primary).map((entry) => entry.dir);
+}
+
+function claudeMutationControlsForDir(dir) {
+  const controls = claudeMutationControls();
+  delete controls.settingsPath;
+  controls.claudeHome = dir;
+  return controls;
+}
+
+function claudeSettingsPathForDir(dir) {
+  return path.join(dir, "settings.json");
+}
+
+async function registerHooksInClaudeConfigDir(dir, meta) {
+  if (!claudeFsApi.existsSync(dir)) {
+    return { dir, status: "error", reason: "config-dir-missing", message: `Claude config folder not found: ${dir}` };
+  }
+  const { registerHooksAsync } = require("../hooks/install.js");
+  try {
+    const result = await registerHooksAsync({
+      silent: true,
+      autoStart: meta.autoStart,
+      port: meta.port,
+      ...claudeMutationControlsForDir(dir),
+    });
+    const verifyReport = buildClaudeHookReportForVerify({
+      requireAutoStart: !!meta.autoStart,
+      settingsPath: claudeSettingsPathForDir(dir),
+    });
+    if (!isExplicitRepairVerified(verifyReport)) {
+      return {
+        dir,
+        status: "error",
+        message: "Claude hook repair did not verify healthy",
+        verifyIssues: verifyReport.issues,
+      };
+    }
+    const { added, updated, removed } = result;
+    if (added > 0 || updated > 0 || removed > 0) {
+      console.log(`Clawd: synced hooks in ${dir} (added ${added}, updated ${updated}, removed ${removed}) [${meta.source || "unspecified"}]`);
+    }
+    return { dir, status: "ok", added, updated, removed };
+  } catch (err) {
+    return { dir, status: "error", message: (err && err.message) || String(err) };
+  }
+}
+
+async function unregisterHooksInClaudeConfigDir(dir) {
+  const { unregisterHooksAsync } = require("../hooks/install.js");
+  try {
+    const result = await unregisterHooksAsync({ backup: true, ...claudeMutationControlsForDir(dir) });
+    return { dir, status: "ok", removed: result.removed || 0, changed: !!result.changed, backupPath: result.backupPath || null };
+  } catch (err) {
+    return { dir, status: "error", message: (err && err.message) || String(err) };
+  }
 }
 
 function registerClaudeHooksTask(meta) {
@@ -583,7 +688,16 @@ function registerClaudeHooksTask(meta) {
       claudeStatuslineIngressSuppressed = false;
     }
 
-    return { status: "ok", added, updated, removed };
+    // Extra folders are best effort: a broken or deleted extra folder is
+    // reported, but never fails the primary install it rides along with.
+    const configDirs = [];
+    for (const dir of getExtraClaudeConfigDirs(meta)) {
+      configDirs.push(await registerHooksInClaudeConfigDir(dir, meta));
+    }
+
+    return configDirs.length > 0
+      ? { status: "ok", added, updated, removed, configDirs }
+      : { status: "ok", added, updated, removed };
   };
 }
 
@@ -601,10 +715,23 @@ function unregisterClaudeHooksTask(meta) {
         clearLocalClaudeStatuslineAuthority();
         clearLocalClaudeQuota();
       }
-      const removed = (hooksResult.removed || 0) + (statuslineResult ? (statuslineResult.removed || 0) : 0);
-      const changed = !!hooksResult.changed || !!(statuslineResult && statuslineResult.changed);
-      const backupPaths = [hooksResult.backupPath, statuslineResult && statuslineResult.backupPath].filter(Boolean);
-      return { status: "ok", removed, changed, backupPaths, hooks: hooksResult, statusline: statuslineResult };
+      const configDirs = [];
+      for (const dir of getExtraClaudeConfigDirs(meta)) {
+        configDirs.push(await unregisterHooksInClaudeConfigDir(dir));
+      }
+      const removed = (hooksResult.removed || 0)
+        + (statuslineResult ? (statuslineResult.removed || 0) : 0)
+        + configDirs.reduce((sum, entry) => sum + (entry.removed || 0), 0);
+      const changed = !!hooksResult.changed || !!(statuslineResult && statuslineResult.changed)
+        || configDirs.some((entry) => entry.changed);
+      const backupPaths = [
+        hooksResult.backupPath,
+        statuslineResult && statuslineResult.backupPath,
+        ...configDirs.map((entry) => entry.backupPath),
+      ].filter(Boolean);
+      const out = { status: "ok", removed, changed, backupPaths, hooks: hooksResult, statusline: statuslineResult };
+      if (configDirs.length > 0) out.configDirs = configDirs;
+      return out;
     } catch (err) {
       if (removesStatusline) claudeStatuslineIngressSuppressed = previousSuppression;
       throw err;
@@ -616,13 +743,71 @@ function syncClawdHooksQueued(implOptions = {}) {
   const source = typeof implOptions.source === "string" ? implOptions.source : "unspecified";
   const automatic = implOptions.automatic !== false;
   const meta = { source, autoStart: implOptions.autoStart, port: implOptions.port };
+  if (Array.isArray(implOptions.claudeConfigDirs)) meta.configDirs = implOptions.claudeConfigDirs;
   return claudeHookOperations.enqueue({ source, automatic }, registerClaudeHooksTask(meta));
 }
 
 function uninstallClaudeHooksQueued(callOptions = {}) {
   const source = typeof callOptions.source === "string" ? callOptions.source : "unspecified";
   const automatic = callOptions.automatic === true;
-  return claudeHookOperations.enqueue({ source, automatic }, unregisterClaudeHooksTask({ source }));
+  const meta = { source };
+  if (Array.isArray(callOptions.claudeConfigDirs)) meta.configDirs = callOptions.claudeConfigDirs;
+  return claudeHookOperations.enqueue({ source, automatic }, unregisterClaudeHooksTask(meta));
+}
+
+// Settings → Claude Code → Config folders. Adding a folder installs and
+// verifies hooks there before prefs record it; removing one takes Clawd's
+// hooks back out. Both act on that folder only and never on the primary.
+function installClaudeConfigDirQueued(dir, callOptions = {}) {
+  const source = typeof callOptions.source === "string" ? callOptions.source : "settings-claude-config-dir";
+  return claudeHookOperations.enqueue({ source, automatic: false }, async () => {
+    const normalized = normalizeClaudeConfigDir(dir, { platform: claudeConfigDirPlatform });
+    if (!normalized) return { status: "error", reason: "invalid-config-dir", message: "Choose an absolute folder path" };
+    if (sameClaudeConfigDir(normalized, claudePrimaryConfigDir, { platform: claudeConfigDirPlatform })) {
+      return { status: "ok", dir: normalized, primary: true };
+    }
+    const resolvedPaths = resolveClaudePathsForServer();
+    const autoStart = !!ctx.autoStartWithClaude;
+    if (claudeHookSourceMissing(resolvedPaths, { requireAutoStart: autoStart })) {
+      return {
+        status: "error",
+        reason: "source-script-missing",
+        message: "Claude hook source script is missing; reinstall or re-extract Clawd",
+      };
+    }
+    const result = await registerHooksInClaudeConfigDir(normalized, {
+      source,
+      autoStart,
+      port: getHookServerPort(),
+    });
+    if (result.status === "ok") syncExtraClaudeSettingsWatchers();
+    return result;
+  });
+}
+
+function uninstallClaudeConfigDirQueued(dir, callOptions = {}) {
+  const source = typeof callOptions.source === "string" ? callOptions.source : "settings-claude-config-dir";
+  return claudeHookOperations.enqueue({ source, automatic: false }, async () => {
+    const normalized = normalizeClaudeConfigDir(dir, { platform: claudeConfigDirPlatform });
+    if (!normalized) return { status: "error", reason: "invalid-config-dir", message: "Choose an absolute folder path" };
+    if (sameClaudeConfigDir(normalized, claudePrimaryConfigDir, { platform: claudeConfigDirPlatform })) {
+      return { status: "error", reason: "primary-config-dir", message: "The primary Claude folder cannot be removed" };
+    }
+    stopExtraClaudeSettingsWatcher(normalized);
+    return unregisterHooksInClaudeConfigDir(normalized);
+  });
+}
+
+// Watcher repair for one extra folder: same queue, gates and verify as the
+// primary repair, but scoped to that folder's settings.json.
+function repairClaudeConfigDirQueued(dir, callOptions = {}) {
+  const source = typeof callOptions.source === "string" ? callOptions.source : "unspecified";
+  const automatic = callOptions.automatic !== false;
+  return claudeHookOperations.enqueue({ source, automatic }, () => registerHooksInClaudeConfigDir(dir, {
+    source,
+    autoStart: ctx.autoStartWithClaude,
+    port: getHookServerPort(),
+  }));
 }
 
 function setClaudeQuotaCollectionEnabled(callOptions = {}) {
@@ -707,6 +892,13 @@ function setClaudeAutoStart(callOptions = {}) {
       // async itself.
       const { unregisterAutoStart } = require("../hooks/install.js");
       unregisterAutoStart({ ...claudeMutationControls() });
+      for (const dir of getExtraClaudeConfigDirs()) {
+        try {
+          unregisterAutoStart({ ...claudeMutationControlsForDir(dir) });
+        } catch (err) {
+          console.warn(`Clawd: failed to remove Claude auto-start from ${dir}:`, err && err.message);
+        }
+      }
       return { status: "ok", enabled };
     }
 
@@ -743,7 +935,15 @@ function setClaudeAutoStart(callOptions = {}) {
       };
     }
 
-    return { status: "ok", enabled: true };
+    const configDirs = [];
+    for (const dir of getExtraClaudeConfigDirs()) {
+      configDirs.push(await registerHooksInClaudeConfigDir(dir, {
+        source,
+        autoStart: true,
+        port: getHookServerPort(),
+      }));
+    }
+    return configDirs.length > 0 ? { status: "ok", enabled: true, configDirs } : { status: "ok", enabled: true };
   });
 }
 
@@ -864,7 +1064,8 @@ function repairRuntimeStatus() {
   };
 }
 
-const claudeSettingsWatcher = createClaudeSettingsWatcher({
+function claudeSettingsWatcherCtx(overrides = {}) {
+  return {
   ...ctx,
   // Same live-getter fix as integrationSyncCtx above — the periodic health
   // check's requireAutoStart (claude-settings-watcher.js's buildReport())
@@ -887,15 +1088,94 @@ const claudeSettingsWatcher = createClaudeSettingsWatcher({
     (typeof ctx.resolveNodeBinAsyncImpl === "function" ? ctx.resolveNodeBinAsyncImpl : resolveNodeBinAsync)(
       { ...(resolverOptions || {}) }
     ),
-});
+  ...overrides,
+  };
+}
+
+// The primary watcher follows the same folder the installer writes, so a
+// CLAUDE_CONFIG_DIR launch no longer watches ~/.claude while hooks live
+// elsewhere. Explicit test seams keep precedence.
+const claudeSettingsWatcher = createClaudeSettingsWatcher(claudeSettingsWatcherCtx({
+  claudeSettingsDir: typeof ctx.claudeSettingsDir === "string" ? ctx.claudeSettingsDir : claudePrimaryConfigDir,
+  claudeSettingsPath: typeof ctx.claudeSettingsPath === "string" ? ctx.claudeSettingsPath : claudeSettingsVerifyPath,
+}));
+
+// One watcher per extra config folder, keyed by folder. Each repairs only its
+// own folder; the suspicious-shrink guard and health state are per folder.
+const extraClaudeSettingsWatchers = new Map();
+let claudeSettingsWatchersRunning = false;
+
+function createExtraClaudeSettingsWatcher(dir) {
+  const factory = typeof ctx.createClaudeSettingsWatcherImpl === "function"
+    ? ctx.createClaudeSettingsWatcherImpl
+    : createClaudeSettingsWatcher;
+  return factory(claudeSettingsWatcherCtx({
+    claudeSettingsDir: dir,
+    claudeSettingsPath: claudeSettingsPathForDir(dir),
+    syncClawdHooks: (options = {}) => repairClaudeConfigDirQueued(dir, options),
+  }));
+}
+
+function stopExtraClaudeSettingsWatcher(dir) {
+  for (const [key, watcher] of extraClaudeSettingsWatchers) {
+    if (!sameClaudeConfigDir(key, dir, { platform: claudeConfigDirPlatform })) continue;
+    try { watcher.stop(); } catch {}
+    extraClaudeSettingsWatchers.delete(key);
+  }
+}
+
+// Reconcile the extra watchers with the current folder list. Called when the
+// primary watcher starts and after Settings adds or removes a folder.
+function syncExtraClaudeSettingsWatchers() {
+  const wanted = claudeSettingsWatchersRunning ? getExtraClaudeConfigDirs() : [];
+  for (const key of [...extraClaudeSettingsWatchers.keys()]) {
+    if (!wanted.some((dir) => sameClaudeConfigDir(dir, key, { platform: claudeConfigDirPlatform }))) {
+      stopExtraClaudeSettingsWatcher(key);
+    }
+  }
+  for (const dir of wanted) {
+    if (extraClaudeSettingsWatchers.has(dir)) continue;
+    if (!claudeFsApi.existsSync(dir)) continue;
+    const watcher = createExtraClaudeSettingsWatcher(dir);
+    extraClaudeSettingsWatchers.set(dir, watcher);
+    try { watcher.start(); } catch (err) {
+      console.warn(`Clawd: failed to watch Claude config folder ${dir}:`, err && err.message);
+    }
+  }
+}
 
 // Richer runtime status (healthy/repairing/degraded/manual-fix-required/
 // guarded/stopped) from the periodic health supervisor — complements
 // getClaudeHookGuardStatus() above, which is scoped to the older
 // suspicious-shrink-only notice. Doctor uses this to explain *why* a Claude
 // hook problem hasn't self-healed (source missing, retry scheduled, stuck).
+const CLAUDE_HOOK_HEALTH_SEVERITY = {
+  healthy: 0,
+  stopped: 0,
+  repairing: 1,
+  degraded: 2,
+  guarded: 3,
+  "manual-fix-required": 4,
+};
+
+function claudeHookHealthSeverity(status) {
+  const value = CLAUDE_HOOK_HEALTH_SEVERITY[status && status.status];
+  return Number.isFinite(value) ? value : 1;
+}
+
+// The primary folder's status, overridden by the worst extra folder. Each
+// folder's own status is listed in configDirs so Doctor can say which one.
 function getClaudeHookHealthStatus() {
-  return claudeSettingsWatcher.getHealthStatus();
+  const primary = claudeSettingsWatcher.getHealthStatus();
+  if (extraClaudeSettingsWatchers.size === 0) return primary;
+  const configDirs = [{ dir: claudePrimaryConfigDir, primary: true, ...primary }];
+  let worst = primary;
+  for (const [dir, watcher] of extraClaudeSettingsWatchers) {
+    const status = watcher.getHealthStatus();
+    configDirs.push({ dir, primary: false, ...status });
+    if (claudeHookHealthSeverity(status) > claudeHookHealthSeverity(worst)) worst = { ...status, dir };
+  }
+  return { ...worst, configDirs };
 }
 
 // Watch ~/.claude/ directory for settings.json overwrites (e.g. CC-Switch)
@@ -903,10 +1183,15 @@ function getClaudeHookHealthStatus() {
 // Watch the directory (not the file) because atomic rename replaces the inode
 // and fs.watch on the old file silently stops firing on Windows.
 function startClaudeSettingsWatcher() {
-  return claudeSettingsWatcher.start();
+  const started = claudeSettingsWatcher.start();
+  claudeSettingsWatchersRunning = true;
+  syncExtraClaudeSettingsWatchers();
+  return started;
 }
 
 function stopClaudeSettingsWatcher() {
+  claudeSettingsWatchersRunning = false;
+  syncExtraClaudeSettingsWatchers();
   return claudeSettingsWatcher.stop();
 }
 
@@ -1150,6 +1435,8 @@ return {
   clearRecentHookEvents,
   syncClawdHooks,
   uninstallClaudeHooks: uninstallClaudeHooksQueued,
+  installClaudeConfigDir: installClaudeConfigDirQueued,
+  uninstallClaudeConfigDir: uninstallClaudeConfigDirQueued,
   setClaudeQuotaCollectionEnabled,
   isClaudeStatuslineMetadataAllowed,
   setClaudeAutoStart,

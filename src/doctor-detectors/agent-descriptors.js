@@ -472,13 +472,24 @@ const AGENT_DESCRIPTORS = Object.freeze([
   }),
 ]);
 
+// The frozen table reads Claude's folder once at load time. Copies handed out
+// to Doctor re-resolve it, so they follow the folder the installer writes now.
+function withLiveClaudePaths(descriptor) {
+  if (descriptor.agentId !== "claude-code") return { ...descriptor };
+  return {
+    ...descriptor,
+    parentDir: claude.DEFAULT_PARENT_DIR,
+    configPath: claude.DEFAULT_CONFIG_PATH,
+  };
+}
+
 function getAgentDescriptors() {
-  return AGENT_DESCRIPTORS.map((descriptor) => ({ ...descriptor }));
+  return AGENT_DESCRIPTORS.map(withLiveClaudePaths);
 }
 
 function getAgentDescriptor(agentId) {
   const descriptor = AGENT_DESCRIPTORS.find((entry) => entry.agentId === agentId);
-  return descriptor ? { ...descriptor } : null;
+  return descriptor ? withLiveClaudePaths(descriptor) : null;
 }
 
 module.exports = {

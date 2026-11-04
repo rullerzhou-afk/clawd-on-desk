@@ -358,6 +358,7 @@ const {
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
+const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
 const { createCodexAutoStartGateEvaluator } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
@@ -463,6 +464,12 @@ function _getAgentIntegrationOptions(agentId) {
   return options;
 }
 
+function _getClaudeConfigDirEntries() {
+  const agents = _settingsController && _settingsController.get("agents");
+  const entry = agents && agents["claude-code"];
+  return entry && Array.isArray(entry.configDirs) ? entry.configDirs : [];
+}
+
 function _resolveAgentDisplayName(agentId) {
   return resolveAgentDisplayName(agentId, _settingsController.get("customApplications"));
 }
@@ -564,6 +571,8 @@ const _settingsController = createSettingsController({
       },
     }),
     uninstallClaudeHooksNow: _uninstallClaudeHooksNow,
+    installClaudeConfigDir: (dir) => _server.installClaudeConfigDir(dir),
+    uninstallClaudeConfigDir: (dir) => _server.uninstallClaudeConfigDir(dir),
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
@@ -2134,6 +2143,7 @@ const refreshPermissionPresentation = require("./permission-presentation-refresh
   isDisposed: () => isQuitting,
 });
 const _permCtx = {
+  getClaudeConfigDirs: () => effectiveClaudeConfigDirs(_getClaudeConfigDirEntries()),
   onPermissionsChanged: refreshPermissionPresentation,
   get win() { return win; },
   get lang() { return lang; },
@@ -2543,6 +2553,7 @@ const _stateCtx = {
     && telegramDirectSend.hasReplyableCompletionMapping(sessionId, session)
   ),
   getSessionAliases: () => _settingsController.get("sessionAliases"),
+  getClaudeConfigDirs: () => effectiveClaudeConfigDirs(_getClaudeConfigDirEntries()),
   getSessionAutomationRecords: () =>
     sessionAutomationStore ? sessionAutomationStore.list() : [],
   getPermissionAutomationMode: () =>
@@ -3119,6 +3130,9 @@ const _serverCtx = {
   shouldSyncAgentIntegration: (agentId) =>
     _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
+  // Extra Claude config folders (prefs.agents["claude-code"].configDirs),
+  // read live so every queued hook task sees the current list.
+  getClaudeConfigDirs: _getClaudeConfigDirEntries,
   isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
   // External review (#995): the route derives the review verdict at accept
   // time, so it needs the same effective-mode and reminder gates the
