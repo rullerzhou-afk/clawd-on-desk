@@ -106,10 +106,12 @@ SSH targets retain the existing parallel-capable behavior.
 
 ## Windows remote hosts
 
-Windows remote deployment supports **Claude Code and Copilot CLI** in
-`account-default` mode. Codex CLI, Hermes Agent, `profile-isolated` mode, and
-the Claude quota ring are not yet supported. Deployment skips the unsupported
-agents and leaves any existing Claude statusLine unchanged.
+Windows remote deployment supports **Claude Code, Copilot CLI, and Codex CLI
+official hooks** in `account-default` mode. Hermes Agent, `profile-isolated`
+mode, the Claude quota ring, and the Codex fallback monitor are not supported
+on Windows remote hosts. Deployment skips the unsupported agents and leaves
+any existing Claude statusLine unchanged. Only the Codex CLI is covered;
+Codex Desktop is not verified.
 
 Choose between remote deployment and running Clawd locally on that Windows
 computer. Deployment is refused while its local Clawd is running, or when its
@@ -129,6 +131,19 @@ File permissions rely on the Windows user profile directory's inherited ACLs;
 this does not isolate deployments that share the same Windows account.
 Copilot ignores a `hooks.json` containing a UTF-8 BOM. Clawd removes that BOM
 automatically during deployment and verifies the result.
+
+Codex uses its official hooks under `~\.codex`. After deployment, run
+`/hooks` in the remote Codex TUI to trust the new entries. Removing this
+deployment shifts the group indexes of later third-party hooks, so those may
+need another `/hooks` review too. `hooks.json` must not contain a UTF-8 BOM;
+Clawd repairs it automatically. Deployment only manages `~\.codex` and does
+not follow a custom `CODEX_HOME`. If `~\.codex`, its `hooks.json`, or its
+`config.toml` is a link, deployment is refused. Deployment is also refused
+when `~\.codex\hooks.json` contains a Clawd entry whose ownership cannot be
+confirmed; resolve or remove that entry, then deploy again. When
+`[features].hooks` is explicitly `false` in the remote `config.toml`,
+deployment is refused before any hook or config write; enable it and deploy
+again.
 
 ## Key concepts
 
@@ -255,10 +270,13 @@ path. Changing the OpenSSH default shell is not required.
 
 Quit Clawd on the Windows remote, then run **Deploy / Repair Hooks**. Local
 Clawd restores local hooks when it starts, including after Windows restarts
-if **Launch at login** is enabled. The warning appears on the next connection
-or reconnect, rather than during an already healthy connection. If Clawd cannot
-read or parse the hook configuration, it reports that verification failed;
-check file access and JSON before reconnecting or redeploying.
+if **Launch at login** is enabled. This applies to Claude Code, Copilot CLI,
+and Codex CLI hooks. The warning appears on the next connection or reconnect,
+rather than during an already healthy connection. If Clawd cannot read or
+parse the hook configuration, it reports that verification failed; check file
+access and JSON before reconnecting or redeploying. For Codex, a missing or
+BOM-prefixed `~\.codex\hooks.json` also requires a fresh deployment and
+`/hooks` review.
 
 ### Can I open the SSH tunnel manually?
 

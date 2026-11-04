@@ -31,6 +31,10 @@ function windowsFailureHint(reason) {
     identity_txn_platform_mismatch: "remoteSshErrIdentityTxnPlatformMismatch",
     copilot_config_bom: "remoteSshErrCopilotConfigBom",
     windows_powershell_path_unsupported: "remoteSshErrWindowsPowerShellPath",
+    windows_codex_powershell_path_unsupported: "remoteSshErrWindowsCodexPowerShellPath",
+    windows_codex_ownership_conflict: "remoteSshErrWindowsCodexOwnershipConflict",
+    windows_codex_hooks_disabled: "remoteSshErrWindowsCodexHooksDisabled",
+    windows_codex_cleanup_incomplete: "remoteSshErrWindowsCodexCleanupIncomplete",
   }[reason] || null;
 }
 

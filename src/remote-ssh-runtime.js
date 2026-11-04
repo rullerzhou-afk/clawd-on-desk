@@ -294,8 +294,8 @@ function classifyProbeExit(code) {
 function checkWindowsRemoteHooks({ layout, steps, routingNonce }) {
   const fs = require("fs"), path = require("path").win32;
   const done = (step) => steps && steps[step] && steps[step].status === "done";
-  if (!done("installClaude") && !done("installCopilot") && !done("claudePermission")) return;
-  let utils, claude, copilot;
+  if (!done("installClaude") && !done("installCopilot") && !done("claudePermission") && !done("installCodex")) return;
+  let utils, claude, copilot, codex = null;
   let unverifiedPath = path.join(layout.claudeHooksDir, "json-utils.js");
   let owned = true;
   try {
@@ -309,6 +309,24 @@ function checkWindowsRemoteHooks({ layout, steps, routingNonce }) {
     };
     if (done("installClaude") || done("claudePermission")) claude = read(layout.claudeSettingsFile, true);
     if (done("installCopilot")) copilot = read(path.join(layout.copilotHome, "hooks", "hooks.json"));
+    if (done("installCodex")) {
+      const codexHooksPath = path.join(layout.codexHome, "hooks.json");
+      unverifiedPath = codexHooksPath;
+      let raw = null;
+      try { raw = fs.readFileSync(codexHooksPath, "utf8"); } catch (err) {
+        if (err && err.code === "ENOENT") owned = false;
+        else throw err;
+      }
+      if (raw !== null) {
+        // Windows Codex rejects the whole file on a BOM; that is repairable
+        // by redeployment, not a sign that local Clawd took the hooks over.
+        if (raw.startsWith("\uFEFF")) owned = false;
+        else {
+          codex = JSON.parse(raw);
+          if (!codex || typeof codex !== "object" || Array.isArray(codex)) throw new Error("Invalid config");
+        }
+      }
+    }
     const flatten = (entries) => (Array.isArray(entries) ? entries : []).flatMap((entry) =>
       entry && Array.isArray(entry.hooks) ? entry.hooks : [entry]);
     const normalize = (value) => utils.normalizeHookScriptPath(value, "win32");
@@ -334,6 +352,25 @@ function checkWindowsRemoteHooks({ layout, steps, routingNonce }) {
     };
     if (done("installClaude")) owned = checkEvents(claude, "install.js", "CLAUDE_CORE_HOOK_EVENTS", ownsCommand) && owned;
     if (done("installCopilot")) owned = checkEvents(copilot, "copilot-install.js", "COPILOT_STATE_HOOK_EVENTS", ownsCopilot) && owned;
+    if (done("installCodex") && codex) {
+      unverifiedPath = path.join(layout.claudeHooksDir, "codex-install-utils.js");
+      const { classifyWindowsRemoteCodexHook, isOwnedWindowsRemoteCodexCommand } = require(unverifiedPath);
+      unverifiedPath = path.join(layout.claudeHooksDir, "codex-install.js");
+      const events = require(unverifiedPath).CODEX_STATE_HOOK_EVENTS;
+      if (!Array.isArray(events) || !events.length) throw new Error("Missing event contract");
+      const codexOwned = events.every((event) => {
+        const hooks = flatten(codex.hooks && codex.hooks[event]);
+        const classes = hooks.map((hook) =>
+          classifyWindowsRemoteCodexHook(hook, { hooksDir: layout.claudeHooksDir }));
+        const oursIndex = classes.indexOf("ours");
+        if (oursIndex < 0) return false;
+        if (classes.includes("conflict") || classes.includes("unknown-clawd")) return false;
+        if (classes.slice(0, oursIndex).includes("local-clawd")) return false;
+        return hooks.every((hook, index) => classes[index] !== "ours"
+          || !!isOwnedWindowsRemoteCodexCommand(hook.command, { hooksDir: layout.claudeHooksDir }));
+      });
+      owned = codexOwned && owned;
+    }
     if (done("claudePermission")) {
       unverifiedPath = path.join(layout.claudeHooksDir, "server-config.js");
       const { isManagedPermissionUrl } = require(unverifiedPath);

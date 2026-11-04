@@ -232,12 +232,15 @@ test("issue #1316: Windows deployment hints have text in all seven Settings lang
   for (const language of Object.values(strings)) {
     for (const key of [
       "remoteSshWindowsPlatform", "remoteSshErrWindowsLocalClawdRunning", "remoteSshErrWindowsLocalClawdUnknown",
-      "remoteSshWindowsCodexSkipped", "remoteSshWindowsHermesSkipped", "remoteSshWindowsQuotaUnsupported",
+      "remoteSshWindowsHermesSkipped", "remoteSshWindowsQuotaUnsupported",
       "remoteSshErrWindowsProfileIsolatedUnsupported", "remoteSshErrRemoteHooksTakenOver", "remoteSshErrRemoteHooksUnverified",
       "remoteSshErrWindowsNodeChanged", "remoteSshErrIdentityTxnPlatformMismatch", "remoteSshErrCopilotConfigBom",
-      "remoteSshErrWindowsPowerShellPath",
+      "remoteSshErrWindowsPowerShellPath", "remoteSshErrWindowsCodexPowerShellPath",
+      "remoteSshErrWindowsCodexOwnershipConflict", "remoteSshErrWindowsCodexHooksDisabled",
+      "remoteSshErrWindowsCodexCleanupIncomplete",
     ]) assert.ok(typeof language[key] === "string" && language[key].trim(), key);
     assert.equal(Object.hasOwn(language, "remoteSshErrWindowsRemotePending"), false);
+    assert.equal(Object.hasOwn(language, "remoteSshWindowsCodexSkipped"), false);
     assert.doesNotMatch(language.remoteSshErrWindowsCmdShell, /Git Bash/);
     assert.ok(language.remoteSshErrWindowsNodeMissing);
     assert.match(language.remoteSshErrWindowsNodeMissing, /14/);

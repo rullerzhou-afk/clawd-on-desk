@@ -2052,6 +2052,25 @@ test("remoteSsh:cleanup reports the precise Hermes residual path to the delete d
   } finally { ipc.dispose(); }
 });
 
+test("issue #1316: remoteSsh:cleanup shows the precise Codex residual reason", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const detail = "2 conflicting Codex hook entries remain in hooks.json";
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([{ ...baseProfile, managedDeployTargets: [ownedTarget()] }]),
+    remoteSshRuntime: mockRuntime(), BrowserWindow, spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async () => ({ ok: false, reason: "windows_codex_cleanup_incomplete", stderr: detail }),
+  });
+  try {
+    const result = await ipcMain.invoke("remoteSsh:cleanup", "p1");
+    assert.equal(result.status, "ok");
+    assert.equal(result.uninstalled, false);
+    assert.equal(result.message, detail);
+    assert.deepEqual(result.warnings, [detail]);
+  } finally { ipc.dispose(); }
+});
+
 test("remoteSsh:cleanup never mutates a never-deployed remote", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
