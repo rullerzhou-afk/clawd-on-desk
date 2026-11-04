@@ -137,8 +137,74 @@ async function windowsOperation(args, deps = {}) {
     return (Array.isArray(entries) ? entries : []).flatMap((entry) =>
       entry && Array.isArray(entry.hooks) ? entry.hooks : [entry]);
   }
+  function normalizeCodexCommandPath(value) {
+    return p.normalize(String(value).replace(/\//g, "\\")).replace(/\\/g, "/").toLowerCase();
+  }
+  function quotedCodexArguments(command) {
+    const args = [];
+    const pattern = /"((?:\\.|[^"])*)"|'((?:\\.|[^'])*)'/g;
+    let match;
+    while ((match = pattern.exec(command)) !== null) args.push(match[1] !== undefined ? match[1] : match[2]);
+    return args;
+  }
+  function hasResidualCodexReference(settings) {
+    const script = normalizeCodexCommandPath(p.join(layout.claudeHooksDir, "codex-hook.js"));
+    return Object.values((settings && object(settings.hooks) ? settings.hooks : {})).some((entries) =>
+      (Array.isArray(entries) ? entries : []).some((entry) => flatten([entry]).some((hook) => {
+        if (!hook || typeof hook !== "object") return false;
+        return [hook.command, hook.commandWindows].some((value) => {
+          if (typeof value !== "string") return false;
+          if (quotedCodexArguments(value).some((arg) => normalizeCodexCommandPath(arg) === script)) return true;
+          return normalizeCodexCommandPath(value).includes(script);
+        });
+      })));
+  }
+  function readCodexHooksForCleanup() {
+    const hooksPath = p.join(layout.codexHome, "hooks.json");
+    let text;
+    try { text = readText(hooksPath); } catch (err) {
+      return { ok: false, message: `hooks.json unreadable: ${err && err.message ? err.message : "read failed"}` };
+    }
+    if (text === null) return { ok: true, missing: true, settings: { hooks: {} } };
+    let settings;
+    try { settings = JSON.parse(text.replace(/^\uFEFF/, "")); } catch {
+      return { ok: false, message: "hooks.json unreadable: invalid JSON" };
+    }
+    if (!object(settings) || !object(settings.hooks)) settings = { hooks: {} };
+    return { ok: true, missing: false, settings };
+  }
   function verifyInstaller() {
     if (!args.verify) return true;
+    if (args.verify === "installCodex") {
+      const hooksPath = p.join(layout.codexHome, "hooks.json");
+      const text = readText(hooksPath);
+      // A BOM or an unparseable file makes Windows Codex reject the whole file.
+      if (text === null || text.startsWith("\uFEFF")) return false;
+      let settings;
+      try { settings = JSON.parse(text); } catch { return false; }
+      if (!object(settings) || !object(settings.hooks)) return false;
+      const tools = (deps.require || require)(safePath(p.join(layout.claudeHooksDir, "codex-install-utils.js")));
+      const installer = (deps.require || require)(safePath(p.join(layout.claudeHooksDir, args.script)));
+      const classify = tools.classifyWindowsRemoteCodexHook;
+      const events = installer.CODEX_STATE_HOOK_EVENTS;
+      if (typeof classify !== "function" || typeof tools.isOwnedWindowsRemoteCodexCommand !== "function"
+        || !Array.isArray(events) || events.length === 0) return false;
+      const disallowed = new Set(["local-clawd", "conflict", "unknown-clawd"]);
+      const owned = events.every((event) => {
+        const hooks = flatten(settings.hooks[event]);
+        const classes = hooks.map((hook) => classify(hook, { hooksDir: layout.claudeHooksDir }));
+        const oursIndex = classes.indexOf("ours");
+        return classes.filter((value) => value === "ours").length === 1
+          && !classes.some((value) => disallowed.has(value))
+          && !!tools.isOwnedWindowsRemoteCodexCommand(hooks[oursIndex] && hooks[oursIndex].command, {
+            hooksDir: layout.claudeHooksDir,
+          });
+      });
+      if (!owned) return false;
+      const feature = tools.readCodexHooksFeatureState(readText(p.join(layout.codexHome, "config.toml")));
+      if (feature === "off") refuse("windows_codex_hooks_disabled", p.join(layout.codexHome, "config.toml"));
+      return feature === "on";
+    }
     const utilsPath = safePath(p.join(layout.claudeHooksDir, "json-utils.js"));
     const { parsePowerShellEnvCommand, normalizeHookScriptPath } = (deps.require || require)(utilsPath);
     const normalize = (value) => normalizeHookScriptPath(value, "win32");
@@ -201,16 +267,21 @@ async function windowsOperation(args, deps = {}) {
     for (const [key, value] of Object.entries(layout)) {
       if (typeof value === "string" && (key.endsWith("File") || key.endsWith("Dir"))) safePath(value);
     }
+    // The Codex installer writes these leaves itself; reject a link here so no
+    // installer ever runs against a redirected hooks.json or config.toml.
+    safePath(p.join(layout.codexHome, "hooks.json"));
+    safePath(p.join(layout.codexHome, "config.toml"));
     const traces = [layout.secureMarkerFile, layout.hostPrefixFile, p.join(layout.claudeHooksDir, "server-config.js")];
-    const configs = [layout.claudeSettingsFile, p.join(layout.copilotHome, "hooks", "hooks.json"), p.join(layout.copilotHome, "settings.json")];
+    const configs = [layout.claudeSettingsFile, p.join(layout.copilotHome, "hooks", "hooks.json"), p.join(layout.copilotHome, "settings.json"),
+      p.join(layout.codexHome, "hooks.json")];
     const configTraces = configs.filter((target) => {
       const text = readText(target);
-      return text !== null && ["clawd-hook.js", "auto-start.js", "copilot-hook.js", "claude-statusline.js"].some((marker) => text.includes(marker));
+      return text !== null && ["clawd-hook.js", "auto-start.js", "copilot-hook.js", "claude-statusline.js", "codex-hook.js"].some((marker) => text.includes(marker));
     });
     return {
       ok: true, identity: !!identity,
       claudePresent: agentPresent(layout.claudeConfigDir),
-      copilotPresent: agentPresent(layout.copilotHome), codexPresent: false,
+      copilotPresent: agentPresent(layout.copilotHome), codexPresent: agentPresent(layout.codexHome),
       legacyTraces: traces.filter((target) => { safePath(target); return !!stat(target); }).length,
       legacyConfigTraces: configTraces.length,
     };
@@ -235,7 +306,67 @@ async function windowsOperation(args, deps = {}) {
   }
 
   assertLease();
-  if (operation === "readClaudePermission") {
+  if (operation === "uninstallCodexOwned") {
+    const initial = readCodexHooksForCleanup();
+    if (!initial.ok) return { ok: false, reason: "windows_codex_cleanup_incomplete", message: initial.message };
+    if (initial.missing) return { ok: true, skipped: true, removed: 0, conflicts: 0, changed: false };
+    let installer;
+    try {
+      installer = (deps.require || require)(safePath(p.join(layout.claudeHooksDir, "codex-install.js")));
+    } catch (err) {
+      return {
+        ok: false, reason: "windows_codex_cleanup_incomplete",
+        message: `codex installer unreadable: ${err && err.message ? err.message : "require failed"}`,
+      };
+    }
+
+    let removed = 0;
+    let conflicts = 0;
+    let changed = false;
+    const hasUninstaller = typeof installer.unregisterRemoteOwnedCodexHooks === "function";
+    if (hasUninstaller) {
+      let result;
+      try {
+        result = installer.unregisterRemoteOwnedCodexHooks({ hooksDir: layout.claudeHooksDir, codexDir: layout.codexHome });
+      } catch (err) {
+        return {
+          ok: false, reason: "windows_codex_cleanup_incomplete",
+          message: `codex uninstall failed: ${err && err.message ? err.message : "unknown error"}`,
+        };
+      }
+      if (!object(result)) {
+        return { ok: false, reason: "windows_codex_cleanup_incomplete", message: "codex uninstall returned an invalid result" };
+      }
+      removed = result.removed || 0;
+      conflicts = result.conflicts || 0;
+      changed = !!result.changed;
+      if (conflicts > 0) {
+        return {
+          ok: false, reason: "windows_codex_cleanup_incomplete",
+          message: `${conflicts} conflicting Codex hook ${conflicts === 1 ? "entry remains" : "entries remain"} in hooks.json`,
+          removed, conflicts, changed,
+        };
+      }
+    }
+
+    // Re-read after the uninstaller ran. Deleting the payload is safe only when
+    // no remaining entry still points at this deployment's codex-hook.js.
+    const after = readCodexHooksForCleanup();
+    if (!after.ok) {
+      return {
+        ok: false, reason: "windows_codex_cleanup_incomplete", message: after.message,
+        removed, conflicts, changed,
+      };
+    }
+    if (hasResidualCodexReference(after.settings)) {
+      return {
+        ok: false, reason: "windows_codex_cleanup_incomplete",
+        message: `hooks.json still references ${p.join(layout.claudeHooksDir, "codex-hook.js")}`,
+        removed, conflicts, changed,
+      };
+    }
+    return { ok: true, removed, conflicts: 0, changed, ...(hasUninstaller ? {} : { skipped: true }) };
+  } else if (operation === "readClaudePermission") {
     const settings = readJson(layout.claudeSettingsFile, "installer_config_invalid", true);
     if (!settings) refuse("installer_config_invalid", layout.claudeSettingsFile);
     const identity = readIdentity();
@@ -280,6 +411,8 @@ async function windowsOperation(args, deps = {}) {
   } else if (operation === "mkdir") {
     for (const target of args.directories) {
       safePath(target);
+      // Deployment never creates ~\.codex: the Codex installer owns that root
+      // and only runs when the directory already exists.
       const codexRelative = p.relative(layout.codexHome, target);
       if (codexRelative === "" || (!codexRelative.startsWith(`..${p.sep}`) && codexRelative !== ".." && !p.isAbsolute(codexRelative))) {
         refuse("codex_unsupported", target);

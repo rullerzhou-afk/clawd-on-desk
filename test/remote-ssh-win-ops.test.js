@@ -11,6 +11,7 @@ const { resolveRemoteRuntimeLayout, remoteLayoutDirectories } = require("../src/
 const { buildWindowsOperationFrame, runWindowsOperation, __test: { windowsOperation } } = require("../src/remote-ssh-win-ops");
 const { REMOTE_NODE_LAUNCH_COMMAND } = require("../src/remote-ssh-node-launch");
 const { EventEmitter } = require("node:events");
+const { CODEX_STATE_HOOK_EVENTS } = require("../hooks/codex-install");
 
 function error(code) { return Object.assign(new Error(code), { code }); }
 
@@ -163,14 +164,33 @@ test("issue #1316: temporary Windows filesystem fixtures use and clean the syste
   assert.equal(fs.existsSync(root), false);
 });
 
-for (const name of ["claudeConfigDir", "copilotHome"]) {
+for (const [name, key] of [["claudeConfigDir", "claudePresent"], ["copilotHome", "copilotPresent"], ["codexHome", "codexPresent"]]) {
   test(`issue #1316: ${name} existence uses lstat and only ENOENT means absent`, async (t) => {
     const f = fixture(t);
-    assert.equal((await f.run("preflight"))[name === "copilotHome" ? "copilotPresent" : "claudePresent"], false);
+    assert.equal((await f.run("preflight"))[key], false);
     fs.mkdirSync(f.local(f.layout[name]), { recursive: true });
-    assert.equal((await f.run("preflight"))[name === "copilotHome" ? "copilotPresent" : "claudePresent"], true);
+    assert.equal((await f.run("preflight"))[key], true);
     f.faults.lstatSync = (target) => { if (target === f.layout[name]) throw error("EACCES"); };
     await assert.rejects(f.run("preflight"), { reason: "path_unreadable" });
+  });
+}
+
+test("issue #1316: Codex legacy hooks.json contributes a migration trace", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.codexHome, "hooks.json"), { hooks: { Stop: [{ hooks: [{ command: "C:\\tools\\codex-hook.js" }] }] } });
+  const result = await f.run("preflight");
+  assert.equal(result.legacyConfigTraces, 1);
+});
+for (const leaf of ["hooks.json", "config.toml"]) {
+  test(`issue #1316: a linked Codex ${leaf} leaf is refused before installers`, async (t) => {
+    const f = fixture(t);
+    const target = path.win32.join(f.layout.codexHome, leaf);
+    const base = f.deps.fs;
+    f.deps.fs = new Proxy(base, { get(fsApi, name) {
+      if (name !== "lstatSync") return fsApi[name];
+      return (file) => file === target ? { isSymbolicLink: () => true, isDirectory: () => false } : fsApi.lstatSync(file);
+    } });
+    await assert.rejects(f.run("preflight"), { reason: "path_link" });
   });
 }
 for (const location of ["home", "ancestor", "leaf"]) {
@@ -408,9 +428,11 @@ if(require.main===module){
   console.error('installer stderr');
   process.exitCode=Number(process.env.TEST_EXIT||0);
 }
-module.exports={CLAUDE_CORE_HOOK_EVENTS:['Stop','SessionStart'],COPILOT_STATE_HOOK_EVENTS:['sessionStart']};`;
-  for (const script of ["install.js", "copilot-install.js"]) f.put(path.win32.join(f.layout.claudeHooksDir, script), source);
-  f.put(path.win32.join(f.layout.claudeHooksDir, "json-utils.js"), fs.readFileSync(path.join(__dirname, "..", "hooks", "json-utils.js"), "utf8"));
+module.exports={CLAUDE_CORE_HOOK_EVENTS:['Stop','SessionStart'],COPILOT_STATE_HOOK_EVENTS:['sessionStart'],CODEX_STATE_HOOK_EVENTS:['SessionStart','Stop']};`;
+  for (const script of ["install.js", "copilot-install.js", "codex-install.js"]) f.put(path.win32.join(f.layout.claudeHooksDir, script), source);
+  for (const name of ["json-utils.js", "codex-install-utils.js", "server-config.js", "appimage-hook-materializer.js"]) {
+    f.put(path.win32.join(f.layout.claudeHooksDir, name), fs.readFileSync(path.join(__dirname, "..", "hooks", name), "utf8"));
+  }
   f.deps.require = (target) => require(f.local(target));
   f.deps.execPath = "C:\\Node\\node.exe";
   f.deps.env = { ...process.env, clawd_remote: "stale", ClAwD_ReMoTe: "stale", TEST_EXIT: "0" };
@@ -422,9 +444,25 @@ module.exports={CLAUDE_CORE_HOOK_EVENTS:['Stop','SessionStart'],COPILOT_STATE_HO
   };
   return (verify, config, extraEnv = {}) => {
     const claude = verify === "installClaude";
-    return f.run("runInstaller", { owner: f.owner, script: claude ? "install.js" : "copilot-install.js", argv: ["--remote"], verify,
-      env: { CLAWD_REMOTE: "1", TEST_OUTPUT: f.local(claude ? f.layout.claudeSettingsFile : path.win32.join(f.layout.copilotHome, "hooks", "hooks.json")), TEST_CONFIG: JSON.stringify(config), ...extraEnv } });
+    const codex = verify === "installCodex";
+    const script = claude ? "install.js" : codex ? "codex-install.js" : "copilot-install.js";
+    const output = claude ? f.layout.claudeSettingsFile
+      : codex ? path.win32.join(f.layout.codexHome, "hooks.json")
+        : path.win32.join(f.layout.copilotHome, "hooks", "hooks.json");
+    return f.run("runInstaller", { owner: f.owner, script, argv: ["--remote"], verify,
+      env: { CLAWD_REMOTE: "1", TEST_OUTPUT: f.local(output), TEST_CONFIG: typeof config === "string" ? config : JSON.stringify(config), ...extraEnv } });
   };
+}
+function codexConfig(f, mutate = null) {
+  const hook = (event) => ({
+    type: "command",
+    commandWindows: `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & "${f.deps.execPath}" "${path.win32.join(f.layout.claudeHooksDir, "codex-hook.js")}" "--clawd-ssh-remote"`,
+    command: `"${f.deps.execPath}" "${path.win32.join(f.layout.claudeHooksDir, "codex-hook.js")}" --clawd-wsl-interop --clawd-ssh-remote`,
+    timeout: event === "PermissionRequest" ? 600 : 30,
+  });
+  const config = { hooks: Object.fromEntries(CODEX_STATE_HOOK_EVENTS.map((event) => [event, [{ hooks: [hook(event)] }]])) };
+  if (mutate) mutate(config);
+  return config;
 }
 function claudeConfig(f, hook) {
   const own = hook || { type: "command", command: f.deps.execPath.toUpperCase(), args: [path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js").toUpperCase(), "Stop", "--clawd-ssh-remote"] };
@@ -464,6 +502,230 @@ test("issue #1316: native installer exit status and failed readback cannot recor
     assert.equal(result.verified, false); assert.equal(result.ok, false); assert.equal(result.reason, "installer_verification_failed");
   }
 });
+function writeCodexConfig(f, config) {
+  f.put(path.win32.join(f.layout.codexHome, "hooks.json"), config);
+}
+function writeCodexFeature(f, text) {
+  f.put(path.win32.join(f.layout.codexHome, "config.toml"), text);
+}
+
+test("issue #1316: native installer verifies the Codex ownership contract and feature flag", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  writeCodexFeature(f, "[features]\nhooks = true\n");
+  const config = codexConfig(f);
+  const result = await run("installCodex", config);
+  assert.equal(result.ok, true); assert.equal(result.verified, true);
+
+  config.hooks[CODEX_STATE_HOOK_EVENTS[0]].push({ hooks: [{
+    type: "command", command: "C:\\Orca\\codex-hook.cmd", timeout: 30,
+  }] });
+  assert.equal((await run("installCodex", config)).verified, true);
+});
+
+test("issue #1316: Codex readback rejects missing, duplicate, local, conflict and unknown entries", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  writeCodexFeature(f, "[features]\nhooks = true\n");
+  const ownCommand = (event) => codexConfig(f).hooks[event][0].hooks[0].commandWindows;
+  const cases = [
+    ["missing event", (config) => { delete config.hooks[CODEX_STATE_HOOK_EVENTS[0]]; }],
+    ["duplicate ours", (config) => {
+      const event = CODEX_STATE_HOOK_EVENTS[0];
+      config.hooks[event].push({ hooks: [{ ...config.hooks[event][0].hooks[0] }] });
+    }],
+    ["local entry", (config) => {
+      config.hooks[CODEX_STATE_HOOK_EVENTS[0]] = [{ hooks: [{
+        type: "command",
+        commandWindows: `& "${f.deps.execPath}" "C:\\App\\codex-hook.js" --clawd-windows-stable`,
+        command: '"/bin/sh" "/mnt/c/App/codex-hook.js.sh"',
+        timeout: 30,
+      }] }];
+    }],
+    ["local entry beside ours", (config) => {
+      config.hooks[CODEX_STATE_HOOK_EVENTS[0]].push({ hooks: [{
+        type: "command",
+        commandWindows: `& "${f.deps.execPath}" "C:\\App\\codex-hook.js" --clawd-windows-stable`,
+        command: '"/bin/sh" "/mnt/c/App/codex-hook.js.sh"',
+        timeout: 30,
+      }] });
+    }],
+    ["missing command", (config) => {
+      delete config.hooks[CODEX_STATE_HOOK_EVENTS[0]][0].hooks[0].command;
+    }],
+    ["conflict", (config) => {
+      config.hooks[CODEX_STATE_HOOK_EVENTS[0]][0].hooks[0].command = '"C:\\Foreign\\tool.exe" --flag';
+    }],
+    ["unknown", (config) => {
+      config.hooks[CODEX_STATE_HOOK_EVENTS[0]][0].hooks[0].commandWindows = `$env:CLAWD_REMOTE='1'; & "${f.deps.execPath}" "C:\\tools\\codex-hook.js-helpers\\run.js"`;
+      delete config.hooks[CODEX_STATE_HOOK_EVENTS[0]][0].hooks[0].command;
+    }],
+  ];
+  for (const [label, mutate] of cases) {
+    const config = codexConfig(f, mutate);
+    const result = await run("installCodex", config);
+    assert.equal(result.verified, false, label);
+    assert.equal(result.reason, "installer_verification_failed", label);
+  }
+  assert.equal(ownCommand(CODEX_STATE_HOOK_EVENTS[0]).includes("codex-hook.js"), true);
+});
+
+test("issue #1316: Codex readback rejects BOM, invalid JSON and missing feature enablement", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
+  for (const [feature, label] of [["[features]\nhooks = true\n", "BOM"], ["[features]\nhooks = true\n", "invalid JSON"]]) {
+    writeCodexFeature(f, feature);
+    const config = label === "BOM" ? "\uFEFF" + JSON.stringify(codexConfig(f)) : "{broken";
+    const result = await run("installCodex", config);
+    assert.equal(result.verified, false, label);
+  }
+  writeCodexFeature(f, "[features]\nother = true\n");
+  assert.equal((await run("installCodex", codexConfig(f))).verified, false);
+  writeCodexFeature(f, "[features]\nhooks = false\n");
+  await assert.rejects(run("installCodex", codexConfig(f)), { reason: "windows_codex_hooks_disabled" });
+});
+
+function residualCodexCommands(f) {
+  const hooks = f.layout.claudeHooksDir;
+  const script = path.win32.join(hooks, "codex-hook.js");
+  return [
+    `& "${f.deps.execPath}" "${path.win32.join(hooks, ".\\codex-hook.js")}"`,
+    `& "${f.deps.execPath}" "${path.win32.join(hooks, "..", "hooks", "codex-hook.js")}"`,
+    `& "${f.deps.execPath}" "${script.toUpperCase()}"`,
+    `& "${f.deps.execPath}" "${script.replace(/\\/g, "/")}"`,
+    `'${script}'`,
+    `"${f.deps.execPath}" "${script}" --clawd-wsl-interop`,
+  ];
+}
+
+test("issue #1316: Codex cleanup rejects a residual reference left by the new uninstaller", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  codexUninstallFixture(f, () => ({ unregisterRemoteOwnedCodexHooks() {
+    return { removed: 1, conflicts: 0, changed: true };
+  } }));
+  for (const command of residualCodexCommands(f)) {
+    writeCodexConfig(f, { hooks: { Stop: [{ hooks: [{ type: "command", commandWindows: command }] }] } });
+    const result = await f.run("uninstallCodexOwned", { owner: f.owner });
+    assert.equal(result.ok, false, command);
+    assert.equal(result.reason, "windows_codex_cleanup_incomplete", command);
+    assert.match(result.message, /still references .*codex-hook\.js|still references .*codex-hook\.js/i, command);
+  }
+});
+
+test("issue #1316: legacy Codex cleanup normalizes every path form before deleting payload", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  codexUninstallFixture(f, () => ({}));
+  for (const command of residualCodexCommands(f)) {
+    writeCodexConfig(f, { hooks: { Stop: [{ hooks: [{ type: "command", commandWindows: command }] }] } });
+    const result = await f.run("uninstallCodexOwned", { owner: f.owner });
+    assert.equal(result.ok, false, command);
+    assert.equal(result.reason, "windows_codex_cleanup_incomplete", command);
+  }
+});
+
+test("issue #1316: Codex cleanup accepts a parseable file without a hooks object", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  codexUninstallFixture(f, () => ({}));
+  for (const value of ["{}", '{"hooks":null}', "[]", "null"]) {
+    writeCodexConfig(f, value);
+    assert.deepEqual(await f.run("uninstallCodexOwned", { owner: f.owner }), {
+      ok: true, skipped: true, removed: 0, conflicts: 0, changed: false,
+    }, value);
+  }
+});
+
+test("issue #1316: Codex cleanup maps read failures to cleanup incomplete", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  codexUninstallFixture(f, () => ({}));
+  f.faults.readFileSync = (target) => {
+    if (target === path.win32.join(f.layout.codexHome, "hooks.json")) throw error("EACCES");
+  };
+  const result = await f.run("uninstallCodexOwned", { owner: f.owner });
+  assert.equal(result.reason, "windows_codex_cleanup_incomplete");
+  assert.match(result.message, /hooks\.json unreadable/);
+  assert.match(result.message, /EACCES|file_unreadable/);
+});
+
+test("issue #1316: the real ownership-aware uninstaller clears a temporary hook file", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  const target = path.win32.join(f.layout.codexHome, "hooks.json");
+  writeCodexConfig(f, codexConfig(f));
+  const realUtils = require("../hooks/codex-install-utils");
+  f.deps.require = () => ({ unregisterRemoteOwnedCodexHooks(options) {
+    return realUtils.unregisterRemoteOwnedCodexHooks({ ...options, hooksPath: f.local(target) });
+  } });
+  const result = await f.run("uninstallCodexOwned", { owner: f.owner });
+  assert.equal(result.ok, true);
+  assert.equal(result.removed, CODEX_STATE_HOOK_EVENTS.length);
+  assert.deepEqual(JSON.parse(fs.readFileSync(f.local(target), "utf8")).hooks, {});
+});
+
+function codexUninstallFixture(f, exportFactory) {
+  f.deps.require = (target) => {
+    assert.equal(target, path.win32.join(f.layout.claudeHooksDir, "codex-install.js"));
+    return exportFactory();
+  };
+}
+
+test("issue #1316: Codex cleanup calls the ownership-aware uninstaller with deployment paths", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  writeCodexConfig(f, codexConfig(f));
+  let seen = null;
+  codexUninstallFixture(f, () => ({ unregisterRemoteOwnedCodexHooks(options) {
+    seen = options;
+    f.put(path.win32.join(f.layout.codexHome, "hooks.json"), { hooks: {} });
+    return { removed: CODEX_STATE_HOOK_EVENTS.length, conflicts: 0, changed: true };
+  } }));
+  assert.deepEqual(await f.run("uninstallCodexOwned", { owner: f.owner }), {
+    ok: true, removed: CODEX_STATE_HOOK_EVENTS.length, conflicts: 0, changed: true,
+  });
+  assert.deepEqual(seen, { hooksDir: f.layout.claudeHooksDir, codexDir: f.layout.codexHome });
+});
+
+test("issue #1316: Codex cleanup keeps payload when an owned entry conflicts", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  writeCodexConfig(f, codexConfig(f));
+  codexUninstallFixture(f, () => ({ unregisterRemoteOwnedCodexHooks() {
+    return { removed: 0, conflicts: 1, changed: false };
+  } }));
+  const result = await f.run("uninstallCodexOwned", { owner: f.owner });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "windows_codex_cleanup_incomplete");
+  assert.equal(result.removed, 0);
+  assert.equal(result.conflicts, 1);
+  assert.equal(result.changed, false);
+  assert.match(result.message, /1 conflicting Codex hook entry remains/);
+});
+
+test("issue #1316: Codex cleanup treats require errors as incomplete, never as a legacy script", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  f.deps.require = () => { throw new Error("require failed"); };
+  writeCodexConfig(f, codexConfig(f));
+  assert.equal((await f.run("uninstallCodexOwned", { owner: f.owner })).reason, "windows_codex_cleanup_incomplete");
+  writeCodexConfig(f, { hooks: { Stop: [{ hooks: [{ type: "command", command: "C:\\Orca\\codex-hook.cmd" }] }] } });
+  assert.equal((await f.run("uninstallCodexOwned", { owner: f.owner })).reason, "windows_codex_cleanup_incomplete");
+});
+
+test("issue #1316: legacy Codex installers only continue when no deployment entry remains", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  codexUninstallFixture(f, () => ({}));
+  writeCodexConfig(f, { hooks: { Stop: [{ hooks: [{ type: "command", command: "C:\\Orca\\codex-hook.cmd" }] }] } });
+  assert.deepEqual(await f.run("uninstallCodexOwned", { owner: f.owner }), {
+    ok: true, skipped: true, removed: 0, conflicts: 0, changed: false,
+  });
+  writeCodexConfig(f, { hooks: { Stop: [{ hooks: [{
+    type: "command", command: `"C:\\Node\\node.exe" "${path.win32.join(f.layout.claudeHooksDir, "codex-hook.js")}" --clawd-wsl-interop`,
+  }] }] } });
+  assert.equal((await f.run("uninstallCodexOwned", { owner: f.owner })).reason, "windows_codex_cleanup_incomplete");
+});
+
+test("issue #1316: Codex cleanup skips a missing hooks file and refuses unreadable JSON", async (t) => {
+  const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
+  codexUninstallFixture(f, () => ({}));
+  assert.deepEqual(await f.run("uninstallCodexOwned", { owner: f.owner }), {
+    ok: true, skipped: true, removed: 0, conflicts: 0, changed: false,
+  });
+  writeCodexConfig(f, "{broken");
+  assert.equal((await f.run("uninstallCodexOwned", { owner: f.owner })).reason, "windows_codex_cleanup_incomplete");
+});
+
 test("issue #1316: native installer refuses paths and lost leases before spawning", async (t) => {
   const f = fixture(t); await f.run("acquireLock", { owner: f.owner });
   f.deps.spawnSync = () => assert.fail("must not spawn");

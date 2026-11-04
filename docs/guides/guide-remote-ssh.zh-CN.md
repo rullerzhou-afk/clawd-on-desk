@@ -88,9 +88,10 @@ EOF 请求持久 readiness 进程自然退出，并在开始下一条 SSH 操作
 
 ## Windows 远程主机
 
-Windows 远程部署支持 **Claude Code 和 Copilot CLI**，仅限 `account-default`
-模式。暂不支持 Codex CLI、Hermes Agent、`profile-isolated` 模式和 Claude 额度环。
-部署会跳过不支持的 agent，用户已有的 Claude statusLine 保持原样。
+Windows 远程部署支持 **Claude Code、Copilot CLI 和 Codex CLI 官方 hook**，仅限
+`account-default` 模式。Windows 远程主机不支持 Hermes Agent、`profile-isolated`
+模式、Claude 额度环和 Codex 备用监控。部署会跳过不支持的 agent，用户已有的
+Claude statusLine 保持原样。Codex 只承诺 CLI；Codex Desktop 尚未验证。
 
 远程部署与那台 Windows 上的本地 Clawd 只能二选一。本地 Clawd 正在运行，或无法
 从 runtime 记录确认它已退出时，部署会被拒绝。请先退出那台电脑上的 Clawd，再点
@@ -105,6 +106,15 @@ Claude 时拉起本地桌宠。
 文件权限依赖 Windows 用户 profile 目录继承的 ACL，不能隔离共用同一 Windows
 账号的部署。Copilot 会忽略带 UTF-8 BOM 的 `hooks.json`；Clawd 会在部署时自动
 去掉 BOM，并回读确认。
+
+Codex 使用 `~\.codex` 下的官方 hook。部署后要在远端 Codex 的 TUI 里运行
+`/hooks` 信任新条目；卸载本次部署后，排在后面的第三方 hook 序号会前移，可能
+也需要重新 `/hooks` 确认。`hooks.json` 不能带 UTF-8 BOM，Clawd 会自动修正。
+部署只管理 `~\.codex`，不支持自定义 `CODEX_HOME`。`~\.codex`、其中的
+`hooks.json` 或 `config.toml` 是链接时会被拒绝部署。`~\.codex\hooks.json` 里
+有无法确认归属的 Clawd 条目时也会拒绝部署；请先处理或删除该条目再部署。远端
+`config.toml` 的 `[features].hooks` 被显式设为 `false` 时，部署会在写任何 hook
+或配置之前被拒绝；请先开启再部署。
 
 ## 关键概念
 
@@ -210,9 +220,11 @@ OpenSSH 的默认 shell。
 ### 远程 hook 被本地 Clawd 接管
 
 先退出 Windows 远端上的 Clawd，再点**部署 / 修复 Hook**。本地 Clawd 启动时会恢复
-本地 hook；如果开启了**开机启动**，Windows 重启后也可能接管。提示会在下次连接或
-重连时出现，已健康连接期间不会持续检查。如果提示无法读取或确认 hook 配置，请检查
-文件权限和 JSON，再重连或重新部署。
+本地 hook；如果开启了**开机启动**，Windows 重启后也可能接管。Claude Code、Copilot
+CLI 和 Codex CLI 都适用。提示会在下次连接或重连时出现，已健康连接期间不会持续
+检查。如果提示无法读取或确认 hook 配置，请检查文件权限和 JSON，再重连或重新部署。
+Codex 的 `~\.codex\hooks.json` 缺失或带 BOM 时同样需要重新部署并运行 `/hooks`
+确认。
 
 ### 可以手动开 SSH 隧道吗？
 

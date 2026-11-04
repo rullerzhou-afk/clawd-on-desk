@@ -1346,12 +1346,21 @@ async function runWindowsDeployOperation({ profile, spawn, runtime, layout, exec
   if (reason === "installer_failed" && detail && /^Windows remote PowerShell hooks cannot use paths containing \$, backtick or double quotes: /m.test(detail.stderrTail || "")) {
     reason = "windows_powershell_path_unsupported";
   }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-unsafe-path: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_powershell_path_unsupported";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-ownership-conflict: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_ownership_conflict";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-hooks-disabled: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_hooks_disabled";
+  }
   if (reason === "installer_result_unknown") throw windowsRecoveryError(runtime, reason);
   return {
     ok: transport.code === 0 && !!detail && typeof detail === "object" && !Array.isArray(detail)
       && (detail.ok === true || (operation === "readIdentity" && Object.hasOwn(detail, "identity"))),
     code: transport.code, detail, reason,
-    message: transport.stderr || (detail && detail.stderrTail) || `Windows ${operation} failed.`,
+    message: transport.stderr || (detail && (detail.stderrTail || detail.message)) || `Windows ${operation} failed.`,
   };
 }
 
@@ -1424,7 +1433,7 @@ async function settleWindowsDeployLease(context, operation, progress = () => {})
 
 function windowsInstallerEnv(layout, permissionTransport) {
   return {
-    CLAUDE_CONFIG_DIR: layout.claudeConfigDir, COPILOT_HOME: layout.copilotHome,
+    CLAUDE_CONFIG_DIR: layout.claudeConfigDir, COPILOT_HOME: layout.copilotHome, CODEX_HOME: layout.codexHome,
     CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1", CLAWD_REMOTE_IDENTITY_PATH: layout.identityFile,
     CLAWD_SSH_SECURE_MARKER_PATH: layout.secureMarkerFile, CLAWD_HOST_PREFIX_PATH: layout.hostPrefixFile,
     CLAWD_REMOTE_LAST_LOG_PATH: layout.lastLogFile, CLAWD_STATUSLINE_SIDECAR_PATH: layout.statuslineSidecarFile,
@@ -1468,7 +1477,8 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
       return fail("preflight", "This remote runtime contains a legacy Clawd deployment with no verifiable owner. Confirm migration before changing it.", "legacy_deployment_confirmation_required");
     }
     progress("preflight", "ok");
-    // Windows has no legacy Codex monitor, isolated wrappers, or Hermes phase.
+    // Windows remote hosts do not support the Codex fallback monitor,
+    // isolated wrappers, or the Hermes phase.
     const stagingNative = path.win32.join(layout.deployStagingDir, leaseId);
     const mkdir = await run("mkdir", true, { directories: [...remoteLayoutDirectories(layout), stagingNative] });
     if (!mkdir.ok) return fail("mkdir", mkdir.message, mkdir.reason);
@@ -1500,23 +1510,22 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
       if (!prefix.ok) return fail("host-prefix", prefix.message, prefix.reason);
     }
     const env = windowsInstallerEnv(layout, profile.remotePermissionTransport);
+    let codexHooksInstalled = false;
     for (const [txnStep, progressStep, script, present] of [
       ["installClaude", "install-claude", "install.js", presence.claudePresent],
-      // Keep the identity step, but never run a Codex installer on Windows.
-      ["installCodex", "install-codex", "codex-install.js", false],
+      ["installCodex", "install-codex", "codex-install.js", presence.codexPresent],
       ["installCopilot", "install-copilot", "copilot-install.js", presence.copilotPresent],
     ]) {
       progress(progressStep, "start");
       if (!present) {
-        await recordStep(txnStep, "not-applicable", txnStep === "installCodex"
-          ? "Codex is not supported on Windows remote hosts in phase 1" : `${script} target root absent before deploy`);
+        await recordStep(txnStep, "not-applicable", `${script} target root absent before deploy`);
       } else {
         const installed = await run("runInstaller", true, { script, argv: ["--remote"], env, verify: txnStep, timeoutMs: 60000 });
         if (!installed.ok || installed.detail.verified !== true) return fail(progressStep, installed.message, installed.reason === "windows_operation_failed" ? "installer_verification_failed" : installed.reason, txnStep);
         await recordStep(txnStep, "done", `${script} settings readback verified secure managed command shape`);
+        if (txnStep === "installCodex") codexHooksInstalled = true;
       }
-      progress(progressStep, "ok", present ? null : "not applicable", txnStep === "installCodex" ? "remoteSshWindowsCodexSkipped"
-        : txnStep === "installClaude" ? "remoteSshWindowsQuotaUnsupported" : null);
+      progress(progressStep, "ok", present ? null : "not applicable", txnStep === "installClaude" ? "remoteSshWindowsQuotaUnsupported" : null);
     }
     if (!presence.claudePresent) {
       await recordStep("claudePermission", "not-applicable", "Claude config root absent before deploy; native approval remains");
@@ -1527,9 +1536,9 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
       await recordStep("claudePermission", native ? "not-applicable" : "done", native
         ? "no managed PermissionRequest; Claude native approval retained" : "managed PermissionRequest URL contains transaction nonce");
     }
-    await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts in phase 1");
+    await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts");
     progress("install-hermes", "ok", "not applicable", "remoteSshWindowsHermesSkipped");
-    return { ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true, codexHooksInstalled: false, isolation: null, hermes: null };
+    return { ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true, codexHooksInstalled, isolation: null, hermes: null };
   }, progress);
 }
 
@@ -2769,6 +2778,14 @@ async function secureUninstallRemoteIntegrations({
         for (const script of ["install.js", "copilot-install.js"]) {
           const result = await runWindows("runInstaller", true, { script, argv, env });
           if (!result.ok) return { ok: false, reason: result.reason, stderr: result.message, layout };
+        }
+        const codex = await runWindows("uninstallCodexOwned", true);
+        if (!codex.ok) {
+          const reason = codex.reason || "windows_codex_cleanup_incomplete";
+          return {
+            ok: false, reason, stderr: codex.message, message: codex.message,
+            hint: windowsFailureHint(reason), layout,
+          };
         }
         const files = [...HOOK_FILES.map((name) => path.win32.join(layout.claudeHooksDir, name)), layout.hostPrefixFile, layout.lastLogFile,
           ...(preserveIdentity ? [] : [layout.identityFile, layout.secureMarkerFile])];

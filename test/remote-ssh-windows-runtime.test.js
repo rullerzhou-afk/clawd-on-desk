@@ -13,12 +13,14 @@ const { NODE_FRAME_LOADER, REMOTE_NODE_LAUNCH_COMMAND, writeNodeFrame } = requir
 const utils = require("../hooks/json-utils");
 const { CLAUDE_CORE_HOOK_EVENTS } = require("../hooks/install");
 const { COPILOT_STATE_HOOK_EVENTS } = require("../hooks/copilot-install");
+const { CODEX_STATE_HOOK_EVENTS } = require("../hooks/codex-install");
+const codexUtils = require("../hooks/codex-install-utils");
 
 const profile = {
   id: "windows", host: "remote", remoteForwardPort: 23334, remotePlatform: "win32",
   remoteHome: "C:\\Users\\remote", runtimeKey: "account-default", runtimeMode: "account-default",
   installId: "a".repeat(64), layoutVersion: 1, detectedRemoteNodeBin: "C:\\Node\\node.exe",
-  identityTxn: { steps: Object.fromEntries(["installClaude", "installCopilot", "claudePermission"].map((step) => [step, { status: "done" }])) },
+  identityTxn: { steps: Object.fromEntries(["installClaude", "installCopilot", "claudePermission", "installCodex"].map((step) => [step, { status: "done" }])) },
 };
 const layout = resolveRemoteRuntimeLayout(profile);
 const identity = { version: 2, installId: profile.installId, profileId: profile.id,
@@ -34,11 +36,18 @@ function configs() {
     copilot: { hooks: Object.fromEntries(COPILOT_STATE_HOOK_EVENTS.map((event) => [event, [{
       powershell: `$env:CLAWD_REMOTE='1'; & "${profile.detectedRemoteNodeBin}" "${script("copilot-hook.js")}" "${event}"`,
     }]])) },
+    codex: { hooks: Object.fromEntries(CODEX_STATE_HOOK_EVENTS.map((event) => [event, [{ hooks: [{
+      type: "command",
+      commandWindows: `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & "${profile.detectedRemoteNodeBin}" "${script("codex-hook.js")}" "--clawd-ssh-remote"`,
+      command: `"${profile.detectedRemoteNodeBin}" "${script("codex-hook.js")}" --clawd-wsl-interop --clawd-ssh-remote`,
+      timeout: 30,
+    }] }]])) },
   };
 }
 function runProbe({ current = profile, config = configs(), execPath = current.detectedRemoteNodeBin,
-  readError = false, invalidJson = false, copilotBom = false, claudeBom = false,
-  persistent = false, claudeEvents = CLAUDE_CORE_HOOK_EVENTS, copilotEvents = COPILOT_STATE_HOOK_EVENTS } = {}) {
+  readError = false, invalidJson = false, copilotBom = false, claudeBom = false, codexBom = false, codexInvalidJson = false,
+  persistent = false, claudeEvents = CLAUDE_CORE_HOOK_EVENTS, copilotEvents = COPILOT_STATE_HOOK_EVENTS,
+  codexEvents = CODEX_STATE_HOOK_EVENTS } = {}) {
   const built = persistent
     ? buildPersistentReadinessCommand(current.remoteForwardPort, execPath, { profile: current, challenge: "c".repeat(32) })
     : buildProbeCommand(current.remoteForwardPort, execPath, { profile: current });
@@ -54,14 +63,21 @@ function runProbe({ current = profile, config = configs(), execPath = current.de
       if (file === layout.identityFile) return JSON.stringify(identity);
       if (readError) throw new Error("EACCES");
       if (invalidJson) return "{broken";
-      const value = file === layout.claudeSettingsFile ? config.claude : config.copilot;
-      if (value === undefined) throw new Error("ENOENT");
-      return ((copilotBom && file !== layout.claudeSettingsFile) || (claudeBom && file === layout.claudeSettingsFile) ? "\uFEFF" : "") + JSON.stringify(value);
+      const codexHooksPath = path.win32.join(layout.codexHome, "hooks.json");
+      const value = file === layout.claudeSettingsFile ? config.claude
+        : file === codexHooksPath ? config.codex : config.copilot;
+      if (value === undefined) { const err = new Error("ENOENT"); err.code = "ENOENT"; throw err; }
+      if (codexInvalidJson && file === codexHooksPath) return "{broken";
+      return (((copilotBom && file !== layout.claudeSettingsFile && file !== codexHooksPath)
+        || (claudeBom && file === layout.claudeSettingsFile)
+        || (codexBom && file === codexHooksPath)) ? "\uFEFF" : "") + JSON.stringify(value);
     } };
     if (name === script("json-utils.js")) return utils;
     if (name === script("server-config.js")) return require("../hooks/server-config");
     if (name === script("install.js")) return { CLAUDE_CORE_HOOK_EVENTS: claudeEvents };
     if (name === script("copilot-install.js")) return { COPILOT_STATE_HOOK_EVENTS: copilotEvents };
+    if (name === script("codex-install.js")) return { CODEX_STATE_HOOK_EVENTS: codexEvents };
+    if (name === script("codex-install-utils.js")) return codexUtils;
     if (name === "http") return { get(options, callback) {
       requests.push(options);
       callback({ headers: { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID }, statusCode: 200 });
@@ -127,6 +143,74 @@ test("issue #1316: Copilot local takeover and permission nonce takeover each exi
     assert.equal(result.exitCode, 6, component);
     assert.equal(result.requests.length, 0);
   }
+});
+
+test("issue #1316: a changed Codex event or a local Codex entry before ours exits 6", () => {
+  const changed = configs();
+  changed.codex.hooks[CODEX_STATE_HOOK_EVENTS[0]] = [{ hooks: [{
+    type: "command", command: "C:\\Orca\\codex-hook.cmd", timeout: 30,
+  }] }];
+  assert.equal(runProbe({ config: changed }).exitCode, 6);
+
+  const localFirst = configs();
+  localFirst.codex.hooks[CODEX_STATE_HOOK_EVENTS[1]].unshift({ hooks: [{
+    type: "command",
+    commandWindows: '& "C:\\Node\\node.exe" "C:\\App\\codex-hook.js" --clawd-windows-stable',
+    command: '"/bin/sh" "/mnt/c/App/codex-hook.js.sh"',
+    timeout: 30,
+  }] });
+  assert.equal(runProbe({ config: localFirst }).exitCode, 6);
+});
+
+test("issue #1316: Codex ownership still requires the interop command and rejects conflict or unknown beside ours", () => {
+  for (const component of ["missing command", "conflict", "unknown"]) {
+    const config = configs();
+    const event = CODEX_STATE_HOOK_EVENTS[0];
+    if (component === "missing command") delete config.codex.hooks[event][0].hooks[0].command;
+    else if (component === "conflict") config.codex.hooks[event][0].hooks[0].command = '"C:\\Foreign\\tool.exe" --flag';
+    else config.codex.hooks[event].push({ hooks: [{
+      type: "command",
+      commandWindows: `& "${profile.detectedRemoteNodeBin}" "C:\\tools\\codex-hook.js-helpers\\run.js"`,
+      timeout: 30,
+    }] });
+    const result = runProbe({ config });
+    assert.equal(result.exitCode, 6, component);
+    assert.equal(result.requests.length, 0, component);
+  }
+});
+
+test("issue #1316: a Codex-only deployment still runs the takeover check", () => {
+  const current = { ...profile, identityTxn: { steps: { installCodex: { status: "done" } } } };
+  assert.equal(runProbe({ current }).exitCode, 0);
+  const config = configs();
+  config.codex.hooks[CODEX_STATE_HOOK_EVENTS[0]] = [{ hooks: [{
+    type: "command", command: "C:\\Orca\\codex-hook.cmd", timeout: 30,
+  }] }];
+  assert.equal(runProbe({ current, config }).exitCode, 6);
+});
+
+test("issue #1316: Codex third-party entries coexist without a takeover warning", () => {
+  const config = configs();
+  config.codex.hooks[CODEX_STATE_HOOK_EVENTS[0]].push({ hooks: [{
+    type: "command", command: "C:\\Orca\\codex-hook.cmd", timeout: 30,
+  }] });
+  assert.equal(runProbe({ config }).exitCode, 0);
+});
+
+test("issue #1316: a missing or BOM-prefixed Codex hooks.json exits 6", () => {
+  const missing = configs();
+  delete missing.codex;
+  const missingResult = runProbe({ config: missing });
+  assert.equal(missingResult.exitCode, 6);
+  assert.equal(missingResult.requests.length, 0);
+  assert.equal(runProbe({ codexBom: true }).exitCode, 6);
+});
+
+test("issue #1316: an unparseable Codex hooks.json exits 8 with its path", () => {
+  const result = runProbe({ codexInvalidJson: true });
+  assert.equal(result.exitCode, 8);
+  assert.equal(result.requests.length, 0);
+  assert.deepEqual(result.stderr, [`unverified: ${path.win32.join(layout.codexHome, "hooks.json")}`]);
 });
 
 test("issue #1316: Claude-only deployment never reads absent not-applicable Copilot config", () => {
