@@ -31,6 +31,7 @@ function buildSettingsAgentOrderExports() {
     "hermes",
     "reasonix",
     "zcode",
+    "command-code",
   ];
 
   const COLLAPSIBLE_AGENT_PRIORITY_MAP = new Map(

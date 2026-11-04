@@ -229,6 +229,39 @@ describe("#634 ctx contract — sendHookEvent seams", () => {
     }
   });
 
+  it("command-code: SessionStart is a start; tool and Stop events are plain events; placeholder ids not cacheable", async () => {
+    const mod = require("../hooks/command-code-hook.js");
+    for (const [event, lifecycle] of [
+      ["SessionStart", "start"],
+      ["PreToolUse", "event"],
+      ["PostToolUse", "event"],
+      ["Stop", "event"],
+    ]) {
+      const cap = capture();
+      await mod.sendHookEvent(
+        { hook_event_name: event, session_id: "cc1", cwd: "D:/repo" },
+        { env: {}, resolvePid: cap, postState: stubPost }
+      );
+      assert.strictEqual(cap.calls.length, 1, event);
+      assert.strictEqual(cap.calls[0].namespace, "command-code", event);
+      assert.strictEqual(cap.calls[0].lifecycle, lifecycle, event);
+      assert.strictEqual(cap.calls[0].sessionId, "command-code:cc1", event);
+      assert.strictEqual(cap.calls[0].cacheable, true, event);
+    }
+    const cap = capture();
+    await mod.sendHookEvent(
+      { hook_event_name: "PreToolUse", cwd: "D:/repo" },
+      { env: {}, resolvePid: cap, postState: stubPost }
+    );
+    assert.strictEqual(cap.calls[0].cacheable, false, "command-code:default must not key a shared cache entry");
+    const capLiteral = capture();
+    await mod.sendHookEvent(
+      { hook_event_name: "PreToolUse", session_id: "default", cwd: "D:/repo" },
+      { env: {}, resolvePid: capLiteral, postState: stubPost }
+    );
+    assert.strictEqual(capLiteral.calls[0].cacheable, false, "a literal raw \"default\" id must not be cacheable either");
+  });
+
   it("antigravity: every event uses the event lifecycle; only an explicit conversation id is cacheable", async () => {
     const mod = require("../hooks/antigravity-hook.js");
     const send = mod.sendHookEvent || (mod.__test && mod.__test.sendHookEvent);

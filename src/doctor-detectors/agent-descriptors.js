@@ -31,6 +31,7 @@ const workbuddy = require("../../hooks/workbuddy-install");
 const grok = require("../../hooks/grok-install");
 const traecode = require("../../hooks/traecode-install");
 const minimax = require("../../hooks/minimax-install");
+const commandCode = require("../../hooks/command-code-install");
 const dsh = require("../../hooks/dsh-install");
 
 function agentName(agentId) {
@@ -469,6 +470,18 @@ const AGENT_DESCRIPTORS = Object.freeze([
     marker: minimax.MARKER,
     managedFiles: [minimax.OWNER_MARKER_FILE, ".claude-plugin/plugin.json", "hooks/hooks.json"],
     hookEvents: minimax.MINIMAX_HOOK_EVENTS,
+  }),
+  Object.freeze({
+    agentId: "command-code",
+    agentName: agentName("command-code"),
+    eventSource: agentEventSource("command-code"),
+    parentDir: commandCode.DEFAULT_PARENT_DIR,
+    configPath: commandCode.DEFAULT_CONFIG_PATH,
+    configMode: "file",
+    autoInstall: true,
+    marker: commandCode.MARKER,
+    nested: true,
+    hookEvents: commandCode.COMMAND_CODE_HOOK_EVENTS,
   }),
 ]);
 

@@ -35,6 +35,7 @@ describe("Agent Registry", () => {
       "traecode",
       "grok-build",
       "minimax",
+      "command-code",
     ]);
   });
 
@@ -61,6 +62,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(registry.getAgent("traecode").name, "TraeCode");
     assert.strictEqual(registry.getAgent("grok-build").name, "Grok Build");
     assert.strictEqual(registry.getAgent("minimax").name, "MiniMax Code");
+    assert.strictEqual(registry.getAgent("command-code").name, "Command Code");
     assert.strictEqual(registry.getAgent("nonexistent"), undefined);
   });
 
@@ -132,6 +134,13 @@ describe("Agent Registry", () => {
     assert.deepStrictEqual(minimax.processNames.win, ["MiniMax Code.exe", "mcode.exe"]);
     assert.deepStrictEqual(minimax.processNames.mac, ["MiniMax Code", "mcode"]);
     assert.deepStrictEqual(minimax.processNames.linux, ["mcode", "MiniMax Code"]);
+
+    // Command Code runs under node.exe on Windows (no distinct image name),
+    // and sets process.title = "command-code" on macOS/Linux.
+    const commandCode = registry.getAgent("command-code");
+    assert.deepStrictEqual(commandCode.processNames.win, []);
+    assert.deepStrictEqual(commandCode.processNames.mac, ["command-code"]);
+    assert.deepStrictEqual(commandCode.processNames.linux, ["command-code"]);
   });
 
   it("should include explicit Linux process names", () => {
@@ -245,6 +254,7 @@ describe("Agent Registry", () => {
     assert.ok(!startupAgentIds.has("qoderwork"));
     assert.ok(!startupAgentIds.has("qwenwork"));
     assert.ok(!startupAgentIds.has("workbuddy"));
+    assert.ok(!startupAgentIds.has("command-code"));
 
     // ZCode keeps only the unambiguous legacy `zcode-cli` in pure-name startup
     // recovery. Current macOS/Windows Electron Node-mode runtimes are matched
@@ -281,6 +291,10 @@ describe("Agent Registry", () => {
     );
     assert.deepStrictEqual(
       registry.getAgent("minimax").startupRecoveryProcessNames,
+      { win: [], mac: [], linux: [] }
+    );
+    assert.deepStrictEqual(
+      registry.getAgent("command-code").startupRecoveryProcessNames,
       { win: [], mac: [], linux: [] }
     );
     assert.deepStrictEqual(
@@ -629,6 +643,32 @@ describe("Agent Registry", () => {
     // impossible) and there is no Notification event.
     assert.strictEqual(minimax.eventMap.PermissionRequest, undefined);
     assert.strictEqual(minimax.eventMap.Notification, undefined);
+  });
+
+  it("treats Command Code as a hook-only state agent", () => {
+    const commandCode = registry.getAgent("command-code");
+
+    assert.strictEqual(commandCode.eventSource, "hook");
+    assert.ok(commandCode.hookConfig);
+    assert.strictEqual(commandCode.hookConfig.configFormat, "commandcode-settings-json");
+    assert.strictEqual(commandCode.logConfig, undefined);
+    assert.strictEqual(commandCode.stdinFormat, "commandCodeHookJson");
+    assert.strictEqual(commandCode.pidField, "source_pid");
+    // Only the four documented hook events are mapped.
+    assert.deepStrictEqual(commandCode.eventMap, {
+      SessionStart: "idle",
+      PreToolUse: "working",
+      PostToolUse: "working",
+      Stop: "attention",
+    });
+    // State-only Phase 1: no HTTP hook, no permission routing, no Notification,
+    // and no SessionEnd event.
+    assert.strictEqual(commandCode.capabilities.httpHook, false);
+    assert.strictEqual(commandCode.capabilities.permissionApproval, false);
+    assert.strictEqual(commandCode.capabilities.interactiveBubble, false);
+    assert.strictEqual(commandCode.capabilities.notificationHook, false);
+    assert.strictEqual(commandCode.capabilities.sessionEnd, false);
+    assert.strictEqual(commandCode.capabilities.subagent, false);
   });
 
   it("treats Gemini CLI as a hook-only agent", () => {

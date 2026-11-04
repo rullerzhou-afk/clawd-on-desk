@@ -129,6 +129,20 @@ const SOURCE_PROVENANCE = Object.freeze({
   // MiniMax Code uses the MIT-licensed Lobe Icons brand mark, matching the
   // other Lobe-sourced agents in this repository.
   minimax: lobeSource("minimax-color.png"),
+  // Official Command Code brand icon (black rounded tile with the white
+  // command glyph), extracted from the published command-code 1.79.2 npm
+  // package: vsix/commandcode-vscode.vsix -> extension/icon.png (256x256).
+  // (c) Command Code, all rights reserved (the package itself is
+  // UNLICENSED). The tile carries its own light/dark contrast, so no
+  // contrast treatment is needed.
+  "command-code": {
+    originalFilename: "icon.png",
+    sourceFilename: "command-code.png",
+    fallback: false,
+    upstreamPackage: "command-code",
+    upstreamVersion: "1.79.2",
+    provenance: "Official Command Code brand icon extracted from the published command-code 1.79.2 npm package (vsix/commandcode-vscode.vsix -> extension/icon.png, 256x256); (c) Command Code, all rights reserved.",
+  },
   // Placeholder mark, not OMP brand artwork: a neutral pi glyph on a tile,
   // in the fallback style the README sanctions until an official source
   // exists. Replace with licensed artwork when one is available.

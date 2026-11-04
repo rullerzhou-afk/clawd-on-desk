@@ -272,6 +272,31 @@ describe("state agent icons", () => {
     assert.match(licenseText, /Except for assets that carry their own explicit license/i);
   });
 
+  it("keeps the official Command Code icon bound to its package provenance", () => {
+    const manifest = readSourceManifest();
+    const record = manifest.sources["command-code"];
+    assert.strictEqual(record.fallback, false);
+    assert.strictEqual(record.originalFilename, "icon.png");
+    assert.strictEqual(record.sourceFilename, "command-code.png");
+    assert.strictEqual(record.upstreamPackage, "command-code");
+    assert.strictEqual(record.upstreamVersion, "1.79.2");
+    assert.match(record.provenance, /command-code 1\.79\.2 npm package/);
+    assert.match(record.provenance, /commandcode-vscode\.vsix/);
+
+    const sourcePath = getSourcePath("command-code");
+    const runtimePath = path.join(AGENT_ICON_DIR, "command-code.png");
+    assert.strictEqual(hashFileSource(sourcePath), record.sha256);
+    assert.strictEqual(
+      manifest.outputs["command-code"].generatedFromSourceSha256,
+      record.sha256
+    );
+
+    // The official tile is opaque artwork, so the export is a re-render, not a
+    // passthrough — the runtime hash must be its own recorded value.
+    assert.match(manifest.outputs["command-code"].outputSha256, /^[0-9a-f]{64}$/);
+    assert.strictEqual(hashFileSource(runtimePath), manifest.outputs["command-code"].outputSha256);
+  });
+
   it("records complete LobeHub provenance for package and official website assets", () => {
     const manifest = readSourceManifest();
     const selectedLobeHubIds = [

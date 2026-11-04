@@ -61,6 +61,7 @@ function makeRuntime(overrides = {}) {
     syncGrokBuildHooksImpl: () => calls.push({ name: "grok-build" }),
     syncKiroHooksImpl: () => calls.push({ name: "kiro" }),
     syncKiroCrewHooksImpl: () => calls.push({ name: "kirocrew" }),
+    syncCommandCodeHooksImpl: () => calls.push({ name: "command-code" }),
     syncKimiHooksImpl: () => calls.push({ name: "kimi" }),
     syncQwenHooksImpl: () => calls.push({ name: "qwen" }),
     syncZcodeHooksImpl: () => calls.push({ name: "zcode" }),
@@ -323,6 +324,7 @@ describe("integration sync runtime", () => {
       "traecode",
       "qwenwork",
       "minimax",
+      "command-code",
     ]);
   });
 
@@ -394,6 +396,7 @@ describe("integration sync runtime", () => {
       "traecode",
       "qwenwork",
       "minimax",
+      "command-code",
     ]);
   });
 
@@ -666,6 +669,13 @@ describe("integration sync runtime", () => {
         modulePath: "../hooks/reasonix-install.js",
         exportName: "registerReasonixHooks",
         reason: "reasonix-not-installed",
+      },
+      {
+        agentId: "command-code",
+        ctxKey: "syncCommandCodeHooksImpl",
+        modulePath: "../hooks/command-code-install.js",
+        exportName: "registerCommandCodeHooks",
+        reason: "command-code-not-installed",
       },
     ];
 
