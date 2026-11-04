@@ -60,6 +60,7 @@ const ELICITATION_OTHER_KEY = "__other__";
 function setSessionTag(data) {
   const parts = [];
   if (data.isCodexSubagent) parts.push(data.codexAgentNickname || bubbleText(data.lang, "agent"));
+  if (data.sessionProfileLabel) parts.push(data.sessionProfileLabel);
   if (data.sessionFolder) parts.push(data.sessionFolder);
   if (data.sessionShortId) parts.push("#" + data.sessionShortId);
   if (parts.length) {

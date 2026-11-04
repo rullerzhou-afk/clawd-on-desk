@@ -7793,3 +7793,27 @@ describe("reopened conversation stays out of the HUD until activity", () => {
     }
   });
 });
+
+describe("Claude profile folder on sessions (#1250)", () => {
+  let api;
+  afterEach(() => { if (api) api.cleanup(); });
+
+  it("keeps the folder across later events, including permission requests", () => {
+    api = require("../src/state")(makeCtx());
+    api.updateSession("p1", "working", "PreToolUse", {
+      cwd: "/tmp", agentId: "claude-code", claudeConfigDir: "/home/u/.claude-work",
+    });
+    api.updateSession("p1", "thinking", "UserPromptSubmit", { cwd: "/tmp", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.get("p1").claudeConfigDir, "/home/u/.claude-work");
+    api.updateSession("p1", "notification", "PermissionRequest", {
+      cwd: "/tmp", agentId: "claude-code", transientPermissionEvent: true,
+    });
+    assert.strictEqual(api.sessions.get("p1").claudeConfigDir, "/home/u/.claude-work");
+  });
+
+  it("leaves default-profile sessions without a folder", () => {
+    api = require("../src/state")(makeCtx());
+    api.updateSession("p2", "working", "PreToolUse", { cwd: "/tmp", agentId: "claude-code" });
+    assert.strictEqual(api.sessions.get("p2").claudeConfigDir, null);
+  });
+});

@@ -290,6 +290,23 @@ body { padding: 2px 3px 8px; }
   border-radius: 3px;
   white-space: nowrap;
 }
+.profile-chip {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  max-width: 8em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  background: rgba(222, 136, 109, 0.18);
+  color: #b85a3e;
+}
+@media (prefers-color-scheme: dark) {
+  .profile-chip { background: rgba(222, 136, 109, 0.24); color: #f0a58c; }
+}
 .usage-neutral { background: rgba(107, 114, 128, 0.13); color: #52525b; }
 .usage-warm { background: rgba(245, 158, 11, 0.15); color: #b45309; }
 .usage-hot { background: rgba(239, 68, 68, 0.10); color: #dc2626; }

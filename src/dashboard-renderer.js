@@ -1249,6 +1249,18 @@ function appendMeta(main, session, now) {
   badge.appendChild(document.createTextNode(badgeLabel(session.badge)));
 
   meta.appendChild(document.createTextNode(agentLabel(session.agentId, session.agentName)));
+  // Claude profile chip ("work"), right after the agent so the clipped end of
+  // this single-line row never hides it.
+  if (session.claudeProfileLabel) {
+    meta.appendChild(document.createTextNode(" "));
+    const profileBadge = document.createElement("span");
+    profileBadge.className = "profile-badge";
+    profileBadge.textContent = session.claudeProfileLabel;
+    profileBadge.title = session.claudeConfigDir
+      ? `${t("sessionClaudeProfile")}: ${session.claudeConfigDir}`
+      : t("sessionClaudeProfile");
+    meta.appendChild(profileBadge);
+  }
   meta.appendChild(document.createTextNode(" · "));
   meta.appendChild(badge);
   meta.appendChild(document.createTextNode(` · ${formatElapsed(now - session.updatedAt)}`));

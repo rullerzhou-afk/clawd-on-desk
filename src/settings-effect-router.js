@@ -213,7 +213,8 @@ function createSettingsEffectRouter(options = {}) {
     }
     // Localized display labels live in snapshots. Refresh after mirrors and
     // dictionaries, also coalescing a simultaneous alias change into one send.
-    if ("lang" in changes || "sessionAliases" in changes) {
+    // Claude profile labels come from agents["claude-code"].configDirs.
+    if ("lang" in changes || "sessionAliases" in changes || "agents" in changes) {
       safeCall(
         logWarn,
         "Clawd: session title snapshot broadcast failed:",

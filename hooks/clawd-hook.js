@@ -11,7 +11,8 @@ const { fitStateBodyToByteBudget } = require("./state-payload-size");
 const { extractClaudeContextUsageFromEntries } = require("./context-usage");
 const { createPidResolver, readStdinJsonDetailed, getPlatformConfig, applyOrcaPaneKey } = require("./shared-process");
 const { updateRecoveryLeaseFromStateBody } = require("./session-recovery-lease");
-const { recordSessionHistoryFromStateBody } = require("./session-history");
+const { recordSessionHistoryFromStateBody, resolveClaudeProfileFromEnv } = require("./session-history");
+const { normalizeClaudeConfigDir } = require("./claude-config-dirs");
 const { normalizeModelId } = require("./claude-rate-limits");
 const { normalizeClaudePhaseId, extractClaudeBatchToolUseIds } = require("./claude-tool-batch");
 // #634: the pid cache + lifecycle orchestration is owned by the shared resolver
@@ -599,7 +600,7 @@ function applyResolvedFields(body, resolved, event) {
   }
 }
 
-function buildStateBody(event, payload, resolve) {
+function buildStateBody(event, payload, resolve, options = {}) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
   const promptId = normalizeClaudePhaseId(payload.prompt_id);
@@ -684,6 +685,13 @@ function buildStateBody(event, payload, resolve) {
     }
   }
   if (cwd) body.cwd = cwd;
+  // Claude Code passes CLAUDE_CONFIG_DIR to hooks, so this names the profile
+  // folder the session runs in. Unset means ~/.claude and is sent as nothing.
+  if (body.agent_id === "claude-code") {
+    const profile = resolveClaudeProfileFromEnv({ env: options.env });
+    const configDir = profile && profile.kind === "custom" ? normalizeClaudeConfigDir(profile.configDir) : null;
+    if (configDir) body.claude_config_dir = configDir;
+  }
   // Only SessionStart carries a model, and even there it is optional (`clear`
   // omits it). state.js merges it stickily, so one report is enough.
   const model = normalizeModelId(payload.model);

@@ -2,6 +2,7 @@
 const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
+const { claudeProfileLabelFor } = require("../hooks/claude-config-dirs");
 const path = require("path");
 const { i18n } = require("./i18n");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
@@ -408,6 +409,14 @@ function shouldHideActiveCodexEphemeral(id, session, options = {}) {
   });
 }
 
+// "work" / "personal" chip for local Claude sessions when Clawd manages more
+// than one Claude config folder. Remote and WSL sessions report folders on
+// another machine, which the local list cannot name.
+function deriveSessionClaudeProfileLabel(session, claudeConfigDirs) {
+  if (!session || session.agentId !== "claude-code" || session.host || session.wslDistro) return "";
+  return claudeProfileLabelFor(session.claudeConfigDir || null, claudeConfigDirs);
+}
+
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {}) {
   const alias = getSessionAliasEntry(id, session, sessionAliases);
   const recentEvents = Array.isArray(session && session.recentEvents)
@@ -499,6 +508,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     wslDistro: (session && session.wslDistro) || null,
+    claudeConfigDir: (session && session.claudeConfigDir) || null,
+    claudeProfileLabel: deriveSessionClaudeProfileLabel(session, options.claudeConfigDirs),
     sourceType: source.sourceType,
     sourceLabel: source.sourceLabel,
     sourceDisplayLabel: source.displayLabel,
@@ -754,6 +765,8 @@ function sessionSnapshotSignature(snapshot) {
       hudHiddenByPreference: !!entry.hudHiddenByPreference,
       host: entry.host,
       wslDistro: entry.wslDistro,
+      claudeConfigDir: entry.claudeConfigDir,
+      claudeProfileLabel: entry.claudeProfileLabel,
       platform: entry.platform,
       model: entry.model,
       provider: entry.provider,

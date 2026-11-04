@@ -390,6 +390,17 @@ function createRowForSession(session, now) {
     }
   }
 
+  if (!feedbackText && session.claudeProfileLabel) {
+    const profileChip = document.createElement("span");
+    profileChip.className = "profile-chip";
+    profileChip.textContent = session.claudeProfileLabel;
+    profileChip.title = session.claudeConfigDir
+      ? `${t("sessionClaudeProfile")}: ${session.claudeConfigDir}`
+      : t("sessionClaudeProfile");
+    right.appendChild(profileChip);
+    hasRightContent = true;
+  }
+
   const chipInfo = feedbackText ? null : stateChipInfo(session);
   if (chipInfo) {
     const chip = document.createElement("span");

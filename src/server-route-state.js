@@ -43,6 +43,14 @@ const {
 const { resolveCodexOfficialHookState } = require("./server-codex-official-turns");
 const { normalizeClaudePhaseId, normalizeClaudeBatchToolUseIds } = require("../hooks/claude-tool-batch");
 const { normalizeTranscriptPath } = require("./transcript-path");
+const { normalizeClaudeConfigDir } = require("../hooks/claude-config-dirs");
+
+// CLAUDE_CONFIG_DIR as the Claude hook saw it. Remote and WSL hosts report
+// their own paths, so accept either path flavour; it is only used as a label.
+function normalizeReportedClaudeConfigDir(value) {
+  return normalizeClaudeConfigDir(value, { platform: "linux" })
+    || normalizeClaudeConfigDir(value, { platform: "win32" });
+}
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
@@ -385,6 +393,7 @@ function handleStatePost(req, res, options) {
       const wslDistro = typeof data.wsl_distro === "string" && data.wsl_distro.trim()
         ? data.wsl_distro.trim()
         : null;
+      const claudeConfigDir = normalizeReportedClaudeConfigDir(data.claude_config_dir);
       const headless = data.headless === true;
       const platform = typeof data.platform === "string" && data.platform.trim()
         ? data.platform.trim()
@@ -1145,6 +1154,7 @@ function handleStatePost(req, res, options) {
             rawSessionId: rawStateSessionId,
             host,
             wslDistro,
+            ...(agentId === "claude-code" && claudeConfigDir ? { claudeConfigDir } : {}),
             headless: headless || codexHookState.headless === true,
             platform,
             model,
