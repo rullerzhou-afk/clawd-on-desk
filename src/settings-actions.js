@@ -122,6 +122,11 @@ const {
   repairAgentIntegration,
 } = require("./settings-actions-agents");
 const {
+  addClaudeConfigDir,
+  removeClaudeConfigDir,
+  setClaudeConfigDirLabel,
+} = require("./settings-actions-claude-config-dirs");
+const {
   ANIMATION_OVERRIDES_EXPORT_VERSION,
   ONESHOT_OVERRIDE_STATES,
   importAnimationOverrides,
@@ -2850,6 +2855,9 @@ const commandRegistry = {
   removeCustomApplication,
   repairAgentIntegration,
   setAgentCustomDiscoveryPaths,
+  addClaudeConfigDir,
+  removeClaudeConfigDir,
+  setClaudeConfigDirLabel,
   setAgentCustomPermissionUrl,
   uninstallAgentIntegration,
   repairLocalServer,

@@ -1753,6 +1753,30 @@ html, body {
 .custom-tool-result-detail {
   overflow-wrap: anywhere;
 }
+/* Claude config folders: path on the left like custom-tool paths, label
+   field and Remove on the right. */
+.claude-config-dir-row .row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.claude-config-dir-row .claude-config-dir-path {
+  overflow: hidden;
+  color: var(--text-primary);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.claude-config-dir-control {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+.claude-config-dir-control .settings-text-input {
+  width: 9em;
+}
 .custom-tool-result-status {
   flex: 0 0 auto;
   align-self: center;
