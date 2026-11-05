@@ -84,7 +84,35 @@ function createMobileDeviceStore(options) {
   const writeToken = options.writeTokenState || ((file, value) => atomicWrite(file, value, io));
   const writeDevices = options.writeDeviceState || ((file, value) => atomicWrite(file, value, io));
   let paused = false;
+  // dirty: the in-memory state still needs writing; the periodic retry or any later successful commit writes it.
   let dirty = false;
+  let failedWrites = 0; // consecutive device-store write failures since the last successful write
+  let lastFailureKind = null;
+
+  function safeLog(line) { try { log(line); } catch {} }
+
+  function failureKind(err) {
+    if (paused) return "paused";
+    const code = err && typeof err.code === "string" && /^[A-Z0-9_]{1,32}$/.test(err.code) ? err.code : null;
+    const syscall = err && typeof err.syscall === "string" && /^[a-z]{1,16}$/.test(err.syscall) ? err.syscall : null;
+    if (code) return syscall ? `${code}/${syscall}` : code;
+    return err && err.message === "Failed to persist mobile access" ? "write-rejected" : "unknown";
+  }
+
+  function notePersistFailure(context, err) {
+    const kind = failureKind(err);
+    if (kind !== "paused") failedWrites += 1;
+    if (kind === lastFailureKind) return; // same failure as last time: stay quiet
+    lastFailureKind = kind;
+    safeLog(`[mobile-preview] device store write failed (${context}): ${kind}`);
+  }
+
+  function notePersistSuccess() {
+    if (failedWrites > 0) safeLog(`[mobile-preview] device store write recovered after ${failedWrites} failed writes`);
+    failedWrites = 0;
+    lastFailureKind = null;
+  }
+
   let state;
   let tokenState;
   const legacyHashes = new Set();
@@ -148,8 +176,8 @@ function createMobileDeviceStore(options) {
 
   function retryPersistence() {
     if (!dirty || paused) return;
-    try { write(writeDevices, devicesPath, state); dirty = false; }
-    catch { log("[mobile-preview] device store persistence deferred"); }
+    try { write(writeDevices, devicesPath, state); dirty = false; notePersistSuccess(); }
+    catch (err) { notePersistFailure("retry", err); }
   }
   retryPersistence();
 
@@ -169,15 +197,33 @@ function createMobileDeviceStore(options) {
     }
     if (flushSeen) lastSeenFlush = now();
     dirty = false;
+    notePersistSuccess();
     return result;
   }
 
-  function refreshPairCode() {
+  function commitNewPairCode() {
     return commit((next) => { next.pairing = newPairing(now()); return { ...next.pairing }; });
   }
 
+  function refreshPairCode() {
+    try { return commitNewPairCode(); }
+    catch (err) { notePersistFailure("manual pair code refresh", err); throw err; }
+  }
+
   function getPairing() {
-    if (state.pairing.expiresAt <= now()) refreshPairCode();
+    if (state.pairing.expiresAt <= now()) {
+      try { commitNewPairCode(); }
+      catch (err) {
+        // Only an expired display code is replaced here. An expired code cannot start
+        // a new device claim, and the copy on disk expired no later than this one, so
+        // the memory copy may move ahead and wait for the write. A new device still
+        // needs a successful commit before it is accepted. A manual refresh of a live
+        // code must not take this shortcut (see refreshPairCode).
+        state.pairing = newPairing(now());
+        dirty = true;
+        notePersistFailure("pair code rotation", err);
+      }
+    }
     return { ...state.pairing };
   }
 
