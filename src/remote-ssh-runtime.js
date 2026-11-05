@@ -291,10 +291,59 @@ function classifyProbeExit(code) {
 
 // Sent only to native Windows hosts. Read failures cannot prove takeover.
 // Serialized with toString(): the function body must not reference outer variables.
-function checkWindowsRemoteHooks({ layout, steps, routingNonce }) {
+function checkWindowsRemoteHooks({ layout, steps, routingNonce, dshInstalled, installId }) {
   const fs = require("fs"), path = require("path").win32;
   const done = (step) => steps && steps[step] && steps[step].status === "done";
-  if (!done("installClaude") && !done("installCopilot") && !done("claudePermission") && !done("installCodex")) return;
+  // Registration ownership check only: it reads package.json declarations and
+  // never claims to verify which package the desktop app actually loaded.
+  let dshRelevant = false;
+  if (dshInstalled === true || installId) {
+    if (typeof installId !== "string" || !/^[a-f0-9]{64}$/.test(installId)) {
+      if (dshInstalled === true) process.exit(8);
+    } else {
+      const remoteRoot = path.join(layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+      const recordPath = path.join(remoteRoot, installId, "deployment.json");
+      let recordRaw = null;
+      try {
+        recordRaw = fs.readFileSync(recordPath, "utf8");
+      } catch (err) {
+        if (!err || err.code !== "ENOENT") process.exit(8);
+      }
+      if (recordRaw === null) {
+        if (dshInstalled === true) process.exit(6);
+      } else {
+        let record;
+        try { record = JSON.parse(recordRaw.replace(/^\uFEFF/, "")); } catch { process.exit(8); }
+        if (!record || typeof record !== "object" || record.phase !== "installed") process.exit(8);
+        const expectedHome = typeof record.dshHome === "string" && record.dshHome ? record.dshHome : null;
+        if (!expectedHome) process.exit(8);
+        const profilePath = path.join(expectedHome, "profiles", "desktop", "package.json");
+        let manifestRaw;
+        try {
+          manifestRaw = fs.readFileSync(profilePath, "utf8");
+        } catch (err) {
+          process.exit(err && err.code === "ENOENT" ? 6 : 8);
+        }
+        let manifest;
+        try { manifest = JSON.parse(manifestRaw.replace(/^\uFEFF/, "")); } catch { process.exit(8); }
+        const spec = manifest && manifest.dependencies && manifest.dependencies["@dsh-external/dsh-clawd-bridge"];
+        if (typeof spec !== "string") process.exit(6);
+        const match = /^(?:file|link):(.*)$/i.exec(spec.trim());
+        if (!match || !match[1]) process.exit(6);
+        let target = match[1];
+        try { target = decodeURIComponent(target); } catch {}
+        if (/^\/[A-Za-z]:[\\/]/.test(target)) target = target.slice(1);
+        if (typeof record.generationId !== "string" || !/^[a-f0-9]{64}$/.test(record.generationId)) process.exit(8);
+        const normalizedHome = (process.platform === "win32" ? expectedHome.toLowerCase() : expectedHome).replace(/\\/g, "/");
+        const namespace = require("crypto").createHash("sha256").update(normalizedHome).digest("hex");
+        const expectedGeneration = path.join(remoteRoot, installId, "homes", namespace, "generations", record.generationId);
+        const declared = path.resolve(path.dirname(profilePath), target);
+        if (declared.toLowerCase() !== expectedGeneration.toLowerCase()) process.exit(6);
+        dshRelevant = true;
+      }
+    }
+  }
+  if (!dshRelevant && !done("installClaude") && !done("installCopilot") && !done("claudePermission") && !done("installCodex")) return;
   let utils, claude, copilot, codex = null;
   let unverifiedPath = path.join(layout.claudeHooksDir, "json-utils.js");
   let owned = true;
@@ -395,7 +444,13 @@ function windowsProbeFrame(js, profile, layout) {
   return {
     command: REMOTE_NODE_LAUNCH_COMMAND,
     frame: buildNodeProgramFrame(js, {
-      layout, steps: profile.identityTxn && profile.identityTxn.steps,
+      layout,
+      steps: profile.identityTxn && profile.identityTxn.steps,
+      dshInstalled: Array.isArray(profile.managedDeployTargets)
+        && profile.managedDeployTargets.some((target) => target
+          && target.installId === profile.installId
+          && target.dshInstalled === true),
+      installId: profile.installId,
     }, profile.detectedRemoteNodeBin),
   };
 }

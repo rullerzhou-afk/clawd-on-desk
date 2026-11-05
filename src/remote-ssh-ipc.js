@@ -1056,6 +1056,12 @@ function registerRemoteSshIpc(options = {}) {
           ...target,
           id: profile.id,
           autoStartCodexMonitor: profile.autoStartCodexMonitor === true,
+          // managedDeployTargets only carries ownership fields, but Windows
+          // cleanup re-probes the remote Node and must compare it against the
+          // node detector recorded on the owning profile.
+          detectedRemoteNodeBin: profile.detectedRemoteNodeBin,
+          detectedRemoteNodeVersion: profile.detectedRemoteNodeVersion,
+          detectedRemoteNodeSource: profile.detectedRemoteNodeSource,
         };
         if (!cleanupProfile.installId
           || cleanupProfile.installId !== binding.installId
@@ -1563,6 +1569,7 @@ function registerRemoteSshIpc(options = {}) {
           runtimeMode: profile.runtimeMode,
           runtimeKey: profile.runtimeKey,
           layoutVersion: profile.layoutVersion,
+          dshInstalled: result.dshBridgeInstalled === true,
         };
         let stampWarning = null;
         try {
@@ -1640,8 +1647,36 @@ function registerRemoteSshIpc(options = {}) {
             );
           }
         }
+        if (result.dshBridgeInstalled === true) {
+          // Same Settings → Agents path as Hermes: open the local gate so the
+          // remote bridge's state and approvals are accepted. Never touch
+          // integrationInstalled.
+          let localDshEnable = null;
+          try {
+            localDshEnable = await settingsController.applyCommand("setAgentFlag", {
+              agentId: "deepseek-harness",
+              flag: "enabled",
+              value: true,
+            });
+          } catch (err) {
+            localDshEnable = { status: "error", message: (err && err.message) || "setAgentFlag threw" };
+          }
+          if (transportContext) transportContext.assertActive();
+          if (!localDshEnable || localDshEnable.status !== "ok") {
+            log("remote-ssh: DSH deployed remotely but could not be enabled locally:",
+              (localDshEnable && localDshEnable.message) || "setAgentFlag returned non-ok");
+          }
+        }
         refreshRuntimeProfile(profile.id);
-        return { status: "ok", codexHooksInstalled: result.codexHooksInstalled === true, hermes: result.hermes || null, ...(stampWarning || {}) };
+        return {
+          status: "ok",
+          codexHooksInstalled: result.codexHooksInstalled === true,
+          hermes: result.hermes || null,
+          dshBridgeInstalled: result.dshBridgeInstalled === true,
+          dshRestartRequired: result.dshRestartRequired === true,
+          ...(result.dshDiscoveryWarning ? { dshDiscoveryWarning: result.dshDiscoveryWarning } : {}),
+          ...(stampWarning || {}),
+        };
       }
       return {
         status: "error",
