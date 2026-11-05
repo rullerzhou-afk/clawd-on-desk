@@ -46,7 +46,9 @@ function fixture(t) {
     };
   } });
   const deps = {
-    platform: "win32", fs: mappedFs, path: path.win32,
+    // An empty env keeps the host's own LOCALAPPDATA, DSH_HOME and SystemRoot
+    // out of the simulated remote; tests that need one set it explicitly.
+    platform: "win32", env: {}, fs: mappedFs, path: path.win32,
     realpathSync: (target) => path.win32.join(layout.remoteHome,
       path.relative(fs.realpathSync(root), fs.realpathSync(local(target)))),
     kill: () => { throw error("ESRCH"); }, delay: async () => {},

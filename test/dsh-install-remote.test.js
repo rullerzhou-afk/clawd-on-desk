@@ -608,19 +608,24 @@ test("DSH remote: install and uninstall use the verified desktop carrier", async
   delete options.commandInfo;
   const discovery = desktopFound(harness.root);
   options.desktopDiscovery = discovery;
+  // On Windows the installer runs the Electron binary that dsh.cmd names;
+  // elsewhere it runs the launcher itself.
+  const carrier = process.platform === "win32"
+    ? path.join(discovery.appRoot, "DeepSeek Harness.exe")
+    : discovery.launcherPath;
   const installed = await dsh.installRemoteDeepSeekHarnessDeployment(options);
   assert.strictEqual(installed.status, "ok");
   assert.ok(harness.cli.calls.length > 0);
   for (const call of harness.cli.calls) {
     assert.ok(call.commandInfo, "installer must receive the detected carrier");
-    assert.strictEqual(call.commandInfo.command, discovery.launcherPath);
+    assert.strictEqual(call.commandInfo.command, carrier);
   }
   harness.cli.calls.length = 0;
   const uninstallOptions = { ...options, desktopDiscovery: discovery };
   const result = await dsh.uninstallOwnedRemoteDeepSeekHarnessDeployment(uninstallOptions);
   assert.strictEqual(result.status, "ok");
   assert.ok(harness.cli.calls.length > 0);
-  assert.strictEqual(harness.cli.calls.at(-1).commandInfo.command, discovery.launcherPath);
+  assert.strictEqual(harness.cli.calls.at(-1).commandInfo.command, carrier);
 });
 
 test("DSH remote: inspect compares against the caller's expected deployment", async (t) => {
