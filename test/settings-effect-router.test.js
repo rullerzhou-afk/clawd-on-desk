@@ -95,6 +95,7 @@ describe("settings-effect-router", () => {
     for (const changes of [
       { sessionHudHideCompletedCodexEphemeral: true }, { sessionHudHideCompletedCodexEphemeral: false },
       { sessionHudHideActiveCodexEphemeral: true }, { sessionHudHideActiveCodexEphemeral: false },
+      { sessionHudHideCanceledCodexEphemeral: true }, { sessionHudHideCanceledCodexEphemeral: false },
       { sessionHudHideCompletedCodexEphemeral: true, sessionHudHideActiveCodexEphemeral: true },
     ]) {
       calls.length = 0;
@@ -104,6 +105,18 @@ describe("settings-effect-router", () => {
         ["emitSessionSnapshot", { force: true }],
       ]);
     }
+  });
+  it("refreshes canceled temporary rows without changing pet rendering or lifecycle", () => {
+    const extra = [];
+    const { calls, emit } = createHarness({ routerOptions: {
+      refreshPetPresentation: () => extra.push("pet"),
+      cleanStaleSessions: () => extra.push("cleanup"),
+      reconcilePowerSaveBlocker: () => extra.push("power"),
+    } });
+    const changes = { sessionHudHideCanceledCodexEphemeral: true };
+    emit(changes);
+    assert.deepStrictEqual(calls, [["updateMirrors", changes], ["emitSessionSnapshot", { force: true }]]);
+    assert.deepStrictEqual(extra, []);
   });
   it("updates mirrors before tray and dock side effects", () => {
     const calls = [];

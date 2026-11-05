@@ -56,6 +56,8 @@ const FROZEN_KEYS = [
   "sessionHudCleanupDetached",
   "sessionHudHideCompletedCodexEphemeral",
   "sessionHudHideActiveCodexEphemeral",
+
+  "sessionHudHideCanceledCodexEphemeral",
   "allowEdgePinning",
   "disableMiniMode",
   "eyeTrackingEnabled",
@@ -128,6 +130,8 @@ const EXPECTED_KEYS = {
     "sessionHudCleanupDetached",
     "sessionHudHideCompletedCodexEphemeral",
     "sessionHudHideActiveCodexEphemeral",
+
+    "sessionHudHideCanceledCodexEphemeral",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
     "quotaMergeSources",
@@ -464,6 +468,8 @@ function makeSnapshot(overrides = {}) {
     sessionHudCleanupDetached: true,
     sessionHudHideCompletedCodexEphemeral: false,
     sessionHudHideActiveCodexEphemeral: false,
+
+    sessionHudHideCanceledCodexEphemeral: false,
     sessionHudShowQuota: true,
     quotaRingDisplayMode: "used",
     quotaMergeSources: false,
@@ -775,7 +781,7 @@ describe("settings tab split", () => {
     assert.deepStrictEqual(sectionTitles(sessions), ["会话 HUD", "额度环与提醒", "高级"]);
     assert.deepStrictEqual(sectionRowLabels(sessions), [
       ["会话面板"],
-      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话", "收起已完成的 Codex 临时会话", "收起活动中的 Codex 临时会话"],
+      ["启用", "显示状态标签", "显示 HUD 时间", "显示上下文用量", "自动清理已分离会话", "收起已完成的 Codex 临时会话", "收起活动中的 Codex 临时会话", "收起已取消的 Codex 临时会话"],
       ["显示额度环", "额度显示方式", "在桌宠旁显示", "合并多机额度", "额度快用完时提醒", "提醒时机", "额度恢复时也提醒", "测试通知"],
       ["超时清理", "会话超时（空闲）", "工作超时", "Codex 活跃任务超时", "终端关闭后清理延迟"],
     ]);
@@ -1036,6 +1042,8 @@ describe("settings tab split", () => {
       "sessionHudCleanupDetached",
       "sessionHudHideCompletedCodexEphemeral",
       "sessionHudHideActiveCodexEphemeral",
+
+      "sessionHudHideCanceledCodexEphemeral",
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), true, key);
     }
@@ -1054,6 +1062,8 @@ describe("settings tab split", () => {
       "sessionHudCleanupDetached",
       "sessionHudHideCompletedCodexEphemeral",
       "sessionHudHideActiveCodexEphemeral",
+
+      "sessionHudHideCanceledCodexEphemeral",
     ]) {
       assert.strictEqual(sessions.getSwitch(key).classList.contains("disabled"), false, key);
     }

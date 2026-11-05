@@ -204,6 +204,8 @@ const SCHEMA = {
   // Independent opt-in: active temporary side chats are also collapsed, without
   // changing execution, canonical sessions or pending-attention visibility.
   sessionHudHideActiveCodexEphemeral: { type: "boolean", default: false },
+  // Independent opt-in: canceled temporary side chats stay in the Dashboard.
+  sessionHudHideCanceledCodexEphemeral: { type: "boolean", default: false },
   sessionHudShowQuota: { type: "boolean", default: true },
   // Preserve the historical used-percentage presentation for existing users;
   // remaining is a display-only choice and never changes stored quota data.

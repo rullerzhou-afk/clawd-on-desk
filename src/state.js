@@ -1271,6 +1271,7 @@ function buildSessionSnapshot() {
     sessionHudCleanupDetached: ctx.sessionHudCleanupDetached === true,
     sessionHudHideCompletedCodexEphemeral: ctx.sessionHudHideCompletedCodexEphemeral === true,
     sessionHudHideActiveCodexEphemeral: ctx.sessionHudHideActiveCodexEphemeral === true,
+    sessionHudHideCanceledCodexEphemeral: ctx.sessionHudHideCanceledCodexEphemeral === true,
     pendingPermissionSessionIds: new Set((ctx.pendingPermissions || [])
       .filter(Boolean).map((entry) => entry.sessionId)),
     focusHostPlatform: ctx.focusHostPlatform || process.platform,
@@ -1473,6 +1474,8 @@ function describeSession(sessionId, session) {
     `sourcePid=${session.sourcePid || "-"}`,
     `pidReachable=${session.pidReachable ? 1 : 0}`,
     `headless=${session.headless ? 1 : 0}`,
+    `ephemeral=${typeof session.codexClientEphemeral === "boolean" ? session.codexClientEphemeral : "unknown"}`,
+    `transcript=${session.transcriptPath == null || (typeof session.transcriptPath === "string" && !session.transcriptPath.trim()) ? "absent" : "present"}`,
   ].join(" ");
 }
 

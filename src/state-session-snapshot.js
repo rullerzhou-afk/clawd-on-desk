@@ -370,11 +370,17 @@ function isSessionAwaitingActivity(session) {
 // An opt-in HUD presentation preference, not internal-source classification or
 // session retirement. Keep every canonical entry available to other consumers.
 function shouldHideCodexEphemeralFromHud(id, session, badge, options = {}) {
+  const events = Array.isArray(session?.recentEvents) ? session.recentEvents : [];
+  const lastEvent = events.at(-1)?.event;
   const hideCompleted = options.sessionHudHideCompletedCodexEphemeral === true
     && session?.state === "idle" && badge === "done";
   const hideActive = options.sessionHudHideActiveCodexEphemeral === true
     && (session?.state === "thinking" || session?.state === "working");
-  if (!hideCompleted && !hideActive) return false;
+  // Cancellation is distinct from successful completion and from active work.
+  // This separate opt-in may also collapse a canceled user-visible side chat.
+  const hideCanceled = options.sessionHudHideCanceledCodexEphemeral === true
+    && session?.state === "idle" && lastEvent === "Interrupt";
+  if (!hideCompleted && !hideActive && !hideCanceled) return false;
   const originator = session && (session.codexOriginator || session.originator);
   const source = typeof session?.codexSource === "string" ? session.codexSource.trim().toLowerCase() : "";
   if (!session
@@ -388,9 +394,9 @@ function shouldHideCodexEphemeralFromHud(id, session, badge, options = {}) {
       || session.subagentId || session.subagentType || session.recapIsSubagent) return false;
   if (session.transcriptPath != null
       && (typeof session.transcriptPath !== "string" || session.transcriptPath.trim())) return false;
-  const events = Array.isArray(session.recentEvents) ? session.recentEvents : [];
-  const lastEvent = events.at(-1)?.event;
   if (hideCompleted && !isDoneEvent(lastEvent)) return false;
+  if (hideCanceled && (session.requiresCompletionAck === true
+      || hasSubagentHoldEvidence(session))) return false;
   // A request can arrive before the pending-permission snapshot catches up.
   // Never collapse the active row while it is asking the user for a decision.
   if (hideActive && (session.requiresCompletionAck === true
@@ -400,11 +406,12 @@ function shouldHideCodexEphemeralFromHud(id, session, badge, options = {}) {
     && options.pendingPermissionSessionIds.has(id));
 }
 
-// Share the strict active-only policy with the pet without applying the
-// independent completed-row HUD option to completion animations.
+// Share only the strict active policy with the pet. Independent completed and
+// canceled HUD options must not alter completion animations or idle visuals.
 function shouldHideActiveCodexEphemeral(id, session, options = {}) {
   return shouldHideCodexEphemeralFromHud(id, session, deriveSessionBadge(session), {
     ...options, sessionHudHideCompletedCodexEphemeral: false,
+    sessionHudHideCanceledCodexEphemeral: false,
   });
 }
 

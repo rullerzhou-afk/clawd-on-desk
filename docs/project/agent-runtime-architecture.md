@@ -206,7 +206,8 @@ argv 将已验证的外层包传给 `/usr/bin/open`，经 LaunchServices 提交�
 激活应用不证明选择了具体侧边聊天，也不允许自动粘贴；已确认临时线程拒绝 queue，
 Direct Send 保持原生手动粘贴边界。未知的旧会话和持久化会话保留既有首次 URI 聚焦。
 
-`sessionHudHideCompletedCodexEphemeral` 与 `sessionHudHideActiveCodexEphemeral` 是两个独立、
+`sessionHudHideCompletedCodexEphemeral`、`sessionHudHideActiveCodexEphemeral` 与
+`sessionHudHideCanceledCodexEphemeral` 是三个独立、
 默认关闭的显示偏好，均不识别后台来源，也不结束任务。共同门槛是本机、明确
 `codexClientEphemeral=true` 且无持久 transcript；typed 标记可用于缺省 originator 的 macOS 行，
 显式 CLI / unknown originator、CLI / exec / mcp / internal / subagent 来源、headless、remote 与 WSL
@@ -219,13 +220,14 @@ Direct Send 保持原生手动粘贴边界。未知的旧会话和持久化会�
   pending 权限/问题、最新请求或错误/中断提示、完成确认及已识别子代理活动不按此规则收起。
   活动偏好不依赖完成偏好：只开活动偏好时，临时会话工作期间收起，完成后重新显示；
   两者都开时，符合各自门槛的活动行与完成行都收起。清扫及其他强提示不属于活动过滤范围。
+- 取消偏好只收起 idle 且最新事件为 `Interrupt` 的明确临时会话；也可能收起用户主动取消的真实侧边聊天。错误状态、完成确认、同会话 pending 和已识别子代理仍保留。它默认关闭，不把取消当作成功完成；开启后只改变 HUD 显示，关闭立即恢复保留的行。灰点、项目名或缺持久记录本身不足以触发它。
 
 HUD 原生几何、renderer、HUD 快捷导航和 HUD 统计统一消费独立 snapshot 字段
 `hudHiddenByPreference`，不复用 `hiddenFromHud`。活动偏好还复用同一 active-only 判定，
 为宠物状态和 SVG 层级生成只读会话投影；已收起的临时活动不再驱动思考/工作动画，
 也不能仅凭该活动唤醒被动 sleep/Mini 状态。已有子代理/待输入呈现投影须先应用再过滤，
-避免丢掉真实子代理和审批提示。完成偏好不进入宠物过滤。
-两者都不删除或改写 canonical 会话，不改变系统 keep-awake、Dashboard、Telegram、Discord、
+避免丢掉真实子代理和审批提示。完成与取消偏好都不进入宠物过滤。
+三个偏好都不删除或改写 canonical 会话，不改变系统 keep-awake、Dashboard、Telegram、Discord、
 额度、审批决定、完成确认、小结或活动时间。开关变化经 controller/effect router 重发 snapshot，
 活动开关还在 mirror 更新后重新选择宠物呈现；pending 卡增删经合并微任务重算。
 关闭相应选项立即恢复仍存活且不被另一个选项收起的行。老 hook 没有 typed 临时标记时维持原显示。

@@ -1411,6 +1411,7 @@ let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
 let sessionHudHideCompletedCodexEphemeral = _settingsController.get("sessionHudHideCompletedCodexEphemeral");
 let sessionHudHideActiveCodexEphemeral = _settingsController.get("sessionHudHideActiveCodexEphemeral");
+let sessionHudHideCanceledCodexEphemeral = _settingsController.get("sessionHudHideCanceledCodexEphemeral");
 let sessionHudPinned = _settingsController.get("sessionHudPinned");
 let sessionStaleMs = _settingsController.get("sessionStaleMs");
 let workingStaleMs = _settingsController.get("workingStaleMs");
@@ -2531,6 +2532,7 @@ const _stateCtx = {
   get sessionHudCleanupDetached() { return sessionHudCleanupDetached; },
   get sessionHudHideCompletedCodexEphemeral() { return sessionHudHideCompletedCodexEphemeral; },
   get sessionHudHideActiveCodexEphemeral() { return sessionHudHideActiveCodexEphemeral; },
+  get sessionHudHideCanceledCodexEphemeral() { return sessionHudHideCanceledCodexEphemeral; },
   getStaleConfig: () => ({
     sessionStaleMs,
     workingStaleMs,
@@ -4857,6 +4859,7 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
   sessionHudHideCompletedCodexEphemeral: (v) => { sessionHudHideCompletedCodexEphemeral = v; },
   sessionHudHideActiveCodexEphemeral: (v) => { sessionHudHideActiveCodexEphemeral = v; },
+  sessionHudHideCanceledCodexEphemeral: (v) => { sessionHudHideCanceledCodexEphemeral = v; },
   sessionHudPinned: (v) => { sessionHudPinned = v; },
   sessionStaleMs: (v) => { sessionStaleMs = v; }, workingStaleMs: (v) => { workingStaleMs = v; },
   codexWorkingStaleMs: (v) => { codexWorkingStaleMs = v; },

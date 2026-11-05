@@ -15,6 +15,31 @@ const DESC = `${LABEL}Desc`;
 const ACTIVE_KEY = "sessionHudHideActiveCodexEphemeral";
 const ACTIVE_LABEL = "rowSessionHudHideActiveCodexEphemeral";
 const ACTIVE_DESC = `${ACTIVE_LABEL}Desc`;
+const CANCELED_KEY = "sessionHudHideCanceledCodexEphemeral";
+const CANCELED_LABEL = "rowSessionHudHideCanceledCodexEphemeral";
+const CANCELED_DESC = `${CANCELED_LABEL}Desc`;
+
+test("canceled collapse defaults off for existing users and persists independently through the controller", async t => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-canceled-ephemeral-settings-"));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+  const prefsPath = path.join(dir, "prefs.json");
+  const previous = { ...prefs.getDefaults(), [KEY]: true, [ACTIVE_KEY]: true };
+  delete previous[CANCELED_KEY];
+  fs.writeFileSync(prefsPath, JSON.stringify(previous));
+  const controller = createSettingsController({ prefsPath });
+  assert.equal(controller.get(CANCELED_KEY), false);
+  for (const value of [true, false]) {
+    assert.equal((await controller.applyUpdate(CANCELED_KEY, value)).status, "ok");
+    const restored = createSettingsController({ prefsPath });
+    assert.equal(restored.get(CANCELED_KEY), value);
+    assert.equal(restored.get(KEY), true);
+    assert.equal(restored.get(ACTIVE_KEY), true);
+  }
+  for (const value of [undefined, "true", 1, null, {}, []]) {
+    assert.equal(prefs.validate({ ...prefs.getDefaults(), [CANCELED_KEY]: value })[CANCELED_KEY], false);
+    assert.equal((await controller.applyUpdate(CANCELED_KEY, value)).status, "error");
+  }
+});
 
 test("active collapse defaults off for older completion-only preferences and validates independently", async (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-active-ephemeral-hud-settings-"));
@@ -159,6 +184,46 @@ test("temporary Codex completion switch is a HUD child and patches both directio
     assert.equal(core.state.mountedControls.generalSwitches.get(KEY), meta);
   }
   assert.equal(core.tabs.sessions.patchInPlace({ soundMuted: true }), false);
+});
+
+test("canceled temporary switch follows the HUD master while remaining independent of the other collapse options", () => {
+  const { core, configs } = createSessionsHarness(false);
+  const meta = core.state.mountedControls.generalSwitches.get(CANCELED_KEY);
+  assert.equal(configs.get(CANCELED_KEY).labelKey, CANCELED_LABEL);
+  assert.equal(configs.get(CANCELED_KEY).descKey, CANCELED_DESC);
+  assert.equal(meta.visual.disabled, true);
+  assert.equal(meta.visual.checked, false);
+  core.state.snapshot.sessionHudEnabled = true;
+  assert.equal(core.tabs.sessions.patchInPlace({ sessionHudEnabled: true }), true);
+  assert.equal(meta.visual.disabled, false);
+  for (const enabled of [true, false]) {
+    core.state.snapshot[CANCELED_KEY] = enabled;
+    assert.equal(core.tabs.sessions.patchInPlace({ [CANCELED_KEY]: enabled }), true);
+    assert.equal(meta.visual.checked, enabled);
+    assert.equal(core.state.snapshot[KEY], false);
+    assert.equal(core.state.snapshot[ACTIVE_KEY], false);
+  }
+  core.state.mountedControls.generalSwitches.delete(CANCELED_KEY);
+  assert.equal(core.tabs.sessions.patchInPlace({ sessionHudEnabled: false }), false);
+});
+
+test("all canceled-collapse locales disclose real canceled side chats and the complete session list", () => {
+  const context = vm.createContext({});
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "../src/settings-i18n.js"), "utf8"), context);
+  const phrases = {
+    en: ["ordinary side chats you cancel", "Dashboard", "errors", "known subagents"],
+    zh: ["主动取消的普通侧边聊天", "会话面板", "错误", "已识别子代理"],
+    "zh-TW": ["主動取消的一般側邊聊天", "工作階段面板", "錯誤", "已識別子代理"],
+    ko: ["취소한 일반 사이드 채팅", "대시보드", "오류", "하위 에이전트"],
+    ja: ["キャンセルした通常のサイドチャット", "ダッシュボード", "エラー", "サブエージェント"],
+    "pt-BR": ["chats laterais comuns que você cancelar", "Dashboard", "erros", "subagentes conhecidos"],
+    es: ["chats laterales normales que canceles", "Dashboard", "errores", "subagentes conocidos"],
+  };
+  for (const [lang, required] of Object.entries(phrases)) {
+    const strings = context.ClawdSettingsI18n.STRINGS[lang];
+    assert.ok(strings[CANCELED_LABEL].length > 0, lang);
+    for (const phrase of required) assert.ok(strings[CANCELED_DESC].includes(phrase), `${lang}: ${phrase}`);
+  }
 });
 
 test("unmounted temporary Codex switch requests a full rerender rather than a partial master patch", () => {

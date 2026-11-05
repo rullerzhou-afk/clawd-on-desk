@@ -358,7 +358,8 @@ function createSettingsEffectRouter(options = {}) {
         warn(logWarn, "Clawd: quota merge mode re-emit failed:", err);
       }
     }
-    if ("sessionHudHideCompletedCodexEphemeral" in changes || "sessionHudHideActiveCodexEphemeral" in changes) {
+    if ("sessionHudHideCompletedCodexEphemeral" in changes || "sessionHudHideActiveCodexEphemeral" in changes
+      || "sessionHudHideCanceledCodexEphemeral" in changes) {
       // Rebuild the snapshot immediately;
       // never run lifecycle cleanup, acknowledge completion or touch approvals.
       safeCall(logWarn, "Clawd: Codex ephemeral HUD preference refresh failed:",

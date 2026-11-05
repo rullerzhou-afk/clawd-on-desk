@@ -12,6 +12,7 @@
     "sessionHudCleanupDetached",
     "sessionHudHideCompletedCodexEphemeral",
     "sessionHudHideActiveCodexEphemeral",
+    "sessionHudHideCanceledCodexEphemeral",
     "sessionHudShowQuota",
     "quotaRingDisplayMode",
     "quotaMergeSources",
@@ -42,6 +43,7 @@
     "sessionHudCleanupDetached",
     "sessionHudHideCompletedCodexEphemeral",
     "sessionHudHideActiveCodexEphemeral",
+    "sessionHudHideCanceledCodexEphemeral",
   ];
 
   let state = null;
@@ -522,6 +524,12 @@
         key: "sessionHudHideActiveCodexEphemeral",
         labelKey: "rowSessionHudHideActiveCodexEphemeral",
         descKey: "rowSessionHudHideActiveCodexEphemeralDesc",
+        disabled: !sessionHudControlsEnabled,
+      }),
+      helpers.buildSwitchRow({
+        key: "sessionHudHideCanceledCodexEphemeral",
+        labelKey: "rowSessionHudHideCanceledCodexEphemeral",
+        descKey: "rowSessionHudHideCanceledCodexEphemeralDesc",
         disabled: !sessionHudControlsEnabled,
       }),
     ];
