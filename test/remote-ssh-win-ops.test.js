@@ -45,14 +45,31 @@ function fixture(t) {
         : original(local(file), ...rest);
     };
   } });
-  const deps = { platform: "win32", fs: mappedFs, path: path.win32, kill: () => { throw error("ESRCH"); }, delay: async () => {} };
+  const deps = {
+    // An empty env keeps the host's own LOCALAPPDATA, DSH_HOME and SystemRoot
+    // out of the simulated remote; tests that need one set it explicitly.
+    platform: "win32", env: {}, fs: mappedFs, path: path.win32,
+    realpathSync: (target) => path.win32.join(layout.remoteHome,
+      path.relative(fs.realpathSync(root), fs.realpathSync(local(target)))),
+    kill: () => { throw error("ESRCH"); }, delay: async () => {},
+    dshDesktopDiscovery: { status: "absent", appRoot: null, checkedPaths: [], reason: null },
+  };
   const run = (operation, fields = {}) => windowsOperation({ layout, expected, operation, ...fields }, deps);
   return { root, layout, owner, expected, identity, runtimePath, local, put, faults, calls, deps, run };
 }
 
 test("issue #1316: absent runtime and identity mean no local desktop and first deployment", async (t) => {
   const f = fixture(t);
-  assert.deepEqual(await f.run("preflight"), { ok: true, identity: false, claudePresent: false, copilotPresent: false, codexPresent: false, legacyTraces: 0, legacyConfigTraces: 0 });
+  assert.deepEqual(await f.run("preflight"), {
+    ok: true, identity: false, claudePresent: false, copilotPresent: false, codexPresent: false, legacyTraces: 0, legacyConfigTraces: 0,
+    dsh: {
+      status: "absent", appRoot: null, checkedPaths: [], reason: null,
+      profileInitialized: false, profileReadable: true, localClawdLinked: null,
+      dshHome: "C:\\Users\\鹿 鹿\\.dsh",
+      remoteRoot: path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness"),
+      remoteRootExists: false,
+    },
+  });
 });
 
 for (const value of ["{", "null", "[]", "42", '"text"']) {
@@ -895,3 +912,392 @@ for (const field of ["remote environment", "SSH environment", "identity path", "
     assert.equal(result.reason, "installer_verification_failed");
   });
 }
+
+test("DSH remote: promoteMany moves nested assets, verifies hashes and rejects traversal", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const staging = path.win32.join(f.layout.deployStagingDir, "dsh-stage");
+  const relative = "dsh-clawd-bridge/lib/index.js";
+  f.put(path.win32.join(staging, "dsh-clawd-bridge", "lib", "index.js"), "nested body");
+  const expected = crypto.createHash("sha256").update("nested body").digest("hex");
+  const promoted = await f.run("promoteMany", { owner: f.owner, staging, hashes: { [relative]: expected } });
+  assert.equal(promoted.ok, true);
+  const target = path.win32.join(f.layout.claudeHooksDir, "dsh-clawd-bridge", "lib", "index.js");
+  assert.equal(fs.readFileSync(f.local(target), "utf8"), "nested body");
+  assert.equal(fs.existsSync(f.local(staging)), false);
+  for (const bad of ["../escape.js", "a/../../b.js", "/abs.js", "a\\b.js"]) {
+    await assert.rejects(
+      f.run("promoteMany", { owner: f.owner, hashes: { [bad]: expected } }),
+      { reason: "path_invalid" },
+      bad,
+    );
+  }
+});
+
+test("DSH remote: cleanup preflight reports record, installer capability and both profile references", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  const installRoot = path.win32.join(remoteRoot, f.owner.installId);
+  const generation = path.win32.join(installRoot, "homes", "a".repeat(64), "generations", "b".repeat(64));
+  f.put(path.win32.join(installRoot, "deployment.json"), { phase: "installed", dshHome: "C:\\Users\\鹿 鹿\\.dsh", generationId: "b".repeat(64) });
+  f.put(path.win32.join(f.layout.claudeHooksDir, "dsh-install.js"), "// stub");
+  f.put(path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json"), {
+    dependencies: { "@dsh-external/dsh-clawd-bridge": `file:${generation}` },
+  });
+  f.deps.require = () => ({ uninstallOwnedRemoteDeepSeekHarnessDeployment() {} });
+  const result = await f.run("dshCleanupPreflight", {
+    owner: f.owner, remoteRoot, installId: f.owner.installId,
+    assets: ["dsh-install.js", "dsh-clawd-bridge/lib/index.js"],
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.assetPresent, true);
+  assert.equal(result.assetUnreadable, false);
+  assert.equal(result.recordExists, true);
+  assert.equal(result.recordPhase, "installed");
+  assert.equal(result.installerCapable, true);
+  assert.equal(result.desktop.state, "present");
+  assert.equal(result.desktop.referenced, true);
+  assert.equal(result.web.state, "missing");
+  assert.equal(result.web.referenced, false);
+
+  f.deps.require = () => { throw new Error("cannot load"); };
+  const unreadable = await f.run("dshCleanupPreflight", {
+    owner: f.owner, remoteRoot, installId: f.owner.installId,
+    assets: ["dsh-install.js", "dsh-clawd-bridge/lib/index.js"],
+  });
+  assert.equal(unreadable.installerLoadFailed, true);
+});
+
+test("DSH remote: removeFiles deletes exactly the supplied DSH asset list", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  f.put(f.layout.identityFile, f.identity);
+  const dshFiles = [
+    path.win32.join(f.layout.claudeHooksDir, "dsh-install.js"),
+    path.win32.join(f.layout.claudeHooksDir, "dsh-clawd-bridge", "lib", "index.js"),
+  ];
+  for (const file of dshFiles) f.put(file, "x");
+  const keep = path.win32.join(f.layout.claudeHooksDir, "clawd-hook.js");
+  f.put(keep, "keep");
+  const result = await f.run("removeFiles", { owner: f.owner, files: dshFiles });
+  assert.equal(result.ok, true);
+  for (const file of dshFiles) assert.equal(fs.existsSync(f.local(file)), false);
+  assert.equal(fs.readFileSync(f.local(keep), "utf8"), "keep");
+});
+
+test("DSH remote: preflight classifies desktop presence and reads the desktop profile declaration", async (t) => {
+  const f = fixture(t);
+  f.deps.dshDesktopDiscovery = { status: "ambiguous", appRoot: null, checkedPaths: ["a", "b"], reason: "multiple-desktop-installs" };
+  assert.equal((await f.run("preflight")).dsh.status, "ambiguous");
+  f.deps.dshDesktopDiscovery = { status: "unknown", appRoot: null, checkedPaths: [], reason: "registry-unreadable" };
+  assert.equal((await f.run("preflight")).dsh.status, "unknown");
+  f.deps.dshDesktopDiscovery = {
+    status: "present",
+    appRoot: "C:\\Users\\鹿 鹿\\AppData\\Local\\Programs\\DeepSeek Harness",
+    checkedPaths: [],
+    reason: null,
+  };
+  const localRoot = path.win32.join(f.layout.remoteHome, ".clawd", "integrations", "deepseek-harness");
+  f.put(path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json"), {
+    dependencies: { "@dsh-external/dsh-clawd-bridge": `file:${localRoot}\\homes\\x\\generations\\y` },
+  });
+  const detail = await f.run("preflight");
+  assert.equal(detail.dsh.status, "present");
+  assert.equal(detail.dsh.profileInitialized, true);
+  assert.equal(detail.dsh.localClawdLinked, true);
+  assert.equal(detail.dsh.profileReadable, true);
+});
+
+test("DSH remote: cleanup preflight distinguishes unreadable and invalid records", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  const installRoot = path.win32.join(remoteRoot, f.owner.installId);
+  const recordPath = path.win32.join(installRoot, "deployment.json");
+  f.put(recordPath, { phase: "installed" });
+  f.faults.readFileSync = (target) => { if (target === recordPath) throw error("EACCES"); };
+  let result = await f.run("dshCleanupPreflight", { owner: f.owner, remoteRoot, installId: f.owner.installId, assets: [] });
+  assert.equal(result.recordReadable, false);
+  assert.equal(result.recordExists, false);
+  f.faults.readFileSync = null;
+  f.put(recordPath, "{broken");
+  result = await f.run("dshCleanupPreflight", { owner: f.owner, remoteRoot, installId: f.owner.installId, assets: [] });
+  assert.equal(result.recordExists, true);
+  assert.equal(result.recordInvalid, true);
+});
+
+test("DSH remote: cleanup preflight checks junction residue even when package.json is gone", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  const installRoot = path.win32.join(remoteRoot, f.owner.installId);
+  const generation = path.win32.join(installRoot, "homes", "a".repeat(64), "generations", "b".repeat(64));
+  const link = path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "node_modules", "@dsh-external", "dsh-clawd-bridge");
+  fs.mkdirSync(path.dirname(f.local(link)), { recursive: true });
+  fs.symlinkSync(generation, f.local(link), "dir");
+  const result = await f.run("dshCleanupPreflight", { owner: f.owner, remoteRoot, installId: f.owner.installId, assets: [] });
+  assert.equal(result.desktop.state, "missing");
+  assert.equal(result.desktop.linkState, "link");
+  assert.equal(result.desktop.linkReferenced, true);
+  assert.equal(result.desktop.referenced, true);
+});
+
+test("DSH remote: cleanup preflight parses file:C:/ forward-slash references", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  const installRoot = path.win32.join(remoteRoot, f.owner.installId);
+  const generation = path.win32.join(installRoot, "homes", "a".repeat(64), "generations", "b".repeat(64));
+  f.put(path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json"), {
+    dependencies: { "@dsh-external/dsh-clawd-bridge": `file:${generation.replace(/\\/g, "/")}` },
+  });
+  const result = await f.run("dshCleanupPreflight", { owner: f.owner, remoteRoot, installId: f.owner.installId, assets: [] });
+  assert.equal(result.desktop.state, "present");
+  assert.equal(result.desktop.dependencyReferenced, true);
+  assert.equal(result.desktop.referenced, true);
+  const installFn = require("../hooks/dsh-install").__test.dependencySourcePath;
+  assert.equal(
+    installFn(`file:${generation.replace(/\\/g, "/")}`, path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop"), "win32"),
+    generation,
+  );
+});
+
+test("DSH remote: cleanup preflight inspects every managed asset, not just the installer", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  f.put(path.win32.join(f.layout.claudeHooksDir, "dsh-clawd-bridge", "lib", "index.js"), "x");
+  const result = await f.run("dshCleanupPreflight", {
+    owner: f.owner, remoteRoot, installId: f.owner.installId,
+    assets: ["dsh-install.js", "dsh-clawd-bridge/lib/index.js"],
+  });
+  assert.equal(result.assetPresent, true);
+  assert.equal(result.installerCapable, false);
+  assert.equal(result.installerLoadFailed, false);
+});
+
+test("DSH remote: preflight discovery classifies case variants, commandDirectory and unreadable roots", async (t) => {
+  const f = fixture(t);
+  delete f.deps.dshDesktopDiscovery;
+  const appRoot = path.win32.join(f.layout.remoteHome, "Apps", "DeepSeek Harness");
+  for (const name of ["DeepSeek Harness.exe", "resources/app.asar", "resources/runtime/cli/bin/dsh.cmd"]) {
+    f.put(path.win32.join(appRoot, ...name.split("/")), "x");
+  }
+  const respond = (payload, status = 0) => () => ({ status, stdout: JSON.stringify(payload), stderr: "" });
+  f.deps.spawnSync = respond({ uninstall: [{ installLocation: appRoot, guidInstallLocation: null }, { installLocation: appRoot.toUpperCase(), guidInstallLocation: null }], commandDirectory: null });
+  assert.equal((await f.run("preflight")).dsh.status, "present");
+
+  f.deps.spawnSync = respond({ uninstall: [], commandDirectory: appRoot });
+  assert.equal((await f.run("preflight")).dsh.status, "present");
+
+  f.faults.statSync = (target) => { if (String(target).toLowerCase().includes("deepseek harness.exe")) throw error("EACCES"); };
+  f.deps.spawnSync = respond({ uninstall: [{ installLocation: appRoot, guidInstallLocation: null }], commandDirectory: null });
+  assert.equal((await f.run("preflight")).dsh.status, "unknown");
+
+  f.faults.statSync = null;
+  f.deps.spawnSync = respond({ uninstall: [], commandDirectory: null });
+  assert.equal((await f.run("preflight")).dsh.status, "absent");
+
+  f.deps.spawnSync = respond({}, 1);
+  const absent = await f.run("preflight");
+  assert.equal(absent.dsh.status, "absent", "no traces when the registry is unreadable");
+  assert.equal(absent.dsh.reason, "registry-unreadable");
+});
+
+test("DSH remote: preflight recognises a forward-slash local Clawd link", async (t) => {
+  const f = fixture(t);
+  delete f.deps.dshDesktopDiscovery;
+  f.deps.dshDesktopDiscovery = { status: "present", appRoot: "C:\\\\App", checkedPaths: [], reason: null };
+  const localRoot = path.win32.join(f.layout.remoteHome, ".clawd", "integrations", "deepseek-harness");
+  f.put(path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json"), {
+    dependencies: { "@dsh-external/dsh-clawd-bridge": `file:${localRoot.replace(/\\/g, "/")}\\homes\\x\\generations\\y` },
+  });
+  const detail = await f.run("preflight");
+  assert.equal(detail.dsh.profileInitialized, true);
+  assert.equal(detail.dsh.localClawdLinked, true);
+});
+
+test("DSH remote: preflight rejects a desktop profile link and an ambiguous DSH_HOME", async (t) => {
+  const f = fixture(t);
+  f.deps.dshDesktopDiscovery = { status: "present" };
+  const link = path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json");
+  fs.mkdirSync(path.dirname(f.local(link)), { recursive: true });
+  fs.symlinkSync(path.win32.join(f.layout.remoteHome, "elsewhere.json"), f.local(link), "file");
+  await assert.rejects(f.run("preflight"), { reason: "path_link" });
+
+  const g = fixture(t);
+  const defaultProfile = path.win32.join(g.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json");
+  g.put(defaultProfile, { name: "desktop" });
+  g.deps.env = { ...(g.deps.env || {}), DSH_HOME: "C:\\\\Custom\\\\Dsh" };
+  g.deps.dshDesktopDiscovery = { status: "present", appRoot: "C:\\\\App", checkedPaths: [], reason: null };
+  const detail = await g.run("preflight");
+  assert.equal(detail.dsh.status, "unknown");
+  assert.equal(detail.dsh.reason, "dsh-home-ambiguous");
+});
+
+
+test("DSH remote: preflight rejects a link on the remote DSH root chain", async (t) => {
+  const f = fixture(t);
+  f.deps.dshDesktopDiscovery = { status: "present" };
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  fs.mkdirSync(path.dirname(f.local(remoteRoot)), { recursive: true });
+  fs.symlinkSync(f.local(f.layout.clawdStateDir), f.local(remoteRoot), "dir");
+  await assert.rejects(f.run("preflight"), { reason: "path_link" });
+});
+
+test("DSH remote: preflight and installer agree on dependency spec resolution", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  const installRoot = path.win32.join(remoteRoot, f.owner.installId);
+  const generation = path.win32.join(installRoot, "homes", "a".repeat(64), "generations", "b".repeat(64));
+  const profileDir = path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop");
+  const { dependencySourcePath } = require("../hooks/dsh-install").__test;
+  const specs = [
+    `file:${generation}`,
+    `link:${generation}`,
+    `file:${generation.replace(/\\/g, "/")}`,
+    `file:/${generation.replace(/\\/g, "/")}`,
+    `file:${encodeURIComponent(generation).replace(/%5C/g, "%5C")}`,
+    "file:relations/generation",
+  ];
+  for (const spec of specs) {
+    f.put(path.win32.join(profileDir, "package.json"), {
+      dependencies: { "@dsh-external/dsh-clawd-bridge": spec },
+    });
+    const result = await f.run("dshCleanupPreflight", {
+      owner: f.owner, remoteRoot, installId: f.owner.installId, assets: [],
+    });
+    assert.equal(
+      path.win32.normalize(result.desktop.dependencyPath || ""),
+      path.win32.normalize(dependencySourcePath(spec, profileDir, "win32") || ""),
+      spec,
+    );
+  }
+});
+
+
+test("DSH remote: an unreadable registry becomes unknown when any default trace exists", async (t) => {
+  const f = fixture(t);
+  delete f.deps.dshDesktopDiscovery;
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  f.deps.env = { ...(f.deps.env || {}), LOCALAPPDATA: "C:\\Users\\鹿 鹿\\AppData\\Local" };
+  const knownRoot = path.win32.join(f.deps.env.LOCALAPPDATA, "Programs", "DeepSeek Harness");
+  f.deps.spawnSync = () => ({ status: 1, stdout: "", stderr: "policy blocked" });
+  fs.mkdirSync(f.local(knownRoot), { recursive: true });
+  const first = await f.run("preflight");
+  if (first.dsh.status !== "unknown") throw new Error(JSON.stringify(first.dsh));
+
+  const g = fixture(t);
+  delete g.deps.dshDesktopDiscovery;
+  g.deps.spawnSync = () => ({ status: 1, stdout: "", stderr: "policy blocked" });
+  g.put(path.win32.join(g.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json"), { name: "desktop" });
+  const profileTrace = await g.run("preflight");
+  assert.equal(profileTrace.dsh.status, "unknown");
+  assert.equal(profileTrace.dsh.reason, "registry-unreadable");
+
+  const h = fixture(t);
+  delete h.deps.dshDesktopDiscovery;
+  h.deps.env = { ...(h.deps.env || {}), LOCALAPPDATA: "C:\\Users\\鹿 鹿\\AppData\\Local" };
+  h.deps.spawnSync = () => ({ status: 1, stdout: "", stderr: "policy blocked" });
+  h.faults.lstatSync = (target) => {
+    if (String(target).includes("DeepSeek Harness")) throw error("EACCES");
+  };
+  assert.equal((await h.run("preflight")).dsh.status, "unknown");
+});
+
+test("DSH remote: preflight leaves DSH links alone when the desktop app is absent", async (t) => {
+  const f = fixture(t);
+  const dshHome = path.win32.join(f.layout.remoteHome, ".dsh");
+  const base = f.deps.fs;
+  f.deps.fs = new Proxy(base, { get(fsApi, name) {
+    if (name !== "lstatSync") return fsApi[name];
+    return (file) => file === dshHome
+      ? { isSymbolicLink: () => true, isDirectory: () => true }
+      : fsApi.lstatSync(file);
+  } });
+  const result = await f.run("preflight");
+  assert.equal(result.ok, true);
+  assert.equal(result.dsh.status, "absent");
+  assert.equal(f.calls.some((call) => call.name === "writeFileSync"), false);
+});
+
+test("DSH remote: preflight reports an unreadable desktop profile path", async (t) => {
+  const f = fixture(t);
+  f.deps.dshDesktopDiscovery = { status: "present" };
+  const profilePath = path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json");
+  f.put(profilePath, { name: "desktop" });
+  f.faults.lstatSync = (target) => { if (target === profilePath) throw error("EACCES"); };
+  await assert.rejects(f.run("preflight"), { reason: "path_unreadable", path: profilePath });
+  assert.equal(f.calls.some((call) => call.name === "writeFileSync"), false);
+});
+
+for (const folder of ["profiles", "profiles/desktop"]) {
+  test(`DSH remote: preflight refuses a linked ${folder} directory for an installed desktop app`, async (t) => {
+    const f = fixture(t);
+    f.deps.dshDesktopDiscovery = { status: "present" };
+    const linked = path.win32.join(f.layout.remoteHome, ".dsh", ...folder.split("/"));
+    const base = f.deps.fs;
+    f.deps.fs = new Proxy(base, { get(fsApi, name) {
+      if (name !== "lstatSync") return fsApi[name];
+      return (file) => file === linked
+        ? { isSymbolicLink: () => true, isDirectory: () => true }
+        : fsApi.lstatSync(file);
+    } });
+    await assert.rejects(f.run("preflight"), { reason: "path_link" });
+  });
+}
+
+test("DSH remote: preflight reports ambiguity when custom and default desktop data both exist", async (t) => {
+  const f = fixture(t);
+  const customHome = path.win32.join(f.layout.remoteHome, "custom-dsh");
+  f.deps.env = { DSH_HOME: customHome };
+  f.deps.dshDesktopDiscovery = { status: "present" };
+  for (const home of [customHome, path.win32.join(f.layout.remoteHome, ".dsh")]) {
+    f.put(path.win32.join(home, "profiles", "desktop", "package.json"), { name: "desktop" });
+  }
+  const result = await f.run("preflight");
+  assert.equal(result.dsh.status, "unknown");
+  assert.equal(result.dsh.reason, "dsh-home-ambiguous");
+  assert.equal(result.dsh.dshHome, customHome);
+});
+
+test("DSH remote: cleanup resolves a drive-letter URL to this deployment", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const remoteRoot = path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+  const generation = path.win32.join(remoteRoot, f.owner.installId, "homes", "x", "generations", "y");
+  f.put(path.win32.join(f.layout.remoteHome, ".dsh", "profiles", "desktop", "package.json"), {
+    dependencies: { "@dsh-external/dsh-clawd-bridge": `file:/${generation.replace(/\\/g, "/")}` },
+  });
+  const result = await f.run("dshCleanupPreflight", {
+    owner: f.owner, remoteRoot, installId: f.owner.installId, assets: [],
+  });
+  assert.equal(result.desktop.dependencyPath, generation);
+  assert.equal(result.desktop.dependencyReferenced, true);
+});
+
+test("DSH remote: cleanup reports an asset lstat access error as unreadable", async (t) => {
+  const f = fixture(t);
+  f.put(path.win32.join(f.layout.deployLockDir, "owner"), f.owner);
+  const asset = "dsh-clawd-bridge/lib/index.js";
+  const target = path.win32.join(f.layout.claudeHooksDir, ...asset.split("/"));
+  f.faults.lstatSync = (file) => { if (file === target) throw error("EACCES"); };
+  const result = await f.run("dshCleanupPreflight", {
+    owner: f.owner,
+    remoteRoot: path.win32.join(f.layout.clawdStateDir, "remote-integrations", "deepseek-harness"),
+    installId: f.owner.installId, assets: [asset],
+  });
+  assert.equal(result.assetPresent, false);
+  assert.equal(result.assetUnreadable, true);
+});
+
+test("DSH remote: home canonicalization uses the filesystem path resolver", async (t) => {
+  const f = fixture(t);
+  const home = path.win32.join(f.layout.remoteHome, ".dsh");
+  const canonical = path.win32.join(f.layout.remoteHome, "dsh-data");
+  const original = f.deps.realpathSync;
+  f.deps.realpathSync = (target) => target === home ? canonical : original(target);
+  assert.equal((await f.run("preflight")).dsh.dshHome, canonical);
+});

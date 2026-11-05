@@ -35,6 +35,21 @@ function windowsFailureHint(reason) {
     windows_codex_ownership_conflict: "remoteSshErrWindowsCodexOwnershipConflict",
     windows_codex_hooks_disabled: "remoteSshErrWindowsCodexHooksDisabled",
     windows_codex_cleanup_incomplete: "remoteSshErrWindowsCodexCleanupIncomplete",
+    windows_dsh_desktop_session_required: "remoteSshErrWindowsDshDesktopSessionRequired",
+    dsh_local_migration_required: "remoteSshErrDshLocalMigrationRequired",
+    windows_dsh_cleanup_incomplete: "remoteSshErrWindowsDshCleanupIncomplete",
+    "bridge-ownership-conflict": "remoteSshErrDshBridgeOwnershipConflict",
+    "dsh-home-changed": "remoteSshErrDshHomeChanged",
+    "inspection-required": "remoteSshErrDshInspectionRequired",
+    "version-unsupported": "remoteSshErrDshVersionUnsupported",
+    dsh_desktop_ambiguous: "remoteSshErrDshDesktopAmbiguous",
+    dsh_desktop_unreadable: "remoteSshErrDshDesktopUnreadable",
+    dsh_profile_unreadable: "remoteSshErrDshProfileUnreadable",
+    dsh_home_ambiguous: "remoteSshErrDshHomeAmbiguous",
+    dsh_asset_upload_failed: "remoteSshErrDshAssetUploadFailed",
+    dsh_install_failed: "remoteSshErrDshInstallFailed",
+    dsh_readback_failed: "remoteSshErrDshReadbackFailed",
+    installer_result_unknown: "remoteSshErrDshInstallerResultUnknown",
   }[reason] || null;
 }
 

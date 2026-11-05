@@ -586,13 +586,16 @@ function handleStatePost(req, res, options) {
         const sequenceResult = dshStateSequenceFence
           && typeof dshStateSequenceFence.accept === "function"
           ? dshStateSequenceFence.accept({
-              // The fence is upstream-protocol scoped. Keep it on DSH's raw
-              // canonical id; the local/remote profile key is a separate
-              // Clawd storage concern applied by resolveSessionIdentity.
+              // The fence keeps DSH's raw canonical id. A remote session also
+              // needs its own namespace: profile ids are only unique per
+              // upstream profile, so two machines may legitimately use the
+              // same raw id. Local sessions pass no remoteProfile and keep
+              // their existing key and capacity.
               sessionId: sessionIdentity.rawSessionId,
               event,
               eventSeq: data.event_seq,
               sessionSeq: data.session_seq,
+              remoteProfile,
             })
           : { accepted: false, reason: "sequence-fence-unavailable" };
         if (!sequenceResult.accepted) {

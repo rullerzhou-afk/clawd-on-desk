@@ -705,8 +705,19 @@
               );
             } else {
               // Only a verified Codex installer run needs the native /hooks review.
-              const reminder = r.codexHooksInstalled === true ? ` ${t("codexHookReviewReminder")}` : "";
-              ops.showToast(`${t("remoteSshDeploySuccess")}${reminder}`, { ttl: 8000 });
+              const messages = [t("remoteSshDeploySuccess")];
+              if (r.codexHooksInstalled === true) messages.push(t("codexHookReviewReminder"));
+              if (r.dshBridgeInstalled === true && r.dshRestartRequired === true) {
+                messages.push(t("remoteSshDshBridgeInstalledRestartRequired"));
+              } else if (r.dshBridgeInstalled === true) {
+                messages.push(t("remoteSshDshBridgeInstalled"));
+              } else if (r.dshRestartRequired === true) {
+                messages.push(t("remoteSshDshRestartRequired"));
+              }
+              if (r.dshDiscoveryWarning && r.dshDiscoveryWarning.hint === "remoteSshWarnDshDiscoveryIncomplete") {
+                messages.push(t("remoteSshWarnDshDiscoveryIncomplete"));
+              }
+              ops.showToast(messages.join(" "), { ttl: 8000 });
             }
           } else {
             // Same hint preference as the progress log line — `remote-shell`

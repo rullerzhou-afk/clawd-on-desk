@@ -47,7 +47,7 @@ function configs() {
 function runProbe({ current = profile, config = configs(), execPath = current.detectedRemoteNodeBin,
   readError = false, invalidJson = false, copilotBom = false, claudeBom = false, codexBom = false, codexInvalidJson = false,
   persistent = false, claudeEvents = CLAUDE_CORE_HOOK_EVENTS, copilotEvents = COPILOT_STATE_HOOK_EVENTS,
-  codexEvents = CODEX_STATE_HOOK_EVENTS } = {}) {
+  codexEvents = CODEX_STATE_HOOK_EVENTS, dshFiles = null } = {}) {
   const built = persistent
     ? buildPersistentReadinessCommand(current.remoteForwardPort, execPath, { profile: current, challenge: "c".repeat(32) })
     : buildProbeCommand(current.remoteForwardPort, execPath, { profile: current });
@@ -61,6 +61,16 @@ function runProbe({ current = profile, config = configs(), execPath = current.de
     if (name === "fs") return { readFileSync(file) {
       reads.push(file);
       if (file === layout.identityFile) return JSON.stringify(identity);
+      if (dshFiles && Object.prototype.hasOwnProperty.call(dshFiles, file)) {
+        const value = dshFiles[file];
+        if (value && value.__error) { const err = new Error(value.__error); err.code = value.__error; throw err; }
+        if (value && typeof value === "object" && Object.hasOwn(value, "__raw")) return value.__raw;
+        return value;
+      }
+      if (/[\\/]remote-integrations[\\/]deepseek-harness[\\/]/.test(file)
+        || /[\\/]\.dsh[\\/]profiles[\\/]/.test(file)) {
+        const err = new Error("ENOENT"); err.code = "ENOENT"; throw err;
+      }
       if (readError) throw new Error("EACCES");
       if (invalidJson) return "{broken";
       const codexHooksPath = path.win32.join(layout.codexHome, "hooks.json");
@@ -78,6 +88,7 @@ function runProbe({ current = profile, config = configs(), execPath = current.de
     if (name === script("copilot-install.js")) return { COPILOT_STATE_HOOK_EVENTS: copilotEvents };
     if (name === script("codex-install.js")) return { CODEX_STATE_HOOK_EVENTS: codexEvents };
     if (name === script("codex-install-utils.js")) return codexUtils;
+    if (name === "crypto") return require("crypto");
     if (name === "http") return { get(options, callback) {
       requests.push(options);
       callback({ headers: { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID }, statusCode: 200 });
@@ -243,7 +254,7 @@ test("issue #1316: Windows readiness stays ready before EOF and exits after stdi
   const current = { ...profile, detectedRemoteNodeBin: process.execPath, identityTxn: { steps: {} } };
   const ready = buildPersistentReadinessCommand(23334, process.execPath, { profile: current, challenge: "c".repeat(32) });
   // Real loader and stdin lifecycle, with all HTTP and file access in memory.
-  const harness = `const realRequire=require;require=(name)=>{if(name==='fs')return {readFileSync:()=>${JSON.stringify(JSON.stringify(identity))}};if(name==='http')return {get:(options,callback)=>{const req=new (realRequire('events').EventEmitter)();req.setTimeout=()=>{};req.destroy=()=>{};setImmediate(()=>{if(process.stdin.isPaused())throw new Error('readiness stdin is paused');callback({headers:{${JSON.stringify(CLAWD_SERVER_HEADER)}:${JSON.stringify(CLAWD_SERVER_ID)}},statusCode:200,resume(){}})});return req}};return realRequire(name)};${NODE_FRAME_LOADER}`;
+  const harness = `const realRequire=require;require=(name)=>{if(name==='fs')return {readFileSync:(file)=>{if((String(file).includes('remote-integrations')&&String(file).includes('deepseek-harness'))||(String(file).includes('.dsh')&&String(file).includes('profiles'))){const err=new Error('ENOENT');err.code='ENOENT';throw err}return ${JSON.stringify(JSON.stringify(identity))}}};if(name==='http')return {get:(options,callback)=>{const req=new (realRequire('events').EventEmitter)();req.setTimeout=()=>{};req.destroy=()=>{};setImmediate(()=>{if(process.stdin.isPaused())throw new Error('readiness stdin is paused');callback({headers:{${JSON.stringify(CLAWD_SERVER_HEADER)}:${JSON.stringify(CLAWD_SERVER_ID)}},statusCode:200,resume(){}})});return req}};return realRequire(name)};${NODE_FRAME_LOADER}`;
   const child = spawn(process.execPath, ["-e", harness], { stdio: ["pipe", "pipe", "pipe"] });
   t.after(() => child.kill());
   const closed = once(child, "close");
@@ -364,4 +375,127 @@ test("issue #1316: unreadable and missing hook configs identify the file without
   const missing = runProbe({ config });
   assert.equal(missing.exitCode, 8);
   assert.deepEqual(missing.stderr, [`unverified: ${path.win32.join(layout.copilotHome, "hooks", "hooks.json")}`]);
+});
+
+
+// ── DSH takeover detection (D9) ──
+const dshRoot = path.win32.join(layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+const dshRecordPath = path.win32.join(dshRoot, profile.installId, "deployment.json");
+const dshProfilePath = path.win32.join(layout.remoteHome, ".dsh", "profiles", "desktop", "package.json");
+const dshGenerationId = "e".repeat(64);
+function dshGenerationPath() {
+  const home = "C:\\Users\\remote\\.dsh".toLowerCase().replace(/\\/g, "/");
+  const namespace = require("node:crypto").createHash("sha256").update(home).digest("hex");
+  return path.win32.join(dshRoot, profile.installId, "homes", namespace, "generations", dshGenerationId);
+}
+function dshFilesFor({ record = "installed", dependency = dshGenerationPath(), recordError = null,
+  profileMissing = false, profileError = null } = {}) {
+  const files = {};
+  if (recordError) files[dshRecordPath] = { __error: recordError };
+  else if (record !== null) files[dshRecordPath] = JSON.stringify({
+    installId: profile.installId, profileId: profile.id,
+    dshHome: "C:\\Users\\remote\\.dsh", generationId: dshGenerationId, phase: record,
+  });
+  if (!profileMissing) {
+    if (profileError) files[dshProfilePath] = { __error: profileError };
+    else files[dshProfilePath] = JSON.stringify({
+      name: "desktop", private: true,
+      dependencies: { "@dsh-external/dsh-clawd-bridge": `file:${dependency}` },
+      dsh: { profile: { bundles: ["@dsh-external/dsh-clawd-bridge"] } },
+    });
+  }
+  return files;
+}
+function runDshProbe({ dshInstalled = true, files = dshFilesFor(), steps = {} } = {}) {
+  const current = {
+    ...profile,
+    managedDeployTargets: dshInstalled
+      ? [{ installId: profile.installId, dshInstalled: true, remotePlatform: "win32" }]
+      : [],
+    identityTxn: { steps },
+  };
+  return runProbe({ current, dshFiles: files });
+}
+
+test("DSH remote: D9 skips when neither a record nor the local marker exists", () => {
+  const result = runDshProbe({ dshInstalled: false, files: dshFilesFor({ record: null, profileMissing: true }) });
+  assert.equal(result.exitCode, 0);
+  assert.equal(result.requests.length, 1);
+});
+
+test("DSH remote: D9 reports takeover when the marker exists without a record", () => {
+  const result = runDshProbe({ dshInstalled: true, files: dshFilesFor({ record: null, profileMissing: true }) });
+  assert.equal(result.exitCode, 6);
+  assert.equal(result.requests.length, 0);
+});
+
+for (const phase of ["installing", "removing"]) {
+  test(`DSH remote: D9 reports unverified for an unfinished ${phase} record`, () => {
+    assert.equal(runDshProbe({ files: dshFilesFor({ record: phase }) }).exitCode, 8);
+  });
+}
+
+test("DSH remote: D9 passes an installed record whose declared dependency is this deployment", () => {
+  assert.equal(runDshProbe().exitCode, 0);
+});
+
+test("DSH remote: D9 reports takeover when the declaration points elsewhere or is missing", () => {
+  assert.equal(runDshProbe({ files: dshFilesFor({ dependency: "C:\\Users\\remote\\.dsh\\other" }) }).exitCode, 6);
+  const missingDeclaration = dshFilesFor();
+  missingDeclaration[dshProfilePath] = JSON.stringify({ name: "desktop", dependencies: {}, dsh: { profile: { bundles: [] } } });
+  assert.equal(runDshProbe({ files: missingDeclaration }).exitCode, 6);
+});
+
+test("DSH remote: D9 distinguishes parse failures, bad specs and bad generation ids", () => {
+  const badRecord = dshFilesFor();
+  badRecord[dshRecordPath] = { __raw: "{broken" };
+  assert.equal(runDshProbe({ files: badRecord }).exitCode, 8);
+
+  const badProfile = dshFilesFor();
+  badProfile[dshProfilePath] = { __raw: "{broken" };
+  assert.equal(runDshProbe({ files: badProfile }).exitCode, 8);
+
+  const nonFileSpec = dshFilesFor();
+  nonFileSpec[dshProfilePath] = JSON.stringify({
+    name: "desktop",
+    dependencies: { "@dsh-external/dsh-clawd-bridge": "https://example.invalid/bridge.tgz" },
+  });
+  assert.equal(runDshProbe({ files: nonFileSpec }).exitCode, 6);
+
+  const badGeneration = dshFilesFor();
+  badGeneration[dshRecordPath] = JSON.stringify({
+    dshHome: "C:\\Users\\remote\\.dsh", generationId: "not-hex", phase: "installed",
+  });
+  assert.equal(runDshProbe({ files: badGeneration }).exitCode, 8);
+});
+
+test("DSH remote: D9 early exit does not depend on other agent steps", () => {
+  const noRecord = dshFilesFor({ record: null, profileMissing: true });
+  assert.equal(runDshProbe({ dshInstalled: false, files: noRecord, steps: {} }).exitCode, 0);
+  assert.equal(runDshProbe({ dshInstalled: false, files: noRecord, steps: { installClaude: { status: "done" } } }).exitCode, 0);
+  assert.equal(runDshProbe({ dshInstalled: true, files: noRecord, steps: {} }).exitCode, 6);
+  assert.equal(runDshProbe({
+    dshInstalled: false,
+    steps: {},
+    files: dshFilesFor({ dependency: "C:\\Users\\remote\\.dsh\\other" }),
+  }).exitCode, 6);
+});
+
+test("DSH remote: D9 still checks an existing record without the local marker when other hooks ran", () => {
+  const steps = { installClaude: { status: "done" } };
+  assert.equal(runDshProbe({ dshInstalled: false, steps }).exitCode, 0);
+  assert.equal(runDshProbe({
+    dshInstalled: false,
+    steps,
+    files: dshFilesFor({ dependency: "C:\\Users\\remote\\.dsh\\other" }),
+  }).exitCode, 6);
+});
+
+test("DSH remote: D9 reports takeover when the desktop profile manifest is gone", () => {
+  assert.equal(runDshProbe({ files: dshFilesFor({ profileMissing: true }) }).exitCode, 6);
+});
+
+test("DSH remote: D9 reports unverified when the record or profile cannot be read", () => {
+  assert.equal(runDshProbe({ files: dshFilesFor({ recordError: "EACCES" }) }).exitCode, 8);
+  assert.equal(runDshProbe({ files: dshFilesFor({ profileError: "EACCES" }) }).exitCode, 8);
 });

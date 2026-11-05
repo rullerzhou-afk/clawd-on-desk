@@ -343,3 +343,26 @@ for (const [platform, installed] of [["win32", false], ["posix", true], ["posix"
     assert.equal(h.toasts[0], h.strings.remoteSshDeploySuccess + (installed ? " " + h.strings.codexHookReviewReminder : ""));
   });
 }
+
+for (const [name, result, noticeKeys] of [
+  ["installed connection and restart", { dshBridgeInstalled: true, dshRestartRequired: true },
+    ["remoteSshDshBridgeInstalledRestartRequired"]],
+  ["installed connection without restart", { dshBridgeInstalled: true, dshRestartRequired: false },
+    ["remoteSshDshBridgeInstalled"]],
+  ["skipped DSH", { dshBridgeInstalled: false, dshRestartRequired: false }, []],
+  ["restart without an installation flag", { dshRestartRequired: true }, ["remoteSshDshRestartRequired"]],
+  ["Codex review alongside DSH restart", { codexHooksInstalled: true, dshBridgeInstalled: true, dshRestartRequired: true },
+    ["codexHookReviewReminder", "remoteSshDshBridgeInstalledRestartRequired"]],
+  ["incomplete DSH discovery", { dshDiscoveryWarning: { reason: "dsh_discovery_incomplete", hint: "remoteSshWarnDshDiscoveryIncomplete" } },
+    ["remoteSshWarnDshDiscoveryIncomplete"]],
+  ["unrelated warning", { dshDiscoveryWarning: { hint: "unrelated-warning" } }, []],
+]) {
+  test(`DSH remote: deployment toast reflects ${name}`, async () => {
+    const h = remoteSshTabHarness({ id: "p1", label: "Remote", host: "remote", remotePlatform: "win32" },
+      { status: "ok", ...result });
+    h.find(h.render(), (element) => element.labelKey === "remoteSshDeploy").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    const expected = [h.strings.remoteSshDeploySuccess, ...noticeKeys.map((key) => h.strings[key])];
+    assert.deepEqual(h.toasts, [expected.join(" ")]);
+  });
+}
