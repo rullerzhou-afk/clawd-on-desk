@@ -86,6 +86,7 @@ const SOURCE_PROVENANCE = Object.freeze({
     ],
   },
   "kiro-cli": lobeSource("kiro-color.png"),
+  "kiro-desktop": { ...lobeSource("kiro-color.png"), sourceFilename: "kiro-cli.png" },
   mimocode: lobeSource("xiaomimimo.png", { contrastTreatment: "neutral-light-tile" }),
   openclaw: lobeSource("openclaw-color.png"),
   opencode: lobeSource("opencode.png", { contrastTreatment: "neutral-light-tile" }),

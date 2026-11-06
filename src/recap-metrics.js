@@ -71,6 +71,7 @@ const AGENT_METRIC_POLICIES = Object.freeze({
   //    denies tools on KiroCrew's approval path), and PostToolUse is a plain
   //    state ping, not a proven per-call tool boundary.
   kirocrew: policy(null, null, null),
+  "kiro-desktop": policy(null, null, STANDARD_TOOL_START),
 });
 
 function policy(sessionStart, turnCompleteEvents, toolCallEvents) {

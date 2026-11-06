@@ -85,6 +85,8 @@ function createSettingsEffectRouter(options = {}) {
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
   const clearCodexRemoteFallbackNotices = options.clearCodexRemoteFallbackNotices || noop;
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || noop;
+  const clearKiroDesktopReminderCards = options.clearKiroDesktopReminderCards || noop;
+  const resyncKiroDesktopReminderCards = options.resyncKiroDesktopReminderCards || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
   const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
@@ -252,6 +254,19 @@ function createSettingsEffectRouter(options = {}) {
     }
 
     // 2. Reactive side effects.
+    const suppressKiroReminders = changes.notificationBubbleAutoCloseSeconds === 0
+      || changes.hideBubbles === true
+      || changes.permissionBubblesEnabled === false;
+    if (suppressKiroReminders) {
+      safeCall(logWarn, "Clawd: clear Kiro reminders failed:", clearKiroDesktopReminderCards, "settings-policy-disabled");
+    }
+    const resumeKiroReminders = changes.notificationBubbleAutoCloseSeconds > 0
+      || changes.hideBubbles === false
+      || changes.permissionBubblesEnabled === true
+      || changes.agents?.["kiro-desktop"]?.permissionsEnabled === true;
+    if (!suppressKiroReminders && resumeKiroReminders) {
+      safeCall(logWarn, "Clawd: resync Kiro reminders failed:", resyncKiroDesktopReminderCards);
+    }
     if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {
       safeCall(logWarn, "Clawd: syncPermissionShortcuts failed:", syncPermissionShortcuts);
     }

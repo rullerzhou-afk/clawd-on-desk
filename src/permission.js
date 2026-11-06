@@ -3284,6 +3284,7 @@ function buildPermissionBubblePayload(permEntry) {
     isCodexSubagent: permEntry.isCodex === true && permEntry.codexSessionRole === "subagent",
     codexAgentNickname: permEntry.codexAgentNickname || null,
     isCodexUserInputNotify: permEntry.isCodexUserInputNotify || false,
+    isKiroDesktopNotify: permEntry.isKiroDesktopNotify === true,
     codexUserInputCallId: permEntry.codexUserInputCallId || null,
     isRemote: !!permEntry.host,
     // Hermes must NOT get the regular go-to-terminal fallback: its opt-in
@@ -4923,6 +4924,7 @@ function handleBubbleExpanded(event, expanded) {
   // Expanding a copy of the options implies that they are actionable here.
   // Treat any stale/old renderer expansion request as the card's real action:
   // dismiss it and return to the native Codex UI.
+  if (perm.isKiroDesktopNotify) return false;
   if (perm.isCodexUserInputNotify) {
     if (expanded === true) {
       dismissPassiveNotify(perm, "expand-focus");
@@ -5234,6 +5236,13 @@ function handleDecide(event, behavior) {
   const unsupportedActionOptions = behavior === "deny-and-focus"
     ? resolutionOptions("handed_to_terminal", false)
     : resolutionOptions("cancelled", false);
+  if (perm.isKiroDesktopNotify) {
+    dismissPassiveNotify(perm, "ipc-decide");
+    if (behavior === "kiro-desktop-focus") {
+      ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
+    }
+    return;
+  }
   if (perm.isCodexUserInputNotify) {
     dismissPassiveNotify(perm, "ipc-decide");
     if (behavior === "codex-user-input-focus" && !perm.host) {
@@ -5762,6 +5771,46 @@ function showCodexUserInputBubble({
   return true;
 }
 
+function showKiroDesktopReminder({ sessionId, question, interactionType, interactionKey, cwd, onDismiss }) {
+  const existing = pendingPermissions.find(entry => entry.isKiroDesktopNotify && entry.sessionId === sessionId);
+  if (existing) {
+    existing.toolInput = { question, interactionType };
+    existing.kiroInteractionKey = interactionKey;
+    syncPermissionBubbleContent(existing);
+    return true;
+  }
+  const session = ctx.sessions?.get(sessionId);
+  const entry = {
+    res: null,
+    abortHandler: null,
+    suggestions: [],
+    resolvedSuggestion: null,
+    sessionId,
+    agentId: "kiro-desktop",
+    bubble: null,
+    hideTimer: null,
+    autoExpireTimer: null,
+    toolName: "KiroDesktopApproval",
+    toolInput: { question, interactionType },
+    createdAt: Date.now(),
+    isKiroDesktopNotify: true,
+    isElicitation: false,
+    kiroInteractionKey: interactionKey,
+    onKiroDesktopDismissed: onDismiss,
+    sourcePid: session?.sourcePid || null,
+    agentPid: session?.agentPid || null,
+    cwd: session?.cwd || cwd || "",
+  };
+  addPendingPermission(entry, "passive-added");
+  showPermissionBubble(entry);
+  return true;
+}
+
+function removeKiroDesktopReminder(sessionId, reason) {
+  const entry = pendingPermissions.find(entry => entry.isKiroDesktopNotify && entry.sessionId === sessionId);
+  if (entry) dismissPassiveNotify(entry, reason);
+}
+
 function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, permissionCommand, permissionToolInput }) {
   if (shouldSuppressKimiNotifyBubble(ctx)) {
     const policy = getPolicy(ctx, "notification");
@@ -5869,6 +5918,9 @@ function dismissPassiveNotify(permEntry, reason = "unknown") {
   if (permEntry.autoExpireTimer) clearTimeout(permEntry.autoExpireTimer);
   if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
   hidePermissionBubbleSafely(permEntry);
+  if (typeof permEntry.onKiroDesktopDismissed === "function") {
+    permEntry.onKiroDesktopDismissed(permEntry, reason);
+  }
   if (typeof permEntry.onCodexRemoteFallbackDismissed === "function") {
     try { permEntry.onCodexRemoteFallbackDismissed(permEntry, reason); } catch {}
   }
@@ -5887,7 +5939,7 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
   // Keep it visible until Codex records the matching function_call_output (or
   // the user explicitly dismisses/focuses it), even if notification policy is
   // refreshed while the card is open.
-  if (permEntry.isCodexUserInputNotify) return false;
+  if (permEntry.isCodexUserInputNotify || permEntry.isKiroDesktopNotify) return false;
   const remainingMs = computePassiveNotifyRemainingMs(permEntry.createdAt, autoCloseMs, now);
   permLog(
     `passive notify schedule: agent=${getPassiveNotifyAgentId(permEntry)} session=${permEntry.sessionId || "(none)"} autoCloseMs=${autoCloseMs} remainingMs=${remainingMs}`
@@ -5904,7 +5956,7 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
 
 function refreshPassiveNotifyAutoClose() {
   const passiveEntries = pendingPermissions.filter(
-    (entry) => isPassiveNotifyEntry(entry) && !entry.isCodexUserInputNotify
+    (entry) => isPassiveNotifyEntry(entry) && !entry.isCodexUserInputNotify && !entry.isKiroDesktopNotify
   );
   if (passiveEntries.length === 0) return 0;
   const policy = getPolicy(ctx, "notification");
@@ -6187,6 +6239,7 @@ return {
   dismissCodexRemoteFallbackNotice, queueCodexRemoteFallbackForEntry,
   showCodexUserInputBubble, clearCodexUserInputBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
+  showKiroDesktopReminder, removeKiroDesktopReminder,
   refreshPassiveNotifyAutoClose,
   refreshPermissionAutoCloseForPolicy,
   dismissPermissionsByAgent, dismissInteractivePermissionBubbles,

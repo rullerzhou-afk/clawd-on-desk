@@ -479,6 +479,18 @@
       "upstreamVersion": "1.95.0",
       "license": "MIT",
       "variant": "light"
+    },
+    "kiro-desktop": {
+      "agentId": "kiro-desktop",
+      "originalFilename": "kiro-color.png",
+      "sourceFilename": "kiro-cli.png",
+      "sourceType": "png",
+      "sha256": "98922033d598cf8eb280c0deb7088ecd04608517909d7e15e1f5c1ba5a22896b",
+      "fallback": false,
+      "upstreamPackage": "@lobehub/icons-static-png",
+      "upstreamVersion": "1.95.0",
+      "license": "MIT",
+      "variant": "light"
     }
   },
   "outputs": {
@@ -649,6 +661,12 @@
       "outputFilename": "kirocrew.png",
       "outputSha256": "92f284435e38654757741d4eeaccd0c0b0ea72a4e00bb27c62f772e5b1a54659",
       "generatedFromSourceSha256": "92f284435e38654757741d4eeaccd0c0b0ea72a4e00bb27c62f772e5b1a54659"
+    },
+    "kiro-desktop": {
+      "agentId": "kiro-desktop",
+      "outputFilename": "kiro-desktop.png",
+      "outputSha256": "22004c531a24751064dae7c54c9285837c4a5e1b6dab1d663336771077eaa069",
+      "generatedFromSourceSha256": "98922033d598cf8eb280c0deb7088ecd04608517909d7e15e1f5c1ba5a22896b"
     }
   }
 }

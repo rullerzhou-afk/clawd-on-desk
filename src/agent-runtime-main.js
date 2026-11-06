@@ -1,5 +1,6 @@
 "use strict";
 
+const { createKiroDesktopRuntime } = require("./kiro-desktop-runtime");
 const DefaultCodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const {
   buildCodexMonitorSessionOptions,
@@ -93,6 +94,7 @@ function createAgentRuntimeMain(options = {}) {
   const getPermissionRuntime = options.getPermissionRuntime || (() => null);
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
+  const kiroDesktop = createKiroDesktopRuntime({ ...options, getStateRuntime, getPermissionRuntime, updateSession });
   // A startup scan may encounter a child before its already-active parent.
   // Keep only live, fenced starts; this ledger never creates a session.
   const pendingCodexChildren = new Map();
@@ -672,6 +674,7 @@ function createAgentRuntimeMain(options = {}) {
     const preserveCodexInitialization = isLocalOfficialCodexEvent
       && event === "SessionStart" && state === "idle"
       && shouldPreserveCodexInitialization(sessionId, opts, stateRuntime);
+    kiroDesktop.onHook(sessionId, event, opts);
     const result = preserveCodexInitialization
       ? stateRuntime.updateCodexInitializationMetadata(sessionId, opts)
       : updateSession(sessionId, state, event, opts);
@@ -831,7 +834,11 @@ function createAgentRuntimeMain(options = {}) {
     });
   }
 
-  function startMonitorForAgent(agentId) {
+  function startMonitorForAgent(agentId, intent = {}) {
+    if (agentId === "kiro-desktop") {
+      if (!disposed && intent.integrationInstalled === true) kiroDesktop.start();
+      return;
+    }
     // Caller (Settings pre-commit enable/install, or startup) has already
     // decided to start; re-reading the persisted gate here races the settings
     // store write. Match the existing monitor.start() semantics.
@@ -841,6 +848,7 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   function stopMonitorForAgent(agentId) {
+    if (agentId === "kiro-desktop") { kiroDesktop.stop(); return; }
     if (agentId !== "codex") return;
     if (codexMonitor) codexMonitor.stop();
     pendingCodexChildren.clear();
@@ -1220,6 +1228,7 @@ function createAgentRuntimeMain(options = {}) {
 
   function cleanup() {
     disposed = true;
+    kiroDesktop.stop();
     workBuddySessionTitleTracker.clear();
     clearRetiredWorkBuddySessions();
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
@@ -1240,6 +1249,10 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   return {
+    getKiroDesktopPendingSessionIds: kiroDesktop.getPendingSessionIds,
+    clearKiroDesktopSession: kiroDesktop.clearSession,
+    clearKiroDesktopReminderCards: kiroDesktop.clearCards,
+    resyncKiroDesktopReminderCards: kiroDesktop.resyncReminderCards,
     getCodexSubagentClassifier: () => codexSubagentClassifier,
     startCodexLogMonitor,
     startMonitorForAgent,

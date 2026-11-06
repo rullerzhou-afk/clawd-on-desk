@@ -1187,6 +1187,12 @@
           hint.textContent = t("traecodeEnableHint");
           text.appendChild(hint);
         }
+        if (agent.capabilities?.approvalReminder && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-kiro-desktop-hint";
+          hint.textContent = t("kiroDesktopEnableHint");
+          text.appendChild(hint);
+        }
         // MiniMax Code has the same manual-enable gap: the plugin directory
         // is on disk but the app decides whether hooks fire.
         if (!agent.custom && agent.id === "minimax" && readers.readAgentIntegrationInstalled(agent.id)) {
@@ -1372,6 +1378,24 @@
       }));
     }
 
+    if (caps.approvalReminder) {
+      approvals.push(buildAgentSwitchRow({
+        agent,
+        flag: "permissionsEnabled",
+        extraClass: "row-sub",
+        disabled: computeAgentSubSwitchDisabled(agent.id, "permissionsEnabled"),
+        buildText: (text) => {
+          const label = document.createElement("span");
+          label.className = "row-label";
+          label.textContent = t("rowKiroReminder");
+          text.appendChild(label);
+          const desc = document.createElement("span");
+          desc.className = "row-desc";
+          desc.textContent = t("rowKiroReminderDesc");
+          text.appendChild(desc);
+        },
+      }));
+    }
     if (caps.permissionApproval || caps.interactiveBubble) {
       approvals.push(buildAgentSwitchRow({
         agent,

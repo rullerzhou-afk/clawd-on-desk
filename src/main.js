@@ -567,7 +567,7 @@ const _settingsController = createSettingsController({
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
-    startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
+    startMonitorForAgent: (id, intent) => agentRuntime && agentRuntime.startMonitorForAgent(id, intent),
     stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
     syncIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.syncIntegrationForAgent(id, options) : false,
@@ -2579,6 +2579,9 @@ const _stateCtx = {
     sessionAutomationStore ? sessionAutomationStore.list() : [],
   getPermissionAutomationMode: () =>
     _settingsController.get("permissionAutomationMode") || "off",
+  getKiroDesktopPendingSessionIds: () => agentRuntime?.getKiroDesktopPendingSessionIds() || new Set(),
+  onSessionDeleted: (sessionId) => agentRuntime?.clearKiroDesktopSession(sessionId),
+  resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   onSessionAutomationLifecycleEnd: (payload) => {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
   },
@@ -3101,6 +3104,7 @@ agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
+  getKiroDesktopReminderContext: () => _permCtx,
   isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   debugLog: (msg) => sessionLog(msg),
@@ -4974,6 +4978,8 @@ const settingsEffectRouter = createSettingsEffectRouter({
   ),
   clearCodexUserInputBubbles,
   clearKimiNotifyBubbles,
+  clearKiroDesktopReminderCards: (reason) => agentRuntime?.clearKiroDesktopReminderCards(reason),
+  resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
   refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),
   hideUpdateBubbleForPolicy: () => callRuntimeMethod(_updateBubble, "hideForPolicy"),
@@ -6333,6 +6339,9 @@ if (!gotTheLock) {
     // agent-gate snapshot — a user who disabled Codex at last shutdown
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
+    if (_runtimeAgentGate.isAgentEnabled("kiro-desktop") && _runtimeAgentGate.isAgentIntegrationInstalled("kiro-desktop")) {
+      agentRuntime.startMonitorForAgent("kiro-desktop", { integrationInstalled: true });
+    }
 
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {

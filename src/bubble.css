@@ -651,3 +651,12 @@ body { padding: 6px; }
 .plan-feedback-actions .btn {
   flex: 1;
 }
+
+.tool-pill[data-tool="KiroDesktopApproval"] { background: #7056c9; color: #fff; }
+
+/* The bounded Kiro question and read-only instruction stay visible together. */
+.card.kiro-desktop-reminder .compact-block {
+  display: block;
+  white-space: pre-wrap;
+  -webkit-line-clamp: unset;
+}

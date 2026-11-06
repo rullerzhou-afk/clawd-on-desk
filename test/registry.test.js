@@ -17,6 +17,7 @@ describe("Agent Registry", () => {
       "codebuddy",
       "kiro-cli",
       "kirocrew",
+      "kiro-desktop",
       "kimi-cli",
       "qwen-code",
       "zcode",
