@@ -162,7 +162,16 @@ const EVENT_TO_STATE = {
   subagentStart: "juggling",
   subagentStop: "working",
   preCompact: "sweeping",
+  notification: "notification",
 };
+
+// Clawd's state machine requires "Notification" to apply the per-agent wait-for-input toggle.
+// Other Copilot event names keep their original camelCase form.
+const EVENT_TO_BODY_EVENT = { notification: "Notification" };
+
+// Only alert for notifications that need a user response. Other types report
+// background shell/agent completion or idleness and would cause false alerts.
+const ALERT_NOTIFICATION_TYPES = new Set(["permission_prompt", "elicitation_dialog"]);
 
 // #634: lifecycle for the shared resolver's cross-process pid cache, keyed on
 // Copilot's camelCase hook names. agentStop is deliberately NOT "end" (turn
@@ -380,11 +389,17 @@ function buildStateBody(event, payload, resolve, options = {}) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
 
+  if (event === "notification") {
+    let notificationType = payload.notificationType;
+    if (typeof notificationType !== "string") notificationType = payload.notification_type;
+    if (typeof notificationType !== "string" || !ALERT_NOTIFICATION_TYPES.has(notificationType)) return null;
+  }
+
   // Copilot CLI uses camelCase: sessionId, not session_id
   const sessionId = payload.sessionId || payload.session_id || "default";
   const cwd = payload.cwd || "";
 
-  const body = { state, session_id: sessionId, event };
+  const body = { state, session_id: sessionId, event: EVENT_TO_BODY_EVENT[event] || event };
   body.agent_id = "copilot-cli";
   if (cwd) body.cwd = cwd;
 

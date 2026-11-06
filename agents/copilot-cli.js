@@ -19,6 +19,7 @@ module.exports = {
     subagentStart: "juggling",
     subagentStop: "working",
     preCompact: "sweeping",
+    notification: "notification",
   },
   capabilities: {
     httpHook: false,
@@ -29,6 +30,8 @@ module.exports = {
     permissionApproval: true,
     mobilePermissionObservation: false,
     interactiveBubble: true,
+    // Enables the Settings "Alert me when it waits for input" toggle for Copilot's notification hook.
+    notificationHook: true,
     sessionEnd: true,
     subagent: true,
   },
