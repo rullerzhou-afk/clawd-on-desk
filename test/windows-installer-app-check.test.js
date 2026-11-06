@@ -12,6 +12,9 @@ const TEMPLATE = path.join(
   ROOT, "node_modules", "app-builder-lib", "templates", "nsis", "include", "allowOnlyOneInstallerInstance.nsh"
 );
 const SYNC_MESSAGE = "electron-builder NSIS template changed; resync build/installer.nsh with it";
+// 32-bit PowerShell cold start can take over 30s on a loaded CI runner.
+const POWERSHELL_WARMUP_TIMEOUT_MS = 120000;
+const POWERSHELL_TIMEOUT_MS = 60000;
 
 function readText(filePath) {
   return fs.readFileSync(filePath, "utf8").replace(/\r\n?/g, "\n");
@@ -38,7 +41,7 @@ function runPowerShell(executable, macro, installDir) {
     "-NonInteractive",
     "-Command",
     getPowerShellCommand(macro, installDir),
-  ], { encoding: "utf8", windowsHide: true, timeout: 30000 });
+  ], { encoding: "utf8", windowsHide: true, timeout: POWERSHELL_TIMEOUT_MS });
 }
 
 describe("Windows NSIS running app check", () => {
@@ -106,7 +109,8 @@ describe("Windows NSIS running app check", () => {
   for (const systemDirectory of ["System32", "SysWOW64"]) {
     it(`issue #882: detects zero, one and two install-directory processes with ${systemDirectory} PowerShell`, {
       skip: process.platform !== "win32" ? "requires Windows PowerShell 5.1" : false,
-      timeout: 180000,
+      // Worst case: 120s warm-up + four 60s PowerShell calls (count 0, 1, 2), plus margin.
+      timeout: 420000,
     }, async (t) => {
       assert.ok(process.env.SystemRoot, "SystemRoot should identify the Windows directory");
       const powershell = path.join(
@@ -117,6 +121,20 @@ describe("Windows NSIS running app check", () => {
         return;
       }
       assert.ok(fs.existsSync(powershell), `${powershell} should exist`);
+
+      // Warm up the executable so the detection calls don't pay the slow cold start.
+      const warmup = childProcess.spawnSync(powershell, [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "exit 0",
+      ], { encoding: "utf8", windowsHide: true, timeout: POWERSHELL_WARMUP_TIMEOUT_MS });
+      assert.strictEqual(
+        warmup.status,
+        0,
+        `${systemDirectory}: PowerShell warm-up failed: error=${warmup.error?.message || "none"}, ` +
+        `signal=${warmup.signal}`
+      );
 
       const root = fs.realpathSync.native(
         fs.mkdtempSync(path.join(os.tmpdir(), "clawd-installer-check-"))
