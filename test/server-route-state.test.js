@@ -3223,7 +3223,7 @@ describe("server-route-state POST", () => {
     }));
 
     assert.strictEqual(res.statusCode, 200);
-    assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg"]]);
+    assert.deepStrictEqual(res.calls.setState, [["working", "pet.svg", { notificationCue: false }]]);
   });
 
   it("drops disabled agents with a 204 and records the disabled outcome", async () => {
@@ -4074,5 +4074,135 @@ describe("issue #1125 AI session title end to end", () => {
     } finally {
       api.cleanup();
     }
+  });
+});
+
+describe("Codex remote MCP: fallback notice state events", () => {
+  const remoteOptions = { remoteProfile: { profileId: "remote-1", displayHost: "workbox" } };
+
+  it("reports a remote Codex event before a state-machine drop", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "Stop",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-stop",
+      turn_id: "turn-1",
+      stop_hook_active: true,
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 204);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].sessionId, makeSessionKey({
+      profileId: "remote-1",
+      rawSessionId: "codex:remote-stop",
+    }));
+    assert.equal(seen[0].rawSessionId, "codex:remote-stop");
+    assert.equal(seen[0].profileId, "remote-1");
+    assert.equal(seen[0].event, "Stop");
+    assert.equal(seen[0].turnId, "turn-1");
+  });
+
+  it("does not report state events from other agents", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "claude-code",
+      session_id: "claude-remote-session",
+      tool_name: "Bash",
+      tool_use_id: "call-1",
+      tool_input_fingerprint: "fp-1",
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(seen.length, 0);
+  });
+
+  it("forwards tool identity and skips metadata-only and local events", async () => {
+    const seen = [];
+    const ctx = { onCodexRemoteStateEvent: (payload) => seen.push(payload) };
+    const body = (extra = {}) => JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-tool",
+      turn_id: "turn-2",
+      tool_name: "mcp__playwright__browser_navigate",
+      tool_use_id: "call-9",
+      tool_input_fingerprint: "fp-9",
+      ...extra,
+    });
+
+    await callStatePost(body(), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].toolName, "mcp__playwright__browser_navigate");
+    assert.equal(seen[0].toolUseId, "call-9");
+    assert.equal(seen[0].toolInputFingerprint, "fp-9");
+
+    seen.length = 0;
+    await callStatePost(body({ metadata_only: true }), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 0);
+
+    seen.length = 0;
+    await callStatePost(body(), { ctx });
+    assert.equal(seen.length, 0);
+  });
+});
+
+
+describe("Copilot terminal wait fields", () => {
+  const key = "a".repeat(32);
+  const fields = { copilot_wait_key: key, copilot_tool_keys: [key, "b".repeat(32)], copilot_event_ts: 1234 };
+  const body = { agent_id: "copilot-cli", session_id: "wait", event: "Notification", state: "notification" };
+
+  it("forwards validated fields using the trusted canonical session identity", async () => {
+    const result = await callStatePost(JSON.stringify({ ...body, ...fields }), {
+      options: { remoteProfile: { profileId: "ssh-box", displayHost: "box" } },
+    });
+    assert.equal(result.statusCode, 200);
+    const [id, , , opts] = result.calls.updateSession[0];
+    assert.equal(id, makeSessionKey({ profileId: "ssh-box", rawSessionId: "wait" }));
+    assert.equal(opts.copilotWaitKey, key);
+    assert.deepEqual(opts.copilotToolKeys, fields.copilot_tool_keys);
+    assert.equal(opts.copilotEventTs, 1234);
+  });
+
+  it("ignores invalid fields without dropping the state event", async () => {
+    for (const invalid of [
+      { copilot_wait_key: "unmatched" }, { copilot_wait_key: "A".repeat(32) }, { copilot_wait_key: 42 },
+      { copilot_wait_key: "a".repeat(33) }, { copilot_wait_key: "a".repeat(31) },
+      { copilot_tool_keys: [key, "bad"] }, { copilot_tool_keys: Array(5).fill(key) },
+      { copilot_tool_keys: key }, { copilot_tool_keys: [null] },
+      { copilot_event_ts: "1234" }, { copilot_event_ts: 0 }, { copilot_event_ts: -1 },
+      { copilot_event_ts: null }, { copilot_event_ts: Infinity },
+    ]) {
+      const result = await callStatePost(JSON.stringify({ ...body, ...invalid }));
+      assert.equal(result.statusCode, 200);
+      const opts = result.calls.updateSession[0][3];
+      assert.equal("copilotWaitKey" in opts, false);
+      assert.equal("copilotToolKeys" in opts, false);
+      assert.equal("copilotEventTs" in opts, false);
+    }
+  });
+
+  it("ignores Copilot fields for other agents and deduplicates tool keys", async () => {
+    for (const agent_id of ["claude-code", "kiro-desktop", "codex"]) {
+      const result = await callStatePost(JSON.stringify({ ...body, ...fields, agent_id }));
+      const opts = result.calls.updateSession[0][3];
+      assert.equal("copilotWaitKey" in opts, false);
+      assert.equal("copilotToolKeys" in opts, false);
+      assert.equal("copilotEventTs" in opts, false);
+    }
+    const result = await callStatePost(JSON.stringify({ ...body, copilot_tool_keys: [key, key] }));
+    assert.deepEqual(result.calls.updateSession[0][3].copilotToolKeys, [key]);
   });
 });

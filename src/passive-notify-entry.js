@@ -10,6 +10,7 @@ function isPassiveNotifyEntry(permEntry) {
     permEntry.isCodexNotify
     || permEntry.isCodexUserInputNotify
     || permEntry.isKimiNotify
+    || permEntry.isKiroDesktopNotify
   ));
 }
 

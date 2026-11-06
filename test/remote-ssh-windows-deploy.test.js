@@ -44,6 +44,14 @@ function recorder(respond = () => null) {
       if (call.operation === "readIdentity") detail = { identity: remoteIdentity };
       if (call.operation === "runInstaller") detail = { ok: true, status: 0, verified: true };
       if (call.operation === "readClaudePermission") detail = { ok: true, mode: "managed" };
+      if (call.operation === "uninstallCodexOwned") detail = { ok: true, removed: 1, conflicts: 0, changed: true };
+      if (call.operation === "dshCleanupPreflight") detail = {
+        ok: true, assetPresent: false, assetUnreadable: false,
+        recordExists: false, recordReadable: true, recordInvalid: false, recordPhase: null,
+        installerCapable: false, installerLoadFailed: false, dshHome: path.win32.join(node.homedir, ".dsh"),
+        desktop: { state: "missing", referenced: false, linkState: "missing", linkReferenced: false, unreadable: false },
+        web: { state: "missing", referenced: false, linkState: "missing", linkReferenced: false, unreadable: false },
+      };
       const response = (respond && respond(call)) || { code: 0, stdout: `banner\n${JSON.stringify(detail)}\n` };
       queueMicrotask(() => {
         if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
@@ -88,16 +96,17 @@ test("issue #1316: Windows deployment completes eight identity steps using only 
   assert.equal(result.ok, true);
   assert.equal(result.layout.platform, "win32");
   assert.deepEqual(result.remoteNode, { nodeBin: node.execPath, version: node.version, source: "discovery" });
-  assert.deepEqual(operations(f), ["acquireLock", "preflight", "mkdir", "writeIdentity", "writeMarker", "upload", "promoteMany", "writeHostPrefix", "runInstaller", "runInstaller", "readClaudePermission", "releaseLock"]);
+  assert.equal(result.codexHooksInstalled, true);
+  assert.deepEqual(operations(f), ["acquireLock", "preflight", "mkdir", "writeIdentity", "writeMarker", "upload", "promoteMany", "writeHostPrefix", "runInstaller", "runInstaller", "runInstaller", "readClaudePermission", "releaseLock"]);
   assert.deepEqual(f.stages, ["acquire-attempted", "lock-owned", "before-acquire"]);
   assert.equal(f.steps.length, 8);
   assert.deepEqual(Object.fromEntries(f.steps.map(([key, value]) => [key, value.status])), {
-    identity: "done", secureMarker: "done", hookFiles: "done", installClaude: "done", installCodex: "not-applicable",
+    identity: "done", secureMarker: "done", hookFiles: "done", installClaude: "done", installCodex: "done",
     installCopilot: "done", claudePermission: "done", codexMonitor: "not-applicable",
   });
   const step = Object.fromEntries(f.steps);
-  assert.equal(step.installCodex.evidence, "Codex is not supported on Windows remote hosts in phase 1");
-  assert.equal(step.codexMonitor.evidence, "Codex monitor is not supported on Windows remote hosts in phase 1");
+  assert.equal(step.installCodex.evidence, "codex-install.js settings readback verified secure managed command shape");
+  assert.equal(step.codexMonitor.evidence, "Codex monitor is not supported on Windows remote hosts");
   assert.equal(step.identity.evidence, "identity read-back matched transaction");
   assert.equal(step.secureMarker.evidence, "marker atomically written and read back");
   assert.equal(step.hookFiles.evidence, "uploaded hook hashes matched local files");
@@ -118,9 +127,9 @@ test("issue #1316: Windows deployment completes eight identity steps using only 
   assert.equal(writtenIdentity.deployedAt, identityTxn.startedAt);
   for (const call of f.calls.filter((call) => call.frame)) assert.ok(call.frame.code.includes(JSON.stringify(node.execPath)));
   const installs = f.calls.filter((call) => call.operation === "runInstaller").map((call) => call.frame.args);
-  assert.deepEqual(installs.map((args) => [args.script, args.argv, args.verify]), [["install.js", ["--remote"], "installClaude"], ["copilot-install.js", ["--remote"], "installCopilot"]]);
+  assert.deepEqual(installs.map((args) => [args.script, args.argv, args.verify]), [["install.js", ["--remote"], "installClaude"], ["codex-install.js", ["--remote"], "installCodex"], ["copilot-install.js", ["--remote"], "installCopilot"]]);
   assert.deepEqual(installs[0].env, {
-    CLAUDE_CONFIG_DIR: result.layout.claudeConfigDir, COPILOT_HOME: result.layout.copilotHome,
+    CLAUDE_CONFIG_DIR: result.layout.claudeConfigDir, COPILOT_HOME: result.layout.copilotHome, CODEX_HOME: result.layout.codexHome,
     CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1", CLAWD_REMOTE_IDENTITY_PATH: result.layout.identityFile,
     CLAWD_SSH_SECURE_MARKER_PATH: result.layout.secureMarkerFile, CLAWD_HOST_PREFIX_PATH: result.layout.hostPrefixFile,
     CLAWD_REMOTE_LAST_LOG_PATH: result.layout.lastLogFile, CLAWD_STATUSLINE_SIDECAR_PATH: result.layout.statuslineSidecarFile,
@@ -167,11 +176,15 @@ test("issue #1316: Windows migration confirmation is required before layout writ
 });
 test("issue #1316: Windows missing agent roots and native permission produce explicit evidence", async () => {
   const f = deployment((call) => call.operation === "preflight" ? { code: 0, stdout: '{"ok":true,"identity":true,"claudePresent":false,"copilotPresent":false}' } : null);
-  assert.equal((await deploy(f.options)).ok, true);
+  const result = await deploy(f.options);
+  assert.equal(result.ok, true);
+  assert.equal(result.codexHooksInstalled, false);
   assert.equal(operations(f).includes("runInstaller"), false);
   const absentSteps = Object.fromEntries(f.steps);
   assert.equal(absentSteps.claudePermission.status, "not-applicable");
   assert.equal(absentSteps.installClaude.status, "not-applicable");
+  assert.equal(absentSteps.installCodex.status, "not-applicable");
+  assert.equal(absentSteps.installCodex.evidence, "codex-install.js target root absent before deploy");
   assert.equal(absentSteps.installCopilot.status, "not-applicable");
   const native = deployment((call) => call.operation === "readClaudePermission" ? { code: 0, stdout: '{"ok":true,"mode":"native"}' } : null);
   assert.equal((await deploy(native.options)).ok, true);
@@ -190,7 +203,7 @@ for (const preserveIdentity of [true, false]) {
     const f = recorder();
     const result = await uninstallRemoteIntegrations({ profile, preserveIdentity, deps: f.deps });
     assert.equal(result.ok, true);
-    assert.deepEqual(operations(f), ["discovery", "readIdentity", "acquireLock", "preflight", "readIdentity", "runInstaller", "runInstaller", "removeFiles", "releaseLock"]);
+    assert.deepEqual(operations(f), ["discovery", "readIdentity", "acquireLock", "preflight", "readIdentity", "runInstaller", "runInstaller", "uninstallCodexOwned", "dshCleanupPreflight", "removeFiles", "releaseLock"]);
     const installs = f.calls.filter((call) => call.operation === "runInstaller").map((call) => call.frame.args);
     assert.deepEqual(installs.map((args) => args.script), ["install.js", "copilot-install.js"]);
     for (const args of installs) assert.deepEqual(args.argv, ["--remote-uninstall-owned", "--hooks-dir", result.layout.claudeHooksDir, "--routing-nonce", remoteIdentity.routingNonce]);
@@ -326,6 +339,8 @@ test("issue #1316: Windows uninstall flags classify discovery and identity reads
     { operation: "readIdentity", mutation: false },
     { operation: "runInstaller", mutation: true },
     { operation: "runInstaller", mutation: true },
+    { operation: "uninstallCodexOwned", mutation: true },
+    { operation: "dshCleanupPreflight", mutation: false },
     { operation: "removeFiles", mutation: true },
     { operation: "releaseLock", mutation: true },
   ]);
@@ -427,9 +442,10 @@ test("issue #1316: Windows deploy progress localizes platform, skipped agents an
   const f = deployment();
   assert.equal((await deploy(f.options)).ok, true);
   for (const [step, hint] of [
-    ["remote-shell", "remoteSshWindowsPlatform"], ["install-codex", "remoteSshWindowsCodexSkipped"],
+    ["remote-shell", "remoteSshWindowsPlatform"],
     ["install-hermes", "remoteSshWindowsHermesSkipped"], ["install-claude", "remoteSshWindowsQuotaUnsupported"],
   ]) assert.equal(f.events.filter((event) => event.step === step && event.status === "ok" && event.hint === hint).length, 1, hint);
+  assert.equal(f.events.some((event) => event.step === "install-codex" && event.hint), false);
 });
 
 for (const [reason, hint] of [
@@ -496,7 +512,478 @@ test("issue #1316: releaseLock exit 7 still requires manual lock inspection", as
   assert.equal(f.events.some((event) => event.step === "lock-release" && event.status === "fail"), true);
 });
 
-test("issue #1316: a successful Windows deployment explicitly reports no Codex installer run", async () => {
+test("issue #1316: Codex installer refusals map to their own reasons and hints", async () => {
+  for (const [tail, reason, hint] of [
+    ["codex-windows-remote-unsafe-path: node path contains $", "windows_codex_powershell_path_unsupported", "remoteSshErrWindowsCodexPowerShellPath"],
+    ["codex-windows-remote-ownership-conflict: SessionStart has a conflict Codex hook", "windows_codex_ownership_conflict", "remoteSshErrWindowsCodexOwnershipConflict"],
+  ]) {
+    const f = deployment((call) => call.operation === "runInstaller" && call.frame.args.script === "codex-install.js"
+      ? { code: 0, stdout: JSON.stringify({ ok: false, reason: "installer_failed", stderrTail: tail }) } : null);
+    const result = await deploy(f.options);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, reason);
+    assert.equal(result.hint, hint);
+    assert.equal(Object.fromEntries(f.steps).installCodex.status, "failed");
+    assert.equal(f.events.find((event) => event.status === "fail").hint, hint);
+  }
+});
+
+test("issue #1316: a disabled Codex hooks feature reports its dedicated reason and hint", async () => {
+  for (const failure of [
+    { code: 1, stderr: "windows_codex_hooks_disabled: C:\\Users\\remote\\.codex\\config.toml" },
+    { code: 0, stdout: JSON.stringify({ ok: false, reason: "installer_failed",
+      stderrTail: "codex-windows-remote-hooks-disabled: [features].hooks is false" }) },
+  ]) {
+    const f = deployment((call) => call.operation === "runInstaller" && call.frame.args.script === "codex-install.js"
+      ? failure : null);
+    const result = await deploy(f.options);
+    assert.equal(result.reason, "windows_codex_hooks_disabled");
+    assert.equal(result.hint, "remoteSshErrWindowsCodexHooksDisabled");
+    assert.equal(Object.fromEntries(f.steps).installCodex.status, "failed");
+  }
+});
+
+test("issue #1316: Windows uninstall surfaces the Codex cleanup reason and hint", async () => {
+  const detail = "2 conflicting Codex hook entries remain in hooks.json";
+  const f = recorder((call) => call.operation === "uninstallCodexOwned"
+    ? { code: 0, stdout: JSON.stringify({ ok: false, reason: "windows_codex_cleanup_incomplete", conflicts: 2, message: detail }) } : null);
+  const result = await uninstallRemoteIntegrations({ profile, deps: f.deps });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "windows_codex_cleanup_incomplete");
+  assert.equal(result.hint, "remoteSshErrWindowsCodexCleanupIncomplete");
+  assert.match(result.stderr, /2 conflicting Codex hook entries remain/);
+  assert.match(result.message, /2 conflicting Codex hook entries remain/);
+  assert.equal(operations(f).includes("removeFiles"), false);
+  assert.equal(operations(f).at(-1), "releaseLock");
+});
+
+test("issue #1316: Windows uninstall skips Codex cleanup cleanly when hooks.json is absent", async () => {
+  const f = recorder((call) => call.operation === "uninstallCodexOwned"
+    ? { code: 0, stdout: JSON.stringify({ ok: true, skipped: true, removed: 0, conflicts: 0, changed: false }) } : null);
+  const result = await uninstallRemoteIntegrations({ profile, deps: f.deps });
+  assert.equal(result.ok, true);
+  assert.equal(operations(f).includes("removeFiles"), true);
+});
+
+test("issue #1316: a successful Windows deployment reports the Codex hooks installer result", async () => {
   const f = deployment();
-  assert.equal((await deploy(f.options)).codexHooksInstalled, false);
+  assert.equal((await deploy(f.options)).codexHooksInstalled, true);
+});
+
+// ── DSH deployment wiring ──
+function dshPreflightDetail(overrides = {}) {
+  return {
+    ok: true, identity: true, claudePresent: true, copilotPresent: true, codexPresent: true,
+    legacyMonitorPresent: true, hermesPresent: false, legacyTraces: 0, legacyConfigTraces: 0,
+    dsh: {
+      status: "present", appRoot: "C:\\Users\\remote\\AppData\\Local\\Programs\\DeepSeek Harness",
+      checkedPaths: [], reason: null, profileInitialized: true, profileReadable: true,
+      localClawdLinked: false,
+      remoteRoot: "C:\\Users\\remote\\.clawd\\remote-integrations\\deepseek-harness",
+      remoteRootExists: false,
+      ...overrides,
+    },
+  };
+}
+
+function dshInstallerDetail(argv, overrides = {}) {
+  const inspect = argv.includes("--remote-inspect");
+  if (inspect) {
+    return {
+      ok: true, status: 0,
+      installerResult: {
+        schemaVersion: 1, operation: "remote-inspect", status: "ok", phase: "installed",
+        desktop: {
+          kind: "ours", withinDeployment: true, hashMatches: true,
+          manifestDeploymentMatches: true, incomplete: false, residuePresent: false,
+        },
+      },
+      ...overrides,
+    };
+  }
+  return {
+    ok: true, status: 0,
+    installerResult: { schemaVersion: 1, operation: "remote-install", status: "ok", restartRequired: true },
+    ...overrides,
+  };
+}
+
+test("DSH remote: deploy uploads assets, installs through the executor, reads back and reports restart", async () => {
+  const f = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: `banner\n${JSON.stringify(dshPreflightDetail())}\n` };
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: `banner\n${JSON.stringify(dshInstallerDetail(call.frame.args.argv))}\n` };
+    }
+    return null;
+  });
+  const result = await deploy(f.options);
+  assert.equal(result.ok, true);
+  assert.equal(result.dshBridgeInstalled, true);
+  assert.equal(result.dshRestartRequired, true);
+  const runs = f.calls.filter((call) => call.operation === "runInstallerAsUser").map((call) => call.frame.args);
+  assert.equal(runs.length, 2);
+  assert.deepEqual(runs.map((args) => args.script), ["dsh-install.js", "dsh-install.js"]);
+  assert.equal(runs[0].argv.includes("--clawd-version"), true);
+  assert.equal(runs[0].argv.includes("--allow-local-migration"), false);
+  assert.equal(runs[0].argv.includes("--remote-inspect"), false);
+  assert.equal(runs[1].argv.includes("--remote-inspect"), true);
+  assert.equal(runs[0].dshHome, path.win32.join(node.homedir, ".dsh"));
+  assert.ok(f.calls.some((call) => call.operation === "promoteMany" && call.frame.args.staging));
+  assert.ok(f.calls.some((call) => call.operation === "mkdir" && call.frame.args.directories.some((dir) => dir.includes("dsh-clawd-bridge"))));
+  const dshPromotion = f.calls.filter((call) => call.operation === "promoteMany").map((call) => call.frame.args).at(-1);
+  assert.ok(Object.keys(dshPromotion.hashes).includes("dsh-clawd-bridge/lib/index.js"));
+  assert.ok(Object.keys(dshPromotion.hashes).includes("dsh-remote-task.js"));
+});
+
+test("DSH remote: deployment install and readback use the preflight DSH_HOME", async () => {
+  const customHome = "C:\\Users\\remote\\custom-dsh";
+  const f = deployment((call) => {
+    if (call.operation === "preflight") {
+      return { code: 0, stdout: JSON.stringify(dshPreflightDetail({ dshHome: customHome })) };
+    }
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: JSON.stringify(dshInstallerDetail(call.frame.args.argv)) };
+    }
+    return null;
+  });
+  const result = await deploy(f.options);
+  assert.equal(result.ok, true);
+  const runs = f.calls.filter((call) => call.operation === "runInstallerAsUser").map((call) => call.frame.args);
+  assert.equal(runs.length, 2);
+  for (const args of runs) assert.equal(args.dshHome, customHome);
+});
+
+test("DSH remote: unreadable registry without any DSH trace continues with a warning", async () => {
+  const f = deployment((call) => call.operation === "preflight"
+    ? { code: 0, stdout: JSON.stringify(dshPreflightDetail({ status: "absent", profileInitialized: false, reason: "registry-unreadable" })) }
+    : null);
+  const result = await deploy(f.options);
+  assert.equal(result.ok, true);
+  assert.equal(result.dshBridgeInstalled, false);
+  assert.equal(result.dshDiscoveryWarning.hint, "remoteSshWarnDshDiscoveryIncomplete");
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+});
+
+test("DSH remote: deploy without DSH keeps the existing operation sequence", async () => {
+  const f = deployment((call) => {
+    if (call.operation === "preflight") {
+      return { code: 0, stdout: `banner\n${JSON.stringify(dshPreflightDetail({ status: "absent", profileInitialized: false }))}\n` };
+    }
+    return null;
+  });
+  const result = await deploy(f.options);
+  assert.equal(result.ok, true);
+  assert.equal(result.dshBridgeInstalled, false);
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+  assert.deepEqual(operations(f), ["acquireLock", "preflight", "mkdir", "writeIdentity", "writeMarker", "upload", "promoteMany", "writeHostPrefix", "runInstaller", "runInstaller", "runInstaller", "readClaudePermission", "releaseLock"]);
+});
+
+test("DSH remote: a present desktop app with an uninitialized profile is not applicable", async () => {
+  const f = deployment((call) => call.operation === "preflight"
+    ? { code: 0, stdout: JSON.stringify(dshPreflightDetail({ profileInitialized: false, localClawdLinked: false })) }
+    : null);
+  const result = await deploy(f.options);
+  assert.equal(result.ok, true);
+  assert.equal(result.dshBridgeInstalled, false);
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+});
+
+test("DSH remote: deploy rejects ambiguous or unreadable DSH discovery", async () => {
+  for (const [overrides, reason] of [
+    [{ status: "ambiguous" }, "dsh_desktop_ambiguous"],
+    [{ status: "unknown" }, "dsh_desktop_unreadable"],
+    [{ status: "present", profileReadable: false }, "dsh_profile_unreadable"],
+  ]) {
+    const f = deployment((call) => call.operation === "preflight"
+      ? { code: 0, stdout: JSON.stringify(dshPreflightDetail(overrides)) }
+      : null);
+    assert.equal((await deploy(f.options)).reason, reason);
+    assert.equal(operations(f).includes("runInstallerAsUser"), false);
+  }
+});
+
+test("DSH remote: preflight link and DSH_HOME rejections happen before any DSH write", async () => {
+  for (const [overrides, reason] of [
+    [{ status: "unknown", reason: "dsh-home-ambiguous" }, "dsh_home_ambiguous"],
+  ]) {
+    const f = deployment((call) => call.operation === "preflight"
+      ? { code: 0, stdout: JSON.stringify(dshPreflightDetail(overrides)) }
+      : null);
+    assert.equal((await deploy(f.options)).reason, reason);
+    assert.equal(operations(f).includes("runInstallerAsUser"), false);
+    assert.equal(operations(f).includes("promoteMany"), false);
+  }
+  const f = deployment((call) => call.operation === "preflight"
+    ? { code: 1, stderr: "path_link: C:\\Users\\remote\\.clawd\\remote-integrations" }
+    : null);
+  assert.equal((await deploy(f.options)).reason, "path_link");
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+});
+
+test("DSH remote: a local DSH link requires confirmation and then passes the migration flag", async () => {
+  const local = dshPreflightDetail({ localClawdLinked: true });
+  const refused = deployment((call) => call.operation === "preflight"
+    ? { code: 0, stdout: JSON.stringify(local) }
+    : null);
+  const refusedResult = await deploy(refused.options);
+  assert.equal(refusedResult.reason, "dsh_local_migration_required");
+  assert.equal(operations(refused).includes("runInstallerAsUser"), false);
+
+  const accepted = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(local) };
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: JSON.stringify(dshInstallerDetail(call.frame.args.argv)) };
+    }
+    return null;
+  });
+  const acceptedResult = await deploy({ ...accepted.options, legacyMigrationConfirmed: true });
+  assert.equal(acceptedResult.ok, true);
+  const installArgs = accepted.calls.find((call) => call.operation === "runInstallerAsUser").frame.args.argv;
+  assert.equal(installArgs.includes("--allow-local-migration"), true);
+});
+
+test("DSH remote: install or readback failure aborts the deployment before commit", async () => {
+  const installFailed = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(dshPreflightDetail()) };
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: JSON.stringify({ ok: false, status: 1, reason: "bridge-ownership-conflict", installerResult: { schemaVersion: 1, operation: "remote-install", status: "error", reason: "bridge-ownership-conflict" } }) };
+    }
+    return null;
+  });
+  assert.equal((await deploy(installFailed.options)).reason, "bridge-ownership-conflict");
+
+  const migrationFailed = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(dshPreflightDetail()) };
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: JSON.stringify({ ok: false, status: 1, installerResult: { schemaVersion: 1, operation: "remote-install", status: "error", reason: "local-migration-required" } }) };
+    }
+    return null;
+  });
+  assert.equal((await deploy(migrationFailed.options)).reason, "dsh_local_migration_required");
+
+  const readbackFailed = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(dshPreflightDetail()) };
+    if (call.operation === "runInstallerAsUser") {
+      const detail = dshInstallerDetail(call.frame.args.argv);
+      if (call.frame.args.argv.includes("--remote-inspect")) detail.installerResult.desktop.kind = "foreign";
+      return { code: 0, stdout: JSON.stringify(detail) };
+    }
+    return null;
+  });
+  assert.equal((await deploy(readbackFailed.options)).reason, "dsh_readback_failed");
+
+  const unknown = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(dshPreflightDetail()) };
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: JSON.stringify({ ok: false, reason: "installer_result_unknown" }) };
+    }
+    return null;
+  });
+  await assert.rejects(deploy(unknown.options), (err) => err && err.code === "installer_result_unknown");
+});
+
+test("DSH remote: DSH asset upload failure aborts the deployment", async () => {
+  const f = deployment((call) => {
+    if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(dshPreflightDetail()) };
+    if (call.tool === "scp" && String(call.args.at(-1)).includes("-dsh/")) {
+      return { code: 1, stderr: "upload failed" };
+    }
+    return null;
+  });
+  const result = await deploy(f.options);
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "dsh_asset_upload_failed");
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+});
+
+test("DSH remote: readback requires every ownership, integrity, phase and residue condition", async () => {
+  for (const mutate of [
+    (detail) => { delete detail.installerResult.desktop.hashMatches; },
+    (detail) => { detail.installerResult.phase = "installing"; },
+    (detail) => { detail.installerResult.desktop.withinDeployment = false; },
+    (detail) => { detail.installerResult.desktop.manifestDeploymentMatches = false; },
+    (detail) => { detail.installerResult.desktop.residuePresent = true; },
+  ]) {
+    const f = deployment((call) => {
+      if (call.operation === "preflight") return { code: 0, stdout: JSON.stringify(dshPreflightDetail()) };
+      if (call.operation === "runInstallerAsUser") {
+        const detail = dshInstallerDetail(call.frame.args.argv);
+        if (call.frame.args.argv.includes("--remote-inspect")) mutate(detail);
+        return { code: 0, stdout: JSON.stringify(detail) };
+      }
+      return null;
+    });
+    assert.equal((await deploy(f.options)).reason, "dsh_readback_failed");
+  }
+});
+
+test("DSH remote: cleanup removes assets after a successful owned uninstall", async () => {
+  const f = recorder((call) => {
+    if (call.operation === "dshCleanupPreflight") {
+      return { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, recordExists: true, recordReadable: true, recordPhase: "installed", installerCapable: true, installerLoadFailed: false, desktop: { state: "present", referenced: true }, web: { state: "present", referenced: false }, remoteRoot: "C:\\Users\\remote\\.clawd\\remote-integrations\\deepseek-harness", installRoot: "C:\\Users\\remote\\.clawd\\remote-integrations\\deepseek-harness\\" + profile.installId }) };
+    }
+    if (call.operation === "runInstallerAsUser") {
+      return { code: 0, stdout: JSON.stringify({ ok: true, status: 0, installerResult: { schemaVersion: 1, operation: "remote-uninstall-owned", status: "ok", registrationRemoved: true, conflicts: [] } }) };
+    }
+    return null;
+  });
+  const result = await uninstallRemoteIntegrations({ profile: profile, deps: f.deps });
+  assert.equal(result.ok, true);
+  assert.equal(result.dshBridgeRemoved, true);
+  assert.ok(operations(f).includes("dshCleanupPreflight"));
+  assert.ok(operations(f).includes("runInstallerAsUser"));
+  assert.ok(operations(f).includes("rmdirEmpty"));
+  const preflightCall = f.calls.find((call) => call.operation === "dshCleanupPreflight");
+  const { BRIDGE_SOURCE_FILES } = require("../hooks/dsh-install");
+  const expectedAssets = [
+    "dsh-install.js", "dsh-notices.js", "dsh-remote-task.js",
+    ...BRIDGE_SOURCE_FILES.map((name) => `dsh-clawd-bridge/${name}`),
+  ];
+  assert.deepEqual(preflightCall.frame.args.assets, expectedAssets);
+});
+
+test("DSH remote: cleanup conflict, unreadable installer or unknown result does not remove hook files", async () => {
+  const cases = [
+    {
+      name: "conflict",
+      respond(call) {
+        if (call.operation === "dshCleanupPreflight") {
+          return { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, recordExists: true, recordReadable: true, recordPhase: "installed", installerCapable: true, installerLoadFailed: false, desktop: { state: "present", referenced: true }, web: { state: "present", referenced: false } }) };
+        }
+        if (call.operation === "runInstallerAsUser") {
+          return { code: 0, stdout: JSON.stringify({ ok: true, status: 0, installerResult: { schemaVersion: 1, operation: "remote-uninstall-owned", status: "ok", registrationRemoved: true, conflicts: [{ profile: "desktop" }] } }) };
+        }
+        return null;
+      },
+    },
+    {
+      name: "installer unreadable",
+      respond(call) {
+        if (call.operation === "dshCleanupPreflight") {
+          return { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, recordExists: true, recordReadable: true, recordPhase: "installed", installerCapable: false, installerLoadFailed: true, desktop: { state: "present", referenced: false }, web: { state: "missing", referenced: false } }) };
+        }
+        return null;
+      },
+    },
+    {
+      name: "unknown",
+      respond(call) {
+        if (call.operation === "dshCleanupPreflight") {
+          return { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, recordExists: true, recordReadable: true, recordPhase: "installed", installerCapable: true, installerLoadFailed: false, desktop: { state: "present", referenced: true }, web: { state: "present", referenced: false } }) };
+        }
+        if (call.operation === "runInstallerAsUser") {
+          return { code: 0, stdout: JSON.stringify({ ok: false, reason: "installer_result_unknown" }) };
+        }
+        return null;
+      },
+    },
+  ];
+  for (const item of cases) {
+    const f = recorder(item.respond);
+    if (item.name === "unknown") {
+      // An unknown installer result keeps the deployment lease and evidence.
+      await assert.rejects(
+        uninstallRemoteIntegrations({ profile: profile, deps: f.deps }),
+        (err) => err && err.code === "installer_result_unknown",
+      );
+    } else {
+      const result = await uninstallRemoteIntegrations({ profile: profile, deps: f.deps });
+      assert.equal(result.ok, false, item.name);
+      assert.equal(result.reason, "windows_dsh_cleanup_incomplete", item.name);
+    }
+    const hookRemoval = f.calls.filter((call) => call.operation === "removeFiles"
+      && call.frame.args.files.some((file) => file.endsWith("clawd-hook.js")));
+    assert.equal(hookRemoval.length, 0, item.name);
+  }
+});
+
+test("DSH remote: historical cleanup uses read-only reference checks when the installer cannot uninstall", async () => {
+  const clean = recorder((call) => call.operation === "dshCleanupPreflight"
+    ? { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, assetUnreadable: false, recordExists: false, recordReadable: true, recordInvalid: false, recordPhase: null, installerCapable: false, installerLoadFailed: false, desktop: { state: "missing", referenced: false, unreadable: false }, web: { state: "missing", referenced: false, unreadable: false } }) }
+    : null);
+  const ok = await uninstallRemoteIntegrations({ profile: profile, deps: clean.deps });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.dshBridgeRemoved, true);
+  assert.equal(operations(clean).includes("runInstallerAsUser"), false);
+
+  for (const refs of [
+    { desktop: { state: "present", referenced: true }, web: { state: "missing", referenced: false } },
+    { desktop: { state: "missing", referenced: false }, web: { state: "unreadable", referenced: false } },
+  ]) {
+    const f = recorder((call) => call.operation === "dshCleanupPreflight"
+      ? { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, assetUnreadable: false, recordExists: false, recordReadable: true, recordInvalid: false, recordPhase: null, installerCapable: false, installerLoadFailed: false, ...refs }) }
+      : null);
+    const result = await uninstallRemoteIntegrations({ profile: profile, deps: f.deps });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "windows_dsh_cleanup_incomplete");
+    assert.equal(f.calls.some((call) => call.operation === "removeFiles"
+      && call.frame.args.files.some((file) => file.endsWith("clawd-hook.js"))), false);
+  }
+});
+
+test("DSH remote: unreadable remote state blocks cleanup without deleting files", async () => {
+  for (const state of [
+    { recordReadable: false, recordExists: false },
+    { recordInvalid: true, recordExists: true, installerCapable: true },
+    { assetUnreadable: true, assetPresent: false },
+  ]) {
+    const f = recorder((call) => {
+      if (call.operation === "dshCleanupPreflight") {
+        return { code: 0, stdout: JSON.stringify({
+          ok: true, assetPresent: false, assetUnreadable: false,
+          recordExists: false, recordReadable: true, recordInvalid: false, recordPhase: null,
+          installerCapable: false, installerLoadFailed: false,
+          desktop: { state: "missing", referenced: false, unreadable: false },
+          web: { state: "missing", referenced: false, unreadable: false },
+          ...state,
+        }) };
+      }
+      if (call.operation === "runInstallerAsUser") {
+        return { code: 0, stdout: JSON.stringify({ ok: true, status: 0, installerResult: { schemaVersion: 1, operation: "remote-uninstall-owned", status: "ok", registrationRemoved: true, conflicts: [] } }) };
+      }
+      return null;
+    });
+    const result = await uninstallRemoteIntegrations({ profile, deps: f.deps });
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, "windows_dsh_cleanup_incomplete");
+    assert.equal(f.calls.some((call) => call.operation === "removeFiles"
+      && call.frame.args.files.some((file) => file.endsWith("clawd-hook.js"))), false);
+  }
+});
+
+test("DSH remote: cleanup with assets but no deployment record uses read-only reference checks", async () => {
+  const f = recorder((call) => call.operation === "dshCleanupPreflight"
+    ? { code: 0, stdout: JSON.stringify({ ok: true, assetPresent: true, recordExists: false, recordReadable: true, recordPhase: null, installerCapable: false, installerLoadFailed: false, desktop: { state: "missing", referenced: false }, web: { state: "missing", referenced: false } }) }
+    : null);
+  const result = await uninstallRemoteIntegrations({ profile: profile, deps: f.deps });
+  assert.equal(result.ok, true);
+  assert.equal(result.dshBridgeRemoved, true);
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+});
+
+test("DSH remote: cleanup always performs one DSH read-only check", async () => {
+  const f = recorder();
+  const result = await uninstallRemoteIntegrations({ profile, deps: f.deps });
+  assert.equal(result.ok, true);
+  assert.equal(operations(f).filter((operation) => operation === "dshCleanupPreflight").length, 1);
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+});
+
+
+test("DSH remote: cleanup refuses an unloadable installer with assets but no deployment record", async () => {
+  const f = recorder((call) => call.operation === "dshCleanupPreflight"
+    ? { code: 0, stdout: JSON.stringify({
+      ok: true, assetPresent: true, assetUnreadable: false,
+      recordExists: false, recordReadable: true, recordInvalid: false,
+      installerCapable: false, installerLoadFailed: true,
+      desktop: { state: "missing", referenced: false, unreadable: false },
+      web: { state: "missing", referenced: false, unreadable: false },
+    }) }
+    : null);
+  const result = await uninstallRemoteIntegrations({ profile, deps: f.deps });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "windows_dsh_cleanup_incomplete");
+  assert.equal(result.hint, "remoteSshErrWindowsDshCleanupIncomplete");
+  assert.equal(operations(f).includes("runInstallerAsUser"), false);
+  assert.equal(operations(f).includes("removeFiles"), false);
 });

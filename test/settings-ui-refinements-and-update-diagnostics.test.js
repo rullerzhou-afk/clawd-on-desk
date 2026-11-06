@@ -11,15 +11,8 @@ const { i18n } = require("../src/i18n");
 const initUpdater = require("../src/updater");
 
 describe("Settings UI refinements and update diagnostics (5-point refinement plan)", () => {
-  it("Point 1: centers 'Auto' and 'Intercept' in Codex permission mode slider", () => {
-    assert.match(
-      settingsCss,
-      /\.codex-permission-mode-segmented button \{[\s\S]*display:\s*flex;[\s\S]*align-items:\s*center;[\s\S]*justify-content:\s*center;[\s\S]*text-align:\s*center;/
-    );
-    assert.match(
-      settingsCss,
-      /\.codex-permission-mode-segmented \.settings-segmented-radio-label \{[\s\S]*text-align:\s*center;[\s\S]*\}/
-    );
+  it("Codex approval settings: removes the retired mode slider CSS", () => {
+    assert.doesNotMatch(settingsCss, /codex-permission-mode-segmented|--codex-permission-mode-active-index/);
   });
 
   it("Point 2: uses vertical column layout for CodeBuddy custom permission URL row to prevent text squeezing", () => {

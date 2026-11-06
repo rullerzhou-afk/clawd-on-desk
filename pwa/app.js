@@ -499,6 +499,11 @@
       var url = scheme + host + ":" + this.config.port + "/ws?";
       url += used.kind === "pair" ? "pair=" + encodeURIComponent(used.pair) : "token=" + encodeURIComponent(used.token);
       if (this.storageOk) url += "&proto=2&cid=" + encodeURIComponent(this.cid);
+      // iOS home-screen PWAs share Safari's UA; report the display mode so the
+      // desktop device list can tell the two apart (#1299).
+      var standalone = navigator.standalone === true
+        || (window.matchMedia && window.matchMedia("(display-mode: standalone)").matches);
+      if (standalone) url += "&mode=pwa";
       this._setState("connecting");
       log("Connecting to " + this.config.host + ":" + this.config.port + "...");
       var socket;

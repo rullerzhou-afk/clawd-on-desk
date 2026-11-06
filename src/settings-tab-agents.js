@@ -11,10 +11,6 @@
   let helpers = null;
   let ops = null;
   let coreRef = null;
-  const CODEX_PERMISSION_MODE_OPTIONS = [
-    { id: "auto", labelKey: "codexPermissionModeAuto" },
-    { id: "intercept", labelKey: "codexPermissionModeIntercept" },
-  ];
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
   const CUSTOM_TOOL_SCAN_STATUS_MIN_MS = 1200;
   let agentHintActionPending = false;
@@ -1191,6 +1187,12 @@
           hint.textContent = t("traecodeEnableHint");
           text.appendChild(hint);
         }
+        if (agent.capabilities?.approvalReminder && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-kiro-desktop-hint";
+          hint.textContent = t("kiroDesktopEnableHint");
+          text.appendChild(hint);
+        }
         // MiniMax Code has the same manual-enable gap: the plugin directory
         // is on disk but the app decides whether hooks fire.
         if (!agent.custom && agent.id === "minimax" && readers.readAgentIntegrationInstalled(agent.id)) {
@@ -1333,7 +1335,7 @@
   }
 
   // Card body of a connected agent, in display order: Approvals → Alerts →
-  // Connection → WSL → Quota → Info, then the quiet disconnect/remove block.
+  // Connection → WSL → Quota → Advanced → Info, then the quiet disconnect/remove block.
   // Groups with no rows are dropped, so no agent renders an empty label.
   function buildAgentDetailRows(agent) {
     const caps = agent.capabilities || {};
@@ -1341,6 +1343,7 @@
     const alerts = [];
     const connection = [];
     const quota = [];
+    const advanced = [];
     const info = [];
 
     if (agent.custom) {
@@ -1348,7 +1351,9 @@
     }
 
     if (agent.id === "codex") {
-      approvals.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
+      const routing = buildCodexApprovalRoutingRow();
+      approvals.push(routing.row);
+      advanced.push(buildCodexInterceptApprovalsRow(agent, routing.syncMode));
       approvals.push(buildAgentSwitchRow({
         agent,
         flag: "nativeNotificationSoundEnabled",
@@ -1373,6 +1378,24 @@
       }));
     }
 
+    if (caps.approvalReminder) {
+      approvals.push(buildAgentSwitchRow({
+        agent,
+        flag: "permissionsEnabled",
+        extraClass: "row-sub",
+        disabled: computeAgentSubSwitchDisabled(agent.id, "permissionsEnabled"),
+        buildText: (text) => {
+          const label = document.createElement("span");
+          label.className = "row-label";
+          label.textContent = t("rowKiroReminder");
+          text.appendChild(label);
+          const desc = document.createElement("span");
+          desc.className = "row-desc";
+          desc.textContent = t("rowKiroReminderDesc");
+          text.appendChild(desc);
+        },
+      }));
+    }
     if (caps.permissionApproval || caps.interactiveBubble) {
       approvals.push(buildAgentSwitchRow({
         agent,
@@ -1488,6 +1511,7 @@
       buildAgentDetailGroup("agentGroupConnection", connection),
       buildAgentDetailGroup("agentGroupWsl", buildAgentInstanceRows(agent)),
       buildAgentDetailGroup("agentGroupQuota", quota),
+      buildAgentDetailGroup("agentGroupAdvanced", advanced),
       buildAgentDetailGroup("agentGroupInfo", info),
     ].filter(Boolean);
     const body = [];
@@ -2271,12 +2295,16 @@
     return row;
   }
 
-  function computeAgentSubSwitchDisabled(agentId, flag) {
+  function computeAgentSubSwitchDisabled(
+    agentId,
+    flag,
+    permissionMode = readers.readAgentPermissionMode(agentId)
+  ) {
     if (flag === "enabled") return false;
     const masterOn = readers.readAgentFlagValue(agentId, "enabled");
     if (!masterOn) return true;
     if (agentId === "codex" && flag === "nativeNotificationSoundEnabled") {
-      return readers.readAgentPermissionMode(agentId) !== "auto";
+      return permissionMode !== "auto";
     }
     // Subagent sub-gate sits under the permission switch: pointless to toggle
     // while the parent permission gate already suppresses every CC bubble.
@@ -2286,71 +2314,91 @@
     return false;
   }
 
-  function buildCodexPermissionModeRow(agent, disabled) {
-    const row = document.createElement("div");
-    row.className = "row row-sub";
+  function buildCodexApprovalRoutingRow() {
+    const parts = helpers.buildSettingRow({
+      labelKey: "rowCodexApprovalRouting",
+      descriptionKey: "rowCodexApprovalRoutingAutoDesc",
+      className: "row-sub codex-approval-routing-row",
+    });
+    const syncMode = (mode) => {
+      parts.descriptionElement.textContent = t(mode === "intercept"
+        ? "rowCodexApprovalRoutingInterceptDesc" : "rowCodexApprovalRoutingAutoDesc");
+    };
+    syncMode(readers.readAgentPermissionMode("codex"));
+    // Keep approval routing visible so users can understand where to respond
+    // without opening an extra disclosure.
+    return { row: parts.element, syncMode };
+  }
 
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("rowCodexPermissionMode");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t("rowCodexPermissionModeDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const control = helpers.buildSegmentedRadio({
-      id: "codex-permission-mode",
-      ariaLabel: t("rowCodexPermissionMode"),
-      className: "codex-permission-mode-segmented",
-      stopPropagation: true,
-      value: readers.readAgentPermissionMode(agent.id),
-      disabled: !!disabled,
+  function buildCodexInterceptApprovalsRow(agent, syncApprovalRouting) {
+    const parts = helpers.buildSettingRow({
+      labelKey: "rowCodexInterceptApprovals",
+      descriptionKey: "rowCodexInterceptApprovalsDesc",
+      className: "row-sub",
+    });
+    const control = helpers.buildSwitch({
+      checked: readers.readAgentPermissionMode(agent.id) === "intercept",
+      disabled: computeAgentSubSwitchDisabled(agent.id, "permissionMode"),
       pending: permissionModePending.has(agent.id),
-      options: CODEX_PERMISSION_MODE_OPTIONS.map((mode) => ({
-        value: mode.id, label: t(mode.labelKey), dataset: { mode: mode.id },
-      })),
-      onValueSync(value, element) {
-        element.style.setProperty("--codex-permission-mode-active-index", String(getCodexPermissionModeIndex(value)));
-      },
-      async onChange(mode) {
-        if (permissionModePending.has(agent.id)) return false;
+      ariaLabelledBy: parts.labelElement.id,
+      ariaDescribedBy: parts.descriptionElement.id,
+      stopPropagation: true,
+      async onToggle({ nextChecked }) {
+        if (permissionModePending.has(agent.id)) return;
         permissionModePending.add(agent.id);
+        control.setState({ checked: nextChecked, pending: true });
+        const snapshotBeforeSave = state.snapshot;
+        const nextMode = nextChecked ? "intercept" : "auto";
+        let saved = false;
+        // Failure settles all mode displays from the snapshot.
+        // Success without a newer snapshot settles them from the optimistic mode.
+        // Success with a newer snapshot settles them from that snapshot.
+        // Reference equality relies on settings-ui-core.js replacing state.snapshot on each update.
         try {
-          const result = await window.settingsAPI.command("setAgentPermissionMode", { agentId: agent.id, mode });
-          if (result && result.status === "ok") return true;
-          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+          const result = await window.settingsAPI.command("setAgentPermissionMode", { agentId: agent.id, mode: nextMode });
+          saved = !!(result && result.status === "ok");
+          if (!saved) {
+            ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+          }
         } catch (err) {
           ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
         } finally {
           permissionModePending.delete(agent.id);
-          state.mountedControls.agentPermissionModes.get(agent.id)?.control.setPending(false);
+          // The card may have been rebuilt while saving. Settle the currently
+          // mounted switch so it does not stay busy after the old one is gone.
+          const mounted = state.mountedControls.agentPermissionModes.get(agent.id);
+          const mode = saved && state.snapshot === snapshotBeforeSave
+            ? nextMode : readers.readAgentPermissionMode(agent.id);
+          mounted?.syncMode(mode);
         }
-        return false;
       },
     });
-    ctrl.appendChild(control.element);
-    row.appendChild(ctrl);
+    function syncMode(mode) {
+      control.setState({
+        checked: mode === "intercept",
+        disabled: computeAgentSubSwitchDisabled(agent.id, "permissionMode"),
+        pending: permissionModePending.has(agent.id),
+      });
+      syncApprovalRouting(mode);
+      const soundSwitch = state.mountedControls.agentSwitches.get(
+        readers.agentSwitchStateId(agent.id, "nativeNotificationSoundEnabled")
+      );
+      soundSwitch?.syncDisabledState(computeAgentSubSwitchDisabled(agent.id, "nativeNotificationSoundEnabled", mode));
+    }
+
+    control.element.setAttribute("data-settings-focus-key", "codex-intercept-approvals");
+    parts.controlElement.appendChild(control.element);
     state.mountedControls.agentPermissionModes.set(agent.id, {
-      row,
+      row: parts.element,
       control,
       agentId: agent.id,
+      syncMode,
       syncFromSnapshot() {
-        control.setValue(readers.readAgentPermissionMode(agent.id));
-        control.setDisabled(!readers.readAgentFlagValue(agent.id, "enabled"));
+        syncMode(readers.readAgentPermissionMode(agent.id));
       },
     });
-    helpers.attachDescriptionDisclosure(row);
-    return row;
-  }
-
-  function getCodexPermissionModeIndex(mode) {
-    return Math.max(0, CODEX_PERMISSION_MODE_OPTIONS.findIndex((option) => option.id === mode));
+    helpers.attachDescriptionDisclosure(parts.element);
+    return parts.element;
   }
 
   function syncAgentSwitchDisabledState(meta, disabled) {

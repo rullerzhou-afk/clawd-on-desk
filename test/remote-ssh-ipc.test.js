@@ -2052,6 +2052,25 @@ test("remoteSsh:cleanup reports the precise Hermes residual path to the delete d
   } finally { ipc.dispose(); }
 });
 
+test("issue #1316: remoteSsh:cleanup shows the precise Codex residual reason", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const detail = "2 conflicting Codex hook entries remain in hooks.json";
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController: mockSettingsController([{ ...baseProfile, managedDeployTargets: [ownedTarget()] }]),
+    remoteSshRuntime: mockRuntime(), BrowserWindow, spawn: makeSucceedingSpawn().spawn,
+    uninstallRemoteIntegrationsFn: async () => ({ ok: false, reason: "windows_codex_cleanup_incomplete", stderr: detail }),
+  });
+  try {
+    const result = await ipcMain.invoke("remoteSsh:cleanup", "p1");
+    assert.equal(result.status, "ok");
+    assert.equal(result.uninstalled, false);
+    assert.equal(result.message, detail);
+    assert.deepEqual(result.warnings, [detail]);
+  } finally { ipc.dispose(); }
+});
+
 test("remoteSsh:cleanup never mutates a never-deployed remote", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
@@ -3663,4 +3682,145 @@ for (const installed of [false, true]) {
     assert.equal(result.status, "ok");
     assert.equal(result.codexHooksInstalled, installed);
   });
+}
+
+test("DSH remote: deploy opens DSH locally, sets the expectation marker and returns DSH fields", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([baseProfile]);
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async () => ({
+      ok: true,
+      remoteNode: { nodeBin: "/usr/local/bin/node", version: "v20.10.0", source: "path" },
+      dshBridgeInstalled: true,
+      dshRestartRequired: true,
+    }),
+  });
+  const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(result.status, "ok");
+  assert.equal(result.dshBridgeInstalled, true);
+  assert.equal(result.dshRestartRequired, true);
+  const stamp = settingsController._commandCalls.find((call) => call.action === "remoteSsh.markDeployed");
+  assert.equal(stamp.args.expectedTarget.dshInstalled, true);
+  const enabled = settingsController._commandCalls.find((call) => call.action === "setAgentFlag");
+  assert.deepEqual(enabled.args, { agentId: "deepseek-harness", flag: "enabled", value: true });
+  ipc.dispose();
+});
+
+test("DSH remote: an incomplete discovery warning is passed through without blocking deploy", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([baseProfile]);
+  const warning = { reason: "dsh_discovery_incomplete", hint: "remoteSshWarnDshDiscoveryIncomplete" };
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async () => ({ ok: true, dshDiscoveryWarning: warning }),
+  });
+  const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(result.status, "ok");
+  assert.deepEqual(result.dshDiscoveryWarning, warning);
+  ipc.dispose();
+});
+
+test("DSH remote: deploy without DSH neither marks nor enables it", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([baseProfile]);
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: mockRuntime(),
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async () => ({ ok: true, remoteNode: { nodeBin: "/usr/local/bin/node", version: "v20.10.0", source: "path" } }),
+  });
+  const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(result.status, "ok");
+  assert.equal(result.dshBridgeInstalled, false);
+  assert.equal(result.dshRestartRequired, false);
+  const stamp = settingsController._commandCalls.find((call) => call.action === "remoteSsh.markDeployed");
+  assert.equal(stamp.args.expectedTarget.dshInstalled, false);
+  assert.equal(settingsController._commandCalls.some((call) => call.action === "setAgentFlag"), false);
+  ipc.dispose();
+});
+
+for (const dshInstalled of [true, false, undefined]) {
+  test(`DSH remote: IPC cleanup reaches owned uninstall with stored DSH flag ${dshInstalled}`, async () => {
+    const ipcMain = mockIpcMain();
+    const { BrowserWindow } = mockBrowserWindow();
+    const settingsController = mockSettingsController([{
+      ...readyProfile,
+      remotePlatform: "win32",
+      remoteHome: "C:\\Users\\pc",
+      detectedRemoteNodeBin: "C:\\Node\\node.exe",
+      managedDeployTargets: [ownedTarget({ remotePlatform: "win32", remoteHome: "C:\\Users\\pc", dshInstalled })],
+    }]);
+    const seen = [];
+    const { uninstallRemoteIntegrations: realUninstall } = require("../src/remote-ssh-deploy");
+    const ipc = registerRemoteSshIpc({
+      ipcMain,
+      settingsController,
+      remoteSshRuntime: mockRuntime(),
+      BrowserWindow,
+      spawn: makeDshCleanupSpawn(seen),
+      getInstallationIdentity: () => ({ installId: TEST_INSTALL_ID }),
+      uninstallRemoteIntegrationsFn: async ({ profile, runtime }) => {
+        // Run the real cleanup implementation with the same profile the IPC
+        // built from managedDeployTargets; only the transport is stubbed.
+        return realUninstall({ profile, runtime, deps: { spawn: makeDshCleanupSpawn(seen) } });
+      },
+    });
+    const result = await ipcMain.invoke("remoteSsh:cleanup", { profileId: "p1" });
+    assert.equal(result.status, "ok");
+    assert.equal(result.uninstalled, true, JSON.stringify({ result, operations: seen.map((call) => call.operation) }));
+    assert.equal(seen.some((call) => call.operation === "dshCleanupPreflight"), true);
+    assert.equal(seen.some((call) => call.operation === "runInstallerAsUser"), true);
+    ipc.dispose();
+  });
+}
+
+
+
+function makeDshCleanupSpawn(seen) {
+  return function spawn(tool, args) {
+    const child = new EventEmitter();
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    child.stdin = { end(input) {
+      const frame = input ? JSON.parse(input) : null;
+      const operation = tool === "scp" ? "upload" : (frame && frame.args && frame.args.operation) || "discovery";
+      seen.push({ tool, operation, frame });
+      let detail = { ok: true };
+      if (operation === "discovery") detail = { platform: "win32", homedir: "C:\\Users\\pc", execPath: "C:\\Node\\node.exe", version: "v22.0.0" };
+      if (operation === "readIdentity") detail = { identity: { version: 2, installId: TEST_INSTALL_ID, profileId: "p1", runtimeKey: "account-default", layoutVersion: 1, routingNonce: "d".repeat(32), remotePort: 23333, deployedAt: 100 } };
+      if (operation === "dshCleanupPreflight") detail = {
+        ok: true, assetPresent: true, assetUnreadable: false,
+        recordExists: true, recordReadable: true, recordInvalid: false, recordPhase: "installed",
+        installerCapable: true, installerLoadFailed: false, dshHome: "C:\\Users\\pc\\.dsh",
+        desktop: { state: "present", referenced: true, unreadable: false },
+        web: { state: "missing", referenced: false, unreadable: false },
+      };
+      if (operation === "runInstallerAsUser") detail = {
+        ok: true, status: 0,
+        installerResult: { schemaVersion: 1, operation: "remote-uninstall-owned", status: "ok", registrationRemoved: true, conflicts: [] },
+      };
+      const response = { code: 0, stdout: `banner\n${JSON.stringify(detail)}\n` };
+      queueMicrotask(() => {
+        if (response.stdout) child.stdout.emit("data", Buffer.from(response.stdout));
+        child.emit("exit", response.code, null);
+        child.emit("close", response.code, null);
+      });
+    } };
+    return child;
+  };
 }

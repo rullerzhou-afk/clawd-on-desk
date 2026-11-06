@@ -369,7 +369,7 @@ Kiro CLI 状态同步（per-agent hook，stdin JSON）：
   Kiro CLI 触发事件
     → hooks/kiro-hook.js（camelCase 事件 → agents/kiro-cli.js 映射 → HTTP POST）
     → 同上状态机（agent_id: kiro-cli）
-  注意：Kiro 无 global hooks，hooks/kiro-install.js 把 hook 注入到 ~/.kiro/agents/ 下每个
+  注意：Kiro CLI 无 global hooks，hooks/kiro-install.js 把 hook 注入到 ~/.kiro/agents/ 下每个
   custom agent 配置里，并额外维护一个 "clawd" agent（继承 kiro_default，启动时从 kiro_default
   重新同步以避免行为漂移）。内置 kiro_default 没有可编辑 JSON，用户需 `kiro-cli --agent clawd`
   或 `/agent swap clawd` 才能启用 hooks。
@@ -696,9 +696,20 @@ WSL 状态同步（本机 loopback，但 PID 属于 Linux VM）：
     → hooks/codex-hook.js POST /permission { tool_name, tool_input, tool_input_description, session_id, turn_id }
     → 默认 auto 模式：准确的本机 session / turn 记录确认 user reviewer 时才由 Clawd 展示 Allow / Deny；自动 reviewer、MCP / app 覆盖、远程 / WSL、无法确认或过期记录立即 no-decision，Codex 继续处理
     → 显式 intercept 模式：main.js 创建普通 Allow / Deny bubble，用户点击后 codex-hook.js stdout 输出官方 JSON decision
-    → 旧 native 偏好规范化为 auto；升级时旧 intercept / native 统一迁到 Auto 一次，之后重新选择的 Intercept 会保留。Permissions & approval → On this machine → per tool 提供 Agents → Codex 路由设置入口
+    → 旧 native 偏好规范化为 auto；升级时旧 intercept / native 统一迁到 Auto 一次，之后重新选择的 Intercept 会保留。Settings → AI Coding Tools → Codex 的「审批方式」行说明当前路由；「高级 → 所有审批都交给桌宠」开关打开对应 intercept、关闭对应 auto，底层值和命令不变。Permissions & approval → On this machine → per tool 的摘要行可跳转并聚焦该高级开关
     → DND / disabled / bubble hidden / Clawd unavailable 时 stdout "{}"，Codex 回到原生审批提示
 ```
+
+
+### Kiro IDE
+
+Kiro IDE（`kiro-desktop`）通过受信任工作区的全局 hooks 上报 SessionStart、UserPromptSubmit、PreToolUse、PostToolUse、Stop。安装器管理 `~/.kiro/hooks/clawd-on-desk.json`，仅精确两 token 的 Node + `kiro-desktop-hook.js` basename 证明条目所有权。Windows 使用 `windowsWrapper:"none"` 供宿主 shell 执行，hook stdout 始终零字节。与 Kiro CLI 和 KiroCrew 各自独立。
+
+`agents/kiro-desktop-log-monitor.js` 每 5 秒发现最近 24 小时内变动的会话文件，最多跟踪 64 个，每秒增量读完整 JSONL 行。每文件每轮读取上限 1 MiB、单行上限 256 KiB，身份变化、缩短或已消费换行边界被改写时重设基线。首次发现只记历史基线，退役偏移用最多 500 条的 LRU 保留。只提取确认关联字段和清洗过的 200 字问题，并读取 `session.json.workspacePaths[0]` 作为聚焦后备。
+
+`src/kiro-desktop-runtime.js` 将监视器的 raw session ID 在入口规范化一次，再交给独立的 `kiro-desktop-interactions.js` 账本。账本按 executionId、toolCallId、consentRound 精确解决，每会话最多 20 条、总会话最多 200。每条 pendingSince 取加入时的注入时钟，超过 24 小时后失效，以兜住漏读的解决或进程退出信号。getPendingSessionIds／getLatest 读取时移除过期条目并触发 onChange，复用 state 每 10 秒的既有清理节奏收卡、撤等待投影，并恢复普通会话过期规则。状态呈现将已有本机会话投影成 pendingAttention，canonical state 与 PID 保留，未决确认保护会话免于纯年龄过期，未出现 hook 的会话只弹卡。Stop／UserPromptSubmit、会话删除、监视器退役或重置都会清对应账本。observed／recovered 的 turn_end 都仅清对应 execution 的账本。取消一轮后若未触发 Stop，由正常工作超时回到待机。小结仅计 PreToolUse 工具数，开始与完成能力保持 null。
+
+`kiro-desktop-reminder.js` 单独管理每会话一张只读卡。关闭卡面保留未决事实，后续新键允许再提醒。勿扰、通知策略、全局权限气泡、agent 启用状态及提醒开关控制卡面，卡片无自动过期。设置关闭通知／全局权限气泡／全部气泡时立即清卡，账本仍驱动等确认呈现。相关策略、提醒开关或勿扰恢复后重新同步未决卡片，用户主动关闭过的键继续保持关闭。停用或卸载停止监视器并清账本，代次栅栏丢弃旧回调。应用启动要求已提交的 enabled 和 integrationInstalled，Settings 在安装成功或重新启用时显式传安装意图。
 
 ## Local Claude Session History
 

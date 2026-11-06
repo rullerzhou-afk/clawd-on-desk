@@ -752,6 +752,7 @@ const {
   deployTargetFingerprint,
   deployTargetDrift,
   DEPLOY_TARGET_FIELDS,
+  sanitizeManagedDeployTarget,
 } = require("../src/remote-ssh-profile");
 
 test("deployTargetFingerprint normalizes port 22 to undefined (matches UI omit-default)", () => {
@@ -1473,4 +1474,52 @@ test("real controller: delete + markDeployed serialize (no resurrected profile)"
   } finally {
     try { fs.unlinkSync(tmp); } catch {}
   }
+});
+
+test("DSH remote: dshInstalled lives on Windows deployment targets only", () => {
+  const win = sanitizeManagedDeployTarget({
+    host: "user@pc", remotePlatform: "win32", deployedAt: 12345,
+    profileId: "p1", installId: "a".repeat(64), remoteHome: "C:\\Users\\pc",
+    dshInstalled: true,
+  });
+  assert.equal(win.dshInstalled, true);
+  const posix = sanitizeManagedDeployTarget({
+    host: "user@pi", remotePlatform: "posix", deployedAt: 12345,
+    profileId: "p1", installId: "a".repeat(64), remoteHome: "/home/user",
+    dshInstalled: true,
+  });
+  assert.equal("dshInstalled" in posix, false);
+  const falseValue = sanitizeManagedDeployTarget({
+    host: "user@pc", remotePlatform: "win32", deployedAt: 12345,
+    profileId: "p1", installId: "a".repeat(64), remoteHome: "C:\\Users\\pc",
+    dshInstalled: false,
+  });
+  assert.equal("dshInstalled" in falseValue, false);
+  assert.equal(deployTargetFingerprint({ ...basicProfile(), dshInstalled: true }).dshInstalled, true);
+  assert.equal(deployTargetFingerprint(basicProfile()).dshInstalled, undefined);
+});
+
+test("DSH remote: markDeployed persists dshInstalled on the Windows target and keeps the lock", () => {
+  const target = {
+    host: "user@pc", port: 22, remoteForwardPort: 23333,
+    remotePlatform: "win32", dshInstalled: true,
+    runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1,
+  };
+  const cmd = commandRegistry["remoteSsh.markDeployed"];
+  assert.equal(cmd.lockKey, "remoteSsh");
+  const r = cmd({
+    id: "p1", deployedAt: 12345, remotePlatform: "win32",
+    expectedTarget: target,
+    installId: "a".repeat(64), remoteHome: "C:\\Users\\pc",
+    remoteNode: { nodeBin: "C:\\Node\\node.exe", version: "v22.0.0", source: "discovery" },
+  }, { snapshot: { remoteSsh: { profiles: [{ ...basicProfile({ host: "user@pc" }), id: "p1" }] } } });
+  assert.equal(r.status, "ok", JSON.stringify(r));
+  assert.equal(r.commit.remoteSsh.profiles[0].managedDeployTargets[0].dshInstalled, true);
+
+  const updated = commandRegistry["remoteSsh.update"]({
+    ...r.commit.remoteSsh.profiles[0], label: "Renamed",
+  }, { snapshot: r.commit });
+  assert.equal(updated.status, "ok");
+  assert.equal(updated.commit.remoteSsh.profiles[0].label, "Renamed");
+  assert.equal(updated.commit.remoteSsh.profiles[0].managedDeployTargets[0].dshInstalled, true);
 });

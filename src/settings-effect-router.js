@@ -80,10 +80,14 @@ function createSettingsEffectRouter(options = {}) {
   const syncWindowTitles = options.syncWindowTitles || noop;
   const emitSessionSnapshot = options.emitSessionSnapshot || noop;
   const cleanStaleSessions = options.cleanStaleSessions || noop;
+  const refreshPendingAttention = options.refreshPendingAttention || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
   const dismissInteractivePermissionBubbles = options.dismissInteractivePermissionBubbles || noop;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
+  const clearCodexRemoteFallbackNotices = options.clearCodexRemoteFallbackNotices || noop;
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || noop;
+  const clearKiroDesktopReminderCards = options.clearKiroDesktopReminderCards || noop;
+  const resyncKiroDesktopReminderCards = options.resyncKiroDesktopReminderCards || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
   const refreshPermissionAutoCloseForPolicy = options.refreshPermissionAutoCloseForPolicy || noop;
@@ -251,6 +255,22 @@ function createSettingsEffectRouter(options = {}) {
     }
 
     // 2. Reactive side effects.
+    if ("agents" in changes) {
+      safeCall(logWarn, "Clawd: pending attention refresh failed:", refreshPendingAttention);
+    }
+    const suppressKiroReminders = changes.notificationBubbleAutoCloseSeconds === 0
+      || changes.hideBubbles === true
+      || changes.permissionBubblesEnabled === false;
+    if (suppressKiroReminders) {
+      safeCall(logWarn, "Clawd: clear Kiro reminders failed:", clearKiroDesktopReminderCards, "settings-policy-disabled");
+    }
+    const resumeKiroReminders = changes.notificationBubbleAutoCloseSeconds > 0
+      || changes.hideBubbles === false
+      || changes.permissionBubblesEnabled === true
+      || changes.agents?.["kiro-desktop"]?.permissionsEnabled === true;
+    if (!suppressKiroReminders && resumeKiroReminders) {
+      safeCall(logWarn, "Clawd: resync Kiro reminders failed:", resyncKiroDesktopReminderCards);
+    }
     if ("hideBubbles" in changes || "permissionBubblesEnabled" in changes) {
       safeCall(logWarn, "Clawd: syncPermissionShortcuts failed:", syncPermissionShortcuts);
     }
@@ -283,6 +303,21 @@ function createSettingsEffectRouter(options = {}) {
         logWarn,
         "Clawd: refresh notification bubble timers failed:",
         refreshPassiveNotifyAutoClose
+      );
+    }
+    // A remote Codex fallback notice is owned by the notification channel but
+    // also disappears with the Codex bubble gate. Clear both queued and shown
+    // notices so a later re-enable cannot resurrect a stale one.
+    if (
+      (("permissionBubblesEnabled" in changes) && changes.permissionBubblesEnabled === false) ||
+      (("hideBubbles" in changes) && changes.hideBubbles === true) ||
+      (("notificationBubbleAutoCloseSeconds" in changes) && changes.notificationBubbleAutoCloseSeconds === 0)
+    ) {
+      safeCall(
+        logWarn,
+        "Clawd: clear Codex remote fallback notices failed:",
+        clearCodexRemoteFallbackNotices,
+        "settings-policy-disabled"
       );
     }
     if (

@@ -108,6 +108,10 @@ const SUPPORTED_DSH_RANGE = PREFERRED_DSH_FAMILY.range;
 const VERIFIED_DSH_ARTIFACT = VERIFIED_DSH_ARTIFACTS[0].artifact;
 const VERIFIED_DSH_ARTIFACT_INTEGRITY = VERIFIED_DSH_ARTIFACTS[0].integrity;
 const SOURCE_AUDIT_BASELINE_COMMIT = "47f943859bef60e4160492346772ded9b24f765a";
+// Remote entries print exactly one machine-readable line. The scheduled-task
+// executor parses the same line, so the wire contract lives here once.
+const DSH_RESULT_SENTINEL = "CLAWD_DSH_RESULT_V1=";
+const DSH_RESULT_SCHEMA_VERSION = 1;
 const DEFAULT_OPERATION_TIMEOUT_MS = 120000;
 // plugin add/remove must outlast the upstream write lock, whose wait ceiling is
 // 120s, so Clawd does not kill dsh while it is still queued for the lock.
@@ -132,6 +136,29 @@ const BRIDGE_SOURCE_FILES = Object.freeze([
 ]);
 
 let mutationTail = Promise.resolve();
+
+function parseDshInstallerResult(stdout, expectedOperation) {
+  const lines = String(stdout || "")
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith(DSH_RESULT_SENTINEL));
+  if (lines.length !== 1) return { ok: false, error: "installer did not return exactly one result sentinel" };
+  let result;
+  try {
+    result = JSON.parse(lines[0].slice(DSH_RESULT_SENTINEL.length));
+  } catch (err) {
+    return { ok: false, error: `installer result is not valid JSON: ${err.message}` };
+  }
+  if (!result || result.schemaVersion !== DSH_RESULT_SCHEMA_VERSION) {
+    return { ok: false, error: "unsupported installer result schema" };
+  }
+  if (!["ok", "skipped", "error"].includes(result.status)) {
+    return { ok: false, error: "invalid installer result status" };
+  }
+  if (expectedOperation && result.operation !== expectedOperation) {
+    return { ok: false, error: "installer returned the wrong operation" };
+  }
+  return { ok: true, result };
+}
 
 function resolveDshHome(env = process.env) {
   const override = env && typeof env.DSH_HOME === "string" ? env.DSH_HOME.trim() : "";
@@ -3472,15 +3499,17 @@ async function unlinkManagedProfileResidue(health, options = {}) {
     return { removed: false, reason: "not-exact-managed-residue" };
   }
   const managedRoot = resolveManagedRoot(options);
-  const expectedGeneration = path.join(
-    managedRoot,
-    "generations",
-    health.marker.bundleHash
-  );
-  if (
-    !isManagedGenerationRecord(health.profileResolved, managedRoot, options)
-    || !sameResolvedPath(health.profileResolved.packageDir, expectedGeneration, options.platform)
-  ) {
+  const expectedGeneration = typeof options.residueExpectedGeneration === "string"
+    ? options.residueExpectedGeneration
+    : path.join(managedRoot, "generations", health.marker.bundleHash);
+  // The remote deployment uses generationId directories under its own root;
+  // callers can supply the exact ownership predicate without reimplementing
+  // the safe isolate/verify/unlink sequence below.
+  const generationOwned = typeof options.residueGenerationCheck === "function"
+    ? options.residueGenerationCheck(health.profileResolved, expectedGeneration)
+    : (isManagedGenerationRecord(health.profileResolved, managedRoot, options)
+      && sameResolvedPath(health.profileResolved.packageDir, expectedGeneration, options.platform));
+  if (!generationOwned) {
     return { removed: false, reason: "residue-target-mismatch" };
   }
   const profileDir = health.profileDir || resolveDshProfileDir(
@@ -5361,6 +5390,1367 @@ async function uninstallDeepSeekHarnessBridge(options = {}) {
   }
 }
 
+// ── Remote SSH deployment ────────────────────────────────────────────────────
+//
+// A remote Windows deployment keeps its own immutable generations under
+// <remote-root>/<installId>/homes/<sha(DSH_HOME)>/generations/<generationId>.
+// Only `desktop` is touched: the web profile stays linked to whatever local
+// generation it used before, and the shared mutation lock still lives under
+// the remote account's default local managed root so an installed local Clawd
+// and this deployment can never mutate the same DSH profile concurrently.
+
+const REMOTE_DEPLOYMENT_SCHEMA_VERSION = 1;
+const REMOTE_DESCRIPTOR_VERSION = 1;
+const REMOTE_DEPLOYMENT_PHASES = Object.freeze(["installing", "installed", "removing"]);
+const REMOTE_INSTALL_ID_RE = /^[a-f0-9]{64}$/;
+const REMOTE_SAFE_ID_RE = /^[a-zA-Z0-9_-]{1,64}$/;
+const REMOTE_RESULT_SCHEMA_VERSION = 1;
+
+function remotePlatformPath(options = {}) {
+  return (options.platform || process.platform) === "win32" ? path.win32 : path.posix;
+}
+
+function remotePathWithin(candidate, parent, options = {}) {
+  const pathApi = remotePlatformPath(options);
+  const normalize = (value) => {
+    const resolved = pathApi.resolve(value);
+    return (options.platform || process.platform) === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  if (!candidate || !parent) return false;
+  const child = normalize(candidate);
+  const root = normalize(parent);
+  return child === root || child.startsWith(`${root}${pathApi.sep}`);
+}
+
+function remoteSamePath(left, right, options = {}) {
+  if (!left || !right) return false;
+  const pathApi = remotePlatformPath(options);
+  const normalize = (value) => {
+    const resolved = pathApi.resolve(value);
+    return (options.platform || process.platform) === "win32" ? resolved.toLowerCase() : resolved;
+  };
+  return normalize(left) === normalize(right);
+}
+
+function normalizeRemoteDeployment(value, options = {}) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  if (value.kind !== "ssh-remote" || value.descriptorVersion !== REMOTE_DESCRIPTOR_VERSION) return null;
+  if (typeof value.installId !== "string" || !REMOTE_INSTALL_ID_RE.test(value.installId)) return null;
+  if (typeof value.profileId !== "string" || !REMOTE_SAFE_ID_RE.test(value.profileId)) return null;
+  if (typeof value.runtimeKey !== "string" || !REMOTE_SAFE_ID_RE.test(value.runtimeKey)) return null;
+  if (!Number.isInteger(value.layoutVersion) || value.layoutVersion <= 0) return null;
+  const pathApi = remotePlatformPath(options);
+  if (typeof value.identityPath !== "string" || !pathApi.isAbsolute(value.identityPath)) return null;
+  if (typeof value.hostPrefixPath !== "string" || !pathApi.isAbsolute(value.hostPrefixPath)) return null;
+  // Fixed field order: the generation id hashes this exact JSON.
+  return {
+    kind: "ssh-remote",
+    descriptorVersion: value.descriptorVersion,
+    installId: value.installId,
+    profileId: value.profileId,
+    runtimeKey: value.runtimeKey,
+    layoutVersion: value.layoutVersion,
+    identityPath: value.identityPath,
+    hostPrefixPath: value.hostPrefixPath,
+  };
+}
+
+function canonicalRemoteDeployment(value, options = {}) {
+  const deployment = normalizeRemoteDeployment(value, options);
+  return deployment ? JSON.stringify(deployment) : null;
+}
+
+function remoteHomeNamespace(canonicalDshHome, options = {}) {
+  const platform = options.platform || process.platform;
+  const normalized = platform === "win32"
+    ? canonicalDshHome.toLowerCase()
+    : canonicalDshHome;
+  return crypto.createHash("sha256").update(normalized.replace(/\\/g, "/"), "utf8").digest("hex");
+}
+
+// The managed profile link resolves to a realpath. Resolve the remote root's
+// existing ancestors here for the same reason the local managed root does, so
+// ownership comparison does not fail on a relocated temp / symlinked root.
+function resolveRemoteInstallRoot(remoteRoot, installId, options = {}) {
+  const pathApi = remotePlatformPath(options);
+  if (typeof remoteRoot !== "string" || !pathApi.isAbsolute(remoteRoot)) {
+    throw new Error("A remote deployment root is required for the remote DeepSeek Harness installer");
+  }
+  const resolvedRemoteRoot = (options.platform || process.platform) === process.platform
+    ? resolveCanonicalLocalPath(remoteRoot, options)
+    : pathApi.resolve(remoteRoot);
+  return pathApi.join(resolvedRemoteRoot, installId);
+}
+
+function remoteInstallRoots(options = {}) {
+  const pathApi = remotePlatformPath(options);
+  const installId = options.installId;
+  const canonicalDshHome = options.canonicalDshHome;
+  if (typeof installId !== "string" || !REMOTE_INSTALL_ID_RE.test(installId)) {
+    throw new Error("A valid install id is required for the remote DeepSeek Harness installer");
+  }
+  if (typeof canonicalDshHome !== "string" || !canonicalDshHome) {
+    throw new Error("A canonical DSH home is required for the remote DeepSeek Harness installer");
+  }
+  const installRoot = resolveRemoteInstallRoot(options.remoteRoot, installId, options);
+  const homeRoot = pathApi.join(installRoot, "homes", remoteHomeNamespace(canonicalDshHome, options));
+  return {
+    installRoot,
+    homeRoot,
+    generationsDir: pathApi.join(homeRoot, "generations"),
+    deploymentRecordPath: pathApi.join(installRoot, "deployment.json"),
+  };
+}
+
+function remoteGenerationId(bundleHash, deployment, options = {}) {
+  const canonical = canonicalRemoteDeployment(deployment, options);
+  if (!canonical) throw new Error("Invalid remote deployment descriptor");
+  return crypto.createHash("sha256").update(`${bundleHash}\0${canonical}`, "utf8").digest("hex");
+}
+
+async function promoteRemoteGeneration(bundle, deployment, options = {}) {
+  const contract = options.contract || bundle.contract || PREFERRED_DSH_CONTRACT;
+  const canonicalDeployment = canonicalRemoteDeployment(deployment, options);
+  if (!canonicalDeployment) throw new Error("Invalid remote deployment descriptor");
+  const roots = remoteInstallRoots(options);
+  const generationId = remoteGenerationId(bundle.bundleHash, deployment, options);
+  const generationDir = path.join(roots.generationsDir, generationId);
+  await fsp.mkdir(roots.generationsDir, { recursive: true });
+  const existing = await readJson(path.join(generationDir, MANIFEST_FILE));
+  const existingDeployment = existing ? canonicalRemoteDeployment(existing.deployment, options) : null;
+  const existingContract = existing ? dshContractForMarker(existing) : null;
+  const existingHash = existing && existingContract
+    ? await hashBridgeDirectory(generationDir, existingContract)
+    : null;
+  if (
+    existing
+    && existing.owner === MANAGED_OWNER
+    && existing.schemaVersion === MANIFEST_SCHEMA_VERSION
+    && existing.protocolVersion === BRIDGE_PROTOCOL_VERSION
+    && existing.bundleHash === bundle.bundleHash
+    && existing.generationId === generationId
+    && existingDeployment === canonicalDeployment
+    && existingContract
+    && existingContract.supportedDshRange === contract.supportedDshRange
+    && existingHash === bundle.bundleHash
+  ) {
+    return { generationDir, generationId, bundleHash: bundle.bundleHash, created: false, manifest: existing };
+  }
+  if (await exists(generationDir)) {
+    // A remote generation is immutable. Never patch bytes or a descriptor in
+    // place: the caller's deployment would silently keep an older identity.
+    throw new Error(`Remote DSH generation exists without a matching deployment marker: ${generationDir}`);
+  }
+  const stagingDir = path.join(roots.generationsDir, `.staging-${process.pid}-${crypto.randomUUID()}`);
+  await fsp.mkdir(stagingDir, { recursive: false });
+  try {
+    for (const file of bundle.files) {
+      const target = path.join(stagingDir, ...file.relativePath.split("/"));
+      await fsp.mkdir(path.dirname(target), { recursive: true });
+      await fsp.writeFile(target, file.content, { flag: "wx" });
+    }
+    const manifest = {
+      owner: MANAGED_OWNER,
+      schemaVersion: MANIFEST_SCHEMA_VERSION,
+      protocolVersion: BRIDGE_PROTOCOL_VERSION,
+      packageName: BRIDGE_PACKAGE_NAME,
+      bundleHash: bundle.bundleHash,
+      generationId,
+      deployment: JSON.parse(canonicalDeployment),
+      sourceClawdVersion: await sourceClawdVersion(options),
+      supportedDshRange: contract.supportedDshRange,
+      installedDshVersion: options.dshVersion || contract.artifactVersion || contract.version,
+      installedDshVersionAssumedAtStaging: options.dshVersionAssumed === true,
+      verifiedDshArtifact: contract.verifiedDshArtifact,
+      verifiedDshArtifactIntegrity: contract.verifiedDshArtifactIntegrity,
+      sourceAuditBaselineCommit: SOURCE_AUDIT_BASELINE_COMMIT,
+      installedAt: new Date().toISOString(),
+    };
+    await fsp.writeFile(
+      path.join(stagingDir, MANIFEST_FILE),
+      `${JSON.stringify(manifest, null, 2)}\n`,
+      { flag: "wx", mode: 0o600 }
+    );
+    try {
+      await fsp.rename(stagingDir, generationDir);
+    } catch (err) {
+      if (!err || (err.code !== "EEXIST" && err.code !== "ENOTEMPTY")) throw err;
+      const raced = await readJson(path.join(generationDir, MANIFEST_FILE));
+      const racedDeployment = raced ? canonicalRemoteDeployment(raced.deployment, options) : null;
+      const racedHash = raced ? await hashBridgeDirectory(generationDir, contract) : null;
+      if (
+        !raced
+        || raced.owner !== MANAGED_OWNER
+        || raced.bundleHash !== bundle.bundleHash
+        || raced.generationId !== generationId
+        || racedDeployment !== canonicalDeployment
+        || racedHash !== bundle.bundleHash
+      ) throw err;
+      await fsp.rm(stagingDir, { recursive: true, force: true });
+      return { generationDir, generationId, bundleHash: bundle.bundleHash, created: false, manifest: raced };
+    }
+    return { generationDir, generationId, bundleHash: bundle.bundleHash, created: true, manifest };
+  } catch (err) {
+    if (path.resolve(stagingDir).startsWith(`${path.resolve(roots.generationsDir)}${path.sep}`)) {
+      try { await fsp.rm(stagingDir, { recursive: true, force: true }); } catch {}
+    }
+    throw err;
+  }
+}
+
+function validateRemoteRecord(record) {
+  if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+  if (record.schemaVersion !== REMOTE_DEPLOYMENT_SCHEMA_VERSION) return false;
+  if (typeof record.installId !== "string" || !REMOTE_INSTALL_ID_RE.test(record.installId)) return false;
+  if (typeof record.profileId !== "string" || !REMOTE_SAFE_ID_RE.test(record.profileId)) return false;
+  if (typeof record.dshHome !== "string" || !record.dshHome) return false;
+  if (typeof record.desktopProfileDir !== "string" || !record.desktopProfileDir) return false;
+  if (typeof record.generationId !== "string" || !/^[a-f0-9]{64}$/.test(record.generationId)) return false;
+  if (!REMOTE_DEPLOYMENT_PHASES.includes(record.phase)) return false;
+  return true;
+}
+
+async function readRemoteDeploymentRecord(recordPath) {
+  let raw;
+  try {
+    raw = await fsp.readFile(recordPath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    return { invalid: true, reason: "deployment-record-unreadable" };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
+  } catch {
+    return { invalid: true, reason: "deployment-record-invalid" };
+  }
+  if (!validateRemoteRecord(parsed)) {
+    return { invalid: true, reason: "deployment-record-invalid" };
+  }
+  return parsed;
+}
+
+async function writeRemoteJsonFileAtomic(filePath, value) {
+  await fsp.mkdir(path.dirname(filePath), { recursive: true });
+  const temporary = path.join(path.dirname(filePath), `.${path.basename(filePath)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  try {
+    await fsp.writeFile(temporary, `${JSON.stringify(value, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    await fsp.rename(temporary, filePath);
+  } catch (err) {
+    try { await fsp.unlink(temporary); } catch {}
+    throw err;
+  }
+}
+
+async function writeRemoteDeploymentRecord(recordPath, record) {
+  await writeRemoteJsonFileAtomic(recordPath, record);
+}
+
+function remoteInspectionLatchPath(installRoot) {
+  return path.join(installRoot, DESKTOP_INSPECTION_LATCH_FILE);
+}
+
+async function readRemoteInspectionLatch(installRoot) {
+  const filePath = remoteInspectionLatchPath(installRoot);
+  let raw;
+  try {
+    raw = await fsp.readFile(filePath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return null;
+    return { invalid: true, reason: "remote-inspection-latch-unreadable", filePath };
+  }
+  const parsed = parseInspectionLatch(raw);
+  return parsed ? { ...parsed, filePath } : { invalid: true, reason: "remote-inspection-latch-invalid", filePath };
+}
+
+async function writeRemoteInspectionLatch(installRoot, reason, detail) {
+  await writeRemoteJsonFileAtomic(remoteInspectionLatchPath(installRoot), {
+    owner: MANAGED_OWNER,
+    schemaVersion: 1,
+    reason,
+    detail: detail ? String(detail).slice(0, 2000) : null,
+    createdAt: new Date().toISOString(),
+  });
+}
+
+async function clearRemoteInspectionLatch(installRoot) {
+  try {
+    await fsp.unlink(remoteInspectionLatchPath(installRoot));
+  } catch (err) {
+    if (err && err.code !== "ENOENT") throw err;
+  }
+}
+
+function buildRemoteDeploymentRecord({ installId, profileId, dshHome, desktopProfileDir, generationId, phase, deployment, clawdVersion }) {
+  return {
+    schemaVersion: REMOTE_DEPLOYMENT_SCHEMA_VERSION,
+    installId,
+    profileId,
+    dshHome,
+    desktopProfileDir,
+    generationId,
+    phase,
+    ...(deployment ? { deployment } : {}),
+    ...(clawdVersion ? { clawdVersion } : {}),
+    updatedAt: new Date().toISOString(),
+  };
+}
+
+function isRemoteGenerationLocation(record, roots, installId, options = {}) {
+  if (!isMarkerOwned(record)) return false;
+  const marker = record.clawdManifest;
+  const deployment = normalizeRemoteDeployment(marker.deployment, options);
+  if (!deployment || deployment.installId !== installId) return false;
+  if (typeof marker.generationId !== "string" || !/^[a-f0-9]{64}$/.test(marker.generationId)) return false;
+  if (remoteGenerationId(marker.bundleHash, deployment, options) !== marker.generationId) return false;
+  return remoteSamePath(record.packageDir, path.join(roots.generationsDir, marker.generationId), options);
+}
+
+function remoteResidueGenerationCheck(roots, installId, options = {}) {
+  return (candidate, target) =>
+    isRemoteGenerationLocation(candidate, roots, installId, options)
+    && remoteSamePath(candidate.packageDir, target, options);
+}
+
+function isLocalGenerationLocation(record, options = {}) {
+  if (!isMarkerOwned(record)) return false;
+  if (Object.hasOwn(record.clawdManifest, "deployment")) return false;
+  const pathApi = remotePlatformPath(options);
+  const expected = pathApi.join(resolveManagedRoot(options), "generations", record.clawdManifest.bundleHash);
+  return remoteSamePath(record.packageDir, expected, options);
+}
+
+// Read a JSON file while distinguishing "definitely absent" from "present but
+// unreadable/invalid". Ownership and GC decisions must never treat a read
+// failure as absence.
+async function readJsonFileState(filePath) {
+  let raw;
+  try {
+    raw = await fsp.readFile(filePath, "utf8");
+  } catch (err) {
+    if (err && err.code === "ENOENT") return { state: "missing" };
+    return { state: "unreadable", code: err && err.code ? err.code : "UNKNOWN" };
+  }
+  try {
+    const parsed = JSON.parse(raw.charCodeAt(0) === 0xFEFF ? raw.slice(1) : raw);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return { state: "invalid" };
+    return { state: "present", value: parsed };
+  } catch {
+    return { state: "invalid" };
+  }
+}
+
+// One read-only picture of the desktop bridge. The dependency declaration and
+// the package the loader actually resolves are classified separately: a
+// declaration that points at this deployment is not proof that a usable link
+// exists, and a foreign package can win even when the declaration looks right.
+async function inspectRemoteDshProfile(options = {}) {
+  const profileDir = resolveDshProfileDir(options.dshHome || resolveDshHome(options.env), DESKTOP_PROFILE_NAME);
+  const profileManifestPath = path.join(profileDir, "package.json");
+  const manifestState = await readJsonFileState(profileManifestPath);
+  const residue = await listManagedProfileRemovalResidues({ ...options, profile: DESKTOP_PROFILE_NAME });
+  const residuePresent = residue.paths.length > 0 || Boolean(residue.unreadableError);
+  const common = {
+    profileDir,
+    residuePresent,
+    residuePaths: residue.paths,
+    declarationKind: null,
+    winnerKind: null,
+    declarationRealpath: null,
+    winnerRealpath: null,
+    declarationIntegrityOk: false,
+    winnerIntegrityOk: false,
+    linkMissing: false,
+    generationId: null,
+    manifestDeployment: null,
+    deploymentMatches: null,
+  };
+  if (manifestState.state !== "present") {
+    const kind = manifestState.state === "missing"
+      ? "profile-missing"
+      : (manifestState.state === "invalid" ? "profile-corrupt" : "profile-unreadable");
+    return {
+      ...common,
+      kind,
+      readErrorCode: manifestState.code || null,
+      dependencyPresent: false,
+      bundlePresent: false,
+      incomplete: false,
+      integrityOk: false,
+    };
+  }
+  const profileManifest = manifestState.value;
+  const dependencies = profileManifest.dependencies && typeof profileManifest.dependencies === "object"
+    ? profileManifest.dependencies
+    : {};
+  const dependencySpec = dependencies[BRIDGE_PACKAGE_NAME] || null;
+  const dependencyPresent = Object.prototype.hasOwnProperty.call(dependencies, BRIDGE_PACKAGE_NAME);
+  const bundles = profileManifest.dsh
+    && profileManifest.dsh.profile
+    && Array.isArray(profileManifest.dsh.profile.bundles)
+    ? profileManifest.dsh.profile.bundles
+    : [];
+  const bundlePresent = bundles.includes(BRIDGE_PACKAGE_NAME);
+  const sourcePath = dependencySourcePath(dependencySpec, profileDir, options.platform || process.platform);
+  const dshHome = options.dshHome || resolveDshHome(options.env);
+  const installationResolved = null;
+  const profileResolved = await inspectResolvedPackage(packagePath(profileDir, BRIDGE_PACKAGE_NAME), "profile");
+  const fallbackResolved = profileResolved
+    ? null
+    : await inspectResolvedPackage(
+      packagePath(path.join(dshHome, "profiles"), BRIDGE_PACKAGE_NAME),
+      "profiles-fallback"
+    );
+  const sourceResolved = await inspectResolvedPackage(
+    sourcePath ? path.join(sourcePath, "package.json") : null,
+    "dependency-source"
+  );
+  const roots = remoteInstallRoots(options);
+  const installId = options.installId;
+  const classify = (record) => {
+    if (!record) return null;
+    if (isRemoteGenerationLocation(record, roots, installId, options)) return "ours";
+    if (isLocalGenerationLocation(record, options)) return "local";
+    return "foreign";
+  };
+  const declarationKind = classify(sourceResolved);
+  const winnerResolved = installationResolved || profileResolved || fallbackResolved || null;
+  const winnerKind = classify(winnerResolved);
+  const declarationIntegrityOk = sourceResolved ? isIntactManaged(sourceResolved) : false;
+  const winnerIntegrityOk = winnerResolved ? isIntactManaged(winnerResolved) : false;
+  const bothOurs = declarationKind === "ours" && winnerKind === "ours"
+    && declarationIntegrityOk && winnerIntegrityOk;
+  const bothLocal = declarationKind === "local" && winnerKind === "local"
+    && declarationIntegrityOk && winnerIntegrityOk;
+
+  let kind = "absent";
+  if (bothOurs) kind = "ours";
+  else if (declarationKind === "ours" && winnerKind === null) kind = "ours-unlinked";
+  else if (declarationKind === "local" && winnerKind === null) kind = "local-unlinked";
+  else if (declarationKind === "local" && winnerKind === "local") kind = "local";
+  else if (declarationKind === null && winnerKind === "ours" && winnerIntegrityOk) kind = "ours-unlinked";
+  else if (declarationKind === null && winnerKind === "local" && winnerIntegrityOk) kind = "local-unlinked";
+  else if (dependencyPresent || bundlePresent || sourceResolved || winnerResolved || residuePresent) {
+    kind = "foreign";
+  }
+
+  const expectedDeployment = options.deployment
+    ? normalizeRemoteDeployment(options.deployment, options)
+    : null;
+  const manifestRecord = winnerResolved || sourceResolved || null;
+  const manifestDeployment = manifestRecord && manifestRecord.clawdManifest
+    ? normalizeRemoteDeployment(manifestRecord.clawdManifest.deployment, options)
+    : null;
+  const healthyKind = kind === "ours" || kind === "local";
+  return {
+    ...common,
+    kind,
+    profileManifest,
+    dependencyPresent,
+    bundlePresent,
+    declarationKind,
+    winnerKind,
+    declarationResolved: sourceResolved || null,
+    winnerResolved: winnerResolved || null,
+    declarationRealpath: sourceResolved ? sourceResolved.packageDir : null,
+    winnerRealpath: winnerResolved ? winnerResolved.packageDir : null,
+    declarationIntegrityOk,
+    winnerIntegrityOk,
+    linkMissing: (declarationKind === "ours" || declarationKind === "local") && winnerKind === null,
+    incomplete: !healthyKind || dependencyPresent !== bundlePresent,
+    integrityOk: healthyKind,
+    generationId: manifestRecord && manifestRecord.clawdManifest
+      ? manifestRecord.clawdManifest.generationId || null
+      : null,
+    manifestDeployment,
+    deploymentMatches: expectedDeployment && manifestDeployment
+      ? JSON.stringify(expectedDeployment) === JSON.stringify(manifestDeployment)
+      : (expectedDeployment ? false : null),
+  };
+}
+
+function remoteError(reason, message, extra = {}) {
+  return { status: "error", reason, message, ...extra };
+}
+
+async function resolveRemoteDesktopCarrier(options) {
+  const discovery = await discoverDshDesktop(options);
+  if (!discovery || discovery.status !== "found") {
+    const reason = !discovery || discovery.status === "not-found"
+      ? "desktop-not-found"
+      : (discovery.status === "ambiguous" ? "multiple-desktop-installs" : "desktop-unverifiable");
+    return { error: remoteError(reason, "The DeepSeek Harness desktop app could not be resolved on the remote host") };
+  }
+  const commandInfo = options.commandInfo || desktopCommandInfo(discovery, options).commandInfo;
+  if (!commandInfo) {
+    return { error: remoteError("carrier-unavailable", "The DeepSeek Harness desktop command is unavailable") };
+  }
+  let dshVersion = options.dshVersion;
+  if (!dshVersion) {
+    const probe = await probeDshCarrier(commandInfo, options);
+    if (probe.status !== "available") {
+      return { error: remoteError(probe.reason || "carrier-unavailable", "The DeepSeek Harness desktop version could not be verified", { detectedVersion: probe.version || null }) };
+    }
+    dshVersion = probe.version;
+  }
+  return { commandInfo, dshVersion, discovery };
+}
+
+async function installRemoteDeepSeekHarnessDeployment(options = {}) {
+  try {
+    return await enqueueMutation(async () => {
+      const frozen = freezeDshOperationOptions(options);
+      const deployment = normalizeRemoteDeployment(options.deployment, frozen);
+      if (typeof frozen.clawdVersion !== "string" || !frozen.clawdVersion.trim()) {
+        return remoteError("clawd-version-required", "The remote installer requires an explicit Clawd version");
+      }
+      if (!deployment) return remoteError("remote-deployment-invalid", "The remote deployment descriptor is invalid");
+      if (frozen.profileId !== undefined && deployment.profileId !== frozen.profileId) {
+        return remoteError("remote-deployment-invalid", "The remote deployment profile id does not match the request");
+      }
+      const scoped = { ...frozen, deployment };
+      const roots = remoteInstallRoots({
+        ...scoped,
+        installId: deployment.installId,
+        canonicalDshHome: frozen.canonicalDshHome,
+      });
+      const recordBefore = await readRemoteDeploymentRecord(roots.deploymentRecordPath);
+      if (recordBefore && recordBefore.invalid) {
+        return remoteError(recordBefore.reason, "The remote deployment record is unreadable or invalid");
+      }
+      if (recordBefore && !remoteSamePath(recordBefore.dshHome, frozen.canonicalDshHome, frozen)) {
+        return remoteError(
+          "dsh-home-changed",
+          `The remote deployment already belongs to a different DSH home: ${recordBefore.dshHome}`
+        );
+      }
+      const carrier = await resolveRemoteDesktopCarrier(scoped);
+      if (carrier.error) return carrier.error;
+      // All DSH mutations must use the launcher this run verified, not whatever
+      // PATH happens to resolve later.
+      scoped.commandInfo = carrier.commandInfo;
+      const family = dshFamilyForVersion(carrier.dshVersion);
+      if (!family) {
+        return remoteError(
+          "version-unsupported",
+          `DeepSeek Harness ${carrier.dshVersion || "unknown"} is unsupported; this bridge supports ${supportedDshRangeLabel()}`,
+          { detectedVersion: carrier.dshVersion || null }
+        );
+      }
+      const contract = dshTargetContract(family, carrier.dshVersion);
+      const bundle = await readSourceBundle({ ...scoped, contract });
+      const generationId = remoteGenerationId(bundle.bundleHash, deployment, scoped);
+
+      const lock = await acquireMutationLock(scoped);
+      try {
+        // A task may have queued behind the mutation lock while the deployment
+        // lease moved on. Re-read it after acquiring the lock, before any write.
+        const leaseError = await verifyRemoteDeploymentLease(scoped);
+        if (leaseError) return leaseError;
+        const record = await readRemoteDeploymentRecord(roots.deploymentRecordPath);
+        if (record && record.invalid) {
+          return remoteError(record.reason, "The remote deployment record changed to an invalid state before mutation");
+        }
+        if (record && !remoteSamePath(record.dshHome, frozen.canonicalDshHome, frozen)) {
+          return remoteError("dsh-home-changed", `The remote deployment already belongs to a different DSH home: ${record.dshHome}`);
+        }
+        const latch = await readRemoteInspectionLatch(roots.installRoot);
+        if (latch && latch.invalid) {
+          return remoteError(latch.reason, "The remote inspection latch is unreadable or invalid", { latchPath: latch.filePath });
+        }
+        if (latch) {
+          return remoteError(
+            "inspection-required",
+            "A previous remote DeepSeek Harness installation needs manual inspection",
+            { latchPath: latch.filePath, healthReason: latch.reason || null }
+          );
+        }
+        const before = await inspectRemoteDshProfile({
+          ...scoped,
+          installId: deployment.installId,
+          canonicalDshHome: frozen.canonicalDshHome,
+        });
+        if (before.kind === "profile-missing" || before.kind === "profile-corrupt" || before.kind === "profile-unreadable") {
+          return remoteError(before.kind, "The DeepSeek Harness desktop profile is missing or unreadable");
+        }
+        if (before.residuePresent) {
+          return remoteError(
+            "inspection-required",
+            "A previous DeepSeek Harness profile-link cleanup left residue; inspect it before retrying",
+            { residuePaths: before.residuePaths }
+          );
+        }
+        if (before.kind === "foreign") {
+          return remoteError(
+            "bridge-ownership-conflict",
+            "The desktop profile has a bridge that does not belong to this deployment"
+          );
+        }
+        const declaredOwned = before.declarationKind === "ours" || before.declarationKind === "local";
+        const winnerOwned = before.winnerKind === "ours" || before.winnerKind === "local";
+        if ((declaredOwned && !before.declarationIntegrityOk)
+          || (winnerOwned && !before.winnerIntegrityOk)) {
+          return remoteError(
+            "generation-integrity-failed",
+            "The managed DSH bridge bytes no longer match their ownership marker; manual inspection is required"
+          );
+        }
+        if ((before.kind === "local" || before.kind === "local-unlinked")
+          && options.allowLocalMigration !== true) {
+          return remoteError(
+            "local-migration-required",
+            "The desktop profile is linked to the local Clawd generation; confirm the migration before replacing it"
+          );
+        }
+        if (
+          before.kind === "ours"
+          && !before.incomplete
+          && before.deploymentMatches
+          && before.generationId === generationId
+          && record
+          && record.phase === "installed"
+          && record.generationId === generationId
+        ) {
+          return {
+            status: "ok",
+            updated: false,
+            firstInstall: false,
+            restartRequired: false,
+            generationId,
+            generation: before.winnerRealpath,
+            deploymentRecord: roots.deploymentRecordPath,
+            health: before,
+          };
+        }
+
+        // The record enters `installing` before any profile mutation. A crash
+        // leaves it there, which the takeover check reports as unfinished.
+        const installing = buildRemoteDeploymentRecord({
+          installId: deployment.installId,
+          profileId: deployment.profileId,
+          dshHome: frozen.canonicalDshHome,
+          desktopProfileDir: resolveDshProfileDir(frozen.canonicalDshHome, DESKTOP_PROFILE_NAME),
+          generationId,
+          phase: "installing",
+          deployment,
+          clawdVersion: await sourceClawdVersion(scoped),
+        });
+        await writeRemoteDeploymentRecord(roots.deploymentRecordPath, installing);
+
+        const generation = await promoteRemoteGeneration(bundle, deployment, { ...scoped, contract });
+        if ((before.kind === "ours" || before.kind === "ours-unlinked") && before.incomplete) {
+          // DSH keeps a disabled plugin's bundle line but drops the dependency;
+          // `plugin add` alone will not re-enable it, so remove first. The same
+          // applies when the declaration exists but its link is missing.
+          const removed = await runDshCommand(
+            ["plugin", "--profile", DESKTOP_PROFILE_NAME, "remove", BRIDGE_PACKAGE_NAME],
+            scoped
+          );
+          if (removed.code !== 0) {
+            return remoteError(
+              "plugin-remove-failed",
+              (removed.stderr || removed.stdout || "dsh plugin remove failed").trim()
+            );
+          }
+        }
+        const added = await runDshCommand(
+          ["plugin", "--profile", DESKTOP_PROFILE_NAME, "add", generation.generationDir],
+          scoped
+        );
+        if (added.code !== 0) {
+          const detail = (added.stderr || added.stdout || "dsh plugin add failed").trim();
+          if (isUnknownCommandResult(added)) {
+            await writeRemoteInspectionLatch(roots.installRoot, "plugin-add-unknown", detail);
+          }
+          return remoteError("plugin-add-failed", detail);
+        }
+        const after = await inspectRemoteDshProfile({
+          ...scoped,
+          installId: deployment.installId,
+          canonicalDshHome: frozen.canonicalDshHome,
+        });
+        if (after.kind !== "ours" || after.incomplete || !after.integrityOk
+          || after.generationId !== generationId || !after.deploymentMatches) {
+          await writeRemoteInspectionLatch(
+            roots.installRoot,
+            "plugin-add-verification-failed",
+            after.kind
+          );
+          return remoteError(
+            "inspection-required",
+            "dsh plugin add completed but the managed bridge did not verify as this deployment",
+            { healthReason: after.kind }
+          );
+        }
+        const installed = buildRemoteDeploymentRecord({
+          installId: deployment.installId,
+          profileId: deployment.profileId,
+          dshHome: frozen.canonicalDshHome,
+          desktopProfileDir: after.profileDir,
+          generationId,
+          phase: "installed",
+          deployment,
+          clawdVersion: installing.clawdVersion,
+        });
+        await writeRemoteDeploymentRecord(roots.deploymentRecordPath, installed);
+        const confirmed = await readRemoteDeploymentRecord(roots.deploymentRecordPath);
+        if (!confirmed || confirmed.invalid || confirmed.phase !== "installed"
+          || confirmed.generationId !== generationId || confirmed.installId !== deployment.installId) {
+          return remoteError("deployment-record-readback-failed", "The remote deployment record did not read back as installed");
+        }
+        await clearRemoteInspectionLatch(roots.installRoot);
+        const firstInstall = before.kind === "absent";
+        const migrated = before.kind === "local" || before.kind === "local-unlinked";
+        return {
+          status: "ok",
+          updated: true,
+          firstInstall,
+          // A migrated desktop link and any replaced same-name package need a
+          // desktop restart; a first install is loaded while the app runs.
+          restartRequired: !firstInstall || migrated,
+          generationId,
+          generation: generation.generationDir,
+          deploymentRecord: roots.deploymentRecordPath,
+          health: after,
+        };
+      } finally {
+        await lock.release();
+      }
+    });
+  } catch (err) {
+    return remoteError("unexpected-error", err && err.message ? err.message : String(err));
+  }
+}
+
+async function profileBridgeReference(options, profile) {
+  const profileDir = resolveDshProfileDir(options.dshHome, profile);
+  const manifestState = await readJsonFileState(path.join(profileDir, "package.json"));
+  if (manifestState.state === "missing") {
+    return {
+      profile,
+      profileDir,
+      state: "absent",
+      present: false,
+      dependencyPresent: false,
+      bundlePresent: false,
+      sourcePath: null,
+      resolved: null,
+    };
+  }
+  if (manifestState.state !== "present") {
+    return {
+      profile,
+      profileDir,
+      state: "unknown",
+      present: null,
+      reason: manifestState.state === "invalid" ? "profile-manifest-invalid" : "profile-manifest-unreadable",
+      dependencyPresent: null,
+      bundlePresent: null,
+      sourcePath: null,
+      resolved: null,
+    };
+  }
+  const profileManifest = manifestState.value;
+  const dependencies = profileManifest.dependencies && typeof profileManifest.dependencies === "object"
+    ? profileManifest.dependencies
+    : {};
+  const dependencyPresent = Object.prototype.hasOwnProperty.call(dependencies, BRIDGE_PACKAGE_NAME);
+  const dependencySpec = dependencies[BRIDGE_PACKAGE_NAME] || null;
+  const bundles = profileManifest.dsh
+    && profileManifest.dsh.profile
+    && Array.isArray(profileManifest.dsh.profile.bundles)
+    ? profileManifest.dsh.profile.bundles
+    : [];
+  const bundlePresent = bundles.includes(BRIDGE_PACKAGE_NAME);
+  const sourcePath = dependencySourcePath(dependencySpec, profileDir, options.platform || process.platform);
+  const resolved = await inspectResolvedPackage(packagePath(profileDir, BRIDGE_PACKAGE_NAME), "profile");
+  return {
+    profile,
+    profileDir,
+    state: "present",
+    present: dependencyPresent || bundlePresent || Boolean(resolved),
+    dependencyPresent,
+    bundlePresent,
+    sourcePath,
+    resolved,
+  };
+}
+
+// Returns "referenced", "unreferenced", or "unknown". GC must keep a
+// generation whenever the answer is unknown (unreadable manifest, a declared
+// non-file target, or a bundle with no resolvable dependency).
+function profileReferencesGeneration(reference, generationDir, options = {}) {
+  if (!reference) return "unknown";
+  if (reference.state === "absent") return "unreferenced";
+  if (reference.state !== "present") return "unknown";
+  if (reference.sourcePath && remotePathWithin(reference.sourcePath, generationDir, options)) return "referenced";
+  if (reference.resolved && remotePathWithin(reference.resolved.packageDir, generationDir, options)) return "referenced";
+  if (reference.dependencyPresent && !reference.sourcePath) return "unknown";
+  if (reference.bundlePresent && !reference.dependencyPresent) return "unknown";
+  return "unreferenced";
+}
+
+async function verifyRemoteDeploymentLease(options = {}) {
+  const leaseFile = options.leaseFile;
+  const leaseOwner = options.leaseOwner;
+  if (leaseFile === undefined && leaseOwner === undefined) return null;
+  if (typeof leaseFile !== "string" || !leaseFile || typeof leaseOwner !== "string" || !leaseOwner) {
+    return remoteError("lease-proof-invalid", "A remote installer lease requires both --lease-file and --lease-owner");
+  }
+  const state = await readJsonFileState(leaseFile);
+  if (state.state !== "present") {
+    return remoteError("lease-lost", "The deployment lease could not be re-read after acquiring the mutation lock", { leaseFile });
+  }
+  const owner = state.value;
+  const current = typeof owner.leaseId === "string" ? owner.leaseId : (typeof owner.id === "string" ? owner.id : null);
+  if (current !== leaseOwner) {
+    return remoteError("lease-lost", "The deployment lease changed before the mutation lock was acquired", { leaseFile });
+  }
+  return null;
+}
+
+async function uninstallOwnedRemoteDeepSeekHarnessDeployment(options = {}) {
+  try {
+    return await enqueueMutation(async () => {
+      const remoteRoot = options.remoteRoot;
+      const installId = options.installId;
+      if (typeof remoteRoot !== "string" || !remoteRoot) {
+        return remoteError("remote-root-invalid", "A remote deployment root is required");
+      }
+      if (typeof installId !== "string" || !REMOTE_INSTALL_ID_RE.test(installId)) {
+        return remoteError("install-id-invalid", "A valid install id is required");
+      }
+      const provisionalInstallRoot = resolveRemoteInstallRoot(remoteRoot, installId, options);
+      const provisionalRecordPath = path.join(provisionalInstallRoot, "deployment.json");
+      const recordBefore = await readRemoteDeploymentRecord(provisionalRecordPath);
+      if (!recordBefore) {
+        return { status: "skipped", reason: "deployment-record-missing", removed: {}, remaining: {}, conflicts: [] };
+      }
+      if (recordBefore.invalid) {
+        return remoteError(recordBefore.reason, "The remote deployment record is unreadable or invalid");
+      }
+      // The record, not the current environment, owns the target. Freezing the
+      // current home before switching only dshHome would send `plugin remove`
+      // to the wrong home and leak env.DSH_HOME into every child command.
+      const frozen = freezeDshOperationOptions({ ...options, dshHome: recordBefore.dshHome });
+      const installRoot = resolveRemoteInstallRoot(remoteRoot, installId, frozen);
+      const recordPath = path.join(installRoot, "deployment.json");
+      const lock = await acquireMutationLock(frozen);
+      try {
+        const leaseError = await verifyRemoteDeploymentLease(frozen);
+        if (leaseError) return leaseError;
+        const record = await readRemoteDeploymentRecord(recordPath);
+        if (!record) {
+          return { status: "skipped", reason: "deployment-record-missing", removed: {}, remaining: {}, conflicts: [] };
+        }
+        if (record.invalid) return remoteError(record.reason, "The remote deployment record is unreadable or invalid");
+        if (!remoteSamePath(record.dshHome, recordBefore.dshHome, frozen)) {
+          return remoteError("dsh-home-changed", "The remote deployment record changed DSH home before uninstall");
+        }
+        const scoped = { ...frozen };
+        const roots = remoteInstallRoots({
+          ...scoped,
+          remoteRoot,
+          installId,
+          canonicalDshHome: record.dshHome,
+        });
+        const latch = await readRemoteInspectionLatch(roots.installRoot);
+        if (latch && latch.invalid) {
+          return remoteError(latch.reason, "The remote inspection latch is unreadable or invalid", { latchPath: latch.filePath });
+        }
+        const desktop = await inspectRemoteDshProfile({
+          ...scoped,
+          installId,
+          canonicalDshHome: record.dshHome,
+          deployment: record.deployment,
+        });
+        if (desktop.kind === "profile-unreadable" || desktop.kind === "profile-corrupt") {
+          return remoteError(
+            "uninstall-unconfirmed",
+            "The DeepSeek Harness desktop profile could not be read; no files were removed",
+            { healthReason: desktop.kind, readErrorCode: desktop.readErrorCode || null }
+          );
+        }
+        const web = await profileBridgeReference(scoped, WEB_PROFILE_NAME);
+        if (desktop.kind !== "absent" && desktop.kind !== "ours" && desktop.kind !== "ours-unlinked"
+          && desktop.kind !== "profile-missing") {
+          return {
+            status: "error",
+            reason: "bridge-ownership-conflict",
+            registrationRemoved: false,
+            removed: {},
+            remaining: {},
+            conflicts: [{ profile: DESKTOP_PROFILE_NAME, kind: desktop.kind }],
+          };
+        }
+        let scopedRun = scoped;
+        if (desktop.kind === "ours" || desktop.kind === "ours-unlinked") {
+          // DSH's `plugin remove` only drops package.json entries; the profile
+          // junction survives. Reuse the local residue cleanup so the link is
+          // isolated, re-verified and unlinked without touching its target.
+          await writeRemoteDeploymentRecord(recordPath, {
+            ...record,
+            phase: "removing",
+            updatedAt: new Date().toISOString(),
+          });
+          if (desktop.dependencyPresent || desktop.bundlePresent) {
+            const carrier = await resolveRemoteDesktopCarrier(scoped);
+            if (carrier.error) return carrier.error;
+            scopedRun = { ...scoped, commandInfo: carrier.commandInfo };
+            const removed = await runDshCommand(
+              ["plugin", "--profile", DESKTOP_PROFILE_NAME, "remove", BRIDGE_PACKAGE_NAME],
+              scopedRun
+            );
+            if (removed.code !== 0) {
+              return remoteError("plugin-remove-failed", (removed.stderr || removed.stdout || "dsh plugin remove failed").trim());
+            }
+          }
+          let after = await inspectRemoteDshProfile({
+            ...scopedRun,
+            installId,
+            canonicalDshHome: record.dshHome,
+            deployment: record.deployment,
+          });
+          if (after.kind === "ours-unlinked"
+            && !after.dependencyPresent
+            && !after.bundlePresent
+            && after.winnerResolved) {
+            const marker = after.winnerResolved.clawdManifest;
+            const expectedGeneration = path.join(roots.generationsDir, marker.generationId);
+            // These fields are exactly what unlinkManagedProfileResidue reads:
+            // the resolved link winner, its intact marker, and whether any
+            // package.json entry still exists. Ownership is decided by the
+            // remote generation predicate below, not by the local root.
+            const cleanup = await unlinkManagedProfileResidue({
+              status: "managed-residue",
+              dependencyPresent: false,
+              bundlePresent: false,
+              installationResolved: null,
+              profileResolved: after.winnerResolved,
+              marker,
+              profileDir: after.profileDir,
+            }, {
+              ...scopedRun,
+              residueExpectedGeneration: expectedGeneration,
+              residueGenerationCheck: remoteResidueGenerationCheck(roots, installId, scopedRun),
+            });
+            if (!cleanup.removed) {
+              return remoteError(
+                "uninstall-unconfirmed",
+                "dsh plugin remove left a profile link that could not be safely unlinked",
+                { healthReason: after.kind, cleanupReason: cleanup.reason, residuePath: cleanup.residuePath || null }
+              );
+            }
+            after = await inspectRemoteDshProfile({
+              ...scopedRun,
+              installId,
+              canonicalDshHome: record.dshHome,
+              deployment: record.deployment,
+            });
+          }
+          const stillOwned = after.kind === "ours" || after.kind === "ours-unlinked";
+          if (stillOwned || after.dependencyPresent || after.bundlePresent || after.winnerRealpath) {
+            return remoteError("uninstall-unconfirmed", "The desktop profile still references the Clawd bridge after removal", {
+              healthReason: after.kind,
+              winnerRealpath: after.winnerRealpath || null,
+            });
+          }
+        }
+
+        const removedGenerations = [];
+        const remainingGenerations = [];
+        const conflicts = [];
+        let entries = [];
+        try {
+          entries = await fsp.readdir(roots.generationsDir, { withFileTypes: true });
+        } catch (err) {
+          if (!err || err.code !== "ENOENT") throw err;
+        }
+        for (const entry of entries) {
+          if (!entry.isDirectory() || entry.name.startsWith(".")) continue;
+          const generationDir = path.join(roots.generationsDir, entry.name);
+          const manifestState = await readJsonFileState(path.join(generationDir, MANIFEST_FILE));
+          if (manifestState.state !== "present") {
+            remainingGenerations.push(entry.name);
+            conflicts.push({ profile: "generation", kind: `manifest-${manifestState.state}`, generation: entry.name });
+            continue;
+          }
+          const manifest = manifestState.value;
+          const deployment = normalizeRemoteDeployment(manifest.deployment, scoped);
+          if (manifest.owner !== MANAGED_OWNER || !deployment
+            || deployment.installId !== installId || manifest.generationId !== entry.name) {
+            continue;
+          }
+          const after = await inspectRemoteDshProfile({
+            ...scopedRun,
+            installId,
+            canonicalDshHome: record.dshHome,
+            deployment: record.deployment,
+          });
+          if (after.kind === "profile-unreadable" || after.kind === "profile-corrupt") {
+            remainingGenerations.push(entry.name);
+            conflicts.push({ profile: DESKTOP_PROFILE_NAME, kind: "profile-unreadable" });
+            continue;
+          }
+          const webReference = profileReferencesGeneration(web, generationDir, scoped);
+          const desktopReference = after.kind === "absent" || after.kind === "profile-missing"
+            ? "unreferenced"
+            : ((after.winnerRealpath && remotePathWithin(after.winnerRealpath, generationDir, scoped))
+              || (after.declarationRealpath && remotePathWithin(after.declarationRealpath, generationDir, scoped))
+              ? "referenced"
+              : "unreferenced");
+          if (webReference === "referenced" || desktopReference === "referenced") {
+            remainingGenerations.push(entry.name);
+            continue;
+          }
+          if (webReference === "unknown" || desktopReference === "unknown") {
+            remainingGenerations.push(entry.name);
+            conflicts.push({ profile: "reference", kind: "reference-unknown", generation: entry.name });
+            continue;
+          }
+          await fsp.rm(generationDir, { recursive: true, force: false });
+          removedGenerations.push(entry.name);
+        }
+        if (conflicts.length) {
+          return {
+            status: "error",
+            reason: "uninstall-unconfirmed",
+            registrationRemoved: desktop.kind === "absent" || desktop.kind === "profile-missing" ? true : null,
+            removed: { generations: removedGenerations, record: false },
+            remaining: { generations: remainingGenerations, directories: {} },
+            conflicts,
+          };
+        }
+        try { await fsp.unlink(recordPath); } catch (err) { if (err.code !== "ENOENT") throw err; }
+        await clearRemoteInspectionLatch(roots.installRoot);
+        const remaining = {};
+        for (const directory of [roots.generationsDir, roots.homeRoot, path.dirname(roots.homeRoot), roots.installRoot]) {
+          try {
+            await fsp.rmdir(directory);
+          } catch (err) {
+            if (err && err.code !== "ENOENT" && err.code !== "ENOTEMPTY") throw err;
+            if (err && err.code === "ENOTEMPTY") remaining[path.basename(directory)] = directory;
+          }
+        }
+        // Shared parents can contain other deployments. Remove only empty
+        // directories, stopping at the remote root's parent.
+        for (const directory of [remoteRoot, path.dirname(remoteRoot)]) {
+          try {
+            await fsp.rmdir(directory);
+          } catch (err) {
+            if (err && err.code === "ENOTEMPTY") break;
+            if (!err || err.code !== "ENOENT") throw err;
+          }
+        }
+        return {
+          status: "ok",
+          registrationRemoved: true,
+          removed: { generations: removedGenerations, record: true },
+          remaining: { generations: remainingGenerations, directories: remaining },
+          conflicts: [],
+        };
+      } finally {
+        await lock.release();
+      }
+    });
+  } catch (err) {
+    return remoteError("unexpected-error", err && err.message ? err.message : String(err));
+  }
+}
+
+// Latch contract: an unknown/partial remote mutation writes
+// inspection-required-desktop.json under <installId>; automatic install keeps
+// refusing until the user inspects the host and runs --remote-clear-latch.
+// A verified install/uninstall clears it automatically.
+async function clearRemoteInspectionLatchForDeployment(options = {}) {
+  try {
+    return await enqueueMutation(async () => {
+      const frozen = freezeDshOperationOptions(options);
+      const remoteRoot = options.remoteRoot;
+      const installId = options.installId;
+      if (typeof remoteRoot !== "string" || !remoteRoot) {
+        return remoteError("remote-root-invalid", "A remote deployment root is required");
+      }
+      if (typeof installId !== "string" || !REMOTE_INSTALL_ID_RE.test(installId)) {
+        return remoteError("install-id-invalid", "A valid install id is required");
+      }
+      const installRoot = resolveRemoteInstallRoot(remoteRoot, installId, frozen);
+      const lock = await acquireMutationLock(frozen);
+      try {
+        const leaseError = await verifyRemoteDeploymentLease(frozen);
+        if (leaseError) return leaseError;
+        const latch = await readRemoteInspectionLatch(installRoot);
+        if (!latch) {
+          return { status: "skipped", reason: "latch-not-present", latchPath: remoteInspectionLatchPath(installRoot) };
+        }
+        if (latch.invalid) {
+          return remoteError(latch.reason, "The remote inspection latch is unreadable or invalid", { latchPath: latch.filePath });
+        }
+        await clearRemoteInspectionLatch(installRoot);
+        return { status: "ok", cleared: true, latchPath: remoteInspectionLatchPath(installRoot) };
+      } finally {
+        await lock.release();
+      }
+    });
+  } catch (err) {
+    return remoteError("unexpected-error", err && err.message ? err.message : String(err));
+  }
+}
+
+async function inspectRemoteDeepSeekHarnessDeployment(options = {}) {
+  try {
+    const remoteRoot = options.remoteRoot;
+    const installId = options.installId;
+    if (typeof remoteRoot !== "string" || !remoteRoot) {
+      return remoteError("remote-root-invalid", "A remote deployment root is required");
+    }
+    if (typeof installId !== "string" || !REMOTE_INSTALL_ID_RE.test(installId)) {
+      return remoteError("install-id-invalid", "A valid install id is required");
+    }
+    const installRoot = resolveRemoteInstallRoot(remoteRoot, installId, options);
+    const record = await readRemoteDeploymentRecord(path.join(installRoot, "deployment.json"));
+    if (!record) {
+      return { status: "skipped", reason: "deployment-record-missing", phase: null, desktop: null };
+    }
+    if (record.invalid) return remoteError(record.reason, "The remote deployment record is unreadable or invalid");
+    const expectedDeployment = options.deployment
+      ? normalizeRemoteDeployment(options.deployment, options)
+      : normalizeRemoteDeployment(record.deployment, options);
+    const desktop = await inspectRemoteDshProfile({
+      ...options,
+      platform: options.platform,
+      dshHome: record.dshHome,
+      installId,
+      canonicalDshHome: record.dshHome,
+      deployment: expectedDeployment,
+    });
+    return {
+      status: "ok",
+      phase: record.phase,
+      installId: record.installId,
+      generationId: record.generationId,
+      deploymentRecord: path.join(installRoot, "deployment.json"),
+      desktop: {
+        kind: desktop.kind,
+        profileDir: desktop.profileDir,
+        winnerRealpath: desktop.winnerRealpath,
+        withinDeployment: desktop.kind === "ours",
+        hashMatches: desktop.integrityOk,
+        manifestDeploymentMatches: desktop.deploymentMatches === true,
+        generationId: desktop.generationId,
+        incomplete: desktop.incomplete,
+        residuePresent: desktop.residuePresent,
+      },
+    };
+  } catch (err) {
+    return remoteError("unexpected-error", err && err.message ? err.message : String(err));
+  }
+}
+
+// ── Remote CLI argument parsing ──────────────────────────────────────────────
+
+function isRemoteCliInvocation(argv) {
+  return argv.some((arg) => arg === "--remote" || arg === "--remote-inspect"
+    || arg === "--remote-uninstall-owned" || arg === "--remote-clear-latch");
+}
+
+function parseRemoteCliArgs(argv) {
+  const parsed = {
+    errors: [],
+    mode: null,
+    operation: "install",
+    profile: null,
+    clawdVersion: null,
+    remoteRoot: null,
+    installId: null,
+    profileId: null,
+    runtimeKey: null,
+    layoutVersion: null,
+    identityPath: null,
+    hostPrefixPath: null,
+    resultFile: null,
+    leaseFile: null,
+    leaseOwner: null,
+    allowLocalMigration: false,
+  };
+  const pathApi = remotePlatformPath({ platform: process.platform });
+  function takeValue(index, flag) {
+    const value = argv[index + 1];
+    if (typeof value !== "string" || !value || value.startsWith("--")) {
+      parsed.errors.push(`${flag} requires a value`);
+      return { value: null, next: index };
+    }
+    return { value, next: index + 1 };
+  }
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === "--remote") {
+      if (parsed.mode && parsed.mode !== "install") parsed.errors.push("Only one remote mode may be selected");
+      parsed.mode = "install";
+    } else if (arg === "--remote-inspect") {
+      if (parsed.mode && parsed.mode !== "inspect") parsed.errors.push("Only one remote mode may be selected");
+      parsed.mode = "inspect";
+    } else if (arg === "--remote-uninstall-owned") {
+      if (parsed.mode && parsed.mode !== "uninstall") parsed.errors.push("Only one remote mode may be selected");
+      parsed.mode = "uninstall";
+    } else if (arg === "--remote-clear-latch") {
+      if (parsed.mode && parsed.mode !== "clear-latch") parsed.errors.push("Only one remote mode may be selected");
+      parsed.mode = "clear-latch";
+    } else if (arg === "--repair") {
+      parsed.operation = "explicit-repair";
+    } else if (arg === "--allow-local-migration") {
+      parsed.allowLocalMigration = true;
+    } else if (arg === "--profile" || arg === "--clawd-version" || arg === "--remote-root"
+      || arg === "--install-id" || arg === "--profile-id" || arg === "--runtime-key"
+      || arg === "--layout-version" || arg === "--identity-path" || arg === "--host-prefix-path"
+      || arg === "--result-file" || arg === "--lease-file" || arg === "--lease-owner") {
+      const taken = takeValue(index, arg);
+      index = taken.next;
+      if (taken.value === null) continue;
+      const key = arg.slice(2).replace(/-([a-z])/g, (_all, letter) => letter.toUpperCase());
+      parsed[key] = taken.value;
+    } else {
+      parsed.errors.push(`Unknown argument: ${arg}`);
+    }
+  }
+  if (!parsed.mode) parsed.errors.push("A remote mode is required");
+  if (parsed.profile !== null && parsed.profile !== DESKTOP_PROFILE_NAME) {
+    parsed.errors.push("--profile must be desktop for a remote deployment");
+  }
+  if (parsed.mode === "install" && parsed.profile === null) {
+    parsed.errors.push("--profile desktop is required");
+  }
+  if (!parsed.remoteRoot) {
+    parsed.errors.push("--remote-root is required");
+  } else if (!pathApi.isAbsolute(parsed.remoteRoot)) {
+    parsed.errors.push("--remote-root must be an absolute path");
+  }
+  if (!parsed.installId) {
+    parsed.errors.push("--install-id is required");
+  } else if (!REMOTE_INSTALL_ID_RE.test(parsed.installId)) {
+    parsed.errors.push("--install-id must be 64 lowercase hex characters");
+  }
+  if (parsed.resultFile !== null && !pathApi.isAbsolute(parsed.resultFile)) {
+    parsed.errors.push("--result-file must be an absolute path");
+  }
+  if (parsed.leaseFile !== null && !pathApi.isAbsolute(parsed.leaseFile)) {
+    parsed.errors.push("--lease-file must be an absolute path");
+  }
+  if ((parsed.leaseFile === null) !== (parsed.leaseOwner === null)) {
+    parsed.errors.push("--lease-file and --lease-owner must be provided together");
+  }
+  if (parsed.leaseOwner !== null && !/^[a-f0-9]{32}$/.test(parsed.leaseOwner)) {
+    parsed.errors.push("--lease-owner must be 32 lowercase hex characters");
+  }
+  const descriptorProvided = parsed.profileId !== null || parsed.runtimeKey !== null
+    || parsed.layoutVersion !== null || parsed.identityPath !== null || parsed.hostPrefixPath !== null;
+  if (descriptorProvided) {
+    if (!parsed.profileId) parsed.errors.push("--profile-id is required with an expected deployment");
+    else if (!REMOTE_SAFE_ID_RE.test(parsed.profileId)) parsed.errors.push("--profile-id is invalid");
+    if (!parsed.runtimeKey) parsed.errors.push("--runtime-key is required with an expected deployment");
+    else if (!REMOTE_SAFE_ID_RE.test(parsed.runtimeKey)) parsed.errors.push("--runtime-key is invalid");
+    if (parsed.layoutVersion === null) parsed.errors.push("--layout-version is required with an expected deployment");
+    else if (!/^[1-9][0-9]*$/.test(parsed.layoutVersion)) parsed.errors.push("--layout-version must be a positive integer");
+    if (!parsed.identityPath) parsed.errors.push("--identity-path is required with an expected deployment");
+    else if (!pathApi.isAbsolute(parsed.identityPath)) parsed.errors.push("--identity-path must be an absolute path");
+    if (!parsed.hostPrefixPath) parsed.errors.push("--host-prefix-path is required with an expected deployment");
+    else if (!pathApi.isAbsolute(parsed.hostPrefixPath)) parsed.errors.push("--host-prefix-path must be an absolute path");
+  }
+  if (parsed.mode === "install") {
+    if (!parsed.clawdVersion) parsed.errors.push("--clawd-version is required");
+    if (!parsed.profileId) parsed.errors.push("--profile-id is required");
+    else if (!REMOTE_SAFE_ID_RE.test(parsed.profileId)) parsed.errors.push("--profile-id is invalid");
+    if (!parsed.runtimeKey) parsed.errors.push("--runtime-key is required");
+    else if (!REMOTE_SAFE_ID_RE.test(parsed.runtimeKey)) parsed.errors.push("--runtime-key is invalid");
+    if (parsed.layoutVersion === null) parsed.errors.push("--layout-version is required");
+    else if (!/^[1-9][0-9]*$/.test(parsed.layoutVersion)) parsed.errors.push("--layout-version must be a positive integer");
+    if (!parsed.identityPath) parsed.errors.push("--identity-path is required");
+    else if (!pathApi.isAbsolute(parsed.identityPath)) parsed.errors.push("--identity-path must be an absolute path");
+    if (!parsed.hostPrefixPath) parsed.errors.push("--host-prefix-path is required");
+    else if (!pathApi.isAbsolute(parsed.hostPrefixPath)) parsed.errors.push("--host-prefix-path must be an absolute path");
+  }
+  return parsed;
+}
+
+function remoteCliOptions(parsed, options = {}) {
+  const descriptorComplete = parsed.installId && parsed.profileId && parsed.runtimeKey
+    && parsed.layoutVersion && parsed.identityPath && parsed.hostPrefixPath;
+  const deployment = descriptorComplete
+    ? normalizeRemoteDeployment({
+      kind: "ssh-remote",
+      descriptorVersion: REMOTE_DESCRIPTOR_VERSION,
+      installId: parsed.installId,
+      profileId: parsed.profileId,
+      runtimeKey: parsed.runtimeKey,
+      layoutVersion: Number(parsed.layoutVersion),
+      identityPath: parsed.identityPath,
+      hostPrefixPath: parsed.hostPrefixPath,
+    }, options)
+    : null;
+  return {
+    ...options,
+    remote: true,
+    profile: DESKTOP_PROFILE_NAME,
+    operation: parsed.operation,
+    clawdVersion: parsed.clawdVersion || undefined,
+    remoteRoot: parsed.remoteRoot,
+    installId: parsed.installId,
+    profileId: parsed.profileId || undefined,
+    runtimeKey: parsed.runtimeKey || undefined,
+    layoutVersion: parsed.layoutVersion ? Number(parsed.layoutVersion) : undefined,
+    identityPath: parsed.identityPath || undefined,
+    hostPrefixPath: parsed.hostPrefixPath || undefined,
+    deployment,
+    leaseFile: parsed.leaseFile || undefined,
+    leaseOwner: parsed.leaseOwner || undefined,
+    allowLocalMigration: parsed.allowLocalMigration === true,
+    silent: true,
+  };
+}
+
+function writeCliResultFile(resultFile, envelope) {
+  if (!resultFile) return null;
+  const directory = path.dirname(resultFile);
+  fs.mkdirSync(directory, { recursive: true });
+  const temporary = path.join(directory, `.${path.basename(resultFile)}.${process.pid}.${crypto.randomUUID()}.tmp`);
+  try {
+    fs.writeFileSync(temporary, `${JSON.stringify(envelope, null, 2)}\n`, { flag: "wx", mode: 0o600 });
+    fs.renameSync(temporary, resultFile);
+    return null;
+  } catch (err) {
+    try { fs.unlinkSync(temporary); } catch {}
+    return err && err.message ? err.message : String(err);
+  }
+}
+
+async function runRemoteCli(parsed, options = {}) {
+  const remoteOptions = remoteCliOptions(parsed, options);
+  let result;
+  if (parsed.mode === "install") {
+    result = await installRemoteDeepSeekHarnessDeployment(remoteOptions);
+  } else if (parsed.mode === "inspect") {
+    result = await inspectRemoteDeepSeekHarnessDeployment(remoteOptions);
+  } else if (parsed.mode === "clear-latch") {
+    result = await clearRemoteInspectionLatchForDeployment(remoteOptions);
+  } else {
+    result = await uninstallOwnedRemoteDeepSeekHarnessDeployment(remoteOptions);
+  }
+  const envelope = {
+    schemaVersion: REMOTE_RESULT_SCHEMA_VERSION,
+    operation: parsed.mode === "install"
+      ? "remote-install"
+      : (parsed.mode === "inspect"
+        ? "remote-inspect"
+        : (parsed.mode === "clear-latch" ? "remote-clear-latch" : "remote-uninstall-owned")),
+    status: result && result.status ? result.status : "error",
+    ...(result || {}),
+  };
+  process.stdout.write(`${DSH_RESULT_SENTINEL}${JSON.stringify(envelope)}\n`);
+  const resultFileError = writeCliResultFile(parsed.resultFile, envelope);
+  if (resultFileError) process.stderr.write(`result file could not be written: ${resultFileError}\n`);
+  return envelope.status === "error" || Boolean(resultFileError) ? 1 : 0;
+}
+
 // Read the persisted notices for both profiles, for the Settings page.
 async function readDeepSeekHarnessNotices(options = {}) {
   const frozen = freezeDshOperationOptions(options);
@@ -5413,6 +6803,8 @@ module.exports = {
   BRIDGE_PROTOCOL_VERSION,
   BRIDGE_SOURCE_FILES,
   DSH_RESTART_HINT,
+  DSH_RESULT_SCHEMA_VERSION,
+  DSH_RESULT_SENTINEL,
   DSH_VERSION_FAMILIES,
   MANAGED_OWNER,
   PREFERRED_DSH_CONTRACT,
@@ -5442,6 +6834,11 @@ module.exports = {
   inspectDeepSeekHarnessIntegration,
   inspectDshTargetsSync,
   resolveDshTargets,
+  installRemoteDeepSeekHarnessDeployment,
+  inspectRemoteDeepSeekHarnessDeployment,
+  uninstallOwnedRemoteDeepSeekHarnessDeployment,
+  parseDshInstallerResult,
+  clearRemoteInspectionLatchForDeployment,
   readDeepSeekHarnessNotices,
   acknowledgeDeepSeekHarnessNotice,
   isBridgeInstalled,
@@ -5470,6 +6867,9 @@ module.exports = {
     readInspectionLatchSync,
     isGenerationReferenced,
     unlinkManagedProfileResidue,
+    dependencySourcePath,
+    isRemoteGenerationLocation,
+    remoteResidueGenerationCheck,
     manualGenerationReferencePath,
     readManualGenerationReference,
     readManualGenerationReferenceSync,
@@ -5515,23 +6915,54 @@ module.exports = {
     readSourceBundle,
     runCommand,
     supportedDshRangeLabel,
+    canonicalRemoteDeployment,
+    normalizeRemoteDeployment,
+    remoteGenerationId,
+    remoteInstallRoots,
+    promoteRemoteGeneration,
+    readRemoteDeploymentRecord,
+    writeRemoteDeploymentRecord,
+    inspectRemoteDshProfile,
+    parseRemoteCliArgs,
+    isRemoteCliInvocation,
+    remoteCliOptions,
+    runRemoteCli,
+    clearRemoteInspectionLatchForDeployment,
   },
 };
 
 if (require.main === module) {
-  const uninstall = process.argv.includes("--uninstall") || process.argv.includes("--uninstall-bridge");
-  const operation = process.argv.includes("--repair") ? "explicit-repair" : "install";
-  Promise.resolve(uninstall
-    ? unregisterDeepSeekHarness({ silent: false })
-    : syncDeepSeekHarnessIntegration({ silent: false, operation }))
-    .then((result) => {
-      if (result && result.status === "error") {
-        console.error(result.message || result.reason || "DeepSeek Harness integration failed");
-        process.exitCode = 1;
-      }
-    })
-    .catch((err) => {
-      console.error(err && err.message ? err.message : err);
+  const argv = process.argv.slice(2);
+  if (isRemoteCliInvocation(argv)) {
+    // Every argument is validated before the first write, so a typo cannot
+    // fall through to the legacy local installer.
+    const parsed = parseRemoteCliArgs(argv);
+    if (parsed.errors.length) {
+      for (const error of parsed.errors) console.error(error);
       process.exitCode = 1;
-    });
+    } else {
+      runRemoteCli(parsed)
+        .then((code) => { process.exitCode = code; })
+        .catch((err) => {
+          console.error(err && err.message ? err.message : err);
+          process.exitCode = 1;
+        });
+    }
+  } else {
+    const uninstall = argv.includes("--uninstall") || argv.includes("--uninstall-bridge");
+    const operation = argv.includes("--repair") ? "explicit-repair" : "install";
+    Promise.resolve(uninstall
+      ? unregisterDeepSeekHarness({ silent: false })
+      : syncDeepSeekHarnessIntegration({ silent: false, operation }))
+      .then((result) => {
+        if (result && result.status === "error") {
+          console.error(result.message || result.reason || "DeepSeek Harness integration failed");
+          process.exitCode = 1;
+        }
+      })
+      .catch((err) => {
+        console.error(err && err.message ? err.message : err);
+        process.exitCode = 1;
+      });
+  }
 }

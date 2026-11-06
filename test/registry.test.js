@@ -17,6 +17,7 @@ describe("Agent Registry", () => {
       "codebuddy",
       "kiro-cli",
       "kirocrew",
+      "kiro-desktop",
       "kimi-cli",
       "qwen-code",
       "zcode",
@@ -324,6 +325,9 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.capabilities.httpHook, false);
     assert.strictEqual(copilot.capabilities.permissionApproval, true);
     assert.strictEqual(copilot.capabilities.interactiveBubble, true);
+    assert.strictEqual(copilot.capabilities.notificationHook, true);
+    assert.strictEqual(copilot.capabilities.terminalWaitReminder, true);
+    assert.notStrictEqual(copilot.capabilities.approvalReminder, true);
     assert.strictEqual(copilot.capabilities.sessionEnd, true);
     assert.strictEqual(copilot.capabilities.subagent, true);
 
@@ -479,6 +483,8 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.eventMap.sessionStart, "idle");
     assert.strictEqual(copilot.eventMap.preToolUse, "working");
     assert.strictEqual(copilot.eventMap.agentStop, "attention");
+    assert.strictEqual(copilot.eventMap.notification, "notification");
+    assert.strictEqual(copilot.eventMap.postToolUseFailure, "working");
 
     const gemini = registry.getAgent("gemini-cli");
     assert.strictEqual(gemini.eventMap.SessionStart, "idle");

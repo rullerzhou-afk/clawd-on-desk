@@ -58,11 +58,11 @@ afterEach(() => {
 });
 
 describe("COPILOT_HOOK_EVENTS", () => {
-  it("state events stay exactly 10 (Clawd EVENT_TO_STATE coverage)", () => {
-    assert.strictEqual(COPILOT_STATE_HOOK_EVENTS.length, 10);
+  it("state events stay exactly 12 (Clawd EVENT_TO_STATE coverage)", () => {
+    assert.strictEqual(COPILOT_STATE_HOOK_EVENTS.length, 12);
     for (const event of [
-      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "sessionEnd",
-      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact",
+      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "postToolUseFailure", "sessionEnd",
+      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact", "notification",
     ]) {
       assert.ok(COPILOT_STATE_HOOK_EVENTS.includes(event), `missing state event ${event}`);
     }
@@ -72,8 +72,8 @@ describe("COPILOT_HOOK_EVENTS", () => {
     assert.ok(COPILOT_PERMISSION_HOOK_EVENTS.includes("permissionRequest"));
   });
 
-  it("combined COPILOT_HOOK_EVENTS = state + permission (11 entries)", () => {
-    assert.strictEqual(COPILOT_HOOK_EVENTS.length, 11);
+  it("combined COPILOT_HOOK_EVENTS = state + permission (13 entries)", () => {
+    assert.strictEqual(COPILOT_HOOK_EVENTS.length, 13);
     for (const event of [...COPILOT_STATE_HOOK_EVENTS, ...COPILOT_PERMISSION_HOOK_EVENTS]) {
       assert.ok(COPILOT_HOOK_EVENTS.includes(event), `missing combined event ${event}`);
     }
@@ -418,6 +418,88 @@ describe("buildCopilotHookEntry", () => {
 });
 
 describe("registerCopilotHooks", () => {
+  it("registers notification and postToolUseFailure with the state timeout in local and remote modes", () => {
+    for (const event of ["notification", "postToolUseFailure"]) {
+      for (const remote of [false, true]) {
+        const { homeDir, hooksPath } = makeTempHomeWithCopilot();
+        registerCopilotHooks({
+          silent: true,
+          homeDir,
+          hooksPath,
+          env: {},
+          platform: "linux",
+          nodeBin: "/usr/bin/node",
+          hookScript: "/srv/clawd/hooks/copilot-hook.js",
+          remote,
+          sshRemote: remote,
+        });
+
+        const entries = readJson(hooksPath).hooks[event];
+        assert.strictEqual(entries.length, 1);
+        const command = `"/usr/bin/node" "/srv/clawd/hooks/copilot-hook.js" "${event}"`;
+        assert.deepStrictEqual(entries[0], {
+          type: "command",
+          bash: remote ? `CLAWD_REMOTE=1 CLAWD_SSH_REMOTE=1 ${command}` : command,
+          powershell: remote
+            ? `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & ${command}`
+            : `& ${command}`,
+          timeoutSec: 5,
+        });
+      }
+    }
+  });
+
+  it("adds notification and postToolUseFailure to an existing 11-event config and leaves the next install unchanged", () => {
+    const oldEvents = [
+      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "sessionEnd",
+      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact", "permissionRequest",
+    ];
+    const oldHooks = Object.fromEntries(oldEvents.map((event) => [
+      event, [buildCopilotHookEntry("node", "/p/copilot-hook.js", event)],
+    ]));
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot({ version: 1, hooks: oldHooks });
+    const options = {
+      silent: true, homeDir, hooksPath, env: {}, platform: "linux",
+      nodeBin: "node", hookScript: "/p/copilot-hook.js",
+    };
+
+    const result = registerCopilotHooks(options);
+    assert.deepStrictEqual(result, {
+      added: 2, updated: 0, skipped: 11, configChanged: true, permissionSkippedDueToUserHook: false,
+    });
+    const config = readJson(hooksPath);
+    assert.deepStrictEqual(config.hooks.notification, [buildCopilotHookEntry("node", "/p/copilot-hook.js", "notification")]);
+    assert.deepStrictEqual(config.hooks.postToolUseFailure, [buildCopilotHookEntry("node", "/p/copilot-hook.js", "postToolUseFailure")]);
+    for (const event of oldEvents) assert.deepStrictEqual(config.hooks[event], oldHooks[event]);
+
+    const before = fs.readFileSync(hooksPath, "utf8");
+    const beforeMtime = fs.statSync(hooksPath).mtimeMs;
+    assert.deepStrictEqual(registerCopilotHooks(options), {
+      added: 0, updated: 0, skipped: 13, configChanged: false, permissionSkippedDueToUserHook: false,
+    });
+    assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
+    assert.strictEqual(fs.statSync(hooksPath).mtimeMs, beforeMtime);
+  });
+
+  it("preserves user notification entries during registration and uninstall", () => {
+    const userEntry = {
+      type: "command", bash: "echo user-notification", powershell: "Write-Host user-notification",
+      timeoutSec: 7, matcher: "agent_completed",
+    };
+    const { homeDir, hooksPath } = makeTempHomeWithCopilot({ version: 1, hooks: { notification: [userEntry] } });
+    const options = {
+      silent: true, homeDir, hooksPath, env: {}, platform: "linux",
+      nodeBin: "node", hookScript: "/p/copilot-hook.js",
+    };
+
+    registerCopilotHooks(options);
+    assert.deepStrictEqual(readJson(hooksPath).hooks.notification, [
+      userEntry, buildCopilotHookEntry("node", "/p/copilot-hook.js", "notification"),
+    ]);
+    assert.strictEqual(unregisterCopilotHooks(options).removed, 13);
+    assert.deepStrictEqual(readJson(hooksPath), { version: 1, hooks: { notification: [userEntry] } });
+  });
+
   it("creates hooks.json from scratch with all events on first install", () => {
     // makeTempHomeWithCopilot() with no arg leaves hooks.json absent,
     // exercising the ENOENT branch in registerCopilotHooks.
@@ -425,6 +507,7 @@ describe("registerCopilotHooks", () => {
     assert.strictEqual(fs.existsSync(hooksPath), false);
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -463,6 +546,7 @@ describe("registerCopilotHooks", () => {
     const { homeDir, hooksPath } = makeTempHomeWithCopilot();
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -487,6 +571,7 @@ describe("registerCopilotHooks", () => {
     const { homeDir, hooksPath } = makeTempHomeWithCopilot();
 
     registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       hookScript: "/srv/clawd/hooks/copilot-hook.js",
@@ -500,11 +585,12 @@ describe("registerCopilotHooks", () => {
 
   it("is idempotent on second run (no rewrite when state matches)", () => {
     const { homeDir, hooksPath } = makeTempHomeWithCopilot();
-    registerCopilotHooks({ silent: true, homeDir, nodeBin: "node", hookScript: "/p/copilot-hook.js" });
+    registerCopilotHooks({ env: {}, silent: true, homeDir, nodeBin: "node", hookScript: "/p/copilot-hook.js" });
     const before = fs.readFileSync(hooksPath, "utf8");
     const beforeMtime = fs.statSync(hooksPath).mtimeMs;
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -523,6 +609,7 @@ describe("registerCopilotHooks", () => {
   it("updates the Clawd entry when the hook script path changes (no append)", () => {
     const { homeDir, hooksPath } = makeTempHomeWithCopilot();
     registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -530,6 +617,7 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -564,6 +652,7 @@ describe("registerCopilotHooks", () => {
     });
 
     registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -599,6 +688,7 @@ describe("registerCopilotHooks", () => {
     });
 
     registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -616,7 +706,7 @@ describe("registerCopilotHooks", () => {
 
   it("skips registration when ~/.copilot does not exist on the target machine", () => {
     const { homeDir } = makeTempHomeWithoutCopilot();
-    const result = registerCopilotHooks({ silent: true, homeDir });
+    const result = registerCopilotHooks({ env: {}, silent: true, homeDir });
 
     assert.deepStrictEqual(result, {
       added: 0,
@@ -635,6 +725,7 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -667,13 +758,14 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
       hookScript: "/p/copilot-hook.js",
     });
 
-    // sessionStart updated; the other 4 events are added
+    // sessionStart updated; the other 12 events are added
     assert.strictEqual(result.updated, 1);
     assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length - 1);
 
@@ -702,6 +794,7 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -710,7 +803,7 @@ describe("registerCopilotHooks", () => {
 
     // sessionStart legacy entry recognized → updated (not appended)
     assert.strictEqual(result.updated, 1, "legacy command entry should be updated, not appended");
-    // Other 9 events still get added fresh
+    // Other 12 events still get added fresh
     assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length - 1);
 
     const sessionStart = readJson(hooksPath).hooks.sessionStart;
@@ -735,6 +828,7 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "node",
@@ -752,7 +846,7 @@ describe("registerCopilotHooks", () => {
     fs.writeFileSync(hooksPath, "{ invalid json"); // syntax error
 
     assert.throws(
-      () => registerCopilotHooks({ silent: true, homeDir }),
+      () => registerCopilotHooks({ env: {}, silent: true, homeDir }),
       /Failed to read hooks\.json/
     );
   });
@@ -879,7 +973,7 @@ describe("registerCopilotHooks", () => {
       },
     });
 
-    const result = unregisterCopilotHooks({ silent: true, homeDir, backup: true });
+    const result = unregisterCopilotHooks({ env: {}, silent: true, homeDir, backup: true });
     const settings = readJson(hooksPath);
 
     assert.strictEqual(result.removed, 2);
@@ -907,13 +1001,14 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
       hookScript: "/srv/clawd/hooks/copilot-hook.js",
     });
 
-    // State events still register fully (10 added). permissionRequest is
+    // State events still register fully (12 added). permissionRequest is
     // skipped because of the user-authored entry.
     assert.strictEqual(result.added, COPILOT_STATE_HOOK_EVENTS.length);
     assert.strictEqual(result.skipped, 1);
@@ -951,6 +1046,7 @@ describe("registerCopilotHooks", () => {
     );
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -991,6 +1087,7 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -1031,6 +1128,7 @@ describe("registerCopilotHooks", () => {
     );
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -1072,6 +1170,7 @@ describe("registerCopilotHooks", () => {
     fs.writeFileSync(hooksPath, Buffer.concat([bom, body]));
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -1100,6 +1199,7 @@ describe("registerCopilotHooks", () => {
     }, null, 2), "utf8");
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -1132,6 +1232,7 @@ describe("registerCopilotHooks", () => {
     }, null, 2), "utf8");
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -1160,6 +1261,7 @@ describe("registerCopilotHooks", () => {
     });
 
     const result = registerCopilotHooks({
+      env: {},
       silent: true,
       homeDir,
       nodeBin: "/usr/local/bin/node",
@@ -1219,7 +1321,7 @@ it("issue #1316: owned Copilot uninstall preserves local paths, lookalikes and f
     sessionStart: [remote, { powershell: remote.powershell.toUpperCase().replace(/\$ENV:/g, "$env:") }, ...survivors],
     agentStop: [{ bash: remote.bash }],
   } });
-  const options = { hooksDir, routingNonce: "a".repeat(32), hooksPath, homeDir, platform: "win32", silent: true };
+  const options = { env: {}, hooksDir, routingNonce: "a".repeat(32), hooksPath, homeDir, platform: "win32", silent: true };
   const result = unregisterRemoteOwnedCopilotHooks(options);
   assert.strictEqual(result.removed, 3);
   assert.deepStrictEqual(readJson(hooksPath), { version: 1, custom: "keep", hooks: { sessionStart: survivors } });
@@ -1250,7 +1352,7 @@ it("issue #1316: owned Copilot uninstall preserves four PowerShell arguments wit
   const hook = { type: "command", powershell: '& "node" "C:/remote/copilot-hook.js" "sessionStart" "extra"' };
   const { hooksPath, homeDir } = makeTempHomeWithCopilot({ hooks: { sessionStart: [hook] } });
   const bytes = fs.readFileSync(hooksPath);
-  const result = unregisterRemoteOwnedCopilotHooks({ hooksDir: "C:/remote", routingNonce: "a".repeat(32), platform: "win32", hooksPath, homeDir, silent: true });
+  const result = unregisterRemoteOwnedCopilotHooks({ env: {}, hooksDir: "C:/remote", routingNonce: "a".repeat(32), platform: "win32", hooksPath, homeDir, silent: true });
   assert.strictEqual(result.removed, 0);
   assert.strictEqual(result.changed, false);
   assert.deepStrictEqual(fs.readFileSync(hooksPath), bytes);
@@ -1261,7 +1363,7 @@ for (const separator of ["/", "\\"]) {
     const { unregisterRemoteOwnedCopilotHooks } = require("../hooks/copilot-install");
     const hook = { type: "command", powershell: '& "node" "C:/Remote User/Hooks/copilot-hook.js" "sessionStart"' };
     const { hooksPath, homeDir } = makeTempHomeWithCopilot({ hooks: { sessionStart: [hook] } });
-    const result = unregisterRemoteOwnedCopilotHooks({ hooksDir: `C:\\Remote User\\Hooks${separator}`,
+    const result = unregisterRemoteOwnedCopilotHooks({ env: {}, hooksDir: `C:\\Remote User\\Hooks${separator}`,
       routingNonce: "a".repeat(32), platform: "win32", hooksPath, homeDir, silent: true });
     assert.strictEqual(result.removed, 1);
     assert.deepStrictEqual(readJson(hooksPath).hooks, {});
@@ -1273,7 +1375,7 @@ it("issue #1316: owned Copilot uninstall preserves different POSIX path case", (
   const same = { powershell: '& "node" "/srv/remote/hooks/copilot-hook.js" "sessionStart"' };
   const different = { powershell: '& "node" "/srv/Remote/hooks/copilot-hook.js" "sessionStart"' };
   const { hooksPath, homeDir } = makeTempHomeWithCopilot({ hooks: { sessionStart: [same, different] } });
-  const result = unregisterRemoteOwnedCopilotHooks({ hooksDir: "/srv/remote/hooks", routingNonce: "a".repeat(32),
+  const result = unregisterRemoteOwnedCopilotHooks({ env: {}, hooksDir: "/srv/remote/hooks", routingNonce: "a".repeat(32),
     platform: "linux", hooksPath, homeDir, silent: true });
   assert.strictEqual(result.removed, 1);
   assert.deepStrictEqual(readJson(hooksPath).hooks.sessionStart, [different]);
@@ -1303,7 +1405,7 @@ it("issue #1316: owned Copilot uninstall removes BOM even when every entry is fo
   const original = { version: 1, custom: { keep: true }, hooks: { sessionStart: [{ type: "command", powershell: "foreign-hook" }] } };
   const temp = makeTempHomeWithCopilot(original);
   fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original)}`, "utf8");
-  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ ...temp,
+  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ env: {}, ...temp,
     hooksDir: "C:\\Users\\remote\\.claude\\hooks", routingNonce: "a".repeat(32), platform: "win32", silent: true });
   assert.strictEqual(result.removed, 0);
   assert.strictEqual(result.configChanged, true);
@@ -1315,7 +1417,7 @@ it("issue #1316: owned Copilot uninstall removes BOM from a config without a hoo
   const original = { version: 1, custom: "keep" };
   const temp = makeTempHomeWithCopilot(original);
   fs.writeFileSync(temp.hooksPath, `\uFEFF${JSON.stringify(original)}`, "utf8");
-  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ ...temp,
+  const result = require("../hooks/copilot-install").unregisterRemoteOwnedCopilotHooks({ env: {}, ...temp,
     hooksDir: "C:\\Users\\remote\\.claude\\hooks", routingNonce: "a".repeat(32), silent: true });
   assert.strictEqual(result.configChanged, true);
   assert.deepStrictEqual(readJson(temp.hooksPath), original);

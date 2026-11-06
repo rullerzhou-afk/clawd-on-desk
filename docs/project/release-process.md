@@ -518,6 +518,15 @@ Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
 outer resources tree and the real `app.asar`; a retired executable or runtime
 module is a hard failure.
 
+## Windows NSIS Running-App Check
+
+`build/installer.nsh` overrides process detection through `customCheckAppRunning`
+to fix the PowerShell 5.1 single-process count (#882 / electron-builder#10454),
+preserving the rest of the electron-builder 26.15.7 flow. When upgrading
+electron-builder, `test/windows-installer-app-check.test.js` detects template
+drift and requires resynchronizing the override. Remove the override once the
+upstream fix is adopted.
+
 ## WinGet Publishing
 
 Publishing the draft release fires `.github/workflows/winget.yml`. The `prepare`

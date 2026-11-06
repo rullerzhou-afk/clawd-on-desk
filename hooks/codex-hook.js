@@ -18,6 +18,7 @@ const {
   CODEX_WINDOWS_STABLE_ARG,
   CODEX_WSL_INTEROP_ARG,
   resolveWslDistro,
+  applySshRemoteFlag,
   applyWslSourceFields,
 } = require("./server-config");
 const {
@@ -131,7 +132,12 @@ function applyWindowsStableSidecarEnv(options = {}) {
   }
 }
 
-if (require.main === module) applyWindowsStableSidecarEnv();
+if (require.main === module) {
+  // Must run before the Windows stable sidecar import: the sidecar is skipped
+  // entirely once CLAWD_REMOTE is set.
+  applySshRemoteFlag({ argv: process.argv, env: process.env, scriptDir: __dirname, homedir: os.homedir() });
+  applyWindowsStableSidecarEnv();
+}
 
 const TOOL_MATCH_STRING_MAX = 240;
 const TOOL_MATCH_ARRAY_MAX = 16;

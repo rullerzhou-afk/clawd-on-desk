@@ -529,6 +529,12 @@ describe("Mobile Preview Server", () => {
     }
   });
 
+  it("redirects the bare root to the PWA instead of a blank 404 (#1299)", async () => {
+    const res = await httpGet(port, "/");
+    assert.strictEqual(res.status, 302);
+    assert.strictEqual(res.headers.location, "/mobile/");
+  });
+
   it("rejects path traversal attempts instead of serving files outside the PWA directory", async () => {
     const dotDot = await httpGet(port, "/mobile/%2e%2e/package.json");
     assert.notStrictEqual(dotDot.status, 200);
