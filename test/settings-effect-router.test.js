@@ -61,6 +61,7 @@ function createHarness(options = {}) {
     clearCodexNotifyBubbles: (...args) => calls.push(["clearCodexNotifyBubbles", ...args]),
     clearCodexUserInputBubbles: (...args) => calls.push(["clearCodexUserInputBubbles", ...args]),
     clearKimiNotifyBubbles: (...args) => calls.push(["clearKimiNotifyBubbles", ...args]),
+    clearKiroDesktopReminderCards: (...args) => calls.push(["clearKiroDesktopReminderCards", ...args]),
     refreshPassiveNotifyAutoClose: () => calls.push(["refreshPassiveNotifyAutoClose"]),
     hideUpdateBubbleForPolicy: () => calls.push(["hideUpdateBubbleForPolicy"]),
     refreshUpdateBubbleAutoClose: () => calls.push(["refreshUpdateBubbleAutoClose"]),
@@ -152,6 +153,7 @@ describe("settings-effect-router", () => {
     emit({ hideBubbles: true });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { hideBubbles: true }],
+      ["clearKiroDesktopReminderCards", "settings-policy-disabled"],
       ["syncPermissionShortcuts"],
       ["dismissInteractivePermissionBubbles"],
       ["clearCodexNotifyBubbles", undefined, "settings-policy-disabled"],
@@ -211,6 +213,7 @@ describe("settings-effect-router", () => {
     emit({ permissionBubblesEnabled: false });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { permissionBubblesEnabled: false }],
+      ["clearKiroDesktopReminderCards", "settings-policy-disabled"],
       ["syncPermissionShortcuts"],
       ["dismissInteractivePermissionBubbles"],
       ["rebuildAllMenus"],
@@ -221,6 +224,7 @@ describe("settings-effect-router", () => {
     emit({ notificationBubbleAutoCloseSeconds: 0 });
     assert.deepStrictEqual(calls, [
       ["updateMirrors", { notificationBubbleAutoCloseSeconds: 0 }],
+      ["clearKiroDesktopReminderCards", "settings-policy-disabled"],
       ["clearCodexNotifyBubbles", undefined, "settings-policy-disabled"],
       ["clearCodexUserInputBubbles", undefined, undefined, "settings-policy-disabled"],
       ["clearKimiNotifyBubbles", undefined, "settings-policy-disabled"],
@@ -862,3 +866,17 @@ describe("settings-effect-router", () => {
     assert.deepStrictEqual(calls, []);
   });
 });
+
+
+for (const changes of [
+  { notificationBubbleAutoCloseSeconds: 0 },
+  { hideBubbles: true },
+  { permissionBubblesEnabled: false },
+]) {
+  it(`kiro-desktop: policy change ${Object.keys(changes)[0]} clears reminder cards`, () => {
+    const harness = createHarness();
+    harness.emit(changes);
+    assert.ok(harness.calls.some(call => call[0] === "clearKiroDesktopReminderCards"));
+    harness.router.dispose();
+  });
+}

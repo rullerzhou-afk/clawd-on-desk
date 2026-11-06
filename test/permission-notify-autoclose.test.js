@@ -1136,3 +1136,56 @@ describe("state ↔ permission joint: batched immediate cues stay on the queue h
     }
   });
 });
+
+describe("kiro-desktop: passive reminder adapter", () => {
+  afterEach(() => {
+    mock.timers.reset();
+    delete require.cache[PERMISSION_MODULE_PATH];
+  });
+  for (const behavior of ["kiro-desktop-focus", "kiro-desktop-dismiss", "allow", "deny"]) {
+    it(`kiro-desktop: ${behavior} closes only the read-only card`, () => {
+      mock.timers.enable({ apis: ["setTimeout", "Date"] });
+      const { api, focused } = createPermissionHarness();
+      const dismissed = [];
+      api.showKiroDesktopReminder({
+        sessionId: "s",
+        interactionKey: "key",
+        question: "Confirm?",
+        interactionType: "tool_approval",
+        onDismiss: (...args) => dismissed.push(args),
+      });
+      const entry = api.pendingPermissions[0];
+      assert.strictEqual(entry.agentId, "kiro-desktop");
+      assert.strictEqual(api.buildPermissionBubblePayload(entry).isKiroDesktopNotify, true);
+      assert.strictEqual(entry.autoExpireTimer, null);
+      assert.strictEqual(api.refreshPassiveNotifyAutoClose(), 0);
+      assert.strictEqual(api.handleBubbleExpanded({ sender: { __window: entry.bubble } }, true), false);
+      mock.timers.tick(3600000);
+      assert.strictEqual(api.pendingPermissions.length, 1);
+      api.handleDecide({ sender: { __window: entry.bubble } }, behavior);
+      assert.strictEqual(api.pendingPermissions.length, 0);
+      assert.strictEqual(focused.length, behavior === "kiro-desktop-focus" ? 1 : 0);
+      assert.strictEqual(dismissed[0][1], "ipc-decide");
+      api.cleanup();
+    });
+  }
+  it("kiro-desktop: updates one entry and scoped dismissal covers reminders", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const { api } = createPermissionHarness();
+    api.showKiroDesktopReminder({ sessionId: "s", interactionKey: "one", question: "First" });
+    api.showKiroDesktopReminder({ sessionId: "s", interactionKey: "two", question: "Second" });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    assert.strictEqual(api.pendingPermissions[0].toolInput.question, "Second");
+    api.showKiroDesktopReminder({ sessionId: "other", interactionKey: "one", question: "Other" });
+    api.removeKiroDesktopReminder("s", "resolved");
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    api.dismissPermissionsByAgent("codex");
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    api.dismissPermissionsByAgent("kiro-desktop");
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    api.showKiroDesktopReminder({ sessionId: "s", interactionKey: "one", question: "DND" });
+    api.dismissPermissionsForDnd();
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    api.cleanup();
+  });
+});

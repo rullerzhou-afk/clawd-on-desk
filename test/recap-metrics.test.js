@@ -156,3 +156,11 @@ describe("recap metric policies", () => {
     }), ["activity"]);
   });
 });
+
+
+it("kiro-desktop: recap counts tool starts without claiming session starts or completions", () => {
+  assert.strictEqual(AGENT_METRIC_POLICIES["kiro-desktop"].sessionStart, null);
+  assert.strictEqual(AGENT_METRIC_POLICIES["kiro-desktop"].turnCompleteEvents, null);
+  assert.deepStrictEqual(mapRecapMetrics({ agentId: "kiro-desktop", event: "PreToolUse" }), ["activity", "tool-call"]);
+  assert.deepStrictEqual(mapRecapMetrics({ agentId: "kiro-desktop", event: "Stop" }), ["activity"]);
+});

@@ -1825,6 +1825,9 @@ function loadAgentsTabForTest({
           rowCodexInterceptApprovalsDesc: "Clawd answers first. Bubble switches and Permission request handling still apply. Start a new chat after switching.",
           rowCodexNativeNotificationSound: "Native sound",
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
+          rowKiroReminder: "Show a reminder when confirmation is needed",
+          rowKiroReminderDesc: "Turning this off hides reminders. Pet animation and the waiting badge still show pending confirmations.",
+          kiroDesktopEnableHint: "Kiro runs hooks only in trusted workspaces. Confirm requests in Kiro.",
           traecodeEnableHint: "Enable hooks in Trae before they fire.",
           minimaxEnableHint: "Enable the Clawd plugin in MiniMax Code before hooks fire.",
           dshNoticeProfileWeb: "Web",
@@ -22542,5 +22545,41 @@ describe("Settings tabs and segmented choice contracts", () => {
     await settleChoice();
     assert.equal(toggle.getAttribute("aria-busy"), "false");
     assert.equal(toggle.getAttribute("aria-checked"), "false");
+  });
+});
+
+
+describe("kiro-desktop: agent settings", () => {
+  it("kiro-desktop: reminder capability renders its flag and trusted-workspace hint", async () => {
+    const agent = require("../agents/kiro-desktop");
+    const commands = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "kiro-desktop": { integrationInstalled: true, enabled: true, permissionsEnabled: true },
+        },
+      },
+      agentMetadata: [agent],
+      settingsAPI: {
+        command: (...args) => {
+          commands.push(args);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+      collapsedGroups: { "agents:kiro-desktop": false },
+    });
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+    const reminderSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find(meta => meta.agentId === "kiro-desktop" && meta.flag === "permissionsEnabled");
+    assert.ok(reminderSwitch);
+    assert.match(collectText(harness.content), /Show a reminder when confirmation is needed/);
+    assert.match(collectText(harness.content.querySelector(".agent-kiro-desktop-hint")), /trusted workspaces/);
+    assert.strictEqual(agent.capabilities.permissionApproval, false);
+    reminderSwitch.element.click();
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(commands)), [["setAgentFlag", {
+      agentId: "kiro-desktop", flag: "permissionsEnabled", value: false,
+    }]]);
   });
 });

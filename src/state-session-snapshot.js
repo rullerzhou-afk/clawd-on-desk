@@ -1,4 +1,5 @@
 "use strict";
+const { isLocalApprovalReminderSession } = require("./approval-reminder-session");
 const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
@@ -426,11 +427,11 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const agentId = (session && session.agentId) || null;
   const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
-  const presentation = agentId === "codex" && !session.headless && !session.host && !session.wslDistro
+  const presentation = (agentId === "codex" || isLocalApprovalReminderSession(session)) && !session.headless && !session.host && !session.wslDistro
     && session.platform !== "wsl"
     && (session.profileId || "local") === "local" && typeof options.getSessionPresentation === "function"
     ? options.getSessionPresentation(id) : null;
-  const activeSubagentCount = Number.isSafeInteger(presentation?.activeSubagentCount)
+  const activeSubagentCount = agentId === "codex" && Number.isSafeInteger(presentation?.activeSubagentCount)
     && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
     ? presentation.activeSubagentCount : 0;
   const pendingAttention = presentation?.pendingAttention === true;

@@ -2,8 +2,9 @@
 // Extracted from main.js L158-240, L299-505, L544-960
 
 let screen;
-const { mergeCodexClientEphemeral } = require("./codex-session-persistence");
 try { ({ screen } = require("electron")); } catch { screen = null; }
+const { isLocalApprovalReminderSession } = require("./approval-reminder-session");
+const { mergeCodexClientEphemeral } = require("./codex-session-persistence");
 const { normalizePlanProgress } = require("../hooks/codex-plan-progress");
 const {
   createStatePriorityConstants,
@@ -217,7 +218,7 @@ const sessions = new Map();
 const codexSubagentPresentation = require("./codex-subagent-presentation")(sessions, () => Date.now());
 // A parent's Stop can settle its turn while delegated children still own the visual.
 const deferredCodexCompletionCues = new Set();
-let lastCodexPendingAttentionIds = new Set();
+let lastPendingAttentionIds = new Set();
 // The owner of a Codex plan belongs to the state runtime, not a session or
 // its snapshot. Clearing an evicted session also discards its turn ownership.
 const codexSessionTurnIds = new Map();
@@ -1255,8 +1256,8 @@ function getSessionAliases() {
 }
 
 function buildSessionSnapshot() {
-  const pendingAttentionIds = getCodexPendingAttentionIds();
-  const projected = codexSubagentPresentation.project(pendingAttentionIds);
+  const pendingAttentionIds = getPendingAttentionIds();
+  const projected = projectPendingAttention(pendingAttentionIds);
   return buildSessionSnapshotFromSessions(sessions, {
     getSessionPresentation: (id) => ({
       effectiveState: projected.get(id)?.state,
@@ -2026,7 +2027,9 @@ function deleteSessionWithCompletionCleanup(sessionId, reason) {
   codexSessionTurnIds.delete(sessionId);
   cancelCompletionDebounce(sessionId, reason);
   cancelClaudeTranscriptCompletionProbe(sessionId, reason);
-  return sessions.delete(sessionId);
+  const removed = sessions.delete(sessionId);
+  if (removed && typeof ctx.onSessionDeleted === "function") ctx.onSessionDeleted(sessionId, reason);
+  return removed;
 }
 
 function isClaudeElicitationCompletionTool(toolName) {
@@ -2255,8 +2258,8 @@ function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
 // whose POST fails is not permanently claimed, and follow-up prompts never
 // overwrite the first one (matching Trae's constant session title).
 // MiniMax Code carries no session title in its hook payload either, so its
-// prompt-derived titles follow the same first-wins rule.
-const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode", "minimax"]);
+// prompt-derived titles follow the same first-wins rule, as do Kiro IDE titles.
+const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode", "minimax", "kiro-desktop"]);
 
 function resolveIncomingSessionTitle(existing, agentId, incomingTitle, incomingFromPrompt = false) {
   const normalized = normalizeTitle(incomingTitle);
@@ -3634,6 +3637,7 @@ function cleanStaleSessions() {
     if (!codexSubagentPresentation.has(id)) deferredCodexCompletionCues.delete(id);
   }
   const staleConfig = typeof ctx.getStaleConfig === "function" ? ctx.getStaleConfig() : null;
+  const pendingApprovalSessionIds = ctx.getKiroDesktopPendingSessionIds?.() || new Set();
   for (const [id, s] of sessions) {
     const childActivityAt = codexSubagentPresentation.lastActivity(id);
     const staleSession = childActivityAt === null ? s : {
@@ -3645,6 +3649,7 @@ function cleanStaleSessions() {
       deriveSessionBadge,
       shouldAutoClearDetachedSession,
       staleConfig,
+      hasPendingApprovalReminder: isLocalApprovalReminderSession(s) && pendingApprovalSessionIds.has(id),
       hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
         ? (session) => ctx.hasReplyableCompletionMapping(id, session)
         : null,
@@ -4097,7 +4102,7 @@ function disposeKimiPermissionSession(sessionId) {
   stopKimiPermissionPoll(sessionId);
 }
 
-function getCodexPendingAttentionIds() {
+function getPendingAttentionIds() {
   const ids = new Set();
   for (const entry of ctx.pendingPermissions || []) {
     if (entry?.agentId !== "codex" || !entry.sessionId || entry.headless || entry.host || entry.wslDistro
@@ -4105,18 +4110,41 @@ function getCodexPendingAttentionIds() {
       || (entry.res && (entry.res.destroyed || entry.res.writableEnded))) continue;
     if (entry.isCodex === true || entry.isCodexNotify === true || entry.isCodexUserInputNotify === true) ids.add(entry.sessionId);
   }
+  for (const id of ctx.getKiroDesktopPendingSessionIds?.() || []) {
+    if (isLocalApprovalReminderSession(sessions.get(id))) ids.add(id);
+  }
   return ids;
 }
 
-function refreshCodexPendingAttention() {
-  const ids = getCodexPendingAttentionIds();
-  const changed = ids.size !== lastCodexPendingAttentionIds.size
-    || [...ids].some(id => !lastCodexPendingAttentionIds.has(id));
-  lastCodexPendingAttentionIds = ids;
+function projectPendingAttention(ids = getPendingAttentionIds()) {
+  const projected = codexSubagentPresentation.project(ids);
+  const reminders = [...ids].filter(id => isLocalApprovalReminderSession(sessions.get(id)));
+  if (!reminders.length) return projected;
+  const result = new Map(projected);
+  // Kiro's event map produces no sweeping/error states that need Codex's
+  // strong-state preservation when pending attention takes over the visual.
+  for (const id of reminders) result.set(id, { ...sessions.get(id), state: "notification", displayHint: null });
+  return result;
+}
+
+function isBlockingPermissionEntry(entry) {
+  // A Kiro reminder has no decision channel. It must not prevent the pet
+  // from returning to its underlying state when pending attention clears.
+  return !!entry
+    && entry.agentId !== "codex"
+    && !entry.isKiroDesktopNotify
+    && !entry.headless
+    && !(entry.res && (entry.res.destroyed || entry.res.writableEnded));
+}
+
+function refreshPendingAttention() {
+  const ids = getPendingAttentionIds();
+  const changed = ids.size !== lastPendingAttentionIds.size
+    || [...ids].some(id => !lastPendingAttentionIds.has(id));
+  lastPendingAttentionIds = ids;
   // Ordinary permission changes only refresh snapshots. Re-select the pet
-  // when Codex attention itself changed, preserving every other agent's wait.
-  const otherPending = (ctx.pendingPermissions || []).some(entry => entry && entry.agentId !== "codex"
-    && !entry.headless && !(entry.res && (entry.res.destroyed || entry.res.writableEnded)));
+  // when pending attention itself changed, preserving other permission waits.
+  const otherPending = (ctx.pendingPermissions || []).some(isBlockingPermissionEntry);
   if (changed && !otherPending && !isSettingsPreviewVisual()
     && (!ONESHOT_STATES.has(currentState) || currentState === "notification" || currentState === "attention")) {
     const resolved = resolveDisplayState();
@@ -4200,7 +4228,7 @@ function refreshPetPresentation() {
 // Child/pending-attention projection first, then the strict temporary-chat
 // filter, so a parent kept juggling or waiting is never collapsed off the pet.
 function resolveDisplayState() {
-  return resolveDisplayStateFromSessions(getPetPresentationSessions(codexSubagentPresentation.project(getCodexPendingAttentionIds())), {
+  return resolveDisplayStateFromSessions(getPetPresentationSessions(projectPendingAttention()), {
     statePriority: STATE_PRIORITY,
     compacting: hasCodexCompactionVisual(),
     permissionLocked: hasPermissionAnimationLock(),
@@ -4230,7 +4258,7 @@ function getSvgOverride(state) {
     updateVisualSvgOverride,
     idleFollowSvg: SVG_IDLE_FOLLOW,
     idleDefaultVisual: typeof ctx.getIdleVisualChoice === "function" ? ctx.getIdleVisualChoice() : null,
-    sessions: getPetPresentationSessions(codexSubagentPresentation.project(getCodexPendingAttentionIds())),
+    sessions: getPetPresentationSessions(projectPendingAttention()),
     displayHintMap: DISPLAY_HINT_MAP,
     theme,
     stateSvgs: STATE_SVGS,
@@ -4310,6 +4338,7 @@ function disableDoNotDisturb() {
   } else {
     playWakeTransitionOrResolve();
   }
+  ctx.resyncKiroDesktopReminderCards?.();
   // #329: a deferred update bubble may be waiting on DND exit.
   if (typeof ctx.notifyUpdaterSilentExit === "function") {
     try { ctx.notifyUpdaterSilentExit(); } catch {}
@@ -4339,7 +4368,7 @@ function getStartupRecoveryActive() { return startupRecoveryActive; }
 
 function cleanup() {
   deferredCodexCompletionCues.clear();
-  lastCodexPendingAttentionIds.clear();
+  lastPendingAttentionIds.clear();
   codexSubagentPresentation.clear();
   for (const id of codexCompactionHolds.keys()) releaseCodexCompaction(id);
   codexCompactionCompletions.clear();
@@ -4370,7 +4399,9 @@ function cleanup() {
 }
 
 return {
-  refreshCodexPendingAttention,
+  refreshPendingAttention,
+  // Preserve the existing permission refresh API while callers migrate.
+  refreshCodexPendingAttention: refreshPendingAttention,
   updateCodexSubagentActivity,
   clearCodexSubagentActivities,
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,

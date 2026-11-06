@@ -12,6 +12,7 @@ const gemini = require("../../hooks/gemini-install");
 const antigravity = require("../../hooks/antigravity-install");
 const codebuddy = require("../../hooks/codebuddy-install");
 const kiro = require("../../hooks/kiro-install");
+const kiroDesktop = require("../../hooks/kiro-desktop-install");
 const kirocrew = require("../../hooks/kirocrew-install");
 const kimi = require("../../hooks/kimi-install");
 const qwen = require("../../hooks/qwen-code-install");
@@ -197,6 +198,17 @@ const AGENT_DESCRIPTORS = Object.freeze([
     // flatArray to read it; `nested` does not apply.
     flatArray: true,
     flatArrayHookEvents: true,
+  }),
+  Object.freeze({
+    agentId: "kiro-desktop",
+    agentName: agentName("kiro-desktop"),
+    eventSource: agentEventSource("kiro-desktop"),
+    parentDir: kiroDesktop.DEFAULT_PARENT_DIR,
+    configPath: kiroDesktop.DEFAULT_CONFIG_PATH,
+    configMode: "kiro-ide-hooks",
+    autoInstall: true,
+    marker: kiroDesktop.MARKER,
+    hookEvents: kiroDesktop.KIRO_DESKTOP_HOOK_EVENTS,
   }),
   Object.freeze({
     agentId: "kimi-cli",

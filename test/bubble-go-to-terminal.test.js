@@ -120,7 +120,7 @@ function createHarness(options = {}) {
   };
   const context = {
     window: {
-      ClawdBubbleFormat: {
+      ClawdBubbleFormat: options.formatter || {
         formatDetail: () => "detail",
         truncate: (value) => String(value),
         parseMcpToolName: () => null,
@@ -153,6 +153,7 @@ function createHarness(options = {}) {
   return {
     show(data) { showPermission({ lang: "en", toolInput: {}, suggestions: [], ...data }); },
     decisions,
+    headerTitle,
     expandedRequests,
     present(data) { showPresentation(data); },
     restoreActiveControl() { restoreActiveControl(); },
@@ -667,4 +668,72 @@ describe("permission bubble compact/detail presentation", () => {
     assert.strictEqual(textarea.value, "Keep this draft");
     assert.strictEqual(harness.element("planFeedbackForm").classList.contains("visible"), true);
   });
+});
+
+describe("kiro-desktop: read-only reminder rendering", () => {
+  for (const [type, title] of [
+    ["tool_approval", "Kiro is waiting for confirmation"],
+    ["user_input", "Kiro is waiting for your answer"],
+  ]) {
+    it(`kiro-desktop: ${type} exposes only native focus and acknowledge actions`, () => {
+      const harness = createHarness({ formatter: require("../src/bubble-format") });
+      harness.show({
+        toolName: "KiroDesktopApproval",
+        isKiroDesktopNotify: true,
+        toolInput: { question: "Continue?", interactionType: type },
+        presentation: { expanded: false, measurementEpoch: 0 },
+      });
+      assert.strictEqual(harness.headerTitle.textContent, title);
+      assert.strictEqual(harness.element("btnAllow").textContent, "Go to Kiro");
+      assert.strictEqual(harness.element("btnDeny").textContent, "Got it");
+      harness.element("btnAllow").click();
+      assert.deepStrictEqual(harness.decisions, ["kiro-desktop-focus"]);
+    });
+  }
+  it("kiro-desktop: acknowledging uses its own action and passive refresh changes content", () => {
+    const harness = createHarness({ formatter: require("../src/bubble-format") });
+    const data = {
+      toolName: "KiroDesktopApproval",
+      isKiroDesktopNotify: true,
+      toolInput: { question: "First", interactionType: "tool_approval" },
+    };
+    harness.show(data);
+    harness.show({ ...data, toolInput: { question: "Second", interactionType: "user_input" } });
+    assert.match(harness.element("compactBlock").textContent, /Second/);
+    harness.element("btnDeny").click();
+    assert.deepStrictEqual(harness.decisions, ["kiro-desktop-dismiss"]);
+  });
+});
+
+
+it("kiro-desktop: long compact questions and read-only instructions stay visible without expansion", () => {
+  const harness = createHarness({ formatter: require("../src/bubble-format"), deferFrames: true });
+  const question = "确认".repeat(90);
+  harness.show({
+    toolName: "KiroDesktopApproval",
+    isKiroDesktopNotify: true,
+    toolInput: { question, interactionType: "tool_approval" },
+    detailText: "hidden generic detail",
+    detailTruncated: true,
+    presentation: { expanded: false, measurementEpoch: 0 },
+  });
+  const compact = harness.element("compactBlock");
+  compact.clientHeight = 24;
+  compact.scrollHeight = 400;
+  harness.flushAnimationFrames();
+  assert.match(compact.textContent, new RegExp(question));
+  assert.match(compact.textContent, /Confirm in Kiro. Clawd leaves the decision to you./);
+  assert.strictEqual(harness.element("card").classList.contains("kiro-desktop-reminder"), true);
+  assert.strictEqual(harness.element("card").classList.contains("expanded"), false);
+  assert.strictEqual(harness.element("btnExpand").classList.contains("visible"), false);
+  harness.element("btnExpand").click();
+  assert.deepStrictEqual(harness.expandedRequests, []);
+  harness.present({ expanded: true, measurementEpoch: 1 });
+  assert.strictEqual(harness.element("card").classList.contains("expanded"), false);
+  const css = fs.readFileSync(path.join(__dirname, "../src/bubble.css"), "utf8");
+  const compactRule = css.match(/\.card\.kiro-desktop-reminder \.compact-block\s*\{([^}]+)\}/);
+  assert.ok(compactRule);
+  assert.match(compactRule[1], /display:\s*block/);
+  assert.match(compactRule[1], /white-space:\s*pre-wrap/);
+  assert.match(compactRule[1], /-webkit-line-clamp:\s*unset/);
 });

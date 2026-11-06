@@ -13,7 +13,8 @@ module.exports = function createPermissionPresentationRefresh(options = {}) {
       if (options.isDisposed?.()) return;
       try {
         const state = options.getStateRuntime?.();
-        if (typeof state?.refreshCodexPendingAttention === "function") state.refreshCodexPendingAttention();
+        if (typeof state?.refreshPendingAttention === "function") state.refreshPendingAttention();
+        else if (typeof state?.refreshCodexPendingAttention === "function") state.refreshCodexPendingAttention();
         else state?.emitSessionSnapshot?.();
       } catch (error) {
         if (typeof options.onError === "function") options.onError(error);

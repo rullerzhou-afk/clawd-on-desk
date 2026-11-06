@@ -110,6 +110,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "Approve or reject this request in the Kimi terminal.",
     gotIt: "Got it",
     codexNeedsInput: "Codex Needs Input",
+    kiroWaitingApproval: "Kiro is waiting for confirmation",
+    kiroWaitingInput: "Kiro is waiting for your answer",
+    goToKiro: "Go to Kiro",
+    kiroReminderReadOnly: "Confirm in Kiro. Clawd leaves the decision to you.",
     goToCodex: "Go to Codex",
     answerInCodex: "Choose or type your answer in Codex.",
     returnToRemoteCodex: "Return to the remote Codex terminal to answer.",
@@ -166,6 +170,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "\u8BF7\u5728 Kimi \u7EC8\u7AEF\u4E2D\u6279\u51C6\u6216\u62D2\u7EDD\u8BE5\u8BF7\u6C42\u3002",
     gotIt: "\u77E5\u9053\u4E86",
     codexNeedsInput: "Codex \u9700\u8981\u4F60\u7684\u56DE\u7B54",
+    kiroWaitingApproval: "Kiro 在等你确认",
+    kiroWaitingInput: "Kiro 在等你回答",
+    goToKiro: "去 Kiro",
+    kiroReminderReadOnly: "在 Kiro 里确认，Clawd 不会替你决定",
     goToCodex: "\u524D\u5F80 Codex",
     answerInCodex: "\u8BF7\u5728 Codex \u4E2D\u9009\u62E9\u6216\u8F93\u5165\u56DE\u7B54\u3002",
     returnToRemoteCodex: "\u8BF7\u8FD4\u56DE\u8FDC\u7AEF Codex \u7EC8\u7AEF\u56DE\u7B54\u3002",
@@ -222,6 +230,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "請在 Kimi 終端機中允許或拒絕此請求。",
     gotIt: "了解",
     codexNeedsInput: "Codex 需要你的回答",
+    kiroWaitingApproval: "Kiro 在等你確認",
+    kiroWaitingInput: "Kiro 在等你回答",
+    goToKiro: "前往 Kiro",
+    kiroReminderReadOnly: "請在 Kiro 裡確認，Clawd 不會替你決定",
     goToCodex: "前往 Codex",
     answerInCodex: "請在 Codex 中選擇或輸入回答。",
     returnToRemoteCodex: "請返回遠端 Codex 終端機回答。",
@@ -278,6 +290,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "Kimi \uD130\uBBF8\uB110\uC5D0\uC11C \uC774 \uC694\uCCAD\uC744 \uD5C8\uC6A9\uD558\uAC70\uB098 \uAC70\uBD80\uD558\uC138\uC694.",
     gotIt: "\uD655\uC778",
     codexNeedsInput: "Codex\uC5D0 \uC785\uB825\uC774 \uD544\uC694\uD569\uB2C8\uB2E4",
+    kiroWaitingApproval: "Kiro가 확인을 기다리고 있습니다",
+    kiroWaitingInput: "Kiro가 답변을 기다리고 있습니다",
+    goToKiro: "Kiro로 이동",
+    kiroReminderReadOnly: "Kiro에서 확인하세요. 결정은 사용자에게 맡깁니다.",
     goToCodex: "Codex\uB85C \uC774\uB3D9",
     answerInCodex: "Codex\uC5D0\uC11C \uB2F5\uBCC0\uC744 \uC120\uD0DD\uD558\uAC70\uB098 \uC785\uB825\uD558\uC138\uC694.",
     returnToRemoteCodex: "\uC6D0\uACA9 Codex \uD130\uBBF8\uB110\uB85C \uB3CC\uC544\uAC00 \uB2F5\uBCC0\uD558\uC138\uC694.",
@@ -334,6 +350,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "Kimi ターミナルでこのリクエストを許可または拒否してください。",
     gotIt: "了解",
     codexNeedsInput: "Codex に入力が必要",
+    kiroWaitingApproval: "Kiro が確認を待っています",
+    kiroWaitingInput: "Kiro が回答を待っています",
+    goToKiro: "Kiro へ",
+    kiroReminderReadOnly: "Kiro で確認してください。決定はご自身で行います。",
     goToCodex: "Codex へ移動",
     answerInCodex: "Codex で回答を選択または入力してください。",
     returnToRemoteCodex: "リモートの Codex ターミナルに戻って回答してください。",
@@ -390,6 +410,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "Aprove ou recuse este pedido no terminal do Kimi.",
     gotIt: "Entendi",
     codexNeedsInput: "O Codex precisa de resposta",
+    kiroWaitingApproval: "O Kiro aguarda confirmação",
+    kiroWaitingInput: "O Kiro aguarda sua resposta",
+    goToKiro: "Ir para o Kiro",
+    kiroReminderReadOnly: "Confirme no Kiro. A decisão é sua.",
     goToCodex: "Ir para o Codex",
     answerInCodex: "Escolha ou digite sua resposta no Codex.",
     returnToRemoteCodex: "Volte ao terminal remoto do Codex para responder.",
@@ -446,6 +470,10 @@ const BUBBLE_STRINGS = {
     checkKimiTerminal: "Aprueba o rechaza esta solicitud en la terminal de Kimi.",
     gotIt: "Entendido",
     codexNeedsInput: "Codex necesita una respuesta",
+    kiroWaitingApproval: "Kiro espera tu confirmación",
+    kiroWaitingInput: "Kiro espera tu respuesta",
+    goToKiro: "Ir a Kiro",
+    kiroReminderReadOnly: "Confirma en Kiro. La decisión es tuya.",
     goToCodex: "Ir a Codex",
     answerInCodex: "Elige o escribe tu respuesta en Codex.",
     returnToRemoteCodex: "Vuelve a la terminal remota de Codex para responder.",
@@ -662,6 +690,7 @@ function resetBubbleContent() {
   activeQuestionIndex = 0;
   card.classList.remove("elicitation-scrollable");
   card.classList.remove("codex-user-input-focus-card");
+  card.classList.remove("kiro-desktop-reminder");
   card.removeAttribute("role");
   card.removeAttribute("tabindex");
   card.removeAttribute("aria-label");
@@ -705,6 +734,9 @@ function resetBubbleContent() {
 }
 
 function getCompactPreview(data) {
+  if (data.isKiroDesktopNotify) {
+    return [data.toolInput?.question, bubbleText(data.lang, "kiroReminderReadOnly")].filter(Boolean).join("\n\n");
+  }
   if (elicitationMode || data.isCodexUserInputNotify) {
     const questions = data.toolInput && Array.isArray(data.toolInput.questions)
       ? data.toolInput.questions
@@ -763,6 +795,7 @@ function scheduleCompactOverflowMeasurement() {
 function applyPresentationView() {
   if (!currentData) return;
   const data = currentData;
+  if (data.isKiroDesktopNotify) currentExpanded = false;
   card.classList.toggle("expanded", currentExpanded);
   btnCollapse.title = bubbleText(data.lang, "collapse");
   btnCollapse.setAttribute("aria-label", bubbleText(data.lang, "collapse"));
@@ -784,7 +817,7 @@ function applyPresentationView() {
   const detailDiffers = typeof data.detailText === "string"
     && data.detailText
     && data.detailText !== compactPreview;
-  const needsExpansion = !codexUserInputMode && (
+  const needsExpansion = !data.isKiroDesktopNotify && !codexUserInputMode && (
     currentIsPlanReview
     || elicitationMode
     || detailDiffers
@@ -1310,6 +1343,7 @@ function show(data) {
   const isPassiveRefresh = data.toolName === "CodexExec"
     || data.toolName === "KimiPermission"
     || data.isCodexUserInputNotify === true
+    || data.isKiroDesktopNotify === true
     || data.isFamilyQuestion === true;
   if (currentData && !isPassiveRefresh) {
     currentData = {
@@ -1479,6 +1513,18 @@ function show(data) {
     return;
   }
 
+  if (data.isKiroDesktopNotify) {
+    card.classList.add("kiro-desktop-reminder");
+    headerTitle.textContent = bubbleText(data.lang, data.toolInput?.interactionType === "user_input"
+      ? "kiroWaitingInput" : "kiroWaitingApproval");
+    toolPillText.textContent = "KIRO";
+    toolPill.setAttribute("data-tool", "KiroDesktopApproval");
+    btnAllow.textContent = bubbleText(data.lang, "goToKiro");
+    btnDeny.textContent = bubbleText(data.lang, "gotIt");
+    btnDeny.style.display = "";
+    revealCard();
+    return;
+  }
   if (data.isCodexUserInputNotify) {
     currentExpanded = false;
     headerTitle.textContent = bubbleText(data.lang, "codexNeedsInput");
@@ -1702,6 +1748,11 @@ function handleElicitationBackAction() {
 }
 
 btnAllow.addEventListener("click", () => {
+  if (currentData?.isKiroDesktopNotify) {
+    disableAll();
+    window.bubbleAPI.decide("kiro-desktop-focus");
+    return;
+  }
   if (elicitationMode) {
     handleElicitationPrimaryAction();
     return;
@@ -1738,6 +1789,11 @@ card.addEventListener("keydown", (event) => {
 });
 
 btnDeny.addEventListener("click", () => {
+  if (currentData?.isKiroDesktopNotify) {
+    disableAll();
+    window.bubbleAPI.decide("kiro-desktop-dismiss");
+    return;
+  }
   if (elicitationMode) {
     handleElicitationBackAction();
     return;
@@ -1835,7 +1891,7 @@ planFeedbackBack.addEventListener("click", () => {
 });
 
 btnExpand.addEventListener("click", () => {
-  if (btnExpand.disabled) return;
+  if (btnExpand.disabled || currentData?.isKiroDesktopNotify) return;
   window.bubbleAPI.setExpanded(true);
 });
 
