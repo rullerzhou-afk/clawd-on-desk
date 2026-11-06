@@ -280,6 +280,129 @@ describe("buildStateBody (Copilot)", () => {
   });
 });
 
+describe("buildStateBody notification (Copilot)", () => {
+  for (const notificationType of ["permission_prompt", "elicitation_dialog"]) {
+    it(`maps ${notificationType} to Notification with session and local PID fields`, () => {
+      const body = buildStateBody("notification", {
+        notificationType,
+        sessionId: "copilot-notification-1",
+        cwd: "/repo",
+        sessionTitle: "Waiting Copilot",
+        message: "Fetch URL: https://example.invalid/private",
+        title: "Permission needed",
+      }, mockResolve);
+
+      assert.deepStrictEqual(body, {
+        state: "notification",
+        event: "Notification",
+        agent_id: "copilot-cli",
+        session_id: "copilot-notification-1",
+        cwd: "/repo",
+        session_title: "Waiting Copilot",
+        source_pid: 1234,
+        agent_pid: 5678,
+        pid_chain: [1234, 5678],
+      });
+      assert.strictEqual("message" in body, false);
+      assert.strictEqual("title" in body, false);
+    });
+  }
+
+  it("accepts snake_case notification_type when notificationType is not a string", () => {
+    for (const notificationType of [undefined, null, false, 42, [], {}]) {
+      const body = buildStateBody("notification", {
+        notificationType,
+        notification_type: "elicitation_dialog",
+        session_id: "copilot-snake-1",
+        session_title: "Snake Case Copilot",
+      }, mockResolve);
+
+      assert.strictEqual(body.state, "notification");
+      assert.strictEqual(body.event, "Notification");
+      assert.strictEqual(body.session_id, "copilot-snake-1");
+    }
+  });
+
+  it("prefers a string notificationType over notification_type even when it is not allowed", () => {
+    const body = buildStateBody("notification", {
+      notificationType: "permission_prompt",
+      notification_type: "agent_idle",
+      sessionTitle: "Camel Case Copilot",
+    }, mockResolve);
+    assert.strictEqual(body.event, "Notification");
+
+    for (const notificationType of ["agent_idle", "", "unknown"]) {
+      assert.strictEqual(buildStateBody("notification", {
+        notificationType,
+        notification_type: "permission_prompt",
+      }, mockResolve), null);
+    }
+  });
+
+  it("returns null for missing or non-string notification types", () => {
+    assert.strictEqual(buildStateBody("notification", {}, mockResolve), null);
+    for (const value of [undefined, null, false, 42, [], {}]) {
+      assert.strictEqual(buildStateBody("notification", { notificationType: value }, mockResolve), null);
+      assert.strictEqual(buildStateBody("notification", { notification_type: value }, mockResolve), null);
+      assert.strictEqual(buildStateBody("notification", {
+        notificationType: value,
+        notification_type: value,
+      }, mockResolve), null);
+    }
+  });
+
+  for (const notificationType of [
+    "shell_completed", "shell_detached_completed", "agent_completed", "agent_idle",
+    "unknown", "", " permission_prompt", "permission_prompt ", "PERMISSION_PROMPT",
+  ]) {
+    it(`returns null for notification type ${JSON.stringify(notificationType)}`, () => {
+      const resolve = () => assert.fail("discarded notifications must not resolve PIDs");
+      assert.strictEqual(buildStateBody("notification", { notificationType }, resolve), null);
+      assert.strictEqual(buildStateBody("notification", { notification_type: notificationType }, resolve), null);
+    });
+  }
+
+  it("remote notification includes host and session fields without local PID fields or notification text", () => {
+    const oldRemote = process.env.CLAWD_REMOTE;
+    process.env.CLAWD_REMOTE = "1";
+    try {
+      const body = buildStateBody("notification", {
+        notificationType: "permission_prompt",
+        sessionId: "copilot-remote-1",
+        cwd: "/remote/repo",
+        session_title: "Remote Copilot",
+        message: "Read /private/file",
+        title: "Permission needed",
+      }, () => assert.fail("remote notifications must not resolve local PIDs"), {
+        readHostPrefix: () => "remote-box",
+      });
+
+      assert.deepStrictEqual(body, {
+        state: "notification",
+        event: "Notification",
+        agent_id: "copilot-cli",
+        session_id: "copilot-remote-1",
+        cwd: "/remote/repo",
+        session_title: "Remote Copilot",
+        host: "remote-box",
+      });
+    } finally {
+      if (oldRemote === undefined) delete process.env.CLAWD_REMOTE;
+      else process.env.CLAWD_REMOTE = oldRemote;
+    }
+  });
+
+  it("keeps every other state event in its original camelCase form", () => {
+    for (const event of [
+      "sessionStart", "sessionEnd", "userPromptSubmitted", "preToolUse", "postToolUse",
+      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact",
+    ]) {
+      const body = buildStateBody(event, { sessionTitle: "Copilot" }, mockResolve);
+      assert.strictEqual(body.event, event);
+    }
+  });
+});
+
 describe("resolveCopilotSessionStateDir", () => {
   it("uses env.COPILOT_HOME (trimmed) over homeDir", () => {
     const result = resolveCopilotSessionStateDir({

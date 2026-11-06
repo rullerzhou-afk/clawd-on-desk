@@ -325,6 +325,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.capabilities.httpHook, false);
     assert.strictEqual(copilot.capabilities.permissionApproval, true);
     assert.strictEqual(copilot.capabilities.interactiveBubble, true);
+    assert.strictEqual(copilot.capabilities.notificationHook, true);
     assert.strictEqual(copilot.capabilities.sessionEnd, true);
     assert.strictEqual(copilot.capabilities.subagent, true);
 
@@ -480,6 +481,7 @@ describe("Agent Registry", () => {
     assert.strictEqual(copilot.eventMap.sessionStart, "idle");
     assert.strictEqual(copilot.eventMap.preToolUse, "working");
     assert.strictEqual(copilot.eventMap.agentStop, "attention");
+    assert.strictEqual(copilot.eventMap.notification, "notification");
 
     const gemini = registry.getAgent("gemini-cli");
     assert.strictEqual(gemini.eventMap.SessionStart, "idle");

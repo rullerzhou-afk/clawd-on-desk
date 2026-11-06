@@ -10,9 +10,11 @@
 
 - **Trigger**: Clawd launches *and* Copilot CLI is installed and enabled in Settings.
 - **Target file**: `<copilot-home>/hooks/hooks.json`, where `<copilot-home>` is `$COPILOT_HOME` (trimmed, non-empty) or `~/.copilot` if the env is unset.
-- **Registered events (10)**: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `sessionEnd`, `errorOccurred`, `agentStop`, `subagentStart`, `subagentStop`, `preCompact`.
+- **Registered state events (11)**: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `sessionEnd`, `errorOccurred`, `agentStop`, `subagentStart`, `subagentStop`, `preCompact`, `notification`.
 - **Coverage**: only entries containing the `copilot-hook.js` marker are managed; your other entries and other `hooks/*.json` files are left untouched.
 - **`disableAllHooks`**: if either `hooks.json` or `<copilot-home>/settings.json` has `disableAllHooks: true` at the top level, doctor surfaces a warning and suppresses the Fix button (so it does not overwrite your explicit intent). Clawd still writes its entries, but Copilot will not execute them.
+
+Copilot path permissions (reading files outside the workspace) bypass the approval hook, so Clawd can only alert you to return to the terminal to approve them. The `notification` hook also alerts when `ask_user` needs your response. A Copilot session that is already running does not pick up hooks added after it started. Exit and resume it to load them.
 
 ## Manual configuration (fallback)
 
@@ -31,7 +33,8 @@ Create `<copilot-home>/hooks/hooks.json` and replace `/path/to/clawd-on-desk` wi
     "agentStop":            [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js agentStop",            "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js agentStop",            "timeoutSec": 5 }],
     "subagentStart":        [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js subagentStart",        "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js subagentStart",        "timeoutSec": 5 }],
     "subagentStop":         [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js subagentStop",         "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js subagentStop",         "timeoutSec": 5 }],
-    "preCompact":           [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preCompact",           "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preCompact",           "timeoutSec": 5 }]
+    "preCompact":           [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preCompact",           "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preCompact",           "timeoutSec": 5 }],
+    "notification":         [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js notification",         "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js notification",         "timeoutSec": 5 }]
   }
 }
 ```
@@ -55,6 +58,8 @@ hooks automatically in the profile's resolved layout: `copilot-hook.js` is
 deployed with the secure hook manifest, and `<COPILOT_HOME>/hooks/hooks.json`
 is wired up alongside Claude Code and Codex CLI. The disabled
 `scripts/remote-deploy.sh` path is not a supported fallback.
+
+For previously deployed remote hosts, run Deploy / Repair Hooks once again in Settings to add `notification`, then exit and resume any running Copilot session to load the new hook.
 
 If Copilot CLI is not installed on the remote (`~/.copilot/` missing), the registration step is skipped with a warning and the rest of the deploy continues.
 

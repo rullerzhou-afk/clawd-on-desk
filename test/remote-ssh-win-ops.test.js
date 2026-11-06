@@ -436,7 +436,7 @@ test("issue #1316: batch promotion refuses a lost lease before touching staging"
   assert.equal(fs.readdirSync(f.local(stage)).length, 3);
 });
 
-function fakeInstaller(f) {
+function fakeInstaller(f, copilotEvents = ["sessionStart"]) {
   const source = `
 if(require.main===module){
   const fs=require('fs'),p=require('path');
@@ -445,7 +445,7 @@ if(require.main===module){
   console.error('installer stderr');
   process.exitCode=Number(process.env.TEST_EXIT||0);
 }
-module.exports={CLAUDE_CORE_HOOK_EVENTS:['Stop','SessionStart'],COPILOT_STATE_HOOK_EVENTS:['sessionStart'],CODEX_STATE_HOOK_EVENTS:['SessionStart','Stop']};`;
+module.exports={CLAUDE_CORE_HOOK_EVENTS:['Stop','SessionStart'],COPILOT_STATE_HOOK_EVENTS:${JSON.stringify(copilotEvents)},CODEX_STATE_HOOK_EVENTS:['SessionStart','Stop']};`;
   for (const script of ["install.js", "copilot-install.js", "codex-install.js"]) f.put(path.win32.join(f.layout.claudeHooksDir, script), source);
   for (const name of ["json-utils.js", "codex-install-utils.js", "server-config.js", "appimage-hook-materializer.js"]) {
     f.put(path.win32.join(f.layout.claudeHooksDir, name), fs.readFileSync(path.join(__dirname, "..", "hooks", name), "utf8"));
@@ -508,6 +508,23 @@ test("issue #1316: native installer verifies PowerShell Claude and Copilot throu
   copilot.hooks.sessionStart[0].powershell = psCommand(f, "copilot-hook.js", "sessionStart").replace("CLAWD_SSH_REMOTE='1'", "CLAWD_SSH_REMOTE='0'");
   assert.equal((await run("installCopilot", copilot)).verified, false);
 });
+test("native Copilot installer requires notification when the uploaded installer declares it", async (t) => {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  const run = fakeInstaller(f, ["sessionStart", "notification"]);
+  const config = { hooks: { sessionStart: [{ powershell: psCommand(f, "copilot-hook.js", "sessionStart") }] } };
+
+  const missing = await run("installCopilot", config);
+  assert.equal(missing.verified, false);
+  assert.equal(missing.ok, false);
+  assert.equal(missing.reason, "installer_verification_failed");
+
+  config.hooks.notification = [{ powershell: psCommand(f, "copilot-hook.js", "notification") }];
+  const complete = await run("installCopilot", config);
+  assert.equal(complete.verified, true);
+  assert.equal(complete.ok, true);
+});
+
 test("issue #1316: native installer exit status and failed readback cannot record success", async (t) => {
   const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); const run = fakeInstaller(f);
   const failed = await run("installClaude", claudeConfig(f), { TEST_EXIT: "9" });
