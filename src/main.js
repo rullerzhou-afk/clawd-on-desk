@@ -5494,6 +5494,7 @@ function createWindow() {
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
     rendererConfigChannel,
+    isQuitting: () => isQuitting,
     guardAlwaysOnTop,
     prepareActivation: (createdHitWin) => (
       _hitWindowActivationRuntime.controller.prepare(createdHitWin)
@@ -6077,7 +6078,7 @@ if (!gotTheLock) {
       prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
-      if (win) {
+      if (win && !win.isDestroyed()) {
         win.showInactive();
         keepOutOfTaskbar(win);
       }

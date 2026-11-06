@@ -33,6 +33,30 @@ test("second-instance relaunch exits hidden state through the pet visibility sta
   );
 });
 
+test("issue #1335: second-instance checks the render window is live before showing it", () => {
+  const source = readMain();
+  const start = source.indexOf('app.on("second-instance"');
+  const end = source.indexOf("codexPetMain.enqueueImportUrlsFromArgv(commandLine);", start);
+  assert.ok(start >= 0 && end > start, "second-instance handler should be present");
+
+  const handler = source.slice(start, end);
+  assert.match(
+    handler,
+    /if \(win && !win\.isDestroyed\(\)\) \{\s*win\.showInactive\(\);/,
+    "the render window must be live before showInactive()",
+  );
+});
+
+test("issue #1335: main passes the live quit flag to createHitWindow", () => {
+  const source = readMain();
+  const start = source.indexOf("hitWin = petWindowRuntime.createHitWindow({");
+  const end = source.indexOf("\n  });", start);
+  assert.ok(start >= 0 && end > start, "createHitWindow call should be present");
+
+  const options = source.slice(start, end);
+  assert.match(options, /isQuitting: \(\) => isQuitting,/);
+});
+
 test("hitWin renderer crash clears transient interaction state before reloading", () => {
   const source = readMain();
   const start = source.indexOf("onRenderProcessGone: (details, ownedHitWin) => {");
