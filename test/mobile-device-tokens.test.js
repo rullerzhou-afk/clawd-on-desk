@@ -60,8 +60,8 @@ async function fixture(t, options = {}) {
   });
   await server.start();
   t.after(async () => { await server.cleanup(); if (!options.dir) fs.rmSync(dir, { recursive: true, force: true }); });
-  function connect(params, ip = "127.0.0.1", socket = new Socket()) {
-    socketServer.emit("connection", socket, { url: "/ws?" + new URLSearchParams(params), headers: { "user-agent": "iPhone Safari/17" }, socket: { remoteAddress: ip } });
+  function connect(params, ip = "127.0.0.1", socket = new Socket(), headers = { "user-agent": "iPhone Safari/17" }) {
+    socketServer.emit("connection", socket, { url: "/ws?" + new URLSearchParams(params), headers, socket: { remoteAddress: ip } });
     return socket;
   }
   return {
@@ -140,6 +140,64 @@ test("device list exposes only display fields and reads lastSeenAt without persi
   devices[0].name = "changed by caller";
   devices.pop();
   assert.equal(f.server.listDevices()[0].name, pending.name);
+});
+
+test("home-screen PWAs get a distinguishing name suffix via the mode param (#1299)", async (t) => {
+  // Pairing from a home-screen PWA (iOS standalone shares Safari's UA).
+  const f = await fixture(t);
+  f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+
+  // Regular Safari pairing stays unsuffixed.
+  const plain = await fixture(t);
+  plain.connect({ pair: plain.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  assert.equal(plain.server.listDevices()[0].name, "iPhone · Safari");
+
+  // Android installed PWA.
+  const android = await fixture(t);
+  android.connect(
+    { pair: android.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1), mode: "pwa" },
+    "127.0.0.1", new Socket(),
+    { "user-agent": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 Chrome/120 Mobile Safari/537.36" },
+  );
+  assert.equal(android.server.listDevices()[0].name, "Android · Chrome · PWA");
+
+  // Unknown mode values are ignored, not echoed into the name.
+  const junk = await fixture(t);
+  junk.connect({ pair: junk.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1), mode: "location.href" });
+  assert.equal(junk.server.listDevices()[0].name, "iPhone · Safari");
+
+  // Legacy migration names new devices with the suffix too.
+  const legacyPwa = await fixture(t);
+  legacyPwa.connect({ token: LEGACY, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(legacyPwa.server.listDevices()[0].name, "iPhone · Safari · PWA");
+});
+
+test("a standalone reconnect renames pre-mode devices in place (#1299)", async (t) => {
+  const f = await fixture(t);
+  // Paired before the suffix existed: no mode param, plain name.
+  const socket = f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const token = socket.rotation().newToken;
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  socket.close(1000);
+
+  // First standalone reconnect fixes the name without revoking or re-pairing.
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+
+  // Further standalone reconnects are a no-op: no extra write lands.
+  const before = fs.readFileSync(f.devicesPath, "utf8");
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+  assert.equal(fs.readFileSync(f.devicesPath, "utf8"), before);
+
+  // A regular Safari reconnect never renames.
+  const plain = await fixture(t);
+  const plainSocket = plain.connect({ pair: plain.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const plainToken = plainSocket.rotation().newToken;
+  plainSocket.close(1000);
+  plain.connect({ token: plainToken, proto: "2", cid: cid(1) });
+  assert.equal(plain.server.listDevices()[0].name, "iPhone · Safari");
 });
 
 test("legacy activity is false on fresh install, true on upgrade, false after revocation", async (t) => {

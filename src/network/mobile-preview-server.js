@@ -301,7 +301,7 @@ function initMobilePreviewServer(ctx) {
     };
   }
 
-  function migrateLegacy(cid, userAgent) {
+  function migrateLegacy(cid, userAgent, mode = null) {
     let device = store.getState().devices.find((d) => d.cid === cid && d.state === "pending")
       || store.getState().devices.find((d) => d.cid === cid && d.state === "active");
     if (device) return device;
@@ -310,7 +310,7 @@ function initMobilePreviewServer(ctx) {
       return null;
     }
     try {
-      device = store.commit((next) => store.createDevice(next, cid, "legacy", userAgent));
+      device = store.commit((next) => store.createDevice(next, cid, "legacy", userAgent, null, mode));
     } catch {
       log("[mobile-preview] legacy migration persistence deferred");
     }
@@ -351,7 +351,7 @@ function initMobilePreviewServer(ctx) {
     return (pairFailures.get(ip) || []).length >= 20;
   }
 
-  function claimDeviceForPairing(ws, code, cid, userAgent, ip) {
+  function claimDeviceForPairing(ws, code, cid, userAgent, ip, mode = null) {
     const codeHash = hash(code);
     const boundDevice = store.getState().devices.find((d) => d.pairCodeHash === codeHash);
     if (boundDevice && boundDevice.cid === cid && boundDevice.state === "pending") return boundDevice;
@@ -369,7 +369,7 @@ function initMobilePreviewServer(ctx) {
     }
     try {
       return store.commit((next) => {
-        const device = store.createDevice(next, cid, "pair", userAgent, codeHash);
+        const device = store.createDevice(next, cid, "pair", userAgent, codeHash, mode);
         next.pairing = newPairing(now());
         return device;
       });
@@ -395,7 +395,8 @@ function initMobilePreviewServer(ctx) {
       return;
     }
     const code = url.searchParams.get("pair").toUpperCase().replace(/-/g, "");
-    const device = claimDeviceForPairing(ws, code, cid, req.headers["user-agent"] || "", ip);
+    const mode = url.searchParams.get("mode") === "pwa" ? "pwa" : null;
+    const device = claimDeviceForPairing(ws, code, cid, req.headers["user-agent"] || "", ip, mode);
     if (!device) return;
     const meta = {
       kind: "pair",
@@ -470,6 +471,12 @@ function initMobilePreviewServer(ctx) {
       return;
     }
 
+    // Typing host:port without the /mobile/ path used to yield a blank 404 (#1299).
+    if (urlPath === "/") {
+      res.writeHead(302, { Location: "/mobile/" });
+      res.end();
+      return;
+    }
     if (urlPath === "/mobile/" || urlPath === "/mobile") urlPath = "/mobile/index.html";
     if (!urlPath.startsWith("/mobile/")) { res.writeHead(404); res.end(); return; }
     const rel = urlPath.slice("/mobile/".length);
@@ -569,7 +576,16 @@ function initMobilePreviewServer(ctx) {
     if (auth.device) store.recordSeen(auth.device.id);
     const cid = url.searchParams.get("cid");
     if (auth.kind === "legacy" && auth.proto2 && CID_RE.test(cid || "")) {
-      rotationDevice = migrateLegacy(cid, req.headers["user-agent"] || "");
+      const mode = url.searchParams.get("mode") === "pwa" ? "pwa" : null;
+      rotationDevice = migrateLegacy(cid, req.headers["user-agent"] || "", mode);
+    }
+    // Devices paired before the mode param existed keep an unsuffixed name;
+    // the first standalone reconnect renames them in place so revoke + re-pair
+    // is not required (#1299).
+    if (auth.kind === "device" && auth.device
+        && url.searchParams.get("mode") === "pwa"
+        && !auth.device.name.endsWith(" · PWA")) {
+      store.renameDevice(auth.device.id, auth.device.name + " · PWA");
     }
 
     sendInitialSnapshots(ws);
