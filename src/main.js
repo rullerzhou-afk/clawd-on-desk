@@ -3264,6 +3264,7 @@ function ensureMobilePreviewServer() {
     sessions,
     rotationMs: !app.isPackaged ? Number(process.env.CLAWD_MOBILE_ROTATION_MS) : undefined,
     permissionObservation: _perm && _perm.permissionObservation,
+    getLang: () => lang,
     log: (message) => sessionLog(message),
   });
   return _lanWss;

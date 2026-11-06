@@ -14,6 +14,7 @@ const WebSocket = require("ws");
 const { createMobileDeviceStore, hash, CID_RE, MAX_DEVICES, newPairing } = require("./mobile-device-store");
 const { sessionDisplayFolder } = require("../state-session-snapshot");
 const { buildPairQrSvg } = require("../mobile-pair-qr");
+const { resolveStrings } = require("./mobile-pwa-i18n");
 
 const APP_VERSION = require("../../package.json").version;
 const PROTOCOL_VERSION = "v1";
@@ -458,6 +459,26 @@ function initMobilePreviewServer(ctx) {
     return "127.0.0.1";
   }
 
+  function currentLang() {
+    const lang = ctx && typeof ctx.getLang === "function" ? ctx.getLang() : null;
+    return typeof lang === "string" && lang ? lang : "en";
+  }
+
+  function renderIndexHtml(source) {
+    const lang = currentLang();
+    const strings = resolveStrings(lang);
+    // Escape `<` so a translated string can never close the injected script tag.
+    const stringsJson = JSON.stringify(strings).replaceAll("<", "\\u003c");
+    return source
+      .replaceAll("__CLAWD_APP_VERSION__", APP_VERSION)
+      .replaceAll("__CLAWD_LANG__", lang)
+      .replaceAll("__CLAWD_STRINGS_JSON__", stringsJson)
+      .replaceAll("__CLAWD_T_PAIR_LABEL__", strings.pairLabel)
+      .replaceAll("__CLAWD_T_PAIR_SUBMIT__", strings.pairSubmit)
+      .replaceAll("__CLAWD_T_NAV_SESSIONS__", strings.navSessions)
+      .replaceAll("__CLAWD_T_NAV_SETTINGS__", strings.navSettings);
+  }
+
   function serveStatic(req, res) {
     let urlPath;
     try { urlPath = new URL(req.url, "http://localhost").pathname; } catch { res.writeHead(400); res.end(); return; }
@@ -492,7 +513,7 @@ function initMobilePreviewServer(ctx) {
         "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=3600",
       });
       const body = rel === "index.html"
-        ? data.toString("utf8").replaceAll("__CLAWD_APP_VERSION__", APP_VERSION)
+        ? renderIndexHtml(data.toString("utf8"))
         : data;
       res.end(body);
     });
