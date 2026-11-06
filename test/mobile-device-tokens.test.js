@@ -200,6 +200,38 @@ test("a standalone reconnect renames pre-mode devices in place (#1299)", async (
   assert.equal(plain.server.listDevices()[0].name, "iPhone · Safari");
 });
 
+test("a failed PWA rename is logged and the connection still completes (#1299)", async (t) => {
+  const f = await fixture(t);
+  // Paired before the suffix existed: no mode param, plain name.
+  const paired = f.connect({ pair: f.server.getConnectionInfo().pairCode, proto: "2", cid: cid(1) });
+  const token = paired.rotation().newToken;
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  paired.close(1000);
+
+  // Promote the staged token first so the failing write below is only the rename.
+  const promoted = f.connect({ token, proto: "2", cid: cid(1) });
+  assert.equal(promoted.code, undefined);
+  promoted.close(1000);
+
+  // The reconnect still has to serve snapshots even when the rename cannot be written.
+  f.failDevices(true);
+  let socket;
+  assert.doesNotThrow(() => { socket = f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" }); });
+  checkSnapshot(socket);
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari");
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write failed")), [
+    "[mobile-preview] device store write failed (device rename): write-rejected",
+  ]);
+
+  // The next reconnect retries the rename and persists it.
+  f.failDevices(false);
+  f.connect({ token, proto: "2", cid: cid(1), mode: "pwa" });
+  assert.equal(f.server.listDevices()[0].name, "iPhone · Safari · PWA");
+  assert.deepEqual(f.logs.filter((line) => line.includes("device store write recovered")), [
+    "[mobile-preview] device store write recovered after 1 failed writes",
+  ]);
+});
+
 test("legacy activity is false on fresh install, true on upgrade, false after revocation", async (t) => {
   const fresh = await fixture(t, { missingToken: true });
   assert.equal(fresh.server.isLegacyActive(), false);
