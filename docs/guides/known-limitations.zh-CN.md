@@ -29,6 +29,7 @@
 | **Hermes Agent：使用前需要安装集成** | Hermes 会显示在 Settings 里，但新安装默认是 Not installed。Clawd 只有在你显式安装该集成、且检测到真实 Hermes 安装后才会写入 plugin 文件。安装 Hermes 后，在 **Settings -> AI 编程工具 -> Install** 里安装，或执行 `npm run install:hermes-plugin`。 |
 | **Hermes Agent：部分支持权限气泡** | Hermes plugin 事件已覆盖状态、会话、SessionEnd、工具活动、终端聚焦、clarify 交互提问气泡，以及 plugin 发起的权限气泡。对显式列入 `CLAWD_HERMES_PERMISSION_TOOLS` 的工具，如果 Clawd 没有返回决定或不可用，plugin 会 fail closed；Hermes 当前没有可接管这条 opt-in gate 的原生审批框，需要等 Clawd 能正常显示气泡后重试工具。Clawd 尚未完全取代 Hermes 原生审批菜单：在上游提供阻塞式审批结果 hook 前，`once` / `session` / `always` 的持久化仍由 Hermes 处理。Subagent 生命周期仍需上游提供成对的 start/stop 事件。 |
 | **Hermes Agent over Remote SSH（Phase 1）** | 远程 SSH 部署目前只覆盖默认 `account-default` layout 和标准 Hermes 安装：`~/.hermes` home 加上 `~/.hermes/profiles/*` 下的 profile home，对应默认 gateway 和普通 named-profile gateway。自定义 `HERMES_HOME`、multiplexed gateway 和实验性 `profile-isolated` 模式都不受支持、也未验证。Clawd 从不重启 Hermes gateway：启用 plugin 在下一个会话生效；托管模块被替换时，正在运行的 gateway 需要你手动重启，`systemctl --user is-active` 只作为 best-effort 提示上报。远程部署不会把本机 Hermes 集成标记为已安装；部署完整验证通过后，Clawd 会自动打开本机 **Settings -> AI 编程工具 -> Hermes Agent** 开关，以接收远程事件。 |
+| **Kiro IDE 确认提醒** | 确认或回答须在 Kiro 中完成，Clawd 提醒卡为只读。活动 hooks 只在受信任工作区执行。Clawd 启动前已经在等的确认不会补提醒。Windows／Linux 已有自动化覆盖，尚未真机验证。 Kiro 里取消一轮后，如果没有触发 Stop，桌宠要等正常工作超时（约 5 分钟）才回到待机。 |
 | **Kiro CLI：无法区分会话** | Kiro CLI stdin JSON 不含 session_id，所有 Kiro 会话会被合并为单个追踪会话。 |
 | **Kiro CLI：无 SessionEnd 事件** | Kiro CLI 没有 SessionEnd 事件，Clawd 无法检测 Kiro 会话结束。 |
 | **Kiro CLI：无 subagent 检测** | Kiro CLI 没有 subagent 事件，不会触发杂耍/指挥动画。 |
