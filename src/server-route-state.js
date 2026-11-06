@@ -776,6 +776,24 @@ function handleStatePost(req, res, options) {
           ctx.codexSubagentClassifier,
           sid,
         );
+        // Remote Codex fallback notices are cleared by the same lifecycle
+        // events that finish a native request. This runs after the identity
+        // gates (metadata-only returned above) and before state-machine drops,
+        // so a turn's Stop still releases its notice even when the visual
+        // state is dropped as a continuation.
+        if (remoteProfile && agentId === "codex"
+          && typeof ctx.onCodexRemoteStateEvent === "function") {
+          ctx.onCodexRemoteStateEvent({
+            sessionId: sessionIdentity.sessionId,
+            rawSessionId: sessionIdentity.rawSessionId,
+            profileId: trustedProfileId,
+            event,
+            toolName,
+            toolUseId,
+            toolInputFingerprint,
+            turnId: codexHookState.turnId || null,
+          });
+        }
         if (codexHookState.drop) {
           res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
           res.end();

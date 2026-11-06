@@ -83,6 +83,7 @@ function createSettingsEffectRouter(options = {}) {
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
   const dismissInteractivePermissionBubbles = options.dismissInteractivePermissionBubbles || noop;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
+  const clearCodexRemoteFallbackNotices = options.clearCodexRemoteFallbackNotices || noop;
   const clearCodexUserInputBubbles = options.clearCodexUserInputBubbles || noop;
   const clearKimiNotifyBubbles = options.clearKimiNotifyBubbles || noop;
   const refreshPassiveNotifyAutoClose = options.refreshPassiveNotifyAutoClose || noop;
@@ -283,6 +284,21 @@ function createSettingsEffectRouter(options = {}) {
         logWarn,
         "Clawd: refresh notification bubble timers failed:",
         refreshPassiveNotifyAutoClose
+      );
+    }
+    // A remote Codex fallback notice is owned by the notification channel but
+    // also disappears with the Codex bubble gate. Clear both queued and shown
+    // notices so a later re-enable cannot resurrect a stale one.
+    if (
+      (("permissionBubblesEnabled" in changes) && changes.permissionBubblesEnabled === false) ||
+      (("hideBubbles" in changes) && changes.hideBubbles === true) ||
+      (("notificationBubbleAutoCloseSeconds" in changes) && changes.notificationBubbleAutoCloseSeconds === 0)
+    ) {
+      safeCall(
+        logWarn,
+        "Clawd: clear Codex remote fallback notices failed:",
+        clearCodexRemoteFallbackNotices,
+        "settings-policy-disabled"
       );
     }
     if (

@@ -24,6 +24,7 @@ const {
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { getAgent } = require("../agents/registry");
 const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { isCodexRemoteFallbackSuppressed } = require("./codex-remote-fallback-notice");
 const { validateQuestionAnswers } = require("./agent-question-wire");
 const { reminderHolds } = require("./permission-reminder");
 const { isPermissionReviewEnabled } = require("./permission-review");
@@ -2837,6 +2838,7 @@ function handlePermissionBubbleFailure(permEntry, reason) {
     return true;
   }
   permLog(`permission bubble failed; returning no-decision: ${reason} tool=${permEntry.toolName} session=${permEntry.sessionId} agent=${permEntry.agentId || "unknown"}`);
+  queueCodexRemoteFallbackForEntry(permEntry);
   resolvePermissionEntry(
     permEntry,
     "no-decision",
@@ -2853,6 +2855,7 @@ function showPermissionBubble(permEntry) {
   // changed since the route asked, give the request back to Codex.
   if (permEntry.codexAutomationClaim === true) {
     permLog(`codex automation claim no longer applies -> no decision, native prompt fallback (tool=${permEntry.toolName})`);
+    queueCodexRemoteFallbackForEntry(permEntry);
     resolvePermissionEntry(
       permEntry,
       "no-decision",
@@ -3300,6 +3303,11 @@ function buildPermissionBubblePayload(permEntry) {
     // standard cue path (formatDetail) while the card stays dismiss-only.
     kimiToolName: permEntry.kimiToolName || null,
     kimiToolInput: permEntry.kimiToolInput || null,
+    // Display-only fields for the remote Codex fallback notice. toolName stays
+    // "CodexExec" so this card remains outside the Allow/Deny path.
+    displayToolName: permEntry.displayToolName || null,
+    displayToolInput: permEntry.displayToolInput || null,
+    displayHost: permEntry.host || null,
     familyAlways: permEntry.familyAlwaysCandidates || [],
     familyPatterns: permEntry.familyPatterns || [],
     sessionFolder,
@@ -5576,6 +5584,119 @@ function showCodexNotifyBubble({ sessionId, command }) {
   schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
 }
 
+// Remote Codex handed a permission request back to its native prompt. The
+// Mac cannot answer it, so this is a heads-up only: it keeps the passive
+// Codex identity (no decision channel, no remote approval) and carries the
+// real tool name/input as display-only fields for the renderer.
+function applyCodexRemoteFallbackContent(permEntry, { host, toolName, toolInput }) {
+  const displayInput = toolInput && typeof toolInput === "object" ? toolInput : {};
+  permEntry.toolInput = displayInput;
+  permEntry.displayToolName = typeof toolName === "string" && toolName ? toolName : null;
+  permEntry.displayToolInput = displayInput;
+  permEntry.host = typeof host === "string" && host ? host : permEntry.host;
+  permEntry.createdAt = Date.now();
+}
+
+function showCodexRemoteFallbackNotice({ sessionId, rawSessionId, profileId, host, toolName, toolInput }) {
+  if (!sessionId) return null;
+  if (isCodexRemoteFallbackSuppressed(ctx)) {
+    permLog(`codex remote fallback suppressed: session=${sessionId} dnd=${ctx.doNotDisturb}`);
+    return null;
+  }
+  const policy = getPolicy(ctx, "notification");
+  const existing = findCodexRemoteFallbackEntryBySession(sessionId);
+  if (existing) {
+    applyCodexRemoteFallbackContent(existing, { host, toolName, toolInput });
+    permLog(`codex remote fallback refresh: session=${sessionId} autoCloseMs=${policy.autoCloseMs}`);
+    syncPermissionBubbleContent(existing);
+    schedulePassiveNotifyAutoExpire(existing, policy.autoCloseMs);
+    return existing;
+  }
+  const permEntry = {
+    res: null,
+    abortHandler: null, suggestions: [],
+    sessionId,
+    rawSessionId: typeof rawSessionId === "string" && rawSessionId ? rawSessionId : null,
+    profileId: typeof profileId === "string" && profileId ? profileId : null,
+    bubble: null, hideTimer: null,
+    toolName: "CodexExec",
+    host: null,
+    resolvedSuggestion: null, createdAt: Date.now(),
+    interaction: classifyPermissionInteraction({
+      agentId: "codex",
+      eventKind: "notification",
+      toolName: "CodexExec",
+    }),
+    isElicitation: false,
+    isCodexNotify: true,
+    isCodexRemoteFallbackNotice: true,
+    agentId: "codex",
+    autoExpireTimer: null,
+  };
+  applyCodexRemoteFallbackContent(permEntry, { host, toolName, toolInput });
+  permEntry.onCodexRemoteFallbackDismissed = (entry) => {
+    if (typeof ctx.onCodexRemoteFallbackCardDismissed === "function") {
+      ctx.onCodexRemoteFallbackCardDismissed(entry && entry.sessionId, entry);
+    }
+  };
+  addPendingPermission(permEntry, "passive-added");
+  try {
+    showPermissionBubble(permEntry);
+  } catch (err) {
+    permLog(`codex remote fallback bubble failed: ${err && err.message ? err.message : err}`);
+    removePendingPermission(permEntry, "codex-remote-fallback-failed");
+    return null;
+  }
+  permLog(`codex remote fallback show: session=${sessionId} autoCloseMs=${policy.autoCloseMs}`);
+  schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
+  return permEntry;
+}
+
+// Refresh is deliberately update-only: a card that vanished (user dismiss,
+// TTL, renderer failure, legacy clear) must not be recreated here or the next
+// event would skip the grace period and resurrect old content.
+function refreshCodexRemoteFallbackNotice(permEntry, payload) {
+  if (!permEntry || !permEntry.isCodexRemoteFallbackNotice
+    || !pendingPermissions.includes(permEntry)) return false;
+  if (isCodexRemoteFallbackSuppressed(ctx)) return false;
+  const policy = getPolicy(ctx, "notification");
+  applyCodexRemoteFallbackContent(permEntry, payload || {});
+  syncPermissionBubbleContent(permEntry);
+  schedulePassiveNotifyAutoExpire(permEntry, policy.autoCloseMs);
+  return permEntry;
+}
+
+function dismissCodexRemoteFallbackNotice(permEntry, reason = "codex-remote-fallback-dismiss") {
+  if (!permEntry || !pendingPermissions.includes(permEntry)) return false;
+  dismissPassiveNotify(permEntry, reason);
+  return true;
+}
+
+// Single entry point for a remote Codex request that is really going back to
+// Codex's native prompt. Passive notices are excluded so a failed reminder can
+// never enqueue itself. Every agent's entry carries profileId, and the shared
+// handlePermissionBubbleFailure calls here for any agent, so agentId must also
+// identify Codex.
+function queueCodexRemoteFallbackForEntry(permEntry) {
+  if (!permEntry || isPassiveNotifyEntry(permEntry)) return false;
+  if (permEntry.agentId !== "codex") return false;
+  // "local" covers this machine and WSL. Only Remote SSH uses an
+  // ingress-assigned profile id. Revisit this gate if WSL gains its own ids.
+  if (!permEntry.profileId || permEntry.profileId === "local") return false;
+  if (typeof ctx.notifyCodexRemoteFallback !== "function") return false;
+  return ctx.notifyCodexRemoteFallback({
+    sessionId: permEntry.sessionId,
+    rawSessionId: permEntry.rawSessionId,
+    profileId: permEntry.profileId,
+    host: permEntry.codexRemoteDisplayHost || permEntry.host,
+    toolName: permEntry.toolName,
+    toolInput: permEntry.toolInput,
+    turnId: permEntry.codexTurnId || permEntry.turnId || null,
+    toolUseId: permEntry.toolUseId,
+    toolInputFingerprint: permEntry.toolInputFingerprint,
+  }) === true;
+}
+
 function showCodexUserInputBubble({
   sessionId,
   callId,
@@ -5722,6 +5843,15 @@ function findCodexNotifyEntryBySession(sessionId) {
   return pendingPermissions.find((permEntry) => permEntry && permEntry.isCodexNotify && permEntry.sessionId === sessionId) || null;
 }
 
+function findCodexRemoteFallbackEntryBySession(sessionId) {
+  if (!sessionId) return null;
+  return pendingPermissions.find((permEntry) => (
+    permEntry
+    && permEntry.isCodexRemoteFallbackNotice
+    && permEntry.sessionId === sessionId
+  )) || null;
+}
+
 function findKimiNotifyEntryBySession(sessionId) {
   if (!sessionId) return null;
   return pendingPermissions.find((permEntry) => permEntry && permEntry.isKimiNotify && permEntry.sessionId === sessionId) || null;
@@ -5739,6 +5869,9 @@ function dismissPassiveNotify(permEntry, reason = "unknown") {
   if (permEntry.autoExpireTimer) clearTimeout(permEntry.autoExpireTimer);
   if (permEntry.hideTimer) clearTimeout(permEntry.hideTimer);
   hidePermissionBubbleSafely(permEntry);
+  if (typeof permEntry.onCodexRemoteFallbackDismissed === "function") {
+    try { permEntry.onCodexRemoteFallbackDismissed(permEntry, reason); } catch {}
+  }
   repositionBubbles();
   repositionDependentBubbles();
   syncPermissionShortcuts();
@@ -6050,6 +6183,8 @@ return {
   handleQueueSelect, handleQueuePresentationAck,
   handleDecide, handleImeEditing, handleBubbleRendererGone, cleanup,
   showCodexNotifyBubble, clearCodexNotifyBubbles,
+  showCodexRemoteFallbackNotice, refreshCodexRemoteFallbackNotice,
+  dismissCodexRemoteFallbackNotice, queueCodexRemoteFallbackForEntry,
   showCodexUserInputBubble, clearCodexUserInputBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose,

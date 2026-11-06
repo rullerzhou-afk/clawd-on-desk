@@ -601,7 +601,12 @@ const _settingsController = createSettingsController({
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
     clearSessionAutomationByAgent: (id) =>
       sessionAutomationCoordinator ? sessionAutomationCoordinator.clearAgent(id) : [],
-    dismissPermissionsByAgent: (id, options) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0,
+    dismissPermissionsByAgent: (id, options) => {
+      if (id === "codex" && !(options && options.subagentOnly) && _codexRemoteFallbackNotice) {
+        _codexRemoteFallbackNotice.clearAll("codex-permissions-disabled");
+      }
+      return agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0;
+    },
     clearRecentHookEvents: (id) => _server.clearRecentHookEvents(id),
     identifyCustomApplication: (sourcePath) => require("./custom-applications").identifyCustomApplication(sourcePath),
     resizePet: _deferredResizePet,
@@ -2133,6 +2138,11 @@ const refreshPermissionPresentation = require("./permission-presentation-refresh
   getStateRuntime: () => _state,
   isDisposed: () => isQuitting,
 });
+const createCodexRemoteFallbackNotice = require("./codex-remote-fallback-notice");
+const {
+  isCodexRemoteFallbackSuppressed: isRemoteFallbackSuppressed,
+} = createCodexRemoteFallbackNotice;
+let _codexRemoteFallbackNotice = null;
 const _permCtx = {
   onPermissionsChanged: refreshPermissionPresentation,
   get win() { return win; },
@@ -2256,10 +2266,29 @@ const _permCtx = {
       try { client.notifyPermissionRequest(payload, options); } catch {}
     }
   },
+  notifyCodexRemoteFallback: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
+  ),
+  onCodexRemoteFallbackCardDismissed: (sessionId, entry) => (
+    _codexRemoteFallbackNotice
+      ? _codexRemoteFallbackNotice.noteCardDismissed(sessionId, entry)
+      : false
+  ),
 };
 const _perm = initPermission(_permCtx);
 permissionPresentationRuntime = _perm;
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, wouldAutoAllowPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
+
+_codexRemoteFallbackNotice = createCodexRemoteFallbackNotice({
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle),
+  isSuppressed: () => isQuitting || isRemoteFallbackSuppressed(_permCtx),
+  show: (payload) => callRuntimeMethod(_perm, "showCodexRemoteFallbackNotice", payload),
+  refresh: (entry, payload) => callRuntimeMethod(_perm, "refreshCodexRemoteFallbackNotice", entry, payload),
+  dismiss: (entry, reason) => callRuntimeMethod(_perm, "dismissCodexRemoteFallbackNotice", entry, reason),
+  log: (message) => permLog(message),
+});
+
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -2462,7 +2491,10 @@ const _stateCtx = {
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
-  dismissPermissionsForDnd: (...args) => _perm.dismissPermissionsForDnd(...args),
+  dismissPermissionsForDnd: (...args) => {
+    if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.invalidateAll("dnd-enabled");
+    return _perm.dismissPermissionsForDnd(...args);
+  },
   showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
   clearKimiNotifyBubbles: (...args) => clearKimiNotifyBubbles(...args),
   // state.js needs this to gate startKimiPermissionPoll symmetrically with
@@ -3120,6 +3152,15 @@ const _serverCtx = {
     _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
   isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  notifyCodexRemoteFallback: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
+  ),
+  queueCodexRemoteFallbackForEntry: (entry) => (
+    callRuntimeMethod(_perm, "queueCodexRemoteFallbackForEntry", entry)
+  ),
+  onCodexRemoteStateEvent: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.handleStateEvent(payload) : false
+  ),
   // External review (#995): the route derives the review verdict at accept
   // time, so it needs the same effective-mode and reminder gates the
   // permission runtime uses. Values are read from the shared controller and
@@ -4928,6 +4969,9 @@ const settingsEffectRouter = createSettingsEffectRouter({
   syncPermissionShortcuts,
   dismissInteractivePermissionBubbles: () => callRuntimeMethod(_perm, "dismissInteractivePermissionBubbles"),
   clearCodexNotifyBubbles,
+  clearCodexRemoteFallbackNotices: (reason) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.clearAll(reason) : 0
+  ),
   clearCodexUserInputBubbles,
   clearKimiNotifyBubbles,
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
@@ -6351,6 +6395,7 @@ if (!gotTheLock) {
     }
     if (discordPresenceBridge) discordPresenceBridge.stop();
     stopFeishuApprovalClient();
+    if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.dispose();
     _perm.cleanup();
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();
