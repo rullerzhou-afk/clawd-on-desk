@@ -446,6 +446,10 @@ class FakeElement {
     this.classList = new FakeClassList(this);
   }
 
+  get parentElement() {
+    return this.parentNode;
+  }
+
   appendChild(child) {
     child.parentNode = this;
     this.children.push(child);
@@ -519,6 +523,10 @@ class FakeElement {
 
   focus() {
     this.focused = true;
+  }
+
+  scrollIntoView(options) {
+    this.scrollOptions = options;
   }
 
   dispatchEvent(event) {
@@ -1654,6 +1662,7 @@ function loadThemeTabForTest({
 function loadAgentsTabForTest({
   snapshot,
   agentMetadata,
+  i18nStrings = null,
   collapsedGroups = {},
   settingsAPI = {},
   doctor = null,
@@ -1676,7 +1685,16 @@ function loadAgentsTabForTest({
 
   const document = {
     body,
-    createElement: (tagName) => new FakeElement(tagName),
+    activeElement: body,
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      element.focus = (options) => {
+        element.focused = true;
+        element.focusOptions = options;
+        document.activeElement = element;
+      };
+      return element;
+    },
     getElementById(id) {
       if (id === "content") return content;
       if (id === "toastStack") return toastStack;
@@ -1740,6 +1758,7 @@ function loadAgentsTabForTest({
           agentGroupConnection: "Connection",
           agentGroupWsl: "WSL",
           agentGroupQuota: "Quota",
+          agentGroupAdvanced: "Advanced",
           agentGroupInfo: "Info",
           agentDescToggle: "Details",
           agentDisconnectLink: "Disconnect {agent}…",
@@ -1799,10 +1818,11 @@ function loadAgentsTabForTest({
           rowAgentSubagentPermissionsDesc: "Subagent permissions desc",
           rowStartWithCodex: "Start with Codex",
           rowStartWithCodexDesc: "Start with Codex desc",
-          rowCodexPermissionMode: "Permission mode",
-          rowCodexPermissionModeDesc: "Permission mode desc",
-          codexPermissionModeAuto: "Auto",
-          codexPermissionModeIntercept: "Intercept",
+          rowCodexApprovalRouting: "Approval handling",
+          rowCodexApprovalRoutingAutoDesc: "Codex handles its own requests. Local human requests appear in Clawd, remote requests follow Permission request handling or return to Codex with a heads-up in Clawd.",
+          rowCodexApprovalRoutingInterceptDesc: "All Codex approvals go to Clawd first (see Advanced below).",
+          rowCodexInterceptApprovals: "Send every approval to Clawd",
+          rowCodexInterceptApprovalsDesc: "Clawd answers first. Bubble switches and Permission request handling still apply. Start a new chat after switching.",
           rowCodexNativeNotificationSound: "Native sound",
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
           traecodeEnableHint: "Enable hooks in Trae before they fire.",
@@ -1855,6 +1875,7 @@ function loadAgentsTabForTest({
       MAINTAINERS: [],
     },
   };
+  if (i18nStrings) context.ClawdSettingsI18n.STRINGS = i18nStrings;
   context.window = context;
   context.globalThis = context;
   context.addEventListener = (type, cb) => {
@@ -1877,12 +1898,14 @@ function loadAgentsTabForTest({
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-permissions.js"), "utf8"), context);
 
   const core = context.ClawdSettingsCore;
   core.state.snapshot = snapshot || { agents: {} };
   core.state.activeTab = "agents";
   core.runtime.agentMetadata = Array.isArray(agentMetadata) ? agentMetadata : [];
   context.ClawdSettingsTabAgents.init(core);
+  context.ClawdSettingsTabPermissions.init(core);
   // Tests exercise the real uninstall command path without driving the modal
   // shell: the confirm answer is injected so cancel/confirm are both testable.
   core.helpers.showSettingsConfirmModal = () => Promise.resolve(confirmAction);
@@ -1892,17 +1915,44 @@ function loadAgentsTabForTest({
     contentRenderCount++;
     core.ops.clearMountedControls();
     content.innerHTML = "";
-    core.tabs.agents.render(content, core);
+    core.tabs[core.state.activeTab].render(content, core);
   }
   core.ops.installRenderHooks({ content: renderContent });
 
   return {
     core,
     content,
+    document,
     raf,
     getContentRenderCount: () => contentRenderCount,
     dispatchWindowEvent: (type) => context.dispatchWindowEvent(type),
   };
+}
+
+function createCodexApprovalHarness({ mode = "auto", enabled = true, collapsed = false, command } = {}) {
+  const harness = loadAgentsTabForTest({
+    snapshot: { agents: {
+      codex: { integrationInstalled: true, enabled, permissionMode: mode, nativeNotificationSoundEnabled: true },
+      "claude-code": { integrationInstalled: true, enabled: true },
+    } },
+    agentMetadata: [
+      { id: "codex", name: "Codex", capabilities: { permissionApproval: true } },
+      { id: "claude-code", name: "Claude Code", capabilities: { permissionApproval: true } },
+    ],
+    collapsedGroups: { "agents:codex": collapsed, "agents:claude-code": false },
+    settingsAPI: command ? { command } : {},
+  });
+  harness.core.ops.requestRender({ content: true });
+  harness.raf.flush();
+  harness.soundSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+    .find((meta) => meta.agentId === "codex" && meta.flag === "nativeNotificationSoundEnabled");
+  harness.broadcastMode = (permissionMode, masterEnabled = enabled) => {
+    const agents = { ...harness.core.state.snapshot.agents, codex: {
+      ...harness.core.state.snapshot.agents.codex, permissionMode, enabled: masterEnabled,
+    } };
+    harness.core.ops.applyChanges({ changes: { agents }, snapshot: { agents } });
+  };
+  return harness;
 }
 
 function loadAnimMapTabForTest({
@@ -18058,7 +18108,8 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("Permissions exposes the Codex approval owner and links to its Agents control", () => {
+  it("Codex approval settings: Permissions summary describes both modes without mode jargon", () => {
+    const strings = loadSettingsI18nForTest().en;
     for (const mode of ["auto", "intercept"]) {
       const harness = loadGeneralTabForTest({
         tab: "permissions",
@@ -18067,18 +18118,51 @@ describe("settings renderer browser environment", () => {
       });
       harness.renderContent();
       const row = harness.content.querySelector(".codex-approval-owner-row");
-      assert.ok(row);
-      assert.ok(row.querySelector(".row-desc").textContent.includes(mode === "auto" ? "Auto" : "Intercept"));
+      const description = row.querySelector(".row-desc").textContent;
+      assert.equal(description, strings[mode === "auto"
+        ? "rowCodexApprovalOwnerAutoDesc" : "rowCodexApprovalOwnerInterceptDesc"]);
+      assert.doesNotMatch(description, /\b(?:Auto|Intercept)\b(?!-approve)/);
       assert.equal(row.querySelector("button").classList.contains("quiet"), true);
-      const selected = [];
-      harness.core.ops.selectTab = (tab) => selected.push(tab);
-      row.querySelector("button").dispatchEvent({ type: "click" });
-      assert.deepStrictEqual(selected, ["agents"]);
-      assert.strictEqual(harness.core.runtime.agentsSubtab, "connected");
     }
   });
 
-  it("keeps manual Codex Permissions available when switching to Auto", () => {
+  it("Codex approval settings: Change expands the Codex card and focuses the advanced switch", () => {
+    const harness = createCodexApprovalHarness({ collapsed: true });
+    harness.core.ops.selectTab("permissions");
+    harness.raf.flush();
+    const row = harness.content.querySelector(".codex-approval-owner-row");
+    row.querySelector("button").click();
+    harness.raf.flush();
+    assert.equal(harness.core.state.activeTab, "agents");
+    assert.equal(harness.core.runtime.agentsSubtab, "connected");
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    assert.equal(meta.control.element.getAttribute("role"), "switch");
+    assert.equal(meta.control.element.focused, true);
+    assert.strictEqual(harness.document.activeElement, meta.control.element);
+    assert.equal(meta.control.element.getAttribute("data-settings-focus-key"), "codex-intercept-approvals");
+    assert.equal(meta.row.scrollOptions.block, "center");
+    assert.equal(findAncestorByClass(meta.row, "collapsible-group").classList.contains("collapsed"), false);
+  });
+
+  it("Codex approval settings: restores advanced switch focus after a full Agents render", () => {
+    const harness = createCodexApprovalHarness();
+    const original = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    original.focus();
+    assert.strictEqual(harness.document.activeElement, original);
+    const rendersBefore = harness.getContentRenderCount();
+
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+
+    const replacement = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    assert.equal(harness.getContentRenderCount(), rendersBefore + 1);
+    assert.notStrictEqual(replacement, original);
+    assert.equal(original.isConnected, false);
+    assert.strictEqual(harness.document.activeElement, replacement);
+    assert.equal(replacement.getAttribute("data-settings-focus-key"), "codex-intercept-approvals");
+  });
+
+  it("Codex approval settings: manual permission bubbles stay available in auto", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
@@ -18139,7 +18223,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(permissionsSwitch.element.attributes.tabindex, "0");
   });
 
-  it("enables the Codex native sound switch only in Native permission mode", () => {
+  it("Codex approval settings: native sound follows auto mode including legacy native snapshots", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
@@ -18339,63 +18423,204 @@ describe("settings renderer browser environment", () => {
     assert.ok(notificationSwitch, "WorkBuddy waiting-notification switch should still be mounted");
   });
 
-  it("slides the Codex permission mode pill when mode broadcasts patch in place", () => {
-    const harness = loadAgentsTabForTest({
-      snapshot: {
-        agents: {
-          codex: {
-            integrationInstalled: true,
-            enabled: true,
-            permissionsEnabled: true,
-            permissionMode: "intercept",
-          },
-        },
-      },
-      agentMetadata: [{
-        id: "codex",
-        name: "Codex",
-        eventSource: "hook",
-        capabilities: {
-          permissionApproval: true,
-        },
-      }],
-      collapsedGroups: {
-        "agents:codex": false,
-      },
+  it("Codex approval settings: auto shows a plain explanation and an off switch only in Codex Advanced", () => {
+    const harness = createCodexApprovalHarness();
+    const routing = harness.content.querySelector(".codex-approval-routing-row");
+    assert.ok(routing);
+    assert.match(routing.querySelector(".row-desc").textContent, /remote requests/);
+    assert.equal(routing.querySelectorAll("button").length, 0);
+    assert.equal(routing.querySelector(".row-desc").classList.contains("row-desc-collapsed"), false);
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    assert.equal(meta.control.element.getAttribute("role"), "switch");
+    assert.equal(meta.control.element.getAttribute("aria-checked"), "false");
+    assert.ok(meta.control.element.getAttribute("aria-labelledby") || meta.control.element.getAttribute("aria-label"));
+    assert.equal(findAncestorByClass(meta.row, "agent-detail-group")
+      .querySelector(".agent-detail-group-label").textContent, "Advanced");
+    const labels = harness.content.querySelectorAll(".agent-detail-group-label").map((el) => el.textContent);
+    assert.equal(labels.filter((text) => text === "Advanced").length, 1);
+    const otherCard = harness.content.querySelectorAll(".agent-subgroup")
+      .find((card) => card.dataset.groupId === "agents:claude-code");
+    assert.ok(otherCard);
+    assert.ok(otherCard.querySelectorAll(".agent-detail-group-label").every((label) => label.textContent !== "Advanced"));
+    assert.ok(labels.indexOf("Advanced") > labels.indexOf("Connection"));
+    assert.equal(harness.soundSwitch.element.disabled, false);
+    assert.equal(harness.content.querySelectorAll(".codex-permission-mode-segmented").length, 0);
+  });
+
+  it("Codex approval settings: toggles send existing commands and broadcasts refresh explanation and native sound", async () => {
+    const calls = [];
+    const harness = createCodexApprovalHarness({ command(name, payload) {
+      calls.push([name, payload.agentId, payload.mode]);
+      harness.broadcastMode(payload.mode);
+      return Promise.resolve({ status: "ok" });
+    } });
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    const routing = harness.content.querySelector(".codex-approval-routing-row");
+    const renderCount = harness.getContentRenderCount();
+    meta.control.element.click();
+    await settleChoice();
+    assert.deepEqual(calls, [["setAgentPermissionMode", "codex", "intercept"]]);
+    assert.equal(meta.control.element.getAttribute("aria-checked"), "true");
+    assert.match(routing.querySelector(".row-desc").textContent, /All Codex approvals/);
+    assert.equal(harness.soundSwitch.element.disabled, true);
+    meta.control.element.click();
+    await settleChoice();
+    assert.deepEqual(calls[1], ["setAgentPermissionMode", "codex", "auto"]);
+    assert.equal(meta.control.element.getAttribute("aria-checked"), "false");
+    assert.match(routing.querySelector(".row-desc").textContent, /remote requests/);
+    assert.equal(harness.soundSwitch.element.disabled, false);
+    assert.equal(harness.getContentRenderCount(), renderCount);
+  });
+
+  for (const [initialMode, nextMode] of [["auto", "intercept"], ["intercept", "auto"]]) {
+    it(`Codex approval settings: ${initialMode} save keeps mode displays consistent before its snapshot`, async () => {
+      const pending = createDeferred();
+      const harness = createCodexApprovalHarness({ mode: initialMode, command: () => pending.promise });
+      const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+      const routing = harness.content.querySelector(".codex-approval-routing-row .row-desc");
+      const snapshotBeforeSave = harness.core.state.snapshot;
+      function assertDisplayedMode(mode) {
+        assert.equal(meta.control.element.getAttribute("aria-checked"), String(mode === "intercept"));
+        assert.equal(meta.control.element.getAttribute("aria-busy"), "false");
+        assert.match(routing.textContent, mode === "intercept" ? /All Codex approvals/ : /remote requests/);
+        assert.equal(harness.soundSwitch.element.disabled, mode === "intercept");
+      }
+
+      meta.control.element.click();
+      pending.resolve({ status: "ok" });
+      await settleChoice();
+      assert.strictEqual(harness.core.state.snapshot, snapshotBeforeSave);
+      assertDisplayedMode(nextMode);
+
+      harness.broadcastMode(nextMode);
+      assertDisplayedMode(nextMode);
+      harness.broadcastMode(initialMode);
+      assertDisplayedMode(initialMode);
     });
+  }
 
-    harness.core.ops.requestRender({ content: true });
-    harness.raf.flush();
-    const segmented = harness.content.querySelector(".codex-permission-mode-segmented");
-    assert.ok(segmented, "Codex permission mode should use the sliding segmented control");
-    assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "1");
+  it("Codex approval settings: external snapshots sync both the switch and explanation in place", () => {
+    const harness = createCodexApprovalHarness();
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    const routing = harness.content.querySelector(".codex-approval-routing-row");
+    for (const mode of ["intercept", "auto"]) {
+      harness.broadcastMode(mode);
+      assert.equal(meta.control.element.getAttribute("aria-checked"), String(mode === "intercept"));
+      assert.match(routing.querySelector(".row-desc").textContent,
+        mode === "intercept" ? /All Codex approvals/ : /remote requests/);
+    }
+  });
 
-    harness.core.ops.applyChanges({
-      changes: {
-        agents: {
-          codex: {
-            integrationInstalled: true,
-            enabled: true,
-            permissionsEnabled: true,
-            permissionMode: "native",
+  it("Codex approval settings: newer snapshots stay authoritative while a save completes", async () => {
+    const pending = createDeferred();
+    const harness = createCodexApprovalHarness({ command: () => pending.promise });
+    const toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    toggle.click();
+    harness.broadcastMode("intercept");
+    harness.broadcastMode("auto");
+    pending.resolve({ status: "ok" });
+    await settleChoice();
+    assert.equal(toggle.getAttribute("aria-checked"), "false");
+    assert.equal(toggle.getAttribute("aria-busy"), "false");
+    assert.equal(harness.soundSwitch.element.disabled, false);
+    assert.match(harness.content.querySelector(".codex-approval-routing-row .row-desc").textContent, /remote requests/);
+  });
+
+  it("Codex approval settings: errors and rejected commands show a toast and roll back in both directions", async () => {
+    for (const mode of ["auto", "intercept"]) {
+      for (const rejects of [false, true]) {
+        const pending = createDeferred();
+        const harness = createCodexApprovalHarness({ mode, command: () => pending.promise });
+        const toasts = [];
+        harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+        const toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+        toggle.click();
+        assert.equal(toggle.getAttribute("aria-busy"), "true");
+        assert.equal(toggle.getAttribute("aria-checked"), String(mode !== "intercept"));
+        if (rejects) pending.reject(new Error("save failed"));
+        else pending.resolve({ status: "error", message: "save failed" });
+        await settleChoice();
+        assert.equal(toggle.getAttribute("aria-checked"), String(mode === "intercept"));
+        assert.equal(toggle.getAttribute("aria-busy"), "false");
+        assert.equal(toasts.length, 1);
+        assert.match(toasts[0].message, /save failed/);
+        assert.equal(toasts[0].options.error, true);
+      }
+    }
+  });
+
+  it("Codex approval settings: master off disables the advanced switch and snapshots re-enable it", () => {
+    let calls = 0;
+    const harness = createCodexApprovalHarness({ enabled: false, command() { calls++; } });
+    const toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    assert.equal(toggle.getAttribute("role"), "switch");
+    assert.equal(toggle.disabled, true);
+    toggle.click();
+    assert.equal(calls, 0);
+    harness.broadcastMode("auto", true);
+    assert.equal(toggle.disabled, false);
+    harness.broadcastMode("auto", false);
+    assert.equal(toggle.disabled, true);
+  });
+
+  it("Codex approval settings: all card text avoids mode jargon in seven languages", () => {
+    const strings = loadSettingsI18nForTest();
+    const modeWords = /\b(?:Auto(?!-approve\b)|Intercept)\b/i;
+    for (const lang of SUPPORTED_LANGS) {
+      for (const permissionMode of ["auto", "intercept"]) {
+        const harness = loadAgentsTabForTest({
+          snapshot: {
+            lang,
+            agents: { codex: { integrationInstalled: true, enabled: true, permissionMode } },
           },
-        },
-      },
-      snapshot: {
-        agents: {
-          codex: {
-            integrationInstalled: true,
-            enabled: true,
-            permissionsEnabled: true,
-            permissionMode: "native",
-          },
-        },
-      },
-    });
+          agentMetadata: [{ id: "codex", name: "Codex", capabilities: { permissionApproval: true } }],
+          collapsedGroups: { "agents:codex": false },
+          i18nStrings: strings,
+        });
+        harness.core.ops.requestRender({ content: true });
+        harness.raf.flush();
+        const card = findAgentCard(harness.content, "Codex");
+        assert.ok(card, `${lang} Codex card`);
+        assert.ok(detailGroupLabels(card).includes(strings[lang].agentGroupApproval));
+        assert.ok(detailGroupLabels(card).includes(strings[lang].agentGroupAdvanced));
+        assert.equal(card.querySelector(".row-note").textContent, strings[lang].rowCodexNativeNotificationSoundNote);
+        // Open descriptions and remove icon text so word boundaries match each label.
+        for (const disclosure of card.querySelectorAll(".row-desc-toggle")) {
+          disclosure.click();
+          disclosure.remove();
+        }
+        const cardText = [".row-label", ".row-desc", ".row-note", ".agent-detail-group-label"]
+          .flatMap((selector) => card.querySelectorAll(selector).map((node) => node.textContent))
+          .join("\n");
+        assert.doesNotMatch(cardText, modeWords, `${lang} ${permissionMode} card text`);
+      }
+    }
+  });
 
-    assert.strictEqual(segmented.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
-    harness.raf.flush();
-    assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "0");
+  it("Codex approval settings: localized descriptions reference the setting and sidebar names", () => {
+    const strings = loadSettingsI18nForTest();
+    for (const lang of SUPPORTED_LANGS) {
+      const locale = strings[lang];
+      for (const key of ["rowCodexApprovalRoutingAutoDesc", "rowCodexApprovalOwnerAutoDesc", "rowCodexInterceptApprovalsDesc"]) {
+        assert.ok(locale[key].includes(locale.rowPermissionAutomation), `${lang} ${key} names the permission setting`);
+      }
+      const path = `${locale.sidebarAgents} → Codex → ${locale.agentGroupAdvanced}`;
+      assert.ok(locale.rowCodexApprovalOwnerInterceptDesc.includes(path), `${lang} names the sidebar path`);
+    }
+  });
+
+  it("Codex approval settings: seven languages have the new copy and no retired keys", () => {
+    for (const [lang, strings] of Object.entries(loadSettingsI18nForTest())) {
+      for (const key of ["agentGroupAdvanced", "rowCodexApprovalRouting", "rowCodexApprovalRoutingAutoDesc",
+        "rowCodexApprovalRoutingInterceptDesc", "rowCodexInterceptApprovals", "rowCodexInterceptApprovalsDesc"]) {
+        assert.ok(typeof strings[key] === "string" && strings[key].trim(), `${lang}.${key}`);
+      }
+      for (const key of ["rowCodexPermissionMode", "rowCodexPermissionModeDesc", "codexPermissionModeAuto", "codexPermissionModeIntercept"]) {
+        assert.equal(Object.hasOwn(strings, key), false, `${lang}.${key} is retired`);
+      }
+      assert.doesNotMatch(strings.rowCodexApprovalOwnerAutoDesc, /\b(?:Auto|Intercept)\b(?!-approve)/);
+      assert.doesNotMatch(strings.rowCodexApprovalOwnerInterceptDesc, /\b(?:Auto|Intercept)\b/);
+    }
   });
 
   it("patches agent-only broadcasts in place without requiring Codex-specific rows", () => {
@@ -21477,12 +21702,13 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(detailGroupRows(claude, "Quota"), ["Read local Claude quota and context usage"]);
 
     const codex = findAgentCard(harness.content, "Codex");
-    assert.deepStrictEqual(detailGroupLabels(codex), ["Approvals", "Connection"]);
-    assert.deepStrictEqual(detailGroupRows(codex, "Approvals"), ["Permission mode", "Native sound", "Permissions"]);
+    assert.deepStrictEqual(detailGroupLabels(codex), ["Approvals", "Connection", "Advanced"]);
+    assert.deepStrictEqual(detailGroupRows(codex, "Approvals"), ["Approval handling", "Native sound", "Permissions"]);
     assert.deepStrictEqual(detailGroupRows(codex, "Connection"), [
       "Start with Codex",
       "Warn me when the approval hook stops working",
     ]);
+    assert.deepStrictEqual(detailGroupRows(codex, "Advanced"), ["Send every approval to Clawd"]);
     const soundRow = findAgentRow(codex, "Native sound");
     assert.ok(soundRow.querySelector(".row-note"));
 
@@ -21559,10 +21785,14 @@ describe("settings renderer browser environment", () => {
     toggle.dispatchEvent({ type: "click", bubbles: true });
     assert.strictEqual(desc.classList.contains("row-desc-collapsed"), true);
 
-    const codexMode = findAgentRow(findAgentCard(harness.content, "Codex"), "Permission mode");
-    const modeDesc = codexMode.querySelector(".row-desc");
-    assert.ok(modeDesc.id, "the Codex mode description is assigned an id");
-    assert.strictEqual(codexMode.querySelector(".row-desc-toggle").getAttribute("aria-controls"), modeDesc.id);
+    const codex = findAgentCard(harness.content, "Codex");
+    const routing = findAgentRow(codex, "Approval handling");
+    assert.strictEqual(routing.querySelector(".row-desc-toggle"), null);
+    assert.strictEqual(routing.querySelector(".row-desc").classList.contains("row-desc-collapsed"), false);
+    const intercept = findAgentRow(codex, "Send every approval to Clawd");
+    const interceptDesc = intercept.querySelector(".row-desc");
+    assert.ok(interceptDesc.id, "the advanced switch description has an id");
+    assert.strictEqual(intercept.querySelector(".row-desc-toggle").getAttribute("aria-controls"), interceptDesc.id);
 
     // Conditional extra notes stay visible and are never folded.
     const autoStart = findAgentRow(claude, "Start with Claude Code");
@@ -22292,7 +22522,7 @@ describe("Settings tabs and segmented choice contracts", () => {
     assert.equal(general.eventListeners.click.length, 0, "old sidebar listeners are removed");
   });
 
-  it("preserves the Codex pending gate across full rerenders and recovers after failure", async () => {
+  it("Codex approval settings: pending blocks repeat clicks across rerenders and recovers after failure", async () => {
     const pending = createDeferred();
     let calls = 0;
     const harness = loadAgentsTabForTest({ snapshot: { agents: { codex: { integrationInstalled: true, enabled: true, permissionMode: "native" } } },
@@ -22300,17 +22530,17 @@ describe("Settings tabs and segmented choice contracts", () => {
       collapsedGroups: { "agents:codex": false },
       settingsAPI: { command() { calls++; return pending.promise; } } });
     harness.core.ops.requestRender({ content: true });
-    let group = harness.content.querySelector(".codex-permission-mode-segmented");
-    group.querySelectorAll("button")[1].click();
+    let toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    toggle.click();
     assert.equal(calls, 1);
     harness.core.ops.requestRender({ content: true });
-    group = harness.content.querySelector(".codex-permission-mode-segmented");
-    assert.equal(group.getAttribute("aria-busy"), "true");
-    group.querySelectorAll("button")[1].click();
+    toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    assert.equal(toggle.getAttribute("aria-busy"), "true");
+    toggle.click();
     assert.equal(calls, 1);
     pending.resolve({ status: "error", message: "failed" });
     await settleChoice();
-    assert.equal(group.getAttribute("aria-busy"), "false");
-    assert.equal(group.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
+    assert.equal(toggle.getAttribute("aria-busy"), "false");
+    assert.equal(toggle.getAttribute("aria-checked"), "false");
   });
 });
