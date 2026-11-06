@@ -62,7 +62,9 @@
 
 ## Codex 审批路由
 
-设置 → AI 编程工具 → Codex 提供 **Auto**（默认）和 **Intercept**，路径是“权限与审批 → 本机 → 按工具”；这一块只在 Codex 接入后显示。Intercept 是显式由 Clawd 接管的审批流程，可能让 Codex 的 Approve for me 等待用户回答 Clawd 气泡。升级时，旧 Intercept / Native 会统一迁到 Auto 一次，因为旧版保存了 Intercept 默认值，无法区分是否为用户主动选择；升级后重新选择 Intercept，此后的选择会保留。
+设置 → AI 编程工具 → Codex 的「审批」组说明默认方式。Codex 能自己处理的留给 Codex，需要你确认的本机请求会在桌宠这边弹出。远程请求按「权限请求处理」能立即批准的由桌宠批，其余交回那台电脑的 Codex，并在桌宠这边提醒你。下文把这种默认行为称为 **Auto**。若要显式优先交给桌宠（下文称为 **Intercept**），打开「**高级 → 所有审批都交给桌宠**」。这可能挡住 Codex 的「帮我审批」，仍受气泡开关和「权限请求处理」设置影响。聊天中途切换时，正在等的审批可能仍留在 Codex，新开聊天后生效。
+
+「权限与审批 → 本机处理 → 按工具」保留 Codex 摘要行，「修改」会打开 Codex 卡片，滚动到并聚焦上述高级开关；这一块只在 Codex 接入后显示。升级时，旧 Intercept / Native 会统一迁到 Auto 一次，因为旧版保存了 Intercept 默认值，无法区分是否为用户主动选择；升级后重新打开「所有审批都交给桌宠」，此后的 Intercept 选择会保留。
 
 Auto 有界读取准确的本机 hook transcript，并核对 session / turn，只接管有人工 reviewer 证据的 Bash / 文件审批。自动 reviewer 或不确定证据立即返回 no-decision，绝不产生 Allow / Deny。Codex 的公开 hook 合约不提供请求实际生效的 reviewer（#23465）；本机 MCP / app 可能覆盖回合设置，因此仍留在 Codex。记录缺失、过旧、不可读、行不完整、快照后的模式变化、长回合上下文落到读取预算外，以及远程 / WSL 请求，同样留在 Codex；Auto 不保证每个手动请求都出现 Clawd 气泡。对于本机请求，Codex 选择的自动 reviewer 仍由 Codex 决定；对于远程 / WSL，Clawd 读不到远端 transcript，如果 Clawd 的全局自动化会立即放行 Bash / apply_patch，则由 Clawd 回答并覆盖 Codex 的自动 reviewer。
 
