@@ -58,10 +58,10 @@ afterEach(() => {
 });
 
 describe("COPILOT_HOOK_EVENTS", () => {
-  it("state events stay exactly 11 (Clawd EVENT_TO_STATE coverage)", () => {
-    assert.strictEqual(COPILOT_STATE_HOOK_EVENTS.length, 11);
+  it("state events stay exactly 12 (Clawd EVENT_TO_STATE coverage)", () => {
+    assert.strictEqual(COPILOT_STATE_HOOK_EVENTS.length, 12);
     for (const event of [
-      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "sessionEnd",
+      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "postToolUseFailure", "sessionEnd",
       "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact", "notification",
     ]) {
       assert.ok(COPILOT_STATE_HOOK_EVENTS.includes(event), `missing state event ${event}`);
@@ -72,8 +72,8 @@ describe("COPILOT_HOOK_EVENTS", () => {
     assert.ok(COPILOT_PERMISSION_HOOK_EVENTS.includes("permissionRequest"));
   });
 
-  it("combined COPILOT_HOOK_EVENTS = state + permission (12 entries)", () => {
-    assert.strictEqual(COPILOT_HOOK_EVENTS.length, 12);
+  it("combined COPILOT_HOOK_EVENTS = state + permission (13 entries)", () => {
+    assert.strictEqual(COPILOT_HOOK_EVENTS.length, 13);
     for (const event of [...COPILOT_STATE_HOOK_EVENTS, ...COPILOT_PERMISSION_HOOK_EVENTS]) {
       assert.ok(COPILOT_HOOK_EVENTS.includes(event), `missing combined event ${event}`);
     }
@@ -418,36 +418,38 @@ describe("buildCopilotHookEntry", () => {
 });
 
 describe("registerCopilotHooks", () => {
-  it("registers notification with the state timeout and no matcher in local and remote modes", () => {
-    for (const remote of [false, true]) {
-      const { homeDir, hooksPath } = makeTempHomeWithCopilot();
-      registerCopilotHooks({
-        silent: true,
-        homeDir,
-        hooksPath,
-        env: {},
-        platform: "linux",
-        nodeBin: "/usr/bin/node",
-        hookScript: "/srv/clawd/hooks/copilot-hook.js",
-        remote,
-        sshRemote: remote,
-      });
+  it("registers notification and postToolUseFailure with the state timeout in local and remote modes", () => {
+    for (const event of ["notification", "postToolUseFailure"]) {
+      for (const remote of [false, true]) {
+        const { homeDir, hooksPath } = makeTempHomeWithCopilot();
+        registerCopilotHooks({
+          silent: true,
+          homeDir,
+          hooksPath,
+          env: {},
+          platform: "linux",
+          nodeBin: "/usr/bin/node",
+          hookScript: "/srv/clawd/hooks/copilot-hook.js",
+          remote,
+          sshRemote: remote,
+        });
 
-      const entries = readJson(hooksPath).hooks.notification;
-      assert.strictEqual(entries.length, 1);
-      const command = '"/usr/bin/node" "/srv/clawd/hooks/copilot-hook.js" "notification"';
-      assert.deepStrictEqual(entries[0], {
-        type: "command",
-        bash: remote ? `CLAWD_REMOTE=1 CLAWD_SSH_REMOTE=1 ${command}` : command,
-        powershell: remote
-          ? `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & ${command}`
-          : `& ${command}`,
-        timeoutSec: 5,
-      });
+        const entries = readJson(hooksPath).hooks[event];
+        assert.strictEqual(entries.length, 1);
+        const command = `"/usr/bin/node" "/srv/clawd/hooks/copilot-hook.js" "${event}"`;
+        assert.deepStrictEqual(entries[0], {
+          type: "command",
+          bash: remote ? `CLAWD_REMOTE=1 CLAWD_SSH_REMOTE=1 ${command}` : command,
+          powershell: remote
+            ? `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & ${command}`
+            : `& ${command}`,
+          timeoutSec: 5,
+        });
+      }
     }
   });
 
-  it("adds notification to an existing 11-event config and leaves the next install unchanged", () => {
+  it("adds notification and postToolUseFailure to an existing 11-event config and leaves the next install unchanged", () => {
     const oldEvents = [
       "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "sessionEnd",
       "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact", "permissionRequest",
@@ -463,16 +465,17 @@ describe("registerCopilotHooks", () => {
 
     const result = registerCopilotHooks(options);
     assert.deepStrictEqual(result, {
-      added: 1, updated: 0, skipped: 11, configChanged: true, permissionSkippedDueToUserHook: false,
+      added: 2, updated: 0, skipped: 11, configChanged: true, permissionSkippedDueToUserHook: false,
     });
     const config = readJson(hooksPath);
     assert.deepStrictEqual(config.hooks.notification, [buildCopilotHookEntry("node", "/p/copilot-hook.js", "notification")]);
+    assert.deepStrictEqual(config.hooks.postToolUseFailure, [buildCopilotHookEntry("node", "/p/copilot-hook.js", "postToolUseFailure")]);
     for (const event of oldEvents) assert.deepStrictEqual(config.hooks[event], oldHooks[event]);
 
     const before = fs.readFileSync(hooksPath, "utf8");
     const beforeMtime = fs.statSync(hooksPath).mtimeMs;
     assert.deepStrictEqual(registerCopilotHooks(options), {
-      added: 0, updated: 0, skipped: 12, configChanged: false, permissionSkippedDueToUserHook: false,
+      added: 0, updated: 0, skipped: 13, configChanged: false, permissionSkippedDueToUserHook: false,
     });
     assert.strictEqual(fs.readFileSync(hooksPath, "utf8"), before);
     assert.strictEqual(fs.statSync(hooksPath).mtimeMs, beforeMtime);
@@ -493,7 +496,7 @@ describe("registerCopilotHooks", () => {
     assert.deepStrictEqual(readJson(hooksPath).hooks.notification, [
       userEntry, buildCopilotHookEntry("node", "/p/copilot-hook.js", "notification"),
     ]);
-    assert.strictEqual(unregisterCopilotHooks(options).removed, 12);
+    assert.strictEqual(unregisterCopilotHooks(options).removed, 13);
     assert.deepStrictEqual(readJson(hooksPath), { version: 1, hooks: { notification: [userEntry] } });
   });
 
@@ -762,7 +765,7 @@ describe("registerCopilotHooks", () => {
       hookScript: "/p/copilot-hook.js",
     });
 
-    // sessionStart updated; the other 11 events are added
+    // sessionStart updated; the other 12 events are added
     assert.strictEqual(result.updated, 1);
     assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length - 1);
 
@@ -800,7 +803,7 @@ describe("registerCopilotHooks", () => {
 
     // sessionStart legacy entry recognized → updated (not appended)
     assert.strictEqual(result.updated, 1, "legacy command entry should be updated, not appended");
-    // Other 11 events still get added fresh
+    // Other 12 events still get added fresh
     assert.strictEqual(result.added, COPILOT_HOOK_EVENTS.length - 1);
 
     const sessionStart = readJson(hooksPath).hooks.sessionStart;
@@ -1005,7 +1008,7 @@ describe("registerCopilotHooks", () => {
       hookScript: "/srv/clawd/hooks/copilot-hook.js",
     });
 
-    // State events still register fully (11 added). permissionRequest is
+    // State events still register fully (12 added). permissionRequest is
     // skipped because of the user-authored entry.
     assert.strictEqual(result.added, COPILOT_STATE_HOOK_EVENTS.length);
     assert.strictEqual(result.skipped, 1);

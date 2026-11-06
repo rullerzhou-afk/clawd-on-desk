@@ -449,6 +449,14 @@ function handleStatePost(req, res, options) {
       const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
         ? data.tool_input_fingerprint
         : null;
+      const isCopilotWaitKey = value => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
+      const copilotWaitKey = agentId === "copilot-cli" && isCopilotWaitKey(data.copilot_wait_key)
+        ? data.copilot_wait_key : null;
+      const copilotToolKeys = agentId === "copilot-cli" && Array.isArray(data.copilot_tool_keys)
+        && data.copilot_tool_keys.length <= 4 && data.copilot_tool_keys.every(isCopilotWaitKey)
+        ? [...new Set(data.copilot_tool_keys)] : null;
+      const copilotEventTs = agentId === "copilot-cli" && Number.isFinite(data.copilot_event_ts)
+        && data.copilot_event_ts > 0 ? data.copilot_event_ts : null;
       const claudePromptId = agentId === "claude-code" ? normalizeClaudePhaseId(data.prompt_id) : null;
       const batchToolUseIds = event === "PostToolBatch" ? normalizeClaudeBatchToolUseIds(data.tool_use_ids) : null;
       if (event === "PostToolBatch" && (agentId !== "claude-code" || !claudePromptId
@@ -1141,7 +1149,7 @@ function handleStatePost(req, res, options) {
         let sessionUpdateApplied = true;
         if (svg && !(claudeToolPhaseDecision && claudeToolPhaseDecision.preservePhase)) {
           const safeSvg = pathApi.basename(svg);
-          ctx.setState(state, safeSvg);
+          ctx.setState(state, safeSvg, { notificationCue: state === "notification" });
         } else {
           sessionUpdateApplied = ctx.updateSession(sid, state, event, {
             sourcePid: effectiveProcessMetadata.sourcePid,
@@ -1192,6 +1200,9 @@ function handleStatePost(req, res, options) {
             assistantLastOutputTruncated,
             toolName,
             ...(toolUseId ? { toolUseId } : {}),
+            ...(copilotWaitKey ? { copilotWaitKey } : {}),
+            ...(copilotToolKeys ? { copilotToolKeys } : {}),
+            ...(copilotEventTs ? { copilotEventTs } : {}),
             ...(claudePromptId ? { claudePromptId } : {}),
             ...(batchToolUseIds ? { batchToolUseIds } : {}),
             ...(claudeToolPhaseDecision ? { claudeToolPhaseDecision } : {}),

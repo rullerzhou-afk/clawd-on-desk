@@ -9,4 +9,8 @@ function isLocalApprovalReminderSession(session) {
     && (session.profileId || "local") === "local";
 }
 
-module.exports = { isLocalApprovalReminderSession };
+function isTerminalWaitSession(session) {
+  return getAgent(session?.agentId)?.capabilities.terminalWaitReminder === true && !session.headless;
+}
+
+module.exports = { isLocalApprovalReminderSession, isTerminalWaitSession };

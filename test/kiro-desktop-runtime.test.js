@@ -543,3 +543,20 @@ test("kiro-desktop: stale sweep expires a day-old pending without hooks and resu
   h.state.cleanStaleSessions();
   assert.equal(h.state.sessions.size, 0);
 });
+
+
+test("kiro-desktop: first pending interaction rings after the real working minimum display", t => {
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: Date.now() });
+  themeLoader.init(path.resolve(__dirname, "../src"));
+  const theme = themeLoader.loadTheme("clawd");
+  const sounds = [];
+  const h = harness(t, {}, { theme, playSound: name => sounds.push(name) });
+  h.hook("PreToolUse");
+  h.emit();
+  assert.deepEqual(sounds, []);
+  t.mock.timers.tick(theme.timings.minDisplay.working + 1);
+  assert.equal(h.state.getCurrentState(), "notification");
+  assert.deepEqual(sounds, ["confirm"]);
+  t.mock.timers.tick(theme.timings.autoReturn.notification + 1);
+  assert.deepEqual(sounds, ["confirm"]);
+});

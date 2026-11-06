@@ -17,6 +17,7 @@
 // no uncaught throw can push us into that path.
 
 const fs = require("fs");
+const crypto = require("crypto");
 const os = require("os");
 const path = require("path");
 const {
@@ -157,6 +158,7 @@ const EVENT_TO_STATE = {
   userPromptSubmitted: "thinking",
   preToolUse: "working",
   postToolUse: "working",
+  postToolUseFailure: "working",
   errorOccurred: "error",
   agentStop: "attention",
   subagentStart: "juggling",
@@ -385,6 +387,23 @@ function writeCopilotDecision(decision, stdoutWrite) {
   write(JSON.stringify(out));
 }
 
+function waitFingerprint(kind, value) {
+  return crypto.createHash("sha256").update(`${kind}\0${value}`).digest("hex").slice(0, 32);
+}
+
+// Only path/url/ask_user waits persist because a Run command completion can
+// arrive long after approval, when the command finishes.
+function notificationWaitKey(message) {
+  if (message === "Information requested") return waitFingerprint("ask_user", "");
+  if (typeof message !== "string") return null;
+  for (const [prefix, kind] of [["Path permission needed: ", "path"], ["Fetch URL: ", "url"]]) {
+    if (message.startsWith(prefix) && message.length > prefix.length) {
+      return waitFingerprint(kind, message.slice(prefix.length));
+    }
+  }
+  return null;
+}
+
 function buildStateBody(event, payload, resolve, options = {}) {
   const state = EVENT_TO_STATE[event];
   if (!state) return null;
@@ -402,6 +421,21 @@ function buildStateBody(event, payload, resolve, options = {}) {
   const body = { state, session_id: sessionId, event: EVENT_TO_BODY_EVENT[event] || event };
   body.agent_id = "copilot-cli";
   if (cwd) body.cwd = cwd;
+  if (["notification", "postToolUse", "postToolUseFailure", "userPromptSubmitted", "agentStop", "sessionEnd"].includes(event)
+    && Number.isFinite(payload.timestamp)) body.copilot_event_ts = payload.timestamp;
+  if (event === "notification") {
+    const key = notificationWaitKey(payload.message);
+    if (key) body.copilot_wait_key = key;
+  }
+  if (event === "postToolUse" || event === "postToolUseFailure") {
+    const keys = [];
+    for (const kind of ["path", "url"]) {
+      const value = payload.toolArgs?.[kind];
+      if (typeof value === "string" && value) keys.push(waitFingerprint(kind, value));
+    }
+    if (payload.toolName === "ask_user") keys.push(waitFingerprint("ask_user", ""));
+    if (keys.length) body.copilot_tool_keys = keys;
+  }
 
   // Session title: prefer payload field if present, otherwise read the
   // renamed name from ~/.copilot/session-state/<sid>/workspace.yaml so

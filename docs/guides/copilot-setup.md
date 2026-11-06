@@ -10,11 +10,11 @@
 
 - **Trigger**: Clawd launches *and* Copilot CLI is installed and enabled in Settings.
 - **Target file**: `<copilot-home>/hooks/hooks.json`, where `<copilot-home>` is `$COPILOT_HOME` (trimmed, non-empty) or `~/.copilot` if the env is unset.
-- **Registered state events (11)**: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `sessionEnd`, `errorOccurred`, `agentStop`, `subagentStart`, `subagentStop`, `preCompact`, `notification`.
+- **Registered state events (12)**: `sessionStart`, `userPromptSubmitted`, `preToolUse`, `postToolUse`, `postToolUseFailure`, `sessionEnd`, `errorOccurred`, `agentStop`, `subagentStart`, `subagentStop`, `preCompact`, `notification`.
 - **Coverage**: only entries containing the `copilot-hook.js` marker are managed; your other entries and other `hooks/*.json` files are left untouched.
 - **`disableAllHooks`**: if either `hooks.json` or `<copilot-home>/settings.json` has `disableAllHooks: true` at the top level, doctor surfaces a warning and suppresses the Fix button (so it does not overwrite your explicit intent). Clawd still writes its entries, but Copilot will not execute them.
 
-Copilot path permissions (reading files outside the workspace) bypass the approval hook, so Clawd can only alert you to return to the terminal to approve them. The `notification` hook also alerts when `ask_user` needs your response. A Copilot session that is already running does not pick up hooks added after it started. Exit and resume it to load them.
+While Copilot waits in the terminal for path permissions, URL fetch confirmation or an `ask_user` answer, Clawd keeps its waiting pose and shows an approval marker in the normal-mode HUD. It restores the underlying state after the answer. Command approvals keep their one-shot alert. If rejection or Esc leaves Copilot at its input prompt, the wait lasts until your next prompt, session end or the roughly two-hour expiry. Disconnecting Remote SSH preserves the wait. A Copilot session that is already running does not pick up hooks added after it started. Exit and resume it to load them.
 
 ## Manual configuration (fallback)
 
@@ -28,6 +28,7 @@ Create `<copilot-home>/hooks/hooks.json` and replace `/path/to/clawd-on-desk` wi
     "userPromptSubmitted":  [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js userPromptSubmitted",  "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js userPromptSubmitted",  "timeoutSec": 5 }],
     "preToolUse":           [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preToolUse",           "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preToolUse",           "timeoutSec": 5 }],
     "postToolUse":          [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUse",          "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUse",          "timeoutSec": 5 }],
+    "postToolUseFailure":   [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUseFailure",          "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUseFailure",          "timeoutSec": 5 }],
     "sessionEnd":           [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionEnd",           "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionEnd",           "timeoutSec": 5 }],
     "errorOccurred":        [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js errorOccurred",        "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js errorOccurred",        "timeoutSec": 5 }],
     "agentStop":            [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js agentStop",            "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js agentStop",            "timeoutSec": 5 }],
@@ -59,7 +60,7 @@ deployed with the secure hook manifest, and `<COPILOT_HOME>/hooks/hooks.json`
 is wired up alongside Claude Code and Codex CLI. The disabled
 `scripts/remote-deploy.sh` path is not a supported fallback.
 
-For previously deployed remote hosts, run Deploy / Repair Hooks once again in Settings to add `notification`, then exit and resume any running Copilot session to load the new hook.
+For previously deployed remote hosts, run Deploy / Repair Hooks once again in Settings to add `notification` and `postToolUseFailure`, then exit and resume any running Copilot session to load the new hook.
 
 If Copilot CLI is not installed on the remote (`~/.copilot/` missing), the registration step is skipped with a warning and the rest of the deploy continues.
 

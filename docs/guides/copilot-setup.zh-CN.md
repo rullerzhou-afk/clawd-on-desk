@@ -10,11 +10,11 @@
 
 - **触发**：Clawd 启动 + 在 Settings 已安装且启用 Copilot CLI agent。
 - **目标文件**：`<copilot-home>/hooks/hooks.json`，其中 `<copilot-home>` = `$COPILOT_HOME`（trimmed 非空）或 `~/.copilot`。
-- **注册的状态事件（11 个）**：`sessionStart` / `userPromptSubmitted` / `preToolUse` / `postToolUse` / `sessionEnd` / `errorOccurred` / `agentStop` / `subagentStart` / `subagentStop` / `preCompact` / `notification`。
+- **注册的状态事件（12 个）**：`sessionStart` / `userPromptSubmitted` / `preToolUse` / `postToolUse` / `postToolUseFailure` / `sessionEnd` / `errorOccurred` / `agentStop` / `subagentStart` / `subagentStop` / `preCompact` / `notification`。
 - **覆盖范围**：只接管含 `copilot-hook.js` marker 的 entry；用户其他 entry / 其他 `hooks/*.json` 文件原样保留。
 - **`disableAllHooks`**：若 `hooks.json` 或 `<copilot-home>/settings.json` 顶层有 `disableAllHooks: true`，doctor 会报 warning 且不挂 Fix 按钮（避免覆盖用户意图）；自动 sync 仍会写入条目，但 Copilot 不会执行。
 
-Copilot 的路径权限（读工作区外文件）不经过审批 hook，桌宠只能提醒你回终端批。`notification` hook 也会在 `ask_user` 等待回答时提醒你。已经开着的 Copilot 会话不会用上之后新加的 hook，退出后 resume 一次才会加载。
+Copilot 在终端等你批路径权限、确认抓取网页或回答 `ask_user` 时，桌宠会持续保持「等你」姿势，普通模式的 HUD 显示审批标记，回答后恢复。命令审批仍是一次性提醒。拒绝或按 Esc 后若 Copilot 停在输入框，等待会保持到你发下一句、结束会话或约 2 小时到期。Remote SSH 断开时等待继续保留。已经开着的 Copilot 会话不会用上之后新加的 hook，退出后 resume 一次才会加载。
 
 ## 手动配置（备选）
 
@@ -28,6 +28,7 @@ Copilot 的路径权限（读工作区外文件）不经过审批 hook，桌宠�
     "userPromptSubmitted":  [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js userPromptSubmitted",  "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js userPromptSubmitted",  "timeoutSec": 5 }],
     "preToolUse":           [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preToolUse",           "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js preToolUse",           "timeoutSec": 5 }],
     "postToolUse":          [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUse",          "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUse",          "timeoutSec": 5 }],
+    "postToolUseFailure":   [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUseFailure",          "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js postToolUseFailure",          "timeoutSec": 5 }],
     "sessionEnd":           [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionEnd",           "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js sessionEnd",           "timeoutSec": 5 }],
     "errorOccurred":        [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js errorOccurred",        "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js errorOccurred",        "timeoutSec": 5 }],
     "agentStop":            [{ "type": "command", "bash": "node /path/to/clawd-on-desk/hooks/copilot-hook.js agentStop",            "powershell": "node /path/to/clawd-on-desk/hooks/copilot-hook.js agentStop",            "timeoutSec": 5 }],
@@ -58,7 +59,7 @@ Copilot CLI 支持 `COPILOT_HOME` 环境变量重定向整个配置目录（参�
 `<COPILOT_HOME>/hooks/hooks.json` 与 Claude Code / Codex CLI 一起配置。
 已停用的 `scripts/remote-deploy.sh` 不是受支持的备选路径。
 
-已经部署过的远程主机，需要在设置页重新「部署 / 修复 Hook」一次才会补上 `notification`，已经开着的 Copilot 会话还要退出后 resume，才会加载新 hook。
+已经部署过的远程主机，需要在设置页重新「部署 / 修复 Hook」一次才会补上 `notification` 和 `postToolUseFailure`，已经开着的 Copilot 会话还要退出后 resume，才会加载新 hook。
 
 若远端未装 Copilot CLI（`~/.copilot/` 缺失），注册步骤跳过并打 warning，部署其余流程继续。
 

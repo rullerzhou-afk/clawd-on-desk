@@ -508,10 +508,10 @@ test("issue #1316: native installer verifies PowerShell Claude and Copilot throu
   copilot.hooks.sessionStart[0].powershell = psCommand(f, "copilot-hook.js", "sessionStart").replace("CLAWD_SSH_REMOTE='1'", "CLAWD_SSH_REMOTE='0'");
   assert.equal((await run("installCopilot", copilot)).verified, false);
 });
-test("native Copilot installer requires notification when the uploaded installer declares it", async (t) => {
+test("native Copilot installer requires notification and postToolUseFailure when declared", async (t) => {
   const f = fixture(t);
   await f.run("acquireLock", { owner: f.owner });
-  const run = fakeInstaller(f, ["sessionStart", "notification"]);
+  const run = fakeInstaller(f, ["sessionStart", "notification", "postToolUseFailure"]);
   const config = { hooks: { sessionStart: [{ powershell: psCommand(f, "copilot-hook.js", "sessionStart") }] } };
 
   const missing = await run("installCopilot", config);
@@ -520,6 +520,10 @@ test("native Copilot installer requires notification when the uploaded installer
   assert.equal(missing.reason, "installer_verification_failed");
 
   config.hooks.notification = [{ powershell: psCommand(f, "copilot-hook.js", "notification") }];
+  const missingFailure = await run("installCopilot", config);
+  assert.equal(missingFailure.verified, false);
+  assert.equal(missingFailure.reason, "installer_verification_failed");
+  config.hooks.postToolUseFailure = [{ powershell: psCommand(f, "copilot-hook.js", "postToolUseFailure") }];
   const complete = await run("installCopilot", config);
   assert.equal(complete.verified, true);
   assert.equal(complete.ok, true);
