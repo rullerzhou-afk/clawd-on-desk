@@ -247,7 +247,7 @@ download_packages() {
 
   CURRENT_MIRROR="$PRIMARY_MIRROR"
   write_ubuntu_sources "$PRIMARY_MIRROR"
-  if download_round 1 45 90; then
+  if download_round 1 45 1; then
     return 0
   fi
 
