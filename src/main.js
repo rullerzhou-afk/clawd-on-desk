@@ -2580,7 +2580,11 @@ const _stateCtx = {
   getPermissionAutomationMode: () =>
     _settingsController.get("permissionAutomationMode") || "off",
   getKiroDesktopPendingSessionIds: () => agentRuntime?.getKiroDesktopPendingSessionIds() || new Set(),
-  onSessionDeleted: (sessionId) => agentRuntime?.clearKiroDesktopSession(sessionId),
+  getCopilotTerminalWaitSessionIds: () => agentRuntime?.getCopilotTerminalWaitSessionIds() || new Set(),
+  onSessionDeleted: (sessionId) => {
+    agentRuntime?.clearKiroDesktopSession(sessionId);
+    agentRuntime?.clearCopilotTerminalWaitSession(sessionId);
+  },
   resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   onSessionAutomationLifecycleEnd: (payload) => {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
@@ -4970,6 +4974,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   },
   emitSessionSnapshot: (options) => _state.emitSessionSnapshot(options),
   cleanStaleSessions: () => _state.cleanStaleSessions(),
+  refreshPendingAttention: () => _state.refreshPendingAttention(),
   syncPermissionShortcuts,
   dismissInteractivePermissionBubbles: () => callRuntimeMethod(_perm, "dismissInteractivePermissionBubbles"),
   clearCodexNotifyBubbles,
@@ -5793,6 +5798,8 @@ function computeFinalDragBounds(bounds, size, clampPosition = clampToScreenVisua
 
 // ── Mini Mode — initialized here after state module ──
 const _miniCtx = {
+  hasPendingReminderAttention: () => _state.hasPendingReminderAttention(),
+  getReminderReselectionOptions: (state) => _state.getReminderReselectionOptions(state),
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get currentSize() { return currentSize; },

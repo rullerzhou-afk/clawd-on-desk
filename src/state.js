@@ -3,7 +3,7 @@
 
 let screen;
 try { ({ screen } = require("electron")); } catch { screen = null; }
-const { isLocalApprovalReminderSession } = require("./approval-reminder-session");
+const { isLocalApprovalReminderSession, isTerminalWaitSession } = require("./approval-reminder-session");
 const { mergeCodexClientEphemeral } = require("./codex-session-persistence");
 const { normalizePlanProgress } = require("../hooks/codex-plan-progress");
 const {
@@ -692,6 +692,10 @@ function scheduleAutoReturn(state) {
   autoReturnTimer = setTimeout(() => {
     autoReturnTimer = null;
     if (ctx.miniMode) {
+      if (!ctx.doNotDisturb && hasPendingReminderAttention() && resolveDisplayState() === "notification") {
+        applyResolvedDisplayState();
+        return;
+      }
       if (ctx.mouseOverPet && !ctx.doNotDisturb) {
         if (state === "mini-peek") {
           // Peek animation done — stay peeked but show idle (don't re-trigger peek)
@@ -740,8 +744,10 @@ function setState(newState, svgOverride, options = {}) {
 
   if (newState === "yawning" && SLEEP_SEQUENCE.has(currentState)) return;
 
-  const sameState = newState === currentState;
-  const sameSvg = !svgOverride || svgOverride === currentSvg;
+  const sameMiniAlert = ctx.miniMode && logicalReminderState(newState) === "notification"
+    && logicalReminderState(currentState) === "notification";
+  const sameState = newState === currentState || sameMiniAlert;
+  const sameSvg = sameMiniAlert || !svgOverride || svgOverride === currentSvg;
   // A Settings animation preview can hold the current visual under the same
   // state name a real event wants. The name+svg dedupe below would swallow the
   // real event, leaving the preview asset up, the display revision frozen, and
@@ -752,6 +758,14 @@ function setState(newState, svgOverride, options = {}) {
   const realEventTakingOverPreview = currentVisualSource === VISUAL_SOURCE_SETTINGS_PREVIEW
     && options.settingsPreview !== true;
   if (sameState && sameSvg && !realEventTakingOverPreview) {
+    // A fresh request still needs a bell while an earlier wait owns the pose.
+    if (logicalReminderState(newState) === "notification" && options.notificationCue === true
+      && hasPendingReminderAttention()) {
+      const soundOptions = normalizeApplyStateOptions(newState, options);
+      if (!isOneshotDisabled("notification") && !soundOptions.muteStateSounds && !soundOptions.muteNotificationSound) {
+        ctx.playSound("confirm");
+      }
+    }
     // Compaction start and completion are distinct cues with the same visual.
     // Restart the SVG and its minimum hold at completion, while preserving a
     // queued higher-priority alert and ordinary repeated-event deduplication.
@@ -783,6 +797,9 @@ function setState(newState, svgOverride, options = {}) {
   }
 
   if (pendingTimer) {
+    // A display refresh must preserve the first real notification's queued bell.
+    if (logicalReminderState(newState) === "notification" && logicalReminderState(pendingState) === "notification"
+      && options.notificationCue !== true && options.settingsPreview !== true) return;
     if (pendingState && getStatePriority(newState, STATE_PRIORITY) < getStatePriority(pendingState, STATE_PRIORITY)) {
       return;
     }
@@ -837,9 +854,12 @@ function resolveVisualBinding(state) {
   return resolveVisualBindingWithBindings(state, STATE_BINDINGS);
 }
 
-function applyResolvedDisplayState() {
+// Display re-selection only. Default getReminderReselectionOptions(resolved) keeps existing Kiro/Copilot waits quiet.
+// New reminders go through setState/updateSession with notificationCue: true.
+function applyResolvedDisplayState(options) {
   const resolved = resolveDisplayState();
-  applyState(resolved, getSvgOverride(resolved), resolveSoundOptionsForState(resolved));
+  const applyOptions = options ?? getReminderReselectionOptions(resolved);
+  applyState(resolved, getSvgOverride(resolved), applyOptions);
   // Kimi CLI permission hold: while notification is pinned, re-trigger the
   // renderer animation so non-looping GIF/APNG assets replay instead of
   // freezing on their last frame. Throttled so concurrent agents flooding
@@ -873,8 +893,18 @@ function applyDndSleepState() {
   applyState(DND_SKIP_YAWN ? "collapsing" : "yawning");
 }
 
+function logicalReminderState(state) {
+  return state === "mini-alert" ? "notification" : state;
+}
+
+// Re-selecting an existing reminder pose stays quiet until another request arrives.
+function getReminderReselectionOptions(state = resolveDisplayState()) {
+  return logicalReminderState(state) === "notification" && hasPendingReminderAttention()
+    ? { muteNotificationSound: true } : {};
+}
+
 function resolveSoundOptionsForState(state) {
-  const logicalState = state === "mini-alert" ? "notification" : state;
+  const logicalState = logicalReminderState(state);
   if (logicalState !== "notification") return {};
   let sawNotificationSession = false;
   for (const [, session] of sessions) {
@@ -2647,7 +2677,7 @@ function updateSession(sessionId, state, event, opts = {}) {
           : null,
       });
     }
-    setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true });
+    setState("notification", undefined, { muteNotificationSound: muteNotificationSound === true, notificationCue: true });
     if (event === "PermissionRequest" && permAgentId === "kimi-cli") {
       // Synthesized PermissionRequest (rewritten gated PreToolUse) carries a
       // gate marker — record it so the Post that settles it can re-arm the
@@ -3453,6 +3483,13 @@ function updateSession(sessionId, state, event, opts = {}) {
     duplicateCompletionVisualAtEntry || shouldSuppressDuplicateCompletionVisual(existing, state, event);
 
   if (ONESHOT_STATES.has(state)) {
+    // Recoverable errors and compaction do not prove a terminal wait ended.
+    if (isTerminalWaitSession(sessions.get(sessionId)) && state !== "notification"
+      && event !== "agentStop" && event !== "sessionEnd" && getPendingAttentionIds().has(sessionId)) {
+      const displayState = resolveDisplayState();
+      setState(displayState, getSvgOverride(displayState));
+      return;
+    }
     if (srcAgentId === "codex" && state === "attention" && codexSubagentPresentation.has(sessionId)) {
       if (!suppressDuplicateCompletionVisual) deferredCodexCompletionCues.add(sessionId);
       const displayState = resolveDisplayState();
@@ -3504,6 +3541,7 @@ function updateSession(sessionId, state, event, opts = {}) {
       return;
     }
     setState(state, state === "attention" && event === "Stop" ? completionVisual : null, {
+      notificationCue: state === "notification",
       codexCompactionCue: srcAgentId === "codex" && state === "sweeping"
         && (event === "PreCompact" || event === "PostCompact" || event === "event_msg:context_compacted"),
       restartAnimation: srcAgentId === "codex"
@@ -3638,6 +3676,7 @@ function cleanStaleSessions() {
   }
   const staleConfig = typeof ctx.getStaleConfig === "function" ? ctx.getStaleConfig() : null;
   const pendingApprovalSessionIds = ctx.getKiroDesktopPendingSessionIds?.() || new Set();
+  const terminalWaitSessionIds = ctx.getCopilotTerminalWaitSessionIds?.() || new Set();
   for (const [id, s] of sessions) {
     const childActivityAt = codexSubagentPresentation.lastActivity(id);
     const staleSession = childActivityAt === null ? s : {
@@ -3649,7 +3688,8 @@ function cleanStaleSessions() {
       deriveSessionBadge,
       shouldAutoClearDetachedSession,
       staleConfig,
-      hasPendingApprovalReminder: isLocalApprovalReminderSession(s) && pendingApprovalSessionIds.has(id),
+      hasPendingApprovalReminder: (isLocalApprovalReminderSession(s) && pendingApprovalSessionIds.has(id))
+        || (isTerminalWaitSession(s) && terminalWaitSessionIds.has(id)),
       hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
         ? (session) => ctx.hasReplyableCompletionMapping(id, session)
         : null,
@@ -4052,7 +4092,7 @@ function schedulePermissionSuspect(sessionId, permissionDetail = null) {
     // legacy suspect) makes the promoted cue name the tool that actually
     // blocks the terminal; null degrades to the generic copy.
     startKimiPermissionPoll(sessionId, permissionDetail, "heuristic");
-    setState("notification");
+    setState("notification", undefined, { notificationCue: true });
   }, delay);
   kimiPermissionSuspectTimers.set(sessionId, { timer, scheduledAt: Date.now() });
 }
@@ -4113,16 +4153,25 @@ function getPendingAttentionIds() {
   for (const id of ctx.getKiroDesktopPendingSessionIds?.() || []) {
     if (isLocalApprovalReminderSession(sessions.get(id))) ids.add(id);
   }
+  for (const id of ctx.getCopilotTerminalWaitSessionIds?.() || []) {
+    if (isTerminalWaitSession(sessions.get(id)) && ctx.isAgentNotificationHookEnabled?.("copilot-cli") !== false) ids.add(id);
+  }
   return ids;
+}
+
+// Only Kiro/Copilot waits without a decision channel count here, excluding Codex pending attention.
+function hasPendingReminderAttention() {
+  return [...getPendingAttentionIds()].some(id =>
+    isLocalApprovalReminderSession(sessions.get(id)) || isTerminalWaitSession(sessions.get(id)));
 }
 
 function projectPendingAttention(ids = getPendingAttentionIds()) {
   const projected = codexSubagentPresentation.project(ids);
-  const reminders = [...ids].filter(id => isLocalApprovalReminderSession(sessions.get(id)));
+  const reminders = [...ids].filter(id =>
+    isLocalApprovalReminderSession(sessions.get(id)) || isTerminalWaitSession(sessions.get(id)));
   if (!reminders.length) return projected;
   const result = new Map(projected);
-  // Kiro's event map produces no sweeping/error states that need Codex's
-  // strong-state preservation when pending attention takes over the visual.
+  // Reminder waits keep their underlying phase until the terminal resolves them.
   for (const id of reminders) result.set(id, { ...sessions.get(id), state: "notification", displayHint: null });
   return result;
 }
@@ -4139,8 +4188,10 @@ function isBlockingPermissionEntry(entry) {
 
 function refreshPendingAttention() {
   const ids = getPendingAttentionIds();
+  const addedIds = [...ids].filter(id => !lastPendingAttentionIds.has(id));
   const changed = ids.size !== lastPendingAttentionIds.size
-    || [...ids].some(id => !lastPendingAttentionIds.has(id));
+    || addedIds.length > 0;
+  const notificationCue = addedIds.some(id => !isTerminalWaitSession(sessions.get(id)));
   lastPendingAttentionIds = ids;
   // Ordinary permission changes only refresh snapshots. Re-select the pet
   // when pending attention itself changed, preserving other permission waits.
@@ -4148,7 +4199,9 @@ function refreshPendingAttention() {
   if (changed && !otherPending && !isSettingsPreviewVisual()
     && (!ONESHOT_STATES.has(currentState) || currentState === "notification" || currentState === "attention")) {
     const resolved = resolveDisplayState();
-    setState(resolved, getSvgOverride(resolved));
+    // Copilot already rang through its hook. Kiro and Codex arrive through this ledger refresh.
+    const options = notificationCue ? { notificationCue: true } : getReminderReselectionOptions(resolved);
+    setState(resolved, getSvgOverride(resolved), options);
   }
   return emitSessionSnapshot();
 }
@@ -4334,7 +4387,11 @@ function disableDoNotDisturb() {
   if (ctx.miniMode) {
     if (ctx.miniSleepPeeked) { ctx.miniPeekOut(); ctx.miniSleepPeeked = false; }
     ctx.miniPeeked = false;
-    applyState("mini-idle");
+    if (hasPendingReminderAttention() && resolveDisplayState() === "notification") {
+      applyResolvedDisplayState();
+    } else {
+      applyState("mini-idle");
+    }
   } else {
     playWakeTransitionOrResolve();
   }
@@ -4402,6 +4459,8 @@ return {
   refreshPendingAttention,
   // Preserve the existing permission refresh API while callers migrate.
   refreshCodexPendingAttention: refreshPendingAttention,
+  hasPendingReminderAttention,
+  getReminderReselectionOptions,
   updateCodexSubagentActivity,
   clearCodexSubagentActivities,
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,

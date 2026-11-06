@@ -1,5 +1,6 @@
 "use strict";
 
+const { createCopilotTerminalWait } = require("./copilot-terminal-wait");
 const { createKiroDesktopRuntime } = require("./kiro-desktop-runtime");
 const DefaultCodexSubagentClassifier = require("../agents/codex-subagent-classifier");
 const {
@@ -95,6 +96,8 @@ function createAgentRuntimeMain(options = {}) {
   const isAgentEnabled = options.isAgentEnabled || (() => true);
   const updateSession = options.updateSession || (() => {});
   const kiroDesktop = createKiroDesktopRuntime({ ...options, getStateRuntime, getPermissionRuntime, updateSession });
+  const copilotTerminalWait = createCopilotTerminalWait({ now });
+  copilotTerminalWait.onChange(() => getStateRuntime()?.refreshPendingAttention?.());
   // A startup scan may encounter a child before its already-active parent.
   // Keep only live, fenced starts; this ledger never creates a session.
   const pendingCodexChildren = new Map();
@@ -678,6 +681,7 @@ function createAgentRuntimeMain(options = {}) {
     const result = preserveCodexInitialization
       ? stateRuntime.updateCodexInitializationMetadata(sessionId, opts)
       : updateSession(sessionId, state, event, opts);
+    if (opts.agentId === "copilot-cli") copilotTerminalWait.onHook(sessionId, event, opts);
     if (officialChildTerminalId
       && resolveSessionIdentity(officialChildTerminalId, "local").sessionId === sessionId) {
       // The official turn fence above has accepted this terminal. The monitor
@@ -1229,6 +1233,7 @@ function createAgentRuntimeMain(options = {}) {
   function cleanup() {
     disposed = true;
     kiroDesktop.stop();
+    copilotTerminalWait.clearAll();
     workBuddySessionTitleTracker.clear();
     clearRetiredWorkBuddySessions();
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
@@ -1249,6 +1254,8 @@ function createAgentRuntimeMain(options = {}) {
   }
 
   return {
+    getCopilotTerminalWaitSessionIds: copilotTerminalWait.getPendingSessionIds,
+    clearCopilotTerminalWaitSession: copilotTerminalWait.clearSession,
     getKiroDesktopPendingSessionIds: kiroDesktop.getPendingSessionIds,
     clearKiroDesktopSession: kiroDesktop.clearSession,
     clearKiroDesktopReminderCards: kiroDesktop.clearCards,

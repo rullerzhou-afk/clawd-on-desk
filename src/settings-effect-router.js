@@ -80,6 +80,7 @@ function createSettingsEffectRouter(options = {}) {
   const syncWindowTitles = options.syncWindowTitles || noop;
   const emitSessionSnapshot = options.emitSessionSnapshot || noop;
   const cleanStaleSessions = options.cleanStaleSessions || noop;
+  const refreshPendingAttention = options.refreshPendingAttention || noop;
   const syncPermissionShortcuts = options.syncPermissionShortcuts || noop;
   const dismissInteractivePermissionBubbles = options.dismissInteractivePermissionBubbles || noop;
   const clearCodexNotifyBubbles = options.clearCodexNotifyBubbles || noop;
@@ -254,6 +255,9 @@ function createSettingsEffectRouter(options = {}) {
     }
 
     // 2. Reactive side effects.
+    if ("agents" in changes) {
+      safeCall(logWarn, "Clawd: pending attention refresh failed:", refreshPendingAttention);
+    }
     const suppressKiroReminders = changes.notificationBubbleAutoCloseSeconds === 0
       || changes.hideBubbles === true
       || changes.permissionBubblesEnabled === false;
