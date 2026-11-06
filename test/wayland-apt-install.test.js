@@ -276,6 +276,30 @@ function generatedSources(harness) {
   );
 }
 
+function assertNetworkCommandsUseSudoTimeout(log) {
+  const network = log.filter(
+    (line) =>
+      line.startsWith("sudo ") &&
+      (line.includes("apt-get update") ||
+        (line.includes("apt-get install") && line.includes("--download-only")) ||
+        line.includes("dpkg --configure -a"))
+  );
+  assert.ok(network.length > 0, "expected at least one network command");
+  for (const line of network) {
+    assert.ok(
+      line.startsWith("sudo timeout -k 10 "),
+      `network command must run through sudo timeout: ${line}`
+    );
+  }
+  assert.ok(!log.some((line) => line.startsWith("sudo apt-get update")));
+  assert.ok(
+    !log.some(
+      (line) => line.startsWith("sudo apt-get install") && line.includes("--download-only")
+    )
+  );
+  assert.ok(!log.some((line) => line.startsWith("sudo dpkg --configure")));
+}
+
 function addCachedDeb(harness, name = "cached.deb") {
   fs.mkdirSync(harness.cacheDir, { recursive: true });
   fs.writeFileSync(path.join(harness.cacheDir, name), "");
@@ -366,6 +390,7 @@ test(
     assert.match(sources, /^Components: main restricted universe multiverse$/m);
     assert.ok(sources.includes(`Signed-By: ${harness.keyringFile}`));
     assert.match(result.output, /generated .*ubuntu\.sources/);
+    assertNetworkCommandsUseSudoTimeout(result.log);
   }
 );
 
@@ -381,6 +406,11 @@ test(
 
     const apt = result.log.filter((line) => line.startsWith("apt-get "));
     assert.ok(apt.some((line) => line.includes(harness.cacheDir) && line.includes("--no-download")));
+    assert.ok(
+      apt.some((line) =>
+        line.includes(`Dir::Cache::archives=${harness.cacheDir}`)
+      )
+    );
     assert.ok(apt.some((line) => line.includes(" check")));
     assert.ok(!apt.some((line) => line.includes(" update")));
     assert.ok(!apt.some((line) => line.includes("--download-only")));
@@ -405,13 +435,16 @@ test(
       (line) => line.startsWith("apt-get install") && !line.includes("--download-only")
     );
     assert.equal(installs.length, 2);
-    assert.ok(installs[0].includes(harness.cacheDir));
-    assert.ok(installs[1].includes(path.join("wayland-apt-")));
+    assert.ok(
+      installs[0].includes(`Dir::Cache::archives=${harness.cacheDir}`)
+    );
+    assert.ok(
+      installs[1].includes(`Dir::Cache::archives=${workDirectory(harness)}/archives`)
+    );
     assert.ok(result.log.some((line) => line.startsWith("apt-get update")));
     assert.ok(result.log.some((line) => line.includes("--download-only")));
     assert.ok(!result.log.some((line) => line === "dpkg --configure -a"));
-    assert.ok(result.log.some((line) => line.startsWith("sudo timeout -k 10 ")));
-    assert.ok(!result.log.some((line) => line.startsWith("timeout ") && line.includes(" sudo ")));
+    assertNetworkCommandsUseSudoTimeout(result.log);
   }
 );
 
@@ -429,6 +462,7 @@ test(
     assert.equal(result.status, 0, result.output);
     assert.ok(result.log.includes("dpkg --audit"));
     assert.ok(result.log.includes("dpkg --configure -a"));
+    assertNetworkCommandsUseSudoTimeout(result.log);
   }
 );
 
@@ -453,6 +487,7 @@ test(
     const sources = generatedSources(harness);
     assert.match(sources, /^URIs: http:\/\/archive\.ubuntu\.com\/ubuntu\/$/m);
     assert.doesNotMatch(sources, /azure\.archive\.ubuntu\.com/);
+    assertNetworkCommandsUseSudoTimeout(result.log);
   }
 );
 
@@ -499,6 +534,7 @@ test(
     );
     assert.equal(downloads.length, 2, "both rounds must attempt a download");
     assert.match(result.output, /round 2 download from archive\.ubuntu\.com failed/);
+    assertNetworkCommandsUseSudoTimeout(result.log);
   }
 );
 
@@ -621,5 +657,6 @@ test(
 
     const sources = generatedSources(harness);
     assert.match(sources, /^URIs: http:\/\/azure\.archive\.ubuntu\.com\/ubuntu\/$/m);
+    assertNetworkCommandsUseSudoTimeout(result.log);
   }
 );

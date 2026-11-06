@@ -273,6 +273,11 @@ download_packages() {
 # Installs the .deb files in a directory and verifies both the recorded package
 # state and the dependency graph. Returns non-zero so the caller can decide
 # whether a cache entry is usable.
+#
+# When apt already has package indexes, it resolves dependencies to the versions
+# in the repository and then looks for those files in Dir::Cache::archives, not
+# in the positional local paths. Point that option at <directory> as well so the
+# downloaded dependencies are found instead of being treated as missing.
 install_debs() {
   local deb_dir="$1"
   local package status
@@ -284,8 +289,14 @@ install_debs() {
     return 1
   fi
 
+  if ! sudo mkdir -p "$deb_dir/partial"; then
+    printf 'could not prepare the apt archive cache at %s\n' "$deb_dir" >&2
+    end_group
+    return 1
+  fi
+
   if ! sudo apt-get install -y --no-install-recommends --no-download \
-    "${APT_ARGS[@]}" "$deb_dir"/*.deb; then
+    -o "Dir::Cache::archives=$deb_dir" "${APT_ARGS[@]}" "$deb_dir"/*.deb; then
     printf 'apt-get could not install the local .deb files from %s\n' "$deb_dir" >&2
     end_group
     return 1
