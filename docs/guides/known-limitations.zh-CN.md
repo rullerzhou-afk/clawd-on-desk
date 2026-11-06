@@ -64,8 +64,12 @@
 
 设置 → AI 编程工具 → Codex 提供 **Auto**（默认）和 **Intercept**，路径是“权限与审批 → 本机 → 按工具”；这一块只在 Codex 接入后显示。Intercept 是显式由 Clawd 接管的审批流程，可能让 Codex 的 Approve for me 等待用户回答 Clawd 气泡。升级时，旧 Intercept / Native 会统一迁到 Auto 一次，因为旧版保存了 Intercept 默认值，无法区分是否为用户主动选择；升级后重新选择 Intercept，此后的选择会保留。
 
-Auto 有界读取准确的本机 hook transcript，并核对 session / turn，只接管有人工 reviewer 证据的 Bash / 文件审批。自动 reviewer 或不确定证据立即返回 no-decision，绝不产生 Allow / Deny。Codex 的公开 hook 合约不提供请求实际生效的 reviewer（#23465）；MCP / app 可能覆盖回合设置，因此仍留在 Codex。记录缺失、过旧、不可读、行不完整、快照后的模式变化、长回合上下文落到读取预算外，以及远程 / WSL 请求，同样留在 Codex；Auto 不保证每个手动请求都出现 Clawd 气泡。对于本机请求，Codex 选择的自动 reviewer 仍由 Codex 决定；对于远程 / WSL，Clawd 读不到远端 transcript，如果 Clawd 的全局自动化会立即放行 Bash / apply_patch，则由 Clawd 回答并覆盖 Codex 的自动 reviewer。
+Auto 有界读取准确的本机 hook transcript，并核对 session / turn，只接管有人工 reviewer 证据的 Bash / 文件审批。自动 reviewer 或不确定证据立即返回 no-decision，绝不产生 Allow / Deny。Codex 的公开 hook 合约不提供请求实际生效的 reviewer（#23465）；本机 MCP / app 可能覆盖回合设置，因此仍留在 Codex。记录缺失、过旧、不可读、行不完整、快照后的模式变化、长回合上下文落到读取预算外，以及远程 / WSL 请求，同样留在 Codex；Auto 不保证每个手动请求都出现 Clawd 气泡。对于本机请求，Codex 选择的自动 reviewer 仍由 Codex 决定；对于远程 / WSL，Clawd 读不到远端 transcript，如果 Clawd 的全局自动化会立即放行 Bash / apply_patch，则由 Clawd 回答并覆盖 Codex 的自动 reviewer。
 
-**在活动对话中切换模式：** 从 Approve for me 改为 Ask me / Always Ask，可能只追加 `thread_settings_applied`，没有当前请求的新 `turn_context`。应用后的 reviewer 或 policy 改变、或任一字段缺失时，Auto 不再采用旧快照；两个审批字段都原样重复的设置事件会保留快照。模式改变后的审批留在 Codex，直到获得新且匹配的 session / turn 证据才可能显示 Clawd 气泡；可在目标模式下新建对话复查。已验证新的本机人工审核 Bash 请求会显示 Clawd 气泡并在 Allow 后完成，MCP / app 与其他不确定请求仍由 Codex 处理。
+**远程 MCP 跟随同一套全局自动化：** 当 Codex 处于 Auto、请求来自非本机、且全局权限自动化（仅问题提示 / 自动放行）会立即放行时，Clawd 也会认领普通的命名空间 MCP 工具。这会越过远端 Codex 上该插件设置的 `approval_mode = "prompt"`；授权依据是用户开启的全局自动化。`codex_apps` 连接器命名空间不在此列，仍交回 Codex；本机 MCP、会话覆盖、交互式子代理和被暂扣的请求同样不认领。破坏性动作提醒只扫描 shell / 文件命令，因此不会暂扣 MCP 调用。
+
+**远程原生回退提醒：** Remote SSH 的 Codex 请求交回原生提示时，Clawd 会在本机桌面显示只读提醒，包含真实工具名和输入，只有一个「知道了」按钮。它不能批准、拒绝，也不会进入 Telegram / 飞书审批。请求被交回后约 2.5 秒显示；若请求先完成则不显示。同一会话合并成一张卡。收起是尽力而为：完全匹配的 `PostToolUse`、同一 turn 的 `Stop` / `Interrupt`、开始新 turn 的新 prompt（撤掉旧 turn 请求）或 `SessionEnd` 会收起；带不了 turnId 的事件不会撤。通知自动关闭时间是最后的兜底，因此原生拒绝、断网或崩溃且没有后续事件时，卡片可能保留到该时间。DND、通知气泡关闭、全局权限气泡关闭或 Codex 权限子开关关闭时完全不排队。
+
+**在活动对话中切换模式：** 从 Approve for me 改为 Ask me / Always Ask，可能只追加 `thread_settings_applied`，没有当前请求的新 `turn_context`。应用后的 reviewer 或 policy 改变、或任一字段缺失时，Auto 不再采用旧快照；两个审批字段都原样重复的设置事件会保留快照。模式改变后的审批留在 Codex，直到获得新且匹配的 session / turn 证据才可能显示 Clawd 气泡；可在目标模式下新建对话复查。已验证新的本机人工审核 Bash 请求会显示 Clawd 气泡并在 Allow 后完成，本机 MCP / app、远程 `codex_apps` 命名空间与其他不确定请求仍由 Codex 处理。
 
 reviewer 拒绝不是用户输入请求。Clawd 可通过既有提醒流程显示观察到的 `request_user_input`，在回答后只清理匹配调用；回答仍在 Codex 完成。hook 合约没有审核后人工审批回调或回复 bridge，Auto 不会在原生审核后另造一层 Allow / Deny；#1062 仍是独立的请求级原生结果同步调查。

@@ -104,6 +104,7 @@ const BUBBLE_STRINGS = {
     other: "Other",
     otherPlaceholder: "Type your answer…",
     codexPermission: "Codex Permission",
+    codexRemoteWaiting: "Codex on that computer may be waiting for you to confirm",
     codexToolApproval: "Codex Tool Approval",
     kimiPermission: "Kimi Permission",
     checkKimiTerminal: "Approve or reject this request in the Kimi terminal.",
@@ -159,6 +160,7 @@ const BUBBLE_STRINGS = {
     other: "\u5176\u4ED6",
     otherPlaceholder: "\u8F93\u5165\u4F60\u7684\u56DE\u7B54\u2026",
     codexPermission: "Codex \u6743\u9650\u8BF7\u6C42",
+    codexRemoteWaiting: "\u90A3\u53F0\u7535\u8111\u4E0A\u7684 Codex \u53EF\u80FD\u5728\u7B49\u4F60\u786E\u8BA4",
     codexToolApproval: "Codex \u5DE5\u5177\u8C03\u7528\u5BA1\u6279",
     kimiPermission: "Kimi \u6743\u9650\u8BF7\u6C42",
     checkKimiTerminal: "\u8BF7\u5728 Kimi \u7EC8\u7AEF\u4E2D\u6279\u51C6\u6216\u62D2\u7EDD\u8BE5\u8BF7\u6C42\u3002",
@@ -214,6 +216,7 @@ const BUBBLE_STRINGS = {
     other: "其他",
     otherPlaceholder: "輸入你的回答…",
     codexPermission: "Codex 權限請求",
+    codexRemoteWaiting: "那台電腦上的 Codex 可能在等你確認",
     codexToolApproval: "Codex 工具呼叫審批",
     kimiPermission: "Kimi 權限請求",
     checkKimiTerminal: "請在 Kimi 終端機中允許或拒絕此請求。",
@@ -269,6 +272,7 @@ const BUBBLE_STRINGS = {
     other: "\uAE30\uD0C0",
     otherPlaceholder: "\uC9C1\uC811 \uC785\uB825\u2026",
     codexPermission: "Codex \uAD8C\uD55C \uC694\uCCAD",
+    codexRemoteWaiting: "\uADF8 \uCEF4\uD4E8\uD130\uC758 Codex\uAC00 \uD655\uC778\uC744 \uAE30\uB2E4\uB9AC\uACE0 \uC788\uC744 \uC218 \uC788\uC2B5\uB2C8\uB2E4",
     codexToolApproval: "Codex \uB3C4\uAD6C \uD638\uCD9C \uC2B9\uC778",
     kimiPermission: "Kimi \uAD8C\uD55C \uC694\uCCAD",
     checkKimiTerminal: "Kimi \uD130\uBBF8\uB110\uC5D0\uC11C \uC774 \uC694\uCCAD\uC744 \uD5C8\uC6A9\uD558\uAC70\uB098 \uAC70\uBD80\uD558\uC138\uC694.",
@@ -324,6 +328,7 @@ const BUBBLE_STRINGS = {
     other: "その他",
     otherPlaceholder: "回答を入力…",
     codexPermission: "Codex 権限リクエスト",
+    codexRemoteWaiting: "そのコンピューターの Codex が確認を待っている可能性があります",
     codexToolApproval: "Codex ツール呼び出しの承認",
     kimiPermission: "Kimi 権限リクエスト",
     checkKimiTerminal: "Kimi ターミナルでこのリクエストを許可または拒否してください。",
@@ -379,6 +384,7 @@ const BUBBLE_STRINGS = {
     other: "Outra",
     otherPlaceholder: "Digite sua resposta…",
     codexPermission: "Permissão do Codex",
+    codexRemoteWaiting: "O Codex nesse computador pode estar esperando você confirmar",
     codexToolApproval: "Aprovação de ferramenta do Codex",
     kimiPermission: "Permissão do Kimi",
     checkKimiTerminal: "Aprove ou recuse este pedido no terminal do Kimi.",
@@ -434,6 +440,7 @@ const BUBBLE_STRINGS = {
     other: "Otra",
     otherPlaceholder: "Escribe tu respuesta…",
     codexPermission: "Permiso de Codex",
+    codexRemoteWaiting: "El Codex de ese equipo puede estar esperando tu confirmación",
     codexToolApproval: "Aprobación de herramienta de Codex",
     kimiPermission: "Permiso de Kimi",
     checkKimiTerminal: "Aprueba o rechaza esta solicitud en la terminal de Kimi.",
@@ -1496,11 +1503,31 @@ function show(data) {
 
   // Codex notify mode — informational bubble with Dismiss button only
   if (data.toolName === "CodexExec") {
-    headerTitle.textContent = bubbleText(data.lang, "codexPermission");
-    toolPillText.textContent = "CODEX";
-    toolPill.setAttribute("data-tool", "CodexExec");
+    const remoteTool = typeof data.displayToolName === "string" && data.displayToolName
+      ? data.displayToolName
+      : null;
+    const remoteInput = data.displayToolInput && typeof data.displayToolInput === "object"
+      ? data.displayToolInput
+      : null;
+    if (remoteTool && remoteInput) {
+      // A remote Codex request went back to its native prompt. Show the real
+      // tool and input, like the Kimi cue, but keep the card dismiss-only.
+      const remoteMcp = parseMcpToolName(data.displayToolName);
+      headerTitle.textContent = bubbleText(data.lang, "codexRemoteWaiting");
+      const displayHost = typeof data.displayHost === "string" && data.displayHost
+        ? data.displayHost
+        : null;
+      if (displayHost) headerTitle.textContent += ` \u00B7 ${displayHost}`;
+      toolPillText.textContent = remoteMcp ? remoteMcp.display : data.displayToolName;
+      toolPill.setAttribute("data-tool", data.displayToolName);
+      commandBlock.textContent = formatDetail(data.displayToolName, data.displayToolInput) || "(n/a)";
+    } else {
+      headerTitle.textContent = bubbleText(data.lang, "codexPermission");
+      toolPillText.textContent = "CODEX";
+      toolPill.setAttribute("data-tool", "CodexExec");
+      commandBlock.textContent = (data.toolInput && data.toolInput.command) || "(unknown)";
+    }
     toolPill.style.display = "";
-    commandBlock.textContent = (data.toolInput && data.toolInput.command) || "(unknown)";
     btnAllow.textContent = bubbleText(data.lang, "gotIt");
     btnAllow.disabled = false;
     btnDeny.style.display = "none";

@@ -4076,3 +4076,84 @@ describe("issue #1125 AI session title end to end", () => {
     }
   });
 });
+
+describe("Codex remote MCP: fallback notice state events", () => {
+  const remoteOptions = { remoteProfile: { profileId: "remote-1", displayHost: "workbox" } };
+
+  it("reports a remote Codex event before a state-machine drop", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "idle",
+      event: "Stop",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-stop",
+      turn_id: "turn-1",
+      stop_hook_active: true,
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 204);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].sessionId, makeSessionKey({
+      profileId: "remote-1",
+      rawSessionId: "codex:remote-stop",
+    }));
+    assert.equal(seen[0].rawSessionId, "codex:remote-stop");
+    assert.equal(seen[0].profileId, "remote-1");
+    assert.equal(seen[0].event, "Stop");
+    assert.equal(seen[0].turnId, "turn-1");
+  });
+
+  it("does not report state events from other agents", async () => {
+    const seen = [];
+    const result = await callStatePost(JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "claude-code",
+      session_id: "claude-remote-session",
+      tool_name: "Bash",
+      tool_use_id: "call-1",
+      tool_input_fingerprint: "fp-1",
+    }), {
+      options: remoteOptions,
+      ctx: { onCodexRemoteStateEvent: (payload) => seen.push(payload) },
+    });
+
+    assert.equal(result.statusCode, 200);
+    assert.equal(seen.length, 0);
+  });
+
+  it("forwards tool identity and skips metadata-only and local events", async () => {
+    const seen = [];
+    const ctx = { onCodexRemoteStateEvent: (payload) => seen.push(payload) };
+    const body = (extra = {}) => JSON.stringify({
+      state: "working",
+      event: "PostToolUse",
+      agent_id: "codex",
+      hook_source: "codex-official",
+      session_id: "codex:remote-tool",
+      turn_id: "turn-2",
+      tool_name: "mcp__playwright__browser_navigate",
+      tool_use_id: "call-9",
+      tool_input_fingerprint: "fp-9",
+      ...extra,
+    });
+
+    await callStatePost(body(), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].toolName, "mcp__playwright__browser_navigate");
+    assert.equal(seen[0].toolUseId, "call-9");
+    assert.equal(seen[0].toolInputFingerprint, "fp-9");
+
+    seen.length = 0;
+    await callStatePost(body({ metadata_only: true }), { options: remoteOptions, ctx });
+    assert.equal(seen.length, 0);
+
+    seen.length = 0;
+    await callStatePost(body(), { ctx });
+    assert.equal(seen.length, 0);
+  });
+});
