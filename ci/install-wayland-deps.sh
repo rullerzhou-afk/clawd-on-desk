@@ -12,8 +12,13 @@
 # <cache-dir> with the verified .deb files.
 #
 # The package list lives in ci/wayland-apt-packages.txt. Tests may override the
-# apt root, the temporary work root, the package list and the primary mirror
+# os-release file, keyring, temporary work root, package list and primary mirror
 # through the WAYLAND_APT_* environment variables below.
+#
+# The runner's own apt sources point at a mirrorlist file rather than at
+# archive.ubuntu.com, so this script writes its own deb822 source file. That is
+# the only way to be sure the download uses Ubuntu archives and never inherits a
+# third-party repository from the host image.
 
 set -euo pipefail
 
@@ -26,12 +31,22 @@ MODE="$1"
 CACHE_DIR="$2"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-APT_ETC="${WAYLAND_APT_ETC:-/etc/apt}"
+OS_RELEASE_FILE="${WAYLAND_APT_OS_RELEASE:-/etc/os-release}"
+KEYRING_FILE="${WAYLAND_APT_KEYRING:-/usr/share/keyrings/ubuntu-archive-keyring.gpg}"
 WORK_ROOT="${WAYLAND_APT_WORK_ROOT:-/var/tmp}"
 PACKAGES_FILE="${WAYLAND_APT_PACKAGES_FILE:-$SCRIPT_DIR/wayland-apt-packages.txt}"
 PRIMARY_MIRROR="${WAYLAND_APT_PRIMARY_MIRROR:-azure.archive.ubuntu.com}"
 FALLBACK_MIRROR="archive.ubuntu.com"
+
+# The install step has a 10 minute (600s) limit. The script's total budget is
+# 540s: at most 450s for network commands, leaving a 90s reserve for the final
+# offline install and verification. timeout may add up to 10s of kill grace, so
+# the absolute worst case is 540 + 10 = 550s, still below 600s. Network
+# commands need at least 20s of usable budget before they are allowed to start.
 TOTAL_BUDGET="${WAYLAND_APT_TOTAL_BUDGET:-540}"
+FINAL_INSTALL_RESERVE=90
+MIN_NETWORK_SECONDS=20
+KILL_GRACE_SECONDS=10
 
 WORK="$WORK_ROOT/wayland-apt-$$"
 TOTAL_STARTED=0
@@ -81,19 +96,24 @@ remaining_budget() {
   printf '%s\n' $((TOTAL_BUDGET - (now - TOTAL_STARTED)))
 }
 
+network_budget_remaining() {
+  printf '%s\n' $(( $(remaining_budget) - FINAL_INSTALL_RESERVE ))
+}
+
 # run_with_budget <step-limit> <description> <command...>
-# Runs a network command under the smaller of the step limit and the remaining
-# total budget. The whole script is meant to finish inside wayland-smoke's
-# timeout-minutes, so a nearly exhausted budget fails before starting work.
+# Runs a network command as root under the smaller of the step limit and the
+# network budget (total budget minus the final-install reserve). Running timeout
+# itself through sudo means -k can kill apt-get, not just the sudo wrapper.
 run_with_budget() {
   local step_limit="$1"
   local description="$2"
   local remaining limit
   shift 2
 
-  remaining="$(remaining_budget)"
-  if [ "$remaining" -lt 20 ]; then
-    printf '::error::time budget exhausted before %s (%ss left)\n' "$description" "$remaining" >&2
+  remaining="$(network_budget_remaining)"
+  if [ "$remaining" -lt "$MIN_NETWORK_SECONDS" ]; then
+    printf '::error::network time budget exhausted before %s (%ss left)\n' \
+      "$description" "$remaining" >&2
     return 1
   fi
 
@@ -101,8 +121,8 @@ run_with_budget() {
   if [ "$remaining" -lt "$limit" ]; then
     limit="$remaining"
   fi
-  printf '%s (timeout %ss, %ss budget left)\n' "$description" "$limit" "$remaining"
-  timeout -k 10 "$limit" "$@"
+  printf '%s (timeout %ss, %ss network budget left)\n' "$description" "$limit" "$remaining"
+  sudo timeout -k "$KILL_GRACE_SECONDS" "$limit" "$@"
 }
 
 load_packages() {
@@ -131,33 +151,54 @@ prepare_work_tree() {
   end_group
 }
 
-prepare_apt_sources() {
-  local found file base dest
-  start_group "copy Ubuntu apt sources"
-
-  found="$(grep -rln -- 'archive.ubuntu.com' \
-    "$APT_ETC/sources.list" "$APT_ETC/sources.list.d" 2>/dev/null || true)"
-  if [ -z "$found" ]; then
-    fail "no Ubuntu apt source files found under $APT_ETC"
-  fi
-
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    printf 'using Ubuntu source: %s\n' "$file"
-    base="$(basename "$file")"
-    case "$base" in
-      *.sources) dest="$base" ;;
-      *)
-        if [ "$file" = "$APT_ETC/sources.list" ]; then
-          dest="ubuntu.list"
-        else
-          dest="$base"
-        fi
+read_codename() {
+  local line codename=""
+  [ -r "$OS_RELEASE_FILE" ] || return 1
+  while IFS= read -r line || [ -n "$line" ]; do
+    line="${line%$'\r'}"
+    case "$line" in
+      VERSION_CODENAME=*)
+        codename="${line#VERSION_CODENAME=}"
+        codename="${codename%\"}"
+        codename="${codename#\"}"
+        codename="${codename%\'}"
+        codename="${codename#\'}"
+        break
         ;;
     esac
-    sudo cp -f -- "$file" "$WORK/sources.list.d/$dest"
-  done <<<"$found"
+  done <"$OS_RELEASE_FILE"
+  [ -n "$codename" ] || return 1
+  printf '%s\n' "$codename"
+}
 
+# write_ubuntu_sources <mirror-host>
+# Writes a deb822 source file for the Ubuntu archive. The runner image normally
+# uses a mirrorlist URI, so copying its sources cannot guarantee an official
+# archive host; generating the file keeps the source set explicit.
+write_ubuntu_sources() {
+  local mirror="$1"
+  local codename file
+
+  start_group "write Ubuntu sources for $mirror"
+  [ -n "$mirror" ] || fail "mirror host is empty"
+  codename="$(read_codename)" ||
+    fail "cannot read VERSION_CODENAME from $OS_RELEASE_FILE"
+  [ -f "$KEYRING_FILE" ] || fail "Ubuntu archive keyring not found at $KEYRING_FILE"
+
+  file="$WORK/sources.list.d/ubuntu.sources"
+  if ! sudo tee "$file" >/dev/null <<EOF
+Types: deb
+URIs: http://$mirror/ubuntu/
+Suites: $codename $codename-updates $codename-security
+Components: main restricted universe multiverse
+Signed-By: $KEYRING_FILE
+EOF
+  then
+    fail "could not write $file"
+  fi
+
+  printf 'generated %s:\n' "$file"
+  sudo cat "$file" || fail "could not read back $file"
   end_group
 }
 
@@ -185,13 +226,13 @@ download_round() {
   # apt-get update can exit 0 after individual sources fail, so its result is
   # informational; the download-only step is the real success signal.
   if ! run_with_budget "$update_limit" "apt-get update (round $round)" \
-    sudo apt-get update "${APT_ARGS[@]}"; then
+    apt-get update "${APT_ARGS[@]}"; then
     printf '::warning::apt-get update in round %s did not complete; the download step decides\n' \
       "$round" >&2
   fi
 
   if run_with_budget "$download_limit" "apt-get download-only (round $round)" \
-    sudo apt-get install -y --no-install-recommends --download-only \
+    apt-get install -y --no-install-recommends --download-only \
     -o "Dir::Cache::archives=$WORK/archives" "${APT_ARGS[@]}" "${PACKAGES[@]}"; then
     end_group
     return 0
@@ -201,44 +242,25 @@ download_round() {
   return 1
 }
 
-rewrite_primary_mirror() {
-  local files file body primary_pattern
-  start_group "switch apt mirror to $FALLBACK_MIRROR"
-
-  files="$(grep -rlF -- "$PRIMARY_MIRROR" "$WORK/sources.list.d" 2>/dev/null || true)"
-  if [ -z "$files" ]; then
-    end_group
-    fail "no source file contains the mirror host $PRIMARY_MIRROR, so round 2 cannot be retried"
-  fi
-
-  primary_pattern="${PRIMARY_MIRROR//./\\.}"
-  while IFS= read -r file; do
-    [ -n "$file" ] || continue
-    printf 'rewriting %s\n' "$file"
-    body="$(sed "s/$primary_pattern/$FALLBACK_MIRROR/g" "$file")"
-    printf '%s\n' "$body" | sudo tee "$file" >/dev/null
-  done <<<"$files"
-
-  end_group
-}
-
 download_packages() {
+  local remaining
+
   CURRENT_MIRROR="$PRIMARY_MIRROR"
+  write_ubuntu_sources "$PRIMARY_MIRROR"
   if download_round 1 45 90; then
     return 0
   fi
 
   printf '::warning::round 1 download from %s failed\n' "$PRIMARY_MIRROR" >&2
-  local remaining
-  remaining="$(remaining_budget)"
-  if [ "$remaining" -lt 20 ]; then
-    printf '::error::time budget exhausted after round 1 (%ss left); not starting round 2\n' \
+  remaining="$(network_budget_remaining)"
+  if [ "$remaining" -lt "$MIN_NETWORK_SECONDS" ]; then
+    printf '::error::network time budget exhausted after round 1 (%ss left); not starting round 2\n' \
       "$remaining" >&2
     return 1
   fi
 
-  rewrite_primary_mirror
   CURRENT_MIRROR="$FALLBACK_MIRROR"
+  write_ubuntu_sources "$FALLBACK_MIRROR"
   if download_round 2 90 240; then
     return 0
   fi
@@ -294,7 +316,7 @@ recover_dpkg_state() {
   audit="$(sudo dpkg --audit 2>&1 || true)"
   if [ -n "$audit" ]; then
     printf 'dpkg --audit reported unfinished work:\n%s\n' "$audit" >&2
-    if ! run_with_budget 60 "dpkg --configure -a" sudo dpkg --configure -a; then
+    if ! run_with_budget 60 "dpkg --configure -a" dpkg --configure -a; then
       printf '::warning::dpkg --configure -a did not finish cleanly\n' >&2
     fi
   fi
@@ -325,7 +347,17 @@ install_mode() {
   return 0
 }
 
+validate_publish_cache_dir() {
+  [ -n "$CACHE_DIR" ] || fail "refusing to publish: cache directory is empty"
+  [ "$CACHE_DIR" != "/" ] || fail "refusing to publish into /"
+  [ "$CACHE_DIR" != "${HOME:-}" ] || fail "refusing to publish into \$HOME"
+  [ "$(basename "$CACHE_DIR")" = "wayland-apt-debs" ] ||
+    fail "refusing to publish: cache directory must end with wayland-apt-debs"
+}
+
 publish_mode() {
+  validate_publish_cache_dir
+
   if ! download_packages; then
     printf '::error::could not download packages from any mirror; cache was not written\n' >&2
     return 1
@@ -358,7 +390,6 @@ main() {
   TOTAL_STARTED="$(epoch_now)"
   load_packages
   prepare_work_tree
-  prepare_apt_sources
   prepare_apt_args
 
   case "$MODE" in

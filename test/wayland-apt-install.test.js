@@ -178,20 +178,18 @@ function createHarness(t) {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
 
   const binDir = path.join(root, "bin");
-  const etcDir = path.join(root, "etc", "apt");
   const workRoot = path.join(root, "work");
-  const cacheDir = path.join(root, "cache");
+  const cacheDir = path.join(root, "cache", "wayland-apt-debs");
   const stateDir = path.join(root, "state");
   const logFile = path.join(root, "commands.log");
+  const osReleaseFile = path.join(root, "os-release");
+  const keyringFile = path.join(root, "ubuntu-archive-keyring.gpg");
 
   fs.mkdirSync(binDir, { recursive: true });
-  fs.mkdirSync(path.join(etcDir, "sources.list.d"), { recursive: true });
   fs.mkdirSync(workRoot, { recursive: true });
   fs.mkdirSync(stateDir, { recursive: true });
-  fs.writeFileSync(
-    path.join(etcDir, "sources.list"),
-    "deb http://azure.archive.ubuntu.com/ubuntu noble main restricted\n"
-  );
+  fs.writeFileSync(osReleaseFile, 'NAME="Ubuntu"\nVERSION_CODENAME=noble\n');
+  fs.writeFileSync(keyringFile, "");
   fs.writeFileSync(logFile, "");
 
   writeFake(binDir, "sudo", fakeSudo());
@@ -234,14 +232,15 @@ function createHarness(t) {
     FAKE_DPKG_QUERY_STATUS: "install ok installed",
     FAKE_DPKG_QUERY_FAIL_PACKAGE: "",
     FAKE_DPKG_QUERY_FAIL_STATUS: "install ok unpacked",
-    WAYLAND_APT_ETC: etcDir,
+    WAYLAND_APT_OS_RELEASE: osReleaseFile,
+    WAYLAND_APT_KEYRING: keyringFile,
     WAYLAND_APT_WORK_ROOT: workRoot,
     WAYLAND_APT_PACKAGES_FILE: PACKAGES_FILE,
     WAYLAND_APT_PRIMARY_MIRROR: "azure.archive.ubuntu.com",
     WAYLAND_APT_TOTAL_BUDGET: "540",
   };
 
-  return { root, binDir, etcDir, workRoot, cacheDir, logFile, env };
+  return { root, binDir, workRoot, cacheDir, logFile, osReleaseFile, keyringFile, env };
 }
 
 function logLines(harness) {
@@ -268,6 +267,13 @@ function workDirectory(harness) {
   );
   assert.equal(entries.length, 1, `expected one work directory, got ${entries.join(", ")}`);
   return path.join(harness.workRoot, entries[0]);
+}
+
+function generatedSources(harness) {
+  return fs.readFileSync(
+    path.join(workDirectory(harness), "sources.list.d", "ubuntu.sources"),
+    "utf8"
+  );
 }
 
 function addCachedDeb(harness, name = "cached.deb") {
@@ -316,6 +322,7 @@ test("Wayland cache warm-up only saves after a successful publish", () => {
   const publish = steps.find((step) => step.name === "Publish apt packages into the cache");
   const save = steps.find((step) => step.uses === "actions/cache/save@v4");
 
+  assert.equal(cache.jobs["warm-cache"].if, "github.ref == 'refs/heads/main'");
   assert.equal(lookup.uses, "actions/cache/restore@v4");
   assert.equal(lookup.with["lookup-only"], true);
   assert.match(publish.run, /install-wayland-deps\.sh publish/);
@@ -342,6 +349,25 @@ test("Wayland apt package list matches the smoke stack", () => {
     "xdotool",
   ]);
 });
+
+test(
+  "Wayland apt install generates a deb822 Ubuntu source for the primary mirror",
+  SHIM_OPTIONS,
+  (t) => {
+    const harness = createHarness(t);
+
+    const result = runScript(harness, ["install", harness.cacheDir]);
+    assert.equal(result.status, 0, result.output);
+
+    const sources = generatedSources(harness);
+    assert.match(sources, /^Types: deb$/m);
+    assert.match(sources, /^URIs: http:\/\/azure\.archive\.ubuntu\.com\/ubuntu\/$/m);
+    assert.match(sources, /^Suites: noble noble-updates noble-security$/m);
+    assert.match(sources, /^Components: main restricted universe multiverse$/m);
+    assert.ok(sources.includes(`Signed-By: ${harness.keyringFile}`));
+    assert.match(result.output, /generated .*ubuntu\.sources/);
+  }
+);
 
 test(
   "Wayland apt install uses the cache without touching the network",
@@ -384,6 +410,8 @@ test(
     assert.ok(result.log.some((line) => line.startsWith("apt-get update")));
     assert.ok(result.log.some((line) => line.includes("--download-only")));
     assert.ok(!result.log.some((line) => line === "dpkg --configure -a"));
+    assert.ok(result.log.some((line) => line.startsWith("sudo timeout -k 10 ")));
+    assert.ok(!result.log.some((line) => line.startsWith("timeout ") && line.includes(" sudo ")));
   }
 );
 
@@ -422,37 +450,37 @@ test(
     assert.match(timeouts[2], /apt-get update/);
     assert.match(timeouts[3], /--download-only/);
 
-    const sources = fs.readFileSync(
-      path.join(workDirectory(harness), "sources.list.d", "ubuntu.list"),
-      "utf8"
-    );
-    assert.match(sources, /archive\.ubuntu\.com/);
+    const sources = generatedSources(harness);
+    assert.match(sources, /^URIs: http:\/\/archive\.ubuntu\.com\/ubuntu\/$/m);
     assert.doesNotMatch(sources, /azure\.archive\.ubuntu\.com/);
   }
 );
 
 test(
-  "Wayland apt install fails when the primary mirror is absent from the sources",
+  "Wayland apt install fails when VERSION_CODENAME is missing",
   SHIM_OPTIONS,
   (t) => {
     const harness = createHarness(t);
-    fs.writeFileSync(
-      path.join(harness.etcDir, "sources.list"),
-      "deb http://archive.ubuntu.com/ubuntu noble main\n"
-    );
+    fs.writeFileSync(harness.osReleaseFile, 'NAME="Ubuntu"\n');
 
-    const result = runScript(harness, ["install", harness.cacheDir], {
-      FAKE_APT_DOWNLOAD_RC_SEQUENCE: "1",
-    });
+    const result = runScript(harness, ["install", harness.cacheDir]);
     assert.notEqual(result.status, 0);
-    assert.match(result.output, /no source file contains the mirror host azure\.archive\.ubuntu\.com/);
-    assert.equal(result.log.filter((line) => line.startsWith("apt-get update")).length, 1);
-    assert.equal(
-      result.log.filter(
-        (line) => line.startsWith("apt-get ") && line.includes("--download-only")
-      ).length,
-      1
-    );
+    assert.match(result.output, /cannot read VERSION_CODENAME/);
+    assert.ok(!result.log.some((line) => line.startsWith("apt-get update")));
+  }
+);
+
+test(
+  "Wayland apt install fails when the Ubuntu archive keyring is missing",
+  SHIM_OPTIONS,
+  (t) => {
+    const harness = createHarness(t);
+    fs.rmSync(harness.keyringFile);
+
+    const result = runScript(harness, ["install", harness.cacheDir]);
+    assert.notEqual(result.status, 0);
+    assert.match(result.output, /Ubuntu archive keyring not found/);
+    assert.ok(!result.log.some((line) => line.startsWith("apt-get update")));
   }
 );
 
@@ -505,15 +533,18 @@ test(
 );
 
 test(
-  "Wayland apt install fails when no Ubuntu source file is present",
+  "Wayland apt publish refuses a cache path with the wrong basename",
   SHIM_OPTIONS,
   (t) => {
     const harness = createHarness(t);
-    fs.rmSync(path.join(harness.etcDir, "sources.list"));
+    const badDir = path.join(harness.root, "not-the-cache");
+    fs.mkdirSync(badDir);
+    fs.writeFileSync(path.join(badDir, "keep.txt"), "keep");
 
-    const result = runScript(harness, ["install", harness.cacheDir]);
+    const result = runScript(harness, ["publish", badDir]);
     assert.notEqual(result.status, 0);
-    assert.match(result.output, /no Ubuntu apt source files found/);
+    assert.match(result.output, /must end with wayland-apt-debs/);
+    assert.deepEqual(fs.readdirSync(badDir), ["keep.txt"]);
     assert.ok(!result.log.some((line) => line.startsWith("apt-get update")));
   }
 );
@@ -551,6 +582,23 @@ test(
 );
 
 test(
+  "Wayland apt install does not start a network command when the reserve leaves too little",
+  SHIM_OPTIONS,
+  (t) => {
+    const harness = createHarness(t);
+
+    const result = runScript(harness, ["install", harness.cacheDir], {
+      WAYLAND_APT_TOTAL_BUDGET: "100",
+    });
+    assert.notEqual(result.status, 0);
+    assert.match(result.output, /network time budget exhausted/);
+    assert.equal(result.log.filter((line) => line.startsWith("timeout ")).length, 0);
+    assert.equal(result.log.filter((line) => line.startsWith("apt-get update")).length, 0);
+    assert.equal(result.log.filter((line) => line.includes("--download-only")).length, 0);
+  }
+);
+
+test(
   "Wayland apt install does not start round two when the budget is spent",
   SHIM_OPTIONS,
   (t) => {
@@ -562,7 +610,7 @@ test(
       WAYLAND_APT_TOTAL_BUDGET: "540",
     });
     assert.notEqual(result.status, 0);
-    assert.match(result.output, /time budget exhausted after round 1/);
+    assert.match(result.output, /network time budget exhausted after round 1/);
     assert.equal(result.log.filter((line) => line.startsWith("apt-get update")).length, 1);
     assert.equal(
       result.log.filter(
@@ -571,10 +619,7 @@ test(
       1
     );
 
-    const sources = fs.readFileSync(
-      path.join(workDirectory(harness), "sources.list.d", "ubuntu.list"),
-      "utf8"
-    );
-    assert.match(sources, /azure\.archive\.ubuntu\.com/);
+    const sources = generatedSources(harness);
+    assert.match(sources, /^URIs: http:\/\/azure\.archive\.ubuntu\.com\/ubuntu\/$/m);
   }
 );

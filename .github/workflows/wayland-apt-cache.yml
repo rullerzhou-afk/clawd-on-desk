@@ -1,9 +1,10 @@
 # Warm the apt package cache used by .github/workflows/wayland-smoke.yml.
 #
 # Only main writes the cache: pull requests restore it read-only, so a slow or
-# broken install can never publish a bad entry. The cache key includes the
-# runner image and the two files that define the package set, and the manual
-# `v1` prefix is the escape hatch when an entry has to be invalidated.
+# broken install can never publish a bad entry. The job also refuses to run when
+# a manual dispatch selects another branch. The cache key includes the runner
+# image and the two files that define the package set, and the manual `v1`
+# prefix is the escape hatch when an entry has to be invalidated.
 name: Warm Wayland apt cache
 
 on:
@@ -27,6 +28,7 @@ concurrency:
 jobs:
   warm-cache:
     name: Warm apt package cache
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
