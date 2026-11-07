@@ -23,7 +23,7 @@ const {
 } = require("../hooks/server-config");
 const { isOpencodeFamilyEntry, getFamilyConfig } = require("../agents/opencode-family");
 const { getAgent } = require("../agents/registry");
-const { isPassiveNotifyEntry } = require("./passive-notify-entry");
+const { isPassiveNotifyEntry, isNativeQuestionNotify } = require("./passive-notify-entry");
 const { isCodexRemoteFallbackSuppressed } = require("./codex-remote-fallback-notice");
 const { validateQuestionAnswers } = require("./agent-question-wire");
 const { reminderHolds } = require("./permission-reminder");
@@ -192,6 +192,16 @@ function shouldSuppressCodexNotifyBubble(ctx) {
 function shouldSuppressCodexUserInputBubble(ctx) {
   const policy = getPolicy(ctx, "notification");
   return !!(ctx.doNotDisturb || !policy.enabled);
+}
+
+// #1326: Claude Desktop's wrap_up question card. Same gates as the Codex notify
+// card, including the per-agent bubble toggle for Claude Code.
+function shouldSuppressClaudeTurnAskBubble(ctx) {
+  const claudeBubblesEnabled =
+    typeof ctx.isAgentPermissionsEnabled !== "function" ||
+    ctx.isAgentPermissionsEnabled("claude-code");
+  const policy = getPolicy(ctx, "notification");
+  return !!(ctx.doNotDisturb || !policy.enabled || !claudeBubblesEnabled);
 }
 
 function shouldSuppressKimiNotifyBubble(ctx) {
@@ -3286,6 +3296,9 @@ function buildPermissionBubblePayload(permEntry) {
     isCodexUserInputNotify: permEntry.isCodexUserInputNotify || false,
     isKiroDesktopNotify: permEntry.isKiroDesktopNotify === true,
     codexUserInputCallId: permEntry.codexUserInputCallId || null,
+    // #1326: Claude Desktop's end-of-turn question box, rendered with the same
+    // read-only native-question card as Codex request_user_input.
+    isClaudeTurnAskNotify: permEntry.isClaudeTurnAskNotify || false,
     isRemote: !!permEntry.host,
     // Hermes must NOT get the regular go-to-terminal fallback: its opt-in
     // permission gate has no native approval prompt to hand back to. A 204 is
@@ -4923,9 +4936,11 @@ function handleBubbleExpanded(event, expanded) {
   // answer must travel over Codex Desktop's private app-server connection.
   // Expanding a copy of the options implies that they are actionable here.
   // Treat any stale/old renderer expansion request as the card's real action:
-  // dismiss it and return to the native Codex UI.
+  // dismiss it and return to the native Codex UI. Claude Desktop's wrap_up
+  // question box (#1326) is read-only for the same reason: a button there sends
+  // the next user message, which Clawd cannot do on the user's behalf.
   if (perm.isKiroDesktopNotify) return false;
-  if (perm.isCodexUserInputNotify) {
+  if (isNativeQuestionNotify(perm)) {
     if (expanded === true) {
       dismissPassiveNotify(perm, "expand-focus");
       if (!perm.host) {
@@ -5243,8 +5258,10 @@ function handleDecide(event, behavior) {
     }
     return;
   }
-  if (perm.isCodexUserInputNotify) {
+  if (isNativeQuestionNotify(perm)) {
     dismissPassiveNotify(perm, "ipc-decide");
+    // "codex-user-input-focus" is the renderer's generic native-question focus
+    // action (name kept for compatibility); it covers the Claude card too.
     if (behavior === "codex-user-input-focus" && !perm.host) {
       ctx.focusTerminalForSession(perm.sessionId, { fallbackEntry: buildPermissionFocusEntry(perm) });
     }
@@ -5771,6 +5788,77 @@ function showCodexUserInputBubble({
   return true;
 }
 
+// #1326: Claude Desktop's end-of-turn question box (mcp__ccd_turn__wrap_up).
+// Read-only like request_user_input: the answer is a button in Claude Desktop
+// that sends the next user message, so the card's only action is "dismiss and
+// bring the session's app forward". One card per session, refreshed in place
+// when Claude asks again. Fields arrive already normalized by
+// claude-turn-ask.js (normalizeClaudeTurnAsk).
+function showClaudeTurnAskBubble({
+  sessionId,
+  toolUseId,
+  ask,
+  actions,
+  sourcePid,
+  agentPid,
+  cwd,
+  host,
+}) {
+  if (!sessionId || typeof ask !== "string" || !ask) return false;
+  if (shouldSuppressClaudeTurnAskBubble(ctx)) {
+    const policy = getPolicy(ctx, "notification");
+    permLog(`claude turn-ask suppressed: session=${sessionId} dnd=${ctx.doNotDisturb} notificationEnabled=${policy.enabled}`);
+    return false;
+  }
+  // Reuse the `questions` shape the native-question card already renders: the
+  // ask is the question and the box's button labels are its read-only options.
+  const toolInput = {
+    questions: [{
+      question: ask,
+      options: (Array.isArray(actions) ? actions : []).map((action) => ({ label: action.label })),
+    }],
+  };
+  const existing = findClaudeTurnAskEntry(sessionId);
+  if (existing) {
+    existing.toolInput = toolInput;
+    existing.claudeTurnAskToolUseId = toolUseId || null;
+    existing.createdAt = Date.now();
+    syncPermissionBubbleContent(existing);
+    permLog(`passive turn-ask refresh: agent=claude-code session=${sessionId}`);
+    return true;
+  }
+  const permEntry = {
+    res: null,
+    abortHandler: null,
+    suggestions: [],
+    sessionId,
+    bubble: null,
+    hideTimer: null,
+    toolName: "ClaudeTurnAsk",
+    toolInput,
+    claudeTurnAskToolUseId: toolUseId || null,
+    resolvedSuggestion: null,
+    createdAt: Date.now(),
+    interaction: classifyPermissionInteraction({
+      agentId: "claude-code",
+      eventKind: "native-question",
+      toolName: "ClaudeTurnAsk",
+    }),
+    isElicitation: false,
+    isClaudeTurnAskNotify: true,
+    agentId: "claude-code",
+    sourcePid: sourcePid || null,
+    agentPid: agentPid || null,
+    cwd: cwd || "",
+    host: host || null,
+    autoExpireTimer: null,
+  };
+  addPendingPermission(permEntry, "passive-added");
+  showPermissionBubble(permEntry);
+  permLog(`passive turn-ask show: agent=claude-code session=${sessionId}`);
+  return true;
+}
+
 function showKiroDesktopReminder({ sessionId, question, interactionType, interactionKey, cwd, onDismiss }) {
   const existing = pendingPermissions.find(entry => entry.isKiroDesktopNotify && entry.sessionId === sessionId);
   if (existing) {
@@ -5873,6 +5961,7 @@ function showKimiNotifyBubble({ sessionId, command, toolName, permissionAction, 
 
 function getPassiveNotifyAgentId(permEntry) {
   if (permEntry?.isCodexNotify || permEntry?.isCodexUserInputNotify) return "codex";
+  if (permEntry?.isClaudeTurnAskNotify) return "claude-code";
   if (permEntry?.isKimiNotify) return "kimi-cli";
   return permEntry?.agentId || "unknown";
 }
@@ -5884,6 +5973,15 @@ function findCodexUserInputEntry(sessionId, callId) {
     && permEntry.isCodexUserInputNotify
     && permEntry.sessionId === sessionId
     && permEntry.codexUserInputCallId === callId
+  ) || null;
+}
+
+function findClaudeTurnAskEntry(sessionId) {
+  if (!sessionId) return null;
+  return pendingPermissions.find((permEntry) =>
+    permEntry
+    && permEntry.isClaudeTurnAskNotify
+    && permEntry.sessionId === sessionId
   ) || null;
 }
 
@@ -5938,8 +6036,11 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
   // request_user_input is a blocking question, not a transient notification.
   // Keep it visible until Codex records the matching function_call_output (or
   // the user explicitly dismisses/focuses it), even if notification policy is
-  // refreshed while the card is open.
-  if (permEntry.isCodexUserInputNotify || permEntry.isKiroDesktopNotify) return false;
+  // refreshed while the card is open. Claude Desktop's wrap_up question (#1326)
+  // is the same kind of blocking question; it is cleared by the session's next
+  // prompt / tool call / SessionEnd (see claude-turn-ask.js). Kiro reminders are
+  // cleared by the interaction ledger, not by a timer.
+  if (isNativeQuestionNotify(permEntry) || permEntry.isKiroDesktopNotify) return false;
   const remainingMs = computePassiveNotifyRemainingMs(permEntry.createdAt, autoCloseMs, now);
   permLog(
     `passive notify schedule: agent=${getPassiveNotifyAgentId(permEntry)} session=${permEntry.sessionId || "(none)"} autoCloseMs=${autoCloseMs} remainingMs=${remainingMs}`
@@ -5956,7 +6057,7 @@ function schedulePassiveNotifyAutoExpire(permEntry, autoCloseMs, now = Date.now(
 
 function refreshPassiveNotifyAutoClose() {
   const passiveEntries = pendingPermissions.filter(
-    (entry) => isPassiveNotifyEntry(entry) && !entry.isCodexUserInputNotify && !entry.isKiroDesktopNotify
+    (entry) => isPassiveNotifyEntry(entry) && !isNativeQuestionNotify(entry) && !entry.isKiroDesktopNotify
   );
   if (passiveEntries.length === 0) return 0;
   const policy = getPolicy(ctx, "notification");
@@ -6172,6 +6273,16 @@ function clearCodexUserInputBubbles(sessionId, callId, reason = "codex-user-inpu
   return toRemove.length;
 }
 
+function clearClaudeTurnAskBubbles(sessionId, reason = "claude-turn-ask-clear") {
+  const toRemove = pendingPermissions.filter((perm) =>
+    perm
+    && perm.isClaudeTurnAskNotify
+    && (!sessionId || perm.sessionId === sessionId)
+  );
+  for (const perm of toRemove) dismissPassiveNotify(perm, reason);
+  return toRemove.length;
+}
+
 function clearKimiNotifyBubbles(sessionId, reason = sessionId ? "kimi-session-release" : "kimi-global-clear") {
   const hasKimi = pendingPermissions.some(p => p.isKimiNotify);
   if (!hasKimi) return;
@@ -6238,6 +6349,7 @@ return {
   showCodexRemoteFallbackNotice, refreshCodexRemoteFallbackNotice,
   dismissCodexRemoteFallbackNotice, queueCodexRemoteFallbackForEntry,
   showCodexUserInputBubble, clearCodexUserInputBubbles,
+  showClaudeTurnAskBubble, clearClaudeTurnAskBubbles,
   showKimiNotifyBubble, clearKimiNotifyBubbles,
   showKiroDesktopReminder, removeKiroDesktopReminder,
   refreshPassiveNotifyAutoClose,

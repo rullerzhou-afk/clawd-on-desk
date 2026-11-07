@@ -26,6 +26,11 @@ const {
 const { isWslSourced, stripRemoteProcessMetadata } = require("./remote-process-metadata");
 const { resolveDshCarrier } = require("./dsh-carrier");
 const {
+  CLAUDE_WRAP_UP_TOOL_NAME,
+  normalizeClaudeTurnAsk,
+  decideClaudeTurnAskAction,
+} = require("./claude-turn-ask");
+const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
 } = require("./server-permission-utils");
@@ -1144,6 +1149,39 @@ function handleStatePost(req, res, options) {
             stateSweepBehaviorFor,
             "Plan dialog dismissed in terminal"
           );
+        }
+        // #1326: Claude Desktop's end-of-turn question box. Main-thread Claude
+        // Code events only; the show/clear/ignore rules live in
+        // claude-turn-ask.js. A non-empty subagentId excludes a child or a
+        // prompt-suggestion phantom that carries a fresh agent_id, and a
+        // retired phase excludes stale tool evidence from an older turn.
+        if (hasExplicitPermissionLifecycleSession
+          && agentId === "claude-code"
+          && !subagentId
+          && !isRetiredClaudePhase) {
+          const claudeTurnAsk = event === "PreToolUse" && toolName === CLAUDE_WRAP_UP_TOOL_NAME
+            ? normalizeClaudeTurnAsk(data.claude_turn_ask)
+            : null;
+          const turnAskAction = decideClaudeTurnAskAction({
+            event,
+            toolName,
+            hasAsk: !!claudeTurnAsk,
+            subagentLifecycleSource,
+          });
+          if (turnAskAction === "show" && typeof ctx.showClaudeTurnAskBubble === "function") {
+            ctx.showClaudeTurnAskBubble({
+              sessionId: sid,
+              toolUseId,
+              ask: claudeTurnAsk.ask,
+              actions: claudeTurnAsk.actions,
+              sourcePid: effectiveProcessMetadata.sourcePid,
+              agentPid: effectiveProcessMetadata.agentPid,
+              cwd,
+              host,
+            });
+          } else if (turnAskAction === "clear" && typeof ctx.clearClaudeTurnAskBubbles === "function") {
+            ctx.clearClaudeTurnAskBubbles(sid, `claude-turn-ask:${event}`);
+          }
         }
         recordRequestHookEvent.acceptedUnlessDnd(shouldDropForDnd());
         let sessionUpdateApplied = true;

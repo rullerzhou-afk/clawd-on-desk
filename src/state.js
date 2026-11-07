@@ -1287,12 +1287,15 @@ function getSessionAliases() {
 
 function buildSessionSnapshot() {
   const pendingAttentionIds = getPendingAttentionIds();
+  // HUD rows include the HUD-only Claude card; the pet projection stays on the
+  // Codex/Kiro/Copilot set.
+  const hudPendingAttentionIds = getHudPendingAttentionIds();
   const projected = projectPendingAttention(pendingAttentionIds);
   return buildSessionSnapshotFromSessions(sessions, {
     getSessionPresentation: (id) => ({
       effectiveState: projected.get(id)?.state,
       activeSubagentCount: codexSubagentPresentation.count(id),
-      pendingAttention: pendingAttentionIds.has(id),
+      pendingAttention: hudPendingAttentionIds.has(id),
     }),
     t: ctx.t,
     sessionAliases: getSessionAliases(),
@@ -4142,6 +4145,10 @@ function disposeKimiPermissionSession(sessionId) {
   stopKimiPermissionPoll(sessionId);
 }
 
+// Sessions with a pending attention wait: local Codex question/approval cards,
+// the Kiro IDE approval ledger, and the Copilot terminal-wait ledger. This set
+// drives both the pet projection and the notification cue, so HUD-only Claude
+// turn-ask cards are added separately in getHudPendingAttentionIds().
 function getPendingAttentionIds() {
   const ids = new Set();
   for (const entry of ctx.pendingPermissions || []) {
@@ -4155,6 +4162,21 @@ function getPendingAttentionIds() {
   }
   for (const id of ctx.getCopilotTerminalWaitSessionIds?.() || []) {
     if (isTerminalWaitSession(sessions.get(id)) && ctx.isAgentNotificationHookEnabled?.("copilot-cli") !== false) ids.add(id);
+  }
+  return ids;
+}
+
+// HUD-only view of the same set plus Claude Desktop's wrap_up question card
+// (#1326). The Claude card has no decision channel and must not drive the pet
+// projection or notification sound, so it stays out of getPendingAttentionIds().
+function getHudPendingAttentionIds() {
+  const ids = getPendingAttentionIds();
+  for (const entry of ctx.pendingPermissions || []) {
+    if (!entry || entry.agentId !== "claude-code" || entry.isClaudeTurnAskNotify !== true) continue;
+    if (!entry.sessionId || entry.headless || entry.host || entry.wslDistro
+      || entry.platform === "wsl" || (entry.profileId && entry.profileId !== "local")
+      || (entry.res && (entry.res.destroyed || entry.res.writableEnded))) continue;
+    ids.add(entry.sessionId);
   }
   return ids;
 }
@@ -4177,11 +4199,13 @@ function projectPendingAttention(ids = getPendingAttentionIds()) {
 }
 
 function isBlockingPermissionEntry(entry) {
-  // A Kiro reminder has no decision channel. It must not prevent the pet
-  // from returning to its underlying state when pending attention clears.
+  // Kiro reminders and Claude turn-ask cards have no decision channel. They
+  // must not prevent the pet from returning to its underlying state when
+  // pending attention clears.
   return !!entry
     && entry.agentId !== "codex"
     && !entry.isKiroDesktopNotify
+    && !entry.isClaudeTurnAskNotify
     && !entry.headless
     && !(entry.res && (entry.res.destroyed || entry.res.writableEnded));
 }

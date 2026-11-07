@@ -2277,7 +2277,7 @@ const _permCtx = {
 };
 const _perm = initPermission(_permCtx);
 permissionPresentationRuntime = _perm;
-const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, wouldAutoAllowPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
+const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, wouldAutoAllowPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showClaudeTurnAskBubble, clearClaudeTurnAskBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
 
 _codexRemoteFallbackNotice = createCodexRemoteFallbackNotice({
   setTimeout: (fn, ms) => setTimeout(fn, ms),
@@ -2288,7 +2288,6 @@ _codexRemoteFallbackNotice = createCodexRemoteFallbackNotice({
   dismiss: (entry, reason) => callRuntimeMethod(_perm, "dismissCodexRemoteFallbackNotice", entry, reason),
   log: (message) => permLog(message),
 });
-
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -3216,6 +3215,8 @@ const _serverCtx = {
   showCodexUserInputBubble,
   syncPermissionBubbleContent,
   clearCodexUserInputBubbles,
+  showClaudeTurnAskBubble,
+  clearClaudeTurnAskBubbles,
   handleTestResult: (result, context) => handleTestResult(result, context),
   maybeStartRemoteApproval,
   replyOpencodeFamilyPermission,
@@ -4983,6 +4984,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
     _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.clearAll(reason) : 0
   ),
   clearCodexUserInputBubbles,
+  clearClaudeTurnAskBubbles,
   clearKimiNotifyBubbles,
   clearKiroDesktopReminderCards: (reason) => agentRuntime?.clearKiroDesktopReminderCards(reason),
   resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),

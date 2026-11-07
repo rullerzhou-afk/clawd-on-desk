@@ -355,6 +355,40 @@ function buildToolInputFingerprint(toolInput) {
     .digest("hex");
 }
 
+// #1326: Claude Desktop's built-in end-of-turn tool. Kept in sync with
+// CLAUDE_WRAP_UP_TOOL_NAME in src/claude-turn-ask.js (hooks can't require src/).
+const CLAUDE_WRAP_UP_TOOL_NAME = "mcp__ccd_turn__wrap_up";
+
+function clampHookText(value, maxChars) {
+  if (typeof value !== "string") return "";
+  const text = value.trim();
+  return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
+}
+
+// Only the question and button labels the card shows, capped so the state body
+// stays small. A recap-only wrap_up (no ask) returns null on purpose: the
+// server treats a wrap_up without claude_turn_ask as "the box no longer asks
+// anything".
+function buildClaudeTurnAsk(toolName, toolInput) {
+  if (toolName !== CLAUDE_WRAP_UP_TOOL_NAME) return null;
+  if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) return null;
+  const ask = clampHookText(toolInput.ask, 300);
+  if (!ask) return null;
+  const result = { ask };
+  const actions = Array.isArray(toolInput.actions)
+    ? toolInput.actions
+      .slice(0, 4)
+      .map((action) => {
+        if (!action || typeof action !== "object") return null;
+        const label = clampHookText(action.label, 60);
+        return label ? { label } : null;
+      })
+      .filter(Boolean)
+    : [];
+  if (actions.length) result.actions = actions;
+  return result;
+}
+
 function shouldReportForegroundWtHwnd(event) {
   return event === "SessionStart" || event === "UserPromptSubmit";
 }
@@ -700,6 +734,14 @@ function buildStateBody(event, payload, resolve) {
     const testResult = classifyTestResult(event, payload);
     if (testResult) body.test_result = testResult;
   }
+  // #1326: Claude Desktop's end-of-turn question box (mcp__ccd_turn__wrap_up)
+  // never reaches PermissionRequest, so PreToolUse is the only place Clawd can
+  // see the question. Forward it (capped) for this one tool only; every other
+  // tool keeps sending just the fingerprint above.
+  if (event === "PreToolUse") {
+    const claudeTurnAsk = buildClaudeTurnAsk(toolName, payload.tool_input);
+    if (claudeTurnAsk) body.claude_turn_ask = claudeTurnAsk;
+  }
   if (event !== "Stop" && typeof payload.transcript_path === "string" && payload.transcript_path) {
     body.transcript_path = payload.transcript_path;
   }
@@ -931,6 +973,7 @@ if (require.main === module) main();
 
 module.exports = {
   buildStateBody,
+  buildClaudeTurnAsk,
   classifyTestResult,
   isRecognizedTestCommand,
   isClaudeHeadlessCommandLine,

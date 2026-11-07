@@ -16,6 +16,7 @@ toolPill.addEventListener("mouseenter", startMarqueeIfOverflowing);
 toolPill.addEventListener("mouseleave", stopMarquee);
 const commandBlock = document.getElementById("commandBlock");
 const compactBlock = document.getElementById("compactBlock");
+const nativeQuestionOptions = document.getElementById("nativeQuestionOptions");
 const detailScroll = document.getElementById("detailScroll");
 const detailTruncation = document.getElementById("detailTruncation");
 const btnExpand = document.getElementById("btnExpand");
@@ -116,6 +117,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "Confirm in Kiro. Clawd leaves the decision to you.",
     goToCodex: "Go to Codex",
     answerInCodex: "Choose or type your answer in Codex.",
+    claudeNeedsInput: "Claude Needs Input",
+    goToClaude: "Go to Claude",
+    answerInClaude: "Choose your answer in Claude Desktop.",
+    optionsInClaude: "Options in Claude: {options}",
     returnToRemoteCodex: "Return to the remote Codex terminal to answer.",
     otherInCodex: "Other (type in Codex)",
     planReview: "Plan Review",
@@ -176,6 +181,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "在 Kiro 里确认，Clawd 不会替你决定",
     goToCodex: "\u524D\u5F80 Codex",
     answerInCodex: "\u8BF7\u5728 Codex \u4E2D\u9009\u62E9\u6216\u8F93\u5165\u56DE\u7B54\u3002",
+    claudeNeedsInput: "Claude \u9700\u8981\u4F60\u7684\u56DE\u7B54",
+    goToClaude: "\u524D\u5F80 Claude",
+    answerInClaude: "\u8BF7\u5728 Claude Desktop \u4E2D\u9009\u62E9\u56DE\u7B54\u3002",
+    optionsInClaude: "\u5728 Claude \u4E2D\u53EF\u9009\uFF1A{options}",
     returnToRemoteCodex: "\u8BF7\u8FD4\u56DE\u8FDC\u7AEF Codex \u7EC8\u7AEF\u56DE\u7B54\u3002",
     otherInCodex: "\u5176\u4ED6\uFF08\u5728 Codex \u4E2D\u8F93\u5165\uFF09",
     planReview: "\u8BA1\u5212\u5BA1\u6279",
@@ -236,6 +245,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "請在 Kiro 裡確認，Clawd 不會替你決定",
     goToCodex: "前往 Codex",
     answerInCodex: "請在 Codex 中選擇或輸入回答。",
+    claudeNeedsInput: "Claude 需要你的回答",
+    goToClaude: "前往 Claude",
+    answerInClaude: "請在 Claude Desktop 中選擇回答。",
+    optionsInClaude: "在 Claude 中可選：{options}",
     returnToRemoteCodex: "請返回遠端 Codex 終端機回答。",
     otherInCodex: "其他（在 Codex 中輸入）",
     planReview: "計畫審查",
@@ -296,6 +309,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "Kiro에서 확인하세요. 결정은 사용자에게 맡깁니다.",
     goToCodex: "Codex\uB85C \uC774\uB3D9",
     answerInCodex: "Codex\uC5D0\uC11C \uB2F5\uBCC0\uC744 \uC120\uD0DD\uD558\uAC70\uB098 \uC785\uB825\uD558\uC138\uC694.",
+    claudeNeedsInput: "Claude\uC5D0 \uC785\uB825\uC774 \uD544\uC694\uD569\uB2C8\uB2E4",
+    goToClaude: "Claude\uB85C \uC774\uB3D9",
+    answerInClaude: "Claude Desktop\uC5D0\uC11C \uB2F5\uBCC0\uC744 \uC120\uD0DD\uD558\uC138\uC694.",
+    optionsInClaude: "Claude\uC5D0\uC11C \uC120\uD0DD \uAC00\uB2A5: {options}",
     returnToRemoteCodex: "\uC6D0\uACA9 Codex \uD130\uBBF8\uB110\uB85C \uB3CC\uC544\uAC00 \uB2F5\uBCC0\uD558\uC138\uC694.",
     otherInCodex: "\uAE30\uD0C0 (Codex\uC5D0\uC11C \uC785\uB825)",
     planReview: "\uACC4\uD68D \uAC80\uD1A0",
@@ -356,6 +373,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "Kiro で確認してください。決定はご自身で行います。",
     goToCodex: "Codex へ移動",
     answerInCodex: "Codex で回答を選択または入力してください。",
+    claudeNeedsInput: "Claude に入力が必要",
+    goToClaude: "Claude へ移動",
+    answerInClaude: "Claude Desktop で回答を選択してください。",
+    optionsInClaude: "Claude での選択肢：{options}",
     returnToRemoteCodex: "リモートの Codex ターミナルに戻って回答してください。",
     otherInCodex: "その他（Codex で入力）",
     planReview: "計画レビュー",
@@ -416,6 +437,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "Confirme no Kiro. A decisão é sua.",
     goToCodex: "Ir para o Codex",
     answerInCodex: "Escolha ou digite sua resposta no Codex.",
+    claudeNeedsInput: "O Claude precisa de resposta",
+    goToClaude: "Ir para o Claude",
+    answerInClaude: "Escolha sua resposta no Claude Desktop.",
+    optionsInClaude: "Opções no Claude: {options}",
     returnToRemoteCodex: "Volte ao terminal remoto do Codex para responder.",
     otherInCodex: "Outra (digite no Codex)",
     planReview: "Revisão do plano",
@@ -476,6 +501,10 @@ const BUBBLE_STRINGS = {
     kiroReminderReadOnly: "Confirma en Kiro. La decisión es tuya.",
     goToCodex: "Ir a Codex",
     answerInCodex: "Elige o escribe tu respuesta en Codex.",
+    claudeNeedsInput: "Claude necesita una respuesta",
+    goToClaude: "Ir a Claude",
+    answerInClaude: "Elige tu respuesta en Claude Desktop.",
+    optionsInClaude: "Opciones en Claude: {options}",
     returnToRemoteCodex: "Vuelve a la terminal remota de Codex para responder.",
     otherInCodex: "Otra (escríbela en Codex)",
     planReview: "Revisión del plan",
@@ -690,6 +719,10 @@ function resetBubbleContent() {
   activeQuestionIndex = 0;
   card.classList.remove("elicitation-scrollable");
   card.classList.remove("codex-user-input-focus-card");
+  if (nativeQuestionOptions) {
+    nativeQuestionOptions.textContent = "";
+    nativeQuestionOptions.classList.remove("visible");
+  }
   card.classList.remove("kiro-desktop-reminder");
   card.removeAttribute("role");
   card.removeAttribute("tabindex");
@@ -737,7 +770,7 @@ function getCompactPreview(data) {
   if (data.isKiroDesktopNotify) {
     return [data.toolInput?.question, bubbleText(data.lang, "kiroReminderReadOnly")].filter(Boolean).join("\n\n");
   }
-  if (elicitationMode || data.isCodexUserInputNotify) {
+  if (elicitationMode || isNativeQuestionData(data)) {
     const questions = data.toolInput && Array.isArray(data.toolInput.questions)
       ? data.toolInput.questions
       : [];
@@ -882,6 +915,21 @@ function renderSessionTrustError(message) {
   footerSecondary.appendChild(error);
   footerSecondary.classList.toggle("visible", currentExpanded);
   sessionTrustErrorElement = error;
+}
+
+// #1326: Codex request_user_input and Claude Desktop's wrap_up question share
+// the read-only native-question card (compact: title, question, "go to"
+// button). Clawd can answer neither one, so the Codex card lists no options;
+// the Claude card adds one muted line of the box's button labels under the
+// question. Only the agent-facing copy otherwise differs.
+function isNativeQuestionData(data) {
+  return !!(data && (data.isCodexUserInputNotify || data.isClaudeTurnAskNotify));
+}
+
+function nativeQuestionCopy(data) {
+  return data && data.isClaudeTurnAskNotify
+    ? { header: "claudeNeedsInput", pill: "CLAUDE", tool: "ClaudeTurnAsk", go: "goToClaude", hint: "answerInClaude" }
+    : { header: "codexNeedsInput", pill: "CODEX", tool: "CodexUserInput", go: "goToCodex", hint: "answerInCodex" };
 }
 
 function getQuestionLabel(question, questionIndex) {
@@ -1237,7 +1285,7 @@ function renderElicitationForm(data) {
   renderElicitationStep();
 }
 
-function createCodexUserInputQuestionCard(question, questionIndex) {
+function createCodexUserInputQuestionCard(question, questionIndex, hintKey = "answerInCodex") {
   const questionCard = document.createElement("div");
   questionCard.className = "question-card";
   const header = document.createElement("div");
@@ -1250,7 +1298,7 @@ function createCodexUserInputQuestionCard(question, questionIndex) {
   questionCard.appendChild(text);
   const hint = document.createElement("div");
   hint.className = "question-hint";
-  hint.textContent = bubbleText(currentLang, "answerInCodex");
+  hint.textContent = bubbleText(currentLang, hintKey);
   questionCard.appendChild(hint);
   const optionList = document.createElement("div");
   optionList.className = "option-list";
@@ -1293,14 +1341,19 @@ function renderCodexUserInputStep(data) {
   if (total) {
     elicitationForm.appendChild(createCodexUserInputQuestionCard(
       elicitationQuestions[activeQuestionIndex],
-      activeQuestionIndex
+      activeQuestionIndex,
+      nativeQuestionCopy(data).hint
     ));
   }
   if (data.isRemote) {
-    const remoteHint = document.createElement("div");
-    remoteHint.className = "question-hint";
-    remoteHint.textContent = bubbleText(currentLang, "returnToRemoteCodex");
-    elicitationForm.appendChild(remoteHint);
+    // The hint names the remote Codex terminal; the Claude card (#1326) has no
+    // equivalent copy and relies on the agent-neutral "Got it" action instead.
+    if (!data.isClaudeTurnAskNotify) {
+      const remoteHint = document.createElement("div");
+      remoteHint.className = "question-hint";
+      remoteHint.textContent = bubbleText(currentLang, "returnToRemoteCodex");
+      elicitationForm.appendChild(remoteHint);
+    }
   }
   elicitationProgress.textContent = total > 1
     ? bubbleText(currentLang, "questionProgress", { current: activeQuestionIndex + 1, total })
@@ -1330,6 +1383,21 @@ function renderCodexUserInputStep(data) {
   scheduleBubbleHeightReport();
 }
 
+// #1326: the Claude card lists the box's choices as one muted, read-only
+// line under the question. Codex keeps its original options-free card.
+function renderClaudeTurnAskOptions(data) {
+  if (!nativeQuestionOptions || !data || !data.isClaudeTurnAskNotify) return;
+  const questions = data.toolInput && Array.isArray(data.toolInput.questions)
+    ? data.toolInput.questions
+    : [];
+  const labels = (questions[0] && Array.isArray(questions[0].options) ? questions[0].options : [])
+    .map((option) => (option && typeof option.label === "string" ? option.label.trim() : ""))
+    .filter(Boolean);
+  if (!labels.length) return;
+  nativeQuestionOptions.textContent = bubbleText(data.lang, "optionsInClaude", { options: labels.join(" · ") });
+  nativeQuestionOptions.classList.add("visible");
+}
+
 function renderCodexUserInputPreview(data) {
   codexUserInputMode = true;
   elicitationQuestions = data.toolInput && Array.isArray(data.toolInput.questions)
@@ -1342,7 +1410,7 @@ function renderCodexUserInputPreview(data) {
 function show(data) {
   const isPassiveRefresh = data.toolName === "CodexExec"
     || data.toolName === "KimiPermission"
-    || data.isCodexUserInputNotify === true
+    || isNativeQuestionData(data)
     || data.isKiroDesktopNotify === true
     || data.isFamilyQuestion === true;
   if (currentData && !isPassiveRefresh) {
@@ -1525,22 +1593,24 @@ function show(data) {
     revealCard();
     return;
   }
-  if (data.isCodexUserInputNotify) {
+  if (isNativeQuestionData(data)) {
+    const copy = nativeQuestionCopy(data);
     currentExpanded = false;
-    headerTitle.textContent = bubbleText(data.lang, "codexNeedsInput");
-    toolPillText.textContent = "CODEX";
-    toolPill.setAttribute("data-tool", "CodexUserInput");
+    headerTitle.textContent = bubbleText(data.lang, copy.header);
+    toolPillText.textContent = copy.pill;
+    toolPill.setAttribute("data-tool", copy.tool);
     toolPill.style.display = "";
     renderCodexUserInputPreview(data);
+    renderClaudeTurnAskOptions(data);
     card.classList.add("codex-user-input-focus-card");
     card.setAttribute("role", "button");
     card.setAttribute("tabindex", "0");
     card.setAttribute("aria-label", data.isRemote
       ? bubbleText(data.lang, "gotIt")
-      : bubbleText(data.lang, "goToCodex"));
+      : bubbleText(data.lang, copy.go));
     btnAllow.textContent = data.isRemote
       ? bubbleText(data.lang, "gotIt")
-      : bubbleText(data.lang, "goToCodex");
+      : bubbleText(data.lang, copy.go);
     btnAllow.disabled = false;
     btnDeny.style.display = "none";
     revealCard();
