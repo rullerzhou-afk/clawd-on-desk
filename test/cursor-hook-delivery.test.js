@@ -83,6 +83,7 @@ async function runHook(t, options = {}) {
       hook_event_name: options.event || "beforeSubmitPrompt",
       conversation_id: "cursor-delivery-test", workspace_roots: ["D:/test"],
       status: "completed", prompt: "test",
+      ...options.payload,
     };
     child.stdin.end(options.input !== undefined ? options.input : JSON.stringify(payload));
   }
@@ -146,6 +147,22 @@ describe("Cursor hook delivery lifecycle", () => {
     assertCleanExit(result, "{}\n");
     assert.equal(result.posts.length, 0);
   });
+
+  for (const [name, payload, expected] of [
+    ["prefers model_id over the legacy slug", { model: "legacy-slug", model_id: "claude-4.5-sonnet" }, "claude-4.5-sonnet"],
+    ["falls back to the legacy slug", { model: "gpt-5" }, "gpt-5"],
+    ["falls back when model_id is unusable", { model: "gpt-5", model_id: "bad\nid" }, "gpt-5"],
+    ["omits a blank model", { model: "   " }, undefined],
+    ["omits an oversized model", { model: "x".repeat(129) }, undefined],
+    ["omits a non-string model", { model: { id: "x" } }, undefined],
+  ]) {
+    it(`reports the session model: ${name}`, async (t) => {
+      const result = await runHook(t, { event: "preToolUse", payload });
+      assertCleanExit(result, "{}\n");
+      assert.equal(result.posts.length, 1);
+      assert.equal(result.posts[0].model, expected);
+    });
+  }
 
   it("does not attempt delivery for malformed input", async (t) => {
     const result = await runHook(t, { input: "{invalid" });
