@@ -62,6 +62,28 @@ function hasSupportedHerdrPaneTarget(entry, options = {}) {
   return osPlatform === "darwin" || osPlatform === "linux";
 }
 
+// wmctrl and xdotool only see X11 windows. KWin scripting requires Plasma 6's
+// /Scripting/Script<id> path and windowList()/activeWindow API; other Wayland
+// desktops and older Plasma versions cannot raise native terminal windows (#1001).
+function isKdeWaylandSession(env = process.env) {
+  return env.XDG_SESSION_TYPE === "wayland"
+    && String(env.XDG_CURRENT_DESKTOP || "").split(":").some((name) => name.toUpperCase() === "KDE")
+    && /^\d+$/.test(env.KDE_SESSION_VERSION || "")
+    && Number(env.KDE_SESSION_VERSION) >= 6;
+}
+
+function canRaiseLinuxTerminalWindow(env = process.env) {
+  return env.XDG_SESSION_TYPE !== "wayland" || isKdeWaylandSession(env);
+}
+
+// A terminal pane or an editor terminal tab can still be selected when the window
+// itself cannot be raised.
+function hasLinuxTabTarget(entry, options = {}) {
+  return !!(entry && (entry.hasPaneFocusTarget === true
+    || entry.tmuxSocket || entry.tmuxClient || entry.editor
+    || hasSupportedHerdrPaneTarget(entry, options)));
+}
+
 function getSessionFocusTarget(entry, options = {}) {
   if (!entry || !entry.id) return { canFocus: false, type: null, url: null };
   if (entry.platform === "webui") return { canFocus: false, type: null, url: null };
@@ -101,6 +123,11 @@ function getSessionFocusTarget(entry, options = {}) {
   }
 
   if (entry.sourcePid) {
+    if (normalizeOsPlatform(options) === "linux"
+      && !canRaiseLinuxTerminalWindow(options.env || process.env)
+      && !hasLinuxTabTarget(entry, options)) {
+      return { canFocus: false, type: null, url: null, reason: "linux-wayland-window-raise" };
+    }
     return { canFocus: true, type: "terminal", url: null };
   }
 
@@ -181,6 +208,8 @@ module.exports = {
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  hasLinuxTabTarget,
   isDshDesktopSession,
   isFocusableLocalHudSession,
+  isKdeWaylandSession,
 };
