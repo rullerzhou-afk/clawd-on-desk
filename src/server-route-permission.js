@@ -1,7 +1,10 @@
 "use strict";
 const { readCodexClientEphemeral } = require("./codex-session-persistence");
 
-const { resolveCodexApprovalRoute } = require("./codex-approval-routing");
+const {
+  isNonlocalCodexRequest,
+  resolveCodexApprovalRoute,
+} = require("./codex-approval-routing");
 
 const {
   CLAWD_SERVER_HEADER,
@@ -58,9 +61,11 @@ const {
 const {
   INTERACTION_INTENT,
   classifyPermissionInteraction,
+  isCodexClaimableMcpTool,
   isDecisionInteraction,
   isValidInteraction,
 } = require("./permission-automation-policy");
+const { normalizeCodexTurnId } = require("./codex-turn-id");
 const { sanitizeShadowRecord } = require("./windows-process-chain-shadow-log");
 
 const MAX_PERMISSION_BODY_BYTES = 524288;
@@ -171,30 +176,43 @@ function shouldInterceptCodexPermission(ctx, data) {
     && ctx.isCodexPermissionInterceptEnabled();
 }
 
-// Auto hands remote and WSL shell/file requests back to Codex because their
-// transcript is not readable here. When the user's global automation would
-// allow such a request on the spot, Clawd answers it instead, as Intercept
-// did before Auto (#1186). Only the nonlocal reason qualifies: a local
-// automatic reviewer was chosen in Codex and stays in charge. Anything that
-// would wait for a human still goes to Codex, and MCP/app requests stay
-// native because they can carry their own reviewer.
+// Auto hands remote and WSL requests back to Codex because their transcript is
+// not readable here. When the user's global automation would allow such a
+// request on the spot, Clawd answers it instead, as Intercept did before Auto
+// (#1186). For shell/file tools only the `nonlocal` route reason qualifies; a
+// local automatic reviewer chosen in Codex stays in charge. Ordinary
+// namespaced MCP tools follow the same rule when the wire request is nonlocal,
+// except the Codex `codex_apps` connector namespace. This deliberately
+// overrides a per-plugin `approval_mode = "prompt"` on the remote Codex: the
+// user's global automation is the authorization the product agreed to.
+// Anything that would wait for a human still goes to Codex.
+function isCodexAutomationClaimTool(data) {
+  if (!data) return false;
+  // The route resolves shell/file tools by tool first and nonlocal second, so
+  // for these two names `reason === "nonlocal"` is exactly this pure check.
+  // Do not call the resolver here: it synchronously reads the transcript and
+  // this helper runs before the permission-mode gate.
+  if (data.tool_name === "Bash" || data.tool_name === "apply_patch") {
+    return isNonlocalCodexRequest(data);
+  }
+  return isCodexClaimableMcpTool(data.tool_name) && isNonlocalCodexRequest(data);
+}
+
 function shouldClaimCodexPermissionForAutomation(ctx, data, probe) {
-  if (data.tool_name !== "Bash" && data.tool_name !== "apply_patch") return false;
+  if (!isCodexAutomationClaimTool(data)) return false;
   if (typeof ctx.getCodexPermissionMode !== "function"
     || ctx.getCodexPermissionMode() !== "auto") return false;
   if (typeof ctx.wouldAutoAllowPermission !== "function") return false;
   if (shouldBypassCodexBubble(ctx)) return false;
-  if (resolveCodexApprovalRoute(data).reason !== "nonlocal") return false;
   return ctx.wouldAutoAllowPermission(probe) === true;
 }
 
 function isCodexAutomationClaimShape(ctx, data) {
   return !!(
     data
-    && (data.tool_name === "Bash" || data.tool_name === "apply_patch")
+    && isCodexAutomationClaimTool(data)
     && typeof ctx.getCodexPermissionMode === "function"
     && ctx.getCodexPermissionMode() === "auto"
-    && resolveCodexApprovalRoute(data).reason === "nonlocal"
   );
 }
 
@@ -1548,6 +1566,22 @@ function handlePermissionPost(req, res, options) {
           return codexSessionOptions;
         };
 
+        const queueCodexRemoteFallbackNotice = () => {
+          if (typeof ctx.queueCodexRemoteFallbackForEntry !== "function") return false;
+          return ctx.queueCodexRemoteFallbackForEntry({
+            agentId: "codex",
+            sessionId,
+            rawSessionId: sessionIdentity.rawSessionId,
+            profileId: trustedProfileId,
+            codexRemoteDisplayHost: trustedDisplayHost,
+            toolName,
+            toolInput,
+            turnId: normalizeCodexTurnId(data.turn_id),
+            toolUseId,
+            toolInputFingerprint,
+          });
+        };
+
         const sendCodexNativePermissionFallback = (reason) => {
           codexSessionOptions = resolveCodexSessionProcessMetadata();
           const nativeSessionOptions = { ...codexSessionOptions };
@@ -1557,6 +1591,7 @@ function handlePermissionPost(req, res, options) {
           nativeSessionOptions.transientPermissionEvent = true;
           ctx.updateSession(sessionId, "notification", "PermissionRequest", nativeSessionOptions);
           ctx.permLog(`codex ${reason} -> no decision, native prompt fallback (tool=${toolName})`);
+          queueCodexRemoteFallbackNotice();
           recordRequestHookEvent.accepted();
           sendCodexPermissionNoDecision(res);
         };
@@ -1619,8 +1654,13 @@ function handlePermissionPost(req, res, options) {
             permissionReminder: permissionReminder.permissionReminder,
             // Codex's fallback is its own native prompt: hand it back the
             // same way the pre-review DND/disabled gates do.
-            onCancelled: () => {
-              if (!res.headersSent && !res.destroyed) sendCodexPermissionNoDecision(res);
+            onCancelled: (cancelReason) => {
+              if (res.headersSent || res.destroyed) return;
+              // A client that already went away will not read the reminder; a
+              // normal cancellation still goes back to Codex and deserves it.
+              // DND/disabled are filtered by the manager's live gate.
+              if (cancelReason !== "client-disconnected") queueCodexRemoteFallbackNotice();
+              sendCodexPermissionNoDecision(res);
             },
           })
           : null;
@@ -1687,6 +1727,8 @@ function handlePermissionPost(req, res, options) {
             && ctx.getCodexPermissionMode() === "auto",
           codexInteractiveSubagent: isCodexSubagent,
           codexAutomationClaim,
+          codexTurnId: normalizeCodexTurnId(data.turn_id),
+          codexRemoteDisplayHost: trustedDisplayHost,
           headless: data.headless === true,
           codexSessionRole: codexSessionOptions.codexSessionRole || null,
           codexAgentNickname: codexSessionOptions.codexAgentNickname || null,
@@ -1730,6 +1772,7 @@ function handlePermissionPost(req, res, options) {
           ctx.permLog(`codex bubble failed: ${bubbleErr && bubbleErr.message} -> no decision`);
           removePendingPermission(ctx, permEntry, "codex-bubble-failed");
           if (permEntry.abortHandler) res.removeListener("close", permEntry.abortHandler);
+          queueCodexRemoteFallbackNotice();
           sendCodexPermissionNoDecision(res);
           return;
         }
@@ -3112,4 +3155,10 @@ module.exports = {
   shouldBypassDshBubble,
   shouldBypassHermesBubble,
   handlePermissionPost,
+};
+
+module.exports.__test = {
+  isCodexAutomationClaimTool,
+  isCodexAutomationClaimShape,
+  shouldClaimCodexPermissionForAutomation,
 };

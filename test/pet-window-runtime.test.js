@@ -2923,14 +2923,74 @@ function createPetRenderWindowForTest(harness, BrowserWindow, extraOptions = {})
   });
 }
 
-function createPetHitWindowForTest(harness, BrowserWindow) {
+function createPetHitWindowForTest(harness, BrowserWindow, extraOptions = {}) {
   return harness.runtime.createHitWindow({
     BrowserWindow,
     preloadPath: "preload-hit.js",
     loadFilePath: "hit.html",
     hitThemeConfig: { ok: true },
+    ...extraOptions,
   });
 }
+
+describe("pet window close requests", () => {
+  for (const [windowName, createWindow] of [
+    ["render", createPetRenderWindowForTest],
+    ["hit", createPetHitWindowForTest],
+  ]) {
+    it(`issue #1335: Windows ${windowName} window ignores close without changing visibility`, () => {
+      const harness = createRuntime({ isWin: true, isMac: false, isLinux: false });
+      const win = createWindow(harness, makePatchedBrowserWindow(), {
+        isQuitting: () => false,
+      });
+
+      for (const visible of [true, false]) {
+        win.visible = visible;
+        win.calls.length = 0;
+        harness.calls.length = 0;
+        harness.renderWin.calls.length = 0;
+        harness.hitWin.calls.length = 0;
+        let prevented = 0;
+
+        win.emit("close", { preventDefault: () => { prevented += 1; } });
+
+        assert.equal(prevented, 1);
+        assert.equal(win.visible, visible);
+        assert.equal(harness.runtime.isPetEffectivelyHidden(), false);
+        assert.deepStrictEqual(win.calls, []);
+        assert.deepStrictEqual(harness.calls, []);
+        assert.deepStrictEqual(harness.renderWin.calls, []);
+        assert.deepStrictEqual(harness.hitWin.calls, []);
+      }
+    });
+
+    it(`issue #1335: Windows ${windowName} window allows close while quitting`, () => {
+      const harness = createRuntime({ isWin: true, isMac: false, isLinux: false });
+      let quitting = false;
+      const win = createWindow(harness, makePatchedBrowserWindow(), {
+        isQuitting: () => quitting,
+      });
+      quitting = true;
+      let prevented = 0;
+
+      win.emit("close", { preventDefault: () => { prevented += 1; } });
+
+      assert.equal(prevented, 0);
+    });
+
+    it(`issue #1335: macOS ${windowName} window allows close before quit`, () => {
+      const harness = createRuntime({ isWin: false, isMac: true, isLinux: false });
+      const win = createWindow(harness, makePatchedBrowserWindow(), {
+        isQuitting: () => false,
+      });
+      let prevented = 0;
+
+      win.emit("close", { preventDefault: () => { prevented += 1; } });
+
+      assert.equal(prevented, 0);
+    });
+  }
+});
 
 describe("pet-window-runtime", () => {
   it("keeps context menu owner creation outside the pet runtime and preserves parent ownership", () => {

@@ -50,7 +50,7 @@ const {
   discoverWindowsRemoteNode,
 } = require("./remote-ssh-node");
 const { REMOTE_NODE_LAUNCH_COMMAND, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
-const { buildWindowsOperationFrame } = require("./remote-ssh-win-ops");
+const { buildWindowsOperationFrame, windowsUserInstallerBudgets } = require("./remote-ssh-win-ops");
 const { windowsFailureHint } = require("./remote-ssh-platform");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
@@ -70,6 +70,7 @@ const {
   HERMES_PLUGIN_ASSET_FILES,
   parseHermesInstallerResult,
 } = require("./hermes-installer-result");
+const { BRIDGE_SOURCE_FILES } = require("../hooks/dsh-install");
 
 // ── Hook files manifest ──
 //
@@ -118,6 +119,30 @@ const HOOK_FILES = [
 // Hermes plugin assets never join HOOK_FILES: they are not hook scripts and
 // go to their own exact staging directory, not ~/.claude/hooks.
 const HERMES_PLUGIN_DIR = "hermes-plugin";
+// Windows-only DSH assets. Never add these to the POSIX-shared HOOK_FILES.
+const DSH_BRIDGE_DIR = "dsh-clawd-bridge";
+const DSH_ASSET_FILES = Object.freeze([
+  "dsh-install.js",
+  "dsh-notices.js",
+  "dsh-remote-task.js",
+  ...BRIDGE_SOURCE_FILES.map((name) => `${DSH_BRIDGE_DIR}/${name}`),
+]);
+const DSH_INSTALLER_TIMEOUT_MS = 300000;
+function dshRemoteRoot(layout) {
+  return path.win32.join(layout.clawdStateDir, "remote-integrations", "deepseek-harness");
+}
+function dshDefaultHome(layout) {
+  return path.win32.join(layout.remoteHome, ".dsh");
+}
+function localClawdVersion(deps = {}) {
+  if (typeof deps.clawdVersion === "string" && deps.clawdVersion.trim()) return deps.clawdVersion.trim();
+  try {
+    const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"));
+    return typeof manifest.version === "string" ? manifest.version : "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
 const HERMES_CLI_TIMEOUT_MS = 15000;
 const HERMES_OUTER_TIMEOUT_BASE_MS = 30000;
 const HERMES_OUTER_TIMEOUT_PER_TARGET_MS = 5000;
@@ -1335,8 +1360,14 @@ function summarizeHermesTargets(targets) {
 // uncertainty fence. runWindowsOperation is intentionally not used here.
 async function runWindowsDeployOperation({ profile, spawn, runtime, layout, execPath, operation, mutation = false, timeoutMs, transportWait = spawnAndWait, ...args }) {
   const frame = buildWindowsOperationFrame({ layout, execPath, operation, ...args });
+  // The DSH installer is a new operation: its outer SSH budget must cover the
+  // inner installer plus the scheduled task's result wait. Existing installers
+  // keep their caller-provided budget unchanged.
+  const effectiveTimeoutMs = operation === "runInstallerAsUser" && Number.isInteger(args.installerTimeoutMs)
+    ? windowsUserInstallerBudgets(args.installerTimeoutMs).transportTimeoutMs
+    : timeoutMs;
   const transport = await transportWait(spawn, "ssh", buildSshArgs(profile).concat([REMOTE_NODE_LAUNCH_COMMAND]), {
-    stdin: frame, runtime, role: `windows-${operation}`, mutation, timeoutMs,
+    stdin: frame, runtime, role: `windows-${operation}`, mutation, timeoutMs: effectiveTimeoutMs,
   });
   let detail;
   try { detail = JSON.parse(String(transport.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
@@ -1346,12 +1377,21 @@ async function runWindowsDeployOperation({ profile, spawn, runtime, layout, exec
   if (reason === "installer_failed" && detail && /^Windows remote PowerShell hooks cannot use paths containing \$, backtick or double quotes: /m.test(detail.stderrTail || "")) {
     reason = "windows_powershell_path_unsupported";
   }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-unsafe-path: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_powershell_path_unsupported";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-ownership-conflict: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_ownership_conflict";
+  }
+  if (reason === "installer_failed" && detail && /^codex-windows-remote-hooks-disabled: /m.test(detail.stderrTail || "")) {
+    reason = "windows_codex_hooks_disabled";
+  }
   if (reason === "installer_result_unknown") throw windowsRecoveryError(runtime, reason);
   return {
     ok: transport.code === 0 && !!detail && typeof detail === "object" && !Array.isArray(detail)
       && (detail.ok === true || (operation === "readIdentity" && Object.hasOwn(detail, "identity"))),
     code: transport.code, detail, reason,
-    message: transport.stderr || (detail && detail.stderrTail) || `Windows ${operation} failed.`,
+    message: transport.stderr || (detail && (detail.stderrTail || detail.message)) || `Windows ${operation} failed.`,
   };
 }
 
@@ -1424,12 +1464,150 @@ async function settleWindowsDeployLease(context, operation, progress = () => {})
 
 function windowsInstallerEnv(layout, permissionTransport) {
   return {
-    CLAUDE_CONFIG_DIR: layout.claudeConfigDir, COPILOT_HOME: layout.copilotHome,
+    CLAUDE_CONFIG_DIR: layout.claudeConfigDir, COPILOT_HOME: layout.copilotHome, CODEX_HOME: layout.codexHome,
     CLAWD_REMOTE: "1", CLAWD_SSH_REMOTE: "1", CLAWD_REMOTE_IDENTITY_PATH: layout.identityFile,
     CLAWD_SSH_SECURE_MARKER_PATH: layout.secureMarkerFile, CLAWD_HOST_PREFIX_PATH: layout.hostPrefixFile,
     CLAWD_REMOTE_LAST_LOG_PATH: layout.lastLogFile, CLAWD_STATUSLINE_SIDECAR_PATH: layout.statuslineSidecarFile,
     CLAWD_REMOTE_PERMISSION_TRANSPORT: permissionTransport === "query" || permissionTransport === "native" ? permissionTransport : "path",
   };
+}
+
+function dshDeploymentArgs({ layout, profile, installId, clawdVersion, mode, allowLocalMigration = false }) {
+  const args = [
+    mode === "inspect" ? "--remote-inspect" : "--remote",
+    "--profile", "desktop",
+    "--remote-root", dshRemoteRoot(layout),
+    "--install-id", installId,
+    "--profile-id", profile.id,
+    "--runtime-key", layout.runtimeKey,
+    "--layout-version", String(layout.layoutVersion),
+    "--identity-path", layout.identityFile,
+    "--host-prefix-path", layout.hostPrefixFile,
+  ];
+  if (mode !== "inspect") args.splice(1, 0, "--clawd-version", clawdVersion);
+  if (mode !== "inspect" && allowLocalMigration) args.push("--allow-local-migration");
+  return args;
+}
+
+async function uploadDshAssets({ run, spawn, runtime, profile, layout, hooksDir, leaseId }) {
+  const stage = path.win32.join(layout.deployStagingDir, `${leaseId}-dsh`);
+  const parentDirs = new Set([stage]);
+  for (const relative of DSH_ASSET_FILES) {
+    let directory = path.win32.dirname(path.win32.join(stage, relative));
+    while (directory !== stage && directory.startsWith(`${stage}${path.win32.sep}`)) {
+      parentDirs.add(directory);
+      directory = path.win32.dirname(directory);
+    }
+  }
+  const mkdir = await run("mkdir", true, { directories: [...parentDirs] });
+  if (!mkdir.ok) return { ok: false, reason: mkdir.reason, message: mkdir.message };
+  const groups = new Map();
+  for (const relative of DSH_ASSET_FILES) {
+    const remoteDir = path.win32.dirname(path.win32.join(stage, relative));
+    if (!groups.has(remoteDir)) groups.set(remoteDir, []);
+    groups.get(remoteDir).push(path.join(hooksDir, ...relative.split("/")));
+  }
+  for (const [remoteDir, localFiles] of groups) {
+    const upload = await spawnAndWait(spawn, "scp", buildScpArgs(profile).concat([
+      ...localFiles,
+      buildScpRemoteTarget(profile.host, toRemoteSftpPath(remoteDir)),
+    ]), { timeoutMs: 120000, runtime, role: "dsh-files-upload", mutation: true });
+    if (upload.code !== 0) return { ok: false, reason: "dsh_asset_upload_failed", message: upload.stderr || "DSH asset staging upload failed" };
+  }
+  const hashes = Object.fromEntries(DSH_ASSET_FILES.map((relative) => [
+    relative,
+    crypto.createHash("sha256").update(fs.readFileSync(path.join(hooksDir, ...relative.split("/")))).digest("hex"),
+  ]));
+  const promoted = await run("promoteMany", true, { hashes, staging: stage });
+  if (!promoted.ok) return { ok: false, reason: promoted.reason, message: promoted.message };
+  return { ok: true };
+}
+
+async function runDshInstaller({ run, layout, profile, installId, clawdVersion, mode, allowLocalMigration, dshHome }) {
+  const budgets = windowsUserInstallerBudgets(DSH_INSTALLER_TIMEOUT_MS);
+  const result = await run("runInstallerAsUser", true, {
+    script: "dsh-install.js",
+    argv: dshDeploymentArgs({ layout, profile, installId, clawdVersion, mode, allowLocalMigration }),
+    env: {},
+    dshHome: dshHome || dshDefaultHome(layout),
+    installerTimeoutMs: budgets.installerTimeoutMs,
+    transportTimeoutMs: budgets.transportTimeoutMs,
+  });
+  const envelope = result && result.detail && result.detail.installerResult;
+  if (!result.ok || !envelope || envelope.status !== "ok") {
+    const rawReason = (envelope && envelope.reason) || result.reason || "dsh_install_failed";
+    const reason = rawReason === "local-migration-required" ? "dsh_local_migration_required" : rawReason;
+    return {
+      ok: false,
+      reason,
+      message: (envelope && envelope.message) || result.message || "DeepSeek Harness remote installer failed",
+      envelope: envelope || null,
+    };
+  }
+  return { ok: true, envelope };
+}
+
+async function cleanupDshWindows({ runWindows, layout, installId }) {
+  const remoteRoot = dshRemoteRoot(layout);
+  const preflight = await runWindows("dshCleanupPreflight", false, {
+    remoteRoot,
+    installId,
+    assets: DSH_ASSET_FILES,
+  });
+  if (!preflight.ok) return { ok: false, reason: preflight.reason, message: preflight.message };
+  const state = preflight.detail;
+  const incomplete = (reason, message) => ({ ok: false, reason: "windows_dsh_cleanup_incomplete", message, dshReason: reason });
+  if (state.recordReadable === false || state.recordInvalid || state.assetUnreadable) {
+    return incomplete("dsh_state_unreadable", "DeepSeek Harness remote state could not be read safely");
+  }
+  if (state.desktop.unreadable || state.web.unreadable
+    || state.desktop.state === "unreadable" || state.web.state === "unreadable") {
+    return incomplete("dsh_reference_unreadable", "A DeepSeek Harness profile reference could not be read safely");
+  }
+  const anyState = state.recordExists || state.assetPresent
+    || state.desktop.referenced || state.web.referenced;
+  if (!anyState) return { ok: true, skipped: true };
+  if (state.installerLoadFailed) {
+    return incomplete("dsh_installer_unreadable", "The remote DeepSeek Harness installer could not be loaded");
+  }
+  if (state.recordExists && !state.installerCapable) {
+    return incomplete("dsh_installer_cannot_uninstall", "The remote DeepSeek Harness installer cannot remove an owned deployment");
+  }
+  if (state.recordExists) {
+    const budgets = windowsUserInstallerBudgets(DSH_INSTALLER_TIMEOUT_MS);
+    const result = await runWindows("runInstallerAsUser", true, {
+      script: "dsh-install.js",
+      argv: ["--remote-uninstall-owned", "--profile", "desktop", "--remote-root", remoteRoot, "--install-id", installId],
+      env: {},
+      dshHome: state.dshHome,
+      installerTimeoutMs: budgets.installerTimeoutMs,
+      transportTimeoutMs: budgets.transportTimeoutMs,
+    });
+    const envelope = result && result.detail && result.detail.installerResult;
+    if (!result.ok || !envelope || envelope.status !== "ok"
+      || envelope.registrationRemoved === false
+      || (Array.isArray(envelope.conflicts) && envelope.conflicts.length > 0)) {
+      return incomplete(
+        "dsh_uninstall_incomplete",
+        (envelope && (envelope.message || envelope.reason)) || result.message || "DeepSeek Harness cleanup was incomplete",
+      );
+    }
+  } else if (state.desktop.referenced || state.web.referenced) {
+    return incomplete(
+      "dsh_reference_unconfirmed",
+      "DeepSeek Harness profiles still reference this deployment but the installer cannot remove it",
+    );
+  }
+  const files = DSH_ASSET_FILES.map((relative) => path.win32.join(layout.claudeHooksDir, relative));
+  const removed = await runWindows("removeFiles", true, { files });
+  if (!removed.ok) return incomplete(removed.reason || "dsh_asset_cleanup_failed", removed.message);
+  await runWindows("rmdirEmpty", false, {
+    directories: [
+      path.win32.join(layout.claudeHooksDir, DSH_BRIDGE_DIR, "lib"),
+      path.win32.join(layout.claudeHooksDir, DSH_BRIDGE_DIR),
+    ],
+  });
+  return { ok: true, removed: true };
 }
 
 async function secureWindowsDeploy({ profile, installId, identityTxn, platformSnapshot, legacyMigrationConfirmed,
@@ -1464,11 +1642,32 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
     const preflight = await run("preflight", false);
     if (!preflight.ok) return fail("preflight", preflight.message, preflight.reason);
     const presence = preflight.detail;
-    if (presence.identity !== true && (presence.legacyTraces > 0 || presence.legacyConfigTraces > 0) && legacyMigrationConfirmed !== true) {
+    const dshState = presence.dsh || { status: "absent" };
+    if (dshState.status === "ambiguous") {
+      return fail("preflight", "More than one DeepSeek Harness desktop installation was found on the remote host.", "dsh_desktop_ambiguous");
+    }
+    if (dshState.status === "unknown") {
+      const reason = dshState.reason === "dsh-home-ambiguous" ? "dsh_home_ambiguous" : "dsh_desktop_unreadable";
+      return fail("preflight", "The DeepSeek Harness desktop installation could not be verified on the remote host.", reason);
+    }
+    if (dshState.status === "present" && dshState.profileReadable === false) {
+      return fail("preflight", "The DeepSeek Harness desktop profile manifest could not be read.", "dsh_profile_unreadable");
+    }
+    const dshApplicable = dshState.status === "present" && dshState.profileInitialized === true;
+    const dshDiscoveryIncomplete = dshState.status === "absent" && dshState.reason === "registry-unreadable";
+    const dshLocalLinked = dshState.localClawdLinked === true;
+    if (presence.identity !== true
+      && (presence.legacyTraces > 0 || presence.legacyConfigTraces > 0 || dshLocalLinked)
+      && legacyMigrationConfirmed !== true) {
       return fail("preflight", "This remote runtime contains a legacy Clawd deployment with no verifiable owner. Confirm migration before changing it.", "legacy_deployment_confirmation_required");
     }
+    if (dshApplicable && presence.identity === true && dshLocalLinked && legacyMigrationConfirmed !== true) {
+      return fail("preflight", "The DeepSeek Harness desktop profile is linked to the local Clawd generation. Confirm migration before replacing it.", "dsh_local_migration_required");
+    }
+    const dshAllowMigration = dshApplicable && dshLocalLinked && legacyMigrationConfirmed === true;
     progress("preflight", "ok");
-    // Windows has no legacy Codex monitor, isolated wrappers, or Hermes phase.
+    // Windows remote hosts do not support the Codex fallback monitor,
+    // isolated wrappers, or the Hermes phase.
     const stagingNative = path.win32.join(layout.deployStagingDir, leaseId);
     const mkdir = await run("mkdir", true, { directories: [...remoteLayoutDirectories(layout), stagingNative] });
     if (!mkdir.ok) return fail("mkdir", mkdir.message, mkdir.reason);
@@ -1495,28 +1694,35 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
     if (!promoted.ok) return fail("hook-files", promoted.message, promoted.reason, "hookFiles");
     await recordStep("hookFiles", "done", "uploaded hook hashes matched local files");
     progress("hook-files", "ok");
+    let dshAssetsReady = false;
+    if (dshApplicable) {
+      progress("dsh-files", "start");
+      const dshUpload = await uploadDshAssets({ run, spawn, runtime, profile, layout, hooksDir, leaseId });
+      if (!dshUpload.ok) return fail("dsh-files", dshUpload.message, dshUpload.reason);
+      dshAssetsReady = true;
+      progress("dsh-files", "ok");
+    }
     if (profile.hostPrefix) {
       const prefix = await run("writeHostPrefix", true, { text: profile.hostPrefix });
       if (!prefix.ok) return fail("host-prefix", prefix.message, prefix.reason);
     }
     const env = windowsInstallerEnv(layout, profile.remotePermissionTransport);
+    let codexHooksInstalled = false;
     for (const [txnStep, progressStep, script, present] of [
       ["installClaude", "install-claude", "install.js", presence.claudePresent],
-      // Keep the identity step, but never run a Codex installer on Windows.
-      ["installCodex", "install-codex", "codex-install.js", false],
+      ["installCodex", "install-codex", "codex-install.js", presence.codexPresent],
       ["installCopilot", "install-copilot", "copilot-install.js", presence.copilotPresent],
     ]) {
       progress(progressStep, "start");
       if (!present) {
-        await recordStep(txnStep, "not-applicable", txnStep === "installCodex"
-          ? "Codex is not supported on Windows remote hosts in phase 1" : `${script} target root absent before deploy`);
+        await recordStep(txnStep, "not-applicable", `${script} target root absent before deploy`);
       } else {
         const installed = await run("runInstaller", true, { script, argv: ["--remote"], env, verify: txnStep, timeoutMs: 60000 });
         if (!installed.ok || installed.detail.verified !== true) return fail(progressStep, installed.message, installed.reason === "windows_operation_failed" ? "installer_verification_failed" : installed.reason, txnStep);
         await recordStep(txnStep, "done", `${script} settings readback verified secure managed command shape`);
+        if (txnStep === "installCodex") codexHooksInstalled = true;
       }
-      progress(progressStep, "ok", present ? null : "not applicable", txnStep === "installCodex" ? "remoteSshWindowsCodexSkipped"
-        : txnStep === "installClaude" ? "remoteSshWindowsQuotaUnsupported" : null);
+      progress(progressStep, "ok", present ? null : "not applicable", txnStep === "installClaude" ? "remoteSshWindowsQuotaUnsupported" : null);
     }
     if (!presence.claudePresent) {
       await recordStep("claudePermission", "not-applicable", "Claude config root absent before deploy; native approval remains");
@@ -1527,9 +1733,51 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
       await recordStep("claudePermission", native ? "not-applicable" : "done", native
         ? "no managed PermissionRequest; Claude native approval retained" : "managed PermissionRequest URL contains transaction nonce");
     }
-    await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts in phase 1");
+    await recordStep("codexMonitor", "not-applicable", "Codex monitor is not supported on Windows remote hosts");
+    let dshBridgeInstalled = false;
+    let dshRestartRequired = false;
+    if (dshAssetsReady) {
+      progress("install-dsh", "start");
+      const install = await runDshInstaller({
+        run, layout, profile, installId, clawdVersion: localClawdVersion(deps),
+        mode: "install", allowLocalMigration: dshAllowMigration,
+        dshHome: dshState.dshHome || dshDefaultHome(layout),
+      });
+      if (!install.ok) return fail("install-dsh", install.message, install.reason);
+      const readback = await runDshInstaller({
+        run, layout, profile, installId, clawdVersion: localClawdVersion(deps),
+        mode: "inspect", allowLocalMigration: false,
+        dshHome: dshState.dshHome || dshDefaultHome(layout),
+      });
+      const desktop = readback.ok ? readback.envelope.desktop : null;
+      if (!readback.ok
+        || !desktop
+        || desktop.kind !== "ours"
+        || desktop.withinDeployment !== true
+        || desktop.hashMatches !== true
+        || desktop.manifestDeploymentMatches !== true
+        || readback.envelope.phase !== "installed"
+        || desktop.incomplete === true
+        || desktop.residuePresent === true) {
+        return fail("install-dsh", "The DeepSeek Harness desktop bridge did not verify as this deployment.", "dsh_readback_failed");
+      }
+      dshBridgeInstalled = true;
+      dshRestartRequired = install.envelope.restartRequired === true;
+      progress("install-dsh", "ok");
+    }
     progress("install-hermes", "ok", "not applicable", "remoteSshWindowsHermesSkipped");
-    return { ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true, codexHooksInstalled: false, isolation: null, hermes: null };
+    return {
+      ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true,
+      codexHooksInstalled, isolation: null, hermes: null,
+      dshBridgeInstalled, dshRestartRequired,
+      ...(dshDiscoveryIncomplete ? {
+        dshDiscoveryWarning: {
+          reason: "dsh_discovery_incomplete",
+          hint: "remoteSshWarnDshDiscoveryIncomplete",
+          message: "DeepSeek Harness discovery was incomplete because the Windows registry could not be read; deployment continued without DSH integration.",
+        },
+      } : {}),
+    };
   }, progress);
 }
 
@@ -2770,10 +3018,31 @@ async function secureUninstallRemoteIntegrations({
           const result = await runWindows("runInstaller", true, { script, argv, env });
           if (!result.ok) return { ok: false, reason: result.reason, stderr: result.message, layout };
         }
+        const codex = await runWindows("uninstallCodexOwned", true);
+        if (!codex.ok) {
+          const reason = codex.reason || "windows_codex_cleanup_incomplete";
+          return {
+            ok: false, reason, stderr: codex.message, message: codex.message,
+            hint: windowsFailureHint(reason), layout,
+          };
+        }
+        const dshCleanup = await cleanupDshWindows({ runWindows, layout, installId: profile.installId });
+        if (!dshCleanup.ok) {
+          const reason = dshCleanup.reason || "windows_dsh_cleanup_incomplete";
+          return {
+            ok: false, reason, stderr: dshCleanup.message, message: dshCleanup.message,
+            hint: windowsFailureHint(reason), layout,
+          };
+        }
         const files = [...HOOK_FILES.map((name) => path.win32.join(layout.claudeHooksDir, name)), layout.hostPrefixFile, layout.lastLogFile,
           ...(preserveIdentity ? [] : [layout.identityFile, layout.secureMarkerFile])];
         const removed = await runWindows("removeFiles", true, { files });
-        return { ok: !!removed.ok, ...(removed.ok ? {} : { reason: removed.reason, stderr: removed.message }), layout };
+        return {
+          ok: !!removed.ok,
+          ...(removed.ok ? {} : { reason: removed.reason, stderr: removed.message }),
+          ...(dshCleanup && dshCleanup.removed ? { dshBridgeRemoved: true } : {}),
+          layout,
+        };
       }
       const envPrefix = buildRemoteInstallerEnv(layout, profile.remotePermissionTransport);
       const optionalInstaller = (script, argv, whenAbsent = "") => {

@@ -1,4 +1,5 @@
 "use strict";
+const { isLocalApprovalReminderSession, isTerminalWaitSession } = require("./approval-reminder-session");
 const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
@@ -426,20 +427,26 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const agentId = (session && session.agentId) || null;
   const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
-  const canPresent = !session.headless && !session.host && !session.wslDistro
+  const isLocalSession = !session.headless && !session.host && !session.wslDistro
     && session.platform !== "wsl"
-    && (session.profileId || "local") === "local" && typeof options.getSessionPresentation === "function";
-  let presentation = null;
-  if (canPresent && agentId === "codex") {
-    presentation = options.getSessionPresentation(id);
-  } else if (canPresent && agentId === "claude-code") {
+    && (session.profileId || "local") === "local";
+  const localPresentation = isLocalSession
+    && (agentId === "codex" || isLocalApprovalReminderSession(session));
+  const canPresent = isLocalSession && typeof options.getSessionPresentation === "function";
+  let presentation = (localPresentation || isTerminalWaitSession(session))
+    && typeof options.getSessionPresentation === "function"
+    ? options.getSessionPresentation(id) : null;
+  if (agentId === "claude-code" && canPresent) {
     // #1326: a Claude session only takes the pending-attention part (Claude
     // Desktop's wrap_up question card), so its row shows the same "needs input"
     // state as a Codex question. Without a card the snapshot shape is unchanged.
+    // Note that pendingAttention overrides hiddenByExistingReason below, so a
+    // detached Claude row with a card becomes visible again while the
+    // "clean up detached sessions" option is on (same as a Codex question card).
     const candidate = options.getSessionPresentation(id);
     if (candidate && candidate.pendingAttention === true) presentation = { pendingAttention: true };
   }
-  const activeSubagentCount = Number.isSafeInteger(presentation?.activeSubagentCount)
+  const activeSubagentCount = agentId === "codex" && Number.isSafeInteger(presentation?.activeSubagentCount)
     && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
     ? presentation.activeSubagentCount : 0;
   const pendingAttention = presentation?.pendingAttention === true;

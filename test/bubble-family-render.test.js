@@ -257,3 +257,43 @@ describe("bubble-renderer family branch (executed)", () => {
     assert.ok(r.el("suggestions").children[0].title.includes("opencode"));
   });
 });
+
+describe("bubble-renderer Claude wrap_up options (executed)", () => {
+  function claudePayload(overrides = {}) {
+    return {
+      lang: "en",
+      toolName: "ClaudeTurnAsk",
+      isClaudeTurnAskNotify: true,
+      toolInput: {
+        questions: [{
+          question: "Pick one",
+          options: [{ label: "A" }, { label: "B" }],
+        }],
+      },
+      suggestions: [],
+      ...overrides,
+    };
+  }
+
+  it("issue #1326: shows the button labels and clears the line for a Codex question", () => {
+    const r = makeRenderer();
+    r.show(claudePayload());
+    assert.strictEqual(r.el("nativeQuestionOptions").textContent, "Options in Claude: A · B");
+    assert.strictEqual(r.el("nativeQuestionOptions").classList.contains("visible"), true);
+
+    r.show({
+      lang: "en",
+      toolName: "CodexUserInput",
+      isCodexUserInputNotify: true,
+      toolInput: {
+        questions: [{
+          question: "Pick one",
+          options: [{ label: "C" }, { label: "D" }],
+        }],
+      },
+      suggestions: [],
+    });
+    assert.strictEqual(r.el("nativeQuestionOptions").textContent, "");
+    assert.strictEqual(r.el("nativeQuestionOptions").classList.contains("visible"), false);
+  });
+});

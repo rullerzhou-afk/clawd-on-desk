@@ -442,7 +442,8 @@ function getMiniEnterDurationMs(state) {
 }
 
 function getMiniRestState() {
-  return ctx.doNotDisturb ? "mini-sleep" : "mini-idle";
+  if (ctx.doNotDisturb) return "mini-sleep";
+  return ctx.hasPendingReminderAttention?.() ? "mini-alert" : "mini-idle";
 }
 
 // §4.5 point 4.5-4 default topology consumption: mini mode is still active,
@@ -521,7 +522,8 @@ function finishMiniEntry(delayMs) {
   miniTransitionTimer = setTimeout(() => {
     miniTransitionTimer = null;
     finalizeMiniProtectionExit(consumeTopologyForMiniRest);
-    ctx.applyState(getMiniRestState());
+    const rest = getMiniRestState();
+    ctx.applyState(rest, undefined, ctx.getReminderReselectionOptions?.(rest));
   }, settleMs);
 }
 
@@ -761,7 +763,7 @@ function exitMiniMode() {
       ctx.applyState("waking");
     } else {
       const resolved = ctx.resolveDisplayState();
-      ctx.applyState(resolved, ctx.getSvgOverride(resolved));
+      ctx.applyState(resolved, ctx.getSvgOverride(resolved), ctx.getReminderReselectionOptions?.(resolved));
     }
     // #329: a deferred update bubble may be waiting on mini exit.
     if (typeof ctx.notifyUpdaterSilentExit === "function") {

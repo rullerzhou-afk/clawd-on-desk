@@ -1,0 +1,67 @@
+# Warm the apt package cache used by .github/workflows/wayland-smoke.yml.
+#
+# Only main writes the cache: pull requests restore it read-only, so a slow or
+# broken install can never publish a bad entry. The job also refuses to run when
+# a manual dispatch selects another branch. The cache key includes the runner
+# image and the two files that define the package set, and the manual `v1`
+# prefix is the escape hatch when an entry has to be invalidated.
+name: Warm Wayland apt cache
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ci/wayland-apt-packages.txt
+      - ci/install-wayland-deps.sh
+      - .github/workflows/wayland-apt-cache.yml
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wayland-apt-cache
+  cancel-in-progress: false
+
+jobs:
+  warm-cache:
+    name: Warm apt package cache
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve apt cache key
+        id: apt-key
+        shell: bash
+        run: |
+          if [[ -n "${ImageOS:-}" && -n "${ImageVersion:-}" ]]; then
+            echo "image=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::ImageOS/ImageVersion is missing; skipping the apt package cache"
+          fi
+
+      - name: Look up cached apt packages
+        id: cache
+        if: steps.apt-key.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/wayland-apt-debs
+          key: wayland-apt-v1-${{ steps.apt-key.outputs.image }}-${{ runner.arch }}-${{ hashFiles('ci/wayland-apt-packages.txt', 'ci/install-wayland-deps.sh') }}
+          lookup-only: true
+
+      - name: Publish apt packages into the cache
+        if: steps.apt-key.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true'
+        run: bash ci/install-wayland-deps.sh publish "$HOME/.cache/wayland-apt-debs"
+
+      - name: Save the apt package cache
+        if: steps.apt-key.outputs.skip != 'true' && steps.cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/wayland-apt-debs
+          key: wayland-apt-v1-${{ steps.apt-key.outputs.image }}-${{ runner.arch }}-${{ hashFiles('ci/wayland-apt-packages.txt', 'ci/install-wayland-deps.sh') }}

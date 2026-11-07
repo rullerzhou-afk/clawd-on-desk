@@ -20,6 +20,8 @@ on:
     paths:
       - src/linux-ozone.js
       - ci/wayland-smoke.sh
+      - ci/install-wayland-deps.sh
+      - ci/wayland-apt-packages.txt
       - ci/appimage-wrapper-shutdown.py
       - .github/workflows/wayland-smoke.yml
       - package.json
@@ -112,11 +114,27 @@ jobs:
           name: linux-installer
           path: dist
 
-      - name: Install isolated headless Wayland stack
+      - name: Resolve apt cache key
+        id: apt-key
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            dbus-x11 weston xwayland libfuse2t64 x11-utils xdotool
+          if [[ -n "${ImageOS:-}" && -n "${ImageVersion:-}" ]]; then
+            echo "image=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::ImageOS/ImageVersion is missing; skipping the apt package cache"
+          fi
+
+      - name: Restore cached apt packages
+        if: steps.apt-key.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/wayland-apt-debs
+          key: wayland-apt-v1-${{ steps.apt-key.outputs.image }}-${{ runner.arch }}-${{ hashFiles('ci/wayland-apt-packages.txt', 'ci/install-wayland-deps.sh') }}
+
+      - name: Install isolated headless Wayland stack
+        timeout-minutes: 10
+        run: bash ci/install-wayland-deps.sh install "$HOME/.cache/wayland-apt-debs"
 
       # Ubuntu 24.04 restricts unprivileged user namespaces (AppArmor), which
       # breaks Chromium's sandbox. Keep the real sandboxed AppImage invocation
@@ -153,11 +171,27 @@ jobs:
           name: linux-installer
           path: dist
 
-      - name: Install isolated headless Wayland stack
+      - name: Resolve apt cache key
+        id: apt-key
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            dbus-x11 weston xwayland libfuse2t64 x11-utils
+          if [[ -n "${ImageOS:-}" && -n "${ImageVersion:-}" ]]; then
+            echo "image=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::ImageOS/ImageVersion is missing; skipping the apt package cache"
+          fi
+
+      - name: Restore cached apt packages
+        if: steps.apt-key.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/wayland-apt-debs
+          key: wayland-apt-v1-${{ steps.apt-key.outputs.image }}-${{ runner.arch }}-${{ hashFiles('ci/wayland-apt-packages.txt', 'ci/install-wayland-deps.sh') }}
+
+      - name: Install isolated headless Wayland stack
+        timeout-minutes: 10
+        run: bash ci/install-wayland-deps.sh install "$HOME/.cache/wayland-apt-debs"
 
       - name: Allow Chromium userns sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
@@ -191,11 +225,27 @@ jobs:
           name: linux-installer
           path: dist
 
-      - name: Install isolated headless Wayland stack
+      - name: Resolve apt cache key
+        id: apt-key
+        shell: bash
         run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            dbus-x11 weston xwayland libfuse2t64 x11-utils
+          if [[ -n "${ImageOS:-}" && -n "${ImageVersion:-}" ]]; then
+            echo "image=${ImageOS}-${ImageVersion}" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::warning::ImageOS/ImageVersion is missing; skipping the apt package cache"
+          fi
+
+      - name: Restore cached apt packages
+        if: steps.apt-key.outputs.skip != 'true'
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/wayland-apt-debs
+          key: wayland-apt-v1-${{ steps.apt-key.outputs.image }}-${{ runner.arch }}-${{ hashFiles('ci/wayland-apt-packages.txt', 'ci/install-wayland-deps.sh') }}
+
+      - name: Install isolated headless Wayland stack
+        timeout-minutes: 10
+        run: bash ci/install-wayland-deps.sh install "$HOME/.cache/wayland-apt-debs"
 
       - name: Allow Chromium userns sandbox
         run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0

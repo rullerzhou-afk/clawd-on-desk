@@ -74,12 +74,14 @@ const COPILOT_STATE_HOOK_EVENTS = [
   "userPromptSubmitted",
   "preToolUse",
   "postToolUse",
+  "postToolUseFailure",
   "sessionEnd",
   "errorOccurred",
   "agentStop",
   "subagentStart",
   "subagentStop",
   "preCompact",
+  "notification",
 ];
 
 const COPILOT_PERMISSION_HOOK_EVENTS = [

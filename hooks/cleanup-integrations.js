@@ -11,6 +11,7 @@ const { unregisterCursorHooks } = require("./cursor-install");
 const { unregisterCopilotHooks } = require("./copilot-install");
 const { unregisterCodeBuddyHooks } = require("./codebuddy-install");
 const { unregisterKiroHooks } = require("./kiro-install");
+const { unregisterKiroDesktopHooks } = require("./kiro-desktop-install");
 const { unregisterKiroCrewHooks } = require("./kirocrew-install");
 const { unregisterKimiHooks } = require("./kimi-install");
 const { unregisterQwenCodeHooks } = require("./qwen-code-install");
@@ -52,6 +53,7 @@ const MANAGED_AGENT_IDS = Object.freeze([
   "codebuddy",
   "kiro-cli",
   "kirocrew",
+  "kiro-desktop",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -85,6 +87,7 @@ const AGENT_DISPLAY_NAMES = Object.freeze({
   "grok-build": "Grok Build",
   "kiro-cli": "Kiro CLI",
   kirocrew: "KiroCrew",
+  "kiro-desktop": "Kiro IDE",
   "kimi-cli": "Kimi Code",
   "qwen-code": "Qwen Code",
   zcode: "ZCode",
@@ -247,6 +250,7 @@ function buildCleanupOptionsForHome(homeDirInput, options = {}) {
         ...common,
         agentsDir: path.join(homeDir, ".kiro", "agents"),
       },
+      "kiro-desktop": { ...common, homeDir },
       kirocrew: {
         ...common,
         hooksPath: path.join(kirocrewHome, "hooks.json"),
@@ -418,6 +422,7 @@ const AGENT_CLEANERS = Object.freeze({
   codebuddy: unregisterCodeBuddyHooks,
   "kiro-cli": unregisterKiroHooks,
   kirocrew: unregisterKiroCrewHooks,
+  "kiro-desktop": unregisterKiroDesktopHooks,
   "kimi-cli": unregisterKimiHooks,
   "qwen-code": unregisterQwenCodeHooks,
   zcode: unregisterZcodeHooks,

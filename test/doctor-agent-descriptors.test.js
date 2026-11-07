@@ -24,6 +24,7 @@ describe("doctor agent descriptors", () => {
         "grok-build",
         "kiro-cli",
         "kirocrew",
+      "kiro-desktop",
         "kimi-cli",
         "qwen-code",
         "zcode",

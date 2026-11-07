@@ -39,6 +39,7 @@ const AUTO_REPAIRABLE_AGENT_IDS = new Set([
   "grok-build",
   "kiro-cli",
   "kirocrew",
+  "kiro-desktop",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -69,6 +70,7 @@ const INSTALLABLE_AGENT_IDS = new Set([
   "grok-build",
   "kiro-cli",
   "kirocrew",
+  "kiro-desktop",
   "kimi-cli",
   "qwen-code",
   "zcode",
@@ -184,7 +186,9 @@ function setAgentFlag(payload, deps) {
         if (result && typeof result === "object" && result.status === "error") {
           return { status: "error", message: result.message || `Failed to enable ${agentId}` };
         }
-        if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+        if (typeof deps.startMonitorForAgent === "function") {
+          deps.startMonitorForAgent(agentId, { integrationInstalled: isAgentIntegrationInstalled(snapshot, agentId) });
+        }
         return commitResult;
       })
       .catch((err) => ({ status: "error", message: `setAgentFlag: ${err && err.message}` }));
@@ -209,9 +213,13 @@ function setAgentFlag(payload, deps) {
         ) {
           deps.syncIntegrationForAgent(agentId, buildAgentIntegrationOptions(snapshot, agentId));
         }
-        if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+        if (typeof deps.startMonitorForAgent === "function") {
+          deps.startMonitorForAgent(agentId, { integrationInstalled: isAgentIntegrationInstalled(snapshot, agentId) });
+        }
       }
     } else if (flag === "permissionsEnabled") {
+      // Reminder reopening follows committed agents changes in the effect
+      // router, where gate readers can observe the newly enabled flag.
       if (!value && typeof deps.dismissPermissionsByAgent === "function") {
         deps.dismissPermissionsByAgent(agentId);
       }
@@ -619,7 +627,9 @@ async function installAgentIntegration(payload, deps = {}) {
         message: resultMessage(result, `Failed to install ${agentId}`),
       };
     }
-    if (typeof deps.startMonitorForAgent === "function") deps.startMonitorForAgent(agentId);
+    if (typeof deps.startMonitorForAgent === "function") {
+      deps.startMonitorForAgent(agentId, { integrationInstalled: true });
+    }
     return {
       status: "ok",
       message: resultMessage(result, `Installed ${agentId}`),

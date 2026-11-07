@@ -2503,15 +2503,6 @@ html, body {
     margin-left: 0;
   }
 }
-.codex-permission-mode-segmented {
-  --codex-permission-mode-active-index: 0;
-  position: relative;
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0;
-  overflow: hidden;
-}
-
 .permission-automation-row {
   flex-direction: column;
   align-items: stretch;
@@ -2547,44 +2538,6 @@ html, body {
 .permission-automation-segmented button:focus-visible {
   outline-offset: 1px;
 }
-.codex-permission-mode-segmented::before {
-  content: "";
-  position: absolute;
-  z-index: 0;
-  top: 2px;
-  bottom: 2px;
-  left: 2px;
-  width: calc((100% - 4px) / 2);
-  border-radius: 5px;
-  background: var(--panel-bg);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08);
-  transform: translateX(calc(var(--codex-permission-mode-active-index) * 100%));
-  transition: transform 0.24s cubic-bezier(0.22, 1, 0.36, 1);
-}
-.codex-permission-mode-segmented button {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  text-align: center;
-  background: transparent;
-  white-space: nowrap;
-}
-.codex-permission-mode-segmented .settings-segmented-radio-label {
-  text-align: center;
-}
-.codex-permission-mode-segmented button.active {
-  background: transparent;
-  box-shadow: none;
-}
-.codex-permission-mode-segmented button:focus-visible {
-  outline-offset: -2px;
-}
-@media (prefers-reduced-motion: reduce) {
-  .codex-permission-mode-segmented::before {
-    transition: none;
-  }
-}
-
 /* ── Coming soon placeholder ── */
 .placeholder {
   display: flex;
