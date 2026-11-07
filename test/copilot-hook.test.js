@@ -10,6 +10,7 @@ const assert = require("node:assert");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const crypto = require("crypto");
 
 const {
   buildStateBody,
@@ -276,6 +277,130 @@ describe("buildStateBody (Copilot)", () => {
     } finally {
       if (oldRemote === undefined) delete process.env.CLAWD_REMOTE;
       else process.env.CLAWD_REMOTE = oldRemote;
+    }
+  });
+});
+
+describe("buildStateBody notification (Copilot)", () => {
+  for (const notificationType of ["permission_prompt", "elicitation_dialog"]) {
+    it(`maps ${notificationType} to Notification with session and local PID fields`, () => {
+      const body = buildStateBody("notification", {
+        notificationType,
+        sessionId: "copilot-notification-1",
+        cwd: "/repo",
+        sessionTitle: "Waiting Copilot",
+        message: "Fetch URL: https://example.invalid/private",
+        title: "Permission needed",
+      }, mockResolve);
+
+      assert.deepStrictEqual(body, {
+        state: "notification",
+        event: "Notification",
+        agent_id: "copilot-cli",
+        session_id: "copilot-notification-1",
+        cwd: "/repo",
+        session_title: "Waiting Copilot",
+        source_pid: 1234,
+        agent_pid: 5678,
+        pid_chain: [1234, 5678],
+        copilot_wait_key: crypto.createHash("sha256").update("url\0https://example.invalid/private").digest("hex").slice(0, 32),
+      });
+      assert.strictEqual("message" in body, false);
+      assert.strictEqual("title" in body, false);
+    });
+  }
+
+  it("accepts snake_case notification_type when notificationType is not a string", () => {
+    for (const notificationType of [undefined, null, false, 42, [], {}]) {
+      const body = buildStateBody("notification", {
+        notificationType,
+        notification_type: "elicitation_dialog",
+        session_id: "copilot-snake-1",
+        session_title: "Snake Case Copilot",
+      }, mockResolve);
+
+      assert.strictEqual(body.state, "notification");
+      assert.strictEqual(body.event, "Notification");
+      assert.strictEqual(body.session_id, "copilot-snake-1");
+    }
+  });
+
+  it("prefers a string notificationType over notification_type even when it is not allowed", () => {
+    const body = buildStateBody("notification", {
+      notificationType: "permission_prompt",
+      notification_type: "agent_idle",
+      sessionTitle: "Camel Case Copilot",
+    }, mockResolve);
+    assert.strictEqual(body.event, "Notification");
+
+    for (const notificationType of ["agent_idle", "", "unknown"]) {
+      assert.strictEqual(buildStateBody("notification", {
+        notificationType,
+        notification_type: "permission_prompt",
+      }, mockResolve), null);
+    }
+  });
+
+  it("returns null for missing or non-string notification types", () => {
+    assert.strictEqual(buildStateBody("notification", {}, mockResolve), null);
+    for (const value of [undefined, null, false, 42, [], {}]) {
+      assert.strictEqual(buildStateBody("notification", { notificationType: value }, mockResolve), null);
+      assert.strictEqual(buildStateBody("notification", { notification_type: value }, mockResolve), null);
+      assert.strictEqual(buildStateBody("notification", {
+        notificationType: value,
+        notification_type: value,
+      }, mockResolve), null);
+    }
+  });
+
+  for (const notificationType of [
+    "shell_completed", "shell_detached_completed", "agent_completed", "agent_idle",
+    "unknown", "", " permission_prompt", "permission_prompt ", "PERMISSION_PROMPT",
+  ]) {
+    it(`returns null for notification type ${JSON.stringify(notificationType)}`, () => {
+      const resolve = () => assert.fail("discarded notifications must not resolve PIDs");
+      assert.strictEqual(buildStateBody("notification", { notificationType }, resolve), null);
+      assert.strictEqual(buildStateBody("notification", { notification_type: notificationType }, resolve), null);
+    });
+  }
+
+  it("remote notification includes host and session fields without local PID fields or notification text", () => {
+    const oldRemote = process.env.CLAWD_REMOTE;
+    process.env.CLAWD_REMOTE = "1";
+    try {
+      const body = buildStateBody("notification", {
+        notificationType: "permission_prompt",
+        sessionId: "copilot-remote-1",
+        cwd: "/remote/repo",
+        session_title: "Remote Copilot",
+        message: "Read /private/file",
+        title: "Permission needed",
+      }, () => assert.fail("remote notifications must not resolve local PIDs"), {
+        readHostPrefix: () => "remote-box",
+      });
+
+      assert.deepStrictEqual(body, {
+        state: "notification",
+        event: "Notification",
+        agent_id: "copilot-cli",
+        session_id: "copilot-remote-1",
+        cwd: "/remote/repo",
+        session_title: "Remote Copilot",
+        host: "remote-box",
+      });
+    } finally {
+      if (oldRemote === undefined) delete process.env.CLAWD_REMOTE;
+      else process.env.CLAWD_REMOTE = oldRemote;
+    }
+  });
+
+  it("keeps every other state event in its original camelCase form", () => {
+    for (const event of [
+      "sessionStart", "sessionEnd", "userPromptSubmitted", "preToolUse", "postToolUse", "postToolUseFailure",
+      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact",
+    ]) {
+      const body = buildStateBody(event, { sessionTitle: "Copilot" }, mockResolve);
+      assert.strictEqual(body.event, event);
     }
   });
 });
@@ -881,5 +1006,65 @@ describe("hasUserPermissionHookInRepoHooks — repo-level safe-v1 (codex review 
         JSON.stringify({ hooks: { permissionRequest: [{ type: "command", bash: "/usr/bin/audit" }] } }));
       assert.strictEqual(hasUserPermissionHookInRepoHooks(root), true);
     } finally { fsTest.rmSync(root, { recursive: true, force: true }); }
+  });
+});
+
+
+describe("buildStateBody terminal wait correlation", () => {
+  const fingerprint = (kind, value) => crypto.createHash("sha256").update(`${kind}\0${value}`).digest("hex").slice(0, 32);
+  for (const [kind, value, message, toolName, toolArgs] of [
+    ["path", "D:\\Images\\a.png", "Path permission needed: D:\\Images\\a.png", "view", { path: "D:\\Images\\a.png" }],
+    ["url", "https://example.invalid/Private?q=X", "Fetch URL: https://example.invalid/Private?q=X", "web_fetch", { url: "https://example.invalid/Private?q=X" }],
+    ["ask_user", "", "Information requested", "ask_user", { question: "private question" }],
+  ]) {
+    it(`matches ${kind} notification with successful and failed tool completion without forwarding content`, () => {
+      const key = fingerprint(kind, value);
+      const notice = buildStateBody("notification", {
+        sessionId: "correlation", sessionTitle: "Copilot", notificationType: "permission_prompt", message, timestamp: 100,
+      }, mockResolve);
+      assert.strictEqual(notice.copilot_wait_key, key);
+      assert.strictEqual(notice.copilot_event_ts, 100);
+      for (const event of ["postToolUse", "postToolUseFailure"]) {
+        const body = buildStateBody(event, {
+          sessionId: "correlation", sessionTitle: "Copilot", toolName, toolArgs, timestamp: 200,
+          toolResult: "private result", error: "private error",
+        }, mockResolve);
+        assert.strictEqual(body.state, "working");
+        assert.deepStrictEqual(body.copilot_tool_keys, [key]);
+        assert.strictEqual(body.copilot_event_ts, 200);
+        for (const field of ["toolArgs", "toolResult", "error", "message", "title"]) assert.strictEqual(field in body, false);
+        assert.strictEqual(JSON.stringify(body).includes("private"), false);
+      }
+      assert.strictEqual(JSON.stringify(notice).includes(message), false);
+    });
+  }
+
+  it("keeps command and unknown notifications as one-shot alerts", () => {
+    for (const message of ["Run command: sleep 3600", "New prompt format", "Path permission needed: ", "Fetch URL: ", undefined, 42]) {
+      const body = buildStateBody("notification", { sessionTitle: "Copilot", notificationType: "permission_prompt", message }, mockResolve);
+      assert.strictEqual(body.event, "Notification");
+      assert.strictEqual("copilot_wait_key" in body, false);
+    }
+  });
+
+  it("hashes values exactly and only forwards path, url and ask_user keys", () => {
+    const toolArgs = { path: " D:\\Images\\A.png ", url: "https://EXAMPLE.invalid/", command: "private command" };
+    const body = buildStateBody("postToolUse", { sessionTitle: "Copilot", toolName: "ask_user", toolArgs }, mockResolve);
+    assert.deepStrictEqual(body.copilot_tool_keys, [fingerprint("path", toolArgs.path), fingerprint("url", toolArgs.url), fingerprint("ask_user", "")]);
+    const empty = buildStateBody("postToolUse", { sessionTitle: "Copilot", toolArgs: { path: 42, url: null, command: "sleep 3600" } }, mockResolve);
+    assert.strictEqual("copilot_tool_keys" in empty, false);
+  });
+
+  it("only sends finite numeric timestamps on the six correlation events", () => {
+    for (const event of ["notification", "postToolUse", "postToolUseFailure", "userPromptSubmitted", "agentStop", "sessionEnd", "sessionStart", "preToolUse", "errorOccurred", "preCompact", "subagentStart", "subagentStop"]) {
+      const payload = { sessionTitle: "Copilot", notificationType: "elicitation_dialog", timestamp: 123 };
+      const body = buildStateBody(event, payload, mockResolve);
+      assert.strictEqual(body.copilot_event_ts, ["sessionStart", "preToolUse", "errorOccurred", "preCompact", "subagentStart", "subagentStop"].includes(event) ? undefined : 123);
+      assert.strictEqual("copilot_wait_key" in body, false);
+      assert.strictEqual("copilot_tool_keys" in body, false);
+      for (const timestamp of [undefined, null, "123", NaN, Infinity, -Infinity]) {
+        assert.strictEqual("copilot_event_ts" in buildStateBody(event, { ...payload, timestamp }, mockResolve), false);
+      }
+    }
   });
 });

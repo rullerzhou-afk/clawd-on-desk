@@ -275,6 +275,21 @@ function createIntegrationSyncRuntime(options = {}) {
     }
   }
 
+  function syncKiroDesktopHooks() {
+    try {
+      if (typeof ctx.syncKiroDesktopHooksImpl === "function") return ctx.syncKiroDesktopHooksImpl();
+      const { registerKiroDesktopHooks } = require("../hooks/kiro-desktop-install.js");
+      const result = registerKiroDesktopHooks({ silent: true });
+      if (hasPositiveCount(result.added) || hasPositiveCount(result.updated)) {
+        console.log(`Clawd: synced Kiro IDE hooks (added ${result.added}, updated ${result.updated})`);
+      }
+      return normalizeCountSyncResult(result, "Kiro IDE", "kiro-desktop-not-installed");
+    } catch (err) {
+      console.warn("Clawd: failed to sync Kiro IDE hooks:", err.message);
+      return { status: "error", message: err && err.message ? err.message : "Failed to sync Kiro IDE hooks" };
+    }
+  }
+
   function syncMinimaxHooks() {
     try {
       if (typeof ctx.syncMinimaxHooksImpl === "function") return ctx.syncMinimaxHooksImpl();
@@ -712,6 +727,7 @@ function createIntegrationSyncRuntime(options = {}) {
     "grok-build": syncGrokBuildHooks,
     "kiro-cli": syncKiroHooks,
     kirocrew: syncKiroCrewHooks,
+    "kiro-desktop": syncKiroDesktopHooks,
     "kimi-cli": syncKimiHooks,
     "qwen-code": syncQwenHooks,
     zcode: syncZcodeHooks,
@@ -876,6 +892,7 @@ function createIntegrationSyncRuntime(options = {}) {
     syncCodeBuddyHooks,
     syncWorkBuddyHooks,
     syncKiroHooks,
+    syncKiroDesktopHooks,
     syncKimiHooks,
     syncQwenHooks,
     syncZcodeHooks,

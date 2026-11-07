@@ -494,6 +494,47 @@ describe("Mobile Preview Server", () => {
     assert.strictEqual(res.status, 404);
   });
 
+  it("serves the PWA fully localized with no leftover placeholders (#1299 D)", async () => {
+    const res = await httpGet(port, "/mobile/");
+    assert.strictEqual(res.status, 200);
+    for (const token of ["__CLAWD_LANG__", "__CLAWD_STRINGS_JSON__", "__CLAWD_APP_VERSION__", "__CLAWD_T_"]) {
+      assert.ok(!res.body.includes(token), `${token} must be replaced before serving`);
+    }
+    assert.ok(res.body.includes('<html lang="en">')); // main describe has no getLang → en
+    assert.ok(res.body.includes("window.__CLAWD_I18N__ = {"));
+    assert.ok(res.body.includes('"pairSubmit":"Pair"'));
+    assert.ok(res.body.includes(">Sessions<"));
+  });
+
+  it("serves the PWA in the injected desktop language", async () => {
+    const tmpTokenDir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-i18n-"));
+    fs.writeFileSync(path.join(tmpTokenDir, "mobile-token.json"), JSON.stringify({ token: "a".repeat(32) }), { mode: 0o600 });
+    const localized = initMobilePreviewServer({
+      sessions: new Map(),
+      getPendingPermissions: () => [],
+      tokenPath: path.join(tmpTokenDir, "mobile-token.json"),
+      getLang: () => "ko",
+    });
+    try {
+      const localizedPort = await localized.start();
+      const res = await httpGet(localizedPort, "/mobile/");
+      assert.strictEqual(res.status, 200);
+      assert.ok(res.body.includes('<html lang="ko">'));
+      assert.ok(res.body.includes('"pairSubmit":"페어링"'));
+      assert.ok(res.body.includes(">세션<"));
+    } finally {
+      localized.cleanup();
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      try { fs.rmSync(tmpTokenDir, { recursive: true }); } catch {}
+    }
+  });
+
+  it("redirects the bare root to the PWA instead of a blank 404 (#1299)", async () => {
+    const res = await httpGet(port, "/");
+    assert.strictEqual(res.status, 302);
+    assert.strictEqual(res.headers.location, "/mobile/");
+  });
+
   it("rejects path traversal attempts instead of serving files outside the PWA directory", async () => {
     const dotDot = await httpGet(port, "/mobile/%2e%2e/package.json");
     assert.notStrictEqual(dotDot.status, 200);

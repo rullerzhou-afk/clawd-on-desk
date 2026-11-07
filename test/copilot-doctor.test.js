@@ -81,14 +81,14 @@ afterEach(() => {
 });
 
 describe("Copilot doctor — happy path", () => {
-  it("ok when all 11 events register Clawd hook in bash field (10 state + permissionRequest)", () => {
+  it("ok when all 13 events register Clawd hook in bash field (12 state + permissionRequest)", () => {
     const parentDir = makeTempCopilotHome();
     const descriptor = copilotDescriptor(parentDir);
     writeJson(descriptor.configPath, copilotHooksConfig(COPILOT_HOOK_EVENTS));
 
     const detail = runOne(descriptor);
     assert.strictEqual(detail.status, "ok");
-    assert.match(detail.detail, /registered for 11 events/);
+    assert.match(detail.detail, /registered for 13 events/);
     assert.ok(!("fixAction" in detail), "ok should not carry a Fix button");
   });
 
@@ -144,7 +144,7 @@ describe("Copilot doctor — missing / broken paths", () => {
   it("not-connected listing missing events when hooks.json is partial", () => {
     const parentDir = makeTempCopilotHome();
     const descriptor = copilotDescriptor(parentDir);
-    // Only register 3 of the 10 events
+    // Only register 3 of the 13 events
     writeJson(descriptor.configPath, copilotHooksConfig(["sessionStart", "preToolUse", "sessionEnd"]));
 
     const detail = runOne(descriptor);
@@ -153,6 +153,30 @@ describe("Copilot doctor — missing / broken paths", () => {
     assert.ok(detail.missingCopilotHookEvents.includes("preCompact"));
     assert.ok(!detail.missingCopilotHookEvents.includes("sessionStart"));
     assert.ok(detail.fixAction, "auto-install should offer Fix on missing-events case");
+  });
+
+  it("reports notification and postToolUseFailure missing from an existing 11-event config", () => {
+    const parentDir = makeTempCopilotHome();
+    const descriptor = copilotDescriptor(parentDir);
+    const oldEvents = [
+      "sessionStart", "userPromptSubmitted", "preToolUse", "postToolUse", "sessionEnd",
+      "errorOccurred", "agentStop", "subagentStart", "subagentStop", "preCompact", "permissionRequest",
+    ];
+    writeJson(descriptor.configPath, copilotHooksConfig(oldEvents));
+
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.deepStrictEqual(detail.missingCopilotHookEvents, ["postToolUseFailure", "notification"]);
+    assert.strictEqual(detail.fixAction.agentId, "copilot-cli");
+  });
+
+  it("reports only postToolUseFailure missing from an existing 12-event config", () => {
+    const descriptor = copilotDescriptor(makeTempCopilotHome());
+    writeJson(descriptor.configPath, copilotHooksConfig(COPILOT_HOOK_EVENTS.filter(event => event !== "postToolUseFailure")));
+    const detail = runOne(descriptor);
+    assert.strictEqual(detail.status, "not-connected");
+    assert.deepStrictEqual(detail.missingCopilotHookEvents, ["postToolUseFailure"]);
+    assert.strictEqual(detail.fixAction.agentId, "copilot-cli");
   });
 
   it("broken-path only when every command in an event fails validation", () => {

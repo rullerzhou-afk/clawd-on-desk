@@ -70,9 +70,25 @@ test("Auto lets global automation allow a WSL Bash request", async (t) => {
   assert.equal(allowed.status, 200);
   assert.equal(JSON.parse(allowed.body).hookSpecificOutput.decision.behavior, "allow");
 
+  // Ordinary remote/WSL MCP follows the same global auto-allow.
   const mcp = await postPermission(h.port, { ...body("x"), tool_name: "mcp__github__get_issue",
     tool_input: { number: 1 } }).response;
-  assert.equal(mcp.status, 204);
+  assert.equal(mcp.status, 200);
+  assert.equal(JSON.parse(mcp.body).hookSpecificOutput.decision.behavior, "allow");
+
+  // The app connector namespace stays native.
+  const app = await postPermission(h.port, { ...body("x"),
+    tool_name: "mcp__codex_apps__vercel__list_projects", tool_input: {} }).response;
+  assert.equal(app.status, 204);
+
+  // A local MCP request has no nonlocal marker and stays native too.
+  const localMcp = await postPermission(h.port, {
+    agent_id: "codex", hook_source: "codex-official",
+    session_id: "codex:01a119d3-1893-7f42-aadc-fa33ca4166a8",
+    turn_id: "01a119d7-24b5-7010-9da2-d8791ff8a1d1", permission_mode: "default",
+    tool_name: "mcp__github__get_issue", tool_input: { number: 1 },
+  }).response;
+  assert.equal(localMcp.status, 204);
 
   mode = "off";
   const native = await postPermission(h.port, body("ssh box uptime")).response;

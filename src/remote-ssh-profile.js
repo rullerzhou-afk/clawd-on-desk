@@ -369,6 +369,7 @@ function sanitizeManagedDeployTarget(raw) {
     layoutVersion: Number.isInteger(raw.layoutVersion) ? raw.layoutVersion : REMOTE_LAYOUT_VERSION,
     remoteHome: typeof raw.remoteHome === "string" ? raw.remoteHome : undefined,
     ...(raw.remotePlatform !== undefined ? { remotePlatform: raw.remotePlatform } : {}),
+    ...(raw.remotePlatform === "win32" && raw.dshInstalled === true ? { dshInstalled: true } : {}),
   };
   const sshTransportHint = sanitizeSshTransportHint(raw.sshTransportHint);
   if (sshTransportHint) target.sshTransportHint = sshTransportHint;
@@ -812,6 +813,7 @@ function deployTargetFingerprint(profile) {
     remoteForwardPort: Number.isInteger(profile.remoteForwardPort) ? profile.remoteForwardPort : undefined,
     hostPrefix,
     chainStatusline,
+    dshInstalled: profile.dshInstalled === true ? true : undefined,
     runtimeMode: profile.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
     runtimeKey: profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
       ? profile.runtimeKey

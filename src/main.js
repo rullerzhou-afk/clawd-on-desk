@@ -567,7 +567,7 @@ const _settingsController = createSettingsController({
     startClaudeSettingsWatcher: () => _server.startClaudeSettingsWatcher(),
     stopClaudeSettingsWatcher: () => _server.stopClaudeSettingsWatcher(),
     setOpenAtLogin: _writeSystemOpenAtLogin,
-    startMonitorForAgent: (id) => agentRuntime && agentRuntime.startMonitorForAgent(id),
+    startMonitorForAgent: (id, intent) => agentRuntime && agentRuntime.startMonitorForAgent(id, intent),
     stopMonitorForAgent: (id) => agentRuntime && agentRuntime.stopMonitorForAgent(id),
     syncIntegrationForAgent: (id, options) =>
       agentRuntime ? agentRuntime.syncIntegrationForAgent(id, options) : false,
@@ -601,7 +601,12 @@ const _settingsController = createSettingsController({
     clearSessionsByAgent: (id) => agentRuntime ? agentRuntime.clearSessionsByAgent(id) : 0,
     clearSessionAutomationByAgent: (id) =>
       sessionAutomationCoordinator ? sessionAutomationCoordinator.clearAgent(id) : [],
-    dismissPermissionsByAgent: (id, options) => agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0,
+    dismissPermissionsByAgent: (id, options) => {
+      if (id === "codex" && !(options && options.subagentOnly) && _codexRemoteFallbackNotice) {
+        _codexRemoteFallbackNotice.clearAll("codex-permissions-disabled");
+      }
+      return agentRuntime ? agentRuntime.dismissPermissionsByAgent(id, options) : 0;
+    },
     clearRecentHookEvents: (id) => _server.clearRecentHookEvents(id),
     identifyCustomApplication: (sourcePath) => require("./custom-applications").identifyCustomApplication(sourcePath),
     resizePet: _deferredResizePet,
@@ -2133,6 +2138,11 @@ const refreshPermissionPresentation = require("./permission-presentation-refresh
   getStateRuntime: () => _state,
   isDisposed: () => isQuitting,
 });
+const createCodexRemoteFallbackNotice = require("./codex-remote-fallback-notice");
+const {
+  isCodexRemoteFallbackSuppressed: isRemoteFallbackSuppressed,
+} = createCodexRemoteFallbackNotice;
+let _codexRemoteFallbackNotice = null;
 const _permCtx = {
   onPermissionsChanged: refreshPermissionPresentation,
   get win() { return win; },
@@ -2256,10 +2266,28 @@ const _permCtx = {
       try { client.notifyPermissionRequest(payload, options); } catch {}
     }
   },
+  notifyCodexRemoteFallback: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
+  ),
+  onCodexRemoteFallbackCardDismissed: (sessionId, entry) => (
+    _codexRemoteFallbackNotice
+      ? _codexRemoteFallbackNotice.noteCardDismissed(sessionId, entry)
+      : false
+  ),
 };
 const _perm = initPermission(_permCtx);
 permissionPresentationRuntime = _perm;
 const { showPermissionBubble, resolvePermissionEntry, sendPermissionResponse, repositionBubbles, permLog, PASSTHROUGH_TOOLS, addPendingPermission, removePendingPermission, isPermissionEntryLive, canAutoResolvePendingPermission, wouldAutoAllowPermission, beginSessionTrustConfirmation, endSessionTrustConfirmation, syncPermissionBubbleContent, maybeStartRemoteApproval, clearCodexNotifyBubbles, showCodexUserInputBubble, clearCodexUserInputBubbles, showClaudeTurnAskBubble, clearClaudeTurnAskBubbles, showKimiNotifyBubble, clearKimiNotifyBubbles, syncPermissionShortcuts, replyOpencodeFamilyPermission, dismissOpencodeFamilyPermissionResolvedExternally } = _perm;
+
+_codexRemoteFallbackNotice = createCodexRemoteFallbackNotice({
+  setTimeout: (fn, ms) => setTimeout(fn, ms),
+  clearTimeout: (handle) => clearTimeout(handle),
+  isSuppressed: () => isQuitting || isRemoteFallbackSuppressed(_permCtx),
+  show: (payload) => callRuntimeMethod(_perm, "showCodexRemoteFallbackNotice", payload),
+  refresh: (entry, payload) => callRuntimeMethod(_perm, "refreshCodexRemoteFallbackNotice", entry, payload),
+  dismiss: (entry, reason) => callRuntimeMethod(_perm, "dismissCodexRemoteFallbackNotice", entry, reason),
+  log: (message) => permLog(message),
+});
 const pendingPermissions = _perm.pendingPermissions;
 let permDebugLog = null; // set after app.whenReady()
 let updateDebugLog = null; // set after app.whenReady()
@@ -2462,7 +2490,10 @@ const _stateCtx = {
   t: (key) => t(key),
   focusTerminalWindow: (...args) => focusTerminalWindow(...args),
   resolvePermissionEntry: (...args) => resolvePermissionEntry(...args),
-  dismissPermissionsForDnd: (...args) => _perm.dismissPermissionsForDnd(...args),
+  dismissPermissionsForDnd: (...args) => {
+    if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.invalidateAll("dnd-enabled");
+    return _perm.dismissPermissionsForDnd(...args);
+  },
   showKimiNotifyBubble: (...args) => showKimiNotifyBubble(...args),
   clearKimiNotifyBubbles: (...args) => clearKimiNotifyBubbles(...args),
   // state.js needs this to gate startKimiPermissionPoll symmetrically with
@@ -2547,6 +2578,13 @@ const _stateCtx = {
     sessionAutomationStore ? sessionAutomationStore.list() : [],
   getPermissionAutomationMode: () =>
     _settingsController.get("permissionAutomationMode") || "off",
+  getKiroDesktopPendingSessionIds: () => agentRuntime?.getKiroDesktopPendingSessionIds() || new Set(),
+  getCopilotTerminalWaitSessionIds: () => agentRuntime?.getCopilotTerminalWaitSessionIds() || new Set(),
+  onSessionDeleted: (sessionId) => {
+    agentRuntime?.clearKiroDesktopSession(sessionId);
+    agentRuntime?.clearCopilotTerminalWaitSession(sessionId);
+  },
+  resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   onSessionAutomationLifecycleEnd: (payload) => {
     if (sessionAutomationCoordinator) sessionAutomationCoordinator.onSessionLifecycleEnd(payload);
   },
@@ -3069,6 +3107,7 @@ agentRuntime = createAgentRuntimeMain({
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
+  getKiroDesktopReminderContext: () => _permCtx,
   isAgentEnabled: (agentId) => _runtimeAgentGate.isAgentEnabled(agentId),
   updateSession: (sessionId, state, event, opts) => updateSession(sessionId, state, event, opts),
   debugLog: (msg) => sessionLog(msg),
@@ -3120,6 +3159,15 @@ const _serverCtx = {
     _runtimeAgentGate.shouldSyncAgentIntegration(agentId),
   getAgentIntegrationOptions: _getAgentIntegrationOptions,
   isAgentPermissionsEnabled: (agentId) => _runtimeAgentGate.isAgentPermissionsEnabled(agentId),
+  notifyCodexRemoteFallback: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
+  ),
+  queueCodexRemoteFallbackForEntry: (entry) => (
+    callRuntimeMethod(_perm, "queueCodexRemoteFallbackForEntry", entry)
+  ),
+  onCodexRemoteStateEvent: (payload) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.handleStateEvent(payload) : false
+  ),
   // External review (#995): the route derives the review verdict at accept
   // time, so it needs the same effective-mode and reminder gates the
   // permission runtime uses. Values are read from the shared controller and
@@ -3217,6 +3265,7 @@ function ensureMobilePreviewServer() {
     sessions,
     rotationMs: !app.isPackaged ? Number(process.env.CLAWD_MOBILE_ROTATION_MS) : undefined,
     permissionObservation: _perm && _perm.permissionObservation,
+    getLang: () => lang,
     log: (message) => sessionLog(message),
   });
   return _lanWss;
@@ -4927,12 +4976,18 @@ const settingsEffectRouter = createSettingsEffectRouter({
   },
   emitSessionSnapshot: (options) => _state.emitSessionSnapshot(options),
   cleanStaleSessions: () => _state.cleanStaleSessions(),
+  refreshPendingAttention: () => _state.refreshPendingAttention(),
   syncPermissionShortcuts,
   dismissInteractivePermissionBubbles: () => callRuntimeMethod(_perm, "dismissInteractivePermissionBubbles"),
   clearCodexNotifyBubbles,
+  clearCodexRemoteFallbackNotices: (reason) => (
+    _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.clearAll(reason) : 0
+  ),
   clearCodexUserInputBubbles,
   clearClaudeTurnAskBubbles,
   clearKimiNotifyBubbles,
+  clearKiroDesktopReminderCards: (reason) => agentRuntime?.clearKiroDesktopReminderCards(reason),
+  resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   refreshPassiveNotifyAutoClose: () => callRuntimeMethod(_perm, "refreshPassiveNotifyAutoClose"),
   refreshPermissionAutoCloseForPolicy: () => callRuntimeMethod(_perm, "refreshPermissionAutoCloseForPolicy"),
   hideUpdateBubbleForPolicy: () => callRuntimeMethod(_updateBubble, "hideForPolicy"),
@@ -5447,6 +5502,7 @@ function createWindow() {
     loadFilePath: path.join(__dirname, "hit.html"),
     hitThemeConfig: themeRuntime.getHitRendererConfig(),
     rendererConfigChannel,
+    isQuitting: () => isQuitting,
     guardAlwaysOnTop,
     prepareActivation: (createdHitWin) => (
       _hitWindowActivationRuntime.controller.prepare(createdHitWin)
@@ -5745,6 +5801,8 @@ function computeFinalDragBounds(bounds, size, clampPosition = clampToScreenVisua
 
 // ── Mini Mode — initialized here after state module ──
 const _miniCtx = {
+  hasPendingReminderAttention: () => _state.hasPendingReminderAttention(),
+  getReminderReselectionOptions: (state) => _state.getReminderReselectionOptions(state),
   get theme() { return getActiveTheme(); },
   get win() { return win; },
   get currentSize() { return currentSize; },
@@ -6030,7 +6088,7 @@ if (!gotTheLock) {
       prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
-      if (win) {
+      if (win && !win.isDestroyed()) {
         win.showInactive();
         keepOutOfTaskbar(win);
       }
@@ -6292,6 +6350,9 @@ if (!gotTheLock) {
     // agent-gate snapshot — a user who disabled Codex at last shutdown
     // shouldn't see its file watcher spin up on the next launch.
     agentRuntime.startCodexLogMonitor();
+    if (_runtimeAgentGate.isAgentEnabled("kiro-desktop") && _runtimeAgentGate.isAgentIntegrationInstalled("kiro-desktop")) {
+      agentRuntime.startMonitorForAgent("kiro-desktop", { integrationInstalled: true });
+    }
 
     // Auto-install VS Code/Cursor terminal-focus extension
     try { installTerminalFocusExtension(); } catch (err) {
@@ -6354,6 +6415,7 @@ if (!gotTheLock) {
     }
     if (discordPresenceBridge) discordPresenceBridge.stop();
     stopFeishuApprovalClient();
+    if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.dispose();
     _perm.cleanup();
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();

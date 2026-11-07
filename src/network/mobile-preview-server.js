@@ -14,6 +14,7 @@ const WebSocket = require("ws");
 const { createMobileDeviceStore, hash, CID_RE, MAX_DEVICES, newPairing } = require("./mobile-device-store");
 const { sessionDisplayFolder } = require("../state-session-snapshot");
 const { buildPairQrSvg } = require("../mobile-pair-qr");
+const { resolveStrings } = require("./mobile-pwa-i18n");
 
 const APP_VERSION = require("../../package.json").version;
 const PROTOCOL_VERSION = "v1";
@@ -301,7 +302,7 @@ function initMobilePreviewServer(ctx) {
     };
   }
 
-  function migrateLegacy(cid, userAgent) {
+  function migrateLegacy(cid, userAgent, mode = null) {
     let device = store.getState().devices.find((d) => d.cid === cid && d.state === "pending")
       || store.getState().devices.find((d) => d.cid === cid && d.state === "active");
     if (device) return device;
@@ -310,7 +311,7 @@ function initMobilePreviewServer(ctx) {
       return null;
     }
     try {
-      device = store.commit((next) => store.createDevice(next, cid, "legacy", userAgent));
+      device = store.commit((next) => store.createDevice(next, cid, "legacy", userAgent, null, mode));
     } catch {
       log("[mobile-preview] legacy migration persistence deferred");
     }
@@ -351,7 +352,7 @@ function initMobilePreviewServer(ctx) {
     return (pairFailures.get(ip) || []).length >= 20;
   }
 
-  function claimDeviceForPairing(ws, code, cid, userAgent, ip) {
+  function claimDeviceForPairing(ws, code, cid, userAgent, ip, mode = null) {
     const codeHash = hash(code);
     const boundDevice = store.getState().devices.find((d) => d.pairCodeHash === codeHash);
     if (boundDevice && boundDevice.cid === cid && boundDevice.state === "pending") return boundDevice;
@@ -369,7 +370,7 @@ function initMobilePreviewServer(ctx) {
     }
     try {
       return store.commit((next) => {
-        const device = store.createDevice(next, cid, "pair", userAgent, codeHash);
+        const device = store.createDevice(next, cid, "pair", userAgent, codeHash, mode);
         next.pairing = newPairing(now());
         return device;
       });
@@ -395,7 +396,8 @@ function initMobilePreviewServer(ctx) {
       return;
     }
     const code = url.searchParams.get("pair").toUpperCase().replace(/-/g, "");
-    const device = claimDeviceForPairing(ws, code, cid, req.headers["user-agent"] || "", ip);
+    const mode = url.searchParams.get("mode") === "pwa" ? "pwa" : null;
+    const device = claimDeviceForPairing(ws, code, cid, req.headers["user-agent"] || "", ip, mode);
     if (!device) return;
     const meta = {
       kind: "pair",
@@ -457,6 +459,26 @@ function initMobilePreviewServer(ctx) {
     return "127.0.0.1";
   }
 
+  function currentLang() {
+    const lang = ctx && typeof ctx.getLang === "function" ? ctx.getLang() : null;
+    return typeof lang === "string" && lang ? lang : "en";
+  }
+
+  function renderIndexHtml(source) {
+    const lang = currentLang();
+    const strings = resolveStrings(lang);
+    // Escape `<` so a translated string can never close the injected script tag.
+    const stringsJson = JSON.stringify(strings).replaceAll("<", "\\u003c");
+    return source
+      .replaceAll("__CLAWD_APP_VERSION__", APP_VERSION)
+      .replaceAll("__CLAWD_LANG__", lang)
+      .replaceAll("__CLAWD_STRINGS_JSON__", stringsJson)
+      .replaceAll("__CLAWD_T_PAIR_LABEL__", strings.pairLabel)
+      .replaceAll("__CLAWD_T_PAIR_SUBMIT__", strings.pairSubmit)
+      .replaceAll("__CLAWD_T_NAV_SESSIONS__", strings.navSessions)
+      .replaceAll("__CLAWD_T_NAV_SETTINGS__", strings.navSettings);
+  }
+
   function serveStatic(req, res) {
     let urlPath;
     try { urlPath = new URL(req.url, "http://localhost").pathname; } catch { res.writeHead(400); res.end(); return; }
@@ -470,6 +492,12 @@ function initMobilePreviewServer(ctx) {
       return;
     }
 
+    // Typing host:port without the /mobile/ path used to yield a blank 404 (#1299).
+    if (urlPath === "/") {
+      res.writeHead(302, { Location: "/mobile/" });
+      res.end();
+      return;
+    }
     if (urlPath === "/mobile/" || urlPath === "/mobile") urlPath = "/mobile/index.html";
     if (!urlPath.startsWith("/mobile/")) { res.writeHead(404); res.end(); return; }
     const rel = urlPath.slice("/mobile/".length);
@@ -485,7 +513,7 @@ function initMobilePreviewServer(ctx) {
         "Cache-Control": ext === ".html" ? "no-cache" : "public, max-age=3600",
       });
       const body = rel === "index.html"
-        ? data.toString("utf8").replaceAll("__CLAWD_APP_VERSION__", APP_VERSION)
+        ? renderIndexHtml(data.toString("utf8"))
         : data;
       res.end(body);
     });
@@ -569,7 +597,16 @@ function initMobilePreviewServer(ctx) {
     if (auth.device) store.recordSeen(auth.device.id);
     const cid = url.searchParams.get("cid");
     if (auth.kind === "legacy" && auth.proto2 && CID_RE.test(cid || "")) {
-      rotationDevice = migrateLegacy(cid, req.headers["user-agent"] || "");
+      const mode = url.searchParams.get("mode") === "pwa" ? "pwa" : null;
+      rotationDevice = migrateLegacy(cid, req.headers["user-agent"] || "", mode);
+    }
+    // Devices paired before the mode param existed keep an unsuffixed name;
+    // the first standalone reconnect renames them in place so revoke + re-pair
+    // is not required (#1299).
+    if (auth.kind === "device" && auth.device
+        && url.searchParams.get("mode") === "pwa"
+        && !auth.device.name.endsWith(" · PWA")) {
+      store.renameDevice(auth.device.id, auth.device.name + " · PWA");
     }
 
     sendInitialSnapshots(ws);

@@ -468,6 +468,14 @@ function handleStatePost(req, res, options) {
       const toolInputFingerprint = typeof data.tool_input_fingerprint === "string" && data.tool_input_fingerprint
         ? data.tool_input_fingerprint
         : null;
+      const isCopilotWaitKey = value => typeof value === "string" && /^[a-f0-9]{32}$/.test(value);
+      const copilotWaitKey = agentId === "copilot-cli" && isCopilotWaitKey(data.copilot_wait_key)
+        ? data.copilot_wait_key : null;
+      const copilotToolKeys = agentId === "copilot-cli" && Array.isArray(data.copilot_tool_keys)
+        && data.copilot_tool_keys.length <= 4 && data.copilot_tool_keys.every(isCopilotWaitKey)
+        ? [...new Set(data.copilot_tool_keys)] : null;
+      const copilotEventTs = agentId === "copilot-cli" && Number.isFinite(data.copilot_event_ts)
+        && data.copilot_event_ts > 0 ? data.copilot_event_ts : null;
       const claudePromptId = agentId === "claude-code" ? normalizeClaudePhaseId(data.prompt_id) : null;
       const batchToolUseIds = event === "PostToolBatch" ? normalizeClaudeBatchToolUseIds(data.tool_use_ids) : null;
       if (event === "PostToolBatch" && (agentId !== "claude-code" || !claudePromptId
@@ -605,13 +613,16 @@ function handleStatePost(req, res, options) {
         const sequenceResult = dshStateSequenceFence
           && typeof dshStateSequenceFence.accept === "function"
           ? dshStateSequenceFence.accept({
-              // The fence is upstream-protocol scoped. Keep it on DSH's raw
-              // canonical id; the local/remote profile key is a separate
-              // Clawd storage concern applied by resolveSessionIdentity.
+              // The fence keeps DSH's raw canonical id. A remote session also
+              // needs its own namespace: profile ids are only unique per
+              // upstream profile, so two machines may legitimately use the
+              // same raw id. Local sessions pass no remoteProfile and keep
+              // their existing key and capacity.
               sessionId: sessionIdentity.rawSessionId,
               event,
               eventSeq: data.event_seq,
               sessionSeq: data.session_seq,
+              remoteProfile,
             })
           : { accepted: false, reason: "sequence-fence-unavailable" };
         if (!sequenceResult.accepted) {
@@ -792,6 +803,24 @@ function handleStatePost(req, res, options) {
           ctx.codexSubagentClassifier,
           sid,
         );
+        // Remote Codex fallback notices are cleared by the same lifecycle
+        // events that finish a native request. This runs after the identity
+        // gates (metadata-only returned above) and before state-machine drops,
+        // so a turn's Stop still releases its notice even when the visual
+        // state is dropped as a continuation.
+        if (remoteProfile && agentId === "codex"
+          && typeof ctx.onCodexRemoteStateEvent === "function") {
+          ctx.onCodexRemoteStateEvent({
+            sessionId: sessionIdentity.sessionId,
+            rawSessionId: sessionIdentity.rawSessionId,
+            profileId: trustedProfileId,
+            event,
+            toolName,
+            toolUseId,
+            toolInputFingerprint,
+            turnId: codexHookState.turnId || null,
+          });
+        }
         if (codexHookState.drop) {
           res.writeHead(204, { [CLAWD_SERVER_HEADER]: CLAWD_SERVER_ID });
           res.end();
@@ -1171,7 +1200,7 @@ function handleStatePost(req, res, options) {
         let sessionUpdateApplied = true;
         if (svg && !(claudeToolPhaseDecision && claudeToolPhaseDecision.preservePhase)) {
           const safeSvg = pathApi.basename(svg);
-          ctx.setState(state, safeSvg);
+          ctx.setState(state, safeSvg, { notificationCue: state === "notification" });
         } else {
           sessionUpdateApplied = ctx.updateSession(sid, state, event, {
             sourcePid: effectiveProcessMetadata.sourcePid,
@@ -1222,6 +1251,9 @@ function handleStatePost(req, res, options) {
             assistantLastOutputTruncated,
             toolName,
             ...(toolUseId ? { toolUseId } : {}),
+            ...(copilotWaitKey ? { copilotWaitKey } : {}),
+            ...(copilotToolKeys ? { copilotToolKeys } : {}),
+            ...(copilotEventTs ? { copilotEventTs } : {}),
             ...(claudePromptId ? { claudePromptId } : {}),
             ...(batchToolUseIds ? { batchToolUseIds } : {}),
             ...(claudeToolPhaseDecision ? { claudeToolPhaseDecision } : {}),

@@ -613,7 +613,7 @@ describe("Codex official hook installer", () => {
     assert.doesNotMatch(command, /CLAWD_SSH_REMOTE|CLAWD_REMOTE_IDENTITY_PATH/);
   });
 
-  it("registers Windows remote hooks with a PowerShell env prefix on commandWindows only", () => {
+  it("issue #1316: Windows remote hooks carry the SSH remote flag on both command fields", () => {
     const codexDir = makeTempCodexDir({});
     const result = registerCodexHooks({
       silent: true,
@@ -622,21 +622,30 @@ describe("Codex official hook installer", () => {
       platform: "win32",
       remote: true,
       sshRemote: true,
+      processEnv: {},
     });
 
     assert.strictEqual(result.added, CODEX_OFFICIAL_HOOK_EVENTS.length);
     const settings = readJson(path.join(codexDir, "hooks.json"));
     const hook = settings.hooks.SessionStart[0].hooks[0];
     const hookScript = path.resolve(__dirname, "..", "hooks", "codex-hook.js").replace(/\\/g, "/");
-    // PowerShell env prefix lives on commandWindows (what Windows codex runs).
+    // PowerShell env prefix lives on commandWindows (what Windows codex runs),
+    // followed by the quoted standalone remote flag.
     assert.strictEqual(
       hook.commandWindows,
-      `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & "C:\\node.exe" "${hookScript}"`
+      `$env:CLAWD_REMOTE='1'; $env:CLAWD_SSH_REMOTE='1'; & "C:\\node.exe" "${hookScript}" "--clawd-ssh-remote"`
     );
     // The POSIX command must NOT carry an env prefix: env vars don't cross
-    // the WSL interop boundary, so a prefix would only mislead readers.
-    assert.strictEqual(hook.command, `"/mnt/c/node.exe" "${hookScript}" ${CODEX_WSL_INTEROP_ARG}`);
-    assert.ok(result.warnings.some((w) => /interop/.test(w)));
+    // the WSL interop boundary. The bare flags use this form's existing
+    // unquoted style.
+    assert.strictEqual(
+      hook.command,
+      `"/mnt/c/node.exe" "${hookScript}" ${CODEX_WSL_INTEROP_ARG} --clawd-ssh-remote`
+    );
+    // The native command keeps its env prefix; the flag also covers the
+    // interop command and is the shared ownership marker, so the interop-env
+    // warning is not emitted for this deployment shape.
+    assert.deepStrictEqual(result.warnings, []);
   });
 
   it("unregisters only official state hooks", () => {

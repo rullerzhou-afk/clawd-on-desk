@@ -106,10 +106,12 @@ SSH targets retain the existing parallel-capable behavior.
 
 ## Windows remote hosts
 
-Windows remote deployment supports **Claude Code and Copilot CLI** in
-`account-default` mode. Codex CLI, Hermes Agent, `profile-isolated` mode, and
-the Claude quota ring are not yet supported. Deployment skips the unsupported
-agents and leaves any existing Claude statusLine unchanged.
+Windows remote deployment supports **Claude Code, Copilot CLI, Codex CLI
+official hooks, and DeepSeek Harness desktop** in `account-default` mode. Hermes Agent, `profile-isolated`
+mode, the Claude quota ring, and the Codex fallback monitor are not supported
+on Windows remote hosts. Deployment skips the unsupported agents and leaves
+any existing Claude statusLine unchanged. Only the Codex CLI is covered;
+Codex Desktop is not verified.
 
 Choose between remote deployment and running Clawd locally on that Windows
 computer. Deployment is refused while its local Clawd is running, or when its
@@ -129,6 +131,84 @@ File permissions rely on the Windows user profile directory's inherited ACLs;
 this does not isolate deployments that share the same Windows account.
 Copilot ignores a `hooks.json` containing a UTF-8 BOM. Clawd removes that BOM
 automatically during deployment and verifies the result.
+
+Codex uses its official hooks under `~\.codex`. After deployment, run
+`/hooks` in the remote Codex TUI to trust the new entries. Removing this
+deployment shifts the group indexes of later third-party hooks, so those may
+need another `/hooks` review too. `hooks.json` must not contain a UTF-8 BOM;
+Clawd repairs it automatically. Deployment only manages `~\.codex` and does
+not follow a custom `CODEX_HOME`. If `~\.codex`, its `hooks.json`, or its
+`config.toml` is a link, deployment is refused. Deployment is also refused
+when `~\.codex\hooks.json` contains a Clawd entry whose ownership cannot be
+confirmed; resolve or remove that entry, then deploy again. When
+`[features].hooks` is explicitly `false` in the remote `config.toml`,
+deployment is refused before any hook or config write; enable it and deploy
+again.
+
+### DeepSeek Harness desktop
+
+On a Windows remote host, Clawd can show DeepSeek Harness desktop session
+state, tool activity and completion, and let you answer its approval requests
+on your Mac. Clicking a session cannot jump to the remote DSH window.
+
+Install DeepSeek Harness desktop on the remote computer and open it at least
+once to create its desktop settings. The supported versions are the same as
+for the [local DSH integration](dsh-setup.md): the `0.2` family from
+`0.2.0-rc.2`, and the `0.1` family from `0.1.0-rc.6`. Sign in to that Windows
+desktop before deploying. If SSH uses an administrator account, Clawd uses a
+one-time scheduled task to install the DSH plugin with your ordinary user
+permissions in that desktop session, then deletes the task. After deployment,
+**restart DeepSeek Harness desktop on the remote computer** for the new
+connection to take effect. A verified deployment also enables DeepSeek Harness
+in the Mac's Clawd settings.
+
+Choose either the remote connection or that computer's local Clawd for DSH.
+If local Clawd already connects to DSH, deployment asks for confirmation
+before switching it to remote use. Starting local Clawd later does not take
+the DSH connection back automatically. To switch back, open Clawd on that
+computer and repair its DeepSeek Harness integration in Settings. Other
+agents' hooks still follow the local takeover behavior described above.
+
+DSH remote support does not cover the web version (`dsh web`), headless use,
+Linux or macOS remote hosts, or `profile-isolated` mode. A host without DSH
+desktop keeps the existing deployment behavior for other agents, including
+when its unused DSH data folder is a link.
+
+The deployment log's DSH messages mean:
+
+| Reason | What to do |
+| --- | --- |
+| `dsh_asset_upload_failed` | Connection files could not be uploaded. Check SSH and remote folder permissions, then run **Deploy / Repair Hooks** again. |
+| `bridge-ownership-conflict` | An existing DSH plugin could not be confirmed as Clawd's. Check it on the remote computer before deploying again. |
+| `dsh_desktop_ambiguous` | More than one desktop installation was found. Keep the one you want to use, then deploy again. |
+| `dsh_desktop_unreadable` | The desktop installation could not be checked. Check access to its installation folder, then deploy again. |
+| `dsh_home_ambiguous` | More than one possible data folder was found. Check `DSH_HOME` and the default `~\.dsh` folder, then deploy again. |
+| `dsh-home-changed` | The data folder differs from the previous deployment. Restore the previous folder, or clean up that deployment before deploying to the new folder. |
+| `inspection-required` | The previous installation needs manual checking. Check the remote integration, lift the pause as described below, then run **Deploy / Repair Hooks**. |
+| `dsh_install_failed` | The DSH connection could not be installed. Check the deployment log and remote file permissions, then deploy again. |
+| `installer_result_unknown` | Installation did not return a confirmed result. Check the remote integration before retrying; lift any installation pause only after checking it. |
+| `dsh_local_migration_required` | Local Clawd already connects to DSH. Confirm to switch to remote use; to switch back later, repair the DSH integration in that computer's local Clawd settings. |
+| `dsh_profile_unreadable` | Desktop settings could not be read. Check the contents and access permissions of `package.json` under the desktop data folder, then deploy again. |
+| `dsh_readback_failed` | Installation finished, but the connection could not be verified. Check the remote integration, then deploy again. |
+| `version-unsupported` | Use a DSH version supported by the local integration, then deploy again. |
+| `windows_dsh_cleanup_incomplete` | Plugin files or references in DSH settings remain, or could not be checked. Run **Deploy / Repair Hooks** first, then try cleanup again. |
+| `windows_dsh_desktop_session_required` | Sign in to the remote Windows desktop, then deploy again so the plugin can be installed with ordinary user permissions. |
+| `dsh_discovery_incomplete` | This is a warning: other integrations were deployed, but DSH was skipped because its installation could not be fully checked. Check DSH on the remote computer and deploy again if needed. |
+
+If an installed desktop app's DSH data or remote connection folders contain
+links, deployment reports `path_link`. Check those folders before retrying;
+this check does not block computers without DSH desktop.
+
+To lift an installation pause **after manually checking the remote DSH
+integration**, run the following in PowerShell on that computer. Replace the
+placeholder with this deployment's 64-character folder name under
+`~\.clawd\remote-integrations\deepseek-harness`; check its `deployment.json`
+to identify the correct deployment. This only lifts the pause; it does not
+repair or approve the integration. Then run **Deploy / Repair Hooks** on your Mac.
+
+```powershell
+node "$env:USERPROFILE\.claude\hooks\dsh-install.js" --remote-clear-latch --profile desktop --remote-root "$env:USERPROFILE\.clawd\remote-integrations\deepseek-harness" --install-id '<deployment install ID>'
+```
 
 ## Key concepts
 
@@ -255,10 +335,13 @@ path. Changing the OpenSSH default shell is not required.
 
 Quit Clawd on the Windows remote, then run **Deploy / Repair Hooks**. Local
 Clawd restores local hooks when it starts, including after Windows restarts
-if **Launch at login** is enabled. The warning appears on the next connection
-or reconnect, rather than during an already healthy connection. If Clawd cannot
-read or parse the hook configuration, it reports that verification failed;
-check file access and JSON before reconnecting or redeploying.
+if **Launch at login** is enabled. This applies to Claude Code, Copilot CLI,
+and Codex CLI hooks. The warning appears on the next connection or reconnect,
+rather than during an already healthy connection. If Clawd cannot read or
+parse the hook configuration, it reports that verification failed; check file
+access and JSON before reconnecting or redeploying. For Codex, a missing or
+BOM-prefixed `~\.codex\hooks.json` also requires a fresh deployment and
+`/hooks` review.
 
 ### Can I open the SSH tunnel manually?
 

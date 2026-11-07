@@ -166,6 +166,38 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(loadSettingsI18nStrings(), "settings");
   });
 
+  it("DSH remote: every Settings locale explains deployment errors and next steps", () => {
+    const strings = loadSettingsI18nStrings();
+    const keys = [
+      "remoteSshErrDshAssetUploadFailed", "remoteSshErrDshBridgeOwnershipConflict",
+      "remoteSshErrDshDesktopAmbiguous", "remoteSshErrDshDesktopUnreadable",
+      "remoteSshErrDshHomeAmbiguous", "remoteSshErrDshHomeChanged",
+      "remoteSshErrDshInspectionRequired", "remoteSshErrDshInstallFailed",
+      "remoteSshErrDshInstallerResultUnknown", "remoteSshErrDshLocalMigrationRequired",
+      "remoteSshErrDshProfileUnreadable", "remoteSshErrDshReadbackFailed",
+      "remoteSshErrDshVersionUnsupported", "remoteSshErrWindowsDshCleanupIncomplete",
+      "remoteSshErrWindowsDshDesktopSessionRequired", "remoteSshWarnDshDiscoveryIncomplete",
+      "remoteSshDshBridgeInstalled", "remoteSshDshRestartRequired",
+      "remoteSshDshBridgeInstalledRestartRequired",
+    ];
+    for (const key of keys) {
+      assert.strictEqual(new Set(SUPPORTED_LANGS.map((lang) => strings[lang][key])).size,
+        SUPPORTED_LANGS.length, key);
+      for (const lang of SUPPORTED_LANGS) {
+        const locale = strings[lang];
+        assert.strictEqual(typeof locale[key], "string", `${lang}.${key}`);
+        assert.ok(locale[key].trim(), `${lang}.${key}`);
+        assert.doesNotMatch(locale[key], /generation|manifest|junction/i, `${lang}.${key}`);
+      }
+    }
+    for (const lang of SUPPORTED_LANGS) {
+      const locale = strings[lang];
+      assert.ok(locale.remoteSshErrWindowsDshCleanupIncomplete.includes(locale.remoteSshDeploy), lang);
+      assert.ok(locale.remoteSshErrDshInspectionRequired.includes(locale.remoteSshDeploy), lang);
+      assert.match(locale.remoteSshErrDshInspectionRequired, /--remote-clear-latch/, lang);
+    }
+  });
+
   it("localizes DSH generation changes using the visible integration action names", () => {
     const strings = loadSettingsI18nStrings();
     for (const lang of SUPPORTED_LANGS) {

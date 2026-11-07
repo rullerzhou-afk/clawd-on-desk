@@ -16,6 +16,7 @@ const {
 } = require("../src/claude-turn-ask");
 const { buildStateBody, buildClaudeTurnAsk } = require("../hooks/clawd-hook");
 const { handleStatePost } = require("../src/server-route-state");
+const { isPassiveNotifyEntry, isNativeQuestionNotify } = require("../src/passive-notify-entry");
 const { makeSessionKey } = require("../src/session-key");
 
 const WRAP_UP_INPUT = {
@@ -299,8 +300,11 @@ describe("Claude wrap_up question marks the HUD row like Codex questions", () =>
     const entry = () => state.buildSessionSnapshot().sessions.find((session) => session.id === id);
     try {
       state.updateSession(id, "attention", "Stop", { agentId: "claude-code", profileId: "local" });
+      const baseline = structuredClone(entry());
+      assert.equal(Object.hasOwn(baseline, "effectiveState"), false);
+      assert.equal(Object.hasOwn(baseline, "activeSubagentCount"), false);
+      assert.equal(Object.hasOwn(baseline, "pendingAttention"), false);
       const petBefore = state.resolveDisplayState();
-      assert.notEqual(entry().pendingAttention, true);
 
       pending.push({ sessionId: id, agentId: "claude-code", res: null, isClaudeTurnAskNotify: true });
       assert.equal(entry().pendingAttention, true, "the HUD row shows the same needs-input state as a Codex question");
@@ -308,7 +312,7 @@ describe("Claude wrap_up question marks the HUD row like Codex questions", () =>
       assert.equal(state.resolveDisplayState(), petBefore, "pet projection stays Codex-only");
 
       pending.length = 0;
-      assert.notEqual(entry().pendingAttention, true, "answered → the row returns to normal");
+      assert.deepStrictEqual(entry(), baseline, "without a card the row is byte-for-byte the main shape");
     } finally { state.cleanup(); }
   });
 
@@ -323,5 +327,148 @@ describe("Claude wrap_up question marks the HUD row like Codex questions", () =>
       pending.push({ sessionId: id, agentId: "claude-code", res: null, isClaudeTurnAskNotify: true, host: "box" });
       assert.notEqual(entry().pendingAttention, true);
     } finally { state.cleanup(); }
+  });
+});
+
+describe("issue #1326: Claude cards stay off the pet and out of other reminders", () => {
+  const path = require("node:path");
+  const themeLoader = require("../src/theme-loader");
+
+  function makeState(overrides = {}) {
+    themeLoader.init(path.join(__dirname, "..", "src"));
+    const theme = structuredClone(themeLoader.loadTheme("clawd"));
+    theme.timings.minDisplay = {}; theme.timings.autoReturn = {};
+    return require("../src/state")({ theme, lang: "en", doNotDisturb: false,
+      miniMode: false, pendingPermissions: [], t: (k) => k,
+      playSound() {}, sendToRenderer() {}, syncHitWin() {}, sendToHitWin() {},
+      buildContextMenu() {}, buildTrayMenu() {}, processKill() { return true; },
+      ...overrides,
+    });
+  }
+
+  it("never changes the pet while another wait owns the pose, or when it is alone", (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.now() });
+    const pending = [];
+    const kiroPending = new Set();
+    const sounds = [];
+    const state = makeState({
+      pendingPermissions: pending,
+      playSound: (name) => sounds.push(name),
+      getKiroDesktopPendingSessionIds: () => kiroPending,
+    });
+    const kiroId = makeSessionKey({ profileId: "local", rawSessionId: "kiro-wait" });
+    const claudeId = makeSessionKey({ profileId: "local", rawSessionId: "claude-card" });
+    const observed = () => ({
+      state: state.getCurrentState(),
+      revision: state.getDisplayRevision(),
+      sounds: sounds.length,
+    });
+    try {
+      state.updateSession(kiroId, "working", "PreToolUse", { agentId: "kiro-desktop", profileId: "local" });
+      kiroPending.add(kiroId);
+      state.refreshPendingAttention();
+      assert.equal(state.getCurrentState(), "notification");
+      let before = observed();
+
+      const card = { sessionId: claudeId, agentId: "claude-code", res: null, isClaudeTurnAskNotify: true, toolUseId: "u1" };
+      pending.push(card);
+      state.refreshPendingAttention();
+      assert.deepStrictEqual(observed(), before, "adding the card changes nothing");
+
+      card.toolUseId = "u2";
+      card.toolInput = { questions: [{ question: "again" }] };
+      state.refreshPendingAttention();
+      assert.deepStrictEqual(observed(), before, "refreshing the card changes nothing");
+
+      pending.length = 0;
+      state.refreshPendingAttention();
+      assert.deepStrictEqual(observed(), before, "clearing the card changes nothing");
+
+      kiroPending.delete(kiroId);
+      state.refreshPendingAttention();
+      assert.equal(state.getCurrentState(), "working");
+      before = observed();
+
+      pending.push(card);
+      state.refreshPendingAttention();
+      assert.deepStrictEqual(observed(), before, "a lone Claude card does not move the pet");
+      pending.length = 0;
+      state.refreshPendingAttention();
+      assert.deepStrictEqual(observed(), before, "clearing a lone Claude card does not move the pet");
+    } finally { state.cleanup(); }
+  });
+
+  it("does not block a Kiro wait from reselecting the pet", (t) => {
+    t.mock.timers.enable({ apis: ["Date", "setTimeout", "setInterval"], now: Date.now() });
+    const pending = [];
+    const kiroPending = new Set();
+    const state = makeState({
+      pendingPermissions: pending,
+      getKiroDesktopPendingSessionIds: () => kiroPending,
+    });
+    const kiroId = makeSessionKey({ profileId: "local", rawSessionId: "kiro-reselect" });
+    const claudeId = makeSessionKey({ profileId: "local", rawSessionId: "claude-reselect" });
+    try {
+      state.updateSession(kiroId, "working", "PreToolUse", { agentId: "kiro-desktop", profileId: "local" });
+      pending.push({ sessionId: claudeId, agentId: "claude-code", res: null, isClaudeTurnAskNotify: true });
+
+      kiroPending.add(kiroId);
+      state.refreshPendingAttention();
+      assert.equal(state.resolveDisplayState(), "notification");
+      assert.equal(state.getCurrentState(), "notification");
+
+      kiroPending.delete(kiroId);
+      state.refreshPendingAttention();
+      assert.equal(state.resolveDisplayState(), "working");
+      assert.equal(state.getCurrentState(), "working", "a card without a decision channel must not pin the notification pose");
+    } finally { state.cleanup(); }
+  });
+
+  it("re-shows a detached row while its card is up and hides it again after clearing", () => {
+    let alive = true;
+    const pending = [];
+    const state = makeState({
+      pendingPermissions: pending,
+      sessionHudCleanupDetached: true,
+      processKill() {
+        if (!alive) { const error = new Error("exited"); error.code = "ESRCH"; throw error; }
+      },
+    });
+    const id = makeSessionKey({ profileId: "local", rawSessionId: "claude-detached" });
+    const entry = () => state.buildSessionSnapshot().sessions.find((session) => session.id === id);
+    try {
+      state.updateSession(id, "idle", "Stop", { agentId: "claude-code", profileId: "local" });
+      const session = state.sessions.get(id);
+      session.state = "idle";
+      session.agentPid = null;
+      session.sourcePid = 4242;
+      session.pidReachable = true;
+      alive = false;
+      assert.equal(entry().hiddenFromHud, true);
+
+      pending.push({ sessionId: id, agentId: "claude-code", res: null, isClaudeTurnAskNotify: true });
+      assert.equal(entry().pendingAttention, true);
+      assert.equal(entry().hiddenFromHud, false, "pending attention wins over the detached-session cleanup");
+
+      pending.length = 0;
+      assert.equal(entry().hiddenFromHud, true);
+    } finally { state.cleanup(); }
+  });
+});
+
+describe("issue #1326: passive notification predicates", () => {
+  it("classifies Claude cards as passive native questions without changing other entries", () => {
+    const cases = [
+      [{ isClaudeTurnAskNotify: true }, true, true],
+      [{ isKiroDesktopNotify: true }, true, false],
+      [{ isCodexUserInputNotify: true }, true, true],
+      [{ isCodexNotify: true }, true, false],
+      [{ isKimiNotify: true }, true, false],
+      [{ agentId: "claude-code" }, false, false],
+    ];
+    for (const [entry, passive, native] of cases) {
+      assert.equal(isPassiveNotifyEntry(entry), passive, JSON.stringify(entry));
+      assert.equal(isNativeQuestionNotify(entry), native, JSON.stringify(entry));
+    }
   });
 });

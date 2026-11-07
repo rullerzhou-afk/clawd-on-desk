@@ -11,6 +11,7 @@ const {
 } = require("../agent-gate");
 const { getAgent } = require("../../agents/registry");
 const { commandMatchesMarker, findHookCommands } = require("../../hooks/json-utils");
+const { isOwnedKiroDesktopCommand } = require("../../hooks/kiro-desktop-install");
 const { isOwnedKiroCrewCommand } = require("../../hooks/kirocrew-command");
 const { GEMINI_HOOK_EVENTS } = require("../../hooks/gemini-install");
 const { ANTIGRAVITY_HOOK_EVENTS, HOOK_GROUP_ID: ANTIGRAVITY_HOOK_GROUP_ID } = require("../../hooks/antigravity-install");
@@ -111,6 +112,9 @@ function withAgentBubbleNote(detail, prefs, agentId) {
   // "permission bubbles disabled" would be misleading. Antigravity, Pi,
   // and OpenClaw are current examples.
   const agent = getAgent(agentId);
+  if (agent?.capabilities.approvalReminder && !isAgentPermissionsEnabled(prefs, agentId)) {
+    return { ...detail, permissionsEnabled: false, permissionBubbleDetail: "Kiro IDE 的确认提醒已关闭" };
+  }
   if (agent && agent.capabilities && agent.capabilities.permissionApproval === false) {
     return detail;
   }
@@ -1618,6 +1622,31 @@ function checkMergedJsoncConfig(descriptor, options) {
   return checkOpencodeSettings({ ...descriptor, configPath: effective.candidate }, effective.tree, options);
 }
 
+function checkKiroDesktopHooks(descriptor, options) {
+  if (!fileExists(options.fs, descriptor.configPath)) {
+    return makeDetail(descriptor, "not-connected", { level: "warning", detail: `${descriptor.configPath} missing` });
+  }
+  let settings;
+  try { settings = readJson(options.fs, descriptor.configPath); }
+  catch (err) { return makeDetail(descriptor, "config-corrupt", { level: "warning", detail: err.message }); }
+  if (!settings || !Array.isArray(settings.hooks) || (settings.version !== undefined && settings.version !== "v1")) {
+    return makeDetail(descriptor, "config-corrupt", { level: "warning", detail: "Expected Kiro IDE v1 hooks array" });
+  }
+  const entries = settings.hooks.filter(entry => entry?.action?.type === "command"
+    && isOwnedKiroDesktopCommand(entry.action.command));
+  const missing = descriptor.hookEvents.filter(trigger => !entries.some(entry => entry.trigger === trigger));
+  if (missing.length) {
+    return makeDetail(descriptor, "not-connected", { level: "warning", missingHookEvents: missing,
+      detail: `Missing Kiro IDE hooks: ${missing.join(", ")}` });
+  }
+  for (const entry of entries) {
+    const result = options.validateCommand(entry.action.command, { platform: options.platform, fs: options.fs });
+    if (!result.ok) return makeDetail(descriptor, "broken-path", { level: "warning", detail: result.issue,
+      hookCommandIssue: result.issue, scriptPath: result.scriptPath });
+  }
+  return makeDetail(descriptor, "ok", { level: null, commandCount: entries.length, detail: "Kiro IDE hooks registered, scriptPath verified" });
+}
+
 function checkFileMode(descriptor, options) {
   if (Array.isArray(descriptor.configCandidates) && descriptor.configCandidates.length) {
     return checkMergedJsoncConfig(descriptor, options);
@@ -3003,7 +3032,9 @@ function checkAgent(descriptor, options) {
   descriptor = effectiveDescriptor;
 
   let detail;
-  if (descriptor.configMode === "file") {
+  if (descriptor.configMode === "kiro-ide-hooks") {
+    detail = checkKiroDesktopHooks(descriptor, options);
+  } else if (descriptor.configMode === "file") {
     detail = checkFileMode(descriptor, options);
   } else if (descriptor.configMode === "copilot-hooks") {
     detail = checkCopilotHooksMode(descriptor, options);

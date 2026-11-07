@@ -1,4 +1,4 @@
-const CACHE_NAME = "clawd-mobile-v8";
+const CACHE_NAME = "clawd-mobile-v9";
 const STATIC_ASSETS = [
   "/mobile/",
   "/mobile/index.html",

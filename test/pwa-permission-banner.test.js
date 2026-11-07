@@ -12,6 +12,7 @@ const HTML_SOURCE = fs.readFileSync(path.join(ROOT, "pwa", "index.html"), "utf8"
 const CSS_SOURCE = fs.readFileSync(path.join(ROOT, "pwa", "style.css"), "utf8");
 const SW_SOURCE = fs.readFileSync(path.join(ROOT, "pwa", "sw.js"), "utf8");
 const PROTOCOL_SOURCE = fs.readFileSync(path.join(ROOT, "docs", "mobile-protocol-v1.md"), "utf8");
+const { resolveStrings } = require(path.join(ROOT, "src", "network", "mobile-pwa-i18n"));
 
 function escapeHtml(value) {
   return String(value)
@@ -108,6 +109,9 @@ function loadPwa(options = {}) {
   const navigator = options.navigator || { serviceWorker: null };
   const window = {
     __CLAWD_MOBILE_TEST__: testApi,
+    // The server injects this pack into index.html; tests run the zh pack so
+    // assertions keep reading the historical Chinese strings.
+    __CLAWD_I18N__: resolveStrings("zh"),
     Notification: FakeNotification,
     location: { search: "", pathname: "/mobile/" },
     addEventListener() {},
@@ -504,11 +508,11 @@ describe("PWA static and protocol contracts", () => {
     assert.match(CSS_SOURCE, /\.state-badge\.working,\s*\.state-badge\.executing,\s*\.state-badge\.juggling\s*\{\s*color:\s*var\(--green\);\s*background:\s*var\(--green-dim\);\s*border-color:\s*var\(--green-border\);\s*\}/);
   });
 
-  it("contains reduced-motion permission styling and cache v8", () => {
+  it("contains reduced-motion permission styling and cache v9", () => {
     assert.match(CSS_SOURCE, /prefers-reduced-motion:\s*reduce/);
     assert.match(CSS_SOURCE, /\.permission-card\s*\{\s*animation:\s*none/);
-    assert.match(SW_SOURCE, /clawd-mobile-v8/);
-    assert.ok(!SW_SOURCE.includes("clawd-mobile-v6"));
+    assert.match(SW_SOURCE, /clawd-mobile-v9/);
+    assert.ok(!SW_SOURCE.includes("clawd-mobile-v8"));
   });
 
   it("documents the read-only additive protocol and its security limits", () => {

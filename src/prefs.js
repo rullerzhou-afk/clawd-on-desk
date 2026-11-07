@@ -533,6 +533,8 @@ const SCHEMA = {
       // default MUST exist or startup sync would write the hooks for any user
       // who merely has a ~/.kiro/crew directory.
       "kirocrew": { integrationInstalled: false, enabled: false, permissionsEnabled: false, notificationHookEnabled: false },
+      // permissionsEnabled intentionally defaults on for read-only reminder cards.
+      "kiro-desktop": { integrationInstalled: false, enabled: false, permissionsEnabled: true },
     }),
     normalize: normalizeAgents,
   },
