@@ -23,6 +23,7 @@ function reminderDelayMsFromMinutes(minutes) {
 
 function createClaudeTurnAskReminder({
   isEnabled = () => false,
+  canRemind = () => true,
   getDelayMs = () => DEFAULT_REMINDER_MINUTES * 60_000,
   onRemind = () => {},
   setTimeout: setTimeoutFn = setTimeout,
@@ -48,13 +49,16 @@ function createClaudeTurnAskReminder({
     entry.timer = setTimeoutFn(() => {
       if (pending.get(sessionId) !== entry) return;
       pending.delete(sessionId);
-      // Checked when the timer fires, so toggling the setting also applies to
-      // questions that are already waiting.
+      // The switch is read when the timer fires, so toggling it also applies to
+      // questions that are already waiting; the minutes are read at track time.
+      // A refused attempt (setting off, session gone, or showing blocked by DND
+      // or the notification policy) is consumed and never retried.
       if (!isEnabled()) return;
+      if (!canRemind(entry.payload)) return;
       try {
         onRemind(entry.payload);
       } catch {
-        // A failed reminder must never break the hook route.
+        // Keep a failing reminder from breaking the timer callback.
       }
     }, delayMs);
     if (entry.timer && typeof entry.timer.unref === "function") entry.timer.unref();

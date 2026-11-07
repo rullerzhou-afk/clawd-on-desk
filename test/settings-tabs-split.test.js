@@ -458,6 +458,8 @@ function makeSnapshot(overrides = {}) {
     permissionBubblesEnabled: true,
     notificationBubbleAutoCloseSeconds: 8,
     updateBubbleAutoCloseSeconds: 12,
+    claudeTurnAskReminder: false,
+    claudeTurnAskReminderMinutes: 5,
     bubbleFollowPet: true,
     bubbleFollowPreference: "auto",
     bubbleFixedCorner: "bottom-right",
@@ -904,8 +906,10 @@ describe("settings tab split", () => {
     const soundSwitch = notifications.getSwitch("soundMuted");
     const flashInterval = notifications.core.state.mountedControls.sessionCleanupControls.get("flashIntervalMs");
     const flashDuration = notifications.core.state.mountedControls.sessionCleanupControls.get("flashDurationMs");
+    const reminderMinutes = notifications.core.state.mountedControls.sessionCleanupControls.get("claudeTurnAskReminderMinutes");
     const flashIntervalInput = flashInterval.row.querySelector("input");
     const flashDurationInput = flashDuration.row.querySelector("input");
+    const reminderMinutesInput = reminderMinutes.row.querySelector("input");
     const notificationSeconds = notifications.core.state.mountedControls.bubblePolicyControls
       .get("notificationBubbleAutoCloseSeconds");
     const notificationSecondsInput = notificationSeconds.row.querySelector("input");
@@ -935,6 +939,11 @@ describe("settings tab split", () => {
     assert.strictEqual(currentFlashDurationInput, flashDurationInput);
     assert.ok(notifications.content.contains(flashDurationInput));
     assert.strictEqual(flashDurationInput.value, "4000");
+    notifications.apply("claudeTurnAskReminderMinutes", 12);
+    const currentReminderMinutesInput = findRowInput(notifications, "rowClaudeTurnAskReminderMinutes");
+    assert.strictEqual(currentReminderMinutesInput, reminderMinutesInput);
+    assert.ok(notifications.content.contains(reminderMinutesInput));
+    assert.strictEqual(reminderMinutesInput.value, "12");
     notifications.apply("notificationBubbleAutoCloseSeconds", 5);
     const currentNotificationSecondsInput = findRowInput(notifications, "bubbleNotificationLabel");
     assert.strictEqual(currentNotificationSecondsInput, notificationSecondsInput);

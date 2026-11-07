@@ -69,8 +69,7 @@ describe("prefs.getDefaults", () => {
     assert.strictEqual(prefs.validate({ petAlwaysOnTop: "off" }).petAlwaysOnTop, true);
   });
 
-  it("defaults mobile permission summaries off independently of session preview", () => {
-    const defaults = prefs.getDefaults();
+  it("defaults mobile permission summaries off independently of session preview", () => {    const defaults = prefs.getDefaults();
     assert.strictEqual(defaults.mobilePreviewEnabled, false);
     assert.strictEqual(defaults.mobilePermissionPreviewEnabled, false);
     const validated = prefs.validate({ mobilePreviewEnabled: true });
@@ -80,6 +79,12 @@ describe("prefs.getDefaults", () => {
       prefs.validate({ mobilePermissionPreviewEnabled: "true" }).mobilePermissionPreviewEnabled,
       false
     );
+  });
+
+  it("defaults the Claude turn-ask reminder off at five minutes", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.claudeTurnAskReminder, false);
+    assert.strictEqual(d.claudeTurnAskReminderMinutes, 5);
   });
 
   it("defaults Claude hook management on and agent-triggered cold launch off", () => {

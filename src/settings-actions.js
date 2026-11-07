@@ -339,7 +339,7 @@ const updateRegistry = {
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
   claudeTurnAskReminder: requireBoolean("claudeTurnAskReminder"),
-  claudeTurnAskReminderMinutes: requireNumberInRange("claudeTurnAskReminderMinutes", 1, 120),
+  claudeTurnAskReminderMinutes: requireIntegerInRange("claudeTurnAskReminderMinutes", 1, 120),
   testReactionsEnabled: requireBoolean("testReactionsEnabled"),
   codexHookHealthNotifyEnabled: requireBoolean("codexHookHealthNotifyEnabled"),
   codexHookHealthLastNotified: requireString("codexHookHealthLastNotified", { allowEmpty: true }),

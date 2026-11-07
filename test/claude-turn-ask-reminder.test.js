@@ -5,6 +5,8 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const path = require("node:path");
 
 const {
   DEFAULT_REMINDER_MINUTES,
@@ -15,10 +17,11 @@ const {
 function makeFakeTimers() {
   let now = 0;
   let nextId = 1;
+  let unrefCalls = 0;
   const timers = new Map();
   return {
     setTimeout(fn, ms) {
-      const id = { id: nextId++ };
+      const id = { id: nextId++, unref() { unrefCalls++; } };
       timers.set(id, { fn, at: now + ms });
       return id;
     },
@@ -33,15 +36,18 @@ function makeFakeTimers() {
       }
     },
     get size() { return timers.size; },
+    get unrefCount() { return unrefCalls; },
+    pending() { return [...timers.entries()].map(([id, timer]) => ({ id, ...timer })); },
   };
 }
 
-function makeReminder({ enabled = true, delayMs = 60_000 } = {}) {
+function makeReminder({ enabled = true, delayMs = 60_000, canRemind = () => true } = {}) {
   const timers = makeFakeTimers();
   const reminded = [];
   const state = { enabled };
   const reminder = createClaudeTurnAskReminder({
     isEnabled: () => state.enabled,
+    canRemind,
     getDelayMs: () => delayMs,
     onRemind: (payload) => reminded.push(payload),
     setTimeout: timers.setTimeout,
@@ -69,9 +75,18 @@ describe("createClaudeTurnAskReminder", () => {
     const { reminder, timers, reminded } = makeReminder();
     reminder.track(QUESTION);
     assert.equal(reminder.resolve("s1"), true);
+    assert.equal(timers.size, 0, "the timer is cleared, not left to no-op");
+    assert.equal(reminder._size(), 0, "the pending question is forgotten immediately");
     timers.advance(60_000);
     assert.equal(reminded.length, 0);
-    assert.equal(timers.size, 0, "the timer is cleared, not left to no-op");
+  });
+
+  it("does not remind when canRemind rejects the payload at expiry", () => {
+    const { reminder, timers, reminded } = makeReminder({ canRemind: () => false });
+    reminder.track(QUESTION);
+    timers.advance(60_000);
+    assert.equal(reminded.length, 0, "a dead or disabled session is not re-shown");
+    assert.equal(reminder._size(), 0, "the single attempt is consumed either way");
   });
 
   it("checks the setting when the timer fires", () => {
@@ -90,12 +105,24 @@ describe("createClaudeTurnAskReminder", () => {
   it("restarts the countdown when the same session asks again", () => {
     const { reminder, timers, reminded } = makeReminder();
     reminder.track(QUESTION);
+    const staleCallback = timers.pending()[0].fn;
     timers.advance(40_000);
     reminder.track({ ...QUESTION, ask: "Push the fix?" });
+    assert.equal(timers.size, 1, "the replacement leaves exactly one live timer");
+    staleCallback();
+    assert.equal(reminded.length, 0, "an already-queued old callback is a no-op");
     timers.advance(40_000);
     assert.equal(reminded.length, 0, "the first question's timer was replaced");
     timers.advance(20_000);
     assert.deepStrictEqual(reminded.map((payload) => payload.ask), ["Push the fix?"]);
+  });
+
+  it("unrefs every timer so a waiting reminder never holds the process open", () => {
+    const { reminder, timers } = makeReminder();
+    reminder.track(QUESTION);
+    assert.equal(timers.unrefCount, 1);
+    reminder.track({ ...QUESTION, sessionId: "s2" });
+    assert.equal(timers.unrefCount, 2);
   });
 
   it("keeps sessions independent and ignores payloads without a session", () => {
@@ -128,12 +155,41 @@ describe("createClaudeTurnAskReminder", () => {
   });
 });
 
-describe("reminderDelayMsFromMinutes", () => {
-  it("clamps to 1–120 minutes and falls back to the default for bad input", () => {
+describe("reminderDelayMsFromMinutes", () => {  it("clamps to 1–120 minutes and falls back to the default for bad input", () => {
     assert.equal(reminderDelayMsFromMinutes(5), 5 * 60_000);
+    assert.equal(reminderDelayMsFromMinutes(7), 7 * 60_000);
+    assert.equal(reminderDelayMsFromMinutes(120), 120 * 60_000);
     assert.equal(reminderDelayMsFromMinutes(0), 60_000);
     assert.equal(reminderDelayMsFromMinutes(500), 120 * 60_000);
     assert.equal(reminderDelayMsFromMinutes(undefined), DEFAULT_REMINDER_MINUTES * 60_000);
     assert.equal(reminderDelayMsFromMinutes(2.5), DEFAULT_REMINDER_MINUTES * 60_000);
+  });
+});
+
+describe("main wiring", () => {
+  const source = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+
+  it("creates the reminder before the state context and gates it on a live Claude session", () => {
+    assert.ok(
+      source.indexOf("const claudeTurnAskReminder = createClaudeTurnAskReminder({")
+        < source.indexOf("const _stateCtx = {"),
+      "onSessionDeleted must not read the reminder before it is initialized"
+    );
+    assert.match(
+      source,
+      /canRemind: \(payload\) => _runtimeAgentGate\.isAgentEnabled\("claude-code"\)\s*&& sessions\.has\(payload\.sessionId\)/
+    );
+  });
+
+  it("resolves on session deletion and disposes on both quit hooks", () => {
+    assert.match(
+      source,
+      /onSessionDeleted: \(sessionId\) => \{[\s\S]*?claudeTurnAskReminder\.resolve\(sessionId\);/
+    );
+    assert.equal((source.match(/claudeTurnAskReminder\.dispose\(\)/g) || []).length, 2);
+    assert.match(
+      source,
+      /app\.on\("before-quit"[\s\S]*?claudeTurnAskReminder\.dispose\(\);\s*_perm\.cleanup\(\);/
+    );
   });
 });

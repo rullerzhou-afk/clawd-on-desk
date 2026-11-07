@@ -2296,6 +2296,21 @@ let sessionDebugLog = null; // set after app.whenReady()
 let focusDebugLog = null; // set after app.whenReady()
 let recordWindowsProcessChainShadow = () => false;
 
+// #1326 follow-up: re-show an unanswered Claude Desktop wrap_up question (with
+// a sound) once it has waited the configured minutes, if the user opted in.
+// Created before _stateCtx so onSessionDeleted can resolve it; the callbacks
+// only read sessions, the agent gate and the settings store when a timer fires.
+const claudeTurnAskReminder = createClaudeTurnAskReminder({
+  isEnabled: () => _settingsController.get("claudeTurnAskReminder") === true,
+  canRemind: (payload) => _runtimeAgentGate.isAgentEnabled("claude-code")
+    && sessions.has(payload.sessionId),
+  getDelayMs: () => reminderDelayMsFromMinutes(_settingsController.get("claudeTurnAskReminderMinutes")),
+  onRemind: (payload) => {
+    if (showClaudeTurnAskBubble(payload)) playSound("confirm");
+  },
+});
+app.on("will-quit", () => claudeTurnAskReminder.dispose());
+
 function getPendingPermissionFocusEntry(sessionId) {
   const id = String(sessionId || "");
   if (!id) return null;
@@ -2584,6 +2599,7 @@ const _stateCtx = {
   onSessionDeleted: (sessionId) => {
     agentRuntime?.clearKiroDesktopSession(sessionId);
     agentRuntime?.clearCopilotTerminalWaitSession(sessionId);
+    claudeTurnAskReminder.resolve(sessionId);
   },
   resyncKiroDesktopReminderCards: () => agentRuntime?.resyncKiroDesktopReminderCards(),
   onSessionAutomationLifecycleEnd: (payload) => {
@@ -3123,17 +3139,6 @@ agentRuntime = createAgentRuntimeMain({
 });
 
 // ── HTTP server — delegated to src/server.js ──
-// #1326 follow-up: re-show an unanswered Claude Desktop wrap_up question (with
-// a sound) once it has waited the configured minutes, if the user opted in.
-const claudeTurnAskReminder = createClaudeTurnAskReminder({
-  isEnabled: () => _settingsController.get("claudeTurnAskReminder") === true,
-  getDelayMs: () => reminderDelayMsFromMinutes(_settingsController.get("claudeTurnAskReminderMinutes")),
-  onRemind: (payload) => {
-    if (showClaudeTurnAskBubble(payload)) playSound("confirm");
-  },
-});
-app.on("will-quit", () => claudeTurnAskReminder.dispose());
-
 const _serverCtx = {
   get manageClaudeHooksAutomatically() { return manageClaudeHooksAutomatically; },
   get autoStartWithClaude() { return autoStartWithClaude; },
@@ -6430,6 +6435,7 @@ if (!gotTheLock) {
     if (discordPresenceBridge) discordPresenceBridge.stop();
     stopFeishuApprovalClient();
     if (_codexRemoteFallbackNotice) _codexRemoteFallbackNotice.dispose();
+    claudeTurnAskReminder.dispose();
     _perm.cleanup();
     _server.cleanup();
     if (_lanWss) _lanWss.cleanup();

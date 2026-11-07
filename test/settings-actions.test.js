@@ -354,8 +354,7 @@ describe("updateRegistry pure-data validators", () => {
     );
   });
 
-  it("bubble auto-close seconds require integers in range", () => {
-    const deps = { snapshot: baseSnapshot };
+  it("bubble auto-close seconds require integers in range", () => {    const deps = { snapshot: baseSnapshot };
     for (const key of [
       "notificationBubbleAutoCloseSeconds",
       "permissionBubbleAutoCloseSeconds",
@@ -368,6 +367,15 @@ describe("updateRegistry pure-data validators", () => {
       assert.strictEqual(updateRegistry[key](1.5, deps).status, "error", `${key}(1.5)`);
       assert.strictEqual(updateRegistry[key](3601, deps).status, "error", `${key}(3601)`);
       assert.strictEqual(updateRegistry[key]("30", deps).status, "error", `${key}("30")`);
+    }
+  });
+
+  it("Claude turn-ask reminder minutes require integers in range", () => {
+    const validate = updateRegistry.claudeTurnAskReminderMinutes;
+    assert.strictEqual(validate(1).status, "ok");
+    assert.strictEqual(validate(120).status, "ok");
+    for (const value of [0, 121, 2.5, NaN, "5"]) {
+      assert.strictEqual(validate(value).status, "error", String(value));
     }
   });
 
