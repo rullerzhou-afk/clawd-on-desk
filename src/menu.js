@@ -11,6 +11,8 @@ const platform = process.platform;
 const isMac = platform === "darwin";
 const isWin = platform === "win32";
 const isLinux = platform === "linux";
+const MENU_FOCUS_WAIT_MS = 200;
+const MENU_OWNER_HIDE_DELAY_MS = 500;
 
 // Login-item / autostart helpers and the openAtLogin write path live in
 // src/login-item.js + main.js's settings-actions effect. menu.js used to
@@ -407,8 +409,57 @@ module.exports = function initMenu(ctx) {
     return ctx.contextMenuOwner;
   }
 
+  let ownerHideTimer = null;
+
+  // A menu opened before the owner window has focus closes within milliseconds
+  // under XWayland, so every other right-click looked like nothing happened.
+  // Wait for the focus just requested; the timeout keeps the menu working if
+  // it never arrives.
+  function whenOwnerFocused(owner, open) {
+    if (!isLinux || typeof owner.isFocused !== "function" || owner.isFocused()) {
+      open();
+      return;
+    }
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      owner.removeListener("focus", settle);
+      if (owner.isDestroyed()) {
+        ctx.menuOpen = false;
+        return;
+      }
+      open();
+    };
+    const timer = setTimeout(settle, MENU_FOCUS_WAIT_MS);
+    owner.once("focus", settle);
+  }
+
+  // Under XWayland, hiding the owner in the same moment a focused menu closes
+  // can block the main process for 20 s or more, until the GPU process exits.
+  // A short delay avoids it, and a new menu reuses the owner that is still up.
+  function cancelOwnerHide() {
+    if (ownerHideTimer === null) return;
+    clearTimeout(ownerHideTimer);
+    ownerHideTimer = null;
+  }
+
+  function hideOwnerAfterMenu(owner) {
+    if (!isLinux) {
+      owner.hide();
+      return;
+    }
+    cancelOwnerHide();
+    ownerHideTimer = setTimeout(() => {
+      ownerHideTimer = null;
+      if (!owner.isDestroyed()) owner.hide();
+    }, MENU_OWNER_HIDE_DELAY_MS);
+  }
+
   function popupMenuAt(menu) {
     if (ctx.menuOpen) return;
+    cancelOwnerHide();
     const owner = ensureContextMenuOwner();
     if (!owner) return;
 
@@ -419,11 +470,11 @@ module.exports = function initMenu(ctx) {
     owner.focus();
 
     ctx.menuOpen = true;
-    menu.popup({
+    whenOwnerFocused(owner, () => menu.popup({
       window: owner,
       callback: () => {
         ctx.menuOpen = false;
-        if (owner && !owner.isDestroyed()) owner.hide();
+        if (owner && !owner.isDestroyed()) hideOwnerAfterMenu(owner);
         // #1260 backstop: the normal renderer path ends any active drag
         // before asking for this menu, so a lock still held at close time
         // was stranded by the menu's modal loop swallowing the closing
@@ -454,7 +505,7 @@ module.exports = function initMenu(ctx) {
           }
         }
       },
-    });
+    }));
   }
 
   function buildDisplaySubmenu(displays = screen.getAllDisplays()) {
