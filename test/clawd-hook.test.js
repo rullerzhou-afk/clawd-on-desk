@@ -39,6 +39,32 @@ const mockResolve = () => ({
   pidChain: [],
 });
 
+describe("buildStateBody Claude profile folder (#1250)", () => {
+  const payload = { session_id: "s-profile", cwd: "/tmp/project" };
+
+  it("reports CLAUDE_CONFIG_DIR for Claude Code sessions", () => {
+    const configDir = path.join(os.tmpdir(), ".claude-work");
+    const body = buildStateBody("UserPromptSubmit", payload, mockResolve, { env: { CLAUDE_CONFIG_DIR: `${configDir}${path.sep}` } });
+    assert.strictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.claude_config_dir, configDir);
+  });
+
+  it("sends nothing for the default folder or an unusable value", () => {
+    for (const env of [{}, { CLAUDE_CONFIG_DIR: "" }, { CLAUDE_CONFIG_DIR: "relative/dir" }]) {
+      const body = buildStateBody("UserPromptSubmit", payload, mockResolve, { env });
+      assert.strictEqual(Object.prototype.hasOwnProperty.call(body, "claude_config_dir"), false, JSON.stringify(env));
+    }
+  });
+
+  it("does not tag other agents that reuse the Claude hook", () => {
+    const body = buildStateBody("UserPromptSubmit", { ...payload, cursor_version: "1.0.0" }, mockResolve, {
+      env: { CLAUDE_CONFIG_DIR: path.join(os.tmpdir(), ".claude-work") },
+    });
+    assert.notStrictEqual(body.agent_id, "claude-code");
+    assert.strictEqual(body.claude_config_dir, undefined);
+  });
+});
+
 describe("buildStateBody", () => {
   it("reports a parent tool batch as a minimal phase event without tool content or process probing", () => {
     const body = buildStateBody("PostToolBatch", {

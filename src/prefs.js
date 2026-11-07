@@ -58,6 +58,7 @@ const {
 } = require("./bubble-policy");
 const { normalizeSessionAliases } = require("./session-alias");
 const { normalizeQuotaAlertThresholds } = require("./quota-alerts");
+const { normalizeClaudeConfigDirEntries } = require("../hooks/claude-config-dirs");
 const {
   TEXT_SCALE_MIN,
   TEXT_SCALE_MAX,
@@ -1257,6 +1258,12 @@ function normalizeAgents(value, defaultsValue) {
         merged.customDiscoveryPaths = customDiscoveryPaths;
         touched = true;
       }
+    }
+    if (id === "claude-code" && Object.prototype.hasOwnProperty.call(entry, "configDirs")) {
+      // Extra Claude config folders (CLAUDE_CONFIG_DIR profiles) whose
+      // settings.json also gets Clawd's hooks; see claude-config-dirs.js.
+      merged.configDirs = normalizeClaudeConfigDirEntries(entry.configDirs);
+      touched = true;
     }
     if (touched) out[id] = merged;
   }

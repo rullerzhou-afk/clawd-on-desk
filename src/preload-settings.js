@@ -192,6 +192,8 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   openDashboard: () => ipcRenderer.send("settings:open-dashboard"),
   listAgents: () => ipcRenderer.invoke("settings:list-agents"),
   pickAgentDiscoveryPath: (kind) => ipcRenderer.invoke("settings:pick-agent-discovery-path", { kind }),
+  getClaudeConfigDirs: () => ipcRenderer.invoke("settings:claude-config-dirs"),
+  pickClaudeConfigDir: () => ipcRenderer.invoke("settings:pick-claude-config-dir"),
   detectAgentInstallations: (opts) => ipcRenderer.invoke("settings:detect-agent-installations", opts),
   getDshNotices: () => ipcRenderer.invoke("settings:dsh-notices"),
   acknowledgeDshNotice: (profile, id) => ipcRenderer.invoke("settings:dsh-notice-ack", { profile, id }),

@@ -30,6 +30,7 @@ const {
 const { parseTomlSections: parseCodewhaleTomlSections } = require("../../hooks/codewhale-install");
 const { findStandaloneBridge, listOtherOmpProfileAgentDirs } = require("../../hooks/omp-install");
 const { getAgentDescriptors } = require("./agent-descriptors");
+const { effectiveClaudeConfigDirs } = require("../../hooks/claude-config-dirs");
 const {
   commandContainsFragment,
   validateHookCommand,
@@ -2935,6 +2936,57 @@ function checkDshPluginMode(descriptor, options, prefs) {
   return withAgentBubbleNote(withFix, prefs, descriptor.agentId);
 }
 
+const CLAUDE_CONFIG_DIR_SKIP_STATUSES = new Set(["not-managed", "disabled", "manual-managed"]);
+
+// Extra Claude config folders (Settings → Claude Code → Config folders) get
+// the same file check as the primary folder. They stay inside the one Claude
+// row, like Qoder's two editions: Fix re-syncs every folder, and the first
+// unhealthy folder decides the row's status when the primary is fine.
+function withClaudeConfigDirChecks(detail, descriptor, options) {
+  if (!detail || descriptor.agentId !== "claude-code" || CLAUDE_CONFIG_DIR_SKIP_STATUSES.has(detail.status)) {
+    return detail;
+  }
+  const prefs = options.prefs || {};
+  const claudePrefs = prefs.agents && prefs.agents["claude-code"];
+  const entries = claudePrefs && Array.isArray(claudePrefs.configDirs) ? claudePrefs.configDirs : [];
+  if (!entries.length || !descriptor.parentDir) return detail;
+  const effective = effectiveClaudeConfigDirs(entries, {
+    primaryDir: descriptor.parentDir,
+    env: options.env,
+    homeDir: options.homeDir,
+  });
+  if (effective.length < 2) return detail;
+
+  const checks = effective.filter((entry) => !entry.primary).map((entry) => {
+    const configPath = require("path").join(entry.dir, "settings.json");
+    if (!dirExists(options.fs, entry.dir)) {
+      return { dir: entry.dir, label: entry.label, configPath, status: "not-connected", detail: `${entry.dir} missing` };
+    }
+    const check = checkFileMode({ ...descriptor, parentDir: entry.dir, configPath }, options);
+    return { dir: entry.dir, label: entry.label, configPath, status: check.status, detail: check.detail };
+  });
+  const primaryLabel = effective[0].label;
+  const out = {
+    ...detail,
+    configDirs: [
+      { dir: effective[0].dir, label: primaryLabel, configPath: descriptor.configPath, status: detail.status, detail: detail.detail },
+      ...checks,
+    ],
+  };
+  const unhealthy = checks.filter((check) => statusLevel(check.status) === "warning");
+  if (!unhealthy.length) return out;
+  const summary = unhealthy.map((check) => `${check.label}: ${check.detail}`).join("; ");
+  if (statusLevel(detail.status) === "warning") {
+    return { ...out, detail: `${detail.detail}; ${summary}` };
+  }
+  return withAgentFixAction({
+    ...out,
+    status: unhealthy[0].status,
+    level: "warning",
+    detail: summary,
+  }, descriptor);
+}
+
 function checkAgent(descriptor, options) {
   const prefs = options.prefs || {};
   if (!isAgentIntegrationInstalled(prefs, descriptor.agentId)) {
@@ -3206,7 +3258,11 @@ function checkAgentIntegrations(options = {}) {
     v2Host: options.v2Host,
   };
   const descriptors = options.descriptors || getAgentDescriptors();
-  const details = descriptors.map((descriptor) => checkAgent(descriptor, detectorOptions));
+  const details = descriptors.map((descriptor) => withClaudeConfigDirChecks(
+    checkAgent(descriptor, detectorOptions),
+    descriptor,
+    detectorOptions
+  ));
   const summary = summarize(details);
   return {
     id: "agent-integrations",

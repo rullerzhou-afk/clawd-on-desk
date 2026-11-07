@@ -9,6 +9,7 @@ const {
   acknowledgeDeepSeekHarnessNotice: defaultAcknowledgeDshNotice,
 } = require("../hooks/dsh-install");
 const { DEFAULT_INTEGRATION_INSTALLED_IDS } = require("./prefs");
+const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
 const settingsThemeImporter = require("./settings-theme-importer");
 const {
   listPetTintOptions,
@@ -93,6 +94,16 @@ const AGENT_DISCOVERY_DIALOG_STRINGS = {
   ja: { file: "ツールの実行ファイルを選択", directory: "ツールのインストールフォルダーを選択" },
   "pt-BR": { file: "Escolha o executável da ferramenta", directory: "Escolha a pasta de instalação da ferramenta" },
   es: { file: "Elige el ejecutable de la herramienta", directory: "Elige la carpeta de instalación de la herramienta" },
+};
+
+const CLAUDE_CONFIG_DIR_DIALOG_STRINGS = {
+  en: "Choose a Claude Code config folder",
+  zh: "选择 Claude Code 配置目录",
+  "zh-TW": "選擇 Claude Code 設定資料夾",
+  ko: "Claude Code 설정 폴더 선택",
+  ja: "Claude Code の設定フォルダーを選択",
+  "pt-BR": "Escolha uma pasta de configuração do Claude Code",
+  es: "Elige una carpeta de configuración de Claude Code",
 };
 
 const REMOVE_THEME_DIALOG_STRINGS = {
@@ -1024,6 +1035,42 @@ function registerSettingsIpc(options = {}) {
       return { status: "ok", path: result.filePaths[0] };
     } catch (err) {
       return { status: "error", message: `agent discovery path picker failed: ${err && err.message}` };
+    }
+  });
+
+  // Claude config folders as Settings shows them: the primary folder Clawd
+  // resolves itself first, then the extra folders from prefs.
+  handle("settings:claude-config-dirs", () => {
+    try {
+      const snapshot = settingsController.getSnapshot() || {};
+      const claude = snapshot.agents && snapshot.agents["claude-code"];
+      const entries = claude && Array.isArray(claude.configDirs) ? claude.configDirs : [];
+      return {
+        status: "ok",
+        dirs: effectiveClaudeConfigDirs(entries).map((entry) => ({
+          ...entry,
+          exists: fs.existsSync(entry.dir),
+        })),
+      };
+    } catch (err) {
+      return { status: "error", message: `claude config dirs failed: ${err && err.message}` };
+    }
+  });
+
+  handle("settings:pick-claude-config-dir", async (event) => {
+    const title = CLAUDE_CONFIG_DIR_DIALOG_STRINGS[getLang()] || CLAUDE_CONFIG_DIR_DIALOG_STRINGS.en;
+    try {
+      const result = await dialog.showOpenDialog(getDialogParent(event), {
+        title,
+        // Config folders are usually dot-folders (~/.claude-work).
+        properties: ["openDirectory", "showHiddenFiles", "createDirectory"],
+      });
+      if (!result || result.canceled || !Array.isArray(result.filePaths) || !result.filePaths[0]) {
+        return { status: "cancel" };
+      }
+      return { status: "ok", path: result.filePaths[0] };
+    } catch (err) {
+      return { status: "error", message: `claude config folder picker failed: ${err && err.message}` };
     }
   });
 

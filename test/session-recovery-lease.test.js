@@ -113,6 +113,19 @@ describe("durable session recovery leases", () => {
     assert.ok(!fs.readFileSync(marked.filePath, "utf8").includes("Secret prompt"));
   });
 
+  it("keeps the Claude profile folder so a recovered session keeps its label (#1250)", () => {
+    const configDir = path.join(recoveryDir, ".claude-work");
+    const first = updateRecoveryLeaseFromStateBody(body({ claude_config_dir: configDir }), winOptions(1000));
+    assert.strictEqual(readLeaseFile(first.filePath).claudeConfigDir, configDir);
+    // Later events without the field keep the folder already recorded.
+    const second = updateRecoveryLeaseFromStateBody(body({ event: "PreToolUse", state: "working" }), winOptions(2000));
+    assert.strictEqual(readLeaseFile(second.filePath).claudeConfigDir, configDir);
+
+    const plain = updateRecoveryLeaseFromStateBody(body({ session_id: "default-profile" }), winOptions(3000));
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(readLeaseFile(plain.filePath), "claudeConfigDir"), false);
+    assert.strictEqual(readLeaseFile(writeLeaseRecord("bad-dir", { claudeConfigDir: "relative/dir" })), null);
+  });
+
   it("keeps transient events from overwriting the last sustained state", () => {
     updateRecoveryLeaseFromStateBody(body(), winOptions(1000));
     const transient = updateRecoveryLeaseFromStateBody(body({

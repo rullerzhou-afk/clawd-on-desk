@@ -111,6 +111,42 @@ function session(state, overrides = {}) {
   };
 }
 
+describe("Claude profile labels in session snapshots (#1250)", () => {
+  const os = require("os");
+  const path = require("path");
+  const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
+  const defaultDir = path.join(os.homedir(), ".claude");
+  const workDir = path.join(os.homedir(), ".claude-work");
+  const twoFolders = effectiveClaudeConfigDirs([{ dir: workDir, label: "Job" }], { primaryDir: defaultDir });
+
+  function snapshotWith(sessions, claudeConfigDirs) {
+    return buildSessionSnapshot(new Map(sessions), { statePriority: STATE_PRIORITY, claudeConfigDirs });
+  }
+
+  it("labels local Claude sessions by folder once two folders are managed", () => {
+    const snap = snapshotWith([
+      ["work", session("working", { claudeConfigDir: workDir })],
+      ["home", session("working")],
+      ["codex", session("working", { agentId: "codex", claudeConfigDir: workDir })],
+      ["remote", session("working", { claudeConfigDir: workDir, host: "devbox" })],
+    ], twoFolders);
+    const byId = Object.fromEntries(snap.sessions.map((entry) => [entry.id, entry]));
+    assert.strictEqual(byId.work.claudeProfileLabel, "Job");
+    assert.strictEqual(byId.work.claudeConfigDir, workDir);
+    assert.strictEqual(byId.home.claudeProfileLabel, "default");
+    assert.strictEqual(byId.codex.claudeProfileLabel, "");
+    assert.strictEqual(byId.remote.claudeProfileLabel, "");
+  });
+
+  it("shows no label with a single folder, and relabels through the signature", () => {
+    const single = snapshotWith([["work", session("working", { claudeConfigDir: workDir })]],
+      effectiveClaudeConfigDirs([], { primaryDir: defaultDir }));
+    assert.strictEqual(single.sessions[0].claudeProfileLabel, "");
+    const labelled = snapshotWith([["work", session("working", { claudeConfigDir: workDir })]], twoFolders);
+    assert.notStrictEqual(sessionSnapshotSignature(single), sessionSnapshotSignature(labelled));
+  });
+});
+
 describe("startup-recovered session snapshots", () => {
   it("exposes the marker, disables focus, and includes marker changes in the signature", () => {
     const recovered = buildSessionSnapshot(new Map([

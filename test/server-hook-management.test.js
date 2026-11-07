@@ -1895,3 +1895,129 @@ describe("Codex official hook turn tracking", () => {
     assert.strictEqual(turns.has(`codex:s1|turn-${MAX_CODEX_OFFICIAL_TURNS + 2}`), true);
   });
 });
+
+// #1250: extra Claude config folders (CLAUDE_CONFIG_DIR profiles) get the same
+// hook set as the primary folder, through the same queue, with per-folder
+// verify. Real installer against temp folders; env is isolated so the host's
+// own CLAUDE_CONFIG_DIR / node discovery never leaks in.
+function withIsolatedClaudeProfileRegister(run) {
+  const { registerHooksAsync } = require("../hooks/install.js");
+  return withPatchedInstallModule({
+    registerHooksAsync: (options) => registerHooksAsync({ ...options, env: {} }),
+  }, run);
+}
+
+function clawdHookCommandCount(settingsPath) {
+  const fs = require("node:fs");
+  if (!fs.existsSync(settingsPath)) return 0;
+  const settings = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  let count = 0;
+  for (const entries of Object.values(settings.hooks || {})) {
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries) {
+      for (const hook of Array.isArray(entry.hooks) ? entry.hooks : [entry]) {
+        if (hook && typeof hook.command === "string" && hook.command.includes("clawd-hook.js")) count++;
+      }
+    }
+  }
+  return count;
+}
+
+describe("server Claude hooks across extra config folders", () => {
+  function setup() {
+    const fs = require("node:fs");
+    const os = require("node:os");
+    const path = require("node:path");
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-server-profiles-"));
+    const home = path.join(root, "home");
+    const primary = path.join(home, ".claude");
+    const work = path.join(home, ".claude-work");
+    fs.mkdirSync(primary, { recursive: true });
+    fs.mkdirSync(work, { recursive: true });
+    let configDirs = [{ dir: work, label: "" }];
+    const { api } = makeServer({
+      syncClawdHooksImpl: undefined,
+      claudeQuotaCollectionEnabled: false,
+      homeDir: home,
+      claudeSettingsPath: path.join(primary, "settings.json"),
+      fs: undefined,
+      getClaudeConfigDirs: () => configDirs,
+    });
+    return {
+      api,
+      root,
+      home,
+      primary,
+      work,
+      settings: (dir) => path.join(dir, "settings.json"),
+      setConfigDirs: (next) => { configDirs = next; },
+      cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+    };
+  }
+
+  it("installs and verifies hooks in every listed folder, statusline left to the primary", async () => withIsolatedClaudeProfileRegister(async () => {
+    const t = setup();
+    try {
+      const result = await t.api.syncClawdHooks({ source: "startup", automatic: true });
+      assert.strictEqual(result.status, "ok", JSON.stringify(result));
+      assert.ok(clawdHookCommandCount(t.settings(t.primary)) > 0);
+      assert.ok(clawdHookCommandCount(t.settings(t.work)) > 0);
+      assert.deepStrictEqual(result.configDirs.map((entry) => [entry.dir, entry.status]), [[t.work, "ok"]]);
+      const work = JSON.parse(require("node:fs").readFileSync(t.settings(t.work), "utf8"));
+      assert.strictEqual(work.statusLine, undefined);
+    } finally {
+      t.cleanup();
+    }
+  }));
+
+  it("reports a missing extra folder without failing the primary install", async () => withIsolatedClaudeProfileRegister(async () => {
+    const t = setup();
+    try {
+      const gone = require("node:path").join(t.home, ".claude-gone");
+      t.setConfigDirs([{ dir: gone, label: "" }]);
+      const result = await t.api.syncClawdHooks({ source: "doctor", automatic: false });
+      assert.strictEqual(result.status, "ok", JSON.stringify(result));
+      assert.deepStrictEqual(result.configDirs.map((entry) => [entry.dir, entry.reason]), [[gone, "config-dir-missing"]]);
+      assert.strictEqual(require("node:fs").existsSync(gone), false);
+    } finally {
+      t.cleanup();
+    }
+  }));
+
+  it("adds and removes one folder without touching the primary", async () => withIsolatedClaudeProfileRegister(async () => {
+    const t = setup();
+    try {
+      t.setConfigDirs([]);
+      await t.api.syncClawdHooks({ source: "startup", automatic: true });
+      const primaryBefore = require("node:fs").readFileSync(t.settings(t.primary), "utf8");
+
+      const added = await t.api.installClaudeConfigDir(t.work);
+      assert.strictEqual(added.status, "ok", JSON.stringify(added));
+      assert.ok(clawdHookCommandCount(t.settings(t.work)) > 0);
+
+      const removed = await t.api.uninstallClaudeConfigDir(t.work);
+      assert.strictEqual(removed.status, "ok", JSON.stringify(removed));
+      assert.strictEqual(clawdHookCommandCount(t.settings(t.work)), 0);
+      assert.strictEqual(require("node:fs").readFileSync(t.settings(t.primary), "utf8"), primaryBefore);
+
+      assert.strictEqual((await t.api.uninstallClaudeConfigDir(t.primary)).reason, "primary-config-dir");
+      assert.strictEqual((await t.api.installClaudeConfigDir(t.primary)).primary, true);
+    } finally {
+      t.cleanup();
+    }
+  }));
+
+  it("uninstalls Clawd's hooks from every listed folder", async () => withIsolatedClaudeProfileRegister(async () => {
+    const t = setup();
+    try {
+      await t.api.syncClawdHooks({ source: "startup", automatic: true });
+      const result = await t.api.uninstallClaudeHooks({ source: "settings-agent-uninstall", automatic: false });
+      assert.strictEqual(result.status, "ok", JSON.stringify(result));
+      assert.strictEqual(clawdHookCommandCount(t.settings(t.primary)), 0);
+      assert.strictEqual(clawdHookCommandCount(t.settings(t.work)), 0);
+      assert.deepStrictEqual(result.configDirs.map((entry) => [entry.dir, entry.status]), [[t.work, "ok"]]);
+    } finally {
+      t.cleanup();
+    }
+  }));
+});
