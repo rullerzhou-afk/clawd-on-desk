@@ -339,15 +339,19 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(entry.isClaudeTurnAskNotify, true);
     assert.strictEqual(entry.agentId, "claude-code");
     assert.strictEqual(entry.res, null, "never holds an HTTP decision channel");
-    assert.deepStrictEqual(entry.toolInput.questions, [{
-      question: "Fix the parser now?",
-      options: [
-        { label: "Fix it", description: "Fix the two failing parser tests." },
-        { label: "Not now" },
-      ],
-    }]);
+    assert.deepStrictEqual(entry.toolInput, {
+      questions: [{
+        question: "Fix the parser now?",
+        options: [{ label: "Fix it" }, { label: "Not now" }],
+      }],
+    });
+    const payload = api.buildPermissionBubblePayload(entry);
+    assert.deepStrictEqual(payload.toolInput, entry.toolInput);
+    assert.strictEqual(JSON.stringify(payload).includes("recap"), false);
+    assert.strictEqual(JSON.stringify(payload).includes('"description"'), false);
+    assert.strictEqual(JSON.stringify(payload).includes("Fix the two failing parser tests."), false);
     assert.strictEqual(entry.autoExpireTimer, null, "a pending question must not auto-expire");
-    assert.strictEqual(api.buildPermissionBubblePayload(entry).isClaudeTurnAskNotify, true);
+    assert.strictEqual(payload.isClaudeTurnAskNotify, true);
     assert.strictEqual(api.refreshPassiveNotifyAutoClose(), 0);
     assert.strictEqual(
       api.maybeStartRemoteApproval(entry),

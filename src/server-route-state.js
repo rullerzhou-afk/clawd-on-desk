@@ -28,22 +28,8 @@ const { resolveDshCarrier } = require("./dsh-carrier");
 const {
   CLAUDE_WRAP_UP_TOOL_NAME,
   normalizeClaudeTurnAsk,
-  createClaudeTurnAskTracker,
+  decideClaudeTurnAskAction,
 } = require("./claude-turn-ask");
-
-// #1326: one tracker per server ctx, so the per-session "stopped since the last
-// prompt" memory survives across /state requests (the real server reuses one
-// ctx) while unit tests that build a fresh ctx never share state.
-const claudeTurnAskTrackers = new WeakMap();
-function getClaudeTurnAskTracker(ctx) {
-  if (!ctx || typeof ctx !== "object") return createClaudeTurnAskTracker();
-  let tracker = claudeTurnAskTrackers.get(ctx);
-  if (!tracker) {
-    tracker = createClaudeTurnAskTracker();
-    claudeTurnAskTrackers.set(ctx, tracker);
-  }
-  return tracker;
-}
 const {
   normalizeHookToolUseId,
   findPendingPermissionForStateEvent,
@@ -1165,8 +1151,10 @@ function handleStatePost(req, res, options) {
           );
         }
         // #1326: Claude Desktop's end-of-turn question box. Main-thread Claude
-        // Code events only; the show/clear/ignore rules (including the
-        // post-Stop phantom guard) live in claude-turn-ask.js.
+        // Code events only; the show/clear/ignore rules live in
+        // claude-turn-ask.js. A non-empty subagentId excludes a child or a
+        // prompt-suggestion phantom that carries a fresh agent_id, and a
+        // retired phase excludes stale tool evidence from an older turn.
         if (hasExplicitPermissionLifecycleSession
           && agentId === "claude-code"
           && !subagentId
@@ -1174,18 +1162,17 @@ function handleStatePost(req, res, options) {
           const claudeTurnAsk = event === "PreToolUse" && toolName === CLAUDE_WRAP_UP_TOOL_NAME
             ? normalizeClaudeTurnAsk(data.claude_turn_ask)
             : null;
-          const turnAskAction = getClaudeTurnAskTracker(ctx).decide({
-            sessionId: sid,
+          const turnAskAction = decideClaudeTurnAskAction({
             event,
             toolName,
             hasAsk: !!claudeTurnAsk,
+            subagentLifecycleSource,
           });
           if (turnAskAction === "show" && typeof ctx.showClaudeTurnAskBubble === "function") {
             ctx.showClaudeTurnAskBubble({
               sessionId: sid,
               toolUseId,
               ask: claudeTurnAsk.ask,
-              recap: claudeTurnAsk.recap,
               actions: claudeTurnAsk.actions,
               sourcePid: effectiveProcessMetadata.sourcePid,
               agentPid: effectiveProcessMetadata.agentPid,

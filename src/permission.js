@@ -5798,7 +5798,6 @@ function showClaudeTurnAskBubble({
   sessionId,
   toolUseId,
   ask,
-  recap,
   actions,
   sourcePid,
   agentPid,
@@ -5812,18 +5811,12 @@ function showClaudeTurnAskBubble({
     return false;
   }
   // Reuse the `questions` shape the native-question card already renders: the
-  // ask is the question and the box's buttons are its read-only options (a
-  // button's optional `message`, the text it sends, becomes the description).
+  // ask is the question and the box's button labels are its read-only options.
   const toolInput = {
     questions: [{
       question: ask,
-      options: (Array.isArray(actions) ? actions : []).map((action) => (
-        action.message
-          ? { label: action.label, description: action.message }
-          : { label: action.label }
-      )),
+      options: (Array.isArray(actions) ? actions : []).map((action) => ({ label: action.label })),
     }],
-    recap: typeof recap === "string" ? recap : "",
   };
   const existing = findClaudeTurnAskEntry(sessionId);
   if (existing) {

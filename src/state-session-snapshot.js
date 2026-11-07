@@ -427,13 +427,12 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const agentId = (session && session.agentId) || null;
   const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
-  const localPresentation = (agentId === "codex" || isLocalApprovalReminderSession(session)) && !session.headless && !session.host && !session.wslDistro
+  const isLocalSession = !session.headless && !session.host && !session.wslDistro
     && session.platform !== "wsl"
     && (session.profileId || "local") === "local";
-  const canPresent = !session.headless && !session.host && !session.wslDistro
-    && session.platform !== "wsl"
-    && (session.profileId || "local") === "local"
-    && typeof options.getSessionPresentation === "function";
+  const localPresentation = isLocalSession
+    && (agentId === "codex" || isLocalApprovalReminderSession(session));
+  const canPresent = isLocalSession && typeof options.getSessionPresentation === "function";
   let presentation = (localPresentation || isTerminalWaitSession(session))
     && typeof options.getSessionPresentation === "function"
     ? options.getSessionPresentation(id) : null;

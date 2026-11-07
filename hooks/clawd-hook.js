@@ -365,26 +365,23 @@ function clampHookText(value, maxChars) {
   return text.length <= maxChars ? text : `${text.slice(0, maxChars - 1)}…`;
 }
 
-// Only the question-carrying fields, capped, so the state body stays small.
-// A recap-only wrap_up (no ask) returns null on purpose: the server treats a
-// wrap_up without claude_turn_ask as "the box no longer asks anything".
+// Only the question and button labels the card shows, capped so the state body
+// stays small. A recap-only wrap_up (no ask) returns null on purpose: the
+// server treats a wrap_up without claude_turn_ask as "the box no longer asks
+// anything".
 function buildClaudeTurnAsk(toolName, toolInput) {
   if (toolName !== CLAUDE_WRAP_UP_TOOL_NAME) return null;
   if (!toolInput || typeof toolInput !== "object" || Array.isArray(toolInput)) return null;
   const ask = clampHookText(toolInput.ask, 300);
   if (!ask) return null;
   const result = { ask };
-  const recap = clampHookText(toolInput.recap, 400);
-  if (recap) result.recap = recap;
   const actions = Array.isArray(toolInput.actions)
     ? toolInput.actions
       .slice(0, 4)
       .map((action) => {
         if (!action || typeof action !== "object") return null;
         const label = clampHookText(action.label, 60);
-        if (!label) return null;
-        const message = clampHookText(action.message, 200);
-        return message ? { label, message } : { label };
+        return label ? { label } : null;
       })
       .filter(Boolean)
     : [];

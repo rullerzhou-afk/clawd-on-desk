@@ -918,9 +918,10 @@ function renderSessionTrustError(message) {
 }
 
 // #1326: Codex request_user_input and Claude Desktop's wrap_up question share
-// the read-only native-question card (compact: title, question, "go to" button;
-// options are deliberately not shown because Clawd cannot answer them). Only the
-// agent-facing copy differs.
+// the read-only native-question card (compact: title, question, "go to"
+// button). Clawd can answer neither one, so the Codex card lists no options;
+// the Claude card adds one muted line of the box's button labels under the
+// question. Only the agent-facing copy otherwise differs.
 function isNativeQuestionData(data) {
   return !!(data && (data.isCodexUserInputNotify || data.isClaudeTurnAskNotify));
 }

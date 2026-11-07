@@ -10,9 +10,10 @@ const { EventEmitter } = require("node:events");
 const {
   CLAUDE_WRAP_UP_TOOL_NAME,
   normalizeClaudeTurnAsk,
-  createClaudeTurnAskTracker,
+  decideClaudeTurnAskAction,
   MAX_ASK_CHARS,
   MAX_ACTIONS,
+  MAX_ACTION_LABEL_CHARS,
 } = require("../src/claude-turn-ask");
 const { buildStateBody, buildClaudeTurnAsk } = require("../hooks/clawd-hook");
 const { handleStatePost } = require("../src/server-route-state");
@@ -29,8 +30,11 @@ const WRAP_UP_INPUT = {
 };
 
 describe("normalizeClaudeTurnAsk", () => {
-  it("keeps the ask, recap and labelled actions", () => {
-    assert.deepStrictEqual(normalizeClaudeTurnAsk(WRAP_UP_INPUT), WRAP_UP_INPUT);
+  it("keeps only the ask and labelled actions", () => {
+    assert.deepStrictEqual(normalizeClaudeTurnAsk(WRAP_UP_INPUT), {
+      ask: "Fix the parser now?",
+      actions: [{ label: "Fix it" }, { label: "Not now" }],
+    });
   });
 
   it("returns null without an ask (a recap-only box asks nothing)", () => {
@@ -52,64 +56,50 @@ describe("normalizeClaudeTurnAsk", () => {
     });
     assert.strictEqual(result.ask.length, MAX_ASK_CHARS);
     assert.ok(result.ask.endsWith("…"));
-    assert.strictEqual(result.recap, "");
+    assert.strictEqual("recap" in result, false);
     // The cap applies to the raw list, so the malformed entries count toward it.
     assert.ok(result.actions.length <= MAX_ACTIONS);
-    assert.ok(result.actions.every((action) => typeof action.label === "string" && action.label));
+    assert.ok(result.actions.every((action) => Object.keys(action).join() === "label" && action.label));
   });
 });
 
-describe("createClaudeTurnAskTracker", () => {
-  const decide = (tracker, event, extra = {}) => tracker.decide({ sessionId: "s1", event, ...extra });
+describe("decideClaudeTurnAskAction", () => {
+  const decide = (event, extra = {}) => decideClaudeTurnAskAction({ event, ...extra });
 
-  it("shows on a wrap_up with an ask and keeps it through the turn's Stop", () => {
-    const tracker = createClaudeTurnAskTracker();
-    assert.strictEqual(decide(tracker, "UserPromptSubmit"), "clear");
+  it("shows on a wrap_up with an ask and ignores Stop", () => {
+    assert.strictEqual(decide("UserPromptSubmit"), "clear");
     assert.strictEqual(
-      decide(tracker, "PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: true }),
+      decide("PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: true }),
       "show"
     );
-    assert.strictEqual(decide(tracker, "Stop"), "ignore", "Stop must never dismiss the card");
+    assert.strictEqual(decide("Stop"), "ignore", "Stop must never dismiss the card");
   });
 
   it("clears when Claude moves on, on a recap-only wrap_up, on the next prompt and on SessionEnd", () => {
-    const tracker = createClaudeTurnAskTracker();
-    assert.strictEqual(decide(tracker, "PreToolUse", { toolName: "Bash" }), "clear");
+    assert.strictEqual(decide("PreToolUse", { toolName: "Bash" }), "clear");
     assert.strictEqual(
-      decide(tracker, "PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: false }),
+      decide("PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: false }),
       "clear"
     );
-    assert.strictEqual(decide(tracker, "UserPromptSubmit"), "clear");
-    assert.strictEqual(decide(tracker, "SessionEnd"), "clear");
+    assert.strictEqual(decide("UserPromptSubmit"), "clear");
+    assert.strictEqual(decide("SessionEnd"), "clear");
   });
 
-  it("ignores every PreToolUse after Stop until the next prompt (prompt-suggestion phantoms)", () => {
-    const tracker = createClaudeTurnAskTracker();
-    decide(tracker, "UserPromptSubmit");
-    decide(tracker, "PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: true });
-    decide(tracker, "Stop");
-    assert.strictEqual(decide(tracker, "PreToolUse", { toolName: "AskUserQuestion" }), "ignore");
+  it("clears a synthetic main-thread SubagentStart but ignores native and legacy shapes", () => {
     assert.strictEqual(
-      decide(tracker, "PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: true }),
-      "ignore"
+      decide("SubagentStart", { subagentLifecycleSource: "synthetic-tool" }),
+      "clear"
     );
-    assert.strictEqual(decide(tracker, "UserPromptSubmit"), "clear");
-    assert.strictEqual(
-      decide(tracker, "PreToolUse", { toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: true }),
-      "show",
-      "a new turn shows again"
-    );
+    assert.strictEqual(decide("SubagentStart", { subagentLifecycleSource: "native" }), "ignore");
+    assert.strictEqual(decide("SubagentStart", { subagentLifecycleSource: "synthetic-task" }), "ignore");
+    assert.strictEqual(decide("SubagentStart", { subagentLifecycleSource: "anonymous" }), "ignore");
+    assert.strictEqual(decide("SubagentStart"), "ignore");
   });
 
-  it("keeps sessions independent and ignores events without a session", () => {
-    const tracker = createClaudeTurnAskTracker();
-    tracker.decide({ sessionId: "a", event: "Stop" });
-    assert.strictEqual(
-      tracker.decide({ sessionId: "b", event: "PreToolUse", toolName: CLAUDE_WRAP_UP_TOOL_NAME, hasAsk: true }),
-      "show"
-    );
-    assert.strictEqual(tracker.decide({ sessionId: "", event: "PreToolUse" }), "ignore");
-    assert.strictEqual(tracker.decide({ sessionId: "a", event: "PostToolUse" }), "ignore");
+  it("ignores unrelated events", () => {
+    assert.strictEqual(decide("PostToolUse"), "ignore");
+    assert.strictEqual(decide("Notification"), "ignore");
+    assert.strictEqual(decide(undefined), "ignore");
   });
 });
 
@@ -123,7 +113,10 @@ describe("clawd-hook forwards the wrap_up question", () => {
       tool_use_id: "toolu_wrap",
       tool_input: WRAP_UP_INPUT,
     }, resolve);
-    assert.deepStrictEqual(body.claude_turn_ask, WRAP_UP_INPUT);
+    assert.deepStrictEqual(body.claude_turn_ask, {
+      ask: "Fix the parser now?",
+      actions: [{ label: "Fix it" }, { label: "Not now" }],
+    });
     assert.strictEqual(body.tool_name, CLAUDE_WRAP_UP_TOOL_NAME);
   });
 
@@ -148,16 +141,16 @@ describe("clawd-hook forwards the wrap_up question", () => {
       recap: "r".repeat(1000),
       actions: Array.from({ length: 10 }, (_, i) => ({ label: `l${i}`.repeat(40), message: "m".repeat(1000) })),
     });
-    assert.ok(result.ask.length <= 300);
-    assert.ok(result.recap.length <= 400);
-    assert.ok(result.actions.length <= 4);
-    assert.ok(result.actions.every((action) => action.label.length <= 60 && action.message.length <= 200));
+    assert.strictEqual(result.ask.length, MAX_ASK_CHARS);
+    assert.strictEqual("recap" in result, false);
+    assert.ok(result.actions.length <= MAX_ACTIONS);
+    assert.ok(result.actions.every((action) => action.label.length === MAX_ACTION_LABEL_CHARS
+      && Object.keys(action).join() === "label"));
   });
 });
 
-// One ctx shared across requests, like the real server, so the per-session
-// tracker state carries from one hook event to the next.
-function createRouteHarness() {
+// One ctx shared across requests, like the real server.
+function createRouteHarness(overrides = {}) {
   const calls = { shown: [], cleared: [] };
   const ctx = {
     STATE_SVGS: {
@@ -177,13 +170,13 @@ function createRouteHarness() {
     handleTestResult: () => {},
     showClaudeTurnAskBubble: (input) => { calls.shown.push(input); return true; },
     clearClaudeTurnAskBubbles: (...args) => calls.cleared.push(args),
+    ...overrides,
   };
   const recorder = {
     acceptedUnlessDnd() {}, droppedByDisabled() {}, droppedByDnd() {},
     droppedInvalidAgent() {}, droppedUnsupported() {},
   };
-  function post(event, payload = {}) {
-    const body = buildStateBody(event, { session_id: "desk-1", ...payload }, () => ({ pid: null }));
+  function postBody(body) {
     return new Promise((resolve) => {
       const req = new EventEmitter();
       req.headers = {};
@@ -204,7 +197,10 @@ function createRouteHarness() {
       });
     });
   }
-  return { calls, post };
+  function post(event, payload = {}) {
+    return postBody(buildStateBody(event, { session_id: "desk-1", ...payload }, () => ({ pid: null })));
+  }
+  return { calls, post, postBody };
 }
 
 const WRAP_UP_PRE = {
@@ -216,7 +212,7 @@ const SID = makeSessionKey({ profileId: "local", rawSessionId: "desk-1" });
 
 describe("/state route surfaces Claude Desktop's wrap_up question", () => {
   it("shows the card from a real hook body and keeps it through Stop and post-Stop phantoms", async () => {
-    const { calls, post } = createRouteHarness();
+    const { calls, post, postBody } = createRouteHarness();
     await post("UserPromptSubmit", { prompt: "review the parser" });
     await post("PreToolUse", { tool_name: "Bash", tool_use_id: "toolu_bash", tool_input: { command: "npm test" } });
     const clearsBeforeAsk = calls.cleared.length;
@@ -227,8 +223,7 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
       sessionId: SID,
       toolUseId: "toolu_wrap_1",
       ask: WRAP_UP_INPUT.ask,
-      recap: WRAP_UP_INPUT.recap,
-      actions: WRAP_UP_INPUT.actions,
+      actions: [{ label: "Fix it" }, { label: "Not now" }],
       sourcePid: calls.shown[0].sourcePid,
       agentPid: calls.shown[0].agentPid,
       cwd: calls.shown[0].cwd,
@@ -236,9 +231,21 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
     });
 
     await post("Stop", { last_assistant_message: "Two tests fail in the parser." });
-    // A prompt-suggestion fork fires PreToolUse for calls that never run.
-    await post("PreToolUse", { tool_name: "AskUserQuestion", tool_use_id: "toolu_phantom" });
-    await post("PreToolUse", { ...WRAP_UP_PRE, tool_use_id: "toolu_phantom_wrap" });
+    // A prompt-suggestion fork fires PreToolUse for calls that never run; the
+    // reported phantoms carry a fresh agent_id, which the hook records as a
+    // subagent and this route excludes.
+    const phantomTool = buildStateBody("PreToolUse", {
+      session_id: "desk-1", tool_name: "AskUserQuestion", tool_use_id: "toolu_phantom",
+      agent_id: "phantom-agent",
+    }, () => ({ pid: null }));
+    const phantomWrap = buildStateBody("PreToolUse", {
+      session_id: "desk-1", tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "toolu_phantom_wrap",
+      tool_input: { ask: "Phantom question?" }, agent_id: "phantom-agent",
+    }, () => ({ pid: null }));
+    assert.ok(phantomTool.subagent_id);
+    assert.ok(phantomWrap.subagent_id);
+    await postBody(phantomTool);
+    await postBody(phantomWrap);
     assert.strictEqual(calls.cleared.length, clearsBeforeAsk, "Stop and post-Stop phantoms must not dismiss the card");
     assert.strictEqual(calls.shown.length, 1, "post-Stop phantoms must not re-show the card");
 
@@ -470,5 +477,208 @@ describe("issue #1326: passive notification predicates", () => {
       assert.equal(isPassiveNotifyEntry(entry), passive, JSON.stringify(entry));
       assert.equal(isNativeQuestionNotify(entry), native, JSON.stringify(entry));
     }
+  });
+});
+
+describe("issue #1326: queued turns, same-turn continuation, and phantoms", () => {
+  it("updates the card when a queued turn starts without UserPromptSubmit", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "First question?", actions: [{ label: "First" }] },
+    });
+    await post("Stop", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t2", prompt_id: "p2",
+      tool_input: { ask: "Queued question?", actions: [{ label: "Second" }] },
+    });
+    assert.strictEqual(calls.shown.length, 2);
+    assert.strictEqual(calls.shown.at(-1).ask, "Queued question?");
+    assert.deepStrictEqual(calls.shown.at(-1).actions, [{ label: "Second" }]);
+  });
+
+  it("clears the card when a queued turn runs an ordinary tool", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "First question?" },
+    });
+    await post("Stop", { prompt_id: "p1" });
+    const cleared = calls.cleared.length;
+    await post("PreToolUse", { tool_name: "Bash", tool_use_id: "t2", prompt_id: "p2", tool_input: { command: "ls" } });
+    assert.strictEqual(calls.cleared.length, cleared + 1);
+  });
+
+  it("clears and re-shows within the same prompt after a vetoed Stop", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "First question?" },
+    });
+    await post("Stop", { prompt_id: "p1" });
+    const cleared = calls.cleared.length;
+    await post("PreToolUse", { tool_name: "Bash", tool_use_id: "t2", prompt_id: "p1", tool_input: { command: "ls" } });
+    assert.strictEqual(calls.cleared.length, cleared + 1);
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t3", prompt_id: "p1",
+      tool_input: { ask: "Continued question?" },
+    });
+    assert.strictEqual(calls.shown.at(-1).ask, "Continued question?");
+  });
+
+  it("documents the known limit: a phantom without agent_id clears or replaces the card", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "Real question?" },
+    });
+    await post("Stop", { prompt_id: "p1" });
+    // Upstream anthropics/claude-code#106339 reports phantoms with a fresh
+    // agent_id. If a build omits it, nothing here can tell the fork apart from
+    // a real queued turn, so this documents the resulting behavior.
+    const cleared = calls.cleared.length;
+    await post("PreToolUse", { tool_name: "AskUserQuestion", tool_use_id: "t-phantom", prompt_id: "p2" });
+    assert.strictEqual(calls.cleared.length, cleared + 1);
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t-phantom-wrap", prompt_id: "p2",
+      tool_input: { ask: "Phantom question?" },
+    });
+    assert.strictEqual(calls.shown.at(-1).ask, "Phantom question?");
+  });
+
+  it("does not revive a retired old tool id after Stop", async () => {
+    const { createClaudeToolPhaseLedger } = require("../src/claude-tool-phase");
+    const ledger = createClaudeToolPhaseLedger();
+    const { calls, post } = createRouteHarness({
+      observeClaudeToolPhase: (sessionId, event, opts) => ledger.observe({
+        sessionId,
+        event,
+        toolUseId: opts.toolUseId,
+        promptId: opts.claudePromptId,
+        subagentId: opts.subagentId,
+        subagentLifecycleSource: opts.subagentLifecycleSource,
+      }),
+    });
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "Real question?" },
+    });
+    await post("Stop", { prompt_id: "p1" });
+    const shown = calls.shown.length;
+    const cleared = calls.cleared.length;
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "Retired question?" },
+    });
+    assert.strictEqual(calls.shown.length, shown);
+    assert.strictEqual(calls.cleared.length, cleared);
+  });
+});
+
+describe("issue #1326: main-thread delegation clears the card", () => {
+  for (const toolName of ["Agent", "Task"]) {
+    it(`clears on a main-thread PreToolUse(${toolName})`, async () => {
+      const { calls, post } = createRouteHarness();
+      await post("UserPromptSubmit", { prompt_id: "p1" });
+      await post("PreToolUse", {
+        tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+        tool_input: { ask: "Real question?" },
+      });
+      const cleared = calls.cleared.length;
+      await post("PreToolUse", { tool_name: toolName, tool_use_id: "agent-1", prompt_id: "p1" });
+      assert.strictEqual(calls.cleared.length, cleared + 1);
+    });
+  }
+
+  it("keeps the card for a subagent's own synthetic Agent start", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "Real question?" },
+    });
+    const cleared = calls.cleared.length;
+    await post("PreToolUse", {
+      tool_name: "Agent", tool_use_id: "agent-child", prompt_id: "p1", agent_id: "child-agent",
+    });
+    assert.strictEqual(calls.cleared.length, cleared);
+  });
+
+  it("keeps the card for native SubagentStart, with or without an agent_id", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "Real question?" },
+    });
+    const cleared = calls.cleared.length;
+    await post("SubagentStart", { agent_id: "child-agent", agent_type: "Explore" });
+    await post("SubagentStart", { agent_type: "Explore" });
+    assert.strictEqual(calls.cleared.length, cleared);
+  });
+});
+
+describe("issue #1326: wrap_up forwards only the fields the card shows", () => {
+  const resolve = () => ({ pid: null });
+
+  it("drops recap and action messages from the hook body", () => {
+    const body = buildStateBody("PreToolUse", {
+      session_id: "s", tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "toolu_wrap",
+      tool_input: WRAP_UP_INPUT,
+    }, resolve);
+    assert.deepStrictEqual(body.claude_turn_ask, {
+      ask: "Fix the parser now?",
+      actions: [{ label: "Fix it" }, { label: "Not now" }],
+    });
+  });
+
+  it("drops recap and action messages in the server normalizer", () => {
+    assert.deepStrictEqual(normalizeClaudeTurnAsk(WRAP_UP_INPUT), {
+      ask: "Fix the parser now?",
+      actions: [{ label: "Fix it" }, { label: "Not now" }],
+    });
+  });
+
+  it("caps ask and label independently in the hook with an ellipsis", () => {
+    const result = buildClaudeTurnAsk(CLAUDE_WRAP_UP_TOOL_NAME, {
+      ask: "a".repeat(1000),
+      recap: "r".repeat(1000),
+      actions: Array.from({ length: 10 }, (_, i) => ({ label: `l${i}`.repeat(40), message: "m".repeat(1000) })),
+    });
+    assert.strictEqual(result.ask.length, 300);
+    assert.ok(result.ask.endsWith("…"));
+    assert.deepStrictEqual(Object.keys(result).sort(), ["actions", "ask"]);
+    assert.strictEqual(result.actions.length, 4);
+    assert.ok(result.actions.every((action) => action.label.length === 60 && action.label.endsWith("…")));
+    assert.ok(result.actions.every((action) => Object.keys(action).join() === "label"));
+  });
+
+  it("caps ask and label independently in the server normalizer with an ellipsis", () => {
+    const result = normalizeClaudeTurnAsk({
+      ask: "a".repeat(1000),
+      recap: "r".repeat(1000),
+      actions: Array.from({ length: 10 }, (_, i) => ({ label: `l${i}`.repeat(40), message: "m".repeat(1000) })),
+    });
+    assert.strictEqual(result.ask.length, 300);
+    assert.ok(result.ask.endsWith("…"));
+    assert.deepStrictEqual(Object.keys(result).sort(), ["actions", "ask"]);
+    assert.strictEqual(result.actions.length, 4);
+    assert.ok(result.actions.every((action) => action.label.length === 60 && action.label.endsWith("…")));
+    assert.ok(result.actions.every((action) => Object.keys(action).join() === "label"));
+  });
+
+  it("does not show the card for a non-Claude wrap_up source", async () => {
+    const { calls, post } = createRouteHarness();
+    await post("UserPromptSubmit", { prompt_id: "p1" });
+    await post("PreToolUse", {
+      tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
+      tool_input: { ask: "Cursor question?" }, cursor_version: "1.2.3",
+    });
+    assert.strictEqual(calls.shown.length, 0);
   });
 });
