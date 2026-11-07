@@ -155,7 +155,7 @@ const TEST_CWD = "/repo/claude-wrap-up";
 
 // One ctx shared across requests, like the real server.
 function createRouteHarness(overrides = {}) {
-  const calls = { shown: [], cleared: [] };
+  const calls = { shown: [], cleared: [], tracked: [], resolved: [] };
   const ctx = {
     STATE_SVGS: {
       idle: "x.svg", thinking: "x.svg", working: "x.svg", juggling: "x.svg", error: "x.svg",
@@ -174,6 +174,8 @@ function createRouteHarness(overrides = {}) {
     handleTestResult: () => {},
     showClaudeTurnAskBubble: (input) => { calls.shown.push(input); return true; },
     clearClaudeTurnAskBubbles: (...args) => calls.cleared.push(args),
+    trackClaudeTurnAskReminder: (payload) => calls.tracked.push(payload),
+    resolveClaudeTurnAskReminder: (sessionId) => calls.resolved.push(sessionId),
     ...overrides,
   };
   const recorder = {
@@ -237,7 +239,10 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
       cwd: TEST_CWD,
       host: null,
     });
+    assert.strictEqual(calls.tracked.length, 1, "showing the card starts the reminder");
+    assert.deepStrictEqual(calls.tracked[0], calls.shown[0], "the reminder re-shows the same card");
 
+    const resolvedBeforeQuiet = calls.resolved.length;
     await post("Stop", { last_assistant_message: "Two tests fail in the parser." });
     // A prompt-suggestion fork fires PreToolUse for calls that never run; the
     // reported phantoms carry a fresh agent_id, which the hook records as a
@@ -256,32 +261,69 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
     await postBody(phantomWrap);
     assert.strictEqual(calls.cleared.length, clearsBeforeAsk, "Stop and post-Stop phantoms must not dismiss the card");
     assert.strictEqual(calls.shown.length, 1, "post-Stop phantoms must not re-show the card");
+    assert.strictEqual(calls.tracked.length, 1, "Stop and post-Stop phantoms must not restart the reminder");
+    assert.strictEqual(calls.resolved.length, resolvedBeforeQuiet, "Stop and post-Stop phantoms must not stop the reminder");
 
     await post("UserPromptSubmit", { prompt: "Fix the two failing parser tests." });
     assert.strictEqual(calls.cleared.length, clearsBeforeAsk + 1);
     assert.strictEqual(calls.cleared.at(-1)[0], SID);
+    assert.strictEqual(calls.resolved.length, resolvedBeforeQuiet + 1);
   });
 
   it("clears when Claude moves on to another tool in the same turn", async () => {
     const { calls, post } = createRouteHarness();
     await post("UserPromptSubmit");
     await post("PreToolUse", WRAP_UP_PRE);
+    assert.strictEqual(calls.tracked.length, 1);
     const before = calls.cleared.length;
+    const resolvedBefore = calls.resolved.length;
     await post("PreToolUse", { tool_name: "Read", tool_use_id: "toolu_read" });
     assert.strictEqual(calls.cleared.length, before + 1);
+    assert.strictEqual(calls.resolved.length, resolvedBefore + 1);
   });
 
   it("clears on a recap-only wrap_up and on SessionEnd", async () => {
     const { calls, post } = createRouteHarness();
     await post("UserPromptSubmit");
     await post("PreToolUse", WRAP_UP_PRE);
+    assert.strictEqual(calls.tracked.length, 1);
     let before = calls.cleared.length;
+    let resolvedBefore = calls.resolved.length;
     await post("PreToolUse", { tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "toolu_recap", tool_input: { recap: "done" } });
     assert.strictEqual(calls.cleared.length, before + 1);
+    assert.strictEqual(calls.resolved.length, resolvedBefore + 1);
     assert.strictEqual(calls.shown.length, 1);
     before = calls.cleared.length;
+    resolvedBefore = calls.resolved.length;
     await post("SessionEnd", { reason: "other" });
     assert.strictEqual(calls.cleared.length, before + 1);
+    assert.strictEqual(calls.resolved.length, resolvedBefore + 1);
+  });
+
+  it("starts the reminder countdown with the card and stops it only when the session moves on", async () => {
+    const { calls, post, postBody } = createRouteHarness();
+    await post("UserPromptSubmit");
+    await post("PreToolUse", WRAP_UP_PRE);
+    assert.equal(calls.tracked.length, 1);
+    assert.deepStrictEqual(calls.tracked[0], calls.shown[0], "the reminder re-shows the same card");
+    const resolvedBefore = calls.resolved.length;
+
+    await post("Stop");
+    assert.equal(calls.resolved.length, resolvedBefore, "Stop keeps the countdown");
+
+    // The prompt-suggestion phantom carries a fresh agent_id, so the hook
+    // records it as a subagent and the route leaves the countdown alone.
+    const phantom = buildStateBody("PreToolUse", {
+      session_id: "desk-1", tool_name: "AskUserQuestion", tool_use_id: "toolu_phantom",
+      agent_id: "phantom-agent",
+    }, () => ({ stablePid: TEST_STABLE_PID, agentPid: TEST_AGENT_PID }));
+    assert.ok(phantom.subagent_id, "the hook tags the phantom as a subagent");
+    await postBody(phantom);
+    assert.equal(calls.tracked.length, 1, "the phantom must not restart the countdown");
+    assert.equal(calls.resolved.length, resolvedBefore, "the phantom must not stop the countdown");
+
+    await post("UserPromptSubmit", { prompt: "继续" });
+    assert.deepStrictEqual(calls.resolved.slice(resolvedBefore), [SID]);
   });
 
   it("ignores wrap_up from a subagent", async () => {
@@ -289,6 +331,8 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
     await post("UserPromptSubmit");
     await post("PreToolUse", { ...WRAP_UP_PRE, agent_id: "sub-1", agent_type: "general-purpose" });
     assert.strictEqual(calls.shown.length, 0);
+    assert.strictEqual(calls.tracked.length, 0);
+    assert.deepStrictEqual(calls.resolved, [SID]);
   });
 });
 
@@ -504,6 +548,8 @@ describe("issue #1326: queued turns, same-turn continuation, and phantoms", () =
     assert.strictEqual(calls.shown.length, 2);
     assert.strictEqual(calls.shown.at(-1).ask, "Queued question?");
     assert.deepStrictEqual(calls.shown.at(-1).actions, [{ label: "Second" }]);
+    assert.strictEqual(calls.tracked.length, 2);
+    assert.deepStrictEqual(calls.tracked.at(-1), calls.shown.at(-1));
   });
 
   it("clears the card when a queued turn runs an ordinary tool", async () => {
@@ -515,8 +561,10 @@ describe("issue #1326: queued turns, same-turn continuation, and phantoms", () =
     });
     await post("Stop", { prompt_id: "p1" });
     const cleared = calls.cleared.length;
+    const resolved = calls.resolved.length;
     await post("PreToolUse", { tool_name: "Bash", tool_use_id: "t2", prompt_id: "p2", tool_input: { command: "ls" } });
     assert.strictEqual(calls.cleared.length, cleared + 1);
+    assert.strictEqual(calls.resolved.length, resolved + 1);
   });
 
   it("clears and re-shows within the same prompt after a vetoed Stop", async () => {
@@ -526,15 +574,19 @@ describe("issue #1326: queued turns, same-turn continuation, and phantoms", () =
       tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
       tool_input: { ask: "First question?" },
     });
+    assert.strictEqual(calls.tracked.length, 1);
     await post("Stop", { prompt_id: "p1" });
     const cleared = calls.cleared.length;
+    const resolved = calls.resolved.length;
     await post("PreToolUse", { tool_name: "Bash", tool_use_id: "t2", prompt_id: "p1", tool_input: { command: "ls" } });
     assert.strictEqual(calls.cleared.length, cleared + 1);
+    assert.strictEqual(calls.resolved.length, resolved + 1);
     await post("PreToolUse", {
       tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t3", prompt_id: "p1",
       tool_input: { ask: "Continued question?" },
     });
     assert.strictEqual(calls.shown.at(-1).ask, "Continued question?");
+    assert.strictEqual(calls.tracked.length, 2);
   });
 
   it("documents the known limit: a phantom without agent_id clears or replaces the card", async () => {
@@ -549,13 +601,16 @@ describe("issue #1326: queued turns, same-turn continuation, and phantoms", () =
     // agent_id. If a build omits it, nothing here can tell the fork apart from
     // a real queued turn, so this documents the resulting behavior.
     const cleared = calls.cleared.length;
+    const resolved = calls.resolved.length;
     await post("PreToolUse", { tool_name: "AskUserQuestion", tool_use_id: "t-phantom", prompt_id: "p2" });
     assert.strictEqual(calls.cleared.length, cleared + 1);
+    assert.strictEqual(calls.resolved.length, resolved + 1);
     await post("PreToolUse", {
       tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t-phantom-wrap", prompt_id: "p2",
       tool_input: { ask: "Phantom question?" },
     });
     assert.strictEqual(calls.shown.at(-1).ask, "Phantom question?");
+    assert.strictEqual(calls.tracked.length, 2);
   });
 
   it("does not revive a retired old tool id after Stop", async () => {
@@ -579,12 +634,16 @@ describe("issue #1326: queued turns, same-turn continuation, and phantoms", () =
     await post("Stop", { prompt_id: "p1" });
     const shown = calls.shown.length;
     const cleared = calls.cleared.length;
+    const tracked = calls.tracked.length;
+    const resolved = calls.resolved.length;
     await post("PreToolUse", {
       tool_name: CLAUDE_WRAP_UP_TOOL_NAME, tool_use_id: "t1", prompt_id: "p1",
       tool_input: { ask: "Retired question?" },
     });
     assert.strictEqual(calls.shown.length, shown);
     assert.strictEqual(calls.cleared.length, cleared);
+    assert.strictEqual(calls.tracked.length, tracked);
+    assert.strictEqual(calls.resolved.length, resolved);
   });
 });
 
@@ -598,8 +657,12 @@ describe("issue #1326: main-thread delegation clears the card", () => {
         tool_input: { ask: "Real question?" },
       });
       const cleared = calls.cleared.length;
+      const resolved = calls.resolved.length;
+      const tracked = calls.tracked.length;
       await post("PreToolUse", { tool_name: toolName, tool_use_id: "agent-1", prompt_id: "p1" });
       assert.strictEqual(calls.cleared.length, cleared + 1);
+      assert.strictEqual(calls.resolved.length, resolved + 1);
+      assert.strictEqual(calls.tracked.length, tracked);
     });
   }
 
@@ -611,10 +674,14 @@ describe("issue #1326: main-thread delegation clears the card", () => {
       tool_input: { ask: "Real question?" },
     });
     const cleared = calls.cleared.length;
+    const resolved = calls.resolved.length;
+    const tracked = calls.tracked.length;
     await post("PreToolUse", {
       tool_name: "Agent", tool_use_id: "agent-child", prompt_id: "p1", agent_id: "child-agent",
     });
     assert.strictEqual(calls.cleared.length, cleared);
+    assert.strictEqual(calls.resolved.length, resolved);
+    assert.strictEqual(calls.tracked.length, tracked);
   });
 
   it("keeps the card for native SubagentStart, with or without an agent_id", async () => {
@@ -625,9 +692,13 @@ describe("issue #1326: main-thread delegation clears the card", () => {
       tool_input: { ask: "Real question?" },
     });
     const cleared = calls.cleared.length;
+    const resolved = calls.resolved.length;
+    const tracked = calls.tracked.length;
     await post("SubagentStart", { agent_id: "child-agent", agent_type: "Explore" });
     await post("SubagentStart", { agent_type: "Explore" });
     assert.strictEqual(calls.cleared.length, cleared);
+    assert.strictEqual(calls.resolved.length, resolved);
+    assert.strictEqual(calls.tracked.length, tracked);
   });
 });
 

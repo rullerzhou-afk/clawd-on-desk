@@ -365,7 +365,7 @@ test("copilot: a pending terminal wait preserves Claude elicitation notification
 test("copilot: main forwards wait getters, combined deletion cleanup and committed refresh", () => {
   const main = require("node:fs").readFileSync(path.resolve(__dirname, "../src/main.js"), "utf8");
   assert.match(main, /getCopilotTerminalWaitSessionIds: \(\) => agentRuntime\?\.getCopilotTerminalWaitSessionIds\(\)/);
-  assert.match(main, /onSessionDeleted: \(sessionId\) => \{\s*agentRuntime\?\.clearKiroDesktopSession\(sessionId\);\s*agentRuntime\?\.clearCopilotTerminalWaitSession\(sessionId\);\s*\}/);
+  assert.match(main, /onSessionDeleted: \(sessionId\) => \{\s*agentRuntime\?\.clearKiroDesktopSession\(sessionId\);\s*agentRuntime\?\.clearCopilotTerminalWaitSession\(sessionId\);\s*(?:claudeTurnAskReminder\.resolve\(sessionId\);\s*)?\}/);
   assert.match(main, /refreshPendingAttention: \(\) => _state\.refreshPendingAttention\(\)/);
   assert.match(main, /hasPendingReminderAttention: \(\) => _state\.hasPendingReminderAttention\(\)/);
   assert.match(main, /getReminderReselectionOptions: \(state\) => _state\.getReminderReselectionOptions\(state\)/);

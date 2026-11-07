@@ -82,6 +82,12 @@ describe("prefs.getDefaults", () => {
     );
   });
 
+  it("defaults the Claude turn-ask reminder off at five minutes", () => {
+    const d = prefs.getDefaults();
+    assert.strictEqual(d.claudeTurnAskReminder, false);
+    assert.strictEqual(d.claudeTurnAskReminderMinutes, 5);
+  });
+
   it("defaults Claude hook management on and agent-triggered cold launch off", () => {
     const d = prefs.getDefaults();
     assert.strictEqual(d.manageClaudeHooksAutomatically, true);

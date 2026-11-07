@@ -371,6 +371,15 @@ describe("updateRegistry pure-data validators", () => {
     }
   });
 
+  it("Claude turn-ask reminder minutes require integers in range", () => {
+    const validate = updateRegistry.claudeTurnAskReminderMinutes;
+    assert.strictEqual(validate(1).status, "ok");
+    assert.strictEqual(validate(120).status, "ok");
+    for (const value of [0, 121, 2.5, NaN, "5"]) {
+      assert.strictEqual(validate(value).status, "error", String(value));
+    }
+  });
+
   it("saved pixel sizes require non-negative finite numbers", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of ["savedPixelWidth", "savedPixelHeight"]) {
