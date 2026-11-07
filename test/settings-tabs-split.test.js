@@ -1035,6 +1035,21 @@ describe("settings tab split", () => {
     }
   });
 
+  it("rounds a fractional reminder-minutes entry before committing", async () => {
+    const harness = createHarness({ tab: "notifications", snapshot: makeSnapshot() });
+    const meta = harness.core.state.mountedControls.sessionCleanupControls
+      .get("claudeTurnAskReminderMinutes");
+    const input = meta.row.querySelector("input");
+    input.focus();
+    input.value = "1.9";
+    input.dispatchEvent({ type: "input" });
+    input.dispatchEvent({ type: "blur" });
+    await harness.settle();
+    assert.deepStrictEqual(harness.updateCalls, [
+      { key: "claudeTurnAskReminderMinutes", value: 2 },
+    ]);
+  });
+
   it("keeps the flattened linkage rules alive", async () => {
     const sessions = createHarness({
       tab: "sessions",

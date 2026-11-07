@@ -2298,8 +2298,9 @@ let recordWindowsProcessChainShadow = () => false;
 
 // #1326 follow-up: re-show an unanswered Claude Desktop wrap_up question (with
 // a sound) once it has waited the configured minutes, if the user opted in.
-// Created before _stateCtx so onSessionDeleted can resolve it; the callbacks
-// only read sessions, the agent gate and the settings store when a timer fires.
+// Created before _stateCtx so onSessionDeleted can resolve it. The minutes are
+// read when a question starts waiting; the switch, the agent gate and the
+// live-session check are read again when the timer fires.
 const claudeTurnAskReminder = createClaudeTurnAskReminder({
   isEnabled: () => _settingsController.get("claudeTurnAskReminder") === true,
   canRemind: (payload) => _runtimeAgentGate.isAgentEnabled("claude-code")

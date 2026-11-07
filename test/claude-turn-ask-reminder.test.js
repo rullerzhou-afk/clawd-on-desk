@@ -155,7 +155,8 @@ describe("createClaudeTurnAskReminder", () => {
   });
 });
 
-describe("reminderDelayMsFromMinutes", () => {  it("clamps to 1–120 minutes and falls back to the default for bad input", () => {
+describe("reminderDelayMsFromMinutes", () => {
+  it("clamps to 1–120 minutes and falls back to the default for bad input", () => {
     assert.equal(reminderDelayMsFromMinutes(5), 5 * 60_000);
     assert.equal(reminderDelayMsFromMinutes(7), 7 * 60_000);
     assert.equal(reminderDelayMsFromMinutes(120), 120 * 60_000);
@@ -170,9 +171,14 @@ describe("main wiring", () => {
   const source = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
 
   it("creates the reminder before the state context and gates it on a live Claude session", () => {
+    const reminderIndex = source.indexOf(
+      "const claudeTurnAskReminder = createClaudeTurnAskReminder({"
+    );
+    const stateCtxIndex = source.indexOf("const _stateCtx = {");
+    assert.ok(reminderIndex >= 0, "the reminder declaration must exist");
+    assert.ok(stateCtxIndex >= 0, "the state context declaration must exist");
     assert.ok(
-      source.indexOf("const claudeTurnAskReminder = createClaudeTurnAskReminder({")
-        < source.indexOf("const _stateCtx = {"),
+      reminderIndex < stateCtxIndex,
       "onSessionDeleted must not read the reminder before it is initialized"
     );
     assert.match(

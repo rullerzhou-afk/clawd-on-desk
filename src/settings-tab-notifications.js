@@ -743,10 +743,7 @@
         descKey: "rowClaudeTurnAskReminderMinutesDesc",
         unitKey: "unitMinutes",
         toDisplay: (minutes) => minutes,
-        fromDisplay: (v) => {
-          const n = parseInt(v, 10);
-          return Number.isFinite(n) ? Math.max(1, Math.min(120, n)) : 5;
-        },
+        fromDisplay: (v) => Math.max(1, Math.min(120, Math.round(v))),
         min: 1,
         max: 120,
       }).row,

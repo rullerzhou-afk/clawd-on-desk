@@ -354,7 +354,8 @@ describe("updateRegistry pure-data validators", () => {
     );
   });
 
-  it("bubble auto-close seconds require integers in range", () => {    const deps = { snapshot: baseSnapshot };
+  it("bubble auto-close seconds require integers in range", () => {
+    const deps = { snapshot: baseSnapshot };
     for (const key of [
       "notificationBubbleAutoCloseSeconds",
       "permissionBubbleAutoCloseSeconds",
