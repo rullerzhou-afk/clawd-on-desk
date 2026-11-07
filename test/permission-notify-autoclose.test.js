@@ -10,6 +10,7 @@ const { describe, it, afterEach, mock } = require("node:test");
 const {
   classifyPermissionInteraction,
 } = require("../src/permission-automation-policy");
+const createSettingsEffectRouter = require("../src/settings-effect-router");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 const tempLogPaths = new Set();
@@ -379,6 +380,41 @@ describe("permission passive notify auto-close refresh", () => {
     assert.deepStrictEqual(api.pendingPermissions.map((entry) => entry.sessionId), ["claude-b"]);
     assert.strictEqual(api.clearClaudeTurnAskBubbles(undefined, "test"), 1);
     assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("issue #1326: turning the notification policy off removes the live Claude card and its window", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    assert.strictEqual(api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), true);
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const bubble = api.pendingPermissions[0].bubble;
+    assert.ok(bubble, "the card must own a bubble window");
+    assert.strictEqual(bubble.destroyed, false);
+
+    let snapshot = { shortcuts: {} };
+    const subscribers = new Set();
+    const controller = {
+      getSnapshot: () => ({ ...snapshot }),
+      subscribe(fn) { subscribers.add(fn); return () => subscribers.delete(fn); },
+      subscribeKey() { return () => {}; },
+    };
+    const router = createSettingsEffectRouter({
+      settingsController: controller,
+      BrowserWindow: { getAllWindows: () => [] },
+      clearClaudeTurnAskBubbles: (...args) => api.clearClaudeTurnAskBubbles(...args),
+    });
+    router.start();
+    try {
+      const changes = { notificationBubbleAutoCloseSeconds: 0 };
+      snapshot = { ...snapshot, ...changes };
+      for (const fn of [...subscribers]) fn({ changes, snapshot: { ...snapshot } });
+      assert.strictEqual(api.pendingPermissions.length, 0, "the card must leave the pending stack");
+      mock.timers.tick(250);
+      assert.strictEqual(bubble.destroyed, true, "the bubble window must be destroyed");
+    } finally {
+      api.cleanup();
+    }
   });
 
   it("does not show the Claude wrap_up card when Claude bubbles or notifications are off", () => {

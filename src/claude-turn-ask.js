@@ -10,7 +10,8 @@
 // This module owns the two pieces that are easy to get wrong, so the /state
 // route stays a thin caller and the rules are unit-testable:
 //   1. normalizeClaudeTurnAsk — re-validate and cap the fields the hook
-//      forwarded (the /state body is a local-only but still untrusted input).
+//      forwarded (/state listens on loopback only, but every request body is
+//      still untrusted input, and remote sessions can relay events here).
 //   2. decideClaudeTurnAskAction — the stateless show / clear / ignore rules.
 //
 // The answer can only be given in Claude Desktop (a button sends the next user

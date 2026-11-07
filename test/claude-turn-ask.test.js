@@ -149,6 +149,10 @@ describe("clawd-hook forwards the wrap_up question", () => {
   });
 });
 
+const TEST_STABLE_PID = 4242;
+const TEST_AGENT_PID = 4343;
+const TEST_CWD = "/repo/claude-wrap-up";
+
 // One ctx shared across requests, like the real server.
 function createRouteHarness(overrides = {}) {
   const calls = { shown: [], cleared: [] };
@@ -198,7 +202,10 @@ function createRouteHarness(overrides = {}) {
     });
   }
   function post(event, payload = {}) {
-    return postBody(buildStateBody(event, { session_id: "desk-1", ...payload }, () => ({ pid: null })));
+    return postBody(buildStateBody(event, { session_id: "desk-1", ...payload }, () => ({
+      stablePid: TEST_STABLE_PID,
+      agentPid: TEST_AGENT_PID,
+    })));
   }
   return { calls, post, postBody };
 }
@@ -207,6 +214,7 @@ const WRAP_UP_PRE = {
   tool_name: CLAUDE_WRAP_UP_TOOL_NAME,
   tool_use_id: "toolu_wrap_1",
   tool_input: WRAP_UP_INPUT,
+  cwd: TEST_CWD,
 };
 const SID = makeSessionKey({ profileId: "local", rawSessionId: "desk-1" });
 
@@ -224,10 +232,10 @@ describe("/state route surfaces Claude Desktop's wrap_up question", () => {
       toolUseId: "toolu_wrap_1",
       ask: WRAP_UP_INPUT.ask,
       actions: [{ label: "Fix it" }, { label: "Not now" }],
-      sourcePid: calls.shown[0].sourcePid,
-      agentPid: calls.shown[0].agentPid,
-      cwd: calls.shown[0].cwd,
-      host: calls.shown[0].host,
+      sourcePid: TEST_STABLE_PID,
+      agentPid: TEST_AGENT_PID,
+      cwd: TEST_CWD,
+      host: null,
     });
 
     await post("Stop", { last_assistant_message: "Two tests fail in the parser." });
