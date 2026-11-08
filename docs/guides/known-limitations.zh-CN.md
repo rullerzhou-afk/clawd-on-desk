@@ -5,6 +5,7 @@
 | 限制 | 说明 |
 |------|------|
 | **Clawd 降级：hook 可能重复** | 降回 1.5.0 或更早的版本时，旧版不认识 exec 写法，会再加一份 hook，事件可能重复上报；再升回来会自动合并，因此卸载旧版前最好先升回来。 |
+| **Remote SSH：远程主机上排在 Clawd 前面的第三方本机 HTTP 审批 hook 会让部署校验失败** | 如果远程 Claude Code 的设置里已经有另一个指向 `127.0.0.1` 的 `PermissionRequest` HTTP hook，并且排在 Clawd 自己的条目前面，「部署 / 修复 Hook」装完后可能以校验失败（`permission_nonce_mismatch`）中止。对方的配置不会被改动或删除。请在远程主机上把那条 hook 挪到 Clawd 的条目之后，或先移除，再重新部署。后续版本会让校验跳过别人的 hook。 |
 | **macOS 桌宠置顶与全屏（#1275）** | 修改桌宠置顶需要重启 Clawd 后生效。自动隐藏只识别原生全屏 Space（分屏也算），无法识别播放器自行铺满普通窗口。多屏按活动 Space 判断，可能与桌宠所在屏不同。 |
 | **动态本地端口与已运行的 CLI 会话** | 常规的 23333–23337 范围不可用时，Clawd 会使用已保存的动态端口提示，或由系统分配端口。新启动的原生客户端通过 `~/.clawd/runtime.json` 发现它。Claude / CodeBuddy 的 HTTP hook 写的是固定 URL，端口变化后，已在运行的 CLI 可能需要新开会话或重新加载 hook。已保存的端口提示能减少漂移，但无法杜绝。runtime 文件写入失败会关闭动态监听；请检查 runtime 目录的权限后重启。 |
 | **动态端口：WSL、手动隧道与旧版本** | 使用独立 home 的 WSL 客户端只扫描 23333–23337，发现不了范围之外的 Windows 端口；Pair 会报告这个限制，这与 NAT / mirrored 网络配置无关。Windows Node interop 可以读取 Windows 的 runtime。手写死端口的 SSH 转发必须跟着实际端口走；托管的 Remote SSH 保持原有的固定远端 identity 端口。旧版客户端和降级后的卸载器可能不认识新的 `/permission/clawd-on-desk` URL；降级前请先用当前版本修复。手机预览使用独立的 23334–23338 局域网监听，这次改动没有给它加动态端口兜底。 |
@@ -67,7 +68,7 @@
 
 「权限与审批 → 本机处理 → 按工具」保留 Codex 摘要行，「修改」会打开 Codex 卡片，滚动到并聚焦上述高级开关；这一块只在 Codex 接入后显示。升级时，旧 Intercept / Native 会统一迁到 Auto 一次，因为旧版保存了 Intercept 默认值，无法区分是否为用户主动选择；升级后重新打开「所有审批都交给桌宠」，此后的 Intercept 选择会保留。
 
-Auto 有界读取准确的本机 hook transcript，并核对 session / turn，只接管有人工 reviewer 证据的 Bash / 文件审批。自动 reviewer 或不确定证据立即返回 no-decision，绝不产生 Allow / Deny。Codex 的公开 hook 合约不提供请求实际生效的 reviewer（#23465）；本机 MCP / app 可能覆盖回合设置，因此仍留在 Codex。记录缺失、过旧、不可读、行不完整、快照后的模式变化、长回合上下文落到读取预算外，以及远程 / WSL 请求，同样留在 Codex；Auto 不保证每个手动请求都出现 Clawd 气泡。对于本机请求，Codex 选择的自动 reviewer 仍由 Codex 决定；对于远程 / WSL，Clawd 读不到远端 transcript，如果 Clawd 的全局自动化会立即放行 Bash / apply_patch，则由 Clawd 回答并覆盖 Codex 的自动 reviewer。
+Auto 有界读取准确的本机 hook transcript，并核对 session / turn，只接管有人工 reviewer 证据的 Bash / 文件审批。自动 reviewer 或不确定证据立即返回 no-decision，绝不产生 Allow / Deny。Codex 的公开 hook 合约不提供请求实际生效的 reviewer（#23465）；本机 MCP / app 可能覆盖回合设置，因此仍留在 Codex。记录缺失、过旧、不可读、行不完整、快照后的模式变化、长回合上下文落到读取预算外，以及远程 / WSL 请求，同样留在 Codex；Auto 不保证每个手动请求都出现 Clawd 气泡。对于本机请求，Codex 选择的自动 reviewer 仍由 Codex 决定；对于远程 / WSL，Clawd 读不到远端 transcript，如果 Clawd 的全局自动化会立即放行 Bash / apply_patch，则由 Clawd 回答并覆盖 Codex 的自动 reviewer。被破坏性操作提醒拦住的请求、会话覆盖、交互式子代理、本机 MCP / app，以及远程的 `codex_apps` 连接器命名空间仍留在 Codex。
 
 **远程 MCP 跟随同一套全局自动化：** 当 Codex 处于 Auto、请求来自非本机、且全局权限自动化（仅问题提示 / 自动放行）会立即放行时，Clawd 也会认领普通的命名空间 MCP 工具。这会越过远端 Codex 上该插件设置的 `approval_mode = "prompt"`；授权依据是用户开启的全局自动化。`codex_apps` 连接器命名空间不在此列，仍交回 Codex；本机 MCP、会话覆盖、交互式子代理和被暂扣的请求同样不认领。破坏性动作提醒只扫描 shell / 文件命令，因此不会暂扣 MCP 调用。
 
