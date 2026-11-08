@@ -89,8 +89,11 @@ function createHarness({ dragLocked = false, includeReleaseEntry = true } = {}) 
   };
 }
 
-// Linux hides the menu owner a moment after close.
-const ownerHideDelay = () => new Promise((resolve) => setTimeout(resolve, 560));
+// Linux hides the menu owner a moment after close; other platforms hide it
+// synchronously, so only Linux has to wait.
+const ownerHideDelay = () => (process.platform === "linux"
+  ? new Promise((resolve) => setTimeout(resolve, 560))
+  : Promise.resolve());
 
 describe("context menu close releases a stranded drag lock (#1260)", () => {
   it("releases the lock through the shared recovery when the menu closes with the lock held", async () => {
