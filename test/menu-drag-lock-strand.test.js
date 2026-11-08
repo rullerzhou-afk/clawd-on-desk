@@ -89,14 +89,18 @@ function createHarness({ dragLocked = false, includeReleaseEntry = true } = {}) 
   };
 }
 
+// Linux hides the menu owner a moment after close.
+const ownerHideDelay = () => new Promise((resolve) => setTimeout(resolve, 560));
+
 describe("context menu close releases a stranded drag lock (#1260)", () => {
-  it("releases the lock through the shared recovery when the menu closes with the lock held", () => {
+  it("releases the lock through the shared recovery when the menu closes with the lock held", async () => {
     const h = createHarness({ dragLocked: true });
     const close = h.popup();
     assert.strictEqual(h.menuOpen, true, "the popup marks the menu open");
     close();
     assert.strictEqual(h.releaseAttempts, 1, "close must run the recovery entry");
     assert.strictEqual(h.menuOpen, false);
+    await ownerHideDelay();
     assert.ok(h.calls.includes("owner.hide"), "the owner hides as usual");
   });
 
@@ -108,11 +112,12 @@ describe("context menu close releases a stranded drag lock (#1260)", () => {
     assert.strictEqual(h.menuOpen, false);
   });
 
-  it("stays inert when no recovery entry is available on the ctx", () => {
+  it("stays inert when no recovery entry is available on the ctx", async () => {
     const h = createHarness({ dragLocked: true, includeReleaseEntry: false });
     const close = h.popup();
     assert.doesNotThrow(() => close());
     assert.strictEqual(h.menuOpen, false);
+    await ownerHideDelay();
     assert.ok(h.calls.includes("owner.hide"), "the rest of the close path still runs");
   });
 });
