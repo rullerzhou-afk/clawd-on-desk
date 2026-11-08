@@ -2,6 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const path = require("path");
 
 const {
   addClaudeConfigDir,
@@ -10,8 +11,10 @@ const {
 } = require("../src/settings-actions-claude-config-dirs");
 const { commandRegistry } = require("../src/settings-actions");
 
-const PRIMARY = "/home/u/.claude";
-const WORK = "/home/u/.claude-work";
+// Host absolute paths: the commands normalize folders with the host's path
+// rules, so POSIX literals would not round-trip on Windows.
+const PRIMARY = path.resolve("/home/u/.claude");
+const WORK = path.resolve("/home/u/.claude-work");
 
 function snapshot(configDirs, extra = {}) {
   return {
@@ -48,7 +51,7 @@ describe("Claude config folder settings commands", () => {
 
   it("installs hooks before recording a new folder", async () => {
     const { calls, deps: d } = deps(snapshot());
-    const result = await addClaudeConfigDir({ dir: `${WORK}/` }, d);
+    const result = await addClaudeConfigDir({ dir: `${WORK}${path.sep}` }, d);
     assert.deepStrictEqual(calls.install, [WORK]);
     assert.strictEqual(result.status, "ok");
     assert.deepStrictEqual(result.commit.agents["claude-code"].configDirs, [{ dir: WORK, label: "" }]);
@@ -106,6 +109,6 @@ describe("Claude config folder settings commands", () => {
       { dir: PRIMARY, label: "personal" },
       { dir: WORK, label: "" },
     ]);
-    assert.strictEqual(setClaudeConfigDirLabel({ dir: "/elsewhere", label: "x" }, d).status, "error");
+    assert.strictEqual(setClaudeConfigDirLabel({ dir: path.resolve("/elsewhere"), label: "x" }, d).status, "error");
   });
 });
