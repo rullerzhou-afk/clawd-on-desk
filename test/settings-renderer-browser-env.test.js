@@ -21460,6 +21460,40 @@ describe("settings renderer browser environment", () => {
       .map((row) => row.querySelector(".row-label")._textContent);
   }
 
+  for (const installed of [false, true]) {
+    it(`PR #1329 follow-up: adding a folder shows the ${installed ? "installed" : "listed"} toast`, async () => {
+      const harness = loadAgentsTabForTest({
+        i18nStrings: loadSettingsI18nForTest(),
+        snapshot: { agents: { "claude-code": { integrationInstalled: true, enabled: true } } },
+        agentMetadata: [{ id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} }],
+        settingsAPI: {
+          getClaudeConfigDirs: async () => ({ status: "ok", dirs: [] }),
+          pickClaudeConfigDir: async () => ({ status: "ok", path: "/profile-work" }),
+          command: async () => ({ status: "ok", installed }),
+        },
+      });
+      const toasts = [];
+      harness.core.ops.showToast = (message) => toasts.push(message);
+      harness.core.ops.requestRender({ content: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.content.querySelector(".claude-config-dir-add").click();
+      await new Promise((resolve) => setImmediate(resolve));
+      const strings = loadSettingsI18nForTest();
+      const key = installed ? "toastClaudeConfigDirAdded" : "toastClaudeConfigDirListed";
+      assert.strictEqual(typeof strings.en[key], "string");
+      assert.deepStrictEqual(toasts, [strings.en[key]]);
+    });
+  }
+
+  it("PR #1329 follow-up: translates the listed-only folder toast in every supported language", () => {
+    const strings = loadSettingsI18nForTest();
+    for (const lang of SUPPORTED_LANGS) {
+      assert.strictEqual(typeof strings[lang].toastClaudeConfigDirListed, "string", lang);
+      assert.ok(strings[lang].toastClaudeConfigDirListed.length > 0, lang);
+      assert.notStrictEqual(strings[lang].toastClaudeConfigDirListed, strings[lang].toastClaudeConfigDirAdded, lang);
+    }
+  });
+
   it("lists Claude config folders with labels and removes only extra folders (#1250)", async () => {
     const calls = [];
     const harness = loadAgentsTabForTest({

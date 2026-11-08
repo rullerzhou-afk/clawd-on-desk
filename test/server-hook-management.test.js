@@ -1924,7 +1924,7 @@ function clawdHookCommandCount(settingsPath) {
 }
 
 describe("server Claude hooks across extra config folders", () => {
-  function setup() {
+  function setup(overrides = {}) {
     const fs = require("node:fs");
     const os = require("node:os");
     const path = require("node:path");
@@ -1935,13 +1935,20 @@ describe("server Claude hooks across extra config folders", () => {
     fs.mkdirSync(primary, { recursive: true });
     fs.mkdirSync(work, { recursive: true });
     let configDirs = [{ dir: work, label: "" }];
+    const watcherCalls = [];
     const { api } = makeServer({
       syncClawdHooksImpl: undefined,
       claudeQuotaCollectionEnabled: false,
       homeDir: home,
       claudeSettingsPath: path.join(primary, "settings.json"),
-      fs: undefined,
+      fs: { ...fs, watch: (_dir, callback) => new FakeWatcher(callback) },
       getClaudeConfigDirs: () => configDirs,
+      createClaudeSettingsWatcherImpl: ({ claudeSettingsDir: dir }) => ({
+        start: () => watcherCalls.push(["start", dir]),
+        stop: () => watcherCalls.push(["stop", dir]),
+        getHealthStatus: () => ({ status: "healthy", issues: [] }),
+      }),
+      ...overrides,
     });
     return {
       api,
@@ -1951,7 +1958,11 @@ describe("server Claude hooks across extra config folders", () => {
       work,
       settings: (dir) => path.join(dir, "settings.json"),
       setConfigDirs: (next) => { configDirs = next; },
-      cleanup: () => fs.rmSync(root, { recursive: true, force: true }),
+      watcherCalls,
+      cleanup: () => {
+        api.cleanup();
+        fs.rmSync(root, { recursive: true, force: true });
+      },
     };
   }
 
@@ -2020,4 +2031,238 @@ describe("server Claude hooks across extra config folders", () => {
       t.cleanup();
     }
   }));
+
+  function subscribeConfigDirWatchers(controller, server) {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const vm = require("node:vm");
+    const source = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
+    // Run the actual composition-root subscription without loading Electron.
+    const start = source.indexOf("function _claudeConfigDirWatcherKey(");
+    const end = source.indexOf("let _remoteSshInstallationIdentity =", start);
+    assert.ok(start >= 0 && end > start, "main must subscribe to committed config folder changes");
+    vm.runInNewContext(source.slice(start, end), {
+      ...require("../hooks/claude-config-dirs"),
+      _settingsController: controller,
+      _server: server,
+    });
+  }
+
+  it("PR #1329 follow-up: starts an added folder watcher after prefs commit, ignoring label-only changes", async () => withIsolatedClaudeProfileRegister(async () => {
+    const { createSettingsController } = require("../src/settings-controller");
+    const prefs = require("../src/prefs");
+    const path = require("node:path");
+    let controller;
+    const t = setup({ getClaudeConfigDirs: () => controller ? controller.get("agents")["claude-code"].configDirs : [] });
+    try {
+      const prefsPath = path.join(t.root, "prefs.json");
+      controller = createSettingsController({
+        prefsPath,
+        injectedDeps: {
+          primaryClaudeConfigDir: t.primary,
+          installClaudeConfigDir: async (dir) => {
+            const result = await t.api.installClaudeConfigDir(dir);
+            assert.deepStrictEqual(t.watcherCalls, [], "no extra watcher before commit");
+            return result;
+          },
+          uninstallClaudeConfigDir: (dir) => t.api.uninstallClaudeConfigDir(dir),
+        },
+      });
+      let syncs = 0;
+      subscribeConfigDirWatchers(controller, {
+        syncClaudeConfigDirWatchers() {
+          syncs++;
+          assert.deepStrictEqual(prefs.load(prefsPath).snapshot.agents, controller.get("agents"));
+          t.api.syncClaudeConfigDirWatchers();
+        },
+      });
+      t.api.startClaudeSettingsWatcher();
+      const added = await controller.applyCommand("addClaudeConfigDir", { dir: t.work });
+      assert.strictEqual(added.status, "ok", JSON.stringify(added));
+      assert.strictEqual(added.installed, true);
+      assert.deepStrictEqual(t.watcherCalls, [["start", t.work]]);
+      assert.strictEqual(syncs, 1);
+      const renamed = await controller.applyCommand("setClaudeConfigDirLabel", { dir: t.work, label: "Job" });
+      assert.strictEqual(renamed.status, "ok");
+      const toggled = await controller.applyCommand("setAgentFlag", { agentId: "codex", flag: "permissionsEnabled", value: false });
+      assert.strictEqual(toggled.status, "ok");
+      assert.strictEqual(controller.get("agents").codex.permissionsEnabled, false);
+      assert.strictEqual(syncs, 1, "labels and unrelated agent flags do not reconcile watchers");
+      const removed = await controller.applyCommand("removeClaudeConfigDir", { dir: t.work });
+      assert.strictEqual(removed.status, "ok", JSON.stringify(removed));
+      assert.strictEqual(syncs, 2);
+      assert.deepStrictEqual(t.watcherCalls, [["start", t.work], ["stop", t.work]]);
+    } finally {
+      t.cleanup();
+    }
+  }));
+
+  it("PR #1329 follow-up: normalizes folder comparisons and skips locked prefs subscriptions", () => {
+    const path = require("node:path");
+    const work = path.resolve("profile-work");
+    const personal = path.resolve("profile-personal");
+    let agents = { "claude-code": { configDirs: [{ dir: work, label: "Job" }, { dir: personal }] } };
+    let locked = false;
+    let listener;
+    let syncs = 0;
+    subscribeConfigDirWatchers({
+      get: () => agents,
+      isLocked: () => locked,
+      subscribeKey(key, callback) { assert.strictEqual(key, "agents"); listener = callback; },
+    }, { syncClaudeConfigDirWatchers: () => syncs++ });
+    const notify = (configDirs) => {
+      agents = { "claude-code": { configDirs } };
+      listener(agents, { agents });
+    };
+    notify([{ dir: work + path.sep, label: "Other" }, { dir: personal }]);
+    assert.strictEqual(syncs, 0);
+    notify([{ dir: personal }, { dir: work, label: "Other" }]);
+    assert.strictEqual(syncs, 0, "reordering extra folders must not reconcile watchers");
+    const differentlyCasedWork = path.resolve("PROFILE-WORK");
+    notify([{ dir: personal }, { dir: differentlyCasedWork, label: "Other" }]);
+    const caseChangeSyncs = process.platform === "darwin" || process.platform === "win32" ? 0 : 1;
+    assert.strictEqual(syncs, caseChangeSyncs, "case-only changes follow the host's folder comparison rules");
+    locked = true;
+    notify([]);
+    assert.strictEqual(syncs, caseChangeSyncs);
+    locked = false;
+    notify([]);
+    assert.strictEqual(syncs, caseChangeSyncs + 1, "a locked change must not advance the committed directory baseline");
+  });
+
+  it("PR #1329 follow-up: retries the same folder change after watcher synchronization throws", () => {
+    const path = require("node:path");
+    let listener;
+    let attempts = 0;
+    subscribeConfigDirWatchers({
+      get: () => ({ "claude-code": { configDirs: [] } }),
+      isLocked: () => false,
+      subscribeKey(key, callback) { assert.strictEqual(key, "agents"); listener = callback; },
+    }, {
+      syncClaudeConfigDirWatchers() {
+        attempts++;
+        if (attempts === 1) throw new Error("watcher synchronization failed");
+      },
+    });
+    const agents = { "claude-code": { configDirs: [{ dir: path.resolve("profile-work") }] } };
+    assert.throws(() => listener(agents), /watcher synchronization failed/);
+    listener(agents);
+    assert.strictEqual(attempts, 2, "the failed sync must leave the previous comparison baseline intact");
+    listener(agents);
+    assert.strictEqual(attempts, 2, "a successful sync advances the baseline");
+  });
+
+  it("PR #1329 follow-up: reconciles extra watchers only while the primary watcher is running", () => {
+    const t = setup();
+    try {
+      t.api.syncClaudeConfigDirWatchers();
+      assert.deepStrictEqual(t.watcherCalls, []);
+      t.api.startClaudeSettingsWatcher();
+      assert.deepStrictEqual(t.watcherCalls, [["start", t.work]]);
+      t.api.stopClaudeSettingsWatcher();
+      t.api.syncClaudeConfigDirWatchers();
+      assert.deepStrictEqual(t.watcherCalls, [["start", t.work], ["stop", t.work]]);
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  for (const fails of [false, true]) {
+    it(`PR #1329 follow-up: stops a folder watcher before uninstall${fails ? " and restores it on failure" : " until successful prefs removal"}`, async () => {
+      const t = setup();
+      try {
+        t.api.startClaudeSettingsWatcher();
+        await withPatchedInstallModule({
+          unregisterHooksAsync: async () => {
+            assert.deepStrictEqual(t.watcherCalls, [["start", t.work], ["stop", t.work]], "stop before touching settings");
+            if (fails) throw new Error("settings.json is not writable");
+            return { removed: 1, changed: true };
+          },
+        }, async () => {
+          const result = await t.api.uninstallClaudeConfigDir(t.work);
+          assert.strictEqual(result.status, fails ? "error" : "ok");
+          assert.deepStrictEqual(t.watcherCalls, fails
+            ? [["start", t.work], ["stop", t.work], ["start", t.work]]
+            : [["start", t.work], ["stop", t.work]]);
+          if (!fails) {
+            t.setConfigDirs([]);
+            t.api.syncClaudeConfigDirWatchers();
+            assert.strictEqual(t.watcherCalls.length, 2, "successful removal must not recreate the watcher");
+          }
+        });
+      } finally {
+        t.cleanup();
+      }
+    });
+  }
+
+  it("PR #1329 follow-up: rejects an extra folder install whose post-write verification fails", async () => {
+    const t = setup();
+    try {
+      require("node:fs").writeFileSync(t.settings(t.work), "{}");
+      await withPatchedInstallModule({ registerHooksAsync: async () => ({ added: 1, updated: 0, removed: 0 }) }, async () => {
+        const result = await t.api.installClaudeConfigDir(t.work);
+        assert.strictEqual(result.status, "error");
+        assert.match(result.message, /did not verify healthy/);
+        assert.ok(result.verifyIssues.length > 0);
+      });
+    } finally {
+      t.cleanup();
+    }
+  });
+
+  it("PR #1329 follow-up: reports partial uninstall failure with backups and keeps the Settings installation intent", async () => withIsolatedClaudeProfileRegister(async () => {
+    const fs = require("node:fs");
+    const path = require("node:path");
+    const { uninstallAgentIntegration } = require("../src/settings-actions-agents");
+    const t = setup();
+    try {
+      const other = path.join(t.home, ".claude-other");
+      fs.mkdirSync(other);
+      t.setConfigDirs([{ dir: t.work }, { dir: other }]);
+      await t.api.syncClawdHooks({ source: "startup", automatic: true });
+      fs.writeFileSync(t.settings(t.work), "{broken JSON");
+      const result = await t.api.uninstallClaudeHooks({ source: "settings", automatic: false });
+      assert.strictEqual(result.status, "error", JSON.stringify(result));
+      assert.ok(result.message.includes(t.work));
+      assert.strictEqual(result.changed, true);
+      assert.ok(result.removed > 0);
+      assert.ok(result.hooks.removed > 0);
+      assert.ok(Object.hasOwn(result, "statusline"));
+      assert.deepStrictEqual(result.configDirs.map(({ dir, status }) => [dir, status]), [[t.work, "error"], [other, "ok"]]);
+      assert.ok(result.backupPaths.includes(result.hooks.backupPath));
+      assert.ok(result.backupPaths.includes(result.configDirs[1].backupPath));
+      assert.ok(result.backupPaths.every((backup) => fs.existsSync(backup)));
+      assert.strictEqual(clawdHookCommandCount(t.settings(t.primary)), 0);
+      assert.strictEqual(clawdHookCommandCount(t.settings(other)), 0);
+      assert.strictEqual(fs.readFileSync(t.settings(t.work), "utf8"), "{broken JSON");
+      let stopped = false;
+      const action = await uninstallAgentIntegration({ agentId: "claude-code" }, {
+        snapshot: { agents: { "claude-code": { enabled: true, integrationInstalled: true } } },
+        uninstallIntegrationForAgent: async () => result,
+        stopMonitorForAgent: () => { stopped = true; },
+      });
+      assert.strictEqual(action.status, "error");
+      assert.strictEqual(action.commit, undefined);
+      assert.strictEqual(stopped, false);
+    } finally {
+      t.cleanup();
+    }
+  }));
+
+  for (const source of ["settings-watch", "periodic-health", "startup", "settings", "doctor"]) {
+    it(`PR #1329 follow-up: ${source} ${source === "settings-watch" || source === "periodic-health" ? "repairs only the primary folder" : "also installs extra folders"}`, async () => withIsolatedClaudeProfileRegister(async () => {
+      const t = setup();
+      try {
+        const result = await t.api.syncClawdHooks({ source, automatic: true });
+        assert.strictEqual(result.status, "ok");
+        assert.ok(clawdHookCommandCount(t.settings(t.primary)) > 0);
+        const watcherRepair = source === "settings-watch" || source === "periodic-health";
+        assert.strictEqual(clawdHookCommandCount(t.settings(t.work)) > 0, !watcherRepair);
+      } finally {
+        t.cleanup();
+      }
+    }));
+  }
+
 });

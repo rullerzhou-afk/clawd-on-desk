@@ -111,4 +111,25 @@ describe("Claude config folder settings commands", () => {
     ]);
     assert.strictEqual(setClaudeConfigDirLabel({ dir: path.resolve("/elsewhere"), label: "x" }, d).status, "error");
   });
+
+  it("PR #1329 follow-up: reports whether adding a folder actually installed hooks", async () => {
+    for (const flags of [
+      { manageClaudeHooksAutomatically: false },
+      { enabled: false },
+      { integrationInstalled: false },
+      {},
+    ]) {
+      const snap = snapshot();
+      if ("manageClaudeHooksAutomatically" in flags) snap.manageClaudeHooksAutomatically = flags.manageClaudeHooksAutomatically;
+      else Object.assign(snap.agents["claude-code"], flags);
+      const { calls, deps: d } = deps(snap);
+      const result = await addClaudeConfigDir({ dir: WORK }, d);
+      const installed = Object.keys(flags).length === 0;
+      assert.strictEqual(result.status, "ok");
+      assert.strictEqual(result.installed, installed);
+      assert.strictEqual(calls.install.length, installed ? 1 : 0);
+      assert.deepStrictEqual(result.commit.agents["claude-code"].configDirs, [{ dir: WORK, label: "" }]);
+    }
+  });
+
 });

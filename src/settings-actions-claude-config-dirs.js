@@ -8,8 +8,8 @@
 // hooks so sessions from every profile reach the one pet, and rename the
 // label shown next to their sessions.
 //
-// Hooks are written (or removed) before prefs change, through the server's
-// Claude hook queue, so a folder is only listed once its hooks verified.
+// While hook management is enabled, installs verify before prefs change through
+// the server's Claude hook queue. Otherwise adding a folder only records it.
 
 const {
   MAX_CLAUDE_CONFIG_DIRS,
@@ -78,7 +78,8 @@ async function addClaudeConfigDir(payload, deps = {}) {
   if (entries.length >= MAX_CLAUDE_CONFIG_DIRS) {
     return { status: "error", message: `At most ${MAX_CLAUDE_CONFIG_DIRS} Claude config folders can be added` };
   }
-  if (shouldWriteHooks(snapshot)) {
+  const installed = shouldWriteHooks(snapshot);
+  if (installed) {
     if (typeof deps.installClaudeConfigDir !== "function") {
       return { status: "error", message: "Claude config folder install is unavailable" };
     }
@@ -93,7 +94,7 @@ async function addClaudeConfigDir(payload, deps = {}) {
     }
   }
   const label = normalizeClaudeConfigDirLabel(payload.label);
-  return { status: "ok", commit: buildCommit(snapshot, [...entries, { dir, label }]) };
+  return { status: "ok", installed, commit: buildCommit(snapshot, [...entries, { dir, label }]) };
 }
 
 async function removeClaudeConfigDir(payload, deps = {}) {
