@@ -120,12 +120,23 @@ function compareVersions(v1, v2) {
   return 0;
 }
 
+function getUpdateHttpStatus(err) {
+  const status = Number(err && (err.statusCode || err.status || (err.response && err.response.status)));
+  if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
+  const match = /^HTTP_ERROR_([1-5]\d{2})$/i.exec(String(err && err.code || ""));
+  return match ? Number(match[1]) : null;
+}
+
 function isUpdate404Error(err) {
-  return !!(err && (
-    err.code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND" ||
-    String(err.message || "").includes("404") ||
-    /Cannot find latest(?:-[^/\\\s]+)?\.yml/i.test(String(err.message || ""))
-  ));
+  if (!err) return false;
+  const status = getUpdateHttpStatus(err);
+  if (status !== null) return status === 404;
+  // electron-updater includes response headers/body in messages. Only legacy
+  // error prefixes can imply 404; a request ID such as F404 is not a status.
+  const message = getErrorMessage(err);
+  return err.code === "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND" ||
+    /^(?:HTTP(?: error| status)?[:\s]+)?404\b/i.test(message) ||
+    /^Cannot find latest(?:-[^/\\\s]+)?\.yml\b/i.test(message);
 }
 
 function getErrorMessage(err) {
@@ -194,7 +205,7 @@ function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LE
 
 function classifyUpdateError(err, meta = {}) {
   const code = String(err && err.code || "").toUpperCase();
-  const status = Number(err && (err.statusCode || err.status || (err.response && err.response.status)));
+  const status = getUpdateHttpStatus(err);
   const text = getErrorMessage(err).toLowerCase();
   const phase = String(meta.phase || "").toLowerCase();
   const mode = String(meta.mode || "").toLowerCase();
@@ -202,7 +213,7 @@ function classifyUpdateError(err, meta = {}) {
   if (["ERR_UPDATER_ZIP_FILE_NOT_FOUND", "ERR_UPDATER_NO_FILES_PROVIDED"].includes(code)) {
     return "NO_COMPATIBLE_ASSET";
   }
-  if ((meta.releaseConfirmed === true) && (status === 404 || isUpdate404Error(err))) return "NO_COMPATIBLE_ASSET";
+  if (meta.releaseConfirmed === true && isUpdate404Error(err)) return "NO_COMPATIBLE_ASSET";
   if (["ENETDOWN", "ENETUNREACH", "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED"].includes(code)
       || text.includes("network is offline") || text.includes("network down") || text.includes("offline")) return "NETWORK_OFFLINE";
   if (["ENOTFOUND", "EAI_AGAIN", "ERR_NAME_NOT_RESOLVED"].includes(code)
