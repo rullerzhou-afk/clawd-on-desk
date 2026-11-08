@@ -186,8 +186,8 @@ function parseBatchObjectSizes(output, expectedCount) {
 
 // Build the tracked-file view that WOULD exist if the current working tree were
 // committed: HEAD plus every non-ignored addition/modification/rename/deletion
-// (the "prospective tree"). Without this, the audit's tracked-tree gate reads
-// the stale committed HEAD and cannot judge an uncommitted implementation.
+// (the "prospective tree"). Without this, the audit reads the stale committed
+// HEAD and cannot judge an uncommitted implementation.
 //
 // Isolation: all new blobs go to a throwaway GIT_OBJECT_DIRECTORY and the index
 // to a throwaway GIT_INDEX_FILE, so the repository's real object database and
@@ -431,6 +431,27 @@ function validatePolicy(policy) {
   if (!license || license.owner !== "legal" || license.retention !== "permanent") {
     errors.push("assets/LICENSE must be owned by legal and retained permanently");
   }
+  // A missing or renamed budget key would otherwise fall back to Infinity in
+  // analyzeAudit and silently disable the gate.
+  const thresholds = policy.thresholds || {};
+  for (const key of [
+    "trackedMediaHardBytes",
+    "trackedMediaWarningBytes",
+    "largeTrackedBinaryMediaBytes",
+  ]) {
+    if (!Number.isSafeInteger(thresholds[key]) || thresholds[key] <= 0) {
+      errors.push(`policy.thresholds.${key} must be a finite positive integer`);
+    }
+  }
+  if (Number.isSafeInteger(thresholds.trackedMediaWarningBytes)
+    && thresholds.trackedMediaWarningBytes > 0
+    && Number.isSafeInteger(thresholds.trackedMediaHardBytes)
+    && thresholds.trackedMediaHardBytes > 0
+    && thresholds.trackedMediaWarningBytes >= thresholds.trackedMediaHardBytes) {
+    errors.push(
+      "policy.thresholds.trackedMediaWarningBytes must be less than policy.thresholds.trackedMediaHardBytes"
+    );
+  }
   const owners = policy.owners || {};
   const classes = policy.classes || {};
   for (const item of [...(policy.pathRules || []), ...(policy.entries || [])]) {
@@ -607,6 +628,10 @@ function duplicateIsExempt(duplicate, manifest, policy) {
   });
 }
 
+function isBinaryMediaFile(file) {
+  return BINARY_MEDIA_EXTENSIONS.has(file.extension);
+}
+
 function analyzeAudit({
   trackedFiles,
   manifest,
@@ -618,6 +643,11 @@ function analyzeAudit({
   const findings = [];
   const thresholds = policy.thresholds || {};
   const trackedBytes = trackedFiles.reduce((sum, file) => sum + file.bytes, 0);
+  // The repository size ceiling only guards binary/media payload. Code, tests,
+  // and docs grow steadily and are budgeted by review, not by this gate.
+  const trackedMediaBytes = trackedFiles
+    .filter(isBinaryMediaFile)
+    .reduce((sum, file) => sum + file.bytes, 0);
   const packageBytes = manifest.files.reduce((sum, file) => sum + file.bytes, 0);
 
   for (const message of validatePolicy(policy)) {
@@ -633,23 +663,23 @@ function analyzeAudit({
     });
   }
 
-  if (trackedBytes > Number(thresholds.trackedTreeHardBytes || Infinity)) {
+  if (trackedMediaBytes > Number(thresholds.trackedMediaHardBytes || Infinity)) {
     findings.push({
       level: "error",
-      rule: "tracked-tree-hard-budget",
-      message: `Tracked tree ${trackedBytes} bytes exceeds hard budget ${thresholds.trackedTreeHardBytes} bytes.`,
+      rule: "tracked-media-hard-budget",
+      message: `Tracked binary/media files ${trackedMediaBytes} bytes exceed hard budget ${thresholds.trackedMediaHardBytes} bytes.`,
     });
-  } else if (trackedBytes > Number(thresholds.trackedTreeWarningBytes || Infinity)) {
+  } else if (trackedMediaBytes > Number(thresholds.trackedMediaWarningBytes || Infinity)) {
     findings.push({
       level: "warning",
-      rule: "tracked-tree-warning-budget",
-      message: `Tracked tree ${trackedBytes} bytes exceeds warning budget ${thresholds.trackedTreeWarningBytes} bytes.`,
+      rule: "tracked-media-warning-budget",
+      message: `Tracked binary/media files ${trackedMediaBytes} bytes exceed warning budget ${thresholds.trackedMediaWarningBytes} bytes.`,
     });
   }
 
   for (const file of trackedFiles) {
     const largeMedia = file.bytes > Number(thresholds.largeTrackedBinaryMediaBytes || Infinity)
-      && BINARY_MEDIA_EXTENSIONS.has(file.extension);
+      && isBinaryMediaFile(file);
     if (largeMedia) {
       const resolved = resolvePolicy(policy, file.path);
       if (!resolved || !resolved.owner || resolved.owner === "unknown" || !policy.owners[resolved.owner]) {
@@ -775,6 +805,7 @@ function analyzeAudit({
     tracked: {
       files: trackedFiles.length,
       bytes: trackedBytes,
+      mediaBytes: trackedMediaBytes,
       byTopLevel: aggregateBy(trackedFiles, (file) => file.topLevel),
       byExtension: aggregateBy(trackedFiles, (file) => file.extension),
       largestFiles: trackedFiles.slice()
@@ -880,6 +911,7 @@ function printSummary(report) {
   process.stdout.write([
     `Repository asset audit @ ${report.revision}${report.prospective ? " (prospective working tree)" : ""}`,
     `Tracked: ${report.tracked.files} files, ${report.tracked.bytes} bytes (${formatMiB(report.tracked.bytes)} MiB)`,
+    `Tracked binary/media: ${report.tracked.mediaBytes} bytes (${formatMiB(report.tracked.mediaBytes)} MiB)`,
     `Package manifest (${report.package.scope}): ${report.package.files} files, ${report.package.bytes} bytes (${formatMiB(report.package.bytes)} MiB)`,
     `Findings: ${errors.length} error(s), ${warnings.length} warning(s)`,
     ...report.findings.map((finding) => {
