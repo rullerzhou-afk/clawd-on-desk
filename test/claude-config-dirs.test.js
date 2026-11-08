@@ -2,6 +2,7 @@
 
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
+const path = require("path");
 
 const {
   MAX_CLAUDE_CONFIG_DIRS,
@@ -112,17 +113,20 @@ describe("claude profile labels", () => {
 
 describe("prefs agents.claude-code.configDirs", () => {
   it("normalizes the folder list and leaves other agents alone", () => {
+    // prefs.validate normalizes with the host's path rules, so build the
+    // fixture as a host absolute path (D:\tmp\.claude-work on Windows).
+    const workDir = path.resolve("/tmp/.claude-work");
     const out = prefs.validate({
       agents: {
         "claude-code": {
           integrationInstalled: true,
           enabled: true,
-          configDirs: [{ dir: "/tmp/.claude-work/", label: " work " }, { dir: "nope" }, 5],
+          configDirs: [{ dir: `${workDir}${path.sep}`, label: " work " }, { dir: "nope" }, 5],
         },
-        codex: { enabled: true, configDirs: [{ dir: "/tmp/x" }] },
+        codex: { enabled: true, configDirs: [{ dir: path.resolve("/tmp/x") }] },
       },
     });
-    assert.deepStrictEqual(out.agents["claude-code"].configDirs, [{ dir: "/tmp/.claude-work", label: "work" }]);
+    assert.deepStrictEqual(out.agents["claude-code"].configDirs, [{ dir: workDir, label: "work" }]);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(out.agents.codex, "configDirs"), false);
   });
 
