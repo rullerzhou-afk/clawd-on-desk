@@ -125,7 +125,9 @@ and reports that the remote hooks need repair if they were taken over.
 Takeover is not checked continuously after a successful connection. If local
 Clawd has **Launch at login** enabled, restarting Windows can automatically
 start it and take the hooks back. Quit it, then deploy again to return to
-remote use.
+remote use. Upgrading that computer's local Clawd from v1.5.0 also removes the
+remote hooks once, because the old uninstaller runs during the upgrade; deploy
+again afterwards.
 
 File permissions rely on the Windows user profile directory's inherited ACLs;
 this does not isolate deployments that share the same Windows account.
