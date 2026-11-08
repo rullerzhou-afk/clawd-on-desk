@@ -7,6 +7,7 @@
 const { describe, it } = require("node:test");
 const assert = require("node:assert/strict");
 const Module = require("node:module");
+const { EventEmitter } = require("node:events");
 
 const MENU_MODULE_PATH = require.resolve("../src/menu");
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -27,18 +28,15 @@ function loadMenu(fakeElectron) {
 }
 
 function createHarness({ focused = true } = {}) {
-  const listeners = new Map();
   const state = { hides: 0, destroyed: false };
-  const owner = {
+  const owner = Object.assign(new EventEmitter(), {
     isDestroyed: () => state.destroyed,
     isFocused: () => focused,
     setBounds() {},
     show() {},
     focus() {},
     hide() { state.hides += 1; },
-    once: (event, fn) => listeners.set(event, fn),
-    removeListener: (event) => listeners.delete(event),
-  };
+  });
   const ctx = {
     win: { isDestroyed: () => false, showInactive() {}, setAlwaysOnTop() {} },
     menuOpen: false,
@@ -60,11 +58,11 @@ function createHarness({ focused = true } = {}) {
   return {
     ctx,
     state,
-    listeners,
+    owner,
     popups,
     open: () => menu.popupMenuAt(fakeMenu),
     close: () => popups.at(-1).callback(),
-    fireFocus: () => { const fn = listeners.get("focus"); if (fn) fn(); },
+    fireFocus: () => owner.emit("focus"),
   };
 }
 
@@ -84,7 +82,7 @@ describe("pet menu owner on Linux", { skip: process.platform !== "linux" }, () =
     h.open();
     h.fireFocus();
     assert.equal(h.popups.length, 1);
-    assert.equal(h.listeners.size, 0);
+    assert.equal(h.owner.listenerCount("focus"), 0);
   });
 
   it("no focus in time still opens the menu", async () => {
@@ -92,7 +90,7 @@ describe("pet menu owner on Linux", { skip: process.platform !== "linux" }, () =
     h.open();
     await wait(260);
     assert.equal(h.popups.length, 1);
-    assert.equal(h.listeners.size, 0);
+    assert.equal(h.owner.listenerCount("focus"), 0);
   });
 
   it("an owner destroyed while waiting opens nothing and frees the menu state", async () => {
@@ -102,6 +100,35 @@ describe("pet menu owner on Linux", { skip: process.platform !== "linux" }, () =
     await wait(260);
     assert.equal(h.popups.length, 0);
     assert.equal(h.ctx.menuOpen, false);
+  });
+
+  it("quitting while waiting opens nothing and frees the menu state", async () => {
+    const h = createHarness({ focused: false });
+    h.open();
+    h.ctx.isQuitting = true;
+    await wait(260);
+    assert.equal(h.popups.length, 0);
+    assert.equal(h.ctx.menuOpen, false);
+  });
+
+  it("quitting before the focus event opens nothing and frees the menu state", () => {
+    const h = createHarness({ focused: false });
+    h.open();
+    h.ctx.isQuitting = true;
+    h.fireFocus();
+    assert.equal(h.popups.length, 0);
+    assert.equal(h.ctx.menuOpen, false);
+  });
+
+  it("leaves unrelated focus listeners attached", () => {
+    const h = createHarness({ focused: false });
+    let unrelated = 0;
+    h.owner.on("focus", () => { unrelated += 1; });
+    h.open();
+    h.fireFocus();
+    assert.equal(h.popups.length, 1);
+    assert.equal(unrelated, 1);
+    assert.equal(h.owner.listenerCount("focus"), 1);
   });
 
   it("hides the owner a moment after the menu closes, never at once", async () => {

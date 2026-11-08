@@ -426,7 +426,7 @@ module.exports = function initMenu(ctx) {
       settled = true;
       clearTimeout(timer);
       owner.removeListener("focus", settle);
-      if (owner.isDestroyed()) {
+      if (owner.isDestroyed() || ctx.isQuitting) {
         ctx.menuOpen = false;
         return;
       }
@@ -438,7 +438,9 @@ module.exports = function initMenu(ctx) {
 
   // Under XWayland, hiding the owner in the same moment a focused menu closes
   // can block the main process for 20 s or more, until the GPU process exits.
-  // A short delay avoids it, and a new menu reuses the owner that is still up.
+  // The 500 ms delay is an empirical value measured on Ubuntu GNOME 50.1
+  // under XWayland; why it freezes is still unknown (#1336 / #1350). A new
+  // menu reuses the owner that is still up.
   function cancelOwnerHide() {
     if (ownerHideTimer === null) return;
     clearTimeout(ownerHideTimer);
