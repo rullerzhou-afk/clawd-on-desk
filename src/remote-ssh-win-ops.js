@@ -592,12 +592,27 @@ async function windowsOperation(args, deps = {}) {
     }
     return { ok: true, removed, conflicts: 0, changed, ...(hasUninstaller ? {} : { skipped: true }) };
   } else if (operation === "readClaudePermission") {
+    // Use the installer's ownership test instead of "the first URL containing
+    // 127.0.0.1:". A third-party tool can also host its approval hook on
+    // loopback and list it before Clawd's entry; a substring check would then
+    // read back that foreign hook and fail the nonce comparison.
+    const serverConfigPath = safePath(p.join(layout.claudeHooksDir, "server-config.js"));
+    let serverConfig;
+    try {
+      serverConfig = (deps.require || require)(serverConfigPath);
+    } catch (err) {
+      refuse("installer_verification_failed", serverConfigPath, (err && (err.code || err.message)) || "load failed");
+    }
+    if (!serverConfig || typeof serverConfig.isManagedPermissionUrl !== "function") {
+      refuse("installer_verification_failed", serverConfigPath, "missing isManagedPermissionUrl export");
+    }
     const settings = readJson(layout.claudeSettingsFile, "installer_config_invalid", true);
     if (!settings) refuse("installer_config_invalid", layout.claudeSettingsFile);
     const identity = readIdentity();
     if (!identity) refuse("ownership_unverified", layout.identityFile);
     const ours = flatten(settings && settings.hooks && settings.hooks.PermissionRequest)
-      .find((hook) => hook && typeof hook.url === "string" && hook.url.includes("127.0.0.1:"));
+      .find((hook) => hook && hook.type === "http" && typeof hook.url === "string"
+        && serverConfig.isManagedPermissionUrl(hook.url));
     if (!ours) return { ok: true, mode: "native" };
     const url = new URL(ours.url);
     const nonce = url.pathname === "/permission" ? url.searchParams.get("nonce") : url.pathname.split("/").pop();

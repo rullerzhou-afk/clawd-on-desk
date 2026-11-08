@@ -23,7 +23,7 @@ const deploy = __test.legacyDeploy;
 const startCodexMonitor = __test.legacyStartCodexMonitor;
 const stopCodexMonitor = __test.legacyStopCodexMonitor;
 const uninstallRemoteIntegrations = __test.legacyUninstallRemoteIntegrations;
-const { clearRemoteNodeCache } = require("../src/remote-ssh-node");
+const { clearRemoteNodeCache, buildRemoteNodeEvalCommand } = require("../src/remote-ssh-node");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
@@ -2204,6 +2204,154 @@ test("installer verification reads back the secure managed command shape", {
   } finally {
     fs.rmSync(temp, { recursive: true, force: true });
   }
+});
+
+const foreignPermissionHook = { type: "http", url: "http://127.0.0.1:8080/approve" };
+function managedPermissionHook(transport = "path", nonce = "c".repeat(32)) {
+  return transport === "query"
+    ? { type: "http", url: `http://127.0.0.1:23333/permission?nonce=${nonce}` }
+    : { type: "http", url: `http://127.0.0.1:23333/permission/${nonce}` };
+}
+function permissionReadback(t, entries, { serverConfig = "real" } = {}) {
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-permission-readback-"));
+  t.after(() => fs.rmSync(temp, { recursive: true, force: true }));
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: temp,
+  });
+  fs.mkdirSync(path.dirname(layout.claudeSettingsFile), { recursive: true });
+  fs.mkdirSync(path.dirname(layout.identityFile), { recursive: true });
+  fs.mkdirSync(layout.claudeHooksDir, { recursive: true });
+  fs.writeFileSync(layout.claudeSettingsFile, JSON.stringify({ hooks: { PermissionRequest: entries } }));
+  fs.writeFileSync(layout.identityFile, JSON.stringify({ routingNonce: "c".repeat(32) }));
+  if (serverConfig === "real") {
+    fs.copyFileSync(path.join(REPO_ROOT, "hooks", "server-config.js"), path.join(layout.claudeHooksDir, "server-config.js"));
+  } else if (serverConfig === "empty") {
+    fs.writeFileSync(path.join(layout.claudeHooksDir, "server-config.js"), "module.exports = {};");
+  }
+  const script = __test.buildClaudePermissionVerifyScript({
+    platform: "posix",
+    claudeSettingsFile: layout.claudeSettingsFile,
+    identityFile: layout.identityFile,
+    claudeHooksDir: layout.claudeHooksDir,
+  });
+  return { run: () => childProcess.spawnSync(process.execPath, ["-e", script], { encoding: "utf8" }) };
+}
+
+test("remote SSH permission readback: POSIX selects Clawd's hook ahead of a foreign loopback hook", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [foreignPermissionHook, managedPermissionHook()]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "managed");
+});
+
+// Ordering-only control: this passes both before and after the fix because the
+// foreign entry is nested after Clawd's and is never selected first.
+test("remote SSH permission readback: POSIX selects Clawd's query hook before a foreign nested hook", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [
+    { hooks: [managedPermissionHook("query")] },
+    { hooks: [foreignPermissionHook] },
+  ]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "managed");
+});
+
+test("remote SSH permission readback: POSIX reports native when only a foreign loopback hook exists", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [foreignPermissionHook]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "native");
+});
+
+test("remote SSH permission readback: POSIX keeps the nonce check when a foreign hook comes first", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [foreignPermissionHook, managedPermissionHook("path", "d".repeat(32))]);
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX ignores a command entry with a Clawd-shaped url", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [
+    { type: "command", command: "approve-tool", url: `http://127.0.0.1:23333/permission/${"d".repeat(32)}` },
+    managedPermissionHook(),
+  ]);
+  const result = r.run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout.trim(), "managed");
+});
+
+test("remote SSH permission readback: POSIX fails closed when server-config.js is missing", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [managedPermissionHook()], { serverConfig: null });
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX fails closed when server-config.js lacks the ownership export", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [], { serverConfig: "empty" });
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX treats a legacy nonce-less Clawd URL as a mismatch", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, (t) => {
+  const r = permissionReadback(t, [{ type: "http", url: "http://127.0.0.1:23333/permission/clawd-on-desk" }]);
+  assert.notEqual(r.run().status, 0);
+});
+
+test("remote SSH permission readback: POSIX deploy runs the shared readback script against a foreign hook ahead of Clawd's", {
+  skip: process.platform === "win32" ? "requires POSIX filesystem semantics" : false,
+}, async (t) => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn();
+  const result = await secureDeploy({
+    ...fixture,
+    runtime: makeRuntimeStub(),
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      onIdentityStep: async () => {},
+    },
+  });
+  assert.equal(result.ok, true, result.stderr || result.reason);
+
+  const layout = require("../src/remote-ssh-layout").resolveRemoteRuntimeLayout({
+    runtimeMode: "account-default",
+    runtimeKey: "account-default",
+    remoteHome: "/home/remote-user",
+  });
+  const expectedScript = __test.buildClaudePermissionVerifyScript(layout);
+  const command = String(recorder.calls[14].args.at(-1));
+  const marker = "&& (\n";
+  const start = command.indexOf(marker);
+  assert.notEqual(start, -1, "claude-permission call must be fenced");
+  const verifySegment = command.slice(start + marker.length).replace(/\n\)$/, "");
+  assert.equal(
+    verifySegment,
+    buildRemoteNodeEvalCommand("/usr/bin/node", expectedScript),
+    "deploy must embed the shared builder's script verbatim",
+  );
+
+  // Run those exact bytes offline: a foreign loopback hook listed first must
+  // not be mistaken for Clawd's entry.
+  const r = permissionReadback(t, [foreignPermissionHook, managedPermissionHook()]);
+  const executed = r.run();
+  assert.equal(executed.status, 0, executed.stderr);
+  assert.equal(executed.stdout.trim(), "managed");
 });
 
 test("secure scp target is one raw argv token without literal shell quotes", () => {

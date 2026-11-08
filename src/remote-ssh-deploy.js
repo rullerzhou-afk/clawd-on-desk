@@ -809,6 +809,27 @@ function buildHermesPreflightLines(layout) {
   ];
 }
 
+function buildClaudePermissionVerifyScript(layout) {
+  assertPosixRemoteLayout(layout);
+  const serverConfigPath = path.posix.join(layout.claudeHooksDir, "server-config.js");
+  return [
+    // Match the installer's ownership test instead of "the first URL containing
+    // 127.0.0.1:". A third-party approval hook can also live on loopback and
+    // be listed before Clawd's entry; a substring check would pick it up and
+    // fail the nonce comparison. The uploaded server-config.js is the source
+    // of truth, so loading it must fail closed.
+    `const c=require(${JSON.stringify(serverConfigPath)});`,
+    "if(typeof c.isManagedPermissionUrl!=='function')process.exit(1);",
+    "const fs=require('fs');",
+    `const s=JSON.parse(fs.readFileSync(${JSON.stringify(layout.claudeSettingsFile)},'utf8'));`,
+    `const i=JSON.parse(fs.readFileSync(${JSON.stringify(layout.identityFile)},'utf8'));`,
+    "const a=Array.isArray(s&&s.hooks&&s.hooks.PermissionRequest)?s.hooks.PermissionRequest:[];",
+    "const flat=[];for(const e of a){if(e&&Array.isArray(e.hooks))flat.push(...e.hooks);else flat.push(e)}",
+    "const ours=flat.find(h=>h&&h.type==='http'&&typeof h.url==='string'&&c.isManagedPermissionUrl(h.url));",
+    "if(ours){const u=new URL(ours.url);const n=u.pathname==='/permission'?u.searchParams.get('nonce'):u.pathname.split('/').pop();if(n!==i.routingNonce)process.exit(1);console.log('managed')}else console.log('native')",
+  ].join("");
+}
+
 function buildOwnershipPreflightScript({ profile, layout, installId }) {
   assertPosixRemoteLayout(layout);
   const expected = {
@@ -2216,15 +2237,7 @@ async function secureDeploy({
         "Claude config root absent before deploy; native approval remains",
       );
     } else {
-      const permissionVerifyScript = [
-      "const fs=require('fs');",
-      `const s=JSON.parse(fs.readFileSync(${JSON.stringify(layout.claudeSettingsFile)},'utf8'));`,
-      `const i=JSON.parse(fs.readFileSync(${JSON.stringify(layout.identityFile)},'utf8'));`,
-      "const a=Array.isArray(s&&s.hooks&&s.hooks.PermissionRequest)?s.hooks.PermissionRequest:[];",
-      "const flat=[];for(const e of a){if(e&&Array.isArray(e.hooks))flat.push(...e.hooks);else flat.push(e)}",
-      "const ours=flat.find(h=>h&&typeof h.url==='string'&&h.url.includes('127.0.0.1:'));",
-      "if(ours){const u=new URL(ours.url);const n=u.pathname==='/permission'?u.searchParams.get('nonce'):u.pathname.split('/').pop();if(n!==i.routingNonce)process.exit(1);console.log('managed')}else console.log('native')",
-    ].join("");
+      const permissionVerifyScript = buildClaudePermissionVerifyScript(layout);
       const permissionVerify = await spawnAndWait(
       spawn,
       "ssh",
@@ -3282,6 +3295,7 @@ module.exports = {
     acquireDeployLock,
     releaseDeployLock,
     buildOwnershipPreflightScript,
+    buildClaudePermissionVerifyScript,
     buildHermesPreflightLines,
     resolveRemoteHermesHome,
     hermesOuterTimeoutMs,

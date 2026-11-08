@@ -777,14 +777,84 @@ test("issue #1316: native installer timeout remains an unknown mutation result",
 });
 test("issue #1316: Windows permission readback distinguishes native and the exact identity nonce", async (t) => {
   const f = fixture(t); await f.run("acquireLock", { owner: f.owner }); f.put(f.layout.identityFile, f.identity);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "server-config.js"), fs.readFileSync(path.join(__dirname, "..", "hooks", "server-config.js"), "utf8"));
+  f.deps.require = (target) => require(f.local(target));
   await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_config_invalid" });
   f.put(f.layout.claudeSettingsFile, { hooks: {} });
   assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "native" });
   for (const url of [`http://127.0.0.1:23333/permission/${f.identity.routingNonce}`, `http://127.0.0.1:23333/permission?nonce=${f.identity.routingNonce}`]) {
-    f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ hooks: [{ url }] }] } });
+    f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ hooks: [{ type: "http", url }] }] } });
     assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
   }
-  f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ url: "http://127.0.0.1:23333/permission?nonce=foreign" }] } });
+  f.put(f.layout.claudeSettingsFile, { hooks: { PermissionRequest: [{ type: "http", url: `http://127.0.0.1:23333/permission?nonce=${"d".repeat(32)}` }] } });
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
+});
+
+async function windowsPermissionFixture(t) {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  f.put(f.layout.identityFile, f.identity);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "server-config.js"), fs.readFileSync(path.join(__dirname, "..", "hooks", "server-config.js"), "utf8"));
+  f.deps.require = (target) => require(f.local(target));
+  return f;
+}
+function permissionRequest(entries) {
+  return { hooks: { PermissionRequest: entries } };
+}
+function managedHook(f, { transport = "path", nonce = f.identity.routingNonce } = {}) {
+  return transport === "query"
+    ? { type: "http", url: `http://127.0.0.1:23333/permission?nonce=${nonce}` }
+    : { type: "http", url: `http://127.0.0.1:23333/permission/${nonce}` };
+}
+const foreignPermissionHook = { type: "http", url: "http://127.0.0.1:8080/approve" };
+
+test("remote SSH permission readback: Windows selects Clawd's hook ahead of a foreign loopback hook", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([foreignPermissionHook, managedHook(f)]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+});
+test("remote SSH permission readback: Windows selects Clawd's hook before a foreign loopback hook", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([{ hooks: [managedHook(f, { transport: "query" })] }, { hooks: [foreignPermissionHook] }]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+});
+test("remote SSH permission readback: Windows reports native when only a foreign loopback hook exists", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([foreignPermissionHook]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "native" });
+});
+test("remote SSH permission readback: Windows keeps the nonce check when a foreign hook comes first", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([foreignPermissionHook, managedHook(f, { nonce: "d".repeat(32) })]));
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
+});
+test("remote SSH permission readback: Windows ignores a command entry with a Clawd-shaped url", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([
+    { type: "command", command: "approve-tool", url: `http://127.0.0.1:23333/permission/${"d".repeat(32)}` },
+    managedHook(f),
+  ]));
+  assert.deepEqual(await f.run("readClaudePermission", { owner: f.owner }), { ok: true, mode: "managed" });
+});
+test("remote SSH permission readback: Windows fails closed when server-config.js is missing", async (t) => {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  f.put(f.layout.identityFile, f.identity);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([managedHook(f)]));
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_verification_failed" });
+});
+test("remote SSH permission readback: Windows fails closed when server-config.js lacks the ownership export", async (t) => {
+  const f = fixture(t);
+  await f.run("acquireLock", { owner: f.owner });
+  f.put(f.layout.identityFile, f.identity);
+  f.put(path.win32.join(f.layout.claudeHooksDir, "server-config.js"), "module.exports = {};");
+  f.deps.require = (target) => require(f.local(target));
+  f.put(f.layout.claudeSettingsFile, permissionRequest([]));
+  await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "installer_verification_failed" });
+});
+test("remote SSH permission readback: Windows treats a legacy nonce-less Clawd URL as a mismatch", async (t) => {
+  const f = await windowsPermissionFixture(t);
+  f.put(f.layout.claudeSettingsFile, permissionRequest([{ type: "http", url: "http://127.0.0.1:23333/permission/clawd-on-desk" }]));
   await assert.rejects(f.run("readClaudePermission", { owner: f.owner }), { reason: "permission_nonce_mismatch" });
 });
 test("issue #1316: Windows retirement is idempotent and rejects an orphan marker or foreign identity", async (t) => {
