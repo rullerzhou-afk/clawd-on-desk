@@ -6,7 +6,7 @@ Use this flow when preparing a Clawd app release.
 
 1. Update `package.json` to the release version.
 2. Add `docs/releases/release-vX.Y.Z.md` and a matching `!` allowlist line in
-   `.gitignore` (for example `!docs/releases/release-v1.5.0.md`). Without the
+   `.gitignore` (for example `!docs/releases/release-v1.6.0.md`). Without the
    allowlist, `git add` silently skips the note and CI's `validate-release`
    skips all three platform builds.
 3. Run the local tests that match the change scope. For full release prep, run:
@@ -75,7 +75,7 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v1.5.0 Draft Smoke Checklist
+### v1.6.0 Draft Smoke Checklist
 
 Use the draft release installer or package artifact, not `npm start`, and record
 platform, architecture, host version, and result for each selected check.
@@ -84,25 +84,99 @@ macOS/Linux hardware must be recorded as **Not tested** in the release notes.
 
 #### 本版必测（Required for this release）
 
-The following release gates and v1.5.0 behavior checks are required for this
+The following release gates and v1.6.0 behavior checks are required for this
 draft. A source run, unit test, or a previous release's evidence does not
 replace a packaged-app or real-host check.
 
 **Recurring release gates**
 
-- **All targets:** packaged app shows `1.5.0` metadata, and About shows `v1.5.0` from `app.getVersion()`.
+- **All targets:** packaged app shows `1.6.0` metadata, and About shows `v1.6.0` from `app.getVersion()`.
 - **All targets:** packaged resources contain the expected hooks, agents, extensions, themes, NOTICE, and official catalog snapshot, with no retired Telegram sidecar or unshipped official-theme payload.
 - **All targets:** native-package/Koffi manifests show exactly one matching native addon, the packaged positive-call smoke passes, and no foreign native payload is present.
-- **All targets:** updater metadata versions and artifact names match `1.5.0` and the generated assets.
+- **All targets:** updater metadata versions and artifact names match `1.6.0` and the generated assets.
 - **Windows x64/arm64:** validate separate architecture-specific NSIS installers and the intended user/machine installation paths.
 - **macOS x64/arm64:** validate signing, quarantine, `codesign`, `spctl`, and notarization/stapler evidence when the signed assets are available; otherwise record **Not tested**.
 - **Windows/macOS/Linux:** fresh-install and launch the packaged app with a visible pet and no error dialog.
-- **Windows/macOS/Linux:** upgrade a real v1.4.0 installation to v1.5.0 and confirm the app launches and preserves the documented v1.4.0 settings; the prefs schema remains version 21, so this release performs no prefs migration.
-- **Windows; macOS on available architectures (after publishing, because drafts are not offered by the updater):** exercise a real v1.4.0 → v1.5.0 updater pair, including Restart Now and Later/quit/reopen, and record versions and asset hashes. On Windows, use the real desktop: in an SSH session the installer stalled before uninstalling the old version, while the same update finished in about 30 seconds on the desktop.
+- **Windows/macOS/Linux:** upgrade a real v1.5.0 installation to v1.6.0 and confirm the app launches and preserves the documented v1.5.0 settings; the prefs schema remains version 21, so this release performs no prefs migration.
+- **Windows; macOS on available architectures (after publishing, because drafts are not offered by the updater):** exercise a real v1.5.0 → v1.6.0 updater pair, including Restart Now and Later/quit/reopen, and record versions and asset hashes. On Windows, use the real desktop: in an SSH session the installer stalled before uninstalling the old version, while the same update finished in about 30 seconds on the desktop.
 - **Packaged native update flows:** after a download finishes, let the update bubble expire or choose Later. The tray must retain Update Ready; About/manual check must reopen the install choice without another release lookup or download. While downloading or ready, a scheduled discovery must not replace the current progress/ready stage. A pending ready bubble superseded by installation/error must not later hide the newer UI. Cover Windows NSIS, available macOS architectures and Linux AppImage separately; a simulated updater is not a real A→B installation check.
 - **All supported permission hosts:** verify manual native Allow/Deny fallback after Clawd DND, disabled bubbles, disconnect, shutdown, or no-decision paths; no timeout or remote failure may invent a decision.
 
-**v1.5.0 new behavior matrix — 37 required items**
+**v1.6.0 new behavior matrix**
+
+Record platform, architecture, host version and result for each item. Items that need hardware or a host that is not available stay **Not tested**; a Codex CLI Bash/apply_patch approval round trip on a Windows remote host, Kiro IDE on Windows and Linux, the Claude Desktop question card on Windows, a real iPhone scan and a real Linux desktop have not been validated before this checklist is run.
+
+*Windows installer, updates and hooks*
+
+1. **Windows, upgrade from v1.5.0 (#882, #1298, #1341):** on a real desktop session (the installer stalls in an SSH session), upgrade with one remaining Clawd process and with several. The installer closes them instead of showing "Clawd on Desk cannot be closed". The old v1.5.0 uninstaller still clears the agent hooks once; after the first launch of v1.6.0 every integration that was installed and enabled has its hook back and a real Claude Code session reports state. Disabled integrations are not written back. A later same-version overwrite install keeps the hooks, and a real uninstall removes only Clawd's entries.
+2. **Windows, Claude Code hook without PowerShell (#1297):** with Claude Code 2.1.160 or later and an absolute Node `.exe` path, and a profile path that has spaces, Chinese characters or a single quote, the hook starts Node directly and Claude Code events arrive; an older Claude Code keeps the PowerShell form. A machine with Grok Build keeps the PowerShell path, a Cursor import of Claude hooks no longer reports (enable the Cursor integration instead), and macOS and Linux hook commands are unchanged.
+3. **Windows, window close and shutdown (#1340):** an external close request on either pet window (taskbar preview X, Alt+F4, a window manager) is ignored; the tray and right-click Hide and Quit, and the update "Restart Now" still close it. With Clawd running, click Restart (or sign out) once on the Windows desktop and confirm "This app is preventing shutdown" does not appear.
+4. **Windows, screenshots (#1294):** with the system snipping tool (Win+Shift+S) and "Auto-hide in fullscreen" off, the pet does not rise above the overlay, does not walk and does not hide; with it on, the pet hides as before and comes back after the capture; a third-party screenshot tool is not covered. Also run with "Keep the pet on top of other windows" on and off.
+5. **Windows, Antigravity and Linux tmux (#1271, #1318):** the agy status line shows under the default install directory (it contains a space) and with a Chinese user name; on Linux, an agent started inside tmux jumps to the right pane from its session row.
+
+*Remote SSH*
+
+6. **Windows remote host (#1319, #1320, #1324, #1331; issue #1316):** against a real Windows host, Deploy, Repair and Uninstall Claude Code, Codex, Copilot and DeepSeek Harness (desktop) with ordinary, spaced, Chinese, single-quote and curly-quote paths; third-party hook entries stay. A real event from each returns to the local pet and a real approval round trip works where the agent supports it (a Windows remote Codex CLI Bash/apply_patch approval round trip has not been run on real hardware). Cut the network in the middle of a deploy: the next attempt reports an unknown or needs-inspection result and never replays silently or releases the lock by itself.
+7. **Windows remote host with DeepSeek Harness:** with the same Windows user signed in on the desktop, install from a normal and from an elevated SSH session, check lease expiry and an unknown result, uninstall the recorded `DSH_HOME`, restart the DSH desktop app after a plugin generation change, and confirm a changed approval identity only hands back to the native prompt.
+8. **POSIX remote host (macOS or Linux):** Deploy again and send one real Claude Code and one real Codex event; the pet receives them, and Uninstall removes only Clawd's entries. Behavior matches v1.5.0. A third-party local HTTP approval hook ahead of Clawd's is a known limitation (deploy reports a verification failure) and is not part of this check.
+
+*Codex*
+
+9. **Codex automation (#1337, #1338; Windows, macOS, WSL and Remote SSH):** with the default way, ordinary MCP tools, `codex_apps`, Bash and apply_patch combinations, session overrides, dangerous-action reminders, DND, a disconnect and quitting Clawd all behave: plain MCP from WSL and Remote SSH follows automation, local MCP still goes back to Codex, `codex_apps` stays with Codex, nothing makes an unexpected decision. For a Remote SSH request that goes back to Codex (not WSL or local), on macOS a native-fallback reminder (subject to DND and the bubble switches) appears after a short delay, merges per session, shows only "Got it", and folds away on the next exact tool or turn end.
+10. **Codex setting migration (#1338; Windows and macOS):** upgrade from v1.5.0 once with Auto and once with Intercept; "Send every approval to Clawd" (AI Coding Tools → Codex → Advanced) matches the old choice, survives restart, and a downgrade-save-upgrade round trip keeps it.
+11. **Codex Desktop titles (#1253, #1314; Windows and macOS):** after Codex renames or auto-titles an internal thread, late events do not bring it back; ordinary side chats and rewritten templates still show; the HUD title refreshes within about 1.5 seconds.
+
+*Other agents*
+
+12. **Kiro IDE (#1339; macOS, then Windows and Linux when available):** Install and Uninstall from Settings keep third-party hooks and touch only `~/.kiro/hooks/clawd-on-desk.json`; Kiro CLI and KiroCrew files are untouched. In a trusted workspace a tool confirmation shows the read-only card ("Go to Kiro" and "Got it"; it cannot approve for you), it folds away after you confirm in Kiro and does not ring again, and a first launch with old pending items does not alert.
+13. **Copilot CLI (#1343, #1344; all platforms, also over SSH):** a path permission, a web fetch confirmation and an `ask_user` question keep the pet in "waiting for you" until the matching tool, your next message, the end of the session, a process exit or the two-hour limit; a command approval alerts once. The "Alert me when it waits for input" switch in the Copilot card turns it off. After a remote Deploy, restart the Copilot session first. On Windows, start with a local Copilot `hooks.json` saved with a UTF-8 BOM: after Clawd starts (or Repair), the BOM is gone, third-party entries are kept and real events arrive.
+14. **Claude Desktop question card (#1327, #1328; macOS, Windows when available):** the end-of-turn question shows a read-only card in the HUD without changing the pet state or ringing; clicking only brings Claude forward; a remote card only closes. With "Remind me about unanswered Claude questions" (Settings → Notifications) on, each question reminds once, answering cancels the timer, and the 1 to 120 minute bounds hold.
+15. **Notifications (Claude Code and Codex):** trigger one real notification in each and confirm there is exactly one sound, not two, and no repeated bell from Kiro waiting.
+
+*Phone pairing*
+
+16. **QR pairing (#1315; Windows or macOS with a real iPhone and an Android phone):** scan the QR code in Settings → Permissions & approval → LAN approval; pairing succeeds, and when the code expires or is refreshed the code and QR change within about 5 seconds. An iOS Home Screen app opens Safari from the scan (known).
+17. **Phone page (#1321, #1322, #1332, #1345; #1299):** open `http://<address>:<port>/` and land on the phone page; the Home Screen app shows as "· PWA" in the paired list; the page follows the desktop language in all seven languages after a reload with no `__CLAWD_` placeholder left over, and unknown languages fall back; a write failure while rotating an expired code or renaming a PWA does not break a valid connection.
+18. **Phone safety:** an unpaired phone sees only the static shell, a pairing socket receives no sessions, a client cannot forge a decision, and turning preview off removes the cards at once.
+
+*Pet*
+
+19. **Hidden pet and accessories (#1300, #1301, #1303, #1304, #1305; all platforms):** wear both accessories, then hide manually, hide through full-screen auto-hide, switch themes, use Mini mode and sleep and wake: the pet, eyes and accessories return, and free roam waits about 8 seconds. Hidden CPU and paint are measurably lower. On Windows with mixed display scales, drawing, position and eyes stay correct across displays.
+20. **macOS Spaces and the on-top switch (#1287):** turn "Keep the pet on top of other windows" off, restart, and check normal and native full-screen switching, hide and show, a theme change and the right-click menu. Entering full screen hides the pet even when "Auto-hide in fullscreen" is off (the row still shows off); approval prompts stay visible as designed.
+21. **Eye tracking (#1285, #1312; all platforms, Cloudling too):** turn "Follow the mouse cursor" (Settings → Pet) off and the eyes look straight ahead; turn it on again without moving the mouse and they return to the cursor; the spin-dizzy egg still works.
+22. **Idle behavior (#1302, #1309; all platforms):** "When idle" (Settings → Pet) offers Stay put, Free roam and Idle activities, which are mutually exclusive, with "How often" at the default Sometimes, the first activity starts about 20–30 s after idle and later ones every 60–100 s (Rarely: 30–45 s, then 120–180 s; Often: 12–18 s, then 30–50 s); a real agent task, a pending confirmation, a drag, a menu or deep sleep wins, and an old free-roam setting is kept.
+23. **Linux GNOME XWayland (#1308, #1350, #1352; also X11):** repeated right-clicks, a right-click after a drag and quitting while the menu is pending all behave; the menu closes and the desktop is clickable afterwards; clicks pass through after a window move or resize. Right-click and right-click during a drag (#1265) also work on Windows and macOS.
+24. **Theme start-up (#1306, #1307):** a normal start is not slower on all three platforms; with a deliberately broken user theme the error names the real cause.
+
+*Updates*
+
+25. **Update ready stays (#1296, #1311; Windows, macOS, AppImage):** after a download finishes, let the bubble expire or choose Later: the tray keeps "Update Ready", About or the tray opens the install choice without another lookup or download; a scheduled check does not replace a download or ready state; after an updater error a retry checks again. A real A to B check can only run after publishing.
+
+*Settings and themes*
+
+26. **Settings (#1256, #1317; Windows and macOS at 125% and 1366×768, all seven languages):** the (i) hints stay put and disappear on page change; IM channels and LAN approval keep the scroll position when a switch changes; the Footprints year view is smooth and the highlighted cell shades are right.
+27. **Official and community themes (catalog 10):** online, Settings → Theme lists Doraemon and Clawd Dev Life (light and dark) with the community badge and author; offline with no cache the bundled snapshot lists the same; download one community theme on macOS.
+
+*Release pipeline*
+
+28. **CI (#1346, #1347):** on `main`, a Wayland smoke run shows an apt cache hit and still runs the real XWayland checks; the Windows test job passes the #882 installer cases with both PowerShell versions.
+29. **Clean checkout/docs:** in a clean checkout, `npm run verify:release` and `npm run audit:assets` pass, all six READMEs and the contributor artwork are current, `NOTICE.md` lists `qrcode-generator`, and the bundled official theme snapshot matches the published catalog before tagging.
+30. **Downgrade sample:** save settings in v1.5.0 over v1.6.0 once and upgrade again; the six new settings (Follow the mouse cursor, Keep the pet on top of other windows, When idle, How often, Remind me about unanswered Claude questions and Remind after) are back to defaults and the Codex approval choice is kept.
+
+#### 老功能抽测（Regression sampling）
+
+Sample a few historical items on each release; record every item not run on the
+release page as **Not tested** rather than carrying forward an earlier pass.
+The former v1.5.0, v1.4.0 and v1.3.0 required matrices are retained below as
+regression evidence, not as an automatic v1.6.0 gate. Keep the recurring release gates above
+required.
+
+##### v1.5.0 historical required matrix
+
+These are the required checks from the v1.5.0 release for changes from
+v1.4.0 → v1.5.0. They remain here as regression sampling, not as fixed v1.6.0
+gates; CI artifact evidence can satisfy static functional checks, while GUI and
+host checks need the actual packaged app. The numbering below is the v1.5.0 one.
 
 *Release pipeline and Linux updates*
 
@@ -158,14 +232,6 @@ replace a packaged-app or real-host check.
 35. **Update failure details:** a forced update failure shows the error code, HTTP status and host with "Repair suggestion (for reference only)", and the copied details keep secrets redacted.
 36. **Themes:** on all three platforms, install, select, go offline, remove from the catalog and uninstall an official theme (and a community one when the catalog has one); category and credit stay correct. Settings → Theme loads the two official themes with no empty "Community themes" group, falls back to the bundled list offline, and an older app reading the new catalog still works.
 37. **Clean checkout/docs:** in a clean checkout, `npm run verify:release` and `npm run audit:assets` pass, all six READMEs and the contributor artwork are current, and the bundled official theme snapshot matches the published catalog before tagging.
-
-#### 老功能抽测（Regression sampling）
-
-Sample a few historical items on each release; record every item not run on the
-release page as **Not tested** rather than carrying forward an earlier pass.
-The former v1.4.0 and v1.3.0 required matrices are retained below as regression
-evidence, not as an automatic v1.5.0 gate. Keep the recurring release gates above
-required.
 
 ##### v1.4.0 historical required matrix
 
@@ -256,7 +322,7 @@ host checks need the actual packaged app.
 Sample a few items on each release; record every item not run on the release
 page as **Not tested** rather than carrying forward an earlier pass.
 These retain older behavior checks and historical migrations; their former
-Required/Recommended labels do not make the entire matrix a v1.5.0 gate.
+Required/Recommended labels do not make the entire matrix a v1.6.0 gate.
 Historical migration fixtures below are separate from the required v1.3.0
 upgrade path.
 

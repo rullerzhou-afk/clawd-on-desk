@@ -9134,6 +9134,7 @@
     "pu-1205", "Free-LZJ", "easyhak", "jlimcode", "xfurqan0", "brantshin", "mantertius", "VonSdite", "sunnyswag",
     "hanzhe-one", "52mzd", "gzx19990101", "ypjn", "jin-codes", "LetitiaChan", "sanzanazaman",
     "zero-or-one", "integrasoft-c", "yunho09", "tianxingjian2406", "Aminorsh", "daijx-ai", "XYZliang",
+    "sunfleeting-debug", "du-xinyi", "AllanOliveiraM", "RyanChenJJH", "alwinecor",
   ];
 
   root.ClawdSettingsI18n = {
