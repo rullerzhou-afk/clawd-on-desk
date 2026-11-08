@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 8,
+  "catalogVersion": 10,
   "themes": [
     {
       "id": "hash-sage",
@@ -69,6 +69,108 @@
         "notice": {
           "en": "ZipZipPipe and 上善无形 are credited for upstream materials; 鹿鹿's new work is CC BY-NC-SA 4.0 where licensable, and this unofficial fan theme is unaffiliated with and neither authorised nor endorsed by DeepSeek.",
           "zh": "上游素材署名 ZipZipPipe、上善无形；鹿鹿的新作在有权授权范围内采用 CC BY-NC-SA 4.0，本非官方同人主题与 DeepSeek 无关联，也未获其授权或背书。"
+        }
+      }
+    },
+    {
+      "id": "doraemon",
+      "version": "1.0.0",
+      "category": "community",
+      "author": "RyanChenJJH",
+      "name": {
+        "en": "Doraemon",
+        "zh": "机器猫"
+      },
+      "description": {
+        "en": "A full-featured Doraemon desktop companion with cursor-following eyes, roaming, gadget idle animations, multi-session work states, a full sleep cycle and click/drag reactions.",
+        "zh": "功能齐全的机器猫桌面伙伴：眼球跟随光标、自由漫游、道具待机动画、多会话工作状态、完整睡眠周期与点击/拖拽反应。"
+      },
+      "minAppVersion": "1.2.0",
+      "archive": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/doraemon-v1.0.0/doraemon-1.0.0.clawd-theme.zip",
+        "bytes": 92326,
+        "unpackedBytes": 88842,
+        "sha256": "4682de3147f7b531c4f87a838e1340da34b0d7b63d83a9fd240e4e7e4e4f82bb"
+      },
+      "preview": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/doraemon-v1.0.0/doraemon-1.0.0.preview.webp",
+        "bytes": 12472,
+        "sha256": "2325411ab160356bbbb1a633b812ae94fc3e70df4011ba71b7f3c871d8b7fe47"
+      },
+      "license": {
+        "spdx": "CC-BY-NC-SA-4.0",
+        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/8cf5db8fd3c3c2d92fc1802b927fbb389d1d51de/themes/doraemon/LICENSE",
+        "notice": {
+          "en": "Doraemon and related names belong to their respective rights holders (Fujiko F. Fujio / Fujiko-Pro, Shogakukan). New artwork and animation by RyanChenJJH are licensed under CC BY-NC-SA 4.0 where licensable; this is an unofficial, non-commercial fan work with no affiliation, authorisation or endorsement.",
+          "zh": "哆啦A梦（机器猫）角色及相关名称归藤子·F·不二雄／藤子プロ、小学馆等权利方所有；RyanChenJJH 的新作美术与动画在有权授权范围内采用 CC BY-NC-SA 4.0。本主题是非官方、非商业同人作品，与上述权利方无关联，也未获其授权或背书。"
+        }
+      }
+    },
+    {
+      "id": "clawd-dev-life",
+      "version": "1.0.0",
+      "category": "community",
+      "author": "alwinecor",
+      "name": {
+        "en": "Clawd Dev Life",
+        "zh": "克码人生"
+      },
+      "description": {
+        "en": "Clawd acts out everyday developer life: thinking, coding, compacting context and errors each get their own little scene.",
+        "zh": "Clawd 演出开发者的日常：思考、写码、压缩上下文、报错都有对应的小剧场。"
+      },
+      "minAppVersion": "1.5.0",
+      "archive": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-v1.0.0/clawd-dev-life-1.0.0.clawd-theme.zip",
+        "bytes": 1407214,
+        "unpackedBytes": 1399928,
+        "sha256": "bceebe3eb3eb762a87182e4661c2fe829bd33a9776f3f707378bf7f5a6484399"
+      },
+      "preview": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-v1.0.0/clawd-dev-life-1.0.0.preview.webp",
+        "bytes": 326,
+        "sha256": "cd812939cc8ff30fa6f7adab16f3ba5a7dae7ced0c52a2343d1f42299171ee50"
+      },
+      "license": {
+        "spdx": "CC-BY-NC-SA-4.0",
+        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/8bb1f8a76fa9ef5d9903884d4a55689e553cd6b6/themes/clawd-dev-life/LICENSE",
+        "notice": {
+          "en": "The Clawd character belongs to Anthropic; the drawing code is adapted from Qisi3344/clawd-moji. alwinecor's artwork is CC BY-NC-SA 4.0 where licensable, and this unofficial fan theme is unaffiliated with and not endorsed by Anthropic.",
+          "zh": "Clawd 角色归 Anthropic 所有，绘图代码改编自 Qisi3344/clawd-moji；alwinecor 的美术在有权授权范围内采用 CC BY-NC-SA 4.0。本主题是非官方粉丝作品，与 Anthropic 无关联，也未获其背书。"
+        }
+      }
+    },
+    {
+      "id": "clawd-dev-life-dark",
+      "version": "1.0.0",
+      "category": "community",
+      "author": "alwinecor",
+      "name": {
+        "en": "Clawd Dev Life (Dark)",
+        "zh": "克码人生（深色）"
+      },
+      "description": {
+        "en": "Clawd acts out everyday developer life, recoloured for dark desktops.",
+        "zh": "Clawd 演出开发者的日常，配色适合深色桌面。"
+      },
+      "minAppVersion": "1.5.0",
+      "archive": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-dark-v1.0.0/clawd-dev-life-dark-1.0.0.clawd-theme.zip",
+        "bytes": 1406245,
+        "unpackedBytes": 1398439,
+        "sha256": "c592dc0f229b65802f5996420adc8485236ee208292b0e2cf81f4f9b93867649"
+      },
+      "preview": {
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-dark-v1.0.0/clawd-dev-life-dark-1.0.0.preview.webp",
+        "bytes": 330,
+        "sha256": "76d28cf707590fe748b6430351fbabf767260bb993477ef667dd2ab585e78d28"
+      },
+      "license": {
+        "spdx": "CC-BY-NC-SA-4.0",
+        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/8bb1f8a76fa9ef5d9903884d4a55689e553cd6b6/themes/clawd-dev-life-dark/LICENSE",
+        "notice": {
+          "en": "The Clawd character belongs to Anthropic; the drawing code is adapted from Qisi3344/clawd-moji. alwinecor's artwork is CC BY-NC-SA 4.0 where licensable, and this unofficial fan theme is unaffiliated with and not endorsed by Anthropic.",
+          "zh": "Clawd 角色归 Anthropic 所有，绘图代码改编自 Qisi3344/clawd-moji；alwinecor 的美术在有权授权范围内采用 CC BY-NC-SA 4.0。本主题是非官方粉丝作品，与 Anthropic 无关联，也未获其背书。"
         }
       }
     }
