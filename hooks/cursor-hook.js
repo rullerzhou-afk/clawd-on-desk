@@ -16,6 +16,7 @@ const {
   processAlive,
 } = require("./shared-process");
 const { resolveSessionTitle } = require("./cursor-session-title");
+const { normalizeModelId } = require("./claude-rate-limits");
 const { CURSOR_HOOK_SENTINEL } = require("./json-utils");
 
 // Grok scans Claude-compatible settings by default and must never produce a
@@ -81,6 +82,16 @@ function displaySvgFromToolHook(hookName, payload) {
   if (name === "Write" || name === "Delete") return "clawd-working-typing.svg";
   if (name === "Read" || name === "Grep") return "clawd-idle-reading.svg";
   return undefined;
+}
+
+// Unlike Claude Code (SessionStart only), Cursor carries `model` (a legacy
+// slug) on every event, plus an optional structured `model_id`. Prefer the id,
+// but fall back to the slug when the id is absent or unusable rather than
+// dropping the label. state.js only rebroadcasts on a real change, so
+// reporting per event follows mid-conversation switches at no steady cost.
+function resolveCursorModel(payload) {
+  if (!payload) return null;
+  return normalizeModelId(payload.model_id) || normalizeModelId(payload.model);
 }
 
 function resolveStateAndEvent(payload, hookName) {
@@ -166,6 +177,8 @@ readStdinJson()
     body.agent_id = "cursor-agent";
     const sessionTitle = resolveSessionTitle(payload, hookNameResolved, { readDatabase: !remote });
     if (sessionTitle) body.session_title = sessionTitle;
+    const model = resolveCursorModel(payload);
+    if (model) body.model = model;
     const hint = displaySvgFromToolHook(hookNameResolved, payload);
     if (hint !== undefined) body.display_svg = hint;
     if (cwd) body.cwd = cwd;
