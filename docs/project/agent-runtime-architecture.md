@@ -881,6 +881,18 @@ Settings Agent 页的 Install 会执行对应 sync 并把 `integrationInstalled=
 
 CodeBuddy 的 PermissionRequest HTTP 所有权只认严格的本机 managed URL，或版本化 marker `clawd-on-desk.permission.v1`。旧 `name:"clawd"` 只有在 URL 同时属于 managed local endpoint 时才会迁移；同名第三方/custom URL 注册和卸载均不触碰。进程内 startup、Settings install/clear/repair 显式传 `{mode:"local"}` 或 `{mode:"custom",url}`；裸 CLI 与 WSL deploy 用 `{mode:"preserve"}`，防止把 marker-owned custom URL 意外改回 localhost。
 
+### Claude 多配置目录（#1250）
+
+Claude Code 用 `CLAUDE_CONFIG_DIR` 选择配置目录（settings、会话、登录），很多人同时用 `~/.claude` 和 `~/.claude-work`。Clawd 仍是**单进程单桌宠**：
+
+- **主目录**：Clawd 自身解析到的目录（`CLAUDE_CONFIG_DIR`，否则 `~/.claude`），行为与以前完全一致，包括 statusline。
+- **额外目录**：`prefs.agents["claude-code"].configDirs = [{ dir, label }]`（`hooks/claude-config-dirs.js` 负责规范化、标签推导和有效列表）。dir 等于主目录的条目只携带主目录标签，不会额外安装。
+- `src/server.js` 的 Claude 队列任务在主目录成功后对每个额外目录调用 `registerHooksAsync({ claudeHome })` 并逐目录 verify；额外目录失败只记入 `configDirs` 结果，不让主目录安装失败。**statusline 只装在主目录**：它上报账户额度，两个 profile 通常是两个账户，会互相覆盖。卸载、auto-start 开关同样覆盖所有目录。Settings 的增删（`addClaudeConfigDir` / `removeClaudeConfigDir`）先经队列写入/移除该目录的 hooks，成功后才提交 prefs。
+- watcher：主 watcher 现在盯安装器实际写入的目录；每个额外目录各有一个 watcher（独立 snapshot / shrink guard / 修复只作用于本目录），`getClaudeHookHealthStatus()` 取最严重的状态并在 `configDirs` 中列出各目录。
+- Doctor：仍是一行 Claude Code，额外目录在同一行里逐个 `checkFileMode`，第一个异常目录决定状态，Fix 走原有修复路径（会同步所有目录）。
+- 清理：应用内清理经队列覆盖所有目录；独立卸载器（`hooks/cleanup-integrations.js`）从 userData 的 `clawd-prefs.json` 读取额外目录，读不到就跳过。
+- 标签：Claude hook 把 `CLAUDE_CONFIG_DIR`（未设置则不发送）作为 `claude_config_dir` 上报；server 只对 claude-code 接受并存入 `session.claudeConfigDir`（也写入恢复 lease）。快照里的 `claudeProfileLabel` 只在管理多于一个目录时、且仅本地会话才非空，dashboard、HUD 和权限气泡显示该标签。远程/WSL 会话的目录属于另一台机器，不显示标签。
+
 ### Claude hook 健康巡检与自愈（#657）
 
 `src/claude-settings-watcher.js` 除了原有的目录 watcher（盯 `~/.claude/` 目录、debounce 1 秒）外，还跑一个自调度的低频只读健康巡检：

@@ -1784,6 +1784,15 @@ function loadAgentsTabForTest({
           rowStartWithClaude: "Start with Claude Code",
           rowStartWithClaudeDesc: "Launches Clawd when a Claude Code session starts.",
           rowStartWithClaudeDisabledDesc: "Requires automatic Claude hook management.",
+          rowClaudeConfigDirs: "Claude config folders",
+          rowClaudeConfigDirsDesc: "Clawd installs its hooks in every folder listed here.",
+          claudeConfigDirAdd: "Add folder…",
+          claudeConfigDirRemove: "Remove",
+          claudeConfigDirPrimary: "Folder Clawd was started with",
+          claudeConfigDirMissing: "Folder not found",
+          claudeConfigDirLabelPlaceholder: "Label",
+          claudeConfigDirLabelAria: "Label for {dir}",
+          toastClaudeConfigDirAdded: "Hooks installed in the Claude config folder",
           rowClaudeQuotaCollection: "Read local Claude quota and context usage",
           rowClaudeQuotaCollectionDesc: "Claude quota desc",
           rowCodexHookHealthNotify: "Warn me when the approval hook stops working",
@@ -21451,6 +21460,54 @@ describe("settings renderer browser environment", () => {
       .map((row) => row.querySelector(".row-label")._textContent);
   }
 
+  it("lists Claude config folders with labels and removes only extra folders (#1250)", async () => {
+    const calls = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "claude-code": { integrationInstalled: true, enabled: true, configDirs: [{ dir: "/home/u/.claude-work", label: "" }] },
+        },
+      },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: { permissionApproval: true } },
+      ],
+      settingsAPI: {
+        getClaudeConfigDirs: async () => ({
+          status: "ok",
+          dirs: [
+            { dir: "/home/u/.claude", label: "default", primary: true, exists: true },
+            { dir: "/home/u/.claude-work", label: "work", primary: false, exists: false },
+          ],
+        }),
+        command: async (command, payload) => {
+          calls.push([command, payload]);
+          return { status: "ok" };
+        },
+      },
+    });
+    // First render starts the folder fetch; the next one shows its result.
+    harness.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.core.ops.requestRender({ content: true });
+
+    const claude = findAgentCard(harness.content, "Claude Code");
+    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), [
+      "Manage hooks automatically",
+      "Start with Claude Code",
+      "Claude config folders",
+      "/home/u/.claude",
+      "/home/u/.claude-work",
+    ]);
+    const primaryRow = findAgentRow(claude, "/home/u/.claude");
+    const workRow = findAgentRow(claude, "/home/u/.claude-work");
+    assert.strictEqual(primaryRow.querySelector(".claude-config-dir-remove"), null);
+    assert.match(collectText(workRow), /Folder not found/);
+
+    workRow.querySelector(".claude-config-dir-remove").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify(["removeClaudeConfigDir", { dir: "/home/u/.claude-work" }]));
+  });
+
   it("renders the five status-line cases from local state", async () => {
     const customId = "custom-status-ai-0123456789ab";
     const connected = loadAgentsTabForTest({
@@ -21701,7 +21758,7 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(detailGroupLabels(claude), ["Approvals", "Alerts", "Connection", "Quota"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Approvals"), ["Permissions", "Subagent permissions"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Alerts"), ["Idle alerts"]);
-    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), ["Manage hooks automatically", "Start with Claude Code"]);
+    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), ["Manage hooks automatically", "Start with Claude Code", "Claude config folders"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Quota"), ["Read local Claude quota and context usage"]);
 
     const codex = findAgentCard(harness.content, "Codex");

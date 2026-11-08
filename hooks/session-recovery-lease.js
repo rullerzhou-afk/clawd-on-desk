@@ -8,6 +8,7 @@ const { execFileSync } = require("child_process");
 const { writeJsonAtomic } = require("./json-utils");
 const { getClaudeStopDisposition } = require("./claude-stop-disposition");
 const { readPidCacheV2 } = require("./pid-cache");
+const { normalizeClaudeConfigDir } = require("./claude-config-dirs");
 
 const LEASE_VERSION = 1;
 const LEASE_DIR_NAME = "session-recovery-v1";
@@ -40,6 +41,9 @@ const ALLOWED_RECORD_KEYS = new Set([
   "sourceProcessStartIdentity",
   "cwd",
   "title",
+  // Optional: CLAUDE_CONFIG_DIR of a Claude session, so a recovered session
+  // keeps its profile label. Absent for default-profile and other agents.
+  "claudeConfigDir",
 ]);
 
 function isPositivePid(value) {
@@ -174,6 +178,11 @@ function validateRecord(record, options = {}) {
   if (cwd !== record.cwd) return null;
   const title = record.title === null ? null : normalizeTitle(record.title);
   if (title !== record.title) return null;
+  let claudeConfigDir = null;
+  if (Object.prototype.hasOwnProperty.call(record, "claudeConfigDir")) {
+    claudeConfigDir = normalizeClaudeConfigDir(record.claudeConfigDir);
+    if (!claudeConfigDir || claudeConfigDir !== record.claudeConfigDir) return null;
+  }
   if (options.filePath) {
     const expected = getLeaseFilePath(agentId, sessionId, { recoveryDir: path.dirname(options.filePath) });
     if (!expected || path.basename(expected) !== path.basename(options.filePath)) return null;
@@ -192,6 +201,7 @@ function validateRecord(record, options = {}) {
     sourceProcessStartIdentity: record.sourceProcessStartIdentity,
     cwd,
     title,
+    ...(claudeConfigDir ? { claudeConfigDir } : {}),
   };
 }
 
@@ -613,6 +623,9 @@ function updateRecoveryLeaseFromStateBody(body, options = {}) {
         ? (existing && existing.title) || null
         : normalizeTitle(body.session_title) || (existing && existing.title) || null,
     };
+    const claudeConfigDir = normalizeClaudeConfigDir(body.claude_config_dir)
+      || (existing && existing.claudeConfigDir) || null;
+    if (claudeConfigDir) record.claudeConfigDir = claudeConfigDir;
     writeJsonAtomic(filePath, record);
     try { fs.chmodSync(filePath, 0o600); } catch {}
     // Do not ask the directory pruner to reacquire this record's lock.

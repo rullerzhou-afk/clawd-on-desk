@@ -108,12 +108,16 @@ function createIntegrationSyncRuntime(options = {}) {
     const automatic = options.automatic !== false;
     try {
       if (typeof ctx.syncClawdHooksImpl === "function") {
-        return ctx.syncClawdHooksImpl({
+        const implOptions = {
           autoStart: ctx.autoStartWithClaude,
           port: getHookServerPort(),
           source,
           automatic,
-        });
+        };
+        // Settings passes the folder list it is about to commit, so the
+        // install covers the same extra Claude folders prefs will record.
+        if (Array.isArray(options.claudeConfigDirs)) implOptions.claudeConfigDirs = options.claudeConfigDirs;
+        return ctx.syncClawdHooksImpl(implOptions);
       }
       const {
         registerHooks,

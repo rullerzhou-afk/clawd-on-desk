@@ -15,6 +15,7 @@ const {
 const { MAC_TOPMOST_LEVEL } = require("./topmost-runtime");
 const { redactSecrets } = require("./secret-redact");
 const path = require("path");
+const { claudeProfileLabelFor } = require("../hooks/claude-config-dirs");
 const http = require("http");
 const crypto = require("crypto");
 const {
@@ -3228,6 +3229,10 @@ function buildPermissionBubblePayload(permEntry) {
   ensureBubblePresentationState(permEntry);
   const sess = ctx.sessions.get(permEntry.sessionId);
   const sessionFolder = sess && sess.cwd ? path.basename(sess.cwd) : null;
+  const sessionProfileLabel = sess && sess.agentId === "claude-code" && !sess.host && !sess.wslDistro
+    && typeof ctx.getClaudeConfigDirs === "function"
+    ? claudeProfileLabelFor(sess.claudeConfigDir || null, ctx.getClaudeConfigDirs())
+    : "";
   const sessionShortId = permEntry.sessionId
     ? String(permEntry.sessionId).slice(-3)
     : null;
@@ -3325,6 +3330,7 @@ function buildPermissionBubblePayload(permEntry) {
     familyAlways: permEntry.familyAlwaysCandidates || [],
     familyPatterns: permEntry.familyPatterns || [],
     sessionFolder,
+    sessionProfileLabel: sessionProfileLabel || null,
     sessionShortId,
   };
 }

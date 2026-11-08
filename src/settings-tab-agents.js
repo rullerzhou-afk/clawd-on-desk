@@ -14,6 +14,10 @@
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
   const CUSTOM_TOOL_SCAN_STATUS_MIN_MS = 1200;
   let agentHintActionPending = false;
+  // Claude config folders as main resolves them ({ dir, label, primary, exists }).
+  // null until the first fetch; refreshed after every add/remove/rename.
+  let claudeConfigDirs = null;
+  let claudeConfigDirsLoading = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
   const permissionModePending = new Set();
@@ -955,7 +959,128 @@
     });
     autoStartRow.classList.add("row-sub");
     helpers.attachDescriptionDisclosure(autoStartRow);
-    return [manageRow, autoStartRow];
+    return [manageRow, autoStartRow, ...buildClaudeConfigDirRows()];
+  }
+
+  function refreshClaudeConfigDirs() {
+    if (claudeConfigDirsLoading) return Promise.resolve();
+    if (!window.settingsAPI || typeof window.settingsAPI.getClaudeConfigDirs !== "function") {
+      return Promise.resolve();
+    }
+    claudeConfigDirsLoading = true;
+    return Promise.resolve(window.settingsAPI.getClaudeConfigDirs())
+      .then((result) => {
+        // A failed read still settles to a list, or every render would refetch.
+        claudeConfigDirs = result && result.status === "ok" && Array.isArray(result.dirs)
+          ? result.dirs
+          : (claudeConfigDirs || []);
+      })
+      .catch(() => { claudeConfigDirs = claudeConfigDirs || []; })
+      .finally(() => {
+        claudeConfigDirsLoading = false;
+        ops.requestRender({ content: true });
+      });
+  }
+
+  async function runClaudeConfigDirCommand(action, payload, button) {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+      return null;
+    }
+    if (button) helpers.setButtonState(button, { pending: true });
+    try {
+      const result = await window.settingsAPI.command(action, payload);
+      if (!result || result.status !== "ok") {
+        ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+        return result;
+      }
+      return result;
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      return null;
+    } finally {
+      if (button && button.isConnected) helpers.setButtonState(button, { pending: false });
+      await refreshClaudeConfigDirs();
+    }
+  }
+
+  async function addPickedClaudeConfigDir(button) {
+    if (!window.settingsAPI || typeof window.settingsAPI.pickClaudeConfigDir !== "function") {
+      ops.showToast(t("toastSaveFailed") + "folder picker unavailable", { error: true });
+      return;
+    }
+    const picked = await window.settingsAPI.pickClaudeConfigDir();
+    if (!picked || picked.status === "cancel") return;
+    if (picked.status !== "ok" || typeof picked.path !== "string" || !picked.path) {
+      ops.showToast(t("toastSaveFailed") + ((picked && picked.message) || "folder picker failed"), { error: true });
+      return;
+    }
+    const result = await runClaudeConfigDirCommand("addClaudeConfigDir", { dir: picked.path }, button);
+    if (result && result.status === "ok" && !result.noop) ops.showToast(t("toastClaudeConfigDirAdded"));
+  }
+
+  function buildClaudeConfigDirRows() {
+    if (claudeConfigDirs === null) refreshClaudeConfigDirs();
+    const dirs = Array.isArray(claudeConfigDirs) ? claudeConfigDirs : [];
+
+    const headerParts = helpers.buildSettingRow({
+      labelKey: "rowClaudeConfigDirs",
+      descriptionKey: "rowClaudeConfigDirsDesc",
+      className: "row-sub claude-config-dirs-row",
+    });
+    const addButton = helpers.buildButton({
+      labelKey: "claudeConfigDirAdd",
+      size: "compact",
+      className: "claude-config-dir-add",
+    });
+    addButton.addEventListener("click", () => addPickedClaudeConfigDir(addButton));
+    headerParts.controlElement.appendChild(addButton);
+    helpers.attachDescriptionDisclosure(headerParts.element);
+
+    return [headerParts.element, ...dirs.map(buildClaudeConfigDirRow)];
+  }
+
+  function buildClaudeConfigDirRow(entry) {
+    const descParts = [entry.primary ? t("claudeConfigDirPrimary") : null];
+    if (entry.exists === false) descParts.push(t("claudeConfigDirMissing"));
+    const rowParts = helpers.buildSettingRow({
+      label: entry.dir,
+      description: descParts.filter(Boolean).join(" · ") || null,
+      className: "row-sub claude-config-dir-row",
+      controlClassName: "claude-config-dir-control",
+    });
+    rowParts.labelElement.classList.add("claude-config-dir-path");
+    rowParts.labelElement.title = entry.dir;
+
+    const input = helpers.buildTextInput({
+      type: "text",
+      size: "compact",
+      value: entry.label || "",
+      placeholder: t("claudeConfigDirLabelPlaceholder"),
+      spellcheck: false,
+      ariaLabel: t("claudeConfigDirLabelAria").replace("{dir}", entry.dir),
+      stopPropagation: true,
+      onEnter: () => input.blur(),
+    });
+    input.maxLength = 24;
+    input.addEventListener("change", () => {
+      runClaudeConfigDirCommand("setClaudeConfigDirLabel", { dir: entry.dir, label: input.value });
+    });
+    rowParts.controlElement.appendChild(input);
+
+    if (!entry.primary) {
+      const removeButton = helpers.buildButton({
+        labelKey: "claudeConfigDirRemove",
+        tone: "danger",
+        size: "compact",
+        className: "claude-config-dir-remove",
+      });
+      removeButton.addEventListener("click", () => {
+        runClaudeConfigDirCommand("removeClaudeConfigDir", { dir: entry.dir }, removeButton);
+      });
+      rowParts.controlElement.appendChild(removeButton);
+    }
+    return rowParts.element;
   }
 
   function buildAgentGroup(agent) {
