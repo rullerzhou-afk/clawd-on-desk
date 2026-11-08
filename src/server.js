@@ -317,7 +317,7 @@ const claudeHookOperations = createClaudeHookOperations({
 const CLAUDE_STATUSLINE_REGISTER_SOURCES = new Set(["startup", "settings-agent-install", "settings-agent-enable"]);
 const CLAUDE_STATUSLINE_UNREGISTER_SOURCES = new Set(["settings-agent-uninstall", "cleanup"]);
 
-// Shared by every register-path queue task (startup/Settings/Doctor/watcher/
+// Shared by whole-integration register tasks (startup/Settings/Doctor/watcher/
 // periodic-health) for the same two safety checks the periodic supervisor
 // already does on its own automatic path: never write toward a source script
 // that doesn't exist, and never trust the installer's own success signal —
@@ -690,9 +690,12 @@ function registerClaudeHooksTask(meta) {
 
     // Extra folders are best effort: a broken or deleted extra folder is
     // reported, but never fails the primary install it rides along with.
+    // Primary watcher repairs stay local; extra folders have their own guards.
     const configDirs = [];
-    for (const dir of getExtraClaudeConfigDirs(meta)) {
-      configDirs.push(await registerHooksInClaudeConfigDir(dir, meta));
+    if (meta.source !== "settings-watch" && meta.source !== "periodic-health") {
+      for (const dir of getExtraClaudeConfigDirs(meta)) {
+        configDirs.push(await registerHooksInClaudeConfigDir(dir, meta));
+      }
     }
 
     return configDirs.length > 0
@@ -731,6 +734,11 @@ function unregisterClaudeHooksTask(meta) {
       ].filter(Boolean);
       const out = { status: "ok", removed, changed, backupPaths, hooks: hooksResult, statusline: statuslineResult };
       if (configDirs.length > 0) out.configDirs = configDirs;
+      const failedDirs = configDirs.filter((entry) => entry.status === "error");
+      if (failedDirs.length > 0) {
+        out.status = "error";
+        out.message = `Failed to uninstall Claude hooks from: ${failedDirs.map((entry) => entry.dir).join(", ")}`;
+      }
       return out;
     } catch (err) {
       if (removesStatusline) claudeStatuslineIngressSuppressed = previousSuppression;
@@ -775,13 +783,11 @@ function installClaudeConfigDirQueued(dir, callOptions = {}) {
         message: "Claude hook source script is missing; reinstall or re-extract Clawd",
       };
     }
-    const result = await registerHooksInClaudeConfigDir(normalized, {
+    return registerHooksInClaudeConfigDir(normalized, {
       source,
       autoStart,
       port: getHookServerPort(),
     });
-    if (result.status === "ok") syncExtraClaudeSettingsWatchers();
-    return result;
   });
 }
 
@@ -794,12 +800,15 @@ function uninstallClaudeConfigDirQueued(dir, callOptions = {}) {
       return { status: "error", reason: "primary-config-dir", message: "The primary Claude folder cannot be removed" };
     }
     stopExtraClaudeSettingsWatcher(normalized);
-    return unregisterHooksInClaudeConfigDir(normalized);
+    const result = await unregisterHooksInClaudeConfigDir(normalized);
+    // Failed removal leaves prefs unchanged, so restore its watcher now.
+    if (result.status === "error") syncExtraClaudeSettingsWatchers();
+    return result;
   });
 }
 
-// Watcher repair for one extra folder: same queue, gates and verify as the
-// primary repair, but scoped to that folder's settings.json.
+// Watcher repair for one extra folder: shared queue and post-install verification,
+// scoped to its settings.json. Source and shrink guards live in each folder's watcher.
 function repairClaudeConfigDirQueued(dir, callOptions = {}) {
   const source = typeof callOptions.source === "string" ? callOptions.source : "unspecified";
   const automatic = callOptions.automatic !== false;
@@ -1124,8 +1133,8 @@ function stopExtraClaudeSettingsWatcher(dir) {
   }
 }
 
-// Reconcile the extra watchers with the current folder list. Called when the
-// primary watcher starts and after Settings adds or removes a folder.
+// Reconcile with committed prefs when the primary watcher starts/stops, after
+// config folder changes commit, or when a failed removal needs its watcher back.
 function syncExtraClaudeSettingsWatchers() {
   const wanted = claudeSettingsWatchersRunning ? getExtraClaudeConfigDirs() : [];
   for (const key of [...extraClaudeSettingsWatchers.keys()]) {
@@ -1437,6 +1446,7 @@ return {
   uninstallClaudeHooks: uninstallClaudeHooksQueued,
   installClaudeConfigDir: installClaudeConfigDirQueued,
   uninstallClaudeConfigDir: uninstallClaudeConfigDirQueued,
+  syncClaudeConfigDirWatchers: syncExtraClaudeSettingsWatchers,
   setClaudeQuotaCollectionEnabled,
   isClaudeStatuslineMetadataAllowed,
   setClaudeAutoStart,

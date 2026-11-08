@@ -1016,7 +1016,9 @@
       return;
     }
     const result = await runClaudeConfigDirCommand("addClaudeConfigDir", { dir: picked.path }, button);
-    if (result && result.status === "ok" && !result.noop) ops.showToast(t("toastClaudeConfigDirAdded"));
+    if (result && result.status === "ok" && !result.noop) {
+      ops.showToast(t(result.installed ? "toastClaudeConfigDirAdded" : "toastClaudeConfigDirListed"));
+    }
   }
 
   function buildClaudeConfigDirRows() {

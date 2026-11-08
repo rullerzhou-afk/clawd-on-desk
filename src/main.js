@@ -359,7 +359,7 @@ const {
 } = require("./bubble-policy");
 const loginItemHelpers = require("./login-item");
 const { writeCodexAutoStartGate } = require("../hooks/server-config");
-const { effectiveClaudeConfigDirs } = require("../hooks/claude-config-dirs");
+const { effectiveClaudeConfigDirs, claudeConfigDirKey } = require("../hooks/claude-config-dirs");
 const { createCodexAutoStartGateEvaluator } = require("./agent-gate");
 const PREFS_PATH = path.join(app.getPath("userData"), "clawd-prefs.json");
 const _initialPrefsLoad = prefsModule.load(PREFS_PATH);
@@ -701,6 +701,21 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
 _settingsController.subscribeKey("autoStartWithCodex", (_enabled, snapshot) => {
   if (_settingsController.isLocked()) return;
   _syncCodexAutoStartGate(snapshot, "settings");
+});
+
+function _claudeConfigDirWatcherKey(agents) {
+  const entries = agents && agents["claude-code"] && agents["claude-code"].configDirs;
+  const dirs = effectiveClaudeConfigDirs(entries).map(({ dir }) => claudeConfigDirKey(dir));
+  return JSON.stringify(dirs.sort());
+}
+let _lastClaudeConfigDirWatcherKey = _claudeConfigDirWatcherKey(_settingsController.get("agents"));
+_settingsController.subscribeKey("agents", (agents) => {
+  if (_settingsController.isLocked()) return;
+  const key = _claudeConfigDirWatcherKey(agents);
+  if (key === _lastClaudeConfigDirWatcherKey) return;
+  // Advance the baseline only after sync succeeds so a failure can be retried.
+  _server.syncClaudeConfigDirWatchers();
+  _lastClaudeConfigDirWatcherKey = key;
 });
 let _remoteSshInstallationIdentity = null;
 let _remoteSshInstallationIdentityPromise = null;
