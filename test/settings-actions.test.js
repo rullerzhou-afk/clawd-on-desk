@@ -2837,6 +2837,7 @@ describe("setThemeSelection command", () => {
       petTint: true,
       accessories: true,
       mouthAccessories: false,
+      darkAppearance: false,
     });
   });
 
@@ -2852,6 +2853,7 @@ describe("setThemeSelection command", () => {
       petTint: true,
       accessories: false,
       mouthAccessories: false,
+      darkAppearance: false,
     });
   });
 
@@ -2912,6 +2914,7 @@ describe("applyThemeSelection shared helper", () => {
       petTint: true,
       accessories: true,
       mouthAccessories: false,
+      darkAppearance: false,
     });
     assert.deepStrictEqual(calls, [{
       themeId: "clawd",

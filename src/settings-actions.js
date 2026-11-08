@@ -370,6 +370,23 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  themeAppearance(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { status: "error", message: "themeAppearance must be a theme-to-appearance object" };
+    }
+    for (const [themeId, appearance] of Object.entries(value)) {
+      if (
+        !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)
+        || (appearance !== "light" && appearance !== "dark")
+      ) {
+        return {
+          status: "error",
+          message: `themeAppearance entry "${themeId}" must map a safe theme id to light or dark`,
+        };
+      }
+    }
+    return { status: "ok" };
+  },
   petAccessory(value) {
     if (!value || typeof value !== "object" || Array.isArray(value)) {
       return { status: "error", message: "petAccessory must be a theme-to-accessory object" };
@@ -1282,6 +1299,11 @@ function buildThemeScopedPrefsCommit(themeId, snapshot) {
     delete nextPetTint[themeId];
     nextCommit.petTint = nextPetTint;
   }
+  if (current.themeAppearance && current.themeAppearance[themeId] !== undefined) {
+    const nextAppearance = { ...current.themeAppearance };
+    delete nextAppearance[themeId];
+    nextCommit.themeAppearance = nextAppearance;
+  }
   if (current.petAccessory && current.petAccessory[themeId] !== undefined) {
     const nextPetAccessory = { ...current.petAccessory };
     delete nextPetAccessory[themeId];
@@ -1393,6 +1415,7 @@ function applyThemeSelection(themeId, variantIdInput, overrideMap, deps) {
         petTint: activeTheme._capabilities.petTint === true,
         accessories: activeTheme._capabilities.accessories === true,
         mouthAccessories: activeTheme._capabilities.mouthAccessories === true,
+        darkAppearance: activeTheme._capabilities.darkAppearance === true,
       }
     : null;
 

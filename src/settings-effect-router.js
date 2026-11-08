@@ -103,6 +103,7 @@ function createSettingsEffectRouter(options = {}) {
   const exitMiniMode = options.exitMiniMode || noop;
   const getMiniMode = options.getMiniMode || (() => false);
   const getActiveTheme = options.getActiveTheme || (() => null);
+  const syncActiveThemeAppearance = options.syncActiveThemeAppearance || noop;
   const syncHitWin = options.syncHitWin || noop;
   const refreshIdleVisual = options.refreshIdleVisual || noop;
   const refreshDisplayedVisual = options.refreshDisplayedVisual || noop;
@@ -195,6 +196,11 @@ function createSettingsEffectRouter(options = {}) {
       const activeTheme = getActiveTheme();
       const tintId = getPetTintIdForTheme(changes.petTint, activeTheme && activeTheme._id);
       sendToRenderer("pet-tint-change", resolvePetTintPayload(tintId, activeTheme));
+    }
+    if ("themeAppearance" in changes) {
+      // Prefs are already committed here, so the runtime reads the new value
+      // itself; no appearance argument needs to be threaded through commands.
+      safeCall(logWarn, "Clawd: theme appearance sync failed:", syncActiveThemeAppearance);
     }
     if (
       "petAccessory" in changes

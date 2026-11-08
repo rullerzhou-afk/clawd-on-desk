@@ -2974,6 +2974,7 @@
     clearTransientStateForChanges(changes);
     const needsAnimOverridesRefresh = !!(changes && (
       "theme" in changes || "themeVariant" in changes || "themeOverrides" in changes
+      || "themeAppearance" in changes
     ));
     if (changes && (
       Object.prototype.hasOwnProperty.call(changes, "theme")

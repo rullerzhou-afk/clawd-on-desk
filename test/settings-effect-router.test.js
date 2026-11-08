@@ -880,3 +880,31 @@ for (const changes of [
     harness.router.dispose();
   });
 }
+
+describe("issue #1323: theme appearance routing", () => {
+  it("issue #1323: commits route themeAppearance to the appearance sync", () => {
+    const synced = [];
+    const { emit } = createHarness({
+      routerOptions: {
+        syncActiveThemeAppearance: () => synced.push("sync"),
+      },
+    });
+
+    emit({ themeAppearance: { night: "dark" } });
+
+    assert.deepStrictEqual(synced, ["sync"]);
+  });
+
+  it("issue #1323: a throwing appearance sync is contained by safeCall", () => {
+    const { emit, logs } = createHarness({
+      routerOptions: {
+        syncActiveThemeAppearance: () => {
+          throw new Error("sync exploded");
+        },
+      },
+    });
+
+    assert.doesNotThrow(() => emit({ themeAppearance: { night: "light" } }));
+    assert.ok(logs.some((entry) => String(entry[0]).includes("appearance")));
+  });
+});

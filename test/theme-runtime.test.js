@@ -209,7 +209,10 @@ describe("theme-runtime active ownership", () => {
     const theme = runtime.loadInitialTheme("clawd", opts);
 
     assert.strictEqual(load.mock.callCount(), 1);
-    assert.deepStrictEqual(load.mock.calls[0].arguments, ["clawd", opts]);
+    assert.deepStrictEqual(load.mock.calls[0].arguments, [
+      "clawd",
+      { ...opts, appearance: "light" },
+    ]);
     assert.strictEqual(theme._id, "clawd");
     assert.strictEqual(theme._variantId, "cozy");
     assert.strictEqual(theme.timings.idleMouseMoveThreshold, 42);
