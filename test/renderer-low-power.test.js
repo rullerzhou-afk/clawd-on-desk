@@ -1484,16 +1484,121 @@ describe("renderer discrete animation sampling", () => {
       }
     });
 
-    it("keeps documents with finite or initially paused animations on every frame", () => {
-      for (const other of [makeAnimation(3800, { iterations: 1 }), makeAnimation(12000, { playState: "paused" })]) {
-        const harness = followHarness({ animations: [makeAnimation(12000), other] });
-        fire(harness.slot.raf);
-        assert.ok(harness.slot.raf);
-        assert.strictEqual(harness.slot.followTimer, null);
-        other.playState = "finished";
-        fire(harness.slot.raf);
-        assert.ok(harness.slot.raf, "an unsampleable document never acquires a cadence later");
-      }
+    it("keeps initially paused animations on every frame and finishes one-shots onto the grid", () => {
+      const paused = makeAnimation(12000, { playState: "paused" });
+      const pausedHarness = followHarness({ animations: [makeAnimation(12000), paused] });
+      fire(pausedHarness.slot.raf);
+      assert.ok(pausedHarness.slot.raf);
+      assert.strictEqual(pausedHarness.slot.followTimer, null);
+      paused.playState = "finished";
+      fire(pausedHarness.slot.raf);
+      assert.ok(pausedHarness.slot.raf, "an unsampleable document never acquires a cadence later");
+
+      const entrance = makeAnimation(3800, { iterations: 1 });
+      const harness = followHarness({ animations: [makeAnimation(12000), entrance] });
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      entrance.playState = "finished";
+      harness.animations[0].currentTime = 10;
+      fire(harness.slot.raf);
+      assert.strictEqual(harness.slot.raf, null);
+      approx(harness.slot.followTimer.ms, stepMs - 10);
+      assert.deepStrictEqual(entrance.calls, [], "a one-shot keeps its arrival timing");
+    });
+
+    it("goes to the grid only after every one-shot animation finishes", () => {
+      const first = makeAnimation(300, { iterations: 1 });
+      const second = makeAnimation(300, { iterations: 1 });
+      const harness = followHarness({ animations: [makeAnimation(12000), first, second] });
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      first.playState = "finished";
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf, "the second one-shot still moves the document");
+      assert.strictEqual(harness.slot.followTimer, null);
+      second.playState = "finished";
+      harness.animations[0].currentTime = 10;
+      fire(harness.slot.raf);
+      assert.strictEqual(harness.slot.raf, null);
+      approx(harness.slot.followTimer.ms, stepMs - 10);
+      assert.deepStrictEqual(first.calls, [], "a one-shot keeps its arrival timing");
+      assert.deepStrictEqual(second.calls, [], "a one-shot keeps its arrival timing");
+    });
+
+    it("stays on every frame while an initially paused loop is unsampleable", () => {
+      const entrance = makeAnimation(300, { iterations: 1 });
+      const pausedLoop = makeAnimation(12000, { playState: "paused" });
+      const harness = followHarness({ animations: [makeAnimation(12000), entrance, pausedLoop] });
+      fire(harness.slot.raf);
+      entrance.playState = "finished";
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+    });
+
+    it("stays on every frame for an initially paused one-shot that may start later", () => {
+      const entrance = makeAnimation(300, { iterations: 1, playState: "paused" });
+      const harness = followHarness({ animations: [makeAnimation(12000), entrance] });
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      entrance.playState = "finished";
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf, "an initially paused animation is never counted as a finished one-shot");
+      assert.strictEqual(harness.slot.followTimer, null);
+    });
+
+    it("stays on every frame for a non-unit playback rate", () => {
+      const fast = makeAnimation(12000, { playbackRate: 2 });
+      const harness = followHarness({ animations: [makeAnimation(12000), fast] });
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      fast.playState = "finished";
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf, "an unsampleable animation never acquires a cadence later");
+      assert.strictEqual(harness.slot.followTimer, null);
+    });
+
+    it("ignores a finished one-shot that stays on the body target", () => {
+      const entrance = makeAnimation(300, { iterations: 1 });
+      const harness = followHarness({ animations: [makeAnimation(12000), entrance] });
+      const body = new FakeElement("g");
+      body.ownerDocument = harness.svgDoc;
+      body.getAnimations = () => [entrance];
+      harness.api.setBodyTargetForTest(body);
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      entrance.playState = "finished";
+      harness.animations[0].currentTime = 10;
+      fire(harness.slot.raf);
+      assert.strictEqual(harness.slot.raf, null);
+      approx(harness.slot.followTimer.ms, stepMs - 10);
+    });
+
+    it("follows the grid when a one-shot finished before alignment", () => {
+      const entrance = makeAnimation(300, { iterations: 1, playState: "finished" });
+      const harness = followHarness({ animations: [makeAnimation(12000), entrance] });
+      harness.animations[0].currentTime = 10;
+      fire(harness.slot.raf);
+      assert.strictEqual(harness.slot.raf, null);
+      approx(harness.slot.followTimer.ms, stepMs - 10);
+      assert.deepStrictEqual(entrance.calls, [], "a one-shot keeps its arrival timing");
+    });
+
+    it("stays on every frame when the document has only a one-shot", () => {
+      const entrance = makeAnimation(300, { iterations: 1 });
+      const harness = followHarness({ animations: [entrance] });
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
+      entrance.playState = "finished";
+      fire(harness.slot.raf);
+      assert.ok(harness.slot.raf);
+      assert.strictEqual(harness.slot.followTimer, null);
     });
 
     it("tracks body transitions every frame and returns to the grid when they end", () => {
