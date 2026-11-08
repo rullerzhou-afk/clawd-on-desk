@@ -5,7 +5,6 @@
 | 限制 | 说明 |
 |------|------|
 | **Clawd 降级：hook 可能重复** | 降回 1.5.0 或更早的版本时，旧版不认识 exec 写法，会再加一份 hook，事件可能重复上报；再升回来会自动合并，因此卸载旧版前最好先升回来。 |
-| **Remote SSH：远程主机上排在 Clawd 前面的第三方本机 HTTP 审批 hook 会让部署校验失败** | 如果远程 Claude Code 的设置里已经有另一个指向 `127.0.0.1` 的 `PermissionRequest` HTTP hook，并且排在 Clawd 自己的条目前面，「部署 / 修复 Hook」装完后可能以校验失败（`permission_nonce_mismatch`）中止。对方的配置不会被改动或删除。请在远程主机上把那条 hook 挪到 Clawd 的条目之后，或先移除，再重新部署。后续版本会让校验跳过别人的 hook。 |
 | **macOS 桌宠置顶与全屏（#1275）** | 修改桌宠置顶需要重启 Clawd 后生效。自动隐藏只识别原生全屏 Space（分屏也算），无法识别播放器自行铺满普通窗口。多屏按活动 Space 判断，可能与桌宠所在屏不同。 |
 | **动态本地端口与已运行的 CLI 会话** | 常规的 23333–23337 范围不可用时，Clawd 会使用已保存的动态端口提示，或由系统分配端口。新启动的原生客户端通过 `~/.clawd/runtime.json` 发现它。Claude / CodeBuddy 的 HTTP hook 写的是固定 URL，端口变化后，已在运行的 CLI 可能需要新开会话或重新加载 hook。已保存的端口提示能减少漂移，但无法杜绝。runtime 文件写入失败会关闭动态监听；请检查 runtime 目录的权限后重启。 |
 | **动态端口：WSL、手动隧道与旧版本** | 使用独立 home 的 WSL 客户端只扫描 23333–23337，发现不了范围之外的 Windows 端口；Pair 会报告这个限制，这与 NAT / mirrored 网络配置无关。Windows Node interop 可以读取 Windows 的 runtime。手写死端口的 SSH 转发必须跟着实际端口走；托管的 Remote SSH 保持原有的固定远端 identity 端口。旧版客户端和降级后的卸载器可能不认识新的 `/permission/clawd-on-desk` URL；降级前请先用当前版本修复。手机预览使用独立的 23334–23338 局域网监听，这次改动没有给它加动态端口兜底。 |
