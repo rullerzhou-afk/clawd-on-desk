@@ -1717,7 +1717,7 @@ const DSH_WINDOWS_REGISTRY_SCRIPT = [
   "  if (Test-Path -LiteralPath $uninstallRoot) {",
   "    foreach ($key in Get-ChildItem -LiteralPath $uninstallRoot) {",
   "      $props = Get-ItemProperty -LiteralPath $key.PSPath",
-  "      if ($props.DisplayName -is [string] -and $props.DisplayName.StartsWith('DeepSeek Harness ')) {",
+  "      if ($props.DisplayName -is [string] -and ($props.DisplayName -eq 'DeepSeek Harness' -or $props.DisplayName.StartsWith('DeepSeek Harness '))) {",
   "        $guid = $key.PSChildName",
   "        $guidInstall = $null",
   "        $guidPath = 'HKCU:\\Software\\' + $guid",
