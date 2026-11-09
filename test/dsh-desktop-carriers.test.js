@@ -1033,8 +1033,8 @@ test("the registry read runs the encoded PowerShell script with a 10s timeout", 
 
 test("the registry script includes bare and versioned DSH display names", () => {
   const script = dshInstallTest.DSH_WINDOWS_REGISTRY_SCRIPT;
-  assert.match(script, /\\$props\\.DisplayName -eq 'DeepSeek Harness'/);
-  assert.match(script, /\\$props\\.DisplayName\\.StartsWith\\('DeepSeek Harness '\\)/);
+  assert.ok(script.includes("$props.DisplayName -eq 'DeepSeek Harness'"));
+  assert.ok(script.includes("$props.DisplayName.StartsWith('DeepSeek Harness ')"));
 });
 
 test("the registry script fails closed and uses literal paths", () => {
