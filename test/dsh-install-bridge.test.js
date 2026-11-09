@@ -2885,3 +2885,58 @@ test("a CLI install reuses the generation staged earlier without a CLI in the sa
   );
   assert.strictEqual(fs.existsSync(referencePath), false);
 });
+
+test("a generation staged before the browser half stays healthy and migrates", async (t) => {
+  const harness = makeHarness();
+  const cli = makeOfficialCli(harness);
+  t.after(() => fs.rmSync(harness.root, { recursive: true, force: true }));
+  const contract = dshContractForVersion(SUPPORTED_DSH_VERSION);
+  const legacyFiles = ["package.json", "cordis.patch.yml", "lib/index.js", "lib/clawd-client.js"];
+
+  // Stage the pre-browser-half shape: four files only, marker hashed from those.
+  const staging = path.join(harness.managedRoot, "generations", "legacy");
+  fs.mkdirSync(staging, { recursive: true });
+  for (const relativePath of legacyFiles) {
+    const target = path.join(staging, ...relativePath.split("/"));
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(path.join(SOURCE_DIR, ...relativePath.split("/")), target);
+  }
+  const bundleHash = dshInstallTest.hashBridgeDirectorySync(fs, staging, contract);
+  assert.ok(bundleHash, "an absent optional client half must not disown a legacy generation");
+  const generationDir = path.join(harness.managedRoot, "generations", bundleHash);
+  fs.renameSync(staging, generationDir);
+  writeJson(path.join(generationDir, "clawd-manifest.json"), {
+    owner: "clawd-on-desk",
+    schemaVersion: 1,
+    protocolVersion: 1,
+    packageName: BRIDGE_PACKAGE_NAME,
+    bundleHash,
+    sourceClawdVersion: "1.2.3",
+    supportedDshRange: contract.supportedDshRange,
+    installedDshVersion: SUPPORTED_DSH_VERSION,
+    installedDshVersionAssumedAtStaging: false,
+    verifiedDshArtifact: contract.verifiedDshArtifact,
+    verifiedDshArtifactIntegrity: contract.verifiedDshArtifactIntegrity,
+    sourceAuditBaselineCommit: "47f943859bef60e4160492346772ded9b24f765a",
+    installedAt: "2026-01-01T00:00:00.000Z",
+  });
+  installProfileLink(harness, generationDir);
+  const linkedDir = packageDir(harness.profileDir);
+  fs.mkdirSync(linkedDir, { recursive: true });
+  fs.cpSync(generationDir, linkedDir, { recursive: true });
+
+  const health = await inspectDeepSeekHarnessIntegration({
+    dshHome: harness.dshHome,
+    managedRoot: harness.managedRoot,
+    resolveCommandForInspection: false,
+  });
+  assert.strictEqual(health.status, "healthy");
+
+  const migrated = await installDeepSeekHarnessBridge(installOptions(harness, cli, {
+    clawdVersion: "1.3.0",
+    dshVersion: SUPPORTED_DSH_VERSION,
+    operation: "startup-sync",
+  }));
+  assert.strictEqual(migrated.status, "ok");
+  assert.strictEqual(migrated.updated, true);
+});

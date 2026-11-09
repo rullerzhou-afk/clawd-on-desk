@@ -207,6 +207,7 @@ const {
   mergeSessionFocusEntry,
 } = require("./session-focus");
 const { focusCodexThreadTarget, focusDshDesktopTarget } = require("./session-focus-handoff");
+const { publishDshFocus } = require("./dsh-focus-stream");
 const { isSessionInProgress } = require("./state-session-snapshot");
 const { restoreSessionsFromRecoveryLeases } = require("./session-recovery-loader");
 const { createSessionHistoryRuntime } = require("./session-history-runtime");
@@ -2872,6 +2873,7 @@ function focusDashboardSession(sessionId, options = {}) {
       requestSource,
       url: focusTarget.url,
       focusLog,
+      publishDshFocus,
     });
     return true;
   }

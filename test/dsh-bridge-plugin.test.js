@@ -586,3 +586,26 @@ test("DSH plugin ignores projection changes for keys other than contextPressure"
   }
   assert.deepStrictEqual(posted, [], "non-contextPressure projection keys must not enqueue anything");
 });
+
+test("the bridge declares its browser half for session-level focus", async () => {
+  const fs = require("node:fs");
+  const root = path.join(__dirname, "..", "hooks", "dsh-clawd-bridge");
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  // Without these two declarations DSH never serves /plugins/.../client.js, and
+  // the page half that switches sessions would simply not exist.
+  assert.strictEqual(pkg.exports["./client"], "./lib/client.js");
+  assert.deepStrictEqual(pkg.dsh.client, { platform: "web" });
+  const source = fs.readFileSync(path.join(root, "lib", "client.js"), "utf8");
+  assert.match(source, /__ModuleLoader__/, "browser half must register with the DSH module loader");
+  assert.match(source, /openSession/, "browser half must switch the session");
+  assert.match(source, /\/dsh\/focus-stream/, "browser half must read Clawd's focus stream");
+  let plugin;
+  require("node:vm").runInNewContext(source, {
+    window: { __ModuleLoader__: { load({ id, factory }) {
+      assert.strictEqual(id, pkg.name);
+      plugin = factory(() => { throw new Error("unexpected client dependency"); });
+    } } },
+  });
+  assert.strictEqual(plugin.name, "dsh-clawd-bridge-client");
+  assert.strictEqual(typeof plugin.apply, "function");
+});
