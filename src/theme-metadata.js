@@ -14,6 +14,7 @@ const {
   basenameOnly,
   getCanonicalFileViewBoxes,
 } = require("./theme-schema");
+const { inspectDarkAppearance } = require("./theme-appearance");
 
 function fileUrl(absPath) {
   try { return pathToFileURL(absPath).href; } catch { return null; }
@@ -154,6 +155,13 @@ function computePreviewContentOffsetPct(raw, previewFile) {
 
 function buildThemeMetadata(themeId, raw, isBuiltin, themeDir, options = {}) {
   if (!raw) return null;
+  const capabilities = buildCapabilities(raw, { trustedRuntimeAllowed: !!isBuiltin });
+  // Settings lists every theme on each refresh, so this probe stays silent.
+  // It only covers the package checks; raster dependencies are only known
+  // when the loader actually builds a cache.
+  capabilities.darkAppearance = isBuiltin
+    ? false
+    : inspectDarkAppearance(themeDir, raw.appearance).ok;
   return {
     id: themeId,
     name: raw.name || themeId,
@@ -162,7 +170,7 @@ function buildThemeMetadata(themeId, raw, isBuiltin, themeDir, options = {}) {
     previewContentRatio: computePreviewContentRatio(raw),
     previewContentOffsetPct: computePreviewContentOffsetPct(raw),
     variants: buildVariantMetadata(raw, themeDir, isBuiltin, options),
-    capabilities: buildCapabilities(raw, { trustedRuntimeAllowed: !!isBuiltin }),
+    capabilities,
   };
 }
 

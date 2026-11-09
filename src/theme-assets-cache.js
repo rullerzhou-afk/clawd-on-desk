@@ -164,12 +164,23 @@ function syncRasterCache(themeId, cacheDir, cacheMeta, rasterRefs) {
 
 function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
   const strict = !!(opts && opts.strict);
+  // Dark appearance has to detect missing rasters even on the lenient startup
+  // path; the light appearance keeps the historical "strict only" behavior.
+  const requireRasterDependencies = !!(opts && opts.requireRasterDependencies);
   const themeCacheDir = opts && opts.themeCacheDir;
-  const sourceAssetsDir = externalAssetsSourceDir(themeDir);
+  const sourceAssetsDir = (opts && opts.sourceAssetsDir) || externalAssetsSourceDir(themeDir);
+  // The light appearance keeps its historical cache directory and meta name.
+  // Dark appearances get a sibling directory keyed by the assets directory
+  // name so a theme can hold both caches at once.
+  const cacheSubdir = (opts && opts.cacheSubdir) || "assets";
   if (!themeCacheDir) return sourceAssetsDir;
 
-  const cacheDir = path.join(themeCacheDir, themeId, "assets");
-  const cacheMetaPath = path.join(themeCacheDir, themeId, ".cache-meta.json");
+  const cacheDir = path.join(themeCacheDir, themeId, cacheSubdir);
+  const cacheMetaPath = path.join(
+    themeCacheDir,
+    themeId,
+    cacheSubdir === "assets" ? ".cache-meta.json" : `.cache-meta-${cacheSubdir}.json`
+  );
 
   let cacheMeta = emptyCacheMeta();
   let metaChanged = false;
@@ -242,10 +253,12 @@ function resolveExternalAssetsDir(themeId, themeDir, opts = {}) {
     } catch {}
   }
 
-  if (strict && rasterCopyResult.missing.length > 0) {
-    throw new Error(
+  if ((strict || requireRasterDependencies) && rasterCopyResult.missing.length > 0) {
+    const error = new Error(
       `Theme "${themeId}" missing raster dependencies: ${rasterCopyResult.missing.join(", ")}`
     );
+    error.code = "MISSING_RASTER_DEPENDENCIES";
+    throw error;
   }
 
   return cacheDir;

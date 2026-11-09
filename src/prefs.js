@@ -450,6 +450,14 @@ const SCHEMA = {
     defaultFactory: () => ({}),
     normalize: normalizePetTint,
   },
+  // Per-theme appearance choice: "light" or "dark". A missing entry means
+  // "follow the system", which is why the default map is empty rather than
+  // seeded with a value.
+  themeAppearance: {
+    type: "object",
+    defaultFactory: () => ({}),
+    normalize: normalizeThemeAppearance,
+  },
   // Per-theme wardrobe choice. Missing entries mean no accessory. The
   // discarded PR #529 global scalar was never shipped, so it is deliberately
   // not treated as a migration source.
@@ -1516,6 +1524,17 @@ function normalizePetTint(value, defaultsValue) {
   return out;
 }
 
+function normalizeThemeAppearance(value, defaultsValue) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
+  const out = {};
+  for (const [themeId, appearance] of Object.entries(value)) {
+    if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/.test(themeId)) continue;
+    if (appearance !== "light" && appearance !== "dark") continue;
+    out[themeId] = appearance;
+  }
+  return out;
+}
+
 function normalizePetAccessory(value, defaultsValue) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return defaultsValue;
   const out = {};
@@ -1741,6 +1760,7 @@ module.exports = {
   mapLocaleToLang,
   normalizeThemeOverrides,
   normalizePetTint,
+  normalizeThemeAppearance,
   normalizePetMouthAccessory,
   normalizeShortcuts,
   normalizeOptionalHttpUrl,

@@ -20,6 +20,12 @@ function createThemeContext(theme, options = {}) {
     return path.join(themeDir, "assets");
   }
 
+  // The directory the theme actually renders from. Dark appearance swaps the
+  // whole asset tree, so every non-cache path must follow `_assetsSourceDir`.
+  function getThemeAssetsSourceDir() {
+    return theme._assetsSourceDir || getExternalAssetsSourceDir(theme._themeDir);
+  }
+
   function resolveAssetPath(filename) {
     const safeFilename = path.basename(filename);
     if (!theme) return path.join(assetsSvgDir, safeFilename);
@@ -31,9 +37,9 @@ function createThemeContext(theme, options = {}) {
     }
 
     if (safeFilename.endsWith(".svg")) {
-      return path.join(theme._assetsDir || getExternalAssetsSourceDir(theme._themeDir), safeFilename);
+      return path.join(theme._assetsDir || getThemeAssetsSourceDir(), safeFilename);
     }
-    return path.join(theme._themeDir, "assets", safeFilename);
+    return path.join(getThemeAssetsSourceDir(), safeFilename);
   }
 
   function getRendererAssetsPath() {
@@ -57,7 +63,7 @@ function createThemeContext(theme, options = {}) {
       }
       return null;
     }
-    return buildFileUrl(path.join(theme._themeDir, "assets"));
+    return buildFileUrl(getThemeAssetsSourceDir());
   }
 
   function getRendererConfig() {

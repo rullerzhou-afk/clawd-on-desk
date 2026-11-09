@@ -597,6 +597,26 @@ Theme-specific DND sleep transitions are available for built-in-style polish:
 
 Most third-party themes do not need this. Use `sleepSequence.mode: "direct"` if you simply want fewer sleep assets.
 
+### Light and Dark Appearances
+
+A theme can ship two complete asset sets instead of publishing two theme IDs. Keep the light set in `assets/` as usual, add a sibling directory (for example `assets-dark/`), and declare it in `theme.json`:
+
+```json
+"appearance": {
+  "dark": { "assetsDir": "assets-dark" }
+}
+```
+
+- `assetsDir` must be a single directory name (`A–Z`, `a–z`, `0–9`, `_`, `-`; up to 64 characters) directly inside the theme folder. It cannot be `assets` (case-insensitive) or a symbolic link.
+- The dark directory must mirror every regular file in `assets/` at the same relative path. Extra dark-only files are allowed but unused; top-level extra SVGs are still sanitized and their raster references are checked, so a missing image in one of them also makes the whole dark set unavailable. There is no per-file fallback to the light set.
+- Raster files referenced by dark SVGs must also live in the dark directory. Clawd sanitizes the dark SVGs into a separate cache; if a referenced image is missing there, the whole dark set is treated as unavailable.
+- If anything above is wrong, Clawd silently keeps using the light set and logs one `dark appearance unavailable` warning per load. A missing raster also produces the cache layer's existing `Missing raster dependency` warning. The theme still loads — `strict` mode does not make an incomplete dark directory fatal.
+- Dark support applies to external themes only. Built-in themes ignore `appearance`.
+- Older Clawd versions do not know this field. They ignore it and load `assets/`, so declaring a dark directory does **not** require raising `minAppVersion`.
+- Users choose **Follow system**, **Light**, or **Dark** in **Settings → Theme → [your theme] → Appearance**. A missing preference follows the operating system, and the switch only appears when the dark set is usable.
+
+Run `node scripts/validate-theme.js <theme-dir>` before publishing: the validator additionally checks the directory name, completeness, and dark SVG raster references.
+
 ### Sounds
 
 Themes can map logical sound names to files in a sibling `sounds/` directory:

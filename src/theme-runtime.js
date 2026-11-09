@@ -34,6 +34,7 @@ function createThemeRuntime(options = {}) {
   const getMiniRuntime = options.getMiniRuntime || (() => null);
   const getAnimationOverridesRuntime = options.getAnimationOverridesRuntime || (() => null);
   const getFadeSequencer = options.getFadeSequencer || (() => null);
+  const getSystemPrefersDark = options.getSystemPrefersDark || (() => false);
   const getPetWindowBounds = options.getPetWindowBounds || (() => null);
   const applyPetWindowBounds = options.applyPetWindowBounds || (() => null);
   const computeFinalDragBounds = options.computeFinalDragBounds || (() => null);
@@ -54,6 +55,7 @@ function createThemeRuntime(options = {}) {
   let activeTheme = null;
   let activeThemeContext = null;
   let reloadInProgress = false;
+  let pendingAppearanceSync = false;
   // Resolvers waiting for the renderer to finish loading the new theme assets.
   // `activateTheme` returns before the fade/reload sequencer settles, so a
   // caller that must delete the old on-disk assets (official theme uninstall)
@@ -96,8 +98,35 @@ function createThemeRuntime(options = {}) {
     return activeTheme;
   }
 
+  function getThemeAppearancePreference(themeId) {
+    const map = settingsController.get("themeAppearance");
+    if (!map || typeof map !== "object" || Array.isArray(map)) return null;
+    const value = map[themeId];
+    return value === "light" || value === "dark" ? value : null;
+  }
+
+  // The appearance the user/system asked for, before capability normalization.
+  function getRawAppearanceRequest(themeId) {
+    return getThemeAppearancePreference(themeId)
+      || (getSystemPrefersDark() ? "dark" : "light");
+  }
+
+  // Preference first, system second. A theme known to lack dark support is
+  // normalized to light so a system flip never triggers a pointless reload.
+  // Before the first load there is no capability data, so callers pass null
+  // and normalize again against the loaded theme.
+  function resolveAppearanceRequest(themeId, theme) {
+    const preferred = getRawAppearanceRequest(themeId);
+    if (theme && (!theme._capabilities || theme._capabilities.darkAppearance !== true)) {
+      return "light";
+    }
+    return preferred;
+  }
+
   function loadInitialTheme(themeId, opts = {}) {
-    const theme = themeLoader.loadTheme(themeId, opts);
+    const appearanceRequest = getRawAppearanceRequest(themeId);
+    const theme = themeLoader.loadTheme(themeId, { ...opts, appearance: appearanceRequest });
+    theme._appearanceRequest = resolveAppearanceRequest(themeId, theme);
     theme._overrideSignature = JSON.stringify(opts.overrides || {});
     return setActiveTheme(theme);
   }
@@ -166,12 +195,22 @@ function createThemeRuntime(options = {}) {
     const currentOverrides = settingsController.get("themeOverrides") || {};
     const targetOverrideMap = arguments.length >= 3 ? arguments[2] : (currentOverrides[themeId] || null);
     const targetOverrideSignature = JSON.stringify(targetOverrideMap || {});
+    // The early return compares the normalized request (old capabilities).
+    // The actual load uses the raw request so a theme whose resources were
+    // just repaired can switch to dark even though the old copy had no dark
+    // capability. The loaded object normalizes again for `_appearanceRequest`.
+    const normalizedAppearanceRequest = resolveAppearanceRequest(
+      themeId,
+      activeTheme && activeTheme._id === themeId ? activeTheme : null
+    );
+    const loadAppearanceRequest = getRawAppearanceRequest(themeId);
 
     if (
       activeTheme &&
       activeTheme._id === themeId &&
       activeTheme._variantId === targetVariant &&
       (activeTheme._overrideSignature || "{}") === targetOverrideSignature &&
+      (activeTheme._appearanceRequest || "light") === normalizedAppearanceRequest &&
       !(activateOptions && activateOptions.forceReload === true)
     ) {
       return { themeId, variantId: activeTheme._variantId };
@@ -181,7 +220,9 @@ function createThemeRuntime(options = {}) {
       strict: true,
       variant: targetVariant,
       overrides: targetOverrideMap,
+      appearance: loadAppearanceRequest,
     });
+    newTheme._appearanceRequest = resolveAppearanceRequest(themeId, newTheme);
     newTheme._overrideSignature = targetOverrideSignature;
 
     const animationOverrides = getAnimationOverridesRuntime();
@@ -193,7 +234,11 @@ function createThemeRuntime(options = {}) {
     } else if (animationOverrides && typeof animationOverrides.clearPreviewTimer === "function") {
       animationOverrides.clearPreviewTimer();
     }
-    if (!activeTheme || activeTheme._id !== newTheme._id) {
+    if (
+      !activeTheme
+      || activeTheme._id !== newTheme._id
+      || activeTheme._appearance !== newTheme._appearance
+    ) {
       bumpAnimationOverridePreviewPosterGeneration();
     }
 
@@ -257,6 +302,10 @@ function createThemeRuntime(options = {}) {
       if (animationOverrides && typeof animationOverrides.runPendingPostReloadTasks === "function") {
         animationOverrides.runPendingPostReloadTasks();
       }
+      if (pendingAppearanceSync) {
+        pendingAppearanceSync = false;
+        syncActiveThemeAppearance();
+      }
     };
 
     const sequencer = getFadeSequencer();
@@ -289,6 +338,24 @@ function createThemeRuntime(options = {}) {
     );
   }
 
+  // Re-resolve the appearance after a preference change or a system light/dark
+  // flip. Called from a nativeTheme callback, so it must never throw.
+  function syncActiveThemeAppearance() {
+    try {
+      if (!activeTheme) return;
+      if (!isLiveWindow(getRenderWindow())) return;
+      const request = resolveAppearanceRequest(activeTheme._id, activeTheme);
+      if (request === (activeTheme._appearanceRequest || "light")) return;
+      if (reloadInProgress) {
+        pendingAppearanceSync = true;
+        return;
+      }
+      reloadActiveTheme();
+    } catch (err) {
+      console.warn("Clawd: theme appearance sync failed:", err && err.message);
+    }
+  }
+
   function refreshActiveThemeHitboxOverrides(themeId, overrideMap) {
     if (!activeTheme || activeTheme._id !== themeId) {
       throw new Error("hitbox refresh requires the requested theme to already be active");
@@ -304,7 +371,9 @@ function createThemeRuntime(options = {}) {
       strict: true,
       variant: targetVariant,
       overrides: overrideMap,
+      appearance: activeTheme._appearanceRequest || "light",
     });
+    newTheme._appearanceRequest = activeTheme._appearanceRequest || "light";
     newTheme._overrideSignature = targetOverrideSignature;
     setActiveTheme(newTheme);
 
@@ -341,6 +410,9 @@ function createThemeRuntime(options = {}) {
       throw new Error(`theme path escapes user themes directory: ${themeId}`);
     }
     fs.rmSync(target, { recursive: true, force: true });
+    if (typeof themeLoader.removeThemeCacheDir === "function") {
+      themeLoader.removeThemeCacheDir(themeId);
+    }
     try { rebuildAllMenus(); } catch {}
   }
 
@@ -350,6 +422,7 @@ function createThemeRuntime(options = {}) {
 
   function cleanup() {
     reloadInProgress = false;
+    pendingAppearanceSync = false;
     resolveReloadWaiters({ status: "cleanup" });
     const sequencer = getFadeSequencer();
     if (sequencer && typeof sequencer.cleanup === "function") sequencer.cleanup();
@@ -359,6 +432,7 @@ function createThemeRuntime(options = {}) {
     loadInitialTheme,
     activateTheme,
     reloadActiveTheme,
+    syncActiveThemeAppearance,
     refreshActiveThemeHitboxOverrides,
     getActiveTheme,
     getActiveThemeContext,

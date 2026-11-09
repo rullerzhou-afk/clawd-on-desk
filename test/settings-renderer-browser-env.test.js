@@ -22674,3 +22674,29 @@ describe("kiro-desktop: agent settings", () => {
     }]]);
   });
 });
+
+describe("issue #1323: theme appearance refreshes animation data", () => {
+  it("issue #1323: a themeAppearance change refetches animation overrides data", async () => {
+    let fetches = 0;
+    const settingsAPI = {
+      getAnimationOverridesData: () => {
+        fetches += 1;
+        return Promise.resolve({ theme: null, assets: [], sections: [], cards: [], sounds: [] });
+      },
+    };
+    const core = loadSettingsCoreForTest(settingsAPI, {
+      document: { body: { contains: () => false }, getElementById: () => null },
+    });
+    core.state.activeTab = "animOverrides";
+    core.state.snapshot = { theme: "night", themeAppearance: {}, themeOverrides: {} };
+    core.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+
+    core.ops.applyChanges({
+      changes: { themeAppearance: { night: "dark" } },
+      snapshot: { ...core.state.snapshot, themeAppearance: { night: "dark" } },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(fetches >= 1, "animation override data must be refetched");
+  });
+});

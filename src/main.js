@@ -503,6 +503,7 @@ function _restartClawdNow() {
 
 let shortcutRuntime = null;
 let themeRuntime = null;
+let systemThemeAppearanceHandler = null;
 // Official downloadable theme owner (created after the settings controller).
 let officialThemeMain = null;
 let agentRuntime = null;
@@ -913,6 +914,7 @@ themeRuntime = createThemeRuntime({
   getMiniRuntime: () => _mini,
   getAnimationOverridesRuntime: () => animationOverridesMain,
   getFadeSequencer: () => themeFadeSequencer,
+  getSystemPrefersDark: () => nativeTheme.shouldUseDarkColors === true,
   getPetWindowBounds,
   applyPetWindowBounds,
   computeFinalDragBounds,
@@ -5057,6 +5059,7 @@ const settingsEffectRouter = createSettingsEffectRouter({
   exitMiniMode: () => exitMiniMode(),
   getMiniMode: () => _mini.getMiniMode(),
   getActiveTheme: () => getActiveTheme(),
+  syncActiveThemeAppearance: () => themeRuntime.syncActiveThemeAppearance(),
   syncHitWin,
   // #509: re-rest the pet on the newly selected idle visual right away, but
   // only while actually idle — task/sleep/mini states pick it up on their
@@ -6308,6 +6311,15 @@ if (!gotTheLock) {
     createWindow();
     try { recapRuntime.start(); }
     catch (err) { console.warn("Clawd: local recap startup failed:", err && err.code ? err.code : "storage-error"); }
+    // nativeTheme reads are only used to pick an appearance, so subscribing
+    // after the pet window exists keeps startup free of extra reloads. The
+    // first did-finish-load repeats the resolution once because the value
+    // read before app.whenReady is not guaranteed on every platform.
+    systemThemeAppearanceHandler = () => themeRuntime.syncActiveThemeAppearance();
+    nativeTheme.on("updated", systemThemeAppearanceHandler);
+    if (win && !win.isDestroyed()) {
+      win.webContents.once("did-finish-load", () => themeRuntime.syncActiveThemeAppearance());
+    }
     // Reconcile the local quota binding only after the app has visible UI.
     // initialize() reads opaque credential metadata but never decrypts the key
     // or performs a network request, so ordinary startup cannot be held behind
@@ -6480,6 +6492,10 @@ if (!gotTheLock) {
     agentRuntime.cleanup();
     topmostRuntime.cleanup();
     themeRuntime.cleanup();
+    if (systemThemeAppearanceHandler) {
+      nativeTheme.removeListener("updated", systemThemeAppearanceHandler);
+      systemThemeAppearanceHandler = null;
+    }
     _focus.cleanup();
     if (animationOverridesMain) animationOverridesMain.cleanup();
     try { _remoteSshIpc.dispose(); } catch {}
