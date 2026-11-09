@@ -23,7 +23,7 @@ inside Clawd. Before tagging, refresh the bundled catalog snapshot with
 `npm run update:official-theme-snapshot` and commit the diff if the snapshot
 changed. Confirm the packaged resources still contain no
 `themes/hash-sage/**` or `themes/whale-chan/**` payload and that `npm run audit:assets` reports the
-tracked-tree budget within policy. On a pull request, the
+tracked binary/media total within policy. On a pull request, the
 `audit:pr-history-assets` gate additionally proves no large official-theme
 media entered the PR's reachable history.
 
