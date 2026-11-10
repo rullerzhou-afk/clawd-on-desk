@@ -28,7 +28,8 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
    - **SSH 端口**：默认 `22`
    - **私钥文件**：可选，留空则使用 ssh-agent 或 `~/.ssh/config`
    - **SSH transport 兼容性**：普通主机和 GitHub Codespaces 保持 **自动**。只有其他无法容忍重叠 SSH session 的 ProxyCommand transport 才使用 **强制单 SSH session**
-   - **远端转发端口**：默认 `23333`；同一台远端有多个 profile 时才需要换到 `23334-23337`
+   - **远端桥接端口**：默认 `23333`；profile 或端口冲突时改到 `23334-23337`。
+     两种传输都只用它作为远端 loopback 端口，不对外暴露
    - **主机前缀**：可选，用于 Sessions / Dashboard 里区分远端来源
 3. 如果 SSH 需要首次确认 host key、输入 passphrase 或加载 ssh-agent，点 **首次认证**。Clawd 会打开系统终端运行一次普通 `ssh`。
 4. 点击 **部署 / 修复 Hook**，然后连接 profile。
@@ -186,7 +187,7 @@ Clawd HTTP 服务，不是远端集群的 IP。远端 hook 也不直接访问你
 
 ```
 远端 Claude/Codex/Copilot/Hermes hook
-  -> POST http://127.0.0.1:<远端转发端口>
+  -> POST http://127.0.0.1:<远端桥接端口>
   -> SSH 反向隧道
   -> profile 专属本地入口（校验 routing nonce）
   -> 本机 Clawd 状态 / 权限处理（profile canonical session ID）
@@ -208,6 +209,39 @@ SSH stdio 回退目前支持普通 POSIX SSH 目标，以及 Clawd 的普通并�
 transport。远端为 Windows，或 profile 强制使用 single-session transport 时不会
 启用该回退。远端端口仍然只是该主机内部的 loopback 监听，因此不需要在远端防火墙
 开放，也不要求它属于对外放开的端口范围。
+
+bridge 以一个无界面的 SSH exec 子进程运行。`ssh -T` 会禁用伪终端，Clawd 只使用
+该子进程的 stdin/stdout 管道，因此不需要打开 Terminal 窗口，也不需要保留 PTY
+或终端标签页。**首次认证 / 打开终端**只用于 host key 确认、密钥口令输入或手工 SSH
+排查。
+
+**远端桥接端口**由反向转发和 stdio 两种模式共用。Clawd 保持
+`23333–23337` 这一受限范围，以便部署身份和 hook URL 可预测；不需要支持任意
+自定义端口，也不需要添加公网防火墙规则。端口被占用时，在同一范围内换一个值，
+重新执行 **部署 / 修复 Hook**，再连接即可。
+
+## 调试连接
+
+详情面板会显示当前隧道方式、状态、最后错误、部署进度、本地入口端口以及入口的
+接受 / 拒绝计数。点击 **复制诊断信息** 可获得脱敏后的诊断报告和可直接运行的远端
+检查命令。报告不包含 routing nonce、私钥路径、hook payload 或审批内容。
+
+远端检查都是只读命令：
+
+```bash
+# 所选 loopback 桥接端口是否正在监听
+ssh dev43 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
+
+# stdio bridge 进程是否在运行
+ssh dev43 "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
+
+# 远端 hook 最近写入的投递错误
+ssh dev43 'tail -n 100 ~/.clawd/remote-last-error.log'
+```
+
+首次连接需要确认 host key 或排查 SSH 时，使用 profile 中的 **打开终端**。
+已连接后，agent 发出第一条 hook 时入口 accepted 计数应当增长；rejected 持续增长
+通常表示远端 hook 与当前部署身份不一致，需要重新执行 **部署 / 修复 Hook**。
 
 所以“已连接”只说明隧道通了。远端 session 要出现在 Dashboard 里，还必须满足：
 
@@ -270,7 +304,7 @@ Clawd 会保留原端口，按退避节奏最多重试四次（目前总计约�
 **重连中**时，不需要立刻修改 profile。
 
 如果这是首次连接，或有限恢复结束后端口仍不可用，冲突可能是长期存在的。可以稍后
-再试，或从 `23333-23337` 中选择一个未占用的 **远端转发端口**。一旦改了端口，
+再试，或从 `23333-23337` 中选择一个未占用的 **远端桥接端口**。一旦改了端口，
 必须先执行 **部署 / 修复 Hook**，再点 **连接**：安全身份、hook 目标、权限 URL
 和健康检查都 pin 在一个精确端口上。当前目标重新部署前，Clawd 会阻止普通连接。
 

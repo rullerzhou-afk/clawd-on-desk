@@ -245,6 +245,16 @@ test("bundled bridge multiplexes concurrent HTTP requests over stdio", async () 
   const results = await Promise.all(requests);
   assert.ok(results.every((entry) =>
     entry.status === 200 && entry.value === entry.expected));
+
+  const conflictingBridge = childProcess.spawn(process.execPath, [
+    path.join(__dirname, "..", "hooks", "remote-ssh-stdio-bridge.js"),
+    String(bridgePort),
+    "d".repeat(32),
+  ], {
+    stdio: ["ignore", "ignore", "ignore"],
+  });
+  assert.equal(await waitForExit(conflictingBridge), 98);
+
   transport.close({ cooperative: true });
   const exitCode = await waitForExit(child);
   assert.equal(exitCode, 0);

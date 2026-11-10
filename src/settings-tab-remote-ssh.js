@@ -234,6 +234,54 @@
     });
   }
 
+  function buildDiagnosticsText(profile, status) {
+    const currentStatus = status || statusForProfile(profile.id);
+    const progress = (view.progressLog.get(profile.id) || []).slice(-20);
+    const hintText = currentStatus.hint
+      ? (t(currentStatus.hint) || currentStatus.hint)
+      : null;
+    const sshCommand = profile.port && profile.port !== 22
+      ? `ssh -p ${profile.port} ${profile.host}`
+      : `ssh ${profile.host}`;
+    const lines = [
+      `Clawd Remote SSH diagnostics`,
+      `profile: ${profile.label || profile.id}`,
+      `host: ${profile.host}`,
+      `sshPort: ${profile.port || 22}`,
+      `remoteBridgePort: ${profile.remoteForwardPort}`,
+      `tunnelMode: ${currentStatus.tunnelMode || profile.tunnelMode || "reverse"}`,
+      `sshTransportMode: ${profile.sshTransportMode || "auto"}`,
+      `runtimeMode: ${profile.runtimeMode || "account-default"}`,
+      `remotePlatform: ${profile.remotePlatform || "unknown"}`,
+      `status: ${currentStatus.status || "idle"}`,
+      `lastErrorReason: ${currentStatus.lastErrorReason || ""}`,
+      `message: ${currentStatus.message || ""}`,
+      `hint: ${hintText || ""}`,
+      `ingressPort: ${currentStatus.ingressPort || ""}`,
+      `ingressAcceptedCount: ${currentStatus.ingressAcceptedCount ?? ""}`,
+      `ingressRejectedCount: ${currentStatus.ingressRejectedCount ?? ""}`,
+      `lastDeployedAt: ${
+        Number.isFinite(profile.lastDeployedAt)
+          ? new Date(profile.lastDeployedAt).toISOString()
+          : ""
+      }`,
+      "",
+      "Remote service checks:",
+      `${sshCommand} 'ss -ltn | grep :${profile.remoteForwardPort} || netstat -ltn | grep :${profile.remoteForwardPort}'`,
+      `${sshCommand} "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"`,
+      `${sshCommand} 'tail -n 100 ~/.clawd/remote-last-error.log'`,
+    ];
+    if (progress.length > 0) {
+      lines.push("", "Recent deploy/connect progress:");
+      for (const entry of progress) {
+        const when = new Date(entry.ts).toISOString();
+        const detail = entry.hint ? (t(entry.hint) || entry.hint) : entry.message;
+        lines.push(`[${when}] ${entry.status} ${entry.step}${detail ? `: ${detail}` : ""}`);
+      }
+    }
+    return lines.join("\n");
+  }
+
   // ── Render ──
 
   function render(parent) {
@@ -580,6 +628,23 @@
     tunnelRow.appendChild(tunnelValue);
     section.appendChild(tunnelRow);
 
+    if (Number.isInteger(status.ingressPort)) {
+      const ingressRow = document.createElement("div");
+      ingressRow.className = "remote-ssh-hooks-row";
+      const ingressLabel = document.createElement("span");
+      ingressLabel.className = "remote-ssh-hooks-label";
+      ingressLabel.textContent = t("remoteSshIngressLabel");
+      ingressRow.appendChild(ingressLabel);
+      const ingressValue = document.createElement("span");
+      ingressValue.className = "remote-ssh-hooks-value";
+      ingressValue.textContent = t("remoteSshIngressCounts")
+        .replace("{port}", String(status.ingressPort))
+        .replace("{accepted}", String(status.ingressAcceptedCount || 0))
+        .replace("{rejected}", String(status.ingressRejectedCount || 0));
+      ingressRow.appendChild(ingressValue);
+      section.appendChild(ingressRow);
+    }
+
     if (isolated) {
       const boundary = document.createElement("div");
       boundary.className = "remote-ssh-field-hint";
@@ -766,6 +831,23 @@
         });
     });
     actions.appendChild(deployBtn);
+
+    const diagnosticsBtn = helpers.buildButton({
+      labelKey: "remoteSshCopyDiagnostics",
+      size: "compact",
+    });
+    diagnosticsBtn.addEventListener("click", async () => {
+      try {
+        await navigator.clipboard.writeText(buildDiagnosticsText(profile, status));
+        ops.showToast(t("remoteSshDiagnosticsCopied"));
+      } catch (err) {
+        ops.showToast(
+          `${t("remoteSshDiagnosticsCopyFailed")}: ${err && err.message ? err.message : "clipboard unavailable"}`,
+          { error: true },
+        );
+      }
+    });
+    actions.appendChild(diagnosticsBtn);
     section.appendChild(actions);
 
     // Progress log slice for this profile (multi-profile concurrent deploys

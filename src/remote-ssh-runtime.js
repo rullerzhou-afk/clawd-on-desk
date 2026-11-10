@@ -756,6 +756,7 @@ function createRemoteSshRuntime(deps = {}) {
       ...(transport ? transport : {}),
       ...(ingressStatus ? {
         ingressPort: ingressStatus.port,
+        ingressAcceptedCount: ingressStatus.acceptedCount,
         ingressRejectedCount: ingressStatus.rejectedCount,
       } : {}),
       tunnelMode: state.tunnelMode,
@@ -1945,6 +1946,7 @@ function createRemoteSshRuntime(deps = {}) {
     cleanupProbeLoop(state);
     const stdioTerminalError = state.stdioTerminalError;
     state.stdioTerminalError = null;
+    const wasStdioReady = state.stdioReady;
     closeStdioTransport(state);
 
     if (state.stopped) {
@@ -1988,6 +1990,24 @@ function createRemoteSshRuntime(deps = {}) {
       dropPartialFirstLine: state.stderrTruncated,
     });
     const wasConnected = state.status === "connected";
+    if (state.tunnelMode === "stdio" && !wasStdioReady) {
+      if (code === 98) {
+        finishFailure(state, {
+          reason: "stdio_port_conflict",
+          hint: "remoteSshErrStdioPortInUse",
+          message: `Remote bridge port ${state.profile.remoteForwardPort} is unavailable. Choose another port and run Deploy / Repair Hooks.`,
+        });
+        return;
+      }
+      if (code === 64) {
+        finishFailure(state, {
+          reason: "stdio_bridge_invalid_args",
+          hint: "remoteSshErrStdioBridgeUnavailable",
+          message: "The remote SSH stdio bridge rejected its launch arguments. Redeploy the hooks.",
+        });
+        return;
+      }
+    }
     if (stdioTerminalError) {
       scheduleReconnect(state, {
         message: (stdioTerminalError && stdioTerminalError.message)

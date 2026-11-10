@@ -33,7 +33,9 @@ the system `ssh` and your system terminal.
    - **SSH port**: defaults to `22`
    - **Private key file**: optional; leave blank to use ssh-agent or `~/.ssh/config`
    - **SSH transport compatibility**: leave **Automatic** for normal hosts and GitHub Codespaces. Use **Force single SSH session** only for another ProxyCommand transport that cannot tolerate overlapping SSH sessions
-   - **Remote forward port**: defaults to `23333`; only change to `23334-23337` when you run multiple profiles against the same remote
+   - **Remote bridge port**: defaults to `23333`; choose another value from
+     `23334-23337` for a profile/port conflict. It is a loopback port for both
+     reverse forwarding and the stdio bridge, not a publicly exposed port
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens a terminal to run a plain `ssh` once. On Windows, **Authenticate / Open Terminal** use a separate Windows Console Host window so Windows Terminal's administrator-profile settings cannot interrupt the session. After SSH exits, the local command prompt stays open so you can read errors; type `exit` to close it.
 4. Click **Deploy / Repair Hooks**, then connect the profile.
@@ -228,7 +230,7 @@ The actual chain is:
 
 ```
 Remote Claude/Codex/Copilot/Hermes hook
-  -> POST http://127.0.0.1:<remote forward port>
+  -> POST http://127.0.0.1:<remote bridge port>
   -> SSH reverse tunnel
   -> Profile-bound local ingress (routing nonce verified)
   -> Local Clawd state / permission handlers (canonical profile session ID)
@@ -251,6 +253,45 @@ parallel transport. It is not used for Windows remote hosts or profiles forced
 into the single-session transport mode. The remote port remains a loopback-only
 listener inside that host, so it does not need to be exposed by the remote
 firewall or belong to an externally open port range.
+
+The bridge runs headlessly as an SSH exec child. `ssh -T` disables a pseudo
+terminal, and Clawd uses only that child's piped stdin/stdout. No Terminal
+window, PTY, or persistent terminal tab is required. **Authenticate / Open
+Terminal** remains only for first-time host-key confirmation, passphrase entry,
+or manual SSH troubleshooting.
+
+The **Remote bridge port** is shared by both transport modes. Clawd keeps it in
+the bounded `23333–23337` range so the deployed identity and hook URLs remain
+predictable. It does not need an arbitrary custom value or a public firewall
+rule. If the selected port is already in use, choose another value from that
+range, run **Deploy / Repair Hooks** again, and reconnect.
+
+## Debugging a connection
+
+The detail panel shows the selected tunnel transport, live status, last error,
+deployment progress, local ingress port, and accepted/rejected ingress counts.
+Click **Copy diagnostics** to copy a redacted report containing those fields
+and ready-to-run remote checks. It does not include the routing nonce, private
+key path, hook payloads, or approval contents.
+
+The remote checks are ordinary read-only SSH commands:
+
+```bash
+# Is the selected loopback bridge port listening?
+ssh dev43 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
+
+# Is the stdio bridge process running?
+ssh dev43 "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
+
+# Last delivery error written by remote hooks, if any
+ssh dev43 'tail -n 100 ~/.clawd/remote-last-error.log'
+```
+
+Use **Open Terminal** in the profile for first-time host-key checks or manual
+SSH diagnostics. A connected profile should show a nonzero ingress accepted
+count after an agent emits its first hook. A growing rejected count usually
+means the remote hooks no longer match the current deployment identity; run
+**Deploy / Repair Hooks** again.
 
 So "Connected" only means the tunnel is up. For a remote session to actually
 appear in the Dashboard, you still need:
@@ -327,7 +368,7 @@ change the profile while it says **Reconnecting**.
 
 On a first connection, or if the port is still unavailable after that bounded
 recovery, the conflict may be persistent. Try again later, or choose an unused
-**Remote forward port** from `23333-23337`. If you change the port, run
+**Remote bridge port** from `23333-23337`. If you change the port, run
 **Deploy / Repair Hooks** before **Connect**: the secure identity, hook target,
 permission URL, and health probe are pinned to one exact port. Clawd blocks an
 ordinary Connect until the edited target has been deployed.

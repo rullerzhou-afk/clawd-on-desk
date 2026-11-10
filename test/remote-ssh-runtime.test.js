@@ -2194,6 +2194,41 @@ test("a persisted SSH stdio mode starts directly without requesting -R", async (
   rt.cleanup();
 });
 
+test("SSH stdio bridge reports a remote port conflict instead of retrying blindly", async () => {
+  const children = [];
+  const spawn = (_command, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const profile = makeSecureProfile({
+    tunnelMode: "stdio",
+    detectedRemoteNodeBin: "/usr/bin/node",
+  });
+  const rt = createRemoteSshRuntime({
+    spawn,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    createStdioTransport: () => ({
+      close() {},
+      isReady: () => false,
+      getStatus: () => ({ mode: "stdio" }),
+    }),
+  });
+
+  rt.connect(profile);
+  await flushAsyncEvents();
+  children[0]._fakeExit(98);
+  await flushAsyncEvents();
+  const status = rt.getProfileStatus(profile.id);
+  assert.equal(status.status, "failed");
+  assert.equal(status.lastErrorReason, "stdio_port_conflict");
+  assert.equal(status.hint, "remoteSshErrStdioPortInUse");
+  assert.match(status.message, /23333/);
+  rt.cleanup();
+});
+
 test("a queued reconnect rechecks deployment readiness after the profile target changes", async () => {
   const children = [];
   const timers = makeFakeTimers();

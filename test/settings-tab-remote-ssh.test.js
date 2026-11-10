@@ -47,6 +47,12 @@ test("settings-i18n.js: all language packs include remote-ssh keys", () => {
     "remoteSshAuthenticate",
     "remoteSshOpenTerminal",
     "remoteSshDeploy",
+    "remoteSshCopyDiagnostics",
+    "remoteSshDiagnosticsCopied",
+    "remoteSshDiagnosticsCopyFailed",
+    "remoteSshErrStdioPortInUse",
+    "remoteSshIngressLabel",
+    "remoteSshIngressCounts",
     "remoteSshFieldHost",
     "remoteSshFieldRemoteForwardPort",
     "remoteSshFieldRemoteForwardPortHint",
@@ -303,9 +309,15 @@ function remoteSshTabHarness(profile, deployResult) {
   }
   const document = { createElement: (tag) => new Element(tag) };
   const strings = settingsStrings().en, toasts = [];
+  const clipboardWrites = [];
   let statusListener;
   const context = {
     document, confirm: () => true,
+    navigator: {
+      clipboard: {
+        writeText: async (value) => { clipboardWrites.push(value); },
+      },
+    },
     window: { remoteSsh: { deploy: async () => deployResult, onStatusChanged: (listener) => { statusListener = listener; } } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8"), context);
@@ -318,8 +330,49 @@ function remoteSshTabHarness(profile, deployResult) {
   const render = () => { const parent = new Element("main"); core.tabs["remote-ssh"].render(parent); return parent; };
   const find = (node, predicate) => predicate(node) ? node : node.children.map((child) => find(child, predicate)).find(Boolean);
   find(render(), (element) => element.className.split(" ").includes("remote-ssh-card")).click();
-  return { render, find, toasts, strings, pushStatus: (status) => statusListener(status) };
+  return {
+    render,
+    find,
+    toasts,
+    strings,
+    clipboardWrites,
+    pushStatus: (status) => statusListener(status),
+  };
 }
+
+test("Remote SSH copies a redacted diagnostic report with service checks", async () => {
+  const profile = {
+    id: "p1",
+    label: "Remote",
+    host: "dev43",
+    remoteForwardPort: 23333,
+    tunnelMode: "stdio",
+    lastDeployedAt: 1_700_000_000_000,
+    routingNonce: "a".repeat(32),
+    identityFile: "/secret/id_ed25519",
+  };
+  const h = remoteSshTabHarness(profile);
+  h.pushStatus({
+    profileId: profile.id,
+    status: "connected",
+    tunnelMode: "stdio",
+    ingressPort: 31234,
+    ingressAcceptedCount: 2,
+    ingressRejectedCount: 1,
+  });
+  const button = h.find(h.render(), (element) => element.labelKey === "remoteSshCopyDiagnostics");
+  assert.ok(button);
+  await button.click();
+  assert.equal(h.clipboardWrites.length, 1);
+  const report = h.clipboardWrites[0];
+  assert.match(report, /remoteBridgePort: 23333/);
+  assert.match(report, /tunnelMode: stdio/);
+  assert.match(report, /ingressAcceptedCount: 2/);
+  assert.match(report, /ingressRejectedCount: 1/);
+  assert.match(report, /\[r\]emote-ssh-stdio-bridge\.js/);
+  assert.match(report, /remote-last-error\.log/);
+  assert.doesNotMatch(report, /routingNonce|id_ed25519/);
+});
 
 test("issue #1316: a platform mismatch with an uncommitted transaction shows the emergency reset button", () => {
   const profile = { id: "p1", label: "Remote", host: "remote", identityTxn: { phase: "rotating" } };
