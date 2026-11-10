@@ -32,7 +32,12 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
    - **主机前缀**：可选，用于 Sessions / Dashboard 里区分远端来源
 3. 如果 SSH 需要首次确认 host key、输入 passphrase 或加载 ssh-agent，点 **首次认证**。Clawd 会打开系统终端运行一次普通 `ssh`。
 4. 点击 **部署 / 修复 Hook**，然后连接 profile。
-   - Clawd 会为该 profile 创建专属本地入口，并维护指向它的 `ssh -R` 反向隧道
+   - Clawd 会为该 profile 创建专属本地入口，并自动探测 SSH 服务端是否允许
+     `ssh -R` 远端转发
+   - 允许时继续使用反向隧道
+   - 被服务端拒绝时，部署会自动改用内置 SSH stdio bridge。它仍使用同一个
+     远端 loopback 端口，但全部请求通过一条普通 `ssh -T` 的 stdin/stdout
+     多路复用传输，不需要 `-R`，也不要求远端防火墙开放该端口
    - Clawd 会原子写入 profile 身份，把 hook 和 Claude 静态权限 URL pin 到精确远端端口；隧道不会接触通用 `/state`、`/permission` 入口
    - 然后从当前已安装的 Clawd 应用复制 hook 文件到解析出的远端 runtime layout
    - 接着在远端已安装对应 agent 时，以远程模式注册 Claude Code hooks、Codex official hooks 和 Copilot CLI hooks
@@ -187,6 +192,22 @@ Clawd HTTP 服务，不是远端集群的 IP。远端 hook 也不直接访问你
   -> 本机 Clawd 状态 / 权限处理（profile canonical session ID）
   -> Dashboard / Session HUD / 桌宠状态
 ```
+
+远端拒绝 `ssh -R` 时，链路会自动切换为：
+
+```
+远端 hook
+  -> POST http://127.0.0.1:<远端端口>
+  -> 远端内置 SSH stdio bridge
+  -> 多路复用的 SSH stdin/stdout
+  -> profile 专属本地入口
+  -> 本机 Clawd 状态 / 权限处理
+```
+
+SSH stdio 回退目前支持普通 POSIX SSH 目标，以及 Clawd 的普通并行 SSH
+transport。远端为 Windows，或 profile 强制使用 single-session transport 时不会
+启用该回退。远端端口仍然只是该主机内部的 loopback 监听，因此不需要在远端防火墙
+开放，也不要求它属于对外放开的端口范围。
 
 所以“已连接”只说明隧道通了。远端 session 要出现在 Dashboard 里，还必须满足：
 

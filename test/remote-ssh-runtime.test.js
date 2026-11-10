@@ -2104,6 +2104,96 @@ test("a failed recovery cannot leak forward-conflict retry eligibility into manu
   rt.cleanup();
 });
 
+test("a deployed profile with a remote Node path falls back from -R to SSH stdio", async () => {
+  const children = [];
+  const timers = makeFakeTimers();
+  let stdioOptions = null;
+  const modes = [];
+  const spawn = (_command, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const profile = makeSecureProfile({
+    detectedRemoteNodeBin: "/usr/bin/node",
+  });
+  const rt = createRemoteSshRuntime({
+    spawn,
+    setTimeout: timers.setTimeoutFn,
+    clearTimeout: timers.clearTimeoutFn,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    createStdioTransport: (options) => {
+      stdioOptions = options;
+      return {
+        close() {},
+        isReady: () => true,
+        getStatus: () => ({ mode: "stdio", ready: true }),
+      };
+    },
+  });
+  rt.on("tunnel-mode-detected", (payload) => modes.push(payload));
+
+  rt.connect(profile);
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+  assert.ok(children[0]._args.includes("-R"));
+  await exitSsh(children[0], "remote port forwarding failed for listen port 23333\n");
+
+  assert.equal(children.length, 2, "stdio bridge replaces the failed reverse tunnel");
+  assert.equal(children[1]._args.includes("-R"), false);
+  assert.equal(children[1]._args.includes("-N"), false);
+  assert.match(children[1]._args.at(-1), /remote-ssh-stdio-bridge\.js/);
+  assert.equal(rt.getProfileStatus(profile.id).tunnelMode, "stdio");
+  assert.equal(modes.length, 1);
+  assert.equal(modes[0].tunnelMode, "stdio");
+  assert.equal(stdioOptions.localPort, 31234);
+
+  stdioOptions.onReady();
+  await flushAsyncEvents();
+  timers.flushWhere((timer) => timer.ms === 0);
+  const probeChild = children[children.length - 1];
+  assert.notEqual(probeChild, children[1]);
+  probeChild._fakeExit(0);
+  await flushAsyncEvents();
+  assert.equal(rt.getProfileStatus(profile.id).status, "connected");
+  rt.cleanup();
+});
+
+test("a persisted SSH stdio mode starts directly without requesting -R", async () => {
+  const children = [];
+  let stdioOptions = null;
+  const spawn = (_command, args) => {
+    const child = makeMockChild();
+    child._args = args;
+    children.push(child);
+    return child;
+  };
+  const profile = makeSecureProfile({
+    tunnelMode: "stdio",
+    detectedRemoteNodeBin: "/usr/bin/node",
+  });
+  const rt = createRemoteSshRuntime({
+    spawn,
+    createProfileIngress: () => makeSecureIngress(),
+    getHookServerPort: () => 23333,
+    createStdioTransport: (options) => {
+      stdioOptions = options;
+      return { close() {}, isReady: () => false, getStatus: () => ({ mode: "stdio" }) };
+    },
+  });
+
+  rt.connect(profile);
+  await flushAsyncEvents();
+  assert.equal(children.length, 1);
+  assert.equal(children[0]._args.includes("-R"), false);
+  assert.match(children[0]._args.at(-1), /remote-ssh-stdio-bridge\.js/);
+  assert.equal(rt.getProfileStatus(profile.id).tunnelMode, "stdio");
+  assert.equal(typeof stdioOptions.onReady, "function");
+  rt.cleanup();
+});
+
 test("a queued reconnect rechecks deployment readiness after the profile target changes", async () => {
   const children = [];
   const timers = makeFakeTimers();

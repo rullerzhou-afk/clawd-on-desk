@@ -32,6 +32,19 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+## multiplex
+
+The standalone Remote SSH stdio bridge is generated from
+`multiplex@6.7.0` and its bundled dependencies:
+
+- https://github.com/maxogden/multiplex (BSD-2-Clause)
+- `duplexify`, `readable-stream`, `varint`, and `xtend` (MIT)
+- `inherits` (ISC)
+
+The generated file is `hooks/remote-ssh-stdio-bridge.js`. Source and license
+metadata remain available under their published npm packages and upstream
+repositories.
+
 ## Freesound Notification Sounds
 
 The default completion sound at `assets/sounds/complete.mp3` uses

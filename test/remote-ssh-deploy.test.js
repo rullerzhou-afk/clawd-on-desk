@@ -287,6 +287,7 @@ test("secure deploy holds a fenced lease, verifies every component, and never pu
   assert.equal(result.ok, true);
   assert.equal(result.secure, true);
   assert.equal(result.transactionReady, true);
+  assert.equal(result.tunnelMode, "reverse");
   assert.deepEqual(stepUpdates.map(([name]) => name), [
     "identity",
     "secureMarker",
@@ -320,6 +321,36 @@ test("secure deploy holds a fenced lease, verifies every component, and never pu
     assert.match(command, /leaseId/);
     assert.match(command, /runtimeKey/);
   }
+});
+
+test("secure deploy persists the tunnel mode selected by its capability probe", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn();
+  const runtime = makeRuntimeStub();
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      probeTunnelMode: async () => ({
+        mode: "stdio",
+        conclusive: true,
+        reason: "forward_failed",
+        message: "Remote forwarding unavailable; SSH stdio transport selected.",
+      }),
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.tunnelMode, "stdio");
+  assert.ok(runtime.events.some((entry) =>
+    entry.event === "progress"
+    && entry.payload.step === "transport-mode"
+    && entry.payload.status === "ok"
+    && /stdio/.test(entry.payload.message)));
 });
 
 test("secure deploy only stops a prior Codex monitor after matching its command line", async () => {
@@ -2387,6 +2418,38 @@ test("secure scp target is one raw argv token without literal shell quotes", () 
     __test.buildScpRemoteTarget("user@example.test", "/home/user/staging/"),
     "user@example.test:/home/user/staging/",
   );
+});
+
+test("remote tunnel probe selects reverse forwarding when ssh -R is accepted", async () => {
+  const profile = { host: "dev43", remoteForwardPort: 23333, tunnelMode: "reverse" };
+  const args = __test.buildReverseForwardProbeArgs(profile);
+  assert.ok(args.includes("-R"));
+  assert.ok(args.includes("ExitOnForwardFailure=yes"));
+  assert.ok(args.includes("127.0.0.1:23333:127.0.0.1:9"));
+  assert.equal(args.at(-1), "sleep 1");
+
+  const recorder = makeRecordingSpawn({ code: 0 });
+  const result = await __test.probeRemoteTunnelMode({
+    profile,
+    spawn: recorder.spawn,
+  });
+  assert.equal(result.mode, "reverse");
+  assert.equal(result.conclusive, true);
+});
+
+test("remote tunnel probe selects SSH stdio when the server rejects -R", async () => {
+  const profile = { host: "dev43", remoteForwardPort: 23333, tunnelMode: "reverse" };
+  const recorder = makeRecordingSpawn({
+    code: 255,
+    stderr: "remote port forwarding failed for listen port 23333\n",
+  });
+  const result = await __test.probeRemoteTunnelMode({
+    profile,
+    spawn: recorder.spawn,
+  });
+  assert.equal(result.mode, "stdio");
+  assert.equal(result.reason, "forward_failed");
+  assert.match(result.message, /stdio/i);
 });
 
 test("monitor verification requires a live PID with the exact layout script path", {

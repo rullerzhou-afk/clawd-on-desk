@@ -42,7 +42,7 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const { buildSshArgs, buildScpArgs } = require("./remote-ssh-runtime");
+const { buildSshArgs, buildScpArgs, classifyStderr } = require("./remote-ssh-runtime");
 const {
   resolveRemoteNodeBin,
   buildRemoteHookNodeCommand,
@@ -117,6 +117,7 @@ const HOOK_FILES = [
   "copilot-hook.js",
   "copilot-install.js",
   "hermes-install.js",
+  "remote-ssh-stdio-bridge.js",
 ];
 // Hermes plugin assets never join HOOK_FILES: they are not hook scripts and
 // go to their own exact staging directory, not ~/.claude/hooks.
@@ -391,6 +392,59 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       },
     });
   });
+}
+
+// A live SSH session is the only portable way to ask the server whether it
+// permits remote forwarding. `-N` is deliberately avoided because some
+// audited ProxyCommands turn it into an interactive shell. A short `sleep`
+// command keeps the forwarding request alive through setup and exits quickly.
+function buildReverseForwardProbeArgs(profile) {
+  return buildSshArgs(profile, {
+    extraOpts: [
+      "-R",
+      `127.0.0.1:${profile.remoteForwardPort}:127.0.0.1:9`,
+      "-o",
+      "ExitOnForwardFailure=yes",
+    ],
+  }).concat(["sleep 1"]);
+}
+
+async function probeRemoteTunnelMode({
+  profile,
+  spawn,
+  runtime = null,
+  remotePlatform = "posix",
+} = {}) {
+  if (remotePlatform === "win32") {
+    return { mode: "reverse", conclusive: true, reason: "windows-remote" };
+  }
+  const result = await spawnAndWait(
+    spawn,
+    "ssh",
+    buildReverseForwardProbeArgs(profile),
+    {
+      timeoutMs: 12000,
+      runtime,
+      role: "tunnel-capability-probe",
+    },
+  );
+  if (result.code === 0) {
+    return { mode: "reverse", conclusive: true, reason: null };
+  }
+  const classified = classifyStderr(result.stderr);
+  if (classified.reason === "forward_failed") {
+    return {
+      mode: "stdio",
+      conclusive: true,
+      reason: "forward_failed",
+      message: "Remote forwarding is unavailable; SSH stdio transport selected.",
+    };
+  }
+  return {
+    mode: profile.tunnelMode === "stdio" ? "stdio" : "reverse",
+    conclusive: false,
+    reason: classified.reason || "probe_inconclusive",
+  };
 }
 
 function managedTransportIsActive(runtime) {
@@ -1792,6 +1846,7 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
     progress("install-hermes", "ok", "not applicable", "remoteSshWindowsHermesSkipped");
     return {
       ok: true, secure: true, leaseId, layout, remoteNode, transactionReady: true,
+      tunnelMode: "reverse",
       codexHooksInstalled, isolation: null, hermes: null,
       dshBridgeInstalled, dshRestartRequired,
       ...(dshDiscoveryIncomplete ? {
@@ -1942,6 +1997,38 @@ async function secureDeploy({
     source: resolved.source || null,
   };
   progress("check-node", "ok", resolved.version || null);
+
+  let tunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
+  if (deps.enableTunnelProbe === true || typeof deps.probeTunnelMode === "function") {
+    progress("transport-mode", "start");
+    const transportMode = deps.transportInspection && deps.transportInspection.mode;
+    const tunnelProbe = transportMode === "serialized"
+      ? {
+          mode: "reverse",
+          conclusive: true,
+          message: "SSH stdio fallback is unavailable on a forced single-session transport.",
+        }
+      : await (deps.probeTunnelMode || probeRemoteTunnelMode)({
+          profile,
+          spawn,
+          runtime,
+          remotePlatform: platformSnapshot ? platformSnapshot.remotePlatform : (profile.remotePlatform || "posix"),
+        });
+    if (tunnelProbe && tunnelProbe.mode === "stdio" && transportMode !== "serialized") {
+      tunnelMode = "stdio";
+    } else if (transportMode === "serialized") {
+      tunnelMode = "reverse";
+    }
+    progress(
+      "transport-mode",
+      "ok",
+      tunnelMode === "stdio"
+        ? (tunnelProbe.message || "Remote forwarding unavailable; SSH stdio transport selected.")
+        : (tunnelProbe && tunnelProbe.conclusive === false
+          ? "Remote forwarding probe inconclusive; keeping reverse tunnel."
+          : "Remote forwarding available."),
+    );
+  }
 
   // Direct callers that do not go through IPC have no trusted platform snapshot.
   if (!platformSnapshot && (!shell || !/^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX)$/i.test(shell.os))) {
@@ -2514,6 +2601,7 @@ async function secureDeploy({
       layout,
       remoteNode: remoteNodeInfo,
       transactionReady: true,
+      tunnelMode,
       codexHooksInstalled: componentPresence.codexPresent === true,
       isolation,
       hermes: hermesSummary,
@@ -3307,6 +3395,8 @@ module.exports = {
     buildInstallerVerificationCommand,
     buildMonitorVerificationCommand,
     buildScpRemoteTarget,
+    buildReverseForwardProbeArgs,
+    probeRemoteTunnelMode,
     probeRemoteCliCapabilities,
     buildIsolatedWrapper,
     buildWrapperEvidence,

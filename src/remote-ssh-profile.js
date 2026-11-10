@@ -40,6 +40,7 @@ const { LOCAL_SESSION_PROFILE_ID } = require("./session-key");
 // never scan this list, but the constrained range preserves predictable
 // validation, diagnostics, and downgrade behavior.
 const REMOTE_FORWARD_PORTS = [23333, 23334, 23335, 23336, 23337];
+const REMOTE_TUNNEL_MODES = Object.freeze(["reverse", "stdio"]);
 
 const HOST_BARE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const HOST_USER_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*@[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -320,6 +321,10 @@ function isValidRemoteForwardPort(value) {
   return REMOTE_FORWARD_PORTS.includes(value);
 }
 
+function isValidRemoteTunnelMode(value) {
+  return REMOTE_TUNNEL_MODES.includes(value);
+}
+
 function isValidIdentityFile(value) {
   if (typeof value !== "string" || value.length === 0) return false;
   if (CONTROL_CHARS_RE.test(value)) return false;
@@ -499,6 +504,9 @@ function validateProfile(profile) {
       message: `profile.remoteForwardPort must be one of ${REMOTE_FORWARD_PORTS.join(", ")}`,
     };
   }
+  if (!isValidRemoteTunnelMode(profile.tunnelMode || "reverse")) {
+    return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
+  }
   const runtimeMode = profile.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
   const runtimeKey = profile.runtimeKey || ACCOUNT_DEFAULT_RUNTIME_KEY;
   if (!isValidRuntimeMode(runtimeMode)) {
@@ -657,6 +665,7 @@ function sanitizeProfile(raw) {
       ? raw.identityFile
       : undefined,
     remoteForwardPort: Number.isInteger(raw.remoteForwardPort) ? raw.remoteForwardPort : 23333,
+    tunnelMode: raw.tunnelMode === "stdio" ? "stdio" : "reverse",
     runtimeMode: runtimeIdentity.runtimeMode,
     runtimeKey: runtimeIdentity.runtimeKey,
     layoutVersion: REMOTE_LAYOUT_VERSION,
@@ -852,6 +861,7 @@ function deployTargetDrift(a, b) {
 
 module.exports = {
   REMOTE_FORWARD_PORTS,
+  REMOTE_TUNNEL_MODES,
   REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
   REMOTE_RUNTIME_MODE_PROFILE_ISOLATED,
   ACCOUNT_DEFAULT_RUNTIME_KEY,
@@ -864,6 +874,7 @@ module.exports = {
   isValidHost,
   isValidPort,
   isValidRemoteForwardPort,
+  isValidRemoteTunnelMode,
   isValidIdentityFile,
   isValidHostPrefix,
   isValidLabel,

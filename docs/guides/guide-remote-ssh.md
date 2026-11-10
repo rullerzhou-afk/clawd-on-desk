@@ -37,7 +37,13 @@ the system `ssh` and your system terminal.
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens a terminal to run a plain `ssh` once. On Windows, **Authenticate / Open Terminal** use a separate Windows Console Host window so Windows Terminal's administrator-profile settings cannot interrupt the session. After SSH exits, the local command prompt stays open so you can read errors; type `exit` to close it.
 4. Click **Deploy / Repair Hooks**, then connect the profile.
-   - Clawd creates a dedicated local ingress for this profile and maintains an `ssh -R` reverse tunnel to that ingress
+   - Clawd creates a dedicated local ingress for this profile and detects whether
+     the SSH server permits `ssh -R` remote forwarding
+   - When remote forwarding is available, Clawd maintains the reverse tunnel
+   - When the server rejects remote forwarding, deployment automatically selects
+     the bundled SSH stdio bridge. The bridge uses the same remote loopback port,
+     but carries all hook requests through one ordinary `ssh -T` command and
+     multiplexed stdin/stdout; it does not need `-R` or a firewall-open port
    - It writes a profile identity atomically, pins hooks and the static Claude permission URL to the profile's exact remote port, and never exposes the general local `/state` or `/permission` routes to the tunnel
    - Then it copies hook files from the currently installed Clawd to the resolved remote runtime layout
    - Then it registers Claude Code hooks, Codex official hooks, and Copilot CLI hooks in remote mode when the matching remote agent is installed
@@ -228,6 +234,23 @@ Remote Claude/Codex/Copilot/Hermes hook
   -> Local Clawd state / permission handlers (canonical profile session ID)
   -> Dashboard / Session HUD / pet state
 ```
+
+For hosts that reject `ssh -R`, the deployed transport is:
+
+```
+Remote hook
+  -> POST http://127.0.0.1:<remote port>
+  -> bundled SSH stdio bridge on the remote
+  -> multiplexed SSH stdin/stdout
+  -> profile-bound local ingress
+  -> Local Clawd state / permission handlers
+```
+
+The SSH stdio fallback currently supports ordinary POSIX SSH targets using the
+parallel transport. It is not used for Windows remote hosts or profiles forced
+into the single-session transport mode. The remote port remains a loopback-only
+listener inside that host, so it does not need to be exposed by the remote
+firewall or belong to an externally open port range.
 
 So "Connected" only means the tunnel is up. For a remote session to actually
 appear in the Dashboard, you still need:

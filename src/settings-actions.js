@@ -1620,6 +1620,7 @@ const REMOTE_SSH_TRUSTED_PROFILE_FIELDS = Object.freeze([
 ]);
 const REMOTE_SSH_DEPLOYMENT_METADATA_FIELDS = Object.freeze([
   "remotePlatform",
+  "tunnelMode",
   "lastDeployedAt",
   "managedDeployTargets",
   "detectedRemoteNodeBin",
@@ -1696,6 +1697,7 @@ function remoteSshAddProfile(payload, deps) {
   // Ownership metadata is server-issued only after a successful deploy.
   // Renderer input must never be able to manufacture cleanup authority.
   stripTrustedRemoteProfileFields(profile);
+  profile.tunnelMode = "reverse";
   next.profiles.push(profile);
   return { status: "ok", commit: { remoteSsh: next } };
 }
@@ -1764,6 +1766,7 @@ function remoteSshUpdateProfile(payload, deps) {
   // values already present in the current settings snapshot.
   stripTrustedRemoteProfileFields(profile);
   preserveTrustedRemoteProfileFields(profile, prev);
+  profile.tunnelMode = prev.tunnelMode === "stdio" ? "stdio" : "reverse";
   // Ownership history is independent of whether the current form still
   // points at the deployed target. Preserve it across A → B edits so delete
   // later cleans the actual managed account(s), never the current guess.
@@ -2070,6 +2073,7 @@ function remoteSshMarkDeployed(payload, deps) {
     return { status: "error", message: "remoteSsh.markDeployed: invalid remote platform" };
   }
   const remoteNode = normalizeRemoteNodeDetection(payload.remoteNode || payload, deployedAt, remotePlatform);
+  const tunnelMode = payload.tunnelMode === "stdio" ? "stdio" : "reverse";
   const targetAtDeployStart = expectedTarget && typeof expectedTarget === "object"
     ? expectedTarget
     : current;
@@ -2125,6 +2129,7 @@ function remoteSshMarkDeployed(payload, deps) {
   const updatedProfile = {
     ...current,
     ...(payload.remotePlatform !== undefined ? { remotePlatform } : {}),
+    tunnelMode,
     lastDeployedAt: deployedAt,
     managedDeployTargets: ownedTargets,
   };
@@ -2198,6 +2203,46 @@ function remoteSshMarkRemoteNode(payload, deps) {
     commit: { remoteSsh: { ...next, profiles: newProfiles } },
   };
 }
+
+function remoteSshSetTunnelMode(payload, deps) {
+  if (!payload || typeof payload !== "object") {
+    return { status: "error", message: "remoteSsh.setTunnelMode: payload must be an object" };
+  }
+  const { id, tunnelMode, expectedTarget } = payload;
+  if (typeof id !== "string" || !id) {
+    return { status: "error", message: "remoteSsh.setTunnelMode.id must be a non-empty string" };
+  }
+  if (tunnelMode !== "reverse" && tunnelMode !== "stdio") {
+    return { status: "error", message: "remoteSsh.setTunnelMode.tunnelMode must be reverse or stdio" };
+  }
+  const next = _remoteSshSnapshot(deps);
+  const idx = next.profiles.findIndex((profile) => profile.id === id);
+  if (idx === -1) {
+    return { status: "ok", noop: true, reason: "profile_deleted" };
+  }
+  const current = next.profiles[idx];
+  if (expectedTarget && typeof expectedTarget === "object") {
+    const drift = deployTargetDrift(
+      deployTargetFingerprint(current),
+      deployTargetFingerprint(expectedTarget),
+    );
+    if (drift) {
+      return {
+        status: "ok",
+        noop: true,
+        reason: "target_drift",
+        targetDrift: drift,
+      };
+    }
+  }
+  if (current.tunnelMode === tunnelMode) {
+    return { status: "ok", noop: true, reason: "unchanged" };
+  }
+  const profiles = next.profiles.slice();
+  profiles[idx] = { ...current, tunnelMode };
+  return { status: "ok", commit: { remoteSsh: { ...next, profiles } } };
+}
+remoteSshSetTunnelMode.lockKey = "remoteSsh";
 
 function remoteSshDeleteProfile(payload, deps) {
   const id = typeof payload === "string"
@@ -2922,6 +2967,7 @@ const commandRegistry = {
   "remoteSsh.update": remoteSshUpdateProfile,
   "remoteSsh.delete": remoteSshDeleteProfile,
   "remoteSsh.markDeployed": remoteSshMarkDeployed,
+  "remoteSsh.setTunnelMode": remoteSshSetTunnelMode,
   "remoteSsh.markRemoteNode": remoteSshMarkRemoteNode,
   "remoteSsh.applyInstallationIdentity": remoteSshApplyInstallationIdentity,
   "remoteSsh.beginIdentityRotation": remoteSshBeginIdentityRotation,

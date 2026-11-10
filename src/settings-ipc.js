@@ -37,6 +37,7 @@ const INTERNAL_SETTINGS_COMMANDS = new Set([
   "remoteSsh.switchRuntimeMode",
   "remoteSsh.markDeployed",
   "remoteSsh.markRemoteNode",
+  "remoteSsh.setTunnelMode",
   "feishuApproval.commitResolvedApprover",
   // Official theme install/uninstall are main-process capabilities. The
   // renderer can only reach the dedicated, owner-gated IPC handlers; it must

@@ -562,6 +562,24 @@
     }
     section.appendChild(runtimeRow);
 
+    const tunnelRow = document.createElement("div");
+    tunnelRow.className = "remote-ssh-hooks-row";
+    const tunnelLabel = document.createElement("span");
+    tunnelLabel.className = "remote-ssh-hooks-label";
+    tunnelLabel.textContent = t("remoteSshTunnelModeLabel");
+    tunnelRow.appendChild(tunnelLabel);
+    const tunnelValue = document.createElement("span");
+    tunnelValue.className = "remote-ssh-hooks-value";
+    const selectedTunnelMode = (status && status.tunnelMode)
+      || (profile.tunnelMode === "stdio" ? "stdio" : "reverse");
+    tunnelValue.textContent = t(
+      selectedTunnelMode === "stdio"
+        ? "remoteSshTunnelModeStdio"
+        : "remoteSshTunnelModeReverse"
+    );
+    tunnelRow.appendChild(tunnelValue);
+    section.appendChild(tunnelRow);
+
     if (isolated) {
       const boundary = document.createElement("div");
       boundary.className = "remote-ssh-field-hint";
@@ -706,6 +724,9 @@
             } else {
               // Only a verified Codex installer run needs the native /hooks review.
               const messages = [t("remoteSshDeploySuccess")];
+              if (r.tunnelMode === "stdio") {
+                messages.push(t("remoteSshDeployStdioSelected"));
+              }
               if (r.codexHooksInstalled === true) messages.push(t("codexHookReviewReminder"));
               if (r.dshBridgeInstalled === true && r.dshRestartRequired === true) {
                 messages.push(t("remoteSshDshBridgeInstalledRestartRequired"));

@@ -15,6 +15,7 @@
     "build:linux": "electron-builder --linux",
     "build:linux:x64": "electron-builder --linux AppImage:x64 deb:x64",
     "build:all": "electron-builder --win --mac --linux",
+    "build:remote-ssh-bridge": "node scripts/build-remote-ssh-stdio-bridge.js",
     "verify:electron": "node scripts/verify-electron-install.js",
     "postinstall": "node scripts/verify-electron-install.js --context postinstall",
     "test": "node test/run-tests.js",
@@ -215,6 +216,7 @@
     "@electron/asar": "^3.4.1",
     "electron": "^41.10.4",
     "electron-builder": "^26.15.7",
+    "esbuild": "^0.28.2",
     "js-yaml": "^4.1.0"
   },
   "dependencies": {
@@ -224,6 +226,7 @@
     "jsonc-parser": "^3.3.1",
     "koffi": "2.16.3",
     "markdown-it": "15.0.0",
+    "multiplex": "^6.7.0",
     "qrcode-generator": "^2.0.4",
     "ws": "^8.21.0",
     "yauzl": "^2.10.0"
