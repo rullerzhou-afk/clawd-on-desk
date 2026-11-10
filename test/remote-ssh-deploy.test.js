@@ -628,7 +628,7 @@ test("deploy transport wraps multiline SSH scripts without consuming command std
   };
   const script = "payload=$(cat)\nprintf '%s\\n' \"$payload\"\n";
 
-  const result = await __test.spawnAndWait(spawn, "ssh", ["dev43", script], {
+  const result = await __test.spawnAndWait(spawn, "ssh", ["remote.example.test", script], {
     stdin: "stdin-frame",
   });
 
@@ -2451,7 +2451,7 @@ test("secure scp target is one raw argv token without literal shell quotes", () 
 });
 
 test("remote tunnel probe selects reverse forwarding when ssh -R is accepted", async () => {
-  const profile = { host: "dev43", remoteForwardPort: 23333, tunnelMode: "reverse" };
+  const profile = { host: "remote.example.test", remoteForwardPort: 23333, tunnelMode: "reverse" };
   const args = __test.buildReverseForwardProbeArgs(profile);
   assert.ok(args.includes("-R"));
   assert.ok(args.includes("ExitOnForwardFailure=yes"));
@@ -2468,7 +2468,7 @@ test("remote tunnel probe selects reverse forwarding when ssh -R is accepted", a
 });
 
 test("remote tunnel probe selects SSH stdio when the server rejects -R", async () => {
-  const profile = { host: "dev43", remoteForwardPort: 23333, tunnelMode: "reverse" };
+  const profile = { host: "remote.example.test", remoteForwardPort: 23333, tunnelMode: "reverse" };
   const recorder = makeRecordingSpawn({
     code: 255,
     stderr: "remote port forwarding failed for listen port 23333\n",

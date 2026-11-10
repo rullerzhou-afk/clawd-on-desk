@@ -278,13 +278,13 @@ The remote checks are ordinary read-only SSH commands:
 
 ```bash
 # Is the selected loopback bridge port listening?
-ssh dev43 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
+ssh remote-host 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
 
 # Is the stdio bridge process running?
-ssh dev43 "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
+ssh remote-host "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
 
 # Last delivery error written by remote hooks, if any
-ssh dev43 'tail -n 100 ~/.clawd/remote-last-error.log'
+ssh remote-host 'tail -n 100 ~/.clawd/remote-last-error.log'
 ```
 
 Use **Open Terminal** in the profile for first-time host-key checks or manual

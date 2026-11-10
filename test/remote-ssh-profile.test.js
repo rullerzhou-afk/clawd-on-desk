@@ -170,7 +170,7 @@ test("isValidRemoteForwardPort rejects outside SERVER_PORTS", () => {
 });
 
 test("remote tunnel mode defaults to reverse and accepts only stdio", () => {
-  const base = basicProfile({ id: "tunnel-mode", host: "dev43" });
+  const base = basicProfile({ id: "tunnel-mode", host: "remote.example.test" });
   assert.equal(validateProfile(base).status, "ok");
   assert.equal(validateProfile({ ...base, tunnelMode: "reverse" }).status, "ok");
   assert.equal(validateProfile({ ...base, tunnelMode: "stdio" }).status, "ok");

@@ -2,7 +2,7 @@
 
 // This file is bundled into hooks/remote-ssh-stdio-bridge.js so the remote
 // host does not need npm/node_modules. Keep stdout reserved for multiplex
-// frames: the audited Relay path can merge remote stderr into stdout.
+// frames: audited gateways can merge remote stderr into stdout.
 process.noDeprecation = true;
 
 const net = require("net");

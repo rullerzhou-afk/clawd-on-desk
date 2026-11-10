@@ -230,13 +230,13 @@ bridge 以一个无界面的 SSH exec 子进程运行。`ssh -T` 会禁用伪终
 
 ```bash
 # 所选 loopback 桥接端口是否正在监听
-ssh dev43 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
+ssh remote-host 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
 
 # stdio bridge 进程是否在运行
-ssh dev43 "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
+ssh remote-host "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
 
 # 远端 hook 最近写入的投递错误
-ssh dev43 'tail -n 100 ~/.clawd/remote-last-error.log'
+ssh remote-host 'tail -n 100 ~/.clawd/remote-last-error.log'
 ```
 
 首次连接需要确认 host key 或排查 SSH 时，使用 profile 中的 **打开终端**。

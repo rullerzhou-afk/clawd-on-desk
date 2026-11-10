@@ -22,10 +22,10 @@ test("multiline shell commands are decoded as a one-line command argument", () =
 
 test("one-line commands and non-ssh tools are unchanged", () => {
   const oneLine = "printf 'ok\\n'";
-  const args = ["dev43", oneLine];
+  const args = ["remote.example.test", oneLine];
   assert.equal(encodeMultilineShellCommand(oneLine), oneLine);
   assert.equal(encodeSshCommandArguments("ssh", args), args);
-  assert.equal(encodeSshCommandArguments("scp", ["dev43:file", "file"]).at(-1), "file");
+  assert.equal(encodeSshCommandArguments("scp", ["remote.example.test:file", "file"]).at(-1), "file");
   assert.equal(decodeSshCommandArguments("ssh", args), args);
 });
 

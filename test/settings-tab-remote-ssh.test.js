@@ -344,7 +344,7 @@ test("Remote SSH copies a redacted diagnostic report with service checks", async
   const profile = {
     id: "p1",
     label: "Remote",
-    host: "dev43",
+    host: "remote.example.test",
     remoteForwardPort: 23333,
     tunnelMode: "stdio",
     lastDeployedAt: 1_700_000_000_000,
