@@ -1531,6 +1531,12 @@ function registerRemoteSshIpc(options = {}) {
         || deployTargetDrift(deployTargetBeforeProbe, deployTargetFingerprint(deployProfile))) {
         return { status: "error", reason: "profile_changed", message: "SSH target changed before deployment; retry deployment." };
       }
+      const activeTunnelState = remoteSshRuntime.getProfileStatus(profile.id);
+      const activeTunnelMode = activeTunnelState
+        && ["connected", "reconnecting"].includes(activeTunnelState.status)
+        && (activeTunnelState.tunnelMode === "stdio" || activeTunnelState.tunnelMode === "reverse")
+        ? activeTunnelState.tunnelMode
+        : null;
       const result = await deployFn({
         profile: deployProfile,
         platformSnapshot,
@@ -1544,6 +1550,7 @@ function registerRemoteSshIpc(options = {}) {
           isPackaged,
           enableTunnelProbe: true,
           transportInspection: inspection,
+          activeTunnelMode,
           onIdentityStep: async (step, value) => {
             const updated = await settingsController.applyCommand("remoteSsh.updateIdentityStep", {
               id: profile.id,

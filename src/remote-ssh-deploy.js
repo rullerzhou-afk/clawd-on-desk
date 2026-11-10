@@ -2001,8 +2001,17 @@ async function secureDeploy({
   let tunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
   if (deps.enableTunnelProbe === true || typeof deps.probeTunnelMode === "function") {
     progress("transport-mode", "start");
-    const transportMode = deps.transportInspection && deps.transportInspection.mode;
-    const tunnelProbe = transportMode === "serialized"
+    const activeTunnelMode = deps.activeTunnelMode === "stdio" || deps.activeTunnelMode === "reverse"
+      ? deps.activeTunnelMode
+      : null;
+    const sshTransportMode = deps.transportInspection && deps.transportInspection.mode;
+    const tunnelProbe = activeTunnelMode
+      ? {
+          mode: activeTunnelMode,
+          conclusive: true,
+          active: true,
+        }
+      : sshTransportMode === "serialized"
       ? {
           mode: "reverse",
           conclusive: true,
@@ -2014,9 +2023,11 @@ async function secureDeploy({
           runtime,
           remotePlatform: platformSnapshot ? platformSnapshot.remotePlatform : (profile.remotePlatform || "posix"),
         });
-    if (tunnelProbe && tunnelProbe.mode === "stdio" && transportMode !== "serialized") {
+    if (activeTunnelMode) {
+      tunnelMode = activeTunnelMode;
+    } else if (tunnelProbe && tunnelProbe.mode === "stdio" && sshTransportMode !== "serialized") {
       tunnelMode = "stdio";
-    } else if (transportMode === "serialized") {
+    } else if (sshTransportMode === "serialized") {
       tunnelMode = "reverse";
     }
     progress(
@@ -2024,6 +2035,8 @@ async function secureDeploy({
       "ok",
       tunnelMode === "stdio"
         ? (tunnelProbe.message || "Remote forwarding unavailable; SSH stdio transport selected.")
+        : tunnelProbe && tunnelProbe.active
+          ? `Kept active ${tunnelMode} tunnel; capability probe skipped to avoid rebinding its port.`
         : (tunnelProbe && tunnelProbe.conclusive === false
           ? "Remote forwarding probe inconclusive; keeping reverse tunnel."
           : "Remote forwarding available."),

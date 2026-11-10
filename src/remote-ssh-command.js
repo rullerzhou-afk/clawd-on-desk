@@ -3,7 +3,7 @@
 const { Buffer } = require("node:buffer");
 
 const MULTILINE_RX = /[\r\n]/;
-const ENCODED_COMMAND_RX = /^sh -c "\$\(printf %s '([A-Za-z0-9+/=]+)' \| base64 -d\)"$/;
+const ENCODED_COMMAND_RX = /^sh -c "\$\(printf %s '([A-Za-z0-9+/=]+)' \| base64 --decode\)"$/;
 
 // Some audited SSH gateways reject a remote-command argument that contains
 // literal line breaks even though OpenSSH and the remote shell support it.
@@ -16,7 +16,7 @@ function encodeMultilineShellCommand(command) {
   }
   if (!MULTILINE_RX.test(command)) return command;
   const encoded = Buffer.from(command, "utf8").toString("base64");
-  return `sh -c "$(printf %s '${encoded}' | base64 -d)"`;
+  return `sh -c "$(printf %s '${encoded}' | base64 --decode)"`;
 }
 
 // buildSshArgs() always puts the destination before the optional remote

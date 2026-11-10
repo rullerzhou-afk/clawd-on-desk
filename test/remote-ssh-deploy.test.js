@@ -353,6 +353,36 @@ test("secure deploy persists the tunnel mode selected by its capability probe", 
     && /stdio/.test(entry.payload.message)));
 });
 
+test("secure deploy keeps an active tunnel mode without rebinding its port", async () => {
+  const fixture = secureFixture();
+  const recorder = secureHappySpawn();
+  const runtime = makeRuntimeStub();
+  let probeCalls = 0;
+  const result = await secureDeploy({
+    ...fixture,
+    runtime,
+    deps: {
+      spawn: recorder.spawn,
+      hooksDir: path.join(REPO_ROOT, "hooks"),
+      detectRemoteShell: stubPosixShellProbe,
+      randomBytes: () => Buffer.alloc(16, 0xab),
+      activeTunnelMode: "reverse",
+      probeTunnelMode: async () => {
+        probeCalls += 1;
+        throw new Error("active tunnel port must not be probed");
+      },
+    },
+  });
+
+  assert.equal(result.ok, true);
+  assert.equal(result.tunnelMode, "reverse");
+  assert.equal(probeCalls, 0);
+  assert.ok(runtime.events.some((entry) =>
+    entry.event === "progress"
+    && entry.payload.step === "transport-mode"
+    && /active reverse tunnel/.test(entry.payload.message)));
+});
+
 test("secure deploy only stops a prior Codex monitor after matching its command line", async () => {
   const fixture = secureFixture({
     profile: { autoStartCodexMonitor: true },

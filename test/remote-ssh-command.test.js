@@ -16,7 +16,7 @@ test("multiline shell commands are decoded as a one-line command argument", () =
   const encoded = encodeMultilineShellCommand(command);
 
   assert.doesNotMatch(encoded, /[\r\n]/);
-  assert.match(encoded, /^sh -c "\$\(printf %s '[A-Za-z0-9+/=]+' \| base64 -d\)"$/);
+  assert.match(encoded, /^sh -c "\$\(printf %s '[A-Za-z0-9+/=]+' \| base64 --decode\)"$/);
   assert.equal(decodeMultilineShellCommand(encoded), command);
 });
 
