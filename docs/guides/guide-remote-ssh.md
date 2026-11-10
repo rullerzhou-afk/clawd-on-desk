@@ -319,6 +319,12 @@ Deployment fails at the `check-node` step. Install Node.js on the remote first,
 then redeploy. The security boundary comes from the pinned identity and
 dedicated ingress, not from port secrecy.
 
+Some managed or audited SSH gateways reject remote commands that contain
+literal line breaks. For POSIX targets, Clawd streams the Node discovery
+script over stdin and sends deploy scripts as a single base64-encoded shell
+argument. This preserves commands that also read a JSON or binary stdin
+payload, and requires only the standard `base64` utility on the remote.
+
 Hermes does not change this: its deployment phase also runs through the remote
 Node runtime, while the installed plugin itself runs under Hermes' own
 virtualenv Python. If the Hermes phase fails because the `hermes` CLI cannot be

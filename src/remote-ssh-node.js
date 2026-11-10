@@ -223,7 +223,11 @@ function buildRemoteNodeProbeCommand(nodeBin = null, source = "cache") {
   const tail = isValidRemoteNodeBin(nodeBin)
     ? ` -- ${quoteForPosixShellArg(nodeBin)} ${quoteForPosixShellArg(String(source || "cache"))}`
     : "";
-  return `sh -c ${quoteForPosixShellArg(NODE_PROBE_SCRIPT)}${tail}`;
+  return `sh -s${tail}`;
+}
+
+function buildRemoteNodeProbeInput() {
+  return NODE_PROBE_SCRIPT;
 }
 
 function parseRemoteNodeProbeOutput(stdout) {
@@ -328,7 +332,11 @@ function clearCachedRemoteNodeBin(profile) {
 async function probeRemoteNodeBin({ profile, spawn, buildSshArgs, runtime, timeoutMs, nodeBin = null, source = "cache" }) {
   const command = buildRemoteNodeProbeCommand(nodeBin, source);
   const args = buildSshArgs(profile).concat([command]);
-  const r = await spawnAndWait(spawn, "ssh", args, { runtime, timeoutMs });
+  const r = await spawnAndWait(spawn, "ssh", args, {
+    stdin: buildRemoteNodeProbeInput(),
+    runtime,
+    timeoutMs,
+  });
   if (r.code !== 0) {
     const detail = summarizeStderr(r.stderr) || `ssh exited ${formatExit(r)}`;
     return {
@@ -484,6 +492,7 @@ module.exports = {
   NODE_PROBE_SENTINEL,
   MIN_REMOTE_NODE_MAJOR,
   buildRemoteNodeProbeCommand,
+  buildRemoteNodeProbeInput,
   parseRemoteNodeProbeOutput,
   isValidRemoteNodeBin,
   isSupportedRemoteNodeVersion,

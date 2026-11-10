@@ -24,6 +24,7 @@ const startCodexMonitor = __test.legacyStartCodexMonitor;
 const stopCodexMonitor = __test.legacyStopCodexMonitor;
 const uninstallRemoteIntegrations = __test.legacyUninstallRemoteIntegrations;
 const { clearRemoteNodeCache, buildRemoteNodeEvalCommand } = require("../src/remote-ssh-node");
+const { decodeSshCommandArguments } = require("../src/remote-ssh-command");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
@@ -556,6 +557,26 @@ test("a lock-release unknown result preserves the primary secure operation failu
   assert.match(result.recoveryError, /manual inspection/i);
 });
 
+test("deploy transport wraps multiline SSH scripts without consuming command stdin", async () => {
+  const child = makeFakeChild();
+  const calls = [];
+  const spawn = (_tool, args) => {
+    calls.push(args);
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  const script = "payload=$(cat)\nprintf '%s\\n' \"$payload\"\n";
+
+  const result = await __test.spawnAndWait(spawn, "ssh", ["dev43", script], {
+    stdin: "stdin-frame",
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].at(-1), /[\r\n]/);
+  assert.equal(child._stdin, "stdin-frame");
+});
+
 test("owned monitor cleanup preserves its known failure when lock release is unknown", async () => {
   const fixture = secureFixture();
   const profile = {
@@ -935,7 +956,7 @@ test("issue #1316: direct unknown-shell Windows deployment requires a platform s
   assert.equal(recorder.calls.some((call) => lastArg(call).startsWith("umask")), false);
   assert.deepEqual(recorder.calls.map((call) => call.command), ["ssh", "ssh", "ssh"]);
   assert.ok(lastArg(recorder.calls[0]).startsWith("printf"));
-  assert.ok(lastArg(recorder.calls[1]).startsWith("sh -c"));
+  assert.equal(lastArg(recorder.calls[1]), "sh -s");
   assert.ok(lastArg(recorder.calls[2]).includes("console.log(process.platform)"));
 });
 
@@ -2853,9 +2874,10 @@ function makeFakeChild() {
 
 function makeRecordingSpawn(handlers) {
   const calls = [];
-  const spawn = (command, args, opts) => {
+  const spawn = (command, rawArgs, opts) => {
     const child = makeFakeChild();
-    calls.push({ command, args, opts, child });
+    const args = decodeSshCommandArguments(command, rawArgs);
+    calls.push({ command, args, rawArgs, opts, child });
     // Look up handler by index (first call → handler[0], etc.)
     const idx = calls.length - 1;
     const handler = Array.isArray(handlers) ? handlers[idx] : handlers;
@@ -3435,7 +3457,7 @@ test("issue #1316: POSIX platform snapshot overrides a previously deployed Windo
   });
   assert.equal(result.ok, true);
   assert.equal(result.layout.platform, "posix");
-  assert.ok(recorded.calls[1].args.at(-1).startsWith("sh -c"));
+  assert.equal(recorded.calls[1].args.at(-1), "sh -s");
 });
 
 test("issue #1316: POSIX node_unavailable failure never acquires a Windows hint", async () => {

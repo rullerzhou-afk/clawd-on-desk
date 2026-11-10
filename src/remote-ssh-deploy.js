@@ -49,6 +49,7 @@ const {
   buildRemoteNodeEvalCommand,
   discoverWindowsRemoteNode,
 } = require("./remote-ssh-node");
+const { encodeSshCommandArguments } = require("./remote-ssh-command");
 const { REMOTE_NODE_LAUNCH_COMMAND, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
 const { buildWindowsOperationFrame, windowsUserInstallerBudgets } = require("./remote-ssh-win-ops");
 const { windowsFailureHint } = require("./remote-ssh-platform");
@@ -188,6 +189,7 @@ function spawnAndWait(spawn, command, args, opts = {}) {
   } = opts;
   return new Promise((resolve, reject) => {
     let child;
+    const transportArgs = encodeSshCommandArguments(command, args);
     const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
     const childOptions = {
       env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
@@ -196,8 +198,8 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     };
     try {
       child = managed
-        ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
-        : spawn(command, args, childOptions);
+        ? runtime.spawnManagedTransportChild({ role, tool: command, args: transportArgs, options: childOptions })
+        : spawn(command, transportArgs, childOptions);
     } catch (err) {
       if (managed) {
         reject(err);

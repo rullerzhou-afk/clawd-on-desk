@@ -134,6 +134,6 @@ test("issue #1316: unknown shell rediscovers login-shell POSIX Node after a Wind
   assert.equal(result.ok, true);
   assert.equal(result.remotePlatform, "posix");
   assert.equal(recorder.calls.length, 3);
-  assert.match(recorder.calls[1].args.at(-1), /^sh -c /);
+  assert.equal(recorder.calls[1].args.at(-1), "sh -s");
   assert.equal(result.remoteNode.nodeBin, "/home/remote/.nvm/node");
 });
