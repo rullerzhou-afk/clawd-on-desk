@@ -34,10 +34,17 @@ function makeCtx() {
 
 describe("display_svg session hints (updateSession path)", () => {
   let api;
+  let random;
   const pid = process.pid;
 
   beforeEach(() => {
+    random = mock.method(Math, "random", () => 0);
     api = require("../src/state")(makeCtx());
+  });
+
+  afterEach(() => {
+    api.cleanup();
+    random.mock.restore();
   });
 
   function baseOpts(overrides = {}) {
@@ -77,6 +84,25 @@ describe("display_svg session hints (updateSession path)", () => {
     assert.strictEqual(api.getSvgOverride("working"), "clawd-working-building.svg");
     api.updateSession("c1", "working", "PostToolUse", baseOpts({ displayHint: null }));
     assert.strictEqual(api.getSvgOverride("working"), "clawd-working-typing.svg");
+  });
+
+  it("issue #1351: no hint can fall back to the second working candidate", () => {
+    random.mock.mockImplementation(() => 0.99);
+    api.updateSession("c1", "working", "PreToolUse", baseOpts());
+    assert.strictEqual(api.getSvgOverride("working"), "clawd-alive-work-coffee.svg");
+  });
+
+  it("issue #1351: invalid hint can fall back to the second working candidate", () => {
+    random.mock.mockImplementation(() => 0.99);
+    api.updateSession("c1", "working", "PreToolUse", baseOpts({ displayHint: "evil.svg" }));
+    assert.strictEqual(api.getSvgOverride("working"), "clawd-alive-work-coffee.svg");
+  });
+
+  it("issue #1351: cleared hint can fall back to the second working candidate", () => {
+    random.mock.mockImplementation(() => 0.99);
+    api.updateSession("c1", "working", "PreToolUse", baseOpts({ displayHint: "clawd-working-building.svg" }));
+    api.updateSession("c1", "working", "PostToolUse", baseOpts({ displayHint: null }));
+    assert.strictEqual(api.getSvgOverride("working"), "clawd-alive-work-coffee.svg");
   });
 
   it("applies thinking hint for thinking state", () => {
@@ -383,6 +409,7 @@ describe("multi-file thinking / working pools", () => {
     useRolls(0.99);
     const ctx = makeCtx();
     ctx.theme = structuredClone(_defaultTheme);
+    ctx.theme.workingTiers = [{ minSessions: 1, file: "clawd-working-typing.svg" }];
     ctx.theme.timings.minDisplay = Object.fromEntries(
       Object.keys(ctx.theme.timings.minDisplay).map((state) => [state, 0]),
     );

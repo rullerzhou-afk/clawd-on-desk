@@ -1,0 +1,374 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 3-Second Loop — Toy paper plane: a little white sheet appears in his
+         hands, two quick folds and *pop* it is a paper plane. He lifts it
+         to his right hand, winds up (leans back), throws — the plane dips,
+         swoops up and glides off the right edge of the view, fading out —
+         and he watches it go with a happy lean, "^^" and a little wave.
+         The held plane follows the hand exactly (positions precomputed from
+         the body and arm keyframes). */
+      .body-anim {
+        transform-origin: 7.5px 13px;
+        animation: pl-body 3s infinite ease-in-out;
+      }
+      .legs-anim {
+        transform-origin: 7.5px 15px;
+        animation: pl-legs 3s infinite ease-in-out;
+      }
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: pl-shadow 3s infinite ease-in-out;
+      }
+      .arm-l {
+        transform-origin: 2px 10px;
+        animation: pl-arm-l 3s infinite ease-in-out;
+      }
+      .arm-r {
+        transform-origin: 13px 10px;
+        animation: pl-arm-r 3s infinite ease-in-out;
+      }
+      .hands-front {
+        opacity: 0;
+        animation: pl-hands 3s infinite ease-in-out;
+      }
+      .eyes-look {
+        animation: pl-look 3s infinite ease-in-out;
+      }
+      .eyes-normal {
+        animation: pl-eyes-normal 3s infinite linear;
+      }
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: pl-blink 3s infinite ease-in-out;
+      }
+      .eyes-happy {
+        opacity: 0;
+        animation: pl-eyes-happy 3s infinite linear;
+      }
+      .prop-x {
+        animation: pl-prop-x 3s infinite;
+      }
+      .prop-y {
+        animation: pl-prop-y 3s infinite;
+      }
+      .prop-rot {
+        transform-origin: 0px 0px;
+        animation: pl-prop-rot 3s infinite ease-in-out;
+      }
+      .prop-fade {
+        opacity: 0;
+        animation: pl-prop-fade 3s infinite linear;
+      }
+      .sheet {
+        transform-origin: 0px 0px;
+        animation: pl-sheet 3s infinite ease-in-out;
+      }
+      .plane {
+        transform-origin: 0px 0px;
+        opacity: 0;
+        animation: pl-plane 3s infinite ease-in-out;
+      }
+
+      /* --- Prop path (x / y / tilt on separate groups) --- */
+      @keyframes pl-prop-x {
+        0% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        4% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        5% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        9% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        13% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        19% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        20% { transform: translateX(7.5px); animation-timing-function: ease-in-out; }
+        24% { transform: translateX(14.29px); animation-timing-function: ease-in-out; }
+        28% { transform: translateX(15.09px); animation-timing-function: ease-in-out; }
+        31% { transform: translateX(14.96px); animation-timing-function: ease-in-out; }
+        38% { transform: translateX(12.11px); animation-timing-function: ease-in-out; }
+        41% { transform: translateX(11.3px); animation-timing-function: ease-in-out; }
+        44% { transform: translateX(18.07px); animation-timing-function: ease-in-out; }
+        46% { transform: translateX(18.6px); animation-timing-function: linear; }
+        50% { transform: translateX(20.2px); animation-timing-function: ease-in-out; }
+        56% { transform: translateX(22.6px); animation-timing-function: ease-in-out; }
+        63% { transform: translateX(25.2px); animation-timing-function: ease-in-out; }
+        70% { transform: translateX(27.4px); animation-timing-function: ease-in-out; }
+        77% { transform: translateX(30.5px); animation-timing-function: ease-in-out; }
+        78% { transform: translateX(7.5px); animation-timing-function: linear; }
+        100% { transform: translateX(7.5px); animation-timing-function: linear; }
+      }
+      @keyframes pl-prop-y {
+        0% { transform: translateY(10.5px); animation-timing-function: ease-in-out; }
+        4% { transform: translateY(10.54px); animation-timing-function: ease-in-out; }
+        5% { transform: translateY(10.55px); animation-timing-function: ease-in-out; }
+        9% { transform: translateY(10.58px); animation-timing-function: ease-in-out; }
+        13% { transform: translateY(10.58px); animation-timing-function: ease-in-out; }
+        19% { transform: translateY(10.42px); animation-timing-function: ease-in-out; }
+        20% { transform: translateY(10.44px); animation-timing-function: ease-in-out; }
+        24% { transform: translateY(5.16px); animation-timing-function: ease-in-out; }
+        28% { transform: translateY(3.83px); animation-timing-function: ease-in-out; }
+        31% { transform: translateY(3.79px); animation-timing-function: ease-in-out; }
+        38% { transform: translateY(3.5px); animation-timing-function: ease-in-out; }
+        41% { transform: translateY(3.38px); animation-timing-function: ease-in-out; }
+        44% { transform: translateY(5.04px); animation-timing-function: ease-in-out; }
+        46% { transform: translateY(5.59px); animation-timing-function: linear; }
+        50% { transform: translateY(2.6px); animation-timing-function: ease-in-out; }
+        56% { transform: translateY(3.8px); animation-timing-function: ease-in-out; }
+        63% { transform: translateY(1px); animation-timing-function: ease-in-out; }
+        70% { transform: translateY(-2.6px); animation-timing-function: ease-in-out; }
+        77% { transform: translateY(-5.2px); animation-timing-function: ease-in-out; }
+        78% { transform: translateY(10.5px); animation-timing-function: linear; }
+        100% { transform: translateY(10.5px); animation-timing-function: linear; }
+      }
+      @keyframes pl-prop-rot {
+        0% { transform: rotate(0deg); }
+        4% { transform: rotate(0deg); }
+        5% { transform: rotate(0deg); }
+        9% { transform: rotate(0deg); }
+        13% { transform: rotate(0deg); }
+        19% { transform: rotate(0deg); }
+        20% { transform: rotate(0deg); }
+        24% { transform: rotate(-10deg); }
+        28% { transform: rotate(-8deg); }
+        31% { transform: rotate(-8deg); }
+        38% { transform: rotate(-22deg); }
+        41% { transform: rotate(-25deg); }
+        44% { transform: rotate(-12deg); }
+        46% { transform: rotate(-8deg); }
+        50% { transform: rotate(0deg); }
+        56% { transform: rotate(12deg); }
+        63% { transform: rotate(-16deg); }
+        70% { transform: rotate(-22deg); }
+        77% { transform: rotate(-14deg); }
+        78% { transform: rotate(0deg); }
+        100% { transform: rotate(0deg); }
+      }
+      /* Appears in his hands; fades out as it glides away, fully gone
+         before its centre passes x 21.7 (nose at the window edge) */
+      @keyframes pl-prop-fade {
+        0% { opacity: 0; }
+        4%, 46% { opacity: 1; }
+        53%, 100% { opacity: 0; }
+      }
+
+      /* Sheet: fold, fold, then swapped for the plane with a little pop */
+      @keyframes pl-sheet {
+        0%, 6% { transform: scale(1, 1); opacity: 1; }
+        9% { transform: scale(0.35, 1.1); opacity: 1; }
+        11% { transform: scale(1.05, 0.95); opacity: 1; }
+        13.5% { transform: scale(0.4, 0.8); opacity: 1; }
+        14% { transform: scale(0.4, 0.8); opacity: 0; }
+        99.5% { transform: scale(1, 1); opacity: 0; }
+        100% { transform: scale(1, 1); opacity: 1; }
+      }
+      @keyframes pl-plane {
+        0%, 13.5% { transform: scale(0.5, 0.5); opacity: 0; }
+        14% { transform: scale(0.6, 0.6); opacity: 1; }
+        17% { transform: scale(1.25, 1.25); opacity: 1; }
+        20% { transform: scale(0.95, 0.95); opacity: 1; }
+        23%, 99.5% { transform: scale(1, 1); opacity: 1; }
+        100% { transform: scale(1, 1); opacity: 0; }
+      }
+
+      /* --- Clawd --- */
+      @keyframes pl-body {
+        0% { transform: translate(0px, 0px) rotate(0deg) scale(1, 1); }
+        5% { transform: translate(0px, 0px) rotate(0deg) scale(1.02, 0.98); }
+        9% { transform: translate(0px, 0px) rotate(0deg) scale(1.03, 0.97); }
+        13% { transform: translate(0px, 0px) rotate(0deg) scale(1.03, 0.97); }
+        19% { transform: translate(0px, 0px) rotate(0deg) scale(0.98, 1.03); }
+        24% { transform: translate(0px, 0px) rotate(0deg) scale(1, 1); }
+        30% { transform: translate(0px, 0px) rotate(0deg) scale(1, 1); }
+        38% { transform: translate(-0.5px, 0px) rotate(-6deg) scale(1.05, 0.94); }
+        41% { transform: translate(-0.5px, 0px) rotate(-7deg) scale(1.06, 0.93); }
+        44% { transform: translate(0.5px, 0px) rotate(6deg) scale(0.95, 1.06); }
+        48% { transform: translate(0.7px, 0px) rotate(5deg) scale(1, 1); }
+        54% { transform: translate(0.3px, 0px) rotate(2deg) scale(1.02, 0.98); }
+        62% { transform: translate(0.5px, 0px) rotate(3deg) scale(1, 1); }
+        68% { transform: translate(0.8px, 0px) rotate(4deg) scale(1.03, 0.97); }
+        72% { transform: translate(0.8px, 0px) rotate(4deg) scale(0.99, 1.02); }
+        76% { transform: translate(0.8px, 0px) rotate(4deg) scale(1.03, 0.97); }
+        80% { transform: translate(0.8px, 0px) rotate(4deg) scale(0.99, 1.02); }
+        86% { transform: translate(0.5px, 0px) rotate(2.5deg) scale(1, 1); }
+        94% { transform: translate(0px, 0px) rotate(0deg) scale(1, 1); }
+        100% { transform: translate(0px, 0px) rotate(0deg) scale(1, 1); }
+      }
+
+      @keyframes pl-legs {
+        0%, 30% { transform: scale(1, 1); }
+        41% { transform: scale(1.04, 0.95); }
+        44% { transform: scale(0.98, 1.02); }
+        50%, 66% { transform: scale(1, 1); }
+        68%, 76% { transform: scale(1.02, 0.97); }
+        72%, 80% { transform: scale(1, 1.01); }
+        88%, 100% { transform: scale(1, 1); }
+      }
+
+      @keyframes pl-shadow {
+        0%, 30% { transform: translate(0, 0) scaleX(1); opacity: 0.5; }
+        41% { transform: translate(-0.5px, 0) scaleX(1.06); opacity: 0.55; }
+        44% { transform: translate(0.5px, 0) scaleX(0.97); opacity: 0.48; }
+        48% { transform: translate(0.7px, 0) scaleX(1); opacity: 0.5; }
+        68%, 80% { transform: translate(0.8px, 0) scaleX(1.03); opacity: 0.5; }
+        94%, 100% { transform: translate(0, 0) scaleX(1); opacity: 0.5; }
+      }
+
+      /* Right arm: tucked in to fold, lifts the plane, winds up, throws,
+         follows through and comes down */
+      @keyframes pl-arm-r {
+        0% { transform: translate(0px, 0px) rotate(0deg); }
+        4% { transform: translate(-2px, 0px) rotate(0deg); }
+        20% { transform: translate(-2px, 0px) rotate(0deg); }
+        24% { transform: translate(0.5px, -3px) rotate(-30deg); }
+        28% { transform: translate(1px, -4.5px) rotate(-20deg); }
+        31% { transform: translate(1px, -4.5px) rotate(-20deg); }
+        38% { transform: translate(0px, -4.5px) rotate(-45deg); }
+        41% { transform: translate(-0.3px, -4.7px) rotate(-55deg); }
+        44% { transform: translate(2.8px, -4px) rotate(-10deg); }
+        46% { transform: translate(3px, -3.8px) rotate(-5deg); }
+        50% { transform: translate(2.5px, -2.5px) rotate(10deg); }
+        56% { transform: translate(0.5px, 0px) rotate(-15deg); }
+        60% { transform: translate(0px, 0.5px) rotate(5deg); }
+        64% { transform: translate(0px, 0px) rotate(0deg); }
+        100% { transform: translate(0px, 0px) rotate(0deg); }
+      }
+      /* Left arm: tucked in to fold, balances the throw, waves goodbye */
+      @keyframes pl-arm-l {
+        0% { transform: translate(0px, 0px) rotate(0deg); }
+        4% { transform: translate(2px, 0px) rotate(0deg); }
+        20% { transform: translate(2px, 0px) rotate(0deg); }
+        24% { transform: translate(0px, 0px) rotate(0deg); }
+        38% { transform: translate(0px, -0.5px) rotate(25deg); }
+        41% { transform: translate(0px, -0.5px) rotate(30deg); }
+        44% { transform: translate(0px, 0.5px) rotate(-20deg); }
+        50% { transform: translate(0px, 0px) rotate(0deg); }
+        68% { transform: translate(-0.5px, -1px) rotate(40deg); }
+        72% { transform: translate(-0.5px, -1.5px) rotate(55deg); }
+        76% { transform: translate(-0.5px, -1px) rotate(40deg); }
+        80% { transform: translate(-0.5px, -1.5px) rotate(55deg); }
+        86% { transform: translate(0px, -0.5px) rotate(20deg); }
+        94% { transform: translate(0px, 0px) rotate(0deg); }
+        100% { transform: translate(0px, 0px) rotate(0deg); }
+      }
+
+      /* Little hands in front, holding the sheet while folding */
+      @keyframes pl-hands {
+        0%, 2% { opacity: 0; }
+        5%, 20% { opacity: 1; }
+        23%, 100% { opacity: 0; }
+      }
+
+      /* Eyes: down at the folding, up to the plane, back on the wind-up,
+         then follow it out to the right */
+      @keyframes pl-look {
+        0%, 2% { transform: translate(0, 0); }
+        6%, 19% { transform: translate(0, 0.5px); }
+        26%, 31% { transform: translate(1.5px, -1px); }
+        39%, 42% { transform: translate(1px, -1px); }
+        48% { transform: translate(2px, -1px); }
+        56% { transform: translate(2px, -0.5px); }
+        66%, 86% { transform: translate(2px, -1px); }
+        94%, 100% { transform: translate(0, 0); }
+      }
+
+      @keyframes pl-eyes-normal {
+        0%, 69% { opacity: 1; }
+        70%, 88% { opacity: 0; }
+        89%, 100% { opacity: 1; }
+      }
+      @keyframes pl-eyes-happy {
+        0%, 69% { opacity: 0; }
+        70%, 88% { opacity: 1; }
+        89%, 100% { opacity: 0; }
+      }
+
+      /* Concentrating squint while folding, blink at the pop, squeeze on
+         the throw, opens wide watching it fly */
+      @keyframes pl-blink {
+        0%, 4% { transform: scaleY(1); }
+        7%, 13% { transform: scaleY(0.6); }
+        15% { transform: scaleY(0.1); }
+        17.5%, 38% { transform: scaleY(1); }
+        41% { transform: scaleY(0.5); }
+        44% { transform: scaleY(0.2); }
+        48% { transform: scaleY(1.25); }
+        60% { transform: scaleY(1.1); }
+        68% { transform: scaleY(1); }
+        69.5% { transform: scaleY(0.3); }
+        88.5% { transform: scaleY(0.3); }
+        92%, 100% { transform: scaleY(1); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Legs -->
+  <g class="legs-anim">
+    <g id="legs" fill="#DE886D">
+      <rect x="3" y="12" width="1" height="3"/>
+      <rect x="5" y="12" width="1" height="3"/>
+      <rect x="9" y="12" width="1" height="3"/>
+      <rect x="11" y="12" width="1" height="3"/>
+    </g>
+  </g>
+
+  <!-- Upper Body -->
+  <g class="body-anim">
+    <!-- Left Arm -->
+    <g class="arm-l">
+      <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <!-- Right Arm -->
+    <g class="arm-r">
+      <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+    </g>
+    <!-- Torso -->
+    <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+    <g class="eyes-look">
+      <g class="eyes-normal">
+        <g class="eyes-blink" fill="#000000">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+      </g>
+      <!-- Happy "^^" -->
+      <g class="eyes-happy" fill="#000000">
+        <rect x="3" y="9" width="1" height="1"/>
+        <rect x="4" y="8" width="1" height="1"/>
+        <rect x="5" y="9" width="1" height="1"/>
+        <rect x="9" y="9" width="1" height="1"/>
+        <rect x="10" y="8" width="1" height="1"/>
+        <rect x="11" y="9" width="1" height="1"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- Paper sheet / plane (world space; follows the hands, then flies) -->
+  <g class="prop-x">
+    <g class="prop-y">
+      <g class="prop-fade">
+        <g class="prop-rot">
+          <!-- Flat sheet -->
+          <g class="sheet">
+            <rect x="-1.5" y="-1.5" width="3" height="2" fill="#FFFFFF"/>
+            <rect x="-1.5" y="0.5" width="3" height="1" fill="#CFD8DC"/>
+          </g>
+          <!-- Paper plane, nose to the right -->
+          <g class="plane">
+            <rect x="-3" y="-1.5" width="2" height="1" fill="#FFFFFF"/>
+            <rect x="-3" y="-0.5" width="6" height="1" fill="#FFFFFF"/>
+            <rect x="-1" y="-0.5" width="4" height="0.5" fill="#ECEFF1"/>
+            <rect x="-2" y="0.5" width="3" height="1" fill="#90A4AE"/>
+          </g>
+        </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Hands in front of the belly while folding (over the sheet's sides) -->
+  <g class="body-anim">
+    <g class="hands-front" fill="#A85A3A">
+      <rect x="4.5" y="10" width="1.5" height="1.5"/>
+      <rect x="9" y="10" width="1.5" height="1.5"/>
+    </g>
+  </g>
+</svg>

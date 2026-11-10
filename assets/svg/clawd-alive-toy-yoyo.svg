@@ -1,0 +1,452 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 3-Second Loop — Toy yo-yo: right arm raised holding a little red
+         yo-yo. Winds up, flicks it down on its string (string is a thin rect
+         scaled with transform, perfectly synced with the yo-yo), it "sleeps"
+         and spins at the bottom, a tug brings it back up into the hand.
+         Twice — the second throw harder and longer — while his eyes follow
+         it, then a proud little bounce with "^^". Starts and ends in the
+         exact rest pose of clawd-idle-follow: over the first ~10% the arm
+         swings up from rest and the yo-yo pops into the hand with a tiny dust
+         poof; over the last ~10% it poofs away and the arm drops to rest. */
+      .arm-rest {
+        transform-origin: 13px 10px;
+        animation: yy-arm-rest 3s infinite ease-in-out;
+      }
+      .arm-rest-vis {
+        animation: yy-arm-rest-vis 3s infinite step-end;
+      }
+      .arm-raise-vis {
+        opacity: 0;
+        animation: yy-arm-raise-vis 3s infinite step-end;
+      }
+      .arm-raise {
+        transform-origin: 13.5px 10px;
+        animation: yy-arm-raise 3s infinite ease-out;
+      }
+      .yoyo-pop {
+        transform-origin: 16px 4.5px;
+        animation: yy-yoyo-pop 3s infinite ease-out;
+      }
+      .poof {
+        transform-origin: 16px 4.5px;
+        opacity: 0;
+        animation: yy-poof 3s infinite ease-out;
+      }
+      .body-air {
+        animation: yy-body-air 3s infinite ease-in-out;
+      }
+      .legs-air {
+        animation: yy-legs-air 3s infinite ease-in-out;
+      }
+      .body-anim {
+        transform-origin: 7.5px 13px;
+        animation: yy-body 3s infinite ease-in-out;
+      }
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: yy-shadow 3s infinite ease-in-out;
+      }
+      .arm-l {
+        transform-origin: 2px 10px;
+        animation: yy-arm-l 3s infinite ease-in-out;
+      }
+      .hand-r {
+        animation: yy-hand-r 3s infinite ease-in-out;
+      }
+      .string {
+        transform-origin: 16px 4.5px;
+        animation: yy-string 3s infinite;
+      }
+      .yoyo-drop {
+        animation: yy-drop 3s infinite;
+      }
+      .yoyo-squash {
+        transform-origin: 16px 4.5px;
+        animation: yy-squash 3s infinite ease-in-out;
+      }
+      .spin-a {
+        animation: yy-spin-a 3s infinite step-end;
+      }
+      .spin-b {
+        opacity: 0;
+        animation: yy-spin-b 3s infinite step-end;
+      }
+      .yoyo-shadow {
+        transform-origin: 16px 15.5px;
+        opacity: 0;
+        animation: yy-yoyo-shadow 3s infinite;
+      }
+      .eyes-look {
+        animation: yy-look 3s infinite ease-in-out;
+      }
+      .eyes-normal {
+        animation: yy-eyes-normal 3s infinite linear;
+      }
+      .eyes-blink {
+        transform-origin: 7.5px 9px;
+        animation: yy-blink 3s infinite ease-in-out;
+      }
+      .eyes-happy {
+        opacity: 0;
+        animation: yy-eyes-happy 3s infinite linear;
+      }
+
+      /* --- Yo-yo (string length L: string scaleY(L) and yo-yo translateY(L)
+         share the exact same stops and easing) --- */
+
+      @keyframes yy-string {
+        0% { transform: scaleY(0.001); animation-timing-function: ease-in-out; }
+        10% { transform: scaleY(0.001); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5); }
+        20% { transform: scaleY(8); animation-timing-function: ease-out; }
+        21.5% { transform: scaleY(8.5); animation-timing-function: ease-in-out; }
+        23.5% { transform: scaleY(7.8); animation-timing-function: ease-in-out; }
+        26% { transform: scaleY(8.1); animation-timing-function: ease-in-out; }
+        28% { transform: scaleY(8); animation-timing-function: cubic-bezier(0.15, 0.6, 0.35, 1); }
+        37% { transform: scaleY(0.001); animation-timing-function: ease-out; }
+        38.5% { transform: scaleY(0.001); animation-timing-function: ease-in-out; }
+        40% { transform: scaleY(0.001); animation-timing-function: ease-in-out; }
+        47% { transform: scaleY(0.001); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5); }
+        54% { transform: scaleY(8.2); animation-timing-function: ease-out; }
+        55.5% { transform: scaleY(8.7); animation-timing-function: ease-in-out; }
+        57.5% { transform: scaleY(7.9); animation-timing-function: ease-in-out; }
+        60% { transform: scaleY(8.15); animation-timing-function: ease-in-out; }
+        62.5% { transform: scaleY(8); animation-timing-function: ease-in-out; }
+        64% { transform: scaleY(8); animation-timing-function: cubic-bezier(0.15, 0.6, 0.35, 1); }
+        72% { transform: scaleY(0.001); animation-timing-function: ease-out; }
+        73.5% { transform: scaleY(0.001); animation-timing-function: ease-in-out; }
+        75.5% { transform: scaleY(0.001); animation-timing-function: ease-in-out; }
+        100% { transform: scaleY(0.001); animation-timing-function: ease-in-out; }
+      }
+
+      @keyframes yy-drop {
+        0% { transform: translateY(0px); animation-timing-function: ease-in-out; }
+        10% { transform: translateY(0px); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5); }
+        20% { transform: translateY(8px); animation-timing-function: ease-out; }
+        21.5% { transform: translateY(8.5px); animation-timing-function: ease-in-out; }
+        23.5% { transform: translateY(7.8px); animation-timing-function: ease-in-out; }
+        26% { transform: translateY(8.1px); animation-timing-function: ease-in-out; }
+        28% { transform: translateY(8px); animation-timing-function: cubic-bezier(0.15, 0.6, 0.35, 1); }
+        37% { transform: translateY(0px); animation-timing-function: ease-out; }
+        38.5% { transform: translateY(-0.3px); animation-timing-function: ease-in-out; }
+        40% { transform: translateY(0px); animation-timing-function: ease-in-out; }
+        47% { transform: translateY(0px); animation-timing-function: cubic-bezier(0.5, 0, 0.9, 0.5); }
+        54% { transform: translateY(8.2px); animation-timing-function: ease-out; }
+        55.5% { transform: translateY(8.7px); animation-timing-function: ease-in-out; }
+        57.5% { transform: translateY(7.9px); animation-timing-function: ease-in-out; }
+        60% { transform: translateY(8.15px); animation-timing-function: ease-in-out; }
+        62.5% { transform: translateY(8px); animation-timing-function: ease-in-out; }
+        64% { transform: translateY(8px); animation-timing-function: cubic-bezier(0.15, 0.6, 0.35, 1); }
+        72% { transform: translateY(0px); animation-timing-function: ease-out; }
+        73.5% { transform: translateY(-0.4px); animation-timing-function: ease-in-out; }
+        75.5% { transform: translateY(0px); animation-timing-function: ease-in-out; }
+        100% { transform: translateY(0px); animation-timing-function: ease-in-out; }
+      }
+
+      /* Stretch on the way, squash on the "thunk" into the hand */
+      @keyframes yy-squash {
+        0%, 10% { transform: scale(1, 1); }
+        15% { transform: scale(0.9, 1.12); }
+        20% { transform: scale(1, 1); }
+        31% { transform: scale(0.92, 1.1); }
+        37.5% { transform: scale(1.2, 0.8); }
+        40% { transform: scale(1, 1); }
+        51% { transform: scale(0.88, 1.15); }
+        54% { transform: scale(1, 1); }
+        67% { transform: scale(0.9, 1.12); }
+        72.5% { transform: scale(1.25, 0.78); }
+        75.5%, 100% { transform: scale(1, 1); }
+      }
+
+      /* Spin shimmer: highlight jumps between two spots while it is unwound */
+      @keyframes yy-spin-a {
+        0%, 11%, 14.2%, 17.4%, 20.6%, 23.8%, 27%, 30.2%, 33.4%, 48%, 51.2%, 54.4%, 57.6%, 60.8%, 64%, 67.2%, 70.4% { opacity: 1; }
+        12.6%, 15.8%, 19%, 22.2%, 25.4%, 28.6%, 31.8%, 35%, 49.6%, 52.8%, 56%, 59.2%, 62.4%, 65.6%, 68.8%, 36.5%, 71.5% { opacity: 0; }
+        37%, 72%, 100% { opacity: 1; }
+      }
+      @keyframes yy-spin-b {
+        0%, 11%, 14.2%, 17.4%, 20.6%, 23.8%, 27%, 30.2%, 33.4%, 48%, 51.2%, 54.4%, 57.6%, 60.8%, 64%, 67.2%, 70.4%, 37%, 72%, 100% { opacity: 0; }
+        12.6%, 15.8%, 19%, 22.2%, 25.4%, 28.6%, 31.8%, 35%, 49.6%, 52.8%, 56%, 59.2%, 62.4%, 65.6%, 68.8% { opacity: 1; }
+      }
+
+      @keyframes yy-yoyo-shadow {
+        0%, 12% { transform: scaleX(0.4); opacity: 0; }
+        20%, 28% { transform: scaleX(1); opacity: 0.3; }
+        34%, 48% { transform: scaleX(0.4); opacity: 0; }
+        54%, 64% { transform: scaleX(1); opacity: 0.3; }
+        70%, 100% { transform: scaleX(0.4); opacity: 0; }
+      }
+
+      /* --- Prop in / out --- */
+
+      /* Yo-yo (and its string) scale in on the raised hand, out at the end */
+      @keyframes yy-yoyo-pop {
+        0%, 4.9% { transform: scale(0); opacity: 0; }
+        5% { transform: scale(0.2); opacity: 1; }
+        7% { transform: scale(1.25); opacity: 1; }
+        8.5% { transform: scale(0.92); opacity: 1; }
+        10%, 90% { transform: scale(1); opacity: 1; }
+        92% { transform: scale(1.2); opacity: 1; }
+        93.9% { transform: scale(0.2); opacity: 1; }
+        94%, 100% { transform: scale(0); opacity: 0; }
+      }
+
+      /* Tiny dust poof (four soft pixels puffing out and fading) */
+      @keyframes yy-poof {
+        0%, 4.9% { transform: scale(0.5); opacity: 0; }
+        5.5% { transform: scale(0.8); opacity: 0.9; }
+        10.5%, 91.9% { transform: scale(1.8); opacity: 0; }
+        92% { transform: scale(0.5); opacity: 0; }
+        93% { transform: scale(0.8); opacity: 0.9; }
+        95.9%, 100% { transform: scale(1.8); opacity: 0; }
+      }
+
+      /* Rest arm: small dip, swings up and hands over to the raised arm;
+         at the end it takes over again and drops back to rest */
+      @keyframes yy-arm-rest {
+        0% { transform: translate(0, 0) rotate(0deg); }
+        2% { transform: translate(0, 0.3px) rotate(0deg); }
+        4.5%, 96% { transform: translate(0, -0.6px) rotate(-35deg); }
+        98% { transform: translate(0, 0.3px) rotate(3deg); }
+        99.5%, 100% { transform: translate(0, 0) rotate(0deg); }
+      }
+      @keyframes yy-arm-rest-vis {
+        0% { opacity: 1; }
+        4.5% { opacity: 0; }
+        96% { opacity: 1; }
+      }
+      @keyframes yy-arm-raise-vis {
+        0% { opacity: 0; }
+        4.5% { opacity: 1; }
+        96% { opacity: 0; }
+      }
+
+      /* Raised arm springs up out of the swing, folds back down at the end */
+      @keyframes yy-arm-raise {
+        0%, 4.5% { transform: rotate(30deg) scale(0.75); }
+        6.5% { transform: rotate(-4deg) scale(1.04); }
+        8%, 94% { transform: rotate(0deg) scale(1); animation-timing-function: ease-in; }
+        96%, 100% { transform: rotate(30deg) scale(0.75); }
+      }
+
+      /* --- Clawd --- */
+
+      /* Hand: lift (wind-up), flick down (throw), tug up, dip on the catch */
+      @keyframes yy-hand-r {
+        0%, 6% { transform: translate(0, 0); }
+        9% { transform: translate(0, -0.8px); }
+        12% { transform: translate(0, 1px); }
+        16%, 26% { transform: translate(0, 0.3px); }
+        28.5% { transform: translate(0, -1.2px); }
+        33% { transform: translate(0, 0); }
+        37.5% { transform: translate(0, 0.6px); }
+        40% { transform: translate(0, 0); }
+        45% { transform: translate(0, -1.2px); }
+        48% { transform: translate(0, 1.2px); }
+        52%, 62.5% { transform: translate(0, 0.3px); }
+        64.5% { transform: translate(0, -1.5px); }
+        68% { transform: translate(0, 0); }
+        72.5% { transform: translate(0, 0.8px); }
+        75.5%, 100% { transform: translate(0, 0); }
+      }
+
+      /* Proud bounce at the end */
+      @keyframes yy-body-air {
+        0%, 76% { transform: translateY(0); }
+        79% { transform: translateY(0); animation-timing-function: cubic-bezier(0.2, 0.7, 0.4, 1); }
+        84% { transform: translateY(-2px); animation-timing-function: cubic-bezier(0.6, 0, 0.85, 0.4); }
+        89% { transform: translateY(0.3px); }
+        92%, 100% { transform: translateY(0); }
+      }
+      @keyframes yy-legs-air {
+        0%, 80% { transform: translateY(0); }
+        85% { transform: translateY(-1px); }
+        89%, 100% { transform: translateY(0); }
+      }
+
+      /* Lean away on the wind-up, toward the yo-yo while it is down */
+      @keyframes yy-body {
+        0%, 6% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+        9% { transform: translate(-0.3px, 0) rotate(-2deg) scale(1.04, 0.96); }
+        13% { transform: translate(0, 0) rotate(1deg) scale(0.98, 1.02); }
+        20%, 27% { transform: translate(0.5px, 0) rotate(3deg) scale(1, 1); }
+        30% { transform: translate(0, 0) rotate(0deg) scale(0.98, 1.03); }
+        37.5% { transform: translate(0, 0) rotate(0deg) scale(1.03, 0.97); }
+        41% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+        45% { transform: translate(-0.5px, 0) rotate(-3deg) scale(1.06, 0.93); }
+        49% { transform: translate(0.3px, 0) rotate(1.5deg) scale(0.97, 1.04); }
+        55% { transform: translate(0.8px, 0) rotate(4deg) scale(1, 1); }
+        58% { transform: translate(0.8px, 0) rotate(4deg) scale(1.02, 0.98); }
+        61% { transform: translate(0.8px, 0) rotate(4deg) scale(1, 1); }
+        64.5% { transform: translate(0, 0) rotate(0deg) scale(0.97, 1.04); }
+        72.5% { transform: translate(0, 0) rotate(0deg) scale(1.04, 0.96); }
+        76% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+        79% { transform: translate(0, 0) rotate(0deg) scale(1.1, 0.87); }
+        82% { transform: translate(0, 0) rotate(0deg) scale(0.92, 1.1); }
+        86% { transform: translate(0, 0) rotate(0deg) scale(0.98, 1.03); }
+        89% { transform: translate(0, 0) rotate(0deg) scale(1.1, 0.88); }
+        93% { transform: translate(0, 0) rotate(0deg) scale(0.98, 1.02); }
+        97%, 100% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+      }
+
+      @keyframes yy-shadow {
+        0%, 6% { transform: translate(0, 0) scaleX(1); opacity: 0.5; }
+        9% { transform: translate(-0.3px, 0) scaleX(1.04); opacity: 0.5; }
+        20%, 27% { transform: translate(0.5px, 0) scaleX(1); opacity: 0.5; }
+        41% { transform: translate(0, 0) scaleX(1); opacity: 0.5; }
+        45% { transform: translate(-0.5px, 0) scaleX(1.05); opacity: 0.52; }
+        55%, 61% { transform: translate(0.8px, 0) scaleX(1); opacity: 0.5; }
+        76% { transform: translate(0, 0) scaleX(1); opacity: 0.5; }
+        79% { transform: translate(0, 0) scaleX(1.08); opacity: 0.55; }
+        84% { transform: translate(0, 0) scaleX(0.8); opacity: 0.35; }
+        89% { transform: translate(0, 0) scaleX(1.1); opacity: 0.55; }
+        95%, 100% { transform: translate(0, 0) scaleX(1); opacity: 0.5; }
+      }
+
+      /* Free arm: little balance moves, fist pump on the proud bounce */
+      @keyframes yy-arm-l {
+        0%, 6% { transform: translate(0, 0) rotate(0deg); }
+        12% { transform: translate(0, -0.5px) rotate(20deg); }
+        18%, 30% { transform: translate(0, 0) rotate(0deg); }
+        48% { transform: translate(0, -0.5px) rotate(25deg); }
+        54%, 66% { transform: translate(0, 0) rotate(0deg); }
+        79% { transform: translate(0, 0.5px) rotate(-20deg); }
+        83% { transform: translate(-1px, -2.5px) rotate(80deg); }
+        87% { transform: translate(-1px, -2px) rotate(70deg); }
+        91% { transform: translate(-0.5px, -1px) rotate(30deg); }
+        97%, 100% { transform: translate(0, 0) rotate(0deg); }
+      }
+
+      /* Eyes follow the yo-yo down and back up */
+      @keyframes yy-look {
+        0%, 4% { transform: translate(0, 0); }
+        7% { transform: translate(1.5px, -0.5px); }
+        10% { transform: translate(1.5px, -1px); }
+        18%, 28% { transform: translate(2px, 1px); }
+        33% { transform: translate(2px, 0); }
+        38%, 46% { transform: translate(1.5px, -1px); }
+        53%, 64% { transform: translate(2px, 1px); }
+        68% { transform: translate(2px, 0); }
+        73% { transform: translate(1.5px, -1px); }
+        78% { transform: translate(0.5px, -0.5px); }
+        84%, 100% { transform: translate(0, 0); }
+      }
+
+      @keyframes yy-eyes-normal {
+        0%, 78% { opacity: 1; }
+        79%, 93% { opacity: 0; }
+        94%, 100% { opacity: 1; }
+      }
+      @keyframes yy-eyes-happy {
+        0%, 78% { opacity: 0; }
+        79%, 93% { opacity: 1; }
+        94%, 100% { opacity: 0; }
+      }
+
+      /* Blink on the first catch; eyes go wide watching the long sleep */
+      @keyframes yy-blink {
+        0%, 36.5% { transform: scaleY(1); }
+        38% { transform: scaleY(0.1); }
+        39.5% { transform: scaleY(1); }
+        53% { transform: scaleY(1); }
+        56%, 62% { transform: scaleY(1.3); }
+        65%, 76% { transform: scaleY(1); }
+        78.5% { transform: scaleY(0.3); }
+        93.5% { transform: scaleY(0.3); }
+        96%, 100% { transform: scaleY(1); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Legs -->
+  <g class="legs-air">
+    <g id="legs" fill="#DE886D">
+      <rect x="3" y="12" width="1" height="3"/>
+      <rect x="5" y="12" width="1" height="3"/>
+      <rect x="9" y="12" width="1" height="3"/>
+      <rect x="11" y="12" width="1" height="3"/>
+    </g>
+  </g>
+
+  <!-- Upper Body -->
+  <g class="body-air">
+    <g class="body-anim">
+      <!-- Raised right arm (behind the torso) + string + yo-yo, all in the hand group -->
+      <!-- Right arm at rest (only at the very start and end) -->
+      <g class="arm-rest-vis">
+        <g class="arm-rest">
+          <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+        </g>
+      </g>
+      <g class="arm-raise-vis">
+        <g class="arm-raise">
+          <g class="hand-r">
+            <g fill="#DE886D">
+              <rect x="13" y="8" width="2" height="2"/>
+              <rect x="14" y="6" width="2" height="2"/>
+              <rect x="15" y="4" width="2" height="2"/>
+            </g>
+          </g>
+        </g>
+      </g>
+      <!-- Torso -->
+      <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+      <!-- Left Arm -->
+      <g class="arm-l">
+        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+      <g class="eyes-look">
+        <g class="eyes-normal">
+          <g class="eyes-blink" fill="#000000">
+            <rect x="4" y="8" width="1" height="2"/>
+            <rect x="10" y="8" width="1" height="2"/>
+          </g>
+        </g>
+        <!-- Proud "^^" -->
+        <g class="eyes-happy" fill="#000000">
+          <rect x="3" y="9" width="1" height="1"/>
+          <rect x="4" y="8" width="1" height="1"/>
+          <rect x="5" y="9" width="1" height="1"/>
+          <rect x="9" y="9" width="1" height="1"/>
+          <rect x="10" y="8" width="1" height="1"/>
+          <rect x="11" y="9" width="1" height="1"/>
+        </g>
+      </g>
+      <g class="arm-raise-vis">
+      <g class="arm-raise">
+      <g class="hand-r">
+        <!-- Dust poof -->
+        <g class="poof" fill="#D7D7DC">
+          <rect x="14" y="2" width="0.5" height="0.5"/>
+          <rect x="17.5" y="2" width="0.5" height="0.5"/>
+          <rect x="13.5" y="6" width="0.5" height="0.5"/>
+          <rect x="18" y="6" width="0.5" height="0.5"/>
+        </g>
+        <g class="yoyo-pop">
+        <!-- String (1 unit tall, scaled to length L) -->
+        <rect class="string" x="15.75" y="4.5" width="0.5" height="1" fill="#4E342E"/>
+        <!-- Yo-yo, seen edge-on: two red halves and the dark groove -->
+        <g class="yoyo-drop">
+          <g class="yoyo-squash">
+            <rect x="15" y="2.5" width="2" height="1" fill="#FF5252"/>
+            <rect x="14" y="3.5" width="4" height="2" fill="#FF5252"/>
+            <rect x="15" y="5.5" width="2" height="1" fill="#C62828"/>
+            <rect x="15.75" y="2.5" width="0.5" height="4" fill="#8E1B1B"/>
+            <rect class="spin-a" x="15" y="3.5" width="0.75" height="1" fill="#FFCDD2"/>
+            <rect class="spin-b" x="16.25" y="4.5" width="0.75" height="1" fill="#FFCDD2"/>
+          </g>
+        </g>
+        </g>
+      </g>
+      </g>
+      </g>
+    </g>
+  </g>
+
+  <!-- Yo-yo floor shadow -->
+  <rect class="yoyo-shadow" x="14.5" y="15" width="3" height="1" fill="#000000"/>
+</svg>

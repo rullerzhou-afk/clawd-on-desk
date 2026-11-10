@@ -44,7 +44,8 @@ describe("Codex delegated child presentation", () => {
     s.updateCodexSubagentActivity(key("parent"), { childId: raw(id), turnId: turn, phase, occurredAt: at });
   const svg = s => s.getSvgOverride(s.resolveDisplayState());
 
-  it("projects 2→1→0 over the latest real parent phase without changing its metadata", () => {
+  it("projects 2→1→0 over the latest real parent phase without changing its metadata", t => {
+    t.mock.method(Math, "random", () => 0);
     update(state, "PreToolUse", "working", { sourcePid: 123, planProgress: { total: 1, completed: 0 } });
     const parent = state.sessions.get(key("parent"));
     const original = structuredClone(parent);
@@ -599,7 +600,8 @@ describe("Codex delegated runtime admission", () => {
   });
 });
 
-it("real rollout polling joins bare UUID thread_spawn metadata to a hook→route→runtime parent", async () => {
+it("real rollout polling joins bare UUID thread_spawn metadata to a hook→route→runtime parent", async t => {
+  t.mock.method(Math, "random", () => 0);
   const { EventEmitter } = require("node:events");
   const { buildStateBody } = require("../hooks/codex-hook");
   const { handleStatePost } = require("../src/server-route-state");

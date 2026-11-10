@@ -39,7 +39,8 @@ describe("Codex delegated children x temporary-chat collapse", () => {
   });
   const row = () => state.buildSessionSnapshot().sessions.find(entry => entry.id === parentId);
 
-  it("keeps a working temporary parent visible through 2->1->0 children, then collapses it", () => {
+  it("keeps a working temporary parent visible through 2->1->0 children, then collapses it", t => {
+    t.mock.method(Math, "random", () => 0);
     state = makeState({ sessionHudHideActiveCodexEphemeral: true });
     parentEvent("thinking", "UserPromptSubmit");
     parentEvent("working", "PreToolUse");

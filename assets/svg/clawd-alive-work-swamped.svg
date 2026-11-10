@@ -1,0 +1,636 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* Clawd Alive — work tier 5 (5 sessions): SWAMPED. Intro 0.3 s (one shot: screens, two keyboards and two overflowing in-trays pop in with poofs, he braces and his arms shoot out to both keyboards), then a 3s infinite loop: typing on two keyboards at once with arms blurred by speed (ghost arms + streaks), papers flying off both trays, sweat drops flicking off, eyes darting between five screens, and a quick "whew" head shake that flings sweat both ways (while the hands never stop typing). */
+      .pop-0 { transform-box: fill-box; transform-origin: center; animation: pop 0.2s ease-out 0s both; }
+      .poof-0 { transform-box: fill-box; transform-origin: center; opacity: 0; animation: poof 0.26s ease-out 0s both; }
+      .pop-1 { transform-box: fill-box; transform-origin: center; animation: pop 0.2s ease-out 0.03s both; }
+      .poof-1 { transform-box: fill-box; transform-origin: center; opacity: 0; animation: poof 0.26s ease-out 0.03s both; }
+      .pop-2 { transform-box: fill-box; transform-origin: center; animation: pop 0.2s ease-out 0.05s both; }
+      .poof-2 { transform-box: fill-box; transform-origin: center; opacity: 0; animation: poof 0.26s ease-out 0.05s both; }
+      .pop-3 { transform-box: fill-box; transform-origin: center; animation: pop 0.2s ease-out 0.08s both; }
+      .poof-3 { transform-box: fill-box; transform-origin: center; opacity: 0; animation: poof 0.26s ease-out 0.08s both; }
+      .pop-4 { transform-box: fill-box; transform-origin: center; animation: pop 0.2s ease-out 0.1s both; }
+      .poof-4 { transform-box: fill-box; transform-origin: center; opacity: 0; animation: poof 0.26s ease-out 0.1s both; }
+      .pop-5 { transform-box: fill-box; transform-origin: center; animation: pop 0.2s ease-out 0.12s both; }
+      .poof-5 { transform-box: fill-box; transform-origin: center; opacity: 0; animation: poof 0.26s ease-out 0.12s both; }
+      .plop { transform-origin: 7.5px 15px; animation: plop 0.3s ease-out both; }
+      .jit5 { animation: sw-jit 0.24s ease-in-out infinite 0.3s backwards; }
+      .sway5 { transform-origin: 7.5px 15px; animation: sw-sway 3s ease-in-out infinite 0.3s backwards; }
+      .eyes5 { animation: sw-eyes 3s ease-in-out infinite 0.3s backwards; }
+      .lid5 { transform-origin: 7.5px 9.5px; animation: sw-lid 3s ease-in-out infinite 0.3s backwards; }
+      .reachL5 { animation: reachL 0.3s ease-out both; }
+      .reachR5 { animation: reachR 0.3s ease-out both; }
+      .hitL { animation: sw-hit 0.1s linear infinite 0.3s backwards; }
+      .hitR { animation: sw-hit 0.1s linear infinite 0.35s backwards; }
+      .ghA { animation: sw-gh-a 0.14s linear infinite 0.3s backwards; }
+      .ghB { animation: sw-gh-b 0.12s linear infinite 0.33s backwards; }
+      .st0 { opacity: 0; animation: sw-streak 0.18s linear infinite 0.3s backwards; }
+      .st1 { opacity: 0; animation: sw-streak 0.21s linear infinite 0.35s backwards; }
+      .st2 { opacity: 0; animation: sw-streak 0.24s linear infinite 0.4s backwards; }
+      .st3 { opacity: 0; animation: sw-streak 0.27s linear infinite 0.33s backwards; }
+      .shadow5 { transform-origin: 7.5px 15.5px; animation: sw-shadow 0.24s ease-in-out infinite 0.3s backwards; }
+      .sw1 { transform-box: fill-box; transform-origin: center; animation: sw-sw1 1s ease-out infinite 0.3s backwards; }
+      .sw2 { transform-box: fill-box; transform-origin: center; animation: sw-sw2 1s ease-out infinite 0.8s backwards; }
+      .sw3 { transform-box: fill-box; transform-origin: center; animation: sw-sw3 3s ease-out infinite 0.3s backwards; }
+      .sw4 { transform-box: fill-box; transform-origin: center; animation: sw-sw4 3s ease-out infinite 0.3s backwards; }
+      .sw5 { transform-box: fill-box; transform-origin: center; animation: sw-sw5 3s ease-out infinite 0.3s backwards; }
+      .sw6 { transform-box: fill-box; transform-origin: center; animation: sw-sw6 3s ease-out infinite 0.3s backwards; }
+      .pL1 { transform-box: fill-box; transform-origin: center; animation: sw-pL1 1.5s ease-out infinite 0.3s backwards; }
+      .pL2 { transform-box: fill-box; transform-origin: center; animation: sw-pL2 1.5s ease-out infinite 0.8s backwards; }
+      .pL3 { transform-box: fill-box; transform-origin: center; animation: sw-pL3 1.5s ease-out infinite 1.3s backwards; }
+      .pR1 { transform-box: fill-box; transform-origin: center; animation: sw-pR1 1.5s ease-out infinite 0.55s backwards; }
+      .pR2 { transform-box: fill-box; transform-origin: center; animation: sw-pR2 1.5s ease-out infinite 1.05s backwards; }
+      .pR3 { transform-box: fill-box; transform-origin: center; animation: sw-pR3 1.5s ease-out infinite 1.55s backwards; }
+      .tray { animation: sw-tray 0.5s ease-out infinite 0.3s backwards; }
+      .kl0 { opacity: 0; animation: kflash 0.18s steps(1, end) infinite 0.35s backwards; }
+      .kl1 { opacity: 0; animation: kflash 0.25s steps(1, end) infinite 0.42s backwards; }
+      .kl2 { opacity: 0; animation: kflash 0.13s steps(1, end) infinite 0.39s backwards; }
+      .kl3 { opacity: 0; animation: kflash 0.12s steps(1, end) infinite 0.33s backwards; }
+      .kl4 { opacity: 0; animation: kflash 0.12s steps(1, end) infinite 0.38s backwards; }
+      .kl5 { opacity: 0; animation: kflash 0.24s steps(1, end) infinite 0.45s backwards; }
+      .kl6 { opacity: 0; animation: kflash 0.15s steps(1, end) infinite 0.42s backwards; }
+      .kr0 { opacity: 0; animation: kflash 0.24s steps(1, end) infinite 0.34s backwards; }
+      .kr1 { opacity: 0; animation: kflash 0.24s steps(1, end) infinite 0.36s backwards; }
+      .kr2 { opacity: 0; animation: kflash 0.17s steps(1, end) infinite 0.45s backwards; }
+      .kr3 { opacity: 0; animation: kflash 0.15s steps(1, end) infinite 0.38s backwards; }
+      .kr4 { opacity: 0; animation: kflash 0.13s steps(1, end) infinite 0.42s backwards; }
+      .kr5 { opacity: 0; animation: kflash 0.24s steps(1, end) infinite 0.34s backwards; }
+      .kr6 { opacity: 0; animation: kflash 0.12s steps(1, end) infinite 0.36s backwards; }
+      .c-cl-1-0 { transform-box: fill-box; transform-origin: left center; animation: cl-1 1s linear infinite 0.3s backwards; }
+      .c-cl-1-1 { transform-box: fill-box; transform-origin: left center; animation: cl-1 1s linear infinite 0.42s backwards; }
+      .c-cl-1-2 { transform-box: fill-box; transform-origin: left center; animation: cl-1 1s linear infinite 0.54s backwards; }
+      .c-cl-1-3 { transform-box: fill-box; transform-origin: left center; animation: cl-1 1s linear infinite 0.66s backwards; }
+      .c-cl-1-4 { transform-box: fill-box; transform-origin: left center; animation: cl-1 1s linear infinite 0.78s backwards; }
+      .c-cl-0_9-0 { transform-box: fill-box; transform-origin: left center; animation: cl-0_9 0.9s linear infinite 0.3s backwards; }
+      .c-cl-0_9-1 { transform-box: fill-box; transform-origin: left center; animation: cl-0_9 0.9s linear infinite 0.41s backwards; }
+      .c-cl-0_9-2 { transform-box: fill-box; transform-origin: left center; animation: cl-0_9 0.9s linear infinite 0.52s backwards; }
+      .c-cl-0_9-3 { transform-box: fill-box; transform-origin: left center; animation: cl-0_9 0.9s linear infinite 0.62s backwards; }
+      .c-cl-0_9-4 { transform-box: fill-box; transform-origin: left center; animation: cl-0_9 0.9s linear infinite 0.73s backwards; }
+      .b-bar-0-0_3-0 { transform-box: fill-box; transform-origin: center bottom; animation: bar-0-0_3 0.3s ease-in-out infinite 0.3s backwards; }
+      .b-bar-1-0_3-1 { transform-box: fill-box; transform-origin: center bottom; animation: bar-1-0_3 0.3s ease-in-out infinite 0.37s backwards; }
+      .b-bar-2-0_3-2 { transform-box: fill-box; transform-origin: center bottom; animation: bar-2-0_3 0.3s ease-in-out infinite 0.44s backwards; }
+      .c-cl-0_8-0 { transform-box: fill-box; transform-origin: left center; animation: cl-0_8 0.8s linear infinite 0.3s backwards; }
+      .c-cl-0_8-1 { transform-box: fill-box; transform-origin: left center; animation: cl-0_8 0.8s linear infinite 0.4s backwards; }
+      .c-cl-0_8-2 { transform-box: fill-box; transform-origin: left center; animation: cl-0_8 0.8s linear infinite 0.49s backwards; }
+      .scope-1-7_1 { animation: scope-1-7_1 1s linear infinite 0.3s backwards; }
+      .p-prog-0_9-30 { transform-box: fill-box; transform-origin: left center; animation: prog-0_9 0.9s ease-in infinite 0.3s backwards; }
+      .p-prog-1_17-50 { transform-box: fill-box; transform-origin: left center; animation: prog-1_17 1.17s ease-in infinite 0.5s backwards; }
+      .p-prog-0_72-40 { transform-box: fill-box; transform-origin: left center; animation: prog-0_72 0.72s ease-in infinite 0.4s backwards; }
+      .p-prog-0_75-30 { transform-box: fill-box; transform-origin: left center; animation: prog-0_75 0.75s ease-in infinite 0.3s backwards; }
+      .p-prog-0_98-50 { transform-box: fill-box; transform-origin: left center; animation: prog-0_98 0.98s ease-in infinite 0.5s backwards; }
+      .p-prog-0_6-40 { transform-box: fill-box; transform-origin: left center; animation: prog-0_6 0.6s ease-in infinite 0.4s backwards; }
+
+      @keyframes pop {
+0%{transform:scale(0);opacity:0}
+55%{transform:scale(1.08);opacity:1}
+78%{transform:scale(0.97);opacity:1}
+100%{transform:scale(1);opacity:1}
+}
+
+      @keyframes poof {
+0%{transform:scale(0.5);opacity:0}
+12%{transform:scale(0.8);opacity:0.9}
+100%{transform:scale(1.9);opacity:0}
+}
+
+      @keyframes plop {
+0%,100%{transform:translate(0,0) scale(1,1)}
+40%{transform:translate(0,0.4px) scale(1.06,0.93)}
+75%{transform:translate(0,-0.3px) scale(0.97,1.04)}
+}
+
+      @keyframes sw-jit {
+0%,100%{transform:translateY(0)}
+50%{transform:translateY(0.55px)}
+}
+
+      @keyframes sw-sway {
+0%,100%{transform:rotate(0deg) scale(1,1)}
+10%,40%{transform:rotate(-2deg) scale(1,1)}
+25%,55%{transform:rotate(2deg) scale(1,1)}
+70%{transform:rotate(-1.5deg) scale(1,1)}
+79%{transform:rotate(0deg) scale(1.04,0.96)}
+81.5%,85.5%{transform:rotate(-6deg) scale(1,1.02)}
+83.5%{transform:rotate(6deg) scale(1,1.02)}
+87.5%{transform:rotate(5deg) scale(1,1.02)}
+89.5%{transform:rotate(-3deg) scale(1,1)}
+92%{transform:rotate(0deg) scale(1.03,0.97)}
+}
+
+      @keyframes sw-eyes {
+0%,92%,100%{transform:translate(0px,0px)}
+3%,11%,32%,37%,71%,78%{transform:translate(-1.6px,0.3px)}
+13%,20%,39%,44%{transform:translate(1.6px,0.3px)}
+22%,30%,62%,69%{transform:translate(0px,-1.2px)}
+46%,52%{transform:translate(-1.6px,1px)}
+54%,60%{transform:translate(1.6px,1px)}
+80.5%,90%{transform:translate(0px,0.2px)}
+}
+
+      @keyframes sw-lid {
+0%,28%,30%,44%,62%,78%,92%,100%{transform:scaleY(1)}
+29%{transform:scaleY(0.1)}
+46%,60%{transform:scaleY(0.7)}
+80.5%,90%{transform:scaleY(0.12)}
+}
+
+      @keyframes reachL {
+0%{transform:translate(0,0)}
+100%{transform:translate(-0.3px,1.6px)}
+}
+
+      @keyframes reachR {
+0%{transform:translate(0,0)}
+100%{transform:translate(0.3px,1.6px)}
+}
+
+      @keyframes sw-hit {
+0%,100%{transform:translate(0,0)}
+50%{transform:translate(0,0.9px)}
+}
+
+      @keyframes sw-gh-a {
+0%,100%{transform:translate(-1.3px,0.2px);opacity:0.35}
+50%{transform:translate(-0.6px,0.8px);opacity:0.15}
+}
+
+      @keyframes sw-gh-b {
+0%,100%{transform:translate(1.1px,-0.4px);opacity:0.25}
+50%{transform:translate(0.5px,0.7px);opacity:0.4}
+}
+
+      @keyframes sw-streak {
+0%,100%{opacity:0}
+40%{opacity:0.7}
+60%{opacity:0.1}
+}
+
+      @keyframes sw-shadow {
+0%,100%{transform:scaleX(1);opacity:0.5}
+50%{transform:scaleX(1.06);opacity:0.56}
+}
+
+      @keyframes sw-sw1 {
+0%{transform:translate(0,0) scale(0.4);opacity:0}
+8%{transform:translate(0,0) scale(1);opacity:1}
+45%{transform:translate(-2.45px,-3px) scale(1);opacity:1}
+80%{transform:translate(-3.5px,-0.6px) scale(0.8);opacity:0.6}
+100%{transform:translate(-3.85px,0.6px) scale(0.6);opacity:0}
+}
+
+      @keyframes sw-sw2 {
+0%{transform:translate(0,0) scale(0.4);opacity:0}
+8%{transform:translate(0,0) scale(1);opacity:1}
+45%{transform:translate(2.45px,-3.4px) scale(1);opacity:1}
+80%{transform:translate(3.5px,-0.68px) scale(0.8);opacity:0.6}
+100%{transform:translate(3.85px,0.68px) scale(0.6);opacity:0}
+}
+
+      @keyframes sw-sw3 {
+0%,81%,100%{transform:translate(0,0) scale(0.4);opacity:0}
+82%{transform:translate(0,0) scale(1);opacity:1}
+88%{transform:translate(-3.5px,-4px) scale(1);opacity:1}
+95%{transform:translate(-5px,-0.4px) scale(0.6);opacity:0}
+}
+
+      @keyframes sw-sw4 {
+0%,83%,100%{transform:translate(0,0) scale(0.4);opacity:0}
+84%{transform:translate(0,0) scale(1);opacity:1}
+90%{transform:translate(3.5px,-4.5px) scale(1);opacity:1}
+97%{transform:translate(5px,-0.45px) scale(0.6);opacity:0}
+}
+
+      @keyframes sw-sw5 {
+0%,85%,100%{transform:translate(0,0) scale(0.4);opacity:0}
+86%{transform:translate(0,0) scale(1);opacity:1}
+91.5%{transform:translate(-2.94px,-1.5px) scale(1);opacity:1}
+98%{transform:translate(-4.2px,-0.15px) scale(0.6);opacity:0}
+}
+
+      @keyframes sw-sw6 {
+0%,86.5%,100%{transform:translate(0,0) scale(0.4);opacity:0}
+87.5%{transform:translate(0,0) scale(1);opacity:1}
+92.75%{transform:translate(3.08px,-1.8px) scale(1);opacity:1}
+99%{transform:translate(4.4px,-0.18px) scale(0.6);opacity:0}
+}
+
+      @keyframes sw-pL1 {
+0%{transform:translate(0,0) rotate(0deg);opacity:0}
+5%{transform:translate(0,-0.8px) rotate(16deg);opacity:1}
+30%{transform:translate(1.12px,-11px) rotate(90deg);opacity:1}
+55%{transform:translate(1.88px,-9.35px) rotate(140deg);opacity:1}
+80%{transform:translate(2.38px,-6.6px) rotate(180deg);opacity:0.6}
+100%{transform:translate(2.5px,-4.95px) rotate(200deg);opacity:0}
+}
+
+      @keyframes sw-pL2 {
+0%{transform:translate(0,0) rotate(0deg);opacity:0}
+5%{transform:translate(0,-0.8px) rotate(-12.8deg);opacity:1}
+30%{transform:translate(-0.45px,-8.5px) rotate(-72deg);opacity:1}
+55%{transform:translate(-0.75px,-7.22px) rotate(-112deg);opacity:1}
+80%{transform:translate(-0.95px,-5.1px) rotate(-144deg);opacity:0.6}
+100%{transform:translate(-1px,-3.83px) rotate(-160deg);opacity:0}
+}
+
+      @keyframes sw-pL3 {
+0%{transform:translate(0,0) rotate(0deg);opacity:0}
+5%{transform:translate(0,-0.8px) rotate(20.8deg);opacity:1}
+30%{transform:translate(2.25px,-9.5px) rotate(117deg);opacity:1}
+55%{transform:translate(3.75px,-8.07px) rotate(182deg);opacity:1}
+80%{transform:translate(4.75px,-5.7px) rotate(234deg);opacity:0.6}
+100%{transform:translate(5px,-4.28px) rotate(260deg);opacity:0}
+}
+
+      @keyframes sw-pR1 {
+0%{transform:translate(0,0) rotate(0deg);opacity:0}
+5%{transform:translate(0,-0.8px) rotate(-17.6deg);opacity:1}
+30%{transform:translate(-1.12px,-10.5px) rotate(-99deg);opacity:1}
+55%{transform:translate(-1.88px,-8.92px) rotate(-154deg);opacity:1}
+80%{transform:translate(-2.38px,-6.3px) rotate(-198deg);opacity:0.6}
+100%{transform:translate(-2.5px,-4.73px) rotate(-220deg);opacity:0}
+}
+
+      @keyframes sw-pR2 {
+0%{transform:translate(0,0) rotate(0deg);opacity:0}
+5%{transform:translate(0,-0.8px) rotate(13.6deg);opacity:1}
+30%{transform:translate(-0.27px,-8.5px) rotate(76.5deg);opacity:1}
+55%{transform:translate(-0.45px,-7.22px) rotate(119deg);opacity:1}
+80%{transform:translate(-0.57px,-5.1px) rotate(153deg);opacity:0.6}
+100%{transform:translate(-0.6px,-3.83px) rotate(170deg);opacity:0}
+}
+
+      @keyframes sw-pR3 {
+0%{transform:translate(0,0) rotate(0deg);opacity:0}
+5%{transform:translate(0,-0.8px) rotate(-20deg);opacity:1}
+30%{transform:translate(-2.25px,-9.5px) rotate(-112.5deg);opacity:1}
+55%{transform:translate(-3.75px,-8.07px) rotate(-175deg);opacity:1}
+80%{transform:translate(-4.75px,-5.7px) rotate(-225deg);opacity:0.6}
+100%{transform:translate(-5px,-4.28px) rotate(-250deg);opacity:0}
+}
+
+      @keyframes sw-tray {
+0%,20%,100%{transform:translateY(0)}
+8%{transform:translateY(-0.5px)}
+}
+
+      @keyframes kflash {
+0%,60%,100%{opacity:0}
+30%{opacity:0.9}
+}
+
+      @keyframes cl-1 {
+0%{transform:translateY(0) scaleX(0);opacity:1}
+18%,72%{transform:translateY(0) scaleX(1);opacity:1}
+88%{transform:translateY(-0.8px) scaleX(1);opacity:0}
+100%{transform:translateY(0) scaleX(0);opacity:0}
+}
+
+      @keyframes cl-0_9 {
+0%{transform:translateY(0) scaleX(0);opacity:1}
+18%,72%{transform:translateY(0) scaleX(1);opacity:1}
+88%{transform:translateY(-0.8px) scaleX(1);opacity:0}
+100%{transform:translateY(0) scaleX(0);opacity:0}
+}
+
+      @keyframes bar-0-0_3 {
+0%,100%{transform:scaleY(0.2)}
+50%{transform:scaleY(1)}
+}
+
+      @keyframes bar-1-0_3 {
+0%,100%{transform:scaleY(0.3)}
+50%{transform:scaleY(1)}
+}
+
+      @keyframes bar-2-0_3 {
+0%,100%{transform:scaleY(0.4)}
+50%{transform:scaleY(1)}
+}
+
+      @keyframes cl-0_8 {
+0%{transform:translateY(0) scaleX(0);opacity:1}
+18%,72%{transform:translateY(0) scaleX(1);opacity:1}
+88%{transform:translateY(-0.8px) scaleX(1);opacity:0}
+100%{transform:translateY(0) scaleX(0);opacity:0}
+}
+
+      @keyframes scope-1-7_1 {
+0%{transform:translate(0px,0px);opacity:1}
+12.5%{transform:translate(0.89px,-0.7px);opacity:1}
+25%{transform:translate(1.77px,0.42px);opacity:1}
+37.5%{transform:translate(2.66px,-0.28px);opacity:1}
+50%{transform:translate(3.55px,0px);opacity:1}
+62.5%{transform:translate(4.44px,-0.84px);opacity:1}
+75%{transform:translate(5.32px,0.35px);opacity:1}
+87.5%{transform:translate(6.21px,-0.14px);opacity:1}
+100%{transform:translate(7.1px,0px);opacity:0}
+}
+
+      @keyframes prog-0_9 {
+0%{transform:scaleX(0);opacity:1}
+80%{transform:scaleX(1);opacity:1}
+90%{transform:scaleX(1);opacity:0.3}
+100%{transform:scaleX(1);opacity:0}
+}
+
+      @keyframes prog-1_17 {
+0%{transform:scaleX(0);opacity:1}
+80%{transform:scaleX(1);opacity:1}
+90%{transform:scaleX(1);opacity:0.3}
+100%{transform:scaleX(1);opacity:0}
+}
+
+      @keyframes prog-0_72 {
+0%{transform:scaleX(0);opacity:1}
+80%{transform:scaleX(1);opacity:1}
+90%{transform:scaleX(1);opacity:0.3}
+100%{transform:scaleX(1);opacity:0}
+}
+
+      @keyframes prog-0_75 {
+0%{transform:scaleX(0);opacity:1}
+80%{transform:scaleX(1);opacity:1}
+90%{transform:scaleX(1);opacity:0.3}
+100%{transform:scaleX(1);opacity:0}
+}
+
+      @keyframes prog-0_98 {
+0%{transform:scaleX(0);opacity:1}
+80%{transform:scaleX(1);opacity:1}
+90%{transform:scaleX(1);opacity:0.3}
+100%{transform:scaleX(1);opacity:0}
+}
+
+      @keyframes prog-0_6 {
+0%{transform:scaleX(0);opacity:1}
+80%{transform:scaleX(1);opacity:1}
+90%{transform:scaleX(1);opacity:0.3}
+100%{transform:scaleX(1);opacity:0}
+}
+    </style>
+  </defs>
+  <rect x="3" y="15" width="9" height="1" fill="#000" class="shadow5" opacity="0.5"/>
+  <rect x="-9.3" y="15" width="10" height="0.8" fill="#000" opacity="0.25"/><rect x="14.3" y="15" width="10" height="0.8" fill="#000" opacity="0.25"/>
+  <!-- Screens -->
+  <g class="pop-1"><g><rect x="-9.4" y="-4.6" width="8.2" height="6.2" fill="#2D2D3D"/>
+<rect x="-9.4" y="-4.6" width="8.2" height="0.5" fill="#3A3A4E"/>
+<rect x="-9.05" y="-4" width="7.5" height="5.25" fill="#1E1E2E"/>
+<rect x="-9" y="-4.48" width="0.3" height="0.25" fill="#40C4FF"/>
+<rect x="-8.55" y="-4.48" width="0.3" height="0.25" fill="#FFC107"/>
+<rect x="-8.1" y="-4.48" width="0.3" height="0.25" fill="#4CAF50"/>
+<rect x="-8.05" y="-3.6" width="5" height="0.5" fill="#4CAF50" class="c-cl-1-0" opacity="0.85"/>
+<rect x="-7.45" y="-2.75" width="4.64" height="0.5" fill="#4CAF50" class="c-cl-1-1" opacity="0.85"/>
+<rect x="-8.65" y="-1.9" width="6.24" height="0.5" fill="#4CAF50" class="c-cl-1-2" opacity="0.85"/>
+<rect x="-8.05" y="-1.05" width="3.83" height="0.5" fill="#4CAF50" class="c-cl-1-3" opacity="0.85"/>
+<rect x="-7.45" y="-0.2" width="3.74" height="0.5" fill="#4CAF50" class="c-cl-1-4" opacity="0.85"/></g></g>
+  <g class="poof-1" fill="#D7D7DC"><rect x="-6.9" y="-2.4" width="0.5" height="0.5"/>
+<rect x="-4.2" y="-2.7" width="0.5" height="0.5"/>
+<rect x="-6.6" y="-0.7" width="0.5" height="0.5"/>
+<rect x="-4" y="-0.8" width="0.5" height="0.5"/></g>
+  <g class="pop-2"><g><rect x="16.2" y="-4.6" width="8.2" height="6.2" fill="#2D2D3D"/>
+<rect x="16.2" y="-4.6" width="8.2" height="0.5" fill="#3A3A4E"/>
+<rect x="16.55" y="-4" width="7.5" height="5.25" fill="#1E1E2E"/>
+<rect x="16.6" y="-4.48" width="0.3" height="0.25" fill="#40C4FF"/>
+<rect x="17.05" y="-4.48" width="0.3" height="0.25" fill="#FFC107"/>
+<rect x="17.5" y="-4.48" width="0.3" height="0.25" fill="#4CAF50"/>
+<rect x="16.95" y="-3.6" width="5.44" height="0.5" fill="#E0E0E0" class="c-cl-0_9-0" opacity="0.85"/>
+<rect x="17.55" y="-2.75" width="2.61" height="0.5" fill="#E0E0E0" class="c-cl-0_9-1" opacity="0.85"/>
+<rect x="16.95" y="-1.9" width="5.58" height="0.5" fill="#4CAF50" class="c-cl-0_9-2" opacity="0.85"/>
+<rect x="16.95" y="-1.05" width="4.91" height="0.5" fill="#E0E0E0" class="c-cl-0_9-3" opacity="0.85"/>
+<rect x="16.95" y="-0.2" width="2.63" height="0.5" fill="#4CAF50" class="c-cl-0_9-4" opacity="0.85"/></g></g>
+  <g class="poof-2" fill="#D7D7DC"><rect x="18.7" y="-2.4" width="0.5" height="0.5"/>
+<rect x="21.4" y="-2.7" width="0.5" height="0.5"/>
+<rect x="19" y="-0.7" width="0.5" height="0.5"/>
+<rect x="21.6" y="-0.8" width="0.5" height="0.5"/></g>
+  <g class="pop-0"><g><rect x="2.9" y="-10.6" width="9.2" height="6.6" fill="#2D2D3D"/>
+<rect x="2.9" y="-10.6" width="9.2" height="0.5" fill="#3A3A4E"/>
+<rect x="3.25" y="-10" width="8.5" height="5.65" fill="#1E1E2E"/>
+<rect x="3.3" y="-10.48" width="0.3" height="0.25" fill="#40C4FF"/>
+<rect x="3.75" y="-10.48" width="0.3" height="0.25" fill="#FFC107"/>
+<rect x="4.2" y="-10.48" width="0.3" height="0.25" fill="#4CAF50"/>
+<rect x="3.65" y="-7" width="1.05" height="2.4" fill="#40C4FF" class="b-bar-0-0_3-0" opacity="0.85"/>
+<rect x="5.05" y="-7" width="1.05" height="2.4" fill="#4CAF50" class="b-bar-1-0_3-1" opacity="0.85"/>
+<rect x="6.45" y="-7" width="1.05" height="2.4" fill="#40C4FF" class="b-bar-2-0_3-2" opacity="0.85"/>
+<rect x="7.88" y="-7" width="1.74" height="0.5" fill="#4CAF50" class="c-cl-0_8-0" opacity="0.85"/>
+<rect x="7.88" y="-6.15" width="1.48" height="0.5" fill="#4CAF50" class="c-cl-0_8-1" opacity="0.85"/>
+<rect x="9.08" y="-5.3" width="1.15" height="0.5" fill="#E0E0E0" class="c-cl-0_8-2" opacity="0.85"/>
+<rect x="3.95" y="-8.6" width="7.1" height="0.15" fill="#2E4A3A"/>
+<g class="scope-1-7_1"><rect x="3.95" y="-8.9" width="0.5" height="0.5" fill="#40C4FF"/>
+<rect x="3.35" y="-8.75" width="0.5" height="0.3" fill="#40C4FF" opacity="0.5"/></g></g></g>
+  <g class="poof-0" fill="#D7D7DC"><rect x="4.94" y="-8.74" width="0.5" height="0.5"/>
+<rect x="9.26" y="-9.22" width="0.5" height="0.5"/>
+<rect x="5.42" y="-6.02" width="0.5" height="0.5"/>
+<rect x="9.58" y="-6.18" width="0.5" height="0.5"/></g>
+  <g class="pop-3"><g><rect x="-7.4" y="-14.6" width="5.6" height="3.8" fill="#2D2D3D"/>
+<rect x="-7.4" y="-14.6" width="5.6" height="0.5" fill="#3A3A4E"/>
+<rect x="-7.05" y="-14" width="4.9" height="2.85" fill="#1E1E2E"/>
+<rect x="-7" y="-14.48" width="0.3" height="0.25" fill="#40C4FF"/>
+<rect x="-6.55" y="-14.48" width="0.3" height="0.25" fill="#FFC107"/>
+<rect x="-6.1" y="-14.48" width="0.3" height="0.25" fill="#4CAF50"/>
+<rect x="-6.65" y="-13.5" width="4.1" height="0.55" fill="#2E3A46"/>
+<rect x="-6.65" y="-13.5" width="4.1" height="0.55" fill="#4CAF50" class="p-prog-0_9-30"/>
+<rect x="-6.65" y="-12.6" width="4.1" height="0.55" fill="#2E3A46"/>
+<rect x="-6.65" y="-12.6" width="4.1" height="0.55" fill="#40C4FF" class="p-prog-1_17-50"/>
+<rect x="-6.65" y="-11.7" width="3.28" height="0.55" fill="#2E3A46"/>
+<rect x="-6.65" y="-11.7" width="3.28" height="0.55" fill="#FFC107" class="p-prog-0_72-40"/></g></g>
+  <g class="poof-3" fill="#D7D7DC"><rect x="-6.52" y="-13.78" width="0.5" height="0.5"/>
+<rect x="-3.28" y="-14.14" width="0.5" height="0.5"/>
+<rect x="-6.16" y="-11.74" width="0.5" height="0.5"/>
+<rect x="-3.04" y="-11.86" width="0.5" height="0.5"/></g>
+  <g class="pop-4"><g><rect x="16.8" y="-14.6" width="5.6" height="3.8" fill="#2D2D3D"/>
+<rect x="16.8" y="-14.6" width="5.6" height="0.5" fill="#3A3A4E"/>
+<rect x="17.15" y="-14" width="4.9" height="2.85" fill="#1E1E2E"/>
+<rect x="17.2" y="-14.48" width="0.3" height="0.25" fill="#40C4FF"/>
+<rect x="17.65" y="-14.48" width="0.3" height="0.25" fill="#FFC107"/>
+<rect x="18.1" y="-14.48" width="0.3" height="0.25" fill="#4CAF50"/>
+<rect x="17.55" y="-13.5" width="4.1" height="0.55" fill="#2E3A46"/>
+<rect x="17.55" y="-13.5" width="4.1" height="0.55" fill="#4CAF50" class="p-prog-0_75-30"/>
+<rect x="17.55" y="-12.6" width="4.1" height="0.55" fill="#2E3A46"/>
+<rect x="17.55" y="-12.6" width="4.1" height="0.55" fill="#40C4FF" class="p-prog-0_98-50"/>
+<rect x="17.55" y="-11.7" width="3.28" height="0.55" fill="#2E3A46"/>
+<rect x="17.55" y="-11.7" width="3.28" height="0.55" fill="#FFC107" class="p-prog-0_6-40"/></g></g>
+  <g class="poof-4" fill="#D7D7DC"><rect x="17.68" y="-13.78" width="0.5" height="0.5"/>
+<rect x="20.92" y="-14.14" width="0.5" height="0.5"/>
+<rect x="18.04" y="-11.74" width="0.5" height="0.5"/>
+<rect x="21.16" y="-11.86" width="0.5" height="0.5"/></g>
+  <!-- In-trays (papers keep flying off) -->
+  <g><g class="pop-3"><rect x="-9.1" y="12.3" width="4.6" height="0.5" fill="#607D8B"/>
+<rect x="-8.8" y="11.85" width="4" height="0.45" fill="#F5F5F5"/>
+<rect x="-8.65" y="11.4" width="4" height="0.45" fill="#E0E0E0"/>
+<rect x="-8.8" y="10.95" width="4" height="0.45" fill="#F5F5F5"/>
+<rect x="-8.65" y="10.5" width="4" height="0.45" fill="#E0E0E0"/>
+<g class="tray"><g><rect x="-7.9" y="9" width="2.2" height="1.6" fill="#B0BEC5"/>
+<rect x="-7.75" y="9.15" width="1.9" height="1.3" fill="#F5F5F5"/>
+<rect x="-7.55" y="9.5" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.05" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.6" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="11.15" width="1" height="0.25" fill="#B0BEC5"/></g></g></g>
+<g class="pL1"><rect x="-7.9" y="8.6" width="2.2" height="2.8" fill="#B0BEC5"/>
+<rect x="-7.75" y="8.75" width="1.9" height="2.5" fill="#F5F5F5"/>
+<rect x="-7.55" y="9.1" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="9.65" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.2" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.75" width="1" height="0.25" fill="#B0BEC5"/></g>
+<g class="pL2"><rect x="-7.9" y="8.6" width="2.2" height="2.8" fill="#B0BEC5"/>
+<rect x="-7.75" y="8.75" width="1.9" height="2.5" fill="#F5F5F5"/>
+<rect x="-7.55" y="9.1" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="9.65" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.2" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.75" width="1" height="0.25" fill="#B0BEC5"/></g>
+<g class="pL3"><rect x="-7.9" y="8.6" width="2.2" height="2.8" fill="#B0BEC5"/>
+<rect x="-7.75" y="8.75" width="1.9" height="2.5" fill="#F5F5F5"/>
+<rect x="-7.55" y="9.1" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="9.65" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.2" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="-7.55" y="10.75" width="1" height="0.25" fill="#B0BEC5"/></g></g>
+  <g><g class="pop-4"><rect x="20" y="12.3" width="4.6" height="0.5" fill="#607D8B"/>
+<rect x="20.3" y="11.85" width="4" height="0.45" fill="#F5F5F5"/>
+<rect x="20.45" y="11.4" width="4" height="0.45" fill="#E0E0E0"/>
+<rect x="20.3" y="10.95" width="4" height="0.45" fill="#F5F5F5"/>
+<rect x="20.45" y="10.5" width="4" height="0.45" fill="#E0E0E0"/>
+<g class="tray"><g><rect x="21.2" y="9" width="2.2" height="1.6" fill="#B0BEC5"/>
+<rect x="21.35" y="9.15" width="1.9" height="1.3" fill="#F5F5F5"/>
+<rect x="21.55" y="9.5" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.05" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.6" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="11.15" width="1" height="0.25" fill="#B0BEC5"/></g></g></g>
+<g class="pR1"><rect x="21.2" y="8.6" width="2.2" height="2.8" fill="#B0BEC5"/>
+<rect x="21.35" y="8.75" width="1.9" height="2.5" fill="#F5F5F5"/>
+<rect x="21.55" y="9.1" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="9.65" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.2" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.75" width="1" height="0.25" fill="#B0BEC5"/></g>
+<g class="pR2"><rect x="21.2" y="8.6" width="2.2" height="2.8" fill="#B0BEC5"/>
+<rect x="21.35" y="8.75" width="1.9" height="2.5" fill="#F5F5F5"/>
+<rect x="21.55" y="9.1" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="9.65" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.2" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.75" width="1" height="0.25" fill="#B0BEC5"/></g>
+<g class="pR3"><rect x="21.2" y="8.6" width="2.2" height="2.8" fill="#B0BEC5"/>
+<rect x="21.35" y="8.75" width="1.9" height="2.5" fill="#F5F5F5"/>
+<rect x="21.55" y="9.1" width="1.4" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="9.65" width="1.6" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.2" width="1.2" height="0.25" fill="#B0BEC5"/>
+<rect x="21.55" y="10.75" width="1" height="0.25" fill="#B0BEC5"/></g></g>
+  <g class="poof-3" fill="#D7D7DC"><rect x="-7.6" y="10.55" width="0.5" height="0.5"/>
+<rect x="-6.25" y="10.4" width="0.5" height="0.5"/>
+<rect x="-7.45" y="11.4" width="0.5" height="0.5"/>
+<rect x="-6.15" y="11.35" width="0.5" height="0.5"/></g><g class="poof-4" fill="#D7D7DC"><rect x="21.82" y="10.73" width="0.5" height="0.5"/>
+<rect x="22.63" y="10.64" width="0.5" height="0.5"/>
+<rect x="21.91" y="11.24" width="0.5" height="0.5"/>
+<rect x="22.69" y="11.21" width="0.5" height="0.5"/></g>
+  <!-- Clawd: plop > jitter > sway -->
+  <g class="plop"><g class="jit5"><g fill="#DE886D"><rect x="3" y="13" width="1" height="2"/>
+<rect x="5" y="13" width="1" height="2"/>
+<rect x="9" y="13" width="1" height="2"/>
+<rect x="11" y="13" width="1" height="2"/></g>
+<g class="sway5"><g><rect x="2" y="6" width="11" height="7" fill="#DE886D" id="torso"/>
+<g><g class="eyes5"><g class="lid5" fill="#000"><rect x="4" y="8" width="1" height="2"/>
+<rect x="10" y="8" width="1" height="2"/></g></g></g></g></g></g></g>
+  <g class="plop"><g class="jit5"><g fill="#40C4FF"><g class="sw1" transform="translate(2.4, 5.2)"><rect x="0" y="0.6" width="1.2" height="1.2"/>
+<rect x="0.2" y="0" width="0.8" height="0.8"/></g>
+<g class="sw2" transform="translate(11.4, 5.2)"><rect x="0" y="0.6" width="1.2" height="1.2"/>
+<rect x="0.2" y="0" width="0.8" height="0.8"/></g>
+<g class="sw3" transform="translate(2, 5)"><rect x="0" y="0.6" width="1.2" height="1.2"/>
+<rect x="0.2" y="0" width="0.8" height="0.8"/></g>
+<g class="sw4" transform="translate(12, 5)"><rect x="0" y="0.6" width="1.2" height="1.2"/>
+<rect x="0.2" y="0" width="0.8" height="0.8"/></g>
+<g class="sw5" transform="translate(1.5, 6.5)"><rect x="0" y="0.6" width="1.2" height="1.2"/>
+<rect x="0.2" y="0" width="0.8" height="0.8"/></g>
+<g class="sw6" transform="translate(12.5, 6.5)"><rect x="0" y="0.6" width="1.2" height="1.2"/>
+<rect x="0.2" y="0" width="0.8" height="0.8"/></g></g></g></g>
+  <!-- Two keyboards -->
+  <g class="pop-1"><g transform="rotate(-3 -4.3 13.7)"><g><rect x="-9.3" y="12.5" width="10" height="2.4" fill="#455A64"/>
+<rect x="-9.3" y="12.5" width="10" height="0.3" fill="#546E7A"/>
+<g fill="#78909C"><rect x="-8.95" y="12.95" width="0.8" height="0.45"/>
+<rect x="-7.9" y="12.95" width="0.8" height="0.45"/>
+<rect x="-6.85" y="12.95" width="0.8" height="0.45"/>
+<rect x="-5.8" y="12.95" width="0.8" height="0.45"/>
+<rect x="-4.75" y="12.95" width="0.8" height="0.45"/>
+<rect x="-3.7" y="12.95" width="0.8" height="0.45"/>
+<rect x="-2.65" y="12.95" width="0.8" height="0.45"/>
+<rect x="-1.6" y="12.95" width="0.8" height="0.45"/>
+<rect x="-0.55" y="12.95" width="0.8" height="0.45"/>
+<rect x="-8.75" y="13.6" width="0.8" height="0.45"/>
+<rect x="-7.7" y="13.6" width="0.8" height="0.45"/>
+<rect x="-6.65" y="13.6" width="0.8" height="0.45"/>
+<rect x="-5.6" y="13.6" width="0.8" height="0.45"/>
+<rect x="-4.55" y="13.6" width="0.8" height="0.45"/>
+<rect x="-3.5" y="13.6" width="0.8" height="0.45"/>
+<rect x="-2.45" y="13.6" width="0.8" height="0.45"/>
+<rect x="-1.4" y="13.6" width="0.8" height="0.45"/>
+<rect x="-8.95" y="14.25" width="0.8" height="0.45"/>
+<rect x="-7.9" y="14.25" width="0.8" height="0.45"/>
+<rect x="-6.85" y="14.25" width="0.8" height="0.45"/>
+<rect x="-5.8" y="14.25" width="0.8" height="0.45"/>
+<rect x="-4.75" y="14.25" width="0.8" height="0.45"/>
+<rect x="-3.7" y="14.25" width="0.8" height="0.45"/>
+<rect x="-2.65" y="14.25" width="0.8" height="0.45"/>
+<rect x="-1.6" y="14.25" width="0.8" height="0.45"/>
+<rect x="-0.55" y="14.25" width="0.8" height="0.45"/></g>
+<g fill="#B0BEC5"><rect x="-4.75" y="12.95" width="0.8" height="0.45" class="kl0"/>
+<rect x="-7.9" y="14.25" width="0.8" height="0.45" class="kl1"/>
+<rect x="-0.55" y="14.25" width="0.8" height="0.45" class="kl2"/>
+<rect x="-1.6" y="14.25" width="0.8" height="0.45" class="kl3"/>
+<rect x="-6.85" y="12.95" width="0.8" height="0.45" class="kl4"/>
+<rect x="-0.55" y="12.95" width="0.8" height="0.45" class="kl5"/>
+<rect x="-5.8" y="12.95" width="0.8" height="0.45" class="kl6"/></g></g></g></g>
+  <g class="pop-2"><g transform="rotate(3 19.3 13.7)"><g><rect x="14.3" y="12.5" width="10" height="2.4" fill="#455A64"/>
+<rect x="14.3" y="12.5" width="10" height="0.3" fill="#546E7A"/>
+<g fill="#78909C"><rect x="14.65" y="12.95" width="0.8" height="0.45"/>
+<rect x="15.7" y="12.95" width="0.8" height="0.45"/>
+<rect x="16.75" y="12.95" width="0.8" height="0.45"/>
+<rect x="17.8" y="12.95" width="0.8" height="0.45"/>
+<rect x="18.85" y="12.95" width="0.8" height="0.45"/>
+<rect x="19.9" y="12.95" width="0.8" height="0.45"/>
+<rect x="20.95" y="12.95" width="0.8" height="0.45"/>
+<rect x="22" y="12.95" width="0.8" height="0.45"/>
+<rect x="23.05" y="12.95" width="0.8" height="0.45"/>
+<rect x="14.85" y="13.6" width="0.8" height="0.45"/>
+<rect x="15.9" y="13.6" width="0.8" height="0.45"/>
+<rect x="16.95" y="13.6" width="0.8" height="0.45"/>
+<rect x="18" y="13.6" width="0.8" height="0.45"/>
+<rect x="19.05" y="13.6" width="0.8" height="0.45"/>
+<rect x="20.1" y="13.6" width="0.8" height="0.45"/>
+<rect x="21.15" y="13.6" width="0.8" height="0.45"/>
+<rect x="22.2" y="13.6" width="0.8" height="0.45"/>
+<rect x="14.65" y="14.25" width="0.8" height="0.45"/>
+<rect x="15.7" y="14.25" width="0.8" height="0.45"/>
+<rect x="16.75" y="14.25" width="0.8" height="0.45"/>
+<rect x="17.8" y="14.25" width="0.8" height="0.45"/>
+<rect x="18.85" y="14.25" width="0.8" height="0.45"/>
+<rect x="19.9" y="14.25" width="0.8" height="0.45"/>
+<rect x="20.95" y="14.25" width="0.8" height="0.45"/>
+<rect x="22" y="14.25" width="0.8" height="0.45"/>
+<rect x="23.05" y="14.25" width="0.8" height="0.45"/></g>
+<g fill="#B0BEC5"><rect x="15.7" y="12.95" width="0.8" height="0.45" class="kr0"/>
+<rect x="16.75" y="12.95" width="0.8" height="0.45" class="kr1"/>
+<rect x="16.75" y="12.95" width="0.8" height="0.45" class="kr2"/>
+<rect x="16.95" y="13.6" width="0.8" height="0.45" class="kr3"/>
+<rect x="19.9" y="12.95" width="0.8" height="0.45" class="kr4"/>
+<rect x="20.95" y="14.25" width="0.8" height="0.45" class="kr5"/>
+<rect x="23.05" y="14.25" width="0.8" height="0.45" class="kr6"/></g></g></g></g>
+  <g class="poof-1" fill="#D7D7DC"><rect x="-6.38" y="12.53" width="0.5" height="0.5"/>
+<rect x="-2.87" y="12.14" width="0.5" height="0.5"/>
+<rect x="-5.99" y="14.74" width="0.5" height="0.5"/>
+<rect x="-2.61" y="14.61" width="0.5" height="0.5"/></g><g class="poof-2" fill="#D7D7DC"><rect x="17.22" y="12.53" width="0.5" height="0.5"/>
+<rect x="20.73" y="12.14" width="0.5" height="0.5"/>
+<rect x="17.61" y="14.74" width="0.5" height="0.5"/>
+<rect x="20.99" y="14.61" width="0.5" height="0.5"/></g>
+  <!-- Arms: blurred with speed (ghost copies + streaks) -->
+  <g class="plop"><g class="jit5"><g fill="#DE886D"><g class="reachL5"><g opacity="1"><g class="ghA"><rect x="0" y="9" width="2" height="2"/></g>
+<g class="ghB"><rect x="0" y="9" width="2" height="2"/></g></g>
+<g fill="#FFFFFF"><rect x="-2.6" y="9.2" width="2.2" height="0.25" class="st0"/>
+<rect x="-3" y="10" width="1.8" height="0.25" class="st1"/>
+<rect x="-2.4" y="10.8" width="2.4" height="0.25" class="st2"/>
+<rect x="0.2" y="8" width="1.6" height="0.25" class="st3"/></g>
+<g class="hitL"><rect x="0" y="9" width="2" height="2"/></g></g>
+<g class="reachR5"><g opacity="1"><g transform="matrix(-1 0 0 1 28 0)"><g class="ghA"><rect x="13" y="9" width="2" height="2"/></g></g>
+<g transform="matrix(-1 0 0 1 28 0)"><g class="ghB"><rect x="13" y="9" width="2" height="2"/></g></g></g>
+<g fill="#FFFFFF"><rect x="15.6" y="9.2" width="2.2" height="0.25" class="st0"/>
+<rect x="16" y="10" width="1.8" height="0.25" class="st1"/>
+<rect x="15.4" y="10.8" width="2.4" height="0.25" class="st2"/>
+<rect x="13.2" y="8" width="1.6" height="0.25" class="st3"/></g>
+<g class="hitR"><rect x="13" y="9" width="2" height="2"/></g></g></g></g></g>
+</svg>

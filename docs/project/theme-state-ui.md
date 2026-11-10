@@ -44,8 +44,8 @@ Windows 的 hit window 在原生 activation controller 可用时按前台全屏�
 - `rendering.discreteSampling` 里的 OBJECT 文件提交时，显示缩放不是 100% 就在 SVG 文档根写 `zoom = 1 / devicePixelRatio` 并重建布局树（根需有 `viewBox`；Chromium 只让有效缩放为 1 的 SVG 变换动画上合成线程）；配饰跟随把 `getCTM()` 乘回文档 zoom，换算成页面像素。显示缩放变化后抖动 400 ms 重载当前文档，动画重来一次；其他 OBJECT 文档（Codex 精灵图、Cloudling）和 `<img>` 通道不处理。
 - 配饰跟随在 `rendering.discreteSampling` 的格点上读取位置；文档里有不可采样的动画、光标过渡中或使用分层跟随时退回每帧读取。SMIL 配饰文档的时间线保持暂停，由定时器一秒推进 12 次。
 - macOS 全屏检测只认活动原生 Space（type 4，分屏也算），不识别播放器自行铺满窗口；多屏按活动 Space 判断。默认置顶且自动隐藏关闭时不加载或调用探针。手动「显示桌宠」覆盖当前全屏隐藏，下一次全屏 Space 恢复隐藏。
-- working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；官方可下载主题 Hash Sage（可选安装）为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作，Whale-chan（鲸鱼娘，可选安装）为今天也在努力呀 / 魔法添饭 / 雨天踩水
-- juggling 子动画：1 个 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作；Whale-chan：1+ → 魔法添饭）
+- working 子动画：Clawd 为 5 档，1 会话 → typing / Alive coffee，2 → headphones groove / Alive dual，3 → building / Alive trio，4 → Alive control-room / swamped，5+ → Alive chaos。斜线两侧组成随机候选池；1–3 档保留原文件键，已有覆盖只替换首槽，其余候选仍可抽中；旧 3+ 档覆盖现在只管 3 会话。Calico / Cloudling 仍为 typing / juggling / building；官方可下载主题 Hash Sage（可选安装）为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作，Whale-chan（鲸鱼娘，可选安装）为今天也在努力呀 / 魔法添饭 / 雨天踩水
+- juggling 子动画：Clawd 为 3 档，1 个 subagent → headphones groove，2 → three-ball juggling / Alive laptops，3+ → Alive chaos；旧 2+ 档覆盖现在只管 2 个子代理，且只替换池首槽。Calico / Cloudling 为 1 → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作；Whale-chan：1+ → 魔法添饭）
 
 ## Theme System
 
@@ -78,7 +78,8 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 独立的 `holidayAccessoryEnabled` 开关只在万圣节、圣诞节和跨年的短日期窗口临时覆盖 head 槽；mouth 槽保持用户选择。日期窗口结束后恢复常驻 head 选择，不回写任一配饰偏好
 - `idleEasterEggs` 是条件式 idle 彩蛋池：每项声明文件、时长、概率、冷却时间和 head / mouth 的精确配饰组合。只有普通 idle、窗口可见、非 mini / roam / drag / 菜单 / 低功耗且两个槽仍匹配时才参与抽签；只有 renderer 确认该逻辑视觉最终 committed 后才从实际显示时刻开始计时长和冷却
 - 用户主题 SVG 会经过白名单消毒，阻断脚本、事件属性、外部资源、`javascript:` 和路径穿越；内置 SVG 不走运行时 sanitizer，必须由仓库测试做静态安全审计
-- `rendering.objectChannelFiles` 对 Clawd 内置主题固定覆盖 23 个需要 `contentDocument` 控制、且经逐素材 Electron 验证的 SVG；这 23 个文件也必须全部出现在 `discreteSampling` 中并按 24 步采样。普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
+- `rendering.objectChannelFiles` 对 Clawd 内置主题覆盖 37 个需要 `contentDocument` 控制的 SVG（含 14 个 Clawd Alive 新动画）；这 37 个文件也必须全部出现在 `discreteSampling` 中并按 24 步采样。普通 CSS / SMIL 动画仍优先使用 `<img>`。这些文件同时进入 required-assets 集合并使主题采用较高功耗档。外部主题仍先走 SVG sanitizer（含动态 SMIL 属性值），该字段不授予脚本能力
+- `rendering.cpuIntensiveFiles` 声明动画成本提示：Clawd 标注工作 4/5 档和杂耍 2/3 档涉及的 5 个文件。Settings → 动画 / 音效按覆盖后的全部 tier 候选判断，任一命中时在卡片信息区提示可能多占 CPU；替换首槽后若池中还有命中文件，提示继续显示。该字段不改变渲染通道或采样率。
 - `trustedRuntime.scriptedSvgFiles` 只对 loader 判定为内置的主题生效；外部主题声明该字段会被忽略
 - 支持 SVG / GIF / APNG / WebP / PNG / JPG；动画周期由 `src/animation-cycle.js` 探测
 - 更新视觉遵循主题绑定：`checking` 可选走 `theme.updateVisuals.checking`，未声明时回退到当前主题的 `thinking`；发现新版本时会进入 `available -> notification`；`downloading / success / error` 继续分别走 `carrying / attention / error`
@@ -243,8 +244,8 @@ Mini 状态映射：
 
 权威表格见 `docs/guides/state-mapping.md`。这里只保留实现层面的补充：
 
-- working 子动画：Clawd 主题为 1 会话 → typing，2 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；官方可下载主题 Hash Sage（可选安装）为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作，Whale-chan（鲸鱼娘，可选安装）为今天也在努力呀 / 魔法添饭 / 雨天踩水
-- juggling 子动画：1 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作；Whale-chan：1+ → 魔法添饭）
+- working 子动画：Clawd 为 5 档，1 会话 → typing / Alive coffee，2 → headphones groove / Alive dual，3 → building / Alive trio，4 → Alive control-room / swamped，5+ → Alive chaos。斜线两侧组成随机候选池；1–3 档保留原文件键，已有覆盖只替换首槽，其余候选仍可抽中；旧 3+ 档覆盖现在只管 3 会话。Calico / Cloudling 仍为 typing / juggling / building；官方可下载主题 Hash Sage（可选安装）为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作，Whale-chan（鲸鱼娘，可选安装）为今天也在努力呀 / 魔法添饭 / 雨天踩水
+- juggling 子动画：Clawd 为 3 档，1 个 subagent → headphones groove，2 → three-ball juggling / Alive laptops，3+ → Alive chaos；旧 2+ 档覆盖现在只管 2 个子代理，且只替换池首槽。Calico / Cloudling 为 1 → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作；Whale-chan：1+ → 魔法添饭）
 - mini 状态有独立动画槽；`mini-working`、`mini-peek-hold`、`mini-sleep-peek` 是可选能力
 - 睡眠序列和 DND 行为见上面的 State Machine
 - `attention / error / sweeping / notification / carrying` 是一次性状态，显示后按 `autoReturn` 回退

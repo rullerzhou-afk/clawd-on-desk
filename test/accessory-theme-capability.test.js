@@ -9,6 +9,7 @@ const themeLoader = require("../src/theme-loader");
 const { buildThemeMetadata } = require("../src/theme-metadata");
 const {
   collectRequiredAssetFiles,
+  getTierFiles,
   projectThemeVisualUsages,
 } = require("../src/theme-schema");
 
@@ -40,7 +41,7 @@ function assertDeclaredTargetsExist(themeId, raw) {
     const assetPath = fs.existsSync(localPath)
       ? localPath
       : path.join(ROOT, "assets", "svg", file);
-    const source = fs.readFileSync(assetPath, "utf8");
+    const source = fs.readFileSync(assetPath, "utf8").replace(/\r\n/g, "\n");
     assert.ok(
       source.includes(`id="${targetId}"`) || source.includes(`id='${targetId}'`),
       `${themeId}/${file} should contain the exact follow target ${targetId}`
@@ -71,8 +72,8 @@ describe("built-in accessory capability contracts", () => {
     const usages = projectThemeVisualUsages(raw);
     const files = collectRequiredAssetFiles(raw);
 
-    assert.strictEqual(usages.length, 52);
-    assert.strictEqual(files.length, 50);
+    assert.strictEqual(usages.length, 66);
+    assert.strictEqual(files.length, 64);
     assert.deepStrictEqual(
       new Set(files),
       new Set(fs.readdirSync(path.join(ROOT, "assets", "svg")).filter((file) => file.endsWith(".svg"))),
@@ -105,13 +106,14 @@ describe("built-in accessory capability contracts", () => {
     assert.deepStrictEqual(buildingTier, {
       minSessions: 3,
       file: "clawd-working-building.svg",
+      files: ["clawd-working-building.svg", "clawd-alive-work-trio.svg"],
     });
     const buildingAccessory =
       raw.customization.accessories.files[buildingTier.file];
     assert.deepStrictEqual(
       buildingAccessory.staticFrame,
       { cx: 7.5, baseY: 1, width: 16 },
-      "the 3+ session accessory should sit on top of the built-in safety helmet"
+      "the 3-session building accessory should sit on top of the built-in safety helmet"
     );
     assert.strictEqual(buildingAccessory.followTarget.id, "accessory-anchor");
     assert.deepStrictEqual(
@@ -122,18 +124,24 @@ describe("built-in accessory capability contracts", () => {
     assert.deepStrictEqual(headphonesTier, {
       minSessions: 2,
       file: "clawd-headphones-groove.svg",
+      files: ["clawd-headphones-groove.svg", "clawd-alive-work-dual.svg"],
     });
     assert.deepStrictEqual(
       raw.customization.accessories.files[headphonesTier.file],
       { visibility: "hidden" },
       "the headphones sprite should never add a head accessory"
     );
-    for (const tier of raw.workingTiers.filter(({ minSessions }) => minSessions !== 2)) {
-      assert.notStrictEqual(
-        raw.customization.accessories.files[tier.file].visibility,
-        "hidden",
-        `${tier.minSessions}-session working accessories should remain visible`
-      );
+    const hiddenHeadFiles = new Set([
+      "clawd-headphones-groove.svg", "clawd-alive-work-trio.svg", "clawd-alive-work-chaos.svg",
+    ]);
+    for (const tier of raw.workingTiers) {
+      for (const file of getTierFiles(tier)) {
+        assert.strictEqual(
+          raw.customization.accessories.files[file].visibility === "hidden",
+          hiddenHeadFiles.has(file),
+          `${tier.minSessions}-session candidate ${file} must keep its authored head policy`
+        );
+      }
     }
     assert.deepStrictEqual(raw.fileHitBoxes["clawd-working-typing.svg"], {
       x: -2, y: -7, w: 20, h: 24,
