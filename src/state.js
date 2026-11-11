@@ -2419,6 +2419,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     host = null,
     wslDistro = null,
     claudeConfigDir = null,
+    claudeEntrypoint = null,
     headless = false,
     platform = null,
     model = null,
@@ -2753,6 +2754,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const srcHost = host || (existing && existing.host) || null;
   const srcWslDistro = wslDistro || (existing && existing.wslDistro) || null;
   const srcClaudeConfigDir = claudeConfigDir || (existing && existing.claudeConfigDir) || null;
+  const srcClaudeEntrypoint = claudeEntrypoint || (existing && existing.claudeEntrypoint) || null;
   const srcHeadless = headless || (existing && existing.headless) || false;
   const srcPlatform = platform || (existing && existing.platform) || null;
   if (observeCodexCompaction(sessionId, state, event, srcAgentId, srcHeadless, opts) === false) return false;
@@ -3131,7 +3133,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     opencodeAttachUrl === undefined && existing && existing.opencodeAttachSource === attachSource
       ? existing.opencodeAttachUrl : opencodeAttachUrl
   ) : null;
-  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
+  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
   // Desktop apps can reopen a previous conversation on launch, so SessionStart
   // only means "opened" — not "used". Any other lifecycle event is a real action
   // and clears the marker. Only the listed agents carry the field; others are
@@ -3691,12 +3693,16 @@ function cleanStaleSessions() {
     const staleSession = childActivityAt === null ? s : {
       ...s, state: "working", updatedAt: Math.max(s.updatedAt || 0, childActivityAt),
     };
+    const hasPendingClaudeInteraction = hasPendingClaudeInteractionForSession(id)
+      || (typeof ctx.hasPendingClaudeTurnAskReminder === "function"
+        && ctx.hasPendingClaudeTurnAskReminder(id) === true);
     const decision = getStaleSessionDecision(staleSession, {
       now,
       isProcessAlive,
       deriveSessionBadge,
       shouldAutoClearDetachedSession,
       staleConfig,
+      hasPendingClaudeInteraction,
       hasPendingApprovalReminder: (isLocalApprovalReminderSession(s) && pendingApprovalSessionIds.has(id))
         || (isTerminalWaitSession(s) && terminalWaitSessionIds.has(id)),
       hasReplyableCompletionMapping: typeof ctx.hasReplyableCompletionMapping === "function"
@@ -4172,6 +4178,25 @@ function getPendingAttentionIds() {
   return ids;
 }
 
+// A Claude card is still waiting only while its connection (if any) is open.
+// Turn-ask cards carry res:null and have no connection to watch; they stay
+// live until removed from the pending list.
+function isClaudeInteractionConnectionLive(entry) {
+  return !(entry.res && (entry.res.destroyed || entry.res.writableEnded));
+}
+
+// Pending Claude interactions (permission, elicitation, or turn-ask card) for
+// one session. Stale cleanup holds that session so a live card never loses its
+// row; the HUD applies its own visibility filters on top.
+function hasPendingClaudeInteractionForSession(sessionId) {
+  return (ctx.pendingPermissions || []).some((entry) => (
+    entry
+    && entry.agentId === "claude-code"
+    && entry.sessionId === sessionId
+    && isClaudeInteractionConnectionLive(entry)
+  ));
+}
+
 // HUD-only view of the same set plus Claude Desktop's wrap_up question card
 // (#1326). The Claude card has no decision channel and must not drive the pet
 // projection or notification sound, so it stays out of getPendingAttentionIds().
@@ -4181,7 +4206,7 @@ function getHudPendingAttentionIds() {
     if (!entry || entry.agentId !== "claude-code" || entry.isClaudeTurnAskNotify !== true) continue;
     if (!entry.sessionId || entry.headless || entry.host || entry.wslDistro
       || entry.platform === "wsl" || (entry.profileId && entry.profileId !== "local")
-      || (entry.res && (entry.res.destroyed || entry.res.writableEnded))) continue;
+      || !isClaudeInteractionConnectionLive(entry)) continue;
     ids.add(entry.sessionId);
   }
   return ids;

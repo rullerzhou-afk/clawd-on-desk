@@ -92,6 +92,18 @@ function isLocalWorkBuddyDesktopIdleSession(session) {
     && session.state === "idle";
 }
 
+function isLocalClaudeDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "claude-code"
+    && !session.host
+    && !session.headless
+    // A WSL session can carry only wslDistro (no host prefix), so exclude both
+    // markers explicitly; its Linux PIDs must never be probed as local ones.
+    && !isWslSourced({ wslDistro: session.wslDistro, host: session.host })
+    && session.state === "idle"
+    && session.claudeEntrypoint === "claude-desktop";
+}
+
 function getStaleSessionDecision(session, options = {}) {
   const now = options.now;
   const config = options.staleConfig || {};
@@ -241,6 +253,24 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "workbuddy-desktop-idle-timeout" };
   }
 
+  // The Claude desktop app keeps one long-lived `claude` process per opened
+  // conversation, and per the issue report it only ends that process when the
+  // conversation is archived or the app quits (no SessionEnd on window close).
+  // A live process therefore cannot vouch for a finished conversation. Keep the
+  // row while an interaction is still pending (permission/elicitation/wrap_up
+  // card) or while its completion can still be replied to; otherwise apply the
+  // user's configured idle cutoff. agent-exit above still wins when the process
+  // really ends.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalClaudeDesktopIdleSession(session)
+  ) {
+    if (options.hasPendingClaudeInteraction === true) return { action: null };
+    if (hasReplyableCompletionMapping(session, options)) return { action: null };
+    return { action: "delete", reason: "claude-desktop-idle-timeout" };
+  }
+
   // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
   // The completion notification (e.g. Telegram push) already fires once at the
   // completion instant, so an unacknowledged remote session has already been
@@ -329,5 +359,6 @@ module.exports = {
   isLocalZcodeDesktopIdleSession,
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
+  isLocalClaudeDesktopIdleSession,
   getStaleSessionDecision,
 };

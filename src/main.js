@@ -2625,6 +2625,7 @@ const _stateCtx = {
     _settingsController.get("permissionAutomationMode") || "off",
   getKiroDesktopPendingSessionIds: () => agentRuntime?.getKiroDesktopPendingSessionIds() || new Set(),
   getCopilotTerminalWaitSessionIds: () => agentRuntime?.getCopilotTerminalWaitSessionIds() || new Set(),
+  hasPendingClaudeTurnAskReminder: (sessionId) => claudeTurnAskReminder.isPending(sessionId),
   onSessionDeleted: (sessionId) => {
     agentRuntime?.clearKiroDesktopSession(sessionId);
     agentRuntime?.clearCopilotTerminalWaitSession(sessionId);

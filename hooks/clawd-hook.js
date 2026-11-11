@@ -40,6 +40,11 @@ const API_ERROR_TYPES = new Set([
   "max_output_tokens",
 ]);
 const SESSION_TITLE_CONTROL_RE = /[\u0000-\u001F\u007F-\u009F]+/g;
+// Claude Code reports its launcher in CLAUDE_CODE_ENTRYPOINT. Clawd only
+// forwards a small opaque token; the server decides what it means. The same
+// allowlist lives in src/server-route-state.js — keep the two in sync.
+const CLAUDE_ENTRYPOINT_MAX_LENGTH = 64;
+const CLAUDE_ENTRYPOINT_RE = /^[A-Za-z0-9._-]+$/;
 const SESSION_TITLE_MAX = 80;
 const PROMPT_TITLE_MAX = 40;
 const PROMPT_TITLE_SECRET_RE =
@@ -60,6 +65,15 @@ function resolveReportingAgentId(payload) {
     && cursorVersion.length <= CURSOR_VERSION_MAX
     && !/[\0\r\n]/.test(cursorVersion);
   return isCursorCompatibilityHook ? "cursor-agent" : "claude-code";
+}
+
+function normalizeClaudeEntrypoint(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > CLAUDE_ENTRYPOINT_MAX_LENGTH || !CLAUDE_ENTRYPOINT_RE.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
 }
 
 function normalizeTitle(value) {
@@ -725,6 +739,15 @@ function buildStateBody(event, payload, resolve, options = {}) {
     const profile = resolveClaudeProfileFromEnv({ env: options.env });
     const configDir = profile && profile.kind === "custom" ? normalizeClaudeConfigDir(profile.configDir) : null;
     if (configDir) body.claude_config_dir = configDir;
+  }
+  // The Claude desktop app keeps one long-lived process per opened
+  // conversation, so a live PID cannot vouch for an individual session's turn.
+  // Forward the launcher token (env resolution matches the profile resolver
+  // above); src/server-route-state.js decides what `claude-desktop` means.
+  if (body.agent_id === "claude-code") {
+    const env = options.env && typeof options.env === "object" ? options.env : process.env;
+    const entrypoint = normalizeClaudeEntrypoint(env.CLAUDE_CODE_ENTRYPOINT);
+    if (entrypoint) body.claude_entrypoint = entrypoint;
   }
   // Only SessionStart carries a model, and even there it is optional (`clear`
   // omits it). state.js merges it stickily, so one report is enough.

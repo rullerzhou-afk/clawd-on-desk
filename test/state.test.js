@@ -393,6 +393,7 @@ function rawSession(state, opts = {}) {
     codexOriginator: opts.codexOriginator || null,
     codexSource: opts.codexSource || null,
     ghosttyTerminalId: opts.ghosttyTerminalId || null,
+    claudeEntrypoint: opts.claudeEntrypoint ?? null,
     sessionTitle: opts.sessionTitle ?? null,
     recentEvents: opts.recentEvents || [],
     pidReachable: opts.pidReachable ?? false,
@@ -1840,6 +1841,92 @@ describe("cleanStaleSessions()", () => {
     api.cleanStaleSessions();
     assert.strictEqual(api.sessions.size, 0);
     assert.deepStrictEqual(cleared, [{ id: "k1", reason: "kimi-session-disposed" }]);
+  });
+
+  it("issue #1365: keeps an expired Claude desktop session while its question card is pending", () => {
+    const pending = [{ agentId: "claude-code", sessionId: "s1", res: null, isClaudeTurnAskNotify: true }];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      pendingPermissions: pending,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+
+    pending.length = 0;
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0, "once the card is gone the next sweep retires the row");
+  });
+
+  it("issue #1365: keeps an expired Claude desktop session while its permission connection is open", () => {
+    const res = { destroyed: false, writableEnded: false };
+    const pending = [{ agentId: "claude-code", sessionId: "s1", res }];
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      pendingPermissions: pending,
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
+
+    res.writableEnded = true;
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0, "an ended connection no longer holds the session");
+  });
+
+  it("issue #1365: another session's or another agent's card does not hold the Claude desktop row", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      pendingPermissions: [
+        { agentId: "claude-code", sessionId: "other", res: null },
+        { agentId: "codex", sessionId: "s1", res: null },
+      ],
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 0);
+  });
+
+  it("issue #1365: a pending Claude turn-ask reminder holds the Claude desktop row", () => {
+    api = require("../src/state")(makeCtx({
+      processKill: makePidKill(new Set([1000, 2000])),
+      hasPendingClaudeTurnAskReminder: (sessionId) => sessionId === "s1",
+    }));
+    api.sessions.set("s1", rawSession("idle", {
+      agentId: "claude-code",
+      claudeEntrypoint: "claude-desktop",
+      agentPid: 1000,
+      sourcePid: 2000,
+      pidReachable: true,
+      updatedAt: Date.now() - 700000,
+    }));
+
+    api.cleanStaleSessions();
+    assert.strictEqual(api.sessions.size, 1);
   });
 
   it("last non-headless deleted → returns to idle", () => {

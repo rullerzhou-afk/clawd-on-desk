@@ -39,6 +39,13 @@ function createClaudeTurnAskReminder({
     return true;
   }
 
+  // True while a question can still produce a reminder. The switch is read
+  // live, so a disabled reminder does not need to hold its session alive.
+  function isPending(sessionId) {
+    if (typeof sessionId !== "string" || !sessionId) return false;
+    return pending.has(sessionId) && isEnabled();
+  }
+
   function track(payload) {
     const sessionId = payload && payload.sessionId;
     if (typeof sessionId !== "string" || !sessionId) return false;
@@ -74,6 +81,7 @@ function createClaudeTurnAskReminder({
   return {
     track,
     resolve,
+    isPending,
     dispose,
     // test-only introspection
     _size: () => pending.size,
