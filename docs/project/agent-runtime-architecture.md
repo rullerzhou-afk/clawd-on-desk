@@ -775,6 +775,7 @@ DND remains an interaction/visual gate and does not stop recap or coverage. Susp
 | Settings 写入与副作用 | `settings-controller` 是唯一写入者；`settings-actions*` 是 pre-commit gates；`settings-effect-router` 是 post-commit runtime effects |
 | Settings UI | `settings-ui-core` 持有 shared UI state，`settings-renderer` 是侧栏/tab shell，业务页在 `settings-tab-*` |
 | Quota reminders | `quota-alerts-runtime` reads source-separated account snapshots; `quota-alerts` owns bounded hashed dedup history; `quota-notifications` acknowledges native delivery. Controls live in Sessions → Quota ring & reminders and use the Settings controller. |
+| Windows system notifications | `system-notifications` turns the session snapshot (completion rule and dedupe key shared with `slack-notify-client`) and `permission.js`'s human-wait announcement into native toasts; `system-notification-ipc` owns the Settings test button. Windows only, off by default. It observes and never changes permission decisions or session lifecycle. See `docs/guides/windows-system-notifications.md`. |
 | Theme | `theme-loader` 是 stateless loader；`theme-runtime` 是唯一 active-theme owner |
 
 Quota reminders remain disabled until explicitly enabled. They use existing quota collection,

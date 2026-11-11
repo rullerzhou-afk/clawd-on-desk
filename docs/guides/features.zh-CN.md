@@ -29,6 +29,10 @@
 - **Telegram / 飞书（Lark）** — 交互式远程审批：把权限请求转发到手机，直接远程「允许 / 拒绝」，无需回到桌面
 - **Slack** — **仅通知**：通过 Slack Incoming Webhook（或可选的 `xoxb-` Bot Token + 频道 ID）以带 Emoji 的 Block Kit 富文本卡片推送**任务完成**、**错误**和**权限请求**。本版本中 Slack 无法批准或拒绝——权限消息只是播报，仍需回到桌面 App 决定。与 Telegram / 飞书并列在远程审批渠道中配置；密钥保存在配置之外的本地 env 文件中（macOS / Linux 为 `0600`；Windows 无 POSIX 权限位，依赖 AppData 的 ACL），未配置或离线时均优雅降级。消息可能包含会话标题、目录名与主机名，**建议使用私有频道**——参见 [slack-notifications.md](slack-notifications.md)
 
+## Windows 系统通知
+
+- **原生通知（Windows，默认关闭）** — **任务完成**、**失败或异常中断**、**等待你授权或回答**时，还可以弹出 Windows 系统通知，在其他窗口工作时也能注意到。点击通知跳到对应会话的终端。通知只带 Agent 名称、项目文件夹名和一行状态，是否显示仍由 Windows 自己的通知设置决定。详见 [Windows system notifications](windows-system-notifications.md)。
+
 ## 会话智能
 
 - **多会话追踪** — 所有已支持 Agent 的会话统一解析到最高优先级状态

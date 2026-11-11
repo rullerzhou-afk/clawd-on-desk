@@ -331,6 +331,13 @@ const SCHEMA = {
     validate: (v) => Number.isFinite(v) && v >= 0 && v <= 1,
   },
   flashTaskbarOnComplete: { type: "boolean", default: true },
+  // Native OS toasts for agent lifecycle events (Windows only; inert elsewhere).
+  // Opt-in like every other outbound notification channel; the per-event
+  // switches default on so enabling the master switch is a complete setup.
+  systemNotifyEnabled: { type: "boolean", default: false },
+  systemNotifyOnDone: { type: "boolean", default: true },
+  systemNotifyOnError: { type: "boolean", default: true },
+  systemNotifyOnPermission: { type: "boolean", default: true },
   flashIntervalMs: {
     type: "number",
     default: 500,

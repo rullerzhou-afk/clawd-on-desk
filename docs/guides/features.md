@@ -29,6 +29,10 @@
 - **Telegram / Feishu (Lark)** — interactive remote approval: route permission requests to your phone and Allow/Deny them without touching the desktop
 - **Slack** — **notification-only**: task **done**, **errors**, and **permission requests** are pushed via a Slack Incoming Webhook (or an optional `xoxb-` bot token + channel id) as rich Block Kit cards. Slack cannot Allow or Deny in this version — a permission message is an announcement, and you decide in the desktop app. Configure it next to Telegram/Feishu in the remote approval channels; secrets are stored locally in an env file outside prefs (`0600` on macOS/Linux; Windows relies on the AppData ACL), and everything degrades gracefully when unconfigured or offline. Messages can carry the session title, folder, and host name, so a **private channel is recommended** — see [slack-notifications.md](slack-notifications.md)
 
+## Windows System Notifications
+
+- **Native toasts (Windows, opt-in)** — task **done**, **failed or interrupted**, and **waiting for your approval or answer** can also be shown as Windows notifications, so you notice them while working in another window. Clicking one jumps to that session's terminal. They carry only the agent name, project folder and a status line, and Windows' own notification settings stay in charge. See [Windows system notifications](windows-system-notifications.md).
+
 ## Session Intelligence
 
 - **Multi-session tracking** — sessions across all agents resolve to the highest-priority state

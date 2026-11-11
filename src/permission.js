@@ -3762,6 +3762,49 @@ function announceSlackPermission(permEntry) {
   }
 }
 
+// Native OS toast for "a human has to act". Shares the Slack announce call
+// sites, so it inherits their guarantee: the request is on screen (or on a
+// delivered remote card) and automation already declined to resolve it.
+//
+// Unlike Slack it also covers passive cards (the agent's own native prompt is
+// waiting) and plan reviews: locally those are just as much "come back to this
+// session". The payload is identity only — no tool input, command or question
+// text ever leaves this function.
+function announceSystemAttention(permEntry) {
+  if (typeof ctx.notifySystemAttention !== "function") return;
+  if (!permEntry || permEntry._systemAttentionAnnounced) return;
+  if (!isValidInteraction(permEntry.interaction)) return;
+  if (PASSTHROUGH_TOOLS.has(permEntry.toolName)) return;
+  if (isPermissionEntryHeadless(permEntry)) return;
+  if (ctx.doNotDisturb) return;
+  if (pendingPermissions.indexOf(permEntry) === -1) return;
+  permEntry._systemAttentionAnnounced = true;
+  try {
+    const passive = isPassiveNotifyEntry(permEntry);
+    const session = ctx.sessions.get(permEntry.sessionId);
+    const question = isNativeQuestionNotify(permEntry)
+      || permEntry.interaction.intent === INTERACTION_INTENT.HUMAN_QUESTION;
+    ctx.notifySystemAttention({
+      kind: question ? "question" : "approval",
+      sessionId: permEntry.sessionId,
+      agentId: permEntry.agentId || "claude-code",
+      folder: basenameForDisplay((session && session.cwd) || permEntry.cwd || ""),
+      // Passive cards carry a synthetic tool name; only real ones are shown.
+      toolName: !question && !passive && typeof permEntry.toolName === "string" ? permEntry.toolName : "",
+      focusEntry: buildPermissionFocusEntry(permEntry),
+    }, {
+      isStillRelevant: () => pendingPermissions.includes(permEntry),
+    });
+  } catch (err) {
+    permLog(`system attention announce failed: ${err && err.message ? err.message : err}`);
+  }
+}
+
+function announcePermissionAttention(permEntry) {
+  announceSlackPermission(permEntry);
+  announceSystemAttention(permEntry);
+}
+
 function normalizeRemoteApprovalDecision(decision) {
   if (decision === "allow" || decision === "deny") return { action: decision };
   if (!decision || typeof decision !== "object") return null;
@@ -3997,7 +4040,7 @@ function maybeStartRemoteApproval(permEntry) {
     if (permEntry.remoteOnly !== true) return;
     if (ctx.doNotDisturb) return;
     if (!pendingPermissions.includes(permEntry)) return;
-    announceSlackPermission(permEntry);
+    announcePermissionAttention(permEntry);
   }
 
   function maybeFallBackRemoteOnlyEntry() {
@@ -4918,7 +4961,7 @@ function handleBubbleHeight(event, measurement) {
   } catch {
     requestWindowVisible = false;
   }
-  if (requestWindowVisible) announceSlackPermission(perm);
+  if (requestWindowVisible) announcePermissionAttention(perm);
   // Geometry updates happen after the delivery acknowledgement. If either
   // reflow throws, the already-rendered card must still be announced.
   repositionBubbles();
@@ -5055,7 +5098,7 @@ function handleQueuePresentationAck(event, acknowledgement) {
   }
   for (const entry of entries) {
     if (commit.hiddenEntryIds.has(entry.uiEntryId)) {
-      announceSlackPermission(entry);
+      announcePermissionAttention(entry);
     } else if (
       commit.visibleEntryIds.has(entry.uiEntryId)
       && entry._slackPermissionAnnounced !== true

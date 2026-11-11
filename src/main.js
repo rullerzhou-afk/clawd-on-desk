@@ -95,6 +95,8 @@ const { registerSettingsIpc } = require("./settings-ipc");
 const { registerQuotaNotificationIpc } = require("./quota-notification-ipc");
 const { createQuotaAlertsRuntime } = require("./quota-alerts-runtime");
 const { createQuotaNotificationPresenter } = require("./quota-notifications");
+const { createSystemNotifications } = require("./system-notifications");
+const { registerSystemNotificationIpc } = require("./system-notification-ipc");
 const createSettingsEffectRouter = require("./settings-effect-router");
 const { createRecapRuntime } = require("./recap-runtime");
 const { createKimiQuotaClient } = require("./kimi-quota-client");
@@ -1415,6 +1417,9 @@ function getEffectiveCurrentPixelSize(overrideWa) {
 let contextMenu;
 let doNotDisturb = false;
 let quotaAlertsRuntime = null;
+// Native OS toasts for agent lifecycle events. Assigned once the modules it
+// borrows from (settings, dashboard, tray) exist; every caller null-checks.
+let systemNotifications = null;
 let isQuitting = false;
 let quitCleanupStarted = false;
 let appQuitDrainStarted = false;
@@ -2294,6 +2299,17 @@ const _permCtx = {
       try { client.notifyPermissionRequest(payload, options); } catch {}
     }
   },
+  // Native OS toast for a request that is really waiting on a human. Read-only
+  // like the Slack heads-up: it announces, it never decides.
+  notifySystemAttention: (payload, options = {}) => {
+    if (!systemNotifications) return;
+    try {
+      systemNotifications.notifyAttention({
+        ...payload,
+        agentName: _resolveAgentDisplayName(payload && payload.agentId),
+      }, options);
+    } catch {}
+  },
   notifyCodexRemoteFallback: (payload) => (
     _codexRemoteFallbackNotice ? _codexRemoteFallbackNotice.notify(payload) : false
   ),
@@ -2585,6 +2601,10 @@ const _stateCtx = {
     // Slack completion pings ride the same fanout; the client dedupes internally
     // and fires sends async, so this never throws or blocks the broadcast.
     try { getSlackNotifyClient().onSnapshot(snapshot); } catch {}
+    // Native OS toasts consume the same snapshot; dedupe lives in the module.
+    if (systemNotifications) {
+      try { systemNotifications.onSnapshot(snapshot); } catch {}
+    }
     if (discordPresenceBridge) {
       try { discordPresenceBridge.onSnapshot(snapshot); } catch {}
     }
@@ -5332,6 +5352,30 @@ const quotaNotificationIpc = registerQuotaNotificationIpc({
   ipcMain, settingsController: _settingsController, getSettingsWindow,
   testNotification: () => quotaNotifications.test(),
 });
+systemNotifications = createSystemNotifications({
+  Notification, platform: process.platform, trayBalloonOwner, getTray: () => _menu.getTray(),
+  getSettings: () => ({
+    enabled: _settingsController.get("systemNotifyEnabled"),
+    onDone: _settingsController.get("systemNotifyOnDone"),
+    onError: _settingsController.get("systemNotifyOnError"),
+    onPermission: _settingsController.get("systemNotifyOnPermission"),
+  }),
+  isSuppressed: () => doNotDisturb || isQuitting || !app.isReady(),
+  getLang: () => lang,
+  // Clicking a toast goes through the same session locator as the Dashboard
+  // and the permission bubble; without a target it opens the session list.
+  focusSession: (sessionId, options = {}) => focusDashboardSession(sessionId, {
+    requestSource: "system-notification",
+    fallbackEntry: options.fallbackEntry || getPendingPermissionFocusEntry(sessionId),
+  }),
+  openDashboard: () => showDashboard(),
+  log: (message) => sessionLog(`system-notify: ${message}`),
+});
+const systemNotificationIpc = registerSystemNotificationIpc({
+  ipcMain, settingsController: _settingsController, getSettingsWindow,
+  isSupported: () => systemNotifications.isSupported(),
+  testNotification: () => systemNotifications.test(),
+});
 quotaAlertsRuntime = createQuotaAlertsRuntime({
   settingsController: _settingsController, state: _state,
   getDoNotDisturb: () => doNotDisturb, notifyQuota: showQuotaAlert,
@@ -5693,6 +5737,12 @@ function createWindow() {
         && _runtimeAgentGate.isAgentIntegrationInstalled(agentId)
       ),
     });
+    // Mark whatever already finished before this launch as history, and make
+    // the notifier live, so a restart neither replays old completions nor
+    // swallows the first new one.
+    if (systemNotifications) {
+      try { systemNotifications.prime(_state.buildSessionSnapshot()); } catch {}
+    }
     if (restoredSessionIds.length > 0) {
       const recoveredSnapshot = _state.buildSessionSnapshot();
       reconcilePowerSaveBlocker();
@@ -6437,6 +6487,7 @@ if (!gotTheLock) {
 
   app.on("before-quit", (event) => {
     quotaNotificationIpc.dispose();
+    systemNotificationIpc.dispose();
     isQuitting = true;
     if (!appQuitDrainReady) {
       event.preventDefault();
@@ -6453,6 +6504,7 @@ if (!gotTheLock) {
     quitCleanupStarted = true;
     quotaAlertsRuntime?.dispose();
     quotaNotifications.dispose();
+    systemNotifications?.dispose();
     // Cancel any live official-theme download and drop this round's `.part`.
     if (officialThemeMain) {
       try { officialThemeMain.cancelInstall(); } catch {}

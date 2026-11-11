@@ -341,6 +341,10 @@ const updateRegistry = {
     return { status: "ok" };
   },
   flashTaskbarOnComplete: requireBoolean("flashTaskbarOnComplete"),
+  systemNotifyEnabled: requireBoolean("systemNotifyEnabled"),
+  systemNotifyOnDone: requireBoolean("systemNotifyOnDone"),
+  systemNotifyOnError: requireBoolean("systemNotifyOnError"),
+  systemNotifyOnPermission: requireBoolean("systemNotifyOnPermission"),
   flashIntervalMs: requireNumberInRange("flashIntervalMs", 200, 2000),
   flashDurationMs: requireNumberInRange("flashDurationMs", 0, 60000),
   claudeTurnAskReminder: requireBoolean("claudeTurnAskReminder"),

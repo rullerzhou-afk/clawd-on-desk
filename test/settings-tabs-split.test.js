@@ -34,6 +34,10 @@ const FROZEN_KEYS = [
   "flashTaskbarOnComplete",
   "flashIntervalMs",
   "flashDurationMs",
+  "systemNotifyEnabled",
+  "systemNotifyOnDone",
+  "systemNotifyOnError",
+  "systemNotifyOnPermission",
   "testReactionsEnabled",
   "soundVolume",
   "lowPowerIdleMode",
@@ -114,6 +118,10 @@ const EXPECTED_KEYS = {
     "flashTaskbarOnComplete",
     "flashIntervalMs",
     "flashDurationMs",
+    "systemNotifyEnabled",
+    "systemNotifyOnDone",
+    "systemNotifyOnError",
+    "systemNotifyOnPermission",
     "hideBubbles",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
@@ -454,6 +462,10 @@ function makeSnapshot(overrides = {}) {
     flashTaskbarOnComplete: true,
     flashIntervalMs: 500,
     flashDurationMs: 2000,
+    systemNotifyEnabled: true,
+    systemNotifyOnDone: true,
+    systemNotifyOnError: true,
+    systemNotifyOnPermission: true,
     hideBubbles: false,
     permissionBubblesEnabled: true,
     notificationBubbleAutoCloseSeconds: 8,
@@ -769,10 +781,11 @@ describe("settings tab split", () => {
       tab: "notifications",
       snapshot: makeSnapshot({ lang: "zh" }),
     });
-    assert.deepStrictEqual(sectionTitles(notifications), ["声音", "托盘闪烁", "气泡"]);
+    assert.deepStrictEqual(sectionTitles(notifications), ["声音", "托盘闪烁", "Windows 系统通知", "气泡"]);
     assert.deepStrictEqual(sectionRowLabels(notifications), [
       ["启用音效", "音量"],
       ["任务完成时闪烁系统托盘图标", "闪烁间隔", "闪烁时长"],
+      ["显示 Windows 系统通知", "任务完成", "失败或异常中断", "等待人工操作", "发送测试通知"],
       ["隐藏气泡", "权限 / 交互气泡", "通知气泡", "提醒未回复的 Claude 提问", "提醒等待时间", "更新气泡", "气泡位置", "优先方向", "固定角落"],
     ]);
 
@@ -810,6 +823,90 @@ describe("settings tab split", () => {
       ["语言", "文字大小"],
       ["开机自启", "在菜单栏显示", "在 Dock 显示", "低功耗 idle", "工作时阻止休眠"],
     ]);
+  });
+
+  it("offers Windows system notifications on Windows only", () => {
+    for (const platform of ["MacIntel", "Linux x86_64"]) {
+      const other = createHarness({ tab: "notifications", platform, snapshot: makeSnapshot({ lang: "zh" }) });
+      assert.deepStrictEqual(sectionTitles(other), ["声音", "托盘闪烁", "气泡"], platform);
+      assert.strictEqual(other.getSwitch("systemNotifyEnabled"), null, platform);
+      assert.strictEqual(other.content.querySelector(".system-notification-test-row"), null, platform);
+      // A change synced from elsewhere must not break a page that has no such rows.
+      assert.doesNotThrow(() => other.apply("systemNotifyEnabled", true), platform);
+    }
+  });
+
+  it("shows the per-event system notification switches only while the master switch is on", () => {
+    const harness = createHarness({
+      tab: "notifications",
+      snapshot: makeSnapshot({ systemNotifyEnabled: false }),
+    });
+    const eventKeys = ["systemNotifyOnDone", "systemNotifyOnError", "systemNotifyOnPermission"];
+    const rowOf = (key) => harness.core.state.mountedControls.generalSwitches.get(key).row;
+    const testRow = harness.content.querySelector(".system-notification-test-row");
+    for (const key of eventKeys) {
+      assert.strictEqual(rowOf(key).hidden, true, key);
+      assert.strictEqual(rowOf(key).getAttribute("aria-hidden"), "true", key);
+    }
+    assert.ok(testRow, "the test button stays reachable so Windows' own settings can be checked first");
+    assert.notStrictEqual(testRow.hidden, true);
+    assert.strictEqual(harness.getSwitch("systemNotifyEnabled").getAttribute("aria-checked"), "false");
+
+    const before = harness.renderCount();
+    harness.apply("systemNotifyEnabled", true);
+    assert.strictEqual(harness.renderCount(), before, "toggling patches in place, no full repaint");
+    assert.strictEqual(harness.getSwitch("systemNotifyEnabled").getAttribute("aria-checked"), "true");
+    for (const key of eventKeys) assert.strictEqual(rowOf(key).hidden, false, key);
+
+    harness.apply("systemNotifyOnError", false);
+    assert.strictEqual(harness.getSwitch("systemNotifyOnError").getAttribute("aria-checked"), "false");
+    assert.strictEqual(harness.getSwitch("systemNotifyOnDone").getAttribute("aria-checked"), "true");
+
+    harness.apply("systemNotifyEnabled", false);
+    for (const key of eventKeys) assert.strictEqual(rowOf(key).hidden, true, key);
+  });
+
+  it("saves each system notification switch under its own key", async () => {
+    const harness = createHarness({
+      tab: "notifications",
+      snapshot: makeSnapshot({ systemNotifyEnabled: false }),
+    });
+    harness.getSwitch("systemNotifyEnabled").click();
+    await harness.settle();
+    assert.deepStrictEqual(harness.updateCalls.map((call) => [call.key, call.value]), [["systemNotifyEnabled", true]]);
+  });
+
+  it("the send-test button reports what the main process says about the toast", async () => {
+    const results = [{ ok: true }, { ok: false, code: "BUSY" }];
+    let calls = 0;
+    const harness = createHarness({
+      tab: "notifications",
+      snapshot: makeSnapshot({ lang: "en" }),
+      settingsAPI: { testSystemNotification: () => { calls += 1; return Promise.resolve(results.shift()); } },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, error: !!(options && options.error) });
+    const button = harness.content.querySelector(".system-notification-test-row").querySelector("button");
+
+    button.click();
+    await harness.settle();
+    button.click();
+    await harness.settle();
+    assert.strictEqual(calls, 2);
+    assert.deepStrictEqual(toasts.map((toast) => toast.error), [false, true]);
+    assert.match(toasts[0].message, /Test notification sent/);
+    assert.match(toasts[1].message, /not shown/);
+
+    const rejecting = createHarness({
+      tab: "notifications",
+      snapshot: makeSnapshot({ lang: "en" }),
+      settingsAPI: { testSystemNotification: () => Promise.reject(new Error("ipc gone")) },
+    });
+    const rejected = [];
+    rejecting.core.ops.showToast = (message, options) => rejected.push(!!(options && options.error));
+    rejecting.content.querySelector(".system-notification-test-row").querySelector("button").click();
+    await rejecting.settle();
+    assert.deepStrictEqual(rejected, [true]);
   });
 
   it("offers a restart only while the GPU switch differs from launch (#1183)", async () => {

@@ -10,6 +10,10 @@
     "flashTaskbarOnComplete",
     "flashIntervalMs",
     "flashDurationMs",
+    "systemNotifyEnabled",
+    "systemNotifyOnDone",
+    "systemNotifyOnError",
+    "systemNotifyOnPermission",
     "hideBubbles",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
@@ -43,9 +47,87 @@
   let helpers = null;
   let ops = null;
   let i18n = null;
+  // Set while the Windows system-notification section is mounted.
+  let syncSystemNotifyRowsVisibility = null;
 
   function t(key) {
     return helpers.t(key);
+  }
+
+  // Native OS toasts exist on Windows only, so the section is not rendered at
+  // all elsewhere (the prefs stay inert there).
+  function buildSystemNotificationsSection() {
+    const eventRows = [
+      helpers.buildSwitchRow({
+        key: "systemNotifyOnDone",
+        labelKey: "rowSystemNotifyOnDone",
+        descKey: "rowSystemNotifyOnDoneDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "systemNotifyOnError",
+        labelKey: "rowSystemNotifyOnError",
+        descKey: "rowSystemNotifyOnErrorDesc",
+      }),
+      helpers.buildSwitchRow({
+        key: "systemNotifyOnPermission",
+        labelKey: "rowSystemNotifyOnPermission",
+        descKey: "rowSystemNotifyOnPermissionDesc",
+      }),
+    ];
+    const testRow = buildSystemNotificationTestRow();
+    // The per-event switches only mean something while the master switch is
+    // on. Hide them rather than gray them out (same as the quota reminders).
+    // The test row stays: it is how you check Windows itself allows toasts.
+    syncSystemNotifyRowsVisibility = () => {
+      const visible = !!(state.snapshot && state.snapshot.systemNotifyEnabled === true);
+      for (const row of eventRows) {
+        row.hidden = !visible;
+        row.setAttribute("aria-hidden", visible ? "false" : "true");
+      }
+    };
+    syncSystemNotifyRowsVisibility();
+    return helpers.buildSection(t("sectionSystemNotifications"), [
+      helpers.buildSwitchRow({
+        key: "systemNotifyEnabled",
+        labelKey: "rowSystemNotifyEnabled",
+        descKey: "rowSystemNotifyEnabledDesc",
+      }),
+      ...eventRows,
+      testRow,
+    ]);
+  }
+
+  function buildSystemNotificationTestRow() {
+    const row = document.createElement("div");
+    row.className = "row system-notification-test-row";
+    const text = document.createElement("div");
+    text.className = "row-text";
+    const label = document.createElement("span");
+    label.className = "row-label";
+    label.textContent = t("systemNotifyTest");
+    const desc = document.createElement("span");
+    desc.className = "row-desc";
+    desc.textContent = t("systemNotifyTestDesc");
+    text.append(label, desc);
+    const control = document.createElement("div");
+    control.className = "row-control";
+    const button = helpers.buildButton({ labelKey: "notificationTestSend", size: "compact" });
+    button.addEventListener("click", async () => {
+      if (button.disabled) return;
+      helpers.setButtonState(button, { pending: true });
+      try {
+        const result = await window.settingsAPI.testSystemNotification();
+        const ok = !!(result && result.ok === true);
+        ops.showToast(t(ok ? "notificationTestSent" : "notificationTestFailed"), { error: !ok });
+      } catch {
+        ops.showToast(t("notificationTestFailed"), { error: true });
+      } finally {
+        helpers.setButtonState(button, { pending: false });
+      }
+    });
+    control.appendChild(button);
+    row.append(text, control);
+    return row;
   }
 
   function saveBubblePlacementValue(key, value) {
@@ -710,6 +792,9 @@
       }).row,
     ]));
 
+    syncSystemNotifyRowsVisibility = null;
+    if (i18n && i18n.IS_WIN) parent.appendChild(buildSystemNotificationsSection());
+
     parent.appendChild(helpers.buildSection(t("sectionBubbles"), [
       helpers.buildSwitchRow({
         key: "hideBubbles",
@@ -816,6 +901,9 @@
       if (key === "soundMuted") {
         state.mountedControls.soundVolume.syncDisabled();
       }
+    }
+    if (keys.includes("systemNotifyEnabled") && typeof syncSystemNotifyRowsVisibility === "function") {
+      syncSystemNotifyRowsVisibility();
     }
     if ((keys.includes("hideBubbles") || keys.some((key) => BUBBLE_POLICY_KEYS.has(key)))
       && !syncBubblePolicyControlsFromSnapshot()) return false;
