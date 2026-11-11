@@ -27,6 +27,10 @@
 - **Telegram / Feishu（Lark）** — インタラクティブなリモート承認：権限リクエストをスマートフォンへ転送し、デスクトップに戻らず Allow / Deny できます
 - **Slack** — **通知専用**：Slack Incoming Webhook（または任意の `xoxb-` Bot Token + channel id）を使い、タスクの**完了**、**エラー**、**権限リクエスト**を Block Kit カードで送信します。このバージョンでは Slack から Allow / Deny はできません。権限メッセージは通知のみで、判断はデスクトップアプリで行います。Telegram / Feishu と同じリモート承認設定にあり、secret は prefs 外のローカル env ファイルに保存されます（macOS / Linux は `0600`、Windows は AppData ACL）。未設定またはオフライン時は安全にフォールバックします。メッセージには session title、folder、host name が含まれる場合があるため、private channel を推奨します。詳細は [Slack 通知ガイド](slack-notifications.md)
 
+## Windows システム通知
+
+- **ネイティブ通知（Windows、既定でオフ）** — タスクの**完了**、**失敗または中断**、**承認や回答の待機**を Windows の通知としても表示でき、別のウィンドウで作業中でも気付けます。通知をクリックすると、そのセッションのターミナルに移動します。通知に含まれるのはエージェント名、プロジェクトフォルダー名、状態の 1 行だけで、表示するかどうかは Windows 側の通知設定に従います。詳しくは [Windows system notifications](windows-system-notifications.md) を参照してください。
+
 ## セッション情報
 
 - **マルチセッション追跡** — すべてのエージェントのセッションから、優先度の最も高い状態を解決します

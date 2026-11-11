@@ -27,6 +27,10 @@
 - **Telegram / 飛書（Lark）** — 互動式遠端審批：把權限請求轉送到手機，直接遠端 Allow / Deny，不必回到桌面
 - **Slack** — **僅通知**：透過 Slack Incoming Webhook（或可選的 `xoxb-` Bot Token + channel id）以 Block Kit 卡片推送任務**完成**、**錯誤**與**權限請求**。本版本中 Slack 無法 Allow 或 Deny；權限訊息只是通知，仍需回到桌面 App 決定。請在遠端審批通道中與 Telegram / 飛書並列設定；密鑰保存在 prefs 之外的本機 env 檔案（macOS / Linux 為 `0600`，Windows 依賴 AppData ACL），未設定或離線時會安全降級。訊息可能包含 session 標題、資料夾與主機名稱，建議使用私人頻道。詳見 [Slack 通知指南](slack-notifications.md)
 
+## Windows 系統通知
+
+- **原生通知（Windows，預設關閉）** — **任務完成**、**失敗或異常中斷**、**等待你授權或回答**時，還可以跳出 Windows 系統通知，在其他視窗工作時也能注意到。點選通知會跳到對應工作階段的終端機。通知只帶 Agent 名稱、專案資料夾名稱和一行狀態，是否顯示仍由 Windows 自己的通知設定決定。詳見 [Windows system notifications](windows-system-notifications.md)。
+
 ## 工作階段智慧體
 
 - **多工作階段追蹤** — 所有已支援 Agent 的工作階段統一解析到最高優先順序狀態

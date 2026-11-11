@@ -29,6 +29,10 @@
 - **Telegram / Feishu (Lark)** — aprobación remota interactiva: envía solicitudes de permisos al teléfono y permite aprobarlas o denegarlas sin tocar el escritorio
 - **Slack** — **solo notificaciones**: envía tareas **terminadas**, **errores** y **solicitudes de permisos** mediante un Incoming Webhook de Slack (o, de forma opcional, un token de bot `xoxb-` y un id. de canal) como tarjetas Block Kit. Slack no puede aprobar ni denegar en esta versión: los mensajes de permisos son avisos y la decisión se toma en la aplicación de escritorio. Configúralo junto a Telegram/Feishu en los canales de aprobación remota. Los secretos se guardan localmente en un archivo de entorno fuera de las preferencias (`0600` en macOS/Linux; en Windows se usa la ACL de AppData), y el canal se degrada de forma segura si no está configurado o no tiene conexión. Los mensajes pueden incluir el título de la sesión, la carpeta y el nombre del equipo, por lo que se recomienda un **canal privado**. Consulta [slack-notifications.md](slack-notifications.md)
 
+## Notificaciones del sistema de Windows
+
+- **Notificaciones nativas (Windows, desactivadas por defecto)** — las tareas **terminadas**, **fallidas o interrumpidas** y las que están **esperando tu aprobación o respuesta** también pueden mostrarse como notificaciones de Windows, para que las veas mientras trabajas en otra ventana. Al hacer clic en una, se abre el terminal de esa sesión. Solo incluyen el nombre del agente, la carpeta del proyecto y una línea de estado, y la configuración de notificaciones de Windows sigue decidiendo si se muestran. Consulta [Windows system notifications](windows-system-notifications.md).
+
 ## Información de sesiones
 
 - **Seguimiento de varias sesiones** — las sesiones de todos los agentes se resuelven al estado de mayor prioridad

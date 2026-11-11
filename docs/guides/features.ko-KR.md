@@ -27,6 +27,10 @@
 - **Telegram / Feishu (Lark)** — 대화형 원격 승인: 권한 요청을 휴대폰으로 전달하고 데스크톱으로 돌아가지 않고 Allow / Deny 할 수 있습니다.
 - **Slack** — **알림 전용**: Slack Incoming Webhook(또는 선택적 `xoxb-` Bot Token + channel id)을 통해 작업 **완료**, **오류**, **권한 요청**을 Block Kit 카드로 보냅니다. 이 버전에서는 Slack에서 Allow / Deny 할 수 없습니다. 권한 메시지는 알림일 뿐이며 결정은 데스크톱 앱에서 합니다. Telegram / Feishu와 같은 원격 승인 설정에서 구성하며 secret은 prefs 밖의 로컬 env 파일에 저장됩니다(macOS / Linux는 `0600`, Windows는 AppData ACL 사용). 미설정 또는 오프라인 상태에서는 안전하게 fallback합니다. 메시지에 session title, folder, host name이 포함될 수 있으므로 private channel을 권장합니다. 자세한 내용은 [Slack 알림 가이드](slack-notifications.md)를 참고하세요.
 
+## Windows 시스템 알림
+
+- **네이티브 알림 (Windows, 기본 꺼짐)** — 작업 **완료**, **실패 또는 중단**, **승인이나 답변 대기** 상황을 Windows 알림으로도 표시해, 다른 창에서 작업하는 동안에도 알아챌 수 있습니다. 알림을 클릭하면 해당 세션의 터미널로 이동합니다. 알림에는 에이전트 이름, 프로젝트 폴더 이름, 상태 한 줄만 담기며, 표시 여부는 Windows의 알림 설정이 결정합니다. 자세한 내용은 [Windows system notifications](windows-system-notifications.md)를 참고하세요.
+
 ## 세션 인텔리전스
 
 - **멀티 세션 추적** — 모든 에이전트 세션 상태를 모아 가장 우선순위가 높은 상태를 반영합니다.
