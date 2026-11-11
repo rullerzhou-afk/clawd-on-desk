@@ -96,7 +96,10 @@ describe("Windows NSIS running app check", {
 
     // The template fallback is nested two spaces deeper than the custom macro.
     assert.strictEqual(
-      getMacroBody(installer, "customCheckAppRunning").replace(/\n/g, "\n  "),
+      getMacroBody(installer, "customCheckAppRunning")
+        .replace(/^[ \t]*;[^\n]*\n/gm, "")
+        .replace(/\n  !ifndef BUILD_UNINSTALLER\n    !insertmacro CLAWD_CHECK_OLD_INSTALL_REMOVABLE\n  !endif$/, "")
+        .replace(/\n/g, "\n  "),
       fallback[1].replace(/\b_CHECK_APP_RUNNING\b/g, "CLAWD_CHECK_APP_RUNNING").trim(),
       SYNC_MESSAGE
     );

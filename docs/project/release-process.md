@@ -584,7 +584,7 @@ Windows x64/arm64, macOS x64/arm64, and Linux x64. The assertion scans both the
 outer resources tree and the real `app.asar`; a retired executable or runtime
 module is a hard failure.
 
-## Windows NSIS Running-App Check
+## Windows NSIS Overrides
 
 `build/installer.nsh` overrides process detection through `customCheckAppRunning`
 to fix the PowerShell 5.1 single-process count (#882 / electron-builder#10454),
@@ -592,6 +592,14 @@ preserving the rest of the electron-builder 26.15.7 flow. When upgrading
 electron-builder, `test/windows-installer-app-check.test.js` detects template
 drift and requires resynchronizing the override. Remove the override once the
 upstream fix is adopted.
+
+The include also samples deletion access to the old install directory before
+upgrades (#882), and supplies `customUnInstallCheck*` with `/SD IDOK` so silent
+upgrades exit when the old uninstaller returns a nonzero result. Insufficient
+deletion permission shows a dedicated prompt, with Cancel exiting with code 2
+and silent mode exiting directly with code 2. When upgrading
+electron-builder, recheck these overrides against `installUtil.nsh` as well;
+`test/windows-installer-permission-check.test.js` guards the result-check copies.
 
 ## WinGet Publishing
 
