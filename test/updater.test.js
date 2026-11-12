@@ -1,5 +1,9 @@
 const { describe, it, beforeEach, mock } = require("node:test");
 const assert = require("node:assert");
+const path = require("node:path");
+const { createHttpError, HttpExecutor, newError } = require(require.resolve("builder-util-runtime", {
+  paths: [path.dirname(require.resolve("electron-updater"))],
+}));
 
 let initUpdater = require("../src/updater");
 
@@ -94,6 +98,191 @@ it("keeps genuine HTTP 404 and explicit missing-channel errors compatible", () =
       releaseConfirmed: true,
     }), "NO_COMPATIBLE_ASSET", err.message);
   }
+});
+
+// doDownload is internal to electron-updater's dependency; if this helper fails,
+// recheck its download error format against getUpdateHttpStatus.
+function makeDownloadError(statusCode, statusMessage) {
+  const executor = new class extends HttpExecutor {
+    createRequest(_options, callback) {
+      callback({ statusCode, statusMessage });
+      return {
+        on() { return this; },
+        end() {},
+        setTimeout() {},
+        abort() {},
+      };
+    }
+  }();
+  let error;
+  // builder-util-runtime HttpExecutor.doDownload creates the real error before any file IO.
+  executor.doDownload({
+    hostname: "github.com",
+    path: "/example/clawd/releases/download/v1.0.0/Clawd.exe",
+  }, { callback: (err) => { error = err; } }, 0);
+  assert.ok(error instanceof Error);
+  return error;
+}
+
+// Production embeds e.stack; tests use the error header without stack frames so checkout
+// paths containing "offline", "timeout", or "proxy" cannot affect keyword checks.
+function makeLatestVersionError(err) {
+  const url = "https://github.com/example/clawd/releases/latest";
+  // electron-updater GitHubProvider.getLatestTagName ("Unable to find latest version on GitHub ...").
+  return newError(`Unable to find latest version on GitHub (${url}), please ensure a production release exists: ${err.name}: ${err.message}`,
+    "ERR_UPDATER_LATEST_VERSION_NOT_FOUND");
+}
+
+function makeReleaseFeedError(err, feedXml = "<feed/>") {
+  // electron-updater GitHubProvider.getLatestVersion ("Cannot parse releases feed: ...").
+  return newError(`Cannot parse releases feed: ${err.name}: ${err.message},\nXML:\n${feedXml}`,
+    "ERR_UPDATER_INVALID_RELEASE_FEED");
+}
+
+describe("dependency HTTP update errors", () => {
+  const availabilityMeta = { phase: "availability-check", releaseConfirmed: true };
+  const downloadMeta = { phase: "download", releaseConfirmed: true };
+
+  it("recognizes a real download 404 as a missing compatible asset", () => {
+    const err = makeDownloadError(404, "Not Found");
+    assert.equal(initUpdater.__test.isUpdate404Error(err), true);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, downloadMeta), "NO_COMPATIBLE_ASSET");
+  });
+
+  it("classifies a real download 504 Gateway Timeout as a service error", () => {
+    const err = makeDownloadError(504, "Gateway Timeout");
+    assert.equal(initUpdater.__test.classifyUpdateError(err, downloadMeta), "HTTP_SERVICE_ERROR");
+  });
+
+  it("keeps a real GitHub download 403 as a download failure", () => {
+    const err = makeDownloadError(403, "Forbidden");
+    assert.equal(initUpdater.__test.classifyUpdateError(err, downloadMeta), "DOWNLOAD_FAILED");
+  });
+
+  it("prioritizes HttpError 504 over Gateway Timeout and keep-alive timeout text", () => {
+    const err = createHttpError({
+      statusCode: 504, statusMessage: "Gateway Timeout", headers: { "keep-alive": "timeout=5" },
+    });
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "HTTP_SERVICE_ERROR");
+  });
+
+  it("prioritizes HttpError 429 over keep-alive timeout text", () => {
+    const err = createHttpError({
+      statusCode: 429, statusMessage: "Too Many Requests", headers: { "keep-alive": "timeout=5" },
+    });
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "GITHUB_RATE_LIMIT");
+  });
+
+  it("recovers HTTP 504 through both GitHubProvider wrappers", () => {
+    const inner = createHttpError({ statusCode: 504, statusMessage: "Gateway Time-out", headers: {} });
+    const err = makeReleaseFeedError(makeLatestVersionError(inner),
+      "<feed><entry>offline proxy timeout download</entry></feed>");
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "HTTP_SERVICE_ERROR");
+  });
+
+  it("recovers HTTP 404 through both GitHubProvider wrappers", () => {
+    const inner = createHttpError({ statusCode: 404, statusMessage: "Not Found", headers: {} });
+    const err = makeReleaseFeedError(makeLatestVersionError(inner));
+    assert.equal(initUpdater.__test.isUpdate404Error(err), true);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "NO_COMPATIBLE_ASSET");
+  });
+
+  it("recovers HTTP 503 from the latest-version wrapper alone", () => {
+    const inner = createHttpError({ statusCode: 503, statusMessage: "Service Unavailable", headers: {} });
+    const err = makeLatestVersionError(inner);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "HTTP_SERVICE_ERROR");
+  });
+
+  it("ignores offline and HttpError text in feed XML around a DNS failure", () => {
+    const err = makeReleaseFeedError(makeLatestVersionError(new Error("getaddrinfo ENOTFOUND github.com")),
+      "<feed><entry>offline HttpError: 404</entry></feed>");
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "DNS_FAILED");
+  });
+
+  it("ignores a download status appearing only on the second line", () => {
+    const err = new Error(`Request failed\n${makeDownloadError(404, "Not Found").message}`);
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+  });
+
+  it("ignores a wrapped HttpError appearing only on the second line", () => {
+    const inner = createHttpError({ statusCode: 404, statusMessage: "Not Found", headers: {} });
+    const err = newError(`Cannot parse releases feed\n: ${inner.name}: ${inner.message}`,
+      "ERR_UPDATER_INVALID_RELEASE_FEED");
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+  });
+
+  it("ignores quoted HttpError text inside a wrapped SyntaxError", () => {
+    const inner = new SyntaxError(`Unexpected token 'H', "HttpError: 404" is not valid JSON`);
+    const err = makeReleaseFeedError(makeLatestVersionError(inner));
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "UNKNOWN");
+  });
+
+  it("ignores quoted wrapped HttpError text inside a wrapped SyntaxError", () => {
+    const inner = new SyntaxError(`Unexpected token 'x', "x: HttpError: 404" is not valid JSON`);
+    const err = makeReleaseFeedError(makeLatestVersionError(inner));
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "UNKNOWN");
+  });
+
+  it("ignores quoted wrapped HttpError text inside an invalid version", () => {
+    // electron-updater AppUpdater.isUpdateAvailable uses this message for an invalid version.
+    const err = newError(
+      'This file could not be downloaded, or the latest version (from update server) '
+        + 'does not have a valid semver version: "x: HttpError: 404"',
+      "ERR_UPDATER_INVALID_VERSION"
+    );
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "DOWNLOAD_FAILED");
+  });
+
+  it("recovers wrapped HTTP 503 with an empty reason phrase", () => {
+    const inner = createHttpError({ statusCode: 503, statusMessage: "", headers: {} });
+    const err = makeReleaseFeedError(makeLatestVersionError(inner));
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "HTTP_SERVICE_ERROR");
+  });
+
+  it("keeps HTTP 408 Request Timeout classified as a timeout", () => {
+    const err = createHttpError({ statusCode: 408, statusMessage: "Request Timeout", headers: {} });
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "CONNECTION_TIMEOUT");
+  });
+
+  it("keeps download 408 Request Timeout classified as a timeout", () => {
+    const err = makeDownloadError(408, "Request Timeout");
+    assert.equal(initUpdater.__test.classifyUpdateError(err, downloadMeta), "CONNECTION_TIMEOUT");
+  });
+
+  it("keeps HTTP 407 Proxy Authentication Required classified as a proxy error", () => {
+    const err = createHttpError({
+      statusCode: 407, statusMessage: "Proxy Authentication Required", headers: {},
+    });
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "TLS_OR_PROXY");
+  });
+
+  it("prioritizes Forbidden by proxy over the GitHub 403 rate-limit rule", () => {
+    const err = createHttpError({
+      statusCode: 403, statusMessage: "Forbidden by proxy", headers: {},
+    }, "method: GET url: https://github.com/example/clawd/releases/download/v1.0.0/latest.yml");
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "TLS_OR_PROXY");
+  });
+
+  it("keeps download 410 Gone classified as a download failure", () => {
+    const err = makeDownloadError(410, "Gone");
+    assert.equal(initUpdater.__test.classifyUpdateError(err, downloadMeta), "DOWNLOAD_FAILED");
+  });
+
+  it("classifies a GitHub check-stage 403 as rate limiting without rate text", () => {
+    const err = createHttpError({ statusCode: 403, statusMessage: "Forbidden", headers: {} },
+      { url: "https://github.com/example/clawd/releases/latest" });
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "GITHUB_RATE_LIMIT");
+  });
+
+  it("recognizes a wrapped HttpError even when the outer error has no updater code", () => {
+    const inner = createHttpError({ statusCode: 503, statusMessage: "Service Unavailable", headers: {} });
+    const err = new Error(makeLatestVersionError(inner).message);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, availabilityMeta), "HTTP_SERVICE_ERROR");
+  });
 });
 
 it("redacts credentials and URL queries and bounds copied update details", () => {
@@ -708,6 +897,34 @@ describe("updater visual flow", () => {
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "up-to-date"]);
   });
 
+  it("reports rate limiting when GitHub API and redirect fallback both return 403", async () => {
+    const bubbles = [];
+    const requests = [];
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: (payload) => bubbles.push(payload),
+    }), makeDeps({
+      httpsGetImpl: makeSequencedHttpsGet([
+        {
+          statusCode: 403,
+          headers: { "x-ratelimit-remaining": "0", "x-ratelimit-limit": "60" },
+          body: JSON.stringify({ message: "API rate limit exceeded" }),
+        },
+        { statusCode: 403, body: "Forbidden" },
+      ], requests),
+    }));
+
+    const snapshot = await updater.checkForUpdates(true);
+
+    assert.deepStrictEqual(requests, [
+      "api.github.com/repos/rullerzhou-afk/clawd-on-desk/releases/latest",
+      "github.com/rullerzhou-afk/clawd-on-desk/releases/latest",
+    ]);
+    assert.equal(snapshot.state, "error");
+    assert.equal(snapshot.error.code, "GITHUB_RATE_LIMIT");
+    assert.equal(snapshot.error.phase, "release-lookup");
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
+  });
+
   it("continues into electron-updater when redirect fallback finds a newer version", async () => {
     const bubbles = [];
     const requests = [];
@@ -788,6 +1005,31 @@ describe("updater visual flow", () => {
     ]);
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
     assert.match(bubbles[1].detail, /GitHub releases redirect returned 200/);
+  });
+
+  it("reports a service error when GitHub API and redirect fallback both return 503", async () => {
+    const bubbles = [];
+    const requests = [];
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: (payload) => bubbles.push(payload),
+    }), makeDeps({
+      httpsGetImpl: makeSequencedHttpsGet([
+        { statusCode: 503, body: "Service Unavailable" },
+        { statusCode: 503, body: "Service Unavailable" },
+      ], requests),
+    }));
+
+    const snapshot = await updater.checkForUpdates(true);
+
+    assert.deepStrictEqual(requests, [
+      "api.github.com/repos/rullerzhou-afk/clawd-on-desk/releases/latest",
+      "github.com/rullerzhou-afk/clawd-on-desk/releases/latest",
+    ]);
+    assert.equal(snapshot.state, "error");
+    assert.equal(snapshot.error.phase, "release-lookup");
+    assert.equal(snapshot.error.code, "HTTP_SERVICE_ERROR");
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
+    assert.match(bubbles[1].detail, /Code: HTTP_SERVICE_ERROR/);
   });
 
   it("does not fallback when GitHub reports that no releases exist", async () => {
@@ -922,6 +1164,42 @@ describe("updater visual flow", () => {
 
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "available", "downloading", "error"]);
     assert.match(bubbles[3].detail, /download exploded/);
+  });
+
+  it("reports a real download 404 in the error bubble and snapshot after the user starts downloading", async () => {
+    const bubbles = [];
+    const handlers = {};
+    const downloadError = makeDownloadError(404, "Not Found");
+    const updater = initUpdater(makeCtx({
+      showUpdateBubble: async (payload) => {
+        bubbles.push(payload);
+        if (payload.mode === "available") return "primary";
+        return payload.defaultAction || null;
+      },
+    }), makeDeps({
+      autoUpdaterFactory: () => ({
+        on(event, handler) { handlers[event] = handler; },
+        checkForUpdates: async () => ({ updateInfo: { version: "0.5.11" } }),
+        downloadUpdate() {
+          return Promise.resolve().then(() => handlers.error(downloadError));
+        },
+      }),
+      httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11" }),
+    }));
+
+    updater.setupAutoUpdater();
+    await updater.checkForUpdates(true);
+    await handlers["update-available"]({ version: "0.5.11" });
+    await new Promise((resolve) => setImmediate(resolve));
+
+    assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), [
+      "checking", "available", "downloading", "error",
+    ]);
+    const snapshot = updater.getUpdateCheckSnapshot();
+    assert.equal(snapshot.state, "error");
+    assert.equal(snapshot.error.phase, "download");
+    assert.equal(snapshot.error.code, "NO_COMPATIBLE_ASSET");
+    assert.match(bubbles[3].detail, /Code: NO_COMPATIBLE_ASSET/);
   });
 
   it("keeps confirmed-release context when a packaged download fails with 404", async () => {
