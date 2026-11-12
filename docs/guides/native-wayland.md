@@ -35,8 +35,11 @@ shim's design:
 - A hide→show remap frequently never maps at all; `isVisible()` still reports
   true. `j/clients` (which only lists mapped windows) is the ground truth.
 - `show()`/`focus()` cannot activate a toplevel; only the compositor can.
-- `setIgnoreMouseEvents()` and `setShape()` are no-ops; click-through needs a
-  `no_focus` window rule, toggled live through the rule's `enabled` flag.
+- `setIgnoreMouseEvents()` and `setShape()` are no-ops, and the `no_focus`
+  window rule is accepted but does not remove the window from the input
+  region (real pointer clicks still land on it). **Click-through is not
+  available on native Wayland**; the shim still records the per-window request
+  as a `no_focus` rule so a compositor that honours it needs no app change.
 - `setVisibleOnAllWorkspaces()` is a no-op; the equivalent is the `pin` rule
   effect (plus a `pin` dispatcher for an already-mapped window).
 - The context menu opens fine from a native-Wayland `BrowserWindow` owner, but
@@ -45,6 +48,10 @@ shim's design:
   compositor before the pop.
 - Hyprland's IPC socket broadcasts every client's command to every listener, so
   a read can return another client's reply. JSON queries validate and retry.
+- The socket also does not answer during the synchronous part of app start-up
+  (a just-created window is absent from `j/clients` while the main script is
+  still loading), so the adoption-time recovery that re-shows an already
+  visible window cannot be verified in that window of time.
 - Window rules match `initialTitle`, which is frozen at map time. The shim
   keeps a zero-width marker in the title and re-asserts it immediately before
   every native show.
@@ -62,6 +69,16 @@ constructor title, and `initialTitle` never changes for that toplevel. Those are
 recognised through `j/clients` by pid and claimed once, and — only for titles
 Electron itself gives our windows (`Electron`, empty) — also get a
 constructor-title placement rule.
+
+## Known gaps
+
+- Click-through (above).
+- Drag follows the compositor: the shim pushes every new rect through
+  `movewindow`, but whether a drag gesture on the pet feels native has not been
+  exercised end-to-end.
+- Auxiliary windows (session HUD, quota ring, update bubble, permission
+  bubbles) rely on the shim's generic float rule and have not been placed or
+  measured individually.
 
 ## Testing
 

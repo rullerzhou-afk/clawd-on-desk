@@ -21,8 +21,11 @@
 //     recovered 36/36 measured failures, so the shim verifies and retries.
 //   • show()/focus() cannot activate a toplevel; only the compositor can.
 //   • setIgnoreMouseEvents() is a complete no-op (X11-only implementation)
-//     and setShape() has no Wayland path, so click-through needs the
-//     compositor's `no_focus` rule.
+//     and setShape() has no Wayland path. The `no_focus` window rule that
+//     looked like its replacement is accepted by Hyprland 0.57 and has no
+//     effect on the input region (measured with real pointer clicks: clicks
+//     on a no_focus window still land on it), so this shim cannot deliver
+//     click-through; see known-limitations.
 //   • A window's initialTitle (what window rules match) is frozen at the
 //     moment it maps and never changes for that toplevel; a window that was
 //     already visible when the shim adopted it therefore keeps a markerless
@@ -44,8 +47,9 @@
 //      native write (works while mapped; a tiled window is the compositor's
 //      to place, which is the honest Wayland answer).
 //   4. Show reliability: verify the map through `j/clients`, retry on miss.
-//   5. Click-through: setIgnoreMouseEvents() toggles a dedicated `no_focus`
-//      rule's `enabled` flag — verified to flip live on a mapped window.
+//   5. Click-through: NOT achievable on this compositor. setIgnoreMouseEvents()
+//      still toggles a per-window `no_focus` rule so the intent is recorded
+//      and a future compositor that honours it needs no app change.
 //   6. Focus: focus() additionally dispatches compositor focus on the
 //      window's address; blur() hands focus back to the previous window.
 //
@@ -661,11 +665,12 @@ function installLinuxWaylandWindowShim(options = {}) {
     backend.focusLastWindow();
   };
 
-  // THE click-through primitive on native Wayland. `no_focus` takes the
-  // window out of Hyprland's hit test (ViewHitTester skips noFocus windows),
-  // so pointer events fall through to whatever is below. Toggling the rule's
-  // `enabled` flag flips live on a mapped window (measured), which is why the
-  // rule is created once and switched rather than re-defined.
+  // setIgnoreMouseEvents() on native Wayland. Measured on Hyprland 0.57: a
+  // `no_focus` window rule (accepted, toggled live) does NOT remove the window
+  // from the input region — a real pointer click on it still lands on it — so
+  // this cannot deliver click-through. The rule is still created and toggled
+  // per window: it is the compositor-side expression of the request, the one
+  // place a future fix would go, and it is harmless.
   proto.setIgnoreMouseEvents = function setIgnoreMouseEvents(ignore, forwardOptions) {
     const state = ensureAdopted(this);
     const want = !!ignore;
