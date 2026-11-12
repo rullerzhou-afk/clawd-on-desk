@@ -90,6 +90,24 @@ describe("official Codex child turn completion and model progress", () => {
     assert.equal(state.resolveDisplayState(), "thinking");
   });
 
+  it("ends a matching child turn on an idle official Interrupt after its own row was dismissed", () => {
+    start(); start(childB, "child-b");
+    assert.equal(count(), 2);
+    const realParent = structuredClone(state.sessions.get(key(parent)));
+    assert.equal(state.sessions.has(key(childB)), true);
+    state.dismissSession(key(childB));
+    assert.equal(count(), 2);
+    assert.equal(state.sessions.has(key(childB)), false);
+
+    runtime.updateSessionFromServer(key(childB), "idle", "Interrupt", {
+      agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId: raw(childB),
+      headless: true, turnId: "child-b",
+    });
+    assert.equal(count(), 1);
+    assert.equal(state.sessions.has(key(childB)), false);
+    assert.deepEqual(state.sessions.get(key(parent)), realParent);
+  });
+
   it("keeps independently running children through their parent's ordinary Stop", () => {
     start(); start(childB, "child-b");
     official(parent, "Stop", "parent-turn");

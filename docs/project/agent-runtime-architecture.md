@@ -287,6 +287,9 @@ headless 压缩不占全局动画；DND、禁用清扫、确认审批锁与更�
 它不结束回合、不产生控制决定。已有安装在下次集成同步时
 增量注册 `PostCompact` 和 `Interrupt`，保留用户 hook；新增命令仍须遵守 Codex 原生 hook review。
 `Interrupt` 超时遵循上游的 3 秒上限，不发审批决定或完成声音。
+本机 official `Interrupt` 到达时，若该会话没有记录则不新建会话行，但回合围栏照常落闩，
+精确匹配的子回合照常收尾，启动等待也照常结束。已有记录仍照常置为 idle；
+远程、WSL、非 official 来源和 JSONL fallback 不适用这条不建行规则。
 Codex 压缩完成同时兼容旧 `event_msg:context_compacted` 与新版
 `event_msg:item_completed`（`payload.item.type === "ContextCompaction"`）。本地与
 Remote SSH monitor 共用 `hooks/codex-log-event.js`，把后者归一化到旧事件键，沿用
