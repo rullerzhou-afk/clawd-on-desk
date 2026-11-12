@@ -157,4 +157,5 @@ Clawd をより良くしてくれたすべての方に感謝します。
 - **Calico cat (三毛猫)** のアートワークは 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) によるものです。All rights reserved.
 - **Cloudling (云宝)** のアートワークは 鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) によるものです。All rights reserved. Cloudling のビジュアル方針には OpenAI Codex ロゴへのオマージュが含まれています。Codex/OpenAI の標章は OpenAI に帰属し、このプロジェクトは OpenAI との提携または承認を受けたものではありません。
 - **Whale-chan（鲸鱼娘）** は [`rullerzhou-afk/clawd-themes`](https://github.com/rullerzhou-afk/clawd-themes) から任意の公式テーマとして別途配布されます。元のキャラクター・設定・素材の権利は各原作者に帰属し、テーマは [Neko3000/deepseek-whalechan](https://github.com/Neko3000/deepseek-whalechan) に記載された ZipZipPipe と上善无形をクレジットします。鹿鹿 ([@rullerzhou-afk](https://github.com/rullerzhou-afk)) による新しいアニメーションとエフェクトは CC BY-NC-SA 4.0 です。全文はテーマパッケージをご覧ください。非公式・非商用のファン作品であり、DeepSeek との関係や承認はなく、本プロジェクトの AGPL-3.0 ソースライセンスの対象外です。
+- **Clawd の追加アニメーションの一部**（`assets/svg/clawd-alive-*.svg`）は Allan Oliveira Miraballes（[@AllanOliveiraM](https://github.com/AllanOliveiraM)）の作品で、[Clawd Alive](https://github.com/AllanOliveiraM/clawd-alive-theme) に由来します。著作権は作者に帰属し、すべての権利が留保されています。Clawd on Desk に同梱する形でのみ配布されます。
 - **サードパーティのコントリビューション**: 著作権は各アーティストに帰属します。

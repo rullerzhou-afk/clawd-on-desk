@@ -28,7 +28,9 @@ describe("listIdleVisualOptions", () => {
   it("keeps every shipped theme's candidate list unchanged without the new field", () => {
     const expected = {
       calico: ["calico-idle-follow.svg", "calico-idle.apng"],
-      clawd: ["clawd-idle-follow.svg", "clawd-idle-look.svg", "clawd-idle-bubble.svg", "clawd-idle-reading.svg"],
+      clawd: ["clawd-idle-follow.svg", "clawd-idle-look.svg", "clawd-idle-bubble.svg", "clawd-idle-reading.svg",
+        "clawd-alive-coffee.svg", "clawd-alive-toy-yoyo.svg", "clawd-alive-toy-plane.svg",
+        "clawd-alive-sit-edge.svg", "clawd-alive-fake-nap.svg"],
       cloudling: ["cloudling-idle.svg", "cloudling-idle-reading.svg"],
       template: ["idle-follow.svg", "idle-look.gif"],
     };

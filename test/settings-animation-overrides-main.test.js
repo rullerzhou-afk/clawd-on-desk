@@ -1077,3 +1077,35 @@ test("a preview is not handed back when a real event re-applies the same state",
     harness.cleanup();
   }
 });
+
+test("issue #1351: tier CPU hints inspect every resolved file and follow saved overrides", () => {
+  function tierCards(overrides) {
+    const harness = createRuntimeHarness({
+      activeTheme: themeLoader.loadTheme("clawd", { strict: true, overrides }),
+    });
+    try {
+      return harness.runtime.buildAnimationOverrideData().cards.filter(card => card.slotType === "tier");
+    } finally {
+      harness.cleanup();
+    }
+  }
+  const cards = tierCards();
+  for (const [group, expected] of [
+    ["workingTiers", new Map([[1, false], [2, false], [3, false], [4, true], [5, true]])],
+    ["jugglingTiers", new Map([[1, false], [2, true], [3, true]])],
+  ]) {
+    const tiers = cards.filter(card => card.tierGroup === group);
+    assert.strictEqual(tiers.length, expected.size);
+    for (const card of tiers) assert.strictEqual(card.cpuIntensive, expected.get(card.minSessions), card.id);
+  }
+  // The juggling pool previews the original, inexpensive sprite; its second
+  // candidate still requires the hint, including after a first-slot override.
+  const juggling = cards.find(card => card.tierGroup === "jugglingTiers" && card.minSessions === 2);
+  assert.strictEqual(juggling.currentFile, "clawd-working-juggling.svg");
+  const replaced = tierCards({ tiers: {
+    workingTiers: { "clawd-alive-work-chaos.svg": { file: "clawd-idle-reading.svg" } },
+    jugglingTiers: { "clawd-working-juggling.svg": { file: "clawd-idle-reading.svg" } },
+  } });
+  assert.strictEqual(replaced.find(card => card.tierGroup === "workingTiers" && card.minSessions === 5).cpuIntensive, false);
+  assert.strictEqual(replaced.find(card => card.tierGroup === "jugglingTiers" && card.minSessions === 2).cpuIntensive, true);
+});

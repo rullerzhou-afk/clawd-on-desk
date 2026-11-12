@@ -481,3 +481,33 @@ describe("issue #1323: dark appearance validation", () => {
     assert.doesNotMatch(result.stdout, /missing raster dependency/);
   });
 });
+
+it("issue #1351: CLI validates assets referenced only by the CPU hint list", () => {
+  const dir = mkTempThemeDir();
+  const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+  raw.rendering = { ...raw.rendering, cpuIntensiveFiles: ["costly.svg"] };
+  fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+  fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+  const missing = runValidateTheme([dir]);
+  assert.strictEqual(missing.status, 1);
+  assert.match(missing.stdout, /Missing asset: costly\.svg/);
+  assert.strictEqual(errorCount(missing.stdout), 1);
+  fs.writeFileSync(path.join(dir, "assets", "costly.svg"), '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1 1"/>');
+  const present = runValidateTheme([dir]);
+  assert.strictEqual(present.status, 0, present.stderr || present.stdout);
+});
+
+for (const value of ["costly.svg", null, [7], ["dir/file.svg"], ["x.png"], [" a.svg"], ["a.svg "]]) {
+  it(`issue #1351: CLI rejects invalid CPU hint value ${JSON.stringify(value)}`, () => {
+    const dir = mkTempThemeDir();
+    const raw = JSON.parse(fs.readFileSync(path.join(CALICO, "theme.json"), "utf8"));
+    raw.rendering = { ...raw.rendering, cpuIntensiveFiles: value };
+    fs.writeFileSync(path.join(dir, "theme.json"), JSON.stringify(raw), "utf8");
+    fs.cpSync(path.join(CALICO, "assets"), path.join(dir, "assets"), { recursive: true });
+    const result = runValidateTheme([dir]);
+    assert.strictEqual(result.status, 1, result.stderr || result.stdout);
+    assert.match(result.stdout, /rendering\.cpuIntensiveFiles must contain SVG basenames only/);
+    assert.strictEqual(errorCount(result.stdout), 1);
+    assert.doesNotMatch(result.stdout, /Missing asset:/);
+  });
+}

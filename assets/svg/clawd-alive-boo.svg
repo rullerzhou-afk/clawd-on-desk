@@ -1,0 +1,250 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500" shape-rendering="crispEdges">
+  <defs>
+    <style>
+      /* 1.4-Second Loop — Boo!: starts from the fake-nap pose (eyes shut,
+         arms tucked), a tiny dip, then POPS up with both arms thrown wide
+         open, eyes huge, body stretched, a little "rawr" tremble at the top,
+         drops with a squash and settles into a grin-like "^^" squint with
+         three little giggle bobs, then the squint relaxes and the eyes reopen
+         to the neutral rest eyes over the last ~10% (ends in the exact rest
+         pose of clawd-idle-follow). No text, no "!" icon. */
+      .body-jump {
+        animation: boo-jump 1.4s infinite ease-in-out;
+      }
+
+      .body-squash {
+        transform-origin: 7.5px 13px;
+        animation: boo-squash 1.4s infinite ease-in-out;
+      }
+
+      .legs-jump {
+        transform-origin: 7.5px 15px;
+        animation: boo-legs 1.4s infinite ease-in-out;
+      }
+
+      .shadow-anim {
+        transform-origin: 7.5px 15.5px;
+        animation: boo-shadow 1.4s infinite ease-in-out;
+      }
+
+      .arm-l {
+        transform-origin: 1px 11px;
+        animation: boo-arm-l 1.4s infinite ease-in-out;
+      }
+
+      .arm-r {
+        transform-origin: 14px 11px;
+        animation: boo-arm-r 1.4s infinite ease-in-out;
+      }
+
+      .eyes-shut {
+        animation: boo-vis-shut 1.4s infinite step-end;
+      }
+
+      .eyes-wide {
+        opacity: 0;
+        animation: boo-vis-wide 1.4s infinite step-end;
+      }
+
+      .eyes-grin {
+        opacity: 0;
+        animation: boo-vis-grin 1.4s infinite step-end;
+      }
+
+      .eye-wide-l {
+        transform-origin: 4.5px 9px;
+        animation: boo-eye-wide 1.4s infinite ease-out;
+      }
+
+      .eye-wide-r {
+        transform-origin: 10.5px 9px;
+        animation: boo-eye-wide 1.4s infinite ease-out;
+      }
+
+      .grin-bob {
+        transform-origin: 7.5px 9px;
+        animation: boo-grin 1.4s infinite ease-in-out;
+      }
+
+      /* --- Keyframes --- */
+
+      /* Dip, pop up, float with a tremble, drop, giggle bobs */
+      @keyframes boo-jump {
+        0%, 6% { transform: translate(0, 0); }
+        11% { transform: translate(0, 0.6px); }
+        17% { transform: translate(0, -3.8px); }
+        21% { transform: translate(0.3px, -3.4px); }
+        24% { transform: translate(-0.3px, -3.3px); }
+        27% { transform: translate(0.3px, -3.2px); }
+        30% { transform: translate(-0.3px, -3px); }
+        34% { transform: translate(0, -2.6px); }
+        42% { transform: translate(0, 0.8px); }
+        48% { transform: translate(0, -0.6px); }
+        53% { transform: translate(0, 0); }
+        57% { transform: translate(0, 0.4px); }
+        61% { transform: translate(0, -0.3px); }
+        65% { transform: translate(0, 0.4px); }
+        69% { transform: translate(0, -0.3px); }
+        73% { transform: translate(0, 0.4px); }
+        78%, 100% { transform: translate(0, 0); }
+      }
+
+      @keyframes boo-squash {
+        0%, 6% { transform: scale(1, 1); }
+        11% { transform: scale(1.1, 0.88); }
+        17% { transform: scale(0.86, 1.2); }
+        24% { transform: scale(0.92, 1.1); }
+        34% { transform: scale(0.96, 1.04); }
+        40% { transform: scale(0.92, 1.1); }
+        42% { transform: scale(1.16, 0.84); }
+        48% { transform: scale(0.96, 1.05); }
+        53% { transform: scale(1, 1); }
+        57% { transform: scale(1.05, 0.95); }
+        61% { transform: scale(0.99, 1.01); }
+        65% { transform: scale(1.05, 0.95); }
+        69% { transform: scale(0.99, 1.01); }
+        73% { transform: scale(1.04, 0.96); }
+        78%, 100% { transform: scale(1, 1); }
+      }
+
+      @keyframes boo-legs {
+        0%, 6% { transform: translate(0, 0) scale(1, 1); }
+        11% { transform: translate(0, 0) scale(1, 0.8); }
+        17% { transform: translate(0, -2.6px) scale(1, 1.1); }
+        24% { transform: translate(0, -2.4px) scale(1, 1); }
+        34% { transform: translate(0, -1.8px) scale(1, 1); }
+        42% { transform: translate(0, 0) scale(1, 0.72); }
+        48% { transform: translate(0, 0) scale(1, 1.05); }
+        53%, 100% { transform: translate(0, 0) scale(1, 1); }
+      }
+
+      @keyframes boo-shadow {
+        0%, 6%, 53%, 100% { transform: scaleX(1); opacity: 0.5; }
+        11% { transform: scaleX(1.08); opacity: 0.53; }
+        17%, 30% { transform: scaleX(0.72); opacity: 0.3; }
+        42% { transform: scaleX(1.2); opacity: 0.57; }
+        48% { transform: scaleX(0.96); opacity: 0.48; }
+      }
+
+      /* Arms: tucked behind (fake nap), then flung wide open and up,
+         trembling, back down to rest */
+      @keyframes boo-arm-l {
+        0%, 6% { transform: translate(1px, 0) rotate(0deg) scale(1, 1); }
+        11% { transform: translate(0.5px, 0.5px) rotate(10deg) scale(1, 1); }
+        17% { transform: translate(0.4px, -2.4px) rotate(-48deg) scale(1, 2.2); }
+        21% { transform: translate(0.3px, -2.3px) rotate(-38deg) scale(1, 2); }
+        24% { transform: translate(0.3px, -2.3px) rotate(-46deg) scale(1, 2); }
+        27% { transform: translate(0.3px, -2.3px) rotate(-38deg) scale(1, 2); }
+        30% { transform: translate(0.3px, -2.3px) rotate(-46deg) scale(1, 2); }
+        36% { transform: translate(0.2px, -1.8px) rotate(-40deg) scale(1, 1.8); }
+        44% { transform: translate(-0.5px, 0) rotate(-25deg) scale(1, 1.1); }
+        52% { transform: translate(0, 0) rotate(8deg) scale(1, 1); }
+        58%, 100% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+      }
+
+      @keyframes boo-arm-r {
+        0%, 6% { transform: translate(-1px, 0) rotate(0deg) scale(1, 1); }
+        11% { transform: translate(-0.5px, 0.5px) rotate(-10deg) scale(1, 1); }
+        17% { transform: translate(-0.4px, -2.4px) rotate(48deg) scale(1, 2.2); }
+        21% { transform: translate(-0.3px, -2.3px) rotate(38deg) scale(1, 2); }
+        24% { transform: translate(-0.3px, -2.3px) rotate(46deg) scale(1, 2); }
+        27% { transform: translate(-0.3px, -2.3px) rotate(38deg) scale(1, 2); }
+        30% { transform: translate(-0.3px, -2.3px) rotate(46deg) scale(1, 2); }
+        36% { transform: translate(-0.2px, -1.8px) rotate(40deg) scale(1, 1.8); }
+        44% { transform: translate(0.5px, 0) rotate(25deg) scale(1, 1.1); }
+        52% { transform: translate(0, 0) rotate(-8deg) scale(1, 1); }
+        58%, 100% { transform: translate(0, 0) rotate(0deg) scale(1, 1); }
+      }
+
+      /* Eye sets: shut lines -> huge open eyes -> grin squint */
+      @keyframes boo-vis-shut {
+        0% { opacity: 1; }
+        11% { opacity: 0; }
+      }
+
+      @keyframes boo-vis-wide {
+        0% { opacity: 0; }
+        11% { opacity: 1; }
+        47% { opacity: 0; }
+        93% { opacity: 1; }
+      }
+
+      @keyframes boo-vis-grin {
+        0% { opacity: 0; }
+        47% { opacity: 1; }
+        93% { opacity: 0; }
+      }
+
+      /* Eyes pop open huge and shrink back a little; at the end they reopen
+         (from a squint) to the neutral rest eyes */
+      @keyframes boo-eye-wide {
+        0%, 11% { transform: scale(1, 0.4); }
+        15% { transform: scale(1.7, 1.55); }
+        20%, 32% { transform: scale(1.5, 1.4); }
+        42% { transform: scale(1.2, 1.1); }
+        47%, 92.9% { transform: scale(1, 1); }
+        93% { transform: scale(1, 0.25); }
+        97.5% { transform: scale(1, 1.1); }
+        99%, 100% { transform: scale(1, 1); }
+      }
+
+      /* Grin squint squeezes on each giggle, then relaxes shut before the
+         neutral eyes reopen */
+      @keyframes boo-grin {
+        0%, 47% { transform: scale(1, 1) translate(0, 0); }
+        57%, 65%, 73% { transform: scale(1.05, 0.85) translate(0, 0.2px); }
+        61%, 69%, 78%, 88% { transform: scale(1, 1) translate(0, 0); }
+        93%, 100% { transform: scale(1.05, 0.5) translate(0, 0.2px); }
+      }
+    </style>
+  </defs>
+
+  <!-- Ground Shadow -->
+  <rect id="ground-shadow" class="shadow-anim" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+
+  <!-- Legs -->
+  <g class="legs-jump">
+    <g id="legs" fill="#DE886D">
+      <rect x="3" y="12" width="1" height="3"/>
+      <rect x="5" y="12" width="1" height="3"/>
+      <rect x="9" y="12" width="1" height="3"/>
+      <rect x="11" y="12" width="1" height="3"/>
+    </g>
+  </g>
+
+  <!-- Animated Upper Body -->
+  <g class="body-jump">
+    <g class="body-squash">
+      <!-- Arms (drawn under the torso so they can start tucked behind) -->
+      <g class="arm-l">
+        <rect x="0" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+      <g class="arm-r">
+        <rect x="13" y="9" width="2" height="2" fill="#DE886D"/>
+      </g>
+      <!-- Torso -->
+      <rect id="torso" x="2" y="6" width="11" height="7" fill="#DE886D"/>
+      <!-- Shut eyes (continuity with the fake nap) -->
+      <g class="eyes-shut" fill="#000000">
+        <rect x="3.5" y="9" width="2" height="1"/>
+        <rect x="9.5" y="9" width="2" height="1"/>
+      </g>
+      <!-- Huge open eyes -->
+      <g class="eyes-wide" fill="#000000">
+        <g class="eye-wide-l"><rect x="4" y="8" width="1" height="2"/></g>
+        <g class="eye-wide-r"><rect x="10" y="8" width="1" height="2"/></g>
+      </g>
+      <!-- Grin-like squint "^^" -->
+      <g class="eyes-grin">
+        <g class="grin-bob" fill="#000000">
+          <rect x="3" y="9" width="1" height="1"/>
+          <rect x="4" y="8" width="1" height="1"/>
+          <rect x="5" y="9" width="1" height="1"/>
+          <rect x="9" y="9" width="1" height="1"/>
+          <rect x="10" y="8" width="1" height="1"/>
+          <rect x="11" y="9" width="1" height="1"/>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>

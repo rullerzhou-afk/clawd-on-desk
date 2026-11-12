@@ -2025,7 +2025,7 @@ function loadAnimMapTabForTest({
   vm.runInContext(fs.readFileSync(SETTINGS_ANIM_OVERRIDES_MERGE, "utf8"), context);
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-map.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8").replace(/\r\n/g, "\n"), context);
 
   const core = context.ClawdSettingsCore;
   core.state.snapshot = snapshot || { theme: "clawd", themeOverrides: {} };
@@ -2866,7 +2866,7 @@ function loadAnimOverridesTabForTest({
   context.globalThis = context;
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "language-picker.js"), "utf8"), context);
-  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-anim-overrides.js"), "utf8").replace(/\r\n/g, "\n"), context);
   const core = {
     state: { activeTab: "animOverrides", mountedControls: {} },
     runtime,
@@ -22699,4 +22699,40 @@ describe("issue #1323: theme appearance refreshes animation data", () => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.ok(fetches >= 1, "animation override data must be refetched");
   });
+});
+
+it("issue #1351: tier drawers render the CPU hint only for costly candidate pools", () => {
+  for (const cpuIntensive of [true, false]) {
+    const card = createAnimOverrideCard({ slotType: "tier", cpuIntensive });
+    const runtime = createAnimOverridesRuntime(card);
+    const modalRoot = new FakeElement("div");
+    const { core } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+    const hints = parent.querySelectorAll(".anim-override-drawer-info .anim-override-binding")
+      .filter(line => line.textContent === "animOverridesCpuIntensiveHint");
+    assert.strictEqual(hints.length, cpuIntensive ? 1 : 0);
+    core.ops.clearMountedControls();
+  }
+});
+
+it("issue #1351: collapsed tier summaries expose an accessible CPU badge only for costly pools", () => {
+  for (const cpuIntensive of [true, false]) {
+    const card = createAnimOverrideCard({ slotType: "tier", cpuIntensive });
+    const runtime = createAnimOverridesRuntime(card, { expandedOverrideRowIds: new Set() });
+    const modalRoot = new FakeElement("div");
+    const { core } = loadAnimOverridesTabForTest({ runtime, modalRoot });
+    const parent = new FakeElement("main");
+    core.tabs.animOverrides.render(parent, core);
+    const summary = parent.querySelector(".anim-override-summary");
+    assert.strictEqual(summary.getAttribute("aria-expanded"), "false");
+    const badges = summary.querySelectorAll(".anim-override-summary-badges .anim-override-badge")
+      .filter(badge => badge.textContent === "\u26A1");
+    assert.strictEqual(badges.length, cpuIntensive ? 1 : 0);
+    if (cpuIntensive) {
+      assert.strictEqual(badges[0].title, "animOverridesCpuIntensiveHint");
+      assert.strictEqual(badges[0].getAttribute("aria-label"), "animOverridesCpuIntensiveHint");
+    }
+    core.ops.clearMountedControls();
+  }
 });

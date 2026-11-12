@@ -209,6 +209,18 @@ function validateTheme(cfg) {
       ) {
         errors.push("rendering.objectChannelFiles must contain SVG basenames only");
       }
+      if (
+        cfg.rendering.cpuIntensiveFiles !== undefined
+        && (!Array.isArray(cfg.rendering.cpuIntensiveFiles)
+          || cfg.rendering.cpuIntensiveFiles.some((file) => (
+            typeof file !== "string"
+            || file.trim() !== file
+            || basenameOnly(file) !== file
+            || !file.endsWith(".svg")
+          )))
+      ) {
+        errors.push("rendering.cpuIntensiveFiles must contain SVG basenames only");
+      }
       if (cfg.rendering.discreteSampling !== undefined) {
         // Discrete sampling only rewrites CSS animation timing on the
         // document-backed (<object>) channel, so it cannot change the derived
@@ -1531,6 +1543,18 @@ function normalizeRendering(value) {
     rendering.lowPowerStaticImageOverrides = lowPowerStaticImageOverrides;
   }
   if (objectChannelFiles.length > 0) rendering.objectChannelFiles = objectChannelFiles;
+  // Keep the author's cost hints through normalization so Settings can inspect
+  // the resolved tier pool after user overrides have been applied.
+  const cpuIntensiveFiles = [];
+  const seenCpuIntensiveFiles = new Set();
+  for (const file of Array.isArray(value.cpuIntensiveFiles) ? value.cpuIntensiveFiles : []) {
+    if (typeof file !== "string") continue;
+    const safeFile = basenameOnly(file);
+    if (!safeFile || !safeFile.endsWith(".svg") || seenCpuIntensiveFiles.has(safeFile)) continue;
+    seenCpuIntensiveFiles.add(safeFile);
+    cpuIntensiveFiles.push(safeFile);
+  }
+  if (cpuIntensiveFiles.length > 0) rendering.cpuIntensiveFiles = cpuIntensiveFiles;
   if (Object.keys(discreteSampling).length > 0) rendering.discreteSampling = discreteSampling;
   return {
     ...rendering,
