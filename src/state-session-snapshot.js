@@ -688,6 +688,11 @@ function buildSessionSnapshot(sessions, options = {}) {
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
         kimiQuota: iconFor("kimi-cli"),
+        // DeepSeek's prepaid-balance coin reuses the agent icon the session
+        // rows already load for DeepSeek Harness.
+        deepseekQuota: iconFor("deepseek-harness"),
+        cursorQuota: iconFor("cursor-agent"),
+        grokBotQuota: iconFor("grok-build"),
       };
     })(),
     sessionAutomationOrphans: automationRecords

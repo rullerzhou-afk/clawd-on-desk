@@ -35,6 +35,12 @@ const RING_PROVIDERS = [
   { key: "claudeQuota", label: "Claude", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
   { key: "codexQuota", label: "Codex", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
   { key: "kimiQuota", label: "Kimi", outer: ["kimiFiveHour"], inner: ["kimiWeekly"] },
+  // DeepSeek Harness prepaid balance. There is no rolling window,
+  // so this provider owns a single outer ring whose percentage is the balance
+  // against a reference amount (see src/dsh-balance-runtime.js).
+  { key: "deepseekQuota", label: "DeepSeek", outer: ["deepseekBalance"], inner: [] },
+  { key: "cursorQuota", label: "Cursor", outer: ["cursorWeekly"], inner: ["cursorMonthly"] },
+  { key: "grokBotQuota", label: "Grok Bot", outer: ["grokBotWeekly"], inner: [] },
 ];
 
 // Layout constants in CSS px (scaled by textScale by the caller, exactly like
@@ -48,7 +54,7 @@ const OVERFLOW_GAP = 8;
 const OVERFLOW_H = 20; // "+N" pill row
 const RING_PET_GAP = 8; // gap between the pet body and the cluster
 const RING_EDGE_MARGIN = 8; // keep the cluster this far from the work-area edge
-const RING_MAX_COINS = 4; // visible coins before overflow collapses to "+N"
+const RING_MAX_COINS = 6; // visible coins before overflow collapses to "+N"
 
 // Transparent window shell (room for the coin drop shadows), mirrors HUD.
 const RING_SHELL = Object.freeze({ top: 6, right: 6, bottom: 8, left: 6 });

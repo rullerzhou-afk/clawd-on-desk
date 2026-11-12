@@ -456,6 +456,9 @@ const updateRegistry = {
   sessionHudHideActiveCodexEphemeral: requireBoolean("sessionHudHideActiveCodexEphemeral"),
   sessionHudShowQuota: requireBoolean("sessionHudShowQuota"),
   quotaRingDisplayMode: requireEnum("quotaRingDisplayMode", ["used", "remaining"]),
+  // DeepSeek prepaid-balance ring: reference amount (CNY) the ¥ balance is
+  // mapped against for the percentage. The exact amount is always displayed.
+  deepseekQuotaBaselineCny: requireNumberInRange("deepseekQuotaBaselineCny", 1, 100000),
   quotaAlertsEnabled: requireBoolean("quotaAlertsEnabled"),
   quotaRecoveryAlertsEnabled: requireBoolean("quotaRecoveryAlertsEnabled"),
   quotaAlertThresholds(value) {
