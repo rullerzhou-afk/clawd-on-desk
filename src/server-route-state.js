@@ -56,6 +56,22 @@ function normalizeReportedClaudeConfigDir(value) {
   return normalizeClaudeConfigDir(value, { platform: "linux" })
     || normalizeClaudeConfigDir(value, { platform: "win32" });
 }
+
+// Mirrors hooks/clawd-hook.js normalizeClaudeEntrypoint: both ends accept only
+// a short opaque token, so a malformed value is dropped instead of stored.
+// Keep the allowlist and length in sync with the hook side.
+const CLAUDE_ENTRYPOINT_MAX_LENGTH = 64;
+const CLAUDE_ENTRYPOINT_RE = /^[A-Za-z0-9._-]+$/;
+
+function normalizeClaudeEntrypoint(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (!trimmed || trimmed.length > CLAUDE_ENTRYPOINT_MAX_LENGTH || !CLAUDE_ENTRYPOINT_RE.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
 const { normalizeQuotaGroup } = require("../hooks/quota-bucket");
 const { ANTIGRAVITY_QUOTA_FIELDS } = require("../hooks/antigravity-context-usage");
 const { CLAUDE_QUOTA_FIELDS } = require("../hooks/claude-rate-limits");
@@ -399,6 +415,7 @@ function handleStatePost(req, res, options) {
         ? data.wsl_distro.trim()
         : null;
       const claudeConfigDir = normalizeReportedClaudeConfigDir(data.claude_config_dir);
+      const claudeEntrypoint = normalizeClaudeEntrypoint(data.claude_entrypoint);
       const headless = data.headless === true;
       const platform = typeof data.platform === "string" && data.platform.trim()
         ? data.platform.trim()
@@ -1229,6 +1246,7 @@ function handleStatePost(req, res, options) {
             host,
             wslDistro,
             ...(agentId === "claude-code" && claudeConfigDir ? { claudeConfigDir } : {}),
+            ...(agentId === "claude-code" && claudeEntrypoint ? { claudeEntrypoint } : {}),
             headless: headless || codexHookState.headless === true,
             platform,
             model,

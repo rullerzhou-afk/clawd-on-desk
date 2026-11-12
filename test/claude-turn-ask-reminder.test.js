@@ -81,6 +81,29 @@ describe("createClaudeTurnAskReminder", () => {
     assert.equal(reminded.length, 0);
   });
 
+  it("issue #1365: reports pending while the question can still remind", () => {
+    const { reminder, state } = makeReminder();
+    assert.strictEqual(reminder.isPending("s1"), false);
+    reminder.track(QUESTION);
+    assert.strictEqual(reminder.isPending("s1"), true);
+    assert.strictEqual(reminder.isPending("other"), false);
+
+    state.enabled = false;
+    assert.strictEqual(reminder.isPending("s1"), false, "a disabled reminder does not need its session kept");
+  });
+
+  it("issue #1365: stops reporting pending after resolve or after it fired", () => {
+    const { reminder, timers } = makeReminder();
+    reminder.track(QUESTION);
+    assert.strictEqual(reminder.isPending("s1"), true);
+    assert.strictEqual(reminder.resolve("s1"), true);
+    assert.strictEqual(reminder.isPending("s1"), false);
+
+    reminder.track(QUESTION);
+    timers.advance(60_000);
+    assert.strictEqual(reminder.isPending("s1"), false, "a consumed reminder no longer holds the session");
+  });
+
   it("does not remind when canRemind rejects the payload at expiry", () => {
     const { reminder, timers, reminded } = makeReminder({ canRemind: () => false });
     reminder.track(QUESTION);

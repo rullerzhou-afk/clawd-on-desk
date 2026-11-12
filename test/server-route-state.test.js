@@ -194,6 +194,67 @@ describe("internally derived execution hint", () => {
   });
 });
 
+describe("Claude desktop entrypoint (issue #1365)", () => {
+  it("issue #1365: forwards a valid claude_entrypoint only for claude-code", async () => {
+    const valid = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: "entrypoint-forward",
+      claude_entrypoint: "claude-desktop",
+    }));
+    assert.strictEqual(valid.calls.updateSession[0][3].claudeEntrypoint, "claude-desktop");
+
+    const invalid = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: "entrypoint-forward",
+      claude_entrypoint: "not a token",
+    }));
+    assert.strictEqual(invalid.calls.updateSession[0][3].claudeEntrypoint, undefined);
+
+    const foreign = await callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "codex", session_id: "entrypoint-forward",
+      claude_entrypoint: "claude-desktop",
+    }));
+    assert.strictEqual(foreign.calls.updateSession[0][3].claudeEntrypoint, undefined);
+  });
+
+  it("issue #1365: keeps the stored marker when a later event omits it, and lets a valid value replace it", async () => {
+    const api = makeMetadataStateRuntime({ processKill: () => true });
+    const rawId = "claude-entrypoint-persist";
+    const sid = localSessionKey(rawId);
+    const post = (extra) => callStatePost(JSON.stringify({
+      state: "idle", event: "Stop", agent_id: "claude-code", session_id: rawId, ...extra,
+    }), { ctx: { sessions: api.sessions, updateSession: api.updateSession } });
+    try {
+      await post({ claude_entrypoint: "claude-desktop" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "claude-desktop");
+
+      await post({});
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "claude-desktop");
+
+      await post({ claude_entrypoint: "cli" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "cli");
+
+      await post({ claude_entrypoint: "still not a token" });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, "cli");
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("issue #1365: does not record the marker on a non-Claude agent even when it is sent", async () => {
+    const api = makeMetadataStateRuntime({ processKill: () => true });
+    const rawId = "claude-entrypoint-foreign";
+    const sid = localSessionKey(rawId);
+    try {
+      await callStatePost(JSON.stringify({
+        state: "idle", event: "Stop", agent_id: "codex", session_id: rawId,
+        claude_entrypoint: "claude-desktop",
+      }), { ctx: { sessions: api.sessions, updateSession: api.updateSession } });
+      assert.strictEqual(api.sessions.get(sid).claudeEntrypoint, null);
+    } finally {
+      api.cleanup();
+    }
+  });
+});
+
 describe("Codex official plan progress", () => {
   const raw = "codex:official-plan";
   const body = (extra = {}) => JSON.stringify({
