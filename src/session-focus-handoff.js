@@ -22,7 +22,9 @@ const DSH_SESSION_NAMESPACE = "deepseek-harness:";
 function resolveDshSessionId(entry) {
   const raw = typeof (entry && entry.rawSessionId) === "string" ? entry.rawSessionId.trim() : "";
   if (!raw) return "";
-  return raw.startsWith(DSH_SESSION_NAMESPACE) ? raw.slice(DSH_SESSION_NAMESPACE.length) : raw;
+  const id = raw.startsWith(DSH_SESSION_NAMESPACE) ? raw.slice(DSH_SESSION_NAMESPACE.length) : raw;
+  // The bridge uses `default` when DSH supplied no id; it is not a real session.
+  return id === "default" ? "" : id;
 }
 
 // Discovery outcomes that are not a verified unique install each get their own

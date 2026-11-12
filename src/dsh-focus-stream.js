@@ -9,20 +9,23 @@
 // One slot, newest wins: a click nobody was listening for must not ambush a
 // page that connects a minute later.
 
-const HEARTBEAT_MS = 15000;
-// How long a click stays replayable for a page that connects right after it.
-const REPLAY_WINDOW_MS = 10000;
-const MAX_ID_CHARS = 200;
-// DSH ids look like `session-<uuid>`. Two page origins subscribe here: a `dsh web`
-// page under a loopback http origin, and the desktop app's `dsh-app://app`
-// window (registered as a CORS scheme by its Electron shell). Anything else gets
-// no stream and no CORS grant.
-const LOOPBACK_ORIGIN_RE = /^(?:https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\])(?::\d+)?|dsh-app:\/\/[A-Za-z0-9._-]+)$/;
+const { randomUUID } = require("node:crypto");
 
-function normalizeLoopbackOrigin(value) {
-  if (typeof value !== "string") return null;
-  const origin = value.trim();
-  return LOOPBACK_ORIGIN_RE.test(origin) ? origin : null;
+// A quiet stream still sends traffic often enough to keep the connection warm.
+const HEARTBEAT_MS = 15000;
+// Desktop cold starts can take over ten seconds; page deduplication makes a
+// thirty-second replay safe without pulling the user back on every reconnect.
+const REPLAY_WINDOW_MS = 30000;
+// DSH ids look like `session-<uuid>`; leave room without retaining arbitrary text.
+const MAX_ID_CHARS = 200;
+// Web and desktop share sessions, but only the main desktop window may switch.
+const DESKTOP_ORIGIN = "dsh-app://app";
+
+function isLoopbackHost(value) {
+  const host = typeof value === "string"
+    ? /^(?:127\.0\.0\.1|localhost|\[::1\])(?::([0-9]{1,5}))?$/i.exec(value)
+    : null;
+  return !!host && (host[1] === undefined || (Number(host[1]) >= 1 && Number(host[1]) <= 65535));
 }
 
 function normalizeTargetId(value) {
@@ -34,34 +37,38 @@ function normalizeTargetId(value) {
 }
 
 function createDshFocusStream({ now = Date.now } = {}) {
+  // A new boot cannot collide with click ids remembered by a still-open page.
+  const bootId = randomUUID();
+  // Each response represents one page's active subscription.
   const subscribers = new Set();
+  // The latest valid click remains replayable even after an attempted delivery.
   let pending = null;
+  // Increasing within this boot distinguishes repeated clicks on one session.
+  let sequence = 0;
 
-  function frame(id) {
-    return `event: focus\ndata: ${JSON.stringify({ sessionId: id })}\n\n`;
+  function frame({ id, clickId }) {
+    return `event: focus\ndata: ${JSON.stringify({ sessionId: id, clickId })}\n\n`;
   }
 
   function publish(sessionId) {
     const id = normalizeTargetId(sessionId);
     if (!id) return false;
-    pending = { id, at: now() };
+    pending = { id, clickId: `${bootId}:${++sequence}`, at: now() };
     for (const res of [...subscribers]) {
       if (res.writableEnded || res.destroyed) {
         subscribers.delete(res);
         continue;
       }
-      res.write(frame(id));
+      res.write(frame(pending));
     }
     return true;
   }
 
-  // One subscriber is one open EventSource. The SSRF-shaped risk here is a
-  // local page subscribing; it can only learn which session Clawd asked for and
-  // trigger a view switch, never a permission or write decision.
+  // The desktop page's cross-origin EventSource always sends Origin. Requiring
+  // it and a loopback Host excludes web tabs and other dsh-app windows.
   function handle(req, res) {
-    const rawOrigin = req && req.headers ? req.headers.origin : undefined;
-    const origin = normalizeLoopbackOrigin(rawOrigin);
-    if (rawOrigin !== undefined && !origin) {
+    const requestHeaders = (req && req.headers) || {};
+    if (requestHeaders.origin !== DESKTOP_ORIGIN || !isLoopbackHost(requestHeaders.host)) {
       res.writeHead(403, { "Content-Type": "text/plain; charset=utf-8", "Connection": "close" });
       res.end("forbidden");
       return;
@@ -71,13 +78,15 @@ function createDshFocusStream({ now = Date.now } = {}) {
       "Cache-Control": "no-store, no-transform",
       "Connection": "keep-alive",
       "X-Accel-Buffering": "no",
+      "Access-Control-Allow-Origin": DESKTOP_ORIGIN,
     };
-    if (origin) headers["Access-Control-Allow-Origin"] = origin;
     res.writeHead(200, headers);
     // A comment frame opens the stream so EventSource reports `open` before the
     // first real click; proxies and DevTools then keep the connection warm.
     res.write(": clawd dsh focus\n\n");
-    if (pending && now() - pending.at <= REPLAY_WINDOW_MS) res.write(frame(pending.id));
+    // Do not clear pending on delivery: a disconnecting page can lose the frame.
+    // Each page deduplicates by clickId when the next connection replays it.
+    if (pending && now() - pending.at <= REPLAY_WINDOW_MS) res.write(frame(pending));
     subscribers.add(res);
 
     const heartbeat = setInterval(() => {
