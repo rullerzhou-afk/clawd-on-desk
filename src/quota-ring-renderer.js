@@ -56,6 +56,16 @@ const RING_PROVIDERS = [
     outer: [{ field: "kimiFiveHour", fallback: "5h" }],
     inner: [{ field: "kimiWeekly", fallback: "7d" }],
   },
+  // DeepSeek Harness prepaid balance. No rolling window, so the
+  // single ring maps the balance against a fixed reference amount and the
+  // readout prints the money amount instead of a bare percentage.
+  {
+    key: "deepseekQuota",
+    label: "DeepSeek",
+    amountDisplay: true,
+    outer: [{ field: "deepseekBalance", fallbackKey: "quotaRingDeepseekBalance" }],
+    inner: [],
+  },
 ];
 
 // Coin ring geometry (SVG user units == the coin's 26px box).
@@ -101,6 +111,8 @@ const GLYPH_ZOOM_BY_PROVIDER = {
   claudeQuota: 64 / 56,
   codexQuota: 64 / 44.4,
   kimiQuota: 64 / 56,
+  // The DeepSeek mark is exported as a plain (non-tiled) glyph: 56 of 64.
+  deepseekQuota: 64 / 56,
 };
 let coinClipSeq = 0;
 
@@ -126,6 +138,20 @@ function quotaDisplayMode() {
 function quotaDisplayPercent(usedPercent) {
   const used = Math.max(0, Math.min(100, Number(usedPercent) || 0));
   return quotaDisplayMode() === "remaining" ? 100 - used : used;
+}
+
+// Prepaid-balance providers (DeepSeek) print the account amount in
+// the percentage slot. Symbols cover the currencies DeepSeek's balance API can
+// return; anything else falls back to a suffixed code.
+const CURRENCY_SYMBOLS = Object.freeze({ CNY: "¥", USD: "$" });
+
+function formatQuotaAmount(amount, currency) {
+  if (amount === null || amount === undefined) return null;
+  const value = Number(amount);
+  if (!Number.isFinite(value) || value < 0) return null;
+  const symbol = CURRENCY_SYMBOLS[currency] || (currency ? `${currency} ` : "¥");
+  const digits = value >= 1000 ? 0 : 2;
+  return `${symbol}${value.toFixed(digits)}`;
 }
 
 function formatWindowLabel(windowMinutes, fallbackLabel) {
@@ -214,7 +240,12 @@ function selectRingWindow(group, candidates, now, ring, providerSeenAtValue, pro
     }
   }
   if (!selected) return null;
-  const baseLabel = formatWindowLabel(selected.bucket.windowMinutes, selected.candidate.fallback);
+  const baseLabel = formatWindowLabel(
+    selected.bucket.windowMinutes,
+    selected.candidate.fallbackKey
+      ? t(selected.candidate.fallbackKey)
+      : selected.candidate.fallback
+  );
   const family = selected.candidate.familyKey ? t(selected.candidate.familyKey) : "";
   return {
     pct: selected.pct,
@@ -228,6 +259,9 @@ function selectRingWindow(group, candidates, now, ring, providerSeenAtValue, pro
     field: selected.candidate.field,
     stale: selected.stale,
     seenAt: selected.seenAt,
+    // Kept so prepaid-balance providers can read amount/currency
+    // off the same bucket that supplied the headline.
+    bucket: selected.bucket,
   };
 }
 
@@ -279,6 +313,21 @@ function buildCoinModel(source, def, now, multiSource) {
   const visibleHost = multiSource
     ? (source.host || t("dashboardQuotaSourceLocal"))
     : null;
+  // Prepaid-balance providers carry the raw money amount; pick it
+  // from the window that owns the headline so it follows the same selection as
+  // the percentage did.
+  let amount = null;
+  let currency = null;
+  for (const window of [displayWindow, restingWindow]) {
+    const bucket = window && window.bucket;
+    if (!bucket) continue;
+    const rawAmount = Number(bucket.amount);
+    if (Number.isFinite(rawAmount)) {
+      amount = rawAmount;
+      currency = typeof bucket.currency === "string" ? bucket.currency : null;
+      break;
+    }
+  }
   return {
     providerKey: def.key,
     label: def.label,
@@ -298,6 +347,9 @@ function buildCoinModel(source, def, now, multiSource) {
     restingWindow,
     state,
     near: !!near,
+    amountDisplay: def.amountDisplay === true,
+    amount,
+    currency,
   };
 }
 
@@ -465,7 +517,14 @@ function buildCoinRow(model, now = Date.now()) {
   // never change — only which window the digits are reporting — so the alert
   // stays on screen the whole time.
   const shown = model.flashingResting ? model.restingWindow : model.displayWindow;
-  if (shown && shown.reset) {
+  const amountText = model.amountDisplay ? formatQuotaAmount(model.amount, model.currency) : null;
+  if (amountText) {
+    // Money amount instead of a bare percentage. The ring itself
+    // still draws the percentage against the provider's reference amount.
+    pct.classList.add("is-amount");
+    pct.textContent = amountText;
+    win.textContent = shown ? shown.label : "";
+  } else if (shown && shown.reset) {
     pct.textContent = quotaDisplayMode() === "remaining" ? "100%" : "0%";
     win.textContent = t("quotaRingReset");
   } else if (shown) {
@@ -500,7 +559,9 @@ function buildCoinRow(model, now = Date.now()) {
 // desaturating the arc, or a dot — not standing text.
 function buildReadoutFoot(model) {
   let text = null;
-  if (quotaDisplayMode() === "remaining") {
+  // A money readout has no percent to disambiguate, so the
+  // "remaining" mode word would just repeat the label.
+  if (quotaDisplayMode() === "remaining" && !(model && model.amountDisplay === true)) {
     text = t("quotaRingRemainingWord");
   } else if (model.sourceMarker) {
     text = model.sourceMarker;

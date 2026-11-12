@@ -336,13 +336,15 @@ describe("quota ring — geometry/renderer mirror", () => {
       claudeQuota: { group: { claudeFiveHour: bucket(1) }, updatedAt: 1 },
       codexQuota: { group: { codexFiveHour: bucket(1) }, updatedAt: 1 },
       kimiQuota: { group: { kimiFiveHour: bucket(1) }, updatedAt: 1 },
+      // Prepaid-balance provider: a single outer ring, no rolling window.
+      deepseekQuota: { group: { deepseekBalance: { usedPercent: 1, amount: 49.5, currency: "CNY" } }, updatedAt: 1 },
     }],
   };
 
   it("declares the same provider keys, in the same order, on both sides", () => {
     const rendererKeys = [...rendererSource.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1]);
     const geometryKeys = ringGeom.listQuotaRingProviders(everyProvider, []).map((p) => p.key);
-    assert.strictEqual(geometryKeys.length, 4, "the all-providers fixture must exercise the table");
+    assert.strictEqual(geometryKeys.length, 5, "the all-providers fixture must exercise the table");
     assert.deepStrictEqual(
       rendererKeys, geometryKeys,
       "provider order decides which coins survive the four-coin cap"
