@@ -677,10 +677,22 @@ function createAgentRuntimeMain(options = {}) {
     const preserveCodexInitialization = isLocalOfficialCodexEvent
       && event === "SessionStart" && state === "idle"
       && shouldPreserveCodexInitialization(sessionId, opts, stateRuntime);
+    // An Interrupt closes a turn without providing a completion to display.
+    // Keep the fence and child cleanup, but do not create a card for a turn
+    // that has no current session record.
+    const orphanCodexInterrupt = isLocalOfficialCodexEvent && event === "Interrupt" && state === "idle"
+      && typeof sessions?.has === "function" && !sessions.has(sessionId);
     kiroDesktop.onHook(sessionId, event, opts);
-    const result = preserveCodexInitialization
-      ? stateRuntime.updateCodexInitializationMetadata(sessionId, opts)
-      : updateSession(sessionId, state, event, opts);
+    let result = false;
+    if (orphanCodexInterrupt) {
+      stateRuntime.releaseCodexCompactionOnTerminal?.(sessionId, event, {
+        turnId: opts.turnId, occurredAt: now(),
+      });
+    } else if (preserveCodexInitialization) {
+      result = stateRuntime.updateCodexInitializationMetadata(sessionId, opts);
+    } else {
+      result = updateSession(sessionId, state, event, opts);
+    }
     if (opts.agentId === "copilot-cli") copilotTerminalWait.onHook(sessionId, event, opts);
     if (officialChildTerminalId
       && resolveSessionIdentity(officialChildTerminalId, "local").sessionId === sessionId) {

@@ -99,6 +99,41 @@ function makeRealStateHarness({ preserveThemeTimings = false, ctxOverrides = {} 
 }
 
 describe("agent-runtime-main", () => {
+  it("keeps a local official Interrupt silent when no session was displayed", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = { agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId };
+    try {
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", { ...official, turnId: "canceled" });
+      assert.equal(harness.state.sessions.has(sessionId), false);
+      assert.deepEqual(harness.sounds, []);
+      assert.deepEqual(harness.stateChanges, []);
+
+      runtime.updateSessionFromServer(sessionId, "working", "PreToolUse", { ...official, turnId: "canceled" });
+      assert.equal(harness.state.sessions.has(sessionId), false, "the terminal fence rejects late work");
+
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...official, turnId: "next" });
+      assert.equal(harness.state.sessions.get(sessionId).state, "thinking");
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", { ...official, turnId: "next" });
+      assert.equal(harness.state.sessions.get(sessionId).state, "idle", "an existing row still receives cancellation");
+
+      const completedId = "codex:bbbbbbbb-1111-4111-8111-111111111111";
+      runtime.updateSessionFromServer(localSessionKey(completedId), "attention", "Stop", {
+        ...official, rawSessionId: completedId, turnId: "completed",
+      });
+      assert.equal(harness.state.sessions.has(localSessionKey(completedId)), true,
+        "a completion received after Clawd starts still creates its row");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
   it("presents manual compaction after Stop while continuing to reject late work", ({ mock }) => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     const harness = makeRealStateHarness();
