@@ -104,19 +104,22 @@ creating a card or changing its activity time. If DSH no longer reports both
 operands, Clawd clears the old percentage instead of displaying a stale one.
 The standard completion bell appears when a finished DSH session is unread.
 
-Clicking a DSH session can also switch the conversation, not just raise the
-window. The bridge ships a browser half (`lib/client.js`, declared through
-`exports["./client"]` and `dsh.client`) that runs inside the DSH page, because
-only page-side code can call the public client service
-`uiWorkspace.openSession()`. Clawd publishes the clicked session id on a loopback
-SSE endpoint (`GET /dsh/focus-stream`) and opens `dsh://open`; the page half
-subscribes, switches, and the window then arrives already on that conversation.
-The id is the bridge's own session id with the `deepseek-harness:` namespace
-removed. Everything degrades: an older DSH that never loads the browser half, a
-page that cannot reach Clawd, or a session deleted in the meantime all leave the
-click as a plain window focus. The stream accepts only a `dsh web` loopback page
-or the desktop app's `dsh-app://app` window; it grants no other origin CORS and
-carries no permission or write authority.
+Clicking a desktop-app DSH session raises the window and, with the browser
+half installed, switches to that conversation. The bridge ships `lib/client.js`
+(declared through `exports["./client"]` and `dsh.client`) because only page-side
+code can call the public client service `uiWorkspace.openSession()`. Clawd
+publishes the clicked session id on a loopback SSE endpoint
+(`GET /dsh/focus-stream`) before opening `dsh://open`. The id is the bridge's own
+session id with the `deepseek-harness:` namespace removed. Only the desktop
+window subscribes: the stream requires the exact Origin `dsh-app://app` and a
+loopback Host. Web tabs never subscribe or switch. Each click has a unique
+`clickId`; the page deduplicates replays, and Clawd retains the latest click for
+30 seconds. During cold start the page waits up to 20 seconds for the session
+list to become ready before switching. The browser tries only ports 23333–23337;
+if Clawd is on another port, the click only raises the window. An older DSH that
+never loads the browser half, an unreachable Clawd, or a deleted session also
+leaves the click as a plain window focus. The stream carries no permission or
+write authority.
 
 The quota coin is separate account telemetry. DSH does not currently expose
 a five-hour usage bucket through this plugin's public session APIs, so Clawd
@@ -536,9 +539,11 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   `0.2.0-rc.2`: clicking a desktop session brought the window to the front
   through `dsh://open` with another app in front, when the window was minimized,
   and after it was closed. The launch fallback (used when the protocol cannot be
-  opened) is covered by unit tests only. It does not switch to that specific
-  conversation: DSH has no external session-navigation entry point, so the
-  window shows whatever it was already on. Web sessions remain unfocusable.
+  opened) is covered by unit tests only. That 2026-10-05 validation covered
+  raising the window only. With the browser half installed, clicking also
+  selects the requested conversation through the focus stream; real-device
+  evidence for conversation switching is recorded separately. Web sessions
+  remain unfocusable.
   The launch fallback refuses to start when discovery is not a single verified
   install: two valid installs at different real paths are ambiguous (for example
   a system-wide and a per-user copy), and any candidate it cannot verify also

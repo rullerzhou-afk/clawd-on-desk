@@ -9,6 +9,7 @@ const path = require("node:path");
 
 const {
   BRIDGE_PACKAGE_NAME,
+  BRIDGE_SOURCE_FILES,
   DSH_RESTART_HINT,
   DSH_VERSION_FAMILIES,
   SUPPORTED_DSH_RANGE,
@@ -634,6 +635,11 @@ test("explicit install promotes an immutable generation and verifies both profil
   assert.strictEqual(result.updated, true);
   assert.strictEqual(result.message, DSH_RESTART_HINT);
   assert.match(result.generation, /generations[\\/][a-f0-9]{64}$/);
+  assert.ok(BRIDGE_SOURCE_FILES.includes("lib/client.js"));
+  assert.strictEqual(
+    fs.readFileSync(path.join(result.generation, "lib/client.js"), "utf8"),
+    fs.readFileSync(path.join(SOURCE_DIR, "lib/client.js"), "utf8")
+  );
   assert.deepStrictEqual(cli.calls[0].slice(0, 4), ["plugin", "--profile", "web", "add"]);
   const health = await inspectDeepSeekHarnessIntegration({
     dshHome: harness.dshHome,

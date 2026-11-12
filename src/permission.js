@@ -803,8 +803,11 @@ function buildPermissionFocusEntry(perm) {
   if (perm.codexSource) focusEntry.codexSource = perm.codexSource;
   if (typeof perm.codexClientEphemeral === "boolean") focusEntry.codexClientEphemeral = perm.codexClientEphemeral;
   // An approval can arrive before the session lifecycle event, so the fallback
-  // entry needs the carrier to remain jumpable to the desktop app window.
-  if (perm.dshCarrier) focusEntry.dshCarrier = perm.dshCarrier;
+  // entry needs the carrier and raw id to raise the app and select the session.
+  if (perm.dshCarrier) {
+    focusEntry.dshCarrier = perm.dshCarrier;
+    if (perm.rawSessionId) focusEntry.rawSessionId = perm.rawSessionId;
+  }
   return focusEntry;
 }
 
