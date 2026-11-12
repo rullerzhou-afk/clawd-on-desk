@@ -529,8 +529,8 @@ describe("WorkBuddy title observer", () => {
       // sample only decides whether the JSONL reader is kept or reset and is the
       // identity recorded on the observation; it has nothing to do with the
       // archive/delete lifecycle.
-      const statSync = (file) => {
-        const stat = fs.statSync(file);
+      const statSync = (file, ...args) => {
+        const stat = fs.statSync(file, ...args);
         if (armSwap && !swapped) {
           swapped = true;
           armSwap = false;
@@ -591,9 +591,9 @@ describe("WorkBuddy title observer", () => {
       const transcriptPath = path.join(dir, "s.jsonl");
       fs.writeFileSync(transcriptPath, `${JSON.stringify({ type: "ai-title", sessionId: "s1", aiTitle: "Old file title" })}\n`);
       let failStat = false;
-      const statSync = (file) => {
+      const statSync = (file, ...args) => {
         if (failStat) throw new Error("EACCES");
-        return fs.statSync(file);
+        return fs.statSync(file, ...args);
       };
       const updates = [];
       const session = {};
@@ -618,6 +618,35 @@ describe("WorkBuddy title observer", () => {
     });
   });
 
+  it("file identity R1: two failed stat samples at the same path create a new entry", async () => {
+    const transcriptPath = path.join(os.tmpdir(), "workbuddy-unreadable.jsonl");
+    const entries = [], statPaths = [], session = {};
+    const tracker = createWorkBuddySessionTitleTracker({
+      statSync: (file) => {
+        statPaths.push(file);
+        throw Object.assign(new Error("unreadable transcript"), { code: "EACCES" });
+      },
+      getSession: () => session,
+      readTitle: async (entry) => { entries.push(entry); return null; },
+      now: () => 100_000,
+      pollMs: 60_000,
+    });
+    try {
+      const input = { sessionId: "s1", rawSessionId: "s1", transcriptPath };
+      tracker.track(input);
+      await tracker.poll();
+      assert.equal(entries.length, 1);
+      assert.equal(entries[0].sourceIdentity, null);
+
+      tracker.track(input);
+      await tracker.poll();
+      assert.deepEqual(statPaths, [transcriptPath, transcriptPath]);
+      assert.equal(entries.length, 2);
+      assert.equal(entries[1].sourceIdentity, null);
+      assert.notStrictEqual(entries[1], entries[0], "two unavailable identities cannot confirm the same source");
+    } finally { tracker.clear(); }
+  });
+
   it("issue #655: beginTurn enforces the shared 256 observation cap", () => {
     const sessions = new Map();
     const tracker = createWorkBuddySessionTitleTracker({ pollMs: 60_000,
@@ -633,7 +662,7 @@ describe("WorkBuddy title observer", () => {
     let stats = 0;
     const sessions = new Map();
     const tracker = createWorkBuddySessionTitleTracker({
-      statSync: () => { stats++; return { dev: 1, ino: 1 }; },
+      statSync: (_file, options) => { stats++; return options?.bigint ? { dev: 1n, ino: 1n } : { dev: 1, ino: 1 }; },
       getSession: (id) => { if (!sessions.has(id)) sessions.set(id, {}); return sessions.get(id); },
       readTitle: async () => null,
       pollMs: 60_000,

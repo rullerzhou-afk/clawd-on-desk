@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { readStats } = require("../hooks/file-identity");
 const Monitor = require("../agents/codex-log-monitor");
 const codex = require("../agents/codex");
 
@@ -100,7 +101,7 @@ describe("Codex delegated old-mtime growth discovery", () => {
   it("keeps pending growth across a read-budget shortage and limits recovery to two per poll", t => {
     const h = fixture(t, { children: 3 });
     for (const n of [1, 2, 3]) h.append(n, "event_msg", { type: "task_started", turn_id: `turn-${n}` });
-    const stat = fs.statSync(h.file(1));
+    const stat = readStats(fs.statSync, h.file(1));
     const growth = h.monitor._observeFileGrowth(h.file(1), stat);
     assert.equal(growth.pendingGrowth, true);
     h.monitor._recoverGrownDelegatedFile({ filePath: h.file(1), fileName: path.basename(h.file(1)) }, stat,

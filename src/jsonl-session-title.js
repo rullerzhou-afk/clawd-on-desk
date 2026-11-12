@@ -1,6 +1,7 @@
 "use strict";
 
 const fs = require("fs/promises");
+const { toNumberStats, fileIdentity } = require("../hooks/file-identity");
 
 const TITLE_EVENTS = new Set([
   "SessionStart",
@@ -41,8 +42,7 @@ function createEntry(sessionId) {
   return {
     sessionId,
     filePath: null,
-    device: null,
-    inode: null,
+    identity: null,
     offset: 0,
     modifiedTimeMs: null,
     changedTimeMs: null,
@@ -169,8 +169,7 @@ function createJsonlSessionTitleTracker(options = {}) {
 
   function resetFileState(entry, filePath, stat) {
     entry.filePath = filePath;
-    entry.device = stat.dev;
-    entry.inode = stat.ino;
+    entry.identity = fileIdentity(stat);
     entry.offset = 0;
     entry.modifiedTimeMs = stat.mtimeMs;
     entry.changedTimeMs = stat.ctimeMs;
@@ -231,7 +230,7 @@ function createJsonlSessionTitleTracker(options = {}) {
     try {
       if (!isCurrent()) return null;
       fd = await fsApi.open(filePath, "r");
-      const stat = await fd.stat();
+      const stat = toNumberStats(await fd.stat({ bigint: true }));
       if (!isCurrent()) return null;
       if (!stat || typeof stat.isFile !== "function" || !stat.isFile() || stat.size < 0) {
         return effectiveTitle(entry);
@@ -239,8 +238,7 @@ function createJsonlSessionTitleTracker(options = {}) {
       metrics.fileSize = stat.size;
 
       let reset = entry.filePath !== filePath
-        || entry.device !== stat.dev
-        || entry.inode !== stat.ino
+        || entry.identity !== fileIdentity(stat)
         || stat.size < entry.offset;
       if (!reset && entry.offset > 0 && !await anchorMatches(fd, entry, metrics)) reset = true;
       if (!reset && stat.size === entry.offset && (
@@ -274,8 +272,7 @@ function createJsonlSessionTitleTracker(options = {}) {
       }
       entry.offset = position;
       entry.filePath = filePath;
-      entry.device = stat.dev;
-      entry.inode = stat.ino;
+      entry.identity = fileIdentity(stat);
       entry.modifiedTimeMs = stat.mtimeMs;
       entry.changedTimeMs = stat.ctimeMs;
       metrics.endOffset = position;
