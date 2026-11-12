@@ -685,6 +685,8 @@ function createAgentRuntimeMain(options = {}) {
     kiroDesktop.onHook(sessionId, event, opts);
     let result = false;
     if (orphanCodexInterrupt) {
+      // The accepted event proves hooks are arriving, even without a row.
+      stateRuntime.endStartupRecovery?.();
       stateRuntime.releaseCodexCompactionOnTerminal?.(sessionId, event, {
         turnId: opts.turnId, occurredAt: now(),
       });

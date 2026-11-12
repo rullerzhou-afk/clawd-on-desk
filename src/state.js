@@ -2473,10 +2473,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     recapSuppressed = false,
     replaceProcessMetadata = false,
   } = opts;
-  if (startupRecoveryActive) {
-    startupRecoveryActive = false;
-    if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
-  }
+  endStartupRecovery();
 
   // #406: forward progress cancels a pending debounced completion. Runs before
   // the PermissionRequest early-return so a permission prompt cancels too.
@@ -3755,8 +3752,7 @@ function cleanStaleSessions() {
   if (startupRecoveryActive && sessions.size === 0) {
     detectRunningAgentProcesses((found) => {
       if (!found) {
-        startupRecoveryActive = false;
-        if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+        endStartupRecovery();
       }
     });
   }
@@ -4467,6 +4463,12 @@ function startStartupRecovery() {
   }, STARTUP_RECOVERY_MAX_MS);
 }
 
+function endStartupRecovery() {
+  if (!startupRecoveryActive) return;
+  startupRecoveryActive = false;
+  if (startupRecoveryTimer) { clearTimeout(startupRecoveryTimer); startupRecoveryTimer = null; }
+}
+
 function getCurrentState() { return currentState; }
 function getDisplayRevision() { return displayRevision; }
 function getCurrentSvg() { return currentSvg; }
@@ -4525,7 +4527,7 @@ return {
   // Read-only, unmerged account windows for source-specific alert deduplication.
   getAccountQuotaSnapshot: () => accountQuota.snapshot({ mergeSources: false }),
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,
-  getSvgOverride, getPetPresentationSessions, refreshPetPresentation, cleanStaleSessions, startStartupRecovery, refreshTheme,
+  getSvgOverride, getPetPresentationSessions, refreshPetPresentation, cleanStaleSessions, startStartupRecovery, endStartupRecovery, refreshTheme,
   detectRunningAgentProcesses, buildSessionSnapshot,
   emitSessionSnapshot, broadcastSessionSnapshot, getLastSessionSnapshot,
   getActiveSessionAliasKeys,
