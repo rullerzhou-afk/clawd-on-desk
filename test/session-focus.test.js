@@ -10,6 +10,7 @@ const {
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
   isFocusableLocalHudSession,
+  isKdeWaylandSession,
 } = require("../src/session-focus");
 const { makeSessionKey } = require("../src/session-key");
 
@@ -365,5 +366,48 @@ describe("session focus helpers", () => {
     assert.strictEqual(isFocusableLocalHudSession({ sourcePid: 1 }), false);
     assert.deepStrictEqual(getFocusableLocalHudSessionIds({ sessions: "bad" }), []);
     assert.deepStrictEqual(getFocusableLocalHudSessionIds(null), []);
+  });
+
+  it("keeps Linux terminals focusable only where a window can be raised", () => {
+    const linux = (env) => ({ osPlatform: "linux", env });
+    const gnomeWayland = linux({ XDG_SESSION_TYPE: "wayland", XDG_CURRENT_DESKTOP: "ubuntu:GNOME" });
+    const entry = { id: "local", sourcePid: 1000 };
+
+    assert.deepStrictEqual(getSessionFocusTarget(entry, gnomeWayland), {
+      canFocus: false, type: null, url: null, reason: "linux-wayland-window-raise",
+    });
+    assert.strictEqual(getSessionFocusTarget(entry, linux({ XDG_SESSION_TYPE: "wayland", XDG_CURRENT_DESKTOP: "KDE", KDE_SESSION_VERSION: "6" })).canFocus, true);
+    assert.strictEqual(getSessionFocusTarget(entry, linux({ XDG_SESSION_TYPE: "x11", XDG_CURRENT_DESKTOP: "GNOME" })).canFocus, true);
+    assert.strictEqual(getSessionFocusTarget(entry, linux({})).canFocus, true);
+    // The same environment says nothing about another host OS.
+    assert.strictEqual(getSessionFocusTarget(entry, { osPlatform: "darwin", env: gnomeWayland.env }).canFocus, true);
+
+    // A pane or editor tab can still be selected without raising the window.
+    assert.strictEqual(getSessionFocusTarget({ ...entry, tmuxSocket: "/tmp/tmux-1000/default" }, gnomeWayland).canFocus, true);
+    assert.strictEqual(getSessionFocusTarget({ ...entry, tmuxClient: "/dev/pts/1" }, gnomeWayland).canFocus, true);
+    assert.strictEqual(getSessionFocusTarget({ ...entry, editor: "code" }, gnomeWayland).canFocus, true);
+    assert.strictEqual(getSessionFocusTarget({ ...entry, hasPaneFocusTarget: true }, gnomeWayland).canFocus, true);
+    for (const hasPaneFocusTarget of [false, "true", 1]) {
+      assert.strictEqual(getSessionFocusTarget({ ...entry, hasPaneFocusTarget }, gnomeWayland).canFocus, false);
+    }
+  });
+
+  it("detects only Plasma 6 or newer on KDE Wayland", () => {
+    const env = { XDG_SESSION_TYPE: "wayland", XDG_CURRENT_DESKTOP: "KDE", KDE_SESSION_VERSION: "6" };
+    assert.strictEqual(isKdeWaylandSession(env), true);
+    assert.strictEqual(isKdeWaylandSession({ ...env, XDG_CURRENT_DESKTOP: "ubuntu:KDE" }), true);
+    assert.strictEqual(isKdeWaylandSession({ ...env, XDG_SESSION_TYPE: "x11" }), false);
+    assert.strictEqual(isKdeWaylandSession({ ...env, XDG_CURRENT_DESKTOP: "GNOME" }), false);
+    assert.strictEqual(isKdeWaylandSession({ XDG_SESSION_TYPE: "wayland" }), false);
+    assert.strictEqual(isKdeWaylandSession({ ...env, KDE_SESSION_VERSION: "7" }), true);
+    for (const version of ["5", "", "6junk", "6.0", " 6 ", undefined]) {
+      const unsupported = { ...env };
+      if (version === undefined) delete unsupported.KDE_SESSION_VERSION;
+      else unsupported.KDE_SESSION_VERSION = version;
+      assert.strictEqual(isKdeWaylandSession(unsupported), false, String(version));
+      assert.strictEqual(getSessionFocusTarget({ id: "local", sourcePid: 1000 }, {
+        osPlatform: "linux", env: unsupported,
+      }).canFocus, false, String(version));
+    }
   });
 });
