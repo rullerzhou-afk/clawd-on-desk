@@ -865,6 +865,7 @@ test("settings IPC delegates controller and size preview handlers", async () => 
     "remoteSsh.forceRevoke",
     "remoteSsh.markDeployed",
     "remoteSsh.markRemoteNode",
+    "remoteSsh.setTunnelMode",
   ]) {
     assert.deepStrictEqual(
       await ipcMain.invoke("settings:command", { action, payload: { forged: true } }),

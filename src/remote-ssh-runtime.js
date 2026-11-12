@@ -39,6 +39,7 @@ const {
   getCachedRemoteNodeBin,
   clearCachedRemoteNodeBin,
   buildRemoteNodeEvalCommand,
+  buildRemoteHookNodeCommand,
 } = require("./remote-ssh-node");
 const { decodeShellBytes } = require("./remote-ssh-decode");
 const { acceptedRoutingNonces } = require("./remote-ssh-identity");
@@ -46,6 +47,7 @@ const { resolveRemoteRuntimeLayout, assertPosixRemoteLayout } = require("./remot
 const { redactTransportDiagnostic } = require("./remote-ssh-transport");
 const { REMOTE_NODE_LAUNCH_COMMAND, buildNodeProgramFrame, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
 const { appendRemoteSshConfigArgs } = require("./remote-ssh-local-config");
+const { createRemoteSshStdioTransport } = require("./remote-ssh-stdio-transport");
 
 const SSH_BASE_OPTS = ["-T", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
 const SCP_BASE_OPTS = ["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"];
@@ -74,6 +76,7 @@ function looksLikeWindowsCmdStderr(stderr) {
 const PROBE_WINDOW_MS = 12000;
 const SERIALIZED_READINESS_TIMEOUT_MS = 30000;
 const SERIALIZED_READINESS_DRAIN_TIMEOUT_MS = 5000;
+const STDIO_READY_TIMEOUT_MS = 20000;
 const PROBE_MIN_GAP_MS = 250;
 const PROBE_CHILD_TIMEOUT_MS = 5000;
 const BACKOFF_SCHEDULE_MS = [5000, 15000, 45000, 120000, 300000];
@@ -632,6 +635,10 @@ function createRemoteSshRuntime(deps = {}) {
   const serializedReadinessDrainTimeoutMs = Number.isFinite(deps.serializedReadinessDrainTimeoutMs)
     ? deps.serializedReadinessDrainTimeoutMs
     : SERIALIZED_READINESS_DRAIN_TIMEOUT_MS;
+  const stdioReadyTimeoutMs = Number.isFinite(deps.stdioReadyTimeoutMs)
+    ? deps.stdioReadyTimeoutMs
+    : STDIO_READY_TIMEOUT_MS;
+  const createStdioTransport = deps.createStdioTransport || createRemoteSshStdioTransport;
   const resolveRemoteNode = deps.resolveRemoteNodeBin || resolveRemoteNodeBin;
   const detectSshClient = deps.detectSsh || (() => detectSsh());
   const platform = deps.platform || process.platform;
@@ -696,6 +703,11 @@ function createRemoteSshRuntime(deps = {}) {
       readinessChallenge: null,
       readinessLineBuffer: "",
       readinessTimer: null,
+      tunnelMode: profile.tunnelMode === "stdio" ? "stdio" : "reverse",
+      stdioTransport: null,
+      stdioReady: false,
+      stdioReadyTimer: null,
+      stdioTerminalError: null,
       sshExitCode: null,
       sshExitSignal: null,
       intentionalClose: false,
@@ -744,8 +756,10 @@ function createRemoteSshRuntime(deps = {}) {
       ...(transport ? transport : {}),
       ...(ingressStatus ? {
         ingressPort: ingressStatus.port,
+        ingressAcceptedCount: ingressStatus.acceptedCount,
         ingressRejectedCount: ingressStatus.rejectedCount,
       } : {}),
+      tunnelMode: state.tunnelMode,
     };
   }
 
@@ -818,6 +832,8 @@ function createRemoteSshRuntime(deps = {}) {
         ? { installId: state.profile.installId }
         : {}),
     };
+    const previousTunnelMode = state.tunnelMode;
+    const nextTunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
     const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(nextProfile);
     if (targetChanged && state.serializedTransport
       && (state.sshChild || state.status === "connecting" || state.status === "connected"
@@ -831,6 +847,12 @@ function createRemoteSshRuntime(deps = {}) {
       return false;
     }
     state.profile = nextProfile;
+    if (previousTunnelMode !== nextTunnelMode
+      && state.status !== "connecting"
+      && state.status !== "connected"
+      && state.status !== "reconnecting") {
+      state.tunnelMode = nextTunnelMode;
+    }
     if (targetChanged) {
       resetRecoveryContext(state);
       clearRemoteShellCache(state);
@@ -852,6 +874,11 @@ function createRemoteSshRuntime(deps = {}) {
       const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(profile);
       // Replace profile snapshot — caller may have just edited fields.
       state.profile = profile;
+      if (targetChanged) {
+        state.tunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
+      } else if (profile.tunnelMode === "stdio") {
+        state.tunnelMode = "stdio";
+      }
       if (targetChanged) {
         clearRemoteShellCache(state);
         resetRecoveryContext(state);
@@ -1242,6 +1269,14 @@ function createRemoteSshRuntime(deps = {}) {
   }
 
   function spawnTunnel(state, localPort) {
+    if (state.tunnelMode === "stdio") {
+      spawnStdioTunnel(state, localPort);
+      return;
+    }
+    spawnReverseTunnel(state, localPort);
+  }
+
+  function spawnReverseTunnel(state, localPort) {
     if (state.stopped) return;
     const profile = state.profile;
     const forwardOpt = `127.0.0.1:${profile.remoteForwardPort}:127.0.0.1:${localPort}`;
@@ -1433,6 +1468,188 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     startProbeLoopWithRemoteNode(state, child);
+  }
+
+  function spawnStdioTunnel(state, localPort) {
+    if (state.stopped) return;
+    const profile = state.profile;
+    if (state.serializedTransport) {
+      finishFailure(state, {
+        reason: "stdio_serialized_unsupported",
+        hint: "remoteSshErrStdioUnsupported",
+        message: "SSH stdio fallback is not supported on a forced single-session transport.",
+      });
+      return;
+    }
+    if (profile.remotePlatform === "win32") {
+      finishFailure(state, {
+        reason: "stdio_windows_unsupported",
+        hint: "remoteSshErrStdioUnsupported",
+        message: "SSH stdio fallback is currently available for POSIX remote hosts.",
+      });
+      return;
+    }
+
+    let hooksDir;
+    try {
+      const layout = resolveRemoteRuntimeLayout({
+        runtimeMode: profile.runtimeMode,
+        runtimeKey: profile.runtimeKey,
+        remoteHome: profile.remoteHome,
+      });
+      hooksDir = layout.claudeHooksDir;
+    } catch (err) {
+      finishFailure(state, {
+        reason: "stdio_layout_invalid",
+        hint: "remoteSshErrSecureIdentityMissing",
+        message: (err && err.message) || "The remote hook layout could not be resolved.",
+      });
+      return;
+    }
+    const remoteNode = state.remoteNodeBin || profile.detectedRemoteNodeBin;
+    if (typeof remoteNode !== "string" || !remoteNode.startsWith("/")) {
+      finishFailure(state, {
+        reason: "stdio_node_missing",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: "The remote Node path is unavailable; run Deploy / Repair Hooks again.",
+      });
+      return;
+    }
+
+    state.readinessChallenge = crypto.randomBytes(16).toString("hex");
+    let command;
+    let args;
+    try {
+      command = buildRemoteHookNodeCommand(
+        remoteNode,
+        "remote-ssh-stdio-bridge.js",
+        [profile.remoteForwardPort, state.readinessChallenge],
+        { hooksDir },
+      );
+      args = buildSshArgs(profile, {
+        extraOpts: ["-o", "ServerAliveInterval=30", "-o", "ServerAliveCountMax=3"],
+      }).concat([command]);
+    } catch (err) {
+      finishFailure(state, {
+        reason: "stdio_command_invalid",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: (err && err.message) || "The SSH stdio bridge command could not be built.",
+      });
+      return;
+    }
+
+    let child;
+    const childOptions = {
+      env: { ...process.env, LANG: "C", LC_ALL: "C" },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    };
+    try {
+      child = spawn("ssh", args, childOptions);
+    } catch (err) {
+      finishFailure(state, {
+        kind: "permanent",
+        reason: err && err.code === "ENOENT" ? "ssh_missing" : "spawn_failed",
+        hint: err && err.code === "ENOENT" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed",
+        message: (err && err.message) || "SSH stdio bridge spawn failed",
+      });
+      return;
+    }
+
+    state.sshChild = child;
+    state.stderrBuf = Buffer.alloc(0);
+    state.stderrTruncated = false;
+    state.sshExitCode = null;
+    state.sshExitSignal = null;
+    state.intentionalClose = false;
+    state.stdioReady = false;
+    state.stdioTerminalError = null;
+    clearStdioReadinessTimer(state);
+
+    child.on("error", (err) => {
+      if (state.sshChild !== child) return;
+      finishFailure(state, {
+        kind: "permanent",
+        reason: err && err.code === "ENOENT" ? "ssh_missing" : "stdio_spawn_failed",
+        hint: err && err.code === "ENOENT" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed",
+        message: (err && err.message) || "SSH stdio bridge process error",
+      });
+    });
+    if (child.stderr) {
+      child.stderr.on("data", (chunk) => {
+        if (state.sshChild !== child) return;
+        const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+        state.stderrBuf = state.stderrBuf.length === 0
+          ? buf
+          : Buffer.concat([state.stderrBuf, buf]);
+        if (state.stderrBuf.length > 8192) {
+          state.stderrTruncated = true;
+          state.stderrBuf = state.stderrBuf.slice(-8192);
+        }
+      });
+    }
+    child.on("exit", (code, signal) => {
+      onSshExit(state, child, code, signal);
+    });
+
+    try {
+      state.stdioTransport = createStdioTransport({
+        child,
+        localPort,
+        challenge: state.readinessChallenge,
+        onReady: () => {
+          if (state.sshChild !== child || state.stopped || state.stdioReady) return;
+          state.stdioReady = true;
+          clearStdioReadinessTimer(state);
+          emitter.emit("progress", {
+            profileId: profile.id,
+            step: "transport-mode",
+            status: "ok",
+            message: "SSH stdio bridge ready.",
+            hint: null,
+          });
+          startProbeLoopWithRemoteNode(state, child);
+        },
+        onError: (err) => {
+          if (state.sshChild !== child || state.stopped) return;
+          state.stdioTerminalError = err || new Error("SSH stdio transport failed");
+          killChild(child);
+        },
+      });
+    } catch (err) {
+      finishFailure(state, {
+        reason: "stdio_transport_create_failed",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: (err && err.message) || "The SSH stdio transport could not be created.",
+      });
+      return;
+    }
+
+    state.stdioReadyTimer = setTimeoutFn(() => {
+      state.stdioReadyTimer = null;
+      if (state.sshChild !== child || state.stdioReady || state.stopped) return;
+      finishFailure(state, {
+        reason: "stdio_ready_timeout",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        message: "The remote SSH stdio bridge did not become ready. Redeploy the hooks and retry.",
+      });
+    }, stdioReadyTimeoutMs);
+  }
+
+  function clearStdioReadinessTimer(state) {
+    if (!state || !state.stdioReadyTimer) return;
+    clearTimeoutFn(state.stdioReadyTimer);
+    state.stdioReadyTimer = null;
+  }
+
+  function closeStdioTransport(state, { cooperative = true } = {}) {
+    clearStdioReadinessTimer(state);
+    state.stdioReady = false;
+    const transport = state.stdioTransport;
+    state.stdioTransport = null;
+    if (transport && typeof transport.close === "function") {
+      try { transport.close({ cooperative }); } catch {}
+    }
   }
 
   function onSerializedTunnelStdout(state, child, chunk) {
@@ -1671,12 +1888,66 @@ function createRemoteSshRuntime(deps = {}) {
     }
   }
 
+  function switchToStdioFallback(state, message) {
+    if (state.serializedTransport || state.profile.remotePlatform === "win32") return false;
+    const remoteNode = state.remoteNodeBin || state.profile.detectedRemoteNodeBin;
+    if (typeof remoteNode !== "string" || !remoteNode.startsWith("/")) return false;
+    const ingressStatus = state.ingress && typeof state.ingress.getStatus === "function"
+      ? state.ingress.getStatus()
+      : null;
+    if (!ingressStatus || !Number.isInteger(ingressStatus.port)) {
+      return false;
+    }
+    state.tunnelMode = "stdio";
+    state.forwardRecoveryFailures = 0;
+    state.unknownStrikes = 0;
+    state.retryAttempt = 0;
+    state.nextRetryAt = null;
+    state.stderrBuf = Buffer.alloc(0);
+    state.stderrTruncated = false;
+    resetRecoveryContext(state);
+    setStatus(state, "connecting", {
+      message: "Remote forwarding is unavailable; switching to SSH stdio transport.",
+      hint: null,
+      lastError: message || null,
+      lastErrorReason: "forward_failed",
+    });
+    emitter.emit("progress", {
+      profileId: state.profile.id,
+      step: "transport-mode",
+      status: "ok",
+      message: "Remote forwarding is unavailable; SSH stdio transport selected.",
+      hint: null,
+    });
+    emitter.emit("tunnel-mode-detected", {
+      profileId: state.profile.id,
+      tunnelMode: "stdio",
+      expectedTarget: {
+        host: state.profile.host,
+        port: state.profile.port,
+        identityFile: state.profile.identityFile,
+        remoteForwardPort: state.profile.remoteForwardPort,
+        hostPrefix: state.profile.hostPrefix,
+        chainStatusline: state.profile.chainStatusline,
+        runtimeMode: state.profile.runtimeMode,
+        runtimeKey: state.profile.runtimeKey,
+        layoutVersion: state.profile.layoutVersion,
+      },
+    });
+    spawnStdioTunnel(state, ingressStatus.port);
+    return true;
+  }
+
   function onSshExit(state, child, code, signal) {
     // Identity-gate: if this child isn't the current sshChild anymore, the
     // exit belongs to a stale process from a prior connect cycle — drop.
     if (state.sshChild !== child) return;
     state.sshChild = null;
     cleanupProbeLoop(state);
+    const stdioTerminalError = state.stdioTerminalError;
+    state.stdioTerminalError = null;
+    const wasStdioReady = state.stdioReady;
+    closeStdioTransport(state);
 
     if (state.stopped) {
       // User-initiated disconnect already flipped state to idle.
@@ -1719,6 +1990,34 @@ function createRemoteSshRuntime(deps = {}) {
       dropPartialFirstLine: state.stderrTruncated,
     });
     const wasConnected = state.status === "connected";
+    if (state.tunnelMode === "stdio" && !wasStdioReady) {
+      if (code === 98) {
+        finishFailure(state, {
+          reason: "stdio_port_conflict",
+          hint: "remoteSshErrStdioPortInUse",
+          message: `Remote bridge port ${state.profile.remoteForwardPort} is unavailable. Choose another port and run Deploy / Repair Hooks.`,
+        });
+        return;
+      }
+      if (code === 64) {
+        finishFailure(state, {
+          reason: "stdio_bridge_invalid_args",
+          hint: "remoteSshErrStdioBridgeUnavailable",
+          message: "The remote SSH stdio bridge rejected its launch arguments. Redeploy the hooks.",
+        });
+        return;
+      }
+    }
+    if (stdioTerminalError) {
+      scheduleReconnect(state, {
+        message: (stdioTerminalError && stdioTerminalError.message)
+          || "SSH stdio transport disconnected",
+        hint: "remoteSshErrStdioBridgeUnavailable",
+        lastErrorReason: "stdio_transport_failed",
+        wasConnected,
+      });
+      return;
+    }
     const serializedExitCode = state.serializedTransport && !wasConnected
       ? signalToExitCode(code, signal)
       : null;
@@ -1744,6 +2043,11 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     const currentTargetKey = tunnelTargetKey(state.profile);
+    if (cls.reason === "forward_failed"
+      && state.tunnelMode === "reverse"
+      && switchToStdioFallback(state, safeStderr)) {
+      return;
+    }
     const canRecoverForwardConflict = cls.reason === "forward_failed"
       && state.recoveryTargetKey === currentTargetKey;
     if (canRecoverForwardConflict) {
@@ -2153,6 +2457,7 @@ function createRemoteSshRuntime(deps = {}) {
   function finishFailure(state, { reason, hint, message }) {
     cleanupProbeLoop(state);
     clearSerializedReadinessTimer(state);
+    closeStdioTransport(state);
     if (state.sshChild) {
       if (state.serializedTransport && state.sshChild.stdin) {
         state.releaseTransportOnClose = true;
@@ -2219,6 +2524,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.transportContext = transportContext || state.transportContext;
     cleanupProbeLoop(state);
     clearSerializedReadinessTimer(state);
+    closeStdioTransport(state);
     if (state.backoffTimer) {
       clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
@@ -2266,6 +2572,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.stopped = true;
       state.intentionalClose = true;
       state.releaseTransportOnClose = false;
+      closeStdioTransport(state);
       closeProfileIngress(state);
       resetRecoveryContext(state);
       clearRemoteShellCache(state);
@@ -2292,6 +2599,7 @@ function createRemoteSshRuntime(deps = {}) {
       state.releaseTransportOnClose = true;
       cleanupProbeLoop(state);
       clearSerializedReadinessTimer(state);
+      closeStdioTransport(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       closeProfileIngress(state);
@@ -2311,6 +2619,7 @@ function createRemoteSshRuntime(deps = {}) {
     state.stopped = true;
     cleanupProbeLoop(state);
     clearSerializedReadinessTimer(state);
+    closeStdioTransport(state);
     if (state.backoffTimer) {
       clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
@@ -2359,6 +2668,7 @@ function createRemoteSshRuntime(deps = {}) {
     for (const state of states.values()) {
       state.stopped = true;
       cleanupProbeLoop(state);
+      closeStdioTransport(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       state.remoteNodeResolveInFlight = false;
@@ -2378,6 +2688,11 @@ function createRemoteSshRuntime(deps = {}) {
     return state.serializedTransport ? "serialized" : "parallel";
   }
 
+  function getProfileTunnelMode(profileId) {
+    const state = states.get(profileId);
+    return state ? state.tunnelMode : null;
+  }
+
   function getProfileTransportInspection(profileId) {
     const state = states.get(profileId);
     return state && state.transportInspection ? { ...state.transportInspection } : null;
@@ -2389,6 +2704,7 @@ function createRemoteSshRuntime(deps = {}) {
     for (const state of states.values()) {
       state.stopped = true;
       cleanupProbeLoop(state);
+      closeStdioTransport(state);
       if (state.backoffTimer) clearTimeoutFn(state.backoffTimer);
       state.backoffTimer = null;
       state.remoteNodeResolveInFlight = false;
@@ -2438,6 +2754,7 @@ function createRemoteSshRuntime(deps = {}) {
     getProfileStatus,
     listStatuses,
     getProfileTransportMode,
+    getProfileTunnelMode,
     getProfileTransportInspection,
     refreshProfile,
     suspendForOperation,
@@ -2514,6 +2831,7 @@ module.exports = {
   CLAWD_SERVER_ID,
   PROBE_WINDOW_MS,
   SERIALIZED_READINESS_TIMEOUT_MS,
+  STDIO_READY_TIMEOUT_MS,
   PROBE_MIN_GAP_MS,
   PROBE_CHILD_TIMEOUT_MS,
   BACKOFF_SCHEDULE_MS,

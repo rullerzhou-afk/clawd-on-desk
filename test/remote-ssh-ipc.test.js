@@ -2938,6 +2938,34 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
   ipc.dispose();
 });
 
+test("remoteSsh:deploy forwards an active ordinary tunnel mode to avoid port rebinding", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const settingsController = mockSettingsController([baseProfile]);
+  const runtime = mockRuntime();
+  runtime.getProfileStatus = () => ({
+    profileId: baseProfile.id,
+    status: "connected",
+    tunnelMode: "reverse",
+  });
+  let activeTunnelMode = null;
+  const ipc = registerRemoteSshIpc({
+    ipcMain,
+    settingsController,
+    remoteSshRuntime: runtime,
+    BrowserWindow,
+    spawn: makeSucceedingSpawn().spawn,
+    deployFn: async ({ deps }) => {
+      activeTunnelMode = deps.activeTunnelMode;
+      return { ok: false, message: "stop after capturing transport state" };
+    },
+  });
+
+  await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(activeTunnelMode, "reverse");
+  ipc.dispose();
+});
+
 test("a real deploy reducer preserves installation binding so connect works without restart", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();

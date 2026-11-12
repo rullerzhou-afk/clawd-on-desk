@@ -11,6 +11,7 @@ const {
   isValidHost,
   isValidPort,
   isValidRemoteForwardPort,
+  isValidRemoteTunnelMode,
   isValidIdentityFile,
   isValidHostPrefix,
   isValidLabel,
@@ -166,6 +167,18 @@ test("isValidRemoteForwardPort rejects outside SERVER_PORTS", () => {
   assert.equal(isValidRemoteForwardPort(23338), false);
   assert.equal(isValidRemoteForwardPort(8080), false);
   assert.equal(isValidRemoteForwardPort(0), false);
+});
+
+test("remote tunnel mode defaults to reverse and accepts only stdio", () => {
+  const base = basicProfile({ id: "tunnel-mode", host: "remote.example.test" });
+  assert.equal(validateProfile(base).status, "ok");
+  assert.equal(validateProfile({ ...base, tunnelMode: "reverse" }).status, "ok");
+  assert.equal(validateProfile({ ...base, tunnelMode: "stdio" }).status, "ok");
+  assert.equal(validateProfile({ ...base, tunnelMode: "auto" }).status, "error");
+  assert.equal(sanitizeProfile(base).tunnelMode, "reverse");
+  assert.equal(sanitizeProfile({ ...base, tunnelMode: "stdio" }).tunnelMode, "stdio");
+  assert.equal(isValidRemoteTunnelMode("stdio"), true);
+  assert.equal(isValidRemoteTunnelMode("other"), false);
 });
 
 // ── isValidIdentityFile ──
@@ -711,6 +724,15 @@ test("settings-actions: remoteSsh.add cannot manufacture deployment ownership", 
   assert.equal(r.commit.remoteSsh.profiles[0].managedDeployTargets, undefined);
 });
 
+test("settings-actions: remoteSsh.add starts in reverse mode and ignores renderer tunnel mode", () => {
+  const cmd = commandRegistry["remoteSsh.add"];
+  const r = cmd(basicProfile({ tunnelMode: "stdio" }), {
+    snapshot: { remoteSsh: { profiles: [] } },
+  });
+  assert.equal(r.status, "ok");
+  assert.equal(r.commit.remoteSsh.profiles[0].tunnelMode, "reverse");
+});
+
 test("settings-actions: remoteSsh.add rejects duplicate id", () => {
   const cmd = commandRegistry["remoteSsh.add"];
   const r = cmd(basicProfile(), {
@@ -866,6 +888,41 @@ test("settings-actions: remoteSsh.markDeployed can persist detected remote Node 
   assert.equal(profile.detectedRemoteNodeVersion, "v22.1.0");
   assert.equal(profile.detectedRemoteNodeSource, "shell:/bin/bash");
   assert.equal(profile.detectedRemoteNodeAt, 12345);
+});
+
+test("settings-actions: markDeployed and setTunnelMode persist automatic SSH stdio selection", () => {
+  const mark = commandRegistry["remoteSsh.markDeployed"];
+  const setMode = commandRegistry["remoteSsh.setTunnelMode"];
+  const original = basicProfile({ tunnelMode: "reverse" });
+  const marked = mark({
+    id: "p1",
+    deployedAt: 12345,
+    tunnelMode: "stdio",
+  }, {
+    snapshot: { remoteSsh: { profiles: [original] } },
+  });
+  assert.equal(marked.status, "ok");
+  assert.equal(marked.commit.remoteSsh.profiles[0].tunnelMode, "stdio");
+
+  const changed = setMode({
+    id: "p1",
+    tunnelMode: "reverse",
+    expectedTarget: original,
+  }, {
+    snapshot: marked.commit,
+  });
+  assert.equal(changed.status, "ok");
+  assert.equal(changed.commit.remoteSsh.profiles[0].tunnelMode, "reverse");
+
+  const drifted = setMode({
+    id: "p1",
+    tunnelMode: "stdio",
+    expectedTarget: { ...original, host: "user@different" },
+  }, {
+    snapshot: marked.commit,
+  });
+  assert.equal(drifted.noop, true);
+  assert.equal(drifted.reason, "target_drift");
 });
 
 test("settings-actions: remoteSsh.markDeployed survives concurrent edit (lost-update fix)", () => {

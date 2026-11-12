@@ -491,13 +491,31 @@ function registerRemoteSshIpc(options = {}) {
       })
       .catch((err) => log("remote-ssh: failed to stamp remote node:", err && err.message));
   };
+  const onTunnelModeDetected = (payload) => {
+    if (!payload || typeof payload.profileId !== "string") return;
+    settingsController.applyCommand("remoteSsh.setTunnelMode", {
+      id: payload.profileId,
+      tunnelMode: payload.tunnelMode,
+      expectedTarget: payload.expectedTarget,
+    }).then((r) => {
+      if (r && r.noop && r.reason === "target_drift") {
+        log("remote-ssh: tunnel mode stamp skipped due to target drift on", r.targetDrift);
+      } else if (!r || r.status !== "ok") {
+        log("remote-ssh: failed to persist tunnel mode:", (r && r.message) || "non-ok result");
+      }
+    }).catch((err) => {
+      log("remote-ssh: failed to persist tunnel mode:", err && err.message);
+    });
+  };
   remoteSshRuntime.on("status-changed", onStatusChanged);
   remoteSshRuntime.on("progress", onProgress);
   remoteSshRuntime.on("remote-node-detected", onRemoteNodeDetected);
+  remoteSshRuntime.on("tunnel-mode-detected", onTunnelModeDetected);
   disposers.push(() => {
     remoteSshRuntime.off("status-changed", onStatusChanged);
     remoteSshRuntime.off("progress", onProgress);
     remoteSshRuntime.off("remote-node-detected", onRemoteNodeDetected);
+    remoteSshRuntime.off("tunnel-mode-detected", onTunnelModeDetected);
   });
 
   // Profile CRUD travels through the generic settings IPC, not this module's
@@ -1513,6 +1531,12 @@ function registerRemoteSshIpc(options = {}) {
         || deployTargetDrift(deployTargetBeforeProbe, deployTargetFingerprint(deployProfile))) {
         return { status: "error", reason: "profile_changed", message: "SSH target changed before deployment; retry deployment." };
       }
+      const activeTunnelState = remoteSshRuntime.getProfileStatus(profile.id);
+      const activeTunnelMode = activeTunnelState
+        && ["connected", "reconnecting"].includes(activeTunnelState.status)
+        && (activeTunnelState.tunnelMode === "stdio" || activeTunnelState.tunnelMode === "reverse")
+        ? activeTunnelState.tunnelMode
+        : null;
       const result = await deployFn({
         profile: deployProfile,
         platformSnapshot,
@@ -1524,6 +1548,9 @@ function registerRemoteSshIpc(options = {}) {
           spawn,
           hooksDir,
           isPackaged,
+          enableTunnelProbe: true,
+          transportInspection: inspection,
+          activeTunnelMode,
           onIdentityStep: async (step, value) => {
             const updated = await settingsController.applyCommand("remoteSsh.updateIdentityStep", {
               id: profile.id,
@@ -1583,6 +1610,7 @@ function registerRemoteSshIpc(options = {}) {
             remoteHome: result.layout && result.layout.remoteHome,
             isolation: result.isolation,
             sshTransportHint: transportHintFromInspection(inspection),
+            tunnelMode: result.tunnelMode === "stdio" ? "stdio" : "reverse",
           });
           if (transportContext) transportContext.assertActive();
           if (stamp && stamp.noop && stamp.reason === "target_drift") {
@@ -1674,6 +1702,7 @@ function registerRemoteSshIpc(options = {}) {
           hermes: result.hermes || null,
           dshBridgeInstalled: result.dshBridgeInstalled === true,
           dshRestartRequired: result.dshRestartRequired === true,
+          tunnelMode: result.tunnelMode === "stdio" ? "stdio" : "reverse",
           ...(result.dshDiscoveryWarning ? { dshDiscoveryWarning: result.dshDiscoveryWarning } : {}),
           ...(stampWarning || {}),
         };

@@ -202,14 +202,18 @@ the full list of fields that are sent, secret storage, and troubleshooting.
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="Remote SSH — permission bubble from Raspberry Pi">
 
-Clawd can sense AI agent activity on remote servers via SSH reverse port forwarding. Hook events and permission requests travel through the SSH tunnel back to your local Clawd — no code changes needed on the Clawd side.
+Clawd can sense AI agent activity on remote servers through either SSH reverse
+port forwarding or the bundled SSH stdio bridge. Deployment probes `ssh -R` and
+automatically selects the stdio bridge when the SSH server disables remote
+forwarding. Hook events and permission requests still travel back to your local
+Clawd without changing the agent-side hook contract.
 
 **Supported flow: in-app Settings → Remote SSH → Deploy / Repair Hooks**
 
 DMG / installer users add a profile under **Settings → Remote SSH** (host
 `user@remote-host`, optional private key, forward port), then click
 **Deploy / Repair Hooks**, then connect. Clawd creates a profile-bound local
-ingress, maintains the `ssh -R` reverse tunnel to it, and deploys identity-pinned
+ingress, selects `ssh -R` or the stdio bridge, and deploys identity-pinned
 hooks to the remote. Full walkthrough, multi-user upgrade boundary, Doctor boundary, and
 troubleshooting (port conflicts, no Node.js, missing remote sessions, etc.)
 in the dedicated guide:

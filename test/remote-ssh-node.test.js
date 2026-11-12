@@ -7,6 +7,7 @@ const { EventEmitter } = require("events");
 
 const {
   buildRemoteNodeProbeCommand,
+  buildRemoteNodeProbeInput,
   parseRemoteNodeProbeOutput,
   isValidRemoteNodeBin,
   isSupportedRemoteNodeVersion,
@@ -23,7 +24,12 @@ function makeFakeChild() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { end() {} };
+  const stdinWrites = [];
+  child.stdin = new EventEmitter();
+  child.stdin.end = (data) => {
+    if (data != null) stdinWrites.push(String(data));
+  };
+  child.stdin.writes = stdinWrites;
   child.kill = () => {};
   return child;
 }
@@ -48,15 +54,17 @@ function makeRecordingSpawn(handlers) {
   return { spawn, calls };
 }
 
-test("buildRemoteNodeProbeCommand uses a POSIX shell probe with manager fallbacks", () => {
+test("buildRemoteNodeProbeCommand keeps the remote command one-line and streams the probe", () => {
   const command = buildRemoteNodeProbeCommand();
-  assert.ok(command.startsWith("sh -c "));
-  assert.ok(command.includes(".nvm"));
-  assert.ok(command.includes(".fnm"));
-  assert.ok(command.includes(".asdf"));
-  assert.ok(command.includes(".mise"));
-  assert.ok(command.includes("-lic"));
-  assert.ok(command.indexOf("-lic") < command.indexOf(".nvm/versions"),
+  const input = buildRemoteNodeProbeInput();
+  assert.equal(command, "sh -s");
+  assert.doesNotMatch(command, /[\r\n]/);
+  assert.ok(input.includes(".nvm"));
+  assert.ok(input.includes(".fnm"));
+  assert.ok(input.includes(".asdf"));
+  assert.ok(input.includes(".mise"));
+  assert.ok(input.includes("-lic"));
+  assert.ok(input.indexOf("-lic") < input.indexOf(".nvm/versions"),
     "login shell should be preferred before raw node-manager glob candidates");
 });
 
@@ -109,7 +117,8 @@ test("resolveRemoteNodeBin records ssh command and caches successful result", as
   assert.equal(resolved.version, "v22.1.0");
   assert.equal(calls.length, 1);
   assert.equal(calls[0].command, "ssh");
-  assert.ok(calls[0].args[calls[0].args.length - 1].startsWith("sh -c "));
+  assert.equal(calls[0].args[calls[0].args.length - 1], "sh -s");
+  assert.deepEqual(calls[0].child.stdin.writes, [buildRemoteNodeProbeInput()]);
 
   const cached = await resolveRemoteNodeBin({
     profile,
@@ -172,6 +181,7 @@ test("resolveRemoteNodeBin can verify a cached path and fall back when stale", a
   assert.equal(resolved.nodeBin, "/usr/local/bin/node");
   assert.equal(calls.length, 2);
   assert.ok(calls[0].args[calls[0].args.length - 1].includes("/stale/node"));
+  assert.doesNotMatch(calls[0].args[calls[0].args.length - 1], /[\r\n]/);
   assert.equal(getCachedRemoteNodeBin(profile).nodeBin, "/usr/local/bin/node");
 });
 

@@ -7,6 +7,7 @@ const { EventEmitter } = require("node:events");
 const deploy = require("../src/remote-ssh-deploy");
 const runtime = require("../src/remote-ssh-runtime");
 const node = require("../src/remote-ssh-node");
+const { decodeSshCommandArguments } = require("../src/remote-ssh-command");
 
 async function snapshots() {
   const { resolveRemoteRuntimeLayout } = require("../src/remote-ssh-layout");
@@ -23,8 +24,8 @@ async function snapshots() {
   const bin = "/usr/bin/node";
   const lease = "b".repeat(32);
   const out = {};
-  function spawn(_command, args) {
-    const command = args.at(-1);
+  function spawn(tool, rawArgs) {
+    const command = decodeSshCommandArguments(tool, rawArgs).at(-1);
     out[command.startsWith("umask") ? "lockAcquire" : "lockRelease"] = command;
     const child = new EventEmitter();
     child.stdout = new EventEmitter();
@@ -56,8 +57,9 @@ async function snapshots() {
   return out;
 }
 
-// SHA-256 snapshots of exact UTF-8 command bytes from the unchanged POSIX
-// implementation at 41d40d22. A whitespace or quoting change changes the hash.
+// SHA-256 snapshots protect exact UTF-8 command bytes at the remote-shell
+// boundary. Multiline scripts are decoded by the recorder so these remain
+// semantic command snapshots rather than base64-transport snapshots.
 const EXPECTED = {
   "lockAcquire": "8fddc8f384d181bbf91358a7d4b5a8a8052934bf2730962343e2912dedfd5ab8",
   "lockRelease": "d1f99578917cc9adab5edde7f5baa0719060590833d2b7f1c39545417efd17bb",
@@ -75,8 +77,8 @@ const EXPECTED = {
   "health": "b7819e7a4a5b26286ac250f0986b62df36ec8fcf0903fa12ddd26e3011e70bab",
   "healthPath": "2ddc9a9368be10f07e8bfa8f6fd4ffa09ee5a629d40b6a1571876e693ec01065",
   "readiness": "9e4685081d9f047ea9a248d59b7f35cab769394d79c0f1669ef77783fb5e68f9",
-  "nodeProbe": "59e3691c7ad8f3210f7f0835b7fb05840cc6940ba0927c2d5ee68d0693a83dde",
-  "cachedNodeProbe": "2c7f380e99fb99086d7254024a29553beee0e8e8a772bc0a6be0736264e9439f",
+  "nodeProbe": "d426f4023d09f34fa017935b1e922291cfbb1f568d77d776a1a3f6ab7fe5a82d",
+  "cachedNodeProbe": "e2e6fe49f70a595d5654deeef5a1018b44bed5eccd0af7973d055e513578b002",
   "nodeEval": "54a7ab54df3c15033f0c5e6441056f95b43caaaa7c3613f5b57a5b04f8eadf82",
   "hook": "c33fe7e0cd20ed5f32f1d71e2fb1cacd7531d346d2ccba2410dd31540e98244a"
 };

@@ -149,6 +149,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/focus.js` | 终端聚焦 |
 | `src/hit-renderer.js` + `src/hit-geometry.js` | 输入窗口命中、拖拽、连击反应 |
 | `src/remote-ssh-runtime.js` | Remote SSH tunnel/ingress 状态机、ordinary health probe、serialized readiness 与重连 |
+| `src/remote-ssh-stdio-transport.js` + `hooks/remote-ssh-stdio-bridge.js` | `ssh -R` 被拒绝时的 profile TCP bridge、multiplex stream、心跳与协作式关闭；远端 bundle 由 `scripts/build-remote-ssh-stdio-bridge.js` 生成 |
 | `src/remote-ssh-transport.js` + `src/remote-ssh-transport-coordinator.js` | effective transport inspection、pre-spawn admission、target ownership、drain barrier 与 quarantine |
 | `src/remote-ssh-deploy.js` | Deploy / Repair、身份事务、lease/fencing、wrapper、cleanup 与远端 Codex monitor mutation |
 | `src/remote-ssh-identity.js` + `src/remote-ssh-layout.js` + `src/remote-ssh-ingress.js` | 身份/布局真相与 profile 专属、nonce 校验的本地 ingress |
