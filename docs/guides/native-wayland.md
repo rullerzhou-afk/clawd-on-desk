@@ -48,10 +48,15 @@ shim's design:
   compositor before the pop.
 - Hyprland's IPC socket broadcasts every client's command to every listener, so
   a read can return another client's reply. JSON queries validate and retry.
-- The socket also does not answer during the synchronous part of app start-up
-  (a just-created window is absent from `j/clients` while the main script is
-  still loading), so the adoption-time recovery that re-shows an already
-  visible window cannot be verified in that window of time.
+- **`j/clients` only lists mapped windows.** Chromium creates a Wayland
+  surface when the window is constructed, before the app maps it, and the
+  compositor lists that surface only once it is mapped. During app start-up
+  the map request is queued behind the main script, so a window that the shim
+  adopts mid-startup is missing from `j/clients` for the whole first-show
+  verification window (measured: every retry sees the same older list). The
+  recovery is consequently reported as `did not map after 3 retries` even
+  though the window appears a moment later; the app's own placement (rule +
+  dispatcher) still lands correctly.
 - Window rules match `initialTitle`, which is frozen at map time. The shim
   keeps a zero-width marker in the title and re-asserts it immediately before
   every native show.
