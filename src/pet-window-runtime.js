@@ -118,6 +118,16 @@ function createPetWindowRuntime(options = {}) {
   const isMac = !!options.isMac;
   const isLinux = !!options.isLinux;
   const windowsHitWindowFocusable = isWin && options.windowsHitWindowFocusable === true;
+  // Native Wayland (src/linux-wayland.js + src/linux-wayland-shim.js). True on
+  // ANY native Wayland session, including compositors the shim cannot drive —
+  // several behaviors below are wrong on native Wayland even unshimmed, so the
+  // gate is deliberately independent of waylandShim being non-null.
+  //
+  // waylandShim is the installed shim handle (src/linux-wayland-shim.js) or
+  // null when the compositor is unsupported (degraded: the pet still places,
+  // but click-through / all-workspaces are unavailable).
+  const isWaylandNative = isLinux && options.isWaylandNative === true;
+  const waylandShim = options.waylandShim || null;
   const linuxWindowType = options.linuxWindowType;
   const topmostLevel = options.topmostLevel;
   // #1275: master always-on-top preference. Gates the creation-time topmost
@@ -173,6 +183,17 @@ function createPetWindowRuntime(options = {}) {
   // a throwing native call can break window setup.
   function applyLinuxAllWorkspaces(win) {
     if (!isLinux || !win) return;
+    // Native Wayland: _NET_WM_STATE_STICKY does not exist (X11/XWayland
+    // only). The equivalent is Hyprland's `pin` window-rule effect, which the
+    // shim owns; it is applied with the rest of the placement rule before the
+    // next map, AND dispatched immediately so a window that is already mapped
+    // (the pet re-shown on this path) is pinned right away too. Without a shim
+    // there is no compositor-neutral way to pin, so do nothing rather than
+    // pretend.
+    if (isWaylandNative) {
+      if (waylandShim) waylandShim.setPinnedAllWorkspaces(win, true);
+      return;
+    }
     try {
       win.setVisibleOnAllWorkspaces(true);
     } catch {}
@@ -217,6 +238,17 @@ function createPetWindowRuntime(options = {}) {
   // are otherwise treated as fixed per-process facts but env vars are not.
   const isEdgeVirtualizationDisabled = options.isEdgeVirtualizationDisabled
     || (() => process.env.CLAWD_DISABLE_EDGE_VIRTUALIZATION === "1");
+  // Edge virtualization is an X11/XWayland correction, not a general Linux
+  // one: an X11 window cannot be placed past a work-area edge, so the pet is
+  // materialized into the reachable strip and #pet-container offsets the
+  // artwork back out (plus the hit window's work-area intersection and
+  // HIT_MIN degeneracy suppression that come with it). A native Wayland
+  // window goes wherever the compositor is told — the shim's dispatcher move
+  // is exact — so both the virtualization and its hit-side consequences must
+  // stay off, or the pet would be clamped to the visible strip for nothing.
+  function isEdgeVirtualizationActive() {
+    return isLinux && !isWaylandNative && !isEdgeVirtualizationDisabled();
+  }
   const flushRuntimeStateToPrefs = options.flushRuntimeStateToPrefs || noop;
   const handleMiniDisplayChange = options.handleMiniDisplayChange || noop;
   // Issue #690 plan §4.5 point 4.5-4: handleDisplayMetricsChanged() must hand
@@ -733,7 +765,10 @@ function createPetWindowRuntime(options = {}) {
   // applyPetWindowBounds() can fold it straight into expectedWrite's
   // snapshot without a second findDisplayIdForPoint() call.
   function resolveHorizontalClampBounds(bounds, workArea, providedEdgeContext) {
-    if (!isLinux || isEdgeVirtualizationDisabled()) return { leftBound: null, rightBound: null, displayId: null };
+    // isEdgeVirtualizationActive() is also false on native Wayland: there is
+    // no WM clamp to converge on, and the shim's dispatcher move places the
+    // window exactly where asked, past any work-area edge.
+    if (!isEdgeVirtualizationActive()) return { leftBound: null, rightBound: null, displayId: null };
     const edge = providedEdgeContext || resolveEdgeContextForBounds(bounds, workArea);
     if (!edge) return { leftBound: null, rightBound: null, displayId: null };
     const displayId = isValidWorkArea(workArea)
@@ -932,11 +967,17 @@ function createPetWindowRuntime(options = {}) {
   // two quiet-timer resets, never once reaching a quiet point) still leaves
   // true evidence behind for whatever reconcile pass eventually runs.
   function onNativeGeometryEvent() {
+    // Native Wayland does not provide a usable echo to reconcile against (the
+    // toplevel position is compositor-private and Electron reports {0,0}), and
+    // the shim already knows the logical rect it last placed. Skip the whole
+    // expected-write machinery there rather than feed it garbage to classify.
+    if (isWaylandNative) return;
     nativeEventSeenThisGen = true;
     scheduleReconcile();
   }
 
   function scheduleReconcile() {
+    if (isWaylandNative) return;
     if (reconcileTimer) clearTimeoutFn(reconcileTimer);
     reconcileTimer = setTimeoutFn(() => runReconcile("native-quiet"), RECONCILE_QUIET_MS);
   }
@@ -948,6 +989,11 @@ function createPetWindowRuntime(options = {}) {
   // is enforced by both halves here: clearTimeout on re-entry AND the sweepGen
   // capture that runReconcile() checks against the CURRENT writeGen.
   function scheduleSettleSweep() {
+    // The sweep exists to catch a WM that silently kept (or shifted) a write.
+    // Native Wayland has no such WM authority over the toplevel rect we asked
+    // for — the shim's dispatcher is the only mover — so there is nothing to
+    // settle-check and nothing safe to rebase from.
+    if (isWaylandNative) return;
     if (sweepTimer) clearTimeoutFn(sweepTimer);
     sweepGen = writeGen;
     sweepTimer = setTimeoutFn(() => {
@@ -1006,6 +1052,11 @@ function createPetWindowRuntime(options = {}) {
   // and (c) exist: physical is truth, exactly like non-Linux/escape-hatch/
   // Linux-internal-seam contexts always behaved pre-#690 (A-4).
   function runReconcile(reason = "native-quiet", gen = -1) {
+    // Belt-and-braces: every scheduler above is already a no-op on native
+    // Wayland, but a stale timer armed before the platform was known must not
+    // run the classification — branch (c) would rebase lastLogicalBounds to
+    // the unshimmed {0,0} getBounds() and destroy the placement.
+    if (isWaylandNative) return;
     // Sweep entries must NOT blindly null reconcileTimer: a quiet timer that's
     // still legitimately counting down would become an orphan no one can
     // cancel via scheduleReconcile()'s clearTimeout.
@@ -1970,6 +2021,7 @@ function createPetWindowRuntime(options = {}) {
   }
 
   function scheduleHitTopologyCheck(index) {
+    if (isWaylandNative) return;
     if (index >= HIT_TOPOLOGY_CHECK_DELAYS_MS.length) return;
     hitTopologyTimer = setTimeoutFn(() => {
       hitTopologyTimer = null;
@@ -2011,7 +2063,7 @@ function createPetWindowRuntime(options = {}) {
     // PR #751 Codex review #5/#4c (rework batch B-2): the escape hatch must
     // revert hit to pre-#690 behavior entirely — no workArea intersection,
     // no HIT_MIN suppression below — not just skip the X offset itself.
-    const edgeVirtualizationActive = isLinux && !isEdgeVirtualizationDisabled();
+    const edgeVirtualizationActive = isEdgeVirtualizationActive();
     if (edgeVirtualizationActive) {
       // Reuse render's own write-time snapshot rather than re-resolving
       // fresh from a bare displayId lookup.
@@ -2135,10 +2187,12 @@ function createPetWindowRuntime(options = {}) {
   // are just as geometry-blind as the render ones (§4.3.9) — scheduling is
   // their only job.
   function onHitNativeGeometryEvent() {
+    if (isWaylandNative) return;
     scheduleHitReconcile();
   }
 
   function scheduleHitReconcile() {
+    if (isWaylandNative) return;
     if (hitQuietTimer) clearTimeoutFn(hitQuietTimer);
     // A fresh native event means whatever candidate-stability streak was
     // building toward "grab ended" (public premise 3 below) reflects a
@@ -2183,6 +2237,11 @@ function createPetWindowRuntime(options = {}) {
   //     hitRetriedRect comment below.
   function runHitReconcile() {
     const hitWin = getHitWindow();
+    // Native Wayland: the hit window's rect is derived and written by the shim,
+    // which also owns the compositor-side position; a readback would only ever
+    // report the unshimmed {0,0} and drive the grab-detection state machine
+    // into a bogus external-move adoption. Nothing to reconcile.
+    if (isWaylandNative) return;
     if (isMac) {
       if (!isLiveWindow(hitWin) || !isLiveWindow(getRenderWindow())) return;
       if (dragLocked || getMiniTransitioning() || isMiniAnimating()

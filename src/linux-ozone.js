@@ -1,44 +1,37 @@
 "use strict";
 
-// ── Linux / Wayland: default to XWayland (issue #441) ──
+// ── Linux / Wayland: native Wayland is the default; XWayland is opt-in ──
 //
-// Native Wayland forbids two things this desktop pet depends on:
-//   1. Client-side window positioning — the BrowserWindow x/y and later
-//      setBounds() calls are ignored by the compositor, so the pet spawns
-//      centered and can't be dragged by following the cursor.
-//   2. Global cursor queries — screen.getCursorScreenPoint() is unsupported,
-//      so there is no mouse tracking.
+// Historically (issue #441) this resolver force-relaunched the app under
+// XWayland (--ozone-platform=x11) on any Wayland session with a DISPLAY,
+// because native Wayland blocks the two things the pet needs: client-side
+// window positioning and global cursor queries.
 //
-// Forcing XWayland (--ozone-platform=x11) restores window positioning (drag
-// works again), matching the workaround reporters find by hand. Cursor
-// tracking stays limited to our own surfaces; full-screen tracking is NOT
-// recoverable under Wayland for an ordinary client — that needs a real X11
-// session (Xorg login), which is a user-side choice we can't paper over.
+// That limitation is now handled natively: src/linux-wayland.js +
+// src/linux-wayland-shim.js restore placement, click-through, all-workspace
+// pinning, focus control and cursor tracking through the compositor's
+// privileged IPC (full support on Hyprland; graceful no-op degradation
+// elsewhere). So the auto-detection below no longer forces x11 — an
+// out-of-the-box launch stays on Chromium's native-Wayland default
+// (--ozone-platform-hint=auto since Electron 38).
 //
-// Since Electron 38 / Chromium 140 the default is --ozone-platform-hint=auto, so
-// an out-of-the-box app runs as a NATIVE WAYLAND client on a Wayland session —
-// exactly the broken state above. The backend can't be switched from JS (Electron
-// picks Ozone in C++ before the main script runs), so planXWaylandRelaunch below
-// relaunches the process with --ozone-platform=x11 on argv. This resolver only
-// decides the DESIRED backend ("x11" | "wayland" | null=leave default).
+// XWayland remains available as an explicit opt-in for compositors where the
+// native path degrades too far:
+//   • CLAWD_OZONE_PLATFORM=x11 → planXWaylandRelaunch below relaunches the
+//     process with --ozone-platform=x11 on argv (the backend cannot be
+//     switched from JS: Electron picks Ozone in C++ before the main script
+//     runs).
+//   • --ozone-platform=… on the real argv → honored as-is, never relaunched
+//     over.
 //
-// Effective precedence (planXWaylandRelaunch checks argv itself, BEFORE calling
-// this resolver, so it always passes userOzonePlatform=null):
-//   • An explicit --ozone-platform you pass yourself → always honored as-is
-//     (Chromium reads it directly; we never relaunch over it).
-//   • Else CLAWD_OZONE_PLATFORM governs the automatic relaunch:
+// Effective precedence (planXWaylandRelaunch checks argv itself, BEFORE
+// calling this resolver, so it always passes userOzonePlatform=null):
+//   • An explicit --ozone-platform you pass yourself → always honored as-is.
+//   • Else CLAWD_OZONE_PLATFORM governs:
 //        x11            → relaunch into XWayland
 //        wayland / auto → stay on the native-Wayland default
-//   • Else auto-detect: x11 when on a Wayland session AND an X server (DISPLAY)
-//     is present for XWayland.
-//
-// The DISPLAY guard matters: forcing x11 with no reachable X server makes the
-// Chromium X11 Ozone backend abort at platform init with a native fatal/CHECK
-// ("Missing X server or $DISPLAY") — not a catchable JS exception, and it
-// happens before app.whenReady. DISPLAY only proves the variable is set, not
-// that the server is reachable, but it is the cheap signal that keeps us from
-// turning "pet can't drag" into "app won't launch" on a Wayland-only box; the
-// CLAWD_OZONE_PLATFORM escape hatch covers the rest.
+//   • Else → null: leave Chromium's own default (native Wayland on a
+//     Wayland session, X11 on an X session).
 //
 // `userOzonePlatform` is the value the user put on argv for --ozone-platform
 // (or null/empty), passed in by the caller so this stays a pure, testable
@@ -62,13 +55,10 @@ function resolveLinuxOzonePlatform(options = {}) {
   const user = String(options.userOzonePlatform || "").trim().toLowerCase();
   if (user) return null;
 
-  // 3. Auto-detect: force XWayland on a Wayland session when XWayland is
-  //    actually reachable (DISPLAY present).
-  const sessionType = String(env.XDG_SESSION_TYPE || "").trim().toLowerCase();
-  const underWayland = sessionType === "wayland" || !!String(env.WAYLAND_DISPLAY || "").trim();
-  const xwaylandAvailable = !!String(env.DISPLAY || "").trim();
-
-  return underWayland && xwaylandAvailable ? "x11" : null;
+  // 3. No override, no user switch → leave Chromium's default alone. Native
+  //    Wayland runs as a first-class backend (src/linux-wayland*.js); the
+  //    #441 auto-relaunch into XWayland is gone.
+  return null;
 }
 
 // Parse the user's explicit --ozone-platform from the REAL process argv.
@@ -102,8 +92,10 @@ function parseOzonePlatformFromArgv(argv) {
   return null;
 }
 
-// Decide whether THIS Linux process must relaunch itself under XWayland to make
-// the pet draggable (issue #441), and with what argv.
+// Decide whether THIS Linux process must relaunch itself under XWayland, and
+// with what argv. Since native Wayland became a first-class backend
+// (src/linux-wayland*.js), this only ever fires for the explicit
+// CLAWD_OZONE_PLATFORM=x11 opt-in — never from auto-detection.
 //
 // Why relaunch instead of app.commandLine.appendSwitch: Electron selects AND
 // instantiates the Ozone backend in C++ PreEarlyInitialization

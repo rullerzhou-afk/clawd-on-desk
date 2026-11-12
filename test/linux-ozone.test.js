@@ -1,4 +1,6 @@
-// test/linux-ozone.test.js — Unit tests for src/linux-ozone.js (issue #441)
+// test/linux-ozone.test.js — Unit tests for src/linux-ozone.js
+// Native Wayland is the default backend; XWayland is an explicit opt-in
+// (CLAWD_OZONE_PLATFORM=x11) that relaunches the process with the flag.
 const { describe, it } = require("node:test");
 const assert = require("node:assert");
 
@@ -56,16 +58,18 @@ describe("resolveLinuxOzonePlatform()", () => {
       assert.strictEqual(resolve("linux", { CLAWD_OZONE_PLATFORM: " WAYLAND " }), "wayland");
     });
 
-    it("ignores an unrecognized override value and falls back to detection", () => {
+    it("ignores an unrecognized override value and falls back to the default", () => {
+      // No auto-relaunch anymore: an unrecognized value means "no opinion",
+      // which leaves Chromium's native-Wayland default alone.
       assert.strictEqual(
         resolve("linux", { CLAWD_OZONE_PLATFORM: "garbage", XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }),
-        "x11"
+        null
       );
     });
   });
 
   describe("explicit user --ozone-platform on argv (no env override)", () => {
-    it("is respected — auto-detection does not override it", () => {
+    it("is respected — never relaunched over", () => {
       assert.strictEqual(
         resolve("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, "wayland"),
         null
@@ -73,24 +77,23 @@ describe("resolveLinuxOzonePlatform()", () => {
       assert.strictEqual(resolve("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, "x11"), null);
     });
 
-    it("blank/whitespace user value is treated as absent → auto-detection runs", () => {
-      assert.strictEqual(resolve("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, "  "), "x11");
+    it("blank/whitespace user value is treated as absent → default (null)", () => {
+      assert.strictEqual(resolve("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, "  "), null);
     });
   });
 
   describe("auto-detection (no override, no user switch)", () => {
-    it("forces x11 on a Wayland session when XWayland (DISPLAY) is available", () => {
-      assert.strictEqual(resolve("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }), "x11");
+    it("stays on native Wayland on a Wayland session, even with DISPLAY present", () => {
+      // The historical #441 auto-relaunch into XWayland is gone: native
+      // Wayland is a first-class backend now (src/linux-wayland*.js).
+      assert.strictEqual(resolve("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }), null);
     });
 
     it("detects Wayland via WAYLAND_DISPLAY when XDG_SESSION_TYPE is unset", () => {
-      assert.strictEqual(resolve("linux", { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" }), "x11");
+      assert.strictEqual(resolve("linux", { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" }), null);
     });
 
-    it("does NOT force x11 on Wayland when no DISPLAY (no XWayland) — would crash startup", () => {
-      // Deliberate: the DISPLAY guard is kept so we never turn "pet can't drag"
-      // into "app won't launch" on a Wayland-only box. CLAWD_OZONE_PLATFORM=x11
-      // is the escape hatch for users who know XWayland is reachable.
+    it("does NOT force x11 on Wayland when no DISPLAY", () => {
       assert.strictEqual(resolve("linux", { XDG_SESSION_TYPE: "wayland" }), null);
       assert.strictEqual(resolve("linux", { WAYLAND_DISPLAY: "wayland-0" }), null);
     });
@@ -112,12 +115,12 @@ describe("resolveLinuxOzonePlatform()", () => {
 
   it("respects a user --ozone-platform parsed from a real argv array", () => {
     const env = { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" };
-    // user explicitly asked for wayland → we must NOT auto-force x11
+    // user explicitly asked for wayland → nothing to do
     const user = parseOzonePlatformFromArgv(["/app/Clawd", "--ozone-platform=wayland"]);
     assert.strictEqual(resolve("linux", env, user), null);
-    // no user switch → auto-detection forces x11
+    // no user switch → default is native Wayland (null), NOT a forced x11
     const none = parseOzonePlatformFromArgv(["/app/Clawd", "--some-other-flag"]);
-    assert.strictEqual(resolve("linux", env, none), "x11");
+    assert.strictEqual(resolve("linux", env, none), null);
   });
 });
 
@@ -167,23 +170,34 @@ describe("planXWaylandRelaunch()", () => {
   const ARGV0 = "/opt/Clawd/clawd"; // process.argv[0]
   const plan = (platform, env, argv) => planXWaylandRelaunch({ platform, env, argv });
 
-  it("relaunches with --ozone-platform=x11 on a Wayland session with DISPLAY", () => {
+  it("relaunches with --ozone-platform=x11 when CLAWD_OZONE_PLATFORM=x11", () => {
     assert.deepStrictEqual(
-      plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0]),
+      plan("linux", { CLAWD_OZONE_PLATFORM: "x11", XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0]),
       { args: ["--ozone-platform=x11"] }
+    );
+  });
+
+  it("does NOT relaunch on a plain Wayland session (native Wayland is default)", () => {
+    assert.strictEqual(
+      plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0]),
+      null
+    );
+    assert.strictEqual(
+      plan("linux", { WAYLAND_DISPLAY: "wayland-0", DISPLAY: ":0" }, [ARGV0]),
+      null
     );
   });
 
   it("preserves passthrough args and appends our flag last", () => {
     assert.deepStrictEqual(
-      plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0, "--foo", "bar"]),
+      plan("linux", { CLAWD_OZONE_PLATFORM: "x11" }, [ARGV0, "--foo", "bar"]),
       { args: ["--foo", "bar", "--ozone-platform=x11"] }
     );
   });
 
   it("inserts the flag BEFORE a -- marker and preserves app args after it", () => {
     assert.deepStrictEqual(
-      plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" },
+      plan("linux", { CLAWD_OZONE_PLATFORM: "x11" },
         [ARGV0, "--enable-foo", "--", "positional", "--ozone-platform=appdoc"]),
       { args: ["--enable-foo", "--ozone-platform=x11", "--", "positional", "--ozone-platform=appdoc"] }
     );
@@ -191,7 +205,7 @@ describe("planXWaylandRelaunch()", () => {
 
   it("inserts the flag before -- even when -- leads the passthrough", () => {
     assert.deepStrictEqual(
-      plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0, "--", "doc"]),
+      plan("linux", { CLAWD_OZONE_PLATFORM: "x11" }, [ARGV0, "--", "doc"]),
       { args: ["--ozone-platform=x11", "--", "doc"] }
     );
   });
@@ -218,7 +232,8 @@ describe("planXWaylandRelaunch()", () => {
 
   it("guard 2: does NOT relaunch when --ozone-platform is already on argv", () => {
     assert.strictEqual(
-      plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0, "--ozone-platform=x11"]),
+      plan("linux", { CLAWD_OZONE_PLATFORM: "x11", XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" },
+        [ARGV0, "--ozone-platform=x11"]),
       null
     );
   });
@@ -226,8 +241,8 @@ describe("planXWaylandRelaunch()", () => {
   it("guard 3: does NOT relaunch when XWayland is not the target", () => {
     // native X11 session — already positionable
     assert.strictEqual(plan("linux", { XDG_SESSION_TYPE: "x11", DISPLAY: ":0" }, [ARGV0]), null);
-    // Wayland but no DISPLAY (no XWayland) — relaunching to x11 would crash
-    assert.strictEqual(plan("linux", { XDG_SESSION_TYPE: "wayland" }, [ARGV0]), null);
+    // plain Wayland session — native Wayland is the default now
+    assert.strictEqual(plan("linux", { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0]), null);
     // CLAWD_OZONE_PLATFORM=wayland — native Wayland is already the default
     assert.strictEqual(
       plan("linux", { CLAWD_OZONE_PLATFORM: "wayland", XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" }, [ARGV0]),
@@ -243,7 +258,7 @@ describe("planXWaylandRelaunch()", () => {
   });
 
   it("does NOT relaunch on non-Linux platforms", () => {
-    const env = { XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" };
+    const env = { CLAWD_OZONE_PLATFORM: "x11", XDG_SESSION_TYPE: "wayland", DISPLAY: ":0" };
     assert.strictEqual(plan("darwin", env, [ARGV0]), null);
     assert.strictEqual(plan("win32", env, [ARGV0]), null);
   });

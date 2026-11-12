@@ -24,6 +24,7 @@ docs/**
 !docs/guides/known-limitations.md
 !docs/guides/agent-questions.md
 !docs/guides/known-limitations.zh-CN.md
+!docs/guides/native-wayland.md
 !docs/guides/recap.md
 !docs/guides/setup-guide.md
 !docs/guides/slack-notifications.md

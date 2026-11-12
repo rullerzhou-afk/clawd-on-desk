@@ -17,7 +17,6 @@ const MENU_OWNER_HIDE_DELAY_MS = 500;
 // Login-item / autostart helpers and the openAtLogin write path live in
 // src/login-item.js + main.js's settings-actions effect. menu.js used to
 // inline them but now just renders a checkbox bound to ctx.openAtLogin.
-
 const WIN_TOPMOST_LEVEL = "pop-up-menu"; // above taskbar-level UI
 
 // ── Window size presets (mirrored from main.js for resizeWindow) ──
@@ -51,6 +50,26 @@ function joinGroups(groups) {
 module.exports = function initMenu(ctx) {
   // ── Translation helper (bound to ctx.lang via the shared i18n module) ──
   const t = createTranslator(() => ctx.lang);
+  // Native Wayland (src/linux-wayland.js + src/linux-wayland-shim.js). The
+  // 1×1 context-menu owner is a focusable window placed exactly at the
+  // cursor, and `Menu.popup` anchors on the owner's origin. Two measured
+  // facts drive the Wayland path below:
+  //   • A focusable toplevel is tiled/resized by Hyprland (a 1×1 request
+  //     landed as 640×400 at 640,420) and setBounds never reaches the
+  //     compositor, so the owner needs the shim's rule-driven float
+  //     placement + a live `movewindow`, via placeWindow().
+  //   • The owner must be the ACTIVE toplevel or the menu closes at once, so
+  //     focus is requested through the compositor; on close, hide() hands
+  //     focus back to the previous toplevel by itself (measured), so no
+  //     blur()/focus-restore call is needed.
+  const isWaylandNative = isLinux && ctx.isWaylandNative === true;
+  const waylandShim = isWaylandNative ? (ctx.waylandShim || null) : null;
+  // The shim moves the owner through its own rules; without a shim the ctx
+  // hook does the compositor move. Both are absent on X11 (no-op path).
+  const placeWaylandWindow = ctx.placeWaylandWindow
+    || (waylandShim && typeof waylandShim.placeWindow === "function"
+      ? (win, rect) => waylandShim.placeWindow(win, rect)
+      : null);
   const macDockVisibility = isMac ? createMacDockVisibilityCoordinator({
     app,
     dock: app.dock,
@@ -395,6 +414,23 @@ module.exports = function initMenu(ctx) {
     // macOS: ensure owner can appear on fullscreen Spaces
     ctx.reapplyMacVisibility();
 
+    // Native Wayland: a focusable 1×1 window would be tiled by the
+    // compositor at its own choice of position, and the menu anchors to the
+    // owner's rect. Opt it into the shim's float placement BEFORE it is ever
+    // shown, so its first map already carries the rule.
+    if (isWaylandNative && waylandShim) {
+      waylandShim.setFloatingPlacement(ctx.contextMenuOwner, true);
+    }
+    // That rule is static (map-time only), and a window's first map happens
+    // the moment show() runs — while this owner is first shown only in
+    // popupMenuAt. Show it once here so that first map is spent on a rect the
+    // placement rule already controls (no_initial_focus keeps it from
+    // stealing the user's keyboard); popupMenuAt then re-maps it at the cursor.
+    if (isWaylandNative) {
+      ctx.contextMenuOwner.showInactive();
+      ctx.contextMenuOwner.hide();
+    }
+
     ctx.contextMenuOwner.on("close", (event) => {
       if (!ctx.isQuitting) {
         event.preventDefault();
@@ -466,47 +502,102 @@ module.exports = function initMenu(ctx) {
     if (!owner) return;
 
     const cursor = screen.getCursorScreenPoint();
-    owner.setBounds({ x: cursor.x, y: cursor.y, width: 1, height: 1 });
+    const origin = { x: Math.round(cursor.x), y: Math.round(cursor.y) };
+    owner.setBounds({ x: origin.x, y: origin.y, width: 1, height: 1 });
     owner.show();
+    if (isWaylandNative) {
+      if (placeWaylandWindow) {
+        // The compositor has to place the 1×1 owner itself. When there is no
+        // shim (no Hyprland backend) the app can still ask through its own
+        // dispatcher; without either, the owner stays wherever the
+        // compositor put it and the menu pops there.
+        placeWaylandWindow(owner, { x: origin.x, y: origin.y, width: 1, height: 1 });
+      }
+    }
     keepOutOfTaskbar(owner);
     owner.focus();
 
     ctx.menuOpen = true;
+    // Native Wayland: the compositor had to move the owner to the cursor
+    // (placeWaylandWindow) and focus() reaches the compositor asynchronously
+    // (~130 ms measured). Popping straight away would anchor the menu on the
+    // owner's PRE-move rect, so the pop waits for focus first.
+    if (isWaylandNative) {
+      openWaylandMenu(menu, owner);
+      return;
+    }
     whenOwnerFocused(owner, () => menu.popup({
       window: owner,
-      callback: () => {
-        ctx.menuOpen = false;
-        if (owner && !owner.isDestroyed()) hideOwnerAfterMenu(owner);
-        // #1260 backstop: the normal renderer path ends any active drag
-        // before asking for this menu, so a lock still held at close time
-        // was stranded by the menu's modal loop swallowing the closing
-        // pointerup. Release through the shared recovery entry — it also
-        // pushes force-drag-release so the renderer unwinds its gesture
-        // state and the input window re-syncs.
-        if (ctx.dragLocked && typeof ctx.releaseStrandedDragLock === "function") {
-          ctx.releaseStrandedDragLock();
+      callback: () => onMenuClosed(owner),
+    }));
+  }
+
+  // Everything that must happen when a context menu closes, whichever path
+  // opened it (XWayland/X11, macOS/Windows, native Wayland).
+  function onMenuClosed(owner) {
+    ctx.menuOpen = false;
+    if (owner && !owner.isDestroyed()) hideOwnerAfterMenu(owner);
+    // #1260 backstop: the normal renderer path ends any active drag
+    // before asking for this menu, so a lock still held at close time
+    // was stranded by the menu's modal loop swallowing the closing
+    // pointerup. Release through the shared recovery entry — it also
+    // pushes force-drag-release so the renderer unwinds its gesture
+    // state and the input window re-syncs.
+    if (ctx.dragLocked && typeof ctx.releaseStrandedDragLock === "function") {
+      ctx.releaseStrandedDragLock();
+    }
+    // ctx.petHidden guard: the menu's own Hide item may have just hidden
+    // the pet, and the click handler can fire on either side of this close
+    // callback — an unconditional showInactive() would resurrect a window
+    // setPetHidden() just hid. Skipping is safe: showPetWindows() re-asserts
+    // taskbar/mac flags on the next show, and Windows topmost is held by
+    // the window's alwaysOnTop flag plus the topmost-runtime watchdog, not
+    // by this callback.
+    if (ctx.win && !ctx.win.isDestroyed() && !ctx.petHidden) {
+      ctx.win.showInactive();
+      keepOutOfTaskbar(ctx.win);
+      if (isMac) {
+        ctx.reapplyMacVisibility();
+      } else if (isWin) {
+        if (ctx.petAlwaysOnTop === false) {
+          ctx.raisePetWindows();
+        } else {
+          ctx.win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
         }
-        // ctx.petHidden guard: the menu's own Hide item may have just hidden
-        // the pet, and the click handler can fire on either side of this close
-        // callback — an unconditional showInactive() would resurrect a window
-        // setPetHidden() just hid. Skipping is safe: showPetWindows() re-asserts
-        // taskbar/mac flags on the next show, and Windows topmost is held by
-        // the window's alwaysOnTop flag plus the topmost-runtime watchdog, not
-        // by this callback.
-        if (ctx.win && !ctx.win.isDestroyed() && !ctx.petHidden) {
-          ctx.win.showInactive();
-          keepOutOfTaskbar(ctx.win);
-          if (isMac) {
-            ctx.reapplyMacVisibility();
-          } else if (isWin) {
-            if (ctx.petAlwaysOnTop === false) {
-              ctx.raisePetWindows();
-            } else {
-              ctx.win.setAlwaysOnTop(true, WIN_TOPMOST_LEVEL);
-            }
-          }
-        }
-      },
+      }
+    }
+  }
+
+  // Native Wayland: the owner has to BE the active toplevel before the pop,
+  // or the menu closes immediately. Electron's focus() cannot activate a
+  // Wayland toplevel, but the shim's focus() dispatches compositor focus, so
+  // "wait for focus, then pop" keeps working through the same priming that
+  // the XWayland path relies on. A menu that never got focus would still be
+  // worse than one that closes, so the pop is attempted on the timeout too.
+  function openWaylandMenu(menu, owner) {
+    if (owner.isDestroyed() || ctx.isQuitting) {
+      ctx.menuOpen = false;
+      return;
+    }
+    whenOwnerFocused(owner, () => menu.popup({
+      window: owner,
+      callback: () => onMenuClosed(owner),
+    }));
+  }
+
+  // Native Wayland: the owner has to be the active toplevel before the pop,
+  // or the menu closes at once. Electron's focus() cannot activate a Wayland
+  // toplevel; the shim's focus() dispatches compositor focus instead, and
+  // that lands ~130 ms after the call, so the pop has to wait for it — the
+  // same focus priming the XWayland path relies on, through the same helper.
+  function openWaylandMenu(menu, owner) {
+    if (owner.isDestroyed() || ctx.isQuitting) {
+      ctx.menuOpen = false;
+      return;
+    }
+    whenOwnerFocused(owner, () => menu.popup({
+      window: owner,
+      callback: () => onMenuClosed(owner),
     }));
   }
 

@@ -3,29 +3,33 @@
 #
 # Usage:
 #   wayland-smoke.sh manual-x11 <AppImage>
-#   wayland-smoke.sh auto-xwayland <AppImage>
+#   wayland-smoke.sh env-xwayland <AppImage>
 #   wayland-smoke.sh native-wayland-contract <AppImage>
 #   wayland-smoke.sh appimage-claude-hooks <AppImage>
 #   wayland-smoke.sh appimage-wrapper-termination <AppImage>
 #
-# manual-x11 and auto-xwayland are full health checks: /state answers and an X
-# client window exists. native-wayland-contract deliberately checks only the
-# escape-hatch contract (no relaunch, no X11 browser, process remains alive).
+# Native Wayland is the DEFAULT backend: a plain launch must never relaunch
+# into XWayland (native-wayland-contract). The XWayland path is an explicit
+# opt-in — manual-x11 passes --ozone-platform=x11 on argv, env-xwayland sets
+# CLAWD_OZONE_PLATFORM=x11 and expects the one-shot relaunch. Both XWayland
+# scenarios are full health checks: /state answers and an X client window
+# exists. native-wayland-contract deliberately checks only the contract (no
+# relaunch, no X11 browser, process remains alive): weston --backend=headless
+# has no real input seat or DRM render node, so it is not a deterministic
+# environment for full native-Wayland Electron health.
 # appimage-claude-hooks boots the packaged AppImage, then asserts the Claude
 # hook commands persisted into the isolated HOME are content-addressed
 # persistent targets (never the transient FUSE mount) and still load after the
-# AppImage exits. weston --backend=headless has no real input seat or DRM
-# render node, so it is not a deterministic environment for full native-Wayland
-# Electron health.
+# AppImage exits.
 # appimage-wrapper-termination removes the owned FUSE wrappers before asking
 # the healthy browser to quit, and checks both the exit code and file cleanup.
 
 set -euo pipefail
 
-SCENARIO="${1:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
-APPIMAGE_ARG="${2:?usage: wayland-smoke.sh <manual-x11|auto-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
+SCENARIO="${1:?usage: wayland-smoke.sh <manual-x11|env-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
+APPIMAGE_ARG="${2:?usage: wayland-smoke.sh <manual-x11|env-xwayland|native-wayland-contract|appimage-claude-hooks|appimage-wrapper-termination> <AppImage>}"
 case "$SCENARIO" in
-  manual-x11 | auto-xwayland | native-wayland-contract | appimage-claude-hooks | appimage-wrapper-termination) ;;
+  manual-x11 | env-xwayland | native-wayland-contract | appimage-claude-hooks | appimage-wrapper-termination) ;;
   *) printf 'Unknown scenario: %s\n' "$SCENARIO" >&2; exit 2 ;;
 esac
 
@@ -321,8 +325,9 @@ PY
     fi
     ;;
 
-  auto-xwayland)
-    note "plain launch must relaunch onto XWayland"
+  env-xwayland)
+    note "CLAWD_OZONE_PLATFORM=x11 opt-in must relaunch onto XWayland"
+    export CLAWD_OZONE_PLATFORM=x11
     launch_app "$APPIMAGE"
     poll 30 grep -q "$RELAUNCH_MARK" "$ARTIFACT_DIR/app.log" ||
       fail "initial process never logged the XWayland relaunch"

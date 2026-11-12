@@ -196,6 +196,8 @@ function createRuntime(overrides = {}) {
     ...(overrides.isEdgeVirtualizationDisabled
       ? { isEdgeVirtualizationDisabled: overrides.isEdgeVirtualizationDisabled }
       : {}),
+    ...(overrides.isWaylandNative ? { isWaylandNative: overrides.isWaylandNative } : {}),
+    ...(overrides.waylandShim ? { waylandShim: overrides.waylandShim } : {}),
     ...(overrides.now ? { now: overrides.now } : {}),
     ...(overrides.edgeLog ? { edgeLog: overrides.edgeLog } : {}),
     ...(overrides.onStrandedDragLockReleased
@@ -4860,5 +4862,246 @@ describe("#1275: non-topmost Mac pet visibility preserves Space membership", () 
       assert.deepEqual(h.hitWin.calls, []);
       assert.equal(h.runtime.isPetEffectivelyHidden(), true);
     }
+  });
+});
+
+// Native Wayland (src/linux-wayland.js + src/linux-wayland-shim.js).
+// On a native Wayland session there is no WM clamp to converge on, no
+// reliable native move/resize echo to reconcile against, and no
+// _NET_WM_STATE_STICKY to set: the shim owns placement, pinning and
+// click-through through compositor IPC instead. These tests pin the runtime
+// gates that switch each X11/XWayland correction off in that mode, and the
+// pin-through-shim replacement for #979's all-workspaces hint.
+describe("native Wayland gating", () => {
+  const LINUX = { isWin: false, isMac: false, isLinux: true, isWaylandNative: true };
+  const LINUX_X11 = { isWin: false, isMac: false, isLinux: true };
+  const callNames = (win) => win.calls.map((call) => call[0]);
+
+  function makeFakeWaylandShim() {
+    const calls = [];
+    return {
+      calls,
+      pinCalls: () => calls.filter(([op]) => op === "setPinnedAllWorkspaces"),
+      setPinnedAllWorkspaces: (win, pinned) => calls.push(["setPinnedAllWorkspaces", win, pinned]),
+      setFloatingPlacement: (win, on) => calls.push(["setFloatingPlacement", win, on]),
+    };
+  }
+
+  it("pins both pet windows through the compositor shim instead of setVisibleOnAllWorkspaces", () => {
+    const shim = makeFakeWaylandShim();
+    const harness = createRuntime({ ...LINUX, waylandShim: shim });
+    const BrowserWindow = makePatchedBrowserWindow();
+
+    const renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+    const hitWin = createPetHitWindowForTest(harness, BrowserWindow);
+
+    assert.deepStrictEqual(shim.pinCalls(), [
+      ["setPinnedAllWorkspaces", renderWin, true],
+      ["setPinnedAllWorkspaces", hitWin, true],
+    ]);
+    for (const win of [renderWin, hitWin]) {
+      assert.ok(
+        !callNames(win).includes("setVisibleOnAllWorkspaces"),
+        "the X11 sticky hint must never be attempted on native Wayland"
+      );
+    }
+  });
+
+  it("still creates both pet windows on a degraded native Wayland session (no shim)", () => {
+    const harness = createRuntime(LINUX);
+    const BrowserWindow = makePatchedBrowserWindow();
+
+    let renderWin;
+    let hitWin;
+    assert.doesNotThrow(() => {
+      renderWin = createPetRenderWindowForTest(harness, BrowserWindow);
+      hitWin = createPetHitWindowForTest(harness, BrowserWindow);
+    });
+    for (const win of [renderWin, hitWin]) {
+      assert.ok(!callNames(win).includes("setVisibleOnAllWorkspaces"));
+      assert.ok(callNames(win).includes("showInactive"));
+      assert.ok(callNames(win).includes("loadFile"));
+    }
+  });
+
+  it("skips edge virtualization: an off-screen-right logical X is written as-is with no viewport offset", () => {
+    const clock = createFakeClock();
+    // A plain window, not makeMutterClampedWindow(): on Wayland no WM clamps
+    // the physical write, so modeling Mutter's require_fully_onscreen here
+    // would only mask what the runtime itself asked for.
+    const renderWin = makeWindow({
+      x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const harness = createRuntime({
+      isLinux: true,
+      isWaylandNative: true,
+      renderWin,
+      clock,
+      displays: [{ id: 1, bounds: ISSUE_690_WORK_AREA, workArea: ISSUE_690_WORK_AREA }],
+    });
+
+    const result = harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+
+    assert.equal(result.x, 1768, "the shim's dispatcher move can place the window past the work-area edge");
+    assert.equal(harness.renderWin.getBounds().x, 1768);
+    assert.equal(harness.runtime.getViewportOffsetX(), 0, "no materialization means no offset to compensate");
+    assert.ok(
+      !harness.calls.some((c) => c[0] === "sendToRenderer" && c[1] === "viewport-offset-x"),
+      "no viewport-offset-x IPC on native Wayland"
+    );
+  });
+
+  it("leaves the hit rect unclipped by the work area (no virtualization consequence to inherit)", () => {
+    const renderWin = makeWindow({ x: 0, y: 0, width: 120, height: 120 });
+    const harness = createRuntime({
+      isLinux: true,
+      isWaylandNative: true,
+      renderWin,
+      displays: [{
+        id: 1,
+        bounds: { x: 0, y: 0, width: 1000, height: 800 },
+        workArea: { x: 0, y: 0, width: 100, height: 760 },
+      }],
+    });
+
+    harness.runtime.syncHitWin();
+
+    assert.deepStrictEqual(
+      harness.hitWin.calls.find((call) => call[0] === "setBounds"),
+      ["setBounds", { x: 0, y: 0, width: 120, height: 120 }],
+      "a rect past the work-area right edge must not be intersected down on Wayland"
+    );
+  });
+
+  it("arms no settle sweep for a write", () => {
+    const clock = createFakeClock();
+    const x11 = create690Fixture({ clock });
+    x11.runtime.applyPetWindowBounds({
+      x: 500, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(clock.pendingCount(), 1, "sanity: X11 arms its settle sweep");
+
+    const waylandClock = createFakeClock();
+    const waylandRenderWin = makeWindow({
+      x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const wayland = createRuntime({
+      isLinux: true,
+      isWaylandNative: true,
+      renderWin: waylandRenderWin,
+      clock: waylandClock,
+      displays: [{ id: 1, bounds: ISSUE_690_WORK_AREA, workArea: ISSUE_690_WORK_AREA }],
+    });
+    wayland.runtime.applyPetWindowBounds({
+      x: 500, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(waylandClock.pendingCount(), 0, "no settle sweep on native Wayland");
+  });
+
+  it("does not reconcile a native move event (no usable compositor echo)", () => {
+    const clock = createFakeClock();
+    const renderWin = makeMutterClampedWindow({
+      x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const harness = createRuntime({
+      isLinux: true,
+      isWaylandNative: true,
+      renderWin,
+      clock,
+      displays: [{ id: 1, bounds: ISSUE_690_WORK_AREA, workArea: ISSUE_690_WORK_AREA }],
+    });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const logicalBefore = harness.runtime.getPetWindowBounds().x;
+    clock.advance(500);
+
+    // A native getBounds() readback on Wayland reports the unusable {0,0}.
+    harness.renderWin.bounds = {
+      x: 0, y: 0, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.renderWin.emit("move");
+    assert.equal(clock.pendingCount(), 0, "no reconcile timer may be armed on native Wayland");
+    clock.advance(1000);
+
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, logicalBefore,
+      "the shim's logical placement must survive a {0,0} native echo untouched"
+    );
+  });
+
+  it("does not reconcile a native hit move event", () => {
+    const clock = createFakeClock();
+    const harness = createRuntime({ isLinux: true, isWaylandNative: true, clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.hitWin.emit("move");
+    assert.equal(clock.pendingCount(), 0, "no hit quiet timer may be armed on native Wayland");
+    clock.advance(1000);
+  });
+
+  it("keeps the X11/Windows/Linux control path reconciling (the gates are Wayland-only)", () => {
+    const clock = createFakeClock();
+    const harness = create690Fixture({ clock });
+    wireNativeGeometryListeners(harness);
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    assert.equal(harness.runtime.getViewportOffsetX(), 51);
+    clock.advance(500);
+    harness.renderWin.bounds = {
+      x: 800, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    harness.renderWin.emit("move");
+    clock.advance(200);
+
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 851,
+      "the same fixture without isWaylandNative must still rebase (control for the Wayland gate)"
+    );
+  });
+
+  it("runReconcile() is a no-op even when invoked directly with a live generation", () => {
+    const clock = createFakeClock();
+    const renderWin = makeWindow({
+      x: 0, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    const harness = createRuntime({
+      isLinux: true,
+      isWaylandNative: true,
+      renderWin,
+      clock,
+      displays: [{ id: 1, bounds: ISSUE_690_WORK_AREA, workArea: ISSUE_690_WORK_AREA }],
+    });
+
+    harness.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    harness.renderWin.bounds = {
+      x: 0, y: 0, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    assert.doesNotThrow(() => harness.runtime.runReconcile("native-quiet"));
+    assert.equal(
+      harness.runtime.getPetWindowBounds().x, 1768,
+      "no classification branch may run on native Wayland -- branch (c) would rebase onto {0,0}"
+    );
+
+    // The X11 control proves the identical direct call DOES classify there.
+    const x11Clock = createFakeClock();
+    const x11 = create690Fixture({ clock: x11Clock });
+    x11.runtime.applyPetWindowBounds({
+      x: 1768, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    });
+    x11Clock.advance(500);
+    x11.renderWin.bounds = {
+      x: 800, y: 721, width: ISSUE_690_WINDOW_SIZE.width, height: ISSUE_690_WINDOW_SIZE.height,
+    };
+    x11.runtime.runReconcile("native-quiet");
+    assert.equal(x11.runtime.getPetWindowBounds().x, 851);
   });
 });

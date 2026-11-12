@@ -1,16 +1,22 @@
-# Packaged Linux smoke tests for the XWayland auto-relaunch (issue #441).
+# Packaged Linux smoke tests for the Wayland backend contract.
 #
 # Build once, then download the exact same AppImage into fresh runner jobs.
 # Each scenario owns its HOME, Electron userData, D-Bus session, Weston/Xwayland
 # compositor and process namespace. This prevents a failed teardown or stale
 # singleton/runtime file in one scenario from contaminating another.
 #
+# Native Wayland is the default backend (the historical #441 XWayland
+# auto-relaunch is gone): a plain launch must stay native — that is the
+# native-wayland-contract scenario. XWayland is an explicit opt-in, covered by
+# manual-x11 (--ozone-platform=x11 on argv) and env-xwayland
+# (CLAWD_OZONE_PLATFORM=x11 → one-shot relaunch).
+#
 # Native Wayland remains a packaged contract check, not a full GUI-health
 # assertion: weston --backend=headless has no real input seat or DRM render
 # node, so requiring the complete Electron app and /state server there is
 # host-dependent. Real native-Wayland rendering still needs a VM/hardware field
 # test. The two XWayland scenarios remain full end-to-end health checks.
-name: Wayland smoke (issue 441)
+name: Wayland smoke
 
 on:
   workflow_dispatch:
@@ -19,6 +25,8 @@ on:
   pull_request:
     paths:
       - src/linux-ozone.js
+      - src/linux-wayland.js
+      - src/linux-wayland-shim.js
       - ci/wayland-smoke.sh
       - ci/install-wayland-deps.sh
       - ci/wayland-apt-packages.txt
@@ -102,7 +110,7 @@ jobs:
       matrix:
         scenario:
           - manual-x11
-          - auto-xwayland
+          - env-xwayland
           - appimage-wrapper-termination
     steps:
       - uses: actions/checkout@v4

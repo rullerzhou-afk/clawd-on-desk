@@ -3,13 +3,17 @@ const { maybeRunPackageKoffiSmoke } = require("./package-koffi-smoke");
 if (maybeRunPackageKoffiSmoke({ app, BrowserWindow })) {
   return;
 }
-// ── Linux/Wayland: relaunch under XWayland so the pet is draggable (issue #441) ──
-// Native Wayland ignores client-side window positioning and blocks global cursor
-// queries, so the pet spawns centered, can't be dragged, and has no tracking;
-// --ozone-platform=x11 (XWayland) restores positioning + drag.
+// ── Linux/Wayland: XWayland relaunch (explicit opt-in only) ──
+// Native Wayland is the default backend now: src/linux-wayland.js +
+// src/linux-wayland-shim.js restore window placement, click-through,
+// all-workspace pinning and cursor tracking through the compositor's
+// privileged IPC (full support on Hyprland, graceful degradation elsewhere).
+// The historical issue-#441 auto-relaunch into XWayland is gone; what remains
+// here is the plumbing for users who explicitly ask for XWayland with
+// CLAWD_OZONE_PLATFORM=x11 (planXWaylandRelaunch only fires for that opt-in).
 //
-// This canNOT be done with app.commandLine.appendSwitch from here: Electron
-// selects AND instantiates the Ozone backend in C++ PreEarlyInitialization
+// The relaunch mechanism itself is unchanged: Electron selects AND
+// instantiates the Ozone backend in C++ PreEarlyInitialization
 // (ui::SetOzonePlatformForLinuxIfNeeded + ui::OzonePlatform::PreEarlyInitialization),
 // which runs BEFORE this main script (PostEarlyInitialization → JoinAppCode) —
 // so any in-process switch change lands after the backend is already chosen.
@@ -25,7 +29,8 @@ const _xwaylandRelaunch = planXWaylandRelaunch({
 if (_xwaylandRelaunch) {
   console.log(
     "Clawd: Linux — relaunching under XWayland (--ozone-platform=x11) " +
-    "(issue #441; override with CLAWD_OZONE_PLATFORM=wayland|x11|auto)"
+    "(CLAWD_OZONE_PLATFORM=x11 opt-in; native Wayland is the default — " +
+    "override with CLAWD_OZONE_PLATFORM=wayland|auto)"
   );
   process.env.CLAWD_OZONE_RELAUNCHED = "1";
   // Spawn the replacement ourselves instead of app.relaunch(). Electron's
@@ -275,6 +280,48 @@ const _linuxX11InputHint = createLinuxX11InputHint({
   displayName: app.commandLine.getSwitchValue("display"),
   onError: (err) => console.warn("Clawd: linux-x11-input-hint failed:", err && err.message),
 });
+
+// ── Linux/native Wayland: Hyprland compositor backend + window shim ──
+// Native Wayland gives clients no window positioning and no global cursor
+// query; on Hyprland the compositor's IPC (window rules, dispatchers,
+// cursorpos) restores both, plus the click-through and all-workspaces
+// behaviors setIgnoreMouseEvents()/setVisibleOnAllWorkspaces() implement
+// only on X11. Created BEFORE any window exists: the shim patches
+// BaseWindow.prototype once, and every window constructed afterwards is
+// covered. On non-Hyprland compositors `available` is false and everything
+// degrades to no-ops (the app still runs as a plain native-Wayland client).
+const _linuxWayland = (() => {
+  const empty = { active: false, backend: null, shim: null };
+  if (!isLinux) return empty;
+  try {
+    const {
+      isWaylandBackendActive,
+      isHyprlandSession,
+      createHyprlandBackend,
+    } = require("./linux-wayland");
+    const { installLinuxWaylandWindowShim } = require("./linux-wayland-shim");
+    const ozonePlatform = app.commandLine.getSwitchValue("ozone-platform");
+    if (!isWaylandBackendActive({ ozonePlatform })) return empty;
+    const backend = createHyprlandBackend({
+      onError: (err) => console.warn("Clawd: linux-wayland backend failed:", err && err.message),
+    });
+    if (!isHyprlandSession() || !backend.available) {
+      if (isHyprlandSession() === false) {
+        console.warn("Clawd: native Wayland without Hyprland — window placement, click-through and cursor tracking are limited (set CLAWD_OZONE_PLATFORM=x11 for the XWayland fallback).");
+      }
+      return { active: true, backend, shim: null };
+    }
+    const shim = installLinuxWaylandWindowShim({
+      BaseWindow: require("electron").BaseWindow,
+      backend,
+      onWarn: (message) => console.warn(message),
+    });
+    return { active: true, backend, shim };
+  } catch (err) {
+    console.warn("Clawd: linux-wayland setup failed:", err && err.message);
+    return empty;
+  }
+})();
 
 // ── Windows: DWM cloak inspection + un-cloak (#525 self-heal) ──
 // Best-effort; degrades to "never cloaked / recovery no-op" when koffi/dwmapi
@@ -1219,6 +1266,14 @@ const petWindowRuntime = createPetWindowRuntime({
   isMac,
   isLinux,
   windowsHitWindowFocusable: _hitWindowActivationRuntime.windowsHitWindowFocusable,
+  // Native Wayland (Wayland Ozone backend, no XWayland): true for the whole
+  // session, shim or not, because the window runtime's geometry model (native
+  // move/resize echoes, work-area clamping, edge virtualization) has no
+  // meaning there. waylandShim is the Hyprland-backed handle that owns real
+  // placement, click-through and all-workspaces; null means degraded but
+  // still native.
+  isWaylandNative: _linuxWayland.active,
+  waylandShim: _linuxWayland.shim,
   linuxWindowType: LINUX_WINDOW_TYPE,
   topmostLevel: WIN_TOPMOST_LEVEL,
   getRenderWindow: () => win,
@@ -4744,6 +4799,10 @@ function showResumeInput(t) {
 const _menuCtx = {
   get win() { return win; },
   get petAlwaysOnTop() { return getPetAlwaysOnTopEffective(); },
+  // Native Wayland: menu.js places and focuses its 1×1 owner through the
+  // compositor (rule-driven float + dispatcher move); on X11 these are unused.
+  get isWaylandNative() { return _linuxWayland.active; },
+  get waylandShim() { return _linuxWayland.shim; },
   get sessions() { return sessions; },
   cancelRoam: () => _roam.cancelRoam(),
   resetKeepSizeFrozen: () => resetKeepSizeFrozen(),
@@ -6258,6 +6317,17 @@ if (!gotTheLock) {
       displayName: app.commandLine.getSwitchValue("display"),
       onError: (err) => console.warn("Clawd: linux-x11-cursor failed:", err && err.message),
     });
+
+    // Linux native Wayland: getCursorScreenPoint() always returns {0,0}
+    // (Chromium has no global cursor query on Wayland). Hyprland's `cursorpos`
+    // reports logical coordinates — DIP 1:1 — so it replaces the value
+    // outright. Mutually exclusive with the X11 install above (the backends
+    // can't both be active).
+    if (_linuxWayland.active && _linuxWayland.backend && _linuxWayland.backend.available) {
+      require("./linux-wayland").installHyprlandCursorProvider(screen, _linuxWayland.backend, {
+        onError: (err) => console.warn("Clawd: hyprland cursor provider failed:", err && err.message),
+      });
+    }
 
     // Older macOS and development builds retain the padded runtime icon from
     // #416. Packaged Tahoe+ leaves the Dock untouched so macOS can apply the
