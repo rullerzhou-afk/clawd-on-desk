@@ -36,6 +36,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { toNumberStats, fileIdentity } = require("../hooks/file-identity");
 const { bareCodexSessionId } = require("../hooks/codex-session-index");
 
 const ARCHIVE_DIR_NAME = "archived_sessions";
@@ -81,15 +82,7 @@ function deriveCanonicalSessionId(fileName) {
 }
 
 function statIdentity(stat) {
-  if (!stat) return null;
-  const dev = Number(stat.dev);
-  const ino = Number(stat.ino);
-  if (Number.isFinite(dev) && Number.isFinite(ino) && (dev !== 0 || ino !== 0)) {
-    return `inode:${dev}:${ino}`;
-  }
-  const birthtimeMs = Number(stat.birthtimeMs);
-  if (Number.isFinite(birthtimeMs) && birthtimeMs > 0) return `birth:${birthtimeMs}`;
-  return null;
+  return fileIdentity(stat);
 }
 
 function isRegularFileStat(stat) {
@@ -131,7 +124,7 @@ async function defaultListDirectory(dir) {
 
 async function defaultStatFile(filePath) {
   try {
-    return await fs.promises.lstat(filePath);
+    return toNumberStats(await fs.promises.lstat(filePath, { bigint: true }));
   } catch (err) {
     if (err && (err.code === "ENOENT" || err.code === "ENOTDIR")) return null;
     throw err;

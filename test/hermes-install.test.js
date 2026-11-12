@@ -987,3 +987,40 @@ describe("remote mode", () => {
     assert.strictEqual(result.remote, true);
   });
 });
+
+
+for (const replace of [true, false]) {
+  it(`S7: staging collision ${replace ? "retains replacement directory" : "cleans unchanged directory"}`, t => {
+    const { collidingFileIds } = require("./helpers/colliding-file-ids");
+    const ids = collidingFileIds(t);
+    const sourcePluginDir = makeRemoteSourcePlugin();
+    const rootHome = makeTempDir();
+    const probe = makeTempDir("hermes-identity-probe-");
+    let stageDir;
+    const failed = registerHermesPluginRemote({
+      sourcePluginDir, targetHomes: [rootHome], hermesCommand: "hermes", spawnSync: remoteSpawn(), env: {},
+      renameSync: (from, to) => {
+        if (path.basename(to) === "__init__.py") {
+          stageDir = path.dirname(to);
+          const before = ids.snapshot(stageDir);
+          ids.assertCollision(before, ids.snapshot(probe));
+          if (replace) {
+            fs.renameSync(stageDir, stageDir + ".old");
+            fs.mkdirSync(stageDir);
+            // Only expected, unchanged managed content: identity is the sole
+            // reason to retain this replacement rather than clean it up.
+            fs.copyFileSync(path.join(sourcePluginDir, "plugin.yaml"), path.join(stageDir, "plugin.yaml"));
+            ids.assertCollision(before, ids.snapshot(stageDir));
+          }
+          throw new Error("injected second-asset failure");
+        }
+        fs.renameSync(from, to);
+      },
+    });
+    assert.strictEqual(failed.status, "error");
+    assert.ok(stageDir);
+    assert.strictEqual(fs.existsSync(stageDir), replace);
+    assert.strictEqual(failed.targets[0].message.includes("staging retained"), replace);
+    if (replace) assert.deepStrictEqual(fs.readdirSync(stageDir), ["plugin.yaml"]);
+  });
+}

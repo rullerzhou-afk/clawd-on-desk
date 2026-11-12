@@ -2,6 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const os = require("os");
+const { readStats, fileIdentity } = require("../hooks/file-identity");
 
 const RECORD_TYPES = Object.freeze({
   PENDING: "pending_interaction",
@@ -13,10 +14,6 @@ const RECORD_TYPES = Object.freeze({
 const MAX_READ_BYTES = 1024 * 1024;
 const MAX_LINE_BYTES = 256 * 1024;
 const MAX_AGE_MS = 24 * 60 * 60 * 1000;
-
-function fileIdentity(stat) {
-  return stat.ino ? `${stat.dev}:${stat.ino}` : `birth:${stat.birthtimeMs}`;
-}
 
 function parseRecord(line, sessionId, cwd, earliestTimestamp) {
   let record;
@@ -88,7 +85,7 @@ class KiroDesktopLogMonitor {
       for (const session of this.listDirectories(bucketDir)) {
         const filename = path.join(bucketDir, session.name, "messages.jsonl");
         try {
-          const stat = fs.statSync(filename);
+          const stat = readStats(fs.statSync, filename);
           if (stat.isFile() && this.now() - stat.mtimeMs <= MAX_AGE_MS) {
             candidates.push({ filename, sessionId: session.name, stat });
           }
@@ -155,7 +152,7 @@ class KiroDesktopLogMonitor {
   readFile(file) {
     const fd = fs.openSync(file.filename, "r");
     try {
-      const stat = fs.fstatSync(fd);
+      const stat = readStats(fs.fstatSync, fd);
       let boundaryChanged = false;
       if (file.offset > 0 && file.offset <= stat.size && !file.discarding) {
         const byte = Buffer.alloc(1);

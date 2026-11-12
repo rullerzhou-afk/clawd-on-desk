@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
+const { toNumberStats, fileIdentity } = require("../hooks/file-identity");
 const {
   createJsonlSessionTitleTracker,
   normalizeSessionTitle,
@@ -49,15 +50,14 @@ function workBuddyHomeOwnsTranscript(dir, transcriptPath) {
 function statTranscriptIdentity(transcriptPath, statSync = fs.statSync) {
   if (!transcriptPath) return null;
   try {
-    const stat = statSync(transcriptPath);
-    return { dev: stat.dev, ino: stat.ino };
+    return fileIdentity(toNumberStats(statSync(transcriptPath, { bigint: true })));
   } catch {
     return null;
   }
 }
 
 function sameTranscriptIdentity(a, b) {
-  return !!a && !!b && a.dev === b.dev && a.ino === b.ino;
+  return typeof a === "string" && a === b;
 }
 
 function normalizeWorkBuddyContextUsage(row) {
@@ -238,7 +238,7 @@ function createWorkBuddySessionTitleTracker(options = {}) {
 
   // Same raw id and same path is not enough: WorkBuddy can replace a transcript
   // in place, and the shared reader keeps parsed title fields when it detects a
-  // new inode. Only a confirmed matching dev+ino keeps the reader's accumulated
+  // new identity. Only a confirmed matching file identity keeps the accumulated
   // state; a changed or unreadable identity resets it. The caller passes the
   // identity it sampled once, so the decision and the recorded entry can never
   // disagree about which file they saw.
@@ -335,7 +335,7 @@ function createWorkBuddySessionTitleTracker(options = {}) {
   // SessionStart boundary. A fresh observer identity stops any read started
   // before this turn from annotating it, while the rate-limit window carries
   // over so the boundary cannot force an extra database read. The JSONL reader
-  // is kept only for the same file (same path and same dev+ino); a transcript
+  // is kept only for the same file (same path and same file identity); a transcript
   // switch or a replaced file resets it, so the previous file's late scan
   // cannot leak its title into this turn.
   function beginTurn(input) {

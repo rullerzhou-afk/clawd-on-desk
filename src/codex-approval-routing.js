@@ -4,6 +4,7 @@ const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { isDeepStrictEqual } = require("node:util");
+const { readStats, fileIdentity } = require("../hooks/file-identity");
 
 const HEAD_LIMIT = 256 * 1024;
 const SCAN_CHUNK_BYTES = 1024 * 1024;
@@ -80,7 +81,7 @@ function resolveCodexApprovalRoute(data = {}, options = {}) {
     });
     if (!roots.some((root) => inside(root, file))) return delegate("foreign-transcript");
     fd = fs.openSync(file, "r");
-    const before = fs.fstatSync(fd);
+    const before = readStats(fs.fstatSync, fd);
     if (!before.isFile()) return delegate("not-a-file");
     const head = readHead(fd, before.size);
     const metaId = head && head.type === "session_meta" && head.payload
@@ -145,9 +146,11 @@ function resolveCodexApprovalRoute(data = {}, options = {}) {
         context = null;
       }
     }
-    const after = fs.fstatSync(fd);
-    const current = fs.statSync(file);
-    if (before.dev !== current.dev || before.ino !== current.ino
+    const after = readStats(fs.fstatSync, fd);
+    const current = readStats(fs.statSync, file);
+    const beforeIdentity = fileIdentity(before);
+    const currentIdentity = fileIdentity(current);
+    if (beforeIdentity === null || currentIdentity === null || beforeIdentity !== currentIdentity
       || before.size !== after.size || before.mtimeMs !== after.mtimeMs
       || after.size !== current.size || after.mtimeMs !== current.mtimeMs) {
       return delegate("transcript-changed");
