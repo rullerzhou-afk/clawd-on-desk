@@ -30,6 +30,72 @@ it("classifies stable update error codes from codes, HTTP status, phase, and con
   assert.equal(initUpdater.__test.isUpdate404Error(new Error("Cannot find latest-mac.yml (404)")), true);
 });
 
+function makeGatewayTimeoutError() {
+  return Object.assign(new Error([
+    "504",
+    'method: GET url: https://example.test/releases/download/v9.9.9/latest.yml',
+    '<html><body><h1>504 Gateway Time-out</h1></body></html>',
+    'Headers: { "x-github-request-id": "F404:EXAMPLE" }',
+  ].join("\n")), { code: "HTTP_ERROR_504", statusCode: 504 });
+}
+
+it("reports a gateway timeout whose response headers contain 404 as a service error", () => {
+  const err = makeGatewayTimeoutError();
+  assert.equal(initUpdater.__test.isUpdate404Error(err), false);
+  assert.equal(initUpdater.__test.classifyUpdateError(err, {
+    phase: "availability-check", mode: "packaged", releaseConfirmed: true,
+  }), "HTTP_SERVICE_ERROR");
+});
+
+it("uses structured HTTP status before missing-channel text", () => {
+  for (const fields of [
+    { statusCode: 504 },
+    { status: "503" },
+    { response: { status: 502 } },
+    { code: "HTTP_ERROR_504" },
+  ]) {
+    const err = Object.assign(new Error("Cannot find latest.yml (404)"), fields);
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false, JSON.stringify(fields));
+    assert.equal(initUpdater.__test.classifyUpdateError(err, {
+      releaseConfirmed: true,
+    }), "HTTP_SERVICE_ERROR", JSON.stringify(fields));
+  }
+});
+
+it("does not infer missing updater metadata from 404 in diagnostic data", () => {
+  for (const message of [
+    'Request failed\nHeaders: { "x-github-request-id": "F404:EXAMPLE" }',
+    "Request failed for https://example.test/404/latest.yml",
+    "Request failed\n<html><h1>404 Not Found</h1></html>",
+    "Request failed\nCannot find latest.yml (404)",
+  ]) {
+    const err = new Error(message);
+    assert.equal(initUpdater.__test.isUpdate404Error(err), false, message);
+    assert.notEqual(initUpdater.__test.classifyUpdateError(err, {
+      releaseConfirmed: true,
+    }), "NO_COMPATIBLE_ASSET", message);
+  }
+});
+
+it("keeps genuine HTTP 404 and explicit missing-channel errors compatible", () => {
+  for (const err of [
+    Object.assign(new Error("Not Found"), { statusCode: 404 }),
+    Object.assign(new Error("Not Found"), { status: "404" }),
+    Object.assign(new Error("Not Found"), { response: { status: 404 } }),
+    Object.assign(new Error("Not Found"), { code: "HTTP_ERROR_404" }),
+    Object.assign(new Error("Missing channel"), { code: "ERR_UPDATER_CHANNEL_FILE_NOT_FOUND" }),
+    new Error("404 Not Found"),
+    new Error("HTTP 404: Not Found"),
+    new Error("Cannot find latest.yml (404)"),
+    new Error("Cannot find latest-mac.yml (404)"),
+  ]) {
+    assert.equal(initUpdater.__test.isUpdate404Error(err), true, err.message);
+    assert.equal(initUpdater.__test.classifyUpdateError(err, {
+      releaseConfirmed: true,
+    }), "NO_COMPATIBLE_ASSET", err.message);
+  }
+});
+
 it("redacts credentials and URL queries and bounds copied update details", () => {
   const sanitize = initUpdater.__test.sanitizeUpdateErrorDetail;
   const secret = "super-secret-value";
@@ -773,6 +839,43 @@ describe("updater visual flow", () => {
     assert.deepStrictEqual(bubbles.map((bubble) => bubble.mode), ["checking", "error"]);
     assert.match(bubbles[1].detail, /NO_COMPATIBLE_ASSET/);
   });
+
+  for (const emitError of [false, true]) {
+    it(`shows a service error for a confirmed release's HTTP 504${emitError ? " emitted before rejection" : " rejection"}`, async () => {
+      const bubbles = [];
+      const handlers = {};
+      const updater = initUpdater(makeCtx({
+        showUpdateBubble: (payload) => bubbles.push(payload),
+      }), makeDeps({
+        autoUpdaterFactory: () => ({
+          on(event, handler) { handlers[event] = handler; },
+          async checkForUpdates() {
+            const err = makeGatewayTimeoutError();
+            if (emitError) await handlers.error(err);
+            throw err;
+          },
+        }),
+        httpsGetImpl: makeLatestReleaseResponse({ tag_name: "v0.5.11" }),
+      }));
+      updater.setupAutoUpdater();
+
+      const snapshot = await updater.checkForUpdates(true);
+
+      assert.equal(snapshot.state, "error");
+      assert.equal(snapshot.error.code, "HTTP_SERVICE_ERROR");
+      assert.equal(snapshot.error.phase, "availability-check");
+      assert.match(snapshot.error.message, /temporary server error/);
+      assert.match(snapshot.error.copyText, /HTTP Status: 504/);
+      assert.match(snapshot.error.copyText, /HTTP_ERROR_504/);
+      assert.equal(bubbles[0].mode, "checking");
+      assert.ok(bubbles.length >= 2);
+      for (const bubble of bubbles.slice(1)) {
+        assert.equal(bubble.mode, "error");
+        assert.match(bubble.detail, /HTTP_SERVICE_ERROR/);
+        assert.doesNotMatch(bubble.detail, /NO_COMPATIBLE_ASSET/);
+      }
+    });
+  }
 
   it("shows a real error bubble when packaged download fails after user starts it", async () => {
     const bubbles = [];
