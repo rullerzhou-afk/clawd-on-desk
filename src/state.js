@@ -1997,6 +1997,16 @@ function commitLocalDshQuota(deepseekQuota) {
   return { accepted: true, persisted: persisted === true };
 }
 
+// Third-party quota bundle: one commit seam for the Cursor / Grok Bot runtime so
+// a partial provider result never disturbs the others.
+function commitLocalThirdPartyQuota(quotas) {
+  const result = accountQuota.updateDetailed(null, quotas || {});
+  if (!result.accepted) return { accepted: false, persisted: false };
+  const persisted = accountQuota.flush();
+  if (result.changed) emitSessionSnapshot();
+  return { accepted: true, persisted: persisted === true };
+}
+
 // Distinct reporting sources that currently carry quota (this machine + WSL /
 // SSH remotes), UNmerged. The settings UI hides the "merge across machines"
 // switch when there is only one source, since merging is then a no-op.
@@ -4558,6 +4568,7 @@ return {
   commitLocalKimiQuota,
   clearLocalKimiQuota,
   commitLocalDshQuota,
+  commitLocalThirdPartyQuota,
   getQuotaSourceCount,
   clearPermissionNotification,
   promoteCompletion,

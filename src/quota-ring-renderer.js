@@ -19,7 +19,7 @@ const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
 const PROVIDER_STALE_AFTER_MS = Object.freeze({
   kimiQuota: 7 * 60 * 1000,
 });
-const MAX_COINS = 4; // must match quota-ring-geometry RING_MAX_COINS
+const MAX_COINS = 6; // must match quota-ring-geometry RING_MAX_COINS
 
 // Mirrors RING_PROVIDERS in quota-ring-geometry.js (that file is CommonJS; this
 // runs in the browser and cannot require it). Antigravity reports two quota
@@ -64,6 +64,20 @@ const RING_PROVIDERS = [
     label: "DeepSeek",
     amountDisplay: true,
     outer: [{ field: "deepseekBalance", fallbackKey: "quotaRingDeepseekBalance" }],
+    inner: [],
+  },
+  {
+    key: "cursorQuota",
+    label: "Cursor",
+    displayMode: "used",
+    outer: [{ field: "cursorWeekly", fallback: "7d" }],
+    inner: [{ field: "cursorMonthly", fallback: "30d" }],
+  },
+  {
+    key: "grokBotQuota",
+    label: "Grok Bot",
+    displayMode: "used",
+    outer: [{ field: "grokBotWeekly", fallback: "7d" }],
     inner: [],
   },
 ];
@@ -113,6 +127,10 @@ const GLYPH_ZOOM_BY_PROVIDER = {
   kimiQuota: 64 / 56,
   // The DeepSeek mark is exported as a plain (non-tiled) glyph: 56 of 64.
   deepseekQuota: 64 / 56,
+  // cursor-agent is a contrast-tiled mark (40 of 64 inside a 56px plate).
+  cursorQuota: 64 / 44.4,
+  // grok-build is a plain mark (56 of 64).
+  grokBotQuota: 64 / 56,
 };
 let coinClipSeq = 0;
 
@@ -135,9 +153,14 @@ function quotaDisplayMode() {
   return payload && payload.displayMode === "remaining" ? "remaining" : "used";
 }
 
-function quotaDisplayPercent(usedPercent) {
+function coinDisplayMode(def) {
+  if (def && (def.displayMode === "used" || def.displayMode === "remaining")) return def.displayMode;
+  return quotaDisplayMode();
+}
+
+function quotaDisplayPercent(usedPercent, mode = quotaDisplayMode()) {
   const used = Math.max(0, Math.min(100, Number(usedPercent) || 0));
-  return quotaDisplayMode() === "remaining" ? 100 - used : used;
+  return mode === "remaining" ? 100 - used : used;
 }
 
 // Prepaid-balance providers (DeepSeek) print the account amount in
@@ -328,7 +351,7 @@ function buildCoinModel(source, def, now, multiSource) {
       break;
     }
   }
-  return {
+  const model = {
     providerKey: def.key,
     label: def.label,
     host: visibleHost || source.host || null,
@@ -351,6 +374,13 @@ function buildCoinModel(source, def, now, multiSource) {
     amount,
     currency,
   };
+  // Display mode is resolved at draw time (not model-build time) so a runtime
+  // mode flip applies without rebuilding models; per-provider overrides win.
+  Object.defineProperty(model, "displayMode", {
+    get() { return coinDisplayMode(def); },
+    enumerable: false,
+  });
+  return model;
 }
 
 // Providers the user hid from this cluster. Display-only — collection and the
@@ -406,6 +436,7 @@ function ringCircle(cls, r, sw, dashFill) {
 
 function buildCoinSvg(model) {
   const dual = model.windows.length > 1;
+  const mode = model.displayMode || quotaDisplayMode();
   const svg = document.createElementNS(SVG_NS, "svg");
   svg.setAttribute("class", "coin");
   svg.setAttribute("viewBox", "0 0 26 26");
@@ -421,7 +452,7 @@ function buildCoinSvg(model) {
   // exactly that state. Per RING, not per row: .coin-row.is-reset only exists
   // when EVERY window reset, so "one window reset while the other is live" —
   // the common case right after a 5h rollover — falls straight through it.
-  const bedOnly = (w) => !!w && w.reset === true && quotaDisplayMode() === "used";
+  const bedOnly = (w) => !!w && w.reset === true && mode === "used";
   // Staleness belongs to a bucket, not necessarily the whole provider. A
   // presence-aware partial update can refresh weekly while leaving 5h old (or
   // vice versa), so each physical ring carries its own class. The row-level
@@ -433,7 +464,7 @@ function buildCoinSvg(model) {
   svg.appendChild(ringCircle(
     `track ${identityClass(model.providerKey, outer.ring)}${bedOnly(outer) ? " is-reset-bed" : ""}${staleClass(outer)}`,
     OUTER_R, OUTER_SW, null));
-  if (outer && (!outer.reset || quotaDisplayMode() === "remaining")) {
+  if (outer && (!outer.reset || mode === "remaining")) {
     const outerNear = !outer.reset && model.near && model.binding === outer;
     const f = ringCircle(
       `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, outer.ring)}${staleClass(outer)}`,
@@ -447,7 +478,7 @@ function buildCoinSvg(model) {
     svg.appendChild(ringCircle(
       `track ${identityClass(model.providerKey, inner.ring)}${bedOnly(inner) ? " is-reset-bed" : ""}${staleClass(inner)}`,
       INNER_R, INNER_SW, null));
-    if (inner && (!inner.reset || quotaDisplayMode() === "remaining")) {
+    if (inner && (!inner.reset || mode === "remaining")) {
       const innerNear = !inner.reset && model.near && model.binding === inner;
       svg.appendChild(ringCircle(
         `fill ${inner.reset ? "sev-reset" : severityClass(inner.pct)}${innerNear ? " is-near" : ""} ${identityClass(model.providerKey, inner.ring)}${staleClass(inner)}`,
@@ -525,10 +556,10 @@ function buildCoinRow(model, now = Date.now()) {
     pct.textContent = amountText;
     win.textContent = shown ? shown.label : "";
   } else if (shown && shown.reset) {
-    pct.textContent = quotaDisplayMode() === "remaining" ? "100%" : "0%";
+    pct.textContent = model.displayMode === "remaining" ? "100%" : "0%";
     win.textContent = t("quotaRingReset");
   } else if (shown) {
-    pct.textContent = `${Math.round(quotaDisplayPercent(shown.pct))}%`;
+    pct.textContent = `${Math.round(quotaDisplayPercent(shown.pct, model.displayMode))}%`;
     win.textContent = shown.label;
   } else {
     pct.textContent = "—";
@@ -561,7 +592,7 @@ function buildReadoutFoot(model) {
   let text = null;
   // A money readout has no percent to disambiguate, so the
   // "remaining" mode word would just repeat the label.
-  if (quotaDisplayMode() === "remaining" && !(model && model.amountDisplay === true)) {
+  if (((model && model.displayMode) || quotaDisplayMode()) === "remaining" && !(model && model.amountDisplay === true)) {
     text = t("quotaRingRemainingWord");
   } else if (model.sourceMarker) {
     text = model.sourceMarker;

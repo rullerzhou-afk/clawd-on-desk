@@ -23,6 +23,7 @@ docs/**
 !docs/guides/guide-theme-creation.md
 !docs/guides/known-limitations.md
 !docs/guides/agent-questions.md
+!docs/guides/thirdparty-quota-ring.md
 !docs/guides/known-limitations.zh-CN.md
 !docs/guides/recap.md
 !docs/guides/setup-guide.md

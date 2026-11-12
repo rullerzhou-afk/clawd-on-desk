@@ -104,6 +104,7 @@ const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
 // balance route (see src/dsh-balance-runtime.js). No DSH plugin or restart is
 // involved: Clawd only reads the same number DSH's own balance widget shows.
 const { createDshBalanceRuntime } = require("./dsh-balance-runtime");
+const { createCursorQuotaRuntime } = require("./cursor-quota-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
@@ -2706,6 +2707,9 @@ _settingsController.subscribeKey("agents", (_agents, snapshot) => {
 // best-effort, and the ring renders the ¥ amount with a percentage against the
 // user-configurable reference balance.
 const _dshBalanceRuntime = createDshBalanceRuntime({
+  // Local patch: allow the official DeepSeek balance API fallback when the DSH
+  // loopback route is unavailable/absent (no DSH plugin required).
+  enableOfficialApi: true,
   getEnabled: () => {
     try {
       return _runtimeAgentGate.isAgentEnabled("deepseek-harness") !== false;
@@ -2729,6 +2733,13 @@ const _dshBalanceRuntime = createDshBalanceRuntime({
 // of waiting for the next minute tick.
 _settingsController.subscribeKey("deepseekQuotaBaselineCny", () => {
   try { void _dshBalanceRuntime.refresh(); } catch {}
+});
+
+// Third-party quota bundle: Cursor plan usage + Grok Bot weekly allowance. The
+// runtime opens Cursor's session DB read-only and fails soft on any error.
+const _cursorQuotaRuntime = createCursorQuotaRuntime({
+  commitQuota: (quotas) => _state.commitLocalThirdPartyQuota(quotas),
+  logWarn: (message) => console.warn("Clawd: Cursor quota:", message),
 });
 const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride,
         enableDoNotDisturb, disableDoNotDisturb: disableDoNotDisturbState,
@@ -3032,6 +3043,9 @@ app.on("before-quit", () => stopActivePermissionReviews());
 app.on("before-quit", () => _dashboard.quick.dispose());
 app.on("before-quit", () => {
   try { _dshBalanceRuntime.stop(); } catch {}
+});
+app.on("before-quit", () => {
+  try { _cursorQuotaRuntime.stop(); } catch {}
 });
 app.on("will-quit", () => _dashboard.quick.dispose());
 
@@ -6361,6 +6375,8 @@ if (!gotTheLock) {
     }
     try { _dshBalanceRuntime.start(); }
     catch (err) { console.warn("Clawd: DSH balance startup failed:", err && err.message); }
+    try { _cursorQuotaRuntime.start(); }
+    catch (err) { console.warn("Clawd: Cursor quota startup failed:", err && err.message); }
     // Reconcile the local quota binding only after the app has visible UI.
     // initialize() reads opaque credential metadata but never decrypts the key
     // or performs a network request, so ordinary startup cannot be held behind

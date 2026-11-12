@@ -125,6 +125,7 @@ describe("DSH balance 鈥?runtime polling", () => {
       getBaseline: () => 50,
       intervalMs: 60_000,
       cachePath: null,
+      statusPath: null,
       now: () => 777,
     });
     const result = await runtime.refresh();
@@ -152,6 +153,7 @@ describe("DSH balance 鈥?runtime polling", () => {
       getBaseline: () => 50,
       intervalMs: 60_000,
       cachePath: null,
+      statusPath: null,
       now: () => 1,
     });
     await runtime.refresh();
@@ -169,6 +171,7 @@ describe("DSH balance 鈥?runtime polling", () => {
       getEnabled: () => enabled,
       intervalMs: 60_000,
       cachePath: null,
+      statusPath: null,
     });
     assert.strictEqual((await runtime.refresh()).status, "disabled");
     enabled = true;
@@ -185,6 +188,7 @@ describe("DSH balance 鈥?runtime polling", () => {
       getEnabled: () => true,
       intervalMs: 60_000,
       cachePath: null,
+      statusPath: null,
     });
     for (let i = 0; i < 6; i += 1) await runtime.refresh();
     // Discovery runs on the first failure and then every fifth failure: 1, 5.

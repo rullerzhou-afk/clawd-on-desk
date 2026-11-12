@@ -44,6 +44,11 @@ const { KIMI_QUOTA_FIELDS } = require("./kimi-quota-normalizer");
 // can print "¥10.91" instead of a bare percentage.
 const DEEPSEEK_QUOTA_FIELDS = ["deepseekBalance"];
 
+// Third-party quota bundle: Cursor plan usage (monthly + optional unified weekly
+// pool) and the Grok Bot weekly allowance carried by the same Cursor account.
+const CURSOR_QUOTA_FIELDS = ["cursorMonthly", "cursorWeekly"];
+const GROKBOT_QUOTA_FIELDS = ["grokBotWeekly"];
+
 const QUOTA_PROVIDER_FIELDS = {
   antigravityQuota: ANTIGRAVITY_QUOTA_FIELDS,
   claudeQuota: CLAUDE_QUOTA_FIELDS,
@@ -51,6 +56,8 @@ const QUOTA_PROVIDER_FIELDS = {
   codexSparkQuota: CODEX_QUOTA_FIELDS,
   kimiQuota: KIMI_QUOTA_FIELDS,
   deepseekQuota: DEEPSEEK_QUOTA_FIELDS,
+  cursorQuota: CURSOR_QUOTA_FIELDS,
+  grokBotQuota: GROKBOT_QUOTA_FIELDS,
 };
 const QUOTA_PROVIDER_KEYS = Object.keys(QUOTA_PROVIDER_FIELDS);
 

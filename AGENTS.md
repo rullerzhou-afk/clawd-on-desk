@@ -90,6 +90,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `docs/project/release-process.md`：发版 checklist、release note 核对、tag 触发 GitHub 打包和资产确认
 - `docs/guides/copilot-setup.md`：Copilot CLI 自动同步说明、`COPILOT_HOME` 兼容性、手动配置备选模板
 - `docs/guides/dsh-setup.md`：DeepSeek Harness web profile 与桌面版的实验性 plugin 集成状态与普通审批集成
+- `docs/guides/thirdparty-quota-ring.md`：额度环的第三方 provider（DeepSeek 余额 / Cursor 计划用量 / Grok Bot 周额度）数据源、官方 API 回退、macOS 解密与显示口径
 - `docs/guides/state-mapping.md`：状态 → 动画权威表
 - `docs/guides/guide-theme-creation.md`：主题作者指南
 - `docs/guides/setup-guide.md`：安装、远程 SSH、各 agent 接入
@@ -124,7 +125,9 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/server.js` + `src/server-route-state.js` + `src/server-route-permission.js` | HTTP 服务、端口发现、`/state` / `/permission` 路由 |
 | `src/agent-runtime-main.js` + `src/integration-sync.js` | local monitor / official hook 仲裁、Codex turn fence、按 gate 的集成同步 |
 | `src/state.js` | 状态机、多会话合并、优先级、自动回退、睡眠/DND |
-| `src/dsh-balance-runtime.js` | DSH 预付余额轮询：从本机监听表发现 DSH 桌面版余额路由（`/api/dsh-balance/balance`），换算成 quota bucket 交给 `state.commitLocalDshQuota`；主进程唯一网络读取，无凭据、无 DSH 改动 |
+| `src/dsh-balance-runtime.js` | DSH 预付余额轮询：从本机监听表发现 DSH 桌面版余额路由（`/api/dsh-balance/balance`），换算成 quota bucket 交给 `state.commitLocalDshQuota`；路由不可用时可用官方 `api.deepseek.com/user/balance`（`enableOfficialApi`，key 只读内存），端口发现支持 netstat/lsof/ss |
+| `src/cursor-quota-runtime.js` | Cursor 计划额度与 Grok Bot 周额度：只读 Cursor `state.vscdb` 的 access token → `cursor.com` 用量接口 → `state.commitLocalThirdPartyQuota`；失败软降级、token 不落盘 |
+| `src/chromium-safe-storage.js` | macOS Cursor 加密 token（`cursor-safe-storage:v1:`）的 Keychain/OSCrypt 解密 helper（PBKDF2-SHA1 + AES-128-CBC），只在显式要求时读 Keychain |
 | `src/renderer.js` | 动画切换、SVG 预加载、眼球追踪渲染 |
 | `src/permission.js` + `src/permission-automation-policy.js` + `src/session-automation-coordinator.js` | 权限气泡、自动化策略、per-session 授权与决策回包；远程 client 由 `main.js` 注入 |
 | `src/pet-window-runtime.js` + `src/floating-window-runtime.js` + `src/topmost-runtime.js` | 双窗口 owner、浮层重排、z-order / fullscreen / focusability |
