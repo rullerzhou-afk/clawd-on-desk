@@ -124,7 +124,17 @@ function getUpdateHttpStatus(err) {
   const status = Number(err && (err.statusCode || err.status || (err.response && err.response.status)));
   if (Number.isInteger(status) && status >= 100 && status <= 599) return status;
   const match = /^HTTP_ERROR_([1-5]\d{2})$/i.exec(String(err && err.code || ""));
-  return match ? Number(match[1]) : null;
+  if (match) return Number(match[1]);
+  const message = getErrorMessage(err);
+  // builder-util-runtime HttpExecutor.doDownload emits this error without status fields.
+  const downloadMatch = /^Cannot download "[^"]+", status ([1-5]\d{2})\b/.exec(message);
+  if (downloadMatch) return Number(downloadMatch[1]);
+  // electron-updater GitHubProvider.getLatestVersion/getLatestTagName embed createHttpError's stack after ": ".
+  // A real inner HttpError ends the first line (even with an empty reason phrase);
+  // quoted JSON/version text has a closing quote, so it cannot match.
+  const firstLine = message.split("\n", 1)[0];
+  const wrappedMatch = /: HttpError: ([1-5]\d{2})(?: [^"]*)?$/.exec(firstLine);
+  return wrappedMatch ? Number(wrappedMatch[1]) : null;
 }
 
 function isUpdate404Error(err) {
@@ -206,7 +216,11 @@ function sanitizeUpdateErrorDetail(value, maxLength = UPDATE_ERROR_DETAIL_MAX_LE
 function classifyUpdateError(err, meta = {}) {
   const code = String(err && err.code || "").toUpperCase();
   const status = getUpdateHttpStatus(err);
-  const text = getErrorMessage(err).toLowerCase();
+  const message = getErrorMessage(err);
+  // electron-updater GitHubProvider.getLatestVersion appends the feed after "\nXML:\n".
+  const text = (code === "ERR_UPDATER_INVALID_RELEASE_FEED"
+    ? message.split("\nXML:\n", 1)[0]
+    : message).toLowerCase();
   const phase = String(meta.phase || "").toLowerCase();
   const mode = String(meta.mode || "").toLowerCase();
 
@@ -214,6 +228,8 @@ function classifyUpdateError(err, meta = {}) {
     return "NO_COMPATIBLE_ASSET";
   }
   if (meta.releaseConfirmed === true && isUpdate404Error(err)) return "NO_COMPATIBLE_ASSET";
+  if (status === 429) return "GITHUB_RATE_LIMIT";
+  if (status >= 500) return "HTTP_SERVICE_ERROR";
   if (["ENETDOWN", "ENETUNREACH", "ERR_INTERNET_DISCONNECTED", "ERR_NETWORK_CHANGED"].includes(code)
       || text.includes("network is offline") || text.includes("network down") || text.includes("offline")) return "NETWORK_OFFLINE";
   if (["ENOTFOUND", "EAI_AGAIN", "ERR_NAME_NOT_RESOLVED"].includes(code)
@@ -222,8 +238,8 @@ function classifyUpdateError(err, meta = {}) {
       || text.includes("timed out") || text.includes("timeout")) return "CONNECTION_TIMEOUT";
   if (code.startsWith("ERR_TLS") || code.includes("CERT") || text.includes("certificate")
       || text.includes("self signed") || text.includes("proxy")) return "TLS_OR_PROXY";
-  if (status === 429 || (status === 403 && (text.includes("rate") || text.includes("github")))) return "GITHUB_RATE_LIMIT";
-  if (status >= 500) return "HTTP_SERVICE_ERROR";
+  // Download URLs already contain "github"; a download 403 alone is no evidence of rate limiting.
+  if (status === 403 && phase !== "download" && (text.includes("rate") || text.includes("github"))) return "GITHUB_RATE_LIMIT";
   if (text.includes("dirty worktree") || text.includes("uncommitted") || text.includes("local files have been modified")) {
     return "GIT_DIRTY_WORKTREE";
   }
@@ -775,7 +791,9 @@ function initUpdater(ctx, deps = {}) {
             // the normal updater path while the GitHub API is unavailable.
             return resolve({ tag_name: tag, assets: [] });
           }
-          reject(new Error(`GitHub releases redirect returned ${res.statusCode}${data ? `: ${data.slice(0, 160)}` : ""}`));
+          const err = new Error(`GitHub releases redirect returned ${res.statusCode}${data ? `: ${data.slice(0, 160)}` : ""}`);
+          if (res.statusCode >= 400) err.statusCode = res.statusCode;
+          reject(err);
         });
         res.on("error", reject);
       });
