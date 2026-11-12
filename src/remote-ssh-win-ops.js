@@ -380,12 +380,12 @@ async function windowsOperation(args, deps = {}) {
       "  $entries = @()",
       "  if (Test-Path -LiteralPath $root) {",
       "    foreach ($key in Get-ChildItem -LiteralPath $root) {",
-      "      $p = Get-ItemProperty -LiteralPath $key.PSPath",
-      "      if ($p.DisplayName -is [string] -and $p.DisplayName.StartsWith('DeepSeek Harness ')) {",
+      "      $props = Get-ItemProperty -LiteralPath $key.PSPath",
+      "      if ($props.DisplayName -is [string] -and ($props.DisplayName -eq 'DeepSeek Harness' -or $props.DisplayName.StartsWith('DeepSeek Harness '))) {",
       "        $g = 'HKCU:\\Software\\' + $key.PSChildName",
       "        $gi = $null",
       "        if (Test-Path -LiteralPath $g) { $gi = (Get-ItemProperty -LiteralPath $g).InstallLocation }",
-      "        $entries += [pscustomobject]@{ installLocation = $p.InstallLocation; guidInstallLocation = $gi }",
+      "        $entries += [pscustomobject]@{ installLocation = $props.InstallLocation; guidInstallLocation = $gi }",
       "      }",
       "    }",
       "  }",
@@ -411,8 +411,9 @@ async function windowsOperation(args, deps = {}) {
     function addRoot(candidate) {
       if (typeof candidate !== "string" || !candidate) return;
       const normalized = pathApi.normalize(candidate);
-      const key = normalized.toLowerCase();
-      if (!roots.has(key)) roots.set(key, normalized);
+      const stripped = normalized.length > 3 ? normalized.replace(/[\\/]+$/, "") : normalized;
+      const key = stripped.toLowerCase();
+      if (!roots.has(key)) roots.set(key, stripped);
     }
     if (parsed && Array.isArray(parsed.uninstall)) {
       for (const entry of parsed.uninstall) {
@@ -420,7 +421,10 @@ async function windowsOperation(args, deps = {}) {
         addRoot(entry.guidInstallLocation);
       }
     }
-    if (parsed) addRoot(parsed.commandDirectory);
+    if (parsed && typeof parsed.commandDirectory === "string" && parsed.commandDirectory.trim()) {
+      // Directory points to resources/runtime/cli/bin, four levels below the app root.
+      addRoot(pathApi.resolve(parsed.commandDirectory.trim(), "..", "..", "..", ".."));
+    }
     const registryRootCount = roots.size;
     let unreadable = false;
     let defaultLocationExists = false;

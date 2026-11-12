@@ -1168,6 +1168,62 @@ test("DSH remote: cleanup preflight inspects every managed asset, not just the i
   assert.equal(result.installerLoadFailed, false);
 });
 
+// Captures the PowerShell that preflight actually sends, decoded from -EncodedCommand.
+async function remoteDshDiscoveryScript(t) {
+  const f = fixture(t);
+  delete f.deps.dshDesktopDiscovery;
+  const calls = [];
+  f.deps.spawnSync = (_executable, argv) => {
+    calls.push(argv);
+    return { status: 0, stdout: JSON.stringify({ uninstall: [], commandDirectory: null }), stderr: "" };
+  };
+  await f.run("preflight");
+  assert.equal(calls.length, 1);
+  const argv = calls[0];
+  const encodedIndex = argv.indexOf("-EncodedCommand");
+  assert.notEqual(encodedIndex, -1);
+  return Buffer.from(argv[encodedIndex + 1], "base64").toString("utf16le");
+}
+
+// Returns the one line of a discovery script that filters uninstall entries by display name.
+function displayNameCondition(script) {
+  const lines = script.split(/\r?\n/).filter((line) => line.includes(".DisplayName -is [string]"));
+  assert.equal(lines.length, 1, "discovery script must contain exactly one display-name condition");
+  return lines[0].trimStart();
+}
+
+test("DSH remote: discovery accepts the same uninstall display names as local discovery", async (t) => {
+  const localScript = require("../hooks/dsh-install").__test.DSH_WINDOWS_REGISTRY_SCRIPT;
+  assert.equal(displayNameCondition(await remoteDshDiscoveryScript(t)), displayNameCondition(localScript));
+});
+
+test("DSH remote: Windows PowerShell accepts bare and versioned DSH names and rejects look-alikes", {
+  skip: process.platform !== "win32" && "needs Windows PowerShell",
+}, async (t) => {
+  const { spawnSync } = require("node:child_process");
+  const localScript = require("../hooks/dsh-install").__test.DSH_WINDOWS_REGISTRY_SCRIPT;
+  const remoteScript = await remoteDshDiscoveryScript(t);
+  const powershell = path.win32.join(process.env.SystemRoot || process.env.SYSTEMROOT || "C:\\Windows",
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+  for (const [name, script] of [["local", localScript], ["remote", remoteScript]]) {
+    // Execute the production condition so the test cannot drift from discovery.
+    const probe = [
+      "$ErrorActionPreference = 'Stop'",
+      "foreach ($name in @('DeepSeek Harness', 'DeepSeek Harness 0.2.1-rc.5', 'DeepSeek HarnessX', 'Other App', $null, 42)) {",
+      "  $props = [pscustomobject]@{ DisplayName = $name }",
+      `  ${displayNameCondition(script)} '1' } else { '0' }`,
+      "}",
+    ].join("\n");
+    const result = spawnSync(powershell, [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+      "-EncodedCommand", Buffer.from(probe, "utf16le").toString("base64"),
+    ], { encoding: "utf8", timeout: 30000, windowsHide: true });
+    assert.ifError(result.error);
+    assert.equal(result.status, 0, `${name}: ${result.stderr}`);
+    assert.deepEqual(result.stdout.trim().split(/\s+/), ["1", "1", "0", "0", "0", "0"], name);
+  }
+});
+
 test("DSH remote: preflight discovery classifies case variants, commandDirectory and unreadable roots", async (t) => {
   const f = fixture(t);
   delete f.deps.dshDesktopDiscovery;
@@ -1179,8 +1235,18 @@ test("DSH remote: preflight discovery classifies case variants, commandDirectory
   f.deps.spawnSync = respond({ uninstall: [{ installLocation: appRoot, guidInstallLocation: null }, { installLocation: appRoot.toUpperCase(), guidInstallLocation: null }], commandDirectory: null });
   assert.equal((await f.run("preflight")).dsh.status, "present");
 
-  f.deps.spawnSync = respond({ uninstall: [], commandDirectory: appRoot });
-  assert.equal((await f.run("preflight")).dsh.status, "present");
+  f.deps.spawnSync = respond({ uninstall: [], commandDirectory: path.win32.join(appRoot, "resources", "runtime", "cli", "bin") });
+  const discovery = (await f.run("preflight")).dsh;
+  assert.equal(discovery.status, "present");
+  assert.equal(discovery.appRoot, appRoot);
+
+  f.deps.spawnSync = respond({
+    uninstall: [{ installLocation: appRoot + "\\", guidInstallLocation: null }],
+    commandDirectory: path.win32.join(appRoot, "resources", "runtime", "cli", "bin"),
+  });
+  const deduplicated = (await f.run("preflight")).dsh;
+  assert.equal(deduplicated.status, "present");
+  assert.equal(deduplicated.appRoot, appRoot);
 
   f.faults.statSync = (target) => { if (String(target).toLowerCase().includes("deepseek harness.exe")) throw error("EACCES"); };
   f.deps.spawnSync = respond({ uninstall: [{ installLocation: appRoot, guidInstallLocation: null }], commandDirectory: null });
