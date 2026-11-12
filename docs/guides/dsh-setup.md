@@ -143,8 +143,8 @@ For the DeepSeek Harness desktop app (macOS, Windows):
 
 - macOS: DeepSeek Harness installed in `/Applications` or `~/Applications`.
 - Windows: a per-user install found through the `HKCU` uninstall entry (display
-  name starting with "DeepSeek Harness ") or
-  `%LOCALAPPDATA%\Programs\DeepSeek Harness`.
+  name "DeepSeek Harness" since 0.2.2-alpha.2, "DeepSeek Harness <version>"
+  before that) or `%LOCALAPPDATA%\Programs\DeepSeek Harness`.
 - Windows 11: run Clawd without elevation (not as administrator). An elevated
   process cannot traverse a junction that a non-admin process created, so an
   elevated Clawd may read a plugin installed without elevation as missing. This
