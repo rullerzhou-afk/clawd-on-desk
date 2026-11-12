@@ -133,6 +133,7 @@ const BRIDGE_SOURCE_FILES = Object.freeze([
   "cordis.patch.yml",
   "lib/index.js",
   "lib/clawd-client.js",
+  "lib/client.js",
 ]);
 
 let mutationTail = Promise.resolve();
@@ -1123,12 +1124,25 @@ function digestBridgeFiles(files, contract = PREFERRED_DSH_CONTRACT) {
   return hash.digest("hex");
 }
 
+// `lib/client.js` (the browser half that switches sessions) was added after the
+// first managed generations shipped. Those installs have no such file, and their
+// ownership marker hashed only the files that existed then. Treating an absent
+// optional file as corruption would report every pre-existing install as
+// unverifiable and block the very upgrade that adds it.
+const OPTIONAL_BRIDGE_FILES = Object.freeze(new Set(["lib/client.js"]));
+
 async function hashBridgeDirectory(packageDir, contract = PREFERRED_DSH_CONTRACT) {
   try {
     const files = [];
     for (const relativePath of BRIDGE_SOURCE_FILES) {
       const filePath = path.join(packageDir, ...relativePath.split("/"));
-      const stat = await fsp.lstat(filePath);
+      let stat;
+      try {
+        stat = await fsp.lstat(filePath);
+      } catch (err) {
+        if (OPTIONAL_BRIDGE_FILES.has(relativePath) && err && err.code === "ENOENT") continue;
+        return null;
+      }
       if (!stat.isFile() || stat.isSymbolicLink()) return null;
       files.push({ relativePath, content: await fsp.readFile(filePath) });
     }
@@ -1143,9 +1157,15 @@ function hashBridgeDirectorySync(fsImpl, packageDir, contract = PREFERRED_DSH_CO
     const files = [];
     for (const relativePath of BRIDGE_SOURCE_FILES) {
       const filePath = path.join(packageDir, ...relativePath.split("/"));
-      const stat = typeof fsImpl.lstatSync === "function"
-        ? fsImpl.lstatSync(filePath)
-        : fsImpl.statSync(filePath);
+      let stat;
+      try {
+        stat = typeof fsImpl.lstatSync === "function"
+          ? fsImpl.lstatSync(filePath)
+          : fsImpl.statSync(filePath);
+      } catch (err) {
+        if (OPTIONAL_BRIDGE_FILES.has(relativePath) && err && err.code === "ENOENT") continue;
+        return null;
+      }
       if (!stat.isFile() || (typeof stat.isSymbolicLink === "function" && stat.isSymbolicLink())) return null;
       files.push({ relativePath, content: fsImpl.readFileSync(filePath) });
     }

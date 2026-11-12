@@ -21,6 +21,7 @@ const {
   resolveNodeBinAsync,
 } = require("../hooks/server-config");
 const { processAlive } = require("../hooks/shared-process");
+const { handleDshFocusStream } = require("./dsh-focus-stream");
 const {
   B1A_AGENT_IDS,
   createServerWindowsProcessMetadataResolver,
@@ -1300,6 +1301,15 @@ function routeHttpRequest(req, res, remoteProfile = null) {
         remoteProfile,
         isClaudeStatuslineMetadataAllowed,
       });
+    } else if (req.method === "GET" && req.url === "/dsh/focus-stream") {
+      // The DSH page's browser half subscribes here to learn which session a
+      // Clawd click meant. Remote profiles have no local DSH page to tell.
+      if (remoteProfile) {
+        res.writeHead(404);
+        res.end();
+      } else {
+        handleDshFocusStream(req, res);
+      }
     } else if (req.method === "POST" && req.url === "/question") {
       if (!remoteProfile && rejectUnsafeLocalHookRequest(req, res, "/question")) return;
       handleQuestionPost(req, res, { ctx, remoteProfile });
