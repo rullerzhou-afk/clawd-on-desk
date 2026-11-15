@@ -487,6 +487,11 @@ function hasConfirmedPermissionAnimationLock() {
 // identity check below exists rather than a longer list of event names.
 const SESSION_START_EVENTS = new Set(["SessionStart", "sessionStart", "agentSpawn"]);
 
+// Copilot reports its raw "sessionEnd"; other agents report "SessionEnd". The
+// state machine treats both spellings as end events. A main-session end usually
+// deletes the row; subagent-scoped ends and replyable Codex sessions keep theirs.
+const SESSION_END_EVENTS = new Set(["SessionEnd", "sessionEnd"]);
+
 // A pane key names one specific Orca pane, and focus consults it before the
 // sourcePid/wtHwnd that would otherwise be authoritative. So an event reporting a
 // terminal identity that differs from the stored one means the session moved, and
@@ -2838,7 +2843,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   const isSubagentStart = event === "SubagentStart" || event === "subagentStart";
   const isSubagentStop = event === "SubagentStop" || event === "subagentStop";
   const normalizedSubagentId = normalizeChildId(subagentId);
-  const isSubagentScopedSessionEnd = event === "SessionEnd" && !!normalizedSubagentId;
+  const isSubagentScopedSessionEnd = SESSION_END_EVENTS.has(event) && !!normalizedSubagentId;
   const isSyntheticSubagentStart = !!(
     isSubagentStart
     && (
@@ -3094,7 +3099,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     // Native + synthetic double delivery observes the same population. Any
     // child close is also the bounded legacy lane's first-stop release.
     subagentTracker.legacyFloor = false;
-  } else if (normalizedSubagentId && event !== "SessionEnd") {
+  } else if (normalizedSubagentId && !SESSION_END_EVENTS.has(event)) {
     // SubagentStop can be vetoed by another hook. Any later activity from the
     // same child is positive liveness evidence and self-corrects the removal.
     subagentTracker.confirmedIds.add(normalizedSubagentId);
@@ -3131,12 +3136,17 @@ function updateSession(sessionId, state, event, opts = {}) {
       ? existing.opencodeAttachUrl : opencodeAttachUrl
   ) : null;
   const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
-  // Desktop apps can reopen a previous conversation on launch, so SessionStart
-  // only means "opened" — not "used". Any other lifecycle event is a real action
-  // and clears the marker. Only the listed agents carry the field; others are
+  // Desktop apps can reopen a previous conversation on launch, so a start event
+  // (see SESSION_START_EVENTS — "SessionStart", Copilot's raw "sessionStart",
+  // Kiro's "agentSpawn") only means "opened" — not "used". A repeated start does
+  // not mark the row while the same agent still has a live approval for it, since
+  // the user is looking at a decision, not an untouched conversation. Any other
+  // event clears the marker; a main-session end deletes the row before this value
+  // would be written back. Only the listed agents carry the field; others are
   // untouched.
   if (AWAITING_ACTIVITY_AGENTS.has(srcAgentId)) {
-    base.awaitingActivity = event === "SessionStart";
+    base.awaitingActivity = SESSION_START_EVENTS.has(event)
+      && !hasLivePendingPermissionForSession(sessionId, srcAgentId);
   }
   if (preserveCompletionAck) base.requiresCompletionAck = true;
   // #862: every branch below rebuilds the session object from `base`; carry the
@@ -3149,8 +3159,10 @@ function updateSession(sessionId, state, event, opts = {}) {
     else if (typedSubagentHoldActive) preservedState = "working";
   }
 
-  // Evict oldest session if at capacity and this is a new session.
-  evictOldestSessionIfNeeded(sessionId);
+  // Evict the oldest session if at capacity and this is a new session. End
+  // events never create a row, so they must not free a slot by evicting a live
+  // session for an id that is already gone.
+  if (!SESSION_END_EVENTS.has(event)) evictOldestSessionIfNeeded(sessionId);
 
   if (isSubagentStop || isSubagentScopedSessionEnd) {
     updateCodexExitProbe(sessionId, srcAgentId, event);
@@ -3224,7 +3236,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     ? pickDisplayHint("working", existing, displayHint)
     : null;
 
-  if (event === "SessionEnd") {
+  if (SESSION_END_EVENTS.has(event)) {
     const endingSession = sessions.get(sessionId);
     const deferredCueSessions = [];
     if (srcAgentId === "codex" && srcHeadless) {
@@ -3492,7 +3504,7 @@ function updateSession(sessionId, state, event, opts = {}) {
   if (ONESHOT_STATES.has(state)) {
     // Recoverable errors and compaction do not prove a terminal wait ended.
     if (isTerminalWaitSession(sessions.get(sessionId)) && state !== "notification"
-      && event !== "agentStop" && event !== "sessionEnd" && getPendingAttentionIds().has(sessionId)) {
+      && event !== "agentStop" && getPendingAttentionIds().has(sessionId)) {
       const displayState = resolveDisplayState();
       setState(displayState, getSvgOverride(displayState));
       return;
@@ -4174,11 +4186,22 @@ function getPendingAttentionIds() {
   return ids;
 }
 
-// A Claude card is still waiting only while its connection (if any) is open.
-// Turn-ask cards carry res:null and have no connection to watch; they stay
-// live until removed from the pending list.
-function isClaudeInteractionConnectionLive(entry) {
+// A pending permission is still waiting while its connection (if any) is open.
+// Entries without a connection (turn-ask cards, reminders) stay live until the
+// pending list drops them.
+function isPendingPermissionConnectionLive(entry) {
   return !(entry.res && (entry.res.destroyed || entry.res.writableEnded));
+}
+
+// A repeated start must not hide a session that is still waiting for the user to
+// approve a live request from the same agent.
+function hasLivePendingPermissionForSession(sessionId, agentId) {
+  return (ctx.pendingPermissions || []).some((entry) => (
+    entry
+    && entry.sessionId === sessionId
+    && entry.agentId === agentId
+    && isPendingPermissionConnectionLive(entry)
+  ));
 }
 
 // Pending Claude interactions (permission, elicitation, or turn-ask card) for
@@ -4189,7 +4212,7 @@ function hasPendingClaudeInteractionForSession(sessionId) {
     entry
     && entry.agentId === "claude-code"
     && entry.sessionId === sessionId
-    && isClaudeInteractionConnectionLive(entry)
+    && isPendingPermissionConnectionLive(entry)
   ));
 }
 
@@ -4202,7 +4225,7 @@ function getHudPendingAttentionIds() {
     if (!entry || entry.agentId !== "claude-code" || entry.isClaudeTurnAskNotify !== true) continue;
     if (!entry.sessionId || entry.headless || entry.host || entry.wslDistro
       || entry.platform === "wsl" || (entry.profileId && entry.profileId !== "local")
-      || !isClaudeInteractionConnectionLive(entry)) continue;
+      || !isPendingPermissionConnectionLive(entry)) continue;
     ids.add(entry.sessionId);
   }
   return ids;

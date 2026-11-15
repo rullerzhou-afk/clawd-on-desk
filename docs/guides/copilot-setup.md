@@ -16,6 +16,8 @@
 
 While Copilot waits in the terminal for path permissions, URL fetch confirmation or an `ask_user` answer, Clawd keeps its waiting pose and shows an approval marker in the normal-mode HUD. It restores the underlying state after the answer. Command approvals keep their one-shot alert. If rejection or Esc leaves Copilot at its input prompt, the wait lasts until your next prompt, session end or the roughly two-hour expiry. Disconnecting Remote SSH preserves the wait. A Copilot session that is already running does not pick up hooks added after it started. Exit and resume it to load them.
 
+A Copilot session that has only sent `sessionStart` stays out of the Session HUD until its first action (a prompt, a tool call, Stop, an approval, or an input-wait reminder), while the Dashboard still lists it; whether it can be opened depends on an available focus target (Copilot targets the terminal or host window, not necessarily the exact chat). A `sessionEnd` for a normal session end deletes the row, the same as other agents' `SessionEnd`; a `sessionEnd` for a session id that never appeared does not create a row. When VS Code exits, the hidden internal session of its built-in Copilot sends only that one `sessionEnd`.
+
 ## Manual configuration (fallback)
 
 Create `<copilot-home>/hooks/hooks.json` and replace `/path/to/clawd-on-desk` with your actual install path:

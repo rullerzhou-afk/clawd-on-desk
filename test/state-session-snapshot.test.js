@@ -1530,20 +1530,73 @@ describe("awaiting-activity rows", () => {
         awaitingActivity: true,
         sourcePid: 996,
       })],
+      ["copilot-active", session("working", {
+        agentId: "copilot-cli",
+        awaitingActivity: false,
+        sourcePid: 995,
+      })],
+      // Copilot sends a sessionStart when a conversation is opened or restored.
+      // A PID can own more than one row; only the touched one may reach the HUD.
+      ["copilot-fresh", session("idle", {
+        agentId: "copilot-cli",
+        awaitingActivity: true,
+        sourcePid: 995,
+      })],
     ]), { statePriority: STATE_PRIORITY, focusHostPlatform: "darwin" });
 
     assert.deepStrictEqual(
       snapshot.sessions.map((entry) => entry.id).sort(),
-      ["dsh-active", "dsh-fresh", "kimi-active", "kimi-fresh"],
+      ["copilot-active", "copilot-fresh", "dsh-active", "dsh-fresh", "kimi-active", "kimi-fresh"],
       "the Dashboard still lists both conversations"
     );
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "dsh-fresh").hiddenFromHud, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "dsh-fresh").canFocus, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "kimi-fresh").hiddenFromHud, true);
     assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "kimi-fresh").canFocus, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "copilot-fresh").hiddenFromHud, true);
+    assert.strictEqual(snapshot.sessions.find((entry) => entry.id === "copilot-fresh").canFocus, true);
     assert.deepStrictEqual(
       getFocusableLocalHudSessionIds(snapshot, { osPlatform: "darwin" }),
-      ["dsh-active", "kimi-active"]
+      ["dsh-active", "kimi-active", "copilot-active"]
     );
+  });
+
+  it("keeps a conversation with a pending question in the HUD", () => {
+    const snapshot = buildSessionSnapshot(new Map([
+      ["copilot-pending", session("idle", {
+        agentId: "copilot-cli",
+        awaitingActivity: true,
+        sourcePid: 994,
+      })],
+    ]), {
+      statePriority: STATE_PRIORITY,
+      focusHostPlatform: "darwin",
+      getSessionPresentation: () => ({ pendingAttention: true }),
+    });
+
+    assert.strictEqual(
+      snapshot.sessions.find((entry) => entry.id === "copilot-pending").hiddenFromHud,
+      false,
+      "a pending question outranks the awaiting-activity marker"
+    );
+  });
+
+  it("hides an awaiting-activity conversation only while it stays idle", () => {
+    for (const stateName of ["working", "juggling"]) {
+      const id = `copilot-${stateName}`;
+      const snapshot = buildSessionSnapshot(new Map([
+        [id, session(stateName, {
+          agentId: "copilot-cli",
+          awaitingActivity: true,
+          sourcePid: 993,
+        })],
+      ]), { statePriority: STATE_PRIORITY, focusHostPlatform: "darwin" });
+
+      assert.strictEqual(
+        snapshot.sessions.find((entry) => entry.id === id).hiddenFromHud,
+        false,
+        `a ${stateName} row must stay in the HUD`
+      );
+    }
   });
 });
