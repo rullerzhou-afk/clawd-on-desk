@@ -361,7 +361,10 @@ function sessionUpdatedAtComparator(a, b) {
 //   - Kimi Code desktop restores the last viewed conversation on launch, and
 //     opening an old conversation from the sidebar does the same; both only
 //     send a SessionStart.
-const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli"]);
+//   - Copilot (the CLI, or the runtime inside VS Code) sends a sessionStart
+//     when a conversation is opened or restored; the row stays out of the HUD
+//     until the user acts.
+const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli", "copilot-cli"]);
 
 function isSessionAwaitingActivity(session) {
   return !!session
@@ -468,8 +471,11 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
   // Positive delegated-work / pending-attention facts keep the parent visible,
   // but do not prove a focus target or change the shared process dedupe policy.
+  // An untouched conversation is idle by definition; once it shows activity or a
+  // pending question (whose effective state is "notification"), keep it in the HUD.
+  const hideAwaitingActivity = isSessionAwaitingActivity(session) && effectiveState === "idle";
   const hiddenFromHud = (hiddenByExistingReason && activeSubagentCount === 0 && !pendingAttention)
-    || isSessionAwaitingActivity(session);
+    || hideAwaitingActivity;
   const hudHiddenByPreference = shouldHideCodexEphemeralFromHud(id, session, badge, options);
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
