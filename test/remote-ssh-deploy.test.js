@@ -3555,7 +3555,7 @@ test("PR #1366 follow-up: jump host deployment wraps every command including iso
     } });
     const recorder = isolated ? secureIsolatedHappySpawn() : secureHappySpawn({ hermes: { present: true } });
     const result = await secureDeploy({
-      ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder), platform: "linux" }),
+      ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder) }),
     });
     assert.equal(result.ok, true, JSON.stringify(result));
     assert.equal(result.tunnelMode, undefined);
@@ -3582,7 +3582,7 @@ test("PR #1366 follow-up: jump host monitor, uninstall, retirement and bootstrap
       child.emit("close", 0, null);
     });
     const result = await operation({ profile, runtime: makeRuntimeStub(), deps: {
-      spawn: jumpHostSpawn(recorder), nodeBin: "/usr/bin/node", platform: "linux",
+      spawn: jumpHostSpawn(recorder), nodeBin: "/usr/bin/node",
       randomBytes: () => Buffer.alloc(16, 0xab), now: () => 123,
     } });
     assert.equal(result.ok, true, `${operation.name}: ${JSON.stringify(result)}`);
@@ -3594,7 +3594,7 @@ test("PR #1366 follow-up: jump host monitor, uninstall, retirement and bootstrap
   ]);
   const created = await require("../src/remote-ssh-deploy").bootstrapIsolatedRuntime({
     profile, installId: profile.installId, runtimeKey: "runtime_b", runtime: makeRuntimeStub(),
-    deps: { spawn: jumpHostSpawn(recorder), platform: "linux", randomBytes: () => Buffer.alloc(16, 0xab) },
+    deps: { spawn: jumpHostSpawn(recorder), randomBytes: () => Buffer.alloc(16, 0xab) },
   });
   assert.equal(created.ok, true, JSON.stringify(created));
   assert.equal(recorder.calls.length, 5);
@@ -3603,7 +3603,7 @@ test("PR #1366 follow-up: jump host monitor, uninstall, retirement and bootstrap
 test("PR #1366 follow-up: decode and Windows length failures produce readable errors before mutation", async () => {
   const fixture = secureFixture({ profile: { tunnelMode: "stdio" } });
   const recorder = secureHappySpawn({ lockFailure: { code: 125, stderr: "Clawd: cannot decode remote command" } });
-  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: recorder.spawn, platform: "linux" }) });
+  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: recorder.spawn }) });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "remote_base64_unavailable");
   assert.match(result.message, /base64 is unavailable/);
@@ -3622,7 +3622,7 @@ test("PR #1366 follow-up: jump host failures still wrap stage cleanup and releas
     installer: { code: 1, stdout: hermesInstallerStdout({ status: "error", message: "Hermes enable failed" }) },
   } });
   const result = await secureDeploy({ ...secureFixture({ profile: { tunnelMode: "stdio" } }), runtime: makeRuntimeStub(),
-    deps: deployDeps({ spawn: jumpHostSpawn(recorder), platform: "linux" }) });
+    deps: deployDeps({ spawn: jumpHostSpawn(recorder) }) });
   assert.equal(result.ok, false);
   assert.equal(result.reason, "hermes_install_failed");
   assert.ok(recorder.calls.some((call) => /rmdir.*-hermes/.test(call.args.at(-1))));
@@ -3679,7 +3679,7 @@ test("PR #1366 follow-up: deploy Node failures preserve conditional gateway guid
           ...(item.hint ? { hint: item.hint } : {}),
         },
       },
-      deps: deployDeps({ platform: "linux", spawn: recorder.spawn }),
+      deps: deployDeps({ spawn: recorder.spawn }),
     });
     assert.equal(result.ok, false, item.label);
     assert.equal(result.step, "check-node", item.label);
@@ -3720,6 +3720,6 @@ test("PR #1366 follow-up: reverse lock exit 125 retains the original unknown acq
   const recorder = secureHappySpawn({ lockFailure: { code: 125, stderr: "ordinary remote error" } });
   await assert.rejects(secureDeploy({
     ...secureFixture({ profile: { tunnelMode: "reverse" } }), runtime: makeRuntimeStub(),
-    deps: deployDeps({ spawn: recorder.spawn, platform: "linux" }),
+    deps: deployDeps({ spawn: recorder.spawn }),
   }), (error) => error.code === "lock_acquire_unknown" && error.recoveryCode === "manual_lock_inspection_required");
 });
