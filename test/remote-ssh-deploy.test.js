@@ -3635,9 +3635,17 @@ test("PR #1366 follow-up: a 255 character remote home exceeds Windows argv limit
   assert.equal(home.length, 255);
   const fixture = secureFixture({ profile: { tunnelMode: "stdio" } });
   const recorder = secureHappySpawn({ responses: { 0: { code: 0, stdout: `CLAWD_REMOTE_HOME=${home}\n` } } });
-  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder), platform: "linux" }) });
+  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder) }) });
+  const sshCalls = recorder.calls.filter((call) => call.command === "ssh");
+  // Windows enforces its argv limit during deployment, before the oversized command can spawn.
+  if (process.platform === "win32") {
+    assert.equal(result.ok, false);
+    assert.match(result.message, /shorter remote home path/);
+    assert.ok(sshCalls.every((call) => call.rawArgs.at(-1).length <= 32000));
+    return;
+  }
   assert.equal(result.ok, true);
-  const largest = recorder.calls.filter((call) => call.command === "ssh")
+  const largest = sshCalls
     .sort((a, b) => b.rawArgs.at(-1).length - a.rawArgs.at(-1).length)[0];
   assert.ok(largest.rawArgs.at(-1).length > 32000);
   let spawns = 0;
