@@ -134,6 +134,8 @@ logs/
 # GIF recording tools (not part of main project)
 scripts/*
 !scripts/apt/
+!scripts/build-remote-ssh-stdio-bridge.js
+!scripts/remote-ssh-stdio-bridge-entry.js
 scripts/apt/__pycache__/
 !scripts/apt/*.py
 # Deterministic source-backed macOS tray asset generator

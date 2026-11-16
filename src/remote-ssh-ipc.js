@@ -27,6 +27,7 @@ const {
 } = require("./remote-ssh-deploy");
 const {
   buildSshArgs,
+  shouldSuggestGatewayMode,
   checkSecureConnectReadiness,
   tunnelTargetKey,
 } = require("./remote-ssh-runtime");
@@ -1483,10 +1484,32 @@ function registerRemoteSshIpc(options = {}) {
         || deployTargetDrift(deployTargetBeforeProbe, deployTargetFingerprint(currentTarget))) {
         return { status: "error", reason: "profile_changed", message: "SSH target changed during platform discovery; retry deployment." };
       }
-      const platformFailure = !platformSnapshot.ok ? platformSnapshot : null;
+      const platformFailure = !platformSnapshot.ok ? { ...platformSnapshot } : null;
+      if (platformFailure && !platformFailure.hint && shouldSuggestGatewayMode(
+        profile, platformFailure.step, platformFailure.stderr || platformFailure.message, platformFailure.code,
+      )) {
+        platformFailure.helpHint = "remoteSshGatewayHelp";
+      }
       if (platformFailure) {
-        runtime.emit("progress", { profileId: profile.id, step: platformFailure.step, status: "fail", message: platformFailure.message, hint: platformFailure.hint });
+        runtime.emit("progress", {
+          profileId: profile.id, step: platformFailure.step, status: "fail",
+          message: platformFailure.message, hint: platformFailure.hint, helpHint: platformFailure.helpHint,
+        });
         return { ...platformFailure, status: "error" };
+      }
+      if (profile.tunnelMode === "stdio"
+        && (inspection.mode === "serialized" || platformSnapshot.remotePlatform === "win32")) {
+        const failure = {
+          status: "error",
+          reason: "stdio_unsupported",
+          hint: "remoteSshErrGatewayUnsupported",
+          message: "Jump host mode requires a POSIX remote and parallel SSH sessions. Choose Automatic for Codespaces, forced single-session transports, or Windows remotes.",
+        };
+        runtime.emit("progress", {
+          profileId: profile.id, step: "remote-shell", status: "fail",
+          message: failure.message, hint: failure.hint,
+        });
+        return failure;
       }
       const begin = await settingsController.applyCommand("remoteSsh.beginIdentityRotation", {
         id: profile.id,
@@ -1560,15 +1583,7 @@ function registerRemoteSshIpc(options = {}) {
         // (remote-ssh-profile.js), or profiles using the missing field
         // false-positive as drifted on every deploy.
         const expectedTarget = {
-          host: profile.host,
-          port: profile.port,
-          identityFile: profile.identityFile,
-          remoteForwardPort: profile.remoteForwardPort,
-          hostPrefix: profile.hostPrefix,
-          chainStatusline: profile.chainStatusline,
-          runtimeMode: profile.runtimeMode,
-          runtimeKey: profile.runtimeKey,
-          layoutVersion: profile.layoutVersion,
+          ...deployTargetFingerprint(profile),
           dshInstalled: result.dshBridgeInstalled === true,
         };
         let stampWarning = null;
@@ -1684,6 +1699,7 @@ function registerRemoteSshIpc(options = {}) {
         step: result.step,
         reason: result.reason || null,
         hint: result.hint || null,
+        ...(result.helpHint ? { helpHint: result.helpHint } : {}),
       };
         },
       );

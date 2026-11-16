@@ -23,7 +23,7 @@ function makeFakeChild() {
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
-  child.stdin = { end() {} };
+  child.stdin = { writes: [], end(data) { if (data !== undefined) this.writes.push(data); } };
   child.kill = () => {};
   return child;
 }
@@ -289,3 +289,17 @@ for (const mode of ["error event", "synchronous throw"]) {
     assert.equal(killed, 1);
   });
 }
+
+test("PR #1366 follow-up: jump host Node discovery preserves the cached path, source and empty stdin", async () => {
+  clearRemoteNodeCache();
+  const { decodeSshCommandArguments } = require("../src/remote-ssh-command");
+  const { spawn, calls } = makeRecordingSpawn({ stdout: "CLAWD_REMOTE_NODE_BIN=/usr/bin/node\nCLAWD_REMOTE_NODE_VERSION=v22.1.0\nCLAWD_REMOTE_NODE_SOURCE=cache\n" });
+  const profile = { id: "node-gateway", host: "user@node-gateway", tunnelMode: "stdio", remoteForwardPort: 23333,
+    detectedRemoteNodeBin: "/usr/bin/node", detectedRemoteNodeVersion: "v22.1.0", detectedRemoteNodeSource: "cache" };
+  const result = await resolveRemoteNodeBin({ profile, spawn, buildSshArgs, platform: "linux", useCache: true, verifyCache: true });
+  assert.equal(result.ok, true);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].args.at(-1), /[\r\n]/);
+  assert.equal(decodeSshCommandArguments("ssh", calls[0].args).at(-1), buildRemoteNodeProbeCommand("/usr/bin/node", "cache"));
+  assert.deepEqual(calls[0].child.stdin.writes, []);
+});

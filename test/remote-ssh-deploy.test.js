@@ -24,6 +24,7 @@ const startCodexMonitor = __test.legacyStartCodexMonitor;
 const stopCodexMonitor = __test.legacyStopCodexMonitor;
 const uninstallRemoteIntegrations = __test.legacyUninstallRemoteIntegrations;
 const { clearRemoteNodeCache, buildRemoteNodeEvalCommand } = require("../src/remote-ssh-node");
+const { decodeSshCommandArguments } = require("../src/remote-ssh-command");
 
 const REPO_ROOT = path.join(__dirname, "..");
 
@@ -286,6 +287,7 @@ test("secure deploy holds a fenced lease, verifies every component, and never pu
   assert.equal(result.ok, true);
   assert.equal(result.secure, true);
   assert.equal(result.transactionReady, true);
+  assert.equal(result.tunnelMode, undefined);
   assert.deepEqual(stepUpdates.map(([name]) => name), [
     "identity",
     "secureMarker",
@@ -320,6 +322,10 @@ test("secure deploy holds a fenced lease, verifies every component, and never pu
     assert.match(command, /runtimeKey/);
   }
 });
+
+
+
+
 
 test("secure deploy only stops a prior Codex monitor after matching its command line", async () => {
   const fixture = secureFixture({
@@ -554,6 +560,28 @@ test("a lock-release unknown result preserves the primary secure operation failu
   assert.equal(result.reason, "ownership_conflict");
   assert.equal(result.recoveryCode, "manual_lock_inspection_required");
   assert.match(result.recoveryError, /manual inspection/i);
+});
+
+test("PR #1366 follow-up: jump host wraps multiline SSH scripts without consuming stdin", async () => {
+  const child = makeFakeChild();
+  const calls = [];
+  const spawn = (_tool, args) => {
+    calls.push(args);
+    queueMicrotask(() => child.emit("close", 0, null));
+    return child;
+  };
+  const script = "payload=$(cat)\nprintf '%s\\n' \"$payload\"\n";
+
+  const result = await __test.spawnAndWait(spawn, "ssh", ["remote.example.test", script], {
+    stdin: "stdin-frame",
+    profile: { tunnelMode: "stdio" },
+    platform: "linux",
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(calls.length, 1);
+  assert.doesNotMatch(calls[0].at(-1), /[\r\n]/);
+  assert.equal(child._stdin, "stdin-frame");
 });
 
 test("owned monitor cleanup preserves its known failure when lock release is unknown", async () => {
@@ -935,7 +963,7 @@ test("issue #1316: direct unknown-shell Windows deployment requires a platform s
   assert.equal(recorder.calls.some((call) => lastArg(call).startsWith("umask")), false);
   assert.deepEqual(recorder.calls.map((call) => call.command), ["ssh", "ssh", "ssh"]);
   assert.ok(lastArg(recorder.calls[0]).startsWith("printf"));
-  assert.ok(lastArg(recorder.calls[1]).startsWith("sh -c"));
+  assert.equal(lastArg(recorder.calls[1]), require("../src/remote-ssh-node").buildRemoteNodeProbeCommand());
   assert.ok(lastArg(recorder.calls[2]).includes("console.log(process.platform)"));
 });
 
@@ -2368,6 +2396,10 @@ test("secure scp target is one raw argv token without literal shell quotes", () 
   );
 });
 
+
+
+
+
 test("monitor verification requires a live PID with the exact layout script path", {
   skip: process.platform === "win32" ? "requires POSIX filesystem and shell semantics" : false,
 }, async () => {
@@ -2853,9 +2885,10 @@ function makeFakeChild() {
 
 function makeRecordingSpawn(handlers) {
   const calls = [];
-  const spawn = (command, args, opts) => {
+  const spawn = (command, rawArgs, opts) => {
     const child = makeFakeChild();
-    calls.push({ command, args, opts, child });
+    const args = decodeSshCommandArguments(command, rawArgs);
+    calls.push({ command, args, rawArgs, opts, child });
     // Look up handler by index (first call → handler[0], etc.)
     const idx = calls.length - 1;
     const handler = Array.isArray(handlers) ? handlers[idx] : handlers;
@@ -3435,7 +3468,7 @@ test("issue #1316: POSIX platform snapshot overrides a previously deployed Windo
   });
   assert.equal(result.ok, true);
   assert.equal(result.layout.platform, "posix");
-  assert.ok(recorded.calls[1].args.at(-1).startsWith("sh -c"));
+  assert.equal(recorded.calls[1].args.at(-1), require("../src/remote-ssh-node").buildRemoteNodeProbeCommand());
 });
 
 test("issue #1316: POSIX node_unavailable failure never acquires a Windows hint", async () => {
@@ -3498,3 +3531,195 @@ for (const present of [false, true]) {
     assert.equal(result.codexHooksInstalled, present);
   });
 }
+
+function jumpHostSpawn(recorder) {
+  return (tool, args, options) => {
+    if (tool === "ssh" && /[\r\n]/.test(args.at(-1))) {
+      const child = makeFakeChild();
+      queueMicrotask(() => {
+        child.stderr.emit("data", Buffer.from("gateway rejected a multiline command"));
+        child.emit("exit", 1, null);
+        child.emit("close", 1, null);
+      });
+      return child;
+    }
+    return recorder.spawn(tool, args, options);
+  };
+}
+
+test("PR #1366 follow-up: jump host deployment wraps every command including isolated and Hermes phases", async () => {
+  for (const isolated of [false, true]) {
+    const fixture = secureFixture({ profile: {
+      tunnelMode: "stdio",
+      ...(isolated ? { runtimeMode: "profile-isolated", runtimeKey: "rt_profile_a" } : {}),
+    } });
+    const recorder = isolated ? secureIsolatedHappySpawn() : secureHappySpawn({ hermes: { present: true } });
+    const result = await secureDeploy({
+      ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder), platform: "linux" }),
+    });
+    assert.equal(result.ok, true, JSON.stringify(result));
+    assert.equal(result.tunnelMode, undefined);
+    assert.equal(recorder.calls.some((call) => call.rawArgs.includes("-R")), false);
+    for (const call of recorder.calls.filter((call) => call.command === "ssh")) {
+      assert.doesNotMatch(call.rawArgs.at(-1), /[\r\n]/);
+    }
+    assert.ok(recorder.calls.some((call) => String(call.child._stdin).includes('"routingNonce"')));
+  }
+});
+
+test("PR #1366 follow-up: jump host monitor, uninstall, retirement and bootstrap retain explicit mode", async () => {
+  const profile = {
+    ...secureFixture().profile, tunnelMode: "stdio", runtimeMode: "profile-isolated", runtimeKey: "runtime_a",
+    installId: "c".repeat(64), remoteHome: "/home/shared",
+  };
+  for (const operation of [secureStartCodexMonitor, secureStopCodexMonitor, secureUninstallRemoteIntegrations,
+    require("../src/remote-ssh-deploy").finalizeRetiredRemoteLayout]) {
+    const recorder = makeRecordingSpawn((child, { args }) => {
+      const stdout = args.at(-1).includes("legacyTraces:")
+        ? '{"ok":true,"identity":true,"legacyTraces":0}' : "";
+      if (stdout) child.stdout.emit("data", Buffer.from(stdout));
+      child.emit("exit", 0, null);
+      child.emit("close", 0, null);
+    });
+    const result = await operation({ profile, runtime: makeRuntimeStub(), deps: {
+      spawn: jumpHostSpawn(recorder), nodeBin: "/usr/bin/node", platform: "linux",
+      randomBytes: () => Buffer.alloc(16, 0xab), now: () => 123,
+    } });
+    assert.equal(result.ok, true, `${operation.name}: ${JSON.stringify(result)}`);
+    assert.ok(recorder.calls.length >= 3);
+  }
+  const recorder = makeRecordingSpawn([
+    { code: 0, stdout: "CLAWD_REMOTE_HOME=/home/shared\n" },
+    { code: 0, stdout: nodeProbeStdout() }, { code: 0 }, { code: 0 }, { code: 0 },
+  ]);
+  const created = await require("../src/remote-ssh-deploy").bootstrapIsolatedRuntime({
+    profile, installId: profile.installId, runtimeKey: "runtime_b", runtime: makeRuntimeStub(),
+    deps: { spawn: jumpHostSpawn(recorder), platform: "linux", randomBytes: () => Buffer.alloc(16, 0xab) },
+  });
+  assert.equal(created.ok, true, JSON.stringify(created));
+  assert.equal(recorder.calls.length, 5);
+});
+
+test("PR #1366 follow-up: decode and Windows length failures produce readable errors before mutation", async () => {
+  const fixture = secureFixture({ profile: { tunnelMode: "stdio" } });
+  const recorder = secureHappySpawn({ lockFailure: { code: 125, stderr: "Clawd: cannot decode remote command" } });
+  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: recorder.spawn, platform: "linux" }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "remote_base64_unavailable");
+  assert.match(result.message, /base64 is unavailable/);
+  assert.equal(recorder.calls.length, 3);
+  let spawns = 0;
+  const long = await __test.spawnAndWait(() => { spawns++; }, "ssh", ["host", "x".repeat(25000) + "\necho done"], {
+    profile: fixture.profile, platform: "win32",
+  });
+  assert.equal(spawns, 0);
+  assert.match(long.stderr, /Windows SSH command length/);
+});
+
+test("PR #1366 follow-up: jump host failures still wrap stage cleanup and release the lease", async () => {
+  const recorder = secureHappySpawn({ hermes: {
+    present: true,
+    installer: { code: 1, stdout: hermesInstallerStdout({ status: "error", message: "Hermes enable failed" }) },
+  } });
+  const result = await secureDeploy({ ...secureFixture({ profile: { tunnelMode: "stdio" } }), runtime: makeRuntimeStub(),
+    deps: deployDeps({ spawn: jumpHostSpawn(recorder), platform: "linux" }) });
+  assert.equal(result.ok, false);
+  assert.equal(result.reason, "hermes_install_failed");
+  assert.ok(recorder.calls.some((call) => /rmdir.*-hermes/.test(call.args.at(-1))));
+  assert.match(recorder.calls.at(-1).args.at(-1), /leaseId/);
+  assert.doesNotMatch(recorder.calls.at(-1).rawArgs.at(-1), /[\r\n]/);
+});
+
+test("PR #1366 follow-up: a 255 character remote home exceeds Windows argv limits without spawning", async () => {
+  const home = "/" + ["x".repeat(127), "x".repeat(126)].join("/");
+  assert.equal(home.length, 255);
+  const fixture = secureFixture({ profile: { tunnelMode: "stdio" } });
+  const recorder = secureHappySpawn({ responses: { 0: { code: 0, stdout: `CLAWD_REMOTE_HOME=${home}\n` } } });
+  const result = await secureDeploy({ ...fixture, runtime: makeRuntimeStub(), deps: deployDeps({ spawn: jumpHostSpawn(recorder) }) });
+  const sshCalls = recorder.calls.filter((call) => call.command === "ssh");
+  // Windows enforces its argv limit during deployment, before the oversized command can spawn.
+  if (process.platform === "win32") {
+    assert.equal(result.ok, false);
+    assert.match(result.message, /shorter remote home path/);
+    assert.ok(sshCalls.every((call) => call.rawArgs.at(-1).length <= 32000));
+    return;
+  }
+  assert.equal(result.ok, true);
+  const largest = sshCalls
+    .sort((a, b) => b.rawArgs.at(-1).length - a.rawArgs.at(-1).length)[0];
+  assert.ok(largest.rawArgs.at(-1).length > 32000);
+  let spawns = 0;
+  const checked = await __test.spawnAndWait(() => { spawns++; }, "ssh", largest.args, {
+    profile: fixture.profile, platform: "win32",
+  });
+  assert.equal(spawns, 0);
+  assert.match(checked.stderr, /shorter remote home path/);
+});
+
+test("PR #1366 follow-up: deploy Node failures preserve conditional gateway guidance", async () => {
+  const cases = [
+    { label: "gateway rejection", code: 19, stderr: "gateway rejects multiline commands", expected: null, helpHint: "remoteSshGatewayHelp" },
+    { label: "Node missing", code: 127, stderr: "", message: "Remote Node.js not found (ssh exited 127)", expected: null },
+    { label: "authentication", stderr: "Permission denied (publickey)", expected: null },
+    { label: "network", stderr: "Connection timed out", expected: null },
+    { label: "jump host selected", stderr: "gateway rejects multiline commands", tunnelMode: "stdio", expected: null },
+    { label: "existing hint", stderr: "gateway rejects multiline commands", hint: "remoteSshProbeNodeMissing", expected: "remoteSshProbeNodeMissing" },
+    { label: "authentication behind a friendly message", stderr: "Permission denied (publickey)", message: "Remote discovery failed", expected: null },
+  ];
+  for (const item of cases) {
+    const fixture = secureFixture({ profile: { tunnelMode: item.tunnelMode || "reverse" } });
+    const recorder = makeRecordingSpawn({ code: 0, stdout: "CLAWD_REMOTE_HOME=/home/remote-user\n" });
+    const runtime = makeRuntimeStub();
+    const result = await secureDeploy({
+      ...fixture, runtime,
+      platformSnapshot: {
+        remotePlatform: "posix", shell: { shell: "posix", os: "Linux" },
+        remoteNode: {
+          ok: false, code: item.code, message: item.message || item.stderr, stderr: item.stderr,
+          ...(item.hint ? { hint: item.hint } : {}),
+        },
+      },
+      deps: deployDeps({ platform: "linux", spawn: recorder.spawn }),
+    });
+    assert.equal(result.ok, false, item.label);
+    assert.equal(result.step, "check-node", item.label);
+    assert.equal(result.hint || null, item.expected, item.label);
+    assert.equal(result.helpHint, item.helpHint, item.label);
+    assert.equal(runtime.events.at(-1).payload.helpHint, item.helpHint, item.label);
+    assert.equal(result.message, item.message || item.stderr, item.label);
+    assert.equal(runtime.events.at(-1).payload.hint, item.expected, item.label);
+    assert.equal(recorder.calls.length, 1, "only the read-only home discovery may run");
+  }
+});
+
+
+test("PR #1366 follow-up: exit 125 preserves stderr unless this SSH command was wrapped", async () => {
+  const stderr = "Clawd: cannot decode remote command (base64 -d/-D/--decode)\nremote detail\n";
+  for (const item of [
+    { tool: "ssh", script: "echo first\necho second", profile: { tunnelMode: "reverse" }, wrapped: false },
+    { tool: "ssh", script: "echo first\necho second", profile: { tunnelMode: "stdio" }, wrapped: true },
+    { tool: "ssh", script: "echo single", profile: { tunnelMode: "stdio" }, wrapped: false },
+    { tool: "ssh", script: "echo first\necho second", profile: { tunnelMode: "stdio", remotePlatform: "win32" }, wrapped: false },
+    { tool: "scp", script: "file\nname", profile: { tunnelMode: "stdio" }, wrapped: false },
+  ]) {
+    const recorder = makeRecordingSpawn({ code: 125, stderr });
+    const result = await __test.spawnAndWait(recorder.spawn, item.tool, ["remote", item.script], {
+      profile: item.profile, platform: "linux",
+    });
+    assert.equal(result.code, 125);
+    if (item.wrapped) {
+      assert.match(result.stderr, /base64 is unavailable/);
+      assert.ok(result.stderr.endsWith(stderr));
+    } else {
+      assert.equal(result.stderr, stderr);
+    }
+  }
+});
+
+test("PR #1366 follow-up: reverse lock exit 125 retains the original unknown acquisition handling", async () => {
+  const recorder = secureHappySpawn({ lockFailure: { code: 125, stderr: "ordinary remote error" } });
+  await assert.rejects(secureDeploy({
+    ...secureFixture({ profile: { tunnelMode: "reverse" } }), runtime: makeRuntimeStub(),
+    deps: deployDeps({ spawn: recorder.spawn, platform: "linux" }),
+  }), (error) => error.code === "lock_acquire_unknown" && error.recoveryCode === "manual_lock_inspection_required");
+});

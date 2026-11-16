@@ -2938,6 +2938,23 @@ test("remoteSsh:deploy stamps via markDeployed (not full update) on success", as
   ipc.dispose();
 });
 
+test("PR #1366 follow-up: deploy receives the selected profile without automatic transport dependencies", async () => {
+  const ipcMain = mockIpcMain();
+  const { BrowserWindow } = mockBrowserWindow();
+  const ipc = registerRemoteSshIpc({
+    platform: "linux", ipcMain, BrowserWindow,
+    settingsController: mockSettingsController([{ ...baseProfile, tunnelMode: "stdio" }]),
+    remoteSshRuntime: mockRuntime(),
+    deployFn: async ({ profile, deps }) => {
+      assert.equal(profile.tunnelMode, "stdio");
+      for (const key of ["activeTunnelMode", "enableTunnelProbe", "transportInspection"]) assert.equal(key in deps, false, key);
+      return { ok: false, message: "captured" };
+    },
+  });
+  await ipcMain.invoke("remoteSsh:deploy", "p1");
+  ipc.dispose();
+});
+
 test("a real deploy reducer preserves installation binding so connect works without restart", async () => {
   const ipcMain = mockIpcMain();
   const { BrowserWindow } = mockBrowserWindow();
@@ -3824,3 +3841,166 @@ function makeDshCleanupSpawn(seen) {
     return child;
   };
 }
+
+test("PR #1366 follow-up: unsupported jump host targets are rejected before identity rotation", async () => {
+  for (const target of ["codespaces", "serialized", "windows"]) {
+    const ipcMain = mockIpcMain();
+    const controller = actionBackedSettingsController([{ ...baseProfile, tunnelMode: "stdio" }]);
+    const coordinator = createRemoteSshTransportCoordinator({
+      inspectEffectiveTransport: async () => ({
+        mode: target === "windows" ? "parallel" : "serialized",
+        kind: target === "codespaces" ? "codespaces-stdio" : (target === "serialized" ? "explicit-serialized" : "standard"),
+        key: "gateway-unsupported", fingerprint: "gateway-fp",
+      }),
+    });
+    const runtime = managedMockRuntime();
+    const progress = [];
+    runtime.on("progress", (event) => progress.push(event));
+    const ipc = registerRemoteSshIpc({
+      platform: "linux", ipcMain, settingsController: controller, transportCoordinator: coordinator,
+      BrowserWindow: mockBrowserWindow().BrowserWindow, remoteSshRuntime: runtime,
+      probeRemotePlatformFn: async () => ({ ok: true, remotePlatform: target === "windows" ? "win32" : "posix" }),
+      deployFn: () => assert.fail("unsupported target must not deploy"),
+    });
+    const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+    assert.equal(result.reason, "stdio_unsupported", `${target}: ${JSON.stringify(result)}`);
+    assert.equal(result.hint, "remoteSshErrGatewayUnsupported");
+    assert.equal(progress.at(-1).profileId, "p1");
+    assert.equal(progress.at(-1).status, "fail");
+    assert.equal(progress.at(-1).message, result.message);
+    assert.equal(progress.at(-1).hint, result.hint);
+    assert.equal(controller._commandCalls.some((call) => call.action === "remoteSsh.beginIdentityRotation"), false);
+    ipc.dispose();
+  }
+});
+
+test("PR #1366 follow-up: jump host deployment and runtime Node stamps use the complete target", async () => {
+  const profile = { ...baseProfile, tunnelMode: "stdio", chainStatusline: true,
+    runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1 };
+  const controller = actionBackedSettingsController([profile]);
+  const ipcMain = mockIpcMain();
+  const runtime = mockRuntime();
+  const ipc = registerRemoteSshIpc({
+    platform: "linux", ipcMain, settingsController: controller, remoteSshRuntime: runtime,
+    BrowserWindow: mockBrowserWindow().BrowserWindow,
+    deployFn: async ({ deps }) => {
+      for (const name of REMOTE_IDENTITY_STEP_NAMES) await deps.onIdentityStep(name, { status: "done" });
+      return { ok: true, layout: { remoteHome: "/home/user" } };
+    },
+  });
+  const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+  assert.equal(result.status, "ok", JSON.stringify(result));
+  const stamp = controller._commandCalls.find((call) => call.action === "remoteSsh.markDeployed");
+  assert.equal(stamp.args.expectedTarget.tunnelMode, "stdio");
+  assert.ok(controller.getSnapshot().remoteSsh.profiles[0].lastDeployedAt > 0);
+  assert.equal(controller.getSnapshot().remoteSsh.profiles[0].tunnelMode, "stdio");
+  ipc.dispose();
+});
+
+test("PR #1366 follow-up: deletion cleans A using its recorded mode after editing the profile to B", async () => {
+  const { normalizeRemoteSsh } = require("../src/remote-ssh-profile");
+  const profile = normalizeRemoteSsh({ profiles: [{
+    ...baseProfile, host: "user@new-host", tunnelMode: "reverse",
+    managedDeployTargets: [ownedTarget({ host: "user@old-host", tunnelMode: "stdio" })],
+  }] }).profiles[0];
+  const ipcMain = mockIpcMain();
+  let cleanupProfile;
+  const ipc = registerRemoteSshIpc({
+    platform: "linux", ipcMain, settingsController: mockSettingsController([profile]),
+    BrowserWindow: mockBrowserWindow().BrowserWindow, remoteSshRuntime: mockRuntime(),
+    uninstallRemoteIntegrationsFn: async ({ profile }) => { cleanupProfile = profile; return { ok: true }; },
+  });
+  const result = await ipcMain.invoke("remoteSsh:cleanup", "p1");
+  assert.equal(result.status, "ok");
+  assert.equal(cleanupProfile.host, "user@old-host");
+  assert.equal(cleanupProfile.tunnelMode, "stdio");
+  ipc.dispose();
+});
+
+test("PR #1366 follow-up: runtime layout cleanup and retirement use historical mode", async () => {
+  const profile = { ...baseProfile, tunnelMode: "reverse", runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1,
+    managedDeployTargets: [ownedTarget({ tunnelMode: "stdio" })] };
+  const ipcMain = mockIpcMain();
+  const modes = [];
+  const ipc = registerRemoteSshIpc({
+    platform: "linux", ipcMain, settingsController: mockSettingsController([profile]),
+    remoteSshRuntime: mockRuntime(), BrowserWindow: mockBrowserWindow().BrowserWindow,
+    uninstallRemoteIntegrationsFn: async ({ profile }) => { modes.push(["cleanup", profile.tunnelMode]); return { ok: true }; },
+    finalizeRetiredRemoteLayoutFn: async ({ profile }) => { modes.push(["finalize", profile.tunnelMode]); return { ok: true }; },
+    bootstrapIsolatedRuntimeFn: async ({ profile, runtimeKey }) => {
+      modes.push(["bootstrap", profile.tunnelMode]);
+      return { ok: true, layout: { runtimeRoot: `/home/user/.clawd/profiles/${runtimeKey}` } };
+    },
+  });
+  const result = await ipcMain.invoke("remoteSsh:set-runtime-mode", { profileId: "p1", runtimeMode: "profile-isolated", confirmed: true });
+  assert.equal(result.status, "ok", JSON.stringify(result));
+  assert.deepEqual(modes, [["cleanup", "stdio"], ["finalize", "stdio"], ["bootstrap", "reverse"]]);
+  ipc.dispose();
+});
+
+for (const step of ["check-node", "remote-shell"]) {
+  test(`PR #1366 follow-up: platform ${step} failures preserve conditional gateway guidance`, async () => {
+    const cases = [
+      { label: "gateway rejection", code: 19, stderr: "gateway rejects multiline commands", expected: undefined, helpHint: "remoteSshGatewayHelp" },
+      ...(step === "check-node" ? [{ label: "Node missing", code: 127, stderr: "", expected: undefined }] : []),
+      { label: "authentication", stderr: "Permission denied (publickey)", expected: undefined },
+      { label: "network", stderr: "Connection timed out", expected: undefined },
+      { label: "jump host selected", stderr: "gateway rejects multiline commands", tunnelMode: "stdio", expected: undefined },
+      { label: "existing hint", stderr: "gateway rejects multiline commands", hint: "remoteSshProbeNodeMissing", expected: "remoteSshProbeNodeMissing" },
+    ];
+    for (const item of cases) {
+      const ipcMain = mockIpcMain();
+      const controller = mockSettingsController([{ ...baseProfile, tunnelMode: item.tunnelMode || "reverse" }]);
+      const runtime = mockRuntime();
+      const progress = [];
+      runtime.on("progress", (event) => progress.push(event));
+      const ipc = registerRemoteSshIpc({
+        platform: "linux", ipcMain, settingsController: controller, remoteSshRuntime: runtime,
+        BrowserWindow: mockBrowserWindow().BrowserWindow,
+        probeRemotePlatformFn: async () => ({
+          ok: false, step, code: item.code, message: "Remote discovery failed", stderr: item.stderr,
+          ...(item.hint ? { hint: item.hint } : {}),
+        }),
+        spawn: () => assert.fail("discovery failure must not start another SSH connection"),
+        deployFn: () => assert.fail("discovery failure must not deploy"),
+      });
+      try {
+        const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+        assert.equal(result.status, "error", item.label);
+        assert.equal(result.step, step, item.label);
+        assert.equal(result.hint, item.expected, item.label);
+        assert.equal(result.helpHint, item.helpHint, item.label);
+        assert.equal(progress.at(-1).helpHint, item.helpHint, item.label);
+        assert.equal(result.stderr, item.stderr, item.label);
+        assert.equal(progress.at(-1).hint, item.expected, item.label);
+        assert.equal(controller._commandCalls.some((call) => call.action === "remoteSsh.beginIdentityRotation"), false, item.label);
+      } finally {
+        ipc.dispose();
+      }
+    }
+  });
+}
+
+
+test("PR #1366 follow-up: deploy IPC preserves the original error and additive help for the toast", async () => {
+  const ipcMain = mockIpcMain();
+  const controller = actionBackedSettingsController([{
+    ...baseProfile, runtimeMode: "account-default", runtimeKey: "account-default", layoutVersion: 1,
+  }]);
+  const failure = { ok: false, step: "check-node", message: "Gateway rejected the remote command", helpHint: "remoteSshGatewayHelp" };
+  const ipc = registerRemoteSshIpc({
+    platform: "linux", ipcMain, settingsController: controller, remoteSshRuntime: mockRuntime(),
+    BrowserWindow: mockBrowserWindow().BrowserWindow,
+    probeRemotePlatformFn: async () => ({ ok: true, remotePlatform: "posix", shell: { shell: "posix", os: "Linux" } }),
+    deployFn: async () => failure,
+    spawn: () => assert.fail("fake discovery and deploy must not spawn"),
+  });
+  try {
+    const result = await ipcMain.invoke("remoteSsh:deploy", "p1");
+    assert.equal(result.status, "error");
+    assert.equal(result.message, failure.message);
+    assert.equal(result.helpHint, failure.helpHint);
+  } finally {
+    ipc.dispose();
+  }
+});

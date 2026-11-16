@@ -1681,6 +1681,10 @@ function copyRemoteNodeDetection(target, source) {
 }
 
 function remoteSshAddProfile(payload, deps) {
+  if (payload && payload.tunnelMode !== undefined
+    && payload.tunnelMode !== "reverse" && payload.tunnelMode !== "stdio") {
+    return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
+  }
   const profile = sanitizeRemoteSshProfile(payload);
   if (!profile) {
     const detail = validateRemoteSshProfile(payload || {});
@@ -1703,6 +1707,10 @@ function remoteSshAddProfile(payload, deps) {
 function remoteSshUpdateProfile(payload, deps) {
   if (!payload || typeof payload !== "object") {
     return { status: "error", message: "remoteSsh.update: payload must be an object" };
+  }
+  if (payload && payload.tunnelMode !== undefined
+    && payload.tunnelMode !== "reverse" && payload.tunnelMode !== "stdio") {
+    return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
   }
   const profile = sanitizeRemoteSshProfile(payload);
   if (!profile) {

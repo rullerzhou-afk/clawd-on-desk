@@ -42,13 +42,14 @@ const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
-const { buildSshArgs, buildScpArgs } = require("./remote-ssh-runtime");
+const { buildSshArgs, buildScpArgs, shouldSuggestGatewayMode } = require("./remote-ssh-runtime");
 const {
   resolveRemoteNodeBin,
   buildRemoteHookNodeCommand,
   buildRemoteNodeEvalCommand,
   discoverWindowsRemoteNode,
 } = require("./remote-ssh-node");
+const { prepareSshCommandArguments, REMOTE_COMMAND_DECODE_EXIT } = require("./remote-ssh-command");
 const { REMOTE_NODE_LAUNCH_COMMAND, writeNodeFrameSafely } = require("./remote-ssh-node-launch");
 const { buildWindowsOperationFrame, windowsUserInstallerBudgets } = require("./remote-ssh-win-ops");
 const { windowsFailureHint } = require("./remote-ssh-platform");
@@ -116,6 +117,7 @@ const HOOK_FILES = [
   "copilot-hook.js",
   "copilot-install.js",
   "hermes-install.js",
+  "remote-ssh-stdio-bridge.js",
 ];
 // Hermes plugin assets never join HOOK_FILES: they are not hook scripts and
 // go to their own exact staging directory, not ~/.claude/hooks.
@@ -185,9 +187,12 @@ function spawnAndWait(spawn, command, args, opts = {}) {
     runtime,
     role = command,
     mutation = false,
+    profile,
+    platform = process.platform,
   } = opts;
   return new Promise((resolve, reject) => {
     let child;
+    let transportArgs;
     const managed = runtime && typeof runtime.spawnManagedTransportChild === "function";
     const childOptions = {
       env: { ...process.env, LANG: "C", LC_ALL: "C", ...(env || {}) },
@@ -195,9 +200,10 @@ function spawnAndWait(spawn, command, args, opts = {}) {
       windowsHide: true,
     };
     try {
+      transportArgs = prepareSshCommandArguments(command, args, { profile, platform });
       child = managed
-        ? runtime.spawnManagedTransportChild({ role, tool: command, args, options: childOptions })
-        : spawn(command, args, childOptions);
+        ? runtime.spawnManagedTransportChild({ role, tool: command, args: transportArgs, options: childOptions })
+        : spawn(command, transportArgs, childOptions);
     } catch (err) {
       if (managed) {
         reject(err);
@@ -340,6 +346,10 @@ function spawnAndWait(spawn, command, args, opts = {}) {
         ...(processError ? { spawnError: true } : {}),
         ...(timedOut ? { timedOut: true, drainVerified: true } : {}),
       };
+      if (transportArgs !== args && payload.code === REMOTE_COMMAND_DECODE_EXIT) {
+        payload.commandDecodeFailed = true;
+        payload.stderr = "Remote base64 is unavailable or could not decode the command (-d/-D/--decode). Install base64 on the remote and retry.\n" + payload.stderr;
+      }
       // A remote command can keep running after either kind of SSH transport
       // loses its result. The ordinary path has no coordinator context, but
       // must preserve the same lease/staging evidence as serialized transport.
@@ -462,7 +472,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
   progress("mkdir", "start");
   {
     const args = buildSshArgs(profile).concat(["mkdir -p ~/.claude/hooks"]);
-    const r = await spawnAndWait(spawn, "ssh", args, { runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, runtime });
     if (r.code !== 0) {
       progress("mkdir", "fail", summarizeStderr(r.stderr) || `ssh exited ${formatExit(r)}`);
       return { ok: false, step: "mkdir", message: r.stderr || `ssh exited ${formatExit(r)}` };
@@ -508,7 +518,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const localFiles = HOOK_FILES.map((name) => path.join(hooksDir, name));
     const remoteTarget = `${profile.host}:~/.claude/hooks/`;
     const args = buildScpArgs(profile).concat([...localFiles, remoteTarget]);
-    const r = await spawnAndWait(spawn, "scp", args, { timeoutMs: 120000, runtime });
+    const r = await spawnAndWait(spawn, "scp", args, { profile, timeoutMs: 120000, runtime });
     if (r.code !== 0) {
       progress("scp", "fail", summarizeStderr(r.stderr) || `scp exited ${formatExit(r)}`);
       return { ok: false, step: "scp", message: r.stderr || `scp exited ${formatExit(r)}` };
@@ -527,7 +537,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     // Write without a trailing newline — remote hooks/server-config.js reads
     // with .trim(), so it's robust to either, but no-newline avoids
     // CRLF / LF surprises across platforms.
-    const r = await spawnAndWait(spawn, "ssh", args, { stdin: profile.hostPrefix, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, stdin: profile.hostPrefix, runtime });
     if (r.code !== 0) {
       progress("host-prefix", "fail", summarizeStderr(r.stderr) || `ssh exited ${formatExit(r)}`);
       return { ok: false, step: "host-prefix", message: r.stderr || `ssh exited ${formatExit(r)}` };
@@ -547,7 +557,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const args = buildSshArgs(profile).concat([
       buildRemoteHookNodeCommand(remoteNode, "install.js", installClaudeArgs),
     ]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 60000, runtime });
     if (r.code !== 0) {
       // Best-effort — log but don't abort. Claude may not be installed remotely.
       progress("install-claude", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
@@ -562,7 +572,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const args = buildSshArgs(profile).concat([
       buildRemoteHookNodeCommand(remoteNode, "codex-install.js", ["--remote"]),
     ]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 60000, runtime });
     if (r.code !== 0) {
       progress("install-codex", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
     } else {
@@ -578,7 +588,7 @@ async function legacyDeploy({ profile, runtime, deps = {} }) {
     const args = buildSshArgs(profile).concat([
       buildRemoteHookNodeCommand(remoteNode, "copilot-install.js", ["--remote"]),
     ]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 60000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 60000, runtime });
     if (r.code !== 0) {
       progress("install-copilot", "fail", summarizeStderr(r.stderr) || `non-zero exit ${formatExit(r)}`);
     } else {
@@ -619,7 +629,7 @@ async function resolveRemoteHome({ profile, spawn, runtime }) {
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { runtime },
+    { profile, runtime },
   );
   if (result.code !== 0) {
     return { ok: false, message: result.stderr || `ssh exited ${formatExit(result)}` };
@@ -678,8 +688,11 @@ async function acquireDeployLock({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(owner), runtime, role: "deploy-lock-acquire", mutation: true },
+    { profile, stdin: compactJson(owner), runtime, role: "deploy-lock-acquire", mutation: true },
   );
+  if (result.commandDecodeFailed) {
+    return { ok: false, reason: "remote_base64_unavailable", message: result.stderr };
+  }
   if (result.code === 0) {
     if (runtime && typeof runtime.setManagedLockStage === "function") {
       runtime.setManagedLockStage("lock-owned");
@@ -729,7 +742,7 @@ async function releaseDeployLock({ profile, layout, leaseId, remoteNode, spawn, 
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { runtime, role: "deploy-lock-release", mutation: true },
+    { profile, runtime, role: "deploy-lock-release", mutation: true },
   );
   if (result.code !== 0) {
     const err = Object.assign(new Error("Remote deployment lock release requires manual inspection"), {
@@ -900,7 +913,7 @@ async function runOwnershipPreflight({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { runtime },
+    { profile, runtime },
   );
   let detail = null;
   try {
@@ -968,7 +981,7 @@ async function cleanupLegacyMonitor({
         buildRemoteNodeEvalCommand(remoteNode, buildLegacyMonitorCleanupScript(layout)),
       ),
     ]),
-    { runtime, role: "legacy-monitor-cleanup", mutation: true },
+    { profile, runtime, role: "legacy-monitor-cleanup", mutation: true },
   );
   let detail = null;
   try {
@@ -1150,7 +1163,7 @@ async function probeRemoteCliCapabilities({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([buildRemoteNodeEvalCommand(remoteNode, script)]),
-    { runtime },
+    { profile, runtime },
   );
   if (result.code !== 0) return { ok: false, reason: "cli_probe_failed", stderr: result.stderr };
   let raw;
@@ -1255,7 +1268,7 @@ async function writeIsolatedWrappers({
     spawn,
     "ssh",
     buildSshArgs(profile).concat([command]),
-    { stdin: compactJson(files), runtime, role: "isolated-wrapper-write", mutation: true },
+    { profile, stdin: compactJson(files), runtime, role: "isolated-wrapper-write", mutation: true },
   );
   return { ok: result.code === 0, stderr: result.stderr, files };
 }
@@ -1321,7 +1334,7 @@ async function verifyIsolatedArtifacts({
     buildSshArgs(profile).concat([
       fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, script)),
     ]),
-    { runtime },
+    { profile, runtime },
   );
   let artifactMap = {};
   try { artifactMap = JSON.parse(String(result.stdout || "").trim().split(/\r?\n/).at(-1)); } catch {}
@@ -1389,6 +1402,7 @@ async function runWindowsDeployOperation({ profile, spawn, runtime, layout, exec
     ? windowsUserInstallerBudgets(args.installerTimeoutMs).transportTimeoutMs
     : timeoutMs;
   const transport = await transportWait(spawn, "ssh", buildSshArgs(profile).concat([REMOTE_NODE_LAUNCH_COMMAND]), {
+    profile,
     stdin: frame, runtime, role: `windows-${operation}`, mutation, timeoutMs: effectiveTimeoutMs,
   });
   let detail;
@@ -1533,7 +1547,7 @@ async function uploadDshAssets({ run, spawn, runtime, profile, layout, hooksDir,
     const upload = await spawnAndWait(spawn, "scp", buildScpArgs(profile).concat([
       ...localFiles,
       buildScpRemoteTarget(profile.host, toRemoteSftpPath(remoteDir)),
-    ]), { timeoutMs: 120000, runtime, role: "dsh-files-upload", mutation: true });
+    ]), { profile, timeoutMs: 120000, runtime, role: "dsh-files-upload", mutation: true });
     if (upload.code !== 0) return { ok: false, reason: "dsh_asset_upload_failed", message: upload.stderr || "DSH asset staging upload failed" };
   }
   const hashes = Object.fromEntries(DSH_ASSET_FILES.map((relative) => [
@@ -1708,6 +1722,7 @@ async function secureWindowsDeploy({ profile, installId, identityTxn, platformSn
     progress("hook-files", "start");
     const localFiles = HOOK_FILES.map((name) => path.join(hooksDir, name));
     const upload = await spawnAndWait(spawn, "scp", buildScpArgs(profile).concat([...localFiles, buildScpRemoteTarget(profile.host, toRemoteSftpPath(stagingNative))]), {
+      profile,
       timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true,
     });
     if (upload.code !== 0) return fail("hook-files", upload.stderr || "Hook staging upload failed", "hook_upload_failed", "hookFiles");
@@ -1868,28 +1883,31 @@ async function secureDeploy({
   let remoteNode = null;
   let lockHeld = false;
 
-  function progress(step, status, message, hint) {
+  function progress(step, status, message, hint, helpHint) {
     runtime.emit("progress", {
       profileId: profile.id,
       step,
       status,
       message: message ? redactTransportDiagnostic(message, profile) : null,
       hint: hint || null,
+      ...(helpHint ? { helpHint } : {}),
     });
   }
   async function recordStep(name, status, evidence) {
     await onStep(name, { status, ...(evidence ? { evidence } : {}) });
   }
-  async function fail(step, message, reason = null, identityStep = null, hint = null) {
+  async function fail(step, message, reason = null, identityStep = null, hint = null, stderr = message, exitCode = null) {
     if ((platformSnapshot ? platformSnapshot.remotePlatform : profile.remotePlatform) === "win32") {
       hint = hint || windowsFailureHint(reason);
     }
+    const helpHint = !hint && shouldSuggestGatewayMode(profile, step, stderr, exitCode)
+      ? "remoteSshGatewayHelp" : null;
     const safeMessage = redactTransportDiagnostic(message, profile);
-    progress(step, "fail", safeMessage, hint);
+    progress(step, "fail", safeMessage, hint, helpHint);
     if (identityStep) {
       try { await recordStep(identityStep, "failed", String(safeMessage || "failed").slice(0, 500)); } catch {}
     }
-    return { ok: false, step, message: safeMessage, reason, ...(hint ? { hint } : {}) };
+    return { ok: false, step, message: safeMessage, reason, ...(hint ? { hint } : {}), ...(helpHint ? { helpHint } : {}) };
   }
 
   const verification = verifyLocalHookFiles({ hooksDir });
@@ -1932,7 +1950,10 @@ async function secureDeploy({
     runtime,
     verifyCache: true,
   });
-  if (!resolved.ok) return fail("check-node", resolved.message || "Remote Node.js not found");
+  if (!resolved.ok) {
+    return fail("check-node", resolved.message || "Remote Node.js not found", null, null,
+      resolved.hint || null, resolved.stderr || resolved.message, resolved.code);
+  }
   remoteNode = resolved.nodeBin;
   const remoteNodeInfo = {
     nodeBin: resolved.nodeBin,
@@ -1945,7 +1966,7 @@ async function secureDeploy({
   if (!platformSnapshot && (!shell || !/^(Linux|Darwin|FreeBSD|OpenBSD|NetBSD|SunOS|AIX)$/i.test(shell.os))) {
     const checked = await spawnAndWait(spawn, "ssh", buildSshArgs(profile).concat([
       buildRemoteNodeEvalCommand(remoteNode, "console.log(process.platform)"),
-    ]), { runtime });
+    ]), { profile, runtime });
     if (checked.code !== 0 || !String(checked.stdout || "").trim()) {
       return fail("check-node", "Remote Node platform could not be verified.");
     }
@@ -2051,7 +2072,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([mkdirCommand]),
-      { runtime, role: "layout-create", mutation: true },
+      { profile, runtime, role: "layout-create", mutation: true },
     );
     if (mkdirResult.code !== 0) return fail("mkdir", mkdirResult.stderr || "Remote layout creation failed");
 
@@ -2073,7 +2094,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([identityCommand]),
-      { stdin: compactJson(identityDocument), runtime, role: "identity-write", mutation: true },
+      { profile, stdin: compactJson(identityDocument), runtime, role: "identity-write", mutation: true },
     );
     if (identityWrite.code !== 0) {
       return fail("identity", identityWrite.stderr || "Identity write failed", null, "identity");
@@ -2090,7 +2111,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, identityVerifyScript)),
       ]),
-      { stdin: compactJson(identityDocument), runtime },
+      { profile, stdin: compactJson(identityDocument), runtime },
     );
     if (identityVerify.code !== 0) return fail("identity", "Identity read-back verification failed", null, "identity");
     await recordStep("identity", "done", "identity read-back matched transaction");
@@ -2108,7 +2129,7 @@ async function secureDeploy({
       spawn,
       "ssh",
       buildSshArgs(profile).concat([markerCommand]),
-      { stdin: "clawd-ssh-secure-v1", runtime, role: "secure-marker-write", mutation: true },
+      { profile, stdin: "clawd-ssh-secure-v1", runtime, role: "secure-marker-write", mutation: true },
     );
     if (markerWrite.code !== 0) return fail("secure-marker", markerWrite.stderr || "Secure marker write failed", null, "secureMarker");
     await recordStep("secureMarker", "done", "marker atomically written and read back");
@@ -2122,7 +2143,7 @@ async function secureDeploy({
       spawn,
       "scp",
       buildScpArgs(profile).concat([...localFiles, remoteTarget]),
-      { timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true },
+      { profile, timeoutMs: 120000, runtime, role: "hook-files-upload", mutation: true },
     );
     if (scp.code !== 0) return fail("hook-files", scp.stderr || "Hook staging upload failed", null, "hookFiles");
     const promotion = HOOK_FILES
@@ -2134,7 +2155,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, `${promotion} && rmdir ${quoteForPosixShellArg(stagingDir)}`),
       ]),
-      { runtime, role: "hook-files-promote", mutation: true },
+      { profile, runtime, role: "hook-files-promote", mutation: true },
     );
     if (promote.code !== 0) return fail("hook-files", promote.stderr || "Hook promotion lost its deployment lease", null, "hookFiles");
     const expectedHashes = Object.fromEntries(HOOK_FILES.map((name) => [
@@ -2152,7 +2173,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, hashScript)),
       ]),
-      { runtime },
+      { profile, runtime },
     );
     if (hashVerify.code !== 0) return fail("hook-files", "Remote hook manifest hash verification failed", null, "hookFiles");
     await recordStep("hookFiles", "done", `sha256 verified ${HOOK_FILES.length} files`);
@@ -2185,7 +2206,7 @@ async function secureDeploy({
         spawn,
         "ssh",
         buildSshArgs(profile).concat([hpCommand]),
-        { stdin: profile.hostPrefix, runtime, role: "host-prefix-write", mutation: true },
+        { profile, stdin: profile.hostPrefix, runtime, role: "host-prefix-write", mutation: true },
       );
       if (hp.code !== 0) return fail("host-prefix", hp.stderr || "Host prefix write failed");
     }
@@ -2218,7 +2239,7 @@ async function secureDeploy({
             `${envPrefix} ${nodeCommand} && ${verifyCommand}`,
           ),
         ]),
-        { timeoutMs: 60000, runtime, role: `installer-${txnStep}`, mutation: true },
+        { profile, timeoutMs: 60000, runtime, role: `installer-${txnStep}`, mutation: true },
       );
       if (result.code !== 0) {
         return fail(progressStep, summarizeStderr(result.stderr) || "Remote installer failed", null, txnStep);
@@ -2245,7 +2266,7 @@ async function secureDeploy({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, permissionVerifyScript)),
       ]),
-      { runtime },
+      { profile, runtime },
     );
       if (permissionVerify.code !== 0) return fail("claude-permission", "Claude PermissionRequest shape verification failed", null, "claudePermission");
       const permissionMode = String(permissionVerify.stdout || "").trim().endsWith("native") ? "native" : "managed";
@@ -2279,7 +2300,7 @@ async function secureDeploy({
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, monitorCommand),
         ]),
-        { runtime, role: "codex-monitor-restart", mutation: true },
+        { profile, runtime, role: "codex-monitor-restart", mutation: true },
       );
       if (monitor.code !== 0) return fail("codex-monitor", monitor.stderr || "Codex monitor verification failed", null, "codexMonitor");
       await recordStep(
@@ -2369,7 +2390,7 @@ async function secureDeploy({
             `umask 077 && mkdir -p ${hermesStageArg} && chmod 700 ${hermesStageArg}`,
           ),
         ]),
-        { runtime, role: "hermes-stage-create", mutation: true },
+        { profile, runtime, role: "hermes-stage-create", mutation: true },
       );
       if (hermesStageMkdir.code !== 0) {
         return fail("hermes-files", hermesStageMkdir.stderr || "Hermes staging directory creation failed");
@@ -2381,7 +2402,7 @@ async function secureDeploy({
           ...hermesAssetPaths,
           buildScpRemoteTarget(profile.host, hermesStage),
         ]),
-        { timeoutMs: 120000, runtime, role: "hermes-files-upload", mutation: true },
+        { profile, timeoutMs: 120000, runtime, role: "hermes-files-upload", mutation: true },
       );
       if (hermesScp.code !== 0) {
         return fail("hermes-files", hermesScp.stderr || "Hermes asset staging upload failed");
@@ -2401,7 +2422,7 @@ async function secureDeploy({
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, hermesHashScript)),
         ]),
-        { runtime },
+        { profile, runtime },
       );
       if (hermesHashVerify.code !== 0) {
         return fail("hermes-files", "Hermes staged asset hash verification failed");
@@ -2432,6 +2453,7 @@ async function secureDeploy({
           ),
         ]),
         {
+          profile,
           timeoutMs: hermesOuterTimeoutMs(hermesTargets.length),
           runtime,
           role: "installer-hermes",
@@ -2473,7 +2495,7 @@ async function secureDeploy({
                 .join(" ")} && rmdir ${hermesStageArg}`,
             ),
           ]),
-          { timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
+          { profile, timeoutMs: 60000, runtime, role: "hermes-stage-cleanup", mutation: true },
         );
       } catch (err) {
         if (hermesFailure && requiresManualLockInspection(err)) {
@@ -2683,7 +2705,7 @@ async function bootstrapIsolatedRuntime({
       buildSshArgs(accountProfile).concat([
         fencedCommand(accountLayout, leaseId, remoteNode, command),
       ]),
-      { runtime, role: "isolated-runtime-bootstrap", mutation: true },
+      { profile: accountProfile, runtime, role: "isolated-runtime-bootstrap", mutation: true },
     );
     if (created.code !== 0) {
       return {
@@ -2751,14 +2773,14 @@ async function legacyStartCodexMonitor({ profile, runtime = null, deps = {} }) {
     "[ -f ~/.clawd-codex-monitor.pid ] && kill $(cat ~/.clawd-codex-monitor.pid) 2>/dev/null; " +
     "rm -f ~/.clawd-codex-monitor.pid; true";
   const cleanArgs = buildSshArgs(profile).concat([cleanCmd]);
-  await spawnAndWait(spawn, "ssh", cleanArgs, { runtime });
+  await spawnAndWait(spawn, "ssh", cleanArgs, { profile, runtime });
 
   // Launch new monitor in background and capture its PID.
   const startCmd =
     `nohup ${buildRemoteHookNodeCommand(remoteNode, "codex-remote-monitor.js", ["--port", profile.remoteForwardPort])} ` +
     "> /dev/null 2>&1 & echo $! > ~/.clawd-codex-monitor.pid";
   const startArgs = buildSshArgs(profile).concat([startCmd]);
-  const r = await spawnAndWait(spawn, "ssh", startArgs, { runtime });
+  const r = await spawnAndWait(spawn, "ssh", startArgs, { profile, runtime });
   return { ok: r.code === 0, stderr: r.stderr };
 }
 
@@ -2768,7 +2790,7 @@ async function legacyStopCodexMonitor({ profile, runtime = null, deps = {} }) {
     "[ -f ~/.clawd-codex-monitor.pid ] && kill $(cat ~/.clawd-codex-monitor.pid) 2>/dev/null; " +
     "rm -f ~/.clawd-codex-monitor.pid";
   const args = buildSshArgs(profile).concat([cmd]);
-  const r = await spawnAndWait(spawn, "ssh", args, { runtime });
+  const r = await spawnAndWait(spawn, "ssh", args, { profile, runtime });
   // best-effort — don't surface failures. Caller decides whether to log.
   return { ok: true, stderr: r.stderr };
 }
@@ -2814,7 +2836,7 @@ async function legacyUninstallRemoteIntegrations({ profile, runtime = null, deps
   let ok = true;
   for (const cmd of steps) {
     const args = buildSshArgs(profile).concat([cmd]);
-    const r = await spawnAndWait(spawn, "ssh", args, { timeoutMs: 30000, runtime });
+    const r = await spawnAndWait(spawn, "ssh", args, { profile, timeoutMs: 30000, runtime });
     if (r.code !== 0) {
       ok = false;
       lastStderr = r.stderr;
@@ -2988,7 +3010,7 @@ async function secureStartCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, start),
         ]),
-        { runtime, role: "codex-monitor-start", mutation: true },
+        { profile, runtime, role: "codex-monitor-start", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -3007,7 +3029,7 @@ async function secureStopCodexMonitor({ profile, runtime = null, deps = {} }) {
         buildSshArgs(profile).concat([
           fencedCommand(layout, leaseId, remoteNode, secureMonitorStopCommand(layout)),
         ]),
-        { runtime, role: "codex-monitor-stop", mutation: true },
+        { profile, runtime, role: "codex-monitor-stop", mutation: true },
       );
       return { ok: result.code === 0, stderr: result.stderr, layout };
     },
@@ -3098,7 +3120,7 @@ async function secureUninstallRemoteIntegrations({
           buildSshArgs(profile).concat([
             fencedCommand(layout, leaseId, remoteNode, command),
           ]),
-          { timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
+          { profile, timeoutMs: 30000, runtime, role: "remote-cleanup", mutation: true },
         );
         if (command === hermesCommand) {
           const parsed = parseHermesInstallerResult(result.stdout, "uninstall");
@@ -3208,7 +3230,7 @@ async function finalizeRetiredRemoteLayout({
       buildSshArgs(profile).concat([
         fencedCommand(layout, leaseId, remoteNode, buildRemoteNodeEvalCommand(remoteNode, script)),
       ]),
-      { runtime, role: "runtime-layout-retire", mutation: true },
+      { profile, runtime, role: "runtime-layout-retire", mutation: true },
     );
     if (result.code !== 0) {
       const reason = result.code === 83

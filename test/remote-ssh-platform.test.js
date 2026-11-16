@@ -134,6 +134,31 @@ test("issue #1316: unknown shell rediscovers login-shell POSIX Node after a Wind
   assert.equal(result.ok, true);
   assert.equal(result.remotePlatform, "posix");
   assert.equal(recorder.calls.length, 3);
-  assert.match(recorder.calls[1].args.at(-1), /^sh -c /);
+  assert.equal(recorder.calls[1].args.at(-1), require("../src/remote-ssh-node").buildRemoteNodeProbeCommand());
   assert.equal(result.remoteNode.nodeBin, "/home/remote/.nvm/node");
+});
+
+
+test("PR #1366 follow-up: platform discovery preserves Node absence and fallback failure evidence", async () => {
+  for (const code of [127, 19, 255]) {
+    require("../src/remote-ssh-node").clearRemoteNodeCache();
+    const missing = recordingSpawn([{ code: 127 }, { code }]);
+    const result = await probeRemotePlatform({
+      profile, buildSshArgs, spawn: missing.spawn, platform: "linux",
+      deps: { detectRemoteShell: async () => ({ shell: "unknown" }) },
+    });
+    assert.equal(result.code, code);
+    assert.equal(result.step, "check-node");
+    assert.match(result.message, /Remote Node.js not found/);
+  }
+  const recorder = recordingSpawn([{ code: 127 }, { code: 19 }]);
+  const fallback = await probeRemotePlatform({
+    profile, buildSshArgs, spawn: recorder.spawn, platform: "linux",
+    deps: {
+      detectRemoteShell: async () => ({ shell: "unknown" }),
+      resolveRemoteNodeBin: async () => ({ ok: true, nodeBin: "/usr/bin/node", version: "v20.0.0" }),
+    },
+  });
+  assert.equal(fallback.code, 19);
+  assert.equal(fallback.stderr, "");
 });
