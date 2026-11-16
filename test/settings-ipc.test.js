@@ -345,7 +345,8 @@ test("DeepSeek balance IPC is trusted-window-only and bypasses generic settings 
   const kimi = await harness.ipcMain.invoke("settings:command", {
     action: "setKimiQuotaCollectionEnabled", payload: { enabled: true },
   });
-  assert.strictEqual(kimi.status, "ok");
+  assert.strictEqual(kimi.status, "error");
+  assert.match(kimi.message, /internal/);
   assert.deepStrictEqual(await harness.ipcMain.invoke("settings:deepseek-balance-status"), {
     status: "ok",
     configured: false,

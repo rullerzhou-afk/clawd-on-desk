@@ -30,6 +30,9 @@ const INTERNAL_SETTINGS_COMMANDS = new Set([
   // This opt-in can start background requests with a stored key. Only the
   // trusted balance IPC handlers may ask the main-process owner to change it.
   "setDeepseekBalanceCollectionEnabled",
+  // Only the trusted Kimi quota IPC handlers may ask the main-process owner
+  // to change this opt-in, matching the DeepSeek balance boundary.
+  "setKimiQuotaCollectionEnabled",
   "remoteSsh.applyInstallationIdentity",
   "remoteSsh.beginIdentityRotation",
   "remoteSsh.updateIdentityStep",
