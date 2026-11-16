@@ -166,6 +166,51 @@ describe("i18n locales", () => {
     assertLocaleObjectParity(loadSettingsI18nStrings(), "settings");
   });
 
+  it("remote ssh deploy log: every locale labels all deployment steps", () => {
+    const strings = loadSettingsI18nStrings();
+    const steps = [
+      "verify", "mkdir", "check-node", "scp", "host-prefix",
+      "install-claude", "install-codex", "install-copilot", "hermes-files",
+      "install-hermes", "remote-shell",
+      "claude-permission", "cli-probe", "codex-monitor", "connect", "deployment-stamp",
+      "dsh-files", "hook-files", "identity", "identity-commit", "install-dsh",
+      "isolated-artifacts", "isolated-wrappers", "layout", "legacy-monitor",
+      "lock", "lock-release", "preflight", "secure-marker",
+    ];
+    for (const lang of SUPPORTED_LANGS) {
+      for (const step of steps) {
+        const key = `remoteSshStep_${step}`;
+        assert.strictEqual(typeof strings[lang][key], "string", `${lang}.${key}`);
+        assert.ok(strings[lang][key].trim(), `${lang}.${key} must not be empty`);
+        assert.notStrictEqual(strings[lang][key], key, `${lang}.${key} must be translated`);
+      }
+    }
+  });
+
+  it("remote ssh deploy log: literal source steps have English labels", () => {
+    const strings = loadSettingsI18nStrings();
+    const srcDir = path.join(ROOT, "src");
+    const steps = new Set();
+    for (const file of fs.readdirSync(srcDir).filter((name) => /^remote-ssh-.*\.js$/.test(name))) {
+      const source = fs.readFileSync(path.join(srcDir, file), "utf8");
+      // Cover literal progress("step", ...) calls and step: "step" fields.
+      // Dynamic names (including tuple-driven steps) are not covered.
+      const patterns = [/\b(?:progress\s*\(\s*|step\s*:\s*)["']([^"'\r\n]+)["']/g];
+      // Only the deploy module's fail(step, ...) emits progress; transport's
+      // fail(reason, ...) reports inspection error codes, not step names.
+      if (file === "remote-ssh-deploy.js") patterns.push(/\bfail\s*\(\s*["']([^"'\r\n]+)["']/g);
+      for (const pattern of patterns) {
+        for (const match of source.matchAll(pattern)) steps.add(match[1]);
+      }
+    }
+    assert.ok(steps.size > 0, "should find literal Remote SSH steps");
+    for (const step of steps) {
+      const key = `remoteSshStep_${step}`;
+      assert.strictEqual(typeof strings.en[key], "string", `${key} must label a source step`);
+      assert.ok(strings.en[key].trim(), `${key} must not be empty`);
+    }
+  });
+
   it("DSH remote: every Settings locale explains deployment errors and next steps", () => {
     const strings = loadSettingsI18nStrings();
     const keys = [

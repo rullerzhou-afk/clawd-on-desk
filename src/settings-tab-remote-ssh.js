@@ -856,7 +856,9 @@
       for (const ev of profileLog) {
         const line = document.createElement("div");
         line.className = "remote-ssh-progress-line remote-ssh-progress-" + ev.status;
-        const stepLabel = t("remoteSshStep_" + ev.step) || ev.step;
+        const stepKey = "remoteSshStep_" + ev.step;
+        const translatedStep = t(stepKey);
+        const stepLabel = translatedStep !== stepKey ? translatedStep : ev.step;
         const detail = statusMessageText(ev);
         line.textContent = `[${ev.status}] ${stepLabel}` + (detail ? ` — ${detail}` : "");
         if (ev.message && detail !== ev.message) line.title = ev.message;
