@@ -2693,3 +2693,19 @@ describe("idle behavior file normalization", () => {
     assert.strictEqual(snapshot.idleActivities, false);
   });
 });
+
+
+describe("quota ring manual selection preference", () => {
+  it("preserves automatic null and explicit empty manual selections", () => {
+    assert.strictEqual(prefs.getDefaults().quotaRingShownProviders, null);
+    for (const raw of [undefined, null, 5, "kimiQuota", {}]) {
+      assert.strictEqual(prefs.validate({ quotaRingShownProviders: raw }).quotaRingShownProviders, null);
+    }
+    assert.deepStrictEqual(prefs.validate({ quotaRingShownProviders: [] }).quotaRingShownProviders, []);
+  });
+  it("cleans and deduplicates provider keys and caps persisted arrays at three", () => {
+    assert.deepStrictEqual(prefs.validate({ quotaRingShownProviders:
+      [" kimiQuota ", null, "", "kimiQuota", "newProvider", "codex\0Quota", "claudeQuota"]
+    }).quotaRingShownProviders, ["kimiQuota", "newProvider", "codexQuota"]);
+  });
+});

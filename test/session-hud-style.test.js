@@ -142,9 +142,10 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingRenderer, /quotaAgentIcons/);
   });
 
-  it("clicking a coin or the overflow opens the Dashboard", () => {
+  it("clicking a coin opens the Dashboard without an overflow control", () => {
     assert.match(quotaRingRenderer, /openDashboard\(\)/);
-    assert.match(quotaRingRenderer, /buildOverflow/);
+    assert.doesNotMatch(quotaRingRenderer, /buildOverflow/);
+    assert.doesNotMatch(quotaRingHtml, /\.overflow/);
   });
 
   it("does not advertise unreachable keyboard controls in the non-focusable ring panel", () => {

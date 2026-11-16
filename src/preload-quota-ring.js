@@ -29,7 +29,7 @@ ipcRenderer.on("quota-ring:visibility", (_event, visible) => {
 
 contextBridge.exposeInMainWorld("quotaRingAPI", {
   getI18n: () => ipcRenderer.invoke("session-hud:get-i18n"),
-  // Clicking a coin (or the "+N" overflow) opens the Dashboard, which owns the
+  // Clicking a coin opens the Dashboard, which owns the
   // full per-source detail. Reuses the HUD's existing channel/handler.
   openDashboard: () => ipcRenderer.send("session-hud:open-dashboard"),
   onSnapshot: (cb) => {

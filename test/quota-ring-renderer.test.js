@@ -60,7 +60,7 @@ function loadRenderer() {
     window: {
       quotaRingAPI: {
         onLangChange() {},
-        onSnapshot() {},
+        onSnapshot(cb) { context.pushSnapshot = cb; },
         getI18n: async () => null,
         openDashboard() {},
       },
@@ -434,7 +434,7 @@ describe("quota ring renderer model", () => {
     assert.doesNotMatch(fills[1].attributes.class, /is-near/);
   });
 
-  it("keeps quota rows and overflow free of hover tooltips", () => {
+  it("keeps quota rows free of hover tooltips", () => {
     const context = loadRenderer();
     const now = 1_000_000;
     const model = modelFor(context, {
@@ -448,9 +448,7 @@ describe("quota ring renderer model", () => {
     context.__model = model;
 
     const row = vm.runInContext("buildCoinRow(__model)", context);
-    const overflow = vm.runInContext("buildOverflow(2)", context);
     assert.strictEqual(row.title, "");
-    assert.strictEqual(overflow.title, "");
   });
 
   it("shows a compact source marker when more than one machine contributes quota", () => {
@@ -855,5 +853,78 @@ describe("quota ring flashback — identity and bookkeeping", () => {
     );
     // A is done on its own schedule; B is still mid-flash.
     assert.deepStrictEqual([...flags], [false, true]);
+  });
+});
+
+describe("quota ring — visible selection", () => {
+  const geometry = require("../src/quota-ring-geometry");
+  const all = {
+    sourceKey: "local",
+    antigravityQuota: { group: { geminiFiveHour: { usedPercent: 1 } } },
+    claudeQuota: { group: { claudeFiveHour: { usedPercent: 2 } } },
+    codexQuota: { group: { codexWeekly: { usedPercent: 3 } } },
+    kimiQuota: { group: { kimiWeekly: { usedPercent: 4 } } },
+  };
+  const remote = { ...all, sourceKey: "remote", host: "build" };
+  const cases = [
+    { name: "automatic mode takes the first three providers", sources: [all], shown: null,
+      expected: ["local:antigravityQuota", "local:claudeQuota", "local:codexQuota"] },
+    { name: "automatic mode respects legacy hidden providers", sources: [all], hidden: ["claudeQuota"],
+      expected: ["local:antigravityQuota", "local:codexQuota", "local:kimiQuota"] },
+    { name: "manual mode ignores hidden providers", sources: [all], hidden: ["kimiQuota"], shown: ["kimiQuota"],
+      expected: ["local:kimiQuota"] },
+    { name: "new providers do not fill manual vacancies", sources: [all], shown: ["kimiQuota", "claudeQuota"],
+      expected: ["local:claudeQuota", "local:kimiQuota"] },
+    { name: "manual providers without data leave vacancies", sources: [{ ...all, kimiQuota: null }], shown: ["kimiQuota"],
+      expected: [] },
+    { name: "an empty manual selection draws nothing", sources: [all], shown: [], expected: [] },
+    { name: "multiple sources consume coins in fixed provider order", sources: [all, remote], shown: ["codexQuota", "claudeQuota"],
+      expected: ["local:claudeQuota", "remote:claudeQuota", "local:codexQuota"] },
+  ];
+  for (const scenario of cases) {
+    it(scenario.name + " in geometry and renderer", () => {
+      const context = loadRenderer();
+      context.__sources = scenario.sources;
+      context.__shown = scenario.shown;
+      context.__hidden = scenario.hidden || [];
+      vm.runInContext("payload.accountQuota = __sources; payload.shownQuotaProviders = __shown; payload.hiddenQuotaProviders = __hidden", context);
+      const rendered = vm.runInContext("collectCoins(Date.now()).map(m => m.sourceKey + ':' + m.providerKey)", context);
+      assert.deepStrictEqual(Array.from(rendered), scenario.expected);
+      const snapshot = { accountQuota: scenario.sources };
+      const sized = geometry.collectQuotaCoins(snapshot, scenario.hidden, scenario.shown)
+        .map(({ source, def }) => source.sourceKey + ":" + def.key);
+      assert.deepStrictEqual(sized, scenario.expected);
+      assert.strictEqual(geometry.countQuotaCoins(snapshot, true, scenario.hidden, scenario.shown), rendered.length);
+      const listed = geometry.listQuotaRingProviders(snapshot, scenario.hidden, scenario.shown);
+      assert.deepStrictEqual(listed.filter(p => p.shown).map(p => p.key),
+        [...new Set(scenario.expected.map(key => key.split(":")[1]))]);
+      assert.strictEqual(listed.reduce((sum, p) => sum + p.shownCoinCount, 0), rendered.length);
+      vm.runInContext("render()", context);
+      assert.strictEqual(context.document.getElementById("cluster").children.length, scenario.expected.length);
+      assert.ok(context.document.getElementById("cluster").children.every(el => el.className !== "overflow"));
+    });
+  }
+});
+
+describe("quota ring — snapshot IPC", () => {
+  it("preserves automatic null and explicit manual selections from snapshot IPC", () => {
+    const context = loadRenderer();
+    for (const shown of [null, [], ["kimiQuota"]]) {
+      context.pushSnapshot({ accountQuota: [], shownQuotaProviders: shown });
+      const received = vm.runInContext("payload.shownQuotaProviders", context);
+      assert.deepStrictEqual(received === null ? null : Array.from(received), shown);
+    }
+  });
+});
+
+describe("quota ring — defensive coin models", () => {
+  it("skips a missing visual model without crashing the renderer", () => {
+    const context = loadRenderer();
+    vm.runInContext(`
+      payload.accountQuota = [{ claudeQuota: { group: { claudeFiveHour: { usedPercent: 10 } } } }];
+      buildCoinModel = () => null;
+    `, context);
+    assert.strictEqual(vm.runInContext("collectCoins(Date.now()).length", context), 0);
+    assert.doesNotThrow(() => vm.runInContext("render()", context));
   });
 });

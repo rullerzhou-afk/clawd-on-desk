@@ -19,7 +19,7 @@ const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
 const PROVIDER_STALE_AFTER_MS = Object.freeze({
   kimiQuota: 7 * 60 * 1000,
 });
-const MAX_COINS = 4; // must match quota-ring-geometry RING_MAX_COINS
+const MAX_COINS = 3; // must match quota-ring-geometry RING_MAX_COINS
 
 // Mirrors RING_PROVIDERS in quota-ring-geometry.js (that file is CommonJS; this
 // runs in the browser and cannot require it). Antigravity reports two quota
@@ -109,6 +109,7 @@ let payload = {
   quotaAgentIcons: {},
   displayMode: "used",
   hiddenQuotaProviders: [],
+  shownQuotaProviders: null,
   side: "left",
   translations: {},
 };
@@ -301,37 +302,29 @@ function buildCoinModel(source, def, now, multiSource) {
   };
 }
 
-// Providers the user hid from this cluster. Display-only — collection and the
-// Dashboard are untouched. quota-ring-geometry.js applies the identical filter
-// when it sizes this window; the two must agree or the window reserves space
-// for coins that never render. test/quota-ring-geometry.test.js pins the pair.
-function hiddenProviderSet() {
-  const hidden = Array.isArray(payload.hiddenQuotaProviders) ? payload.hiddenQuotaProviders : [];
-  const keys = hidden.filter((key) => typeof key === "string" && key);
-  return keys.length ? new Set(keys) : null;
-}
-
+// Mirrors collectQuotaCoins in quota-ring-geometry.js. Provider-first ordering
+// intentionally precedes source order. Multiple sources consume separate coins;
+// host markers count only the sources that survive the cap and actually draw.
 function collectCoins(now) {
   const sources = Array.isArray(payload.accountQuota) ? payload.accountQuota : [];
-  const hidden = hiddenProviderSet();
-  const isDrawn = (source, def) =>
-    !(hidden && hidden.has(def.key)) && providerHasDrawableQuota(source, def);
-  // "Multi-source" drives the per-coin host marker, so it counts sources that
-  // still draw something AFTER hiding — hiding every provider a second machine
-  // reports should retire the marker, not leave it labelling a single cluster.
-  const drawableSources = sources.filter((source) =>
-    source && typeof source === "object"
-      && RING_PROVIDERS.some((def) => isDrawn(source, def)));
-  const multiSource = drawableSources.length > 1;
-  const coins = [];
-  for (const source of drawableSources) {
-    for (const def of RING_PROVIDERS) {
-      if (hidden && hidden.has(def.key)) continue;
-      const model = buildCoinModel(source, def, now, multiSource);
-      if (model) coins.push(model);
+  const shown = Array.isArray(payload.shownQuotaProviders) ? new Set(payload.shownQuotaProviders) : null;
+  const hidden = new Set(Array.isArray(payload.hiddenQuotaProviders) ? payload.hiddenQuotaProviders : []);
+  const entries = [];
+  for (const def of RING_PROVIDERS) {
+    if (shown ? !shown.has(def.key) : hidden.has(def.key)) continue;
+    for (const source of sources) {
+      if (!providerHasDrawableQuota(source, def)) continue;
+      entries.push({ source, def });
+      if (entries.length === MAX_COINS) break;
     }
+    if (entries.length === MAX_COINS) break;
   }
-  return coins;
+  const multiSource = new Set(entries.map(({ source }) => source)).size > 1;
+  // Both sides use providerHasDrawableQuota, so accepted buckets produce the
+  // same count. Keep the null guard as a backstop for future model changes.
+  return entries
+    .map(({ source, def }) => buildCoinModel(source, def, now, multiSource))
+    .filter(Boolean);
 }
 
 function ringCircle(cls, r, sw, dashFill) {
@@ -512,14 +505,6 @@ function buildReadoutFoot(model) {
   return foot;
 }
 
-function buildOverflow(count) {
-  const el = document.createElement("div");
-  el.className = "overflow";
-  el.textContent = `+${count}`;
-  el.addEventListener("click", () => window.quotaRingAPI.openDashboard());
-  return el;
-}
-
 // ── Rolling-window flashback ──
 //
 // When an alert borrows the headline, the rolling number vanishes — but "what
@@ -681,14 +666,10 @@ function render() {
 
   const coins = collectCoins(now);
   if (!coins.length) return;
-  const visible = coins.slice(0, MAX_COINS);
-  const overflow = coins.length - visible.length;
-
-  for (const model of visible) {
+  for (const model of coins) {
     model.flashingResting = isFlashing(model, now);
     clusterEl.appendChild(buildCoinRow(model, now));
   }
-  if (overflow > 0) clusterEl.appendChild(buildOverflow(overflow));
 }
 
 function tick() {
@@ -709,6 +690,9 @@ async function init() {
       hiddenQuotaProviders: Array.isArray(next && next.hiddenQuotaProviders)
         ? next.hiddenQuotaProviders
         : [],
+      shownQuotaProviders: Array.isArray(next && next.shownQuotaProviders)
+        ? next.shownQuotaProviders
+        : null,
       side: next && next.side === "right" ? "right" : "left",
       translations: payload.translations,
       lang: payload.lang,

@@ -1437,6 +1437,7 @@ let sessionHudShowElapsed = _settingsController.get("sessionHudShowElapsed");
 let sessionHudShowContextUsage = _settingsController.get("sessionHudShowContextUsage");
 let sessionHudShowQuota = _settingsController.get("sessionHudShowQuota");
 let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
+let quotaRingShownProviders = _settingsController.get("quotaRingShownProviders");
 let quotaRingHiddenProviders = _settingsController.get("quotaRingHiddenProviders");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
 let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
@@ -1775,6 +1776,27 @@ function broadcastSettingsWindow(channel, payload) {
     if (!settingsWin.webContents || settingsWin.webContents.isDestroyed()) return;
     settingsWin.webContents.send(channel, payload);
   } catch {}
+}
+
+let lastQuotaRingProvidersWindow = null;
+let lastQuotaRingProvidersSignature = null;
+function broadcastQuotaRingProviders(snapshot) {
+  const settingsWin = getSettingsWindow();
+  if (!settingsWin || settingsWin.isDestroyed()
+    || !settingsWin.webContents || settingsWin.webContents.isDestroyed()) {
+    lastQuotaRingProvidersWindow = null;
+    lastQuotaRingProvidersSignature = null;
+    return;
+  }
+  const providers = _ringGeom.listQuotaRingProviders(
+    snapshot, quotaRingHiddenProviders, quotaRingShownProviders
+  );
+  const signature = JSON.stringify(providers);
+  if (settingsWin === lastQuotaRingProvidersWindow
+    && signature === lastQuotaRingProvidersSignature) return;
+  broadcastSettingsWindow("settings:quota-ring-providers-changed", providers);
+  lastQuotaRingProvidersWindow = settingsWin;
+  lastQuotaRingProvidersSignature = signature;
 }
 
 function getThemeSoundPreloadUrls() {
@@ -2563,6 +2585,7 @@ const _stateCtx = {
     reconcilePowerSaveBlocker();
     broadcastDashboardSessionSnapshot(snapshot);
     broadcastSessionHudSnapshot(snapshot);
+    broadcastQuotaRingProviders(snapshot);
     repositionFloatingBubbles();
     // R1a: best-effort completion notifications. Must never throw or block the
     // broadcast — the companion computes synchronously and fires sends async.
@@ -3125,6 +3148,7 @@ const _sessionHud = require("./session-hud")({
   get sessionHudShowContextUsage() { return sessionHudShowContextUsage; },
   get sessionHudShowQuota() { return sessionHudShowQuota; },
   get quotaRingDisplayMode() { return quotaRingDisplayMode; },
+  get quotaRingShownProviders() { return quotaRingShownProviders; },
   get quotaRingHiddenProviders() { return quotaRingHiddenProviders; },
   get sessionHudPinned() { return sessionHudPinned; },
   get lowPowerIdleMode() { return lowPowerIdleMode; },
@@ -4953,8 +4977,8 @@ const SETTINGS_MIRROR_SETTERS = {
   sessionHudShowContextUsage: (v) => { sessionHudShowContextUsage = v; },
   sessionHudShowQuota: (v) => { sessionHudShowQuota = v; },
   quotaRingDisplayMode: (v) => { quotaRingDisplayMode = v; },
-  // Normalized to an array here as well as in prefs: this mirror also takes the
-  // value straight from a settings broadcast, and every consumer indexes it.
+  // Preserve null as automatic mode when mirroring settings broadcasts.
+  quotaRingShownProviders: (v) => { quotaRingShownProviders = Array.isArray(v) ? v : null; },
   quotaRingHiddenProviders: (v) => { quotaRingHiddenProviders = Array.isArray(v) ? v : []; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
   kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
@@ -5355,7 +5379,8 @@ const settingsIpcRuntime = registerSettingsIpc({
   getQuotaSourceCount: () => _state.getQuotaSourceCount(),
   getQuotaRingProviders: () => _ringGeom.listQuotaRingProviders(
     _state.buildSessionSnapshot(),
-    quotaRingHiddenProviders
+    quotaRingHiddenProviders,
+    quotaRingShownProviders
   ),
   themeLoader,
   codexPetMain,

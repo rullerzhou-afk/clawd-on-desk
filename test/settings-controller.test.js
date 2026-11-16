@@ -1865,3 +1865,25 @@ describe("idle behavior controller boundary", () => {
     assert.strictEqual(events.length, 0);
   });
 });
+
+
+describe("quota ring selection commits", () => {
+  it("persists and broadcasts the first toggle once without an intermediate automatic selection", async () => {
+    const prefsPath = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath });
+    const events = [];
+    ctrl.subscribe(event => events.push(event.changes));
+    const result = await ctrl.applyCommand("setQuotaRingProviderShown", {
+      key: "claudeQuota", shown: false,
+      currentShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"],
+    });
+    assert.strictEqual(result.status, "ok");
+    assert.deepStrictEqual(events, [{ quotaRingShownProviders: ["antigravityQuota", "codexQuota"] }]);
+    assert.deepStrictEqual(prefs.load(prefsPath).snapshot.quotaRingShownProviders, ["antigravityQuota", "codexQuota"]);
+    const rejected = await ctrl.applyCommand("setQuotaRingProviderShown", { key: "kimiQuota", shown: true });
+    assert.strictEqual(rejected.status, "ok");
+    const overflow = await ctrl.applyCommand("setQuotaRingProviderShown", { key: "claudeQuota", shown: true });
+    assert.strictEqual(overflow.status, "error");
+    assert.strictEqual(events.length, 2);
+  });
+});

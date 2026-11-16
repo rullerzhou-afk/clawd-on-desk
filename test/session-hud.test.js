@@ -821,3 +821,27 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
     );
   });
 });
+
+
+describe("quota ring selection eligibility", () => {
+  it("honors manual selections and legacy hidden providers in auto-hide eligibility", () => {
+    const snapshot = { sessions: [], accountQuota: [{
+      codexQuota: { group: { codexWeekly: { usedPercent: 10 } } },
+    }] };
+    const flags = { snapshot, sessionHudEnabled: false, showQuota: true,
+      clickRevealed: true, inHotZone: true, now: 1 };
+    assert.strictEqual(evaluateBaseEligible({ ...flags, shownQuotaProviders: [] }), false);
+    assert.strictEqual(evaluateShouldShow({ ...flags, shownQuotaProviders: [] }).show, false);
+    assert.strictEqual(evaluateShouldShow({ ...flags, hiddenQuotaProviders: ["codexQuota"] }).show, false);
+    assert.strictEqual(evaluateShouldShow({ ...flags, hiddenQuotaProviders: ["codexQuota"],
+      shownQuotaProviders: ["codexQuota"] }).show, true);
+  });
+  it("passes manual selections through the runtime mirror and renderer payload", () => {
+    const hud = fs.readFileSync(path.join(__dirname, "..", "src", "session-hud.js"), "utf8");
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.match(main, /let quotaRingShownProviders = _settingsController\.get\("quotaRingShownProviders"\)/);
+    assert.match(main, /get quotaRingShownProviders\(\) \{ return quotaRingShownProviders; \}/);
+    assert.match(main, /quotaRingShownProviders: \(v\) => \{ quotaRingShownProviders = Array\.isArray\(v\) \? v : null; \}/);
+    assert.match(hud, /shownQuotaProviders: Array\.isArray\(ctx\.quotaRingShownProviders\) \? ctx\.quotaRingShownProviders : null/);
+  });
+});
