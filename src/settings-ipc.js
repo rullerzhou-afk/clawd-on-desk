@@ -27,6 +27,9 @@ const CLEANUP_EXEMPT_AGENT_IDS = new Set(DEFAULT_INTEGRATION_INSTALLED_IDS);
 // renderer cannot mint a trusted install binding, advance a deployment
 // transaction, or claim that a remote profile was verified.
 const INTERNAL_SETTINGS_COMMANDS = new Set([
+  // This opt-in can start background requests with a stored key. Only the
+  // trusted balance IPC handlers may ask the main-process owner to change it.
+  "setDeepseekBalanceCollectionEnabled",
   "remoteSsh.applyInstallationIdentity",
   "remoteSsh.beginIdentityRotation",
   "remoteSsh.updateIdentityStep",
@@ -573,6 +576,49 @@ function registerSettingsIpc(options = {}) {
     const rejected = rejectUntrustedSettingsEvent(event);
     if (rejected) return rejected;
     const runtime = options.kimiQuotaRuntime;
+    return runtime && typeof runtime.forget === "function"
+      ? runtime.forget()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-status", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.getStatus === "function"
+      ? runtime.getStatus()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-connect", async (event, payload) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    if (!payload || typeof payload !== "object" || typeof payload.apiKey !== "string") {
+      return { status: "error", reason: "invalid-credential-input" };
+    }
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.connect === "function"
+      ? runtime.connect(payload.apiKey)
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-reconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.reconnect === "function"
+      ? runtime.reconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-disconnect", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
+    return runtime && typeof runtime.disconnect === "function"
+      ? runtime.disconnect()
+      : { status: "error", reason: "runtime-unavailable" };
+  });
+  handle("settings:deepseek-balance-forget", (event) => {
+    const rejected = rejectUntrustedSettingsEvent(event);
+    if (rejected) return rejected;
+    const runtime = options.deepseekBalanceRuntime;
     return runtime && typeof runtime.forget === "function"
       ? runtime.forget()
       : { status: "error", reason: "runtime-unavailable" };

@@ -240,6 +240,9 @@ if (ctx.claudeQuotaCollectionEnabled === false) {
 if (ctx.kimiQuotaCollectionEnabled === false) {
   clearLocalKimiQuota({ broadcast: false });
 }
+if (ctx.deepseekBalanceCollectionEnabled === false) {
+  clearLocalDeepseekQuota({ broadcast: false });
+}
 const MAX_SESSIONS = 20;
 const ASSISTANT_OUTPUT_MAX = 2400;
 const CODEX_EXIT_PROBE_DELAYS_MS = [1000, 3000, 8000, 15000];
@@ -1984,6 +1987,21 @@ function commitLocalKimiQuota(kimiQuota) {
 
 function clearLocalKimiQuota(options = {}) {
   const cleared = accountQuota.clearProvider("kimiQuota", (sourceKey) => sourceKey === "");
+  const persisted = cleared ? accountQuota.flush() === true : true;
+  if (cleared && options.broadcast !== false) emitSessionSnapshot();
+  return { cleared: cleared > 0, persisted };
+}
+
+function commitLocalDeepseekQuota(deepseekQuota) {
+  const result = accountQuota.updateDetailed(null, { deepseekQuota });
+  if (!result.accepted) return { accepted: false, persisted: false };
+  const persisted = accountQuota.flush();
+  if (result.changed) emitSessionSnapshot();
+  return { accepted: true, persisted: persisted === true };
+}
+
+function clearLocalDeepseekQuota(options = {}) {
+  const cleared = accountQuota.clearProvider("deepseekQuota", (sourceKey) => sourceKey === "");
   const persisted = cleared ? accountQuota.flush() === true : true;
   if (cleared && options.broadcast !== false) emitSessionSnapshot();
   return { cleared: cleared > 0, persisted };
@@ -4565,6 +4583,8 @@ return {
   clearClaudeStatuslineAuthority,
   updateAccountQuota,
   clearLocalClaudeQuota,
+  commitLocalDeepseekQuota,
+  clearLocalDeepseekQuota,
   commitLocalKimiQuota,
   clearLocalKimiQuota,
   getQuotaSourceCount,

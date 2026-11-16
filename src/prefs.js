@@ -236,6 +236,7 @@ const SCHEMA = {
   // This boolean is only the durable collection opt-in; the secret is never a
   // preference and never enters a settings snapshot.
   kimiQuotaCollectionEnabled: { type: "boolean", default: false },
+  deepseekBalanceCollectionEnabled: { type: "boolean", default: false },
   quotaMergeSources: { type: "boolean", default: false },
   sessionHudCleanupDetached: { type: "boolean", default: true },
   sessionHudPinned: { type: "boolean", default: false },

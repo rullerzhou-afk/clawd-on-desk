@@ -3998,6 +3998,33 @@ describe("updateSession()", () => {
     assert.strictEqual(reloaded.find((entry) => entry.host === "workbox").claudeQuota.group.claudeWeekly.usedPercent, 90);
   });
 
+  it("persists and broadcasts DeepSeek amount changes and clears a disabled startup cache", () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-deepseek-state-"));
+    const persistPath = path.join(dir, "account-quota.json");
+    const broadcasts = [];
+    const localApi = require("../src/state")(makeCtx({ accountQuotaPersistPath: persistPath,
+      deepseekBalanceCollectionEnabled: true,
+      broadcastSessionSnapshot: (snapshot) => broadcasts.push(snapshot) }));
+    try {
+      const capturedAt = Date.now();
+      const make = (amount) => ({ deepseekBalance: { usedPercent: 55, amount, baseline: 100,
+        currency: "CNY", capturedAt } });
+      assert.deepStrictEqual(localApi.commitLocalDeepseekQuota(make(45.20)), { accepted: true, persisted: true });
+      const before = broadcasts.length;
+      localApi.commitLocalDeepseekQuota(make(45.21));
+      assert.strictEqual(broadcasts.length, before + 1);
+      assert.strictEqual(localApi.buildSessionSnapshot().accountQuota[0].deepseekQuota.group.deepseekBalance.amount,
+        45.21);
+    } finally { localApi.cleanup(); }
+    const restarted = require("../src/state")(makeCtx({ accountQuotaPersistPath: persistPath,
+      deepseekBalanceCollectionEnabled: false }));
+    try { assert.strictEqual(restarted.buildSessionSnapshot().accountQuota.length, 0); }
+    finally { restarted.cleanup(); }
+    const reloaded = require("../src/state-account-quota").createAccountQuotaStore({ persistPath });
+    assert.strictEqual(reloaded.snapshot().length, 0);
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
   it("commits, flushes, and clears only local Kimi quota", () => {
     const persistPath = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "clawd-kimi-state-")), "account-quota.json");
     const localApi = require("../src/state")(makeCtx({
@@ -4914,7 +4941,7 @@ describe("buildSessionSnapshot", () => {
     // shape, then compare the rest exactly.
     const { quotaAgentIcons, ...rest } = snapshot;
     assert.deepStrictEqual(Object.keys(quotaAgentIcons).sort(), [
-      "antigravityQuota", "claudeQuota", "codexQuota", "kimiQuota",
+      "antigravityQuota", "claudeQuota", "codexQuota", "deepseekQuota", "kimiQuota",
     ]);
     assert.deepStrictEqual(rest, {
       sessions: [],

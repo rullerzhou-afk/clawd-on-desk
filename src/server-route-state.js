@@ -508,6 +508,8 @@ function handleStatePost(req, res, options) {
       const sessionTitleFromPrompt =
         sessionTitle !== null && data.session_title_from_prompt === true;
       const contextUsage = normalizeContextUsage(data.context_usage);
+      // DeepSeek balance is owned by the local API-key runtime. Deliberately
+      // exclude deepseek_quota/deepseekQuota from HTTP ingress, even on localhost.
       const antigravityQuota = normalizeAntigravityQuota(data.antigravity_quota);
       const claudeQuota = normalizeClaudeQuota(data.claude_quota);
       const codexQuota = normalizeCodexQuota(data.codex_quota);

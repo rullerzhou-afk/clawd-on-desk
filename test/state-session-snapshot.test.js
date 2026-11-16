@@ -1600,3 +1600,16 @@ describe("awaiting-activity rows", () => {
     }
   });
 });
+
+
+describe("DeepSeek balance snapshots", () => {
+  it("changes the signature when only the amount changes and resolves the existing agent icon", () => {
+    const make = (amount) => buildSessionSnapshot(new Map(), {
+      accountQuota: [{ host: null, deepseekQuota: { lastSeenAt: 1000,
+        group: { deepseekBalance: { amount, baseline: 100, currency: "CNY", usedPercent: 55 } } } }],
+      getAgentIconUrl: (id) => `icon:${id}`,
+    });
+    assert.notStrictEqual(sessionSnapshotSignature(make(45.20)), sessionSnapshotSignature(make(45.21)));
+    assert.strictEqual(make(45).quotaAgentIcons.deepseekQuota, "icon:deepseek-harness");
+  });
+});

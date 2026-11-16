@@ -354,6 +354,21 @@ describe("updateRegistry pure-data validators", () => {
     );
   });
 
+  it("DeepSeek balance collection is command-only", () => {
+    const entry = updateRegistry.deepseekBalanceCollectionEnabled;
+    assert.strictEqual(entry.validate(true).status, "ok");
+    assert.strictEqual(entry.validate("yes").status, "error");
+    assert.strictEqual(entry.commandOnly, true);
+    assert.deepStrictEqual(
+      commandRegistry.setDeepseekBalanceCollectionEnabled({ enabled: true }),
+      { status: "ok", commit: { deepseekBalanceCollectionEnabled: true } }
+    );
+    assert.strictEqual(
+      commandRegistry.setDeepseekBalanceCollectionEnabled({ enabled: "yes" }).status,
+      "error"
+    );
+  });
+
   it("bubble auto-close seconds require integers in range", () => {
     const deps = { snapshot: baseSnapshot };
     for (const key of [

@@ -503,9 +503,13 @@ const updateRegistry = {
       return deps.setClaudeQuotaCollectionEnabled(value);
     },
   },
-  // Only the dedicated, trusted Kimi quota IPC path may change this opt-in.
+  // Only dedicated, trusted credential IPC paths may change these opt-ins.
   // Generic settings:update/applyBulk/hydrate are intentionally rejected by
   // the controller's commandOnly boundary.
+  deepseekBalanceCollectionEnabled: {
+    validate: requireBoolean("deepseekBalanceCollectionEnabled"),
+    commandOnly: true,
+  },
   kimiQuotaCollectionEnabled: {
     validate: requireBoolean("kimiQuotaCollectionEnabled"),
     commandOnly: true,
@@ -953,6 +957,18 @@ function setKimiQuotaCollectionEnabled(payload) {
   return { status: "ok", commit: { kimiQuotaCollectionEnabled: enabled } };
 }
 setKimiQuotaCollectionEnabled.lockKey = "kimiQuota";
+
+function setDeepseekBalanceCollectionEnabled(payload) {
+  const enabled = typeof payload === "boolean" ? payload : payload && payload.enabled;
+  if (typeof enabled !== "boolean") {
+    return {
+      status: "error",
+      message: "setDeepseekBalanceCollectionEnabled.enabled must be a boolean",
+    };
+  }
+  return { status: "ok", commit: { deepseekBalanceCollectionEnabled: enabled } };
+}
+setDeepseekBalanceCollectionEnabled.lockKey = "deepseekBalance";
 
 // Permission automation writer. A plain settings:update cannot reach this
 // field; both automatic modes require confirmation at the data layer, including
@@ -2942,6 +2958,7 @@ const commandRegistry = {
   setAgentPermissionMode,
   setAllBubblesHidden,
   setKimiQuotaCollectionEnabled,
+  setDeepseekBalanceCollectionEnabled,
   setPermissionAutomationMode,
   setMobilePermissionPreviewEnabled,
   "mobilePreview.refreshPairCode": refreshMobilePairCode,

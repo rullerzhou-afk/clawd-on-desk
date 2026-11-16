@@ -1,5 +1,7 @@
 "use strict";
 
+const { isDrawableBalanceBucket } = require("./quota-balance");
+
 // ── Pet-attached quota "Orbit" ring geometry ──
 //
 // The account-quota indicators live in their OWN transparent window, attached
@@ -35,6 +37,7 @@ const RING_PROVIDERS = [
   { key: "claudeQuota", label: "Claude", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
   { key: "codexQuota", label: "Codex", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
   { key: "kimiQuota", label: "Kimi", outer: ["kimiFiveHour"], inner: ["kimiWeekly"] },
+  { key: "deepseekQuota", label: "DeepSeek", kind: "balance", outer: ["deepseekBalance"], inner: [] },
 ];
 
 // Layout constants in CSS px (scaled by textScale by the caller, exactly like
@@ -112,13 +115,14 @@ function resolveAvoidingY({ initialY, minY, maxY, width, height, x, avoidRects, 
   return scored[0].y;
 }
 
-// A provider draws a coin when its group carries at least one candidate bucket
-// as an object. Mirrors the renderer's draw rule exactly so the window is never
+// A window provider needs a candidate bucket; a balance provider also needs
+// complete money metadata. Mirrors the renderer's draw rule exactly so the window is never
 // sized for a coin the renderer will not draw (or vice versa).
 function providerHasDrawableQuota(source, def) {
   const entry = source && source[def.key];
   const group = entry && entry.group;
   if (!group) return false;
+  if (def.kind === "balance") return def.outer.some((field) => isDrawableBalanceBucket(group[field]));
   return [...def.outer, ...def.inner].some((field) =>
     group[field] && typeof group[field] === "object");
 }

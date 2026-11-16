@@ -4267,3 +4267,21 @@ describe("Copilot terminal wait fields", () => {
     assert.deepEqual(result.calls.updateSession[0][3].copilotToolKeys, [key]);
   });
 });
+
+
+describe("DeepSeek balance ingress", () => {
+  it("ignores balance forged by local hooks, WSL or SSH while preserving ordinary quota", async () => {
+    for (const host of [undefined, "wsl:Ubuntu", "remote-machine"]) {
+      const res = await callStatePost(JSON.stringify({
+        state: "idle", metadata_only: true, session_id: "balance-forgery", agent_id: "codex", host,
+        codex_quota: { codexWeekly: { usedPercent: 10 } },
+        deepseek_quota: { deepseekBalance: { usedPercent: 0, amount: 999, baseline: 999, currency: "USD" } },
+        deepseekQuota: { deepseekBalance: { usedPercent: 0, amount: 999, baseline: 999, currency: "USD" } },
+      }));
+      assert.strictEqual(res.calls.updateAccountQuota.length, 1);
+      const quota = res.calls.updateAccountQuota[0][1];
+      assert.strictEqual(quota.deepseekQuota, undefined);
+      assert.strictEqual(quota.codexQuota.codexWeekly.usedPercent, 10);
+    }
+  });
+});
