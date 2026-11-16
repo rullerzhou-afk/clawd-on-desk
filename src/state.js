@@ -2298,7 +2298,7 @@ function mergeSessionProcessMetadata(existing, incoming = {}, options = {}) {
 // overwrite the first one (matching Trae's constant session title).
 // MiniMax Code carries no session title in its hook payload either, so its
 // prompt-derived titles follow the same first-wins rule, as do Kiro IDE titles.
-const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode", "minimax", "kiro-desktop"]);
+const FIRST_WINS_TITLE_AGENT_IDS = new Set(["traecode", "minimax", "kiro-desktop", "codebuddy"]);
 
 function resolveIncomingSessionTitle(existing, agentId, incomingTitle, incomingFromPrompt = false) {
   const normalized = normalizeTitle(incomingTitle);
@@ -2432,6 +2432,9 @@ function updateSession(sessionId, state, event, opts = {}) {
     codexOriginator = null,
     codexSource = null,
     dshCarrier = null,
+    codebuddyClient = null,
+    codebuddyUrlScheme = null,
+    codebuddyAppBundle = null,
     ghosttyTerminalId = null,
     displayHint = undefined,
     sessionTitle = null,
@@ -2658,6 +2661,9 @@ function updateSession(sessionId, state, event, opts = {}) {
         codexOriginator: srcCodexOriginator,
         codexSource: srcCodexSource,
         codexClientEphemeral: mergeCodexClientEphemeral(existing, opts),
+        codebuddyClient: (existing && typeof existing.codebuddyClient === "string" ? existing.codebuddyClient : null),
+        codebuddyUrlScheme: (existing && typeof existing.codebuddyUrlScheme === "string" ? existing.codebuddyUrlScheme : null),
+        codebuddyAppBundle: (existing && typeof existing.codebuddyAppBundle === "string" ? existing.codebuddyAppBundle : null),
         ghosttyTerminalId: srcGhosttyTerminalId,
         sessionTitle: srcSessionTitle,
         sessionTitleFromPrompt: srcSessionTitleFromPrompt,
@@ -2776,6 +2782,14 @@ function updateSession(sessionId, state, event, opts = {}) {
   // and an app-focus target must never survive on a comparison the last event
   // no longer supports.
   const srcDshCarrier = dshCarrier || null;
+  // Sticky across an IDE CodeBuddy session: only UserPromptSubmit is guaranteed
+  // to carry the client field, and later tool/Stop events must keep the carrier.
+  const srcCodebuddyClient = (typeof codebuddyClient === "string" && codebuddyClient.trim())
+    || (existing && typeof existing.codebuddyClient === "string" ? existing.codebuddyClient : null);
+  const srcCodebuddyUrlScheme = (typeof codebuddyUrlScheme === "string" && codebuddyUrlScheme.trim())
+    || (existing && typeof existing.codebuddyUrlScheme === "string" ? existing.codebuddyUrlScheme : null);
+  const srcCodebuddyAppBundle = (typeof codebuddyAppBundle === "string" && codebuddyAppBundle.trim())
+    || (existing && typeof existing.codebuddyAppBundle === "string" ? existing.codebuddyAppBundle : null);
   const srcGhosttyTerminalId = normalizeGhosttyTerminalId(ghosttyTerminalId) || (existing && existing.ghosttyTerminalId) || null;
   // Sticky: empty input does not clear an existing title. A session that has
   // ever been named keeps that name until the user explicitly renames it.
@@ -3135,7 +3149,7 @@ function updateSession(sessionId, state, event, opts = {}) {
     opencodeAttachUrl === undefined && existing && existing.opencodeAttachSource === attachSource
       ? existing.opencodeAttachUrl : opencodeAttachUrl
   ) : null;
-  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
+  const base = { opencodeAttachUrl: attachUrl, opencodeAttachSource: attachSource, sourcePid: srcPid, wtHwnd: srcWtHwnd, cwd: srcCwd, editor: srcEditor, pidChain: srcPidChain, tmuxSocket: srcTmuxSocket, tmuxClient: srcTmuxClient, orcaPaneKey: srcOrcaPaneKey, herdrPaneId: srcHerdr.herdrPaneId, herdrSocket: srcHerdr.herdrSocket, agentPid: srcAgentPid, agentId: srcAgentId, profileId: (existing && existing.profileId) || profileId || "local", rawSessionId: (existing && existing.rawSessionId) || rawSessionId || sessionId, sessionAutomationIdentity: srcSessionAutomationIdentity, host: srcHost, wslDistro: srcWslDistro, claudeConfigDir: srcClaudeConfigDir, claudeEntrypoint: srcClaudeEntrypoint, headless: srcHeadless, platform: srcPlatform, model: srcModel, provider: srcProvider, codexOriginator: srcCodexOriginator, codexSource: srcCodexSource, codexClientEphemeral: mergeCodexClientEphemeral(existing, opts), codebuddyClient: srcCodebuddyClient, codebuddyUrlScheme: srcCodebuddyUrlScheme, codebuddyAppBundle: srcCodebuddyAppBundle, dshCarrier: srcDshCarrier, ghosttyTerminalId: srcGhosttyTerminalId, sessionTitle: srcSessionTitle, sessionTitleFromPrompt: srcSessionTitleFromPrompt, contextUsage: srcContextUsage, contextUsageOrigin: srcContextUsageOrigin, planProgress: srcPlanProgress, planProgressSource: srcPlanProgressSource, metadataUpdatedAt: srcMetadataUpdatedAt, assistantLastOutput: srcAssistantLastOutput, assistantLastOutputTruncated: srcAssistantLastOutputTruncated, lastToolName: srcToolName, transcriptPath: srcTranscriptPath, recentEvents, pidReachable, lastToolBoundaryAt: srcLastToolBoundaryAt, lastStopAt: srcLastStopAt, awaitingInputSinceStop: resolveAwaitingInputSinceStop(existing, event), muteNotificationSound: state === "notification" && muteNotificationSound === true, claudeBackgroundSubagentHoldAt };
   // Desktop apps can reopen a previous conversation on launch, so a start event
   // (see SESSION_START_EVENTS — "SessionStart", Copilot's raw "sessionStart",
   // Kiro's "agentSpawn") only means "opened" — not "used". A repeated start does

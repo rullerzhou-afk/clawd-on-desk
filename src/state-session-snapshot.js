@@ -545,6 +545,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     ...(session && typeof session.codexClientEphemeral === "boolean"
       ? { codexClientEphemeral: session.codexClientEphemeral } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
+    codebuddyClient: (session && session.codebuddyClient) || null,
+    codebuddyUrlScheme: (session && session.codebuddyUrlScheme) || null,
+    codebuddyAppBundle: (session && session.codebuddyAppBundle) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
       ? session.assistantLastOutput
@@ -797,6 +800,9 @@ function sessionSnapshotSignature(snapshot) {
       planProgress: entry.planProgress || null,
       codexClientEphemeral: entry.codexClientEphemeral,
       dshCarrier: entry.dshCarrier,
+      codebuddyClient: entry.codebuddyClient,
+      codebuddyUrlScheme: entry.codebuddyUrlScheme,
+      codebuddyAppBundle: entry.codebuddyAppBundle,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,
       assistantLastOutputTruncated: !!entry.assistantLastOutputTruncated,

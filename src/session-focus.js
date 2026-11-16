@@ -100,6 +100,24 @@ function getSessionFocusTarget(entry, options = {}) {
     return { canFocus: true, type: "dsh-desktop", url: dshDesktopUrl };
   }
 
+  // CodeBuddy 5.x IDE sessions are hosted by the CodeBuddy app, not by a
+  // terminal tab. Only builds that actually implement the conversation/open
+  // route report codebuddyUrlScheme; older 5.x, 4.x and the release build
+  // before that route ships fall back to app-window activation. Bare CLI
+  // reports client "CLI" and keeps the ordinary terminal focus path.
+  if (entry.agentId === "codebuddy" && entry.codebuddyClient === "CodeBuddyIDE") {
+    const scheme = typeof entry.codebuddyUrlScheme === "string"
+      ? entry.codebuddyUrlScheme.trim() : "";
+    const conversationId = typeof entry.rawSessionId === "string" && entry.rawSessionId.trim()
+      ? entry.rawSessionId.trim()
+      : (typeof entry.id === "string" ? entry.id : "");
+    if (/^[a-z0-9-]{1,64}$/i.test(scheme)
+      && /^[A-Za-z0-9_-]{1,128}$/.test(conversationId)) {
+      return { canFocus: true, type: "codebuddy-conversation", url: scheme + "://codebuddy-ide/conversation/open?id=" + conversationId };
+    }
+    return { canFocus: true, type: "codebuddy-ide", url: null };
+  }
+
   if (entry.sourcePid) {
     return { canFocus: true, type: "terminal", url: null };
   }
