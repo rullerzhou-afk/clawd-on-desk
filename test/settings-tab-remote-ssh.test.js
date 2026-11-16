@@ -348,6 +348,17 @@ function remoteSshTabHarness(profile, deployResult) {
   };
 }
 
+for (const step of ["check-node", "layout", "made-up-step"]) {
+  test(`remote ssh deploy log: renders the label or raw name for ${step}`, () => {
+    const h = remoteSshTabHarness({ id: "p1", label: "Remote", host: "remote" });
+    h.pushProgress({ profileId: "p1", step, status: "start" });
+    const line = h.find(h.render(), (element) => element.className.includes("remote-ssh-progress-line"));
+    const expected = step === "made-up-step" ? step : h.strings[`remoteSshStep_${step}`];
+    assert.equal(line.textContent, `[start] ${expected}`);
+    assert.doesNotMatch(line.textContent, /remoteSshStep_/);
+  });
+}
+
 test("Remote SSH copies a redacted diagnostic report with service checks", async () => {
   const profile = {
     id: "p1",
