@@ -27,8 +27,8 @@ let heartbeatTimer = null;
 
 const mux = multiplex({ chunked: true, halfOpen: true }, (stream, id) => {
   if (id === STREAM_HEARTBEAT) {
-    lastHeartbeatAt = Date.now();
-    stream.resume();
+    stream.on("data", () => { lastHeartbeatAt = Date.now(); });
+    stream.on("error", () => {});
     return;
   }
   if (id === STREAM_SHUTDOWN) {
@@ -71,6 +71,8 @@ mux.on("error", () => shutdown(74));
 server.on("error", () => shutdown(98));
 process.stdin.on("end", () => shutdown(0));
 process.stdin.on("error", () => shutdown(74));
+process.stdout.on("error", () => shutdown(74));
+process.stdout.write("\n__clawd_stdio_begin__:" + challenge + "\n");
 mux.pipe(process.stdout);
 process.stdin.pipe(mux);
 

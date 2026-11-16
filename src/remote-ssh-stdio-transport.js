@@ -50,16 +50,25 @@ function createRemoteSshStdioTransport({
   let ready = false;
   let readyBuffer = "";
   let heartbeatTimer = null;
+  const startupMarker = Buffer.from(`\n__clawd_stdio_begin__:${readyChallenge}\n`);
+  let startupBuffer = Buffer.alloc(0);
+  let skippedStartupBytes = 0;
   const sockets = new Set();
 
   const mux = createMultiplex({ chunked: true, halfOpen: true }, (stream, id) => {
+    if (closed) {
+      stream.on("error", () => {});
+      stream.resume();
+      return;
+    }
     if (id === STDIO_READY_STREAM) {
       stream.setEncoding("utf8");
       stream.on("data", (chunk) => {
         readyBuffer += chunk;
-        if (readyBuffer.length > 256 || ready) return;
+        if (readyBuffer.length > 256 || ready || closed) return;
         if (readyBuffer === readyChallenge) {
           ready = true;
+          startHeartbeat();
           if (typeof onReady === "function") onReady();
         }
       });
@@ -87,7 +96,26 @@ function createRemoteSshStdioTransport({
   mux.on("error", fail);
   child.stdin.on("error", fail);
   mux.pipe(child.stdin);
-  child.stdout.pipe(mux);
+  // Shell banners precede the bridge; only bytes after its challenge marker are frames.
+  child.stdout.on("data", scanStartup);
+
+  function scanStartup(chunk) {
+    if (closed) return;
+    const buffered = Buffer.concat([startupBuffer, chunk]);
+    const markerIndex = buffered.indexOf(startupMarker);
+    if (markerIndex !== -1) {
+      child.stdout.removeListener("data", scanStartup);
+      startupBuffer = Buffer.alloc(0);
+      skippedStartupBytes += markerIndex;
+      const remainder = buffered.subarray(markerIndex + startupMarker.length);
+      if (remainder.length) mux.write(remainder);
+      if (!closed) child.stdout.pipe(mux);
+      return;
+    }
+    const retainedBytes = Math.min(buffered.length, startupMarker.length - 1);
+    skippedStartupBytes += buffered.length - retainedBytes;
+    startupBuffer = Buffer.from(buffered.subarray(buffered.length - retainedBytes));
+  }
 
   function sendControl(name) {
     if (!mux.destroyed) {
@@ -98,8 +126,18 @@ function createRemoteSshStdioTransport({
     }
   }
 
-  heartbeatTimer = setIntervalFn(() => sendControl(STDIO_HEARTBEAT_STREAM), heartbeatIntervalMs);
-  if (heartbeatTimer && typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
+  function startHeartbeat() {
+    // One channel avoids half-open channel leaks; one pending write bounds stalled output.
+    const heartbeat = mux.createStream(STDIO_HEARTBEAT_STREAM);
+    heartbeat.on("error", () => {});
+    let writePending = false;
+    heartbeatTimer = setIntervalFn(() => {
+      if (closed || writePending) return;
+      writePending = true;
+      heartbeat.write(Buffer.from([0]), () => { writePending = false; });
+    }, heartbeatIntervalMs);
+    if (heartbeatTimer && typeof heartbeatTimer.unref === "function") heartbeatTimer.unref();
+  }
 
   function close({ cooperative = true } = {}) {
     if (closed) return;
@@ -108,6 +146,8 @@ function createRemoteSshStdioTransport({
       clearIntervalFn(heartbeatTimer);
       heartbeatTimer = null;
     }
+    child.stdout.removeListener("data", scanStartup);
+    startupBuffer = Buffer.alloc(0);
     if (cooperative) sendControl(STDIO_SHUTDOWN_STREAM);
     for (const socket of sockets) {
       try { socket.destroy(); } catch {}
@@ -125,6 +165,8 @@ function createRemoteSshStdioTransport({
       localPort,
       streamCount: sockets.size,
       closed,
+      skippedStartupBytes,
+      startupBufferedBytes: startupBuffer.length,
     }),
   };
 }
