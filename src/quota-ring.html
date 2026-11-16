@@ -136,17 +136,24 @@
      carry identity and window while color is only the backup. */
   --id-kimi-outer: #3b93f7;
   --id-kimi-inner: #e27aeb;
-  /* DeepSeek's brand blue #4D6BFE (229°) nearly overlaps Antigravity's weekly
-     #6366f1: normal/deutan/protan ΔE2000 = 3.6 / 1.7 / 1.8. The older #34d399
-     has only ΔE ≈ 9.8 to alert red under deuteranopia, the same reason this
-     palette already retired that green.
+  /* DeepSeek uses #7aa0e8 (219°), a lighter, less saturated periwinkle in its
+     blue family. Brand blue #4D6BFE was too intense on a real desktop and was
+     rejected. Hot pink #e619a8 read as alert red and was also rejected.
 
-     Hot pink #e619a8 (318°) clears alert red by 42°. Its minimum ΔE to the two
-     alert colors is 25 / 34 / 38 (normal/deutan/protan), with contrast 4.0 / 3.0
-     on dark/light wallpaper. The cost is proximity to Kimi weekly #e27aeb:
-     about 23°, ΔE 16 / 13 / 11. The single vs dual ring shape and center glyph
-     carry provider identity; color remains a secondary cue. */
-  --id-deepseek-outer: #e619a8;
+     The softer blue stays far from both alerts: normal/deutan/protan CIEDE2000
+     is 54 / 58 / 55 to warn and 40 / 45 / 36 to hot, so the minimum is
+     40 / 45 / 36. The cost is proximity to Claude weekly #6489f7 (5.6° apart,
+     ΔE 6.9 / 7.9 / 7.1) and Kimi 5h #3b93f7 (7.4°, ΔE 7.5 / 7.5 / 5.5).
+     It separates from Antigravity weekly #6366f1 better than the brand blue
+     did: ΔE 17.8 / 14.8 / 14.5. DeepSeek's single ring, whale glyph and ¥
+     amount distinguish it from Claude/Kimi's dual rings and percentages;
+     color is only a secondary identity cue.
+
+     Contrast is 6.3 on dark wallpaper but 1.9 on light, below the brand blue's
+     3.1 on light: a deliberate cost of making the coin less harsh. The #34d399
+     used in #1278 has only ΔE ≈ 9.8 to alert red under deuteranopia, the same
+     reason this palette already retired that green. */
+  --id-deepseek-outer: #7aa0e8;
   --ink: #ffffff;
   --ink-soft: rgba(255, 255, 255, 0.74);
   --ink-faint: rgba(255, 255, 255, 0.6);

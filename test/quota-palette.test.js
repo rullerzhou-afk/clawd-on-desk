@@ -5,8 +5,8 @@
 // provider palette and the severity colors live in both. This suite pins the
 // mirror: same tokens, same values, same thresholds — and guards the two
 // palette invariants the comments in quota-ring.html promise:
-//   1. no two identity hues collide (the original Kimi draft reused Claude's
-//      inner blue verbatim and sat 15° off Codex's violet);
+//   1. identity hues stay distinct, except for DeepSeek's documented soft-blue
+//      neighbors (the original Kimi draft accidentally reused Claude's blue);
 //   2. identity hues stay clear of the warm alert band that sev-warn/sev-hot
 //      own, so a warm arc/bar still means exactly one thing.
 
@@ -22,6 +22,13 @@ const dashboardRenderer = fs.readFileSync(path.join(__dirname, "..", "src", "das
 
 const PROVIDERS = ["claude", "codex", "antigravity", "kimi"];
 const SLOTS = ["outer", "inner"];
+// DeepSeek uses a softer blue to avoid a harsh coin. It deliberately sits near
+// Claude weekly and Kimi 5h; its single ring, whale and money readout distinguish
+// it from their dual rings and percentage readouts. Other pairs keep the floor.
+const CLOSE_HUE_EXCEPTIONS = new Set([
+  "claude-inner|deepseek-outer",
+  "deepseek-outer|kimi-outer",
+]);
 
 function tokens(source, prefix) {
   const found = {};
@@ -86,7 +93,7 @@ describe("quota palette mirror across Orbit and Dashboard", () => {
 
   it("mirrors the DeepSeek color only for its single balance ring", () => {
     for (const source of [quotaRingHtml, dashboardHtml]) {
-      assert.strictEqual(tokens(source, "--id-")["deepseek-outer"], "#e619a8");
+      assert.strictEqual(tokens(source, "--id-")["deepseek-outer"], "#7aa0e8");
       assert.strictEqual(tokens(source, "--id-")["deepseek-inner"], undefined);
     }
     assert.match(quotaRingHtml, /\.pv-deepseekQuota\.rg-outer\s*\{[^}]*var\(--id-deepseek-outer\)/);
@@ -95,7 +102,7 @@ describe("quota palette mirror across Orbit and Dashboard", () => {
 
   it("keeps every identity hue unique and each provider's two windows apart", () => {
     const ring = tokens(quotaRingHtml, "--id-");
-    const names = PROVIDERS.flatMap((p) => SLOTS.map((s) => `${p}-${s}`));
+    const names = [...PROVIDERS.flatMap((p) => SLOTS.map((s) => `${p}-${s}`)), "deepseek-outer"];
     const values = names.map((name) => ring[name]);
     assert.strictEqual(new Set(values).size, values.length, "two rings share one exact color");
     for (const provider of PROVIDERS) {
@@ -112,6 +119,8 @@ describe("quota palette mirror across Orbit and Dashboard", () => {
     // duplicates like the original Kimi/Claude collision.
     for (let i = 0; i < names.length; i += 1) {
       for (let j = i + 1; j < names.length; j += 1) {
+        const pair = [names[i], names[j]].sort().join("|");
+        if (CLOSE_HUE_EXCEPTIONS.has(pair)) continue;
         const gap = hueDistance(hexToHue(ring[names[i]]), hexToHue(ring[names[j]]));
         assert.ok(gap >= 10, `${names[i]} and ${names[j]} are only ${gap.toFixed(1)}° apart`);
       }
