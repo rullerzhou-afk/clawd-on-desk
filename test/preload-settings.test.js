@@ -177,3 +177,33 @@ test("settings preload forwards quota provider changes and uses the existing com
   await api.command("setQuotaRingProviderShown", payload);
   assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [["settings:command", { action: "setQuotaRingProviderShown", payload }]]);
 });
+
+
+test("DeepSeek key actions use dedicated IPC without reading credentials back", async () => {
+  const { exposed, invokes } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  await api.connectDeepseekBalance("sk-private");
+  await api.getDeepseekBalanceStatus();
+  await api.reconnectDeepseekBalance();
+  await api.disconnectDeepseekBalance();
+  await api.forgetDeepseekBalanceCredential();
+  assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [
+    ["settings:deepseek-balance-connect", { apiKey: "sk-private" }],
+    ["settings:deepseek-balance-status"], ["settings:deepseek-balance-reconnect"],
+    ["settings:deepseek-balance-disconnect"], ["settings:deepseek-balance-forget"],
+  ]);
+});
+
+
+test("settings preload forwards sanitized DeepSeek status until unsubscribed", () => {
+  const { exposed, ipcHandlers } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  const received = [];
+  const unsubscribe = api.onDeepseekBalanceStatusChanged((status) => received.push(status));
+  const status = { status: "ok", state: "credential-rejected", configured: true };
+  ipcHandlers.get("settings:deepseek-balance-status-changed")({}, status);
+  assert.deepEqual(received, [status]);
+  unsubscribe();
+  ipcHandlers.get("settings:deepseek-balance-status-changed")({}, { ...status, state: "fresh" });
+  assert.deepEqual(received, [status]);
+});

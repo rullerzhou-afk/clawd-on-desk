@@ -100,6 +100,9 @@ const { createRecapRuntime } = require("./recap-runtime");
 const { createKimiQuotaClient } = require("./kimi-quota-client");
 const { createKimiQuotaCredentialStore } = require("./kimi-quota-credential-store");
 const { createKimiQuotaRuntime } = require("./kimi-quota-runtime");
+const { createDeepseekBalanceClient } = require("./deepseek-balance-client");
+const { createDeepseekBalanceCredentialStore } = require("./deepseek-balance-credential-store");
+const { createDeepseekBalanceRuntime } = require("./deepseek-balance-runtime");
 const {
   getPetTintIdForTheme,
   resolvePetTintPayload,
@@ -1440,6 +1443,7 @@ let quotaRingDisplayMode = _settingsController.get("quotaRingDisplayMode");
 let quotaRingShownProviders = _settingsController.get("quotaRingShownProviders");
 let quotaRingHiddenProviders = _settingsController.get("quotaRingHiddenProviders");
 let claudeQuotaCollectionEnabled = _settingsController.get("claudeQuotaCollectionEnabled");
+let deepseekBalanceCollectionEnabled = _settingsController.get("deepseekBalanceCollectionEnabled");
 let kimiQuotaCollectionEnabled = _settingsController.get("kimiQuotaCollectionEnabled");
 let quotaMergeSources = _settingsController.get("quotaMergeSources");
 let sessionHudCleanupDetached = _settingsController.get("sessionHudCleanupDetached");
@@ -1797,6 +1801,25 @@ function broadcastQuotaRingProviders(snapshot) {
   broadcastSettingsWindow("settings:quota-ring-providers-changed", providers);
   lastQuotaRingProvidersWindow = settingsWin;
   lastQuotaRingProvidersSignature = signature;
+}
+
+let lastDeepseekBalanceStatusWindow = null;
+let lastDeepseekBalanceStatusSignature = null;
+function broadcastDeepseekBalanceStatus() {
+  const settingsWin = getSettingsWindow();
+  if (!settingsWin || settingsWin.isDestroyed()
+      || !settingsWin.webContents || settingsWin.webContents.isDestroyed()) {
+    lastDeepseekBalanceStatusWindow = null;
+    lastDeepseekBalanceStatusSignature = null;
+    return;
+  }
+  const status = _deepseekBalanceRuntime.getStatus();
+  const signature = JSON.stringify(status);
+  if (settingsWin === lastDeepseekBalanceStatusWindow
+      && signature === lastDeepseekBalanceStatusSignature) return;
+  broadcastSettingsWindow("settings:deepseek-balance-status-changed", status);
+  lastDeepseekBalanceStatusWindow = settingsWin;
+  lastDeepseekBalanceStatusSignature = signature;
 }
 
 function getThemeSoundPreloadUrls() {
@@ -2530,6 +2553,7 @@ const _stateCtx = {
   accountQuotaPersistPath: require("./state-account-quota").DEFAULT_PERSIST_PATH,
   recapSink: recapRuntime,
   get claudeQuotaCollectionEnabled() { return claudeQuotaCollectionEnabled; },
+  get deepseekBalanceCollectionEnabled() { return deepseekBalanceCollectionEnabled; },
   get kimiQuotaCollectionEnabled() { return kimiQuotaCollectionEnabled; },
   get quotaMergeSources() { return quotaMergeSources; },
   get doNotDisturb() { return doNotDisturb; },
@@ -2698,6 +2722,22 @@ displayedVisualProjection = createDisplayedVisualProjection({
     petWindowRuntime.reloadWindowWebContents(win);
   },
 });
+const _deepseekBalanceRuntime = createDeepseekBalanceRuntime({
+  credentialStore: createDeepseekBalanceCredentialStore({ safeStorage }),
+  client: createDeepseekBalanceClient(),
+  getSettingsSnapshot: () => _settingsController.getSnapshot(),
+  setCollectionEnabled: (enabled) => _settingsController.applyCommand(
+    "setDeepseekBalanceCollectionEnabled", { enabled }
+  ),
+  commitLocalDeepseekQuota: (quota) => _state.commitLocalDeepseekQuota(quota),
+  clearLocalDeepseekQuota: () => _state.clearLocalDeepseekQuota(),
+  onStatusChanged: () => broadcastDeepseekBalanceStatus(),
+});
+_settingsController.subscribeKey("deepseekBalanceCollectionEnabled", () => {
+  _deepseekBalanceRuntime.onSettingsChanged();
+});
+_settingsController.subscribeKey("agents", () => _deepseekBalanceRuntime.onSettingsChanged());
+app.on("before-quit", () => _deepseekBalanceRuntime.dispose());
 const _kimiQuotaCredentialStore = createKimiQuotaCredentialStore({ safeStorage });
 const _kimiQuotaRuntime = createKimiQuotaRuntime({
   credentialStore: _kimiQuotaCredentialStore,
@@ -4981,6 +5021,7 @@ const SETTINGS_MIRROR_SETTERS = {
   quotaRingShownProviders: (v) => { quotaRingShownProviders = Array.isArray(v) ? v : null; },
   quotaRingHiddenProviders: (v) => { quotaRingHiddenProviders = Array.isArray(v) ? v : []; },
   claudeQuotaCollectionEnabled: (v) => { claudeQuotaCollectionEnabled = v; },
+  deepseekBalanceCollectionEnabled: (v) => { deepseekBalanceCollectionEnabled = v; },
   kimiQuotaCollectionEnabled: (v) => { kimiQuotaCollectionEnabled = v; },
   quotaMergeSources: (v) => { quotaMergeSources = v; },
   sessionHudCleanupDetached: (v) => { sessionHudCleanupDetached = v; },
@@ -5423,6 +5464,7 @@ const settingsIpcRuntime = registerSettingsIpc({
   getHookServerPort: () => getHookServerPort(),
   getRecentHookEvents: (options) => _server.getRecentHookEvents(options),
   kimiQuotaRuntime: _kimiQuotaRuntime,
+  deepseekBalanceRuntime: _deepseekBalanceRuntime,
   checkForUpdates,
   getUpdateCheckSnapshot,
   clearUpdateError,
@@ -6355,6 +6397,11 @@ if (!gotTheLock) {
     void _kimiQuotaRuntime.initialize().catch((err) => {
       console.warn("Clawd: Kimi quota startup reconciliation failed:", err && err.message);
     });
+    void _deepseekBalanceRuntime.initialize().catch(() => {
+      console.warn("Clawd: DeepSeek balance startup reconciliation failed");
+    });
+    powerMonitor.on("suspend", () => _deepseekBalanceRuntime.suspend());
+    powerMonitor.on("resume", () => _deepseekBalanceRuntime.resume());
     notifyPrefsAuthorityFailure();
     if (feishuApprovalMigrationNudge) {
       void feishuApprovalMigrationNudge.sync({ allowNotify: true });

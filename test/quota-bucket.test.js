@@ -55,3 +55,19 @@ describe("normalizeQuotaGroup", () => {
     assert.strictEqual(normalizeQuotaGroup(null, ["a"]), null);
   });
 });
+
+
+describe("balance bucket metadata", () => {
+  it("retains only finite nonnegative money and supported currency", () => {
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 20, amount: 45.201, baseline: 60.009,
+      currency: "CNY" }), { usedPercent: 20, amount: 45.2, baseline: 60.01, currency: "CNY" });
+    for (const invalid of [-1, NaN, Infinity, null, "", "12", undefined]) {
+      assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 20, amount: invalid, baseline: invalid,
+        currency: "EUR" }), { usedPercent: 20 });
+    }
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 0, amount: 0, baseline: 0, currency: "USD" }),
+      { usedPercent: 0, amount: 0, baseline: 0, currency: "USD" });
+    assert.deepStrictEqual(normalizeQuotaBucket({ usedPercent: 12, windowMinutes: 300, resetAt: 5000 }),
+      { usedPercent: 12, windowMinutes: 300, resetAt: 5000 });
+  });
+});

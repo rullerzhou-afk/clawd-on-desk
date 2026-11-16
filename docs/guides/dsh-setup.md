@@ -560,3 +560,23 @@ warnings, and rely on DSH's native web flow whenever Clawd yields no decision.
   receives no Clawd decision and continues its native flow.
 - Hiding the pet is not DND, so a new approval may still show a bubble. DND
   returns control to DSH without deciding.
+
+
+## DeepSeek 预付余额
+
+在「设置 → AI 编程工具 → DeepSeek Harness → 额度 → 预付余额」粘贴自己的 DeepSeek API key 并连接。
+此功能默认关闭；连接后，只有 DeepSeek Harness 已启用且本机保存了 key 时，才会立即查询并每 5 分钟查询一次。
+余额查询只连接 `api.deepseek.com` 的官方 `/user/balance` 接口，不读取 DSH 或其他软件的凭据。
+key 由系统凭据库加密后保存在本机 `~/.clawd/deepseek-balance-credential.json`，仅主进程解密使用；
+Linux 系统凭据库只有 `basic_text` 时拒绝保存。油表基准单独保存在 `~/.clawd/deepseek-balance-runtime.json`，不含 key。
+API key 也具有调用模型并消费余额的权限，请妥善保管。
+
+余额硬币永远显示剩余：首次余额视为满格；余额比上次增加至少 0.01 时，视为充值并以新余额作为满格。
+断开会停止查询并清掉硬币，但保留本机 key；断开后可再忘记 key。这两个动作都不会撤销 DeepSeek 控制台中的 key。
+401 拒绝状态会与当前 credentialId 一起保存在本机，应用重启或系统唤醒后仍暂停查询。
+更换 key 或重新连接才会解除；忘记 key 会一并移除拒绝记录。其他临时错误保留上次数值并在下个周期自动重试，
+12 分钟没有更新后硬币变灰。
+系统睡眠时暂停，唤醒后满足开关条件就立即查询。首版没有低余额提醒。
+
+桌宠旁最多显示 3 枚，若已经有 3 枚，要到「设置 → 会话 → 在桌宠旁显示」里把 DeepSeek 打开
+（需要先关闭其中一个）；Dashboard 始终显示全部提供方。

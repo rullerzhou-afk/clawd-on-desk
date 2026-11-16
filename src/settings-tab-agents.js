@@ -23,6 +23,7 @@
   const permissionModePending = new Set();
   let dshNoticesRequestSeq = 0;
   const dshNoticeContainers = new Set();
+  const deepseekBalanceCards = new Set();
 
   function t(key) {
     return helpers.t(key);
@@ -1631,6 +1632,9 @@
     if (agent.id === "kimi-cli") {
       quota.push(...buildKimiQuotaRows());
     }
+    if (agent.id === "deepseek-harness") {
+      quota.push(...buildDeepseekBalanceRows());
+    }
 
     const groups = [
       buildAgentDetailGroup("agentGroupApproval", approvals),
@@ -1793,6 +1797,235 @@
       }
     });
     return button;
+  }
+
+  function applyDeepseekBalanceStatus(status) {
+    if (!status || status.status !== "ok") return;
+    for (const applyStatus of deepseekBalanceCards) applyStatus(status);
+  }
+
+  function deepseekBalanceStatusText(status) {
+    const keys = {
+      unconfigured: "Unconfigured",
+      "configured-disabled": "ConfiguredDisabled",
+      "agent-disabled": "AgentDisabled",
+      "credential-rejected": "Rejected",
+      "secure-storage-unavailable": "StorageUnavailable",
+      "credential-unreadable": "StorageUnavailable",
+      "rate-limited": "RateLimited",
+      "payment-required": "PaymentRequired",
+      timeout: "Timeout",
+      "network-error": "NetworkError",
+      "server-error": "ServerError",
+      "malformed-response": "MalformedResponse",
+      "response-too-large": "MalformedResponse",
+      "http-error": "HttpError",
+      refreshing: "Refreshing",
+      fresh: "Fresh",
+      ready: "Ready",
+      paused: "Paused",
+    };
+    const key = keys[status?.state];
+    return key ? t(`deepseekBalanceStatus${key}`)
+      : t("deepseekBalanceStatusError").replace("{reason}", status?.reason || "runtime-unavailable");
+  }
+
+  function buildDeepseekBalanceRows() {
+    const parts = helpers.buildSettingRow({
+      labelKey: "deepseekBalanceTitle",
+      descriptionKey: "deepseekBalanceDesc",
+      className: "row-sub deepseek-balance-row",
+      controlClassName: "kimi-quota-row-control",
+    });
+    helpers.attachDescriptionDisclosure(parts.element);
+    const action = helpers.buildButton({
+      labelKey: "deepseekBalanceManage",
+      size: "compact",
+      className: "deepseek-balance-row-action",
+    });
+    parts.controlElement.appendChild(action);
+    const panel = document.createElement("div");
+    panel.className = "kimi-quota-panel";
+    panel.hidden = true;
+    // Both key workflows use the same row/card styles. The independent owner
+    // keeps DeepSeek's periodic collection separate from Kimi's manual policy.
+    const card = document.createElement("div");
+    card.className = "row row-sub kimi-quota-card deepseek-balance-card";
+    panel.appendChild(card);
+    const statusLine = document.createElement("span");
+    statusLine.className = "row-desc deepseek-balance-status";
+    card.appendChild(statusLine);
+    const note = document.createElement("span");
+    note.className = "row-desc";
+    note.textContent = t("deepseekBalanceSecurity");
+    card.appendChild(note);
+    const connectRow = document.createElement("div");
+    connectRow.className = "kimi-quota-connect-row";
+    const input = helpers.buildTextInput({
+      type: "password",
+      autocomplete: "new-password",
+      className: "kimi-quota-key-input",
+      placeholder: t("deepseekBalanceKeyPlaceholder"),
+      ariaLabel: t("deepseekBalanceKeyPlaceholder"),
+      spellcheck: false,
+      stopPropagation: true,
+      onEnter: () => submitKey(),
+    });
+    const connect = helpers.buildButton({
+      labelKey: "deepseekBalanceConnect",
+      tone: "accent",
+      className: "deepseek-balance-connect",
+    });
+    connectRow.append(input, connect);
+    card.appendChild(connectRow);
+    const controls = document.createElement("div");
+    controls.className = "kimi-quota-primary-row";
+    const reconnect = helpers.buildButton({
+      labelKey: "deepseekBalanceReconnect",
+      className: "deepseek-balance-reconnect",
+    });
+    const disconnect = helpers.buildButton({
+      labelKey: "deepseekBalanceDisconnect",
+      className: "deepseek-balance-disconnect",
+    });
+    const forget = helpers.buildButton({
+      labelKey: "deepseekBalanceForget",
+      tone: "danger",
+      className: "deepseek-balance-forget",
+    });
+    controls.append(reconnect, disconnect, forget);
+    card.appendChild(controls);
+    const foot = document.createElement("span");
+    foot.className = "row-desc";
+    foot.textContent = t("deepseekBalanceDisconnectDesc");
+    card.appendChild(foot);
+    const link = helpers.buildButton({
+      labelKey: "deepseekBalanceConsole",
+      tone: "quiet",
+      size: "compact",
+      className: "deepseek-balance-console",
+    });
+    card.appendChild(link);
+    let currentStatus = null;
+    let busy = false;
+    let feedback = null;
+    let disposed = false;
+    let statusRevision = 0;
+    deepseekBalanceCards.add(applyStatus);
+    helpers.registerMountedDisposable({
+      dispose() {
+        disposed = true;
+        statusRevision++;
+        deepseekBalanceCards.delete(applyStatus);
+        input.value = "";
+      },
+    });
+
+    function applyStatus(status) {
+      if (disposed) return;
+      statusRevision++;
+      currentStatus = status;
+      feedback = null;
+      sync();
+    }
+
+    function sync() {
+      const configured = currentStatus?.configured === true;
+      const enabled = currentStatus?.collectionEnabled === true;
+      statusLine.textContent = feedback || (currentStatus
+        ? deepseekBalanceStatusText(currentStatus) : t("deepseekBalanceStatusLoading"));
+      helpers.setButtonState(connect, {
+        disabled: busy || !currentStatus,
+        labelKey: configured ? "deepseekBalanceReplace" : "deepseekBalanceConnect",
+        pending: busy,
+      });
+      helpers.setTextInputState(input, { pending: busy });
+      helpers.setButtonState(reconnect, { disabled: busy || !configured || !currentStatus?.decryptable });
+      reconnect.hidden = !configured;
+      helpers.setButtonState(disconnect, { disabled: busy || !enabled });
+      disconnect.hidden = !configured;
+      helpers.setButtonState(forget, { disabled: busy || !configured || enabled });
+      forget.hidden = !configured;
+    }
+    async function reloadStatus() {
+      const revision = ++statusRevision;
+      let status;
+      try {
+        status = await window.settingsAPI.getDeepseekBalanceStatus();
+      } catch {
+        status = {
+          state: "error",
+          reason: "runtime-unavailable",
+        };
+      }
+      // A background push is newer than a status read started before it.
+      // Removed cards must not update the replacement card through old work.
+      if (disposed || revision !== statusRevision) return;
+      currentStatus = status;
+      sync();
+    }
+    async function runAction(invoke) {
+      if (busy) return;
+      busy = true;
+      feedback = null;
+      sync();
+      let result;
+      try {
+        result = await invoke();
+      } catch {
+        result = {
+          status: "error",
+          reason: "runtime-unavailable",
+        };
+      }
+      if (disposed) return;
+      busy = false;
+      if (result?.status !== "ok") {
+        feedback = deepseekBalanceStatusText({
+          state: result?.reason,
+          reason: result?.reason || "runtime-unavailable",
+        });
+      }
+      await reloadStatus();
+    }
+    function submitKey() {
+      const apiKey = input.value;
+      input.value = "";
+      if (!apiKey) {
+        helpers.setTextInputState(input, { invalid: true });
+        return;
+      }
+      void runAction(() => window.settingsAPI.connectDeepseekBalance(apiKey));
+    }
+    connect.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitKey();
+    });
+    reconnect.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void runAction(() => window.settingsAPI.reconnectDeepseekBalance());
+    });
+    disconnect.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void runAction(() => window.settingsAPI.disconnectDeepseekBalance());
+    });
+    forget.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (typeof window.confirm === "function" && !window.confirm(t("deepseekBalanceForgetConfirm"))) return;
+      void runAction(() => window.settingsAPI.forgetDeepseekBalanceCredential());
+    });
+    link.addEventListener("click", (event) => {
+      event.stopPropagation();
+      window.settingsAPI.openExternal("https://platform.deepseek.com/api_keys");
+    });
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) void reloadStatus();
+    });
+    sync();
+    void reloadStatus();
+    return [parts.element, panel];
   }
 
   function kimiQuotaStatusText(status) {
@@ -2825,6 +3058,7 @@
       render,
       patchInPlace,
       applyAgentActivity,
+      applyDeepseekBalanceStatus,
     };
   }
 

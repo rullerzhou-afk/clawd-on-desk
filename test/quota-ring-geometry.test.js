@@ -335,6 +335,7 @@ describe("quota ring — geometry/renderer mirror", () => {
       antigravityQuota: { group: { geminiFiveHour: bucket(1) }, updatedAt: 1 },
       claudeQuota: { group: { claudeFiveHour: bucket(1) }, updatedAt: 1 },
       codexQuota: { group: { codexFiveHour: bucket(1) }, updatedAt: 1 },
+      deepseekQuota: { group: { deepseekBalance: { ...bucket(1), amount: 12, baseline: 24, currency: "USD" } }, updatedAt: 1 },
       kimiQuota: { group: { kimiFiveHour: bucket(1) }, updatedAt: 1 },
     }],
   };
@@ -342,7 +343,7 @@ describe("quota ring — geometry/renderer mirror", () => {
   it("declares the same provider keys, in the same order, on both sides", () => {
     const rendererKeys = [...rendererSource.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1]);
     const geometryKeys = ringGeom.listQuotaRingProviders(everyProvider, []).map((p) => p.key);
-    assert.strictEqual(geometryKeys.length, 4, "the all-providers fixture must exercise the table");
+    assert.strictEqual(geometryKeys.length, 5, "the all-providers fixture must exercise the table");
     assert.deepStrictEqual(
       rendererKeys, geometryKeys,
       "provider order decides which coins survive the three-coin cap"

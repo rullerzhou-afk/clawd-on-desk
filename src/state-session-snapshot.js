@@ -694,6 +694,7 @@ function buildSessionSnapshot(sessions, options = {}) {
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
         kimiQuota: iconFor("kimi-cli"),
+        deepseekQuota: iconFor("deepseek-harness"),
       };
     })(),
     sessionAutomationOrphans: automationRecords
@@ -754,6 +755,9 @@ function sessionSnapshotSignature(snapshot) {
         : null,
       codexSparkQuota: entry.codexSparkQuota
         ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
+        : null,
+      deepseekQuota: entry.deepseekQuota
+        ? { group: entry.deepseekQuota.group, lastSeenAt: entry.deepseekQuota.lastSeenAt }
         : null,
       kimiQuota: entry.kimiQuota
         ? { group: entry.kimiQuota.group, lastSeenAt: entry.kimiQuota.lastSeenAt }

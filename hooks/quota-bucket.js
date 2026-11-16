@@ -35,6 +35,12 @@ function normalizeQuotaBucket(value) {
   // cached values must not let an older observation overwrite a newer one.
   const capturedAt = Number(value.capturedAt);
   if (Number.isFinite(capturedAt)) out.capturedAt = Math.round(capturedAt);
+  for (const field of ["amount", "baseline"]) {
+    if (typeof value[field] === "number" && Number.isFinite(value[field]) && value[field] >= 0) {
+      out[field] = Number(value[field].toFixed(2));
+    }
+  }
+  if (value.currency === "CNY" || value.currency === "USD") out.currency = value.currency;
   return out;
 }
 

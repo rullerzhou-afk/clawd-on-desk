@@ -243,6 +243,20 @@ describe("Kimi quota collection opt-in", () => {
   });
 });
 
+describe("DeepSeek balance collection opt-in", () => {
+  it("persists only through its command path", async () => {
+    const prefsPath = makeTempPath();
+    const ctrl = createSettingsController({ prefsPath });
+    assert.strictEqual(ctrl.get("deepseekBalanceCollectionEnabled"), false);
+    assert.strictEqual((await ctrl.applyUpdate("deepseekBalanceCollectionEnabled", true)).status, "error");
+    const enabled = await ctrl.applyCommand("setDeepseekBalanceCollectionEnabled", { enabled: true });
+    assert.strictEqual(enabled.status, "ok");
+    assert.strictEqual(ctrl.get("deepseekBalanceCollectionEnabled"), true);
+    const relaunched = createSettingsController({ prefsPath });
+    assert.strictEqual(relaunched.get("deepseekBalanceCollectionEnabled"), true);
+  });
+});
+
 describe("permission automation safe startup persistence", () => {
   it("keeps off across a relaunch", async () => {
     const p = makeTempPath();

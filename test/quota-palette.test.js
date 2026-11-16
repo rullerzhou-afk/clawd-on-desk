@@ -84,6 +84,15 @@ describe("quota palette mirror across Orbit and Dashboard", () => {
     }
   });
 
+  it("mirrors the DeepSeek color only for its single balance ring", () => {
+    for (const source of [quotaRingHtml, dashboardHtml]) {
+      assert.strictEqual(tokens(source, "--id-")["deepseek-outer"], "#e619a8");
+      assert.strictEqual(tokens(source, "--id-")["deepseek-inner"], undefined);
+    }
+    assert.match(quotaRingHtml, /\.pv-deepseekQuota\.rg-outer\s*\{[^}]*var\(--id-deepseek-outer\)/);
+    assert.match(dashboardHtml, /\.pv-deepseekQuota\.rg-outer\s*\{[^}]*var\(--id-deepseek-outer\)/);
+  });
+
   it("keeps every identity hue unique and each provider's two windows apart", () => {
     const ring = tokens(quotaRingHtml, "--id-");
     const names = PROVIDERS.flatMap((p) => SLOTS.map((s) => `${p}-${s}`));

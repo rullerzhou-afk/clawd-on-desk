@@ -16803,6 +16803,178 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("full re-render"));
   });
 
+  it("renders DeepSeek balance connection, reconnect and two-step local key removal", async () => {
+    let configured = false;
+    let enabled = false;
+    let agentEnabled = true;
+    let connectionState = "unconfigured";
+    const calls = [];
+    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+    const harness = loadAgentsTabForTest({
+      snapshot: { deepseekBalanceCollectionEnabled: false,
+        agents: { "deepseek-harness": { integrationInstalled: true, enabled: true } },
+        customApplications: [], customToolDiscoveryPaths: [] },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: {
+        getDeepseekBalanceStatus: async () => ({ status: "ok", configured, decryptable: configured,
+          collectionEnabled: enabled, agentEnabled, state: connectionState }),
+        connectDeepseekBalance: async (key) => {
+          calls.push(["connect", key]); configured = true; enabled = true; connectionState = "fresh";
+          return { status: "ok" };
+        },
+        reconnectDeepseekBalance: async () => { calls.push(["reconnect"]); enabled = true; return { status: "ok" }; },
+        disconnectDeepseekBalance: async () => {
+          calls.push(["disconnect"]); enabled = false; connectionState = "configured-disabled";
+          return { status: "ok" };
+        },
+        forgetDeepseekBalanceCredential: async () => {
+          calls.push(["forget"]); configured = false; connectionState = "unconfigured";
+          return { status: "ok" };
+        },
+        openExternal: async (url) => calls.push(["external", url]),
+        command: async (...args) => { calls.push(["generic", ...args]); return { status: "ok" }; },
+      },
+    });
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true }); await flush();
+    const card = harness.content.querySelector(".deepseek-balance-card");
+    assert.ok(card);
+    harness.content.querySelector(".deepseek-balance-row-action").dispatchEvent({ type: "click" });
+    const input = card.querySelector("input");
+    assert.strictEqual(input.type, "password");
+    input.value = "sk-renderer-deepseek";
+    card.querySelector(".deepseek-balance-connect").dispatchEvent({ type: "click" });
+    assert.strictEqual(input.value, ""); await flush();
+    assert.deepStrictEqual(calls[0], ["connect", "sk-renderer-deepseek"]);
+    assert.strictEqual(card.querySelector(".deepseek-balance-forget").disabled, true);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusFresh");
+    card.querySelector(".deepseek-balance-console").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[1] === "https://platform.deepseek.com/api_keys"));
+    card.querySelector(".deepseek-balance-disconnect").dispatchEvent({ type: "click" }); await flush();
+    assert.strictEqual(card.querySelector(".deepseek-balance-forget").disabled, false);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent,
+      "deepseekBalanceStatusConfiguredDisabled");
+    card.querySelector(".deepseek-balance-reconnect").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[0] === "reconnect"));
+    enabled = false; agentEnabled = false; connectionState = "agent-disabled";
+    card.querySelector(".deepseek-balance-disconnect").dispatchEvent({ type: "click" }); await flush();
+    card.querySelector(".deepseek-balance-forget").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[0] === "forget"));
+    assert.ok(!calls.some((call) => call[0] === "generic" && JSON.stringify(call).includes("sk-renderer-deepseek")));
+  });
+
+  it("updates a mounted DeepSeek balance card after a background rejection", async () => {
+    const status = { status: "ok", configured: true, decryptable: true,
+      collectionEnabled: true, agentEnabled: true, state: "fresh" };
+    let deferredRead = null;
+    let defer = false;
+    const h = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: { getDeepseekBalanceStatus: () => defer
+        ? new Promise((resolve) => { deferredRead = resolve; }) : Promise.resolve(status) },
+    });
+    h.core.runtime.agentInstallationHintsFetched = true;
+    h.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const card = h.content.querySelector(".deepseek-balance-card");
+    const line = card.querySelector(".deepseek-balance-status");
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusFresh");
+    defer = true;
+    h.content.querySelector(".deepseek-balance-row-action").dispatchEvent({ type: "click" });
+    h.core.tabs.agents.applyDeepseekBalanceStatus({ ...status, state: "credential-rejected" });
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusRejected");
+    deferredRead(status);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusRejected");
+  });
+
+  it("updates the replacement DeepSeek card when a connection finishes during rebuild", async () => {
+    let status = { status: "ok", configured: false, decryptable: false,
+      collectionEnabled: false, agentEnabled: true, state: "unconfigured" };
+    let finishConnect;
+    const h = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: {
+        getDeepseekBalanceStatus: async () => ({ ...status }),
+        connectDeepseekBalance: () => {
+          status = { ...status, configured: true, decryptable: true, collectionEnabled: true, state: "refreshing" };
+          return new Promise((resolve) => { finishConnect = resolve; });
+        },
+      },
+    });
+    h.core.runtime.agentInstallationHintsFetched = true;
+    h.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const oldCard = h.content.querySelector(".deepseek-balance-card");
+    oldCard.querySelector("input").value = "sk-rebuild-secret";
+    oldCard.querySelector(".deepseek-balance-connect").dispatchEvent({ type: "click" });
+    h.core.ops.applyChanges({ changes: { deepseekBalanceCollectionEnabled: true } });
+    h.raf.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    const card = h.content.querySelector(".deepseek-balance-card");
+    assert.notStrictEqual(card, oldCard);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusRefreshing");
+    status = { ...status, state: "fresh" };
+    h.core.tabs.agents.applyDeepseekBalanceStatus(status);
+    finishConnect({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusFresh");
+    assert.strictEqual(card.querySelector("input").value, "");
+  });
+
+  it("shows localized retry messages for DeepSeek transient errors in all seven languages", async () => {
+    require("../src/settings-i18n");
+    const catalogs = globalThis.ClawdSettingsI18n.STRINGS;
+    const states = {
+      "rate-limited": "RateLimited",
+      "payment-required": "PaymentRequired",
+      timeout: "Timeout",
+      "network-error": "NetworkError",
+      "server-error": "ServerError",
+      "malformed-response": "MalformedResponse",
+      "response-too-large": "MalformedResponse",
+      "http-error": "HttpError",
+    };
+    for (const lang of ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]) {
+      const status = { status: "ok", configured: true, decryptable: true,
+        collectionEnabled: true, agentEnabled: true, state: "fresh" };
+      const h = loadAgentsTabForTest({
+        snapshot: { lang, agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+        agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+        i18nStrings: catalogs,
+        settingsAPI: {
+          getDeepseekBalanceStatus: async () => status,
+          reconnectDeepseekBalance: async () => ({ status: "error", reason: "rate-limited" }),
+        },
+      });
+      h.core.runtime.agentInstallationHintsFetched = true;
+      h.core.ops.requestRender({ content: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      const card = h.content.querySelector(".deepseek-balance-card");
+      const line = card.querySelector(".deepseek-balance-status");
+      for (const [state, suffix] of Object.entries(states)) {
+        h.core.tabs.agents.applyDeepseekBalanceStatus({ ...status, state, reason: state });
+        const expected = catalogs[lang][`deepseekBalanceStatus${suffix}`];
+        assert.ok(expected);
+        assert.strictEqual(line.textContent, expected);
+        assert.ok(!line.textContent.includes(state));
+      }
+      card.querySelector(".deepseek-balance-reconnect").dispatchEvent({ type: "click" });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(line.textContent, catalogs[lang].deepseekBalanceStatusRateLimited);
+    }
+  });
+
+  it("routes DeepSeek balance pushes through preload and the settings shell", () => {
+    const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
+    const shell = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
+    assert.ok(preload.includes('ipcRenderer.on("settings:deepseek-balance-status-changed"'));
+    assert.ok(shell.includes("settingsAPI.onDeepseekBalanceStatusChanged"));
+    assert.ok(shell.includes("applyDeepseekBalanceStatus"));
+  });
+
   it("renders Kimi quota as an explicit manual-only encrypted-key workflow", async () => {
     let configured = false;
     let collectionEnabled = false;

@@ -18,6 +18,7 @@ const XLINK_NS = "http://www.w3.org/1999/xlink";
 const DEFAULT_QUOTA_STALE_AFTER_MS = 5 * 60 * 1000;
 const PROVIDER_STALE_AFTER_MS = Object.freeze({
   kimiQuota: 7 * 60 * 1000,
+  deepseekQuota: 12 * 60 * 1000,
 });
 const MAX_COINS = 3; // must match quota-ring-geometry RING_MAX_COINS
 
@@ -55,6 +56,13 @@ const RING_PROVIDERS = [
     label: "Kimi",
     outer: [{ field: "kimiFiveHour", fallback: "5h" }],
     inner: [{ field: "kimiWeekly", fallback: "7d" }],
+  },
+  {
+    key: "deepseekQuota",
+    label: "DeepSeek",
+    kind: "balance",
+    outer: [{ field: "deepseekBalance", fallback: "" }],
+    inner: [],
   },
 ];
 
@@ -101,6 +109,7 @@ const GLYPH_ZOOM_BY_PROVIDER = {
   claudeQuota: 64 / 56,
   codexQuota: 64 / 44.4,
   kimiQuota: 64 / 56,
+  deepseekQuota: 64 / 56,
 };
 let coinClipSeq = 0;
 
@@ -189,6 +198,10 @@ function providerHasDrawableQuota(source, def) {
   const provider = source && source[def.key];
   const group = provider && provider.group;
   if (!group) return false;
+  if (def.kind === "balance") {
+    return def.outer.some((candidate) =>
+      globalThis.ClawdQuotaBalance.isDrawableBalanceBucket(group[candidate.field]));
+  }
   return [...def.outer, ...def.inner].some((candidate) =>
     group[candidate.field] && typeof group[candidate.field] === "object");
 }
@@ -236,7 +249,7 @@ function selectRingWindow(group, candidates, now, ring, providerSeenAtValue, pro
 function buildCoinModel(source, def, now, multiSource) {
   const provider = source[def.key];
   const group = provider && provider.group;
-  if (!group) return null;
+  if (!providerHasDrawableQuota(source, def)) return null;
   const providerSeen = providerSeenAt(provider);
   const outer = selectRingWindow(group, def.outer, now, "outer", providerSeen, def.key);
   const inner = selectRingWindow(group, def.inner, now, "inner", providerSeen, def.key);
@@ -282,6 +295,8 @@ function buildCoinModel(source, def, now, multiSource) {
     : null;
   return {
     providerKey: def.key,
+    kind: def.kind || "window",
+    balance: def.kind === "balance" ? group[outer.field] : null,
     label: def.label,
     host: visibleHost || source.host || null,
     // Stable identity from the store, distinct from the display label: two
@@ -380,7 +395,8 @@ function buildCoinSvg(model) {
       `fill ${outer.reset ? "sev-reset" : severityClass(outer.pct)}${outerNear ? " is-near" : ""} ${identityClass(model.providerKey, outer.ring)}${staleClass(outer)}`,
       OUTER_R,
       OUTER_SW,
-      { pct: outer.reset ? 100 : quotaDisplayPercent(outer.pct) }
+      { pct: model.kind === "balance" ? 100 - outer.pct
+        : (outer.reset ? 100 : quotaDisplayPercent(outer.pct)) }
     );
     svg.appendChild(f);
   }
@@ -440,6 +456,12 @@ function buildCoinSvg(model) {
   return svg;
 }
 
+// Mirrored in dashboard-renderer.js; keep money formatting in sync.
+function formatBalanceAmount(amount, currency) {
+  const symbol = currency === "USD" ? "$" : "¥";
+  return symbol + (amount >= 100 ? Math.round(amount).toString() : amount.toFixed(2));
+}
+
 function buildCoinRow(model, now = Date.now()) {
   const row = document.createElement("div");
   row.className = `coin-row is-${model.state}`;
@@ -458,7 +480,10 @@ function buildCoinRow(model, now = Date.now()) {
   // never change — only which window the digits are reporting — so the alert
   // stays on screen the whole time.
   const shown = model.flashingResting ? model.restingWindow : model.displayWindow;
-  if (shown && shown.reset) {
+  if (model.kind === "balance") {
+    pct.textContent = formatBalanceAmount(model.balance.amount, model.balance.currency);
+    win.textContent = t("quotaRingBalance");
+  } else if (shown && shown.reset) {
     pct.textContent = quotaDisplayMode() === "remaining" ? "100%" : "0%";
     win.textContent = t("quotaRingReset");
   } else if (shown) {
@@ -493,7 +518,7 @@ function buildCoinRow(model, now = Date.now()) {
 // desaturating the arc, or a dot — not standing text.
 function buildReadoutFoot(model) {
   let text = null;
-  if (quotaDisplayMode() === "remaining") {
+  if (model.kind !== "balance" && quotaDisplayMode() === "remaining") {
     text = t("quotaRingRemainingWord");
   } else if (model.sourceMarker) {
     text = model.sourceMarker;

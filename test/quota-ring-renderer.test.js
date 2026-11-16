@@ -72,6 +72,7 @@ function loadRenderer() {
   };
   context.globalThis = context;
   vm.createContext(context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, "..", "src", "quota-balance.js"), "utf8"), context);
   vm.runInContext(rendererSource, context);
   vm.runInContext(`
     payload = {
@@ -926,5 +927,85 @@ describe("quota ring — defensive coin models", () => {
     `, context);
     assert.strictEqual(vm.runInContext("collectCoins(Date.now()).length", context), 0);
     assert.doesNotThrow(() => vm.runInContext("render()", context));
+  });
+});
+
+
+describe("DeepSeek balance coins", () => {
+  it("always draws remaining credit with a money readout, one ring and no mode footnote", () => {
+    const ctx = loadRenderer();
+    vm.runInContext(`
+      payload.translations.quotaRingBalance = "Balance";
+      payload.accountQuota = [{ deepseekQuota: { lastSeenAt: 1000000,
+        group: { deepseekBalance: { usedPercent: 75, amount: 45.20, baseline: 180.80, currency: "CNY" } } } }];
+      var balanceModel = collectCoins(1000000)[0];
+    `, ctx);
+    assert.strictEqual(vm.runInContext('balanceModel.kind', ctx), "balance");
+    assert.strictEqual(vm.runInContext('balanceModel.windows.length', ctx), 1);
+    for (const mode of ["used", "remaining"]) {
+      ctx.mode = mode;
+      vm.runInContext('payload.displayMode = mode', ctx);
+      const row = vm.runInContext('buildCoinRow(balanceModel)', ctx);
+      assert.strictEqual(row.children[0].children[0].textContent, "¥45.20");
+      assert.strictEqual(row.children[0].children[1].textContent, "Balance");
+      assert.strictEqual(row.children[0].children.length, 2);
+      const fill = row.children[1].children.find((node) => /^fill /.test(node.attributes.class || ""));
+      assert.match(fill.attributes["stroke-dasharray"], /^17\.28 /);
+      assert.match(fill.attributes.class, /sev-warn/);
+      assert.ok(!row.children[1].children.some((node) => /is-reset-bed/.test(node.attributes.class || "")));
+    }
+    assert.strictEqual(vm.runInContext('formatBalanceAmount(289.3, "CNY")', ctx), "¥289");
+    assert.strictEqual(vm.runInContext('formatBalanceAmount(12, "USD")', ctx), "$12.00");
+    assert.strictEqual(vm.runInContext('collectCoins(1720000)[0].state', ctx), "live");
+    assert.strictEqual(vm.runInContext('collectCoins(1720001)[0].state', ctx), "stale");
+  });
+});
+
+
+describe("balance selection mirror", () => {
+  it("skips incomplete balance data without hiding valid subscription coins", () => {
+    const ctx = loadRenderer();
+    const geometry = require("../src/quota-ring-geometry");
+    const complete = { usedPercent: 50, amount: 12, baseline: 24, currency: "USD" };
+    const invalid = ["amount", "baseline", "currency"].map((field) => {
+      const bucket = { ...complete };
+      delete bucket[field];
+      return bucket;
+    });
+    invalid.push({ ...complete, amount: -1 }, { ...complete, baseline: Infinity },
+      { ...complete, currency: "EUR" });
+    for (const balance of invalid) {
+      const snapshot = { accountQuota: [{
+        claudeQuota: { group: { claudeWeekly: { usedPercent: 12 } } },
+        deepseekQuota: { group: { deepseekBalance: balance } },
+      }] };
+      ctx.data = snapshot.accountQuota;
+      assert.doesNotThrow(() => vm.runInContext("payload.accountQuota = data; render()", ctx));
+      const rendered = vm.runInContext("collectCoins(1000).map((coin) => coin.providerKey)", ctx);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(rendered)), ["claudeQuota"]);
+      assert.strictEqual(geometry.countQuotaCoins(snapshot, true), 1);
+      const model = vm.runInContext(
+        'buildCoinModel(data[0], RING_PROVIDERS.find((def) => def.kind === "balance"), 1000, false)', ctx
+      );
+      assert.strictEqual(model, null);
+    }
+  });
+
+  it("matches geometry when DeepSeek is selected alongside subscriptions and multiple sources", () => {
+    const ctx = loadRenderer();
+    const geometry = require("../src/quota-ring-geometry");
+    const snapshot = { accountQuota: [
+      { host: null, sourceKey: "", claudeQuota: { group: { claudeWeekly: { usedPercent: 1 } } },
+        deepseekQuota: { group: { deepseekBalance: { amount: 12, baseline: 20, currency: "USD", usedPercent: 40 } } } },
+      { host: "box", sourceKey: "remote:box", claudeQuota: { group: { claudeWeekly: { usedPercent: 1 } } } },
+    ] };
+    for (const selection of [null, ["deepseekQuota"], ["claudeQuota", "deepseekQuota"]]) {
+      ctx.data = snapshot.accountQuota; ctx.selection = selection;
+      const rendered = vm.runInContext(`payload.accountQuota = data; payload.shownQuotaProviders = selection;
+        collectCoins(1000).map((coin) => [coin.providerKey, coin.sourceKey])`, ctx);
+      const expected = geometry.collectQuotaCoins(snapshot, [], selection)
+        .map(({ def, source }) => [def.key, source.sourceKey]);
+      assert.deepStrictEqual(JSON.parse(JSON.stringify(rendered)), expected);
+    }
   });
 });

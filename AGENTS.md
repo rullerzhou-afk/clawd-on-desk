@@ -135,6 +135,11 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 | `src/session-alias.js` | session alias key 规范化、TTL pruning、Kiro cwd scope |
 | `src/theme-loader.js` + `src/theme-runtime.js` | stateless 主题加载/消毒与唯一 active-theme owner；`waitForThemeReloadSettled` 完成信号 |
 | `src/official-theme-catalog.js` / `-download.js` / `-installer.js` / `-main.js` | 官方可下载主题：严格 catalog/cache、Electron `net.request` 流式下载、受限流式 ZIP 解压与 marker-before-rename、main owner/IPC/共享 `theme` lock |
+| `src/quota-balance.js` | geometry / Orbit / Dashboard 共用的余额 bucket 可展示判定 |
+| `src/quota-credential-store.js` | Kimi / DeepSeek 主进程共享的 safeStorage 加解密、凭据身份与私有原子 JSON 写入 |
+| `src/deepseek-balance-credential-store.js` | DeepSeek key 的独立路径、kind 和错误码；不读取其他应用凭据 |
+| `src/deepseek-balance-client.js` + `src/deepseek-balance-normalizer.js` | 官方余额接口、限时限量响应与预付余额油表规则 |
+| `src/deepseek-balance-runtime.js` | 默认关闭的本机五分钟轮询 owner、睡眠/退出取消、凭据绑定与油表持久化 |
 | `src/prefs.js` | 偏好 schema、load/save/migrate/validate，设置持久化入口 |
 | `src/settings-actions*.js` + `src/settings-effect-router.js` | 设置 validators / commands / pre-commit gates 与 post-commit runtime effects |
 | `src/settings-controller.js` | 设置系统唯一写入者 |

@@ -243,6 +243,7 @@ function createHarness(overrides = {}) {
     getRecentHookEvents: overrides.getRecentHookEvents,
     getQuotaSourceCount: overrides.getQuotaSourceCount,
     kimiQuotaRuntime: overrides.kimiQuotaRuntime,
+    deepseekBalanceRuntime: overrides.deepseekBalanceRuntime,
     detectAgentInstallations: overrides.detectAgentInstallations,
     readDshNotices: overrides.readDshNotices,
     acknowledgeDshNotice: overrides.acknowledgeDshNotice,
@@ -323,6 +324,58 @@ test("Kimi quota IPC is trusted-window-only and bypasses generic settings comman
     { status: "error", message: "untrusted settings sender" }
   );
   assert.equal(runtimeCalls.length, 5);
+});
+
+test("DeepSeek balance IPC is trusted-window-only and bypasses generic settings commands", async () => {
+  const runtimeCalls = [];
+  const deepseekBalanceRuntime = {
+    getStatus: () => ({ status: "ok", configured: false, mode: "periodic" }),
+    connect: async (apiKey) => { runtimeCalls.push(["connect", apiKey]); return { status: "ok" }; },
+    refresh: async () => { runtimeCalls.push(["refresh"]); return { status: "ok" }; },
+    reconnect: async () => { runtimeCalls.push(["reconnect"]); return { status: "ok" }; },
+    disconnect: async () => { runtimeCalls.push(["disconnect"]); return { status: "ok" }; },
+    forget: async () => { runtimeCalls.push(["forget"]); return { status: "ok" }; },
+  };
+  const harness = createHarness({ deepseekBalanceRuntime });
+  const generic = await harness.ipcMain.invoke("settings:command", {
+    action: "setDeepseekBalanceCollectionEnabled", payload: { enabled: true },
+  });
+  assert.strictEqual(generic.status, "error");
+  assert.match(generic.message, /internal/);
+  const kimi = await harness.ipcMain.invoke("settings:command", {
+    action: "setKimiQuotaCollectionEnabled", payload: { enabled: true },
+  });
+  assert.strictEqual(kimi.status, "ok");
+  assert.deepStrictEqual(await harness.ipcMain.invoke("settings:deepseek-balance-status"), {
+    status: "ok",
+    configured: false,
+    mode: "periodic",
+  });
+  assert.deepStrictEqual(
+    await harness.ipcMain.invoke("settings:deepseek-balance-connect", { apiKey: "sk-secret" }),
+    { status: "ok" }
+  );
+  await harness.ipcMain.invoke("settings:deepseek-balance-reconnect");
+  await harness.ipcMain.invoke("settings:deepseek-balance-disconnect");
+  await harness.ipcMain.invoke("settings:deepseek-balance-forget");
+  assert.deepStrictEqual(runtimeCalls, [
+    ["connect", "sk-secret"],
+    ["reconnect"],
+    ["disconnect"],
+    ["forget"],
+  ]);
+  assert.equal(harness.calls.some((call) => JSON.stringify(call).includes("sk-secret")), false);
+
+  harness.ipcMain.invokeEvent = { sender: {}, senderFrame: null };
+  assert.deepStrictEqual(
+    await harness.ipcMain.invoke("settings:deepseek-balance-connect", { apiKey: "sk-secret" }),
+    { status: "error", message: "untrusted settings sender" }
+  );
+  assert.deepStrictEqual(
+    await harness.ipcMain.invoke("settings:deepseek-balance-reconnect"),
+    { status: "error", message: "untrusted settings sender" }
+  );
+  assert.equal(runtimeCalls.length, 4);
 });
 
 test("settings IPC registers owned channels and leaves animation override channels to their module", () => {

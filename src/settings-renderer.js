@@ -148,6 +148,13 @@ if (window.settingsAPI && typeof window.settingsAPI.onQuotaRingProvidersChanged 
   });
 }
 
+if (window.settingsAPI && typeof window.settingsAPI.onDeepseekBalanceStatusChanged === "function") {
+  window.settingsAPI.onDeepseekBalanceStatusChanged((status) => {
+    const tab = core.tabs.agents;
+    if (tab && typeof tab.applyDeepseekBalanceStatus === "function") tab.applyDeepseekBalanceStatus(status);
+  });
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.onAgentActivity === "function") {
   window.settingsAPI.onAgentActivity((payload) => {
     const tab = core.tabs.agents;
