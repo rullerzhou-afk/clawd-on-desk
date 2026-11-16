@@ -1,7 +1,6 @@
 "use strict";
 
 const net = require("node:net");
-const multiplex = require("multiplex");
 
 const STDIO_READY_STREAM = "__clawd_stdio_ready__";
 const STDIO_HEARTBEAT_STREAM = "__clawd_stdio_heartbeat__";
@@ -13,6 +12,11 @@ function normalizeChallenge(value) {
     throw new TypeError("Remote SSH stdio challenge must be 128-bit lowercase hex");
   }
   return value;
+}
+
+// Reverse connections must not load multiplex, even after connecting and probing.
+function loadMultiplex() {
+  return require("multiplex");
 }
 
 // The local side of a profile-bound TCP bridge. The remote bridge accepts
@@ -27,7 +31,7 @@ function createRemoteSshStdioTransport({
   onError,
   heartbeatIntervalMs = DEFAULT_HEARTBEAT_INTERVAL_MS,
   connect = net.connect,
-  createMultiplex = multiplex,
+  createMultiplex = loadMultiplex(),
   setIntervalFn = setInterval,
   clearIntervalFn = clearInterval,
 } = {}) {

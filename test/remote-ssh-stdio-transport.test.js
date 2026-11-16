@@ -260,3 +260,26 @@ test("bundled bridge multiplexes concurrent HTTP requests over stdio", async () 
   assert.equal(exitCode, 0);
   await closeServer(localServer);
 });
+
+test("PR #1366 follow-up: challenge rejects wrong, fragmented and oversized values and becomes ready once", () => {
+  for (const chunks of [["d".repeat(32)], ["c".repeat(16)], ["x".repeat(257), "c".repeat(32)], ["c".repeat(16), "c".repeat(16), "c".repeat(32)]]) {
+    const child = makeFakeChild();
+    let streamHandler;
+    let calls = 0;
+    const mux = new PassThrough();
+    mux.createStream = () => new PassThrough();
+    const transport = createRemoteSshStdioTransport({
+      child, localPort: 45001, challenge: "c".repeat(32),
+      createMultiplex(_options, handler) { streamHandler = handler; return mux; },
+      onReady() { calls++; }, setIntervalFn: () => ({ unref() {} }), clearIntervalFn() {},
+    });
+    const stream = new PassThrough();
+    streamHandler(stream, STDIO_READY_STREAM);
+    for (let i = 0; i < chunks.length; i++) {
+      stream.write(chunks[i]);
+      if (i === 0 && chunks[i].length === 16) assert.equal(calls, 0);
+    }
+    assert.equal(calls, chunks[0] === "c".repeat(16) && chunks.length > 1 ? 1 : 0);
+    transport.close({ cooperative: false });
+  }
+});

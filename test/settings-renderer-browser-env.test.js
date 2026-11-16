@@ -4654,7 +4654,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(portHint, "remote forward port should explain its availability requirement");
     assert.equal(
       portHint.textContent,
-      "Loopback port on the remote host used by reverse forwarding or the stdio bridge. It is not exposed publicly; choose another value if it is occupied.",
+      "Loopback port on the remote host used by reverse forwarding or Jump host mode. It is not exposed publicly; choose another value if it is occupied.",
     );
     assert.equal(getSelectedPickerValue(portPicker), "23333");
     choosePickerOption(portPicker, "23336");

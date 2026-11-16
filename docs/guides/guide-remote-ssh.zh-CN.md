@@ -33,10 +33,9 @@ Clawd 不保存 SSH 密码或私钥口令。首次 host key 确认、passphrase�
    - **主机前缀**：可选，用于 Sessions / Dashboard 里区分远端来源
 3. 如果 SSH 需要首次确认 host key、输入 passphrase 或加载 ssh-agent，点 **首次认证**。Clawd 会打开系统终端运行一次普通 `ssh`。
 4. 点击 **部署 / 修复 Hook**，然后连接 profile。
-   - Clawd 会为该 profile 创建专属本地入口，并自动探测 SSH 服务端是否允许
-     `ssh -R` 远端转发
-   - 允许时继续使用反向隧道
-   - 被服务端拒绝时，部署会自动改用内置 SSH stdio bridge。它仍使用同一个
+   - Clawd 会为该 profile 创建专属本地入口，默认使用 `ssh -R` 反向转发
+   - 如果经过禁止 `ssh -R` 或拒绝多行命令的 POSIX 跳板机，请手动选择
+     **跳板机模式**，保存后重新 **部署 / 修复 Hook**。此模式使用内置 SSH stdio bridge，仍使用同一个
      远端 loopback 端口，但全部请求通过一条普通 `ssh -T` 的 stdin/stdout
      多路复用传输，不需要 `-R`，也不要求远端防火墙开放该端口
    - Clawd 会原子写入 profile 身份，把 hook 和 Claude 静态权限 URL pin 到精确远端端口；隧道不会接触通用 `/state`、`/permission` 入口
@@ -194,7 +193,7 @@ Clawd HTTP 服务，不是远端集群的 IP。远端 hook 也不直接访问你
   -> Dashboard / Session HUD / 桌宠状态
 ```
 
-远端拒绝 `ssh -R` 时，链路会自动切换为：
+手动选择 **跳板机模式** 并重新部署后，链路为：
 
 ```
 远端 hook
@@ -205,9 +204,9 @@ Clawd HTTP 服务，不是远端集群的 IP。远端 hook 也不直接访问你
   -> 本机 Clawd 状态 / 权限处理
 ```
 
-SSH stdio 回退目前支持普通 POSIX SSH 目标，以及 Clawd 的普通并行 SSH
-transport。远端为 Windows，或 profile 强制使用 single-session transport 时不会
-启用该回退。远端端口仍然只是该主机内部的 loopback 监听，因此不需要在远端防火墙
+跳板机模式支持普通 POSIX SSH 目标和并行 SSH transport；Windows 远端和
+serialized transport（包括自动识别的 Codespaces）不支持部署此模式。切入或切出
+都需要重新部署，Clawd 不会自动切换模式。远端端口仍然只是该主机内部的 loopback 监听，因此不需要在远端防火墙
 开放，也不要求它属于对外放开的端口范围。
 
 bridge 以一个无界面的 SSH exec 子进程运行。`ssh -T` 会禁用伪终端，Clawd 只使用

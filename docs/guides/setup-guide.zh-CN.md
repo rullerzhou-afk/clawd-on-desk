@@ -154,11 +154,13 @@ Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="远程 SSH — 来自树莓派的权限气泡">
 
-Clawd 支持通过 SSH 反向端口转发感知远程服务器上的 AI Agent 状态。Hook 事件和权限请求通过 SSH 隧道传回本地 Clawd，无需修改 Clawd 本体代码。
+Clawd 默认通过 `ssh -R` 反向端口转发感知远程服务器上的 AI Agent 状态。Hook 事件和权限请求通过 SSH 隧道传回本地 Clawd，无需修改 Clawd 本体代码。
+
+如果经过禁止 `ssh -R` 或拒绝多行命令的 POSIX 跳板机，请手动选择 **跳板机模式**，保存后重新 **部署 / 修复 Hook**。Clawd 不会自动切换模式。跳板机模式需要并行 SSH 会话，不支持 Windows 远端或 serialized 传输（包括自动识别的 Codespaces）。
 
 **受支持流程：应用内 Settings → 远程 SSH → 部署 / 修复 Hook**
 
-DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **部署 / 修复 Hook** 后再连接。Clawd 会创建 profile 专属本地入口，自动探测并选择 `ssh -R` 反向隧道或内置 SSH stdio bridge，再部署带身份 pin 的 hooks。完整步骤、多用户升级边界、Doctor 边界和故障排查见专门指南：
+DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **部署 / 修复 Hook** 后再连接。Clawd 会创建 profile 专属本地入口，使用所选传输模式，再部署带身份 pin 的 hooks。完整步骤、多用户升级边界、Doctor 边界和故障排查见专门指南：
 
 **→ [docs/guides/guide-remote-ssh.zh-CN.md](guide-remote-ssh.zh-CN.md)**
 

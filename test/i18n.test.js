@@ -610,7 +610,6 @@ describe("i18n locales", () => {
       telegramApprovalCompletionOutputFullConfirm: "Clawd incluirá la respuesta final completa del asistente en las notificaciones de finalización de Telegram. Las respuestas pueden contener código, contenido de archivos, rutas u otra información sensible.",
       remoteSshTitle: "Hosts SSH",
       remoteSshFieldAutoStartCodex: "Iniciar la supervisión de respaldo de Codex al conectar",
-      remoteSshErrForwardFailed: "El puerto remoto no está disponible. Inténtalo de nuevo más tarde. Si cambias el puerto de reenvío remoto (23333-23337), ejecuta Desplegar / Reparar hooks antes de conectarte.",
       remoteSshConnectWarnNoDeploy: "Los hooks no están desplegados para este destino. Ejecuta primero Desplegar / Reparar hooks; Conectar permanecerá desactivado hasta que el despliegue esté listo.",
       agentsSubtitle: "Una vez conectada, la mascota sigue el trabajo de la herramienta y muestra sus aprobaciones. Expande una tarjeta para ajustarla.",
       shortcutLabelPetReveal: "Clic en la mascota: Mostrar superposiciones de la mascota",
@@ -624,6 +623,9 @@ describe("i18n locales", () => {
       assert.strictEqual(es[key], value, key);
     }
 
+    assert.ok(es.remoteSshErrForwardFailed.startsWith("El puerto remoto no está disponible. Inténtalo de nuevo más tarde. Si cambias el puerto de reenvío remoto (23333-23337), ejecuta Desplegar / Reparar hooks antes de conectarte."));
+    assert.ok(es.remoteSshErrForwardFailed.endsWith(es.remoteSshGatewayHelp));
+    assert.match(es.remoteSshGatewayHelp, /selecciona.*guarda.*ejecuta/);
     assert.strictEqual(es.remoteSshDeploy, "Desplegar / Reparar hooks");
     for (const key of [
       "remoteSshRuntimeModeChanged",

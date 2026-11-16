@@ -724,13 +724,13 @@ test("settings-actions: remoteSsh.add cannot manufacture deployment ownership", 
   assert.equal(r.commit.remoteSsh.profiles[0].managedDeployTargets, undefined);
 });
 
-test("settings-actions: remoteSsh.add starts in reverse mode and ignores renderer tunnel mode", () => {
+test("PR #1366 follow-up: add preserves the user selected jump host mode", () => {
   const cmd = commandRegistry["remoteSsh.add"];
   const r = cmd(basicProfile({ tunnelMode: "stdio" }), {
     snapshot: { remoteSsh: { profiles: [] } },
   });
   assert.equal(r.status, "ok");
-  assert.equal(r.commit.remoteSsh.profiles[0].tunnelMode, "reverse");
+  assert.equal(r.commit.remoteSsh.profiles[0].tunnelMode, "stdio");
 });
 
 test("settings-actions: remoteSsh.add rejects duplicate id", () => {
@@ -815,6 +815,7 @@ test("deployTargetDrift detects each field change deterministically", () => {
     else if (f === "remoteForwardPort") changed.remoteForwardPort = 23335;
     else if (f === "hostPrefix") changed.hostPrefix = "pi-prefix";
     else if (f === "chainStatusline") changed.chainStatusline = true;
+    else if (f === "tunnelMode") changed.tunnelMode = "stdio";
     else if (f === "runtimeMode") {
       changed.runtimeMode = "profile-isolated";
       changed.runtimeKey = "runtime_changed";
@@ -890,40 +891,7 @@ test("settings-actions: remoteSsh.markDeployed can persist detected remote Node 
   assert.equal(profile.detectedRemoteNodeAt, 12345);
 });
 
-test("settings-actions: markDeployed and setTunnelMode persist automatic SSH stdio selection", () => {
-  const mark = commandRegistry["remoteSsh.markDeployed"];
-  const setMode = commandRegistry["remoteSsh.setTunnelMode"];
-  const original = basicProfile({ tunnelMode: "reverse" });
-  const marked = mark({
-    id: "p1",
-    deployedAt: 12345,
-    tunnelMode: "stdio",
-  }, {
-    snapshot: { remoteSsh: { profiles: [original] } },
-  });
-  assert.equal(marked.status, "ok");
-  assert.equal(marked.commit.remoteSsh.profiles[0].tunnelMode, "stdio");
 
-  const changed = setMode({
-    id: "p1",
-    tunnelMode: "reverse",
-    expectedTarget: original,
-  }, {
-    snapshot: marked.commit,
-  });
-  assert.equal(changed.status, "ok");
-  assert.equal(changed.commit.remoteSsh.profiles[0].tunnelMode, "reverse");
-
-  const drifted = setMode({
-    id: "p1",
-    tunnelMode: "stdio",
-    expectedTarget: { ...original, host: "user@different" },
-  }, {
-    snapshot: marked.commit,
-  });
-  assert.equal(drifted.noop, true);
-  assert.equal(drifted.reason, "target_drift");
-});
 
 test("settings-actions: remoteSsh.markDeployed survives concurrent edit (lost-update fix)", () => {
   // Caller captures pre-deploy snapshot at T=0 with label "Pi".
@@ -1158,7 +1126,7 @@ test("settings-actions: remoteSsh.update ignores renderer-supplied deployment ow
   });
   const profile = r.commit.remoteSsh.profiles[0];
   assert.equal(profile.lastDeployedAt, 12345);
-  assert.deepEqual(profile.managedDeployTargets, [{ ...owned, chainStatusline: false }]);
+  assert.deepEqual(profile.managedDeployTargets, [{ ...owned, chainStatusline: false, tunnelMode: "reverse" }]);
 
   const fresh = cmd(forgedEdit, {
     snapshot: { remoteSsh: { profiles: [basicProfile()] } },
@@ -1579,4 +1547,68 @@ test("DSH remote: markDeployed persists dshInstalled on the Windows target and k
   assert.equal(updated.status, "ok");
   assert.equal(updated.commit.remoteSsh.profiles[0].label, "Renamed");
   assert.equal(updated.commit.remoteSsh.profiles[0].managedDeployTargets[0].dshInstalled, true);
+});
+
+test("PR #1366 follow-up: raw tunnel values and serialized combinations are rejected", () => {
+  for (const action of ["remoteSsh.add", "remoteSsh.update"]) {
+    for (const tunnelMode of ["auto", "", null, false, 0, "STDIO"]) {
+      const result = commandRegistry[action](basicProfile({ tunnelMode }), {
+        snapshot: { remoteSsh: { profiles: action.endsWith("update") ? [basicProfile()] : [] } },
+      });
+      assert.equal(result.status, "error", `${action}:${tunnelMode}`);
+    }
+    assert.equal(commandRegistry[action](basicProfile({ tunnelMode: "stdio", sshTransportMode: "serialized" }), {
+      snapshot: { remoteSsh: { profiles: action.endsWith("update") ? [basicProfile()] : [] } },
+    }).status, "error");
+  }
+  assert.equal(validateProfile(basicProfile({ tunnelMode: "stdio", sshTransportMode: "serialized" })).status, "error");
+  assert.equal(commandRegistry["remoteSsh.setTunnelMode"], undefined);
+});
+
+test("PR #1366 follow-up: mode changes invalidate deployment in both directions and respect the busy gate", () => {
+  for (const [before, after] of [["reverse", "stdio"], ["stdio", "reverse"]]) {
+    const current = basicProfile({ tunnelMode: before, lastDeployedAt: 12345 });
+    const payload = { ...current, tunnelMode: after };
+    const deps = { snapshot: { remoteSsh: { profiles: [current] } } };
+    const result = commandRegistry["remoteSsh.update"](payload, deps);
+    assert.equal(result.status, "ok");
+    assert.equal(result.commit.remoteSsh.profiles[0].tunnelMode, after);
+    assert.equal(result.commit.remoteSsh.profiles[0].lastDeployedAt, undefined);
+    assert.equal(commandRegistry["remoteSsh.update"](payload, { ...deps, isRemoteSshTransportBusy: () => true }).status, "error");
+  }
+  assert.equal(deployTargetDrift(deployTargetFingerprint(basicProfile()), deployTargetFingerprint(basicProfile({ tunnelMode: "reverse" }))), null);
+  assert.equal(remoteOwnershipDomainKey(basicProfile()), remoteOwnershipDomainKey(basicProfile({ tunnelMode: "stdio" })));
+});
+
+test("PR #1366 follow-up: deployment stamps preserve current mode and retain historical deployment mode", () => {
+  const oldTarget = basicProfile({ tunnelMode: "stdio", host: "user@old-host" });
+  const current = basicProfile({ tunnelMode: "reverse" });
+  const mark = commandRegistry["remoteSsh.markDeployed"];
+  const result = mark({ id: "p1", deployedAt: 12345, expectedTarget: oldTarget, tunnelMode: "stdio" }, {
+    snapshot: { remoteSsh: { profiles: [current] } },
+  });
+  assert.equal(result.reason, "target_drift");
+  const saved = result.commit.remoteSsh.profiles[0];
+  assert.equal(saved.tunnelMode, "reverse");
+  assert.equal(saved.lastDeployedAt, undefined);
+  assert.equal(saved.managedDeployTargets[0].tunnelMode, "stdio");
+  const normalized = normalizeRemoteSsh(result.commit.remoteSsh).profiles[0];
+  assert.equal(normalized.managedDeployTargets[0].tunnelMode, "stdio");
+  const matching = mark({ id: "p1", deployedAt: 12345, expectedTarget: current, tunnelMode: "stdio" }, {
+    snapshot: { remoteSsh: { profiles: [current] } },
+  }).commit.remoteSsh.profiles[0];
+  assert.equal(matching.tunnelMode, "reverse");
+  assert.equal(matching.lastDeployedAt, 12345);
+});
+
+test("PR #1366 follow-up: a mode edit during deployment records ownership without stamping the new mode", () => {
+  const before = basicProfile({ tunnelMode: "stdio" });
+  const current = { ...before, tunnelMode: "reverse" };
+  const result = commandRegistry["remoteSsh.markDeployed"]({
+    id: current.id, deployedAt: 12345, expectedTarget: deployTargetFingerprint(before),
+  }, { snapshot: { remoteSsh: { profiles: [current] } } });
+  assert.equal(result.targetDrift, "tunnelMode");
+  assert.equal(result.commit.remoteSsh.profiles[0].lastDeployedAt, undefined);
+  assert.equal(result.commit.remoteSsh.profiles[0].tunnelMode, "reverse");
+  assert.equal(result.commit.remoteSsh.profiles[0].managedDeployTargets[0].tunnelMode, "stdio");
 });

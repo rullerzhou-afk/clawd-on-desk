@@ -366,6 +366,7 @@ function sanitizeManagedDeployTarget(raw) {
       ? raw.hostPrefix
       : undefined,
     chainStatusline: raw.chainStatusline === true,
+    tunnelMode: raw.tunnelMode === "stdio" ? "stdio" : "reverse",
     deployedAt: Number(raw.deployedAt),
     profileId: typeof raw.profileId === "string" ? raw.profileId : undefined,
     installId: typeof raw.installId === "string" ? raw.installId : undefined,
@@ -504,8 +505,11 @@ function validateProfile(profile) {
       message: `profile.remoteForwardPort must be one of ${REMOTE_FORWARD_PORTS.join(", ")}`,
     };
   }
-  if (!isValidRemoteTunnelMode(profile.tunnelMode || "reverse")) {
+  if (profile.tunnelMode !== undefined && !isValidRemoteTunnelMode(profile.tunnelMode)) {
     return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
+  }
+  if (profile.tunnelMode === "stdio" && profile.sshTransportMode === "serialized") {
+    return { status: "error", message: "Jump host mode cannot use a forced single SSH session" };
   }
   const runtimeMode = profile.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
   const runtimeKey = profile.runtimeKey || ACCOUNT_DEFAULT_RUNTIME_KEY;
@@ -822,6 +826,7 @@ function deployTargetFingerprint(profile) {
     remoteForwardPort: Number.isInteger(profile.remoteForwardPort) ? profile.remoteForwardPort : undefined,
     hostPrefix,
     chainStatusline,
+    tunnelMode: profile.tunnelMode === "stdio" ? "stdio" : undefined,
     dshInstalled: profile.dshInstalled === true ? true : undefined,
     runtimeMode: profile.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
     runtimeKey: profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
@@ -846,6 +851,7 @@ const DEPLOY_TARGET_FIELDS = [
   "remoteForwardPort",
   "hostPrefix",
   "chainStatusline",
+  "tunnelMode",
   "runtimeMode",
   "runtimeKey",
   "layoutVersion",

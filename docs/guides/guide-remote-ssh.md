@@ -39,11 +39,10 @@ the system `ssh` and your system terminal.
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens a terminal to run a plain `ssh` once. On Windows, **Authenticate / Open Terminal** use a separate Windows Console Host window so Windows Terminal's administrator-profile settings cannot interrupt the session. After SSH exits, the local command prompt stays open so you can read errors; type `exit` to close it.
 4. Click **Deploy / Repair Hooks**, then connect the profile.
-   - Clawd creates a dedicated local ingress for this profile and detects whether
-     the SSH server permits `ssh -R` remote forwarding
-   - When remote forwarding is available, Clawd maintains the reverse tunnel
-   - When the server rejects remote forwarding, deployment automatically selects
-     the bundled SSH stdio bridge. The bridge uses the same remote loopback port,
+   - Clawd creates a dedicated local ingress and uses `ssh -R` by default
+   - For a POSIX jump host that blocks `ssh -R` or rejects multiline commands,
+     select **Jump host mode**, save, then run **Deploy / Repair Hooks** again.
+     This manually selects the bundled SSH stdio bridge, using the same remote loopback port,
      but carries all hook requests through one ordinary `ssh -T` command and
      multiplexed stdin/stdout; it does not need `-R` or a firewall-open port
    - It writes a profile identity atomically, pins hooks and the static Claude permission URL to the profile's exact remote port, and never exposes the general local `/state` or `/permission` routes to the tunnel
@@ -237,7 +236,7 @@ Remote Claude/Codex/Copilot/Hermes hook
   -> Dashboard / Session HUD / pet state
 ```
 
-For hosts that reject `ssh -R`, the deployed transport is:
+When you select **Jump host mode** and redeploy, the transport is:
 
 ```
 Remote hook
@@ -248,9 +247,10 @@ Remote hook
   -> Local Clawd state / permission handlers
 ```
 
-The SSH stdio fallback currently supports ordinary POSIX SSH targets using the
-parallel transport. It is not used for Windows remote hosts or profiles forced
-into the single-session transport mode. The remote port remains a loopback-only
+Jump host mode currently supports ordinary POSIX SSH targets using the
+parallel transport. It cannot be deployed to Windows remote hosts or serialized
+transports, including automatically detected Codespaces. Switching into or out
+of this mode requires redeployment; Clawd never switches modes automatically. The remote port remains a loopback-only
 listener inside that host, so it does not need to be exposed by the remote
 firewall or belong to an externally open port range.
 

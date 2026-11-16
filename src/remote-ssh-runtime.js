@@ -32,6 +32,7 @@
 // `settings-controller`; this file only consumes the validated profile.
 
 const childProcess = require("child_process");
+const { deployTargetFingerprint } = require("./remote-ssh-profile");
 const crypto = require("crypto");
 const { EventEmitter } = require("events");
 const {
@@ -253,6 +254,17 @@ function classifyStderr(stderr) {
   }
 
   return { kind: "unknown" };
+}
+
+function shouldSuggestGatewayMode(profile, step, stderr, exitCode) {
+  if (profile.tunnelMode === "stdio" || !["remote-shell", "check-node"].includes(step)) return false;
+  // The Node discovery script completed and found no supported Node; changing
+  // the SSH transport cannot fix that result.
+  if (step === "check-node" && exitCode === 127) return false;
+  return ![
+    "auth_denied", "host_key", "identity_missing", "dns",
+    "net_timeout", "net_unreachable", "broken_pipe", "op_timeout",
+  ].includes(classifyStderr(stderr).reason);
 }
 
 // ── Probe exit code classifier ──
@@ -875,11 +887,6 @@ function createRemoteSshRuntime(deps = {}) {
       // Replace profile snapshot — caller may have just edited fields.
       state.profile = profile;
       if (targetChanged) {
-        state.tunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
-      } else if (profile.tunnelMode === "stdio") {
-        state.tunnelMode = "stdio";
-      }
-      if (targetChanged) {
         clearRemoteShellCache(state);
         resetRecoveryContext(state);
       }
@@ -889,6 +896,7 @@ function createRemoteSshRuntime(deps = {}) {
           || state.status === "reconnecting")) {
         return snapshotState(state);
       }
+      state.tunnelMode = profile.tunnelMode === "stdio" ? "stdio" : "reverse";
       // Reset retry counters on a user-initiated re-connect.
       state.retryAttempt = 0;
       state.nextRetryAt = null;
@@ -1476,16 +1484,16 @@ function createRemoteSshRuntime(deps = {}) {
     if (state.serializedTransport) {
       finishFailure(state, {
         reason: "stdio_serialized_unsupported",
-        hint: "remoteSshErrStdioUnsupported",
-        message: "SSH stdio fallback is not supported on a forced single-session transport.",
+        hint: "remoteSshErrGatewayUnsupported",
+        message: "Jump host mode does not support forced single SSH sessions. Select Automatic instead.",
       });
       return;
     }
     if (profile.remotePlatform === "win32") {
       finishFailure(state, {
         reason: "stdio_windows_unsupported",
-        hint: "remoteSshErrStdioUnsupported",
-        message: "SSH stdio fallback is currently available for POSIX remote hosts.",
+        hint: "remoteSshErrGatewayUnsupported",
+        message: "Jump host mode requires a POSIX remote. Select Automatic for Windows remotes.",
       });
       return;
     }
@@ -1533,7 +1541,7 @@ function createRemoteSshRuntime(deps = {}) {
       finishFailure(state, {
         reason: "stdio_command_invalid",
         hint: "remoteSshErrStdioBridgeUnavailable",
-        message: (err && err.message) || "The SSH stdio bridge command could not be built.",
+        message: (err && err.message) || "The jump host bridge command could not be built.",
       });
       return;
     }
@@ -1551,7 +1559,7 @@ function createRemoteSshRuntime(deps = {}) {
         kind: "permanent",
         reason: err && err.code === "ENOENT" ? "ssh_missing" : "spawn_failed",
         hint: err && err.code === "ENOENT" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed",
-        message: (err && err.message) || "SSH stdio bridge spawn failed",
+        message: (err && err.message) || "Jump host bridge spawn failed",
       });
       return;
     }
@@ -1572,7 +1580,7 @@ function createRemoteSshRuntime(deps = {}) {
         kind: "permanent",
         reason: err && err.code === "ENOENT" ? "ssh_missing" : "stdio_spawn_failed",
         hint: err && err.code === "ENOENT" ? "remoteSshErrSshMissing" : "remoteSshErrSpawnFailed",
-        message: (err && err.message) || "SSH stdio bridge process error",
+        message: (err && err.message) || "Jump host bridge process error",
       });
     });
     if (child.stderr) {
@@ -1603,16 +1611,16 @@ function createRemoteSshRuntime(deps = {}) {
           clearStdioReadinessTimer(state);
           emitter.emit("progress", {
             profileId: profile.id,
-            step: "transport-mode",
+            step: "connect",
             status: "ok",
-            message: "SSH stdio bridge ready.",
+            message: "Jump host bridge ready.",
             hint: null,
           });
           startProbeLoopWithRemoteNode(state, child);
         },
         onError: (err) => {
           if (state.sshChild !== child || state.stopped) return;
-          state.stdioTerminalError = err || new Error("SSH stdio transport failed");
+          state.stdioTerminalError = err || new Error("Jump host transport failed");
           killChild(child);
         },
       });
@@ -1620,7 +1628,7 @@ function createRemoteSshRuntime(deps = {}) {
       finishFailure(state, {
         reason: "stdio_transport_create_failed",
         hint: "remoteSshErrStdioBridgeUnavailable",
-        message: (err && err.message) || "The SSH stdio transport could not be created.",
+        message: (err && err.message) || "The jump host transport could not be created.",
       });
       return;
     }
@@ -1631,7 +1639,7 @@ function createRemoteSshRuntime(deps = {}) {
       finishFailure(state, {
         reason: "stdio_ready_timeout",
         hint: "remoteSshErrStdioBridgeUnavailable",
-        message: "The remote SSH stdio bridge did not become ready. Redeploy the hooks and retry.",
+        message: "The remote jump host bridge did not become ready. Redeploy the hooks and retry.",
       });
     }, stdioReadyTimeoutMs);
   }
@@ -1681,13 +1689,7 @@ function createRemoteSshRuntime(deps = {}) {
   }
 
   function remoteNodeExpectedTarget(profile) {
-    return {
-      host: profile && profile.host,
-      port: profile && profile.port,
-      identityFile: profile && profile.identityFile,
-      remoteForwardPort: profile && profile.remoteForwardPort,
-      hostPrefix: profile && profile.hostPrefix,
-    };
+    return deployTargetFingerprint(profile);
   }
 
   function remoteShellCacheKey(profile) {
@@ -1888,56 +1890,6 @@ function createRemoteSshRuntime(deps = {}) {
     }
   }
 
-  function switchToStdioFallback(state, message) {
-    if (state.serializedTransport || state.profile.remotePlatform === "win32") return false;
-    const remoteNode = state.remoteNodeBin || state.profile.detectedRemoteNodeBin;
-    if (typeof remoteNode !== "string" || !remoteNode.startsWith("/")) return false;
-    const ingressStatus = state.ingress && typeof state.ingress.getStatus === "function"
-      ? state.ingress.getStatus()
-      : null;
-    if (!ingressStatus || !Number.isInteger(ingressStatus.port)) {
-      return false;
-    }
-    state.tunnelMode = "stdio";
-    state.forwardRecoveryFailures = 0;
-    state.unknownStrikes = 0;
-    state.retryAttempt = 0;
-    state.nextRetryAt = null;
-    state.stderrBuf = Buffer.alloc(0);
-    state.stderrTruncated = false;
-    resetRecoveryContext(state);
-    setStatus(state, "connecting", {
-      message: "Remote forwarding is unavailable; switching to SSH stdio transport.",
-      hint: null,
-      lastError: message || null,
-      lastErrorReason: "forward_failed",
-    });
-    emitter.emit("progress", {
-      profileId: state.profile.id,
-      step: "transport-mode",
-      status: "ok",
-      message: "Remote forwarding is unavailable; SSH stdio transport selected.",
-      hint: null,
-    });
-    emitter.emit("tunnel-mode-detected", {
-      profileId: state.profile.id,
-      tunnelMode: "stdio",
-      expectedTarget: {
-        host: state.profile.host,
-        port: state.profile.port,
-        identityFile: state.profile.identityFile,
-        remoteForwardPort: state.profile.remoteForwardPort,
-        hostPrefix: state.profile.hostPrefix,
-        chainStatusline: state.profile.chainStatusline,
-        runtimeMode: state.profile.runtimeMode,
-        runtimeKey: state.profile.runtimeKey,
-        layoutVersion: state.profile.layoutVersion,
-      },
-    });
-    spawnStdioTunnel(state, ingressStatus.port);
-    return true;
-  }
-
   function onSshExit(state, child, code, signal) {
     // Identity-gate: if this child isn't the current sshChild anymore, the
     // exit belongs to a stale process from a prior connect cycle — drop.
@@ -1992,6 +1944,18 @@ function createRemoteSshRuntime(deps = {}) {
     const wasConnected = state.status === "connected";
     if (state.tunnelMode === "stdio" && !wasStdioReady) {
       if (code === 98) {
+        if (state.recoveryTargetKey === tunnelTargetKey(state.profile)) {
+          state.forwardRecoveryFailures += 1;
+          if (state.forwardRecoveryFailures < FORWARD_RECOVERY_FAILURE_LIMIT) {
+            scheduleReconnect(state, {
+              message: "Waiting for the previous remote bridge to release its port.",
+              hint: "remoteSshErrForwardRetrying",
+              lastErrorReason: "stdio_recovery_conflict",
+              wasConnected: false,
+            });
+            return;
+          }
+        }
         finishFailure(state, {
           reason: "stdio_port_conflict",
           hint: "remoteSshErrStdioPortInUse",
@@ -2003,7 +1967,7 @@ function createRemoteSshRuntime(deps = {}) {
         finishFailure(state, {
           reason: "stdio_bridge_invalid_args",
           hint: "remoteSshErrStdioBridgeUnavailable",
-          message: "The remote SSH stdio bridge rejected its launch arguments. Redeploy the hooks.",
+          message: "The remote jump host bridge rejected its launch arguments. Redeploy the hooks.",
         });
         return;
       }
@@ -2011,7 +1975,7 @@ function createRemoteSshRuntime(deps = {}) {
     if (stdioTerminalError) {
       scheduleReconnect(state, {
         message: (stdioTerminalError && stdioTerminalError.message)
-          || "SSH stdio transport disconnected",
+          || "Jump host transport disconnected",
         hint: "remoteSshErrStdioBridgeUnavailable",
         lastErrorReason: "stdio_transport_failed",
         wasConnected,
@@ -2043,11 +2007,6 @@ function createRemoteSshRuntime(deps = {}) {
     }
 
     const currentTargetKey = tunnelTargetKey(state.profile);
-    if (cls.reason === "forward_failed"
-      && state.tunnelMode === "reverse"
-      && switchToStdioFallback(state, safeStderr)) {
-      return;
-    }
     const canRecoverForwardConflict = cls.reason === "forward_failed"
       && state.recoveryTargetKey === currentTargetKey;
     if (canRecoverForwardConflict) {
@@ -2688,11 +2647,6 @@ function createRemoteSshRuntime(deps = {}) {
     return state.serializedTransport ? "serialized" : "parallel";
   }
 
-  function getProfileTunnelMode(profileId) {
-    const state = states.get(profileId);
-    return state ? state.tunnelMode : null;
-  }
-
   function getProfileTransportInspection(profileId) {
     const state = states.get(profileId);
     return state && state.transportInspection ? { ...state.transportInspection } : null;
@@ -2754,7 +2708,6 @@ function createRemoteSshRuntime(deps = {}) {
     getProfileStatus,
     listStatuses,
     getProfileTransportMode,
-    getProfileTunnelMode,
     getProfileTransportInspection,
     refreshProfile,
     suspendForOperation,
@@ -2816,6 +2769,7 @@ module.exports = {
   buildSshArgs,
   buildScpArgs,
   classifyStderr,
+  shouldSuggestGatewayMode,
   classifyProbeExit,
   buildProbeCommand,
   buildPersistentReadinessCommand,

@@ -304,13 +304,16 @@ function remoteSshTabHarness(profile, deployResult) {
       this.classList = { add: (name) => { this.className += " " + name; } };
     }
     appendChild(child) { this.children.push(child); return child; }
+    setAttribute(name, value) { this[name] = value; }
     addEventListener(type, listener) { this.events.set(type, listener); }
     click() { return this.events.get("click")?.({ stopPropagation() {} }); }
   }
   const document = { createElement: (tag) => new Element(tag) };
   const strings = settingsStrings().en, toasts = [];
   const clipboardWrites = [];
+  const selectors = [], commands = [];
   let statusListener;
+  let progressListener;
   const context = {
     document, confirm: () => true,
     navigator: {
@@ -318,13 +321,16 @@ function remoteSshTabHarness(profile, deployResult) {
         writeText: async (value) => { clipboardWrites.push(value); },
       },
     },
-    window: { remoteSsh: { deploy: async () => deployResult, onStatusChanged: (listener) => { statusListener = listener; } } },
+    window: { settingsAPI: { command: async (action, payload) => { commands.push({ action, payload }); return { status: "ok" }; } }, remoteSsh: { deploy: async () => deployResult, onStatusChanged: (listener) => { statusListener = listener; }, onProgress: (listener) => { progressListener = listener; } } },
   };
   vm.runInNewContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-remote-ssh.js"), "utf8"), context);
   const core = { state: { snapshot: { remoteSsh: { profiles: [profile] } }, activeTab: "remote-ssh" }, tabs: {},
     helpers: { t: (key) => strings[key] || key,
       buildButton: (options) => Object.assign(new Element("button"), options, { textContent: strings[options.labelKey] }),
-      setButtonState() {} },
+      setButtonState() {},
+      buildTextInput: (options) => Object.assign(new Element("input"), options),
+      buildSwitch: () => ({ setState() {} }),
+      buildSettingsSelect: (options) => { selectors.push(options); return { element: new Element("select") }; } },
     ops: { requestRender() {}, showToast: (message) => toasts.push(message) } };
   context.ClawdSettingsTabRemoteSsh.init(core);
   const render = () => { const parent = new Element("main"); core.tabs["remote-ssh"].render(parent); return parent; };
@@ -336,7 +342,9 @@ function remoteSshTabHarness(profile, deployResult) {
     toasts,
     strings,
     clipboardWrites,
+    selectors, commands,
     pushStatus: (status) => statusListener(status),
+    pushProgress: (event) => progressListener(event),
   };
 }
 
@@ -360,6 +368,14 @@ test("Remote SSH copies a redacted diagnostic report with service checks", async
     ingressAcceptedCount: 2,
     ingressRejectedCount: 1,
   });
+  h.pushProgress({
+    profileId: profile.id, step: "check-node", status: "fail",
+    message: "Gateway rejected the remote command", helpHint: "remoteSshGatewayHelp",
+  });
+  h.pushProgress({
+    profileId: profile.id, step: "check-node", status: "fail",
+    message: "Remote Node.js not found", hint: "remoteSshProbeNodeMissing",
+  });
   const button = h.find(h.render(), (element) => element.labelKey === "remoteSshCopyDiagnostics");
   assert.ok(button);
   await button.click();
@@ -371,6 +387,8 @@ test("Remote SSH copies a redacted diagnostic report with service checks", async
   assert.match(report, /ingressRejectedCount: 1/);
   assert.match(report, /\[r\]emote-ssh-stdio-bridge\.js/);
   assert.match(report, /remote-last-error\.log/);
+  assert.ok(report.includes("Gateway rejected the remote command " + h.strings.remoteSshGatewayHelp));
+  assert.ok(report.includes(h.strings.remoteSshProbeNodeMissing));
   assert.doesNotMatch(report, /routingNonce|id_ed25519/);
 });
 
@@ -419,3 +437,110 @@ for (const [name, result, noticeKeys] of [
     assert.deepEqual(h.toasts, [expected.join(" ")]);
   });
 }
+
+test("PR #1366 follow-up: transport picker decodes persisted fields and updates its hint before saving", async () => {
+  for (const [tunnelMode, sshTransportMode, expected] of [["stdio", "auto", "stdio"], ["reverse", "serialized", "serialized"], ["reverse", "auto", "auto"]]) {
+    const harness = remoteSshTabHarness({ id: "p1", label: "Pi", host: "user@pi", remoteForwardPort: 23333, tunnelMode, sshTransportMode });
+    harness.find(harness.render(), (el) => el.labelKey === "remoteSshEdit").click();
+    const form = harness.render();
+    const picker = harness.selectors.find((selector) => selector.options.some((option) => option.value === "stdio"));
+    assert.equal(picker.value, expected);
+    picker.onChange("stdio");
+    assert.ok(harness.find(form, (el) => el.textContent === harness.strings.remoteSshTransportModeGatewayHint));
+    picker.onChange("auto");
+    assert.ok(harness.find(form, (el) => el.textContent === harness.strings.remoteSshTransportModeHint));
+    picker.onChange("stdio");
+    harness.find(form, (el) => el.labelKey === "remoteSshSave").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(harness.commands.length, 1);
+    assert.equal(harness.commands[0].payload.tunnelMode, "stdio");
+    assert.equal(harness.commands[0].payload.sshTransportMode, "auto");
+    assert.equal("_transportChoice" in harness.commands[0].payload, false);
+  }
+  for (const strings of Object.values(settingsStrings())) {
+    for (const key of ["remoteSshTransportModeGateway", "remoteSshTransportModeGatewayHint", "remoteSshGatewayHelp"]) assert.ok(strings[key], key);
+    assert.equal(strings.remoteSshDeployStdioSelected, undefined);
+    assert.equal(strings["remoteSshStep_transport-mode"], undefined);
+  }
+});
+
+test("PR #1366 follow-up: leaving jump host mode prompts redeployment and busy profiles disable the picker", async () => {
+  const profile = { id: "p1", label: "Pi", host: "user@pi", remoteForwardPort: 23333, tunnelMode: "stdio" };
+  const harness = remoteSshTabHarness(profile);
+  harness.find(harness.render(), (el) => el.labelKey === "remoteSshEdit").click();
+  const form = harness.render();
+  const picker = harness.selectors.find((selector) => selector.options.some((option) => option.value === "stdio"));
+  picker.onChange("auto");
+  harness.find(form, (el) => el.labelKey === "remoteSshSave").click();
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(harness.commands[0].payload.tunnelMode, "reverse");
+  assert.ok(harness.toasts.some((message) => message.includes(harness.strings.remoteSshTransportModeRedeploy)));
+  const busy = remoteSshTabHarness(profile);
+  busy.pushStatus({ profileId: "p1", status: "connected" });
+  busy.find(busy.render(), (el) => el.labelKey === "remoteSshEdit").click();
+  busy.render();
+  assert.equal(busy.selectors.find((selector) => selector.options.some((option) => option.value === "stdio")).disabled, true);
+});
+
+test("PR #1366 follow-up: all locales append gateway guidance after the original forward port advice", () => {
+  const originalPortAdvice = {
+    "en": "Remote port unavailable. Try again later. If you change the Remote Forward Port (23333-23337), run Deploy / Repair Hooks before connecting.",
+    "zh": "远端端口不可用，请稍后重试。若要更换远端转发端口（23333-23337），请先执行 Deploy / Repair Hooks，再连接。",
+    "zh-TW": "遠端連接埠無法使用，請稍後再試。若要更換遠端轉送連接埠（23333-23337），請先執行 Deploy / Repair Hooks，再連線。",
+    "ko": "원격 포트를 사용할 수 없습니다. 잠시 후 다시 시도하세요. 원격 포워드 포트(23333-23337)를 변경했다면 연결 전에 Deploy / Repair Hooks를 실행하세요.",
+    "ja": "リモートポートを使用できません。しばらくしてから再試行してください。リモートフォワードポート (23333-23337) を変更した場合は、接続前に Deploy / Repair Hooks を実行してください。",
+    "pt-BR": "Porta remota indisponível. Tente mais tarde. Se você mudar a porta de encaminhamento remoto (23333-23337), rode Instalar / reparar hooks antes de conectar.",
+    "es": "El puerto remoto no está disponible. Inténtalo de nuevo más tarde. Si cambias el puerto de reenvío remoto (23333-23337), ejecuta Desplegar / Reparar hooks antes de conectarte.",
+  };
+  for (const [locale, strings] of Object.entries(settingsStrings())) {
+    const visibleHint = strings.remoteSshErrForwardFailed;
+    assert.ok(visibleHint.startsWith(originalPortAdvice[locale]), locale);
+    assert.ok(visibleHint.endsWith(strings.remoteSshGatewayHelp), locale);
+    assert.ok(visibleHint.length > originalPortAdvice[locale].length, locale);
+  }
+});
+
+
+test("PR #1366 follow-up: deployment toast and progress append gateway help without hiding the error", async () => {
+  const cases = [
+    { message: "Remote Node.js not found (ssh exited 127)" },
+    { message: "Gateway rejected the remote command", helpHint: "remoteSshGatewayHelp" },
+    { message: "Raw discovery error", hint: "remoteSshProbeNodeMissing" },
+  ];
+  for (const failure of cases) {
+    const h = remoteSshTabHarness({ id: "p1", label: "Remote", host: "remote" }, { status: "error", ...failure });
+    h.find(h.render(), (element) => element.labelKey === "remoteSshDeploy").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    const original = failure.hint ? h.strings[failure.hint] : failure.message;
+    const expected = original + (failure.helpHint ? " " + h.strings[failure.helpHint] : "");
+    assert.deepEqual(h.toasts, [expected]);
+    h.pushProgress({ profileId: "p1", step: "check-node", status: "fail", ...failure });
+    const line = h.find(h.render(), (element) => element.className.includes("remote-ssh-progress-line"));
+    assert.ok(line.textContent.endsWith(expected), line.textContent);
+  }
+});
+
+test("PR #1366 follow-up: gateway translations name the visible actions and use consistent terminology", () => {
+  for (const [locale, strings] of Object.entries(settingsStrings())) {
+    for (const key of ["remoteSshTransportModeGatewayHint", "remoteSshGatewayHelp", "remoteSshTransportModeRedeploy", "remoteSshErrStdioBridgeUnavailable", "remoteSshErrStdioPortInUse"]) {
+      assert.ok(strings[key].includes(strings.remoteSshDeploy), `${locale}: ${key}`);
+    }
+    assert.ok(strings.remoteSshFieldRemoteForwardPortHint.toLowerCase().includes(strings.remoteSshTransportModeGateway.toLowerCase()), locale);
+    if (locale === "ja") {
+      for (const key of ["remoteSshTransportModeGatewayHint", "remoteSshTransportModeRedeploy"]) {
+        assert.ok(strings[key].includes("に " + strings.remoteSshDeploy), key);
+      }
+    }
+    const unsupported = strings.remoteSshErrGatewayUnsupported;
+    assert.ok(unsupported, locale);
+    assert.ok(unsupported.includes("Codespaces"), locale);
+    assert.ok(unsupported.includes("Windows"), locale);
+    assert.ok(unsupported.includes(strings.remoteSshTransportModeAuto), locale);
+    for (const key of ["remoteSshErrGatewayUnsupported", "remoteSshErrStdioBridgeUnavailable", "remoteSshErrStdioPortInUse", "remoteSshFieldRemoteForwardPortHint"]) {
+      assert.doesNotMatch(strings[key], /stdio|fallback/i, `${locale}: ${key}`);
+    }
+    if (["zh", "zh-TW", "ja"].includes(locale)) {
+      assert.ok(strings.remoteSshErrForwardFailed.includes("。" + strings.remoteSshGatewayHelp), locale);
+    }
+  }
+});

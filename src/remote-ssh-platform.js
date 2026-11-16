@@ -100,11 +100,11 @@ async function probeRemotePlatform(options) {
   const fallback = await (deps.spawnAndWait || runRemoteNodeCommand)(
     spawn, "ssh", buildSshArgs(profile).concat([
       buildRemoteNodeEvalCommand(resolved.nodeBin, "console.log(process.platform)"),
-    ]), { runtime },
+    ]), { profile, runtime },
   );
   const platform = String(fallback.stdout || "").trim();
   if (fallback.code !== 0 || !/^[a-z][a-z0-9]*$/.test(platform)) {
-    return { ok: false, step: "check-node", message: "Remote Node platform could not be verified." };
+    return { ok: false, step: "check-node", code: fallback.code, stderr: fallback.stderr, message: "Remote Node platform could not be verified." };
   }
   if (platform === "win32") return windowsPlatformFailure();
   return { ok: true, remotePlatform: "posix", shell, remoteNode: resolved };
