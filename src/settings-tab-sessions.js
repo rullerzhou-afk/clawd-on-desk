@@ -82,6 +82,8 @@
     return row;
   }
 
+  let quotaProvidersBlock = null;
+
   function buildQuotaRingGroup() {
     const enabledRow = helpers.buildSwitchRow({
       key: "sessionHudShowQuota",
@@ -95,6 +97,7 @@
     });
     const displayModeRow = buildQuotaRingDisplayModeRow();
     const providersBlock = buildQuotaRingProvidersBlock();
+    quotaProvidersBlock = providersBlock;
     // "Merge across machines" only matters with more than one reporting source
     // (WSL / SSH remotes). Hidden by default so single-machine users never see
     // a confusing no-op switch; revealed once multiple sources are confirmed.
@@ -147,25 +150,16 @@
         })
         .catch(() => {});
     }
-    providersBlock.load(null);
+    providersBlock.load();
     return rows;
   }
 
-  // Per-provider visibility for the pet-side cluster. This is display-only —
-  // collection stays on each provider's Agents card and the Dashboard keeps
-  // showing everything — because the cluster caps at four coins and the
-  // renderer simply takes the first four in provider order, so without this the
-  // user has no say over WHICH four survive. With remotes the count is sources
-  // × providers, which is where it stops being theoretical.
-  //
-  // The list is built from providers that actually report, so a fresh install
-  // sees nothing here rather than four checkboxes for things it never
-  // connected — the same rule that hides "merge across machines" on one machine.
+  // Selection is per provider, while the budget counts coins from all sources.
+  // The list includes connected providers beyond the cap so users can swap them.
   function buildQuotaRingProvidersBlock() {
     const element = document.createElement("div");
     element.className = "quota-ring-providers";
     element.style.display = "none";
-
     const head = document.createElement("div");
     head.className = "row quota-ring-providers-head";
     const headText = document.createElement("div");
@@ -178,11 +172,55 @@
     headDesc.textContent = t("rowQuotaRingProvidersDesc");
     headText.append(headLabel, headDesc);
     head.appendChild(headText);
-    element.appendChild(head);
+    const limit = document.createElement("div");
+    limit.className = "row row-sub row-desc quota-ring-providers-limit";
+    limit.textContent = t("quotaRingProvidersLimit");
+    element.append(head, limit);
 
-    function hiddenList() {
-      const raw = state.snapshot && state.snapshot.quotaRingHiddenProviders;
-      return Array.isArray(raw) ? raw.filter((key) => typeof key === "string" && key) : [];
+    let providers = [];
+    let selectedProviders = state.snapshot && state.snapshot.quotaRingShownProviders;
+    let pendingChange = null;
+    let queryGeneration = 0;
+    const controls = new Map();
+
+    function isProviderChecked(provider) {
+      return provider.shown || (provider.selected && provider.coinCount === 0);
+    }
+
+    function syncControls() {
+      const visibleCount = providers.reduce((sum, provider) => sum + provider.shownCoinCount, 0);
+      const selectedCount = Array.isArray(selectedProviders)
+        ? selectedProviders.length
+        : providers.filter((provider) => provider.selected).length;
+      let hasBlockedProvider = false;
+      for (const provider of providers) {
+        const control = controls.get(provider.key);
+        if (!control) continue;
+        const blocked = !isProviderChecked(provider)
+          && (selectedCount >= 3 || visibleCount + provider.coinCount > 3);
+        if (blocked) hasBlockedProvider = true;
+        const checked = pendingChange && pendingChange.key === provider.key
+          ? pendingChange.shown : isProviderChecked(provider);
+        control.setState({
+          checked,
+          pending: !!pendingChange,
+          disabled: !!pendingChange || blocked,
+        });
+      }
+      limit.style.display = hasBlockedProvider ? "" : "none";
+    }
+
+    function applyCommittedSelection(selected) {
+      selectedProviders = selected;
+      let remaining = 3;
+      // Use the latest source counts even if a push arrived during the save.
+      // An absent selected provider keeps its choice slot, without a coin.
+      providers = providers.map((provider) => {
+        const isSelected = selected.includes(provider.key);
+        const count = isSelected ? Math.min(remaining, provider.coinCount) : 0;
+        remaining -= count;
+        return { ...provider, selected: isSelected, shown: count > 0, shownCoinCount: count };
+      });
     }
 
     function buildProviderRow(provider) {
@@ -193,74 +231,96 @@
       text.className = "row-text";
       const label = document.createElement("span");
       label.className = "row-label";
-      // Brand name, deliberately not translated — it identifies the provider.
+      // Brand names identify the provider and deliberately stay untranslated.
       label.textContent = provider.label || provider.key;
       text.appendChild(label);
+      if (provider.coinCount === 0) {
+        const noData = document.createElement("span");
+        noData.className = "row-desc quota-ring-provider-no-data";
+        noData.textContent = t("quotaRingProviderNoData");
+        text.appendChild(noData);
+      }
       const control = document.createElement("div");
       control.className = "row-control";
-      // ON means "shown", so the switch reads the way the label does. The pref
-      // stores the inverse (what is HIDDEN) — see prefs.js for why.
       const switchControl = helpers.buildSwitch({
-        checked: !hiddenList().includes(provider.key),
+        checked: isProviderChecked(provider),
         ariaLabel: provider.label || provider.key,
       });
+      controls.set(provider.key, switchControl);
       control.appendChild(switchControl.element);
       row.append(text, control);
-
-      switchControl.setOnToggle(({ nextChecked: next }) => {
-        // Optimistic: the broadcast that confirms this rebuilds the tab, and
-        // leaving the switch stale until then reads as an ignored click.
-        switchControl.setState({ checked: next, pending: true });
-        const hidden = hiddenList().filter((key) => key !== provider.key);
-        if (!next) hidden.push(provider.key);
+      switchControl.setOnToggle(({ nextChecked: shown }) => {
+        const currentShownProviders = providers
+          .filter((entry) => entry.shown)
+          .map((entry) => entry.key);
+        const currentSelection = Array.isArray(selectedProviders)
+          ? selectedProviders : currentShownProviders;
+        const selected = currentSelection.filter((key) => key !== provider.key);
+        if (shown) selected.push(provider.key);
+        pendingChange = { key: provider.key, shown };
+        syncControls();
         return Promise.resolve()
-          .then(() => window.settingsAPI.update("quotaRingHiddenProviders", hidden))
+          .then(() => window.settingsAPI.command("setQuotaRingProviderShown", {
+            key: provider.key,
+            shown,
+            currentShownProviders,
+          }))
           .then((result) => {
             if (!result || result.status !== "ok" || result.noop) {
-              switchControl.setState({ checked: !hiddenList().includes(provider.key) });
               if (result && result.noop) return;
               ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+              return;
             }
+            // A push must not suppress the successful command's selection.
+            applyCommittedSelection(selected);
           })
-          .catch((err) => {
-            switchControl.setState({ checked: !hiddenList().includes(provider.key) });
-            ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
-          })
+          .catch((err) => ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true }))
           .finally(() => {
-            // A rejected/no-op save has no snapshot broadcast to rebuild this row.
-            switchControl.setState({ pending: false });
+            pendingChange = null;
+            syncControls();
           });
       });
       return row;
     }
 
-    function load(group) {
+    function applyProviders(list) {
+      // Every notification supersedes the initial query, including an empty or
+      // identical list. This query fence never controls save completion.
+      queryGeneration += 1;
+      const next = Array.isArray(list)
+        ? list.filter((provider) => provider && typeof provider.key === "string") : [];
+      if (JSON.stringify(next) === JSON.stringify(providers)) return;
+      providers = next;
+      controls.clear();
+      element.innerHTML = "";
+      element.append(head, limit);
+      // One entry offers no alternatives; count absent selected entries too,
+      // so multiple stored choices remain reachable when their data disappears.
+      element.style.display = providers.length > 1 ? "" : "none";
+      if (providers.length > 1) {
+        for (const provider of providers) element.appendChild(buildProviderRow(provider));
+        syncControls();
+      }
+    }
+
+    function load() {
       const api = window.settingsAPI;
       if (!api || typeof api.getQuotaRingProviders !== "function") return;
+      const startedAt = queryGeneration;
       Promise.resolve(api.getQuotaRingProviders())
-        .then((providers) => {
-          const list = Array.isArray(providers) ? providers : [];
-          // One connected provider cannot crowd anything out, so the control
-          // would be a no-op switch — the same reason merge stays hidden.
-          if (list.length <= 1) return;
-          const reveal = () => {
-            for (const provider of list) {
-              if (!provider || typeof provider.key !== "string") continue;
-              element.appendChild(buildProviderRow(provider));
-            }
-            element.style.display = "";
-            return element;
-          };
-          if (group && typeof group.mutateCollapsibleBody === "function") {
-            group.mutateCollapsibleBody(reveal);
-          } else {
-            reveal();
-          }
+        .then((list) => {
+          // A live notification can overtake the initial query.
+          if (queryGeneration === startedAt) applyProviders(list);
         })
         .catch(() => {});
     }
+    return { element, load, applyProviders };
+  }
 
-    return { element, load };
+  function applyQuotaRingProviders(providers) {
+    if (quotaProvidersBlock && document.body.contains(quotaProvidersBlock.element)) {
+      quotaProvidersBlock.applyProviders(providers);
+    }
   }
 
   function buildQuotaRingDisplayModeRow() {
@@ -731,6 +791,7 @@
     core.tabs.sessions = {
       render,
       patchInPlace,
+      applyQuotaRingProviders,
     };
   }
 

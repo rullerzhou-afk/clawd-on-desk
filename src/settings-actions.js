@@ -483,6 +483,17 @@ const updateRegistry = {
     }
     return { status: "ok" };
   },
+  quotaRingShownProviders: {
+    commandOnly: true,
+    validate(value) {
+      // Matches prefs.normalizeQuotaRingShownProviders and geometry.RING_MAX_COINS;
+      // the command limits provider choices, while geometry limits actual coins.
+      return value === null || (Array.isArray(value) && value.length <= 3
+        && value.every((key) => typeof key === "string" && key.trim()))
+        ? { status: "ok" }
+        : { status: "error", message: "Choose at most 3 quota providers" };
+    },
+  },
   claudeQuotaCollectionEnabled: {
     validate: requireBoolean("claudeQuotaCollectionEnabled"),
     effect(value, deps = {}) {
@@ -2873,7 +2884,33 @@ function setTextScaleForDisplay(payload, deps) {
   return { status: "ok", commit: { textScaleByDisplay: next } };
 }
 
+function setQuotaRingProviderShown(payload, deps = {}) {
+  if (!payload || typeof payload.key !== "string" || !payload.key.trim()
+    || typeof payload.shown !== "boolean") {
+    return { status: "error", message: "A provider key and shown flag are required" };
+  }
+  const snapshot = deps.snapshot || {};
+  // The UI passes the actual visible set for the first toggle. After that,
+  // durable selections win over stale UI lists and preserve absent providers.
+  // Keep this provider-choice cap in sync with the validator above, prefs'
+  // normalization and quota-ring-geometry.RING_MAX_COINS.
+  const current = Array.isArray(snapshot.quotaRingShownProviders)
+    ? snapshot.quotaRingShownProviders : payload.currentShownProviders;
+  if (!Array.isArray(current) || current.length > 3
+    || current.some((key) => typeof key !== "string" || !key.trim())) {
+    return { status: "error", message: "Current quota selection must contain at most 3 provider keys" };
+  }
+  const key = payload.key.replace(/\0/g, "").trim().slice(0, 64);
+  const next = [...new Set(current)].filter((entry) => entry !== key);
+  if (payload.shown) next.push(key);
+  if (next.length > 3 || !key) {
+    return { status: "error", message: "Choose at most 3 quota providers" };
+  }
+  return { status: "ok", commit: { quotaRingShownProviders: next } };
+}
+
 const commandRegistry = {
+  setQuotaRingProviderShown,
   addCustomApplication,
   removeTheme,
   installHooks,

@@ -160,3 +160,20 @@ test("settings preload forwards Telegram status revisions and unsubscribe is exa
   forward({}, { channel: "telegram", revision: 8 });
   assert.equal(received.length, 1, "unsubscribe must remove only the registered callback");
 });
+
+
+test("settings preload forwards quota provider changes and uses the existing command channel", async () => {
+  const { exposed, ipcHandlers, invokes } = loadPreload();
+  const api = exposed.get("settingsAPI");
+  const received = [];
+  const unsubscribe = api.onQuotaRingProvidersChanged(providers => received.push(providers));
+  const providers = [{ key: "kimiQuota", shown: false, coinCount: 1, shownCoinCount: 0 }];
+  ipcHandlers.get("settings:quota-ring-providers-changed")({}, providers);
+  assert.deepEqual(received, [providers]);
+  unsubscribe();
+  ipcHandlers.get("settings:quota-ring-providers-changed")({}, []);
+  assert.deepEqual(received, [providers]);
+  const payload = { key: "kimiQuota", shown: true, currentShownProviders: [] };
+  await api.command("setQuotaRingProviderShown", payload);
+  assert.deepEqual(JSON.parse(JSON.stringify(invokes)), [["settings:command", { action: "setQuotaRingProviderShown", payload }]]);
+});

@@ -49,6 +49,7 @@ const remoteApprovalStatusListeners = new Set();
 const textScaleContextListeners = new Set();
 const sizeContextListeners = new Set();
 const agentActivityListeners = new Set();
+const quotaRingProvidersListeners = new Set();
 const recapChangedListeners = new Set();
 const updateCheckStatusListeners = new Set();
 const requestedTabListeners = new Set();
@@ -95,6 +96,11 @@ ipcRenderer.on("settings:text-scale-context-changed", () => {
 ipcRenderer.on("settings:size-context-changed", () => {
   for (const cb of sizeContextListeners) {
     try { cb(); } catch (err) { console.warn("size context listener threw:", err); }
+  }
+});
+ipcRenderer.on("settings:quota-ring-providers-changed", (_event, providers) => {
+  for (const cb of quotaRingProvidersListeners) {
+    try { cb(providers); } catch (err) { console.warn("quota provider listener threw:", err); }
   }
 });
 ipcRenderer.on("settings:agent-activity", (_event, payload) => {
@@ -232,6 +238,11 @@ contextBridge.exposeInMainWorld("settingsAPI", {
   resetMobileAccess: () => ipcRenderer.invoke("settings:reset-mobile-access"),
   onChanged: (cb) => {
     if (typeof cb === "function") listeners.add(cb);
+  },
+  onQuotaRingProvidersChanged: (cb) => {
+    if (typeof cb !== "function") return () => {};
+    quotaRingProvidersListeners.add(cb);
+    return () => quotaRingProvidersListeners.delete(cb);
   },
   onAgentActivity: (cb) => {
     if (typeof cb !== "function") return () => {};

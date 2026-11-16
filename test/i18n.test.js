@@ -698,4 +698,15 @@ describe("i18n locales", () => {
       }
     }
   });
+
+  it("explains selected quota providers without data in every supported language", () => {
+    const strings = loadSettingsI18nStrings();
+    for (const lang of SUPPORTED_LANGS) {
+      const text = strings[lang].quotaRingProviderNoData;
+      assert.strictEqual(typeof text, "string", lang);
+      assert.ok(text.trim(), lang);
+    }
+    assert.strictEqual(strings.zh.quotaRingProviderNoData, "当前没有额度数据。");
+  });
+
 });

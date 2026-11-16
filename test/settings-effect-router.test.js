@@ -908,3 +908,13 @@ describe("issue #1323: theme appearance routing", () => {
     assert.ok(logs.some((entry) => String(entry[0]).includes("appearance")));
   });
 });
+
+
+describe("quota ring selection effects", () => {
+  it("remeasures and repositions when manual provider selection changes", () => {
+    const { emit, calls } = createHarness();
+    emit({ quotaRingShownProviders: ["kimiQuota"] });
+    assert.strictEqual(calls.filter(call => call[0] === "syncSessionHudVisibility").length, 1);
+    assert.strictEqual(calls.filter(call => call[0] === "repositionFloatingBubbles").length, 1);
+  });
+});

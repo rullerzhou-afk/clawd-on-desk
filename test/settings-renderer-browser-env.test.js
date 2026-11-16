@@ -13692,9 +13692,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
   });
 
-  it("lets the user pick which providers draw beside the pet, hiding by exception", async () => {
-    // The cluster caps at four coins and the renderer takes the first four in
-    // provider order, so without this the user has no say over which survive.
+  it("lets the user materialize actual providers through the selection command", async () => {
     const updateCalls = [];
     const harness = loadGeneralTabForTest({
       tab: "sessions",
@@ -13702,12 +13700,12 @@ describe("settings renderer browser environment", () => {
       settingsAPI: {
         getQuotaSourceCount: async () => 1,
         getQuotaRingProviders: async () => ([
-          { key: "claudeQuota", label: "Claude", hidden: false },
-          { key: "codexQuota", label: "Codex", hidden: true },
-          { key: "kimiQuota", label: "Kimi", hidden: false },
+          { key: "claudeQuota", label: "Claude", shown: true, coinCount: 1, shownCoinCount: 1 },
+          { key: "codexQuota", label: "Codex", shown: false, coinCount: 1, shownCoinCount: 0 },
+          { key: "kimiQuota", label: "Kimi", shown: true, coinCount: 1, shownCoinCount: 1 },
         ]),
-        update: (key, value) => {
-          updateCalls.push({ key, value });
+        command: (action, payload) => {
+          updateCalls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
           return Promise.resolve({ status: "ok" });
         },
       },
@@ -13724,28 +13722,25 @@ describe("settings renderer browser environment", () => {
       rows.map((row) => row.dataset.providerKey),
       ["claudeQuota", "codexQuota", "kimiQuota"]
     );
-    // The switch reads as "shown", the stored preference records what is hidden.
+    // Switches reflect the actual visible set, including the automatic cap.
     const switches = rows.map((row) => row.querySelector(".switch"));
     assert.strictEqual(switches[0].classList.contains("on"), true, "Claude draws");
     assert.strictEqual(switches[1].classList.contains("on"), false, "Codex is hidden");
     assert.strictEqual(switches[2].classList.contains("on"), true, "Kimi draws");
 
-    // Hiding one appends to the list rather than replacing it, or turning off a
-    // second provider would quietly bring the first one back.
+    // The first toggle passes the visible providers, not all unhidden providers.
     switches[2].eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(updateCalls, [
-      { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] },
+      { action: "setQuotaRingProviderShown", payload: { key: "kimiQuota", shown: false, currentShownProviders: ["claudeQuota", "kimiQuota"] } },
     ]);
 
     // Re-showing removes only that key.
     updateCalls.length = 0;
     switches[1].eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(updateCalls, [
-      { key: "quotaRingHiddenProviders", value: [] },
+      { action: "setQuotaRingProviderShown", payload: { key: "codexQuota", shown: true, currentShownProviders: ["claudeQuota"] } },
     ]);
   });
 
@@ -13764,11 +13759,11 @@ describe("settings renderer browser environment", () => {
         snapshot: makeGeneralSnapshot({ quotaRingHiddenProviders: ["codexQuota"] }),
         settingsAPI: {
           getQuotaRingProviders: async () => ([
-            { key: "codexQuota", label: "Codex" },
-            { key: "kimiQuota", label: "Kimi" },
+            { key: "codexQuota", label: "Codex", shown: false, coinCount: 1, shownCoinCount: 0 },
+            { key: "kimiQuota", label: "Kimi", shown: true, coinCount: 1, shownCoinCount: 1 },
           ]),
-          update: (key, value) => {
-            calls.push({ key, value });
+          command: (action, payload) => {
+            calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
             return calls.length === 1 ? scenario.reply() : Promise.resolve({ status: "ok" });
           },
         },
@@ -13793,11 +13788,214 @@ describe("settings renderer browser environment", () => {
       sw.dispatchEvent({ type: "click" });
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(calls.length, 2, "the same mounted control must allow retry");
-      assert.deepStrictEqual(calls[1], { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] });
+      assert.deepStrictEqual(calls[1], { action: "setQuotaRingProviderShown", payload: { key: "kimiQuota", shown: false, currentShownProviders: ["kimiQuota"] } });
       assert.equal(sw.getAttribute("aria-checked"), "false");
       assert.equal(sw.getAttribute("aria-busy"), "false", "success must not depend on receiving a broadcast");
     });
   }
+
+  it("disables off providers at three coins and refreshes sources without reopening", async () => {
+    const providers = [
+      { key: "claudeQuota", label: "Claude", shown: true, coinCount: 2, shownCoinCount: 2 },
+      { key: "codexQuota", label: "Codex", shown: true, coinCount: 1, shownCoinCount: 1 },
+      { key: "kimiQuota", label: "Kimi", shown: false, coinCount: 1, shownCoinCount: 0 },
+    ];
+    const calls = [];
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot({ quotaRingShownProviders: ["claudeQuota", "codexQuota"] }),
+      settingsAPI: { getQuotaRingProviders: async () => providers,
+        command: (action, payload) => { calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) }); return { status: "ok" }; } },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const switches = () => block.querySelectorAll(".quota-ring-provider-row").map(row => row.querySelector(".switch"));
+    assert.strictEqual(switches()[2].getAttribute("aria-disabled"), "true");
+    assert.strictEqual(block.querySelector(".quota-ring-providers-limit").style.display, "");
+    switches()[2].dispatchEvent({ type: "click" });
+    assert.strictEqual(calls.length, 0);
+    switches()[1].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(switches()[2].getAttribute("aria-disabled"), "false", "turning off frees a coin");
+    assert.strictEqual(switches()[1].getAttribute("aria-checked"), "false", "vacancy stays empty");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      { key: "antigravityQuota", label: "Antigravity", shown: false, coinCount: 2, shownCoinCount: 0 },
+      { ...providers[0] }, { ...providers[1], shown: false, shownCoinCount: 0 }, providers[2],
+    ]);
+    assert.strictEqual(switches().length, 4, "new source appears on the mounted page");
+    assert.strictEqual(switches()[0].getAttribute("aria-checked"), "false");
+    assert.strictEqual(switches()[0].getAttribute("aria-disabled"), "true", "two-source provider cannot exceed the remaining coin budget");
+    assert.strictEqual(calls.length, 1, "source changes never select a provider");
+    harness.core.tabs.sessions.applyQuotaRingProviders([providers[2]]);
+    assert.strictEqual(block.style.display, "none", "one remaining provider hides the block");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("lets absent selected providers release a full manual selection", async () => {
+    const geometry = require("../src/quota-ring-geometry");
+    const { commandRegistry } = require("../src/settings-actions");
+    const saved = { quotaRingShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] };
+    const quota = { accountQuota: [{
+      claudeQuota: { group: { claudeFiveHour: { usedPercent: 10 } } },
+      kimiQuota: { group: { kimiWeekly: { usedPercent: 10 } } },
+    }] };
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot(saved),
+      settingsAPI: {
+        getQuotaRingProviders: async () => geometry.listQuotaRingProviders(quota, [], saved.quotaRingShownProviders),
+        command: async (_name, payload) => {
+          const result = commandRegistry.setQuotaRingProviderShown(payload, { snapshot: saved });
+          if (result.commit) Object.assign(saved, result.commit);
+          return result;
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const rows = () => block.querySelectorAll(".quota-ring-provider-row");
+    const row = key => rows().find(entry => entry.dataset.providerKey === key);
+    assert.strictEqual(rows().length, 4);
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-checked"), "true");
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-disabled"), "false");
+    assert.ok(row("antigravityQuota").querySelector(".quota-ring-provider-no-data"));
+    assert.strictEqual(row("kimiQuota").querySelector(".switch").getAttribute("aria-disabled"), "true");
+    assert.strictEqual(block.querySelector(".quota-ring-providers-limit").style.display, "");
+    row("antigravityQuota").querySelector(".switch").dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-checked"), "false");
+    assert.strictEqual(row("kimiQuota").querySelector(".switch").getAttribute("aria-disabled"), "false");
+    row("kimiQuota").querySelector(".switch").dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(Array.from(saved.quotaRingShownProviders), ["claudeQuota", "codexQuota", "kimiQuota"]);
+  });
+
+  for (const changed of [false, true]) {
+    it(`keeps a pending toggle after ${changed ? "changed" : "identical"} provider pushes and a delayed success`, async () => {
+      let resolveSave;
+      const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+      const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+        settingsAPI: { getQuotaRingProviders: async () => providers,
+          command: () => new Promise(resolve => { resolveSave = resolve; }) },
+      });
+      harness.renderContent();
+      await new Promise(resolve => setImmediate(resolve));
+      const block = harness.content.querySelector(".quota-ring-providers");
+      const currentSwitch = () => block.querySelectorAll(".quota-ring-provider-row")[1].querySelector(".switch");
+      currentSwitch().dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      const pushed = changed ? providers.map(provider => ({ ...provider, coinCount: 2 })) : providers;
+      harness.core.tabs.sessions.applyQuotaRingProviders(pushed);
+      assert.strictEqual(currentSwitch().getAttribute("aria-checked"), "false", "pushes preserve pending intent");
+      resolveSave({ status: "ok" });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual(currentSwitch().getAttribute("aria-checked"), "false", "success preserves the committed toggle");
+      assert.strictEqual(currentSwitch().getAttribute("aria-busy"), "false");
+    });
+  }
+
+  it("shows the provider limit hint only when an off switch is blocked", async () => {
+    const providers = ["antigravityQuota", "claudeQuota", "codexQuota"].map(key => ({
+      key, shown: true, coinCount: 1, shownCoinCount: 1,
+    }));
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: async () => providers },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const hint = block.querySelector(".quota-ring-providers-limit");
+    assert.strictEqual(hint.style.display, "none", "three enabled providers are not an error");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      ...providers, { key: "kimiQuota", shown: false, coinCount: 1, shownCoinCount: 0 },
+    ]);
+    assert.strictEqual(hint.style.display, "");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      { ...providers[0], coinCount: 2, shownCoinCount: 2 },
+      { key: "kimiQuota", shown: false, coinCount: 2, shownCoinCount: 0 },
+    ]);
+    assert.strictEqual(hint.style.display, "", "a two-source provider can exceed a partially filled budget");
+  });
+
+  it("keeps successive manual toggles consistent before settings broadcasts arrive", async () => {
+    const keys = ["claudeQuota", "codexQuota", "kimiQuota"];
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot({ quotaRingShownProviders: keys }),
+      settingsAPI: { getQuotaRingProviders: async () => keys.map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 })),
+        command: async () => ({ status: "ok" }) },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const switches = harness.content.querySelectorAll(".quota-ring-provider-row").map(row => row.querySelector(".switch"));
+    switches[1].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    switches[2].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(switches[0].getAttribute("aria-checked"), "true");
+    assert.strictEqual(switches[1].getAttribute("aria-checked"), "false");
+    assert.strictEqual(switches[2].getAttribute("aria-checked"), "false");
+  });
+
+  it("keeps a newer provider notification when the initial query resolves late", async () => {
+    let resolveQuery;
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: () => new Promise(resolve => { resolveQuery = resolve; }) },
+    });
+    harness.renderContent();
+    const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+    harness.core.tabs.sessions.applyQuotaRingProviders(providers);
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const firstRow = block.querySelector(".quota-ring-provider-row");
+    harness.core.tabs.sessions.applyQuotaRingProviders(providers);
+    assert.strictEqual(block.querySelector(".quota-ring-provider-row"), firstRow, "unchanged metadata preserves mounted controls");
+    resolveQuery([]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 2);
+  });
+
+  it("keeps an empty source notification when the initial provider query is stale", async () => {
+    let resolveQuery;
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: () => new Promise(resolve => { resolveQuery = resolve; }) },
+    });
+    harness.renderContent();
+    harness.core.tabs.sessions.applyQuotaRingProviders([]);
+    resolveQuery(["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 })));
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.strictEqual(block.style.display, "none");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("settles a pending selection when sources disappear during the save", async () => {
+    let resolveSave;
+    const toasts = [];
+    const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: async () => providers,
+        command: () => new Promise(resolve => { resolveSave = resolve; }) },
+    });
+    harness.core.ops.showToast = message => toasts.push(message);
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    harness.content.querySelector(".quota-ring-provider-row .switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    harness.core.tabs.sessions.applyQuotaRingProviders([providers[0]]);
+    resolveSave({ status: "ok" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(harness.content.querySelector(".quota-ring-providers").style.display, "none");
+    assert.deepStrictEqual(toasts, []);
+  });
+
+  it("wires provider-change notifications through preload and the settings shell", () => {
+    const main = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8");
+    const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
+    const shell = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
+    assert.ok(main.includes('broadcastSettingsWindow("settings:quota-ring-providers-changed"'));
+    assert.ok(preload.includes('ipcRenderer.on("settings:quota-ring-providers-changed"'));
+    assert.ok(shell.includes("settingsAPI.onQuotaRingProvidersChanged"));
+    assert.ok(shell.includes("applyQuotaRingProviders"));
+  });
 
   it("offers no provider list when only one provider reports", async () => {
     // One connected provider cannot crowd anything out, so the control would be

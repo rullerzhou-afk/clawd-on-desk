@@ -31,9 +31,8 @@ describe("quota ring — coin counting", () => {
         { host: "pi", claudeQuota: { group: { claudeWeekly: bucket(9) }, updatedAt: 1 } },
       ],
     };
-    // 3 providers on local + 1 on the remote = 4 coins (a provider with two
-    // windows is still ONE coin — the two windows become concentric rings).
-    assert.strictEqual(countQuotaCoins(snapshot, true), 4);
+    // Multiple windows still make one coin; multiple sources share the cap.
+    assert.strictEqual(countQuotaCoins(snapshot, true), 3);
   });
 
   it("still counts a source whose only window has expired (dimmed reset coin)", () => {
@@ -93,16 +92,17 @@ describe("quota ring — cluster sizing", () => {
     assert.strictEqual(one.width, two.width, "width is fixed (coin + readout column)");
     assert.ok(two.height > one.height, "two coins are taller than one");
     assert.strictEqual(two.height - one.height, constants.COIN_SIZE + constants.COIN_GAP);
-    assert.strictEqual(one.overflow, 0);
+    assert.ok(!("overflow" in one));
   });
 
-  it("caps visible coins and reports the overflow, adding a row for the +N pill", () => {
+  it("caps at three rows without reserving an overflow row", () => {
     const capped = ringClusterContentSize(constants.RING_MAX_COINS + 2);
     assert.strictEqual(capped.visible, constants.RING_MAX_COINS);
-    assert.strictEqual(capped.overflow, 2);
+    assert.strictEqual(capped.visible, 3);
+    assert.ok(!("overflow" in capped));
     const exactly = ringClusterContentSize(constants.RING_MAX_COINS);
-    assert.ok(capped.height > exactly.height, "the overflow pill adds height");
-    assert.strictEqual(exactly.overflow, 0);
+    assert.deepStrictEqual(capped, exactly);
+    assert.strictEqual(exactly.height, 110);
   });
 });
 
@@ -167,18 +167,18 @@ describe("quota ring — bounds placement", () => {
 
   it("clamps a tall cluster inside the work area vertically", () => {
     const shortWa = { x: 0, y: 0, width: 1440, height: 300 };
-    const r = computeQuotaRingBounds({ hitRect, workArea: shortWa, coinCount: 4, scale: 1 });
+    const r = computeQuotaRingBounds({ hitRect, workArea: shortWa, coinCount: 3, scale: 1 });
     assert.ok(r.contentBounds.y >= shortWa.y);
     assert.ok(r.contentBounds.y + r.contentBounds.height <= shortWa.y + shortWa.height);
   });
 
-  it("moves a four-coin Orbit clear of the visible Session HUD", () => {
+  it("moves a three-coin Orbit clear of the visible Session HUD", () => {
     const pet = { left: 573, top: 306, right: 651, bottom: 424 };
     const hud = { x: 455, y: 378, width: 296, height: 30 };
     const r = computeQuotaRingBounds({
       hitRect: pet,
       workArea: { x: 0, y: 0, width: 1280, height: 800 },
-      coinCount: 4,
+      coinCount: 3,
       scale: 1,
       avoidRects: [hud],
     });
@@ -195,7 +195,7 @@ describe("quota ring — bounds placement", () => {
     assert.strictEqual(overlapW * overlapH, 0);
   });
 
-  it("moves a four-coin Orbit clear of fixed permission and update bubbles", () => {
+  it("moves a three-coin Orbit clear of fixed permission and update bubbles", () => {
     // Real default-theme geometry from the review repro: right-bottom Clawd,
     // bubbleFollowPet=false, one permission bubble plus one update bubble.
     const pet = { left: 1182.955, top: 738.26, right: 1247.045, bottom: 783.5 };
@@ -207,12 +207,12 @@ describe("quota ring — bounds placement", () => {
     const r = computeQuotaRingBounds({
       hitRect: pet,
       workArea,
-      coinCount: 4,
+      coinCount: 3,
       scale: 1,
       avoidRects: avoids,
     });
 
-    assert.deepStrictEqual(r.contentBounds, { x: 1087, y: 540, width: 88, height: 146 });
+    assert.deepStrictEqual(r.contentBounds, { x: 1087, y: 576, width: 88, height: 110 });
     for (const rect of avoids) {
       assert.strictEqual(
         ringGeom.overlapArea(r.contentBounds, rect, 6),
@@ -246,7 +246,7 @@ describe("quota ring — window labels & severity", () => {
 
 // The pet-side cluster caps at RING_MAX_COINS and the renderer simply takes the
 // first N in provider order, so without a per-provider opt-out the user has no
-// say over WHICH coins survive. Hiding is display-only: collection and the
+// say over WHICH coins survive. Selection is display-only: collection and the
 // Dashboard are untouched.
 describe("quota ring — per-provider visibility", () => {
   const snapshot = {
@@ -306,7 +306,7 @@ describe("quota ring — per-provider visibility", () => {
     // rule that keeps "merge across machines" hidden on a single machine.
     assert.ok(!listed.some((p) => p.key === "antigravityQuota"));
     // An already-hidden provider still lists, or it could never be turned back on.
-    assert.deepStrictEqual(listed.map((p) => p.hidden), [false, true, false]);
+    assert.deepStrictEqual(listed.map((p) => p.shown), [true, false, true]);
   });
 
   it("lists nothing for an empty snapshot instead of offering every provider", () => {
@@ -316,7 +316,7 @@ describe("quota ring — per-provider visibility", () => {
 });
 
 // The renderer runs in a page that cannot require this module, so it carries its
-// own copy of RING_PROVIDERS and its own hidden-provider filter. If the two ever
+// own copy of RING_PROVIDERS and its own selection rules. If the two ever
 // disagree the window is sized for coins the renderer never draws (or clips ones
 // it does), which is invisible in unit tests of either side alone.
 describe("quota ring — geometry/renderer mirror", () => {
@@ -326,7 +326,7 @@ describe("quota ring — geometry/renderer mirror", () => {
     path.join(__dirname, "..", "src", "quota-ring-renderer.js"), "utf8"
   );
 
-  // RING_PROVIDERS is not exported, so read the geometry's order back through
+  // Read the geometry's order back through
   // listQuotaRingProviders with every provider reporting — that walks the real
   // table in the real order rather than trusting a second hand-kept copy.
   const everyProvider = {
@@ -345,7 +345,7 @@ describe("quota ring — geometry/renderer mirror", () => {
     assert.strictEqual(geometryKeys.length, 4, "the all-providers fixture must exercise the table");
     assert.deepStrictEqual(
       rendererKeys, geometryKeys,
-      "provider order decides which coins survive the four-coin cap"
+      "provider order decides which coins survive the three-coin cap"
     );
   });
 
@@ -360,12 +360,28 @@ describe("quota ring — geometry/renderer mirror", () => {
       assert.strictEqual(match.label, label, `${key} label diverged`);
     }
   });
+});
 
-  it("applies the hidden filter in the renderer, not only when sizing", () => {
-    // Sizing without drawing (or the reverse) leaves the transparent window and
-    // its auto-hide hot zone wrong, which no per-side test would catch.
-    assert.match(rendererSource, /hiddenQuotaProviders/);
-    assert.match(rendererSource, /function hiddenProviderSet\(\)/);
-    assert.match(rendererSource, /if \(hidden && hidden\.has\(def\.key\)\) continue;/);
+
+describe("quota ring — selected providers without data", () => {
+  it("lists selected providers without coins so they can be deselected", () => {
+    const snapshot = { accountQuota: [{
+      claudeQuota: { group: { claudeFiveHour: bucket(20) } },
+      kimiQuota: { group: { kimiWeekly: bucket(30) } },
+    }] };
+    const selected = ["antigravityQuota", "claudeQuota", "codexQuota"];
+    const list = ringGeom.listQuotaRingProviders(snapshot, [], selected);
+    assert.deepStrictEqual(list.map(provider => provider.key),
+      ["antigravityQuota", "claudeQuota", "codexQuota", "kimiQuota"]);
+    assert.deepStrictEqual(list.map(provider => provider.selected), [true, true, true, false]);
+    assert.deepStrictEqual(list.map(provider => provider.coinCount), [0, 1, 0, 1]);
+    assert.deepStrictEqual(list.map(provider => provider.shown), [false, true, false, false]);
+    assert.strictEqual(countQuotaCoins(snapshot, true, [], selected), 1);
+  });
+
+  it("keeps unknown selected keys available for removal without drawing them", () => {
+    const list = ringGeom.listQuotaRingProviders({ accountQuota: [] }, [], ["futureQuota", "kimiQuota"]);
+    assert.deepStrictEqual(list.map(provider => provider.key), ["kimiQuota", "futureQuota"]);
+    assert.ok(list.every(provider => provider.selected && provider.coinCount === 0 && !provider.shown));
   });
 });

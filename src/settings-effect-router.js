@@ -385,6 +385,7 @@ function createSettingsEffectRouter(options = {}) {
       // would leave the transparent window (and its auto-hide hot zone) sized
       // for coins that no longer draw.
       || "quotaRingHiddenProviders" in changes
+      || "quotaRingShownProviders" in changes
     ) {
       try {
         syncSessionHudVisibility();

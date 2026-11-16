@@ -3837,3 +3837,46 @@ it("issue #1316: a platform rebuild preserves the original source nonce and dead
     assert.strictEqual(JSON.stringify(profile), original);
   }
 });
+
+
+describe("setQuotaRingProviderShown command", () => {
+  it("materializes only the actually drawn providers and applies the first toggle atomically", () => {
+    const snapshot = { quotaRingShownProviders: null, quotaRingHiddenProviders: [] };
+    const result = commandRegistry.setQuotaRingProviderShown({ key: "claudeQuota", shown: false,
+      currentShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] }, { snapshot });
+    assert.deepStrictEqual(result, { status: "ok", commit: {
+      quotaRingShownProviders: ["antigravityQuota", "codexQuota"] } });
+    assert.strictEqual(snapshot.quotaRingShownProviders, null);
+  });
+  it("uses the durable manual selection instead of a stale materialization list", () => {
+    const result = commandRegistry.setQuotaRingProviderShown({ key: "kimiQuota", shown: true,
+      currentShownProviders: ["antigravityQuota", "codexQuota"] },
+      { snapshot: { quotaRingShownProviders: ["claudeQuota"] } });
+    assert.deepStrictEqual(result.commit, { quotaRingShownProviders: ["claudeQuota", "kimiQuota"] });
+  });
+  it("rejects more than three selections and malformed payloads", () => {
+    for (const payload of [null, { key: 2, shown: true }, { key: "", shown: true }, { key: "kimiQuota", shown: 1 },
+      { key: "kimiQuota", shown: true },
+      { key: "kimiQuota", shown: true, currentShownProviders: ["a", "b", "c"] },
+      { key: "kimiQuota", shown: false, currentShownProviders: ["a", "b", "c", "d"] },
+      { key: "kimiQuota", shown: true, currentShownProviders: [null] }]) {
+      assert.strictEqual(commandRegistry.setQuotaRingProviderShown(payload,
+        { snapshot: { quotaRingShownProviders: null } }).status, "error", JSON.stringify(payload));
+    }
+  });
+});
+
+
+describe("quota ring selection vacancies", () => {
+  it("frees an absent provider selection before accepting a newly connected provider", () => {
+    const snapshot = { quotaRingShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] };
+    const enableKimi = { key: "kimiQuota", shown: true };
+    assert.strictEqual(commandRegistry.setQuotaRingProviderShown(enableKimi, { snapshot }).status, "error");
+    const remove = commandRegistry.setQuotaRingProviderShown({ key: "codexQuota", shown: false }, { snapshot });
+    assert.strictEqual(remove.status, "ok");
+    Object.assign(snapshot, remove.commit);
+    const enable = commandRegistry.setQuotaRingProviderShown(enableKimi, { snapshot });
+    assert.strictEqual(enable.status, "ok");
+    assert.deepStrictEqual(enable.commit.quotaRingShownProviders, ["antigravityQuota", "claudeQuota", "kimiQuota"]);
+  });
+});
