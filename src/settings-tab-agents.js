@@ -202,9 +202,9 @@
   }
 
   function refreshMountedInstallSkippedNotices(targetAgentId = null) {
-    for (const [container, agentId] of [...installSkippedNoticeContainers.entries()]) {
+    for (const [agentId, container] of [...installSkippedNoticeContainers.entries()]) {
       if (typeof container.isConnected === "boolean" && !container.isConnected) {
-        installSkippedNoticeContainers.delete(container);
+        installSkippedNoticeContainers.delete(agentId);
         continue;
       }
       if (targetAgentId && agentId !== targetAgentId) continue;
@@ -1523,7 +1523,8 @@
     const container = document.createElement("div");
     container.className = "agent-install-skipped-notices";
     text.appendChild(container);
-    installSkippedNoticeContainers.set(container, agent.id);
+    // Replacing by agent id keeps only the latest row container across renders.
+    installSkippedNoticeContainers.set(agent.id, container);
     renderSkippedInstallNotice(container, agent.id);
   }
 

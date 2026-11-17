@@ -22687,6 +22687,14 @@ describe("settings renderer browser environment", () => {
     harness.core.runtime.agentsSubtab = "discover";
     harness.core.ops.requestRender({ content: true });
 
+    // Repeated hint/broadcast renders must not leave stale notice containers
+    // registered. A later skipped result should refresh only the current row.
+    const staleContainers = [];
+    for (let i = 0; i < 8; i++) {
+      staleContainers.push(harness.content.querySelector(".agent-install-skipped-notices"));
+      harness.core.ops.requestRender({ content: true });
+    }
+
     const installBtn = harness.content.querySelector(".agent-integration-action");
     assert.ok(installBtn);
     installedSnapshot = true;
@@ -22701,6 +22709,9 @@ describe("settings renderer browser environment", () => {
 
     const notice = harness.content.querySelector(".agent-install-skipped-notice");
     assert.ok(notice, "inline dismissible skipped notice should appear under the DSH row");
+    assert.ok(staleContainers.every((container) => (
+      container && container.querySelector(".agent-install-skipped-notice") === null
+    )), "detached row containers should not be retained and refreshed");
     const noticeText = collectText(notice);
     assert.match(noticeText, /Open the DeepSeek Harness desktop app once/);
     assert.match(noticeText, /Web: not in use/);

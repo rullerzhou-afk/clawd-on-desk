@@ -5378,10 +5378,24 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
         if (typeof frozen.dshInstalled === "boolean") {
           return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
         }
-        // Keep isDshInstalled() scoped to DSH home/CLI for its unit contract,
-        // while letting sync classify an unlaunched Desktop app cleanly via resolveDshTargets.
+        // Keep isDshInstalled() scoped to DSH home/CLI for its unit contract;
+        // a found desktop then lets resolveDshTargets classify an unlaunched profile.
         desktopDiscovery = await discoverDshDesktop(frozen);
-        if (!desktopDiscovery || desktopDiscovery.status === "not-found") {
+        if (!desktopDiscovery || desktopDiscovery.status !== "found") {
+          if (desktopDiscovery && desktopDiscovery.status === "ambiguous") {
+            return {
+              status: "skipped",
+              reason: "multiple-desktop-installs",
+              message: "Multiple DeepSeek Harness desktop installations were found",
+            };
+          }
+          if (desktopDiscovery && desktopDiscovery.status === "unknown") {
+            return {
+              status: "skipped",
+              reason: "desktop-unverifiable",
+              message: "DeepSeek Harness desktop installation could not be verified",
+            };
+          }
           return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
         }
       }
