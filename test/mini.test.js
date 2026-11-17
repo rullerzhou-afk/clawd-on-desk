@@ -301,6 +301,134 @@ describe("theme mini peek motion", () => {
     assert.equal(ctx.getBoundsSnapshot().x, afterExit);
     mini.cleanup();
   });
+
+  it("T10: exiting mini during a meeting keeps DND and applies normal DND sleep once", () => {
+    const { mini, ctx, states } = ready(cloneTheme(_defaultTheme), { sleep: true });
+    const rendererEvents = [];
+    const hitEvents = [];
+    let sleeps = 0;
+    ctx.isMeetingModeActive = () => true;
+    ctx.applyDndSleepState = () => { sleeps++; ctx.applyState("sleeping"); };
+    ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+    ctx.sendToHitWin = (...args) => hitEvents.push(args);
+    mini.exitMiniMode();
+    mock.timers.tick(450);
+    assert.equal(mini.getMiniMode(), false);
+    assert.equal(ctx.doNotDisturb, true);
+    assert.equal(sleeps, 1);
+    assert.ok(!rendererEvents.some(([name, value]) => name === "dnd-change" && value === false));
+    assert.ok(!hitEvents.some(([name, value]) => name === "hit-state-sync" && value.dndEnabled === false));
+    assert.ok(!states.includes("waking"));
+    mini.cleanup();
+  });
+
+  for (const meetingActive of [false, undefined]) {
+    it(`T11: exiting mini keeps legacy DND wake when meeting callback is ${meetingActive}`, () => {
+      const { mini, ctx, states } = ready(cloneTheme(_defaultTheme), { sleep: true });
+      const rendererEvents = [];
+      if (meetingActive !== undefined) ctx.isMeetingModeActive = () => meetingActive;
+      ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+      mini.exitMiniMode();
+      mock.timers.tick(450);
+      assert.equal(mini.getMiniMode(), false);
+      assert.equal(ctx.doNotDisturb, false);
+      assert.ok(rendererEvents.some(([name, value]) => name === "dnd-change" && value === false));
+      assert.ok(states.includes("waking"));
+      mini.cleanup();
+    });
+  }
+});
+
+describe("mini transition menu synchronization (#1382)", () => {
+  let loader;
+  let mini;
+  const display = { bounds: { x: 0, y: 0, width: 800, height: 600 }, workArea: { x: 0, y: 0, width: 800, height: 600 } };
+
+  beforeEach(() => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    loader = loadMiniWithElectron({ getAllDisplays: () => [display] });
+  });
+
+  afterEach(() => {
+    if (mini) mini.cleanup();
+    loader.restore();
+    mock.timers.reset();
+    mini = null;
+  });
+
+  function ready({ stableMini = false } = {}) {
+    const ctx = makeCtx(cloneTheme(_defaultTheme), [], 650);
+    mini = loader.initMini(ctx);
+    const builds = { context: [], tray: [] };
+    const flags = () => ({ transitioning: mini.getMiniTransitioning(), miniMode: mini.getMiniMode() });
+    ctx.buildContextMenu = () => builds.context.push(flags());
+    ctx.buildTrayMenu = () => builds.tray.push(flags());
+    if (stableMini) {
+      const rest = mini.restoreFromPrefs({ x: 700, y: 180, miniEdge: "right" }, { width: 120, height: 120 });
+      ctx.win.setBounds(rest);
+      ctx.currentState = "mini-idle";
+      ctx.mouseOverPet = true;
+    }
+    return { ctx, builds };
+  }
+
+  it("R4: menu entry rebuilds with settled flags after the full transition", () => {
+    const { builds } = ready();
+    mini.enterMiniViaMenu();
+    mock.timers.tick(560); // 60px crabwalk at 0.12px/ms + 50ms handoff
+    mock.timers.tick(360); // entry parabola
+    mock.timers.tick(300); // mini-enter preload
+    mock.timers.tick(1020); // declared 1000ms mini-enter animation
+    assert.equal(mini.getMiniMode(), true);
+    assert.equal(mini.getMiniTransitioning(), false);
+    assert.deepStrictEqual(builds.tray.at(-1), { transitioning: false, miniMode: true });
+    assert.deepStrictEqual(builds.context.at(-1), { transitioning: false, miniMode: true });
+  });
+
+  it("R4: exit rebuilds synchronously with busy flags and finally with normal flags", () => {
+    const { builds } = ready({ stableMini: true });
+    mini.exitMiniMode();
+    assert.deepStrictEqual(builds.tray, [{ transitioning: true, miniMode: true }]);
+    assert.deepStrictEqual(builds.context, [{ transitioning: true, miniMode: true }]);
+    mock.timers.tick(400);
+    assert.equal(mini.getMiniMode(), false);
+    assert.equal(mini.getMiniTransitioning(), false);
+    const expected = [
+      { transitioning: true, miniMode: true },
+      { transitioning: false, miniMode: false },
+    ];
+    assert.deepStrictEqual(builds.tray, expected);
+    assert.deepStrictEqual(builds.context, expected);
+  });
+
+  it("R4: menu entry rebuilds synchronously before crabwalk", () => {
+    const { builds } = ready();
+    mini.enterMiniViaMenu();
+    assert.equal(mini.getMiniTransitioning(), true);
+    assert.deepStrictEqual(builds.tray, [{ transitioning: true, miniMode: false }]);
+    assert.deepStrictEqual(builds.context, [{ transitioning: true, miniMode: false }]);
+  });
+
+  it("R4: stable mini peek in and out do not rebuild menus", () => {
+    const { ctx, builds } = ready({ stableMini: true });
+    const restX = ctx.getBoundsSnapshot().x;
+    assert.equal(mini.getMiniTransitioning(), false);
+    mini.miniPeekIn();
+    assert.equal(mini.getMiniTransitioning(), false);
+    assert.equal(mini.getIsAnimating(), true);
+    mock.timers.tick(224);
+    assert.equal(mini.getIsAnimating(), false);
+    assert.equal(ctx.getBoundsSnapshot().x, restX - mini.getMiniPeekOffset());
+    assert.deepStrictEqual(builds, { context: [], tray: [] });
+    mini.miniPeekOut();
+    assert.equal(mini.getMiniTransitioning(), false);
+    assert.equal(mini.getIsAnimating(), true);
+    mock.timers.tick(224);
+    assert.equal(mini.getIsAnimating(), false);
+    assert.equal(mini.getMiniTransitioning(), false);
+    assert.equal(ctx.getBoundsSnapshot().x, restX);
+    assert.deepStrictEqual(builds, { context: [], tray: [] });
+  });
 });
 
 describe("mini mode entry timing", () => {

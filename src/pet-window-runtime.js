@@ -1455,10 +1455,12 @@ function createPetWindowRuntime(options = {}) {
   //  - mini transitioning -> { applied:false, deferred:true,  changed:false } (petHidden untouched)
   //  - already in target  -> { applied:true,  deferred:false, changed:false }
   //  - state flipped      -> { applied:true,  deferred:false, changed:true  }
+  // When showing, keepFullscreenAutoHide restores only the manual layer without
+  // reporting manual show intent or clearing the fullscreen auto-hide layer.
   // `changed` reports whether the pet's on-screen visibility actually flipped,
   // which with the #935 auto-hide layer stacked on top is not always the same
   // as the manual flag flipping.
-  function setPetHidden(hidden) {
+  function setPetHidden(hidden, optionsArg = {}) {
     const target = !!hidden;
     const win = getRenderWindow();
     if (!isLiveWindow(win)) return { applied: false, deferred: false, changed: false };
@@ -1466,13 +1468,13 @@ function createPetWindowRuntime(options = {}) {
     // the visibility write wait for a later fullscreen poll. In the common
     // auto-hidden case the manual layer is already visible, so the retry only
     // needs to lift the fullscreen layer once the transition completes.
-    if (!target) noteManualPetShow();
+    if (!target && !optionsArg.keepFullscreenAutoHide) noteManualPetShow();
     if (getMiniTransitioning()) return { applied: false, deferred: true, changed: false };
     // #935: a manual show also clears the fullscreen auto-hide — "show" must
     // mean show NOW, not "show once the fullscreen app exits". topmost-
     // runtime's sync observes the cleared flag and holds off re-hiding for the
     // rest of that fullscreen episode.
-    const clearAutoHide = !target && fullscreenAutoHidden;
+    const clearAutoHide = !target && !optionsArg.keepFullscreenAutoHide && fullscreenAutoHidden;
     if (target === petHidden && !clearAutoHide) {
       if (!target) reassertWinTopmost();
       return { applied: true, deferred: false, changed: false };

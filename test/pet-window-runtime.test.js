@@ -4316,6 +4316,39 @@ describe("pet-window-runtime cloak self-heal (#525)", () => {
 // restore, and a manual show (setPetHidden(false)) clears the auto flag so
 // "show" always means show NOW.
 describe("fullscreen auto-hide visibility layer (#935)", () => {
+  it("T9: meeting restore clears only manual hide and preserves fullscreen suppression without show intent", () => {
+    const notes = [];
+    const h = createRuntime({ noteManualPetShow: () => notes.push("show") });
+    h.runtime.setFullscreenAutoHidden(true);
+    h.runtime.setPetHidden(true, { keepFullscreenAutoHide: true });
+    assert.equal(h.runtime.isPetHidden(), true, "the option does not inhibit hiding");
+    h.renderWin.calls.length = 0;
+    h.calls.length = 0;
+    const result = h.runtime.setPetHidden(false, { keepFullscreenAutoHide: true });
+    assert.deepStrictEqual(result, { applied: true, deferred: false, changed: false });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    assert.deepStrictEqual(notes, []);
+    assert.ok(!h.renderWin.calls.some(([name]) => name === "showInactive"));
+    assert.ok(!h.calls.some(([name, value]) => name === "setFloatingSurfacesFullscreenSuppressed" && value === false));
+  });
+
+  it("R3: meeting restore shows the pet when fullscreen auto-hide is off", () => {
+    const h = createRuntime();
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    h.runtime.setPetHidden(true);
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    h.renderWin.calls.length = 0;
+    const result = h.runtime.setPetHidden(false, { keepFullscreenAutoHide: true });
+    assert.deepStrictEqual(result, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some(([name]) => name === "showInactive"));
+  });
+
   it("setFullscreenAutoHidden hides the pet without touching the manual state", () => {
     const h = createRuntime();
     const r = h.runtime.setFullscreenAutoHidden(true);

@@ -450,3 +450,91 @@ describe("#1275: Windows menu close respects pet topmost", () => {
     });
   }
 });
+
+describe("meeting mode menu items (#1382)", () => {
+  function trayCtx(overrides = {}) {
+    const tray = { template: null, tooltip: null };
+    const ctx = buildBaseCtx({
+      tray: {
+        setContextMenu(menuObj) { tray.template = menuObj.template; },
+        setToolTip(text) { tray.tooltip = text; },
+      },
+      ...overrides,
+    });
+    return { ctx, tray };
+  }
+
+  it("T12: both meeting actions are disabled during mini transitions and enabled otherwise", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    for (const transitioning of [true, false]) {
+      for (const active of [true, false]) {
+        const { ctx, tray } = trayCtx({
+          getMiniTransitioning: () => transitioning,
+          getMeetingMode: () => ({ active, endsAt: 1_000_000 }),
+          startMeetingMode: () => {},
+          endMeetingMode: () => {},
+        });
+        const menu = initMenu(ctx);
+        menu.buildTrayMenu();
+        menu.buildContextMenu();
+        for (const template of [tray.template, ctx.contextMenu.template]) {
+          const item = template.find((entry) => active
+            ? /^End Meeting Mode /.test(entry.label || "")
+            : entry.label === "Meeting Mode");
+          assert.ok(item);
+          assert.strictEqual(item.enabled, !transitioning, `active=${active}, transitioning=${transitioning}`);
+        }
+      }
+    }
+  });
+
+  it("offers 30 min / 1 h / 2 h in both menus and starts with that duration", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    const started = [];
+    const { ctx, tray } = trayCtx({
+      getMeetingMode: () => ({ active: false, endsAt: 0 }),
+      startMeetingMode: (minutes) => started.push(minutes),
+      endMeetingMode: () => {},
+    });
+    const menu = initMenu(ctx);
+    menu.buildTrayMenu();
+    menu.buildContextMenu();
+    for (const template of [tray.template, ctx.contextMenu.template]) {
+      const item = template.find((entry) => entry.label === "Meeting Mode");
+      assert.ok(item, "meeting mode submenu present");
+      assert.deepStrictEqual(item.submenu.map((entry) => entry.label),
+        ["Hide for 30 Minutes", "Hide for 1 Hour", "Hide for 2 Hours"]);
+      item.submenu[1].click();
+    }
+    assert.deepStrictEqual(started, [60, 60]);
+    assert.strictEqual(tray.tooltip, "Clawd Desktop Pet");
+  });
+
+  it("while active, shows a single End item with the end time and sets the tray tooltip", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    let ended = 0;
+    const endsAt = new Date(2026, 10, 17, 14, 30).getTime();
+    const { ctx, tray } = trayCtx({
+      getMeetingMode: () => ({ active: true, endsAt }),
+      startMeetingMode: () => {},
+      endMeetingMode: () => { ended += 1; },
+    });
+    const menu = initMenu(ctx);
+    menu.buildTrayMenu();
+    const item = tray.template.find((entry) => /^End Meeting Mode \(until .+\)$/.test(entry.label || ""));
+    assert.ok(item, "end item present");
+    assert.match(item.label, /2:30|14:30/);
+    assert.ok(!tray.template.some((entry) => entry.label === "Meeting Mode"));
+    item.click();
+    assert.strictEqual(ended, 1);
+    assert.match(tray.tooltip, /^Clawd: meeting mode until .*(2:30|14:30)/);
+  });
+
+  it("is disabled when the runtime does not provide meeting mode", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    const { ctx, tray } = trayCtx();
+    initMenu(ctx).buildTrayMenu();
+    const item = tray.template.find((entry) => entry.label === "Meeting Mode");
+    assert.strictEqual(item.enabled, false);
+  });
+});
