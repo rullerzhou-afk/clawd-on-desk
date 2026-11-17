@@ -23,6 +23,216 @@
   const permissionModePending = new Set();
   let dshNoticesRequestSeq = 0;
   const dshNoticeContainers = new Set();
+  const installSkippedNoticeContainers = new Map();
+
+  function getInstallSkippedMap() {
+    if (!runtime.agentInstallSkipped || typeof runtime.agentInstallSkipped !== "object") {
+      runtime.agentInstallSkipped = {};
+    }
+    return runtime.agentInstallSkipped;
+  }
+
+  function isGenericNotInstalledReason(reason) {
+    if (!reason || typeof reason !== "string") return true;
+    return (
+      reason === "not-installed" ||
+      reason === "dsh-not-found" ||
+      reason === "grok-home-missing" ||
+      reason.endsWith("-not-installed")
+    );
+  }
+
+  function detectorSourceLabel(hint) {
+    if (!hint || !hint.detectedInstalled) return "";
+    const reason = typeof hint.reason === "string" ? hint.reason : "";
+    let label = t("agentInstallSkippedDetectorGeneric");
+    if (reason === "desktop-app") label = t("agentInstallSkippedDetectorDesktopApp");
+    else if (reason === "command-path") label = t("agentInstallSkippedDetectorCommand");
+    else if (reason === "parent-dir") label = t("agentInstallSkippedDetectorParentDir");
+    else if (reason === "custom-path") label = t("agentInstallSkippedDetectorCustomPath");
+    const detail = typeof hint.detail === "string" ? hint.detail.trim() : "";
+    return detail ? `${label} (${detail})` : label;
+  }
+
+  function skippedTargetReasonText(entry) {
+    if (!entry || typeof entry !== "object") return "";
+    const reason = typeof entry.reason === "string" ? entry.reason : "";
+    if (reason === "web-not-used") return t("agentInstallSkippedTargetWebNotUsed");
+    if (reason === "desktop-profile-uninitialized") return t("agentInstallSkippedTargetDesktopUninitialized");
+    if (reason === "desktop-not-installed") return t("agentInstallSkippedTargetDesktopNotInstalled");
+    if (typeof entry.resultMessage === "string" && entry.resultMessage.trim()) return entry.resultMessage.trim();
+    if (typeof entry.resultReason === "string" && entry.resultReason.trim()) return entry.resultReason.trim();
+    return reason;
+  }
+
+  function formatSkippedTargetsSummary(targets) {
+    if (!targets || typeof targets !== "object") return "";
+    const orderedKeys = [
+      "web",
+      "desktop",
+      ...Object.keys(targets).filter((key) => key !== "web" && key !== "desktop"),
+    ];
+    const parts = [];
+    for (const profile of orderedKeys) {
+      const entry = targets[profile];
+      if (!entry) continue;
+      const text = skippedTargetReasonText(entry);
+      if (!text) continue;
+      const profileLabel = profile === "web" || profile === "desktop"
+        ? dshNoticeProfileLabel(profile)
+        : profile;
+      parts.push(
+        t("dshNoticeLine")
+          .replace("{profile}", profileLabel)
+          .replace("{text}", text)
+      );
+    }
+    return parts.join(" · ");
+  }
+
+  function buildSkippedInstallFeedback(agent, result) {
+    const agentId = agent && agent.id;
+    const agentName = (agent && (agent.name || agent.id)) || "";
+    const reason = result && typeof result.reason === "string" ? result.reason : "";
+    const rawMessage = result && typeof result.message === "string" ? result.message.trim() : "";
+    const syntheticFallback = agentId ? `Skipped installing ${agentId}` : "";
+    const specificMessage = rawMessage && rawMessage !== syntheticFallback ? rawMessage : "";
+    const targets = result && result.targets && typeof result.targets === "object" ? result.targets : null;
+    const desktopReason = targets && targets.desktop && typeof targets.desktop.reason === "string"
+      ? targets.desktop.reason
+      : "";
+    const hint = agentId ? getInstallationHint(agentId) : null;
+    const detectedInstalled = Boolean(hint && hint.detectedInstalled);
+    const genericMissing = isGenericNotInstalledReason(reason);
+    const targetsSummary = formatSkippedTargetsSummary(targets);
+    const hasSpecificDetail = Boolean(targetsSummary || !genericMissing);
+    const isDshDesktopUninitialized = (
+      reason === "no-applicable-target" && desktopReason === "desktop-profile-uninitialized"
+    );
+    const detectorConflict = detectedInstalled && !isDshDesktopUninitialized && (
+      genericMissing || reason === "no-applicable-target"
+    );
+
+    let primaryText = "";
+    let toastDetail = "";
+    if (isDshDesktopUninitialized) {
+      primaryText = t("agentInstallSkippedDshDesktopUninitialized");
+      toastDetail = primaryText;
+    } else if (genericMissing) {
+      if (detectedInstalled) {
+        primaryText = specificMessage && !/is not installed$/i.test(specificMessage)
+          ? specificMessage
+          : t("agentInstallSkippedInstallerNotFound");
+        toastDetail = specificMessage || t("agentInstallSkippedInstallerNotFound");
+      }
+    } else {
+      primaryText = specificMessage || reason;
+      toastDetail = primaryText;
+    }
+
+    const secondaryLines = [];
+    if (targetsSummary) secondaryLines.push(targetsSummary);
+    if (detectedInstalled) {
+      const source = detectorSourceLabel(hint);
+      if (source) {
+        secondaryLines.push(formatHintResult(t("agentInstallSkippedDetectedSource"), { source }));
+      }
+    }
+
+    let toast;
+    if (!hasSpecificDetail && !detectedInstalled) {
+      toast = formatHintResult(t("agentIntegrationInstallSkipped"), { agents: agentName });
+    } else if (detectorConflict) {
+      toast = formatHintResult(t("agentIntegrationInstallSkippedDetectorConflict"), {
+        agents: agentName,
+        detail: toastDetail,
+      });
+    } else {
+      toast = formatHintResult(t("agentIntegrationInstallSkippedWithReason"), {
+        agents: agentName,
+        detail: toastDetail,
+      });
+    }
+
+    const showInline = Boolean(primaryText && (hasSpecificDetail || detectedInstalled));
+    return {
+      toast,
+      hasSpecificDetail,
+      detectorConflict,
+      showInline,
+      notice: showInline ? { primaryText, secondaryLines } : null,
+    };
+  }
+
+  function renderSkippedInstallNotice(container, agentId) {
+    const entry = agentId ? getInstallSkippedMap()[agentId] : null;
+    container.textContent = "";
+    if (!entry || !entry.primaryText) {
+      container.hidden = true;
+      return;
+    }
+    container.hidden = false;
+    const item = document.createElement("div");
+    item.className = "agent-dsh-notice agent-install-skipped-notice";
+    item.dataset.kind = "skipped-install";
+    const line = document.createElement("div");
+    line.className = "agent-dsh-notice-line";
+    line.textContent = entry.primaryText;
+    item.appendChild(line);
+    for (const detail of entry.secondaryLines || []) {
+      const detailLine = document.createElement("div");
+      detailLine.className = "agent-dsh-notice-line agent-install-skipped-detail";
+      detailLine.textContent = detail;
+      item.appendChild(detailLine);
+    }
+    const actions = document.createElement("div");
+    actions.className = "agent-dsh-notice-actions";
+    const dismissBtn = helpers.buildButton({
+      labelKey: "dshNoticeAcknowledge",
+      size: "compact",
+      className: "agent-install-skipped-ack",
+    });
+    dismissBtn.addEventListener("click", (ev) => {
+      if (ev && typeof ev.stopPropagation === "function") ev.stopPropagation();
+      clearAgentInstallSkipped(agentId);
+    });
+    actions.appendChild(dismissBtn);
+    item.appendChild(actions);
+    container.appendChild(item);
+  }
+
+  function refreshMountedInstallSkippedNotices(targetAgentId = null) {
+    for (const [container, agentId] of [...installSkippedNoticeContainers.entries()]) {
+      if (typeof container.isConnected === "boolean" && !container.isConnected) {
+        installSkippedNoticeContainers.delete(container);
+        continue;
+      }
+      if (targetAgentId && agentId !== targetAgentId) continue;
+      renderSkippedInstallNotice(container, agentId);
+    }
+  }
+
+  function recordSkippedInstall(agent, result) {
+    const feedback = buildSkippedInstallFeedback(agent, result);
+    const agentId = agent && agent.id;
+    if (agentId) {
+      if (feedback.showInline && feedback.notice) {
+        getInstallSkippedMap()[agentId] = feedback.notice;
+      } else {
+        delete getInstallSkippedMap()[agentId];
+      }
+      refreshMountedInstallSkippedNotices(agentId);
+    }
+    return feedback;
+  }
+
+  function clearAgentInstallSkipped(agentId) {
+    if (!agentId) return;
+    const map = getInstallSkippedMap();
+    if (!(agentId in map)) return;
+    delete map[agentId];
+    refreshMountedInstallSkippedNotices(agentId);
+  }
   const deepseekBalanceCards = new Set();
 
   function t(key) {
@@ -808,13 +1018,17 @@
     let failed = 0;
     let firstError = "";
     try {
+      const skippedFeedbacks = [];
       for (const agentId of agentIds) {
         const result = await window.settingsAPI.command("installAgentIntegration", { agentId });
         if (result && result.status === "ok") {
           installed++;
+          clearAgentInstallSkipped(agentId);
         } else if (result && result.status === "skipped") {
           skipped++;
           skippedAgentIds.push(agentId);
+          const agent = getAgentMetadata(agentId) || { id: agentId, name: agentId };
+          skippedFeedbacks.push(recordSkippedInstall(agent, result));
         } else if (!firstError) {
           failed++;
           firstError = (result && result.message) || "unknown error";
@@ -830,17 +1044,30 @@
         }), { error: true });
       } else if (installed > 0) {
         if (skipped > 0) {
-          ops.showToast(formatHintResult(t("toastAgentInstallHintPartialSkipped"), {
-            success: installed,
-            agents: formatAgentNames(skippedAgentIds),
-          }), { ttl: 5000 });
+          const hasInlineSkipped = skippedFeedbacks.some((item) => item.showInline);
+          ops.showToast(formatHintResult(
+            t(hasInlineSkipped ? "toastAgentInstallHintPartialSkippedDetailed" : "toastAgentInstallHintPartialSkipped"),
+            {
+              success: installed,
+              agents: formatAgentNames(skippedAgentIds),
+            }
+          ), { ttl: 5000 });
         } else {
           ops.showToast(t("toastAgentInstallHintInstalled"));
         }
       } else if (skipped > 0) {
-        ops.showToast(formatHintResult(t("toastAgentInstallHintSkipped"), {
-          agents: formatAgentNames(skippedAgentIds),
-        }), { ttl: 5000 });
+        if (
+          skippedFeedbacks.length === 1 &&
+          (skippedFeedbacks[0].hasSpecificDetail || skippedFeedbacks[0].detectorConflict)
+        ) {
+          ops.showToast(skippedFeedbacks[0].toast, { ttl: 5000 });
+        } else {
+          const hasInlineSkipped = skippedFeedbacks.some((item) => item.showInline);
+          ops.showToast(formatHintResult(
+            t(hasInlineSkipped ? "toastAgentInstallHintSkippedDetailed" : "toastAgentInstallHintSkipped"),
+            { agents: formatAgentNames(skippedAgentIds) }
+          ), { ttl: 5000 });
+        }
       }
     } catch (err) {
       ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
@@ -914,10 +1141,12 @@
 
   function formatHintResult(template, values) {
     return String(template)
-      .replace("{success}", String(values.success))
-      .replace("{failed}", String(values.failed))
-      .replace("{agents}", values.agents || "")
-      .replace("{message}", values.message || "unknown error");
+      .replace("{success}", () => String(values.success))
+      .replace("{failed}", () => String(values.failed))
+      .replace("{agents}", () => values.agents || "")
+      .replace("{detail}", () => values.detail || "")
+      .replace("{source}", () => values.source || "")
+      .replace("{message}", () => values.message || "unknown error");
   }
 
   function showClaudeHooksDisableConfirmModal() {
@@ -1289,6 +1518,15 @@
     refreshDshNotices(container);
   }
 
+  function buildAgentInstallSkippedNotices(agent, text) {
+    if (!agent || agent.custom || !agent.id) return;
+    const container = document.createElement("div");
+    container.className = "agent-install-skipped-notices";
+    text.appendChild(container);
+    installSkippedNoticeContainers.set(container, agent.id);
+    renderSkippedInstallNotice(container, agent.id);
+  }
+
   // Card header: name + one status sentence + exactly one control. Connected
   // cards keep their master switch; unintegrated cards get only Install. The
   // control choice follows categorizeAgentsForSections: connected vs not.
@@ -1330,6 +1568,7 @@
           text.appendChild(hint);
         }
         buildDshNotices(agent, text);
+        buildAgentInstallSkippedNotices(agent, text);
       },
       buildExtraControls: (ctrl) => {
         // Connected cards have no button here; Uninstall/Remove lives in the
@@ -2824,9 +3063,8 @@
       });
       window.settingsAPI.command(command, { agentId: agent.id }).then((result) => {
         if (result && result.status === "skipped") {
-          ops.showToast(formatHintResult(t("agentIntegrationInstallSkipped"), {
-            agents: agent.name || agent.id,
-          }), { ttl: 5000 });
+          const feedback = recordSkippedInstall(agent, result);
+          ops.showToast(feedback.toast, { ttl: 5000 });
           refreshInstallationHints();
           syncAgentIntegrationAction(meta);
           return;
@@ -2837,6 +3075,7 @@
           syncAgentIntegrationAction(meta);
           return;
         }
+        clearAgentInstallSkipped(agent.id);
         const key = installed ? "toastAgentIntegrationUninstalled" : "toastAgentIntegrationInstalled";
         ops.showToast(t(key));
         refreshInstallationHints();

@@ -5373,10 +5373,20 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
   try {
     return await enqueueMutation(async () => {
       const frozen = freezeDshOperationOptions(options);
+      let desktopDiscovery = null;
       if (!(await isDshInstalled(frozen))) {
-        return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
+        if (typeof frozen.dshInstalled === "boolean") {
+          return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
+        }
+        // Keep isDshInstalled() scoped to DSH home/CLI for its unit contract,
+        // while letting sync classify an unlaunched Desktop app cleanly via resolveDshTargets.
+        desktopDiscovery = await discoverDshDesktop(frozen);
+        if (!desktopDiscovery || desktopDiscovery.status === "not-found") {
+          return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
+        }
       }
-      const targets = await resolveDshTargets(frozen, { operation });
+      const targetOptions = desktopDiscovery ? Object.freeze({ ...frozen, desktopDiscovery }) : frozen;
+      const targets = await resolveDshTargets(targetOptions, { operation });
       const run = await runDshTargets(frozen, operation, targets, "sync");
       const entries = [run.web, run.desktop];
       const result = summarizeDshInstallResults(entries);

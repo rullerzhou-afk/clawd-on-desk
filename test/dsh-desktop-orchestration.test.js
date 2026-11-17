@@ -1151,3 +1151,27 @@ test("a desktop success keeps web's manual command on the top-level ok result", 
   assert.match(result.manualCommand, /plugin --profile web add|'plugin' '--profile' 'web' 'add'/);
   assert.ok(result.warnings.some((line) => line.startsWith("web:")));
 });
+
+test("unlaunched DSH desktop without ~/.dsh or CLI falls through isDshInstalled to desktop-profile-uninitialized", async (t) => {
+  const harness = makeHarness(t);
+  const cli = makeCli(harness);
+  for (const operation of ["install", "startup-sync"]) {
+    const result = await installDeepSeekHarnessBridge(orchOptions(harness, cli, {
+      operation,
+      dshInstalled: undefined,
+      commandInfo: null,
+      dshCommand: false,
+      env: { PATH: "" },
+      desktopDiscovery: desktopFound(harness),
+    }));
+    assert.strictEqual(result.status, "skipped", `${operation} must skip cleanly`);
+    assert.strictEqual(result.reason, "no-applicable-target");
+    assert.strictEqual(result.targets.web.role, "not-applicable");
+    assert.strictEqual(result.targets.web.reason, "web-not-used");
+    assert.strictEqual(result.targets.desktop.role, "not-applicable");
+    assert.strictEqual(result.targets.desktop.reason, "desktop-profile-uninitialized");
+    assert.match(result.message, /open the DeepSeek Harness desktop app once/i);
+  }
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-web.json")), false);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-desktop.json")), false);
+});
