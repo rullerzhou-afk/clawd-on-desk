@@ -43,6 +43,13 @@ function syncSessionHudVisibility() {
   if (typeof ctx.syncSessionHudVisibility === "function") ctx.syncSessionHudVisibility();
 }
 
+// The tray menu is static; rebuild on transition flag changes so dependent
+// items do not retain stale enabled states (#1382).
+function rebuildMenus() {
+  ctx.buildContextMenu();
+  ctx.buildTrayMenu();
+}
+
 function refreshTheme() {
   cancelPendingMiniPeek(true);
   MINI_OFFSET_RATIO = ctx.theme.miniMode.offsetRatio;
@@ -507,6 +514,7 @@ function consumeTopologyForMiniPeekIn() {
 // actually check" since nothing was left to call
 // releaseReconcileProtection().
 function finalizeMiniProtectionExit(onConsumeTopology) {
+  const wasTransitioning = miniTransitioning;
   miniTransitioning = false;
   isAnimating = false;
   if (typeof ctx.releaseReconcileProtection === "function") ctx.releaseReconcileProtection();
@@ -514,6 +522,7 @@ function finalizeMiniProtectionExit(onConsumeTopology) {
     pendingTopologyMaterialize = false;
     if (typeof onConsumeTopology === "function") onConsumeTopology();
   }
+  if (wasTransitioning) rebuildMenus();
 }
 
 function finishMiniEntry(delayMs) {
@@ -614,8 +623,7 @@ function enterMiniMode(wa, viaMenu, edge) {
   ctx.sendToRenderer("mini-mode-change", true, miniEdge);
   ctx.sendToHitWin("hit-state-sync", { miniMode: true });
   miniTransitioning = true;
-  ctx.buildContextMenu();
-  ctx.buildTrayMenu();
+  rebuildMenus();
   syncSessionHudVisibility();
 
   const enterSvgState = ctx.doNotDisturb ? "mini-enter-sleep" : "mini-enter";
@@ -724,6 +732,7 @@ function exitMiniMode() {
   // display-metrics-changed, move-window-by, checkMiniModeSnap, etc.)
   // from interfering with the animation. Both flags clear in onDone.
   miniTransitioning = true;
+  rebuildMenus();
   miniSnap = null;
   miniSleepPeeked = false;
   miniPeeked = false;
@@ -751,8 +760,6 @@ function exitMiniMode() {
     ctx.sendToRenderer("mini-clip", null);
     ctx.sendToRenderer("mini-mode-change", false);
     ctx.sendToHitWin("hit-state-sync", { miniMode: false });
-    ctx.buildContextMenu();
-    ctx.buildTrayMenu();
     syncSessionHudVisibility();
     if (ctx.doNotDisturb && ctx.isMeetingModeActive?.()) {
       ctx.applyDndSleepState();
@@ -795,6 +802,7 @@ function enterMiniViaMenu() {
   miniEdge = edge;
 
   miniTransitioning = true;
+  rebuildMenus();
   syncSessionHudVisibility();
 
   // Pre-entry crabwalk still uses the normal-size render/layout path. Send the
