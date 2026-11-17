@@ -205,6 +205,7 @@ const { createDisplayedVisualProjection } = require("./displayed-visual-projecti
 const { getRightSideMirrorFiles, isVisualMirrored, resolveMirroredFile } = require("./mirrored-files");
 const { createTestReactionHandler } = require("./test-reaction");
 const createMacHideController = require("./mac-hide");
+const { createMeetingModeController } = require("./meeting-mode");
 const {
   getFocusableLocalHudSessionIds: selectFocusableLocalHudSessionIds,
   getSessionFocusTarget,
@@ -1593,6 +1594,13 @@ function prepManualPetVisibility() {
 }
 function togglePetVisibility() {
   prepManualPetVisibility();
+  // #1382: during meeting mode the pet is hidden on purpose, so the toggle
+  // can only mean "show it": end the meeting (which restores what it changed)
+  // and make sure the pet is visible even if it was hidden before the meeting.
+  if (meetingMode.noteUserOverride("pet-shown")) {
+    if (petWindowRuntime.isPetHidden()) return petWindowRuntime.setPetHidden(false);
+    return { applied: true, deferred: false, changed: true };
+  }
   return petWindowRuntime.togglePetVisibility();
 }
 // Explicit-direction variant for the menus: the Show/Hide Pet items apply the
@@ -1601,6 +1609,7 @@ function togglePetVisibility() {
 // action (see menu.js).
 function setPetVisibility(visible) {
   prepManualPetVisibility();
+  if (visible) meetingMode.noteUserOverride("pet-shown");
   return petWindowRuntime.setPetHidden(!visible);
 }
 function bringPetToPrimaryDisplay() {
@@ -2767,10 +2776,38 @@ const { setState, applyState, updateSession, resolveDisplayState, getSvgOverride
         startStartupRecovery: _startStartupRecovery } = _state;
 const sessions = _state.sessions;
 
-function disableDoNotDisturb() {
+function disableDoNotDisturbAndObserveQuota() {
   const result = disableDoNotDisturbState();
   quotaAlertsRuntime?.observeQuota();
   return result;
+}
+
+// #1382: meeting mode drives the manual pet hide and DND. Its own restore
+// calls the raw setters below; the user-facing setters above end the meeting
+// first when the user shows the pet or wakes Clawd.
+const meetingMode = createMeetingModeController({
+  hidePet: () => {
+    prepManualPetVisibility();
+    petWindowRuntime.setPetHidden(true);
+  },
+  showPet: () => {
+    prepManualPetVisibility();
+    petWindowRuntime.setPetHidden(false);
+  },
+  isPetHidden: () => petWindowRuntime.isPetHidden(),
+  enableDnd: () => enableDoNotDisturb(),
+  disableDnd: () => disableDoNotDisturbAndObserveQuota(),
+  isDnd: () => doNotDisturb,
+  onChange: () => {
+    buildTrayMenu();
+    buildContextMenu();
+  },
+  log: (message) => console.log(`Clawd: ${message}`),
+});
+
+function disableDoNotDisturb() {
+  if (meetingMode.noteUserOverride("wake") && !doNotDisturb) return undefined;
+  return disableDoNotDisturbAndObserveQuota();
 }
 
 function showQuotaAlert(event) {
@@ -4890,6 +4927,9 @@ const _menuCtx = {
   set contextMenu(v) { contextMenu = v; },
   enableDoNotDisturb: () => enableDoNotDisturb(),
   disableDoNotDisturb: () => disableDoNotDisturb(),
+  getMeetingMode: () => meetingMode.getState(),
+  startMeetingMode: (minutes) => meetingMode.start(minutes),
+  endMeetingMode: () => meetingMode.end("menu"),
   enterMiniViaMenu: () => {
     if (!disableMiniModeCached) enterMiniViaMenu();
   },
@@ -6440,6 +6480,9 @@ if (!gotTheLock) {
     // timeout (system-wake-recovery.js finishWithTimeout), while un-cloaking is
     // a main-process concern that must not depend on renderer health. The two
     // paths coexist; recoverIfCloaked() is a no-op when nothing is cloaked.
+    // #1382: timers may not advance while the machine sleeps.
+    powerMonitor.on("resume", () => meetingMode.checkExpiry());
+    powerMonitor.on("unlock-screen", () => meetingMode.checkExpiry());
     if (isWin) {
       powerMonitor.on("resume", () => petWindowRuntime.recoverIfCloaked());
       powerMonitor.on("unlock-screen", () => petWindowRuntime.recoverIfCloaked());

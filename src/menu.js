@@ -6,6 +6,7 @@ const { keepOutOfTaskbar } = require("./taskbar");
 const { loadTrayNormalIcon } = require("./tray-flash-icon");
 const { createMacDockVisibilityCoordinator } = require("./mac-dock-visibility");
 const { resolveRuntimeDockIconPolicy } = require("./mac-dock-icon-runtime");
+const { MEETING_MODE_DURATIONS_MIN, formatMeetingEndTime } = require("./meeting-mode");
 
 const platform = process.platform;
 const isMac = platform === "darwin";
@@ -13,6 +14,7 @@ const isWin = platform === "win32";
 const isLinux = platform === "linux";
 const MENU_FOCUS_WAIT_MS = 200;
 const MENU_OWNER_HIDE_DELAY_MS = 500;
+const TRAY_TOOLTIP = "Clawd Desktop Pet";
 
 // Login-item / autostart helpers and the openAtLogin write path live in
 // src/login-item.js + main.js's settings-actions effect. menu.js used to
@@ -228,7 +230,7 @@ module.exports = function initMenu(ctx) {
       iconPath: path.join(__dirname, "../assets/icon.png"),
     });
     ctx.tray = new Tray(icon);
-    ctx.tray.setToolTip("Clawd Desktop Pet");
+    ctx.tray.setToolTip(TRAY_TOOLTIP);
     buildTrayMenu();
   }
 
@@ -243,8 +245,43 @@ module.exports = function initMenu(ctx) {
     return macDockVisibility.apply(ctx.showDock);
   }
 
+  // #1382: meeting mode = pet hidden + DND for a fixed time. Inactive, it is a
+  // submenu of durations; active, a single item that ends it and says when it
+  // would end on its own (the tray tooltip carries the same time).
+  function getMeetingModeState() {
+    const state = typeof ctx.getMeetingMode === "function" ? ctx.getMeetingMode() : null;
+    return state && state.active ? state : null;
+  }
+
+  function buildMeetingModeMenuItem() {
+    const state = getMeetingModeState();
+    if (state) {
+      return {
+        label: t("meetingModeEnd").replace("{time}", formatMeetingEndTime(state.endsAt, ctx.lang)),
+        click: () => ctx.endMeetingMode(),
+      };
+    }
+    return {
+      label: t("meetingMode"),
+      enabled: typeof ctx.startMeetingMode === "function",
+      submenu: MEETING_MODE_DURATIONS_MIN.map((minutes) => ({
+        label: t(`meetingModeFor${minutes}`),
+        click: () => ctx.startMeetingMode(minutes),
+      })),
+    };
+  }
+
+  function syncTrayToolTip() {
+    if (!ctx.tray || typeof ctx.tray.setToolTip !== "function") return;
+    const state = getMeetingModeState();
+    ctx.tray.setToolTip(state
+      ? t("meetingModeTooltip").replace("{time}", formatMeetingEndTime(state.endsAt, ctx.lang))
+      : TRAY_TOOLTIP);
+  }
+
   function buildTrayMenu() {
     if (!ctx.tray) return;
+    syncTrayToolTip();
 
     // Same grouping discipline as the context menu (see joinGroups), adapted
     // for the tray's larger item set: state / noise / work / system / app /
@@ -255,6 +292,7 @@ module.exports = function initMenu(ctx) {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
+      buildMeetingModeMenuItem(),
       buildMiniModeMenuItem(),
     ];
 
@@ -563,6 +601,7 @@ module.exports = function initMenu(ctx) {
         label: ctx.doNotDisturb ? t("wake") : t("sleep"),
         click: () => ctx.doNotDisturb ? ctx.disableDoNotDisturb() : ctx.enableDoNotDisturb(),
       },
+      buildMeetingModeMenuItem(),
     ];
 
     const workGroup = [
