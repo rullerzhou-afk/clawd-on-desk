@@ -1595,11 +1595,10 @@ function prepManualPetVisibility() {
 function togglePetVisibility() {
   prepManualPetVisibility();
   // #1382: during meeting mode the pet is hidden on purpose, so the toggle
-  // can only mean "show it": end the meeting (which restores what it changed)
-  // and make sure the pet is visible even if it was hidden before the meeting.
+  // means "show it": end the meeting, then apply the user's show intent to
+  // clear fullscreen auto-hide too (the meeting's own restore preserves it).
   if (meetingMode.noteUserOverride("pet-shown")) {
-    if (petWindowRuntime.isPetHidden()) return petWindowRuntime.setPetHidden(false);
-    return { applied: true, deferred: false, changed: true };
+    return petWindowRuntime.setPetHidden(false);
   }
   return petWindowRuntime.togglePetVisibility();
 }
@@ -1613,6 +1612,9 @@ function setPetVisibility(visible) {
   return petWindowRuntime.setPetHidden(!visible);
 }
 function bringPetToPrimaryDisplay() {
+  if (petWindowRuntime.isPetEffectivelyHidden() && !_mini.getMiniMode() && !_mini.getMiniTransitioning()) {
+    meetingMode.noteUserOverride("pet-shown");
+  }
   prepManualPetVisibility();
   return petWindowRuntime.bringPetToPrimaryDisplay();
 }
@@ -2792,8 +2794,9 @@ const meetingMode = createMeetingModeController({
   },
   showPet: () => {
     prepManualPetVisibility();
-    petWindowRuntime.setPetHidden(false);
+    petWindowRuntime.setPetHidden(false, { keepFullscreenAutoHide: true });
   },
+  isBusy: () => _mini.getMiniTransitioning(),
   isPetHidden: () => petWindowRuntime.isPetHidden(),
   enableDnd: () => enableDoNotDisturb(),
   disableDnd: () => disableDoNotDisturbAndObserveQuota(),
@@ -4928,7 +4931,11 @@ const _menuCtx = {
   enableDoNotDisturb: () => enableDoNotDisturb(),
   disableDoNotDisturb: () => disableDoNotDisturb(),
   getMeetingMode: () => meetingMode.getState(),
-  startMeetingMode: (minutes) => meetingMode.start(minutes),
+  startMeetingMode: (minutes) => {
+    // Keep a pre-existing OS hide after the meeting, without unhiding the app.
+    if (macHideController) macHideController.noteManualChange();
+    return meetingMode.start(minutes);
+  },
   endMeetingMode: () => meetingMode.end("menu"),
   enterMiniViaMenu: () => {
     if (!disableMiniModeCached) enterMiniViaMenu();
@@ -5963,6 +5970,8 @@ function computeFinalDragBounds(bounds, size, clampPosition = clampToScreenVisua
 
 // ── Mini Mode — initialized here after state module ──
 const _miniCtx = {
+  isMeetingModeActive: () => meetingMode.isActive(),
+  applyDndSleepState: () => _state.applyDndSleepState(),
   hasPendingReminderAttention: () => _state.hasPendingReminderAttention(),
   getReminderReselectionOptions: (state) => _state.getReminderReselectionOptions(state),
   get theme() { return getActiveTheme(); },
@@ -6247,6 +6256,7 @@ if (!gotTheLock) {
   _syncCodexAutoStartGate(startupGateSnapshot, "startup");
   app.on("second-instance", (_event, commandLine) => {
     if (petWindowRuntime.isPetEffectivelyHidden()) {
+      meetingMode.noteUserOverride("pet-shown");
       prepManualPetVisibility();
       petWindowRuntime.setPetHidden(false);
     } else {
@@ -6496,6 +6506,7 @@ if (!gotTheLock) {
         isMac,
         app,
         getShowDock: () => showDock,
+        beforeManualShow: () => meetingMode.noteUserOverride("pet-shown"),
         isPetHidden: () => petWindowRuntime.isPetHidden(),
         setPetHidden: (hidden) => petWindowRuntime.setPetHidden(hidden),
       });

@@ -301,6 +301,42 @@ describe("theme mini peek motion", () => {
     assert.equal(ctx.getBoundsSnapshot().x, afterExit);
     mini.cleanup();
   });
+
+  it("T10: exiting mini during a meeting keeps DND and applies normal DND sleep once", () => {
+    const { mini, ctx, states } = ready(cloneTheme(_defaultTheme), { sleep: true });
+    const rendererEvents = [];
+    const hitEvents = [];
+    let sleeps = 0;
+    ctx.isMeetingModeActive = () => true;
+    ctx.applyDndSleepState = () => { sleeps++; ctx.applyState("sleeping"); };
+    ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+    ctx.sendToHitWin = (...args) => hitEvents.push(args);
+    mini.exitMiniMode();
+    mock.timers.tick(450);
+    assert.equal(mini.getMiniMode(), false);
+    assert.equal(ctx.doNotDisturb, true);
+    assert.equal(sleeps, 1);
+    assert.ok(!rendererEvents.some(([name, value]) => name === "dnd-change" && value === false));
+    assert.ok(!hitEvents.some(([name, value]) => name === "hit-state-sync" && value.dndEnabled === false));
+    assert.ok(!states.includes("waking"));
+    mini.cleanup();
+  });
+
+  for (const meetingActive of [false, undefined]) {
+    it(`T11: exiting mini keeps legacy DND wake when meeting callback is ${meetingActive}`, () => {
+      const { mini, ctx, states } = ready(cloneTheme(_defaultTheme), { sleep: true });
+      const rendererEvents = [];
+      if (meetingActive !== undefined) ctx.isMeetingModeActive = () => meetingActive;
+      ctx.sendToRenderer = (...args) => rendererEvents.push(args);
+      mini.exitMiniMode();
+      mock.timers.tick(450);
+      assert.equal(mini.getMiniMode(), false);
+      assert.equal(ctx.doNotDisturb, false);
+      assert.ok(rendererEvents.some(([name, value]) => name === "dnd-change" && value === false));
+      assert.ok(states.includes("waking"));
+      mini.cleanup();
+    });
+  }
 });
 
 describe("mini mode entry timing", () => {

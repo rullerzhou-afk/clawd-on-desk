@@ -273,7 +273,7 @@ Copilot CLI 同步走 `<COPILOT_HOME 或 ~/.copilot>/hooks/hooks.json`，marker-
 - `miniTransitioning` 期间，所有窗口定位路径都必须先检查保护标志，否则 `setPosition()` 可能并发崩
 - DND 会屏蔽 hook 事件并压住 bubble，但**不应替用户做权限决定**：opencode 走 silent drop 回到 TUI 提示，Claude Code / CodeBuddy 走断连回到内置聊天/终端确认，Codex official hook 走 no-decision `{}` 回到原生审批提示；Pi 是 state-only，不进入权限审批链路
 - 隐藏桌宠（petHidden）≠ 免打扰：隐藏只收起宠物/HUD/update bubble/当时 pending 的权限气泡，**隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修**；要静默权限气泡走 DND（见上条）。详见 `docs/project/theme-state-ui.md` State Machine 节
-- 会议模式（#1382，`src/meeting-mode.js`）不是新的隐藏层：它按时长（30/60/120 分钟）同时打开手动 petHidden 和 DND，记住进入前两者的状态，结束时只撤销自己打开的那一半。用户手动显示桌宠（快捷键 / 菜单）或唤醒会先结束会议模式；计时器睡眠期间可能不走，`powerMonitor` resume / unlock-screen 时重查结束时间；不持久化。不要改用 `setContentProtection`：macOS 15 起 ScreenCaptureKit 截屏忽略它（electron/electron#48258）
+- 会议模式（#1382，`src/meeting-mode.js`）不是新的隐藏层：它按时长（30/60/120 分钟）同时打开手动 petHidden 和 DND，记住进入前两者的状态，结束时只撤销自己打开的那一半。用户手动显示桌宠（快捷键 / 菜单 / Dock 点击 / 再次启动 / 移到主显示器）或唤醒会先结束会议模式；会议中退出迷你模式保留 DND，到点恢复不清全屏自动隐藏；计时器睡眠期间可能不走，`powerMonitor` resume / unlock-screen 时重查结束时间；不持久化。不要改用 `setContentProtection`：macOS 15 起 ScreenCaptureKit 截屏忽略它（electron/electron#48258）
 - Session HUD 默认显示所有非 headless、非 sleeping 的 live session，包括 badge=Done 的 idle session；不要按 `state !== "idle"` 过滤。两个独立、默认关闭的显示偏好为 `sessionHudHideCompletedCodexEphemeral` 与 `sessionHudHideActiveCodexEphemeral`：用 snapshot 字段 `hudHiddenByPreference` 分别收起明确的本机 Codex 临时完成行，或 thinking/working 行，均可能包含普通侧边聊天。活动偏好还通过只读投影排除该活动对宠物状态/SVG 的驱动；保留已识别子代理、pending 权限/原生问题、错误和完成确认提示。完成偏好不屏蔽完成动画；仅开活动偏好时，完成行会重新显示。两者都不是后台来源识别，不删除 canonical 会话、不结束任务、不改变 Dashboard、系统 keep-awake、审批或小结；见运行时架构。
 - update bubble 跟随桌宠时要同时避让 Session HUD 和 permission stack；permission bubble 增删、测高、deny-and-focus 后都要触发 update bubble 重排
 - `mini-working` 是可选主题能力，缺失时必须优雅降级

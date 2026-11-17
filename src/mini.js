@@ -754,7 +754,9 @@ function exitMiniMode() {
     ctx.buildContextMenu();
     ctx.buildTrayMenu();
     syncSessionHudVisibility();
-    if (ctx.doNotDisturb) {
+    if (ctx.doNotDisturb && ctx.isMeetingModeActive?.()) {
+      ctx.applyDndSleepState();
+    } else if (ctx.doNotDisturb) {
       ctx.doNotDisturb = false;
       ctx.sendToRenderer("dnd-change", false);
       ctx.sendToHitWin("hit-state-sync", { dndEnabled: false });

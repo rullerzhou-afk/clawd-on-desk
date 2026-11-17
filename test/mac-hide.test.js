@@ -13,9 +13,11 @@ function makeHarness(opts = {}) {
     show() { this._shown++; },
   };
   const calls = []; // recorded setPetHidden(target) booleans
+  const order = [];
   let resultQueue = [];
   const setPetHidden = (hidden) => {
     calls.push(hidden);
+    order.push(`setPetHidden(${hidden})`);
     return resultQueue.length
       ? resultQueue.shift()
       : { applied: true, deferred: false, changed: true };
@@ -34,6 +36,7 @@ function makeHarness(opts = {}) {
     getShowDock: opts.getShowDock || (() => true),
     isPetHidden: opts.isPetHidden || (() => false),
     setPetHidden,
+    beforeManualShow: opts.beforeManualShow ? () => { order.push("beforeManualShow"); opts.beforeManualShow(); } : undefined,
     setInterval: setIntervalFn,
     clearInterval: clearIntervalFn,
     setTimeout: setTimeoutFn,
@@ -44,6 +47,7 @@ function makeHarness(opts = {}) {
     ctrl,
     fakeApp,
     calls,
+    order,
     queueResults: (...r) => { resultQueue = r; },
     poll: () => { if (intervalCb) intervalCb(); },
     hasInterval: () => !!intervalCb,
@@ -53,6 +57,43 @@ function makeHarness(opts = {}) {
 }
 
 describe("mac-hide controller (#416)", () => {
+  it("T7: OS hide and unhide preserve a pet that was already manually hidden", () => {
+    const h = makeHarness({ isPetHidden: () => true });
+    h.ctrl.start();
+    h.fakeApp._hidden = true;
+    h.poll();
+    assert.deepStrictEqual(h.calls, []);
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, false);
+    h.fakeApp._hidden = false;
+    h.poll();
+    assert.deepStrictEqual(h.calls, []);
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, false);
+  });
+
+  it("T8: Dock manual show runs beforeManualShow before applying visibility", () => {
+    let overrides = 0;
+    const h = makeHarness({ isPetHidden: () => true, beforeManualShow: () => { overrides++; } });
+    h.ctrl.onActivate();
+    assert.strictEqual(overrides, 1);
+    assert.deepStrictEqual(h.order, ["beforeManualShow", "setPetHidden(false)"]);
+  });
+
+  it("T8: OS-hidden activation and a hidden Dock do not call beforeManualShow", () => {
+    for (const osHidden of [true, false]) {
+      let overrides = 0;
+      const h = makeHarness({
+        isPetHidden: () => true,
+        getShowDock: () => osHidden,
+        beforeManualShow: () => { overrides++; },
+      });
+      h.fakeApp._hidden = osHidden;
+      h.ctrl.onActivate();
+      assert.strictEqual(overrides, 0);
+      assert.deepStrictEqual(h.calls, []);
+      assert.strictEqual(h.fakeApp._shown, osHidden ? 1 : 0);
+    }
+  });
+
   it("start() installs the poll only on macOS", () => {
     const mac = makeHarness({ isMac: true });
     mac.ctrl.start();

@@ -255,15 +255,17 @@ module.exports = function initMenu(ctx) {
 
   function buildMeetingModeMenuItem() {
     const state = getMeetingModeState();
+    const transitioning = typeof ctx.getMiniTransitioning === "function" && ctx.getMiniTransitioning();
     if (state) {
       return {
         label: t("meetingModeEnd").replace("{time}", formatMeetingEndTime(state.endsAt, ctx.lang)),
+        enabled: !transitioning,
         click: () => ctx.endMeetingMode(),
       };
     }
     return {
       label: t("meetingMode"),
-      enabled: typeof ctx.startMeetingMode === "function",
+      enabled: typeof ctx.startMeetingMode === "function" && !transitioning,
       submenu: MEETING_MODE_DURATIONS_MIN.map((minutes) => ({
         label: t(`meetingModeFor${minutes}`),
         click: () => ctx.startMeetingMode(minutes),

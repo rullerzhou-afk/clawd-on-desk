@@ -9,15 +9,24 @@ const {
   formatMeetingEndTime,
 } = require("../src/meeting-mode");
 
-function makeHarness({ petHidden = false, dnd = false } = {}) {
-  const state = { petHidden, dnd, now: 1_000_000, timers: [], calls: [], changes: [] };
+function makeHarness({ petHidden = false, dnd = false, busy = false, fail = null } = {}) {
+  const state = { petHidden, dnd, busy, fail, now: 1_000_000, timers: [], calls: [], changes: [], logs: [] };
+  function record(name) {
+    state.calls.push(name);
+    if (state.fail === name) {
+      assert.strictEqual(state.liveTimers().length, name === "hidePet" || name === "enableDnd" ? 1 : 0);
+      throw new Error(`${name} failed`);
+    }
+  }
   const controller = createMeetingModeController({
-    hidePet: () => { state.calls.push("hidePet"); state.petHidden = true; },
-    showPet: () => { state.calls.push("showPet"); state.petHidden = false; },
+    hidePet: () => { record("hidePet"); state.petHidden = true; },
+    showPet: () => { record("showPet"); state.petHidden = false; },
     isPetHidden: () => state.petHidden,
-    enableDnd: () => { state.calls.push("enableDnd"); state.dnd = true; },
-    disableDnd: () => { state.calls.push("disableDnd"); state.dnd = false; },
+    enableDnd: () => { record("enableDnd"); state.dnd = true; },
+    disableDnd: () => { record("disableDnd"); state.dnd = false; },
     isDnd: () => state.dnd,
+    isBusy: () => state.busy,
+    log: (message) => state.logs.push(message),
     onChange: (s) => state.changes.push(s),
     now: () => state.now,
     setTimeout: (fn, ms) => {
@@ -27,7 +36,8 @@ function makeHarness({ petHidden = false, dnd = false } = {}) {
     },
     clearTimeout: (timer) => { if (timer) timer.cleared = true; },
   });
-  state.liveTimer = () => state.timers.filter((t) => !t.cleared).at(-1);
+  state.liveTimers = () => state.timers.filter((t) => !t.cleared);
+  state.liveTimer = () => state.liveTimers().at(-1);
   state.fire = () => {
     const timer = state.liveTimer();
     timer.cleared = true;
@@ -37,6 +47,103 @@ function makeHarness({ petHidden = false, dnd = false } = {}) {
 }
 
 describe("meeting mode controller (#1382)", () => {
+  it("T1: start while busy changes nothing, including an existing meeting", () => {
+    const { controller, state } = makeHarness({ busy: true });
+    assert.strictEqual(controller.start(30), false);
+    assert.deepStrictEqual(state.calls, []);
+    assert.deepStrictEqual(state.changes, []);
+    assert.deepStrictEqual(state.timers, []);
+    assert.deepStrictEqual(controller.getState(), { active: false, endsAt: 0 });
+    state.busy = false;
+    controller.start(30);
+    const before = controller.getState();
+    const timer = state.liveTimer();
+    state.busy = true;
+    assert.strictEqual(controller.start(60), false);
+    assert.deepStrictEqual(controller.getState(), before);
+    assert.strictEqual(state.liveTimer(), timer);
+    assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet"]);
+    assert.strictEqual(state.changes.length, 1);
+  });
+
+  it("T2: overdue busy meetings retry with exactly one short timer, then restore", () => {
+    const { controller, state } = makeHarness();
+    controller.start(30);
+    const endsAt = controller.getState().endsAt;
+    state.now = endsAt;
+    state.busy = true;
+    state.fire();
+    assert.deepStrictEqual(controller.getState(), { active: true, endsAt });
+    assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet"]);
+    assert.strictEqual(state.liveTimers().length, 1);
+    assert.strictEqual(state.liveTimer().ms, 250);
+    assert.strictEqual(controller.checkExpiry(), false); // resume while retry pending
+    assert.strictEqual(state.liveTimers().length, 1);
+    state.now += 250;
+    state.fire();
+    assert.strictEqual(state.liveTimers().length, 1);
+    assert.strictEqual(state.liveTimer().ms, 250);
+    state.busy = false;
+    state.now += 250;
+    state.fire();
+    assert.strictEqual(controller.isActive(), false);
+    assert.strictEqual(state.liveTimers().length, 0);
+    assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet", "disableDnd", "showPet"]);
+    assert.strictEqual(state.petHidden, false);
+    assert.strictEqual(state.dnd, false);
+  });
+
+  for (const fail of ["disableDnd", "showPet"]) {
+    it(`T3: end survives ${fail} failure and still restores the other half and notifies`, () => {
+      const { controller, state } = makeHarness();
+      controller.start(30);
+      state.fail = fail;
+      assert.strictEqual(controller.end("menu"), true);
+      assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet", "disableDnd", "showPet"]);
+      assert.deepStrictEqual(state.changes.at(-1), { active: false, endsAt: 0 });
+      assert.strictEqual(state.changes.length, 2);
+      assert.strictEqual(controller.isEnding(), false);
+      assert.strictEqual(state.liveTimers().length, 0);
+      assert.strictEqual(fail === "disableDnd" ? state.petHidden : state.dnd, false);
+      assert.ok(state.logs.some((message) => message.includes(`${fail} failed`)));
+    });
+  }
+
+  for (const fail of ["hidePet", "enableDnd"]) {
+    it(`T4: start survives ${fail} failure with a timer already armed and expires`, () => {
+      const { controller, state } = makeHarness({ fail });
+      assert.strictEqual(controller.start(30), true);
+      assert.strictEqual(controller.isActive(), true);
+      assert.strictEqual(state.liveTimers().length, 1);
+      assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet"]);
+      assert.ok(state.logs.some((message) => message.includes(`${fail} failed`)));
+      state.now = controller.getState().endsAt;
+      state.fire();
+      assert.deepStrictEqual(controller.getState(), { active: false, endsAt: 0 });
+      assert.deepStrictEqual(state.changes.at(-1), { active: false, endsAt: 0 });
+      assert.strictEqual(state.liveTimers().length, 0);
+      assert.strictEqual(state.petHidden, false);
+      assert.strictEqual(state.dnd, false);
+    });
+  }
+
+  it("T5: end skips disabling DND when it was already switched off externally", () => {
+    const { controller, state } = makeHarness();
+    controller.start(30);
+    state.dnd = false;
+    controller.end("menu");
+    assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet", "showPet"]);
+  });
+
+  it("T6: normal end publishes an inactive change after restoring both halves", () => {
+    const { controller, state } = makeHarness();
+    controller.start(30);
+    assert.strictEqual(controller.end("menu"), true);
+    assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet", "disableDnd", "showPet"]);
+    assert.deepStrictEqual(state.changes.at(-1), { active: false, endsAt: 0 });
+    assert.strictEqual(state.changes.length, 2);
+  });
+
   it("offers 30, 60 and 120 minutes", () => {
     assert.deepStrictEqual([...MEETING_MODE_DURATIONS_MIN], [30, 60, 120]);
   });

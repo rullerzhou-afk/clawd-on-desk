@@ -4564,7 +4564,7 @@ return {
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,
   setState, applyState, updateSession, observeClaudeToolPhase, recordRecapEventOnly, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   shouldDropForDnd,
-  enableDoNotDisturb, disableDoNotDisturb,
+  enableDoNotDisturb, disableDoNotDisturb, applyDndSleepState,
   // Read-only, unmerged account windows for source-specific alert deduplication.
   getAccountQuotaSnapshot: () => accountQuota.snapshot({ mergeSources: false }),
   startStaleCleanup, stopStaleCleanup, startWakePoll, stopWakePoll,

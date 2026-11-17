@@ -464,6 +464,30 @@ describe("meeting mode menu items (#1382)", () => {
     return { ctx, tray };
   }
 
+  it("T12: both meeting actions are disabled during mini transitions and enabled otherwise", () => {
+    const initMenu = loadMenuWithElectron(fakeElectron());
+    for (const transitioning of [true, false]) {
+      for (const active of [true, false]) {
+        const { ctx, tray } = trayCtx({
+          getMiniTransitioning: () => transitioning,
+          getMeetingMode: () => ({ active, endsAt: 1_000_000 }),
+          startMeetingMode: () => {},
+          endMeetingMode: () => {},
+        });
+        const menu = initMenu(ctx);
+        menu.buildTrayMenu();
+        menu.buildContextMenu();
+        for (const template of [tray.template, ctx.contextMenu.template]) {
+          const item = template.find((entry) => active
+            ? /^End Meeting Mode /.test(entry.label || "")
+            : entry.label === "Meeting Mode");
+          assert.ok(item);
+          assert.strictEqual(item.enabled, !transitioning, `active=${active}, transitioning=${transitioning}`);
+        }
+      }
+    }
+  });
+
   it("offers 30 min / 1 h / 2 h in both menus and starts with that duration", () => {
     const initMenu = loadMenuWithElectron(fakeElectron());
     const started = [];

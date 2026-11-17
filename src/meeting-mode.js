@@ -15,6 +15,7 @@
 // is persisted: neither the manual hide nor DND survives a restart either.
 
 const MEETING_MODE_DURATIONS_MIN = Object.freeze([30, 60, 120]);
+const BUSY_RETRY_MS = 250;
 
 function createMeetingModeController(options = {}) {
   const hidePet = options.hidePet;
@@ -23,6 +24,7 @@ function createMeetingModeController(options = {}) {
   const enableDnd = options.enableDnd;
   const disableDnd = options.disableDnd;
   const isDnd = options.isDnd;
+  const isBusy = typeof options.isBusy === "function" ? options.isBusy : () => false;
   const onChange = typeof options.onChange === "function" ? options.onChange : () => {};
   const now = typeof options.now === "function" ? options.now : () => Date.now();
   const setTimer = options.setTimeout || setTimeout;
@@ -44,32 +46,36 @@ function createMeetingModeController(options = {}) {
     }
   }
 
-  function armTimer() {
+  function armTimer(delay = Math.max(0, endsAt - now())) {
     clearPendingTimer();
-    const remaining = Math.max(0, endsAt - now());
     timer = setTimer(() => {
       timer = null;
       checkExpiry();
-    }, remaining);
+    }, delay);
     if (timer && typeof timer.unref === "function") timer.unref();
   }
 
   function start(minutes) {
     const mins = Number(minutes);
-    if (!Number.isFinite(mins) || mins <= 0) return false;
+    if (!Number.isFinite(mins) || mins <= 0 || isBusy()) return false;
     endsAt = now() + Math.round(mins * 60 * 1000);
+    // Arm before side effects so a failing callback cannot strand the meeting.
+    armTimer();
     if (!active) {
       active = true;
       // Snapshot first: enabling DND rebuilds menus, which read getState().
       hidPet = !isPetHidden();
       enabledDnd = !isDnd();
-      if (enabledDnd) enableDnd();
-      if (hidPet) hidePet();
+      try {
+        if (enabledDnd) enableDnd();
+      } catch (err) { log(`meeting mode enableDnd failed: ${err}`); }
+      try {
+        if (hidPet) hidePet();
+      } catch (err) { log(`meeting mode hidePet failed: ${err}`); }
       log(`meeting mode on: ${mins} min (hidPet=${hidPet} enabledDnd=${enabledDnd})`);
     } else {
       log(`meeting mode extended: ${mins} min`);
     }
-    armTimer();
     onChange(getState());
     return true;
   }
@@ -87,8 +93,12 @@ function createMeetingModeController(options = {}) {
       enabledDnd = false;
       log(`meeting mode off: ${reason} (showPet=${restorePet} disableDnd=${restoreDnd})`);
       // DND first, so the wake animation starts while the pet comes back.
-      if (restoreDnd && isDnd()) disableDnd();
-      if (restorePet && isPetHidden()) showPet();
+      try {
+        if (restoreDnd && isDnd()) disableDnd();
+      } catch (err) { log(`meeting mode disableDnd failed: ${err}`); }
+      try {
+        if (restorePet && isPetHidden()) showPet();
+      } catch (err) { log(`meeting mode showPet failed: ${err}`); }
     } finally {
       ending = false;
     }
@@ -98,7 +108,13 @@ function createMeetingModeController(options = {}) {
 
   function checkExpiry() {
     if (!active) return false;
-    if (now() >= endsAt) return end("timeout");
+    if (now() >= endsAt) {
+      if (isBusy()) {
+        armTimer(BUSY_RETRY_MS);
+        return false;
+      }
+      return end("timeout");
+    }
     armTimer();
     return false;
   }
