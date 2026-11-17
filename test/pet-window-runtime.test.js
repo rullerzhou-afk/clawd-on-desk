@@ -4334,6 +4334,21 @@ describe("fullscreen auto-hide visibility layer (#935)", () => {
     assert.ok(!h.calls.some(([name, value]) => name === "setFloatingSurfacesFullscreenSuppressed" && value === false));
   });
 
+  it("R3: meeting restore shows the pet when fullscreen auto-hide is off", () => {
+    const h = createRuntime();
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    h.runtime.setPetHidden(true);
+    assert.equal(h.runtime.isPetHidden(), true);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), true);
+    h.renderWin.calls.length = 0;
+    const result = h.runtime.setPetHidden(false, { keepFullscreenAutoHide: true });
+    assert.deepStrictEqual(result, { applied: true, deferred: false, changed: true });
+    assert.equal(h.runtime.isPetHidden(), false);
+    assert.equal(h.runtime.isFullscreenAutoHidden(), false);
+    assert.equal(h.runtime.isPetEffectivelyHidden(), false);
+    assert.ok(h.renderWin.calls.some(([name]) => name === "showInactive"));
+  });
+
   it("setFullscreenAutoHidden hides the pet without touching the manual state", () => {
     const h = createRuntime();
     const r = h.runtime.setFullscreenAutoHidden(true);

@@ -10,11 +10,12 @@ const {
 } = require("../src/meeting-mode");
 
 function makeHarness({ petHidden = false, dnd = false, busy = false, fail = null } = {}) {
-  const state = { petHidden, dnd, busy, fail, now: 1_000_000, timers: [], calls: [], changes: [], logs: [] };
+  const state = { petHidden, dnd, busy, fail, now: 1_000_000, timers: [], timersAtCall: {}, calls: [], changes: [], events: [], logs: [] };
   function record(name) {
     state.calls.push(name);
+    state.events.push(name);
+    state.timersAtCall[name] = state.liveTimers().length;
     if (state.fail === name) {
-      assert.strictEqual(state.liveTimers().length, name === "hidePet" || name === "enableDnd" ? 1 : 0);
       throw new Error(`${name} failed`);
     }
   }
@@ -27,7 +28,10 @@ function makeHarness({ petHidden = false, dnd = false, busy = false, fail = null
     isDnd: () => state.dnd,
     isBusy: () => state.busy,
     log: (message) => state.logs.push(message),
-    onChange: (s) => state.changes.push(s),
+    onChange: (s) => {
+      state.changes.push(s);
+      state.events.push({ active: s.active, petHidden: state.petHidden, dnd: state.dnd });
+    },
     now: () => state.now,
     setTimeout: (fn, ms) => {
       const timer = { fn, ms, cleared: false };
@@ -113,6 +117,7 @@ describe("meeting mode controller (#1382)", () => {
     it(`T4: start survives ${fail} failure with a timer already armed and expires`, () => {
       const { controller, state } = makeHarness({ fail });
       assert.strictEqual(controller.start(30), true);
+      assert.deepStrictEqual(state.timersAtCall, { enableDnd: 1, hidePet: 1 });
       assert.strictEqual(controller.isActive(), true);
       assert.strictEqual(state.liveTimers().length, 1);
       assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet"]);
@@ -142,6 +147,12 @@ describe("meeting mode controller (#1382)", () => {
     assert.deepStrictEqual(state.calls, ["enableDnd", "hidePet", "disableDnd", "showPet"]);
     assert.deepStrictEqual(state.changes.at(-1), { active: false, endsAt: 0 });
     assert.strictEqual(state.changes.length, 2);
+    assert.deepStrictEqual(state.events, [
+      "enableDnd", "hidePet",
+      { active: true, petHidden: true, dnd: true },
+      "disableDnd", "showPet",
+      { active: false, petHidden: false, dnd: false },
+    ]);
   });
 
   it("offers 30, 60 and 120 minutes", () => {

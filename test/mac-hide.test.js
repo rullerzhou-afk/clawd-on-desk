@@ -119,6 +119,69 @@ describe("mac-hide controller (#416)", () => {
     assert.equal(h.ctrl._state().hiddenByOsHide, false);
   });
 
+  it("R3: OS hide and unhide work while Dock is hidden", () => {
+    const h = makeHarness({ getShowDock: () => false });
+    h.ctrl.start();
+    h.fakeApp._hidden = true;
+    h.poll();
+    assert.deepStrictEqual(h.calls, [true]);
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, true);
+    h.fakeApp._hidden = false;
+    h.poll();
+    assert.deepStrictEqual(h.calls, [true, false]);
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, false);
+  });
+
+  it("R3: repeated OS hide cancels a deferred show while manual hide remains", () => {
+    let petHidden = false;
+    const h = makeHarness({ isPetHidden: () => petHidden });
+    h.ctrl.start();
+    h.fakeApp._hidden = true;
+    h.poll();
+    assert.deepStrictEqual(h.calls, [true]);
+    petHidden = true;
+
+    h.queueResults({ applied: false, deferred: true, changed: false });
+    h.fakeApp._hidden = false;
+    h.poll();
+    assert.deepStrictEqual(h.calls, [true, false]);
+    assert.strictEqual(h.pendingTimeouts(), 1);
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, false);
+
+    h.fakeApp._hidden = true;
+    h.poll();
+    assert.strictEqual(h.pendingTimeouts(), 0);
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, false);
+    h.flushTimeouts();
+    assert.deepStrictEqual(h.calls, [true, false], "the stale show must never retry after the second OS hide");
+  });
+
+  it("R3: Dock activation preserves unowned manual hide until the second click", () => {
+    let overrides = 0;
+    const h = makeHarness({ isPetHidden: () => true, beforeManualShow: () => { overrides++; } });
+    h.ctrl.start();
+    h.fakeApp._hidden = true;
+    h.poll();
+    assert.strictEqual(h.ctrl._state().hiddenByOsHide, false);
+
+    h.ctrl.onActivate();
+    assert.strictEqual(h.fakeApp._shown, 1);
+    assert.strictEqual(overrides, 0);
+    assert.deepStrictEqual(h.calls, []);
+    assert.deepStrictEqual(h.order, []);
+
+    h.fakeApp._hidden = false;
+    h.poll();
+    assert.deepStrictEqual(h.calls, []);
+    assert.strictEqual(overrides, 0);
+
+    h.ctrl.onActivate();
+    assert.strictEqual(h.fakeApp._shown, 1);
+    assert.strictEqual(overrides, 1);
+    assert.deepStrictEqual(h.calls, [false]);
+    assert.deepStrictEqual(h.order, ["beforeManualShow", "setPetHidden(false)"]);
+  });
+
   it("a no-op poll (no hidden-state change) drives nothing", () => {
     const h = makeHarness();
     h.ctrl.start();
