@@ -219,10 +219,72 @@ function createQoderDesktopTitleTracker(options = {}) {
   return { track, sweep, poll, clear, readSuppression, readMeta, size: () => entries.size };
 }
 
+// HUD parity with Codex delegated work: the parent row shows the "juggling"
+// (multi-task) chip while delegated children are active. Qoder hooks carry no
+// turn ids, so admission is per child id with the same activity TTL as Codex;
+// a child Stop/SessionEnd removes it immediately.
+const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: SUBAGENT_TTL_MS } = require("./state-stale-cleanup");
+
+function createQoderSubagentPresentation(sessions, now = Date.now) {
+  const parents = new Map();
+  function isLocalQoderParent(session) {
+    return session && session.agentId === "qoder" && !session.headless
+      && session.state !== "sleeping" && !session.host && !session.wslDistro
+      && (!session.profileId || session.profileId === "local");
+  }
+  function prune() {
+    let changed = false;
+    for (const [id, children] of parents) {
+      for (const [childId, at] of children) {
+        if (!isLocalQoderParent(sessions.get(id)) || now() - at > SUBAGENT_TTL_MS) {
+          children.delete(childId); changed = true;
+        }
+      }
+      if (!children.size) parents.delete(id);
+    }
+    return changed;
+  }
+  function update(parentId, input = {}) {
+    prune();
+    const childId = typeof input.childId === "string" && input.childId ? input.childId : null;
+    if (!childId || parentId === childId || !isLocalQoderParent(sessions.get(parentId))) return false;
+    if (input.phase === "end") {
+      const changed = parents.has(parentId);
+      parents.delete(parentId);
+      return changed;
+    }
+    if (!["start", "activity", "stop"].includes(input.phase)) return false;
+    const children = parents.get(parentId);
+    if (input.phase === "stop") {
+      if (!children || !children.delete(childId)) return false;
+      if (!children.size) parents.delete(parentId);
+      return true;
+    }
+    const occurredAt = Number.isSafeInteger(input.occurredAt) ? input.occurredAt : now();
+    if (occurredAt > now() + 1500 || now() - occurredAt > SUBAGENT_TTL_MS) return false;
+    const previous = children && children.get(childId);
+    if (previous && occurredAt < previous) return false;
+    const target = children || new Map();
+    if (!previous && target.size >= 200) return false;
+    target.set(childId, occurredAt);
+    parents.set(parentId, target);
+    return !previous || previous !== occurredAt;
+  }
+  return {
+    update,
+    prune,
+    count: (id) => { prune(); return parents.get(id)?.size || 0; },
+    has: (id) => { prune(); return !!parents.get(id)?.size; },
+    hasAny: () => { prune(); return parents.size > 0; },
+    clear: () => parents.clear(),
+  };
+}
+
 module.exports = {
   TITLE_POLL_MS,
   MAX_DB_TITLE_BYTES,
   qoderDesktopDataDirs,
   readQoderDesktopSession,
   createQoderDesktopTitleTracker,
+  createQoderSubagentPresentation,
 };

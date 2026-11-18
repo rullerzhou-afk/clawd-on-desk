@@ -254,7 +254,7 @@ function createAgentRuntimeMain(options = {}) {
   // main.sqlite never does. Like Codex subagents, an active child projects its
   // working state onto the parent card instead of opening a row of its own.
   const QODER_CHILD_ACTIVE_STATES = new Set(["working", "thinking"]);
-  function shouldSuppressQoderDesktop(sessionId, state, opts = {}) {
+  function shouldSuppressQoderDesktop(sessionId, state, event, opts = {}) {
     if (disposed || !isAgentEnabled("qoder")) return false;
     if (opts.agentId !== "qoder" || (opts.profileId || "local") !== "local"
       || opts.host || opts.wslDistro) return false;
@@ -273,13 +273,19 @@ function createAgentRuntimeMain(options = {}) {
     if (session && stateRuntime && typeof stateRuntime.dismissSession === "function") {
       stateRuntime.dismissSession(sessionId);
     }
-    if (meta.delegated && !meta.archived && !meta.deleted && meta.parentSessionId
-      && QODER_CHILD_ACTIVE_STATES.has(state) && stateRuntime
-      && typeof stateRuntime.touchSessionActivity === "function") {
-      stateRuntime.touchSessionActivity(`qoder:${meta.parentSessionId}`, {
-        agentId: "qoder", profileId: "local", localOnly: true,
-        reviveIdle: true, activityState: state, now: Date.now(),
-      });
+    if (meta.delegated && !meta.archived && !meta.deleted && meta.parentSessionId && stateRuntime) {
+      const parentSid = `qoder:${meta.parentSessionId}`;
+      const phase = (event === "Stop" || event === "SessionEnd") ? "stop"
+        : QODER_CHILD_ACTIVE_STATES.has(state) ? "activity" : null;
+      if (phase && typeof stateRuntime.updateQoderSubagentActivity === "function") {
+        stateRuntime.updateQoderSubagentActivity(parentSid, { childId: raw, phase, occurredAt: Date.now() });
+      }
+      if (QODER_CHILD_ACTIVE_STATES.has(state) && typeof stateRuntime.touchSessionActivity === "function") {
+        stateRuntime.touchSessionActivity(parentSid, {
+          agentId: "qoder", profileId: "local", localOnly: true,
+          reviveIdle: true, activityState: state, now: Date.now(),
+        });
+      }
     }
     return true;
   }
@@ -667,7 +673,7 @@ function createAgentRuntimeMain(options = {}) {
     )) {
       return false;
     }
-    if (shouldSuppressQoderDesktop(sessionId, state, opts)) {
+    if (shouldSuppressQoderDesktop(sessionId, state, event, opts)) {
       return false;
     }
     const isLocalOfficialCodexEvent = !!(opts
@@ -889,7 +895,13 @@ function createAgentRuntimeMain(options = {}) {
       qoderSessionTitleTracker.clear(rawSessionId, { preserveExternalTitle: event === "SessionStart" });
       qoderDesktopTitleTracker.clear(sessionId);
     }
-    if (event === "SessionEnd") return;
+    if (event === "SessionEnd") {
+      const state = getStateRuntime();
+      if (state && typeof state.updateQoderSubagentActivity === "function") {
+        state.updateQoderSubagentActivity(sessionId, { phase: "end" });
+      }
+      return;
+    }
     if (!session) return;
     if (opts.sessionTitle) {
       noteQoderExternalTitle(sessionId, opts.sessionTitle);
@@ -961,6 +973,7 @@ function createAgentRuntimeMain(options = {}) {
     if (codexMonitor) codexMonitor.stop();
     pendingCodexChildren.clear();
     getStateRuntime()?.clearCodexSubagentActivities?.();
+    getStateRuntime()?.clearQoderSubagentActivities?.();
     stopCodexArchiveTracker();
   }
 
@@ -1342,6 +1355,7 @@ function createAgentRuntimeMain(options = {}) {
     clearRetiredWorkBuddySessions();
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
     getStateRuntime()?.clearCodexSubagentActivities?.();
+    getStateRuntime()?.clearQoderSubagentActivities?.();
     stopCodexArchiveTracker();
     resetLocalCodexLifecycleTracking();
     if (qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {

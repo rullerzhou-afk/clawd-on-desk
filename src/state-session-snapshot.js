@@ -440,7 +440,7 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     && session.platform !== "wsl"
     && (session.profileId || "local") === "local";
   const localPresentation = isLocalSession
-    && (agentId === "codex" || isLocalApprovalReminderSession(session));
+    && (agentId === "codex" || agentId === "qoder" || isLocalApprovalReminderSession(session));
   const canPresent = isLocalSession && typeof options.getSessionPresentation === "function";
   let presentation = (localPresentation || isTerminalWaitSession(session))
     && typeof options.getSessionPresentation === "function"
@@ -455,7 +455,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     const candidate = options.getSessionPresentation(id);
     if (candidate && candidate.pendingAttention === true) presentation = { pendingAttention: true };
   }
-  const activeSubagentCount = agentId === "codex" && Number.isSafeInteger(presentation?.activeSubagentCount)
+  const activeSubagentCount = (agentId === "codex" || agentId === "qoder")
+    && Number.isSafeInteger(presentation?.activeSubagentCount)
     && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
     ? presentation.activeSubagentCount : 0;
   const pendingAttention = presentation?.pendingAttention === true;

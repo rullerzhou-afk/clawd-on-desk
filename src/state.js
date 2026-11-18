@@ -216,6 +216,7 @@ function hasCodexCompactionVisual() {
 
 const sessions = new Map();
 const codexSubagentPresentation = require("./codex-subagent-presentation")(sessions, () => Date.now());
+const qoderSubagentPresentation = require("./qoder-desktop-sessions").createQoderSubagentPresentation(sessions, () => Date.now());
 // A parent's Stop can settle its turn while delegated children still own the visual.
 const deferredCodexCompletionCues = new Set();
 let lastPendingAttentionIds = new Set();
@@ -1293,8 +1294,12 @@ function buildSessionSnapshot() {
   const projected = projectPendingAttention(pendingAttentionIds);
   return buildSessionSnapshotFromSessions(sessions, {
     getSessionPresentation: (id) => ({
-      effectiveState: projected.get(id)?.state,
-      activeSubagentCount: codexSubagentPresentation.count(id),
+      effectiveState: sessions.get(id)?.agentId === "qoder"
+        ? (qoderSubagentPresentation.has(id) ? "juggling" : undefined)
+        : projected.get(id)?.state,
+      activeSubagentCount: sessions.get(id)?.agentId === "qoder"
+        ? qoderSubagentPresentation.count(id)
+        : codexSubagentPresentation.count(id),
       pendingAttention: hudPendingAttentionIds.has(id),
     }),
     t: ctx.t,
@@ -4255,6 +4260,19 @@ function playDeferredCodexCompletionCue(session) {
   return true;
 }
 
+function updateQoderSubagentActivity(parentId, input) {
+  const changed = qoderSubagentPresentation.update(parentId, input);
+  if (changed) emitSessionSnapshot();
+  return changed;
+}
+
+function clearQoderSubagentActivities() {
+  const changed = qoderSubagentPresentation.hasAny();
+  qoderSubagentPresentation.clear();
+  if (changed) emitSessionSnapshot();
+  return changed;
+}
+
 function updateCodexSubagentActivity(parentId, input) {
   if (!codexSubagentPresentation.update(parentId, input)) return false;
   if (input.phase === "stop" && !codexSubagentPresentation.has(parentId)) {
@@ -4493,6 +4511,8 @@ return {
   getReminderReselectionOptions,
   updateCodexSubagentActivity,
   clearCodexSubagentActivities,
+  updateQoderSubagentActivity,
+  clearQoderSubagentActivities,
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,
   setState, applyState, updateSession, observeClaudeToolPhase, recordRecapEventOnly, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   shouldDropForDnd,

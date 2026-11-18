@@ -117,9 +117,14 @@ describe("Qoder desktop delegation gate", () => {
       assert.strictEqual(integration.post(CHILD, "PreToolUse", "working"), false);
       assert.strictEqual(integration.state.sessions.has(`qoder:${CHILD}`), false);
       assert.strictEqual(integration.state.sessions.get(`qoder:${PARENT}`).state, "working");
+      const withChild = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
+      assert.strictEqual(withChild.activeSubagentCount, 1);
+      assert.strictEqual(withChild.effectiveState, "juggling");
 
       assert.strictEqual(integration.post(CHILD, "Stop", "attention"), false);
       assert.strictEqual(integration.state.sessions.has(`qoder:${CHILD}`), false);
+      const afterStop = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
+      assert.strictEqual(afterStop.activeSubagentCount, 0);
     } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
