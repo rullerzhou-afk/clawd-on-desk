@@ -10,6 +10,8 @@ const createAgentRuntimeMain = require("../src/agent-runtime-main");
 const initState = require("../src/state");
 const themeLoader = require("../src/theme-loader");
 const { createQoderDesktopTitleTracker } = require("../src/qoder-desktop-sessions");
+const { resolveSessionIdentity } = require("../src/session-key");
+const sessionKey = (raw) => resolveSessionIdentity(`qoder:${raw}`, "local").sessionId;
 
 themeLoader.init(path.join(__dirname, "..", "src"));
 const integrationTheme = themeLoader.loadTheme("clawd");
@@ -28,6 +30,9 @@ function withFixtureDb(run) {
   insert.run(PARENT, "父任务", "{}");
   insert.run(CHILD, "子会话", JSON.stringify({ delegationParent: { sessionId: PARENT } }));
   insert.run(ARCH, "归档会话", "{}");
+  db.exec("CREATE TABLE chat_session_context_usage (session_id TEXT PRIMARY KEY, snapshot_json TEXT NOT NULL, updated_at INTEGER NOT NULL)");
+  db.prepare("INSERT INTO chat_session_context_usage (session_id, snapshot_json, updated_at) VALUES (?, ?, ?)")
+    .run(PARENT, JSON.stringify({ percentage: 0.37, totalTokens: 0, maxTokens: 0 }), Date.now());
   db.close();
   return { dir, dbPath: path.join(dir, "main.sqlite") };
 }
@@ -81,6 +86,9 @@ function createIntegration(dataDirs) {
     updateTitle: (sessionId, title) => {
       state.updateSessionMetadata(sessionId, { sessionTitle: title, expectedAgentId: "qoder" });
     },
+    updateContextUsage: (sessionId, contextUsage) => {
+      state.updateSessionMetadata(sessionId, { contextUsage, contextUsageOrigin: "qoder-native", expectedAgentId: "qoder" });
+    },
   });
   const runtime = createAgentRuntimeMain({
     codexSubagentClassifier: {},
@@ -89,7 +97,7 @@ function createIntegration(dataDirs) {
     qoderDesktopTitleTracker: tracker,
     isAgentEnabled: () => true,
   });
-  const post = (raw, event, hookState) => runtime.updateSessionFromServer(`qoder:${raw}`, hookState, event, {
+  const post = (raw, event, hookState) => runtime.updateSessionFromServer(sessionKey(raw), hookState, event, {
     agent_id: undefined,
     agentId: "qoder",
     profileId: "local",
@@ -108,21 +116,23 @@ describe("Qoder desktop delegation gate", () => {
     const integration = createIntegration([dir]);
     try {
       integration.post(PARENT, "UserPromptSubmit", "thinking");
-      assert.strictEqual(integration.state.sessions.has(`qoder:${PARENT}`), true);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(PARENT)), true);
       await waitFor(() => integration.state.buildSessionSnapshot().sessions
         .some((s) => s.rawSessionId === PARENT && s.sessionTitle === "父任务"), "parent title");
+      const named = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
+      assert.strictEqual(named.contextUsage && named.contextUsage.percent, 37);
       integration.post(PARENT, "Stop", "idle");
-      assert.strictEqual(integration.state.sessions.get(`qoder:${PARENT}`).state, "idle");
+      assert.strictEqual(integration.state.sessions.get(sessionKey(PARENT)).state, "idle");
 
       assert.strictEqual(integration.post(CHILD, "PreToolUse", "working"), false);
-      assert.strictEqual(integration.state.sessions.has(`qoder:${CHILD}`), false);
-      assert.strictEqual(integration.state.sessions.get(`qoder:${PARENT}`).state, "working");
+      assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), false);
+      assert.strictEqual(integration.state.sessions.get(sessionKey(PARENT)).state, "working");
       const withChild = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
       assert.strictEqual(withChild.activeSubagentCount, 1);
       assert.strictEqual(withChild.effectiveState, "juggling");
 
       assert.strictEqual(integration.post(CHILD, "Stop", "attention"), false);
-      assert.strictEqual(integration.state.sessions.has(`qoder:${CHILD}`), false);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), false);
       const afterStop = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
       assert.strictEqual(afterStop.activeSubagentCount, 0);
     } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
@@ -133,14 +143,14 @@ describe("Qoder desktop delegation gate", () => {
     const integration = createIntegration([dir]);
     try {
       integration.post(ARCH, "UserPromptSubmit", "thinking");
-      assert.strictEqual(integration.state.sessions.has(`qoder:${ARCH}`), true);
-      assert.strictEqual(integration.state.sessions.has(`qoder:${ARCH}`), true);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(ARCH)), true);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(ARCH)), true);
       const db = reopen(dbPath);
       db.prepare("UPDATE chat_sessions SET archived = 1 WHERE session_id = ?").run(ARCH);
       db.close();
       await new Promise((resolve) => setTimeout(resolve, 60));
       assert.strictEqual(integration.post(ARCH, "PreToolUse", "working"), false);
-      assert.strictEqual(integration.state.sessions.has(`qoder:${ARCH}`), false);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(ARCH)), false);
     } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -153,7 +163,7 @@ describe("Qoder desktop delegation gate", () => {
       db.prepare("UPDATE chat_sessions SET extra_json = '{}' WHERE session_id = ?").run(CHILD);
       db.close();
       integration.post(CHILD, "UserPromptSubmit", "thinking");
-      assert.strictEqual(integration.state.sessions.has(`qoder:${CHILD}`), true);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), true);
       const db2 = reopen(dbPath);
       db2.prepare("UPDATE chat_sessions SET extra_json = ? WHERE session_id = ?")
         .run(JSON.stringify({ delegationParent: { sessionId: PARENT } }), CHILD);
@@ -161,7 +171,7 @@ describe("Qoder desktop delegation gate", () => {
       integration.post(PARENT, "UserPromptSubmit", "thinking");
 
       integration.runtime.sweepQoderDesktopSessions();
-      await waitFor(() => !integration.state.sessions.has(`qoder:${CHILD}`), "child retired by sweep");
+      await waitFor(() => !integration.state.sessions.has(sessionKey(CHILD)), "child retired by sweep");
       await waitFor(() => integration.state.buildSessionSnapshot().sessions
         .some((s) => s.rawSessionId === PARENT && s.sessionTitle === "父任务"), "parent named by sweep");
     } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
@@ -171,7 +181,7 @@ describe("Qoder desktop delegation gate", () => {
     const integration = createIntegration([]);
     try {
       integration.post(CHILD, "UserPromptSubmit", "thinking");
-      assert.strictEqual(integration.state.sessions.has(`qoder:${CHILD}`), true);
+      assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), true);
     } finally { integration.cleanup(); }
   });
 });

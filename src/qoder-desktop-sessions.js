@@ -70,12 +70,33 @@ function readQoderDesktopSession(input, options = {}) {
       }
       const deleted = row.deleted_at !== null && row.deleted_at !== undefined;
       const archived = row.archived === 1 || row.archived === true;
+      let contextUsage = null;
+      try {
+        const usageRow = db.prepare(
+          "SELECT snapshot_json FROM chat_session_context_usage WHERE session_id = ?",
+        ).get(raw);
+        if (usageRow && usageRow.snapshot_json) {
+          const snapshot = JSON.parse(usageRow.snapshot_json);
+          const fraction = Number(snapshot && snapshot.percentage);
+          if (Number.isFinite(fraction)) {
+            const used = Number(snapshot.totalTokens);
+            const limit = Number(snapshot.maxTokens);
+            contextUsage = {
+              used: Number.isFinite(used) ? used : 0,
+              ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
+              percent: Math.max(0, Math.min(100, Math.round(fraction * 100))),
+              source: "qoder",
+            };
+          }
+        }
+      } catch {}
       return {
         title: deleted ? null : normalizeSessionTitle(row.title),
         delegated,
         parentSessionId,
         archived,
         deleted,
+        contextUsage,
         home: dir,
       };
     } catch {
@@ -95,6 +116,7 @@ function suppressedMeta(meta) {
 function createQoderDesktopTitleTracker(options = {}) {
   const getSession = options.getSession || (() => null);
   const updateTitle = options.updateTitle || (() => {});
+  const updateContextUsage = options.updateContextUsage || (() => {});
   const onRetired = typeof options.onRetired === "function" ? options.onRetired : () => {};
   const jsonl = options.jsonl || null;
   const readSession = options.readSession || readQoderDesktopSession;
@@ -173,6 +195,7 @@ function createQoderDesktopTitleTracker(options = {}) {
         }
         if (entries.get(entry.sessionId) !== entry || getSession(entry.sessionId) !== live) return;
         if (title) updateTitle(entry.sessionId, title);
+        if (meta && meta.contextUsage) updateContextUsage(entry.sessionId, meta.contextUsage);
       } catch {} // Metadata discovery never breaks state delivery.
     })();
     try { await entry.pending; }

@@ -274,7 +274,7 @@ function createAgentRuntimeMain(options = {}) {
       stateRuntime.dismissSession(sessionId);
     }
     if (meta.delegated && !meta.archived && !meta.deleted && meta.parentSessionId && stateRuntime) {
-      const parentSid = `qoder:${meta.parentSessionId}`;
+      const parentSid = resolveSessionIdentity(`qoder:${meta.parentSessionId}`, "local").sessionId;
       const phase = (event === "Stop" || event === "SessionEnd") ? "stop"
         : QODER_CHILD_ACTIVE_STATES.has(state) ? "activity" : null;
       if (phase && typeof stateRuntime.updateQoderSubagentActivity === "function") {
@@ -300,6 +300,14 @@ function createAgentRuntimeMain(options = {}) {
         const state = getStateRuntime();
         if (state && typeof state.updateSessionMetadata === "function") {
           state.updateSessionMetadata(sessionId, { sessionTitle: title, expectedAgentId: "qoder" });
+        }
+      },
+      updateContextUsage(sessionId, contextUsage) {
+        const state = getStateRuntime();
+        if (state && typeof state.updateSessionMetadata === "function") {
+          state.updateSessionMetadata(sessionId, {
+            contextUsage, contextUsageOrigin: "qoder-native", expectedAgentId: "qoder",
+          });
         }
       },
     });
