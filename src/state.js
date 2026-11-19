@@ -4199,7 +4199,7 @@ function hasPendingReminderAttention() {
 }
 
 function projectPendingAttention(ids = getPendingAttentionIds()) {
-  const projected = codexSubagentPresentation.project(ids);
+  const projected = qoderSubagentPresentation.project(codexSubagentPresentation.project(ids));
   const reminders = [...ids].filter(id =>
     isLocalApprovalReminderSession(sessions.get(id)) || isTerminalWaitSession(sessions.get(id)));
   if (!reminders.length) return projected;
@@ -4262,7 +4262,7 @@ function playDeferredCodexCompletionCue(session) {
 
 function updateQoderSubagentActivity(parentId, input) {
   const changed = qoderSubagentPresentation.update(parentId, input);
-  if (changed) emitSessionSnapshot();
+  if (changed) refreshCodexSubagentPresentation();
   return changed;
 }
 

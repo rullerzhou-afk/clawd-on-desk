@@ -296,6 +296,26 @@ function createQoderSubagentPresentation(sessions, now = Date.now) {
   return {
     update,
     prune,
+    // Pet/HUD projection parity with Codex: while delegated children are
+    // active the parent presents "juggling" without rewriting canonical state.
+    project(source) {
+      prune();
+      if (!parents.size) return source;
+      const projected = new Map(source);
+      for (const [id, children] of parents) {
+        const parent = source.get(id);
+        if (!isLocalQoderParent(parent)) continue;
+        const preserveStrongState = ["notification", "sweeping", "error"].includes(parent.state);
+        if (preserveStrongState && !children.size) continue;
+        projected.set(id, {
+          ...parent,
+          state: preserveStrongState ? parent.state : "juggling",
+          displayHint: preserveStrongState ? parent.displayHint : null,
+          subagentTracker: { confirmedIds: new Set(children.keys()), legacyFloor: false, recoveredFloor: false },
+        });
+      }
+      return projected;
+    },
     count: (id) => { prune(); return parents.get(id)?.size || 0; },
     has: (id) => { prune(); return !!parents.get(id)?.size; },
     hasAny: () => { prune(); return parents.size > 0; },

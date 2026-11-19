@@ -130,6 +130,7 @@ describe("Qoder desktop delegation gate", () => {
       const withChild = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
       assert.strictEqual(withChild.activeSubagentCount, 1);
       assert.strictEqual(withChild.effectiveState, "juggling");
+      assert.strictEqual(integration.state.resolveDisplayState(), "juggling");
 
       assert.strictEqual(integration.post(CHILD, "Stop", "attention"), false);
       assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), false);
