@@ -26,7 +26,11 @@ const HOOK_MAP = {
   UserPromptSubmit:   { state: "thinking",     event: "UserPromptSubmit" },
   PreToolUse:         { state: "working",      event: "PreToolUse" },
   PostToolUse:        { state: "working",      event: "PostToolUse" },
-  PostToolUseFailure: { state: "error",        event: "PostToolUseFailure" },
+  // A failed tool call is per-tool progress, not a session-level interruption:
+  // the agent retries/continues and no Stop follows the failure. Mapping it to
+  // "error" let the error->idle timeout derive an "interrupted" HUD badge for
+  // turns that completed normally.
+  PostToolUseFailure: { state: "working",      event: "PostToolUseFailure" },
   Stop:               { state: "attention",    event: "Stop" },
   Notification:       { state: "notification", event: "Notification" },
   // State-only: Qoder's permission events are surfaced as a passive Clawd
