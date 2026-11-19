@@ -1294,9 +1294,7 @@ function buildSessionSnapshot() {
   const projected = projectPendingAttention(pendingAttentionIds);
   return buildSessionSnapshotFromSessions(sessions, {
     getSessionPresentation: (id) => ({
-      effectiveState: sessions.get(id)?.agentId === "qoder"
-        ? (qoderSubagentPresentation.has(id) ? "juggling" : undefined)
-        : projected.get(id)?.state,
+      effectiveState: projected.get(id)?.state,
       activeSubagentCount: sessions.get(id)?.agentId === "qoder"
         ? qoderSubagentPresentation.count(id)
         : codexSubagentPresentation.count(id),
@@ -1642,12 +1640,15 @@ function resolveIncomingAgentId(existing, incomingAgentId, incomingDefaulted) {
 function normalizeContextUsage(value) {
   if (!value || typeof value !== "object") return null;
   const used = Number(value.used);
-  if (!Number.isFinite(used) || used < 0) return null;
-  const out = { used };
+  const usedKnown = Number.isFinite(used) && used >= 0;
+  const percent = Number(value.percent);
+  const percentKnown = Number.isFinite(percent);
+  if (!usedKnown && !percentKnown) return null;
+  const out = {};
+  if (usedKnown) out.used = used;
   const limit = Number(value.limit);
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
-  const percent = Number(value.percent);
-  if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
+  if (percentKnown) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
   if (value.source === "claude" || value.source === "codex" || value.source === "antigravity" || value.source === "opencode" || value.source === "workbuddy" || value.source === "qoder") out.source = value.source;
   return out;
 }

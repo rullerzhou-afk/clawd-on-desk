@@ -607,7 +607,13 @@ function formatTokenCount(value) {
 
 function contextUsageText(session) {
   const usage = session && session.contextUsage;
-  if (!usage || !Number.isFinite(Number(usage.used))) return "";
+  if (!usage) return "";
+  if (!Number.isFinite(Number(usage.used))) {
+    // Percent-only usage (token counts unavailable): never claim "0 tokens".
+    return Number.isFinite(Number(usage.percent))
+      ? `${t("dashboardContextUsage")}: ${Math.max(0, Math.min(100, Math.round(Number(usage.percent))))}%`
+      : "";
+  }
   const used = formatTokenCount(usage.used);
   if (Number.isFinite(Number(usage.limit))) {
     const limit = formatTokenCount(usage.limit);

@@ -3,17 +3,20 @@
 // Qoder Desktop (com.qoder.app.stable / com.qodercn.app.stable) keeps session
 // titles and delegation metadata in main.sqlite `chat_sessions`. Newer builds
 // no longer append ai-title/custom-title JSONL records, so the JSONL tracker
-// alone cannot name these sessions. Delegated child sessions (extra_json
-// delegationParent, sideChat owner, non-standard kind) fire their own hooks
-// but must not open HUD cards of their own.
+// alone cannot name these sessions. Only the explicit delegation marker
+// (extra_json.delegationParent) suppresses a row: session_kind /
+// owner_session_id also describe user-visible side chats and must never infer
+// delegation. Unknown/unreadable databases never suppress.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { normalizeSessionTitle } = require("./jsonl-session-title");
 
 const TITLE_POLL_MS = 2000;
+const IDLE_POLL_MS = 10000;
 const MAX_SESSIONS = 256;
 const MAX_DB_TITLE_BYTES = 4096;
+const MAX_SNAPSHOT_BYTES = 65536;
 
 function qoderDesktopDataDirs(options = {}) {
   const home = options.homeDir || os.homedir();
@@ -34,30 +37,95 @@ function openReadOnlyDatabase(filePath) {
   return new DatabaseSync(filePath, { readOnly: true });
 }
 
-// Returns { title, delegated, archived, deleted, home } or null when no row /
-// database could be read. Callers must treat null as "unknown", never as a
-// reason to suppress.
+function bareQoderRaw(value) {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  const bare = trimmed.startsWith("qoder:") ? trimmed.slice(6) : trimmed;
+  return bare || null;
+}
+
+// Schema-tolerant row read: full columns, then minimal, then title-only.
+// Older/future Qoder schemas missing lifecycle columns degrade instead of
+// losing the title entirely.
+function readRow(db, raw) {
+  try {
+    const row = db.prepare(
+      "SELECT CASE WHEN title IS NULL OR length(CAST(title AS BLOB)) <= ? THEN title ELSE NULL END AS title, "
+      + "extra_json, archived, deleted_at, updated_at FROM chat_sessions WHERE session_id = ?",
+    ).get(MAX_DB_TITLE_BYTES, raw);
+    if (row) return { row, degraded: false };
+  } catch {}
+  try {
+    const row = db.prepare(
+      "SELECT CASE WHEN title IS NULL OR length(CAST(title AS BLOB)) <= ? THEN title ELSE NULL END AS title, "
+      + "extra_json FROM chat_sessions WHERE session_id = ?",
+    ).get(MAX_DB_TITLE_BYTES, raw);
+    if (row) return { row, degraded: true };
+  } catch {}
+  try {
+    const row = db.prepare(
+      "SELECT CASE WHEN title IS NULL OR length(CAST(title AS BLOB)) <= ? THEN title ELSE NULL END AS title "
+      + "FROM chat_sessions WHERE session_id = ?",
+    ).get(MAX_DB_TITLE_BYTES, raw);
+    if (row) return { row, degraded: true };
+  } catch {}
+  return null;
+}
+
+function readContextUsage(db, raw) {
+  try {
+    const usageRow = db.prepare(
+      "SELECT substr(snapshot_json, 1, ?) AS snapshot_json FROM chat_session_context_usage WHERE session_id = ?",
+    ).get(MAX_SNAPSHOT_BYTES, raw);
+    if (!usageRow || !usageRow.snapshot_json) return null;
+    const snapshot = JSON.parse(usageRow.snapshot_json);
+    const fraction = Number(snapshot && snapshot.percentage);
+    if (!Number.isFinite(fraction)) return null;
+    const usage = {
+      percent: Math.max(0, Math.min(100, Math.round(fraction * 100))),
+      source: "qoder",
+    };
+    // Token counts are often unavailable (tokenCountsAvailable:false); filling
+    // used:0 would render a misleading "0 tokens" tooltip.
+    if (snapshot.tokenCountsAvailable === true) {
+      const used = Number(snapshot.totalTokens);
+      const limit = Number(snapshot.maxTokens);
+      if (Number.isFinite(used)) usage.used = used;
+      if (Number.isFinite(limit) && limit > 0) usage.limit = limit;
+    }
+    return usage;
+  } catch {
+    return null;
+  }
+}
+
+// Returns the best row across installed editions, or null when unreadable.
+// Active rows win over archived/deleted/delegated copies; ties prefer the
+// most recently updated row. null means "unknown", never a reason to suppress.
 function readQoderDesktopSession(input, options = {}) {
-  const raw = typeof input.rawSessionId === "string" ? input.rawSessionId.trim() : "";
+  const raw = bareQoderRaw(input.rawSessionId);
   if (!raw) return null;
   const dirs = options.dataDirs || qoderDesktopDataDirs(options);
   const openDatabase = options.openDatabase || openReadOnlyDatabase;
+  const handles = options.handles || null;
+  let best = null;
+  let bestSuppressed = false;
   for (const dir of dirs) {
     const filePath = path.join(dir, "main.sqlite");
-    let db;
+    let db = handles ? handles.get(dir) : undefined;
+    let own = false;
     try {
-      // readOnly alone throws on absent files; don't create a Qoder home.
-      if (!fs.existsSync(filePath)) continue;
-      db = openDatabase(filePath);
-      const row = db.prepare(
-        "SELECT CASE WHEN title IS NULL OR length(CAST(title AS BLOB)) <= ? THEN title ELSE NULL END AS title, "
-        + "extra_json, session_kind, owner_session_id, archived, deleted_at "
-        + "FROM chat_sessions WHERE session_id = ?",
-      ).get(MAX_DB_TITLE_BYTES, raw);
-      if (!row) continue;
-      // Only the explicit delegation marker suppresses a row. session_kind /
-      // owner_session_id also describe user-visible side chats, so inferring
-      // delegation from them could hide conversations the user expects to see.
+      if (!db) {
+        if (!fs.existsSync(filePath)) continue;
+        db = openDatabase(filePath);
+        own = true;
+      }
+      const got = readRow(db, raw);
+      if (!got) continue;
+      const { row, degraded } = got;
+      if (degraded && typeof options.debugLog === "function") {
+        options.debugLog(`qoder-desktop schema degraded dir=${dir}`);
+      }
       let delegated = false;
       let parentSessionId = null;
       try {
@@ -70,47 +138,29 @@ function readQoderDesktopSession(input, options = {}) {
       } catch {}
       const deleted = row.deleted_at !== null && row.deleted_at !== undefined;
       const archived = row.archived === 1 || row.archived === true;
-      let contextUsage = null;
-      try {
-        const usageRow = db.prepare(
-          "SELECT snapshot_json FROM chat_session_context_usage WHERE session_id = ?",
-        ).get(raw);
-        if (usageRow && usageRow.snapshot_json) {
-          const snapshot = JSON.parse(usageRow.snapshot_json);
-          const fraction = Number(snapshot && snapshot.percentage);
-          if (Number.isFinite(fraction)) {
-            const used = Number(snapshot.totalTokens);
-            const limit = Number(snapshot.maxTokens);
-            contextUsage = {
-              used: Number.isFinite(used) ? used : 0,
-              ...(Number.isFinite(limit) && limit > 0 ? { limit } : {}),
-              percent: Math.max(0, Math.min(100, Math.round(fraction * 100))),
-              source: "qoder",
-            };
-          }
-        }
-      } catch {}
-      return {
+      const candidate = {
         title: deleted ? null : normalizeSessionTitle(row.title),
         delegated,
         parentSessionId,
         archived,
         deleted,
-        contextUsage,
+        contextUsage: readContextUsage(db, raw),
+        updatedAt: Number(row.updated_at) || 0,
         home: dir,
       };
+      const suppressed = archived || deleted || delegated;
+      if (!best || (bestSuppressed && !suppressed)
+        || (bestSuppressed === suppressed && candidate.updatedAt > best.updatedAt)) {
+        best = candidate;
+        bestSuppressed = suppressed;
+      }
     } catch {
-      // Older Node, locked/corrupt DBs, or unknown schemas: unknown, not false.
       continue;
     } finally {
-      if (db) { try { db.close(); } catch {} }
+      if (own && db) { try { db.close(); } catch {} }
     }
   }
-  return null;
-}
-
-function suppressedMeta(meta) {
-  return !!(meta && (meta.delegated || meta.archived || meta.deleted));
+  return best;
 }
 
 function createQoderDesktopTitleTracker(options = {}) {
@@ -120,31 +170,28 @@ function createQoderDesktopTitleTracker(options = {}) {
   const onRetired = typeof options.onRetired === "function" ? options.onRetired : () => {};
   const jsonl = options.jsonl || null;
   const readSession = options.readSession || readQoderDesktopSession;
+  const debugLog = typeof options.debugLog === "function" ? options.debugLog : null;
   const pollMs = options.pollMs || TITLE_POLL_MS;
+  const idlePollMs = options.idlePollMs || IDLE_POLL_MS;
   const now = typeof options.now === "function" ? options.now : Date.now;
   const readerOptions = options.readerOptions || {};
   const entries = new Map();
   const metaCache = new Map();
   let timer = null;
 
-  function readMeta(rawSessionId, force = false) {
-    const cached = metaCache.get(rawSessionId);
+  function readMeta(rawSessionId, force = false, handles = null) {
+    const raw = bareQoderRaw(rawSessionId);
+    if (!raw) return null;
+    const cached = metaCache.get(raw);
     if (!force && cached && now() - cached.readAt < pollMs) return cached.meta;
     let meta = null;
     try {
-      meta = readSession({ rawSessionId }, readerOptions);
+      meta = readSession({ rawSessionId: raw }, { ...readerOptions, handles, debugLog });
     } catch { meta = null; }
-    metaCache.delete(rawSessionId);
-    metaCache.set(rawSessionId, { meta, readAt: now() });
+    metaCache.delete(raw);
+    metaCache.set(raw, { meta, readAt: now() });
     while (metaCache.size > MAX_SESSIONS) metaCache.delete(metaCache.keys().next().value);
     return meta;
-  }
-
-  // Synchronous gate for the accept path. Only a confirmed delegated /
-  // archived / deleted row suppresses; an unreadable database never does.
-  function readSuppression(rawSessionId) {
-    if (typeof rawSessionId !== "string" || !rawSessionId) return false;
-    return suppressedMeta(readMeta(rawSessionId));
   }
 
   function ensureTimer() {
@@ -158,6 +205,8 @@ function createQoderDesktopTitleTracker(options = {}) {
       entries.clear();
       metaCache.clear();
     } else {
+      const entry = entries.get(sessionId);
+      if (entry) metaCache.delete(entry.rawSessionId);
       entries.delete(sessionId);
     }
     if (!entries.size && timer) {
@@ -172,17 +221,21 @@ function createQoderDesktopTitleTracker(options = {}) {
     while (entries.size > MAX_SESSIONS) clear(entries.keys().next().value);
   }
 
-  async function refresh(entry) {
+  async function refresh(entry, handles = null) {
     if (entry.pending) return entry.pending;
     const live = getSession(entry.sessionId);
     if (!live) { clear(entry.sessionId); return; }
+    // Idle conversations back off; active ones keep the short poll window.
+    const idle = live.state === "idle" || live.state === "sleeping";
+    if (idle && now() - entry.lastReadAt < idlePollMs) return;
+    entry.lastReadAt = now();
     entry.pending = (async () => {
       try {
-        const meta = readMeta(entry.rawSessionId, true);
+        const meta = readMeta(entry.rawSessionId, true, handles);
         // SessionEnd, disable/uninstall and late async reads must not annotate
         // another lifecycle or create a phantom HUD row.
         if (entries.get(entry.sessionId) !== entry || getSession(entry.sessionId) !== live) return;
-        if (suppressedMeta(meta)) {
+        if (meta && (meta.delegated || meta.archived || meta.deleted)) {
           clear(entry.sessionId);
           try { onRetired({ sessionId: entry.sessionId, rawSessionId: entry.rawSessionId, meta }); } catch {}
           return;
@@ -202,19 +255,34 @@ function createQoderDesktopTitleTracker(options = {}) {
     finally { entry.pending = null; }
   }
 
+  // One connection per edition per poll cycle instead of per session.
   async function poll() {
-    await Promise.all([...entries.values()].map(refresh));
+    const handles = new Map();
+    const openDatabase = readerOptions.openDatabase || openReadOnlyDatabase;
+    try {
+      for (const dir of readerOptions.dataDirs || qoderDesktopDataDirs(readerOptions)) {
+        const filePath = path.join(dir, "main.sqlite");
+        try {
+          if (fs.existsSync(filePath)) handles.set(dir, openDatabase(filePath));
+        } catch {}
+      }
+      await Promise.all([...entries.values()].map((entry) => refresh(entry, handles)));
+    } finally {
+      for (const db of handles.values()) { try { db.close(); } catch {} }
+    }
   }
 
   function track(input) {
+    // Production rawSessionId carries the qoder: namespace; SQL keys are bare.
+    const rawSessionId = bareQoderRaw(input.rawSessionId) || input.rawSessionId;
     const previous = entries.get(input.sessionId);
     const entry = {
       sessionId: input.sessionId,
-      rawSessionId: input.rawSessionId,
+      rawSessionId,
       cwd: input.cwd,
       transcriptPath: input.transcriptPath,
       pending: null,
-      lastReadAt: previous && previous.rawSessionId === input.rawSessionId ? previous.lastReadAt : 0,
+      lastReadAt: previous && previous.rawSessionId === rawSessionId ? previous.lastReadAt : 0,
     };
     insertEntry(input.sessionId, entry);
     ensureTimer();
@@ -239,15 +307,20 @@ function createQoderDesktopTitleTracker(options = {}) {
     }
   }
 
-  return { track, sweep, poll, clear, readSuppression, readMeta, size: () => entries.size };
+  return {
+    track,
+    sweep,
+    poll,
+    clear,
+    readMeta,
+    size: () => entries.size,
+  };
 }
 
-// HUD parity with Codex delegated work: the parent row shows the "juggling"
-// (multi-task) chip while delegated children are active. Qoder hooks carry no
-// turn ids, so admission is per child id with the same activity TTL as Codex;
-// a child Stop/SessionEnd removes it immediately.
-const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: SUBAGENT_TTL_MS } = require("./state-stale-cleanup");
-
+// Pet/HUD projection parity with Codex: while delegated children are active
+// the parent presents "juggling" without rewriting canonical state. Strong
+// states (notification/sweeping/error) keep their own presentation. Evidence
+// lives outside sessions, like codex-subagent-presentation.
 function createQoderSubagentPresentation(sessions, now = Date.now) {
   const parents = new Map();
   function isLocalQoderParent(session) {
@@ -293,35 +366,35 @@ function createQoderSubagentPresentation(sessions, now = Date.now) {
     parents.set(parentId, target);
     return !previous || previous !== occurredAt;
   }
+  function project(source) {
+    prune();
+    if (!parents.size) return source;
+    const projected = new Map(source);
+    for (const [id, children] of parents) {
+      const parent = source.get(id);
+      if (!isLocalQoderParent(parent)) continue;
+      if (["notification", "sweeping", "error"].includes(parent.state)) continue;
+      projected.set(id, {
+        ...parent,
+        state: "juggling",
+        displayHint: null,
+        subagentTracker: { confirmedIds: new Set(children.keys()), legacyFloor: false, recoveredFloor: false },
+      });
+    }
+    return projected;
+  }
   return {
     update,
     prune,
-    // Pet/HUD projection parity with Codex: while delegated children are
-    // active the parent presents "juggling" without rewriting canonical state.
-    project(source) {
-      prune();
-      if (!parents.size) return source;
-      const projected = new Map(source);
-      for (const [id, children] of parents) {
-        const parent = source.get(id);
-        if (!isLocalQoderParent(parent)) continue;
-        const preserveStrongState = ["notification", "sweeping", "error"].includes(parent.state);
-        if (preserveStrongState && !children.size) continue;
-        projected.set(id, {
-          ...parent,
-          state: preserveStrongState ? parent.state : "juggling",
-          displayHint: preserveStrongState ? parent.displayHint : null,
-          subagentTracker: { confirmedIds: new Set(children.keys()), legacyFloor: false, recoveredFloor: false },
-        });
-      }
-      return projected;
-    },
+    project,
     count: (id) => { prune(); return parents.get(id)?.size || 0; },
     has: (id) => { prune(); return !!parents.get(id)?.size; },
     hasAny: () => { prune(); return parents.size > 0; },
     clear: () => parents.clear(),
   };
 }
+
+const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: SUBAGENT_TTL_MS } = require("./state-stale-cleanup");
 
 module.exports = {
   TITLE_POLL_MS,

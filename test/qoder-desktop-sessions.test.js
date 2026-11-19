@@ -27,10 +27,10 @@ function createDatabase(dir, rows) {
   const db = new DatabaseSync(path.join(dir, "main.sqlite"));
   db.exec("CREATE TABLE chat_sessions ("
     + "session_id TEXT PRIMARY KEY, title TEXT, extra_json TEXT, session_kind TEXT, "
-    + "owner_session_id TEXT, archived INTEGER, deleted_at INTEGER)");
+    + "owner_session_id TEXT, archived INTEGER, deleted_at INTEGER, updated_at INTEGER)");
   const insert = db.prepare("INSERT INTO chat_sessions "
-    + "(session_id, title, extra_json, session_kind, owner_session_id, archived, deleted_at) "
-    + "VALUES (?, ?, ?, ?, ?, ?, ?)");
+    + "(session_id, title, extra_json, session_kind, owner_session_id, archived, deleted_at, updated_at) "
+    + "VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
   for (const row of rows) {
     insert.run(
       row.session_id,
@@ -40,6 +40,7 @@ function createDatabase(dir, rows) {
       row.owner_session_id ?? null,
       row.archived ?? 0,
       row.deleted_at ?? null,
+      row.updated_at ?? 0,
     );
   }
   db.close();
@@ -352,7 +353,7 @@ describe("createQoderDesktopTitleTracker", () => {
     harness.tracker.clear();
   });
 
-  it("readSuppression suppresses only confirmed rows, never unknown or invalid ids", async () => {
+  it("readMeta exposes suppression flags only for confirmed rows, never unknown or invalid ids", async () => {
     const metas = {
       "raw-normal": meta(),
       "raw-delegated": meta({ delegated: true }),
@@ -360,17 +361,92 @@ describe("createQoderDesktopTitleTracker", () => {
       "raw-deleted": meta({ deleted: true, title: null }),
     };
     const harness = createHarness({ readSession: ({ rawSessionId }) => metas[rawSessionId] ?? null });
-    assert.equal(harness.tracker.readSuppression("raw-normal"), false);
-    assert.equal(harness.tracker.readSuppression("raw-delegated"), true);
-    assert.equal(harness.tracker.readSuppression("raw-archived"), true);
-    assert.equal(harness.tracker.readSuppression("raw-deleted"), true);
-    assert.equal(harness.tracker.readSuppression("raw-missing"), false);
+    const flags = (raw) => {
+      const m = harness.tracker.readMeta(raw);
+      return !!(m && (m.delegated || m.archived || m.deleted));
+    };
+    assert.equal(flags("raw-normal"), false);
+    assert.equal(flags("raw-delegated"), true);
+    assert.equal(flags("raw-archived"), true);
+    assert.equal(flags("raw-deleted"), true);
+    assert.equal(flags("raw-missing"), false);
     const readsBefore = harness.reads.length;
-    assert.equal(harness.tracker.readSuppression(""), false);
-    assert.equal(harness.tracker.readSuppression(null), false);
-    assert.equal(harness.tracker.readSuppression(42), false);
+    assert.equal(harness.tracker.readMeta(""), null);
+    assert.equal(harness.tracker.readMeta(null), null);
+    assert.equal(harness.tracker.readMeta(42), null);
     assert.equal(harness.reads.length, readsBefore);
     harness.tracker.clear();
+  });
+
+  it("track and sweep normalize the qoder: prefix before querying (S1)", async () => {
+    const harness = createHarness({ readSession: () => meta({ title: "T" }) });
+    harness.addLive("s1");
+    harness.tracker.track({ sessionId: "s1", rawSessionId: "qoder:raw-1" });
+    await nextTurn();
+    assert.deepEqual(harness.reads, ["raw-1"]);
+    assert.deepEqual(harness.updates, [{ sessionId: "s1", title: "T" }]);
+    harness.addLive("s2");
+    harness.tracker.sweep([{ sessionId: "s2", rawSessionId: "qoder:raw-2" }]);
+    await nextTurn();
+    assert.ok(harness.reads.includes("raw-2"));
+    harness.tracker.clear();
+  });
+
+  it("clear(sessionId) invalidates the meta cache for that raw id (L3)", async () => {
+    const harness = createHarness({ readSession: () => meta() });
+    harness.addLive("s1");
+    harness.tracker.track({ sessionId: "s1", rawSessionId: "raw-1" });
+    await nextTurn();
+    const readsBefore = harness.reads.length;
+    harness.tracker.readMeta("raw-1");
+    assert.equal(harness.reads.length, readsBefore);
+    harness.tracker.clear("s1");
+    harness.tracker.readMeta("raw-1");
+    assert.equal(harness.reads.length, readsBefore + 1);
+    harness.tracker.clear();
+  });
+
+  it("degraded schema without lifecycle columns still yields the title (M4)", { skip: !DatabaseSync }, async () => {
+    await fixture(async (home) => {
+      const dir = path.join(home, "com.qoder.app.stable");
+      fs.mkdirSync(dir, { recursive: true });
+      const db = new DatabaseSync(path.join(dir, "main.sqlite"));
+      db.exec("CREATE TABLE chat_sessions (session_id TEXT PRIMARY KEY, title TEXT, extra_json TEXT)");
+      db.prepare("INSERT INTO chat_sessions VALUES (?, ?, ?)").run("s-min", "Minimal title", "{}");
+      db.close();
+      const row = readQoderDesktopSession({ rawSessionId: "s-min" }, { dataDirs: [dir] });
+      assert.equal(row.title, "Minimal title");
+      assert.equal(row.archived, false);
+      assert.equal(row.delegated, false);
+    });
+  });
+
+  it("active row in a second edition wins over an archived copy in the first (L2)", { skip: !DatabaseSync }, async () => {
+    await fixture(async (home) => {
+      const dirA = path.join(home, "com.qoder.app.stable");
+      const dirB = path.join(home, "com.qodercn.app.stable");
+      createDatabase(dirA, [{ session_id: "s-dup", title: "Archived copy", archived: 1, updated_at: 200 }]);
+      createDatabase(dirB, [{ session_id: "s-dup", title: "Active copy", archived: 0, updated_at: 100 }]);
+      const row = readQoderDesktopSession({ rawSessionId: "s-dup" }, { dataDirs: [dirA, dirB] });
+      assert.equal(row.title, "Active copy");
+      assert.equal(row.archived, false);
+    });
+  });
+
+  it("omits used/limit when token counts are unavailable (L6)", { skip: !DatabaseSync }, async () => {
+    await fixture(async (home) => {
+      const dir = path.join(home, "com.qoder.app.stable");
+      createDatabase(dir, [{ session_id: "s-usage", title: "U" }]);
+      const db = new DatabaseSync(path.join(dir, "main.sqlite"));
+      db.exec("CREATE TABLE chat_session_context_usage (session_id TEXT PRIMARY KEY, snapshot_json TEXT, updated_at INTEGER)");
+      db.prepare("INSERT INTO chat_session_context_usage VALUES (?, ?, ?)")
+        .run("s-usage", JSON.stringify({ percentage: 0.37, tokenCountsAvailable: false, totalTokens: 0, maxTokens: 0 }), 1);
+      db.close();
+      const row = readQoderDesktopSession({ rawSessionId: "s-usage" }, { dataDirs: [dir] });
+      assert.equal(row.contextUsage.percent, 37);
+      assert.equal(Object.hasOwn(row.contextUsage, "used"), false);
+      assert.equal(Object.hasOwn(row.contextUsage, "limit"), false);
+    });
   });
 
   it("readMeta caches inside the poll window and re-reads once it expires", async () => {

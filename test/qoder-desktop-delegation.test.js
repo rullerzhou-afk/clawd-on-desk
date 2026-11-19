@@ -25,7 +25,7 @@ function withFixtureDb(run) {
   const db = new DatabaseSync(path.join(dir, "main.sqlite"));
   db.exec("CREATE TABLE chat_sessions (session_id TEXT PRIMARY KEY, title TEXT, extra_json TEXT NOT NULL DEFAULT '{}', "
     + "session_kind TEXT NOT NULL DEFAULT 'standard', owner_session_id TEXT, archived INTEGER NOT NULL DEFAULT 0, "
-    + "deleted_at INTEGER)");
+    + "deleted_at INTEGER, updated_at INTEGER NOT NULL DEFAULT 0)");
   const insert = db.prepare("INSERT INTO chat_sessions (session_id, title, extra_json) VALUES (?, ?, ?)");
   insert.run(PARENT, "父任务", "{}");
   insert.run(CHILD, "子会话", JSON.stringify({ delegationParent: { sessionId: PARENT } }));
@@ -97,12 +97,13 @@ function createIntegration(dataDirs) {
     qoderDesktopTitleTracker: tracker,
     isAgentEnabled: () => true,
   });
-  const post = (raw, event, hookState) => runtime.updateSessionFromServer(sessionKey(raw), hookState, event, {
+  const post = (raw, event, hookState, extra = {}) => runtime.updateSessionFromServer(sessionKey(raw), hookState, event, {
     agent_id: undefined,
     agentId: "qoder",
     profileId: "local",
     rawSessionId: raw,
     cwd: "C:/fixture",
+    ...extra,
   });
   return {
     state, runtime, tracker, post,
@@ -126,7 +127,8 @@ describe("Qoder desktop delegation gate", () => {
 
       assert.strictEqual(integration.post(CHILD, "PreToolUse", "working"), false);
       assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), false);
-      assert.strictEqual(integration.state.sessions.get(sessionKey(PARENT)).state, "working");
+      // M2: projection must not rewrite the parent's canonical state.
+      assert.strictEqual(integration.state.sessions.get(sessionKey(PARENT)).state, "idle");
       const withChild = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
       assert.strictEqual(withChild.activeSubagentCount, 1);
       assert.strictEqual(withChild.effectiveState, "juggling");
@@ -171,10 +173,13 @@ describe("Qoder desktop delegation gate", () => {
       db2.close();
       integration.post(PARENT, "UserPromptSubmit", "thinking");
 
+      // Production restored rows carry the namespaced rawSessionId (S1).
+      integration.state.sessions.get(sessionKey(CHILD)).rawSessionId = `qoder:${CHILD}`;
+      integration.state.sessions.get(sessionKey(PARENT)).rawSessionId = `qoder:${PARENT}`;
       integration.runtime.sweepQoderDesktopSessions();
       await waitFor(() => !integration.state.sessions.has(sessionKey(CHILD)), "child retired by sweep");
       await waitFor(() => integration.state.buildSessionSnapshot().sessions
-        .some((s) => s.rawSessionId === PARENT && s.sessionTitle === "父任务"), "parent named by sweep");
+        .some((s) => s.rawSessionId === `qoder:${PARENT}` && s.sessionTitle === "父任务"), "parent named by sweep");
     } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 
@@ -184,5 +189,48 @@ describe("Qoder desktop delegation gate", () => {
       integration.post(CHILD, "UserPromptSubmit", "thinking");
       assert.strictEqual(integration.state.sessions.has(sessionKey(CHILD)), true);
     } finally { integration.cleanup(); }
+  });
+
+  it("archived child Stop still clears the parent presentation (M1)", async () => {
+    const { dir, dbPath } = withFixtureDb();
+    const integration = createIntegration([dir]);
+    try {
+      integration.post(PARENT, "UserPromptSubmit", "thinking");
+      integration.post(CHILD, "PreToolUse", "working");
+      assert.strictEqual(integration.state.buildSessionSnapshot().sessions
+        .find((s) => s.rawSessionId === PARENT).activeSubagentCount, 1);
+      const db = reopen(dbPath);
+      db.prepare("UPDATE chat_sessions SET archived = 1, deleted_at = 1 WHERE session_id = ?").run(CHILD);
+      db.close();
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      assert.strictEqual(integration.post(CHILD, "Stop", "attention"), false);
+      assert.strictEqual(integration.state.buildSessionSnapshot().sessions
+        .find((s) => s.rawSessionId === PARENT).activeSubagentCount, 0);
+    } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("strong parent states win over the juggling projection (M3)", async () => {
+    const { dir } = withFixtureDb();
+    const integration = createIntegration([dir]);
+    try {
+      integration.post(PARENT, "UserPromptSubmit", "thinking");
+      // Exercise the projection's strong-state preservation directly.
+      integration.state.sessions.get(sessionKey(PARENT)).state = "notification";
+      integration.post(CHILD, "PreToolUse", "working");
+      const entry = integration.state.buildSessionSnapshot().sessions.find((s) => s.rawSessionId === PARENT);
+      assert.strictEqual(entry.activeSubagentCount, 1);
+      assert.strictEqual(entry.effectiveState, "notification");
+      assert.strictEqual(integration.state.resolveDisplayState(), "notification");
+    } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
+  });
+
+  it("external session_title does not block DB title/usage tracking (L4)", async () => {
+    const { dir } = withFixtureDb();
+    const integration = createIntegration([dir]);
+    try {
+      integration.post(PARENT, "PreToolUse", "working", { session_title: "External" });
+      await waitFor(() => integration.state.buildSessionSnapshot().sessions
+        .some((s) => s.rawSessionId === PARENT && s.sessionTitle === "父任务"), "DB title despite external title");
+    } finally { integration.cleanup(); fs.rmSync(dir, { recursive: true, force: true }); }
   });
 });
