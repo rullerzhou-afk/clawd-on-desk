@@ -78,6 +78,8 @@ Common state/event pairs are:
 
 The active theme must provide the requested state. Unknown states return HTTP 400. `SessionEnd` removes the session rather than leaving an idle card.
 
+`executing` is reserved for a hint derived internally from Claude Code events. An inbound `state: "executing"` is normalized to `working` before theme validation, including for custom agents; it cannot request the executing hint or its optional theme animation directly.
+
 Useful optional fields:
 
 | Field | Type | Purpose |

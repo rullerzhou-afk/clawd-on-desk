@@ -5,6 +5,7 @@ import functools
 import gzip
 import http.server
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -14,6 +15,7 @@ import tempfile
 import threading
 import types
 import unittest
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("repository", ROOT / "scripts/apt/repository.py")
@@ -223,6 +225,27 @@ class AptRepository(unittest.TestCase):
         old = self.published / "apt/dists/stable/main/binary-amd64/Packages"
         self.assertEqual((target / "apt/dists/stable/main/binary-amd64/by-hash/SHA256" / repo.digest(old.read_bytes())).read_bytes(), old.read_bytes())
 
+    def test_live_verification_requests_normalized_paths(self):
+        requested = []
+        real_fetch = repo.fetch
+
+        def recording_fetch(url, limit, **kwargs):
+            requested.append(url)
+            return real_fetch(url, limit, **kwargs)
+
+        with mock.patch.object(repo, "fetch", recording_fetch), contextlib.redirect_stdout(None):
+            repo.verify_live(self.config, self.public)
+        self.assertTrue(any("/by-hash/" in url for url in requested))
+        self.assertEqual([url for url in requested if "/./" in url], [])
+
+    def test_committed_public_key_matches_the_activation_record(self):
+        records = command("gpg", "--batch", "--show-keys", "--with-colons", str(ROOT / "distribution/apt/archive-key.asc")).stdout.decode()
+        fingerprints = [line.split(":")[9] for line in records.splitlines() if line.startswith("fpr:")]
+        self.assertTrue(fingerprints)
+        record = (ROOT / "docs/guides/apt-maintenance.md").read_text()
+        for fingerprint in fingerprints:
+            self.assertIn(fingerprint, record)
+
     def test_rejects_same_version_changed_bytes_rollback_and_identity_change(self):
         inputs = self.work / "input"
         shutil.copytree(self.inputs, inputs)
@@ -292,6 +315,33 @@ class AptRepository(unittest.TestCase):
         command(*dpkg, "--purge", "clawd-apt-source")
         for name in names:
             self.assertFalse((root / name).exists())
+
+
+class RedirectedResponse(io.BytesIO):
+    def __init__(self, final_url):
+        super().__init__(b"body")
+        self.url = final_url
+
+
+class SiteHost(unittest.TestCase):
+    def fetch_redirected_to(self, url, final_url):
+        with mock.patch.object(repo.urllib.request, "urlopen", return_value=RedirectedResponse(final_url)):
+            return repo.fetch(url, 1024)
+
+    def test_redirect_away_from_the_apt_host_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "different host"):
+            self.fetch_redirected_to("https://apt.example/dists/stable/InRelease", "https://other.example/dists/stable/InRelease")
+
+    def test_release_download_may_follow_the_github_asset_cdn(self):
+        body = self.fetch_redirected_to("https://github.com/o/r/releases/download/v1/a.deb", "https://release-assets.githubusercontent.com/a.deb")
+        self.assertEqual(body, b"body")
+
+    def test_hostname_agrees_everywhere_it_is_written(self):
+        uri = json.loads((ROOT / "distribution/apt/config.json").read_text())["uri"]
+        self.assertIn(f"--previous-url {uri})", (ROOT / ".github/workflows/publish-apt.yml").read_text())
+        self.assertIn(f'APT_GUIDE_URL = "{uri}/"', (ROOT / "src/updater.js").read_text())
+        host = repo.urllib.parse.urlsplit(uri).hostname
+        self.assertEqual((ROOT / "distribution/apt/index.html").read_text().count(f"<code>{host}</code>"), 2)
 
 
 if __name__ == "__main__":

@@ -440,6 +440,13 @@ describe("session HUD layout", () => {
     assert.strictEqual(rowCount, 2);
   });
 
+  it("excludes preference-suppressed rows from native HUD geometry and folded counts", () => {
+    const sessions = [mkSession("visible"), mkSession("completed-temporary", { hudHiddenByPreference: true })];
+    const layout = computeHudLayout({ sessions, orderedIds: ["completed-temporary", "visible"] });
+    assert.deepStrictEqual(layout.expanded.map(row => row.id), ["visible"]);
+    assert.strictEqual(layout.folded.length, 0); assert.strictEqual(layout.rowCount, 1);
+  });
+
   it("returns 0 rows for empty snapshot", () => {
     const { expanded, folded, rowCount } = computeHudLayout({ sessions: [] });
     assert.strictEqual(expanded.length, 0);
@@ -812,5 +819,29 @@ describe("session HUD v5 three-state runtime contracts (source-level)", () => {
       /function showQuotaRing\(win\)\s*\{[\s\S]*?cancelHiddenDestroy\("ring"\)/.test(src),
       "showing the ring should cancel only the ring cleanup"
     );
+  });
+});
+
+
+describe("quota ring selection eligibility", () => {
+  it("honors manual selections and legacy hidden providers in auto-hide eligibility", () => {
+    const snapshot = { sessions: [], accountQuota: [{
+      codexQuota: { group: { codexWeekly: { usedPercent: 10 } } },
+    }] };
+    const flags = { snapshot, sessionHudEnabled: false, showQuota: true,
+      clickRevealed: true, inHotZone: true, now: 1 };
+    assert.strictEqual(evaluateBaseEligible({ ...flags, shownQuotaProviders: [] }), false);
+    assert.strictEqual(evaluateShouldShow({ ...flags, shownQuotaProviders: [] }).show, false);
+    assert.strictEqual(evaluateShouldShow({ ...flags, hiddenQuotaProviders: ["codexQuota"] }).show, false);
+    assert.strictEqual(evaluateShouldShow({ ...flags, hiddenQuotaProviders: ["codexQuota"],
+      shownQuotaProviders: ["codexQuota"] }).show, true);
+  });
+  it("passes manual selections through the runtime mirror and renderer payload", () => {
+    const hud = fs.readFileSync(path.join(__dirname, "..", "src", "session-hud.js"), "utf8");
+    const main = fs.readFileSync(path.join(__dirname, "..", "src", "main.js"), "utf8");
+    assert.match(main, /let quotaRingShownProviders = _settingsController\.get\("quotaRingShownProviders"\)/);
+    assert.match(main, /get quotaRingShownProviders\(\) \{ return quotaRingShownProviders; \}/);
+    assert.match(main, /quotaRingShownProviders: \(v\) => \{ quotaRingShownProviders = Array\.isArray\(v\) \? v : null; \}/);
+    assert.match(hud, /shownQuotaProviders: Array\.isArray\(ctx\.quotaRingShownProviders\) \? ctx\.quotaRingShownProviders : null/);
   });
 });

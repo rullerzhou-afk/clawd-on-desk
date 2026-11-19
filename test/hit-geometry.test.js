@@ -32,6 +32,24 @@ function visibleContentRect(theme, artRect) {
 describe("hit geometry", () => {
   const bounds = { x: 0, y: 0, width: 200, height: 200 };
 
+  it("keeps working eye-tracking fallback geometry unchanged during executing", () => {
+    const theme = { viewBox: { x: 0, y: 0, width: 100, height: 100 },
+      states: { idle: ["idle.svg"], working: ["working.svg"] },
+      eyeTracking: { enabled: true, states: ["working"] },
+      objectScale: { widthRatio: 1, heightRatio: 1, imgWidthRatio: 0.5, imgBottom: 0.1 },
+    };
+    const hitBox = { x: 10, y: 20, w: 60, h: 50 };
+    assert.equal(hitGeometry.usesObjectChannel(theme, "executing", "working.svg"), true);
+    assert.deepStrictEqual(hitGeometry.getAssetRectScreen(theme, bounds, "executing", "working.svg"),
+      hitGeometry.getAssetRectScreen(theme, bounds, "working", "working.svg"));
+    assert.deepStrictEqual(hitGeometry.getHitRectScreen(theme, bounds, "executing", "working.svg", hitBox),
+      hitGeometry.getHitRectScreen(theme, bounds, "working", "working.svg", hitBox));
+    theme.states.executing = ["own.svg"];
+    assert.equal(hitGeometry.usesObjectChannel(theme, "executing", "own.svg"), false);
+    theme.eyeTracking.states = ["executing"];
+    assert.equal(hitGeometry.usesObjectChannel(theme, "executing", "own.svg"), true);
+  });
+
   it("matches bottom-anchored SVG layout for calico idle", () => {
     const rect = hitGeometry.getAssetRectScreen(calico, bounds, "idle", "calico-idle-follow.svg");
     approx(rect.x, 35.94);

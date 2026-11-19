@@ -696,6 +696,32 @@ test("a custom Windows install directory with spaces and non-ASCII resolves", ()
   assert.strictEqual(result.staticVersion, FAMILY_VERSION);
 });
 
+test("a bare-name DSH uninstall entry identifies a custom D: desktop install", () => {
+  const root = "D:\\software\\deepseek-harness";
+  const localAppData = "C:\\Users\\tester\\AppData\\Local";
+  const result = discoverDshDesktopSync({
+    platform: "win32",
+    env: { SystemRoot: "C:\\Windows", LOCALAPPDATA: localAppData, DSH_HOME: root },
+    fs: winFs(winDesktopFiles(root)),
+    windowsRegistrySnapshot: {
+      uninstall: [{
+        displayName: "DeepSeek Harness",
+        displayVersion: "0.2.2-rc.1",
+        installLocation: root,
+      }],
+      commandDirectory: null,
+    },
+  });
+  assert.strictEqual(result.status, "found");
+  assert.strictEqual(result.appRoot, root);
+  assert.strictEqual(result.staticVersion, "0.2.2-rc.1");
+  assert.strictEqual(result.launcherPath, path.win32.join(root, "resources", "runtime", "cli", "bin", "dsh.cmd"));
+  assert.deepStrictEqual(result.checkedPaths, [
+    root,
+    path.win32.join(localAppData, "Programs", "DeepSeek Harness"),
+  ]);
+});
+
 test("a GUID-scoped InstallLocation is a valid fallback with unknown static version", () => {
   const root = "C:\\Tools\\DeepSeek Harness";
   const result = discoverDshDesktopSync({
@@ -1003,6 +1029,12 @@ test("the registry read runs the encoded PowerShell script with a 10s timeout", 
   );
   assert.strictEqual(captured.options.timeoutMs, 10000);
   dshInstallTest.resetWindowsRegistryCache();
+});
+
+test("the registry script includes bare and versioned DSH display names", () => {
+  const script = dshInstallTest.DSH_WINDOWS_REGISTRY_SCRIPT;
+  assert.ok(script.includes("$props.DisplayName -eq 'DeepSeek Harness'"));
+  assert.ok(script.includes("$props.DisplayName.StartsWith('DeepSeek Harness ')"));
 });
 
 test("the registry script fails closed and uses literal paths", () => {

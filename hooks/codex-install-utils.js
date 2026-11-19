@@ -20,6 +20,11 @@ const {
   commandMatchesMarker,
   extractExistingNodeBin,
   formatNodeHookCommand,
+  normalizeHookScriptPath,
+  parsePowerShellEnvCommand,
+  quotePowerShellSingleArg,
+  remoteHookScriptKey,
+  unescapePowerShellSingleQuoted,
 } = require("./json-utils");
 
 function resolveCodexHome(options = {}) {
@@ -41,6 +46,10 @@ const CODEX_HOOK_EVENTS = [
   "Interrupt",
   "SessionEnd",
 ];
+const CODEX_SSH_REMOTE_ARG = "--clawd-ssh-remote";
+const CODEX_WINDOWS_REMOTE_OWNERSHIP_CONFLICT = "codex-windows-remote-ownership-conflict";
+const CODEX_WINDOWS_REMOTE_UNSAFE_PATH = "codex-windows-remote-unsafe-path";
+const CODEX_WINDOWS_REMOTE_HOOKS_DISABLED = "codex-windows-remote-hooks-disabled";
 const CODEX_HOOKS_FEATURE_KEY = "hooks";
 const LEGACY_CODEX_HOOKS_FEATURE_KEY = "codex_hooks";
 const CODEX_STABLE_HOOK_DIRNAME = "clawd-hooks";
@@ -86,10 +95,6 @@ function resolveStableCodexDir(options = {}) {
     return path.dirname(path.resolve(options.hooksPath.trim()));
   }
   return resolveCodexHome(options);
-}
-
-function quotePowerShellLiteral(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function quotePosixLiteral(value) {
@@ -476,8 +481,8 @@ function buildStableCodexHookCommand(launcherPath, platform = process.platform) 
     // (desiredCommandWindows / buildCodexHookCommand) and codex-hook.js reads
     // the sidecar itself. This branch remains only for recognizing/removing
     // legacy entries and for non-executing compatibility tests.
-    const runFile = quotePowerShellLiteral(launcherPath);
-    const signature = quotePowerShellLiteral(CODEX_STABLE_WINDOWS_RUN_SIGNATURE);
+    const runFile = quotePowerShellSingleArg(launcherPath);
+    const signature = quotePowerShellSingleArg(CODEX_STABLE_WINDOWS_RUN_SIGNATURE);
     // Codex already evaluates commandWindows in PowerShell. Read the mutable
     // UTF-8/Base64 data sidecar with .NET APIs, so non-ASCII user/profile
     // paths stay data and never depend on Windows PowerShell 5.1's legacy
@@ -502,7 +507,7 @@ function extractStableCodexHookLauncherPath(command, platform = process.platform
   if (platform === "win32") {
     const match = text.match(/ReadAllLines\(\s*'((?:''|[^'])+)'/i);
     if (!match) return null;
-    const manifestPath = match[1].replace(/''/g, "'");
+    const manifestPath = unescapePowerShellSingleQuoted(match[1]);
     return manifestPath.replace(/\\/g, "/").endsWith("codex-hook.js.windows.run")
       ? manifestPath
       : null;
@@ -739,7 +744,7 @@ function windowsPathToWslPath(value) {
 // Env-var prefixes (`KEY=value node.exe ...`) do NOT cross the interop
 // boundary — never prepend env here; keep it on the native Windows path
 // (the stable local hook imports it from its data sidecar).
-function buildCodexHookPosixInteropCommand(nodeBin, hookScript) {
+function buildCodexHookPosixInteropCommand(nodeBin, hookScript, options = {}) {
   const wslNodeBin = windowsPathToWslPath(nodeBin);
   // A UNC node path (\\server\share\node.exe or //server/share/node.exe)
   // has no /mnt translation and a POSIX shell cannot exec the raw Windows
@@ -748,15 +753,11 @@ function buildCodexHookPosixInteropCommand(nodeBin, hookScript) {
     || (/^[\\/]{2}/.test(String(nodeBin))
       ? "node.exe"
       : (/\.exe$/i.test(String(nodeBin)) ? nodeBin : `${nodeBin}.exe`));
-  return `${formatNodeHookCommand(posixNodeBin, hookScript, { platform: "linux" })} ${CODEX_WSL_INTEROP_ARG}`;
+  return `${formatNodeHookCommand(posixNodeBin, hookScript, { platform: "linux", wslDistro: options.wslDistro })} ${CODEX_WSL_INTEROP_ARG}`;
 }
 
 function quotePosixEnvValue(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
-function quotePowerShellEnvValue(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function filterCommandEnvEntries(env) {
@@ -771,7 +772,7 @@ function withCommandEnv(command, env, platform = process.platform) {
 
   if (platform === "win32") {
     const prefix = entries
-      .map(([key, value]) => `$env:${key}=${quotePowerShellEnvValue(value)}`)
+      .map(([key, value]) => `$env:${key}=${quotePowerShellSingleArg(value)}`)
       .join("; ");
     return `${prefix}; ${command}`;
   }
@@ -912,6 +913,35 @@ function writeCodexConfigToml(configPath, lines, newline) {
   const nextText = `${lines.join(newline).replace(/\s*$/, "")}${newline}`;
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, nextText, "utf-8");
+}
+
+// Read-only mirror of ensureCodexHooksFeature's decision. Callers must not
+// write config.toml; this only classifies the current [features] state.
+function readCodexHooksFeatureState(text) {
+  const lines = text ? String(text).split(/\r?\n/) : [];
+  let featuresStart = -1;
+  let featuresEnd = lines.length;
+
+  for (let i = 0; i < lines.length; i++) {
+    const section = parseTomlTableHeader(lines[i]);
+    if (!section) continue;
+    if (isFeaturesTableHeader(section)) {
+      featuresStart = i;
+      continue;
+    }
+    if (featuresStart !== -1 && i > featuresStart) {
+      featuresEnd = i;
+      break;
+    }
+  }
+
+  if (featuresStart === -1) return "missing";
+  const found = findFeatureAssignments(lines, featuresStart, featuresEnd);
+  if (found.hooks) return found.hooks.value ? "on" : "off";
+  if (found.hooksNonBoolean) return "invalid";
+  if (found.legacy) return found.legacy.value ? "on" : "off";
+  if (found.legacyNonBoolean) return "invalid";
+  return "missing";
 }
 
 function ensureCodexHooksFeature(configPath, options = {}) {
@@ -1117,6 +1147,268 @@ function removeCodexCommandHooks(entries, predicate) {
   return { entries: nextEntries, removed, changed };
 }
 
+function unquotePowerShellDoubleQuoted(value) {
+  return String(value).replace(/\\(["\\])/g, "$1");
+}
+
+// Strict counterpart for the POSIX `command` field of a Windows remote hook.
+// Only the exact shape the installer writes is accepted: two double-quoted
+// tokens followed by the bare WSL-interop and SSH-remote flags, in that
+// order. A flag hidden in a path or in an extra argument never matches.
+function parseWindowsRemoteCodexInteropCommand(command) {
+  if (typeof command !== "string" || /[\r\n\0]/.test(command)) return null;
+  const match = /^"((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)" --clawd-wsl-interop --clawd-ssh-remote$/.exec(command);
+  if (!match) return null;
+  if (/[$`\u201C\u201D\u201E]/.test(match[1]) || /[$`\u201C\u201D\u201E]/.test(match[2])) return null;
+  return {
+    nodeBin: unquotePowerShellDoubleQuoted(match[1]),
+    script: unquotePowerShellDoubleQuoted(match[2]),
+  };
+}
+
+// The local Windows stable entry is a direct PowerShell call-operator command
+// with a bare stable flag. Kept separate from parsePowerShellEnvCommand so a
+// remote-shaped command can never be mistaken for it (and vice versa).
+// Installation verification and takeover checks need a command field, not just
+// the ownership classification: `ours` also accepts a missing command so that
+// uninstall can safely delete a half-written entry.
+function isOwnedWindowsRemoteCodexCommand(command, options = {}) {
+  const parsed = parseWindowsRemoteCodexInteropCommand(command);
+  if (!parsed) return null;
+  const scriptName = options.scriptName || "codex-hook.js";
+  if (normalizeHookScriptPath(parsed.script, "win32")
+    !== remoteHookScriptKey(options.hooksDir, scriptName, "win32")) return null;
+  return parsed;
+}
+
+function parseLocalStableWindowsCodexCommand(command) {
+  if (typeof command !== "string" || /[\r\n\0]/.test(command)) return null;
+  const match = /^& "((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)" --clawd-windows-stable$/.exec(command);
+  if (!match) return null;
+  return {
+    nodeBin: unquotePowerShellDoubleQuoted(match[1]),
+    script: unquotePowerShellDoubleQuoted(match[2]),
+  };
+}
+
+function codexScriptBasename(value) {
+  return String(value || "").replace(/\\/g, "/").split("/").pop();
+}
+
+// Windows paths are case-insensitive, so local-entry recognition must be too.
+function isCodexScriptName(value, scriptName) {
+  return codexScriptBasename(value).toLowerCase() === String(scriptName).toLowerCase();
+}
+
+function commandHasCodexMarker(command) {
+  return typeof command === "string" && commandMatchesMarker(command, "codex-hook.js");
+}
+
+function classifyWindowsCodexField(command, context) {
+  if (typeof command !== "string") return "missing";
+
+  const native = parsePowerShellEnvCommand(command);
+  if (
+    native
+    && native.args.length === 3
+    && native.args[2] === CODEX_SSH_REMOTE_ARG
+    && normalizeHookScriptPath(native.args[1], "win32")
+      === remoteHookScriptKey(context.hooksDir, context.scriptName, "win32")
+  ) {
+    return "ours";
+  }
+
+  const localStable = parseLocalStableWindowsCodexCommand(command);
+  if (localStable && isCodexScriptName(localStable.script, context.scriptName)) {
+    return "local";
+  }
+
+  if (
+    native
+    && native.args.length >= 2
+    && isCodexScriptName(native.args[1], context.scriptName)
+    && !native.args.includes(CODEX_SSH_REMOTE_ARG)
+    && normalizeHookScriptPath(native.args[1], "win32")
+      !== remoteHookScriptKey(context.hooksDir, context.scriptName, "win32")
+  ) {
+    return "local";
+  }
+
+  return commandHasCodexMarker(command) ? "marker" : "foreign";
+}
+
+function classifyPosixCodexField(command, context) {
+  if (typeof command !== "string") return "missing";
+  const parsed = parseWindowsRemoteCodexInteropCommand(command);
+  if (
+    parsed
+    && normalizeHookScriptPath(parsed.script, "win32")
+      === remoteHookScriptKey(context.hooksDir, context.scriptName, "win32")
+  ) {
+    return "ours";
+  }
+  return commandHasCodexMarker(command) ? "marker" : "foreign";
+}
+
+// Object-level ownership for a Windows remote Codex hook. Both command fields
+// are inspected together, each with its own strict parser, because a hook is
+// only safe to update or remove when the native and interop forms agree that
+// it belongs to this deployment.
+function classifyWindowsRemoteCodexHook(hook, options = {}) {
+  if (!hook || typeof hook !== "object") return "third-party";
+  const context = {
+    hooksDir: options.hooksDir,
+    scriptName: options.scriptName || "codex-hook.js",
+  };
+  const native = classifyWindowsCodexField(hook.commandWindows, context);
+  const posix = classifyPosixCodexField(hook.command, context);
+
+  if (native === "ours" && (posix === "ours" || posix === "missing")) return "ours";
+  if (native === "ours" || posix === "ours") return "conflict";
+  if (native === "local") {
+    // A local stable commandWindows is still safe to migrate only while its
+    // interop command is missing or still carries the Clawd marker. A
+    // marker-less command means the user replaced it deliberately; keep it
+    // and fail the install instead of overwriting their fix.
+    return posix === "missing" || posix === "marker" ? "local-clawd" : "conflict";
+  }
+  if (native !== "marker" && posix !== "marker") return "third-party";
+  return "unknown-clawd";
+}
+
+function listWindowsRemoteCodexHooks(entries) {
+  const items = [];
+  if (!Array.isArray(entries)) return items;
+  for (const entry of entries) {
+    if (!entry || typeof entry !== "object") continue;
+    if (Array.isArray(entry.hooks)) {
+      for (const hook of entry.hooks) {
+        if (hook && typeof hook === "object") items.push({ entry, hook, nested: true });
+      }
+      continue;
+    }
+    if (typeof entry.command === "string" || typeof entry.commandWindows === "string") {
+      items.push({ entry, hook: entry, nested: false });
+    }
+  }
+  return items;
+}
+
+// A group can also carry a top-level command of its own (third-party or
+// hand-written). Removing the last nested hook must not take that command with
+// it; keep the group and drop only its now-empty hooks array.
+function dropEmptiedHookGroup(entries, index, entry) {
+  if (entry.hooks.length !== 0) return;
+  if (typeof entry.command === "string" || typeof entry.commandWindows === "string") {
+    delete entry.hooks;
+    return;
+  }
+  entries.splice(index, 1);
+}
+
+function assertWindowsRemoteCodexOwnership(settings, events, context) {
+  const hookEvents = new Set(events);
+  if (settings.hooks && typeof settings.hooks === "object") {
+    for (const event of Object.keys(settings.hooks)) hookEvents.add(event);
+  }
+  for (const event of hookEvents) {
+    const entries = settings.hooks && settings.hooks[event];
+    for (const item of listWindowsRemoteCodexHooks(entries)) {
+      const classification = classifyWindowsRemoteCodexHook(item.hook, context);
+      if (classification !== "conflict" && classification !== "unknown-clawd") continue;
+      throw new Error(
+        `${CODEX_WINDOWS_REMOTE_OWNERSHIP_CONFLICT}: ${event} has a ${classification} Codex hook; `
+        + "refusing to install remote hooks until that entry is resolved"
+      );
+    }
+  }
+}
+
+function assertSafeWindowsRemoteHookPath(value, label) {
+  if (!/[$`"\u201C\u201D\u201E]/.test(String(value))) return;
+  throw new Error(
+    `${CODEX_WINDOWS_REMOTE_UNSAFE_PATH}: ${label} contains a PowerShell-unsafe character: ${value}`
+  );
+}
+
+function registerWindowsRemoteEvent(entries, desired, context) {
+  const items = listWindowsRemoteCodexHooks(entries).map((item) => ({
+    ...item,
+    classification: classifyWindowsRemoteCodexHook(item.hook, context),
+  }));
+  const existingOurs = items.find((item) => item.classification === "ours");
+  const firstLocal = items.find((item) => item.classification === "local-clawd");
+  // An existing deployment entry wins. Otherwise migrate the first local
+  // stable entry in place so its group-level fields (matcher, ...) survive.
+  const keep = existingOurs || firstLocal || null;
+  const removeHooks = new Set();
+  const removeEntries = new Set();
+
+  for (const item of items) {
+    if (item === keep) continue;
+    if (item.classification !== "ours" && item.classification !== "local-clawd") continue;
+    if (item.nested) removeHooks.add(item.hook);
+    else removeEntries.add(item.entry);
+  }
+
+  let changed = false;
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const entry = entries[i];
+    if (removeEntries.has(entry)) {
+      entries.splice(i, 1);
+      changed = true;
+      continue;
+    }
+    if (!Array.isArray(entry.hooks) || !entry.hooks.some((hook) => removeHooks.has(hook))) continue;
+    entry.hooks = entry.hooks.filter((hook) => !removeHooks.has(hook));
+    changed = true;
+    dropEmptiedHookGroup(entries, i, entry);
+  }
+
+  if (!keep) {
+    entries.push({
+      hooks: [{
+        type: "command",
+        command: desired.command,
+        commandWindows: desired.commandWindows,
+        timeout: desired.timeout,
+      }],
+    });
+    return { added: 1, updated: 0, skipped: 0, changed: true };
+  }
+
+  const hook = keep.hook;
+  let stale = changed;
+  if (hook.type !== "command") {
+    hook.type = "command";
+    stale = true;
+  }
+  if (hook.command !== desired.command) {
+    hook.command = desired.command;
+    stale = true;
+  }
+  if (hook.commandWindows !== desired.commandWindows) {
+    hook.commandWindows = desired.commandWindows;
+    stale = true;
+  }
+  if (hook.timeout !== desired.timeout) {
+    hook.timeout = desired.timeout;
+    stale = true;
+  }
+  return stale
+    ? { added: 0, updated: 1, skipped: 0, changed: true }
+    : { added: 0, updated: 0, skipped: 1, changed: false };
+}
+
+function hooksFileHasUtf8Bom(filePath) {
+  try {
+    const buffer = fs.readFileSync(filePath);
+    return buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF;
+  } catch {
+    return false;
+  }
+}
+
 function registerCodexCommandHooks(options = {}) {
   const marker = options.marker;
   const scriptName = options.scriptName || marker;
@@ -1130,15 +1422,26 @@ function registerCodexCommandHooks(options = {}) {
   }
 
   const warnings = [];
-  const feature = ensureCodexHooksFeature(configPath, {
-    force: options.forceCodexHooksFeature === true,
-  });
-  if (feature.warning) warnings.push(feature.warning);
-
-  const settings = readJsonIfPresent(hooksPath, "hooks.json");
   const hostPlatform = options.platform || process.platform;
   const isWindowsHost = hostPlatform === "win32";
   const processEnv = options.processEnv || process.env;
+  const sshSecureRemote = options.remote === true
+    && (options.sshRemote === true || processEnv.CLAWD_SSH_REMOTE === "1");
+  const windowsRemoteOwned = isWindowsHost && options.remote === true;
+  const windowsRemoteSecure = windowsRemoteOwned && sshSecureRemote;
+  let feature = null;
+  // Every non-Windows-SSH path keeps the baseline order: enable the feature
+  // first, then read hooks.json. Only the guarded remote path moves all
+  // rejection checks ahead of that write.
+  if (!windowsRemoteSecure) {
+    feature = ensureCodexHooksFeature(configPath, {
+      force: options.forceCodexHooksFeature === true,
+    });
+    if (feature.warning) warnings.push(feature.warning);
+  }
+  let settings = readJsonIfPresent(hooksPath, "hooks.json");
+  if (windowsRemoteSecure && (!settings || typeof settings !== "object" || Array.isArray(settings))) settings = {};
+  const hooksHadUtf8Bom = isWindowsHost && hooksFileHasUtf8Bom(hooksPath);
   let hookScript = asarUnpackedPath(path.resolve(__dirname, scriptName).replace(/\\/g, "/"));
   if (hostPlatform === "linux" && processEnv.APPIMAGE) {
     const extraEntryPaths = scriptName === "codex-hook.js"
@@ -1171,8 +1474,31 @@ function registerCodexCommandHooks(options = {}) {
     || stableNodeBin
     || legacyNodeBin
     || "node";
-  const sshSecureRemote = options.remote === true
-    && (options.sshRemote === true || processEnv.CLAWD_SSH_REMOTE === "1");
+  if (windowsRemoteOwned) {
+    assertSafeWindowsRemoteHookPath(nodeBin, "node path");
+    assertSafeWindowsRemoteHookPath(hookScript, "hook script path");
+  }
+  if (windowsRemoteSecure) {
+    assertWindowsRemoteCodexOwnership(settings, events, { hooksDir: __dirname, scriptName });
+    if (options.forceCodexHooksFeature !== true) {
+      let configText = null;
+      try {
+        configText = fs.readFileSync(configPath, "utf-8");
+      } catch (err) {
+        if (err.code !== "ENOENT") throw new Error(`Failed to read config.toml: ${err.message}`);
+      }
+      if (configText !== null && readCodexHooksFeatureState(configText) === "off") {
+        throw new Error(
+          `${CODEX_WINDOWS_REMOTE_HOOKS_DISABLED}: [features].hooks is false in ${configPath}`
+        );
+      }
+    }
+    feature = ensureCodexHooksFeature(configPath, {
+      force: options.forceCodexHooksFeature === true,
+    });
+    if (feature.warning) warnings.push(feature.warning);
+  }
+
   const remoteSecureEnv = options.remote ? {
     CLAWD_REMOTE: "1",
     ...(sshSecureRemote ? {
@@ -1218,11 +1544,11 @@ function registerCodexCommandHooks(options = {}) {
   // bare `"node" "hook.js"` exits 1 — and codex-hook.js reads the same
   // mutable sidecar itself and applies env before any hook code runs. The
   // sidecar/manifest artifacts are still written (data-driven hook, installer
-  // recovery, Doctor validation). Remote installs never opt into the stable launcher and keep
-  // their env-prefixed direct form unchanged. Note codex builds before
-  // openai/codex#22159 (2026-05) ignore commandWindows and would run the
-  // POSIX form on Windows.
-  const desiredCommandWindows = isWindowsHost
+  // recovery, Doctor validation). Remote installs never opt into the stable
+  // launcher and keep the env-prefixed direct form below. Note codex builds
+  // before openai/codex#22159 (2026-05) ignore commandWindows and would run
+  // the POSIX form on Windows.
+  const baseCommandWindows = isWindowsHost
     ? (stableLauncher
       ? `${buildCodexHookCommand(
         stableLauncher.nodeBin,
@@ -1231,7 +1557,13 @@ function registerCodexCommandHooks(options = {}) {
       )} ${CODEX_WINDOWS_STABLE_ARG}`
       : withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, "win32"), commandEnv, "win32"))
     : null;
-  const desiredCommand = stableLauncher
+  // The quoted standalone flag is valid PowerShell syntax and is the shape
+  // the ownership classifier expects. It is not a replacement for the env
+  // prefix: the native command above keeps that.
+  const desiredCommandWindows = windowsRemoteSecure
+    ? `${baseCommandWindows} ${JSON.stringify(CODEX_SSH_REMOTE_ARG)}`
+    : baseCommandWindows;
+  let desiredCommand = stableLauncher
     ? (isWindowsHost
       ? buildStableCodexHookCommand(
         windowsPathToWslPath(stableLauncher.posixLauncherPath) || stableLauncher.posixLauncherPath,
@@ -1239,12 +1571,26 @@ function registerCodexCommandHooks(options = {}) {
       )
       : buildStableCodexHookCommand(stableLauncher.posixLauncherPath, hostPlatform))
     : (isWindowsHost
-      ? buildCodexHookPosixInteropCommand(nodeBin, hookScript)
+      ? buildCodexHookPosixInteropCommand(
+        nodeBin,
+        hookScript,
+        // A Windows SSH remote deployment must write the exact quoted shape
+        // its ownership parser accepts, even when the installer process
+        // inherits CLAWD_WSL_DISTRO from somewhere else.
+        windowsRemoteSecure ? { wslDistro: null } : undefined
+      )
       : withCommandEnv(buildCodexHookCommand(nodeBin, hookScript, hostPlatform), commandEnv, hostPlatform));
+  // The WSL-interop form keeps its existing bare-argument style.
+  if (windowsRemoteSecure && !stableLauncher && isWindowsHost) {
+    desiredCommand = `${desiredCommand} ${CODEX_SSH_REMOTE_ARG}`;
+  }
   // Gate the warning on the same filter withCommandEnv applies, so an env
   // object that contributes nothing (invalid keys / nullish values) doesn't
   // emit a false warning — repairCodexHooks escalates any warning to error.
-  if (isWindowsHost && filterCommandEnvEntries(commandEnv).length) {
+  // The native command keeps its env prefix. The flag additionally covers the
+  // interop command, which cannot inherit env, and gives both fields a shared
+  // ownership marker; the interop-env warning would only add noise here.
+  if (isWindowsHost && !windowsRemoteSecure && filterCommandEnvEntries(commandEnv).length) {
     warnings.push(
       "Env vars don't cross the WSL interop boundary; they were applied to the native Windows hook only."
     );
@@ -1264,9 +1610,23 @@ function registerCodexCommandHooks(options = {}) {
     }
 
     const arr = settings.hooks[event];
+    const desiredTimeout = timeoutForCodexEvent(event);
+
+    if (windowsRemoteSecure) {
+      const result = registerWindowsRemoteEvent(arr, {
+        command: desiredCommand,
+        commandWindows: desiredCommandWindows,
+        timeout: desiredTimeout,
+      }, { hooksDir: __dirname, scriptName });
+      added += result.added;
+      updated += result.updated;
+      skipped += result.skipped;
+      changed = changed || result.changed;
+      continue;
+    }
+
     let found = false;
     let stale = false;
-    const desiredTimeout = timeoutForCodexEvent(event);
 
     for (const entry of arr) {
       const hook = findCodexCommandHook(entry, marker, { includeWindowsVariant: isWindowsHost });
@@ -1319,7 +1679,10 @@ function registerCodexCommandHooks(options = {}) {
     changed = true;
   }
 
-  if (changed) writeJsonAtomic(hooksPath, settings);
+  // Windows Codex rejects the whole hooks.json when it starts with a UTF-8
+  // BOM, so rewrite it without one even when the entries themselves did not
+  // change. POSIX hosts keep the file byte-for-byte.
+  if (changed || hooksHadUtf8Bom) writeJsonAtomic(hooksPath, settings);
 
   if (!options.silent) {
     const label = options.label || "Codex hooks";
@@ -1383,16 +1746,87 @@ function unregisterCodexCommandHooks(options = {}) {
   return result;
 }
 
+// Remove only the hook objects this deployment owns. Codex entries carry no
+// nonce, so ownership is proved by the command shape itself: a native remote
+// commandWindows (plus an optional matching interop command). A hook with one
+// owned field and one foreign/hand-edited field is a conflict and stays on
+// disk so the deployment layer can report an incomplete cleanup.
+function unregisterRemoteOwnedCodexHooks(options = {}) {
+  const hooksDir = options.hooksDir;
+  if (typeof hooksDir !== "string" || !hooksDir.trim()) {
+    throw new Error("Remote owned uninstall requires --hooks-dir");
+  }
+  const scriptName = options.scriptName || "codex-hook.js";
+  const { hooksPath } = getCodexPaths(options);
+  let settings;
+  try {
+    settings = readJsonFile(hooksPath);
+  } catch (err) {
+    if (err.code === "ENOENT") return { removed: 0, conflicts: 0, changed: false };
+    throw new Error(`Failed to read hooks.json: ${err.message}`);
+  }
+  if (!settings || typeof settings !== "object" || Array.isArray(settings)
+    || !settings.hooks || typeof settings.hooks !== "object" || Array.isArray(settings.hooks)) {
+    return { removed: 0, conflicts: 0, changed: false };
+  }
+
+  const context = { hooksDir, scriptName };
+  let removed = 0;
+  let conflicts = 0;
+  let changed = false;
+
+  for (const event of Object.keys(settings.hooks)) {
+    const entries = settings.hooks[event];
+    if (!Array.isArray(entries)) continue;
+
+    const removeHooks = new Set();
+    const removeEntries = new Set();
+    for (const item of listWindowsRemoteCodexHooks(entries)) {
+      const classification = classifyWindowsRemoteCodexHook(item.hook, context);
+      if (classification === "conflict") {
+        conflicts += 1;
+        continue;
+      }
+      if (classification !== "ours") continue;
+      if (item.nested) removeHooks.add(item.hook);
+      else removeEntries.add(item.entry);
+      removed += 1;
+    }
+    if (!removeHooks.size && !removeEntries.size) continue;
+
+    changed = true;
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const entry = entries[i];
+      if (removeEntries.has(entry)) {
+        entries.splice(i, 1);
+        continue;
+      }
+      if (!Array.isArray(entry.hooks) || !entry.hooks.some((hook) => removeHooks.has(hook))) continue;
+      entry.hooks = entry.hooks.filter((hook) => !removeHooks.has(hook));
+      dropEmptiedHookGroup(entries, i, entry);
+    }
+    if (entries.length === 0) delete settings.hooks[event];
+  }
+
+  if (changed) writeJsonAtomic(hooksPath, settings);
+  return { removed, conflicts, changed };
+}
+
 module.exports = {
   CODEX_HOOK_EVENTS,
+  CODEX_SSH_REMOTE_ARG,
   CODEX_WINDOWS_STABLE_ARG,
   CODEX_WSL_INTEROP_ARG,
+  CODEX_WINDOWS_REMOTE_HOOKS_DISABLED,
+  CODEX_WINDOWS_REMOTE_OWNERSHIP_CONFLICT,
+  CODEX_WINDOWS_REMOTE_UNSAFE_PATH,
   CODEX_HOOKS_FEATURE_KEY,
   LEGACY_CODEX_HOOKS_FEATURE_KEY,
   buildCodexHookCommand,
   buildCodexHookPosixInteropCommand,
   buildStableCodexHookCommand,
   buildStableCodexHookLauncherSource,
+  classifyWindowsRemoteCodexHook,
   collectRelativeHookClosure,
   ensureCodexHooksFeature,
   extractExistingWindowsNodeBin,
@@ -1401,12 +1835,15 @@ module.exports = {
   materializeAppImageHookScript,
   materializeStableCodexHookLauncher,
   inspectStableCodexHookCommand,
+  isOwnedWindowsRemoteCodexCommand,
+  readCodexHooksFeatureState,
   readStableCodexHookManifest,
   removeStableCodexHookLauncher,
   registerCodexCommandHooks,
   stableCodexHookPaths,
   timeoutForCodexEvent,
   unregisterCodexCommandHooks,
+  unregisterRemoteOwnedCodexHooks,
   windowsPathToWslPath,
   withCommandEnv,
   resolveCodexHome,

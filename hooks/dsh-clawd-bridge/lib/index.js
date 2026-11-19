@@ -357,6 +357,19 @@ export function createSessionObservers(sender, options = {}) {
     }
   }
 
+  // A title is not a one-time fact: DSH regenerates it after later prompts and
+  // the user can rename the session, while a Clawd that was not listening (or
+  // was restarting) never retries the missed `session/title` POST. Read the
+  // folded, last-wins projection instead of trusting incremental events, so any
+  // reported lifecycle event re-supplies the title that is current right now.
+  const currentSessionTitle = (session) => {
+    try {
+      return projectionRegistry?.snapshot(session, ['title'])?.values?.title
+    } catch {
+      return undefined
+    }
+  }
+
   const handleSessionCreated = safely((session) => {
     let metadata = null
     try {
@@ -385,13 +398,17 @@ export function createSessionObservers(sender, options = {}) {
     }
     const mapping = mapSessionEvent(event)
     if (!mapping) return
-    sender.enqueue(statePayload(session, mapping, { eventSeq: event?.seq }, carrier))
+    const title = currentSessionTitle(session)
+    const payloadMapping = title ? { ...mapping, title } : mapping
+    sender.enqueue(statePayload(session, payloadMapping, { eventSeq: event?.seq }, carrier))
   })
 
   const handleSessionDisposed = safely((session) => {
+    const title = currentSessionTitle(session)
     sender.enqueue(statePayload(session, {
       event: 'SessionEnd',
       state: 'sleeping',
+      ...(title ? { title } : {}),
     }, { sessionSeq: session?.seq }, carrier))
   })
 

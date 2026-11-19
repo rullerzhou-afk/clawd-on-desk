@@ -1,5 +1,7 @@
 "use strict";
 
+const { isDrawableBalanceBucket } = require("./quota-balance");
+
 // ── Pet-attached quota "Orbit" ring geometry ──
 //
 // The account-quota indicators live in their OWN transparent window, attached
@@ -7,8 +9,8 @@
 // sessions). One coin per (source, provider); a coin carries up to two
 // concentric rings — an outer ring for the shorter/rolling window and an inner
 // ring for the weekly window — so a single provider's 5h + weekly both read at
-// a glance without spawning two gauges. Providers beyond the cap collapse into
-// a "+N" affordance that opens the Dashboard.
+// a glance without spawning two gauges. Only the first three selected coins
+// draw beside the pet; the Dashboard retains every provider and source.
 //
 // This module owns the PURE geometry: how many coins a snapshot draws, the
 // cluster's pixel footprint, and where it sits relative to the pet (default
@@ -35,6 +37,7 @@ const RING_PROVIDERS = [
   { key: "claudeQuota", label: "Claude", outer: ["claudeFiveHour"], inner: ["claudeWeekly"] },
   { key: "codexQuota", label: "Codex", outer: ["codexFiveHour"], inner: ["codexWeekly"] },
   { key: "kimiQuota", label: "Kimi", outer: ["kimiFiveHour"], inner: ["kimiWeekly"] },
+  { key: "deepseekQuota", label: "DeepSeek", kind: "balance", outer: ["deepseekBalance"], inner: [] },
 ];
 
 // Layout constants in CSS px (scaled by textScale by the caller, exactly like
@@ -44,11 +47,11 @@ const COIN_GAP = 10; // vertical gap between stacked coins
 const READOUT_W = 44; // "%" + window/source column, outer side of each coin
 const COIN_READOUT_GAP = 6; // gap between coin and its readout
 const CLUSTER_PAD = 6; // inner padding around the cluster content
-const OVERFLOW_GAP = 8;
-const OVERFLOW_H = 20; // "+N" pill row
 const RING_PET_GAP = 8; // gap between the pet body and the cluster
 const RING_EDGE_MARGIN = 8; // keep the cluster this far from the work-area edge
-const RING_MAX_COINS = 4; // visible coins before overflow collapses to "+N"
+// Matches prefs.normalizeQuotaRingShownProviders and settings-actions' selection
+// limit. They count provider choices; this display limit counts physical coins.
+const RING_MAX_COINS = 3;
 
 // Transparent window shell (room for the coin drop shadows), mirrors HUD.
 const RING_SHELL = Object.freeze({ top: 6, right: 6, bottom: 8, left: 6 });
@@ -112,69 +115,72 @@ function resolveAvoidingY({ initialY, minY, maxY, width, height, x, avoidRects, 
   return scored[0].y;
 }
 
-// A provider draws a coin when its group carries at least one candidate bucket
-// as an object. Mirrors the renderer's draw rule exactly so the window is never
+// A window provider needs a candidate bucket; a balance provider also needs
+// complete money metadata. Mirrors the renderer's draw rule exactly so the window is never
 // sized for a coin the renderer will not draw (or vice versa).
 function providerHasDrawableQuota(source, def) {
   const entry = source && source[def.key];
   const group = entry && entry.group;
   if (!group) return false;
+  if (def.kind === "balance") return def.outer.some((field) => isDrawableBalanceBucket(group[field]));
   return [...def.outer, ...def.inner].some((field) =>
     group[field] && typeof group[field] === "object");
 }
 
-// Providers the user has hidden from the pet-side cluster. Display-only: the
-// data keeps being collected and the Dashboard keeps showing it, because the
-// cluster caps at RING_MAX_COINS coins with no say over WHICH ones survive
-// (the renderer takes the first N in RING_PROVIDERS order), while the Dashboard
-// has room for everything. Unknown keys are tolerated rather than rejected so a
-// provider that is removed — or renamed — never wedges a stored preference.
-function hiddenProviderSet(hiddenProviders) {
-  if (!Array.isArray(hiddenProviders)) return null;
-  const hidden = hiddenProviders.filter((key) => typeof key === "string" && key);
-  return hidden.length ? new Set(hidden) : null;
-}
-
-function isProviderDrawn(source, def, hidden) {
-  if (hidden && hidden.has(def.key)) return false;
-  return providerHasDrawableQuota(source, def);
-}
-
-// Total coins a snapshot draws: one per (source, provider-with-quota) that the
-// user has not hidden. This MUST apply the same hidden filter the renderer
-// does, or the transparent window is sized (and its auto-hide hot zone drawn)
-// for coins that never appear.
-function countQuotaCoins(snapshot, showQuota, hiddenProviders) {
-  if (showQuota === false) return 0;
+// Manual selections ignore the legacy hidden list. Data only determines which
+// selected providers draw coins; collection and the Dashboard are unaffected.
+// Provider-first order intentionally takes precedence over source order when
+// truncating multiple machines. Keep this rule mirrored in the renderer.
+function collectQuotaCoins(snapshot, hiddenProviders, shownProviders) {
   const sources = snapshot && Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [];
-  const hidden = hiddenProviderSet(hiddenProviders);
-  let count = 0;
-  for (const source of sources) {
-    if (!source || typeof source !== "object") continue;
-    for (const def of RING_PROVIDERS) {
-      if (isProviderDrawn(source, def, hidden)) count += 1;
+  const shown = Array.isArray(shownProviders) ? new Set(shownProviders) : null;
+  const hidden = new Set(Array.isArray(hiddenProviders) ? hiddenProviders : []);
+  const coins = [];
+  for (const def of RING_PROVIDERS) {
+    if (shown ? !shown.has(def.key) : hidden.has(def.key)) continue;
+    for (const source of sources) {
+      if (!providerHasDrawableQuota(source, def)) continue;
+      coins.push({ source, def });
+      // Selection is per provider, but multiple machines consume separate
+      // coins. Truncation in provider/source order is an accepted boundary.
+      if (coins.length === RING_MAX_COINS) return coins;
     }
   }
-  return count;
+  return coins;
 }
 
-// Providers that currently report drawable quota, for the Settings list. Driven
-// by the snapshot rather than by RING_PROVIDERS alone so the list never offers a
-// checkbox for a provider the user has not connected — the same reasoning that
-// keeps "merge across machines" hidden on a single-machine setup. `hidden` is
-// reported alongside so an already-hidden provider still lists (and can be
-// turned back on) even though it draws nothing right now.
-function listQuotaRingProviders(snapshot, hiddenProviders) {
+function countQuotaCoins(snapshot, showQuota, hiddenProviders, shownProviders) {
+  return showQuota === false ? 0 : collectQuotaCoins(snapshot, hiddenProviders, shownProviders).length;
+}
+
+// Include selected providers without data so the user can release their choice
+// slots. They draw no coins and therefore consume none of the coin budget.
+function listQuotaRingProviders(snapshot, hiddenProviders, shownProviders) {
   const sources = snapshot && Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [];
-  const hidden = hiddenProviderSet(hiddenProviders);
-  const seen = [];
-  for (const def of RING_PROVIDERS) {
-    const reports = sources.some((source) =>
-      source && typeof source === "object" && providerHasDrawableQuota(source, def));
-    if (!reports) continue;
-    seen.push({ key: def.key, label: def.label, hidden: !!(hidden && hidden.has(def.key)) });
+  const coins = collectQuotaCoins(snapshot, hiddenProviders, shownProviders);
+  const selected = new Set(Array.isArray(shownProviders) ? shownProviders : []);
+  const definitions = [...RING_PROVIDERS];
+  // Prefs preserve unknown keys across upgrades; keep those choices removable.
+  for (const key of selected) {
+    if (!definitions.some((def) => def.key === key)) {
+      definitions.push({ key, label: key, outer: [], inner: [] });
+    }
   }
-  return seen;
+  const list = [];
+  for (const def of definitions) {
+    const coinCount = sources.filter((source) => providerHasDrawableQuota(source, def)).length;
+    if (!coinCount && !selected.has(def.key)) continue;
+    const shownCoinCount = coins.filter((coin) => coin.def.key === def.key).length;
+    list.push({
+      key: def.key,
+      label: def.label,
+      selected: selected.has(def.key),
+      shown: shownCoinCount > 0,
+      coinCount,
+      shownCoinCount,
+    });
+  }
+  return list;
 }
 
 function formatWindowLabel(windowMinutes, fallbackLabel) {
@@ -196,21 +202,19 @@ function quotaSeverity(usedPercent) {
 }
 
 // Content width is fixed (coin + readout column); height grows with the coin
-// count up to the cap, then adds an overflow row. The ring fills with USED
+// count up to the cap. The ring fills with USED
 // percent (matching the Dashboard) and an empty ring is the reset state, so
 // the semantics read from the form — no persistent "used" label needed.
 function ringClusterContentSize(coinCount) {
   const total = Math.max(0, Math.floor(Number(coinCount) || 0));
   const visible = Math.min(total, RING_MAX_COINS);
-  const overflow = Math.max(0, total - visible);
   const rows = Math.max(1, visible);
 
   const width = CLUSTER_PAD * 2 + READOUT_W + COIN_READOUT_GAP + COIN_SIZE;
-  let height = CLUSTER_PAD * 2
+  const height = CLUSTER_PAD * 2
     + rows * COIN_SIZE
     + Math.max(0, rows - 1) * COIN_GAP;
-  if (overflow > 0) height += OVERFLOW_GAP + OVERFLOW_H;
-  return { width, height, visible, overflow };
+  return { width, height, visible };
 }
 
 // Default side is LEFT (the permission bubble slides in from the right, so the
@@ -290,7 +294,6 @@ function computeQuotaRingBounds({
   return {
     side,
     visibleCoins: content.visible,
-    overflow: content.overflow,
     contentBounds,
     bounds: {
       x: contentBounds.x - shell.left,
@@ -303,6 +306,7 @@ function computeQuotaRingBounds({
 
 module.exports = {
   RING_PROVIDERS,
+  collectQuotaCoins,
   countQuotaCoins,
   listQuotaRingProviders,
   formatWindowLabel,
@@ -319,8 +323,6 @@ module.exports = {
     READOUT_W,
     COIN_READOUT_GAP,
     CLUSTER_PAD,
-    OVERFLOW_GAP,
-    OVERFLOW_H,
     RING_PET_GAP,
     RING_EDGE_MARGIN,
     RING_MAX_COINS,

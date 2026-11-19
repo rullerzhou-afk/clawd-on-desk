@@ -11,18 +11,19 @@
   let helpers = null;
   let ops = null;
   let coreRef = null;
-  const CODEX_PERMISSION_MODE_OPTIONS = [
-    { id: "auto", labelKey: "codexPermissionModeAuto" },
-    { id: "intercept", labelKey: "codexPermissionModeIntercept" },
-  ];
   const INSTALL_HINT_CONFIDENCES = new Set(["high", "medium"]);
   const CUSTOM_TOOL_SCAN_STATUS_MIN_MS = 1200;
   let agentHintActionPending = false;
+  // Claude config folders as main resolves them ({ dir, label, primary, exists }).
+  // null until the first fetch; refreshed after every add/remove/rename.
+  let claudeConfigDirs = null;
+  let claudeConfigDirsLoading = false;
   let agentInstallHintResetPending = false;
   let agentCleanupHintResetPending = false;
   const permissionModePending = new Set();
   let dshNoticesRequestSeq = 0;
   const dshNoticeContainers = new Set();
+  const deepseekBalanceCards = new Set();
 
   function t(key) {
     return helpers.t(key);
@@ -959,7 +960,130 @@
     });
     autoStartRow.classList.add("row-sub");
     helpers.attachDescriptionDisclosure(autoStartRow);
-    return [manageRow, autoStartRow];
+    return [manageRow, autoStartRow, ...buildClaudeConfigDirRows()];
+  }
+
+  function refreshClaudeConfigDirs() {
+    if (claudeConfigDirsLoading) return Promise.resolve();
+    if (!window.settingsAPI || typeof window.settingsAPI.getClaudeConfigDirs !== "function") {
+      return Promise.resolve();
+    }
+    claudeConfigDirsLoading = true;
+    return Promise.resolve(window.settingsAPI.getClaudeConfigDirs())
+      .then((result) => {
+        // A failed read still settles to a list, or every render would refetch.
+        claudeConfigDirs = result && result.status === "ok" && Array.isArray(result.dirs)
+          ? result.dirs
+          : (claudeConfigDirs || []);
+      })
+      .catch(() => { claudeConfigDirs = claudeConfigDirs || []; })
+      .finally(() => {
+        claudeConfigDirsLoading = false;
+        ops.requestRender({ content: true });
+      });
+  }
+
+  async function runClaudeConfigDirCommand(action, payload, button) {
+    if (!window.settingsAPI || typeof window.settingsAPI.command !== "function") {
+      ops.showToast(t("toastSaveFailed") + "settings API unavailable", { error: true });
+      return null;
+    }
+    if (button) helpers.setButtonState(button, { pending: true });
+    try {
+      const result = await window.settingsAPI.command(action, payload);
+      if (!result || result.status !== "ok") {
+        ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+        return result;
+      }
+      return result;
+    } catch (err) {
+      ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
+      return null;
+    } finally {
+      if (button && button.isConnected) helpers.setButtonState(button, { pending: false });
+      await refreshClaudeConfigDirs();
+    }
+  }
+
+  async function addPickedClaudeConfigDir(button) {
+    if (!window.settingsAPI || typeof window.settingsAPI.pickClaudeConfigDir !== "function") {
+      ops.showToast(t("toastSaveFailed") + "folder picker unavailable", { error: true });
+      return;
+    }
+    const picked = await window.settingsAPI.pickClaudeConfigDir();
+    if (!picked || picked.status === "cancel") return;
+    if (picked.status !== "ok" || typeof picked.path !== "string" || !picked.path) {
+      ops.showToast(t("toastSaveFailed") + ((picked && picked.message) || "folder picker failed"), { error: true });
+      return;
+    }
+    const result = await runClaudeConfigDirCommand("addClaudeConfigDir", { dir: picked.path }, button);
+    if (result && result.status === "ok" && !result.noop) {
+      ops.showToast(t(result.installed ? "toastClaudeConfigDirAdded" : "toastClaudeConfigDirListed"));
+    }
+  }
+
+  function buildClaudeConfigDirRows() {
+    if (claudeConfigDirs === null) refreshClaudeConfigDirs();
+    const dirs = Array.isArray(claudeConfigDirs) ? claudeConfigDirs : [];
+
+    const headerParts = helpers.buildSettingRow({
+      labelKey: "rowClaudeConfigDirs",
+      descriptionKey: "rowClaudeConfigDirsDesc",
+      className: "row-sub claude-config-dirs-row",
+    });
+    const addButton = helpers.buildButton({
+      labelKey: "claudeConfigDirAdd",
+      size: "compact",
+      className: "claude-config-dir-add",
+    });
+    addButton.addEventListener("click", () => addPickedClaudeConfigDir(addButton));
+    headerParts.controlElement.appendChild(addButton);
+    helpers.attachDescriptionDisclosure(headerParts.element);
+
+    return [headerParts.element, ...dirs.map(buildClaudeConfigDirRow)];
+  }
+
+  function buildClaudeConfigDirRow(entry) {
+    const descParts = [entry.primary ? t("claudeConfigDirPrimary") : null];
+    if (entry.exists === false) descParts.push(t("claudeConfigDirMissing"));
+    const rowParts = helpers.buildSettingRow({
+      label: entry.dir,
+      description: descParts.filter(Boolean).join(" · ") || null,
+      className: "row-sub claude-config-dir-row",
+      controlClassName: "claude-config-dir-control",
+    });
+    rowParts.labelElement.classList.add("claude-config-dir-path");
+    rowParts.labelElement.title = entry.dir;
+
+    const input = helpers.buildTextInput({
+      type: "text",
+      size: "compact",
+      value: entry.label || "",
+      placeholder: t("claudeConfigDirLabelPlaceholder"),
+      spellcheck: false,
+      ariaLabel: t("claudeConfigDirLabelAria").replace("{dir}", entry.dir),
+      stopPropagation: true,
+      onEnter: () => input.blur(),
+    });
+    input.maxLength = 24;
+    input.addEventListener("change", () => {
+      runClaudeConfigDirCommand("setClaudeConfigDirLabel", { dir: entry.dir, label: input.value });
+    });
+    rowParts.controlElement.appendChild(input);
+
+    if (!entry.primary) {
+      const removeButton = helpers.buildButton({
+        labelKey: "claudeConfigDirRemove",
+        tone: "danger",
+        size: "compact",
+        className: "claude-config-dir-remove",
+      });
+      removeButton.addEventListener("click", () => {
+        runClaudeConfigDirCommand("removeClaudeConfigDir", { dir: entry.dir }, removeButton);
+      });
+      rowParts.controlElement.appendChild(removeButton);
+    }
+    return rowParts.element;
   }
 
   function buildAgentGroup(agent) {
@@ -1191,6 +1315,12 @@
           hint.textContent = t("traecodeEnableHint");
           text.appendChild(hint);
         }
+        if (agent.capabilities?.approvalReminder && readers.readAgentIntegrationInstalled(agent.id)) {
+          const hint = document.createElement("div");
+          hint.className = "row-desc agent-kiro-desktop-hint";
+          hint.textContent = t("kiroDesktopEnableHint");
+          text.appendChild(hint);
+        }
         // MiniMax Code has the same manual-enable gap: the plugin directory
         // is on disk but the app decides whether hooks fire.
         if (!agent.custom && agent.id === "minimax" && readers.readAgentIntegrationInstalled(agent.id)) {
@@ -1333,7 +1463,7 @@
   }
 
   // Card body of a connected agent, in display order: Approvals → Alerts →
-  // Connection → WSL → Quota → Info, then the quiet disconnect/remove block.
+  // Connection → WSL → Quota → Advanced → Info, then the quiet disconnect/remove block.
   // Groups with no rows are dropped, so no agent renders an empty label.
   function buildAgentDetailRows(agent) {
     const caps = agent.capabilities || {};
@@ -1341,6 +1471,7 @@
     const alerts = [];
     const connection = [];
     const quota = [];
+    const advanced = [];
     const info = [];
 
     if (agent.custom) {
@@ -1348,7 +1479,9 @@
     }
 
     if (agent.id === "codex") {
-      approvals.push(buildCodexPermissionModeRow(agent, computeAgentSubSwitchDisabled(agent.id, "permissionMode")));
+      const routing = buildCodexApprovalRoutingRow();
+      approvals.push(routing.row);
+      advanced.push(buildCodexInterceptApprovalsRow(agent, routing.syncMode));
       approvals.push(buildAgentSwitchRow({
         agent,
         flag: "nativeNotificationSoundEnabled",
@@ -1373,6 +1506,24 @@
       }));
     }
 
+    if (caps.approvalReminder) {
+      approvals.push(buildAgentSwitchRow({
+        agent,
+        flag: "permissionsEnabled",
+        extraClass: "row-sub",
+        disabled: computeAgentSubSwitchDisabled(agent.id, "permissionsEnabled"),
+        buildText: (text) => {
+          const label = document.createElement("span");
+          label.className = "row-label";
+          label.textContent = t("rowKiroReminder");
+          text.appendChild(label);
+          const desc = document.createElement("span");
+          desc.className = "row-desc";
+          desc.textContent = t("rowKiroReminderDesc");
+          text.appendChild(desc);
+        },
+      }));
+    }
     if (caps.permissionApproval || caps.interactiveBubble) {
       approvals.push(buildAgentSwitchRow({
         agent,
@@ -1481,6 +1632,9 @@
     if (agent.id === "kimi-cli") {
       quota.push(...buildKimiQuotaRows());
     }
+    if (agent.id === "deepseek-harness") {
+      quota.push(...buildDeepseekBalanceRows());
+    }
 
     const groups = [
       buildAgentDetailGroup("agentGroupApproval", approvals),
@@ -1488,10 +1642,20 @@
       buildAgentDetailGroup("agentGroupConnection", connection),
       buildAgentDetailGroup("agentGroupWsl", buildAgentInstanceRows(agent)),
       buildAgentDetailGroup("agentGroupQuota", quota),
+      buildAgentDetailGroup("agentGroupAdvanced", advanced),
       buildAgentDetailGroup("agentGroupInfo", info),
     ].filter(Boolean);
-    groups.push(buildAgentDisconnectBlock(agent));
-    return groups;
+    const body = [];
+    if (groups.length > 0) {
+      // The groups share one label column (CSS subgrid), so a long localized
+      // label widens it for the whole card instead of running into the rows.
+      const list = document.createElement("div");
+      list.className = "agent-detail-groups";
+      for (const group of groups) list.appendChild(group);
+      body.push(list);
+    }
+    body.push(buildAgentDisconnectBlock(agent));
+    return body;
   }
 
   // One labelled column of card-body rows. The label sits in the narrow left
@@ -1633,6 +1797,235 @@
       }
     });
     return button;
+  }
+
+  function applyDeepseekBalanceStatus(status) {
+    if (!status || status.status !== "ok") return;
+    for (const applyStatus of deepseekBalanceCards) applyStatus(status);
+  }
+
+  function deepseekBalanceStatusText(status) {
+    const keys = {
+      unconfigured: "Unconfigured",
+      "configured-disabled": "ConfiguredDisabled",
+      "agent-disabled": "AgentDisabled",
+      "credential-rejected": "Rejected",
+      "secure-storage-unavailable": "StorageUnavailable",
+      "credential-unreadable": "StorageUnavailable",
+      "rate-limited": "RateLimited",
+      "payment-required": "PaymentRequired",
+      timeout: "Timeout",
+      "network-error": "NetworkError",
+      "server-error": "ServerError",
+      "malformed-response": "MalformedResponse",
+      "response-too-large": "MalformedResponse",
+      "http-error": "HttpError",
+      refreshing: "Refreshing",
+      fresh: "Fresh",
+      ready: "Ready",
+      paused: "Paused",
+    };
+    const key = keys[status?.state];
+    return key ? t(`deepseekBalanceStatus${key}`)
+      : t("deepseekBalanceStatusError").replace("{reason}", status?.reason || "runtime-unavailable");
+  }
+
+  function buildDeepseekBalanceRows() {
+    const parts = helpers.buildSettingRow({
+      labelKey: "deepseekBalanceTitle",
+      descriptionKey: "deepseekBalanceDesc",
+      className: "row-sub deepseek-balance-row",
+      controlClassName: "kimi-quota-row-control",
+    });
+    helpers.attachDescriptionDisclosure(parts.element);
+    const action = helpers.buildButton({
+      labelKey: "deepseekBalanceManage",
+      size: "compact",
+      className: "deepseek-balance-row-action",
+    });
+    parts.controlElement.appendChild(action);
+    const panel = document.createElement("div");
+    panel.className = "kimi-quota-panel";
+    panel.hidden = true;
+    // Both key workflows use the same row/card styles. The independent owner
+    // keeps DeepSeek's periodic collection separate from Kimi's manual policy.
+    const card = document.createElement("div");
+    card.className = "row row-sub kimi-quota-card deepseek-balance-card";
+    panel.appendChild(card);
+    const statusLine = document.createElement("span");
+    statusLine.className = "row-desc deepseek-balance-status";
+    card.appendChild(statusLine);
+    const note = document.createElement("span");
+    note.className = "row-desc";
+    note.textContent = t("deepseekBalanceSecurity");
+    card.appendChild(note);
+    const connectRow = document.createElement("div");
+    connectRow.className = "kimi-quota-connect-row";
+    const input = helpers.buildTextInput({
+      type: "password",
+      autocomplete: "new-password",
+      className: "kimi-quota-key-input",
+      placeholder: t("deepseekBalanceKeyPlaceholder"),
+      ariaLabel: t("deepseekBalanceKeyPlaceholder"),
+      spellcheck: false,
+      stopPropagation: true,
+      onEnter: () => submitKey(),
+    });
+    const connect = helpers.buildButton({
+      labelKey: "deepseekBalanceConnect",
+      tone: "accent",
+      className: "deepseek-balance-connect",
+    });
+    connectRow.append(input, connect);
+    card.appendChild(connectRow);
+    const controls = document.createElement("div");
+    controls.className = "kimi-quota-primary-row";
+    const reconnect = helpers.buildButton({
+      labelKey: "deepseekBalanceReconnect",
+      className: "deepseek-balance-reconnect",
+    });
+    const disconnect = helpers.buildButton({
+      labelKey: "deepseekBalanceDisconnect",
+      className: "deepseek-balance-disconnect",
+    });
+    const forget = helpers.buildButton({
+      labelKey: "deepseekBalanceForget",
+      tone: "danger",
+      className: "deepseek-balance-forget",
+    });
+    controls.append(reconnect, disconnect, forget);
+    card.appendChild(controls);
+    const foot = document.createElement("span");
+    foot.className = "row-desc";
+    foot.textContent = t("deepseekBalanceDisconnectDesc");
+    card.appendChild(foot);
+    const link = helpers.buildButton({
+      labelKey: "deepseekBalanceConsole",
+      tone: "quiet",
+      size: "compact",
+      className: "deepseek-balance-console",
+    });
+    card.appendChild(link);
+    let currentStatus = null;
+    let busy = false;
+    let feedback = null;
+    let disposed = false;
+    let statusRevision = 0;
+    deepseekBalanceCards.add(applyStatus);
+    helpers.registerMountedDisposable({
+      dispose() {
+        disposed = true;
+        statusRevision++;
+        deepseekBalanceCards.delete(applyStatus);
+        input.value = "";
+      },
+    });
+
+    function applyStatus(status) {
+      if (disposed) return;
+      statusRevision++;
+      currentStatus = status;
+      feedback = null;
+      sync();
+    }
+
+    function sync() {
+      const configured = currentStatus?.configured === true;
+      const enabled = currentStatus?.collectionEnabled === true;
+      statusLine.textContent = feedback || (currentStatus
+        ? deepseekBalanceStatusText(currentStatus) : t("deepseekBalanceStatusLoading"));
+      helpers.setButtonState(connect, {
+        disabled: busy || !currentStatus,
+        labelKey: configured ? "deepseekBalanceReplace" : "deepseekBalanceConnect",
+        pending: busy,
+      });
+      helpers.setTextInputState(input, { pending: busy });
+      helpers.setButtonState(reconnect, { disabled: busy || !configured || !currentStatus?.decryptable });
+      reconnect.hidden = !configured;
+      helpers.setButtonState(disconnect, { disabled: busy || !enabled });
+      disconnect.hidden = !configured;
+      helpers.setButtonState(forget, { disabled: busy || !configured || enabled });
+      forget.hidden = !configured;
+    }
+    async function reloadStatus() {
+      const revision = ++statusRevision;
+      let status;
+      try {
+        status = await window.settingsAPI.getDeepseekBalanceStatus();
+      } catch {
+        status = {
+          state: "error",
+          reason: "runtime-unavailable",
+        };
+      }
+      // A background push is newer than a status read started before it.
+      // Removed cards must not update the replacement card through old work.
+      if (disposed || revision !== statusRevision) return;
+      currentStatus = status;
+      sync();
+    }
+    async function runAction(invoke) {
+      if (busy) return;
+      busy = true;
+      feedback = null;
+      sync();
+      let result;
+      try {
+        result = await invoke();
+      } catch {
+        result = {
+          status: "error",
+          reason: "runtime-unavailable",
+        };
+      }
+      if (disposed) return;
+      busy = false;
+      if (result?.status !== "ok") {
+        feedback = deepseekBalanceStatusText({
+          state: result?.reason,
+          reason: result?.reason || "runtime-unavailable",
+        });
+      }
+      await reloadStatus();
+    }
+    function submitKey() {
+      const apiKey = input.value;
+      input.value = "";
+      if (!apiKey) {
+        helpers.setTextInputState(input, { invalid: true });
+        return;
+      }
+      void runAction(() => window.settingsAPI.connectDeepseekBalance(apiKey));
+    }
+    connect.addEventListener("click", (event) => {
+      event.stopPropagation();
+      submitKey();
+    });
+    reconnect.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void runAction(() => window.settingsAPI.reconnectDeepseekBalance());
+    });
+    disconnect.addEventListener("click", (event) => {
+      event.stopPropagation();
+      void runAction(() => window.settingsAPI.disconnectDeepseekBalance());
+    });
+    forget.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (typeof window.confirm === "function" && !window.confirm(t("deepseekBalanceForgetConfirm"))) return;
+      void runAction(() => window.settingsAPI.forgetDeepseekBalanceCredential());
+    });
+    link.addEventListener("click", (event) => {
+      event.stopPropagation();
+      window.settingsAPI.openExternal("https://platform.deepseek.com/api_keys");
+    });
+    action.addEventListener("click", (event) => {
+      event.stopPropagation();
+      panel.hidden = !panel.hidden;
+      if (!panel.hidden) void reloadStatus();
+    });
+    sync();
+    void reloadStatus();
+    return [parts.element, panel];
   }
 
   function kimiQuotaStatusText(status) {
@@ -2262,12 +2655,16 @@
     return row;
   }
 
-  function computeAgentSubSwitchDisabled(agentId, flag) {
+  function computeAgentSubSwitchDisabled(
+    agentId,
+    flag,
+    permissionMode = readers.readAgentPermissionMode(agentId)
+  ) {
     if (flag === "enabled") return false;
     const masterOn = readers.readAgentFlagValue(agentId, "enabled");
     if (!masterOn) return true;
     if (agentId === "codex" && flag === "nativeNotificationSoundEnabled") {
-      return readers.readAgentPermissionMode(agentId) !== "auto";
+      return permissionMode !== "auto";
     }
     // Subagent sub-gate sits under the permission switch: pointless to toggle
     // while the parent permission gate already suppresses every CC bubble.
@@ -2277,71 +2674,91 @@
     return false;
   }
 
-  function buildCodexPermissionModeRow(agent, disabled) {
-    const row = document.createElement("div");
-    row.className = "row row-sub";
+  function buildCodexApprovalRoutingRow() {
+    const parts = helpers.buildSettingRow({
+      labelKey: "rowCodexApprovalRouting",
+      descriptionKey: "rowCodexApprovalRoutingAutoDesc",
+      className: "row-sub codex-approval-routing-row",
+    });
+    const syncMode = (mode) => {
+      parts.descriptionElement.textContent = t(mode === "intercept"
+        ? "rowCodexApprovalRoutingInterceptDesc" : "rowCodexApprovalRoutingAutoDesc");
+    };
+    syncMode(readers.readAgentPermissionMode("codex"));
+    // Keep approval routing visible so users can understand where to respond
+    // without opening an extra disclosure.
+    return { row: parts.element, syncMode };
+  }
 
-    const text = document.createElement("div");
-    text.className = "row-text";
-    const label = document.createElement("span");
-    label.className = "row-label";
-    label.textContent = t("rowCodexPermissionMode");
-    const desc = document.createElement("span");
-    desc.className = "row-desc";
-    desc.textContent = t("rowCodexPermissionModeDesc");
-    text.appendChild(label);
-    text.appendChild(desc);
-    row.appendChild(text);
-
-    const ctrl = document.createElement("div");
-    ctrl.className = "row-control";
-    const control = helpers.buildSegmentedRadio({
-      id: "codex-permission-mode",
-      ariaLabel: t("rowCodexPermissionMode"),
-      className: "codex-permission-mode-segmented",
-      stopPropagation: true,
-      value: readers.readAgentPermissionMode(agent.id),
-      disabled: !!disabled,
+  function buildCodexInterceptApprovalsRow(agent, syncApprovalRouting) {
+    const parts = helpers.buildSettingRow({
+      labelKey: "rowCodexInterceptApprovals",
+      descriptionKey: "rowCodexInterceptApprovalsDesc",
+      className: "row-sub",
+    });
+    const control = helpers.buildSwitch({
+      checked: readers.readAgentPermissionMode(agent.id) === "intercept",
+      disabled: computeAgentSubSwitchDisabled(agent.id, "permissionMode"),
       pending: permissionModePending.has(agent.id),
-      options: CODEX_PERMISSION_MODE_OPTIONS.map((mode) => ({
-        value: mode.id, label: t(mode.labelKey), dataset: { mode: mode.id },
-      })),
-      onValueSync(value, element) {
-        element.style.setProperty("--codex-permission-mode-active-index", String(getCodexPermissionModeIndex(value)));
-      },
-      async onChange(mode) {
-        if (permissionModePending.has(agent.id)) return false;
+      ariaLabelledBy: parts.labelElement.id,
+      ariaDescribedBy: parts.descriptionElement.id,
+      stopPropagation: true,
+      async onToggle({ nextChecked }) {
+        if (permissionModePending.has(agent.id)) return;
         permissionModePending.add(agent.id);
+        control.setState({ checked: nextChecked, pending: true });
+        const snapshotBeforeSave = state.snapshot;
+        const nextMode = nextChecked ? "intercept" : "auto";
+        let saved = false;
+        // Failure settles all mode displays from the snapshot.
+        // Success without a newer snapshot settles them from the optimistic mode.
+        // Success with a newer snapshot settles them from that snapshot.
+        // Reference equality relies on settings-ui-core.js replacing state.snapshot on each update.
         try {
-          const result = await window.settingsAPI.command("setAgentPermissionMode", { agentId: agent.id, mode });
-          if (result && result.status === "ok") return true;
-          ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+          const result = await window.settingsAPI.command("setAgentPermissionMode", { agentId: agent.id, mode: nextMode });
+          saved = !!(result && result.status === "ok");
+          if (!saved) {
+            ops.showToast(t("toastSaveFailed") + ((result && result.message) || "unknown error"), { error: true });
+          }
         } catch (err) {
           ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
         } finally {
           permissionModePending.delete(agent.id);
-          state.mountedControls.agentPermissionModes.get(agent.id)?.control.setPending(false);
+          // The card may have been rebuilt while saving. Settle the currently
+          // mounted switch so it does not stay busy after the old one is gone.
+          const mounted = state.mountedControls.agentPermissionModes.get(agent.id);
+          const mode = saved && state.snapshot === snapshotBeforeSave
+            ? nextMode : readers.readAgentPermissionMode(agent.id);
+          mounted?.syncMode(mode);
         }
-        return false;
       },
     });
-    ctrl.appendChild(control.element);
-    row.appendChild(ctrl);
+    function syncMode(mode) {
+      control.setState({
+        checked: mode === "intercept",
+        disabled: computeAgentSubSwitchDisabled(agent.id, "permissionMode"),
+        pending: permissionModePending.has(agent.id),
+      });
+      syncApprovalRouting(mode);
+      const soundSwitch = state.mountedControls.agentSwitches.get(
+        readers.agentSwitchStateId(agent.id, "nativeNotificationSoundEnabled")
+      );
+      soundSwitch?.syncDisabledState(computeAgentSubSwitchDisabled(agent.id, "nativeNotificationSoundEnabled", mode));
+    }
+
+    control.element.setAttribute("data-settings-focus-key", "codex-intercept-approvals");
+    parts.controlElement.appendChild(control.element);
     state.mountedControls.agentPermissionModes.set(agent.id, {
-      row,
+      row: parts.element,
       control,
       agentId: agent.id,
+      syncMode,
       syncFromSnapshot() {
-        control.setValue(readers.readAgentPermissionMode(agent.id));
-        control.setDisabled(!readers.readAgentFlagValue(agent.id, "enabled"));
+        syncMode(readers.readAgentPermissionMode(agent.id));
       },
     });
-    helpers.attachDescriptionDisclosure(row);
-    return row;
-  }
-
-  function getCodexPermissionModeIndex(mode) {
-    return Math.max(0, CODEX_PERMISSION_MODE_OPTIONS.findIndex((option) => option.id === mode));
+    helpers.attachDescriptionDisclosure(parts.element);
+    return parts.element;
   }
 
   function syncAgentSwitchDisabledState(meta, disabled) {
@@ -2641,6 +3058,7 @@
       render,
       patchInPlace,
       applyAgentActivity,
+      applyDeepseekBalanceStatus,
     };
   }
 

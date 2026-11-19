@@ -1,6 +1,6 @@
 {
   "name": "clawd-on-desk",
-  "version": "1.4.0",
+  "version": "1.6.0",
   "description": "A desktop pet that reacts to your Claude Code sessions in real-time.",
   "main": "src/main.js",
   "scripts": {
@@ -15,6 +15,7 @@
     "build:linux": "electron-builder --linux",
     "build:linux:x64": "electron-builder --linux AppImage:x64 deb:x64",
     "build:all": "electron-builder --win --mac --linux",
+    "build:remote-ssh-bridge": "node scripts/build-remote-ssh-stdio-bridge.js",
     "verify:electron": "node scripts/verify-electron-install.js",
     "postinstall": "node scripts/verify-electron-install.js --context postinstall",
     "test": "node test/run-tests.js",
@@ -35,6 +36,8 @@
     "install:antigravity-hooks": "node hooks/antigravity-install.js",
     "install:cursor-hooks": "node hooks/cursor-install.js",
     "install:kiro-hooks": "node hooks/kiro-install.js",
+    "install:kiro-desktop-hooks": "node hooks/kiro-desktop-install.js",
+    "uninstall:kiro-desktop-hooks": "node hooks/kiro-desktop-install.js --uninstall",
     "install:kirocrew-hooks": "node hooks/kirocrew-install.js",
     "uninstall:kirocrew-hooks": "node hooks/kirocrew-install.js --uninstall",
     "install:kimi-hooks": "node hooks/kimi-install.js",
@@ -213,6 +216,7 @@
     "@electron/asar": "^3.4.1",
     "electron": "^41.10.4",
     "electron-builder": "^26.15.7",
+    "esbuild": "^0.28.2",
     "js-yaml": "^4.1.0"
   },
   "dependencies": {
@@ -222,6 +226,8 @@
     "jsonc-parser": "^3.3.1",
     "koffi": "2.16.3",
     "markdown-it": "15.0.0",
+    "multiplex": "^6.7.0",
+    "qrcode-generator": "^2.0.4",
     "ws": "^8.21.0",
     "yauzl": "^2.10.0"
   }

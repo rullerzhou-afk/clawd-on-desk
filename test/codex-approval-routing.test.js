@@ -171,11 +171,19 @@ test("PR #1156 follow-up: inode replacement with unchanged size and mtime invali
   // short-name expansion and case normalization in CI temporary directories.
   const file = fs.realpathSync.native(f.file);
   if (process.platform === "win32") f.data.transcript_path = file.toUpperCase();
-  const before = fs.statSync(file);
-  const after = { ...before, ino: before.ino === 0 ? 1 : 0 };
+  const { collidingFileIds } = require("./helpers/colliding-file-ids");
+  const ids = collidingFileIds(t);
+  const peer = path.join(f.home, "replacement.jsonl");
+  fs.copyFileSync(file, peer);
+  const before = fs.statSync(file, { bigint: true });
+  const after = { ...before, ino: ids.snapshot(peer) };
+  ids.assertCollision(before.ino, after.ino);
   const stat = fs.statSync;
   const statMock = t.mock.method(fs, "statSync", (filePath, ...args) => {
-    if (filePath === file) return after;
+    if (filePath === file) {
+      const current = stat(filePath, ...args);
+      return { ...current, ino: typeof current.ino === "bigint" ? after.ino : Number(after.ino) };
+    }
     return stat(filePath, ...args);
   });
   assert.notEqual(after.ino, before.ino);

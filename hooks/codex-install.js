@@ -14,6 +14,7 @@ const {
   registerCodexCommandHooks,
   removeStableCodexHookLauncher,
   unregisterCodexCommandHooks,
+  unregisterRemoteOwnedCodexHooks,
 } = require("./codex-install-utils");
 
 const MARKER = "codex-hook.js";
@@ -62,12 +63,54 @@ module.exports = {
   buildCodexStateHookCommand,
   registerCodexHooks,
   unregisterCodexHooks,
+  unregisterRemoteOwnedCodexHooks,
 };
+
+// Validate the whole command line before touching any configuration. Unknown
+// flags must fail closed: an older controller running this script with a new
+// flag must not fall through into a local registration.
+function runCli(argv = process.argv) {
+  const args = argv.slice(2);
+  let remote = false;
+  let uninstall = false;
+  let remoteUninstallOwned = false;
+  let hooksDir = null;
+
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--remote") {
+      remote = true;
+    } else if (arg === "--uninstall") {
+      uninstall = true;
+    } else if (arg === "--remote-uninstall-owned") {
+      remoteUninstallOwned = true;
+    } else if (arg === "--hooks-dir") {
+      const value = args[i + 1];
+      if (typeof value !== "string" || !value || value.startsWith("--")) {
+        throw new Error("Remote owned uninstall requires --hooks-dir <dir>");
+      }
+      hooksDir = value;
+      i += 1;
+    } else {
+      throw new Error(`Unknown argument: ${arg}`);
+    }
+  }
+
+  if (uninstall && remoteUninstallOwned) {
+    throw new Error("--uninstall and --remote-uninstall-owned cannot be combined");
+  }
+  if (remoteUninstallOwned) {
+    if (!hooksDir) throw new Error("Remote owned uninstall requires --hooks-dir <dir>");
+    return unregisterRemoteOwnedCodexHooks({ hooksDir });
+  }
+  if (hooksDir) throw new Error("--hooks-dir is only valid with --remote-uninstall-owned");
+  if (uninstall) return unregisterCodexHooks({});
+  return registerCodexHooks({ remote });
+}
 
 if (require.main === module) {
   try {
-    if (process.argv.includes("--uninstall")) unregisterCodexHooks({});
-    else registerCodexHooks({ remote: process.argv.includes("--remote") });
+    runCli();
   } catch (err) {
     console.error(err.message);
     process.exit(1);

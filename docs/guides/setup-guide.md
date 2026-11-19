@@ -45,7 +45,7 @@ Fresh installs enable and install only Claude Code and Codex by default. For oth
 
 ### Claude Code usage: official status line, not scraping
 
-Local Claude usage collection is **off by default**. You can opt in under **Settings → AI Coding Tools → Claude Code → Collect local Claude usage**. With an empty status-line slot, enabling it adds Clawd's visible `statusLine.command` to `~/.claude/settings.json`.
+Local Claude usage collection is **off by default**. You can opt in under **Settings → AI Coding Tools → Claude Code → Read local Claude quota and context usage**. With an empty status-line slot, enabling it adds Clawd's visible `statusLine.command` to `~/.claude/settings.json`.
 
 This uses Claude Code's documented extension mechanism, not a private or reverse-engineered endpoint. Claude Code's [official status-line documentation](https://code.claude.com/docs/en/statusline) provides `context_window.current_usage`, `context_window.context_window_size`, and (when available) `rate_limits` in the JSON sent to a status-line command. It also states that the command runs locally without consuming API tokens.
 
@@ -96,6 +96,8 @@ Clawd can display the chat name from Cursor's standard desktop profile when Node
 **WorkBuddy** — uses Claude Code-compatible hooks in `~/.workbuddy-ai/settings.json` (current WorkBuddy AI) or `~/.workbuddy/settings.json` (legacy builds). Install it from **Settings → AI Coding Tools** when you want local WorkBuddy tracking; after that Clawd keeps the hooks synced on launch while WorkBuddy remains enabled. You can also run `node hooks/workbuddy-install.js` manually. WorkBuddy is a macOS/Windows Electron desktop app with no standalone Linux/WSL CLI; state-driven animations have been verified on macOS. Integration is **state + Notification only**: the desktop app always handles permission approval inside its own native sandbox and GUI confirmation cards, so Clawd never registers a `/permission` HTTP hook. A permission prompt reaches Clawd only as a waiting-for-confirmation Notification carrying its `session_id` — the bell/attention cue works (verified on Windows), but the approve/deny decision stays inside WorkBuddy. WorkBuddy does not send `SessionEnd`, so a finished conversation stays in the HUD until it idles past the session timeout (`workbuddy-desktop-idle-timeout`) or WorkBuddy quits; when Clawd can read WorkBuddy's local database, archiving or deleting a conversation retires its card within a few seconds instead, and if the database is unreadable it still waits for that idle timeout.
 
 **Kiro CLI** — install it from **Settings → AI Coding Tools** when you want local Kiro tracking, or run `npm run install:kiro-hooks` if you want hooks registered before launching Clawd. Kiro's built-in `kiro_default` agent is not backed by an editable JSON file, so Clawd creates a custom `clawd` agent and re-syncs it from the latest `kiro_default` each time Clawd starts after the integration is installed, then appends hooks. Use `kiro-cli --agent clawd` for a new chat, or `/agent swap clawd` inside an existing Kiro session, when you want hooks enabled. On macOS and Windows, state-driven animations have been verified; native terminal permission prompts such as `t / y / n` still need to be answered in the terminal.
+
+**Kiro IDE** — install from Settings → AI Coding Tools, or run `npm run install:kiro-desktop-hooks`. Global hooks in `~/.kiro/hooks/clawd-on-desk.json` report activity in trusted workspaces. Local session records drive the waiting badge and read-only confirmation/question reminder. “Go to Kiro” returns to the IDE. Turn off reminder cards with the agent’s reminder switch while retaining the waiting animation and badge. Uninstall with `npm run uninstall:kiro-desktop-hooks`. Kiro CLI is a separate integration.
 
 **KiroCrew** — Install the optional state-only gateway bridge from **Settings → AI Coding Tools**, or run `npm run install:kirocrew-hooks`; uninstall with `npm run uninstall:kirocrew-hooks`. Hooks are stored in `~/.kiro/crew/hooks.json` (or `<KIROCREW_HOME>/hooks.json`) and cover AgentSpawn, UserPromptSubmit, PostToolUse, and Stop. Stop the KiroCrew gateway before installing or uninstalling, then start it so it loads the changed file. The bridge does not register PreToolUse or permission hooks; approvals stay in KiroCrew. It does not use the gateway-provided cwd as a project path.
 
@@ -200,15 +202,22 @@ the full list of fields that are sent, secret storage, and troubleshooting.
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="Remote SSH — permission bubble from Raspberry Pi">
 
-Clawd can sense AI agent activity on remote servers via SSH reverse port forwarding. Hook events and permission requests travel through the SSH tunnel back to your local Clawd — no code changes needed on the Clawd side.
+Clawd senses AI agent activity on remote servers through `ssh -R` reverse port
+forwarding by default. For a POSIX jump host that blocks `ssh -R` or rejects
+multiline commands, manually select **Jump host mode**, save, then run
+**Deploy / Repair Hooks** again. Clawd does not switch modes automatically.
+Jump host mode requires parallel SSH sessions and does not support Windows
+remotes or serialized transports, including automatically detected Codespaces.
+Hook events and permission requests still travel back to your local Clawd
+without changing the agent-side hook contract.
 
 **Supported flow: in-app Settings → Remote SSH → Deploy / Repair Hooks**
 
 DMG / installer users add a profile under **Settings → Remote SSH** (host
 `user@remote-host`, optional private key, forward port), then click
 **Deploy / Repair Hooks**, then connect. Clawd creates a profile-bound local
-ingress, maintains the `ssh -R` reverse tunnel to it, and deploys identity-pinned
-hooks to the remote. Full walkthrough, multi-user upgrade boundary, Doctor boundary, and
+ingress, uses the selected transport mode, and deploys identity-pinned hooks
+to the remote. Full walkthrough, multi-user upgrade boundary, Doctor boundary, and
 troubleshooting (port conflicts, no Node.js, missing remote sessions, etc.)
 in the dedicated guide:
 
@@ -267,7 +276,7 @@ node hooks/install.js
 node hooks/install.js --statusline
 ```
 
-The statusline installer preserves an existing third-party statusline unless you explicitly opt into chaining; see [Agent Setup](#agent-setup). The Windows app accepts WSL Claude context/quota metadata only while **Collect local Claude usage** is enabled. With that switch off, metadata POSTs are successful no-ops. Pair itself does not install the statusline and supplies transcript fallback rather than an authoritative custom-provider context window. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
+The statusline installer preserves an existing third-party statusline unless you explicitly opt into chaining; see [Agent Setup](#agent-setup). The Windows app accepts WSL Claude context/quota metadata only while **Read local Claude quota and context usage** is enabled. With that switch off, metadata POSTs are successful no-ops. Pair itself does not install the statusline and supplies transcript fallback rather than an authoritative custom-provider context window. Windows startup reconciliation cannot remove a statusline from WSL's separate home.
 
 Other manual hook commands, run from the same checkout:
 
@@ -276,6 +285,7 @@ Other manual hook commands, run from the same checkout:
 | Codex CLI | `node hooks/codex-install.js --remote` |
 | Copilot CLI | `node hooks/copilot-install.js --remote` |
 | Kiro CLI | `node hooks/kiro-install.js` |
+| Kiro IDE | `npm run install:kiro-desktop-hooks` |
 | Kimi Code CLI (Kimi-CLI) | `node hooks/kimi-install.js` |
 | Qwen Code | `node hooks/qwen-code-install.js` |
 | Cursor Agent | `node hooks/cursor-install.js` |
@@ -283,7 +293,7 @@ Other manual hook commands, run from the same checkout:
 | Antigravity CLI (agy) | `node hooks/antigravity-install.js` |
 | CodeBuddy | `node hooks/codebuddy-install.js` |
 
-Kiro registers hooks in custom agents under `~/.kiro/agents/` and creates a `clawd` agent. CodeBuddy's bare installer preserves an existing managed custom permission URL; explicit alternatives are `--permission-url local` or `--permission-url https://approval.example/permission`. General installer commands are also listed in [Agent Setup](#agent-setup).
+Kiro CLI registers hooks in custom agents under `~/.kiro/agents/` and creates a `clawd` agent. CodeBuddy's bare installer preserves an existing managed custom permission URL; explicit alternatives are `--permission-url local` or `--permission-url https://approval.example/permission`. General installer commands are also listed in [Agent Setup](#agent-setup).
 
 WorkBuddy has no verified standalone Linux/WSL CLI; use its macOS/Windows desktop integration. opencode, MiMo Code, Pi, and OpenClaw are not currently in the WSL Pair mapping and their WSL integration remains unverified. A general installer for one of these agents is not a verified WSL recipe.
 

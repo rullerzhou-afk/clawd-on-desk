@@ -141,6 +141,20 @@ if (window.settingsAPI && typeof window.settingsAPI.onChanged === "function") {
   window.settingsAPI.onChanged((payload) => core.ops.applyChanges(payload));
 }
 
+if (window.settingsAPI && typeof window.settingsAPI.onQuotaRingProvidersChanged === "function") {
+  window.settingsAPI.onQuotaRingProvidersChanged((providers) => {
+    const tab = core.tabs.sessions;
+    if (tab && typeof tab.applyQuotaRingProviders === "function") tab.applyQuotaRingProviders(providers);
+  });
+}
+
+if (window.settingsAPI && typeof window.settingsAPI.onDeepseekBalanceStatusChanged === "function") {
+  window.settingsAPI.onDeepseekBalanceStatusChanged((status) => {
+    const tab = core.tabs.agents;
+    if (tab && typeof tab.applyDeepseekBalanceStatus === "function") tab.applyDeepseekBalanceStatus(status);
+  });
+}
+
 if (window.settingsAPI && typeof window.settingsAPI.onAgentActivity === "function") {
   window.settingsAPI.onAgentActivity((payload) => {
     const tab = core.tabs.agents;

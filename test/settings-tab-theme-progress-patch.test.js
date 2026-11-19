@@ -115,6 +115,8 @@ function createThemeTab({
   const code = fs.readFileSync(path.join(SRC_DIR, "settings-tab-theme.js"), "utf8");
   const dom = createDom();
   const renderCalls = [];
+  const selects = [];
+  const toasts = [];
   const state = { activeTab };
   const runtime = {
     themeList,
@@ -145,13 +147,27 @@ function createThemeTab({
         return btn;
       },
       buildSwitch: () => new dom.FakeElement("div"),
-      buildSettingsSelect: () => new dom.FakeElement("div"),
+      buildSettingsSelect: (opts = {}) => {
+        const element = new dom.FakeElement("div");
+        let value = opts.value;
+        const select = {
+          opts,
+          element,
+          get value() { return value; },
+          setValue(next) { value = next; },
+          setPending() {},
+          setDisabled() {},
+          change(next) { return opts.onChange(next); },
+        };
+        selects.push(select);
+        return select;
+      },
       openExternalSafe: () => {},
     },
     ops: {
       requestRender: (opts) => renderCalls.push(opts),
       fetchThemes: () => Promise.resolve(runtime.themeList),
-      showToast: () => {},
+      showToast: (...args) => toasts.push(args),
       focusSettingsTarget: () => {},
       // Snapshots are trusted in this fake harness; the real gating is covered
       // by the follow-up suite.
@@ -171,6 +187,8 @@ function createThemeTab({
     state,
     runtime,
     renderCalls,
+    selects,
+    toasts,
     window: sandbox.window,
     document: dom.document,
     render() {
@@ -555,5 +573,111 @@ describe("theme tab pending-state patching", () => {
     // vm-realm objects: compare fields, not prototypes.
     assert.strictEqual(h.renderCalls.length, 1, "one fallback render");
     assert.strictEqual(h.renderCalls[0].content, true);
+  });
+});
+
+describe("issue #1323: theme appearance row", () => {
+  function appearanceTheme(capabilities) {
+    return {
+      id: "night",
+      name: "Night",
+      active: true,
+      builtin: false,
+      capabilities: { petTint: true, ...capabilities },
+    };
+  }
+
+  function openDetail(theme, snapshot = {}) {
+    const harness = createThemeTab({ themeList: [theme] });
+    harness.state.snapshot = { petTint: {}, themeAppearance: {}, ...snapshot };
+    const list = harness.render();
+    const button = list.querySelector(".theme-customize-btn");
+    assert.ok(button, "the active customizable card exposes its detail button");
+    button.listeners.get("click")({ stopPropagation() {} });
+    return { harness, detail: harness.render() };
+  }
+
+  test("issue #1323: the appearance row is shown only for dark-capable themes", () => {
+    const withDark = openDetail(appearanceTheme({ darkAppearance: true }));
+    assert.ok(withDark.detail.textContent.includes("rowThemeAppearance"));
+
+    const withoutDark = openDetail(appearanceTheme({}));
+    assert.ok(!withoutDark.detail.textContent.includes("rowThemeAppearance"));
+  });
+
+  test("issue #1323: a theme with only dark appearance support can open its detail", () => {
+    const theme = { id: "night", name: "Night", active: true, builtin: false, capabilities: { darkAppearance: true } };
+    const harness = createThemeTab({ themeList: [theme] });
+    const list = harness.render();
+    assert.ok(list.querySelector(".theme-customize-btn"));
+
+    const plain = createThemeTab({
+      themeList: [{ id: "plain", name: "Plain", active: true, builtin: false, capabilities: {} }],
+    });
+    const plainList = plain.render();
+    assert.strictEqual(plainList.querySelector(".theme-customize-btn"), null);
+  });
+
+  test("issue #1323: patchInPlace claims themeAppearance changes only", () => {
+    const { harness } = openDetail(appearanceTheme({ darkAppearance: true }));
+
+    assert.strictEqual(harness.tab.patchInPlace({ themeAppearance: { night: "dark" } }), true);
+    assert.strictEqual(harness.tab.patchInPlace({ lang: "en" }), false);
+    assert.strictEqual(harness.tab.patchInPlace({ themeAppearance: {}, lang: "en" }), false);
+  });
+
+  test("issue #1323: picking dark updates only this theme's entry", async () => {
+    const { harness } = openDetail(appearanceTheme({ darkAppearance: true }), {
+      themeAppearance: { other: "light" },
+    });
+    const updates = [];
+    harness.window.settingsAPI.update = (key, value) => {
+      updates.push([key, value]);
+      return Promise.resolve({ status: "ok" });
+    };
+
+    assert.strictEqual(await harness.selects[0].change("dark"), true);
+    assert.deepStrictEqual(
+      updates.map(([key, value]) => [key, { ...value }]),
+      [["themeAppearance", { other: "light", night: "dark" }]]
+    );
+  });
+
+  test("issue #1323: picking follow-system removes only this theme's entry", async () => {
+    const { harness } = openDetail(appearanceTheme({ darkAppearance: true }), {
+      themeAppearance: { night: "dark", other: "light" },
+    });
+    const updates = [];
+    harness.window.settingsAPI.update = (key, value) => {
+      updates.push([key, value]);
+      return Promise.resolve({ status: "ok" });
+    };
+
+    assert.strictEqual(await harness.selects[0].change("system"), true);
+    assert.deepStrictEqual(
+      updates.map(([key, value]) => [key, { ...value }]),
+      [["themeAppearance", { other: "light" }]]
+    );
+  });
+
+  test("issue #1323: a failed appearance update toasts and reports false", async () => {
+    const { harness } = openDetail(appearanceTheme({ darkAppearance: true }));
+    harness.window.settingsAPI.update = () => Promise.resolve({ status: "error", message: "nope" });
+
+    assert.strictEqual(await harness.selects[0].change("dark"), false);
+    assert.strictEqual(harness.toasts.length, 1);
+    assert.strictEqual(harness.toasts[0][1].error, true);
+  });
+
+  test("issue #1323: patchInPlace refreshes the mounted appearance picker", () => {
+    const { harness } = openDetail(appearanceTheme({ darkAppearance: true }), {
+      themeAppearance: { night: "light" },
+    });
+    const select = harness.selects[0];
+    assert.strictEqual(select.value, "light");
+
+    harness.state.snapshot.themeAppearance = { night: "dark" };
+    assert.strictEqual(harness.tab.patchInPlace({ themeAppearance: { night: "dark" } }), true);
+    assert.strictEqual(select.value, "dark");
   });
 });

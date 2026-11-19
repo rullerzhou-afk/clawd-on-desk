@@ -794,3 +794,27 @@ test("R6 keeps objectChannelFiles, discreteSampling, and assets/svg consistent",
     "objectChannelFiles and discreteSampling must list the same existing SVG basenames",
   );
 });
+
+test("display scale compositor: sampled Clawd SVGs have a viewBox and no root stylesheet selectors", () => {
+  const theme = JSON.parse(readMarkup(THEME_PATH));
+  const files = Object.keys(theme.rendering.discreteSampling);
+  assert.ok(files.length > 0, "Clawd must declare sampled SVGs");
+  for (const file of files) {
+    const markup = readMarkup(path.join(SVG_DIR, file));
+    const root = markup.match(/<svg\b[^>]*>/);
+    assert.ok(root, `${file}: missing SVG root`);
+    assert.match(root[0], /\sviewBox\s*=/, `${file}: display scale cancellation requires a viewBox`);
+    for (const style of markup.matchAll(/<style\b[^>]*>([\s\S]*?)<\/style>/g)) {
+      const css = style[1].replace(/\/\*[\s\S]*?\*\//g, "");
+      // Look only at selectors, so declarations and keyframe values cannot
+      // accidentally be mistaken for root styling.
+      for (const rule of css.matchAll(/([^{}]+)\{/g)) {
+        assert.doesNotMatch(
+          rule[1],
+          /(^|[\s,>+~])(?:svg|html|:root)(?=$|[\s,.#:[>+~])/i,
+          `${file}: root CSS lengths do not scale with the viewBox: ${rule[1].trim()}`,
+        );
+      }
+    }
+  }
+});

@@ -51,6 +51,7 @@ contextBridge.exposeInMainWorld("electronAPI", {
   onMiniModeChange: (cb) => ipcRenderer.on("mini-mode-change", (_, enabled, edge, options) => cb(enabled, edge, options)),
   onMiniClip: (cb) => ipcRenderer.on("mini-clip", (_, info) => cb(info)),
   onLowPowerIdleModeChange: (cb) => ipcRenderer.on("low-power-idle-mode-change", (_, enabled) => cb(enabled)),
+  onPetHiddenChange: (cb) => ipcRenderer.on("pet-hidden-change", (_, hidden) => cb(hidden)),
   onSystemWake: (cb) => ipcRenderer.on("system-wake", (_, payload) => cb(payload)),
   // Reaction control (from main, relayed from hit window)
   onStartDragReaction: (cb) => ipcRenderer.on("start-drag-reaction", (_, requestOrDirection, legacyDirection) => cb(requestOrDirection, legacyDirection)),

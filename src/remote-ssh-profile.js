@@ -31,6 +31,7 @@ const {
   REMOTE_LAYOUT_VERSION,
   normalizeRemoteRuntimeIdentity,
   resolveRemoteRuntimeLayout,
+  isWindowsAbsolutePath,
 } = require("./remote-ssh-layout");
 const { LOCAL_SESSION_PROFILE_ID } = require("./session-key");
 
@@ -39,6 +40,7 @@ const { LOCAL_SESSION_PROFILE_ID } = require("./session-key");
 // never scan this list, but the constrained range preserves predictable
 // validation, diagnostics, and downgrade behavior.
 const REMOTE_FORWARD_PORTS = [23333, 23334, 23335, 23336, 23337];
+const REMOTE_TUNNEL_MODES = Object.freeze(["reverse", "stdio"]);
 
 const HOST_BARE_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 const HOST_USER_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]*@[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
@@ -167,6 +169,7 @@ function sanitizeIdentityStep(raw) {
 
 function sanitizeIdentityTxn(raw, expected = {}) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (raw.remotePlatform !== undefined && !isValidRemotePlatform(raw.remotePlatform)) return null;
   const runtimeMode = expected.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
   const runtimeKey = typeof raw.runtimeKey === "string" ? raw.runtimeKey : expected.runtimeKey;
   const layoutVersion = Number.isInteger(raw.layoutVersion)
@@ -196,6 +199,7 @@ function sanitizeIdentityTxn(raw, expected = {}) {
   return {
     runtimeKey,
     layoutVersion,
+    ...(raw.remotePlatform !== undefined ? { remotePlatform: raw.remotePlatform } : {}),
     phase: raw.phase,
     fromNonce: raw.fromNonce || null,
     toNonce: raw.toNonce,
@@ -205,14 +209,26 @@ function sanitizeIdentityTxn(raw, expected = {}) {
   };
 }
 
-function isValidDetectedRemoteNodeBin(value) {
+function isValidRemotePlatform(value) {
+  return value === "posix" || value === "win32";
+}
+
+function isValidDetectedRemoteNodeBin(value, platform = "posix") {
+  if (platform === "win32") return isWindowsAbsolutePath(value);
   return typeof value === "string"
+    && platform === "posix"
     && value.startsWith("/")
     && !CONTROL_CHARS_RE.test(value);
 }
 
-function isValidRemoteHome(value) {
+function isValidRemoteHome(value, platform = "posix") {
+  if (platform === "win32") {
+    return isWindowsAbsolutePath(value)
+      && path.win32.normalize(value) === value
+      && value !== path.win32.parse(value).root;
+  }
   return typeof value === "string"
+    && platform === "posix"
     && value !== "/"
     && value.startsWith("/")
     && path.posix.normalize(value) === value
@@ -305,6 +321,10 @@ function isValidRemoteForwardPort(value) {
   return REMOTE_FORWARD_PORTS.includes(value);
 }
 
+function isValidRemoteTunnelMode(value) {
+  return REMOTE_TUNNEL_MODES.includes(value);
+}
+
 function isValidIdentityFile(value) {
   if (typeof value !== "string" || value.length === 0) return false;
   if (CONTROL_CHARS_RE.test(value)) return false;
@@ -334,6 +354,7 @@ function isValidId(value) {
 
 function sanitizeManagedDeployTarget(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  if (raw.remotePlatform !== undefined && !isValidRemotePlatform(raw.remotePlatform)) return null;
   const target = {
     host: typeof raw.host === "string" ? raw.host.trim() : "",
     port: Number.isInteger(raw.port) && raw.port !== 22 ? raw.port : undefined,
@@ -345,6 +366,7 @@ function sanitizeManagedDeployTarget(raw) {
       ? raw.hostPrefix
       : undefined,
     chainStatusline: raw.chainStatusline === true,
+    tunnelMode: raw.tunnelMode === "stdio" ? "stdio" : "reverse",
     deployedAt: Number(raw.deployedAt),
     profileId: typeof raw.profileId === "string" ? raw.profileId : undefined,
     installId: typeof raw.installId === "string" ? raw.installId : undefined,
@@ -352,6 +374,8 @@ function sanitizeManagedDeployTarget(raw) {
     runtimeKey: raw.runtimeKey || ACCOUNT_DEFAULT_RUNTIME_KEY,
     layoutVersion: Number.isInteger(raw.layoutVersion) ? raw.layoutVersion : REMOTE_LAYOUT_VERSION,
     remoteHome: typeof raw.remoteHome === "string" ? raw.remoteHome : undefined,
+    ...(raw.remotePlatform !== undefined ? { remotePlatform: raw.remotePlatform } : {}),
+    ...(raw.remotePlatform === "win32" && raw.dshInstalled === true ? { dshInstalled: true } : {}),
   };
   const sshTransportHint = sanitizeSshTransportHint(raw.sshTransportHint);
   if (sshTransportHint) target.sshTransportHint = sshTransportHint;
@@ -373,7 +397,7 @@ function sanitizeManagedDeployTarget(raw) {
       || !isValidRuntimeMode(target.runtimeMode)
       || !isValidRuntimeKey(target.runtimeKey, target.runtimeMode)
       || target.layoutVersion !== REMOTE_LAYOUT_VERSION
-      || !isValidRemoteHome(target.remoteHome)
+      || !isValidRemoteHome(target.remoteHome, target.remotePlatform || "posix")
     ))) {
     return null;
   }
@@ -385,7 +409,7 @@ function sanitizeManagedDeployTarget(raw) {
     delete target.layoutVersion;
     delete target.remoteHome;
   }
-  if (isValidDetectedRemoteNodeBin(raw.detectedRemoteNodeBin)) {
+  if (isValidDetectedRemoteNodeBin(raw.detectedRemoteNodeBin, target.remotePlatform || "posix")) {
     target.detectedRemoteNodeBin = raw.detectedRemoteNodeBin;
     if (isValidDetectedRemoteNodeVersion(raw.detectedRemoteNodeVersion)) {
       target.detectedRemoteNodeVersion = raw.detectedRemoteNodeVersion;
@@ -407,7 +431,7 @@ function remoteAccountKey(profile) {
   if (!profile || typeof profile !== "object") return "";
   const host = typeof profile.host === "string" ? profile.host.trim() : "";
   const port = Number.isInteger(profile.port) ? profile.port : 22;
-  return `${host}\n${port}`;
+  return `${host}\n${port}${profile.remotePlatform === "win32" ? "\nwin32" : ""}`;
 }
 
 function remoteOwnershipDomainKey(profile) {
@@ -447,6 +471,9 @@ function validateProfile(profile) {
   if (!profile || typeof profile !== "object" || Array.isArray(profile)) {
     return { status: "error", message: "profile must be an object" };
   }
+  if (profile.remotePlatform !== undefined && !isValidRemotePlatform(profile.remotePlatform)) {
+    return { status: "error", message: "profile.remotePlatform must be posix or win32" };
+  }
   if (!isValidId(profile.id)) {
     return { status: "error", message: "profile.id must be 1-64 chars [a-zA-Z0-9_-]" };
   }
@@ -477,6 +504,12 @@ function validateProfile(profile) {
       status: "error",
       message: `profile.remoteForwardPort must be one of ${REMOTE_FORWARD_PORTS.join(", ")}`,
     };
+  }
+  if (profile.tunnelMode !== undefined && !isValidRemoteTunnelMode(profile.tunnelMode)) {
+    return { status: "error", message: "profile.tunnelMode must be reverse or stdio" };
+  }
+  if (profile.tunnelMode === "stdio" && profile.sshTransportMode === "serialized") {
+    return { status: "error", message: "Jump host mode cannot use a forced single SSH session" };
   }
   const runtimeMode = profile.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT;
   const runtimeKey = profile.runtimeKey || ACCOUNT_DEFAULT_RUNTIME_KEY;
@@ -588,8 +621,8 @@ function validateProfile(profile) {
     }
   }
   if (profile.detectedRemoteNodeBin !== undefined && profile.detectedRemoteNodeBin !== null) {
-    if (!isValidDetectedRemoteNodeBin(profile.detectedRemoteNodeBin)) {
-      return { status: "error", message: "profile.detectedRemoteNodeBin must be an absolute POSIX path with no control characters" };
+    if (!isValidDetectedRemoteNodeBin(profile.detectedRemoteNodeBin, profile.remotePlatform || "posix")) {
+      return { status: "error", message: `profile.detectedRemoteNodeBin must be an absolute ${profile.remotePlatform === "win32" ? "Windows" : "POSIX"} path with no control characters` };
     }
   }
   if (profile.detectedRemoteNodeVersion !== undefined && profile.detectedRemoteNodeVersion !== null) {
@@ -607,8 +640,8 @@ function validateProfile(profile) {
       return { status: "error", message: "profile.detectedRemoteNodeAt must be a positive finite number" };
     }
   }
-  if (profile.remoteHome !== undefined && !isValidRemoteHome(profile.remoteHome)) {
-    return { status: "error", message: "profile.remoteHome must be a normalized absolute POSIX home path" };
+  if (profile.remoteHome !== undefined && !isValidRemoteHome(profile.remoteHome, profile.remotePlatform || "posix")) {
+    return { status: "error", message: `profile.remoteHome must be a normalized absolute ${profile.remotePlatform === "win32" ? "Windows" : "POSIX"} home path` };
   }
   return { status: "ok" };
 }
@@ -617,6 +650,7 @@ function validateProfile(profile) {
 // Returns null if the result would be invalid.
 function sanitizeProfile(raw) {
   if (!raw || typeof raw !== "object") return null;
+  if (raw.remotePlatform !== undefined && !isValidRemotePlatform(raw.remotePlatform)) return null;
   let runtimeIdentity;
   try {
     runtimeIdentity = normalizeRemoteRuntimeIdentity({
@@ -635,6 +669,7 @@ function sanitizeProfile(raw) {
       ? raw.identityFile
       : undefined,
     remoteForwardPort: Number.isInteger(raw.remoteForwardPort) ? raw.remoteForwardPort : 23333,
+    tunnelMode: raw.tunnelMode === "stdio" ? "stdio" : "reverse",
     runtimeMode: runtimeIdentity.runtimeMode,
     runtimeKey: runtimeIdentity.runtimeKey,
     layoutVersion: REMOTE_LAYOUT_VERSION,
@@ -658,7 +693,8 @@ function sanitizeProfile(raw) {
       : undefined,
     isolatedActive: false,
     runtimeKeyConflict: raw.runtimeKeyConflict === true,
-    remoteHome: isValidRemoteHome(raw.remoteHome) ? raw.remoteHome : undefined,
+    ...(raw.remotePlatform !== undefined ? { remotePlatform: raw.remotePlatform } : {}),
+    remoteHome: isValidRemoteHome(raw.remoteHome, raw.remotePlatform || "posix") ? raw.remoteHome : undefined,
   };
   const isolatedRuntime = sanitizeIsolatedRuntime(raw.isolatedRuntime);
   if (isolatedRuntime) {
@@ -698,7 +734,7 @@ function sanitizeProfile(raw) {
   }
   const managedDeployTargets = normalizeManagedDeployTargets(raw.managedDeployTargets);
   if (managedDeployTargets.length) out.managedDeployTargets = managedDeployTargets;
-  if (isValidDetectedRemoteNodeBin(raw.detectedRemoteNodeBin)) {
+  if (isValidDetectedRemoteNodeBin(raw.detectedRemoteNodeBin, out.remotePlatform || "posix")) {
     out.detectedRemoteNodeBin = raw.detectedRemoteNodeBin;
     if (isValidDetectedRemoteNodeVersion(raw.detectedRemoteNodeVersion)) {
       out.detectedRemoteNodeVersion = raw.detectedRemoteNodeVersion;
@@ -790,6 +826,8 @@ function deployTargetFingerprint(profile) {
     remoteForwardPort: Number.isInteger(profile.remoteForwardPort) ? profile.remoteForwardPort : undefined,
     hostPrefix,
     chainStatusline,
+    tunnelMode: profile.tunnelMode === "stdio" ? "stdio" : undefined,
+    dshInstalled: profile.dshInstalled === true ? true : undefined,
     runtimeMode: profile.runtimeMode || REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
     runtimeKey: profile.runtimeMode === REMOTE_RUNTIME_MODE_PROFILE_ISOLATED
       ? profile.runtimeKey
@@ -813,6 +851,7 @@ const DEPLOY_TARGET_FIELDS = [
   "remoteForwardPort",
   "hostPrefix",
   "chainStatusline",
+  "tunnelMode",
   "runtimeMode",
   "runtimeKey",
   "layoutVersion",
@@ -828,6 +867,7 @@ function deployTargetDrift(a, b) {
 
 module.exports = {
   REMOTE_FORWARD_PORTS,
+  REMOTE_TUNNEL_MODES,
   REMOTE_RUNTIME_MODE_ACCOUNT_DEFAULT,
   REMOTE_RUNTIME_MODE_PROFILE_ISOLATED,
   ACCOUNT_DEFAULT_RUNTIME_KEY,
@@ -840,11 +880,13 @@ module.exports = {
   isValidHost,
   isValidPort,
   isValidRemoteForwardPort,
+  isValidRemoteTunnelMode,
   isValidIdentityFile,
   isValidHostPrefix,
   isValidLabel,
   isValidId,
   isValidDetectedRemoteNodeBin,
+  isValidRemotePlatform,
   isValidDetectedRemoteNodeVersion,
   isValidDetectedRemoteNodeSource,
   sanitizeIsolatedRuntime,

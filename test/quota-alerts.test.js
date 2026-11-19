@@ -450,3 +450,17 @@ describe("quota alerts", () => {
     assert.equal(attempts, 1);
   });
 });
+
+
+test("DeepSeek balance never emits window quota alerts", () => {
+  const events = [];
+  let time = START;
+  const alerts = createQuotaAlerts({ now: () => time, historyPath: null,
+    notify: (event) => { events.push(event); return true; } });
+  time += 60000;
+  const balance = { sourceKey: "", host: null, deepseekQuota: { lastSeenAt: time,
+    group: { deepseekBalance: { usedPercent: 99, amount: 1, baseline: 100, currency: "CNY", lastSeenAt: time } } } };
+  assert.deepEqual(alerts.observe([balance], CONFIG), []);
+  assert.deepEqual(events, []);
+  alerts.dispose();
+});

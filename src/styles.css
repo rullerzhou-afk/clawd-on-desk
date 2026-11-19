@@ -14,6 +14,14 @@ html, body {
   background: transparent;
 }
 
+/* With background throttling off, a hidden pet window still counts as visible
+   and would keep painting. !important beats the inline visibility that
+   accessory slots set. */
+html.pet-hidden,
+html.pet-hidden * {
+  visibility: hidden !important;
+}
+
 /* Seam clip layer — wraps #pet-container so the multi-monitor seam
    clip-path is applied in screen space. #pet-facing-stage carries the
    left-edge mini-mode flip; this outer layer remains untransformed so

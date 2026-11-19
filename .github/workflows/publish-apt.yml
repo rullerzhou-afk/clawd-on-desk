@@ -73,7 +73,7 @@ jobs:
           set -euo pipefail
           args=()
           if [[ "$PUBLISH" == true ]]; then
-            args+=(--previous-url https://rullerzhou-afk.github.io/clawd-on-desk/apt)
+            args+=(--previous-url https://apt.clawdondesk.com)
             if [[ "$INITIAL" == true ]]; then args+=(--allow-initial); fi
           fi
           python3 scripts/apt/repository.py build --input "$RUNNER_TEMP/apt-input" --output "$RUNNER_TEMP/apt-site" --public-key "$RUNNER_TEMP/apt-public.asc" --signing-key "$APT_BUILD_KEY" "${args[@]}"
@@ -89,14 +89,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: apt-preview-test-key-only
-          path: ${{ runner.temp }}/apt-site
+          path: ${{ runner.temp }}/apt-site/apt
           retention-days: 7
           if-no-files-found: error
       - name: Upload verified Pages snapshot
         if: inputs.publish
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ runner.temp }}/apt-site
+          path: ${{ runner.temp }}/apt-site/apt
       - name: Destroy temporary signing material
         if: always()
         run: |

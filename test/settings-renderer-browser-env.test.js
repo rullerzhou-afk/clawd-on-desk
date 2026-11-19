@@ -446,6 +446,10 @@ class FakeElement {
     this.classList = new FakeClassList(this);
   }
 
+  get parentElement() {
+    return this.parentNode;
+  }
+
   appendChild(child) {
     child.parentNode = this;
     this.children.push(child);
@@ -519,6 +523,10 @@ class FakeElement {
 
   focus() {
     this.focused = true;
+  }
+
+  scrollIntoView(options) {
+    this.scrollOptions = options;
   }
 
   dispatchEvent(event) {
@@ -1321,6 +1329,8 @@ function makeGeneralSnapshot(overrides = {}) {
     allowEdgePinning: true,
     disableMiniMode: false,
     keepSizeAcrossDisplays: true,
+    idleActivities: false,
+    idleActivityFrequency: "medium",
     manageClaudeHooksAutomatically: true,
     openAtLogin: false,
     autoStartWithClaude: false,
@@ -1652,6 +1662,7 @@ function loadThemeTabForTest({
 function loadAgentsTabForTest({
   snapshot,
   agentMetadata,
+  i18nStrings = null,
   collapsedGroups = {},
   settingsAPI = {},
   doctor = null,
@@ -1674,7 +1685,16 @@ function loadAgentsTabForTest({
 
   const document = {
     body,
-    createElement: (tagName) => new FakeElement(tagName),
+    activeElement: body,
+    createElement(tagName) {
+      const element = new FakeElement(tagName);
+      element.focus = (options) => {
+        element.focused = true;
+        element.focusOptions = options;
+        document.activeElement = element;
+      };
+      return element;
+    },
     getElementById(id) {
       if (id === "content") return content;
       if (id === "toastStack") return toastStack;
@@ -1738,6 +1758,7 @@ function loadAgentsTabForTest({
           agentGroupConnection: "Connection",
           agentGroupWsl: "WSL",
           agentGroupQuota: "Quota",
+          agentGroupAdvanced: "Advanced",
           agentGroupInfo: "Info",
           agentDescToggle: "Details",
           agentDisconnectLink: "Disconnect {agent}…",
@@ -1763,6 +1784,15 @@ function loadAgentsTabForTest({
           rowStartWithClaude: "Start with Claude Code",
           rowStartWithClaudeDesc: "Launches Clawd when a Claude Code session starts.",
           rowStartWithClaudeDisabledDesc: "Requires automatic Claude hook management.",
+          rowClaudeConfigDirs: "Claude config folders",
+          rowClaudeConfigDirsDesc: "Clawd installs its hooks in every folder listed here.",
+          claudeConfigDirAdd: "Add folder…",
+          claudeConfigDirRemove: "Remove",
+          claudeConfigDirPrimary: "Folder Clawd was started with",
+          claudeConfigDirMissing: "Folder not found",
+          claudeConfigDirLabelPlaceholder: "Label",
+          claudeConfigDirLabelAria: "Label for {dir}",
+          toastClaudeConfigDirAdded: "Hooks installed in the Claude config folder",
           rowClaudeQuotaCollection: "Read local Claude quota and context usage",
           rowClaudeQuotaCollectionDesc: "Claude quota desc",
           rowCodexHookHealthNotify: "Warn me when the approval hook stops working",
@@ -1797,12 +1827,16 @@ function loadAgentsTabForTest({
           rowAgentSubagentPermissionsDesc: "Subagent permissions desc",
           rowStartWithCodex: "Start with Codex",
           rowStartWithCodexDesc: "Start with Codex desc",
-          rowCodexPermissionMode: "Permission mode",
-          rowCodexPermissionModeDesc: "Permission mode desc",
-          codexPermissionModeAuto: "Auto",
-          codexPermissionModeIntercept: "Intercept",
+          rowCodexApprovalRouting: "Approval handling",
+          rowCodexApprovalRoutingAutoDesc: "Codex handles its own requests. Local human requests appear in Clawd, remote requests follow Permission request handling or return to Codex with a heads-up in Clawd.",
+          rowCodexApprovalRoutingInterceptDesc: "All Codex approvals go to Clawd first (see Advanced below).",
+          rowCodexInterceptApprovals: "Send every approval to Clawd",
+          rowCodexInterceptApprovalsDesc: "Clawd answers first. Bubble switches and Permission request handling still apply. Start a new chat after switching.",
           rowCodexNativeNotificationSound: "Native sound",
           rowCodexNativeNotificationSoundDesc: "Native sound desc",
+          rowKiroReminder: "Show a reminder when confirmation is needed",
+          rowKiroReminderDesc: "Turning this off hides reminders. Pet animation and the waiting badge still show pending confirmations.",
+          kiroDesktopEnableHint: "Kiro runs hooks only in trusted workspaces. Confirm requests in Kiro.",
           traecodeEnableHint: "Enable hooks in Trae before they fire.",
           minimaxEnableHint: "Enable the Clawd plugin in MiniMax Code before hooks fire.",
           dshNoticeProfileWeb: "Web",
@@ -1853,6 +1887,7 @@ function loadAgentsTabForTest({
       MAINTAINERS: [],
     },
   };
+  if (i18nStrings) context.ClawdSettingsI18n.STRINGS = i18nStrings;
   context.window = context;
   context.globalThis = context;
   context.addEventListener = (type, cb) => {
@@ -1875,12 +1910,14 @@ function loadAgentsTabForTest({
   vm.runInContext(fs.readFileSync(SETTINGS_UI_CORE, "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-agent-order.js"), "utf8"), context);
   vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-agents.js"), "utf8"), context);
+  vm.runInContext(fs.readFileSync(path.join(SRC_DIR, "settings-tab-permissions.js"), "utf8"), context);
 
   const core = context.ClawdSettingsCore;
   core.state.snapshot = snapshot || { agents: {} };
   core.state.activeTab = "agents";
   core.runtime.agentMetadata = Array.isArray(agentMetadata) ? agentMetadata : [];
   context.ClawdSettingsTabAgents.init(core);
+  context.ClawdSettingsTabPermissions.init(core);
   // Tests exercise the real uninstall command path without driving the modal
   // shell: the confirm answer is injected so cancel/confirm are both testable.
   core.helpers.showSettingsConfirmModal = () => Promise.resolve(confirmAction);
@@ -1890,17 +1927,44 @@ function loadAgentsTabForTest({
     contentRenderCount++;
     core.ops.clearMountedControls();
     content.innerHTML = "";
-    core.tabs.agents.render(content, core);
+    core.tabs[core.state.activeTab].render(content, core);
   }
   core.ops.installRenderHooks({ content: renderContent });
 
   return {
     core,
     content,
+    document,
     raf,
     getContentRenderCount: () => contentRenderCount,
     dispatchWindowEvent: (type) => context.dispatchWindowEvent(type),
   };
+}
+
+function createCodexApprovalHarness({ mode = "auto", enabled = true, collapsed = false, command } = {}) {
+  const harness = loadAgentsTabForTest({
+    snapshot: { agents: {
+      codex: { integrationInstalled: true, enabled, permissionMode: mode, nativeNotificationSoundEnabled: true },
+      "claude-code": { integrationInstalled: true, enabled: true },
+    } },
+    agentMetadata: [
+      { id: "codex", name: "Codex", capabilities: { permissionApproval: true } },
+      { id: "claude-code", name: "Claude Code", capabilities: { permissionApproval: true } },
+    ],
+    collapsedGroups: { "agents:codex": collapsed, "agents:claude-code": false },
+    settingsAPI: command ? { command } : {},
+  });
+  harness.core.ops.requestRender({ content: true });
+  harness.raf.flush();
+  harness.soundSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+    .find((meta) => meta.agentId === "codex" && meta.flag === "nativeNotificationSoundEnabled");
+  harness.broadcastMode = (permissionMode, masterEnabled = enabled) => {
+    const agents = { ...harness.core.state.snapshot.agents, codex: {
+      ...harness.core.state.snapshot.agents.codex, permissionMode, enabled: masterEnabled,
+    } };
+    harness.core.ops.applyChanges({ changes: { agents }, snapshot: { agents } });
+  };
+  return harness;
 }
 
 function loadAnimMapTabForTest({
@@ -2062,12 +2126,14 @@ function loadPermissionsTabForTest({
     getMobileConnectionInfo: () => Promise.resolve({
       status: "ok",
       port: 23380,
-      token: "tok",
+      pairCode: "ABCD1234",
+      pairExpiresAt: 123456,
       lanIp: "192.168.0.23",
-      pairUrl: "http://192.168.0.23:23380/mobile/?token=tok",
+      pairUrl: "http://192.168.0.23:23380/mobile/?pair=ABCD1234",
     }),
-    regenerateMobileToken: () => {
-      commands.push({ name: "regenerateMobileToken" });
+    getMobileDevices: () => Promise.resolve({ status: "ok", devices: [], legacyActive: false }),
+    refreshMobilePairCode: () => {
+      commands.push({ name: "refreshMobilePairCode" });
       return Promise.resolve({ status: "ok" });
     },
     resetMobileAccess: () => {
@@ -4103,7 +4169,7 @@ describe("settings renderer browser environment", () => {
     });
     const parent = new FakeElement("main");
     core.tabs.animOverrides.render(parent, core);
-    assert.strictEqual(parent.querySelector(".anim-override-trigger").textContent, "PreToolUse (2+ sessions)");
+    assert.strictEqual(parent.querySelector(".anim-override-trigger").textContent, "Agent activity / tool results (2+ sessions)");
   });
 
   it("loads browser scripts in dependency order and keeps CommonJS helpers out of settings.html", () => {
@@ -4586,7 +4652,10 @@ describe("settings renderer browser environment", () => {
     assert.ok(portPicker, "remote forward port should use the shared Settings picker");
     const portHint = portPicker.parentNode.querySelector(".remote-ssh-field-hint");
     assert.ok(portHint, "remote forward port should explain its availability requirement");
-    assert.equal(portHint.textContent, "Listening port on the remote host. Choose a port that is not already in use.");
+    assert.equal(
+      portHint.textContent,
+      "Loopback port on the remote host used by reverse forwarding or Jump host mode. It is not exposed publicly; choose another value if it is occupied.",
+    );
     assert.equal(getSelectedPickerValue(portPicker), "23333");
     choosePickerOption(portPicker, "23336");
 
@@ -7712,6 +7781,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.content.querySelector(".feishu-approval-timeout-select"), select);
     assert.equal(getSelectedPickerValue(select), "30");
 
+    const renderRequestsBefore = harness.renderRequests.length;
     assert.equal(harness.core.tabs.permissions.patchInPlace(
       { feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false } },
       {
@@ -7721,7 +7791,14 @@ describe("settings renderer browser environment", () => {
           feishuApproval: { ...nextSnapshot.feishuApproval, enabled: false },
         },
       }
-    ), false, "other Feishu configuration changes still require a full render");
+    ), true, "the remote module claims its own config changes before applyChanges repaints");
+    assert.equal(harness.renderRequests.length, renderRequestsBefore + 1,
+      "the claim still rebuilds the card");
+    assert.deepEqual(
+      JSON.parse(JSON.stringify(harness.renderRequests.at(-1))),
+      { content: true, preserveScroll: true },
+      "the rebuild must keep the settings pane scroll position"
+    );
   });
 
   it("saves Feishu Enable through an authoritative field-level patch", async () => {
@@ -9228,7 +9305,7 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("renders the LAN card as one header switch, one group and one footer", async () => {
+  it("renders pairing and paired-device groups below the LAN card controls", async () => {
     let confirmResult = false;
     const harness = loadPermissionsTabForTest({
       subtab: "lan",
@@ -9246,6 +9323,7 @@ describe("settings renderer browser environment", () => {
     assert.equal(card.querySelector(".settings-detail-group-rows .switch").classList.contains("disabled"), true);
     assert.equal(card.querySelector(".channel-foot-hint").textContent, "mobilePairingHint");
     assert.equal(card.querySelector(".mobile-conn-row"), null);
+    assert.equal(card.querySelectorAll("div").some((node) => node.id === "mobile-devices"), false);
     const groupingLabels = card.querySelectorAll(".settings-detail-group-label").map((label) => label.textContent);
     assert.deepStrictEqual(groupingLabels, ["mobileGroupPhoneShows"]);
     assert.equal(groupingLabels.includes("mobileGroupPairing"), false);
@@ -9258,19 +9336,20 @@ describe("settings renderer browser environment", () => {
     await Promise.resolve();
     await Promise.resolve();
     enabled.render();
-    await Promise.resolve();
-    await Promise.resolve();
+    for (let i = 0; i < 8; i++) await Promise.resolve();
     card = enabled.content.querySelector(".mobile-channel-card");
     assert.equal(card.querySelector(".settings-status-text").textContent, "mobileStatusRunning");
     assert.deepStrictEqual(
       card.querySelectorAll(".settings-detail-group-label").map((label) => label.textContent),
-      ["mobileGroupPhoneShows", "mobileGroupPairing"],
+      ["mobileGroupPhoneShows", "mobileGroupPairing", "mobileGroupDevices"],
     );
+    const deviceList = card.querySelectorAll("div").find((node) => node.id === "mobile-devices");
+    assert.equal(deviceList.textContent, "mobileDevicesEmpty");
     const rows = card.querySelectorAll(".mobile-conn-row");
-    assert.equal(rows.length, 4);
+    assert.equal(rows.length, 5);
     assert.deepStrictEqual(
       rows.map((row) => row.querySelector(".row-label").textContent),
-      ["mobileConnLanIp", "mobileConnPort", "mobileConnToken", "mobileConnUrl"],
+      ["mobileConnLanIp", "mobileConnPort", "mobileConnPairCode", "mobileConnPairExpires", "mobileConnUrl"],
     );
     const copy = rows[0].querySelector(".mobile-copy");
     copy.dispatchEvent({ type: "click" });
@@ -9278,23 +9357,53 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(enabled.clipboardWrites, ["192.168.0.23"]);
     assert.equal(copy.textContent, "mobileCopied");
 
-    const regenerate = card.querySelector(".mobile-regenerate");
+    const refresh = card.querySelector(".mobile-refresh-pair-code");
     const reset = card.querySelector(".mobile-reset");
-    assert.ok(regenerate && reset);
+    assert.ok(refresh && reset);
     assert.equal(reset.classList.contains("danger"), true);
-    regenerate.dispatchEvent({ type: "click" });
     reset.dispatchEvent({ type: "click" });
-    assert.equal(enabled.commands.some((call) => call.name === "regenerateMobileToken"), false);
+    assert.equal(enabled.commands.some((call) => call.name === "refreshMobilePairCode"), false);
     assert.equal(enabled.commands.some((call) => call.name === "resetMobileAccess"), false);
 
     confirmResult = true;
-    regenerate.dispatchEvent({ type: "click" });
+    refresh.dispatchEvent({ type: "click" });
     reset.dispatchEvent({ type: "click" });
     await Promise.resolve();
-    assert.equal(enabled.commands.some((call) => call.name === "regenerateMobileToken"), true);
+    assert.equal(enabled.commands.some((call) => call.name === "refreshMobilePairCode"), true);
     assert.equal(enabled.commands.some((call) => call.name === "resetMobileAccess"), true);
   });
 
+
+  it("offers Copy for pairing values except the expiry time", async () => {
+    const harness = loadPermissionsTabForTest({
+      subtab: "lan",
+      snapshot: { mobilePreviewEnabled: true },
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    harness.render();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const rows = harness.content.querySelectorAll(".mobile-conn-row");
+    assert.equal(rows.length, 5);
+    const copiedValues = [];
+    for (const row of rows) {
+      const label = row.querySelector(".row-label").textContent;
+      const buttons = row.querySelectorAll(".mobile-copy");
+      if (label === "mobileConnPairExpires") {
+        assert.equal(buttons.length, 0, "expiry time should have no Copy button");
+      } else {
+        assert.equal(buttons.length, 1, `${label} should retain its Copy button`);
+        copiedValues.push(row.querySelector(".mobile-conn-value").textContent);
+        buttons[0].dispatchEvent({ type: "click" });
+        await Promise.resolve();
+        assert.equal(buttons[0].textContent, "mobileCopied");
+      }
+    }
+    assert.deepStrictEqual(harness.clipboardWrites, copiedValues);
+    assert.equal(copiedValues.length, 4);
+  });
 
   it("gates the Telegram test footer on ready, runtime and native readiness", async () => {
     async function renderTelegram({ allowedTgUserId = "123456789", tokenConfigured = true, state, migration, testCommand }) {
@@ -9682,6 +9791,63 @@ describe("settings renderer browser environment", () => {
     assert.equal(status.element.classList.contains("warn"), false);
     assert.equal(status.element.classList.contains("bad"), true);
     assert.equal(status.element.querySelector(".settings-status-text").textContent, "Bad");
+  });
+
+  it("replaces the native disclosure title with the shared in-page hint", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const row = buildFakeSettingRow(document, {
+      label: "Label",
+      description: "Folded description",
+    });
+    core.helpers.attachDescriptionDisclosure(row.element);
+    const toggle = row.element.querySelector(".row-desc-toggle");
+    assert.ok(toggle);
+    assert.equal(toggle.getAttribute("title"), undefined, "native OS tooltip must not be used");
+    assert.equal(toggle.getAttribute("aria-describedby"), row.descriptionElement.id);
+    const svg = toggle.querySelector("svg");
+    assert.ok(svg, "the disclosure renders a vector SVG icon");
+    assert.equal(svg.getAttribute("viewBox"), "0 0 14 14");
+
+    toggle.dispatchEvent({ type: "mouseenter" });
+    const tooltip = document.body.children.find((child) => child.classList.contains("settings-tooltip"));
+    assert.ok(tooltip, "hovering the disclosure mounts the shared tooltip");
+    assert.equal(tooltip.textContent, "Folded description");
+    assert.equal(tooltip.classList.contains("visible"), true);
+    assert.equal(tooltip.getAttribute("aria-hidden"), "false");
+
+    toggle.dispatchEvent({ type: "click" });
+    assert.equal(tooltip.classList.contains("visible"), false);
+    assert.equal(row.descriptionElement.classList.contains("row-desc-collapsed"), false);
+    // Once the text is inline there is nothing left to hint.
+    toggle.dispatchEvent({ type: "mouseenter" });
+    assert.equal(tooltip.classList.contains("visible"), false);
+    assert.equal(document.body.children.includes(tooltip), true, "a single tooltip node is reused");
+  });
+
+  it("keeps three-action confirmation button labels unsplit on a single line", () => {
+    const document = {
+      body: new FakeElement("body"),
+      createElement: (tagName) => new FakeElement(tagName),
+      getElementById: () => null,
+    };
+    const core = loadSettingsCoreForTest({}, { document });
+    const button = core.helpers.buildButton({ label: "重置令牌并启用（推荐）", size: "large" });
+    const label = button.querySelector(".settings-button-label");
+    assert.equal(label.textContent, "重置令牌并启用（推荐）");
+    assert.equal(label.children.length, 0, "button labels stay a single unsplit text run");
+
+    core.helpers.setButtonState(button, { label: "保留令牌并启用" });
+    assert.equal(label.textContent, "保留令牌并启用");
+    assert.equal(label.children.length, 0);
+
+    const css = fs.readFileSync(SETTINGS_CSS, "utf8");
+    assert.match(css, /\.settings-confirm-actions:has\(>\s*:nth-child\(3\)\)\s*\{[\s\S]*?display:\s*flex;/);
+    assert.match(css, /\.settings-confirm-actions:has\(>\s*:nth-child\(3\)\)\s+\.soft-btn\s*\{[\s\S]*?white-space:\s*nowrap;/);
   });
 
   it("removes the legacy channel markup from source and CSS", () => {
@@ -12549,167 +12715,213 @@ describe("settings renderer browser environment", () => {
     }
   });
 
-  it("renders Free roam movement style as a dependent segmented choice", async () => {
-    const generalSource = fs.readFileSync(path.join(SRC_DIR, "settings-tab-pet.js"), "utf8");
-    const i18nSource = fs.readFileSync(SETTINGS_I18N, "utf8");
-    assert.ok(generalSource.includes("function buildFreeRoamGroup()"));
-    assert.ok(generalSource.includes('id: "pet:free-roam"'));
-    assert.ok(generalSource.includes('className: "free-roam-collapsible"'));
-    assert.ok(generalSource.includes("defaultCollapsed: true"));
-    assert.ok(generalSource.includes("function buildRoamMovementStyleRow()"));
-    assert.ok(generalSource.includes('"row roam-movement-style-row"'));
-    assert.ok(generalSource.includes('"roamConstrainAxis"'));
-    for (const key of [
-      "rowRoamMovementStyle",
-      "rowRoamMovementStyleDesc",
-      "roamMovementNatural",
-      "roamMovementAxis",
-      "rowRoamArea",
-      "roamAreaLoading",
-      "roamAreaEntire",
-      "roamAreaCustom",
-      "roamAreaUnavailable",
-      "roamAreaPetTooLarge",
-      "roamAreaChoose",
-      "roamAreaReset",
-      "roamAreaSaved",
-      "roamAreaResetDone",
-    ]) {
-      const matches = i18nSource.match(new RegExp(`\\b${key}:`, "g"));
-      const matchCount = matches ? matches.length : 0;
-      assert.strictEqual(matchCount, SUPPORTED_LANGS.length,
-        `${key} should appear in all ${SUPPORTED_LANGS.length} supported languages`);
-    }
+  const idleBehaviorCases = [
+    { mode: "none", freeRoam: false, idleActivities: false, description: "Stay in place, look around, and doze." },
+    { mode: "roam", freeRoam: true, idleActivities: false, description: "Wander freely around the desktop when idle. Movement stops when you move the mouse." },
+    { mode: "activities", freeRoam: false, idleActivities: true, description: "While no agent is active, occasionally play another animation from the theme." },
+    { mode: "roam", freeRoam: true, idleActivities: true, description: "Wander freely around the desktop when idle. Movement stops when you move the mouse." },
+  ];
 
-    const updateCalls = [];
-    const initialSnapshot = makeGeneralSnapshot({ roamConstrainAxis: true, freeRoam: false });
+  function assertIdleBehavior(harness, scenario) {
+    const group = harness.content.querySelector(".idle-behavior-group");
+    const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+    assert.strictEqual(control.getValue(), scenario.mode);
+    assert.strictEqual(group.querySelector(".idle-behavior-mode-row .row-desc").textContent, scenario.description);
+    for (const [selector, visible] of [
+      [".roam-movement-style-row", scenario.mode === "roam"],
+      [".roam-area-row", scenario.mode === "roam"],
+      [".idle-activity-frequency-row", scenario.mode === "activities"],
+    ]) {
+      const row = group.querySelector(selector);
+      assert.strictEqual(row.hidden, !visible, selector);
+      assert.strictEqual(row.getAttribute("aria-hidden"), visible ? "false" : "true", selector);
+      for (const button of row.querySelectorAll("button")) {
+        assert.strictEqual(button.disabled, false, "detail controls remain usable whenever shown");
+      }
+    }
+  }
+
+  for (const scenario of idleBehaviorCases) {
+    it(`renders idle behavior ${scenario.mode} for roam=${scenario.freeRoam}, activities=${scenario.idleActivities}`, () => {
+      const harness = loadGeneralTabForTest({ tab: "pet", snapshot: makeGeneralSnapshot(scenario) });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+      assert.strictEqual(control.element.querySelector("button").getAttribute("data-settings-choice-group"), "idle-behavior-mode");
+      assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
+      assert.strictEqual(control.element.getAttribute("aria-label"), "When idle");
+      assert.deepStrictEqual(control.element.querySelectorAll("button").map((button) => button.textContent),
+        ["Stay put", "Free roam", "Idle activities"]);
+      assert.strictEqual(harness.getSwitch("freeRoam"), null);
+      assert.strictEqual(harness.getSwitch("idleActivities"), null);
+      assertIdleBehavior(harness, scenario);
+    });
+  }
+
+  it("lays out idle behavior choices at full width and hides inactive detail rows", () => {
+    const css = fs.readFileSync(path.join(SRC_DIR, "settings.css"), "utf8").replace(/\r\n/g, "\n");
+    assert.match(css, /\.idle-behavior-group \.row\[hidden\]\s*\{\s*display: none;/);
+    assert.match(css, /\.idle-behavior-mode-segmented\s*\{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+    assert.match(css, /\.idle-behavior-group \.settings-segmented-radio\s*\{\s*width: 100%/);
+    assert.match(css, /\.idle-behavior-group \.settings-segmented-radio button\s*\{[^}]*white-space: normal/);
+  });
+
+  it("saves each idle behavior through the paired command and keeps detail values", async () => {
+    const calls = [];
     const harness = loadGeneralTabForTest({
       tab: "pet",
-      snapshot: initialSnapshot,
-      settingsAPI: {
-        update: (key, value) => {
-          updateCalls.push({ key, value });
-          return Promise.resolve({ status: "ok" });
-        },
-      },
+      snapshot: makeGeneralSnapshot({ freeRoam: false, idleActivities: false, roamConstrainAxis: true, idleActivityFrequency: "high" }),
+      settingsAPI: { command: async (name, payload) => { calls.push({ name, payload: { mode: payload.mode } }); return { status: "ok" }; } },
     });
     harness.renderContent();
-
-    const control = harness.core.state.mountedControls.roamMovementStyle;
-    const row = harness.content.querySelector(".roam-movement-style-row");
-    const group = harness.content.querySelector(".free-roam-collapsible");
-    const header = group.querySelector(".collapsible-group-header");
-    const disclosure = group.querySelector(".collapsible-group-disclosure");
-    const freeRoamSwitch = harness.getSwitch("freeRoam");
-    assert.ok(control && row, "the dependent movement-style row must mount");
-    assert.ok(group, "Free roam must render as a collapsible group");
-    assert.strictEqual(group.dataset.groupId, "pet:free-roam");
-    assert.strictEqual(group.classList.contains("collapsed"), true, "Free roam details default closed");
-    assert.strictEqual(header.getAttribute("role"), undefined, "the shared header must not wrap both interactive controls");
-    assert.strictEqual(disclosure.getAttribute("role"), "button");
-    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "false");
-    assert.strictEqual(disclosure.getAttribute("aria-label"), "Expand section: Free roam");
-    assert.strictEqual(disclosure.contains(freeRoamSwitch), false, "the switch must be a sibling of the disclosure button");
-    assert.strictEqual(header.contains(disclosure), true);
-    assert.strictEqual(header.contains(freeRoamSwitch), true);
-    assert.strictEqual(freeRoamSwitch.getAttribute("role"), "switch");
-    assert.strictEqual(freeRoamSwitch.getAttribute("aria-label"), "Free roam");
-    assert.ok(
-      group.querySelector(".collapsible-group-body").contains(row),
-      "movement style must live inside the collapsible body",
-    );
-    assert.ok(row.classList.contains("settings-option-item"), "movement style must use the nested-card style");
-    assert.strictEqual(control.element.getAttribute("role"), "radiogroup");
-    const buttons = control.element.querySelectorAll("button");
-    const natural = buttons.find((button) => button.dataset.value === "natural");
-    const axis = buttons.find((button) => button.dataset.value === "axis");
-    assert.ok(natural && axis, "both movement styles must be available");
-    assert.strictEqual(axis.classList.contains("active"), true, "stored axis choice remains visible");
-    assert.strictEqual(natural.classList.contains("active"), false);
-    assert.strictEqual(axis.disabled, true, "style is disabled while Free roam is off");
-    assert.strictEqual(natural.disabled, true);
-
-    // The header master switch updates Free roam without also opening the
-    // sibling disclosure. No propagation workaround is needed.
-    freeRoamSwitch.dispatchEvent({
-      type: "click",
-      bubbles: true,
-      cancelBubble: false,
-      stopPropagation() { this.cancelBubble = true; },
-    });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      updateCalls.some((call) => call.key === "freeRoam" && call.value === true),
-      "the header switch must persist freeRoam=true",
-    );
-    assert.strictEqual(group.classList.contains("collapsed"), true);
-
-    disclosure.dispatchEvent({ type: "click", bubbles: true });
-    assert.strictEqual(group.classList.contains("collapsed"), false);
-    assert.strictEqual(disclosure.getAttribute("aria-expanded"), "true");
-    assert.strictEqual(disclosure.getAttribute("aria-label"), "Collapse section: Free roam");
-
-    // Enabling the parent patches the mounted child in place and preserves its
-    // stored axis selection instead of resetting the preference.
-    const beforeRenderCount = harness.getContentRenderCount();
-    const enabledSnapshot = { ...initialSnapshot, freeRoam: true };
-    harness.core.ops.applyChanges({
-      changes: { freeRoam: true },
-      snapshot: enabledSnapshot,
-    });
-    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
-    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
-    assert.strictEqual(axis.disabled, false);
-    assert.strictEqual(natural.disabled, false);
-    assert.strictEqual(axis.classList.contains("active"), true);
-
-    // Natural maps back to the existing boolean false; no prefs migration or
-    // new runtime setting is introduced by the presentation change.
-    natural.dispatchEvent({ type: "click", bubbles: false });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === false),
-      "Natural must persist roamConstrainAxis=false",
-    );
-    assert.strictEqual(natural.classList.contains("active"), true);
-    assert.strictEqual(axis.classList.contains("active"), false);
-
-    // Axis maps to the existing boolean true through the same user-click path.
-    axis.dispatchEvent({ type: "click", bubbles: false });
-    await new Promise((r) => setTimeout(r, 0));
-    assert.ok(
-      updateCalls.some((call) => call.key === "roamConstrainAxis" && call.value === true),
-      "Axis must persist roamConstrainAxis=true",
-    );
-    assert.strictEqual(axis.classList.contains("active"), true);
-    assert.strictEqual(natural.classList.contains("active"), false);
-
-    // Authoritative broadcasts keep the same control mounted and can replace
-    // the optimistic value without rebuilding General.
-    const naturalSnapshot = { ...enabledSnapshot, roamConstrainAxis: false };
-    harness.core.ops.applyChanges({
-      changes: { roamConstrainAxis: false },
-      snapshot: naturalSnapshot,
-    });
-    const axisSnapshot = { ...naturalSnapshot, roamConstrainAxis: true };
-    harness.core.ops.applyChanges({
-      changes: { roamConstrainAxis: true },
-      snapshot: axisSnapshot,
-    });
-    assert.strictEqual(axis.classList.contains("active"), true);
-    assert.strictEqual(natural.classList.contains("active"), false);
-
-    // Turning the parent off disables the child but preserves the stored style.
-    harness.core.ops.applyChanges({
-      changes: { freeRoam: false },
-      snapshot: { ...axisSnapshot, freeRoam: false },
-    });
-    assert.strictEqual(harness.core.state.mountedControls.roamMovementStyle, control);
-    assert.strictEqual(harness.getContentRenderCount(), beforeRenderCount);
-    assert.strictEqual(axis.classList.contains("active"), true);
-    assert.strictEqual(natural.disabled, true);
-    assert.strictEqual(axis.disabled, true);
+    const mounted = harness.core.state.mountedControls;
+    const mode = mounted.idleBehavior.modeControl;
+    const movement = mounted.roamMovementStyle;
+    const frequency = mounted.idleActivityFrequency;
+    const before = harness.getContentRenderCount();
+    for (const index of [1, 2, 0, 2, 1]) {
+      const scenario = idleBehaviorCases[index];
+      mode.element.querySelectorAll("button").find((button) => button.dataset.value === scenario.mode)
+        .dispatchEvent({ type: "click", bubbles: false });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.deepStrictEqual(calls.at(-1), { name: "setIdleBehavior", payload: { mode: scenario.mode } });
+      assertIdleBehavior(harness, scenario);
+      harness.core.ops.applyChanges({
+        changes: { freeRoam: scenario.freeRoam, idleActivities: scenario.idleActivities },
+        snapshot: { ...harness.core.state.snapshot, freeRoam: scenario.freeRoam, idleActivities: scenario.idleActivities },
+      });
+      assert.strictEqual(movement.getValue(), "axis");
+      assert.strictEqual(frequency.getValue(), "high");
+      assert.strictEqual(mounted.idleBehavior.modeControl, mode);
+      assert.strictEqual(mounted.roamMovementStyle, movement);
+      assert.strictEqual(mounted.idleActivityFrequency, frequency);
+      assert.strictEqual(harness.getContentRenderCount(), before);
+    }
   });
+
+  for (const scenario of [
+    { name: "an error result", message: "disk full", reply: () => ({ status: "error", message: "disk full" }) },
+    { name: "a rejected promise", message: "IPC unavailable", reply: () => Promise.reject(new Error("IPC unavailable")) },
+  ]) {
+    it(`rolls back the idle behavior choice and shows a toast on ${scenario.name}`, async () => {
+      const calls = [], toasts = [];
+      const harness = loadGeneralTabForTest({
+        tab: "pet", snapshot: makeGeneralSnapshot(idleBehaviorCases[1]),
+        settingsAPI: { command: (name, payload) => { calls.push({ name, payload: { mode: payload.mode } }); return scenario.reply(); } },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+      control.element.querySelectorAll("button").find((button) => button.dataset.value === "activities")
+        .dispatchEvent({ type: "click", bubbles: false });
+      assert.strictEqual(control.getValue(), "activities", "choice changes optimistically before the reply");
+      await new Promise((resolve) => setImmediate(resolve));
+      assertIdleBehavior(harness, idleBehaviorCases[1]);
+      assert.deepStrictEqual(calls, [{ name: "setIdleBehavior", payload: { mode: "activities" } }]);
+      assert.strictEqual(toasts.length, 1);
+      assert.strictEqual(toasts[0].options.error, true);
+      assert.ok(toasts[0].message.includes(scenario.message));
+    });
+  }
+
+  it("patches idle behavior broadcasts in place, including mixed and hidden detail updates", async () => {
+    const calls = [];
+    const harness = loadGeneralTabForTest({
+      tab: "pet", snapshot: makeGeneralSnapshot(idleBehaviorCases[0]),
+      settingsAPI: { update: async (key, value) => { calls.push({ key, value }); return { status: "ok" }; } },
+    });
+    harness.renderContent();
+    const mounted = harness.core.state.mountedControls;
+    const group = mounted.idleBehavior.element;
+    const mode = mounted.idleBehavior.modeControl;
+    const movement = mounted.roamMovementStyle;
+    const frequency = mounted.idleActivityFrequency;
+    const before = harness.getContentRenderCount();
+    function apply(changes) {
+      harness.core.ops.applyChanges({ changes, snapshot: { ...harness.core.state.snapshot, ...changes } });
+      assert.strictEqual(harness.getContentRenderCount(), before);
+      assert.strictEqual(harness.content.querySelector(".idle-behavior-group"), group);
+      assert.strictEqual(mounted.idleBehavior.modeControl, mode);
+      assert.strictEqual(mounted.roamMovementStyle, movement);
+      assert.strictEqual(mounted.idleActivityFrequency, frequency);
+    }
+    apply({ roamConstrainAxis: true, idleActivityFrequency: "high" });
+    assert.strictEqual(movement.getValue(), "axis");
+    assert.strictEqual(frequency.getValue(), "high");
+    for (const index of [1, 2, 0, 1]) {
+      const scenario = idleBehaviorCases[index];
+      apply({ freeRoam: scenario.freeRoam, idleActivities: scenario.idleActivities, allowEdgePinning: false });
+      assertIdleBehavior(harness, scenario);
+      assert.strictEqual(harness.getSwitch("allowEdgePinning").classList.contains("on"), false);
+      assert.strictEqual(movement.getValue(), "axis");
+      assert.strictEqual(frequency.getValue(), "high");
+    }
+    movement.element.querySelectorAll("button").find((button) => button.dataset.value === "natural")
+      .dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(calls.at(-1), { key: "roamConstrainAxis", value: false });
+    apply({ roamConstrainAxis: false });
+    assert.strictEqual(movement.getValue(), "natural");
+    apply({ freeRoam: false, idleActivities: true });
+    frequency.element.querySelectorAll("button").find((button) => button.dataset.value === "low")
+      .dispatchEvent({ type: "click", bubbles: false });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(calls.at(-1), { key: "idleActivityFrequency", value: "low" });
+    apply({ idleActivityFrequency: "low" });
+    assert.strictEqual(frequency.getValue(), "low");
+  });
+
+  it("uses snapshot mode changes when a broadcast arrives before the optimistic save resolves", async () => {
+    let resolveSave;
+    const harness = loadGeneralTabForTest({
+      tab: "pet", snapshot: makeGeneralSnapshot(idleBehaviorCases[0]),
+      settingsAPI: { command: () => new Promise((resolve) => { resolveSave = resolve; }) },
+    });
+    harness.renderContent();
+    const control = harness.core.state.mountedControls.idleBehavior.modeControl;
+    const before = harness.getContentRenderCount();
+    control.element.querySelectorAll("button").find((button) => button.dataset.value === "roam")
+      .dispatchEvent({ type: "click", bubbles: false });
+    assert.strictEqual(control.getValue(), "roam");
+    harness.core.ops.applyChanges({
+      changes: { freeRoam: true, idleActivities: false },
+      snapshot: { ...harness.core.state.snapshot, freeRoam: true, idleActivities: false },
+    });
+    assertIdleBehavior(harness, idleBehaviorCases[1]);
+    assert.strictEqual(harness.getContentRenderCount(), before);
+    assert.strictEqual(harness.core.state.mountedControls.idleBehavior.modeControl, control);
+    resolveSave({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+  });
+
+  for (const scenario of [
+    { name: "a non-ok result", message: "disk full", reply: () => ({ status: "error", message: "disk full" }) },
+    { name: "a rejected request", message: "IPC unavailable", reply: () => Promise.reject(new Error("IPC unavailable")) },
+  ]) {
+    it(`shows an error when the idle activity frequency save returns ${scenario.name}`, async () => {
+      const calls = [], toasts = [];
+      const harness = loadGeneralTabForTest({
+        tab: "pet",
+        snapshot: makeGeneralSnapshot({ idleActivities: true, idleActivityFrequency: "medium" }),
+        settingsAPI: {
+          update: (key, value) => {
+            calls.push({ key, value });
+            return scenario.reply();
+          },
+        },
+      });
+      harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+      harness.renderContent();
+      const control = harness.core.state.mountedControls.idleActivityFrequency;
+      const high = control.element.querySelectorAll("button").find((button) => button.dataset.value === "high");
+      high.dispatchEvent({ type: "click", bubbles: false });
+      await new Promise((resolve) => setImmediate(resolve));
+
+      assert.deepStrictEqual(calls, [{ key: "idleActivityFrequency", value: "high" }]);
+      assert.equal(toasts.length, 1);
+      assert.equal(toasts[0].options.error, true);
+      assert.ok(String(toasts[0].message).includes(scenario.message));
+    });
+  }
 
   it("shows, selects, and resets the Free roam activity area", async () => {
     const calls = [];
@@ -12743,7 +12955,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(control && harness.content.querySelector(".roam-area-row"));
     assert.strictEqual(control.description.textContent, "Custom area · 60% × 60% of each display");
     assert.strictEqual(control.resetButton.style.display, "");
-    assert.ok(harness.content.querySelector(".free-roam-option-list").contains(control.row));
+    assert.ok(harness.content.querySelector(".idle-behavior-group").contains(control.row));
 
     control.chooseButton.dispatchEvent({ type: "click", bubbles: false });
     await new Promise((resolve) => setTimeout(resolve, 0));
@@ -13480,9 +13692,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(harness.getSwitchMeta("quotaMergeSources").row.style.display, "");
   });
 
-  it("lets the user pick which providers draw beside the pet, hiding by exception", async () => {
-    // The cluster caps at four coins and the renderer takes the first four in
-    // provider order, so without this the user has no say over which survive.
+  it("lets the user materialize actual providers through the selection command", async () => {
     const updateCalls = [];
     const harness = loadGeneralTabForTest({
       tab: "sessions",
@@ -13490,12 +13700,12 @@ describe("settings renderer browser environment", () => {
       settingsAPI: {
         getQuotaSourceCount: async () => 1,
         getQuotaRingProviders: async () => ([
-          { key: "claudeQuota", label: "Claude", hidden: false },
-          { key: "codexQuota", label: "Codex", hidden: true },
-          { key: "kimiQuota", label: "Kimi", hidden: false },
+          { key: "claudeQuota", label: "Claude", shown: true, coinCount: 1, shownCoinCount: 1 },
+          { key: "codexQuota", label: "Codex", shown: false, coinCount: 1, shownCoinCount: 0 },
+          { key: "kimiQuota", label: "Kimi", shown: true, coinCount: 1, shownCoinCount: 1 },
         ]),
-        update: (key, value) => {
-          updateCalls.push({ key, value });
+        command: (action, payload) => {
+          updateCalls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
           return Promise.resolve({ status: "ok" });
         },
       },
@@ -13512,28 +13722,25 @@ describe("settings renderer browser environment", () => {
       rows.map((row) => row.dataset.providerKey),
       ["claudeQuota", "codexQuota", "kimiQuota"]
     );
-    // The switch reads as "shown", the stored preference records what is hidden.
+    // Switches reflect the actual visible set, including the automatic cap.
     const switches = rows.map((row) => row.querySelector(".switch"));
     assert.strictEqual(switches[0].classList.contains("on"), true, "Claude draws");
     assert.strictEqual(switches[1].classList.contains("on"), false, "Codex is hidden");
     assert.strictEqual(switches[2].classList.contains("on"), true, "Kimi draws");
 
-    // Hiding one appends to the list rather than replacing it, or turning off a
-    // second provider would quietly bring the first one back.
+    // The first toggle passes the visible providers, not all unhidden providers.
     switches[2].eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(updateCalls, [
-      { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] },
+      { action: "setQuotaRingProviderShown", payload: { key: "kimiQuota", shown: false, currentShownProviders: ["claudeQuota", "kimiQuota"] } },
     ]);
 
     // Re-showing removes only that key.
     updateCalls.length = 0;
     switches[1].eventListeners.click[0]();
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(updateCalls, [
-      { key: "quotaRingHiddenProviders", value: [] },
+      { action: "setQuotaRingProviderShown", payload: { key: "codexQuota", shown: true, currentShownProviders: ["claudeQuota"] } },
     ]);
   });
 
@@ -13552,11 +13759,11 @@ describe("settings renderer browser environment", () => {
         snapshot: makeGeneralSnapshot({ quotaRingHiddenProviders: ["codexQuota"] }),
         settingsAPI: {
           getQuotaRingProviders: async () => ([
-            { key: "codexQuota", label: "Codex" },
-            { key: "kimiQuota", label: "Kimi" },
+            { key: "codexQuota", label: "Codex", shown: false, coinCount: 1, shownCoinCount: 0 },
+            { key: "kimiQuota", label: "Kimi", shown: true, coinCount: 1, shownCoinCount: 1 },
           ]),
-          update: (key, value) => {
-            calls.push({ key, value });
+          command: (action, payload) => {
+            calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) });
             return calls.length === 1 ? scenario.reply() : Promise.resolve({ status: "ok" });
           },
         },
@@ -13581,11 +13788,214 @@ describe("settings renderer browser environment", () => {
       sw.dispatchEvent({ type: "click" });
       await new Promise((resolve) => setImmediate(resolve));
       assert.equal(calls.length, 2, "the same mounted control must allow retry");
-      assert.deepStrictEqual(calls[1], { key: "quotaRingHiddenProviders", value: ["codexQuota", "kimiQuota"] });
+      assert.deepStrictEqual(calls[1], { action: "setQuotaRingProviderShown", payload: { key: "kimiQuota", shown: false, currentShownProviders: ["kimiQuota"] } });
       assert.equal(sw.getAttribute("aria-checked"), "false");
       assert.equal(sw.getAttribute("aria-busy"), "false", "success must not depend on receiving a broadcast");
     });
   }
+
+  it("disables off providers at three coins and refreshes sources without reopening", async () => {
+    const providers = [
+      { key: "claudeQuota", label: "Claude", shown: true, coinCount: 2, shownCoinCount: 2 },
+      { key: "codexQuota", label: "Codex", shown: true, coinCount: 1, shownCoinCount: 1 },
+      { key: "kimiQuota", label: "Kimi", shown: false, coinCount: 1, shownCoinCount: 0 },
+    ];
+    const calls = [];
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot({ quotaRingShownProviders: ["claudeQuota", "codexQuota"] }),
+      settingsAPI: { getQuotaRingProviders: async () => providers,
+        command: (action, payload) => { calls.push({ action, payload: JSON.parse(JSON.stringify(payload)) }); return { status: "ok" }; } },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const switches = () => block.querySelectorAll(".quota-ring-provider-row").map(row => row.querySelector(".switch"));
+    assert.strictEqual(switches()[2].getAttribute("aria-disabled"), "true");
+    assert.strictEqual(block.querySelector(".quota-ring-providers-limit").style.display, "");
+    switches()[2].dispatchEvent({ type: "click" });
+    assert.strictEqual(calls.length, 0);
+    switches()[1].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(switches()[2].getAttribute("aria-disabled"), "false", "turning off frees a coin");
+    assert.strictEqual(switches()[1].getAttribute("aria-checked"), "false", "vacancy stays empty");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      { key: "antigravityQuota", label: "Antigravity", shown: false, coinCount: 2, shownCoinCount: 0 },
+      { ...providers[0] }, { ...providers[1], shown: false, shownCoinCount: 0 }, providers[2],
+    ]);
+    assert.strictEqual(switches().length, 4, "new source appears on the mounted page");
+    assert.strictEqual(switches()[0].getAttribute("aria-checked"), "false");
+    assert.strictEqual(switches()[0].getAttribute("aria-disabled"), "true", "two-source provider cannot exceed the remaining coin budget");
+    assert.strictEqual(calls.length, 1, "source changes never select a provider");
+    harness.core.tabs.sessions.applyQuotaRingProviders([providers[2]]);
+    assert.strictEqual(block.style.display, "none", "one remaining provider hides the block");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("lets absent selected providers release a full manual selection", async () => {
+    const geometry = require("../src/quota-ring-geometry");
+    const { commandRegistry } = require("../src/settings-actions");
+    const saved = { quotaRingShownProviders: ["antigravityQuota", "claudeQuota", "codexQuota"] };
+    const quota = { accountQuota: [{
+      claudeQuota: { group: { claudeFiveHour: { usedPercent: 10 } } },
+      kimiQuota: { group: { kimiWeekly: { usedPercent: 10 } } },
+    }] };
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot(saved),
+      settingsAPI: {
+        getQuotaRingProviders: async () => geometry.listQuotaRingProviders(quota, [], saved.quotaRingShownProviders),
+        command: async (_name, payload) => {
+          const result = commandRegistry.setQuotaRingProviderShown(payload, { snapshot: saved });
+          if (result.commit) Object.assign(saved, result.commit);
+          return result;
+        },
+      },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const rows = () => block.querySelectorAll(".quota-ring-provider-row");
+    const row = key => rows().find(entry => entry.dataset.providerKey === key);
+    assert.strictEqual(rows().length, 4);
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-checked"), "true");
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-disabled"), "false");
+    assert.ok(row("antigravityQuota").querySelector(".quota-ring-provider-no-data"));
+    assert.strictEqual(row("kimiQuota").querySelector(".switch").getAttribute("aria-disabled"), "true");
+    assert.strictEqual(block.querySelector(".quota-ring-providers-limit").style.display, "");
+    row("antigravityQuota").querySelector(".switch").dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(row("antigravityQuota").querySelector(".switch").getAttribute("aria-checked"), "false");
+    assert.strictEqual(row("kimiQuota").querySelector(".switch").getAttribute("aria-disabled"), "false");
+    row("kimiQuota").querySelector(".switch").dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepStrictEqual(Array.from(saved.quotaRingShownProviders), ["claudeQuota", "codexQuota", "kimiQuota"]);
+  });
+
+  for (const changed of [false, true]) {
+    it(`keeps a pending toggle after ${changed ? "changed" : "identical"} provider pushes and a delayed success`, async () => {
+      let resolveSave;
+      const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+      const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+        settingsAPI: { getQuotaRingProviders: async () => providers,
+          command: () => new Promise(resolve => { resolveSave = resolve; }) },
+      });
+      harness.renderContent();
+      await new Promise(resolve => setImmediate(resolve));
+      const block = harness.content.querySelector(".quota-ring-providers");
+      const currentSwitch = () => block.querySelectorAll(".quota-ring-provider-row")[1].querySelector(".switch");
+      currentSwitch().dispatchEvent({ type: "click" });
+      await Promise.resolve();
+      const pushed = changed ? providers.map(provider => ({ ...provider, coinCount: 2 })) : providers;
+      harness.core.tabs.sessions.applyQuotaRingProviders(pushed);
+      assert.strictEqual(currentSwitch().getAttribute("aria-checked"), "false", "pushes preserve pending intent");
+      resolveSave({ status: "ok" });
+      await new Promise(resolve => setImmediate(resolve));
+      assert.strictEqual(currentSwitch().getAttribute("aria-checked"), "false", "success preserves the committed toggle");
+      assert.strictEqual(currentSwitch().getAttribute("aria-busy"), "false");
+    });
+  }
+
+  it("shows the provider limit hint only when an off switch is blocked", async () => {
+    const providers = ["antigravityQuota", "claudeQuota", "codexQuota"].map(key => ({
+      key, shown: true, coinCount: 1, shownCoinCount: 1,
+    }));
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: async () => providers },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const hint = block.querySelector(".quota-ring-providers-limit");
+    assert.strictEqual(hint.style.display, "none", "three enabled providers are not an error");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      ...providers, { key: "kimiQuota", shown: false, coinCount: 1, shownCoinCount: 0 },
+    ]);
+    assert.strictEqual(hint.style.display, "");
+    harness.core.tabs.sessions.applyQuotaRingProviders([
+      { ...providers[0], coinCount: 2, shownCoinCount: 2 },
+      { key: "kimiQuota", shown: false, coinCount: 2, shownCoinCount: 0 },
+    ]);
+    assert.strictEqual(hint.style.display, "", "a two-source provider can exceed a partially filled budget");
+  });
+
+  it("keeps successive manual toggles consistent before settings broadcasts arrive", async () => {
+    const keys = ["claudeQuota", "codexQuota", "kimiQuota"];
+    const harness = loadGeneralTabForTest({ tab: "sessions",
+      snapshot: makeGeneralSnapshot({ quotaRingShownProviders: keys }),
+      settingsAPI: { getQuotaRingProviders: async () => keys.map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 })),
+        command: async () => ({ status: "ok" }) },
+    });
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    const switches = harness.content.querySelectorAll(".quota-ring-provider-row").map(row => row.querySelector(".switch"));
+    switches[1].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    switches[2].dispatchEvent({ type: "click" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(switches[0].getAttribute("aria-checked"), "true");
+    assert.strictEqual(switches[1].getAttribute("aria-checked"), "false");
+    assert.strictEqual(switches[2].getAttribute("aria-checked"), "false");
+  });
+
+  it("keeps a newer provider notification when the initial query resolves late", async () => {
+    let resolveQuery;
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: () => new Promise(resolve => { resolveQuery = resolve; }) },
+    });
+    harness.renderContent();
+    const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+    harness.core.tabs.sessions.applyQuotaRingProviders(providers);
+    const block = harness.content.querySelector(".quota-ring-providers");
+    const firstRow = block.querySelector(".quota-ring-provider-row");
+    harness.core.tabs.sessions.applyQuotaRingProviders(providers);
+    assert.strictEqual(block.querySelector(".quota-ring-provider-row"), firstRow, "unchanged metadata preserves mounted controls");
+    resolveQuery([]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 2);
+  });
+
+  it("keeps an empty source notification when the initial provider query is stale", async () => {
+    let resolveQuery;
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: () => new Promise(resolve => { resolveQuery = resolve; }) },
+    });
+    harness.renderContent();
+    harness.core.tabs.sessions.applyQuotaRingProviders([]);
+    resolveQuery(["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 })));
+    await new Promise(resolve => setImmediate(resolve));
+    const block = harness.content.querySelector(".quota-ring-providers");
+    assert.strictEqual(block.style.display, "none");
+    assert.strictEqual(block.querySelectorAll(".quota-ring-provider-row").length, 0);
+  });
+
+  it("settles a pending selection when sources disappear during the save", async () => {
+    let resolveSave;
+    const toasts = [];
+    const providers = ["claudeQuota", "kimiQuota"].map(key => ({ key, shown: true, coinCount: 1, shownCoinCount: 1 }));
+    const harness = loadGeneralTabForTest({ tab: "sessions", snapshot: makeGeneralSnapshot({}),
+      settingsAPI: { getQuotaRingProviders: async () => providers,
+        command: () => new Promise(resolve => { resolveSave = resolve; }) },
+    });
+    harness.core.ops.showToast = message => toasts.push(message);
+    harness.renderContent();
+    await new Promise(resolve => setImmediate(resolve));
+    harness.content.querySelector(".quota-ring-provider-row .switch").dispatchEvent({ type: "click" });
+    await Promise.resolve();
+    harness.core.tabs.sessions.applyQuotaRingProviders([providers[0]]);
+    resolveSave({ status: "ok" });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.strictEqual(harness.content.querySelector(".quota-ring-providers").style.display, "none");
+    assert.deepStrictEqual(toasts, []);
+  });
+
+  it("wires provider-change notifications through preload and the settings shell", () => {
+    const main = fs.readFileSync(path.join(SRC_DIR, "main.js"), "utf8");
+    const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
+    const shell = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
+    assert.ok(main.includes('broadcastSettingsWindow("settings:quota-ring-providers-changed"'));
+    assert.ok(preload.includes('ipcRenderer.on("settings:quota-ring-providers-changed"'));
+    assert.ok(shell.includes("settingsAPI.onQuotaRingProvidersChanged"));
+    assert.ok(shell.includes("applyQuotaRingProviders"));
+  });
 
   it("offers no provider list when only one provider reports", async () => {
     // One connected provider cannot crowd anything out, so the control would be
@@ -16393,6 +16803,178 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("full re-render"));
   });
 
+  it("renders DeepSeek balance connection, reconnect and two-step local key removal", async () => {
+    let configured = false;
+    let enabled = false;
+    let agentEnabled = true;
+    let connectionState = "unconfigured";
+    const calls = [];
+    const flush = async () => { for (let i = 0; i < 12; i++) await Promise.resolve(); };
+    const harness = loadAgentsTabForTest({
+      snapshot: { deepseekBalanceCollectionEnabled: false,
+        agents: { "deepseek-harness": { integrationInstalled: true, enabled: true } },
+        customApplications: [], customToolDiscoveryPaths: [] },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: {
+        getDeepseekBalanceStatus: async () => ({ status: "ok", configured, decryptable: configured,
+          collectionEnabled: enabled, agentEnabled, state: connectionState }),
+        connectDeepseekBalance: async (key) => {
+          calls.push(["connect", key]); configured = true; enabled = true; connectionState = "fresh";
+          return { status: "ok" };
+        },
+        reconnectDeepseekBalance: async () => { calls.push(["reconnect"]); enabled = true; return { status: "ok" }; },
+        disconnectDeepseekBalance: async () => {
+          calls.push(["disconnect"]); enabled = false; connectionState = "configured-disabled";
+          return { status: "ok" };
+        },
+        forgetDeepseekBalanceCredential: async () => {
+          calls.push(["forget"]); configured = false; connectionState = "unconfigured";
+          return { status: "ok" };
+        },
+        openExternal: async (url) => calls.push(["external", url]),
+        command: async (...args) => { calls.push(["generic", ...args]); return { status: "ok" }; },
+      },
+    });
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.ops.requestRender({ content: true }); await flush();
+    const card = harness.content.querySelector(".deepseek-balance-card");
+    assert.ok(card);
+    harness.content.querySelector(".deepseek-balance-row-action").dispatchEvent({ type: "click" });
+    const input = card.querySelector("input");
+    assert.strictEqual(input.type, "password");
+    input.value = "sk-renderer-deepseek";
+    card.querySelector(".deepseek-balance-connect").dispatchEvent({ type: "click" });
+    assert.strictEqual(input.value, ""); await flush();
+    assert.deepStrictEqual(calls[0], ["connect", "sk-renderer-deepseek"]);
+    assert.strictEqual(card.querySelector(".deepseek-balance-forget").disabled, true);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusFresh");
+    card.querySelector(".deepseek-balance-console").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[1] === "https://platform.deepseek.com/api_keys"));
+    card.querySelector(".deepseek-balance-disconnect").dispatchEvent({ type: "click" }); await flush();
+    assert.strictEqual(card.querySelector(".deepseek-balance-forget").disabled, false);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent,
+      "deepseekBalanceStatusConfiguredDisabled");
+    card.querySelector(".deepseek-balance-reconnect").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[0] === "reconnect"));
+    enabled = false; agentEnabled = false; connectionState = "agent-disabled";
+    card.querySelector(".deepseek-balance-disconnect").dispatchEvent({ type: "click" }); await flush();
+    card.querySelector(".deepseek-balance-forget").dispatchEvent({ type: "click" }); await flush();
+    assert.ok(calls.some((call) => call[0] === "forget"));
+    assert.ok(!calls.some((call) => call[0] === "generic" && JSON.stringify(call).includes("sk-renderer-deepseek")));
+  });
+
+  it("updates a mounted DeepSeek balance card after a background rejection", async () => {
+    const status = { status: "ok", configured: true, decryptable: true,
+      collectionEnabled: true, agentEnabled: true, state: "fresh" };
+    let deferredRead = null;
+    let defer = false;
+    const h = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: { getDeepseekBalanceStatus: () => defer
+        ? new Promise((resolve) => { deferredRead = resolve; }) : Promise.resolve(status) },
+    });
+    h.core.runtime.agentInstallationHintsFetched = true;
+    h.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const card = h.content.querySelector(".deepseek-balance-card");
+    const line = card.querySelector(".deepseek-balance-status");
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusFresh");
+    defer = true;
+    h.content.querySelector(".deepseek-balance-row-action").dispatchEvent({ type: "click" });
+    h.core.tabs.agents.applyDeepseekBalanceStatus({ ...status, state: "credential-rejected" });
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusRejected");
+    deferredRead(status);
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(line.textContent, "deepseekBalanceStatusRejected");
+  });
+
+  it("updates the replacement DeepSeek card when a connection finishes during rebuild", async () => {
+    let status = { status: "ok", configured: false, decryptable: false,
+      collectionEnabled: false, agentEnabled: true, state: "unconfigured" };
+    let finishConnect;
+    const h = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+      agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+      settingsAPI: {
+        getDeepseekBalanceStatus: async () => ({ ...status }),
+        connectDeepseekBalance: () => {
+          status = { ...status, configured: true, decryptable: true, collectionEnabled: true, state: "refreshing" };
+          return new Promise((resolve) => { finishConnect = resolve; });
+        },
+      },
+    });
+    h.core.runtime.agentInstallationHintsFetched = true;
+    h.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    const oldCard = h.content.querySelector(".deepseek-balance-card");
+    oldCard.querySelector("input").value = "sk-rebuild-secret";
+    oldCard.querySelector(".deepseek-balance-connect").dispatchEvent({ type: "click" });
+    h.core.ops.applyChanges({ changes: { deepseekBalanceCollectionEnabled: true } });
+    h.raf.flush();
+    await new Promise((resolve) => setImmediate(resolve));
+    const card = h.content.querySelector(".deepseek-balance-card");
+    assert.notStrictEqual(card, oldCard);
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusRefreshing");
+    status = { ...status, state: "fresh" };
+    h.core.tabs.agents.applyDeepseekBalanceStatus(status);
+    finishConnect({ status: "ok" });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(card.querySelector(".deepseek-balance-status").textContent, "deepseekBalanceStatusFresh");
+    assert.strictEqual(card.querySelector("input").value, "");
+  });
+
+  it("shows localized retry messages for DeepSeek transient errors in all seven languages", async () => {
+    require("../src/settings-i18n");
+    const catalogs = globalThis.ClawdSettingsI18n.STRINGS;
+    const states = {
+      "rate-limited": "RateLimited",
+      "payment-required": "PaymentRequired",
+      timeout: "Timeout",
+      "network-error": "NetworkError",
+      "server-error": "ServerError",
+      "malformed-response": "MalformedResponse",
+      "response-too-large": "MalformedResponse",
+      "http-error": "HttpError",
+    };
+    for (const lang of ["en", "zh", "zh-TW", "ko", "ja", "pt-BR", "es"]) {
+      const status = { status: "ok", configured: true, decryptable: true,
+        collectionEnabled: true, agentEnabled: true, state: "fresh" };
+      const h = loadAgentsTabForTest({
+        snapshot: { lang, agents: { "deepseek-harness": { enabled: true, integrationInstalled: true } } },
+        agentMetadata: [{ id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "hook", capabilities: {} }],
+        i18nStrings: catalogs,
+        settingsAPI: {
+          getDeepseekBalanceStatus: async () => status,
+          reconnectDeepseekBalance: async () => ({ status: "error", reason: "rate-limited" }),
+        },
+      });
+      h.core.runtime.agentInstallationHintsFetched = true;
+      h.core.ops.requestRender({ content: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      const card = h.content.querySelector(".deepseek-balance-card");
+      const line = card.querySelector(".deepseek-balance-status");
+      for (const [state, suffix] of Object.entries(states)) {
+        h.core.tabs.agents.applyDeepseekBalanceStatus({ ...status, state, reason: state });
+        const expected = catalogs[lang][`deepseekBalanceStatus${suffix}`];
+        assert.ok(expected);
+        assert.strictEqual(line.textContent, expected);
+        assert.ok(!line.textContent.includes(state));
+      }
+      card.querySelector(".deepseek-balance-reconnect").dispatchEvent({ type: "click" });
+      await new Promise((resolve) => setImmediate(resolve));
+      assert.strictEqual(line.textContent, catalogs[lang].deepseekBalanceStatusRateLimited);
+    }
+  });
+
+  it("routes DeepSeek balance pushes through preload and the settings shell", () => {
+    const preload = fs.readFileSync(path.join(SRC_DIR, "preload-settings.js"), "utf8");
+    const shell = fs.readFileSync(path.join(SRC_DIR, "settings-renderer.js"), "utf8");
+    assert.ok(preload.includes('ipcRenderer.on("settings:deepseek-balance-status-changed"'));
+    assert.ok(shell.includes("settingsAPI.onDeepseekBalanceStatusChanged"));
+    assert.ok(shell.includes("applyDeepseekBalanceStatus"));
+  });
+
   it("renders Kimi quota as an explicit manual-only encrypted-key workflow", async () => {
     let configured = false;
     let collectionEnabled = false;
@@ -17911,7 +18493,8 @@ describe("settings renderer browser environment", () => {
     );
   });
 
-  it("Permissions exposes the Codex approval owner and links to its Agents control", () => {
+  it("Codex approval settings: Permissions summary describes both modes without mode jargon", () => {
+    const strings = loadSettingsI18nForTest().en;
     for (const mode of ["auto", "intercept"]) {
       const harness = loadGeneralTabForTest({
         tab: "permissions",
@@ -17920,18 +18503,51 @@ describe("settings renderer browser environment", () => {
       });
       harness.renderContent();
       const row = harness.content.querySelector(".codex-approval-owner-row");
-      assert.ok(row);
-      assert.ok(row.querySelector(".row-desc").textContent.includes(mode === "auto" ? "Auto" : "Intercept"));
+      const description = row.querySelector(".row-desc").textContent;
+      assert.equal(description, strings[mode === "auto"
+        ? "rowCodexApprovalOwnerAutoDesc" : "rowCodexApprovalOwnerInterceptDesc"]);
+      assert.doesNotMatch(description, /\b(?:Auto|Intercept)\b(?!-approve)/);
       assert.equal(row.querySelector("button").classList.contains("quiet"), true);
-      const selected = [];
-      harness.core.ops.selectTab = (tab) => selected.push(tab);
-      row.querySelector("button").dispatchEvent({ type: "click" });
-      assert.deepStrictEqual(selected, ["agents"]);
-      assert.strictEqual(harness.core.runtime.agentsSubtab, "connected");
     }
   });
 
-  it("keeps manual Codex Permissions available when switching to Auto", () => {
+  it("Codex approval settings: Change expands the Codex card and focuses the advanced switch", () => {
+    const harness = createCodexApprovalHarness({ collapsed: true });
+    harness.core.ops.selectTab("permissions");
+    harness.raf.flush();
+    const row = harness.content.querySelector(".codex-approval-owner-row");
+    row.querySelector("button").click();
+    harness.raf.flush();
+    assert.equal(harness.core.state.activeTab, "agents");
+    assert.equal(harness.core.runtime.agentsSubtab, "connected");
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    assert.equal(meta.control.element.getAttribute("role"), "switch");
+    assert.equal(meta.control.element.focused, true);
+    assert.strictEqual(harness.document.activeElement, meta.control.element);
+    assert.equal(meta.control.element.getAttribute("data-settings-focus-key"), "codex-intercept-approvals");
+    assert.equal(meta.row.scrollOptions.block, "center");
+    assert.equal(findAncestorByClass(meta.row, "collapsible-group").classList.contains("collapsed"), false);
+  });
+
+  it("Codex approval settings: restores advanced switch focus after a full Agents render", () => {
+    const harness = createCodexApprovalHarness();
+    const original = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    original.focus();
+    assert.strictEqual(harness.document.activeElement, original);
+    const rendersBefore = harness.getContentRenderCount();
+
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+
+    const replacement = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    assert.equal(harness.getContentRenderCount(), rendersBefore + 1);
+    assert.notStrictEqual(replacement, original);
+    assert.equal(original.isConnected, false);
+    assert.strictEqual(harness.document.activeElement, replacement);
+    assert.equal(replacement.getAttribute("data-settings-focus-key"), "codex-intercept-approvals");
+  });
+
+  it("Codex approval settings: manual permission bubbles stay available in auto", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
@@ -17992,7 +18608,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(permissionsSwitch.element.attributes.tabindex, "0");
   });
 
-  it("enables the Codex native sound switch only in Native permission mode", () => {
+  it("Codex approval settings: native sound follows auto mode including legacy native snapshots", () => {
     const harness = loadAgentsTabForTest({
       snapshot: {
         agents: {
@@ -18192,63 +18808,204 @@ describe("settings renderer browser environment", () => {
     assert.ok(notificationSwitch, "WorkBuddy waiting-notification switch should still be mounted");
   });
 
-  it("slides the Codex permission mode pill when mode broadcasts patch in place", () => {
-    const harness = loadAgentsTabForTest({
-      snapshot: {
-        agents: {
-          codex: {
-            integrationInstalled: true,
-            enabled: true,
-            permissionsEnabled: true,
-            permissionMode: "intercept",
-          },
-        },
-      },
-      agentMetadata: [{
-        id: "codex",
-        name: "Codex",
-        eventSource: "hook",
-        capabilities: {
-          permissionApproval: true,
-        },
-      }],
-      collapsedGroups: {
-        "agents:codex": false,
-      },
+  it("Codex approval settings: auto shows a plain explanation and an off switch only in Codex Advanced", () => {
+    const harness = createCodexApprovalHarness();
+    const routing = harness.content.querySelector(".codex-approval-routing-row");
+    assert.ok(routing);
+    assert.match(routing.querySelector(".row-desc").textContent, /remote requests/);
+    assert.equal(routing.querySelectorAll("button").length, 0);
+    assert.equal(routing.querySelector(".row-desc").classList.contains("row-desc-collapsed"), false);
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    assert.equal(meta.control.element.getAttribute("role"), "switch");
+    assert.equal(meta.control.element.getAttribute("aria-checked"), "false");
+    assert.ok(meta.control.element.getAttribute("aria-labelledby") || meta.control.element.getAttribute("aria-label"));
+    assert.equal(findAncestorByClass(meta.row, "agent-detail-group")
+      .querySelector(".agent-detail-group-label").textContent, "Advanced");
+    const labels = harness.content.querySelectorAll(".agent-detail-group-label").map((el) => el.textContent);
+    assert.equal(labels.filter((text) => text === "Advanced").length, 1);
+    const otherCard = harness.content.querySelectorAll(".agent-subgroup")
+      .find((card) => card.dataset.groupId === "agents:claude-code");
+    assert.ok(otherCard);
+    assert.ok(otherCard.querySelectorAll(".agent-detail-group-label").every((label) => label.textContent !== "Advanced"));
+    assert.ok(labels.indexOf("Advanced") > labels.indexOf("Connection"));
+    assert.equal(harness.soundSwitch.element.disabled, false);
+    assert.equal(harness.content.querySelectorAll(".codex-permission-mode-segmented").length, 0);
+  });
+
+  it("Codex approval settings: toggles send existing commands and broadcasts refresh explanation and native sound", async () => {
+    const calls = [];
+    const harness = createCodexApprovalHarness({ command(name, payload) {
+      calls.push([name, payload.agentId, payload.mode]);
+      harness.broadcastMode(payload.mode);
+      return Promise.resolve({ status: "ok" });
+    } });
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    const routing = harness.content.querySelector(".codex-approval-routing-row");
+    const renderCount = harness.getContentRenderCount();
+    meta.control.element.click();
+    await settleChoice();
+    assert.deepEqual(calls, [["setAgentPermissionMode", "codex", "intercept"]]);
+    assert.equal(meta.control.element.getAttribute("aria-checked"), "true");
+    assert.match(routing.querySelector(".row-desc").textContent, /All Codex approvals/);
+    assert.equal(harness.soundSwitch.element.disabled, true);
+    meta.control.element.click();
+    await settleChoice();
+    assert.deepEqual(calls[1], ["setAgentPermissionMode", "codex", "auto"]);
+    assert.equal(meta.control.element.getAttribute("aria-checked"), "false");
+    assert.match(routing.querySelector(".row-desc").textContent, /remote requests/);
+    assert.equal(harness.soundSwitch.element.disabled, false);
+    assert.equal(harness.getContentRenderCount(), renderCount);
+  });
+
+  for (const [initialMode, nextMode] of [["auto", "intercept"], ["intercept", "auto"]]) {
+    it(`Codex approval settings: ${initialMode} save keeps mode displays consistent before its snapshot`, async () => {
+      const pending = createDeferred();
+      const harness = createCodexApprovalHarness({ mode: initialMode, command: () => pending.promise });
+      const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+      const routing = harness.content.querySelector(".codex-approval-routing-row .row-desc");
+      const snapshotBeforeSave = harness.core.state.snapshot;
+      function assertDisplayedMode(mode) {
+        assert.equal(meta.control.element.getAttribute("aria-checked"), String(mode === "intercept"));
+        assert.equal(meta.control.element.getAttribute("aria-busy"), "false");
+        assert.match(routing.textContent, mode === "intercept" ? /All Codex approvals/ : /remote requests/);
+        assert.equal(harness.soundSwitch.element.disabled, mode === "intercept");
+      }
+
+      meta.control.element.click();
+      pending.resolve({ status: "ok" });
+      await settleChoice();
+      assert.strictEqual(harness.core.state.snapshot, snapshotBeforeSave);
+      assertDisplayedMode(nextMode);
+
+      harness.broadcastMode(nextMode);
+      assertDisplayedMode(nextMode);
+      harness.broadcastMode(initialMode);
+      assertDisplayedMode(initialMode);
     });
+  }
 
-    harness.core.ops.requestRender({ content: true });
-    harness.raf.flush();
-    const segmented = harness.content.querySelector(".codex-permission-mode-segmented");
-    assert.ok(segmented, "Codex permission mode should use the sliding segmented control");
-    assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "1");
+  it("Codex approval settings: external snapshots sync both the switch and explanation in place", () => {
+    const harness = createCodexApprovalHarness();
+    const meta = harness.core.state.mountedControls.agentPermissionModes.get("codex");
+    const routing = harness.content.querySelector(".codex-approval-routing-row");
+    for (const mode of ["intercept", "auto"]) {
+      harness.broadcastMode(mode);
+      assert.equal(meta.control.element.getAttribute("aria-checked"), String(mode === "intercept"));
+      assert.match(routing.querySelector(".row-desc").textContent,
+        mode === "intercept" ? /All Codex approvals/ : /remote requests/);
+    }
+  });
 
-    harness.core.ops.applyChanges({
-      changes: {
-        agents: {
-          codex: {
-            integrationInstalled: true,
-            enabled: true,
-            permissionsEnabled: true,
-            permissionMode: "native",
+  it("Codex approval settings: newer snapshots stay authoritative while a save completes", async () => {
+    const pending = createDeferred();
+    const harness = createCodexApprovalHarness({ command: () => pending.promise });
+    const toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    toggle.click();
+    harness.broadcastMode("intercept");
+    harness.broadcastMode("auto");
+    pending.resolve({ status: "ok" });
+    await settleChoice();
+    assert.equal(toggle.getAttribute("aria-checked"), "false");
+    assert.equal(toggle.getAttribute("aria-busy"), "false");
+    assert.equal(harness.soundSwitch.element.disabled, false);
+    assert.match(harness.content.querySelector(".codex-approval-routing-row .row-desc").textContent, /remote requests/);
+  });
+
+  it("Codex approval settings: errors and rejected commands show a toast and roll back in both directions", async () => {
+    for (const mode of ["auto", "intercept"]) {
+      for (const rejects of [false, true]) {
+        const pending = createDeferred();
+        const harness = createCodexApprovalHarness({ mode, command: () => pending.promise });
+        const toasts = [];
+        harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+        const toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+        toggle.click();
+        assert.equal(toggle.getAttribute("aria-busy"), "true");
+        assert.equal(toggle.getAttribute("aria-checked"), String(mode !== "intercept"));
+        if (rejects) pending.reject(new Error("save failed"));
+        else pending.resolve({ status: "error", message: "save failed" });
+        await settleChoice();
+        assert.equal(toggle.getAttribute("aria-checked"), String(mode === "intercept"));
+        assert.equal(toggle.getAttribute("aria-busy"), "false");
+        assert.equal(toasts.length, 1);
+        assert.match(toasts[0].message, /save failed/);
+        assert.equal(toasts[0].options.error, true);
+      }
+    }
+  });
+
+  it("Codex approval settings: master off disables the advanced switch and snapshots re-enable it", () => {
+    let calls = 0;
+    const harness = createCodexApprovalHarness({ enabled: false, command() { calls++; } });
+    const toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    assert.equal(toggle.getAttribute("role"), "switch");
+    assert.equal(toggle.disabled, true);
+    toggle.click();
+    assert.equal(calls, 0);
+    harness.broadcastMode("auto", true);
+    assert.equal(toggle.disabled, false);
+    harness.broadcastMode("auto", false);
+    assert.equal(toggle.disabled, true);
+  });
+
+  it("Codex approval settings: all card text avoids mode jargon in seven languages", () => {
+    const strings = loadSettingsI18nForTest();
+    const modeWords = /\b(?:Auto(?!-approve\b)|Intercept)\b/i;
+    for (const lang of SUPPORTED_LANGS) {
+      for (const permissionMode of ["auto", "intercept"]) {
+        const harness = loadAgentsTabForTest({
+          snapshot: {
+            lang,
+            agents: { codex: { integrationInstalled: true, enabled: true, permissionMode } },
           },
-        },
-      },
-      snapshot: {
-        agents: {
-          codex: {
-            integrationInstalled: true,
-            enabled: true,
-            permissionsEnabled: true,
-            permissionMode: "native",
-          },
-        },
-      },
-    });
+          agentMetadata: [{ id: "codex", name: "Codex", capabilities: { permissionApproval: true } }],
+          collapsedGroups: { "agents:codex": false },
+          i18nStrings: strings,
+        });
+        harness.core.ops.requestRender({ content: true });
+        harness.raf.flush();
+        const card = findAgentCard(harness.content, "Codex");
+        assert.ok(card, `${lang} Codex card`);
+        assert.ok(detailGroupLabels(card).includes(strings[lang].agentGroupApproval));
+        assert.ok(detailGroupLabels(card).includes(strings[lang].agentGroupAdvanced));
+        assert.equal(card.querySelector(".row-note").textContent, strings[lang].rowCodexNativeNotificationSoundNote);
+        // Open descriptions and remove icon text so word boundaries match each label.
+        for (const disclosure of card.querySelectorAll(".row-desc-toggle")) {
+          disclosure.click();
+          disclosure.remove();
+        }
+        const cardText = [".row-label", ".row-desc", ".row-note", ".agent-detail-group-label"]
+          .flatMap((selector) => card.querySelectorAll(selector).map((node) => node.textContent))
+          .join("\n");
+        assert.doesNotMatch(cardText, modeWords, `${lang} ${permissionMode} card text`);
+      }
+    }
+  });
 
-    assert.strictEqual(segmented.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
-    harness.raf.flush();
-    assert.strictEqual(segmented.style.getPropertyValue("--codex-permission-mode-active-index"), "0");
+  it("Codex approval settings: localized descriptions reference the setting and sidebar names", () => {
+    const strings = loadSettingsI18nForTest();
+    for (const lang of SUPPORTED_LANGS) {
+      const locale = strings[lang];
+      for (const key of ["rowCodexApprovalRoutingAutoDesc", "rowCodexApprovalOwnerAutoDesc", "rowCodexInterceptApprovalsDesc"]) {
+        assert.ok(locale[key].includes(locale.rowPermissionAutomation), `${lang} ${key} names the permission setting`);
+      }
+      const path = `${locale.sidebarAgents} → Codex → ${locale.agentGroupAdvanced}`;
+      assert.ok(locale.rowCodexApprovalOwnerInterceptDesc.includes(path), `${lang} names the sidebar path`);
+    }
+  });
+
+  it("Codex approval settings: seven languages have the new copy and no retired keys", () => {
+    for (const [lang, strings] of Object.entries(loadSettingsI18nForTest())) {
+      for (const key of ["agentGroupAdvanced", "rowCodexApprovalRouting", "rowCodexApprovalRoutingAutoDesc",
+        "rowCodexApprovalRoutingInterceptDesc", "rowCodexInterceptApprovals", "rowCodexInterceptApprovalsDesc"]) {
+        assert.ok(typeof strings[key] === "string" && strings[key].trim(), `${lang}.${key}`);
+      }
+      for (const key of ["rowCodexPermissionMode", "rowCodexPermissionModeDesc", "codexPermissionModeAuto", "codexPermissionModeIntercept"]) {
+        assert.equal(Object.hasOwn(strings, key), false, `${lang}.${key} is retired`);
+      }
+      assert.doesNotMatch(strings.rowCodexApprovalOwnerAutoDesc, /\b(?:Auto|Intercept)\b(?!-approve)/);
+      assert.doesNotMatch(strings.rowCodexApprovalOwnerInterceptDesc, /\b(?:Auto|Intercept)\b/);
+    }
   });
 
   it("patches agent-only broadcasts in place without requiring Codex-specific rows", () => {
@@ -21076,6 +21833,88 @@ describe("settings renderer browser environment", () => {
       .map((row) => row.querySelector(".row-label")._textContent);
   }
 
+  for (const installed of [false, true]) {
+    it(`PR #1329 follow-up: adding a folder shows the ${installed ? "installed" : "listed"} toast`, async () => {
+      const harness = loadAgentsTabForTest({
+        i18nStrings: loadSettingsI18nForTest(),
+        snapshot: { agents: { "claude-code": { integrationInstalled: true, enabled: true } } },
+        agentMetadata: [{ id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: {} }],
+        settingsAPI: {
+          getClaudeConfigDirs: async () => ({ status: "ok", dirs: [] }),
+          pickClaudeConfigDir: async () => ({ status: "ok", path: "/profile-work" }),
+          command: async () => ({ status: "ok", installed }),
+        },
+      });
+      const toasts = [];
+      harness.core.ops.showToast = (message) => toasts.push(message);
+      harness.core.ops.requestRender({ content: true });
+      await new Promise((resolve) => setImmediate(resolve));
+      harness.content.querySelector(".claude-config-dir-add").click();
+      await new Promise((resolve) => setImmediate(resolve));
+      const strings = loadSettingsI18nForTest();
+      const key = installed ? "toastClaudeConfigDirAdded" : "toastClaudeConfigDirListed";
+      assert.strictEqual(typeof strings.en[key], "string");
+      assert.deepStrictEqual(toasts, [strings.en[key]]);
+    });
+  }
+
+  it("PR #1329 follow-up: translates the listed-only folder toast in every supported language", () => {
+    const strings = loadSettingsI18nForTest();
+    for (const lang of SUPPORTED_LANGS) {
+      assert.strictEqual(typeof strings[lang].toastClaudeConfigDirListed, "string", lang);
+      assert.ok(strings[lang].toastClaudeConfigDirListed.length > 0, lang);
+      assert.notStrictEqual(strings[lang].toastClaudeConfigDirListed, strings[lang].toastClaudeConfigDirAdded, lang);
+    }
+  });
+
+  it("lists Claude config folders with labels and removes only extra folders (#1250)", async () => {
+    const calls = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "claude-code": { integrationInstalled: true, enabled: true, configDirs: [{ dir: "/home/u/.claude-work", label: "" }] },
+        },
+      },
+      agentMetadata: [
+        { id: "claude-code", name: "Claude Code", eventSource: "hook", capabilities: { permissionApproval: true } },
+      ],
+      settingsAPI: {
+        getClaudeConfigDirs: async () => ({
+          status: "ok",
+          dirs: [
+            { dir: "/home/u/.claude", label: "default", primary: true, exists: true },
+            { dir: "/home/u/.claude-work", label: "work", primary: false, exists: false },
+          ],
+        }),
+        command: async (command, payload) => {
+          calls.push([command, payload]);
+          return { status: "ok" };
+        },
+      },
+    });
+    // First render starts the folder fetch; the next one shows its result.
+    harness.core.ops.requestRender({ content: true });
+    await new Promise((resolve) => setImmediate(resolve));
+    harness.core.ops.requestRender({ content: true });
+
+    const claude = findAgentCard(harness.content, "Claude Code");
+    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), [
+      "Manage hooks automatically",
+      "Start with Claude Code",
+      "Claude config folders",
+      "/home/u/.claude",
+      "/home/u/.claude-work",
+    ]);
+    const primaryRow = findAgentRow(claude, "/home/u/.claude");
+    const workRow = findAgentRow(claude, "/home/u/.claude-work");
+    assert.strictEqual(primaryRow.querySelector(".claude-config-dir-remove"), null);
+    assert.match(collectText(workRow), /Folder not found/);
+
+    workRow.querySelector(".claude-config-dir-remove").click();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.strictEqual(JSON.stringify(calls[0]), JSON.stringify(["removeClaudeConfigDir", { dir: "/home/u/.claude-work" }]));
+  });
+
   it("renders the five status-line cases from local state", async () => {
     const customId = "custom-status-ai-0123456789ab";
     const connected = loadAgentsTabForTest({
@@ -21326,16 +22165,17 @@ describe("settings renderer browser environment", () => {
     assert.deepStrictEqual(detailGroupLabels(claude), ["Approvals", "Alerts", "Connection", "Quota"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Approvals"), ["Permissions", "Subagent permissions"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Alerts"), ["Idle alerts"]);
-    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), ["Manage hooks automatically", "Start with Claude Code"]);
+    assert.deepStrictEqual(detailGroupRows(claude, "Connection"), ["Manage hooks automatically", "Start with Claude Code", "Claude config folders"]);
     assert.deepStrictEqual(detailGroupRows(claude, "Quota"), ["Read local Claude quota and context usage"]);
 
     const codex = findAgentCard(harness.content, "Codex");
-    assert.deepStrictEqual(detailGroupLabels(codex), ["Approvals", "Connection"]);
-    assert.deepStrictEqual(detailGroupRows(codex, "Approvals"), ["Permission mode", "Native sound", "Permissions"]);
+    assert.deepStrictEqual(detailGroupLabels(codex), ["Approvals", "Connection", "Advanced"]);
+    assert.deepStrictEqual(detailGroupRows(codex, "Approvals"), ["Approval handling", "Native sound", "Permissions"]);
     assert.deepStrictEqual(detailGroupRows(codex, "Connection"), [
       "Start with Codex",
       "Warn me when the approval hook stops working",
     ]);
+    assert.deepStrictEqual(detailGroupRows(codex, "Advanced"), ["Send every approval to Clawd"]);
     const soundRow = findAgentRow(codex, "Native sound");
     assert.ok(soundRow.querySelector(".row-note"));
 
@@ -21351,6 +22191,19 @@ describe("settings renderer browser environment", () => {
 
     for (const group of harness.content.querySelectorAll(".agent-detail-group")) {
       assert.ok(group.querySelector(".agent-detail-group-rows").children.length > 0);
+    }
+
+    // The groups of one card sit in a single wrapper (the shared label column);
+    // the disconnect footer stays outside it, full width.
+    for (const card of [claude, codex, kimi, custom]) {
+      const wrappers = card.querySelectorAll(".agent-detail-groups");
+      assert.strictEqual(wrappers.length, 1);
+      assert.deepStrictEqual(
+        wrappers[0].children.map((child) => child.className),
+        wrappers[0].children.map(() => "agent-detail-group"),
+      );
+      assert.strictEqual(wrappers[0].querySelectorAll(".agent-disconnect").length, 0);
+      assert.strictEqual(card.querySelectorAll(".agent-disconnect").length, 1);
     }
   });
 
@@ -21399,10 +22252,14 @@ describe("settings renderer browser environment", () => {
     toggle.dispatchEvent({ type: "click", bubbles: true });
     assert.strictEqual(desc.classList.contains("row-desc-collapsed"), true);
 
-    const codexMode = findAgentRow(findAgentCard(harness.content, "Codex"), "Permission mode");
-    const modeDesc = codexMode.querySelector(".row-desc");
-    assert.ok(modeDesc.id, "the Codex mode description is assigned an id");
-    assert.strictEqual(codexMode.querySelector(".row-desc-toggle").getAttribute("aria-controls"), modeDesc.id);
+    const codex = findAgentCard(harness.content, "Codex");
+    const routing = findAgentRow(codex, "Approval handling");
+    assert.strictEqual(routing.querySelector(".row-desc-toggle"), null);
+    assert.strictEqual(routing.querySelector(".row-desc").classList.contains("row-desc-collapsed"), false);
+    const intercept = findAgentRow(codex, "Send every approval to Clawd");
+    const interceptDesc = intercept.querySelector(".row-desc");
+    assert.ok(interceptDesc.id, "the advanced switch description has an id");
+    assert.strictEqual(intercept.querySelector(".row-desc-toggle").getAttribute("aria-controls"), interceptDesc.id);
 
     // Conditional extra notes stay visible and are never folded.
     const autoStart = findAgentRow(claude, "Start with Claude Code");
@@ -21747,7 +22604,7 @@ describe("settings renderer browser environment", () => {
     assert.ok(!agentsSource.includes("buildAgentInstallHintBanner"));
     assert.ok(!css.includes(".agent-badge"));
 
-    const defaultGroupIndex = css.indexOf("grid-template-columns: 58px minmax(0, 1fr)");
+    const defaultGroupIndex = css.indexOf("grid-template-columns: minmax(58px, max-content) minmax(0, 1fr)");
     const mobileGroupIndex = css.indexOf("@media (max-width: 720px)", defaultGroupIndex);
     assert.ok(defaultGroupIndex >= 0 && mobileGroupIndex > defaultGroupIndex,
       "the narrow-window single-column rule must come after the default two-column rule");
@@ -21826,6 +22683,30 @@ const choiceOptions = () => [
 const settleChoice = () => new Promise((resolve) => setImmediate(resolve));
 
 describe("Settings tabs and segmented choice contracts", () => {
+  it("dismisses the shared hint before replacing its subpage anchor", () => {
+    const document = createChoiceDocument();
+    const core = loadSettingsCoreForTest({}, { document });
+    const panel = document.createElement("div");
+    document.body.appendChild(panel);
+    const host = core.helpers.createSubpageHost();
+    host.render(panel, (body) => {
+      const row = buildFakeSettingRow(document, { label: "Label", description: "Folded description" });
+      core.helpers.attachDescriptionDisclosure(row.element);
+      body.appendChild(row.element);
+    });
+    const anchor = panel.querySelector(".row-desc-toggle");
+    anchor.dispatchEvent({ type: "mouseenter" });
+    const tooltip = document.body.querySelector(".settings-tooltip");
+    assert.equal(tooltip.classList.contains("visible"), true);
+
+    host.render(panel, () => {
+      assert.equal(tooltip.classList.contains("visible"), false);
+      assert.equal(tooltip.getAttribute("aria-hidden"), "true");
+    });
+    assert.equal(anchor.isConnected, false);
+    host.dispose();
+  });
+
   it("replaces only subpage bodies, restores lost focus and invalidates disposed scroll work", () => {
     const document = createChoiceDocument();
     const frames = [];
@@ -22108,7 +22989,7 @@ describe("Settings tabs and segmented choice contracts", () => {
     assert.equal(general.eventListeners.click.length, 0, "old sidebar listeners are removed");
   });
 
-  it("preserves the Codex pending gate across full rerenders and recovers after failure", async () => {
+  it("Codex approval settings: pending blocks repeat clicks across rerenders and recovers after failure", async () => {
     const pending = createDeferred();
     let calls = 0;
     const harness = loadAgentsTabForTest({ snapshot: { agents: { codex: { integrationInstalled: true, enabled: true, permissionMode: "native" } } },
@@ -22116,17 +22997,79 @@ describe("Settings tabs and segmented choice contracts", () => {
       collapsedGroups: { "agents:codex": false },
       settingsAPI: { command() { calls++; return pending.promise; } } });
     harness.core.ops.requestRender({ content: true });
-    let group = harness.content.querySelector(".codex-permission-mode-segmented");
-    group.querySelectorAll("button")[1].click();
+    let toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    toggle.click();
     assert.equal(calls, 1);
     harness.core.ops.requestRender({ content: true });
-    group = harness.content.querySelector(".codex-permission-mode-segmented");
-    assert.equal(group.getAttribute("aria-busy"), "true");
-    group.querySelectorAll("button")[1].click();
+    toggle = harness.core.state.mountedControls.agentPermissionModes.get("codex").control.element;
+    assert.equal(toggle.getAttribute("aria-busy"), "true");
+    toggle.click();
     assert.equal(calls, 1);
     pending.resolve({ status: "error", message: "failed" });
     await settleChoice();
-    assert.equal(group.getAttribute("aria-busy"), "false");
-    assert.equal(group.querySelectorAll("button")[0].getAttribute("aria-checked"), "true");
+    assert.equal(toggle.getAttribute("aria-busy"), "false");
+    assert.equal(toggle.getAttribute("aria-checked"), "false");
+  });
+});
+
+
+describe("kiro-desktop: agent settings", () => {
+  it("kiro-desktop: reminder capability renders its flag and trusted-workspace hint", async () => {
+    const agent = require("../agents/kiro-desktop");
+    const commands = [];
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "kiro-desktop": { integrationInstalled: true, enabled: true, permissionsEnabled: true },
+        },
+      },
+      agentMetadata: [agent],
+      settingsAPI: {
+        command: (...args) => {
+          commands.push(args);
+          return Promise.resolve({ status: "ok" });
+        },
+      },
+      collapsedGroups: { "agents:kiro-desktop": false },
+    });
+    harness.core.ops.requestRender({ content: true });
+    harness.raf.flush();
+    const reminderSwitch = [...harness.core.state.mountedControls.agentSwitches.values()]
+      .find(meta => meta.agentId === "kiro-desktop" && meta.flag === "permissionsEnabled");
+    assert.ok(reminderSwitch);
+    assert.match(collectText(harness.content), /Show a reminder when confirmation is needed/);
+    assert.match(collectText(harness.content.querySelector(".agent-kiro-desktop-hint")), /trusted workspaces/);
+    assert.strictEqual(agent.capabilities.permissionApproval, false);
+    reminderSwitch.element.click();
+    await Promise.resolve();
+    assert.deepStrictEqual(JSON.parse(JSON.stringify(commands)), [["setAgentFlag", {
+      agentId: "kiro-desktop", flag: "permissionsEnabled", value: false,
+    }]]);
+  });
+});
+
+describe("issue #1323: theme appearance refreshes animation data", () => {
+  it("issue #1323: a themeAppearance change refetches animation overrides data", async () => {
+    let fetches = 0;
+    const settingsAPI = {
+      getAnimationOverridesData: () => {
+        fetches += 1;
+        return Promise.resolve({ theme: null, assets: [], sections: [], cards: [], sounds: [] });
+      },
+    };
+    const core = loadSettingsCoreForTest(settingsAPI, {
+      document: { body: { contains: () => false }, getElementById: () => null },
+    });
+    core.state.activeTab = "animOverrides";
+    core.state.snapshot = { theme: "night", themeAppearance: {}, themeOverrides: {} };
+    core.ops.installRenderHooks({ sidebar: () => {}, content: () => {}, modal: () => {} });
+
+    core.ops.applyChanges({
+      changes: { themeAppearance: { night: "dark" } },
+      snapshot: { ...core.state.snapshot, themeAppearance: { night: "dark" } },
+    });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.ok(fetches >= 1, "animation override data must be refetched");
   });
 });

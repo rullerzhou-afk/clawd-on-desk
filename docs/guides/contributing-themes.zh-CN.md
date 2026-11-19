@@ -36,6 +36,7 @@ node scripts/create-theme.js my-theme --name "My Theme" --author "Your Name"
 - `idle`、`thinking`、`working` 需要实际文件；`sleeping` 需要文件或有效的 `fallbackTo`。完成、报错、通知等状态应有可理解的表现或回退。
 - 可以先做小而完整的主题。无需追齐现有主题的动画数量。没有眼球追踪或迷你模式时，显式关闭对应能力；采用 `sleepSequence.mode: "direct"` 可省去完整入睡过程。细节见制作指南。
 - 为自己的主题选择独立 ID（文件夹名）。不要使用 `clawd`、`calico`、`cloudling`、`hash-sage`、`whale-chan`、`template`，也不要占用目录中已有的 ID。
+- 同一套设计如果有明暗两套图，请做成**一个主题**，不要拆成两个 ID。增加一个完整镜像的深色素材目录，并在 `theme.json` 声明 `appearance.dark.assetsDir`；用户在设置里选择「跟随系统 / 浅色 / 深色」。见[主题制作指南](guide-theme-creation.md#light-and-dark-appearances)。
 - 外部 SVG 会被清理，不能依赖内嵌 JavaScript、联网加载资源或 `trustedRuntime`。请把需要的画面放在本地素材中。
 
 在主仓库运行校验，把路径替换为脚本打印的实际目录：

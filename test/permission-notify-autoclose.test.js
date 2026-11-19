@@ -10,6 +10,7 @@ const { describe, it, afterEach, mock } = require("node:test");
 const {
   classifyPermissionInteraction,
 } = require("../src/permission-automation-policy");
+const createSettingsEffectRouter = require("../src/settings-effect-router");
 
 const PERMISSION_MODULE_PATH = require.resolve("../src/permission");
 const tempLogPaths = new Set();
@@ -316,6 +317,115 @@ describe("permission passive notify auto-close refresh", () => {
     assert.strictEqual(api.pendingPermissions.length, 0);
     assert.strictEqual(harness.focused.length, 1);
     assert.strictEqual(harness.focused[0][0], "codex-expand");
+  });
+
+  // #1326: Claude Desktop's end-of-turn question box (mcp__ccd_turn__wrap_up).
+  const CLAUDE_TURN_ASK = {
+    sessionId: "claude-a",
+    toolUseId: "toolu_wrap",
+    ask: "Fix the parser now?",
+    recap: "Two parser tests fail.",
+    actions: [{ label: "Fix it", message: "Fix the two failing parser tests." }, { label: "Not now" }],
+    sourcePid: 42,
+    cwd: "/repo",
+  };
+
+  it("keeps the Claude wrap_up question as a read-only native-question card", () => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    assert.strictEqual(api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), true);
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const entry = api.pendingPermissions[0];
+
+    assert.strictEqual(entry.isClaudeTurnAskNotify, true);
+    assert.strictEqual(entry.agentId, "claude-code");
+    assert.strictEqual(entry.res, null, "never holds an HTTP decision channel");
+    assert.deepStrictEqual(entry.toolInput, {
+      questions: [{
+        question: "Fix the parser now?",
+        options: [{ label: "Fix it" }, { label: "Not now" }],
+      }],
+    });
+    const payload = api.buildPermissionBubblePayload(entry);
+    assert.deepStrictEqual(payload.toolInput, entry.toolInput);
+    assert.strictEqual(JSON.stringify(payload).includes("recap"), false);
+    assert.strictEqual(JSON.stringify(payload).includes('"description"'), false);
+    assert.strictEqual(JSON.stringify(payload).includes("Fix the two failing parser tests."), false);
+    assert.strictEqual(entry.autoExpireTimer, null, "a pending question must not auto-expire");
+    assert.strictEqual(payload.isClaudeTurnAskNotify, true);
+    assert.strictEqual(api.refreshPassiveNotifyAutoClose(), 0);
+    assert.strictEqual(
+      api.maybeStartRemoteApproval(entry),
+      false,
+      "Clawd cannot answer it, so remote approval must never pick it up"
+    );
+
+    api.handleDecide({ sender: { __window: entry.bubble } }, "codex-user-input-focus");
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    assert.deepStrictEqual(harness.focused.map((args) => args[0]), ["claude-a"]);
+  });
+
+  it("refreshes one Claude wrap_up card per session and clears it by session", () => {
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK);
+    api.showClaudeTurnAskBubble({ ...CLAUDE_TURN_ASK, ask: "Push the fix?", toolUseId: "toolu_wrap_2" });
+    api.showClaudeTurnAskBubble({ ...CLAUDE_TURN_ASK, sessionId: "claude-b" });
+    assert.strictEqual(api.pendingPermissions.length, 2);
+    const refreshed = api.pendingPermissions.find((entry) => entry.sessionId === "claude-a");
+    assert.strictEqual(refreshed.toolInput.questions[0].question, "Push the fix?");
+    assert.strictEqual(refreshed.claudeTurnAskToolUseId, "toolu_wrap_2");
+
+    assert.strictEqual(api.clearClaudeTurnAskBubbles("claude-a", "test"), 1);
+    assert.deepStrictEqual(api.pendingPermissions.map((entry) => entry.sessionId), ["claude-b"]);
+    assert.strictEqual(api.clearClaudeTurnAskBubbles(undefined, "test"), 1);
+    assert.strictEqual(api.pendingPermissions.length, 0);
+  });
+
+  it("issue #1326: turning the notification policy off removes the live Claude card and its window", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const harness = createPermissionHarness();
+    const { api } = harness;
+    assert.strictEqual(api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), true);
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    const bubble = api.pendingPermissions[0].bubble;
+    assert.ok(bubble, "the card must own a bubble window");
+    assert.strictEqual(bubble.destroyed, false);
+
+    let snapshot = { shortcuts: {} };
+    const subscribers = new Set();
+    const controller = {
+      getSnapshot: () => ({ ...snapshot }),
+      subscribe(fn) { subscribers.add(fn); return () => subscribers.delete(fn); },
+      subscribeKey() { return () => {}; },
+    };
+    const router = createSettingsEffectRouter({
+      settingsController: controller,
+      BrowserWindow: { getAllWindows: () => [] },
+      clearClaudeTurnAskBubbles: (...args) => api.clearClaudeTurnAskBubbles(...args),
+    });
+    router.start();
+    try {
+      const changes = { notificationBubbleAutoCloseSeconds: 0 };
+      snapshot = { ...snapshot, ...changes };
+      for (const fn of [...subscribers]) fn({ changes, snapshot: { ...snapshot } });
+      assert.strictEqual(api.pendingPermissions.length, 0, "the card must leave the pending stack");
+      mock.timers.tick(250);
+      assert.strictEqual(bubble.destroyed, true, "the bubble window must be destroyed");
+    } finally {
+      api.cleanup();
+    }
+  });
+
+  it("does not show the Claude wrap_up card when Claude bubbles or notifications are off", () => {
+    const disabled = createPermissionHarness({ agentPermissionsEnabled: false });
+    assert.strictEqual(disabled.api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), false);
+    assert.strictEqual(disabled.api.pendingPermissions.length, 0);
+
+    const quiet = createPermissionHarness();
+    quiet.setNotificationAutoCloseMs(0);
+    assert.strictEqual(quiet.api.showClaudeTurnAskBubble(CLAUDE_TURN_ASK), false);
+    assert.strictEqual(quiet.api.pendingPermissions.length, 0);
   });
 
   it("dismisses a stale remote Codex expansion without focusing a local terminal", () => {
@@ -1134,5 +1244,58 @@ describe("state ↔ permission joint: batched immediate cues stay on the queue h
     } finally {
       stateApi.cleanup();
     }
+  });
+});
+
+describe("kiro-desktop: passive reminder adapter", () => {
+  afterEach(() => {
+    mock.timers.reset();
+    delete require.cache[PERMISSION_MODULE_PATH];
+  });
+  for (const behavior of ["kiro-desktop-focus", "kiro-desktop-dismiss", "allow", "deny"]) {
+    it(`kiro-desktop: ${behavior} closes only the read-only card`, () => {
+      mock.timers.enable({ apis: ["setTimeout", "Date"] });
+      const { api, focused } = createPermissionHarness();
+      const dismissed = [];
+      api.showKiroDesktopReminder({
+        sessionId: "s",
+        interactionKey: "key",
+        question: "Confirm?",
+        interactionType: "tool_approval",
+        onDismiss: (...args) => dismissed.push(args),
+      });
+      const entry = api.pendingPermissions[0];
+      assert.strictEqual(entry.agentId, "kiro-desktop");
+      assert.strictEqual(api.buildPermissionBubblePayload(entry).isKiroDesktopNotify, true);
+      assert.strictEqual(entry.autoExpireTimer, null);
+      assert.strictEqual(api.refreshPassiveNotifyAutoClose(), 0);
+      assert.strictEqual(api.handleBubbleExpanded({ sender: { __window: entry.bubble } }, true), false);
+      mock.timers.tick(3600000);
+      assert.strictEqual(api.pendingPermissions.length, 1);
+      api.handleDecide({ sender: { __window: entry.bubble } }, behavior);
+      assert.strictEqual(api.pendingPermissions.length, 0);
+      assert.strictEqual(focused.length, behavior === "kiro-desktop-focus" ? 1 : 0);
+      assert.strictEqual(dismissed[0][1], "ipc-decide");
+      api.cleanup();
+    });
+  }
+  it("kiro-desktop: updates one entry and scoped dismissal covers reminders", () => {
+    mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const { api } = createPermissionHarness();
+    api.showKiroDesktopReminder({ sessionId: "s", interactionKey: "one", question: "First" });
+    api.showKiroDesktopReminder({ sessionId: "s", interactionKey: "two", question: "Second" });
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    assert.strictEqual(api.pendingPermissions[0].toolInput.question, "Second");
+    api.showKiroDesktopReminder({ sessionId: "other", interactionKey: "one", question: "Other" });
+    api.removeKiroDesktopReminder("s", "resolved");
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    api.dismissPermissionsByAgent("codex");
+    assert.strictEqual(api.pendingPermissions.length, 1);
+    api.dismissPermissionsByAgent("kiro-desktop");
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    api.showKiroDesktopReminder({ sessionId: "s", interactionKey: "one", question: "DND" });
+    api.dismissPermissionsForDnd();
+    assert.strictEqual(api.pendingPermissions.length, 0);
+    api.cleanup();
   });
 });

@@ -4,14 +4,51 @@ The source is an opt-in distribution channel for existing official `amd64` relea
 
 ## Activation record
 
-**Not activated by this change. No production public key/fingerprint has been provisioned.** Before activation, commit the reviewed armored public-key bundle as `distribution/apt/archive-key.asc` and replace this paragraph with the full primary fingerprint, key expiry, activation date, successful preview/production run links, and HTTPS/APT acceptance evidence. Never put secret-key material in the checkout, logs or artifacts.
+**Activated 2026-10-31: the key was provisioned, the first production publication succeeded, and the live acceptance below passed. v1.5.0, the first app release through the source, was published the same day and its release-event publication passed. Still to verify: the "Update with APT" button on a real Linux desktop.**
 
-The proposed URL is `https://rullerzhou-afk.github.io/clawd-on-desk/apt/`. Both repository Pages and account user-site Pages returned 404 during planning on 2026-10-24. Recheck account custom-domain settings before activation: a redirect can change the URL and hostname-wide pin. Do not overwrite an existing Pages site. This setup does not alter clawdondesk.com hosting.
+- Primary fingerprint: `B315327BEFF98206ECC682875AC75344D51B2887` (RSA 4096, certification only, expires 2036-10-28).
+- Signing subkey: `B9BC4B583AB5651BEDCA5EB91757F4700BC2A311` (RSA 4096, expires 2029-10-30). Renew it by 2029-04-30, because installed sources only learn about new keys by upgrading `clawd-apt-source`.
+- Public bundle: `distribution/apt/archive-key.asc`. The primary secret and revocation certificate are kept offline in an encrypted disk image. Only the signing subkey is in the `apt-production` environment.
+- Preview run: [41150329833](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41150329833).
+- First production run (`publish=true`, `initial=true`, main `8b9a54bc`): [41155483770](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41155483770). Total 53 seconds, deploy job 20 seconds.
+- Published: Clawd 1.4.0, 1.3.0, 1.2.0 and `clawd-apt-source` 1.0.0. The 112,008,612-byte 1.4.0 package is served with the same size and SHA-256 as the release asset.
+- Host: `https://apt.clawdondesk.com/`. The certificate was issued before the first deployment, HTTPS is enforced and the domain is verified. The old `rullerzhou-afk.github.io/clawd-on-desk/` address returns 301 to the new host.
+- Headers: `server: GitHub.com`, `cache-control: max-age=600`, `x-cache` HIT/MISS, HTTP/2.
+- Live acceptance: [41155929686](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41155929686). Each system followed the guide: checksum check of the source package, `apt install`, `apt update --error-on=any`, candidate check, upgrade, later-update commands, `apt remove` keeps the source, `apt purge` removes source and key, and Clawd stays installed.
+
+| System | apt / verifier | Upgrade 1.3.0 to 1.4.0 | Profile kept | Sandbox | App answered `/state` |
+|---|---|---|---|---|---|
+| Ubuntu 22.04.5 VM | 2.4.14 / gpgv 2.2.27 | pass | yes | root 755, AppArmor enabled | yes |
+| Ubuntu 24.04.5 VM | 2.8.3 / gpgv 2.4.4 | pass | yes | root 755, AppArmor profile installed | yes |
+| Debian 12 container | 2.6.1 / gpgv 2.2.40 | pass | yes | root 4755 | not run |
+| Debian 13 container | 3.0.3 / sqv | pass | yes | root 4755 | not run |
+
+- Tagged-build gate on the `ubuntu-latest` image (Ubuntu 26.04.1): `APT ready: authenticated repository and guide; version 1.4.0`.
+
+First app release (v1.5.0):
+
+- Second publication, rehearsed before tagging (`publish=true`, `initial=false`, main `e752627d`, same packages): [41170253019](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41170253019), 63 seconds. The acceptance above passed again: [41170380140](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41170380140).
+- Publish request from the tag (`gh workflow run publish-apt.yml --ref v1.5.0 -f publish=true`): [41173233652](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41173233652). Both jobs were skipped and the site did not change.
+- Release event: `Request APT publication` [41173720229](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41173720229) started the publisher [41173727453](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41173727453), and 1.5.0 was live about 75 seconds after the release. The source keeps 1.5.0, 1.4.0 and 1.3.0 and retired 1.2.0. The previous `Packages.gz` stayed available by hash after the index changed.
+- A 1.3.0 to 1.5.0 upgrade through the source passed on the same four systems: [41173899467](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/41173899467).
+
+v1.6.0:
+
+- Second publication, rehearsed before tagging (`publish=true`, `initial=false`, main `e1bc1bf4`, same packages): [42438436616](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/42438436616), 54 seconds. `InRelease` got a new date, the package index was unchanged, and `verify-live` passed on a Raspberry Pi 5 (Debian 13).
+- Release event: `Request APT publication` [42442419574](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/42442419574) started the publisher [42442425294](https://github.com/rullerzhou-afk/clawd-on-desk/actions/runs/42442425294) (58 seconds), and 1.6.0 was live about 30 seconds after the release. The source keeps 1.6.0, 1.5.0 and 1.4.0 and retired 1.3.0. The previous `Packages.gz` stayed available by hash, and `verify-live` reported version 1.6.0. The four-system upgrade acceptance was not rerun for this release.
+
+**Still to verify** (not yet done):
+
+- On a real Linux desktop: the update notification, the "Update with APT" button, and opening the guide.
+
+Never put secret-key material in the checkout, logs or artifacts.
+
+The source's address is `https://apt.clawdondesk.com/`: a DNS-only Cloudflare CNAME to `rullerzhou-afk.github.io`, with the files on this repository's Pages site. The hostname is written into every installed source, so it is one we own: hosting can later move by repointing DNS, without touching installed sources. Keep the record DNS-only, because GitHub cannot issue the certificate behind Cloudflare's proxy, and keep `clawdondesk.com` on auto-renew, because a lapsed domain breaks every installed source. This setup does not alter clawdondesk.com hosting.
 
 ## First activation, in order
 
 1. Review and merge the implementation. The release dispatcher must enter `main` **before** the next tag is created; release events read the YAML in the tag, not the latest default branch.
-2. Protect `main`. Create an `apt-production` Actions environment that permits deployments from **only the `main` branch**, not release tags. Use this environment for both signing and Pages deployment. Add approval requirements if desired. Configure Pages to use GitHub Actions. Verify the resulting domain remains the reviewed github.io host.
+2. Protect `main`. Create an `apt-production` Actions environment that permits deployments from **only the `main` branch**, not release tags. Use this environment for both signing and Pages deployment. Add approval requirements if desired. Add the DNS-only `apt` CNAME in Cloudflare and verify `clawdondesk.com` under the account's Pages settings, so that nobody else can claim the subdomain. Keep the verification TXT record in place, and if the domain has CAA records, one must allow `letsencrypt.org`. Configure Pages to use GitHub Actions with custom domain `apt.clawdondesk.com`, and enforce HTTPS once the certificate is issued. Publication fails until then: a TLS error is not the 404 that `initial` permits.
 3. Generate a dedicated RSA 3072-bit or stronger OpenPGP certification primary and signing subkey using GnuPG on a trusted administrative machine. Keep the primary secret offline with an encrypted backup and revocation certificate. Give the signing subkey a documented expiry and set an operational renewal reminder outside the app. Test the public key on the oldest supported APT before publishing.
 4. Commit the armored public bundle and full primary fingerprint in this activation record. Export **only the signing secret subkey** (GnuPG `--export-secret-subkeys PRIMARY_FINGERPRINT`) into environment secret `APT_SIGNING_SUBKEY`. The export must contain a stub, not usable primary secret material. CI checks `sec` availability before signing. Use a dedicated CI subkey without an interactive passphrase; the Actions secret/environment supplies access control. Put the uppercase 40-character primary fingerprint in environment variable `APT_FINGERPRINT`. The secret is never a repository-wide secret.
 5. Run **Publish APT source** with `publish=false`. This uses a disposable key and uploads a preview artifact, never production secrets or Pages. Inspect the generated guide, source package, package list and size. Do not install a preview source package on a normal machine.
@@ -50,7 +87,7 @@ No short `Valid-Until` is used: infrequent application releases should not expir
 
 The `/etc` key location intentionally differs from the usual package-owned `/usr/share/keyrings`: plain dpkg remove must retain key and source together. `apt remove` leaves the source active in rc state and stops bootstrap key updates; `apt purge` is the documented removal operation. Keep the source and preference templates unchanged unless a migration is necessary. Normal dpkg semantics preserve edits, `Enabled: no`, and deleted files. A user-edited keyring may require manual conffile resolution during key updates; never force replacement.
 
-The pin permits the two named packages at priority 500 and all others at -1 using `origin "rullerzhou-afk.github.io"`. It applies to that **whole host**, not just this project's path. Tests place a higher-version unrelated `bash` package in a signed fixture and assert it has no install candidate.
+The pin permits the two named packages at priority 500 and all others at -1 using `origin "apt.clawdondesk.com"`. It applies to that **whole host**, so keep the hostname dedicated to this source. Tests place a higher-version unrelated `bash` package in a signed fixture and assert it has no install candidate.
 
 `bootstrap_version` and `source_date_epoch` are reviewed inputs in `distribution/apt/config.json`. The same version must reproduce the same bytes. Bump the version for every key/template/control change; if a dpkg toolchain change affects archive bytes, bump the version rather than weakening the immutable package check.
 
@@ -66,15 +103,15 @@ A compromised signing key requires revocation/incident handling and a new review
 
 Retain `.deb` in `latest-linux.yml`; old installations with a functioning privileged updater can still bootstrap into the new app. Do not rewrite already published 1.4.0 notes. Include this text in the first release containing the new app behavior, with the source already live:
 
-> **Linux `.deb` updates now use APT.** Existing users can add the official source once using the [migration guide](https://rullerzhou-afk.github.io/clawd-on-desk/apt/), even if the old in-app update failed. Quit Clawd before updating, then reopen it. AppImage keeps its in-app updater.
+> **Linux `.deb` updates now use APT.** Existing users can add the official source once using the [migration guide](https://apt.clawdondesk.com/), even if the old in-app update failed. Quit Clawd before updating, then reopen it. AppImage keeps its in-app updater.
 
-> **Linux `.deb` 改用 APT 更新。** 旧用户可按[迁移指南](https://rullerzhou-afk.github.io/clawd-on-desk/apt/#chinese)接入一次官方软件源，无需先修好旧版应用内更新。更新前请退出 Clawd，完成后重新打开。AppImage 保留应用内更新。
+> **Linux `.deb` 改用 APT 更新。** 旧用户可按[迁移指南](https://apt.clawdondesk.com/#chinese)接入一次官方软件源，无需先修好旧版应用内更新。更新前请退出 Clawd，完成后重新打开。AppImage 保留应用内更新。
 
 README and setup/limitations links are included in this change. A response to issue #1221 is a separate external communication and is not posted by the build or this implementation.
 
 ## Capacity and recovery
 
-GitHub Pages allows a published site up to 1 GB and has an approximately 100 GB/month soft bandwidth limit; at around 112 MB per app package this is roughly 900 complete downloads. The 700 MiB build cap protects site size, not bandwidth. Track distribution traffic operationally and move to dedicated static hosting/CDN if adoption outgrows Pages. A hostname change needs a versioned source/pin migration; preserve old hosting during the transition.
+GitHub Pages allows a published site up to 1 GB and has an approximately 100 GB/month soft bandwidth limit; at around 112 MB per app package this is roughly 900 complete downloads. The 700 MiB build cap protects site size, not bandwidth. Track distribution traffic operationally and move to dedicated static hosting/CDN if adoption outgrows Pages. Repointing the `apt` record is enough when the new host serves the same paths. Changing the hostname itself needs a versioned source/pin migration; preserve old hosting during the transition.
 
 On a failed run, inspect validation output and retry after fixing the cause. The existing site remains available. If deployment succeeds but serving is unhealthy, redeploy the last known good Pages artifact as an explicit maintainer recovery and document it; normal publication intentionally rejects version rollback. Do not mutate a public package in place.
 

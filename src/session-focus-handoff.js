@@ -13,6 +13,20 @@ function sanitizeFocusError(err) {
   return err && err.message ? err.message.replace(/[\r\n\t]+/g, " ") : "unknown";
 }
 
+const DSH_SESSION_NAMESPACE = "deepseek-harness:";
+
+// The bridge reports `<agent>:<dsh session id>` (canonicalSessionId), but the
+// DSH page only accepts its own id form, so the namespace comes off before the
+// id is published. A missing field (older bridges, other agents) means no
+// session-level jump — the window focus still works on its own.
+function resolveDshSessionId(entry) {
+  const raw = typeof (entry && entry.rawSessionId) === "string" ? entry.rawSessionId.trim() : "";
+  if (!raw) return "";
+  const id = raw.startsWith(DSH_SESSION_NAMESPACE) ? raw.slice(DSH_SESSION_NAMESPACE.length) : raw;
+  // The bridge uses `default` when DSH supplied no id; it is not a real session.
+  return id === "default" ? "" : id;
+}
+
 // Discovery outcomes that are not a verified unique install each get their own
 // reason so an unresolved candidate is not logged as "not installed".
 function discoveryStatusReason(discovery) {
@@ -151,6 +165,7 @@ function focusDshDesktopTarget({
   requestSource = "dashboard",
   url,
   focusLog = () => {},
+  publishDshFocus = () => false,
   discoverDesktop,
   osPlatform,
   spawnImpl,
@@ -164,6 +179,20 @@ function focusDshDesktopTarget({
   const id = String(sessionId || (focusEntry && focusEntry.id) || "");
   focusLog(`focus request source=${requestSource} sid=${id} agent=${(focusEntry && focusEntry.agentId) || "-"} target=dsh-desktop`);
   return Promise.resolve()
+    // The window focus below is only half the job: an already-open DSH window
+    // keeps showing whatever conversation it was on, so the page-side plugin
+    // must be told which session this click meant. Publish first (no await
+    // needed — the page subscribes continuously) so it is already switching by
+    // the time the window comes forward. A failure here never blocks the focus.
+    .then(() => {
+      const dshSessionId = resolveDshSessionId(focusEntry);
+      if (!dshSessionId) return;
+      try {
+        publishDshFocus(dshSessionId);
+      } catch {
+        // A dead stream is not a failed click; `dsh://open` still raises the app.
+      }
+    })
     .then(() => shell.openExternal(url))
     .then(() => {
       focusLog(`focus result branch=dsh-desktop reason=opened source=${requestSource} sid=${id}`);
@@ -228,6 +257,7 @@ module.exports = {
   focusCodexThreadTarget,
   focusDshDesktopTarget,
   launchDshDesktopApp,
+  resolveDshSessionId,
   sanitizeFocusError,
   stripElectronLaunchEnv,
 };

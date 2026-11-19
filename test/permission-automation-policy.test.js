@@ -269,6 +269,33 @@ describe("permission automation interaction classifier", () => {
     }
   });
 
+  it("answers ZCode AskUserQuestion manually but never automates it (#1264)", () => {
+    const interaction = classifyPermissionInteraction({
+      agentId: "zcode",
+      toolName: "AskUserQuestion",
+    });
+    assert.strictEqual(interaction.intent, INTERACTION_INTENT.HUMAN_QUESTION);
+    assert.strictEqual(interaction.capabilities.answerQuestions, true);
+    assert.strictEqual(interaction.capabilities.allowDeny, false);
+    assert.strictEqual(interaction.capabilities.nativeFallback, true);
+    assert.deepStrictEqual(
+      { ...interaction.automationEligibility },
+      { autoTools: false, unattended: false }
+    );
+    for (const mode of [PERMISSION_AUTOMATION_MODE.AUTO_TOOLS, PERMISSION_AUTOMATION_MODE.UNATTENDED]) {
+      assert.strictEqual(
+        evaluatePermissionAutomation({ mode, interaction }),
+        AUTOMATION_ACTION.DEFER
+      );
+    }
+    // Casing/alias forms resolve to the same answerable interaction.
+    const alias = classifyPermissionInteraction({
+      agentId: "zcode",
+      toolName: "AskUserQuestionTool",
+    });
+    assert.strictEqual(alias.capabilities.answerQuestions, true);
+  });
+
   it("never auto-allows an unreviewed ZCode built-in name", () => {
     const interaction = classifyPermissionInteraction({
       agentId: "zcode",

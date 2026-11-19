@@ -30,7 +30,7 @@ describe("pet-attached quota ring", () => {
   // A healthy ring is colored by identity, not by headroom: severity has only
   // three steps, so two healthy windows used to come out the same color and read
   // as one thick ring. Severity still owns the alert states.
-  it("gives every ring provider its own identity pair, so none silently wears another's colors", () => {
+  it("gives each reported ring an identity color without inventing unused inner rings", () => {
     // The generic --id-outer/--id-inner pair is Claude's, by design (it is the
     // most common coin). That makes a missing pair invisible rather than loud:
     // a new provider would just look like Claude. Pin the mapping instead.
@@ -38,13 +38,16 @@ describe("pet-attached quota ring", () => {
       [...quotaRingHtml.matchAll(/--id-([a-z]+)-(outer|inner)\s*:/g)].map((m) => `${m[1]}-${m[2]}`)
     );
     // RING_PROVIDERS keys are "<name>Quota"; the CSS classes are pv-<key>.
-    const providerKeys = [...quotaRingRenderer.matchAll(/key:\s*"(\w+Quota)"/g)].map((m) => m[1]);
+    const providers = require("../src/quota-ring-geometry").RING_PROVIDERS;
+    const providerKeys = providers.map((provider) => provider.key);
     assert.ok(providerKeys.length >= 3, `expected the ring providers, got ${providerKeys}`);
     const valueOf = (name, slot) =>
       (quotaRingHtml.match(new RegExp(`--id-${name}-${slot}\\s*:\\s*(#[0-9a-fA-F]{3,8})`)) || [])[1];
     for (const key of providerKeys) {
       const name = key.replace(/Quota$/, "").toLowerCase();
-      for (const slot of ["outer", "inner"]) {
+      const slots = providers.find((provider) => provider.key === key).inner.length
+        ? ["outer", "inner"] : ["outer"];
+      for (const slot of slots) {
         assert.ok(
           declared.has(`${name}-${slot}`),
           `${key} has no --id-${name}-${slot} in quota-ring.html; it would inherit the generic (Claude) pair`
@@ -59,7 +62,7 @@ describe("pet-attached quota ring", () => {
       // are tellable apart. Identical values would sail past the checks above
       // and reinstate the exact "two healthy windows merge into one thick ring"
       // bug this palette exists to fix.
-      assert.notStrictEqual(
+      if (slots.length === 2) assert.notStrictEqual(
         valueOf(name, "outer"), valueOf(name, "inner"),
         `${key} paints its outer and inner rings the same color`
       );
@@ -142,9 +145,10 @@ describe("pet-attached quota ring", () => {
     assert.match(quotaRingRenderer, /quotaAgentIcons/);
   });
 
-  it("clicking a coin or the overflow opens the Dashboard", () => {
+  it("clicking a coin opens the Dashboard without an overflow control", () => {
     assert.match(quotaRingRenderer, /openDashboard\(\)/);
-    assert.match(quotaRingRenderer, /buildOverflow/);
+    assert.doesNotMatch(quotaRingRenderer, /buildOverflow/);
+    assert.doesNotMatch(quotaRingHtml, /\.overflow/);
   });
 
   it("does not advertise unreachable keyboard controls in the non-focusable ring panel", () => {

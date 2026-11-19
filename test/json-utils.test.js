@@ -526,3 +526,59 @@ describe("backup pruning", () => {
     });
   });
 });
+
+describe("issue #1316: literal PowerShell env command parser", () => {
+  const { parsePowerShellEnvCommand, quotePowerShellSingleArg } = require("../hooks/json-utils");
+  it("issue #1316: parses generated env values and separate invocation arguments", () => {
+    const identity = "C:\\Users\\O'Connell ’\\clawd-remote.json";
+    const command = `$env:CLAWD_REMOTE='1'; $env:CLAWD_REMOTE_IDENTITY_PATH=${quotePowerShellSingleArg(identity)}; & "C:\\Program Files\\node.exe" "C:/Users/O'Connell/hooks/clawd-hook.js" "Stop" "--clawd-ssh-remote"`;
+    assert.deepStrictEqual(parsePowerShellEnvCommand(command), {
+      env: { CLAWD_REMOTE: "1", CLAWD_REMOTE_IDENTITY_PATH: identity },
+      args: ["C:\\Program Files\\node.exe", "C:/Users/O'Connell/hooks/clawd-hook.js", "Stop", "--clawd-ssh-remote"],
+    });
+    assert.deepStrictEqual(parsePowerShellEnvCommand('& "node" "hook" "Stop"').args, ["node", "hook", "Stop"]);
+  });
+  it("issue #1316: rejects malformed assignments, interpolation and composed invocations", () => {
+    for (const command of [null, "", '$env:X="1"; & "node" "hook"', "$env:X='bad';whoami; & \"node\" \"hook\"",
+      "$env:X='unclosed; & \"node\" \"hook\"", '& node "hook"', '& "node" "hook"; whoami',
+      '& "node" "hook" | other', '& "node" "$script"', '& "node" "`script"', '& "node" "hook"\n',
+      "$env:X='O'Connell'; & \"node\" \"hook\"", "$env:X='O’Connell'; & \"node\" \"hook\"",
+    ]) assert.strictEqual(parsePowerShellEnvCommand(command), null, String(command));
+  });
+});
+
+it("issue #1316: PowerShell smart double quotes cannot compose extra commands", () => {
+  const { parsePowerShellEnvCommand } = require("../hooks/json-utils");
+  for (const quote of ["\u201c", "\u201d", "\u201e"]) {
+    for (const operator of [";", "|", "&&"]) {
+      const command = `& "node${quote} ${operator} Write-Output ${quote}foreign" "C:/remote/clawd-hook.js" "Stop" "--clawd-ssh-remote"`;
+      assert.strictEqual(parsePowerShellEnvCommand(command), null, command);
+    }
+  }
+});
+
+it("issue #1316: PowerShell smart single quotes require canonical env escaping", () => {
+  const { parsePowerShellEnvCommand, quotePowerShellSingleArg } = require("../hooks/json-utils");
+  const value = "C:/Users/O’Connell/hooks";
+  const invoke = '& "node" "C:/remote/clawd-hook.js" "Stop" "--clawd-ssh-remote"';
+  assert.strictEqual(parsePowerShellEnvCommand(`$env:CLAWD_HOST_PREFIX_PATH='${value}'; ${invoke}`), null);
+  assert.deepStrictEqual(parsePowerShellEnvCommand(`$env:CLAWD_HOST_PREFIX_PATH=${quotePowerShellSingleArg(value)}; ${invoke}`).env,
+    { CLAWD_HOST_PREFIX_PATH: value });
+});
+
+it("issue #1316: CLI option values reject absent values and following options", () => {
+  const { getCliOptionValue } = require("../hooks/json-utils");
+  for (const args of [[], ["--hooks-dir"], ["--hooks-dir", ""], ["--hooks-dir", "--routing-nonce", "a".repeat(32)]]) {
+    assert.strictEqual(getCliOptionValue(args, "--hooks-dir"), undefined);
+  }
+  assert.strictEqual(getCliOptionValue(["--hooks-dir", "C:/Remote User/hooks"], "--hooks-dir"), "C:/Remote User/hooks");
+});
+
+it("issue #1316: remote script keys trim separators and respect platform case rules", () => {
+  const { remoteHookScriptKey } = require("../hooks/json-utils");
+  for (const suffix of ["", "/", "\\"]) {
+    assert.strictEqual(remoteHookScriptKey(`C:\\Remote User\\Hooks${suffix}`, "copilot-hook.js", "win32"), "c:/remote user/hooks/copilot-hook.js");
+  }
+  assert.notStrictEqual(remoteHookScriptKey("/Remote/Hooks", "copilot-hook.js", "linux"),
+    remoteHookScriptKey("/remote/hooks", "copilot-hook.js", "linux"));
+});

@@ -14,6 +14,7 @@ const { digestCodexTurnId } = require("../src/codex-turn-id");
 const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS } = require("../src/state-stale-cleanup");
 const {
   CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS,
+  CODEX_INTERNAL_THREAD_TITLE_REFRESH,
 } = require("../hooks/codex-internal-worker");
 const themeLoader = require("../src/theme-loader");
 
@@ -98,6 +99,117 @@ function makeRealStateHarness({ preserveThemeTimings = false, ctxOverrides = {} 
 }
 
 describe("agent-runtime-main", () => {
+  it("keeps a local official Interrupt silent when no session was displayed", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = { agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId };
+    try {
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", { ...official, turnId: "canceled" });
+      assert.equal(harness.state.sessions.has(sessionId), false);
+      assert.deepEqual(harness.sounds, []);
+      assert.deepEqual(harness.stateChanges, []);
+
+      runtime.updateSessionFromServer(sessionId, "working", "PreToolUse", { ...official, turnId: "canceled" });
+      assert.equal(harness.state.sessions.has(sessionId), false, "the terminal fence rejects late work");
+
+      runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...official, turnId: "next" });
+      assert.equal(harness.state.sessions.get(sessionId).state, "thinking");
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", { ...official, turnId: "next" });
+      assert.equal(harness.state.sessions.get(sessionId).state, "idle", "an existing row still receives cancellation");
+
+      const completedId = "codex:bbbbbbbb-1111-4111-8111-111111111111";
+      runtime.updateSessionFromServer(localSessionKey(completedId), "attention", "Stop", {
+        ...official, rawSessionId: completedId, turnId: "completed",
+      });
+      assert.equal(harness.state.sessions.has(localSessionKey(completedId)), true,
+        "a completion received after Clawd starts still creates its row");
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("keeps creating Interrupt rows for remote, WSL, non-official and other-agent events", () => {
+    for (const source of [
+      { profileId: "remote", host: "remote" },
+      { wslDistro: "test", platform: "wsl" },
+      { hookSource: "other-hook" },
+      { agentId: "kimi-cli" },
+    ]) {
+      const harness = makeRealStateHarness();
+      const runtime = createAgentRuntimeMain({
+        getStateRuntime: () => harness.state,
+        updateSession: (...args) => harness.state.updateSession(...args),
+      });
+      const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+      const sessionId = localSessionKey(rawSessionId);
+      try {
+        runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", {
+          agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId,
+          turnId: "canceled", ...source,
+        });
+        assert.equal(harness.state.sessions.has(sessionId), true, JSON.stringify(source));
+      } finally {
+        runtime.cleanup();
+        harness.state.cleanup();
+      }
+    }
+  });
+
+  it("ends startup recovery on a local official orphan Interrupt without creating a row", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    try {
+      harness.state.startStartupRecovery();
+      assert.equal(harness.state.getStartupRecoveryActive(), true);
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", {
+        agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId,
+        turnId: "canceled",
+      });
+      assert.equal(harness.state.getStartupRecoveryActive(), false);
+      assert.equal(harness.state.sessions.has(sessionId), false);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("releases a matching compaction hold on a local official orphan Interrupt", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const rawSessionId = "codex:aaaaaaaa-1111-4111-8111-111111111111";
+    const sessionId = localSessionKey(rawSessionId);
+    const official = { agentId: "codex", profileId: "local", hookSource: "codex-official", rawSessionId,
+      turnId: "compacting" };
+    try {
+      runtime.updateSessionFromServer(sessionId, "sweeping", "PreCompact", official);
+      assert.equal(harness.state.hasCodexCompactionHold(sessionId), true);
+      // Normal removal also releases the hold; delete only the row to exercise
+      // the defensive path where presentation ownership outlives its session.
+      harness.state.sessions.delete(sessionId);
+      assert.equal(harness.state.hasCodexCompactionHold(sessionId), true);
+      runtime.updateSessionFromServer(sessionId, "idle", "Interrupt", official);
+      assert.equal(harness.state.hasCodexCompactionHold(sessionId), false);
+      assert.equal(harness.state.sessions.has(sessionId), false);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
   it("presents manual compaction after Stop while continuing to reject late work", ({ mock }) => {
     mock.timers.enable({ apis: ["setTimeout", "Date"] });
     const harness = makeRealStateHarness();
@@ -1720,10 +1832,10 @@ describe("agent-runtime-main", () => {
       assert.ok(!harness.state.sessions.has(sessionId), "Stop must stay suppressed");
       assert.deepStrictEqual(harness.sounds.filter((name) => name === "complete"), []);
 
-      // SessionEnd clears the sid, so a later unmarked event builds normally.
+      // A normal prompt after SessionEnd releases the sid and builds normally.
       runtime.updateSessionFromServer(sessionId, "sleeping", "SessionEnd", opts);
       runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...opts, turnId: "turn-2" });
-      assert.ok(harness.state.sessions.has(sessionId), "SessionEnd must clear the suppression");
+      assert.ok(harness.state.sessions.has(sessionId), "a normal prompt after SessionEnd must release suppression");
     } finally {
       runtime.cleanup();
       harness.state.cleanup();
@@ -1937,6 +2049,302 @@ describe("agent-runtime-main", () => {
       runtime.updateSessionFromServer(sessionId, "attention", "Stop", opts);
       assert.strictEqual(harness.state.sessions.get(sessionId).state, "idle");
       assert.strictEqual(harness.sounds.filter((name) => name === "complete").length, 1);
+    } finally {
+      runtime.cleanup();
+      harness.state.cleanup();
+    }
+  });
+
+  it("title refresh recognition leaves three real same-folder Desktop threads and their shared process independent", () => {
+    const harness = makeRealStateHarness();
+    const lifecycleEnds = [];
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+      onCodexArchiveLifecycleEnd: (event) => lifecycleEnds.push(event),
+    });
+    const optsFor = (rawSessionId) => ({
+      agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId,
+      cwd: "C:\\project", sourcePid: 42, agentPid: 84,
+      codexOriginator: "codex_work_desktop", turnId: `turn-${rawSessionId}`,
+    });
+    try {
+      const peers = ["codex:real-a", "codex:real-b", "codex:real-c"];
+      for (const raw of peers) {
+        runtime.updateSessionFromServer(localSessionKey(raw), "thinking", "UserPromptSubmit", optsFor(raw));
+        runtime.updateSessionFromServer(localSessionKey(raw), "working", "PreToolUse", optsFor(raw));
+      }
+      const before = peers.map((raw) => JSON.stringify(harness.state.sessions.get(localSessionKey(raw))));
+      const raw = "codex:title-refresh", id = localSessionKey(raw), opts = optsFor(raw);
+      // A delayed recognition must remove only the row that slipped in earlier.
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", opts);
+      assert.strictEqual(harness.state.sessions.size, 4);
+      const completeBefore = harness.sounds.filter((name) => name === "complete").length;
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", {
+        ...opts, codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      for (const [state, event] of [["idle", "Stop"], ["idle", "Interrupt"], ["working", "PreToolUse"]]) {
+        runtime.updateSessionFromServer(id, state, event, opts);
+        assert.strictEqual(harness.state.sessions.has(id), false, `${event} cannot recreate the recognized title thread`);
+      }
+      peers.forEach((peer, index) => {
+        assert.strictEqual(JSON.stringify(harness.state.sessions.get(localSessionKey(peer))), before[index]);
+      });
+      const rows = harness.state.buildSessionSnapshot().sessions;
+      assert.strictEqual(rows.length, 3);
+      assert.ok(rows.every((row) => !row.hiddenFromHud && row.state === "working" && row.agentId === "codex"));
+      assert.strictEqual(harness.sounds.filter((name) => name === "complete").length, completeBefore);
+      assert.deepStrictEqual(lifecycleEnds, [], "title recognition is not an archive automation lifecycle");
+
+      runtime.updateSessionFromServer(id, "sleeping", "SessionEnd", opts);
+      assert.strictEqual(harness.state.sessions.has(id), false);
+      runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", { ...opts, turnId: "next-real-user-turn" });
+      assert.strictEqual(harness.state.sessions.get(id).state, "thinking", "a normal prompt after SessionEnd releases only that thread's suppression");
+      assert.strictEqual(harness.state.sessions.size, 4);
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  for (const kind of [CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS, CODEX_INTERNAL_THREAD_TITLE_REFRESH]) {
+    it(`PR #1253 follow-up: drops late official events after an internal thread ends (${kind})`, () => {
+      const harness = makeRealStateHarness();
+      const forwardedEvents = [];
+      const logs = [];
+      const runtime = createAgentRuntimeMain({
+        getStateRuntime: () => harness.state,
+        updateSession: (...args) => {
+          forwardedEvents.push(args[2]);
+          return harness.state.updateSession(...args);
+        },
+        debugLog: (line) => logs.push(line),
+      });
+      const rawSessionId = `codex:ended-internal-${kind}`;
+      const sessionId = localSessionKey(rawSessionId);
+      const opts = {
+        agentId: "codex", hookSource: "codex-official", profileId: "local",
+        rawSessionId, sourcePid: 42, turnId: "internal-turn",
+      };
+      try {
+        runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+          ...opts, codexInternalThread: kind,
+        });
+        assert.strictEqual(harness.state.sessions.has(sessionId), false);
+        runtime.updateSessionFromServer(sessionId, "sleeping", "SessionEnd", opts);
+        for (const [state, event] of [
+          ["idle", "Stop"], ["idle", "Interrupt"], ["working", "PreToolUse"],
+          ["working", "PostToolUse"], ["sleeping", "SessionEnd"],
+        ]) {
+          runtime.updateSessionFromServer(sessionId, state, event, opts);
+          assert.strictEqual(harness.state.sessions.has(sessionId), false, `${event} must not recreate an ended internal thread`);
+        }
+        assert.deepStrictEqual(forwardedEvents, ["SessionEnd"], "only the active thread's SessionEnd flows through");
+        assert.deepStrictEqual(harness.sounds.filter((name) => name === "complete"), []);
+        assert.ok(logs.includes(`codex-internal-thread recognize sid=${sessionId} kind=${kind}`));
+      } finally {
+        runtime.cleanup();
+        harness.state.cleanup();
+      }
+    });
+
+    for (const restart of [false, true]) {
+      it(`PR #1253 follow-up: releases an ended internal thread on ${restart ? "SessionStart then a normal prompt" : "a normal prompt"} (${kind})`, () => {
+        const harness = makeRealStateHarness();
+        const runtime = createAgentRuntimeMain({
+          getStateRuntime: () => harness.state,
+          updateSession: (...args) => harness.state.updateSession(...args),
+        });
+        const rawSessionId = `codex:reused-internal-${kind}`;
+        const sessionId = localSessionKey(rawSessionId);
+        const opts = {
+          agentId: "codex", hookSource: "codex-official", profileId: "local",
+          rawSessionId, sourcePid: 42, turnId: "internal-turn",
+        };
+        try {
+          runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", {
+            ...opts, codexInternalThread: kind,
+          });
+          runtime.updateSessionFromServer(sessionId, "sleeping", "SessionEnd", opts);
+          if (restart) {
+            runtime.updateSessionFromServer(sessionId, "idle", "SessionStart", { ...opts, turnId: "real-turn" });
+            assert.ok(harness.state.sessions.has(sessionId), "SessionStart releases the ended sid before the prompt");
+          }
+          runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...opts, turnId: "real-turn" });
+          assert.strictEqual(harness.state.sessions.get(sessionId).state, "thinking");
+          runtime.updateSessionFromServer(sessionId, "attention", "Stop", { ...opts, turnId: "real-turn" });
+          assert.strictEqual(harness.state.sessions.get(sessionId).state, "idle");
+          assert.strictEqual(harness.sounds.filter((name) => name === "complete").length, 1);
+        } finally {
+          runtime.cleanup();
+          harness.state.cleanup();
+        }
+      });
+    }
+
+    it(`PR #1253 follow-up: a marked prompt reactivates an ended internal thread (${kind})`, () => {
+      const harness = makeRealStateHarness();
+      const runtime = createAgentRuntimeMain({
+        getStateRuntime: () => harness.state,
+        updateSession: (...args) => harness.state.updateSession(...args),
+      });
+      const rawSessionId = `codex:reactivated-internal-${kind}`;
+      const sessionId = localSessionKey(rawSessionId);
+      const opts = {
+        agentId: "codex", hookSource: "codex-official", profileId: "local",
+        rawSessionId, sourcePid: 42,
+      };
+      try {
+        runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...opts, codexInternalThread: kind });
+        runtime.updateSessionFromServer(sessionId, "sleeping", "SessionEnd", opts);
+        runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", { ...opts, codexInternalThread: kind });
+        runtime.updateSessionFromServer(sessionId, "idle", "SessionStart", opts);
+        runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", opts);
+        assert.strictEqual(harness.state.sessions.has(sessionId), false, "reactivation keeps ordinary events suppressed until another SessionEnd");
+        runtime.updateSessionFromServer(sessionId, "sleeping", "SessionEnd", opts);
+        runtime.updateSessionFromServer(sessionId, "thinking", "UserPromptSubmit", opts);
+        assert.strictEqual(harness.state.sessions.get(sessionId).state, "thinking");
+      } finally {
+        runtime.cleanup();
+        harness.state.cleanup();
+      }
+    });
+  }
+
+  it("title refresh marker never hides unknown, nonofficial, remote, WSL or other-agent activity", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const cases = [
+      { name: "unknown", extra: { codexInternalThread: "future_title_job" } },
+      { name: "nonofficial", extra: { hookSource: "codex-jsonl" } },
+      { name: "remote-profile", extra: { profileId: "ssh-work", host: "workbox" } },
+      { name: "host-only", extra: { host: "workbox" } },
+      { name: "wsl-distro", extra: { wslDistro: "Ubuntu" } },
+      { name: "wsl-host", extra: { host: "wsl:Ubuntu" } },
+      { name: "other-agent", extra: { agentId: "claude-code" } },
+    ];
+    try {
+      for (const entry of cases) {
+        const rawSessionId = `codex:unhidden-${entry.name}`;
+        const opts = { agentId: "codex", hookSource: "codex-official", profileId: "local", rawSessionId,
+          codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+          sourcePid: 42, codexOriginator: "codex_work_desktop", ...entry.extra };
+        const id = makeSessionKey({ profileId: opts.profileId, rawSessionId });
+        runtime.updateSessionFromServer(id, "thinking", "UserPromptSubmit", opts);
+        assert.ok(harness.state.sessions.has(id), entry.name);
+        assert.strictEqual(harness.state.sessions.get(id).state, "thinking", entry.name);
+      }
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  it("a JSONL marker cannot recognize or clear title refresh suppression", () => {
+    const instances = [];
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      loadCodexLogMonitor: () => makeFakeMonitorClass(instances),
+      loadCodexAgent: () => ({ id: "codex" }), codexSubagentClassifier: {}, isAgentEnabled: () => true,
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    try {
+      const monitor = runtime.startCodexLogMonitor(), raw = "codex:jsonl-title-marker", id = localSessionKey(raw);
+      monitor.emit(raw, "thinking", "event_msg:task_started", {
+        turnId: "jsonl-real-turn", sourcePid: 42, agentPid: 84, codexOriginator: "codex_work_desktop",
+        codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+        codex_internal_thread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      assert.strictEqual(harness.state.sessions.get(id).state, "thinking", "JSONL cannot supply the official internal-thread marker");
+
+      const hiddenRaw = "codex:official-title-marker", hiddenId = localSessionKey(hiddenRaw);
+      const official = { agentId: "codex", profileId: "local", rawSessionId: hiddenRaw, hookSource: "codex-official" };
+      runtime.updateSessionFromServer(hiddenId, "thinking", "UserPromptSubmit", {
+        ...official, codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      // A foreign/nonofficial teardown cannot lift a local official suppression.
+      runtime.updateSessionFromServer(hiddenId, "sleeping", "SessionEnd", { ...official, hookSource: "codex-jsonl" });
+      runtime.updateSessionFromServer(hiddenId, "idle", "Stop", official);
+      assert.strictEqual(harness.state.sessions.has(hiddenId), false);
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  it("title refresh and ambient suppression share the existing 200-thread bound and cleanup reset", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const optsFor = (index) => ({ agentId: "codex", profileId: "local", hookSource: "codex-official",
+      rawSessionId: `codex:bounded-title-${index}`, sourcePid: 42, codexOriginator: "codex_work_desktop" });
+    try {
+      for (let index = 0; index <= 200; index++) {
+        const opts = optsFor(index);
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "thinking", "UserPromptSubmit", {
+          ...opts, codexInternalThread: index % 2
+            ? CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS : CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+        });
+      }
+      assert.strictEqual(harness.state.sessions.size, 0);
+      const oldest = optsFor(0), retained = optsFor(1), newest = optsFor(200);
+      for (const opts of [retained, newest]) {
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "thinking", "UserPromptSubmit", opts);
+        assert.strictEqual(harness.state.sessions.has(localSessionKey(opts.rawSessionId)), false);
+      }
+      runtime.updateSessionFromServer(localSessionKey(oldest.rawSessionId), "thinking", "UserPromptSubmit", oldest);
+      assert.ok(harness.state.sessions.has(localSessionKey(oldest.rawSessionId)), "only the oldest entry is evicted after 201 recognized threads");
+      runtime.cleanup();
+      runtime.updateSessionFromServer(localSessionKey(newest.rawSessionId), "thinking", "UserPromptSubmit", newest);
+      assert.ok(harness.state.sessions.has(localSessionKey(newest.rawSessionId)), "runtime cleanup clears the shared suppression set");
+    } finally {
+      runtime.cleanup(); harness.state.cleanup();
+    }
+  });
+
+  it("PR #1253 follow-up: ended internal threads share the 200-entry FIFO and cleanup with active threads", () => {
+    const harness = makeRealStateHarness();
+    const runtime = createAgentRuntimeMain({
+      getStateRuntime: () => harness.state,
+      updateSession: (...args) => harness.state.updateSession(...args),
+    });
+    const optsFor = (index) => ({
+      agentId: "codex", profileId: "local", hookSource: "codex-official",
+      rawSessionId: `codex:ended-bound-${index}`, sourcePid: 42,
+    });
+    try {
+      for (let index = 0; index < 200; index++) {
+        const opts = optsFor(index);
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "thinking", "UserPromptSubmit", {
+          ...opts, codexInternalThread: index % 2
+            ? CODEX_INTERNAL_THREAD_AMBIENT_SUGGESTIONS : CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+        });
+      }
+      for (const index of [0, 2]) {
+        const opts = optsFor(index);
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "sleeping", "SessionEnd", opts);
+      }
+      const newest = optsFor(200);
+      runtime.updateSessionFromServer(localSessionKey(newest.rawSessionId), "thinking", "UserPromptSubmit", {
+        ...newest, codexInternalThread: CODEX_INTERNAL_THREAD_TITLE_REFRESH,
+      });
+      const oldest = optsFor(0);
+      runtime.updateSessionFromServer(localSessionKey(oldest.rawSessionId), "idle", "Stop", oldest);
+      assert.ok(harness.state.sessions.has(localSessionKey(oldest.rawSessionId)), "SessionEnd must not refresh FIFO order: the oldest ended entry is evicted");
+      for (const index of [1, 2, 200]) {
+        const opts = optsFor(index);
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "idle", "Stop", opts);
+        assert.strictEqual(harness.state.sessions.has(localSessionKey(opts.rawSessionId)), false, `entry ${index} stays suppressed regardless of active/ended status`);
+      }
+      runtime.cleanup();
+      for (const index of [2, 200]) {
+        const opts = optsFor(index);
+        runtime.updateSessionFromServer(localSessionKey(opts.rawSessionId), "idle", "Stop", opts);
+        assert.ok(harness.state.sessions.has(localSessionKey(opts.rawSessionId)), "cleanup clears both ended and active entries");
+      }
     } finally {
       runtime.cleanup();
       harness.state.cleanup();

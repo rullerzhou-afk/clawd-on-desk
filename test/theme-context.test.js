@@ -50,6 +50,19 @@ function writeFile(filePath, content = "x") {
   fs.writeFileSync(filePath, content, "utf8");
 }
 
+test("executing inherits working eye tracking only when it aliases working art", () => {
+  const fixture = makeRoot();
+  try {
+    const theme = makeTheme({ states: { idle: ["idle.svg"], working: ["working.svg"] },
+      eyeTracking: { enabled: true, states: ["working"] } });
+    assert.deepStrictEqual(createThemeContext(theme, fixture).getRendererConfig().eyeTrackingStates,
+      ["working", "executing"]);
+    assert.deepStrictEqual(theme.eyeTracking.states, ["working"], "do not mutate the theme");
+    theme.states.executing = ["executing.svg"];
+    assert.deepStrictEqual(createThemeContext(theme, fixture).getRendererConfig().eyeTrackingStates, ["working"]);
+  } finally { fixture.cleanup(); }
+});
+
 test("explicit contexts resolve independent external asset paths without active-theme state", () => {
   const fixture = makeRoot();
   try {

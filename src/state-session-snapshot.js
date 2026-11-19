@@ -1,6 +1,9 @@
 "use strict";
+const { isLocalApprovalReminderSession, isTerminalWaitSession } = require("./approval-reminder-session");
+const { hasSubagentHoldEvidence } = require("./subagent-lifecycle");
 
 const crypto = require("crypto");
+const { claudeProfileLabelFor } = require("../hooks/claude-config-dirs");
 const path = require("path");
 const { i18n } = require("./i18n");
 const { isCodexDesktopOriginator } = require("../hooks/codex-originator");
@@ -358,12 +361,64 @@ function sessionUpdatedAtComparator(a, b) {
 //   - Kimi Code desktop restores the last viewed conversation on launch, and
 //     opening an old conversation from the sidebar does the same; both only
 //     send a SessionStart.
-const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli"]);
+//   - Copilot (the CLI, or the runtime inside VS Code) sends a sessionStart
+//     when a conversation is opened or restored; the row stays out of the HUD
+//     until the user acts.
+const AWAITING_ACTIVITY_AGENTS = new Set(["deepseek-harness", "kimi-cli", "copilot-cli"]);
 
 function isSessionAwaitingActivity(session) {
   return !!session
     && AWAITING_ACTIVITY_AGENTS.has(session.agentId)
     && session.awaitingActivity === true;
+}
+
+// An opt-in HUD presentation preference, not internal-source classification or
+// session retirement. Keep every canonical entry available to other consumers.
+function shouldHideCodexEphemeralFromHud(id, session, badge, options = {}) {
+  const hideCompleted = options.sessionHudHideCompletedCodexEphemeral === true
+    && session?.state === "idle" && badge === "done";
+  const hideActive = options.sessionHudHideActiveCodexEphemeral === true
+    && (session?.state === "thinking" || session?.state === "working");
+  if (!hideCompleted && !hideActive) return false;
+  const originator = session && (session.codexOriginator || session.originator);
+  const source = typeof session?.codexSource === "string" ? session.codexSource.trim().toLowerCase() : "";
+  if (!session
+      || session.agentId !== "codex" || session.codexClientEphemeral !== true
+      // Native macOS hooks can report typed ephemeral without an originator.
+      // This display fact must not manufacture Desktop dedupe/automation identity.
+      || (originator && !isCodexDesktopOriginator(originator))
+      || ["cli", "exec", "mcp", "internal", "subagent", "agent-subagent"].includes(source)
+      || (session.profileId || "local") !== "local" || session.host
+      || session.wslDistro || String(session.platform || "").trim().toLowerCase() === "wsl" || session.headless
+      || session.subagentId || session.subagentType || session.recapIsSubagent) return false;
+  if (session.transcriptPath != null
+      && (typeof session.transcriptPath !== "string" || session.transcriptPath.trim())) return false;
+  const events = Array.isArray(session.recentEvents) ? session.recentEvents : [];
+  const lastEvent = events.at(-1)?.event;
+  if (hideCompleted && !isDoneEvent(lastEvent)) return false;
+  // A request can arrive before the pending-permission snapshot catches up.
+  // Never collapse the active row while it is asking the user for a decision.
+  if (hideActive && (session.requiresCompletionAck === true
+      || hasSubagentHoldEvidence(session)
+      || ["PermissionRequest", "CodexUserInputRequest", "Elicitation", "Notification", "StopFailure", "PostToolUseFailure", "ApiError", "Interrupt"].includes(lastEvent))) return false;
+  return !(options.pendingPermissionSessionIds instanceof Set
+    && options.pendingPermissionSessionIds.has(id));
+}
+
+// Share the strict active-only policy with the pet without applying the
+// independent completed-row HUD option to completion animations.
+function shouldHideActiveCodexEphemeral(id, session, options = {}) {
+  return shouldHideCodexEphemeralFromHud(id, session, deriveSessionBadge(session), {
+    ...options, sessionHudHideCompletedCodexEphemeral: false,
+  });
+}
+
+// "work" / "personal" chip for local Claude sessions when Clawd manages more
+// than one Claude config folder. Remote and WSL sessions report folders on
+// another machine, which the local list cannot name.
+function deriveSessionClaudeProfileLabel(session, claudeConfigDirs) {
+  if (!session || session.agentId !== "claude-code" || session.host || session.wslDistro) return "";
+  return claudeProfileLabelFor(session.claudeConfigDir || null, claudeConfigDirs);
 }
 
 function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {}) {
@@ -384,12 +439,44 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
   const agentId = (session && session.agentId) || null;
   const planProgress = agentId === "codex" ? normalizePlanProgress(session && session.planProgress) : null;
   const state = (session && session.state) || "idle";
+  const isLocalSession = !session.headless && !session.host && !session.wslDistro
+    && session.platform !== "wsl"
+    && (session.profileId || "local") === "local";
+  const localPresentation = isLocalSession
+    && (agentId === "codex" || isLocalApprovalReminderSession(session));
+  const canPresent = isLocalSession && typeof options.getSessionPresentation === "function";
+  let presentation = (localPresentation || isTerminalWaitSession(session))
+    && typeof options.getSessionPresentation === "function"
+    ? options.getSessionPresentation(id) : null;
+  if (agentId === "claude-code" && canPresent) {
+    // #1326: a Claude session only takes the pending-attention part (Claude
+    // Desktop's wrap_up question card), so its row shows the same "needs input"
+    // state as a Codex question. Without a card the snapshot shape is unchanged.
+    // Note that pendingAttention overrides hiddenByExistingReason below, so a
+    // detached Claude row with a card becomes visible again while the
+    // "clean up detached sessions" option is on (same as a Codex question card).
+    const candidate = options.getSessionPresentation(id);
+    if (candidate && candidate.pendingAttention === true) presentation = { pendingAttention: true };
+  }
+  const activeSubagentCount = agentId === "codex" && Number.isSafeInteger(presentation?.activeSubagentCount)
+    && presentation.activeSubagentCount > 0 && presentation.activeSubagentCount <= 200
+    ? presentation.activeSubagentCount : 0;
+  const pendingAttention = presentation?.pendingAttention === true;
+  const effectiveState = pendingAttention ? "notification"
+    : activeSubagentCount > 0 && presentation.effectiveState === "juggling" ? "juggling" : state;
   // Existing hidden reasons also disable focus (there is nothing to jump to).
   // The awaiting-activity marker is different: it only hides the HUD row, so the
   // Dashboard can still list the conversation and open it on demand.
   const hiddenByExistingReason = shouldAutoClearDetachedSession(session, badge, options)
     || isSupersededLocalCodexProcessSession(id, session, options.latestLocalCodexProcessIds);
-  const hiddenFromHud = hiddenByExistingReason || isSessionAwaitingActivity(session);
+  // Positive delegated-work / pending-attention facts keep the parent visible,
+  // but do not prove a focus target or change the shared process dedupe policy.
+  // An untouched conversation is idle by definition; once it shows activity or a
+  // pending question (whose effective state is "notification"), keep it in the HUD.
+  const hideAwaitingActivity = isSessionAwaitingActivity(session) && effectiveState === "idle";
+  const hiddenFromHud = (hiddenByExistingReason && activeSubagentCount === 0 && !pendingAttention)
+    || hideAwaitingActivity;
+  const hudHiddenByPreference = shouldHideCodexEphemeralFromHud(id, session, badge, options);
   const startupRecovered = !!(session && session.startupRecovered === true);
   const focusTarget = session && !session.headless && !startupRecovered && state !== "sleeping" && !hiddenByExistingReason
     ? getSessionFocusTarget({ ...(session || {}), id }, {
@@ -417,9 +504,11 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     agentName: resolveAgentDisplayName(agentId),
     iconUrl: getAgentIconUrl(agentId),
     state,
+    ...(presentation ? { effectiveState, activeSubagentCount, pendingAttention } : {}),
     startupRecovered,
     badge,
     hiddenFromHud,
+    hudHiddenByPreference,
     hasAlias: !!(alias && typeof alias.title === "string" && alias.title),
     sessionTitle: getEffectiveSessionTitle(id, session, options),
     displayTitle: sessionDisplayTitle(id, session, sessionAliases, options),
@@ -441,6 +530,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     focusTarget: focusTarget.type ? { type: focusTarget.type, url: focusTarget.url || null } : null,
     host: (session && session.host) || null,
     wslDistro: (session && session.wslDistro) || null,
+    claudeConfigDir: (session && session.claudeConfigDir) || null,
+    claudeProfileLabel: deriveSessionClaudeProfileLabel(session, options.claudeConfigDirs),
     sourceType: source.sourceType,
     sourceLabel: source.sourceLabel,
     sourceDisplayLabel: source.displayLabel,
@@ -451,6 +542,8 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
     codexOriginator: (session && session.codexOriginator) || null,
     codexSource: (session && session.codexSource) || null,
     ...(planProgress ? { planProgress } : {}),
+    ...(session && typeof session.codexClientEphemeral === "boolean"
+      ? { codexClientEphemeral: session.codexClientEphemeral } : {}),
     dshCarrier: (session && session.dshCarrier) || null,
     contextUsage: snapshotContextUsage(session),
     assistantLastOutput: (session && typeof session.assistantLastOutput === "string")
@@ -478,6 +571,9 @@ function buildSessionSnapshotEntry(id, session, sessionAliases = {}, options = {
             ? automationIdentity.reason
             : "identity-not-verified"
         ),
+    // Keep this final so a HUD-only preference field added by another feature
+    // cannot overwrite the verified activity/attention visibility veto.
+    ...(activeSubagentCount > 0 || pendingAttention ? { hudHiddenByPreference: false } : {}),
   };
 }
 
@@ -545,7 +641,7 @@ function buildSessionSnapshot(sessions, options = {}) {
   const orderedIds = dashboardEntries.map((entry) => entry.id);
   const menuOrderedIds = menuEntries.map((entry) => entry.id);
   const hudEntries = dashboardEntries.filter((entry) =>
-    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud
+    !entry.headless && entry.state !== "sleeping" && !entry.hiddenFromHud && !entry.hudHiddenByPreference
   );
 
   const groupMap = new Map();
@@ -598,6 +694,7 @@ function buildSessionSnapshot(sessions, options = {}) {
         claudeQuota: iconFor("claude-code"),
         codexQuota: iconFor("codex"),
         kimiQuota: iconFor("kimi-cli"),
+        deepseekQuota: iconFor("deepseek-harness"),
       };
     })(),
     sessionAutomationOrphans: automationRecords
@@ -659,6 +756,9 @@ function sessionSnapshotSignature(snapshot) {
       codexSparkQuota: entry.codexSparkQuota
         ? { group: entry.codexSparkQuota.group, lastSeenAt: entry.codexSparkQuota.lastSeenAt }
         : null,
+      deepseekQuota: entry.deepseekQuota
+        ? { group: entry.deepseekQuota.group, lastSeenAt: entry.deepseekQuota.lastSeenAt }
+        : null,
       kimiQuota: entry.kimiQuota
         ? { group: entry.kimiQuota.group, lastSeenAt: entry.kimiQuota.lastSeenAt }
         : null,
@@ -669,6 +769,9 @@ function sessionSnapshotSignature(snapshot) {
       rawSessionId: entry.rawSessionId,
       displaySessionTag: entry.displaySessionTag,
       state: entry.state,
+      effectiveState: entry.effectiveState,
+      activeSubagentCount: entry.activeSubagentCount,
+      pendingAttention: entry.pendingAttention,
       startupRecovered: !!entry.startupRecovered,
       badge: entry.badge,
       hasAlias: entry.hasAlias,
@@ -685,14 +788,18 @@ function sessionSnapshotSignature(snapshot) {
       focusTarget: entry.focusTarget,
       headless: entry.headless,
       hiddenFromHud: !!entry.hiddenFromHud,
+      hudHiddenByPreference: !!entry.hudHiddenByPreference,
       host: entry.host,
       wslDistro: entry.wslDistro,
+      claudeConfigDir: entry.claudeConfigDir,
+      claudeProfileLabel: entry.claudeProfileLabel,
       platform: entry.platform,
       model: entry.model,
       provider: entry.provider,
       codexOriginator: entry.codexOriginator,
       codexSource: entry.codexSource,
       planProgress: entry.planProgress || null,
+      codexClientEphemeral: entry.codexClientEphemeral,
       dshCarrier: entry.dshCarrier,
       contextUsage: entry.contextUsage,
       assistantLastOutput: entry.assistantLastOutput,
@@ -724,6 +831,7 @@ module.exports = {
   shouldAutoClearDetachedSession,
   AWAITING_ACTIVITY_AGENTS,
   isSessionAwaitingActivity,
+  shouldHideActiveCodexEphemeral,
   getSessionAliasEntry,
   getEffectiveSessionTitle,
   sessionDisplayFolder,

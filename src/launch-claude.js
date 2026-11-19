@@ -12,22 +12,25 @@ const {
 } = require("./remote-ssh-quote");
 
 const { normalizeClaudeSessionId } = require("../hooks/claude-session-id");
+const { quotePowerShellSingleArg } = require("../hooks/json-utils");
 const { normalizeClaudeProfile } = require("../hooks/session-history");
 
 // PowerShell single-quoted string quoting.
 //
-// Inside a PowerShell single-quoted string the only character that needs
-// escaping is `'` itself (doubled). Single-quoted strings are fully literal:
-// no `$`, backtick, `;`, `&`, `()` or `$()` interpolation happens. That means a
-// user-supplied sessionId can't break out of the string or inject commands.
+// Inside a PowerShell single-quoted string the only characters that need
+// escaping are the single quotes, each doubled: `'` and the curly U+2018,
+// U+2019, U+201A and U+201B that PowerShell reads as quotes too. Single-quoted
+// strings are fully literal: no `$`, backtick, `;`, `&`, `()` or `$()`
+// interpolation happens. That means a user-supplied sessionId can't break out
+// of the string or inject commands.
 // The result must be embedded inside a `& <quoted> <quoted> ...` invocation by
-// the caller. We keep this local rather than in remote-ssh-quote.js because no
-// remote-ssh code path uses PowerShell.
+// the caller. We keep this wrapper here rather than in remote-ssh-quote.js
+// because no remote-ssh code path uses PowerShell.
 function quoteForPowerShell(arg) {
   if (typeof arg !== "string") {
     throw new TypeError("quoteForPowerShell: arg must be a string");
   }
-  return "'" + arg.replace(/'/g, "''") + "'";
+  return quotePowerShellSingleArg(arg);
 }
 
 function quoteCmdExecutablePath(arg) {

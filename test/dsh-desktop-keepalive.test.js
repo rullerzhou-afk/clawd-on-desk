@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -364,7 +365,7 @@ test("a dangling inspection latch symlink pauses cleanup", async (t) => {
   const stray = writeStrayGeneration(harness);
   const latch = latchPath(harness, "desktop");
   fs.mkdirSync(path.dirname(latch), { recursive: true });
-  fs.symlinkSync(path.join(harness.root, "missing-latch-target"), latch);
+  linkForRejection(path.join(harness.root, "missing-latch-target"), latch);
 
   const result = await installWeb(harness);
 
@@ -491,7 +492,7 @@ test("clearInspectionLatch refuses a symlinked record and leaves the target inta
   const target = path.join(harness.root, "external-inspection-record");
   writeJson(target, { owner: "clawd-on-desk", schemaVersion: 1, reason: "still-valid" });
   fs.mkdirSync(path.dirname(latch), { recursive: true });
-  fs.symlinkSync(target, latch);
+  linkForRejection(target, latch);
 
   await assert.rejects(
     () => dshInstallTest.clearInspectionLatch({ managedRoot: harness.managedRoot, profile: "web" }),
@@ -505,7 +506,7 @@ test("clearInspectionLatch refuses a dangling record", async (t) => {
   const harness = makeHarness(t);
   const latch = latchPath(harness, "web");
   fs.mkdirSync(path.dirname(latch), { recursive: true });
-  fs.symlinkSync(path.join(harness.root, "missing-inspection-record"), latch);
+  linkForRejection(path.join(harness.root, "missing-inspection-record"), latch);
 
   await assert.rejects(
     () => dshInstallTest.clearInspectionLatch({ managedRoot: harness.managedRoot, profile: "web" }),
@@ -547,7 +548,7 @@ test("a symlinked inspection record makes disk health inspection-required", asyn
   const target = path.join(harness.root, "external-inspection-record");
   writeJson(target, { owner: "clawd-on-desk", schemaVersion: 1, reason: "still-valid" });
   fs.mkdirSync(path.dirname(latch), { recursive: true });
-  fs.symlinkSync(target, latch);
+  linkForRejection(target, latch);
 
   const health = inspectDeepSeekHarnessDiskSync({
     dshHome: harness.dshHome,

@@ -5,8 +5,9 @@ const assert = require("node:assert");
 
 const initPermission = require("../src/permission");
 const { classifyPermissionInteraction } = require("../src/permission-automation-policy");
-const { getSessionFocusTarget } = require("../src/session-focus");
+const { getSessionFocusTarget, mergeSessionFocusEntry } = require("../src/session-focus");
 const { buildApprovalCard } = require("../src/feishu-approval-client");
+const { makeSessionKey } = require("../src/session-key");
 
 function flushAsync() {
   return new Promise((resolve) => setImmediate(resolve));
@@ -168,14 +169,19 @@ describe("DSH permission response contract", () => {
     assert.strictEqual(initPermission.__test.queueAgentLabel({ agentId: "unknown-agent" }), "unknown-agent");
   });
 
-  it("copies the desktop carrier into the fallback focus entry", () => {
+  it("copies the desktop carrier and raw session id into the fallback focus entry", () => {
     const { buildPermissionFocusEntry } = initPermission.__test;
+    const rawSessionId = "deepseek-harness:session-approval";
+    const sessionId = makeSessionKey({ profileId: "local", rawSessionId });
     const entry = buildPermissionFocusEntry({
-      sessionId: "deepseek-harness:s1",
+      sessionId,
+      rawSessionId,
       agentId: "deepseek-harness",
       dshCarrier: "desktop",
     });
+    assert.match(entry.id, /^s1\./);
     assert.strictEqual(entry.dshCarrier, "desktop");
+    assert.strictEqual(entry.rawSessionId, rawSessionId);
     assert.deepStrictEqual(getSessionFocusTarget(entry, { osPlatform: "darwin" }), {
       canFocus: true,
       type: "dsh-desktop",
@@ -183,15 +189,36 @@ describe("DSH permission response contract", () => {
     });
 
     const plain = buildPermissionFocusEntry({
-      sessionId: "deepseek-harness:s1",
+      sessionId,
+      rawSessionId,
       agentId: "deepseek-harness",
     });
     assert.strictEqual(Object.hasOwn(plain, "dshCarrier"), false);
+    assert.strictEqual(Object.hasOwn(plain, "rawSessionId"), false);
     assert.deepStrictEqual(getSessionFocusTarget(plain, { osPlatform: "darwin" }), {
       canFocus: false,
       type: null,
       url: null,
     });
+  });
+
+  it("keeps other agents' fallback object shape without a raw session id", () => {
+    const entry = initPermission.__test.buildPermissionFocusEntry({
+      sessionId: "claude-code:approval", rawSessionId: "claude-code:raw", agentId: "claude-code",
+    });
+    assert.deepStrictEqual(entry, { id: "claude-code:approval", agentId: "claude-code" });
+  });
+
+  it("preserves the live raw session id when a desktop approval has none", () => {
+    const rawSessionId = "deepseek-harness:session-live";
+    const sessionId = makeSessionKey({ profileId: "local", rawSessionId });
+    const session = { id: sessionId, rawSessionId, agentId: "deepseek-harness", dshCarrier: "desktop" };
+    const fallback = initPermission.__test.buildPermissionFocusEntry({
+      sessionId, agentId: "deepseek-harness", dshCarrier: "desktop",
+    });
+    assert.strictEqual(Object.hasOwn(fallback, "rawSessionId"), false);
+    const merged = mergeSessionFocusEntry(session, fallback, sessionId);
+    assert.strictEqual(merged.rawSessionId, rawSessionId);
   });
 
   async function captureRemotePayload(entry) {

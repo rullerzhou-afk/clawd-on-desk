@@ -45,6 +45,11 @@ const HOOKS_DIR = path.resolve(__dirname, "..", "hooks");
 // PowerShells whether Clawd was up or down, because it was never really running.
 // The vacuity guard at the bottom of this file exists to stop that recurring.
 const ADAPTERS = [
+  {
+    name: "kiro-desktop-hook.js",
+    payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" },
+    stdout: "",
+  },
   { name: "clawd-hook.js", argv: ["PreToolUse"], payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "codex-hook.js", payload: { hook_event_name: "PreToolUse", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
   { name: "copilot-hook.js", argv: ["sessionStart"], payload: { hook_event_name: "sessionStart", session_id: "s-681", cwd: "D:/repo" }, stdout: "" },
@@ -167,7 +172,7 @@ describe("#681 — every adapter survives a clean offline with zero spawn", { sk
       .sort();
     assert.deepStrictEqual(consumers, ADAPTERS.map((a) => a.name).sort(),
       "a new createPidResolver adapter must be added to ADAPTERS above and proven offline-safe");
-    assert.strictEqual(consumers.length, 18, "traecode-hook.js, qwenwork-hook.js and minimax-hook.js joined the createPidResolver consumers");
+    assert.strictEqual(consumers.length, 19, "traecode-hook.js, qwenwork-hook.js and minimax-hook.js joined the createPidResolver consumers");
   });
 });
 

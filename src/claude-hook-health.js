@@ -14,6 +14,7 @@ const {
 const {
   classifyManagedClaudeStateHookCommand,
   commandMatchesMarker,
+  getClaudeHookCommand,
   findManagedClaudeEnvNodeBinCandidates,
   parseClaudeEnvStateHookCommand,
   stripUtf8Bom,
@@ -85,13 +86,15 @@ function findMarkerCommandsForEvent(hooks, eventName, marker) {
     if (!entry || typeof entry !== "object") continue;
     if (Array.isArray(entry.hooks)) {
       for (const hook of entry.hooks) {
-        if (hook && typeof hook.command === "string" && commandMatchesMarker(hook.command, marker)) {
-          commands.push(hook.command);
+        const command = getClaudeHookCommand(hook, marker);
+        if (commandMatchesMarker(command, marker)) {
+          commands.push(command);
         }
       }
     }
-    if (typeof entry.command === "string" && commandMatchesMarker(entry.command, marker)) {
-      commands.push(entry.command);
+    const command = getClaudeHookCommand(entry, marker);
+    if (commandMatchesMarker(command, marker)) {
+      commands.push(command);
     }
   }
   return commands;
@@ -105,14 +108,15 @@ function findManagedStateCommandRecords(settings, eventName) {
   const unverified = [];
 
   const collect = (hook, entryIndex, hookIndex) => {
-    if (!hook || typeof hook.command !== "string") return;
+    const command = getClaudeHookCommand(hook, HOOK_MARKER);
+    if (command === null) return;
     // Health historically recognizes Clawd commands inside PowerShell
     // EncodedCommand wrappers. Keep that read-only visibility without
     // broadening the installer's raw-marker mutation ownership boundary.
-    const mutationKind = classifyManagedClaudeStateHookCommand(hook.command, settings, eventName);
-    const kind = mutationKind || (commandMatchesMarker(hook.command, HOOK_MARKER) ? "literal" : null);
+    const mutationKind = classifyManagedClaudeStateHookCommand(command, settings, eventName);
+    const kind = mutationKind || (commandMatchesMarker(command, HOOK_MARKER) ? "literal" : null);
     const record = {
-      command: hook.command,
+      command,
       entryIndex,
       hookIndex,
       kind,
@@ -120,12 +124,12 @@ function findManagedStateCommandRecords(settings, eventName) {
     };
     if (kind) {
       if (kind === "env") {
-        record.parsedEnv = parseClaudeEnvStateHookCommand(hook.command, eventName);
+        record.parsedEnv = parseClaudeEnvStateHookCommand(command, eventName);
       }
       managed.push(record);
       return;
     }
-    const parsedEnv = parseClaudeEnvStateHookCommand(hook.command, eventName);
+    const parsedEnv = parseClaudeEnvStateHookCommand(command, eventName);
     if (parsedEnv) unverified.push({ ...record, parsedEnv });
   };
 

@@ -21,19 +21,30 @@ AppImage 的 FUSE wrapper 被提前终止时，Electron 仍可能在退出清理
 
 Windows 的 hit window 在原生 activation controller 可用时按前台全屏状态切换 `WS_EX_NOACTIVATE`：非全屏时清除该扩展样式，全屏时重新设置以避免点击和拖拽把前台切到 Clawd。Electron 内部保持 non-focusable；首次显示前安装的 `WM_MOUSEACTIVATE` hook 通过一次性 `Chrome.IgnoreMouseActivate` 属性让 Chromium 对该消息返回 `MA_NOACTIVATE`（不因这条消息激活窗口，也不丢弃鼠标输入），避免 `MA_NOACTIVATEANDEAT` 吞掉点击。该消息的返回值不保证普通桌面点击始终保持 OS 前台归属，相关限制见 Known Limits。输入窗口仍和渲染窗口分离，并永久接收 mouse events。
 
+桌宠本体的置顶由主开关 `petAlwaysOnTop`（默认开；Settings → 桌宠 →「窗口置顶」，#1275）统一治理。Windows / Linux 切换立即生效；macOS 取启动值，运行中修改后设置行显示「尚未生效」与重启按钮，切回启动值则消失。Mac 窗口进入 SkyLight 私有 Space 后无法在运行中退回全部普通 Space，因此关闭状态必须从启动时就不委托到私有 Space：render + hit 保持普通层级和全部 Space 可见性，cross-space 写入使用 `skipTransformProcessType` 避免调出 Dock 图标；#640 IME 重叠避让停用，防止 restore 重新委托。Mac 关闭状态遇到前台原生全屏时，1 秒轮询隐藏桌宠、HUD、额度环和更新气泡，审批气泡照常显示。关闭状态的桌宠隐藏使用渲染窗口透明度 0、输入窗口鼠标穿透，恢复时只还原透明度；实测调用 `hide()` 会让退出全屏后的窗口只留在一个 Space，无法继续跟随全部桌面。Windows 的 `reassertWinTopmost` / topmost guard / 拖拽 nudge / HWND 恢复 / watchdog 在关闭状态幂等降级（先 render 后 hit，`isAlwaysOnTop()` 去重），菜单关闭也不重新置顶。Windows 关闭状态下按下桌宠和菜单关闭时，按渲染、输入顺序将两个窗口一起提到普通层最前，避免输入窗口单独盖在别的窗口上。Linux 无维护循环，pref 变更时直接对两个窗口写 `setAlwaysOnTop`。浮层保留各自的 topmost 行为；显式全屏自动隐藏独立控制浮层可见性。
+
 ## State Machine
 
 - 多会话追踪：`sessions` Map 按 `session_id` 独立记录状态，`resolveDisplayState()` 取最高优先级
-- 状态优先级：`error(8) > notification(7) > sweeping(6) > attention(5) > carrying/juggling(4) > working(3) > thinking(2) > idle(1) > sleeping(0)`
+- 状态优先级：`error(8) > notification(7) > sweeping(6) > attention(5) > carrying/juggling(4) > executing(3.5) > working(3) > thinking(2) > idle(1) > sleeping(0)`
+- `executing` 是本机交互式 Claude 主会话的新鲜工具调用提示，使用已有 prompt/tool 关联账本；不是未完成工具计数，也不证明进程已开始运行。普通结果保守回到 `working`，已接受的批次才回到 `thinking`；子代理返回和审批清理不恢复旧的 executing。主题可选提供 `states.executing`，缺少时完整复用 working 的档位、覆盖、稳定抽样与适用的 display hint/眼球跟踪；不注入合成主题绑定。显示时长默认继承主题的 working，Mini 复用 mini-working。Settings 仅在主题自带 executing 素材时显示独立配置卡。
 - 最小显示时长：防止快速闪切（`error=5s`、`attention/notification=4s`、`carrying=3s`、`sweeping=2s`、`working/thinking=1s`）
 - 一次性状态：`attention/error/sweeping/notification/carrying` 显示后自动回退（`AUTO_RETURN_MS`）
 - Codex `PreCompact` 为清扫额外建立按对话的显示持有，普通其他对话活动不会提前切回工作；完成或同对话恢复活动后释放，再按完成提示的最小显示时长回退。丢失完成最多持有 10 分钟，headless 不持有，DND/禁用动画/审批锁保持原有语义。
 - 睡眠序列：20s 鼠标静止 → idle-look → 60s → yawning(3s) → dozing → 10min → collapsing(0.8s) → sleeping；鼠标移动触发 waking(1.5s) → 恢复
 - 逻辑 `idle` 与静置视觉分离：Settings 可为当前主题选择一个常驻 idle 变体，但不改变状态优先级；thinking / working / permission / completion / sleep / reaction / roam 仍会覆盖它，结束后再回到所选视觉
+- 空闲小动作和自由漫步二选一：设置页用 `setIdleBehavior` 一次提交两个键，两个字段的校验器拒绝同时为 true，prefs 读写文件时再归一化。默认关闭的空闲小动作只借用主题的其他状态画面，逻辑状态始终为 `idle`；显示结算后才开始计算时长，结束时只有仍拥有该视觉 generation 才归还静置画面。每次真正进入 idle 重新等待首次延迟，自动漫步返回 idle 不重置。
 - 逻辑状态与真正显示的视觉也彼此分离：所有 state、reaction、随机 idle、低功耗替换和回退都先生成带 `visualGeneration` 的显示请求；renderer 结算后，main 才提交 `{ displayState, file, hitBox, source, visualGeneration }`。原生 hit window、配饰投影与 Presence 只读这份 committed visual，输入窗口仍即时读取逻辑状态做反应门控
 - DND 模式：跳过 dozing，直接 yawning → collapsing → sleeping；同时屏蔽 hook 事件
 - 隐藏桌宠（petHidden，入口：托盘 / 右键菜单 / 快捷键）：语义是「看不见宠物」而非免打扰——隐藏时收起宠物、Session HUD、update bubble 和当时 pending 的权限气泡（恢复显示时回来），但隐藏期间新到的权限请求仍照常弹气泡，这是有意设计、不要当 bug 修；要连权限气泡都静默是 DND 的职责（它有回终端确认的 fallback）。Allow/Deny 全局快捷键跟随「可见气泡」：隐藏期间只要有可见气泡就保持注册，但只作用于可见的请求，收起的旧气泡不会被盲操作（#601）。petHidden 不持久化，重启恢复显示
-- Windows 全屏自动隐藏会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
+- 会议模式（#1382，入口：托盘 / 右键菜单 → 30/60/120 分钟）= 手动 petHidden + DND 的定时组合，由 `src/meeting-mode.js` 驱动，不新增可见性层。进入时快照两者，只打开当时没开的；结束（到时 / 「结束会议模式」/ 用户显示桌宠 / 唤醒）只撤销自己打开的部分，所以进入前就隐藏或已在 DND 的状态会保留。用户显示桌宠（含 Dock 点击、再次启动、移到主显示器）或唤醒先结束会议模式，再执行原动作（toggle 快捷键在会议中只表示「显示」）；会议中退出迷你模式保留 DND，到点恢复不清全屏自动隐藏。`powerMonitor` resume / unlock-screen 重查到期时间；不持久化，和 petHidden / DND 一样重启即恢复。托盘提示和菜单项显示结束时间，不在菜单栏挂文字（共享屏幕时同样可见）。不用 content protection：macOS 15 起 ScreenCaptureKit 忽略 `NSWindow.sharingType`
+- Windows / macOS 显式开启的全屏自动隐藏（#935/#1275）会同时收起桌宠与浮层，并压住全屏期间新到的本地权限请求；退出全屏只恢复仍 pending 且未被其他隐藏条件排除的请求。它不同于手动 petHidden 的新请求例外。隐藏本身不产生决定，远程审批通道与用户配置的 auto-close 仍按原合同运行。
+- 桌宠隐藏期间（手动隐藏、macOS 应用隐藏、全屏自动隐藏，包括 macOS 用透明度隐藏的分支）自由漫步暂停：走到一半在下一帧取消，桌宠停在最后写入的位置，恢复显示后重新等待完整 8 秒。闲置和睡眠计时不受影响。
+- 保留「空闲小动作播放期间自由漫步暂停」的兜底门禁；正常设置下两者互斥。
+- 桌宠隐藏期间页面整页 `visibility: hidden`（`html.pet-hidden`，规则在 `src/styles.css`），不再绘制。页面仍算可见，定时器、素材加载、视觉结算、提示音照常；配饰跟随循环停止、配饰 SVG 文档暂停，恢复显示时按当前姿势重算布局，再按低功耗状态恢复循环和文档。脚本 SVG 的 JS 循环不停，这部分开销还在。主进程在有效隐藏跨边沿时发 `pet-hidden-change`，页面加载后补发当前值（`syncRendererStateAfterLoad`）。
+- `rendering.discreteSampling` 里的 OBJECT 文件提交时，显示缩放不是 100% 就在 SVG 文档根写 `zoom = 1 / devicePixelRatio` 并重建布局树（根需有 `viewBox`；Chromium 只让有效缩放为 1 的 SVG 变换动画上合成线程）；配饰跟随把 `getCTM()` 乘回文档 zoom，换算成页面像素。显示缩放变化后抖动 400 ms 重载当前文档，动画重来一次；其他 OBJECT 文档（Codex 精灵图、Cloudling）和 `<img>` 通道不处理。
+- 配饰跟随在 `rendering.discreteSampling` 的格点上读取位置；文档里有不可采样的动画、光标过渡中或使用分层跟随时退回每帧读取。SMIL 配饰文档的时间线保持暂停，由定时器一秒推进 12 次。
+- macOS 全屏检测只认活动原生 Space（type 4，分屏也算），不识别播放器自行铺满窗口；多屏按活动 Space 判断。默认置顶且自动隐藏关闭时不加载或调用探针。手动「显示桌宠」覆盖当前全屏隐藏，下一次全屏 Space 恢复隐藏。
 - working 子动画：Clawd 主题为 1 个会话 → typing，2 个 → headphones groove，3+ → building；Calico / Cloudling 仍为 typing / juggling / building；官方可下载主题 Hash Sage（可选安装）为执笔制符 / 御剑哈希符文 / 纸灵忙碌协作，Whale-chan（鲸鱼娘，可选安装）为今天也在努力呀 / 魔法添饭 / 雨天踩水
 - juggling 子动画：1 个 subagent → juggling，2+ → conducting（Hash Sage：1 → 御剑哈希符文，2+ → 纸灵忙碌协作；Whale-chan：1+ → 魔法添饭）
 
@@ -57,6 +68,10 @@ Clawd 是主题化桌宠：动画资源、计时、hitbox、眼球追踪参数�
 - 能力缺失时走 `VISUAL_FALLBACK_STATES` 回退链
 - `thinking` / `working` / `juggling` 的视觉在每个 hook 事件都会经 `getSvgOverride` 重新解析。`states.thinking`、无 `workingTiers` 时的 `states.working`、无 `jugglingTiers` 时的 `states.juggling`，以及 tier 的 `files` 列出多个文件时随机抽一个；抽中结果由 `state-visual-resolver.js` 的 `createStableVisualPicker` 按状态保持：同一状态、同一候选列表下重复解析返回同一文件（否则每次工具调用都会换动画）。`applyState` 提交新状态时丢弃其他状态的抽签，候选列表变化（tier 随会话数 / 子代理数切换）或 `refreshTheme` 时重抽。tier 的 `files` 优先于 `file`；两者并存时 `file` 只供旧版本读取，并继续作为 Animation Override 的 tier 键。`displayHintMap` 命中时仍然优先
 - 默认配置集中在 `theme-loader.js` 顶部的 `DEFAULT_*` 常量；loader 保持 stateless，`src/theme-runtime.js` 是唯一 active-theme owner，主题 reload/sync/cache 不得另设模块级真相
+- 明暗外观（外部主题）：`theme.json` 的 `appearance.dark.assetsDir` 指向主题目录内一个真实、非符号链接的同级目录；该目录必须按相对路径完整镜像 `assets/` 的普通文件，深色 SVG 引用的位图也必须位于深色目录。检查函数 `src/theme-appearance.js` 只做这些包体检查，不读位图依赖，也不打日志；loader 命中后才把 `_capabilities.darkAppearance` 置 true，检查失败且主题声明了 `appearance` 时每次加载打一条 `dark appearance unavailable` 警告并继续按浅色加载（strict 也不抛）；缺位图时缓存层另有一条原有的缺位图警告。深色缓存构建发现 `missing raster dependencies` 时（无论 strict 与否）按浅色重新完整加载一遍并把 `_capabilities.darkAppearance` 置 false，因此 idle visual 过滤等派生字段与直接按浅色加载一致
+- 外观选择偏好是 `prefs.themeAppearance = { [themeId]: "light" | "dark" }`，缺少某个主题的键表示跟随系统（`nativeTheme.shouldUseDarkColors`）。runtime 解析成归一化请求值 `_appearanceRequest`：主题没有深色能力时一律为 `"light"`，所以系统翻转不会让无深色主题重载。`loadInitialTheme` / `activateTheme` / `refreshActiveThemeHitboxOverrides` 都带外观加载；`syncActiveThemeAppearance()` 在偏好提交（effect-router）和 `nativeTheme` updated 事件（窗口创建后注册、首次 did-finish-load 兜底一次）时调用，窗口未就绪、请求未变、reload 进行中都不重载，进行中的翻转只记一个 pending 标记，在 `finishThemeReload` 末尾补一次；整个方法是 try/catch，不向 nativeTheme 回调抛错
+- loader 设置 `_assetsSourceDir`（实际源目录）与 `_appearance`（实际 `"light"` / `"dark"`）在 idle visual 过滤之前；`theme-context.js` 的非 SVG 路径和 `getRendererSourceAssetsPath`、动画覆盖预览目录都跟随它。浅色缓存路径保持 `theme-cache/<id>/assets` + `.cache-meta.json`，深色用 `theme-cache/<id>/<assetsDir>` + `.cache-meta-<assetsDir>.json`；官方安装/卸载和普通 `removeThemeDir` 都清整个 `theme-cache/<id>`。动画覆盖选择器仍以浅色 `assets/` 的文件名为准，海报缓存键包含实际资源绝对路径，主题 id 或实际外观变化都 bump 海报 generation
+- 启动主题加载的读取重试（#1295）：更新后首次启动的真实触发原因未证实，文件尚未写完或被占用只是候选。默认读一次，只有 `main.js` 启动调用传 5 次（100/250/500/1000ms 退避）；每个主题最多多等约 1.85 秒，请求主题与回退的 `clawd` 都读不到时约 3.7 秒。读不到、校验失败两条回退都转发预算，不转发 variant/overrides。最后一次尝试中，真实读取/解析错误优先于另一目录的文件不存在；确实不存在时保持 `Theme "x" not found`，有真实错误则附诊断；只要捕获到读取或解析错误，致命的 `Default theme 'clawd' not found` 就带诊断，包括文件不存在。打包版 asar 路径上的 `existsSync` 只看 asar 头，已有 entry 对应的物理文件缺失或被锁时仍可能为 true，因此直接读并检查错误码（ENOENT/ENOTDIR 静默）
 - 变体是白名单 deep-merge；数组和特定字段会整体替换
 - Animation override 是用户 per-slot 覆盖，和作者定义的 variants 正交
 - 配饰是两个独立的主题级槽：`petAccessory` 对应 head，`petMouthAccessory` 对应 mouth。renderer 中两者都是 pet media 的外部兄弟层，固定顺序为 `pet media → head → mouth`，因此 pet tint 不会染到配饰，mouth 也能稳定画在手或 head 配饰之上
@@ -95,7 +110,7 @@ Pages mount only their active panel's content and retain ownership of rendering,
 exit cleanup, drafts, persistence and scrolling. An existing `panels` Map may be
 passed when rebuilding only the sidebar, preserving the mounted page.
 
-设置页按「它是什么东西」分 tab：通用（语言、文字大小、启动与系统）、桌宠（大小、走动、贴边、反应）、通知（声音、托盘闪烁、气泡）、会话（会话 HUD、额度环与提醒、超时清理、会话面板）、权限与审批（本机处理 / IM 渠道 / 局域网审批三个子页，远程渠道的身体由 `settings-tab-telegram-approval.js` 提供；每张渠道卡分三层：卡头一句状态 + 启用开关，没配好只有「开始配置」块，配好后是「连接 / 通知 / 高级」分组加卡底「发送测试」）。每个 tab 的 `patchInPlace` 只认自己渲染的键，别的 tab 的键一律返回 false 交给核心整页重画。新增开关放到它所属对象的 tab 里（例如新的气泡选项进「通知」，新的 HUD 子开关进「会话」），不要塞回「通用」。侧栏分组用 `SIDEBAR_TABS` 项的 `groupStart: true` 标记，渲染时加 `sidebar-item-group-start` 类画分隔线。
+设置页按「它是什么东西」分 tab：通用（语言、文字大小、启动与系统）、桌宠（大小、走动、贴边、置顶、反应）、通知（声音、托盘闪烁、气泡）、会话（会话 HUD、额度环与提醒、超时清理、会话面板）、权限与审批（本机处理 / IM 渠道 / 局域网审批三个子页，远程渠道的身体由 `settings-tab-telegram-approval.js` 提供；每张渠道卡分三层：卡头一句状态 + 启用开关，没配好只有「开始配置」块，配好后是「连接 / 通知 / 高级」分组加卡底「发送测试」）。每个 tab 的 `patchInPlace` 只认自己渲染的键，别的 tab 的键一律返回 false 交给核心整页重画。新增开关放到它所属对象的 tab 里（例如新的气泡选项进「通知」，新的 HUD 子开关进「会话」），不要塞回「通用」。侧栏分组用 `SIDEBAR_TABS` 项的 `groupStart: true` 标记，渲染时加 `sidebar-item-group-start` 类画分隔线。
 
 Tabs use manual activation: arrows/Home/End move focus; Enter/Space/click activate.
 Horizontal tabs leave Up/Down available for scrolling; the vertical sidebar uses
@@ -129,7 +144,7 @@ focus. All non-placeholder cells share the same popover for pointer and keyboard
 inspection, including empty/unknown/future coverage states; native title tooltips
 are omitted. Blur, Escape and body disposal dismiss the popover.
 
-Enumerated values use the existing `buildSegmentedRadio`: Codex permission mode,
+Enumerated values use the existing `buildSegmentedRadio`: Codex "Who handles approvals" (permission mode),
 Feishu platform and ID type, Recap period, and the Permissions/approval choices. Add a
 stable `id` for focus restoration and an accessible name (`ariaLabel` or
 `labelledBy`). Arrows select immediately. `onChange` may return synchronously or
@@ -137,7 +152,7 @@ asynchronously; false/rejection rolls back unless a newer `setValue` snapshot ha
 arrived. `setPending` and `setDisabled` are independent. Pending radios retain
 focus with `aria-disabled` and suppress activation; business-disabled options use
 native disabled. Disposal invalidates asynchronous completions. Pages retain
-cross-render command gates (including Codex permission mode); the primitive does
+cross-render command gates (including Codex "Who handles approvals"); the primitive does
 not persist settings. `onValueSync(value, element)` can update the Codex pill's CSS
 position alongside checked state, including rollback and snapshot updates.
 

@@ -11,9 +11,11 @@ const {
   writeJsonAtomic,
   writeJsonAtomicWithBackup,
   asarUnpackedPath,
-  buildPortableStatuslineCommand,
+  portableWindowsNodeToken,
   decodeWindowsEncodedCommand,
   extractFirstQuotedToken,
+  quotePowerShellSingleArg,
+  unescapePowerShellSingleQuoted,
   windowsPowerShellBin,
 } = require("./json-utils");
 
@@ -53,10 +55,6 @@ function fallbackStdoutForEvent(event) {
 
 function quoteShellSingleArg(value) {
   return `'${String(value).replace(/'/g, "'\\''")}'`;
-}
-
-function quotePowerShellSingleArg(value) {
-  return `'${String(value).replace(/'/g, "''")}'`;
 }
 
 function normalizeFailOpenTimeoutSeconds(options = {}) {
@@ -288,7 +286,7 @@ function extractNodeBinFromCommand(command) {
   const quotedRe = /'((?:''|[^'])*)'|"((?:\\"|[^"])*)"/g;
   let match;
   while ((match = quotedRe.exec(text))) {
-    if (match[1] !== undefined) quotedTokens.push(match[1].replace(/''/g, "'"));
+    if (match[1] !== undefined) quotedTokens.push(unescapePowerShellSingleQuoted(match[1]));
     else quotedTokens.push(match[2].replace(/\\"/g, "\"").replace(/\\\\/g, "\\"));
   }
   for (let i = 1; i < quotedTokens.length; i++) {
@@ -458,15 +456,48 @@ function hasAntigravityStatuslineSettings(homeDir) {
   return fs.existsSync(path.join(homeDir, ".gemini", "antigravity-cli"));
 }
 
-// On Windows this must NOT use quoteWindowsProcessArg for the interpreter:
-// a quoted command token is a string literal under PowerShell and never
-// executes, and agy's statusline runner shell is not pinned down the way
-// its hook runner (cmd) is. buildPortableStatuslineCommand emits a form
-// that parses identically under Git Bash, PowerShell, and cmd.
+// On Windows, Antigravity CLI passes statusLine.command on in a way that turns
+// `"` into literal quote characters in node's argv: agy 1.0.6 fails with
+// `Cannot find module '<cwd>\"D:\...\antigravity-statusline.js"'`. So on
+// Windows neither the interpreter token nor the script path may be
+// double-quoted. A script path with spaces (the installed app lives under
+// "Clawd on Desk") is made space-free with 8.3 short directory names instead.
 function buildAntigravityStatuslineCommand(nodeBin, scriptPath, options = {}) {
   const platform = options.platform || process.platform;
-  if (platform === "win32") return buildPortableStatuslineCommand(nodeBin, scriptPath, options);
+  if (platform === "win32") {
+    const nodeToken = portableWindowsNodeToken(nodeBin);
+    let script = String(scriptPath).replace(/\\/g, "/");
+    const resolveShortDir = options.resolveShortDir
+      || (process.platform === "win32" ? resolveWindowsShortDir : null);
+    if (/\s/.test(script) && resolveShortDir) {
+      // Only the directory is shortened: the file name carries STATUSLINE_MARKER,
+      // which register/unregister use to recognize our own statusLine entry.
+      const shortDir = resolveShortDir(path.posix.dirname(script));
+      if (shortDir && !/\s/.test(shortDir)) {
+        script = `${shortDir.replace(/\\/g, "/")}/${path.posix.basename(script)}`;
+      }
+    }
+    return `${nodeToken} ${script}`;
+  }
   return [nodeBin, scriptPath].map(quoteShellSingleArg).join(" ");
+}
+
+// 8.3 short form of an existing Windows directory, or null if cmd fails. On a
+// volume with 8.3 names disabled cmd echoes the long path back; the caller
+// rejects it because it still has spaces. `/u` makes cmd's built-in echo write
+// UTF-16LE, so non-ASCII names come back intact whatever the console code page is.
+function resolveWindowsShortDir(dir, execSync = require("child_process").execSync) {
+  const winDir = String(dir).replace(/\//g, "\\");
+  try {
+    const out = execSync(`cmd.exe /d /u /c "for %I in ("${winDir}") do @echo %~sI"`, {
+      windowsHide: true,
+      timeout: 5000,
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+    return Buffer.from(out).toString("utf16le").trim() || null;
+  } catch {
+    return null;
+  }
 }
 
 // Antigravity's statusLine setting is a single slot, not an event-keyed map
@@ -563,6 +594,7 @@ module.exports = {
     withFailOpenShellFallback,
     hasAntigravityStatuslineSettings,
     buildAntigravityStatuslineCommand,
+    resolveWindowsShortDir,
   },
 };
 

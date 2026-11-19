@@ -11,6 +11,9 @@ ownership-fenced cleanup required by the secure transport.
 - A local Clawd instance is running
 - Your machine can reach the remote host via the system `ssh`
 - Node.js is installed on the remote
+- For Windows 10/11 remote hosts, enable the built-in OpenSSH Server and put
+  Node.js 14+ on PATH. The default shell can be cmd, PowerShell, or Git Bash;
+  no shell change is needed
 - At least one supported remote agent is installed on the remote: Claude Code, Codex CLI, Copilot CLI, or Hermes Agent
 - For Hermes Agent, Hermes is already installed on the remote and its CLI is
   reachable as `<home>/hermes-agent/venv/bin/hermes`, as `~/.local/bin/hermes`
@@ -30,11 +33,18 @@ the system `ssh` and your system terminal.
    - **SSH port**: defaults to `22`
    - **Private key file**: optional; leave blank to use ssh-agent or `~/.ssh/config`
    - **SSH transport compatibility**: leave **Automatic** for normal hosts and GitHub Codespaces. Use **Force single SSH session** only for another ProxyCommand transport that cannot tolerate overlapping SSH sessions
-   - **Remote forward port**: defaults to `23333`; only change to `23334-23337` when you run multiple profiles against the same remote
+   - **Remote bridge port**: defaults to `23333`; choose another value from
+     `23334-23337` for a profile/port conflict. It is a loopback port for both
+     reverse forwarding and the stdio bridge, not a publicly exposed port
    - **Host prefix**: optional, used in Sessions / Dashboard to disambiguate the remote
 3. If SSH needs first-time host-key confirmation, a passphrase, or an ssh-agent load, click **Authenticate**. Clawd opens a terminal to run a plain `ssh` once. On Windows, **Authenticate / Open Terminal** use a separate Windows Console Host window so Windows Terminal's administrator-profile settings cannot interrupt the session. After SSH exits, the local command prompt stays open so you can read errors; type `exit` to close it.
 4. Click **Deploy / Repair Hooks**, then connect the profile.
-   - Clawd creates a dedicated local ingress for this profile and maintains an `ssh -R` reverse tunnel to that ingress
+   - Clawd creates a dedicated local ingress and uses `ssh -R` by default
+   - For a POSIX jump host that blocks `ssh -R` or rejects multiline commands,
+     select **Jump host mode**, save, then run **Deploy / Repair Hooks** again.
+     This manually selects the bundled SSH stdio bridge, using the same remote loopback port,
+     but carries all hook requests through one ordinary `ssh -T` command and
+     multiplexed stdin/stdout; it does not need `-R` or a firewall-open port
    - It writes a profile identity atomically, pins hooks and the static Claude permission URL to the profile's exact remote port, and never exposes the general local `/state` or `/permission` routes to the tunnel
    - Then it copies hook files from the currently installed Clawd to the resolved remote runtime layout
    - Then it registers Claude Code hooks, Codex official hooks, and Copilot CLI hooks in remote mode when the matching remote agent is installed
@@ -59,7 +69,8 @@ Clawd launches `~/.claude/hooks/codex-remote-monitor.js` as connection
 maintenance. On a serialized transport it finishes this one-shot maintenance
 before starting the persistent reverse tunnel; automatic tunnel reconnects do
 not replay the monitor mutation.
-The fallback is not needed when Codex official hooks are working.
+The fallback is not needed when Codex official hooks are working. It is not
+available on Windows remote hosts; Clawd skips it even if this option is enabled.
 
 ### Hermes Agent scope and activation
 
@@ -100,6 +111,114 @@ The explicit single-session override is intentionally conservative and keyed
 to the effective destination. Change it only while Disconnected. Standard
 SSH targets retain the existing parallel-capable behavior.
 
+## Windows remote hosts
+
+Windows remote deployment supports **Claude Code, Copilot CLI, Codex CLI
+official hooks, and DeepSeek Harness desktop** in `account-default` mode. Hermes Agent, `profile-isolated`
+mode, the Claude quota ring, and the Codex fallback monitor are not supported
+on Windows remote hosts. Deployment skips the unsupported agents and leaves
+any existing Claude statusLine unchanged. Only the Codex CLI is covered;
+Codex Desktop is not verified.
+
+Choose between remote deployment and running Clawd locally on that Windows
+computer. Deployment is refused while its local Clawd is running, or when its
+runtime record cannot establish that it has stopped. Quit that Clawd before
+clicking **Deploy / Repair Hooks**. Remote deployment also removes Clawd's
+Claude auto-start hook, so starting Claude does not launch the local desktop.
+
+Starting local Clawd later takes the hooks back for local use. The next
+**Connect** or reconnect checks the components installed by this deployment
+and reports that the remote hooks need repair if they were taken over.
+Takeover is not checked continuously after a successful connection. If local
+Clawd has **Launch at login** enabled, restarting Windows can automatically
+start it and take the hooks back. Quit it, then deploy again to return to
+remote use. Upgrading that computer's local Clawd from v1.5.0 also removes the
+remote hooks once, because the old uninstaller runs during the upgrade; deploy
+again afterwards.
+
+File permissions rely on the Windows user profile directory's inherited ACLs;
+this does not isolate deployments that share the same Windows account.
+Copilot ignores a `hooks.json` containing a UTF-8 BOM. Clawd removes that BOM
+automatically during deployment and verifies the result.
+
+Codex uses its official hooks under `~\.codex`. After deployment, run
+`/hooks` in the remote Codex TUI to trust the new entries. Removing this
+deployment shifts the group indexes of later third-party hooks, so those may
+need another `/hooks` review too. `hooks.json` must not contain a UTF-8 BOM;
+Clawd repairs it automatically. Deployment only manages `~\.codex` and does
+not follow a custom `CODEX_HOME`. If `~\.codex`, its `hooks.json`, or its
+`config.toml` is a link, deployment is refused. Deployment is also refused
+when `~\.codex\hooks.json` contains a Clawd entry whose ownership cannot be
+confirmed; resolve or remove that entry, then deploy again. When
+`[features].hooks` is explicitly `false` in the remote `config.toml`,
+deployment is refused before any hook or config write; enable it and deploy
+again.
+
+### DeepSeek Harness desktop
+
+On a Windows remote host, Clawd can show DeepSeek Harness desktop session
+state, tool activity and completion, and let you answer its approval requests
+on your Mac. Clicking a session cannot jump to the remote DSH window.
+
+Install DeepSeek Harness desktop on the remote computer and open it at least
+once to create its desktop settings. The supported versions are the same as
+for the [local DSH integration](dsh-setup.md): the `0.2` family from
+`0.2.0-rc.2`, and the `0.1` family from `0.1.0-rc.6`. Sign in to that Windows
+desktop before deploying. If SSH uses an administrator account, Clawd uses a
+one-time scheduled task to install the DSH plugin with your ordinary user
+permissions in that desktop session, then deletes the task. After deployment,
+**restart DeepSeek Harness desktop on the remote computer** for the new
+connection to take effect. A verified deployment also enables DeepSeek Harness
+in the Mac's Clawd settings.
+
+Choose either the remote connection or that computer's local Clawd for DSH.
+If local Clawd already connects to DSH, deployment asks for confirmation
+before switching it to remote use. Starting local Clawd later does not take
+the DSH connection back automatically. To switch back, open Clawd on that
+computer and repair its DeepSeek Harness integration in Settings. Other
+agents' hooks still follow the local takeover behavior described above.
+
+DSH remote support does not cover the web version (`dsh web`), headless use,
+Linux or macOS remote hosts, or `profile-isolated` mode. A host without DSH
+desktop keeps the existing deployment behavior for other agents, including
+when its unused DSH data folder is a link.
+
+The deployment log's DSH messages mean:
+
+| Reason | What to do |
+| --- | --- |
+| `dsh_asset_upload_failed` | Connection files could not be uploaded. Check SSH and remote folder permissions, then run **Deploy / Repair Hooks** again. |
+| `bridge-ownership-conflict` | An existing DSH plugin could not be confirmed as Clawd's. Check it on the remote computer before deploying again. |
+| `dsh_desktop_ambiguous` | More than one desktop installation was found. Keep the one you want to use, then deploy again. |
+| `dsh_desktop_unreadable` | The desktop installation could not be checked. Check access to its installation folder, then deploy again. |
+| `dsh_home_ambiguous` | More than one possible data folder was found. Check `DSH_HOME` and the default `~\.dsh` folder, then deploy again. |
+| `dsh-home-changed` | The data folder differs from the previous deployment. Restore the previous folder, or clean up that deployment before deploying to the new folder. |
+| `inspection-required` | The previous installation needs manual checking. Check the remote integration, lift the pause as described below, then run **Deploy / Repair Hooks**. |
+| `dsh_install_failed` | The DSH connection could not be installed. Check the deployment log and remote file permissions, then deploy again. |
+| `installer_result_unknown` | Installation did not return a confirmed result. Check the remote integration before retrying; lift any installation pause only after checking it. |
+| `dsh_local_migration_required` | Local Clawd already connects to DSH. Confirm to switch to remote use; to switch back later, repair the DSH integration in that computer's local Clawd settings. |
+| `dsh_profile_unreadable` | Desktop settings could not be read. Check the contents and access permissions of `package.json` under the desktop data folder, then deploy again. |
+| `dsh_readback_failed` | Installation finished, but the connection could not be verified. Check the remote integration, then deploy again. |
+| `version-unsupported` | Use a DSH version supported by the local integration, then deploy again. |
+| `windows_dsh_cleanup_incomplete` | Plugin files or references in DSH settings remain, or could not be checked. Run **Deploy / Repair Hooks** first, then try cleanup again. |
+| `windows_dsh_desktop_session_required` | Sign in to the remote Windows desktop, then deploy again so the plugin can be installed with ordinary user permissions. |
+| `dsh_discovery_incomplete` | This is a warning: other integrations were deployed, but DSH was skipped because its installation could not be fully checked. Check DSH on the remote computer and deploy again if needed. |
+
+If an installed desktop app's DSH data or remote connection folders contain
+links, deployment reports `path_link`. Check those folders before retrying;
+this check does not block computers without DSH desktop.
+
+To lift an installation pause **after manually checking the remote DSH
+integration**, run the following in PowerShell on that computer. Replace the
+placeholder with this deployment's 64-character folder name under
+`~\.clawd\remote-integrations\deepseek-harness`; check its `deployment.json`
+to identify the correct deployment. This only lifts the pause; it does not
+repair or approve the integration. Then run **Deploy / Repair Hooks** on your Mac.
+
+```powershell
+node "$env:USERPROFILE\.claude\hooks\dsh-install.js" --remote-clear-latch --profile desktop --remote-root "$env:USERPROFILE\.clawd\remote-integrations\deepseek-harness" --install-id '<deployment install ID>'
+```
+
 ## Key concepts
 
 The `127.0.0.1:<port>` shown in Doctor is normal — it's the Clawd HTTP service
@@ -110,12 +229,69 @@ The actual chain is:
 
 ```
 Remote Claude/Codex/Copilot/Hermes hook
-  -> POST http://127.0.0.1:<remote forward port>
+  -> POST http://127.0.0.1:<remote bridge port>
   -> SSH reverse tunnel
   -> Profile-bound local ingress (routing nonce verified)
   -> Local Clawd state / permission handlers (canonical profile session ID)
   -> Dashboard / Session HUD / pet state
 ```
+
+When you select **Jump host mode** and redeploy, the transport is:
+
+```
+Remote hook
+  -> POST http://127.0.0.1:<remote port>
+  -> bundled SSH stdio bridge on the remote
+  -> multiplexed SSH stdin/stdout
+  -> profile-bound local ingress
+  -> Local Clawd state / permission handlers
+```
+
+Jump host mode currently supports ordinary POSIX SSH targets using the
+parallel transport. It cannot be deployed to Windows remote hosts or serialized
+transports, including automatically detected Codespaces. Switching into or out
+of this mode requires redeployment; Clawd never switches modes automatically. The remote port remains a loopback-only
+listener inside that host, so it does not need to be exposed by the remote
+firewall or belong to an externally open port range.
+
+The bridge runs headlessly as an SSH exec child. `ssh -T` disables a pseudo
+terminal, and Clawd uses only that child's piped stdin/stdout. No Terminal
+window, PTY, or persistent terminal tab is required. **Authenticate / Open
+Terminal** remains only for first-time host-key confirmation, passphrase entry,
+or manual SSH troubleshooting.
+
+The **Remote bridge port** is shared by both transport modes. Clawd keeps it in
+the bounded `23333–23337` range so the deployed identity and hook URLs remain
+predictable. It does not need an arbitrary custom value or a public firewall
+rule. If the selected port is already in use, choose another value from that
+range, run **Deploy / Repair Hooks** again, and reconnect.
+
+## Debugging a connection
+
+The detail panel shows the selected tunnel transport, live status, last error,
+deployment progress, local ingress port, and accepted/rejected ingress counts.
+Click **Copy diagnostics** to copy a redacted report containing those fields
+and ready-to-run remote checks. It does not include the routing nonce, private
+key path, hook payloads, or approval contents.
+
+The remote checks are ordinary read-only SSH commands:
+
+```bash
+# Is the selected loopback bridge port listening?
+ssh remote-host 'ss -ltn | grep :23333 || netstat -ltn | grep :23333'
+
+# Is the stdio bridge process running?
+ssh remote-host "ps -ef | grep '[r]emote-ssh-stdio-bridge.js'"
+
+# Last delivery error written by remote hooks, if any
+ssh remote-host 'tail -n 100 ~/.clawd/remote-last-error.log'
+```
+
+Use **Open Terminal** in the profile for first-time host-key checks or manual
+SSH diagnostics. A connected profile should show a nonzero ingress accepted
+count after an agent emits its first hook. A growing rejected count usually
+means the remote hooks no longer match the current deployment identity; run
+**Deploy / Repair Hooks** again.
 
 So "Connected" only means the tunnel is up. For a remote session to actually
 appear in the Dashboard, you still need:
@@ -192,7 +368,7 @@ change the profile while it says **Reconnecting**.
 
 On a first connection, or if the port is still unavailable after that bounded
 recovery, the conflict may be persistent. Try again later, or choose an unused
-**Remote forward port** from `23333-23337`. If you change the port, run
+**Remote bridge port** from `23333-23337`. If you change the port, run
 **Deploy / Repair Hooks** before **Connect**: the secure identity, hook target,
 permission URL, and health probe are pinned to one exact port. Clawd blocks an
 ordinary Connect until the edited target has been deployed.
@@ -207,11 +383,37 @@ Deployment fails at the `check-node` step. Install Node.js on the remote first,
 then redeploy. The security boundary comes from the pinned identity and
 dedicated ingress, not from port secrecy.
 
+Some managed or audited SSH gateways reject remote commands that contain
+literal line breaks. For POSIX targets, Clawd streams the Node discovery
+script over stdin and sends deploy scripts as a single base64-encoded shell
+argument. This preserves commands that also read a JSON or binary stdin
+payload, and requires only the standard `base64` utility on the remote.
+
 Hermes does not change this: its deployment phase also runs through the remote
 Node runtime, while the installed plugin itself runs under Hermes' own
 virtualenv Python. If the Hermes phase fails because the `hermes` CLI cannot be
 resolved, make it reachable as `<home>/hermes-agent/venv/bin/hermes`, as
 `~/.local/bin/hermes`, or as `hermes` on the non-login `PATH`, then redeploy.
+
+### Remote has no Node.js (Windows)
+
+Install Node.js 14+ on the Windows remote and make `node` available on PATH to
+the OpenSSH session, then run **Deploy / Repair Hooks** again. A Node version
+manager available only in an interactive shell is not enough. If the Node
+executable on PATH changes after deployment, deploy again to verify its new
+path. Changing the OpenSSH default shell is not required.
+
+### Remote hooks were taken over by local Clawd
+
+Quit Clawd on the Windows remote, then run **Deploy / Repair Hooks**. Local
+Clawd restores local hooks when it starts, including after Windows restarts
+if **Launch at login** is enabled. This applies to Claude Code, Copilot CLI,
+and Codex CLI hooks. The warning appears on the next connection or reconnect,
+rather than during an already healthy connection. If Clawd cannot read or
+parse the hook configuration, it reports that verification failed; check file
+access and JSON before reconnecting or redeploying. For Codex, a missing or
+BOM-prefixed `~\.codex\hooks.json` also requires a fresh deployment and
+`/hooks` review.
 
 ### Can I open the SSH tunnel manually?
 

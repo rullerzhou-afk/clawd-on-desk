@@ -1,4 +1,5 @@
 "use strict";
+const { linkForRejection } = require("./fs-link-fixtures");
 
 const test = require("node:test");
 const assert = require("node:assert");
@@ -750,7 +751,7 @@ test("an invalid inspection record stops an explicit repair before any command",
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));
@@ -778,7 +779,7 @@ test("an invalid inspection record stops an uninstall before remove", async (t) 
         if (injected) return;
         injected = true;
         fs.mkdirSync(path.dirname(latch), { recursive: true });
-        fs.symlinkSync(path.join(harness.root, "missing-inspection-record"), latch);
+        linkForRejection(path.join(harness.root, "missing-inspection-record"), latch);
       },
     },
   }));
@@ -807,7 +808,7 @@ test("an invalid inspection record stops an install that would add", async (t) =
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));
@@ -836,7 +837,7 @@ test("an invalid inspection record stops confirming a previous removal", async (
         if (replaced) return;
         replaced = true;
         fs.unlinkSync(latch);
-        fs.symlinkSync(external, latch);
+        linkForRejection(external, latch);
       },
     },
   }));

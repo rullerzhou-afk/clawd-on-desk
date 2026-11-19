@@ -20,6 +20,7 @@ describe("settings agent order", () => {
 
   it("treats agents with detail rows as collapsible", () => {
     assert.strictEqual(isAgentCollapsible({ capabilities: { permissionApproval: true } }), true);
+    assert.strictEqual(isAgentCollapsible({ capabilities: { approvalReminder: true } }), true);
     assert.strictEqual(isAgentCollapsible({ capabilities: { interactiveBubble: true } }), true);
     assert.strictEqual(isAgentCollapsible({ capabilities: { notificationHook: true } }), true);
     assert.strictEqual(isAgentCollapsible({ capabilities: { permissionApproval: false, interactiveBubble: false, notificationHook: false } }), false);

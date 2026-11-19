@@ -15,8 +15,10 @@
 
 const childProcess = require("child_process");
 const crypto = require("crypto");
+const { probeRemotePlatform, windowsFailureHint } = require("./remote-ssh-platform");
 const {
   deploy,
+  verifyLocalHookFiles,
   startCodexMonitor,
   stopCodexMonitor,
   uninstallRemoteIntegrations,
@@ -25,6 +27,7 @@ const {
 } = require("./remote-ssh-deploy");
 const {
   buildSshArgs,
+  shouldSuggestGatewayMode,
   checkSecureConnectReadiness,
   tunnelTargetKey,
 } = require("./remote-ssh-runtime");
@@ -91,6 +94,7 @@ function registerRemoteSshIpc(options = {}) {
     : () => null;
   // Test-only injection points. Production main.js never overrides these.
   const deployFn = options.deployFn || deploy;
+  const probeRemotePlatformFn = options.probeRemotePlatformFn || probeRemotePlatform;
   const startCodexMonitorFn = options.startCodexMonitorFn || startCodexMonitor;
   const stopCodexMonitorFn = options.stopCodexMonitorFn || stopCodexMonitor;
   const uninstallRemoteIntegrationsFn = options.uninstallRemoteIntegrationsFn || uninstallRemoteIntegrations;
@@ -326,7 +330,12 @@ function registerRemoteSshIpc(options = {}) {
         deployTargetFingerprint(requestedProfile),
         deployTargetFingerprint(latest),
       );
-      const shouldResume = policy && policy.resume === "if-desired"
+      const platformBlocked = result && (result.reason === "windows_node_missing"
+        || result.reason === "windows_node_changed"
+        || result.reason === "windows_profile_isolated_unsupported"
+        || result.reason === "windows_platform_snapshot_required"
+        || (result.hint && result.hint === windowsFailureHint(result.reason)));
+      const shouldResume = !platformBlocked && policy && policy.resume === "if-desired"
         && !(primaryError && (primaryError.reason === "profile_changed"
           || primaryError.reason === "transport_inspection_failed"))
         && intent.desiredConnected === true
@@ -335,7 +344,7 @@ function registerRemoteSshIpc(options = {}) {
         && !targetDrift;
       const disconnectedDuringOperation = intent.desiredConnected === false
         && intent.intentGeneration !== intentAtAdmission.intentGeneration;
-      if (!shouldResume && disconnectedDuringOperation
+      if (!platformBlocked && !shouldResume && disconnectedDuringOperation
         && policy && policy.stopMonitorWhenDisconnected === true
         && latest && latest.autoStartCodexMonitor === true && latest.remoteHome) {
         let monitorProfile = null;
@@ -1048,6 +1057,12 @@ function registerRemoteSshIpc(options = {}) {
           ...target,
           id: profile.id,
           autoStartCodexMonitor: profile.autoStartCodexMonitor === true,
+          // managedDeployTargets only carries ownership fields, but Windows
+          // cleanup re-probes the remote Node and must compare it against the
+          // node detector recorded on the owning profile.
+          detectedRemoteNodeBin: profile.detectedRemoteNodeBin,
+          detectedRemoteNodeVersion: profile.detectedRemoteNodeVersion,
+          detectedRemoteNodeSource: profile.detectedRemoteNodeSource,
         };
         if (!cleanupProfile.installId
           || cleanupProfile.installId !== binding.installId
@@ -1191,6 +1206,9 @@ function registerRemoteSshIpc(options = {}) {
     }
     const profile = findProfile(settingsController, id);
     if (!profile) return { status: "error", message: "profile not found" };
+    if (profile.remotePlatform === "win32" && runtimeMode === "profile-isolated") {
+      return { status: "error", reason: "windows_profile_isolated_unsupported", hint: windowsFailureHint("windows_profile_isolated_unsupported") };
+    }
     if (!profile.runtimeModeTxn
       && (profile.runtimeMode || "account-default") === runtimeMode) {
       return { status: "ok", noop: true };
@@ -1438,6 +1456,12 @@ function registerRemoteSshIpc(options = {}) {
         message: "Profile-isolated runtime is gated until the real SSH and CLI validation matrix is complete.",
       };
     }
+    const verification = verifyLocalHookFiles({ hooksDir, isPackaged });
+    if (!verification.ok) {
+      const message = redactTransportDiagnostic(verification.message, profile);
+      remoteSshRuntime.emit("progress", { profileId: profile.id, step: verification.step, status: "fail", message, hint: null });
+      return { status: "error", step: verification.step, message, reason: verification.reason, hint: null };
+    }
     destructiveProfileOperations.set(id, "deploy");
     try {
       return await withManagedTransport(
@@ -1450,13 +1474,57 @@ function registerRemoteSshIpc(options = {}) {
         },
         async ({ profile, runtime, inspection, transportContext }) => {
       if (transportContext) transportContext.assertActive();
+      const targetBeforeProbe = localTargetFingerprint(profile);
+      const deployTargetBeforeProbe = deployTargetFingerprint(profile);
+      const platformSnapshot = await probeRemotePlatformFn({ profile, spawn, buildSshArgs, runtime });
+      if (transportContext) transportContext.assertActive();
+      const currentTarget = findProfile(settingsController, profile.id);
+      if (!currentTarget
+        || localTargetFingerprint(currentTarget) !== targetBeforeProbe
+        || deployTargetDrift(deployTargetBeforeProbe, deployTargetFingerprint(currentTarget))) {
+        return { status: "error", reason: "profile_changed", message: "SSH target changed during platform discovery; retry deployment." };
+      }
+      const platformFailure = !platformSnapshot.ok ? { ...platformSnapshot } : null;
+      if (platformFailure && !platformFailure.hint && shouldSuggestGatewayMode(
+        profile, platformFailure.step, platformFailure.stderr || platformFailure.message, platformFailure.code,
+      )) {
+        platformFailure.helpHint = "remoteSshGatewayHelp";
+      }
+      if (platformFailure) {
+        runtime.emit("progress", {
+          profileId: profile.id, step: platformFailure.step, status: "fail",
+          message: platformFailure.message, hint: platformFailure.hint, helpHint: platformFailure.helpHint,
+        });
+        return { ...platformFailure, status: "error" };
+      }
+      if (profile.tunnelMode === "stdio"
+        && (inspection.mode === "serialized" || platformSnapshot.remotePlatform === "win32")) {
+        const failure = {
+          status: "error",
+          reason: "stdio_unsupported",
+          hint: "remoteSshErrGatewayUnsupported",
+          message: "Jump host mode requires a POSIX remote and parallel SSH sessions. Choose Automatic for Codespaces, forced single-session transports, or Windows remotes.",
+        };
+        runtime.emit("progress", {
+          profileId: profile.id, step: "remote-shell", status: "fail",
+          message: failure.message, hint: failure.hint,
+        });
+        return failure;
+      }
       const begin = await settingsController.applyCommand("remoteSsh.beginIdentityRotation", {
         id: profile.id,
+        remotePlatform: platformSnapshot.remotePlatform,
+        expectedTarget: { ...profile },
       });
       if (transportContext) transportContext.assertActive();
       if (!begin || begin.status !== "ok") {
+        const hint = begin && begin.reason === "identity_txn_platform_mismatch"
+          ? windowsFailureHint(begin.reason) : null;
+        if (hint) runtime.emit("progress", { profileId: profile.id, step: "identity", status: "fail", message: begin.message, hint });
         return {
+          ...(hint ? { hint } : {}),
           status: "error",
+          ...(begin && begin.reason ? { reason: begin.reason } : {}),
           message: (begin && begin.message) || "could not start secure identity transaction",
         };
       }
@@ -1464,8 +1532,13 @@ function registerRemoteSshIpc(options = {}) {
       if (!deployProfile || !deployProfile.identityTxn) {
         return { status: "error", message: "secure identity transaction was not persisted" };
       }
+      if (localTargetFingerprint(deployProfile) !== targetBeforeProbe
+        || deployTargetDrift(deployTargetBeforeProbe, deployTargetFingerprint(deployProfile))) {
+        return { status: "error", reason: "profile_changed", message: "SSH target changed before deployment; retry deployment." };
+      }
       const result = await deployFn({
         profile: deployProfile,
+        platformSnapshot,
         installId: profile.installId,
         identityTxn: deployProfile.identityTxn,
         legacyMigrationConfirmed,
@@ -1510,15 +1583,8 @@ function registerRemoteSshIpc(options = {}) {
         // (remote-ssh-profile.js), or profiles using the missing field
         // false-positive as drifted on every deploy.
         const expectedTarget = {
-          host: profile.host,
-          port: profile.port,
-          identityFile: profile.identityFile,
-          remoteForwardPort: profile.remoteForwardPort,
-          hostPrefix: profile.hostPrefix,
-          chainStatusline: profile.chainStatusline,
-          runtimeMode: profile.runtimeMode,
-          runtimeKey: profile.runtimeKey,
-          layoutVersion: profile.layoutVersion,
+          ...deployTargetFingerprint(profile),
+          dshInstalled: result.dshBridgeInstalled === true,
         };
         let stampWarning = null;
         try {
@@ -1527,6 +1593,7 @@ function registerRemoteSshIpc(options = {}) {
             deployedAt: Date.now(),
             expectedTarget,
             remoteNode: result.remoteNode,
+            remotePlatform: platformSnapshot.remotePlatform,
             installId: profile.installId,
             remoteHome: result.layout && result.layout.remoteHome,
             isolation: result.isolation,
@@ -1595,8 +1662,36 @@ function registerRemoteSshIpc(options = {}) {
             );
           }
         }
+        if (result.dshBridgeInstalled === true) {
+          // Same Settings → Agents path as Hermes: open the local gate so the
+          // remote bridge's state and approvals are accepted. Never touch
+          // integrationInstalled.
+          let localDshEnable = null;
+          try {
+            localDshEnable = await settingsController.applyCommand("setAgentFlag", {
+              agentId: "deepseek-harness",
+              flag: "enabled",
+              value: true,
+            });
+          } catch (err) {
+            localDshEnable = { status: "error", message: (err && err.message) || "setAgentFlag threw" };
+          }
+          if (transportContext) transportContext.assertActive();
+          if (!localDshEnable || localDshEnable.status !== "ok") {
+            log("remote-ssh: DSH deployed remotely but could not be enabled locally:",
+              (localDshEnable && localDshEnable.message) || "setAgentFlag returned non-ok");
+          }
+        }
         refreshRuntimeProfile(profile.id);
-        return { status: "ok", hermes: result.hermes || null, ...(stampWarning || {}) };
+        return {
+          status: "ok",
+          codexHooksInstalled: result.codexHooksInstalled === true,
+          hermes: result.hermes || null,
+          dshBridgeInstalled: result.dshBridgeInstalled === true,
+          dshRestartRequired: result.dshRestartRequired === true,
+          ...(result.dshDiscoveryWarning ? { dshDiscoveryWarning: result.dshDiscoveryWarning } : {}),
+          ...(stampWarning || {}),
+        };
       }
       return {
         status: "error",
@@ -1604,6 +1699,7 @@ function registerRemoteSshIpc(options = {}) {
         step: result.step,
         reason: result.reason || null,
         hint: result.hint || null,
+        ...(result.helpHint ? { helpHint: result.helpHint } : {}),
       };
         },
       );
@@ -1613,6 +1709,7 @@ function registerRemoteSshIpc(options = {}) {
         ...(err && (err.reason || err.code) ? { reason: err.reason || err.code } : {}),
         ...(err && err.recoveryCode ? { recoveryCode: err.recoveryCode } : {}),
         ...(err && err.resumeWarning ? { resumeWarning: err.resumeWarning } : {}),
+        ...(err && err.hint ? { hint: err.hint } : {}),
         message: (err && err.message) || "deploy threw",
       };
     } finally {

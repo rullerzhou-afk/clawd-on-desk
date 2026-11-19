@@ -1,76 +1,122 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="-15 -25 45 45" width="500" height="500">
   <defs>
     <style>
+      /* Crabwalk (Free Roam walk + mini-mode entry).
+         t=0 is exactly the rest pose of clawd-idle-follow.svg. A one-shot
+         0.3 s intro (wrappers, fill forwards) eases from rest into the
+         stride: a tiny back-dip, then the forward lean toward the
+         destination (right; the renderer mirrors for left) and the eyes
+         sliding right. The looping motion starts after it (delay 0.3 s) and
+         is centered on the rest position, so the walk can be cut at any
+         phase without a visible jump. */
+
+      /* --- One-shot intro wrappers --- */
+      .walk-intro {
+        transform-origin: 7.5px 15px;
+        animation: walk-intro 0.3s 1 ease-out forwards;
+      }
+      .shadow-intro {
+        transform-origin: 7.5px 15.5px;
+        animation: shadow-intro 0.3s 1 ease-out forwards;
+      }
+      .eyes-intro {
+        animation: eyes-intro 0.3s 1 ease-out forwards;
+      }
+
+      @keyframes walk-intro {
+        0%   { transform: translate(0, 0) rotate(0deg); }
+        40%  { transform: translate(-0.3px, 0) rotate(-0.4deg); }
+        100% { transform: translate(0, 0) rotate(1deg); }
+      }
+      @keyframes shadow-intro {
+        0%   { transform: scale(1, 1); opacity: 1; }
+        100% { transform: scale(0.9, 1); opacity: 0.8; }
+      }
+      @keyframes eyes-intro {
+        0%   { transform: translateX(0); }
+        100% { transform: translateX(2px); }
+      }
+
+      /* --- Looping stride (starts after the intro) --- */
       .body-hunch {
         transform-origin: 7.5px 15px;
-        animation: hunch-walk 2s infinite alternate ease-in-out;
+        animation: hunch-walk 4s 0.3s infinite linear;
       }
-      .leg-1 { animation: sneak-1 0.5s infinite linear; transform-origin: top center; transform-box: fill-box; }
-      .leg-2 { animation: sneak-2 0.5s infinite linear; transform-origin: top center; transform-box: fill-box; }
       .shadow-sneak {
         transform-origin: 7.5px 15.5px;
-        animation: shadow-shift 2s infinite alternate ease-in-out;
+        animation: shadow-shift 4s 0.3s infinite linear;
       }
+      .leg-1 { animation: sneak-1 0.5s 0.3s infinite linear; transform-origin: top center; transform-box: fill-box; }
+      .leg-2 { animation: sneak-1 0.5s 0.55s infinite linear; transform-origin: top center; transform-box: fill-box; }
 
-      /* Sneaking forward and backward */
+      /* Sneaking forward and back around the rest spot (sine-like, 4 s =
+         the old 2 s alternate there-and-back) */
       @keyframes hunch-walk {
-        0% { transform: translate(-2px, 1px) rotate(2deg); }
-        100% { transform: translate(3px, 1px) rotate(2deg); }
+        0%   { transform: translate(0, 0) rotate(0deg); animation-timing-function: cubic-bezier(0.61, 1, 0.88, 1); }
+        25%  { transform: translate(0.8px, 0) rotate(0.4deg); animation-timing-function: cubic-bezier(0.37, 0, 0.63, 1); }
+        75%  { transform: translate(-0.8px, 0) rotate(-0.4deg); animation-timing-function: cubic-bezier(0.12, 0, 0.39, 0); }
+        100% { transform: translate(0, 0) rotate(0deg); }
       }
       @keyframes shadow-shift {
-        0% { transform: translateX(-2px) scale(0.9); opacity: 0.4; }
-        100% { transform: translateX(3px) scale(0.9); opacity: 0.4; }
+        0%   { transform: translateX(0); animation-timing-function: cubic-bezier(0.61, 1, 0.88, 1); }
+        25%  { transform: translateX(0.89px); animation-timing-function: cubic-bezier(0.37, 0, 0.63, 1); }
+        75%  { transform: translateX(-0.89px); animation-timing-function: cubic-bezier(0.12, 0, 0.39, 0); }
+        100% { transform: translateX(0); }
       }
 
-      /* Fast tiptoe / sneak leg movement */
+      /* Fast tiptoe / sneak legs: each pair lifts once every 0.5 s,
+         alternating (leg-2 is half a step behind) */
       @keyframes sneak-1 {
         0%, 100% { transform: rotate(0deg) scaleY(1); }
         50% { transform: rotate(-25deg) scaleY(0.7); }
       }
-      @keyframes sneak-2 {
-        0%, 100% { transform: rotate(-25deg) scaleY(0.7); }
-        50% { transform: rotate(0deg) scaleY(1); }
-      }
 
-      /* Eyes: look right (toward destination), occasionally glance back and blink */
+      /* Eyes: look right (held by .eyes-intro at +2), occasionally glance
+         back and blink. Offsets are relative to that +2. */
       .eyes-crabwalk {
         transform-origin: 7.5px 9px;
-        animation: crab-eyes 5s infinite ease-in-out;
+        animation: crab-eyes 5s 0.3s infinite ease-in-out;
       }
       @keyframes crab-eyes {
-        0%, 55%  { transform: translateX(2px) scaleY(1); }
-        62%      { transform: translateX(0) scaleY(1); }
-        66%      { transform: translateX(0) scaleY(0.1); }
-        70%      { transform: translateX(0) scaleY(1); }
-        75%      { transform: translateX(0) scaleY(0.1); }
-        80%, 85% { transform: translateX(0) scaleY(1); }
-        92%, 100% { transform: translateX(2px) scaleY(1); }
+        0%, 55%  { transform: translateX(0) scaleY(1); }
+        62%      { transform: translateX(-2px) scaleY(1); }
+        66%      { transform: translateX(-2px) scaleY(0.1); }
+        70%      { transform: translateX(-2px) scaleY(1); }
+        75%      { transform: translateX(-2px) scaleY(0.1); }
+        80%, 85% { transform: translateX(-2px) scaleY(1); }
+        92%, 100% { transform: translateX(0) scaleY(1); }
       }
     </style>
   </defs>
 
-  <rect id="ground-shadow" class="shadow-sneak" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+  <g class="shadow-intro">
+    <rect id="ground-shadow" class="shadow-sneak" x="3" y="15" width="9" height="1" fill="#000000" opacity="0.5"/>
+  </g>
 
-  <g class="body-hunch">
-    <g id="legs" fill="#DE886D">
-      <rect id="outer-left-leg" class="leg-1" x="3" y="13" width="1" height="2"/>
-      <rect id="inner-left-leg" class="leg-2" x="5" y="13" width="1" height="2"/>
-      <rect id="inner-right-leg" class="leg-1" x="9" y="13" width="1" height="2"/>
-      <rect id="outer-right-leg" class="leg-2" x="11" y="13" width="1" height="2"/>
-    </g>
+  <g class="walk-intro">
+    <g class="body-hunch">
+      <g id="legs" fill="#DE886D">
+        <rect id="outer-left-leg" class="leg-1" x="3" y="13" width="1" height="2"/>
+        <rect id="inner-left-leg" class="leg-2" x="5" y="13" width="1" height="2"/>
+        <rect id="inner-right-leg" class="leg-1" x="9" y="13" width="1" height="2"/>
+        <rect id="outer-right-leg" class="leg-2" x="11" y="13" width="1" height="2"/>
+      </g>
 
-    <g id="body-color-group" fill="#DE886D">
-      <rect id="torso" x="2" y="6" width="11" height="7"/>
-      <!-- Left arm (normal pose) -->
-      <rect id="left-arm" x="0" y="9" width="2" height="2"/>
-      <!-- Right arm (normal pose, no magnifying glass) -->
-      <rect id="right-arm" x="13" y="9" width="2" height="2"/>
-    </g>
+      <g id="body-color-group" fill="#DE886D">
+        <rect id="torso" x="2" y="6" width="11" height="7"/>
+        <!-- Left arm (normal pose) -->
+        <rect id="left-arm" x="0" y="9" width="2" height="2"/>
+        <!-- Right arm (normal pose, no magnifying glass) -->
+        <rect id="right-arm" x="13" y="9" width="2" height="2"/>
+      </g>
 
-    <!-- Eyes: look right, occasionally glance back + blink -->
-    <g class="eyes-crabwalk" fill="#000000">
-      <rect x="4" y="8" width="1" height="2"/>
-      <rect x="10" y="8" width="1" height="2"/>
+      <!-- Eyes: look right, occasionally glance back + blink -->
+      <g id="eyes" class="eyes-intro" fill="#000000">
+        <g class="eyes-crabwalk">
+          <rect x="4" y="8" width="1" height="2"/>
+          <rect x="10" y="8" width="1" height="2"/>
+        </g>
+      </g>
     </g>
   </g>
 </svg>

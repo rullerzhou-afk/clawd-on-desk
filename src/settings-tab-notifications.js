@@ -13,6 +13,8 @@
     "hideBubbles",
     "permissionBubblesEnabled",
     "notificationBubbleAutoCloseSeconds",
+    "claudeTurnAskReminder",
+    "claudeTurnAskReminderMinutes",
     "updateBubbleAutoCloseSeconds",
     "bubbleFollowPet",
     "bubbleFollowPreference",
@@ -29,9 +31,10 @@
     "bubbleFollowPreference",
     "bubbleFixedCorner",
   ]);
-  const FLASH_NUMBER_KEYS = new Set([
+  const NUMBER_INPUT_KEYS = new Set([
     "flashIntervalMs",
     "flashDurationMs",
+    "claudeTurnAskReminderMinutes",
   ]);
   const BUBBLE_SECONDS_AUTO_COMMIT_DELAY_MS = 600;
 
@@ -727,6 +730,23 @@
         descKey: "bubbleNotificationDesc",
         secondsKey: "notificationBubbleAutoCloseSeconds",
       }),
+      // #1326 follow-up: opt-in reminder for an unanswered Claude Desktop
+      // end-of-turn question.
+      helpers.buildSwitchRow({
+        key: "claudeTurnAskReminder",
+        labelKey: "rowClaudeTurnAskReminder",
+        descKey: "rowClaudeTurnAskReminderDesc",
+      }),
+      helpers.buildNumberInputRow({
+        key: "claudeTurnAskReminderMinutes",
+        labelKey: "rowClaudeTurnAskReminderMinutes",
+        descKey: "rowClaudeTurnAskReminderMinutesDesc",
+        unitKey: "unitMinutes",
+        toDisplay: (minutes) => minutes,
+        fromDisplay: (v) => Math.max(1, Math.min(120, Math.round(v))),
+        min: 1,
+        max: 120,
+      }).row,
       buildBubbleCategoryControl({
         category: "update",
         labelKey: "bubbleUpdateLabel",
@@ -754,9 +774,9 @@
       && !getMountedBubblePlacement()) {
       return false;
     }
-    if (keys.some((key) => FLASH_NUMBER_KEYS.has(key))) {
+    if (keys.some((key) => NUMBER_INPUT_KEYS.has(key))) {
       for (const key of keys) {
-        if (!FLASH_NUMBER_KEYS.has(key)) continue;
+        if (!NUMBER_INPUT_KEYS.has(key)) continue;
         const meta = state.mountedControls.sessionCleanupControls.get(key);
         if (!meta || !document.body.contains(meta.row)) return false;
       }
@@ -769,7 +789,7 @@
         continue;
       }
       if (BUBBLE_PLACEMENT_KEYS.has(key)) continue;
-      if (FLASH_NUMBER_KEYS.has(key)) continue;
+      if (NUMBER_INPUT_KEYS.has(key)) continue;
       const meta = state.mountedControls.generalSwitches.get(key);
       if (!meta || !document.body.contains(meta.element)) return false;
     }
@@ -783,7 +803,7 @@
         continue;
       }
       if (BUBBLE_PLACEMENT_KEYS.has(key)) continue;
-      if (FLASH_NUMBER_KEYS.has(key)) {
+      if (NUMBER_INPUT_KEYS.has(key)) {
         state.mountedControls.sessionCleanupControls.get(key).syncFromSnapshot();
         continue;
       }

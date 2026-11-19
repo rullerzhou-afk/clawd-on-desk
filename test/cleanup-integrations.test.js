@@ -66,6 +66,65 @@ describe("cleanupIntegrations", () => {
     }
   });
 
+  it("cleans Claude hooks from the profile named by CLAUDE_CONFIG_DIR", () => {
+    const homeDir = path.join(os.tmpdir(), "clawd-claude-profile-home");
+    const profileDir = path.join(os.tmpdir(), "clawd-claude-profile-home", ".claude-work");
+    assert.strictEqual(
+      buildCleanupOptionsForHome(homeDir, { env: {} }).byAgent["claude-code"].settingsPath,
+      path.join(homeDir, ".claude", "settings.json")
+    );
+    assert.strictEqual(
+      buildCleanupOptionsForHome(homeDir, { env: { CLAUDE_CONFIG_DIR: profileDir } })
+        .byAgent["claude-code"].settingsPath,
+      path.join(profileDir, "settings.json")
+    );
+  });
+
+  it("cleans Claude hooks from extra config folders listed in Clawd's prefs (#1250)", () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-claude-extra-dirs-"));
+    try {
+      const homeDir = path.join(root, "home");
+      const userData = path.join(root, "userData");
+      const primary = path.join(homeDir, ".claude");
+      const work = path.join(homeDir, ".claude-work");
+      writeJson(path.join(userData, "clawd-prefs.json"), {
+        agents: { "claude-code": { configDirs: [{ dir: work, label: "" }, { dir: primary, label: "me" }] } },
+      });
+      const hookCommand = 'node "/opt/clawd/hooks/clawd-hook.js" Stop';
+      const settingsWithHook = {
+        hooks: {
+          Stop: [
+            { matcher: "", hooks: [{ type: "command", command: hookCommand }] },
+            { matcher: "", hooks: [{ type: "command", command: "echo mine" }] },
+          ],
+        },
+      };
+      writeJson(path.join(work, "settings.json"), settingsWithHook);
+      writeJson(path.join(primary, "settings.json"), settingsWithHook);
+
+      const plan = buildCleanupOptionsForHome(homeDir, { env: {}, clawdUserDataDir: userData, backup: false });
+      const claudeOptions = plan.byAgent["claude-code"];
+      assert.deepStrictEqual(claudeOptions.extraSettingsPaths, [path.join(work, "settings.json")]);
+
+      const result = AGENT_CLEANERS["claude-code"](claudeOptions);
+      assert.strictEqual(result.configDirs.length, 1);
+      for (const dir of [work, primary]) {
+        const commands = JSON.stringify(readJson(path.join(dir, "settings.json")));
+        assert.ok(!commands.includes("clawd-hook.js"), dir);
+        assert.ok(commands.includes("echo mine"), dir);
+      }
+
+      // An unreadable or missing prefs file means no extra folders, not an error.
+      assert.deepStrictEqual(
+        buildCleanupOptionsForHome(homeDir, { env: {}, clawdUserDataDir: path.join(root, "nope") })
+          .byAgent["claude-code"].extraSettingsPaths,
+        []
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   it("builds explicit cleanup path overrides for every managed agent", () => {
     const homeDir = path.join(os.tmpdir(), "clawd-target-home");
     const inheritedLocalAppData = path.join(os.tmpdir(), "admin-local-appdata");

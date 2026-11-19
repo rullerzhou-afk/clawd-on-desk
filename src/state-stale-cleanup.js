@@ -14,7 +14,7 @@ const CODEX_LOCAL_WORKING_STALE_FLOOR_MS = 20 * 60 * 1000;
 const OPENCODE_LOCAL_WORKING_STALE_FLOOR_MS = 20 * 60 * 1000;
 
 function isWorkingLikeState(state) {
-  return state === "working" || state === "juggling" || state === "thinking";
+  return state === "working" || state === "executing" || state === "juggling" || state === "thinking";
 }
 
 function isLocalCodexWorkingLikeSession(session) {
@@ -76,12 +76,32 @@ function isLocalTraeDesktopIdleSession(session) {
     && session.state === "idle";
 }
 
+function isLocalKiroDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "kiro-desktop"
+    && !session.host
+    && !session.headless
+    && session.state === "idle";
+}
+
 function isLocalWorkBuddyDesktopIdleSession(session) {
   return !!session
     && session.agentId === "workbuddy"
     && !session.host
     && !session.headless
     && session.state === "idle";
+}
+
+function isLocalClaudeDesktopIdleSession(session) {
+  return !!session
+    && session.agentId === "claude-code"
+    && !session.host
+    && !session.headless
+    // A WSL session can carry only wslDistro (no host prefix), so exclude both
+    // markers explicitly; its Linux PIDs must never be probed as local ones.
+    && !isWslSourced({ wslDistro: session.wslDistro, host: session.host })
+    && session.state === "idle"
+    && session.claudeEntrypoint === "claude-desktop";
 }
 
 function getStaleSessionDecision(session, options = {}) {
@@ -144,6 +164,15 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "agent-exit" };
   }
 
+  // A confirmed pending interaction can wait indefinitely. Keep process-exit
+  // cleanup above and source-exit cleanup here, without aging the session out.
+  if (options.hasPendingApprovalReminder === true) {
+    if (pidReachable && session.sourcePid && !agentAlive && !isProcessAliveOnce(session.sourcePid)) {
+      return { action: "delete", reason: "source-exit" };
+    }
+    return { action: null };
+  }
+
   // GLOBAL reference time: the stale branches consume Math.max(updatedAt,
   // ackedAt) so a freshly-acked session restarts its idle countdown from the
   // ack instant instead of its (possibly ancient) last updatedAt.
@@ -201,6 +230,15 @@ function getStaleSessionDecision(session, options = {}) {
     return { action: "delete", reason: "traecode-desktop-idle-timeout" };
   }
 
+  // Kiro IDE conversations share the long-lived IDE process and have no SessionEnd.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalKiroDesktopIdleSession(session)
+  ) {
+    return { action: "delete", reason: "kiro-desktop-idle-timeout" };
+  }
+
   // WorkBuddy emits Stop when a turn finishes (stored as idle) but never emits
   // SessionEnd, and archiving or deleting a conversation sends no event either.
   // On Windows agent_pid is the long-lived main process, so a live process
@@ -213,6 +251,24 @@ function getStaleSessionDecision(session, options = {}) {
     && isLocalWorkBuddyDesktopIdleSession(session)
   ) {
     return { action: "delete", reason: "workbuddy-desktop-idle-timeout" };
+  }
+
+  // The Claude desktop app keeps one long-lived `claude` process per opened
+  // conversation, and per the issue report it only ends that process when the
+  // conversation is archived or the app quits (no SessionEnd on window close).
+  // A live process therefore cannot vouch for a finished conversation. Keep the
+  // row while an interaction is still pending (permission/elicitation/wrap_up
+  // card) or while its completion can still be replied to; otherwise apply the
+  // user's configured idle cutoff. agent-exit above still wins when the process
+  // really ends.
+  if (
+    sessionStaleMs > 0
+    && age > sessionStaleMs
+    && isLocalClaudeDesktopIdleSession(session)
+  ) {
+    if (options.hasPendingClaudeInteraction === true) return { action: null };
+    if (hasReplyableCompletionMapping(session, options)) return { action: null };
+    return { action: "delete", reason: "claude-desktop-idle-timeout" };
   }
 
   // NOTE: requiresCompletionAck does NOT hold a session out of stale cleanup.
@@ -244,8 +300,8 @@ function getStaleSessionDecision(session, options = {}) {
   //
   // With an age window enabled, only check source liveness after it elapses. A
   // source_pid frequently belongs to a per-event launcher rather than to the
-  // session host — Windows Claude Code runs every hook through a throwaway
-  // pwsh wrapper, so the pid shipped with an event is already gone when the
+  // session host — Windows Claude Code's PowerShell hook form uses a throwaway
+  // pwsh wrapper, so the pid shipped with that event can be gone when the
   // next sweep reads it. Probing it while the turn is still reporting deletes
   // the live session between events, and the following event recreates it.
   if (isWorkingLikeState(session.state)) {
@@ -303,5 +359,6 @@ module.exports = {
   isLocalZcodeDesktopIdleSession,
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
+  isLocalClaudeDesktopIdleSession,
   getStaleSessionDecision,
 };

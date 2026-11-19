@@ -7,6 +7,7 @@ const os = require("os");
 const crypto = require("crypto");
 const path = require("path");
 const { execFile, spawn } = require("child_process");
+const { quotePowerShellSingleArg } = require("../hooks/json-utils");
 
 const isMac = process.platform === "darwin";
 const isWin = process.platform === "win32";
@@ -239,7 +240,7 @@ function normalizeHwndString(value) {
 }
 
 function psSingleQuotedString(value) {
-  return `'${String(value || "").replace(/'/g, "''")}'`;
+  return quotePowerShellSingleArg(value || "");
 }
 
 function makeFocusCmd(sourcePid, cwdCandidates, focusCacheKey = null, wtHwnd = null, focusToken = "", cacheCwdCandidates = cwdCandidates, orcaHosted = false) {
@@ -1756,9 +1757,12 @@ function scheduleTmuxPaneFocus(pidChain, tmuxSocket, tmuxClient) {
     if (err || !stdout) return;
     const tmuxPids = new Set();
     for (const line of stdout.trim().split("\n")) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length >= 2 && path.basename(parts[parts.length - 1]).toLowerCase() === "tmux") {
-        tmuxPids.add(parseInt(parts[0], 10));
+      const match = line.trim().match(/^(\d+)\s+(.+)$/);
+      if (!match) continue;
+      // Linux comm is "tmux: server", so keep the whole comm instead of its last word.
+      const comm = match[2];
+      if (path.basename(comm).toLowerCase() === "tmux" || comm.startsWith("tmux: ")) {
+        tmuxPids.add(parseInt(match[1], 10));
       }
     }
     if (!tmuxPids.size) return;
@@ -2440,6 +2444,9 @@ return {
   initFocusHelper,
   killFocusHelper,
   focusTerminalWindow,
+  focusProcessAppWindow: request => require("./process-app-focus").focusProcessAppWindow(request, {
+    execFile, platform: process.platform, windowsActivationCode: PS_FOCUS_ADDTYPE,
+  }),
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
   cleanup,

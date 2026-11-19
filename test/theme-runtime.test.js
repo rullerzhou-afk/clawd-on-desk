@@ -1,6 +1,6 @@
 "use strict";
 
-const { describe, it, afterEach } = require("node:test");
+const { describe, it, afterEach, mock } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const os = require("node:os");
@@ -145,6 +145,7 @@ function createRuntime(options = {}) {
 }
 
 afterEach(() => {
+  mock.restoreAll();
   themeLoader.bindActiveThemeRuntime(null);
   while (tempDirs.length) {
     fs.rmSync(tempDirs.pop(), { recursive: true, force: true });
@@ -195,15 +196,23 @@ describe("theme-runtime active ownership", () => {
     );
   });
 
-  it("loads the startup theme with requested variant and override signature", () => {
+  it("loads the startup theme with requested variant, overrides and retry budget", () => {
     makeFixture();
     const { runtime } = createRuntime();
-
-    const theme = runtime.loadInitialTheme("clawd", {
+    const load = mock.method(themeLoader, "loadTheme");
+    const opts = {
       variant: "cozy",
       overrides: { states: { idle: { file: "idle-custom.svg" } } },
-    });
+      readAttempts: 5,
+      retryDelaysMs: [100, 250, 500, 1000],
+    };
+    const theme = runtime.loadInitialTheme("clawd", opts);
 
+    assert.strictEqual(load.mock.callCount(), 1);
+    assert.deepStrictEqual(load.mock.calls[0].arguments, [
+      "clawd",
+      { ...opts, appearance: "light" },
+    ]);
     assert.strictEqual(theme._id, "clawd");
     assert.strictEqual(theme._variantId, "cozy");
     assert.strictEqual(theme.timings.idleMouseMoveThreshold, 42);

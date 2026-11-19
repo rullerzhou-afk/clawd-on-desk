@@ -2,6 +2,7 @@
 
 const fs = require("fs");
 const path = require("path");
+const { unescapePowerShellSingleQuoted } = require("../../hooks/json-utils");
 
 const HOOK_COMMAND_FRAGMENT_MAX = 128;
 const POWERSHELL_ENCODED_COMMAND_FLAGS = new Set(["-encodedcommand", "-enc", "-e"]);
@@ -110,7 +111,7 @@ function extractQuotedTokens(command) {
   const quotedRe = /'((?:''|[^'])*)'|"((?:\\"|[^"])*)"/g;
   let match;
   while ((match = quotedRe.exec(String(command || "")))) {
-    if (match[1] !== undefined) tokens.push(match[1].replace(/''/g, "'"));
+    if (match[1] !== undefined) tokens.push(unescapePowerShellSingleQuoted(match[1]));
     else tokens.push(match[2].replace(/\\"/g, "\"").replace(/\\\\/g, "\\"));
   }
   return tokens;
@@ -156,7 +157,7 @@ function parseNodeScriptPairFromQuotedText(command) {
 function extractPowerShellSingleQuotedAssignment(command, name) {
   const pattern = new RegExp(`\\$psi\\.${name}\\s*=\\s*'((?:''|[^'])*)'`, "i");
   const match = String(command || "").match(pattern);
-  return match ? match[1].replace(/''/g, "'") : null;
+  return match ? unescapePowerShellSingleQuoted(match[1]) : null;
 }
 
 function parseProcessStartInfoNodePair(command) {

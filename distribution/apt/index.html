@@ -51,7 +51,7 @@ sudo apt install clawd-on-desk</code></pre>
       <pre><code>sudo apt purge clawd-apt-source
 sudo apt update</code></pre>
       <p>This keeps Clawd installed. Use <strong>purge</strong>: plain <code>apt remove</code> retains the configuration and trust key, leaving the source active without future key updates. To pause updates, add <code>Enabled: no</code> to <code>/etc/apt/sources.list.d/clawd-on-desk.sources</code>. Package upgrades preserve that choice.</p>
-      <p>The pin in <code>/etc/apt/preferences.d/clawd-on-desk.pref</code> permits only <code>clawd-on-desk</code> and <code>clawd-apt-source</code>. Its restriction covers the entire <code>rullerzhou-afk.github.io</code> hostname, including other paths.</p>
+      <p>The pin in <code>/etc/apt/preferences.d/clawd-on-desk.pref</code> permits only <code>clawd-on-desk</code> and <code>clawd-apt-source</code>. Its restriction covers the entire <code>apt.clawdondesk.com</code> hostname, including other paths.</p>
     </details>
     <details><summary>New version missing, expired key, or source unavailable?</summary>
       <p>A release notification may arrive before source publication completes. Check <code>apt-cache policy clawd-on-desk</code>, wait a few minutes, then retry <code>sudo apt update</code>. Refresh indexes if an older package URL returns 404.</p>
@@ -93,7 +93,7 @@ sudo apt install clawd-on-desk</code></pre>
       <pre><code>sudo apt purge clawd-apt-source
 sudo apt update</code></pre>
       <p>这会移除软件源和公钥，保留 Clawd 本体。必须使用 <strong>purge</strong>；普通 <code>apt remove</code> 会保留配置和信任，软件源仍启用，却无法再收到公钥更新。若只想暂停，在 <code>/etc/apt/sources.list.d/clawd-on-desk.sources</code> 中添加 <code>Enabled: no</code>，升级会保留这一设置。</p>
-      <p><code>/etc/apt/preferences.d/clawd-on-desk.pref</code> 只允许安装 <code>clawd-on-desk</code> 和 <code>clawd-apt-source</code>。限制覆盖整个 <code>rullerzhou-afk.github.io</code> 主机名，包括其下其他路径。</p>
+      <p><code>/etc/apt/preferences.d/clawd-on-desk.pref</code> 只允许安装 <code>clawd-on-desk</code> 和 <code>clawd-apt-source</code>。限制覆盖整个 <code>apt.clawdondesk.com</code> 主机名，包括其下其他路径。</p>
     </details>
     <details><summary>找不到新版、密钥过期或软件源暂时不可用</summary>
       <p>应用通知可能早于软件源发布。可用 <code>apt-cache policy clawd-on-desk</code> 查看候选版本，稍等几分钟再运行 <code>sudo apt update</code>。旧包地址返回 404 时，也应先刷新索引。</p>

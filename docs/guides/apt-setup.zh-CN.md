@@ -2,7 +2,7 @@
 
 官方软件源支持 **Debian 12/13、Ubuntu 22.04/24.04 的 amd64 系统**，是否添加由用户选择。AppImage 保留应用内下载和重启更新；Homebrew 管理的安装请使用 `brew upgrade --cask clawd-on-desk`。
 
-[APT 接入页面](https://rullerzhou-afk.github.io/clawd-on-desk/apt/#chinese)提供当前软件源接入包、SHA-256 和公钥指纹。若软件源尚未启用或暂时不可用，可继续从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest) 下载官方 `.deb` 手动安装。
+[APT 接入页面](https://apt.clawdondesk.com/#chinese)提供当前软件源接入包、SHA-256 和公钥指纹。若软件源尚未启用或暂时不可用，可继续从 [GitHub Releases](https://github.com/rullerzhou-afk/clawd-on-desk/releases/latest) 下载官方 `.deb` 手动安装。
 
 ## 已安装 `.deb` 的用户，包括 1.3、1.4
 
@@ -10,7 +10,7 @@
 
 1. 运行 `dpkg --print-architecture`，确认结果是 `amd64`。
 2. 退出 Clawd。旧版可能在退出时请求安装已下载的更新；取消该授权提示即可。
-3. 打开 [APT 接入页面](https://rullerzhou-afk.github.io/clawd-on-desk/apt/#chinese)，下载 `clawd-apt-source_<version>_all.deb`，按页面显示的完整 SHA-256 校验。首次安装也可将公钥完整指纹与[维护者启用记录](apt-maintenance.md#activation-record)核对。
+3. 打开 [APT 接入页面](https://apt.clawdondesk.com/#chinese)，下载 `clawd-apt-source_<version>_all.deb`，按页面显示的完整 SHA-256 校验。首次安装也可将公钥完整指纹与[维护者启用记录](apt-maintenance.md#activation-record)核对。
 4. 在下载目录执行，第一行需替换成实际下载的文件名：
 
 ```sh
@@ -47,7 +47,7 @@ sudo apt update
 
 必须使用 **purge**。普通 `apt remove` 会保留配置、公钥和限制文件：软件源仍然启用，但接入包已移除，不能再收到公钥更新。三类文件都采用 dpkg conffile 管理，避免留下“源还在、公钥却没了”的状态。
 
-限制文件只允许从 `rullerzhou-afk.github.io` 安装 `clawd-on-desk` 和 `clawd-apt-source`；它覆盖整个主机名，包括其下其他路径。公钥通过 `Signed-By` 仅用于此源，不进入全局信任。
+限制文件只允许从 `apt.clawdondesk.com` 安装 `clawd-on-desk` 和 `clawd-apt-source`；它覆盖整个主机名，包括其下其他路径。公钥通过 `Signed-By` 仅用于此源，不进入全局信任。
 
 ## 故障处理
 

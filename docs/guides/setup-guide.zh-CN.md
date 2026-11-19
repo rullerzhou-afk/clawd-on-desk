@@ -34,7 +34,7 @@ npm install
 
 ### Claude Code 使用信息：官方状态栏，不抓取网页
 
-本机 Claude 使用信息采集**默认关闭**。可在 **Settings → Sessions → 额度环 → 采集本机 Claude 使用信息** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
+本机 Claude 使用信息采集**默认关闭**。可在 **Settings → AI 编程工具 → Claude Code → 读取本机 Claude 的额度和上下文用量** 中显式开启；开启后，Clawd 会把自己的可见 `statusLine.command` 添加到 `~/.claude/settings.json`。
 
 这里使用的是 Claude Code 官方扩展机制，不是私有或逆向接口。Claude Code 的[官方 statusline 文档](https://code.claude.com/docs/en/statusline)会向状态栏命令提供 `context_window.current_usage`、`context_window.context_window_size`，以及可用时的 `rate_limits`；命令在本机执行，不消耗额外 API token。
 
@@ -42,7 +42,7 @@ npm install
 
 1. 一次正常 Claude Code 交互后，Claude Code 自己把官方 statusline JSON 通过 stdin 交给已配置命令。
 2. Clawd 读取输入 token 用量与上报的上下文窗口大小，并在 Claude Code 提供时读取订阅额度；终端中仍会显示一条简短、可见的状态栏。
-3. Clawd 只把规范化后的上下文快照和可用额度发送到自身的 `127.0.0.1:23333-23337` loopback 服务。显式部署的 SSH profile 则通过用户配置的反向 SSH 隧道回到本机 Clawd。
+3. Clawd 只把规范化后的上下文快照和可用额度发送到自身的 loopback 服务，端口以 `~/.clawd/runtime.json` 为准（通常是 `127.0.0.1:23333-23337`）。显式部署的 SSH profile 则通过用户配置的反向 SSH 隧道回到本机 Clawd。
 
 此功能**不会**额外请求 Anthropic、抓取 `claude.ai`、调用 `/usage`，也不会读取 Claude 的认证 cookie/token。转发内容只有规范化的 token 数、窗口大小，以及可用额度的百分比/重置时间，不包含 prompt 或 transcript 正文。即使 context window 可用，`rate_limits` 仍可能缺失。
 
@@ -81,6 +81,8 @@ Clawd 可以在 Node 的 SQLite 模块可用时读取 Cursor 标准桌面配置�
 **WorkBuddy** — 使用与 Claude Code 兼容的 hooks，当前 WorkBuddy AI 的配置写入 `~/.workbuddy-ai/settings.json`，旧版使用 `~/.workbuddy/settings.json`。需要本机 WorkBuddy 追踪时，先到 **Settings → AI 编程工具** 安装；安装且启用后，Clawd 才会在启动时继续同步 hooks。也可以手动执行 `node hooks/workbuddy-install.js`。WorkBuddy 是 macOS/Windows 的 Electron 桌面应用，没有独立的 Linux/WSL CLI；状态类动效已在 macOS 上验证可用。集成为**仅状态 + 通知**：桌面版审批始终由 WorkBuddy 原生沙箱与 GUI 确认卡片处理，因此 Clawd 不会注册 `/permission` HTTP hook。权限请求只会以「等待确认」的 Notification 形式（带 `session_id`）传给 Clawd——铃铛/提醒提示可用（已在 Windows 实测），但同意/拒绝的决定始终留在 WorkBuddy 内。
 
 **Kiro CLI** — 需要本机 Kiro 追踪时，先到 **Settings → AI 编程工具** 安装；如果你想在启动 Clawd 前先注册 hooks，也可执行 `npm run install:kiro-hooks`。Kiro 内置的 `kiro_default` 不是一个可编辑的 JSON agent，所以 Clawd 会维护一个自定义 `clawd` agent，并在集成安装后每次启动时先同步最新的 `kiro_default` 配置，再追加 hooks。需要 hooks 时，请用 `kiro-cli --agent clawd` 新开会话，或者在现有会话里执行 `/agent swap clawd`。目前在 macOS 与 Windows 上，状态类动效已验证可用；但涉及终端里 `t / y / n` 的原生权限确认，仍然只能在终端处理。
+
+**Kiro IDE** — 在设置 → AI 编程工具安装，或执行 `npm run install:kiro-desktop-hooks`。全局 hooks 位于 `~/.kiro/hooks/clawd-on-desk.json`，在受信任工作区上报活动。本机会话记录驱动「等确认」标记和确认／提问的只读提醒卡，点「去 Kiro」返回 IDE。关闭该 agent 的提醒开关后，等确认动作和标记仍保留。卸载执行 `npm run uninstall:kiro-desktop-hooks`。它与 Kiro CLI 是独立集成。
 
 **KiroCrew** — 可在 **Settings → AI 编程工具** 安装可选的 state-only gateway bridge，也可运行 `npm run install:kirocrew-hooks`；卸载命令为 `npm run uninstall:kirocrew-hooks`。Hooks 写入 `~/.kiro/crew/hooks.json`（或 `<KIROCREW_HOME>/hooks.json`），覆盖 AgentSpawn、UserPromptSubmit、PostToolUse 和 Stop 四个事件。安装或卸载前先停止 KiroCrew gateway，完成后再启动以加载新配置。Clawd 不注册 PreToolUse 或权限 hook，审批仍由 KiroCrew 处理；gateway payload 中的 cwd 不会用作项目路径。
 
@@ -152,11 +154,13 @@ Clawd 也可以通过飞书（中国）或 Lark（国际）的自建应用发送
 
 <img src="../../assets/screenshot-remote-ssh.png" width="560" alt="远程 SSH — 来自树莓派的权限气泡">
 
-Clawd 支持通过 SSH 反向端口转发感知远程服务器上的 AI Agent 状态。Hook 事件和权限请求通过 SSH 隧道传回本地 Clawd，无需修改 Clawd 本体代码。
+Clawd 默认通过 `ssh -R` 反向端口转发感知远程服务器上的 AI Agent 状态。Hook 事件和权限请求通过 SSH 隧道传回本地 Clawd，无需修改 Clawd 本体代码。
+
+如果经过禁止 `ssh -R` 或拒绝多行命令的 POSIX 跳板机，请手动选择 **跳板机模式**，保存后重新 **部署 / 修复 Hook**。Clawd 不会自动切换模式。跳板机模式需要并行 SSH 会话，不支持 Windows 远端或 serialized 传输（包括自动识别的 Codespaces）。
 
 **受支持流程：应用内 Settings → 远程 SSH → 部署 / 修复 Hook**
 
-DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **部署 / 修复 Hook** 后再连接。Clawd 会创建 profile 专属本地入口、建立指向它的 `ssh -R` 反向隧道，并部署带身份 pin 的 hooks。完整步骤、多用户升级边界、Doctor 边界和故障排查见专门指南：
+DMG / 安装包用户的入口是 Clawd 应用内的 **Settings → 远程 SSH**：新增 profile（填 `user@host`、可选私钥、转发端口），点 **部署 / 修复 Hook** 后再连接。Clawd 会创建 profile 专属本地入口，使用所选传输模式，再部署带身份 pin 的 hooks。完整步骤、多用户升级边界、Doctor 边界和故障排查见专门指南：
 
 **→ [docs/guides/guide-remote-ssh.zh-CN.md](guide-remote-ssh.zh-CN.md)**
 
@@ -206,7 +210,7 @@ node hooks/install.js
 node hooks/install.js --statusline
 ```
 
-已有第三方 statusline 会被保留，除非你显式选择串联，详见 [Agent 配置说明](#agent-配置说明)。只有 Windows 端 **Collect local Claude usage** 开启时，Clawd 才会接收 WSL Claude 的上下文/配额元数据；关闭后，相应 POST 虽返回成功，但不会摄入数据。Pair 本身不安装 statusline，仅提供 transcript fallback，不保证自定义 provider 的权威上下文窗口。Windows 启动同步无法移除 WSL 独立 home 中的 statusline。
+已有第三方 statusline 会被保留，除非你显式选择串联，详见 [Agent 配置说明](#agent-配置说明)。只有 Windows 端 **读取本机 Claude 的额度和上下文用量** 开启时，Clawd 才会接收 WSL Claude 的上下文/配额元数据；关闭后，相应 POST 虽返回成功，但不会摄入数据。Pair 本身不安装 statusline，仅提供 transcript fallback，不保证自定义 provider 的权威上下文窗口。Windows 启动同步无法移除 WSL 独立 home 中的 statusline。
 
 其他 hook agent 的手动命令也从同一仓库执行：
 
@@ -215,6 +219,7 @@ node hooks/install.js --statusline
 | Codex CLI | `node hooks/codex-install.js --remote` |
 | Copilot CLI | `node hooks/copilot-install.js --remote` |
 | Kiro CLI | `node hooks/kiro-install.js` |
+| Kiro IDE | `npm run install:kiro-desktop-hooks` |
 | Kimi Code CLI（Kimi-CLI） | `node hooks/kimi-install.js` |
 | Qwen Code | `node hooks/qwen-code-install.js` |
 | Cursor Agent | `node hooks/cursor-install.js` |
@@ -246,11 +251,11 @@ Claude 的旧 `--remote` 用法仍受支持。它还会安装 statusline、设�
 
 ### 网络与排障
 
-Windows Clawd 监听 `127.0.0.1:23333-23337` 范围内的回环端口。**Linux Node → Windows Clawd** 通常需要 WSL2 mirrored networking；默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored 模式要求 Windows 11 22H2 或更高版本。Microsoft 的 [WSL 网络文档](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) 说明了 `%USERPROFILE%\.wslconfig` 中的 `networkingMode=mirrored` 与重启步骤；重启 WSL 会停止其中运行的会话。WSL1 共享回环地址，但这一网络事实不代表当前 Codex 支持 WSL1。
+Windows Clawd 在回环地址上监听，通常在 `127.0.0.1:23333-23337` 范围内；这些端口不可用时会退回由系统分配的端口。**Linux Node → Windows Clawd** 通常需要 WSL2 mirrored networking；默认 NAT 不会把 Windows 回环服务暴露给 Linux。mirrored 模式要求 Windows 11 22H2 或更高版本。Microsoft 的 [WSL 网络文档](https://learn.microsoft.com/en-us/windows/wsl/networking#mirrored-mode-networking) 说明了 `%USERPROFILE%\.wslconfig` 中的 `networkingMode=mirrored` 与重启步骤；重启 WSL 会停止其中运行的会话。WSL1 共享回环地址，但这一网络事实不代表当前 Codex 支持 WSL1。
 
 **Codex 共享 home 的 Windows interop** 使用 Windows `node.exe` 执行 hook，访问 Windows 回环服务，因此该传输路径不要求 mirrored networking。共享 `CODEX_HOME` 本身并不决定使用 interop：由 WSL 拥有的原生 launcher 仍使用 Linux Node 和 Linux 网络路径。修改网络前先核对 [三种路径对照](codex-wsl-clarification.zh-CN.md#配置与执行路径)。
 
-普通 WSL **状态事件**会在 23333–23337 中发现服务。Claude 的 HTTP **PermissionRequest** URL 在安装时固定写入，不会在权限请求触发时逐端口探测。安装器使用显式端口或有效的本地 `~/.clawd/runtime.json`，否则回退 23333。独立 WSL home 通常没有 Windows 的 runtime 记录，所以 Pair 和手动安装通常都注册 23333。如果 Windows Clawd 实际监听 23334 或更高端口，可能出现状态正常而权限气泡不可达。请对照 Windows 的实际 runtime 端口与 WSL Claude 配置中的 URL；状态探测成功不能验证权限 URL。WSL 权限端口自动同步仍是后续待解决的限制。
+普通 WSL **状态事件**会在 23333–23337 中发现服务。独立的 Linux home 读不到 Windows 的 runtime 文件，因此即使启用 mirrored networking，也发现不了范围之外的 Windows 监听端口；Pair 会在部署前报告这个发现限制。Windows Node interop 会读取 Windows 的 runtime 文件，支持动态端口。Claude 的 HTTP **PermissionRequest** URL 在安装时固定写入，不会在权限请求触发时逐端口探测。安装器使用显式端口或有效的本地 `~/.clawd/runtime.json`，否则回退 23333。独立 WSL home 通常没有 Windows 的 runtime 记录，所以 Pair 和手动安装通常都注册 23333。如果 Windows Clawd 实际监听 23334 或更高端口，可能出现状态正常而权限气泡不可达。请对照 Windows 的实际 runtime 端口与 WSL Claude 配置中的 URL；状态探测成功不能验证权限 URL。WSL 权限端口自动同步仍是后续待解决的限制。
 
 如果新会话没有出现，依次检查所选发行版、agent 启用状态、已注册命令及其 Node 路径，再看连通性结果。安装、可达和真实会话到达是三个独立检查。
 

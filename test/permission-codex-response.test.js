@@ -172,6 +172,42 @@ describe("Codex permission response sanitizer", () => {
     assert.strictEqual(permission.__test.buildZcodePermissionResponseBody(null), "{}");
   });
 
+  it("puts the validated ZCode elicitation answer object on the allow wire (#1264)", () => {
+    const permission = loadPermissionWithElectron();
+    const answer = {
+      questions: [{ question: "Proceed with restart?" }],
+      answers: { "Proceed with restart?": "Restart now" },
+    };
+    const allow = JSON.parse(permission.__test.buildZcodePermissionResponseBody({
+      behavior: "allow",
+      updatedInput: answer,
+    }));
+    assert.deepStrictEqual(allow.hookSpecificOutput.decision, {
+      behavior: "allow",
+      updatedInput: answer,
+    });
+
+    // Non-elicitation updatedInput shapes degrade to a plain allow. A plain
+    // allow is right for an ordinary tool approval, and an elicitation entry
+    // never reaches this builder with a broken answer: resolvePermissionEntry
+    // downgrades it to no-decision before the wire (#1264 review).
+    for (const updatedInput of [
+      { command: "rm -rf /" },
+      { questions: [], answers: { q: "a" } },
+      { questions: [{ question: "q" }], answers: { q: "" } },
+      { questions: [{ question: "q" }], answers: { q: 42 } },
+      { questions: [{ question: "q" }], answers: { "not-a-question": "a" } },
+      { questions: [{ question: "q" }], answers: { q: "x".repeat(70000) } },
+      null,
+    ]) {
+      const degraded = JSON.parse(permission.__test.buildZcodePermissionResponseBody({
+        behavior: "allow",
+        updatedInput,
+      }));
+      assert.deepStrictEqual(degraded.hookSpecificOutput.decision, { behavior: "allow" });
+    }
+  });
+
   it("keeps Antigravity allow/ask decisions and drops permissionOverrides", () => {
     const permission = loadPermissionWithElectron();
     const body = permission.__test.buildAntigravityPermissionResponseBody({

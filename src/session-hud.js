@@ -57,7 +57,8 @@ function isScreenRect(rect) {
 }
 
 function isHudSession(session) {
-  return !!session && !session.headless && session.state !== "sleeping" && !session.hiddenFromHud;
+  return !!session && !session.headless && session.state !== "sleeping"
+    && !session.hiddenFromHud && !session.hudHiddenByPreference;
 }
 
 function snapshotHasVisibleSessions(snapshot) {
@@ -73,6 +74,7 @@ function evaluateBaseEligible({
   miniTransitioning,
   showQuota,
   hiddenQuotaProviders,
+  shownQuotaProviders,
 }) {
   if (!snapshot) return false;
   if (petHidden) return false;
@@ -83,7 +85,7 @@ function evaluateBaseEligible({
   // still be checked ("a remote's quota before starting work") even with the
   // Session HUD turned off.
   const hudEligible = sessionHudEnabled !== false && snapshotHasVisibleSessions(snapshot);
-  const ringEligible = countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders) > 0;
+  const ringEligible = countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders, shownQuotaProviders) > 0;
   return hudEligible || ringEligible;
 }
 
@@ -136,6 +138,8 @@ function evaluateShouldShow({
   miniMode,
   miniTransitioning,
   showQuota,
+  hiddenQuotaProviders,
+  shownQuotaProviders,
 }) {
   const baseEligible = evaluateBaseEligible({
     snapshot,
@@ -144,6 +148,8 @@ function evaluateShouldShow({
     miniMode,
     miniTransitioning,
     showQuota,
+    hiddenQuotaProviders,
+    shownQuotaProviders,
   });
   if (!baseEligible) return { show: false, nextHoldUntil: 0 };
   if (sessionHudPinned === true) return { show: true, nextHoldUntil: 0 };
@@ -198,8 +204,8 @@ function layoutHasTaggedFallback(layout) {
 // need the count — quota alone can keep the pet's floating UI up (the "check a
 // remote's quota before starting work" moment), and the ring window is sized
 // from it.
-function countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders) {
-  return ringGeom.countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders);
+function countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders, shownQuotaProviders) {
+  return ringGeom.countQuotaCoins(snapshot, showQuota, hiddenQuotaProviders, shownQuotaProviders);
 }
 
 function computeHudHeight(rowCount) {
@@ -373,6 +379,7 @@ module.exports = function initSessionHud(ctx) {
       miniTransitioning: getMiniTransitioning(),
       showQuota: ctx.sessionHudShowQuota !== false,
       hiddenQuotaProviders: ctx.quotaRingHiddenProviders,
+      shownQuotaProviders: ctx.quotaRingShownProviders,
     });
   }
 
@@ -450,7 +457,7 @@ module.exports = function initSessionHud(ctx) {
       const computed = computeSessionHudBounds({ hitRect, anchorRect, workArea, width, height, scale, widthScale });
       contentBounds = computed && computed.contentBounds;
     }
-    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders);
+    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders, ctx.quotaRingShownProviders);
     const ring = coinCount > 0
       ? ringGeom.computeQuotaRingBounds({
         hitRect,
@@ -504,6 +511,7 @@ module.exports = function initSessionHud(ctx) {
       miniTransitioning: getMiniTransitioning(),
       showQuota: ctx.sessionHudShowQuota !== false,
       hiddenQuotaProviders: ctx.quotaRingHiddenProviders,
+      shownQuotaProviders: ctx.quotaRingShownProviders,
     });
     visibleHoldUntil = result.nextHoldUntil;
     // In revealed state, poll detecting !show means user moved away past grace.
@@ -677,13 +685,11 @@ module.exports = function initSessionHud(ctx) {
       accountQuota: Array.isArray(snapshot.accountQuota) ? snapshot.accountQuota : [],
       quotaAgentIcons: snapshot.quotaAgentIcons || {},
       displayMode: ctx.quotaRingDisplayMode === "remaining" ? "remaining" : "used",
-      // The same list quota-ring-geometry.js used to size this window. Sent
-      // rather than pre-filtered out of accountQuota so the renderer's own draw
-      // rule stays the single place that decides whether a coin exists — and so
-      // the two filters cannot drift into sizing for coins nobody draws.
+      // Sizing and drawing receive the same automatic/manual selection.
       hiddenQuotaProviders: Array.isArray(ctx.quotaRingHiddenProviders)
         ? ctx.quotaRingHiddenProviders
         : [],
+      shownQuotaProviders: Array.isArray(ctx.quotaRingShownProviders) ? ctx.quotaRingShownProviders : null,
       side,
     });
   }
@@ -784,7 +790,7 @@ module.exports = function initSessionHud(ctx) {
 
   function computeRingBounds(snapshot, scale = getTextScale(), avoidRects = []) {
     if (!ctx.win || ctx.win.isDestroyed()) return null;
-    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders);
+    const coinCount = countQuotaCoins(snapshot, ctx.sessionHudShowQuota !== false, ctx.quotaRingHiddenProviders, ctx.quotaRingShownProviders);
     if (coinCount <= 0) return null;
     const petBounds = typeof ctx.getPetWindowBounds === "function" ? ctx.getPetWindowBounds() : null;
     if (!petBounds) return null;

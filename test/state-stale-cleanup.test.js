@@ -14,6 +14,7 @@ const {
   isLocalZcodeDesktopIdleSession,
   isLocalTraeDesktopIdleSession,
   isLocalWorkBuddyDesktopIdleSession,
+  isLocalClaudeDesktopIdleSession,
   getStaleSessionDecision,
 } = require("../src/state-stale-cleanup");
 
@@ -77,6 +78,16 @@ function workbuddyDesktopSession(overrides = {}) {
   });
 }
 
+function claudeDesktopSession(overrides = {}) {
+  return session({
+    agentId: "claude-code",
+    claudeEntrypoint: "claude-desktop",
+    agentPid: 60,
+    sourcePid: 61,
+    ...overrides,
+  });
+}
+
 function decision(target, overrides = {}) {
   const calls = [];
   const alivePids = overrides.alivePids || new Set();
@@ -89,6 +100,7 @@ function decision(target, overrides = {}) {
     deriveSessionBadge: overrides.deriveSessionBadge || (() => "idle"),
     shouldAutoClearDetachedSession: overrides.shouldAutoClearDetachedSession || (() => false),
     staleConfig: overrides.staleConfig,
+    hasPendingClaudeInteraction: overrides.hasPendingClaudeInteraction,
     hasReplyableCompletionMapping: overrides.hasReplyableCompletionMapping,
   });
   return { result, calls };
@@ -180,6 +192,9 @@ describe("state stale cleanup decisions", () => {
   });
 
   it("handles working stale timeout source exit and idle downgrade", () => {
+    assert.deepStrictEqual(decision(session({ agentId: "claude-code",
+      state: "executing", updatedAt: 1000000 - WORKING_STALE_MS - 1,
+    })).result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
     assert.deepStrictEqual(decision(session({
       state: "working",
       updatedAt: 1000000 - WORKING_STALE_MS - 1,
@@ -630,6 +645,124 @@ describe("state stale cleanup decisions", () => {
     });
 
     assert.deepStrictEqual(result, { action: "delete", reason: "agent-exit" });
+  });
+
+  it("issue #1365: deletes an idle Claude desktop session after timeout even while its process is alive", () => {
+    const { result, calls } = decision(claudeDesktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([60, 61]),
+      staleConfig: { sessionStaleMs: 60_000 },
+    });
+
+    assert.strictEqual(isLocalClaudeDesktopIdleSession(claudeDesktopSession()), true);
+    assert.deepStrictEqual(result, { action: "delete", reason: "claude-desktop-idle-timeout" });
+    assert.deepStrictEqual(calls, [60]);
+  });
+
+  it("issue #1365: keeps Claude desktop sessions before the cutoff or when the cutoff is disabled", () => {
+    const alivePids = new Set([60, 61]);
+    assert.deepStrictEqual(decision(claudeDesktopSession({
+      updatedAt: 1000000 - 59_999,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 60_000 },
+    }).result, { action: null });
+    assert.deepStrictEqual(decision(claudeDesktopSession({
+      updatedAt: 1000000 - 24 * 60 * 60 * 1000,
+    }), {
+      alivePids,
+      staleConfig: { sessionStaleMs: 0 },
+    }).result, { action: null });
+  });
+
+  it("issue #1365: keeps a Claude desktop session right at the idle cutoff", () => {
+    const { result } = decision(claudeDesktopSession({
+      updatedAt: 1000000 - 60_000,
+    }), {
+      alivePids: new Set([60, 61]),
+      staleConfig: { sessionStaleMs: 60_000 },
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("issue #1365: only an exact claude-desktop entrypoint opts into the idle timeout", () => {
+    const updatedAt = 1000000 - 60_001;
+    const alivePids = new Set([60, 61]);
+    const staleConfig = { sessionStaleMs: 60_000 };
+    for (const extra of [
+      { claudeEntrypoint: "cli" },
+      { claudeEntrypoint: null },
+      { claudeEntrypoint: undefined },
+    ]) {
+      const result = decision(claudeDesktopSession({ updatedAt, ...extra }), { alivePids, staleConfig }).result;
+      assert.notStrictEqual(result.reason, "claude-desktop-idle-timeout", JSON.stringify(extra));
+      assert.deepStrictEqual(result, { action: null });
+    }
+  });
+
+  it("issue #1365: does not apply the Claude desktop idle timeout to remote, headless, or WSL sessions", () => {
+    const updatedAt = 1000000 - 60_001;
+    const alivePids = new Set([60, 61]);
+    const staleConfig = { sessionStaleMs: 60_000 };
+    const cases = [
+      claudeDesktopSession({ host: "remote-box", updatedAt }),
+      claudeDesktopSession({ headless: true, updatedAt }),
+      claudeDesktopSession({ wslDistro: "Ubuntu", updatedAt }),
+    ];
+    for (const target of cases) {
+      const result = decision(target, { alivePids, staleConfig }).result;
+      assert.notStrictEqual(result.reason, "claude-desktop-idle-timeout");
+    }
+  });
+
+  it("issue #1365: holds an expired Claude desktop session while an interaction is pending", () => {
+    const { result } = decision(claudeDesktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([60, 61]),
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasPendingClaudeInteraction: true,
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+  });
+
+  it("issue #1365: holds an expired Claude desktop session while its completion can still be replied to", () => {
+    const target = claudeDesktopSession({
+      updatedAt: 1000000 - 60_001,
+    });
+    const checked = [];
+    const { result } = decision(target, {
+      alivePids: new Set([60, 61]),
+      staleConfig: { sessionStaleMs: 60_000 },
+      hasReplyableCompletionMapping: (value) => {
+        checked.push(value);
+        return true;
+      },
+    });
+
+    assert.deepStrictEqual(result, { action: null });
+    assert.deepStrictEqual(checked, [target]);
+  });
+
+  it("issue #1365: agent-exit and working-timeout still win over the Claude desktop idle timeout", () => {
+    const staleConfig = { sessionStaleMs: 60_000 };
+    assert.deepStrictEqual(decision(claudeDesktopSession({
+      updatedAt: 1000000 - 60_001,
+    }), {
+      alivePids: new Set([61]),
+      staleConfig,
+    }).result, { action: "delete", reason: "agent-exit" });
+
+    assert.deepStrictEqual(decision(claudeDesktopSession({
+      state: "working",
+      updatedAt: 1000000 - 310_000,
+    }), {
+      alivePids: new Set([60, 61]),
+      staleConfig,
+    }).result, { action: "idle", reason: "working-timeout", updateTimestamp: true });
   });
 
   it("treats sessionStaleMs=0 as disabled — does not delete by age", () => {

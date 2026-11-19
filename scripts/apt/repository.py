@@ -48,9 +48,11 @@ def fetch(url, limit, *, api=False):
     if api and os.environ.get("GITHUB_TOKEN"):
         headers["Authorization"] = "Bearer " + os.environ["GITHUB_TOKEN"]
     with urllib.request.urlopen(urllib.request.Request(url, headers=headers), timeout=120) as response:
-        if not api and "github.io" in urllib.parse.urlsplit(url).netloc:
+        # Release downloads legitimately leave github.com for its asset CDN. Anything
+        # else is the APT site, where a redirect would move the host the pin names.
+        if not api and urllib.parse.urlsplit(url).hostname != "github.com":
             if urllib.parse.urlsplit(response.url).netloc != urllib.parse.urlsplit(url).netloc:
-                raise ValueError("Pages redirects to a different host; review APT URI/pin before activation")
+                raise ValueError("APT site redirects to a different host; review APT URI/pin before activation")
         data = response.read(limit + 1)
     if len(data) > limit:
         raise ValueError(f"Oversized response: {url}")
@@ -174,8 +176,8 @@ def previous_snapshot(url, trusted_key, cfg, directory, allow_initial):
         sha, size = entries[name]
         if size > limit:
             raise ValueError("Prior index exceeds limit")
-        parent = str(Path(name).parent)
-        data = fetch(url.rstrip("/") + f"/dists/stable/{parent}/by-hash/SHA256/{sha}", limit)
+        hashed = Path("dists/stable") / Path(name).parent / "by-hash/SHA256" / sha
+        data = fetch(url.rstrip("/") + "/" + hashed.as_posix(), limit)
         if len(data) != size or digest(data) != sha:
             raise ValueError("Prior index checksum mismatch")
         return data
@@ -354,8 +356,6 @@ def build(args):
             raise ValueError("Unresolved guide template")
         (site / "index.html").write_text(template)
         shutil.copyfile(extracted_key, site / "clawd-on-desk.asc")
-        (args.output / "index.html").write_text('<!doctype html><meta http-equiv="refresh" content="0;url=apt/"><a href="apt/">Clawd APT</a>')
-        (args.output / ".nojekyll").touch()
         total = sum(p.stat().st_size for p in args.output.rglob("*") if p.is_file())
         if total > cfg["site_limit_bytes"]:
             raise ValueError(f"Site size {total} exceeds limit")
