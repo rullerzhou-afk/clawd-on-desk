@@ -55,19 +55,19 @@ function readQoderDesktopSession(input, options = {}) {
         + "FROM chat_sessions WHERE session_id = ?",
       ).get(MAX_DB_TITLE_BYTES, raw);
       if (!row) continue;
-      let delegated = !!row.owner_session_id
-        || (typeof row.session_kind === "string" && row.session_kind !== "standard");
+      // Only the explicit delegation marker suppresses a row. session_kind /
+      // owner_session_id also describe user-visible side chats, so inferring
+      // delegation from them could hide conversations the user expects to see.
+      let delegated = false;
       let parentSessionId = null;
-      if (!delegated) {
-        try {
-          const extra = JSON.parse(row.extra_json || "{}");
-          const parent = extra && extra.delegationParent && extra.delegationParent.sessionId;
-          if (parent) {
-            delegated = true;
-            parentSessionId = String(parent);
-          }
-        } catch {}
-      }
+      try {
+        const extra = JSON.parse(row.extra_json || "{}");
+        const parent = extra && extra.delegationParent && extra.delegationParent.sessionId;
+        if (parent) {
+          delegated = true;
+          parentSessionId = String(parent);
+        }
+      } catch {}
       const deleted = row.deleted_at !== null && row.deleted_at !== undefined;
       const archived = row.archived === 1 || row.archived === true;
       let contextUsage = null;

@@ -169,19 +169,21 @@ describe("readQoderDesktopSession", () => {
     });
   });
 
-  it("flags owner_session_id and non-standard session kinds as delegated", { skip: !DatabaseSync }, async () => {
+  it("only the explicit delegationParent marker suppresses; side chats stay visible", { skip: !DatabaseSync }, async () => {
     await fixture(async (home) => {
       const dir = path.join(home, "com.qoder.app.stable");
       createDatabase(dir, [
         { session_id: "s-owner", title: "Owned", owner_session_id: "s-parent" },
         { session_id: "s-side", title: "Side chat", session_kind: "sideChat" },
-        { session_id: "s-empty-owner", title: "Empty owner", owner_session_id: "" },
+        { session_id: "s-auto", title: "Automation", session_kind: "automationExecution" },
+        { session_id: "s-delegated", title: "Delegated", extra_json: JSON.stringify({ delegationParent: { sessionId: "s-parent" } }) },
         { session_id: "s-standard", title: "Standard", session_kind: "standard", extra_json: "{}" },
       ]);
       const options = { dataDirs: [dir] };
-      assert.equal(readQoderDesktopSession({ rawSessionId: "s-owner" }, options).delegated, true);
-      assert.equal(readQoderDesktopSession({ rawSessionId: "s-side" }, options).delegated, true);
-      assert.equal(readQoderDesktopSession({ rawSessionId: "s-empty-owner" }, options).delegated, false);
+      assert.equal(readQoderDesktopSession({ rawSessionId: "s-owner" }, options).delegated, false);
+      assert.equal(readQoderDesktopSession({ rawSessionId: "s-side" }, options).delegated, false);
+      assert.equal(readQoderDesktopSession({ rawSessionId: "s-auto" }, options).delegated, false);
+      assert.equal(readQoderDesktopSession({ rawSessionId: "s-delegated" }, options).delegated, true);
       assert.equal(readQoderDesktopSession({ rawSessionId: "s-standard" }, options).delegated, false);
     });
   });
