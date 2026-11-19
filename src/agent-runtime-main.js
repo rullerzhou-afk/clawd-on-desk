@@ -9,6 +9,7 @@ const {
   isCodexMonitorMetadataOnlyEvent,
 } = require("./codex-monitor-callback");
 const { resolveSessionIdentity } = require("./session-key");
+const { readCodexThreadSource, isInternalCodexThreadSource } = require("./codex-thread-source");
 const { bareCodexSessionId } = require("../hooks/codex-session-index");
 const {
   isCodexInternalThread,
@@ -307,6 +308,24 @@ function createAgentRuntimeMain(options = {}) {
 
   function forgetCodexInternalThreadSession(sessionId) {
     codexInternalThreadSessions.delete(sessionId);
+  }
+
+  // Rollout heads are immutable per session; cache recognized sources only.
+  // A missing/unreadable head stays uncached so a later event can retry.
+  const codexThreadSourceCache = new Map();
+  function resolveCodexThreadSourceForSession(sessionId, opts = {}) {
+    if (codexThreadSourceCache.has(sessionId)) return codexThreadSourceCache.get(sessionId);
+    const session = getStateRuntime()?.sessions?.get(sessionId);
+    const transcriptPath = opts.transcriptPath || (session && session.transcriptPath) || null;
+    const source = readCodexThreadSource(transcriptPath);
+    if (source) {
+      codexThreadSourceCache.delete(sessionId);
+      codexThreadSourceCache.set(sessionId, source);
+      while (codexThreadSourceCache.size > MAX_CODEX_INTERNAL_THREAD_SESSIONS) {
+        codexThreadSourceCache.delete(codexThreadSourceCache.keys().next().value);
+      }
+    }
+    return source;
   }
 
   // Both active and ended entries are considered suppressed.
@@ -614,6 +633,15 @@ function createAgentRuntimeMain(options = {}) {
         rememberCodexInternalThreadSession(sessionId);
         dismissCodexInternalThreadSession(sessionId);
         debugLog(`codex-internal-thread recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")} kind=${opts.codexInternalThread}`);
+        return false;
+      }
+      const threadSource = resolveCodexThreadSourceForSession(sessionId, opts);
+      if (isInternalCodexThreadSource(threadSource)) {
+        // Background threads (Guardian review, subagents) exit without a
+        // terminal hook; retire their rows like other internal work.
+        rememberCodexInternalThreadSession(sessionId);
+        dismissCodexInternalThreadSession(sessionId);
+        debugLog(`codex-thread-source recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")} source=${threadSource}`);
         return false;
       }
       const internalThreadState = codexInternalThreadSessions.get(sessionId);
@@ -1265,6 +1293,7 @@ function createAgentRuntimeMain(options = {}) {
     codexOfficialActivity.clear();
     codexSessionEndTombstones.clear();
     codexInternalThreadSessions.clear();
+    codexThreadSourceCache.clear();
   }
 
   return {
