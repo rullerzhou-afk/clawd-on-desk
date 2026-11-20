@@ -1025,13 +1025,10 @@
           skippedAgentIds.push(agentId);
           const agent = getAgentMetadata(agentId) || { id: agentId, name: agentId };
           skippedFeedbacks.push(recordSkippedInstall(agent, result));
-        } else if (!firstError) {
-          failed++;
-          clearAgentInstallSkipped(agentId);
-          firstError = (result && result.message) || "unknown error";
         } else {
           failed++;
           clearAgentInstallSkipped(agentId);
+          if (!firstError) firstError = (result && result.message) || "unknown error";
         }
       }
       if (failed > 0) {
@@ -1398,7 +1395,7 @@
         if (notice.reason === "generation-conflict") return t("dshNoticeGenerationConflict");
         const message = notice.message == null ? "" : String(notice.message);
         const key = notice.operation === "uninstall" ? "dshNoticeUninstallFailed" : "dshNoticeInstallFailed";
-        let body = t(key).replace("{message}", message);
+        let body = fillTemplate(t(key), { message });
         if (DSH_REPAIRABLE_FAILURE_REASONS.has(notice.reason)) {
           body = `${body} ${t("dshNoticeOpenDoctor").replace("{fix}", t("doctorFix"))}`;
         }
@@ -1444,9 +1441,10 @@
     row.setAttribute("data-profile", notice.profile);
     const line = document.createElement("div");
     line.className = "agent-dsh-notice-line";
-    line.textContent = t("dshNoticeLine")
-      .replace("{profile}", dshNoticeProfileLabel(notice.profile))
-      .replace("{text}", dshNoticeBody(notice));
+    line.textContent = fillTemplate(t("dshNoticeLine"), {
+      profile: dshNoticeProfileLabel(notice.profile),
+      text: dshNoticeBody(notice),
+    });
     row.appendChild(line);
     if (notice.kind === "manual-command") {
       const commands = document.createElement("pre");

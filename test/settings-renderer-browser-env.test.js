@@ -14818,6 +14818,26 @@ describe("settings renderer browser environment", () => {
     assert.match(collectText(rows[4]), /Desktop: Installed in DeepSeek Harness desktop\./);
   });
 
+  it("renders placeholder-like text literally in a persistent DeepSeek Harness notice", async () => {
+    const message = "$& {profile}";
+    const harness = loadDshNoticesHarness({
+      notices: [{
+        id: "f",
+        profile: "web",
+        kind: "failed-target",
+        operation: "install",
+        reason: "version-unsupported",
+        message,
+      }],
+    });
+
+    harness.core.ops.requestRender({ content: true });
+    await flushAsync();
+
+    const line = harness.content.querySelector(".agent-dsh-notice .agent-dsh-notice-line");
+    assert.strictEqual(line.textContent, `Web: Not installed: ${message}`);
+  });
+
   it("guides DeepSeek Harness generation changes through Uninstall and Install while repairable failures keep Doctor", async () => {
     const harness = loadDshNoticesHarness({ notices: [
       { id: "g", profile: "web", kind: "failed-target", operation: "install", reason: "generation-conflict", message: "raw installer error" },
