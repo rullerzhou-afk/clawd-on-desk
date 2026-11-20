@@ -216,6 +216,7 @@ function hasCodexCompactionVisual() {
 
 const sessions = new Map();
 const codexSubagentPresentation = require("./codex-subagent-presentation")(sessions, () => Date.now());
+const qoderSubagentPresentation = require("./qoder-desktop-sessions").createQoderSubagentPresentation(sessions, () => Date.now());
 // A parent's Stop can settle its turn while delegated children still own the visual.
 const deferredCodexCompletionCues = new Set();
 let lastPendingAttentionIds = new Set();
@@ -1302,7 +1303,9 @@ function buildSessionSnapshot() {
   return buildSessionSnapshotFromSessions(sessions, {
     getSessionPresentation: (id) => ({
       effectiveState: projected.get(id)?.state,
-      activeSubagentCount: codexSubagentPresentation.count(id),
+      activeSubagentCount: sessions.get(id)?.agentId === "qoder"
+        ? qoderSubagentPresentation.count(id)
+        : codexSubagentPresentation.count(id),
       pendingAttention: hudPendingAttentionIds.has(id),
     }),
     t: ctx.t,
@@ -1645,18 +1648,21 @@ function resolveIncomingAgentId(existing, incomingAgentId, incomingDefaulted) {
 function normalizeContextUsage(value) {
   if (!value || typeof value !== "object") return null;
   const used = Number(value.used);
-  if (!Number.isFinite(used) || used < 0) return null;
-  const out = { used };
+  const usedKnown = Number.isFinite(used) && used >= 0;
+  const percent = Number(value.percent);
+  const percentKnown = Number.isFinite(percent);
+  if (!usedKnown && !percentKnown) return null;
+  const out = {};
+  if (usedKnown) out.used = used;
   const limit = Number(value.limit);
   if (Number.isFinite(limit) && limit > 0) out.limit = limit;
-  const percent = Number(value.percent);
-  if (Number.isFinite(percent)) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
-  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity" || value.source === "opencode" || value.source === "workbuddy") out.source = value.source;
+  if (percentKnown) out.percent = Math.max(0, Math.min(100, Math.round(percent)));
+  if (value.source === "claude" || value.source === "codex" || value.source === "antigravity" || value.source === "opencode" || value.source === "workbuddy" || value.source === "qoder") out.source = value.source;
   return out;
 }
 
 function normalizeContextUsageOrigin(value) {
-  return value === "claude-statusline" || value === "claude-transcript" || value === "opencode-statusline" || value === "workbuddy-native" ? value : null;
+  return value === "claude-statusline" || value === "claude-transcript" || value === "opencode-statusline" || value === "workbuddy-native" || value === "qoder-native" ? value : null;
 }
 
 function isStatuslineOrigin(origin) {
@@ -4256,7 +4262,7 @@ function hasPendingReminderAttention() {
 }
 
 function projectPendingAttention(ids = getPendingAttentionIds()) {
-  const projected = codexSubagentPresentation.project(ids);
+  const projected = qoderSubagentPresentation.project(codexSubagentPresentation.project(ids));
   const reminders = [...ids].filter(id =>
     isLocalApprovalReminderSession(sessions.get(id)) || isTerminalWaitSession(sessions.get(id)));
   if (!reminders.length) return projected;
@@ -4315,6 +4321,19 @@ function playDeferredCodexCompletionCue(session) {
   if (hasConfirmedPermissionAnimationLock()) return false;
   setState("attention", null);
   return true;
+}
+
+function updateQoderSubagentActivity(parentId, input) {
+  const changed = qoderSubagentPresentation.update(parentId, input);
+  if (changed) refreshCodexSubagentPresentation();
+  return changed;
+}
+
+function clearQoderSubagentActivities() {
+  const changed = qoderSubagentPresentation.hasAny();
+  qoderSubagentPresentation.clear();
+  if (changed) emitSessionSnapshot();
+  return changed;
 }
 
 function updateCodexSubagentActivity(parentId, input) {
@@ -4561,6 +4580,8 @@ return {
   getReminderReselectionOptions,
   updateCodexSubagentActivity,
   clearCodexSubagentActivities,
+  updateQoderSubagentActivity,
+  clearQoderSubagentActivities,
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,
   setState, applyState, updateSession, observeClaudeToolPhase, recordRecapEventOnly, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   shouldDropForDnd,

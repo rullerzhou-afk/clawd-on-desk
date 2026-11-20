@@ -5826,6 +5826,9 @@ function createWindow() {
       }
       sessionLog(`startup recovery restored sessions=${restoredSessionIds.join(",")}`);
     }
+    // Restored Qoder rows may predate delegation/archive recognition in
+    // main.sqlite; reconcile them against the native database once on launch.
+    try { agentRuntime?.sweepQoderDesktopSessions?.(); } catch {}
     void _remoteSshIpc.connectOnLaunchProfiles().catch((err) => {
       console.warn("Clawd remote-ssh: connect-on-launch failed:", err && err.message);
     });
