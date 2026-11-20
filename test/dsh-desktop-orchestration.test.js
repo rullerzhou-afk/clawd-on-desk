@@ -1151,3 +1151,61 @@ test("a desktop success keeps web's manual command on the top-level ok result", 
   assert.match(result.manualCommand, /plugin --profile web add|'plugin' '--profile' 'web' 'add'/);
   assert.ok(result.warnings.some((line) => line.startsWith("web:")));
 });
+
+test("unlaunched DSH desktop without ~/.dsh or CLI falls through isDshInstalled to desktop-profile-uninitialized", async (t) => {
+  const harness = makeHarness(t);
+  const cli = makeCli(harness);
+  for (const operation of ["install", "startup-sync"]) {
+    const result = await installDeepSeekHarnessBridge(orchOptions(harness, cli, {
+      operation,
+      dshInstalled: undefined,
+      commandInfo: null,
+      dshCommand: false,
+      env: { PATH: "" },
+      desktopDiscovery: desktopFound(harness),
+    }));
+    assert.strictEqual(result.status, "skipped", `${operation} must skip cleanly`);
+    assert.strictEqual(result.reason, "no-applicable-target");
+    assert.strictEqual(result.targets.web.role, "not-applicable");
+    assert.strictEqual(result.targets.web.reason, "web-not-used");
+    assert.strictEqual(result.targets.desktop.role, "not-applicable");
+    assert.strictEqual(result.targets.desktop.reason, "desktop-profile-uninitialized");
+    assert.match(result.message, /open the DeepSeek Harness desktop app once/i);
+  }
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-web.json")), false);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-desktop.json")), false);
+});
+
+test("unverifiable or ambiguous DSH desktop discovery does not report desktop-not-installed", async (t) => {
+  const harness = makeHarness(t);
+  const cli = makeCli(harness);
+  const cases = [
+    ["unknown", "desktop-unverifiable", "could not be verified"],
+    ["ambiguous", "multiple-desktop-installs", "Multiple DeepSeek Harness desktop installations"],
+  ];
+
+  for (const [status, reason, message] of cases) {
+    const result = await installDeepSeekHarnessBridge(orchOptions(harness, cli, {
+      dshInstalled: undefined,
+      commandInfo: null,
+      dshCommand: false,
+      env: { PATH: "" },
+      desktopDiscovery: {
+        status,
+        appRoot: null,
+        launcherPath: null,
+        staticVersion: null,
+        checkedPaths: [],
+        reason,
+      },
+    }));
+
+    assert.strictEqual(result.status, "skipped", `${status} discovery should skip cleanly`);
+    assert.strictEqual(result.reason, reason);
+    assert.match(result.message, new RegExp(message, "i"));
+    assert.strictEqual(result.targets, undefined);
+  }
+  assert.strictEqual(cli.calls.length, 0, "uncertain discovery must not invoke the DSH CLI");
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-web.json")), false);
+  assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-desktop.json")), false);
+});

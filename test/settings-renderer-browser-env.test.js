@@ -1865,6 +1865,19 @@ function loadAgentsTabForTest({
           agentIntegrationWorking: "Working",
           agentIntegrationUninstallConfirm: "Confirm uninstall",
           agentIntegrationInstallSkipped: "No local installation was found for {agents}.",
+          agentIntegrationInstallSkippedWithReason: "{agents} skipped: {detail}",
+          agentIntegrationInstallSkippedDetectorConflict: "Detected locally, but installer skipped {agents}: {detail}",
+          agentInstallSkippedDshDesktopUninitialized: "Open the DeepSeek Harness desktop app once to initialize its profile, then try Install again.",
+          agentInstallSkippedInstallerNotFound: "Clawd detected this tool locally, but the installer did not find an active profile or CLI to attach to.",
+          agentInstallSkippedTargetWebNotUsed: "not in use",
+          agentInstallSkippedTargetDesktopUninitialized: "profile not initialized",
+          agentInstallSkippedTargetDesktopNotInstalled: "app not installed",
+          agentInstallSkippedDetectedSource: "Detected via: {source}",
+          agentInstallSkippedDetectorDesktopApp: "desktop app installation",
+          agentInstallSkippedDetectorCommand: "CLI command on PATH",
+          agentInstallSkippedDetectorParentDir: "local data folder",
+          agentInstallSkippedDetectorCustomPath: "configured path",
+          agentInstallSkippedDetectorGeneric: "local files",
           agentListSeparator: ", ",
           agentCleanupHintTitle: "Review missing local agents",
           agentCleanupHintDesc: "Missing local installs for {agents}.",
@@ -1876,6 +1889,8 @@ function loadAgentsTabForTest({
           toastAgentIntegrationUninstalled: "Integration uninstalled.",
           toastAgentInstallHintInstalled: "Recommended integrations installed.",
           toastAgentInstallHintSkipped: "No local installation was found for {agents}.",
+          toastAgentInstallHintSkippedDetailed: "Skipped {agents}. See details under each tool.",
+          toastAgentInstallHintPartialSkippedDetailed: "{success} installed. Skipped {agents} (see details below).",
           toastAgentInstallHintPartialSkipped: "{success} installed. Skipped {agents}.",
           toastAgentInstallHintPartial: "{success} installed, {failed} failed: {message}",
           toastAgentCleanupHintRemoved: "Missing integrations removed.",
@@ -22613,6 +22628,230 @@ describe("settings renderer browser environment", () => {
       mobileBlock,
       /\.agent-detail-group,\s*\.settings-detail-group\s*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)/s,
     );
+  });
+
+  it("shows skipped desktop-profile-uninitialized guidance in toast and dismissible card notice across re-renders", async () => {
+    const flushAll = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+    let nextResult = {
+      status: "skipped",
+      reason: "no-applicable-target",
+      message: "No applicable DeepSeek Harness target (web: web-not-used; desktop: desktop-profile-uninitialized); open the DeepSeek Harness desktop app once to initialize its profile",
+      targets: {
+        web: { role: "not-applicable", reason: "web-not-used" },
+        desktop: { role: "not-applicable", reason: "desktop-profile-uninitialized" },
+      },
+    };
+    let installedSnapshot = false;
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { integrationInstalled: false, enabled: false } } },
+      agentMetadata: [{
+        id: "deepseek-harness",
+        name: "DeepSeek Harness",
+        eventSource: "plugin",
+        capabilities: {},
+      }],
+      settingsAPI: {
+        detectAgentInstallations: () => Promise.resolve({
+          checkedAt: 100,
+          agents: [{
+            agentId: "deepseek-harness",
+            detectedInstalled: installedSnapshot,
+            confidence: "high",
+            reason: "desktop-app",
+            detail: "DeepSeek Harness 0.2.2-rc.3",
+          }],
+          customTools: [],
+          skippedAgentIds: [],
+        }),
+        command: (name) => {
+          if (name !== "installAgentIntegration") return Promise.resolve({ status: "ok" });
+          return Promise.resolve(nextResult);
+        },
+      },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 100,
+      agents: [{
+        agentId: "deepseek-harness",
+        detectedInstalled: true,
+        confidence: "high",
+        reason: "desktop-app",
+        detail: "DeepSeek Harness 0.2.2-rc.3",
+      }],
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+
+    // Repeated hint/broadcast renders must not leave stale notice containers
+    // registered. A later skipped result should refresh only the current row.
+    const staleContainers = [];
+    for (let i = 0; i < 8; i++) {
+      staleContainers.push(harness.content.querySelector(".agent-install-skipped-notices"));
+      harness.core.ops.requestRender({ content: true });
+    }
+
+    const installBtn = harness.content.querySelector(".agent-integration-action");
+    assert.ok(installBtn);
+    installedSnapshot = true;
+    installBtn.click();
+    await flushAll();
+
+    assert.strictEqual(toasts.length, 1);
+    assert.notStrictEqual(toasts[0].options && toasts[0].options.error, true);
+    assert.match(toasts[0].message, /DeepSeek Harness/);
+    assert.match(toasts[0].message, /Open the DeepSeek Harness desktop app once to initialize its profile/);
+    assert.doesNotMatch(toasts[0].message, /No local installation was found/);
+
+    const notice = harness.content.querySelector(".agent-install-skipped-notice");
+    assert.ok(notice, "inline dismissible skipped notice should appear under the DSH row");
+    assert.ok(staleContainers.every((container) => (
+      container && container.querySelector(".agent-install-skipped-notice") === null
+    )), "detached row containers should not be retained and refreshed");
+    const noticeText = collectText(notice);
+    assert.match(noticeText, /Open the DeepSeek Harness desktop app once/);
+    assert.match(noticeText, /Web: not in use/);
+    assert.match(noticeText, /Desktop: profile not initialized/);
+    assert.match(noticeText, /Detected via: desktop app installation \(DeepSeek Harness 0\.2\.2-rc\.3\)/);
+
+    // Switching subtabs and back keeps the transient notice for the session
+    harness.core.runtime.agentsSubtab = "connected";
+    harness.core.ops.requestRender({ content: true });
+    assert.strictEqual(harness.content.querySelector(".agent-install-skipped-notice"), null);
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+    assert.ok(harness.content.querySelector(".agent-install-skipped-notice"));
+
+    // Dismissing clears it immediately and across subsequent re-renders
+    const ackBtn = harness.content.querySelector(".agent-install-skipped-ack");
+    assert.ok(ackBtn);
+    ackBtn.click();
+    assert.strictEqual(harness.content.querySelector(".agent-install-skipped-notice"), null);
+    harness.core.ops.requestRender({ content: true });
+    assert.strictEqual(harness.content.querySelector(".agent-install-skipped-notice"), null);
+
+    // Re-trigger and confirm a subsequent ok install clears it cleanly
+    harness.content.querySelector(".agent-integration-action").click();
+    await flushAll();
+    assert.ok(harness.content.querySelector(".agent-install-skipped-notice"));
+    nextResult = { status: "ok", changed: true };
+    harness.content.querySelector(".agent-integration-action").click();
+    await flushAll();
+    assert.strictEqual(harness.content.querySelector(".agent-install-skipped-notice"), null);
+  });
+
+  it("explains detector-vs-installer disagreement instead of showing false not-found toast", async () => {
+    const flushAll = async () => { for (let i = 0; i < 16; i++) await Promise.resolve(); };
+    const harness = loadAgentsTabForTest({
+      snapshot: { agents: { "deepseek-harness": { integrationInstalled: false, enabled: false } } },
+      agentMetadata: [{
+        id: "deepseek-harness",
+        name: "DeepSeek Harness",
+        eventSource: "plugin",
+        capabilities: {},
+      }],
+      settingsAPI: {
+        command: () => Promise.resolve({
+          status: "skipped",
+          reason: "dsh-not-found",
+          message: "DeepSeek Harness is not installed",
+        }),
+      },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 200,
+      agents: [{
+        agentId: "deepseek-harness",
+        detectedInstalled: true,
+        confidence: "medium",
+        reason: "parent-dir",
+        detail: "C:\\Users\\demo\\.dsh",
+      }],
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+
+    harness.content.querySelector(".agent-integration-action").click();
+    await flushAll();
+
+    assert.strictEqual(toasts.length, 1);
+    assert.match(toasts[0].message, /Detected locally, but installer skipped DeepSeek Harness/);
+    assert.doesNotMatch(toasts[0].message, /No local installation was found/);
+    const noticeText = collectText(harness.content.querySelector(".agent-install-skipped-notice"));
+    assert.match(noticeText, /installer did not find an active profile or CLI/);
+    assert.match(noticeText, /Detected via: local data folder/);
+  });
+
+  it("surfaces detailed batch Install all skip guidance and notices when multiple detected tools skip", async () => {
+    const flushAll = async () => { for (let i = 0; i < 20; i++) await Promise.resolve(); };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: {
+          "deepseek-harness": { integrationInstalled: false, enabled: false },
+          "qwen-code": { integrationInstalled: false, enabled: false },
+        },
+      },
+      agentMetadata: [
+        { id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "plugin", capabilities: {} },
+        { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} },
+      ],
+      settingsAPI: {
+        command: (name, payload) => {
+          if (name !== "installAgentIntegration") return Promise.resolve({ status: "ok" });
+          if (payload.agentId === "deepseek-harness") {
+            return Promise.resolve({
+              status: "skipped",
+              reason: "no-applicable-target",
+              message: "Open DSH desktop",
+              targets: {
+                web: { role: "not-applicable", reason: "web-not-used" },
+                desktop: { role: "not-applicable", reason: "desktop-profile-uninitialized" },
+              },
+            });
+          }
+          return Promise.resolve({
+            status: "skipped",
+            reason: "qwen-not-installed",
+            message: "Qwen Code is not installed",
+          });
+        },
+      },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.core.runtime.agentInstallationHints = {
+      checkedAt: 300,
+      agents: [
+        { agentId: "deepseek-harness", detectedInstalled: true, confidence: "high", reason: "desktop-app" },
+        { agentId: "qwen-code", detectedInstalled: true, confidence: "medium", reason: "command-path" },
+      ],
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+
+    const installAllBtn = harness.content.querySelector(".agent-install-all");
+    assert.ok(installAllBtn);
+    installAllBtn.click();
+    await flushAll();
+
+    assert.strictEqual(toasts.length, 1);
+    assert.match(toasts[0].message, /Skipped .*DeepSeek Harness.*See details under each tool/);
+    const notices = harness.content.querySelectorAll(".agent-install-skipped-notice");
+    assert.strictEqual(notices.length, 2);
+    assert.match(collectText(notices[0]), /Open the DeepSeek Harness desktop app once/);
+    assert.match(collectText(notices[1]), /Detected via: CLI command on PATH/);
   });
 });
 

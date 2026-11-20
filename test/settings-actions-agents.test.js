@@ -1261,3 +1261,31 @@ test("Hermes WSL Unpair propagates warnings without disabling the global gate", 
   assert.strictEqual(result.commit, undefined);
   assert.strictEqual(snapshot.agents.hermes.enabled, true);
 });
+
+test("settings agent actions preserve sanitized skipped targets metadata", async () => {
+  const result = await agentCommands.installAgentIntegration({ agentId: "deepseek-harness" }, {
+    snapshot: prefs.getDefaults(),
+    syncIntegrationForAgent: async () => ({
+      status: "skipped",
+      reason: "no-applicable-target",
+      message: "No applicable DeepSeek Harness target (web: web-not-used; desktop: desktop-profile-uninitialized); open the DeepSeek Harness desktop app once to initialize its profile",
+      targets: {
+        web: { role: "not-applicable", reason: "web-not-used", result: null },
+        desktop: {
+          role: "not-applicable",
+          reason: "desktop-profile-uninitialized",
+          result: null,
+          internalDebugOnly: { ignore: true },
+        },
+      },
+    }),
+  });
+
+  assert.strictEqual(result.status, "skipped");
+  assert.strictEqual(result.reason, "no-applicable-target");
+  assert.match(result.message, /desktop-profile-uninitialized/);
+  assert.deepStrictEqual(result.targets, {
+    web: { role: "not-applicable", reason: "web-not-used" },
+    desktop: { role: "not-applicable", reason: "desktop-profile-uninitialized" },
+  });
+});
