@@ -126,12 +126,11 @@ async function finishChildThroughJsonl(h) {
 
   appendEvent(h, 2, "task_complete", CHILD_TURN);
   h.poll();
-  // The completed child should become idle when turn completion is unified.
-  expectChild(h, "working", "PostToolUse", 0);
+  expectChild(h, "idle", "event_msg:task_complete", 0, { badge: "done" });
 
   h.advance(60_000);
   h.poll();
-  expectChild(h, "working", "PostToolUse", 0);
+  expectChild(h, "idle", "event_msg:task_complete", 0, { badge: "done" });
 }
 
 it("Codex dual ingress: S1 persistent desktop turn completes through the official Stop first", async t => {
@@ -228,20 +227,21 @@ it("Codex dual ingress: S3 codex exec completes a JSONL-only tool turn", t => {
   expectRow(h, 1, "idle", "event_msg:task_complete", { badge: "done", complete: 1 });
 });
 
-it("Codex dual ingress: S4 JSONL-first child completion releases the parent and leaves the child working", async t => {
+it("Codex dual ingress: S4 JSONL-first child completion releases the parent and settles the child idle", async t => {
   // Child rollout opens work, official tools take over its row, and JSONL finishes within the official window.
   const h = harness(t);
   await finishChildThroughJsonl(h);
 });
 
-it("Codex dual ingress: S5 late same-turn official Stop leaves the completed child's row working", async t => {
+it("Codex dual ingress: S5 late same-turn official Stop preserves the child's JSONL completion", async t => {
   // After the JSONL-first child terminal and the one-minute observation, deliver the matching Stop.
   const h = harness(t);
   await finishChildThroughJsonl(h);
+  const completed = structuredClone(h.row(2));
 
   await childHook(h, "Stop");
-  // Unifying turn completion should leave this child idle even when Stop arrives second.
-  expectChild(h, "working", "PostToolUse", 0);
+  expectChild(h, "idle", "event_msg:task_complete", 0, { badge: "done" });
+  assert.deepEqual(structuredClone(h.row(2)), completed, "late Stop leaves the completed child row intact");
 });
 
 it("Codex dual ingress: S4b official tool and Stop create and finish the headless child first", async t => {
