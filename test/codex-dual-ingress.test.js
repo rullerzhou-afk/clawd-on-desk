@@ -237,9 +237,11 @@ it("Codex dual ingress: S5 late same-turn official Stop preserves the child's JS
   // After the JSONL-first child terminal and the one-minute observation, deliver the matching Stop.
   const h = harness(t);
   await finishChildThroughJsonl(h);
+  const completed = structuredClone(h.row(2));
 
   await childHook(h, "Stop");
   expectChild(h, "idle", "event_msg:task_complete", 0, { badge: "done" });
+  assert.deepEqual(structuredClone(h.row(2)), completed, "late Stop leaves the completed child row intact");
 });
 
 it("Codex dual ingress: S4b official tool and Stop create and finish the headless child first", async t => {

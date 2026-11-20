@@ -501,6 +501,10 @@ function createAgentRuntimeMain(options = {}) {
   // has a matching compaction hold. Headless sessions only accept idle here:
   // the monitor resolves tracked subagent completions to idle so their rows
   // settle silently.
+  // The turn fence drops repeated terminals with the same turn ID. Once the
+  // fallback idles a row, it is no longer working-like, so repeated task_complete
+  // stays suppressed within the recent official-hook window unless there is a
+  // matching compaction hold.
   function shouldAllowCodexJsonlCompletionFallback(sessionId, state, event, turnId, extra) {
     if (event !== "event_msg:task_complete") return false;
     // codex-log-monitor only resolves task_complete to a completion state.

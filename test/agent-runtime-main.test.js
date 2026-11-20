@@ -1184,6 +1184,12 @@ describe("agent-runtime-main", () => {
       runtime.shouldSuppressCodexLogEvent("codex:headless", "idle", "event_msg:task_complete"),
       false
     );
+
+    sessions.get("codex:headless").state = "idle";
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:headless", "idle", "event_msg:task_complete"),
+      true
+    );
   });
 
   it("only rescues known local Codex sessions, and never suppresses without recent official hooks", () => {
