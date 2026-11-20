@@ -310,20 +310,19 @@ function createAgentRuntimeMain(options = {}) {
     codexInternalThreadSessions.delete(sessionId);
   }
 
-  // Rollout heads are immutable per session; cache recognized sources only.
-  // A missing/unreadable head stays uncached so a later event can retry.
+  // Cache settled rollout reads, including heads with no usable source.
+  // Retry on later events when the head is unavailable, incomplete, or unverified.
   const codexThreadSourceCache = new Map();
   function resolveCodexThreadSourceForSession(sessionId, opts = {}) {
     if (codexThreadSourceCache.has(sessionId)) return codexThreadSourceCache.get(sessionId);
     const session = getStateRuntime()?.sessions?.get(sessionId);
-    const transcriptPath = opts.transcriptPath || (session && session.transcriptPath) || null;
-    const source = readCodexThreadSource(transcriptPath);
-    if (source) {
-      codexThreadSourceCache.delete(sessionId);
-      codexThreadSourceCache.set(sessionId, source);
-      while (codexThreadSourceCache.size > MAX_CODEX_INTERNAL_THREAD_SESSIONS) {
-        codexThreadSourceCache.delete(codexThreadSourceCache.keys().next().value);
-      }
+    const transcriptPath = opts.transcriptPath || session?.transcriptPath;
+    const expectedThreadId = opts.rawSessionId || session?.rawSessionId;
+    const { settled, source } = readCodexThreadSource(transcriptPath, expectedThreadId);
+    if (!settled) return null;
+    codexThreadSourceCache.set(sessionId, source);
+    while (codexThreadSourceCache.size > MAX_CODEX_INTERNAL_THREAD_SESSIONS) {
+      codexThreadSourceCache.delete(codexThreadSourceCache.keys().next().value);
     }
     return source;
   }
@@ -637,8 +636,9 @@ function createAgentRuntimeMain(options = {}) {
       }
       const threadSource = resolveCodexThreadSourceForSession(sessionId, opts);
       if (isInternalCodexThreadSource(threadSource)) {
-        // Background threads (Guardian review, subagents) exit without a
-        // terminal hook; retire their rows like other internal work.
+        // Guardian reviews can exit without a terminal hook. Retire their rows
+        // and drop subsequent events. Delegated threads follow the existing
+        // lifecycle described in codex-thread-source.js.
         rememberCodexInternalThreadSession(sessionId);
         dismissCodexInternalThreadSession(sessionId);
         debugLog(`codex-thread-source recognize sid=${String(sessionId || "-").replace(/[\r\n]/g, "_")} source=${threadSource}`);

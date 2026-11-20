@@ -90,6 +90,22 @@ describe("official Codex child turn completion and model progress", () => {
     assert.equal(state.resolveDisplayState(), "thinking");
   });
 
+  it("PR #1395 follow-up: releases the parent count on official Stop/Interrupt for subagent rollout heads", () => {
+    for (const [id, turnId, terminal] of [[childA, "child-a", "Stop"], [childB, "child-b", "Interrupt"]]) {
+      const payload = {
+        id,
+        thread_source: "subagent",
+        source: { subagent: { thread_spawn: { parent_thread_id: parent } } },
+      };
+      const { filePath: transcriptPath } = feed(id, "session_meta", payload);
+      fs.writeFileSync(transcriptPath, JSON.stringify({ type: "session_meta", payload }) + "\n");
+      start(id, turnId);
+      assert.equal(count(), 1, `${terminal}: the started child counts toward its parent`);
+      official(id, terminal, turnId, { transcriptPath });
+      assert.equal(count(), 0, `${terminal}: the official terminal releases the parent count`);
+    }
+  });
+
   it("ends a matching child turn on an idle official Interrupt after its own row was dismissed", () => {
     start(); start(childB, "child-b");
     assert.equal(count(), 2);
