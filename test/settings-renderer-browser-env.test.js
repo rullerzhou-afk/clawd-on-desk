@@ -22786,6 +22786,7 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(toasts.length, 1);
     assert.match(toasts[0].message, /Detected locally, but installer skipped DeepSeek Harness/);
     assert.doesNotMatch(toasts[0].message, /No local installation was found/);
+    assert.doesNotMatch(toasts[0].message, /is not installed/);
     const noticeText = collectText(harness.content.querySelector(".agent-install-skipped-notice"));
     assert.match(noticeText, /installer did not find an active profile or CLI/);
     assert.match(noticeText, /Detected via: local data folder/);
@@ -22852,6 +22853,185 @@ describe("settings renderer browser environment", () => {
     assert.strictEqual(notices.length, 2);
     assert.match(collectText(notices[0]), /Open the DeepSeek Harness desktop app once/);
     assert.match(collectText(notices[1]), /Detected via: CLI command on PATH/);
+  });
+
+  function loadSkippedInstallTest({ agentMetadata, detectedInstalled = true, command }) {
+    const detectionResult = {
+      checkedAt: 100,
+      agents: agentMetadata.map(({ id }) => ({
+        agentId: id,
+        detectedInstalled,
+        confidence: "high",
+      })),
+      customTools: [],
+      skippedAgentIds: [],
+    };
+    const harness = loadAgentsTabForTest({
+      snapshot: {
+        agents: Object.fromEntries(agentMetadata.map(({ id }) => [id, { integrationInstalled: false, enabled: false }])),
+      },
+      agentMetadata,
+      settingsAPI: { command, detectAgentInstallations: async () => detectionResult },
+    });
+    const toasts = [];
+    harness.core.ops.showToast = (message, options) => toasts.push({ message, options });
+    harness.core.runtime.agentInstallationHints = detectionResult;
+    harness.core.runtime.agentInstallationHintsFetched = true;
+    harness.core.runtime.agentsSubtab = "discover";
+    harness.core.ops.requestRender({ content: true });
+    return { ...harness, detectionResult, toasts };
+  }
+
+  for (const [id, name, eventSource, message] of [
+    ["opencode", "OpenCode", "plugin", "opencode is not installed; skipped plugin sync"],
+    ["pi", "Pi", "extension", "Pi is not installed; skipped extension sync"],
+  ]) {
+    it(`shows generic not-found feedback for undetected ${name}`, async () => {
+      const harness = loadSkippedInstallTest({
+        agentMetadata: [{ id, name, eventSource, capabilities: {} }],
+        detectedInstalled: false,
+        command: async () => ({ status: "skipped", reason: `${id}-not-found`, message }),
+      });
+
+      harness.content.querySelector(".agent-integration-action").click();
+      await flushAsync();
+
+      assert.deepStrictEqual(harness.toasts.map((toast) => toast.message), [
+        `No local installation was found for ${name}.`,
+      ]);
+      assert.strictEqual(harness.content.querySelector(".agent-install-skipped-notice"), null);
+    });
+  }
+
+  it("localizes the Codex installer conflict in both the toast and notice", async () => {
+    const message = "codex is not installed; skipped hook sync";
+    const harness = loadSkippedInstallTest({
+      agentMetadata: [{ id: "codex", name: "Codex", eventSource: "hook", capabilities: {} }],
+      command: async () => ({ status: "skipped", reason: "codex-not-installed", message }),
+    });
+
+    harness.content.querySelector(".agent-integration-action").click();
+    await flushAsync();
+
+    const detail = "Clawd detected this tool locally, but the installer did not find an active profile or CLI to attach to.";
+    const primaryLine = harness.content.querySelector(".agent-install-skipped-notice .agent-dsh-notice-line");
+    assert.deepStrictEqual([harness.toasts[0].message, primaryLine.textContent], [
+      `Detected locally, but installer skipped Codex: ${detail}`,
+      detail,
+    ]);
+    assert.ok(!harness.toasts[0].message.includes(message));
+  });
+
+  const dshAgent = {
+    id: "deepseek-harness", name: "DeepSeek Harness", eventSource: "plugin", capabilities: {}, cleanupSuggestionExempt: false,
+  };
+  const uninitializedDesktop = {
+    status: "skipped",
+    reason: "no-applicable-target",
+    targets: { desktop: { reason: "desktop-profile-uninitialized" } },
+  };
+
+  for (const [failure, retry] of [
+    ["an error result", async () => ({ status: "error", message: "boom" })],
+    ["a rejected promise", async () => { throw new Error("boom"); }],
+  ]) {
+    it(`clears a skipped DSH notice when a single-card retry returns ${failure}`, async () => {
+      let install = async () => uninitializedDesktop;
+      const harness = loadSkippedInstallTest({
+        agentMetadata: [dshAgent],
+        command: () => install(),
+      });
+
+      harness.content.querySelector(".agent-integration-action").click();
+      await flushAsync();
+      assert.ok(harness.content.querySelector(".agent-install-skipped-notice"));
+
+      install = retry;
+      harness.content.querySelector(".agent-integration-action").click();
+      await flushAsync();
+
+      assert.strictEqual(harness.toasts[1].message, "Failed: boom");
+      assert.strictEqual(harness.content.querySelectorAll(".agent-install-skipped-notice").length, 0);
+    });
+  }
+
+  it("clears both skipped notices when Install all retries fail", async () => {
+    let fail = false;
+    const harness = loadSkippedInstallTest({
+      agentMetadata: [dshAgent, { id: "qwen-code", name: "Qwen Code", eventSource: "hook", capabilities: {} }],
+      command: async (name, { agentId }) => {
+        assert.strictEqual(name, "installAgentIntegration");
+        if (fail) return { status: "error", message: "boom" };
+        if (agentId === dshAgent.id) return uninitializedDesktop;
+        return { status: "skipped", reason: "qwen-not-installed" };
+      },
+    });
+
+    harness.content.querySelector(".agent-install-all").click();
+    await flushAsync();
+    assert.strictEqual(harness.content.querySelectorAll(".agent-install-skipped-notice").length, 2);
+
+    fail = true;
+    harness.content.querySelector(".agent-install-all").click();
+    await flushAsync();
+
+    assert.strictEqual(harness.toasts[1].message, "0 installed, 2 failed: boom");
+    assert.strictEqual(harness.content.querySelectorAll(".agent-install-skipped-notice").length, 0);
+  });
+
+  it("clears a skipped notice after the missing-tool cleanup uninstalls the integration", async () => {
+    const calls = [];
+    const harness = loadSkippedInstallTest({
+      agentMetadata: [dshAgent],
+      command: async (name, { agentId }) => {
+        calls.push([name, agentId]);
+        return name === "installAgentIntegration" ? uninitializedDesktop : { status: "ok" };
+      },
+    });
+
+    harness.content.querySelector(".agent-integration-action").click();
+    await flushAsync();
+    assert.ok(harness.content.querySelector(".agent-install-skipped-notice"));
+
+    harness.core.state.snapshot = { agents: { [dshAgent.id]: { integrationInstalled: true, enabled: true } } };
+    harness.detectionResult.agents[0].detectedInstalled = false;
+    harness.core.runtime.agentInstallationHints = harness.detectionResult;
+    harness.core.runtime.agentsSubtab = "connected";
+    harness.core.ops.requestRender({ content: true });
+    assert.ok(harness.content.querySelector(".agent-install-skipped-notice"));
+
+    harness.content.querySelector(".agent-cleanup-hint-remove").click();
+    await flushAsync();
+
+    assert.deepStrictEqual(calls, [
+      ["installAgentIntegration", dshAgent.id],
+      ["uninstallAgentIntegration", dshAgent.id],
+    ]);
+    assert.strictEqual(harness.toasts[1].message, "Missing integrations removed.");
+    assert.strictEqual(harness.content.querySelectorAll(".agent-install-skipped-notice").length, 0);
+  });
+
+  it("keeps placeholder-like text literal in a skipped toast and target summary", async () => {
+    const message = "bad $& {source} {message} value";
+    const harness = loadSkippedInstallTest({
+      agentMetadata: [dshAgent],
+      command: async () => ({
+        status: "skipped",
+        reason: "desktop-unverifiable",
+        message,
+        targets: { desktop: { reason: "desktop-unverifiable", resultMessage: "x $& y" } },
+      }),
+    });
+
+    harness.content.querySelector(".agent-integration-action").click();
+    await flushAsync();
+
+    const notice = harness.content.querySelector(".agent-install-skipped-notice");
+    assert.deepStrictEqual([
+      harness.toasts[0].message,
+      notice.querySelector(".agent-dsh-notice-line").textContent,
+      notice.querySelector(".agent-install-skipped-detail").textContent,
+    ], [`DeepSeek Harness skipped: ${message}`, message, "Desktop: x $& y"]);
   });
 });
 

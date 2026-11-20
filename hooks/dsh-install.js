@@ -5380,7 +5380,13 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
         }
         // Keep isDshInstalled() scoped to DSH home/CLI for its unit contract;
         // a found desktop then lets resolveDshTargets classify an unlaunched profile.
-        desktopDiscovery = await discoverDshDesktop(frozen);
+        if (operation === "startup-sync") {
+          // Startup already preheats the Windows registry cache.
+          desktopDiscovery = discoverDshDesktopSync(frozen);
+        }
+        if (!desktopDiscovery || desktopDiscovery.reason === "windows-discovery-pending") {
+          desktopDiscovery = await discoverDshDesktop(frozen);
+        }
         if (!desktopDiscovery || desktopDiscovery.status !== "found") {
           if (desktopDiscovery && desktopDiscovery.status === "ambiguous") {
             return {
