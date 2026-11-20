@@ -17,6 +17,8 @@ const {
   uninstallDeepSeekHarnessBridge,
   unregisterDeepSeekHarness,
   readDeepSeekHarnessNotices,
+  refreshDshDesktopDiscovery,
+  syncDeepSeekHarnessIntegration,
 } = require("../hooks/dsh-install");
 const { __test: dshInstallTest } = require("../hooks/dsh-install");
 const { buildCleanupOptionsForHome } = require("../hooks/cleanup-integrations");
@@ -1174,6 +1176,72 @@ test("unlaunched DSH desktop without ~/.dsh or CLI falls through isDshInstalled 
   }
   assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-web.json")), false);
   assert.strictEqual(fs.existsSync(path.join(harness.managedRoot, "notices-desktop.json")), false);
+});
+
+test("Windows DSH startup reuses preheated discovery while Install refreshes it", async (t) => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), "clawd-dsh-registry-"));
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }));
+  t.after(() => dshInstallTest.resetWindowsRegistryCache());
+  const appRoot = "C:\\Program Files\\DeepSeek Harness";
+  const desktopFiles = new Set([
+    path.win32.join(appRoot, "DeepSeek Harness.exe"),
+    path.win32.join(appRoot, "resources", "runtime", "cli", "bin", "dsh.cmd"),
+    path.win32.join(appRoot, "resources", "app.asar"),
+  ]);
+  const registryReads = {};
+
+  for (const [scenario, operation, preheat] of [
+    ["preheated startup", "startup-sync", true],
+    ["preheated install", "install", true],
+    ["cold startup", "startup-sync", false],
+  ]) {
+    dshInstallTest.resetWindowsRegistryCache();
+    let reads = 0;
+    const options = {
+      platform: "win32",
+      env: { PATH: "", SystemRoot: "C:\\Windows" },
+      dshHome: path.join(home, ".dsh"),
+      managedRoot: path.join(home, "managed"),
+      dshInstalled: undefined,
+      ...NO_WEB_COMMAND,
+      silent: true,
+      fs: {
+        ...fs,
+        statSync(filePath) {
+          if (desktopFiles.has(filePath)) return { isFile: () => true };
+          return fs.statSync(filePath);
+        },
+      },
+      runCommand: async (command) => {
+        assert.strictEqual(path.win32.basename(command), "powershell.exe");
+        reads++;
+        return {
+          code: 0,
+          stdout: JSON.stringify({
+            uninstall: [{ displayName: "DeepSeek Harness", displayVersion: FAMILY_VERSION, installLocation: appRoot }],
+            commandDirectory: null,
+          }),
+        };
+      },
+    };
+
+    if (preheat) {
+      const discovery = await refreshDshDesktopDiscovery(options);
+      assert.strictEqual(discovery.status, "found");
+      assert.strictEqual(reads, 1);
+    }
+    const result = await syncDeepSeekHarnessIntegration({ ...options, operation });
+    assert.strictEqual(result.status, "skipped", scenario);
+    assert.strictEqual(result.reason, "no-applicable-target", scenario);
+    assert.strictEqual(result.targets.desktop.reason, "desktop-profile-uninitialized", scenario);
+    registryReads[scenario] = reads;
+  }
+
+  assert.deepStrictEqual(registryReads, {
+    "preheated startup": 1,
+    "preheated install": 2,
+    "cold startup": 1,
+  });
 });
 
 test("unverifiable or ambiguous DSH desktop discovery does not report desktop-not-installed", async (t) => {

@@ -34,10 +34,12 @@
 
   function isGenericNotInstalledReason(reason) {
     if (!reason || typeof reason !== "string") return true;
+    // Keep the not-installed reasons aligned with isNotInstalledReason in src/integration-sync.js.
     return (
+      reason === "not-found" ||
       reason === "not-installed" ||
-      reason === "dsh-not-found" ||
       reason === "grok-home-missing" ||
+      reason.endsWith("-not-found") ||
       reason.endsWith("-not-installed")
     );
   }
@@ -81,11 +83,7 @@
       const profileLabel = profile === "web" || profile === "desktop"
         ? dshNoticeProfileLabel(profile)
         : profile;
-      parts.push(
-        t("dshNoticeLine")
-          .replace("{profile}", profileLabel)
-          .replace("{text}", text)
-      );
+      parts.push(fillTemplate(t("dshNoticeLine"), { profile: profileLabel, text }));
     }
     return parts.join(" · ");
   }
@@ -120,10 +118,8 @@
       toastDetail = primaryText;
     } else if (genericMissing) {
       if (detectedInstalled) {
-        primaryText = specificMessage && !/is not installed$/i.test(specificMessage)
-          ? specificMessage
-          : t("agentInstallSkippedInstallerNotFound");
-        toastDetail = specificMessage || t("agentInstallSkippedInstallerNotFound");
+        primaryText = t("agentInstallSkippedInstallerNotFound");
+        toastDetail = primaryText;
       }
     } else {
       primaryText = specificMessage || reason;
@@ -1029,11 +1025,10 @@
           skippedAgentIds.push(agentId);
           const agent = getAgentMetadata(agentId) || { id: agentId, name: agentId };
           skippedFeedbacks.push(recordSkippedInstall(agent, result));
-        } else if (!firstError) {
-          failed++;
-          firstError = (result && result.message) || "unknown error";
         } else {
           failed++;
+          clearAgentInstallSkipped(agentId);
+          if (!firstError) firstError = (result && result.message) || "unknown error";
         }
       }
       if (failed > 0) {
@@ -1096,6 +1091,7 @@
         });
         if (result && result.status === "ok") {
           removed++;
+          clearAgentInstallSkipped(agentId);
         } else {
           failed++;
           if (!firstError) firstError = (result && result.message) || "unknown error";
@@ -1139,14 +1135,21 @@
     });
   }
 
+  function fillTemplate(template, values) {
+    return String(template).replace(/\{(\w+)\}/g, (placeholder, key) => (
+      Object.prototype.hasOwnProperty.call(values, key) ? values[key] : placeholder
+    ));
+  }
+
   function formatHintResult(template, values) {
-    return String(template)
-      .replace("{success}", () => String(values.success))
-      .replace("{failed}", () => String(values.failed))
-      .replace("{agents}", () => values.agents || "")
-      .replace("{detail}", () => values.detail || "")
-      .replace("{source}", () => values.source || "")
-      .replace("{message}", () => values.message || "unknown error");
+    return fillTemplate(template, {
+      success: String(values.success),
+      failed: String(values.failed),
+      agents: values.agents || "",
+      detail: values.detail || "",
+      source: values.source || "",
+      message: values.message || "unknown error",
+    });
   }
 
   function showClaudeHooksDisableConfirmModal() {
@@ -1392,7 +1395,7 @@
         if (notice.reason === "generation-conflict") return t("dshNoticeGenerationConflict");
         const message = notice.message == null ? "" : String(notice.message);
         const key = notice.operation === "uninstall" ? "dshNoticeUninstallFailed" : "dshNoticeInstallFailed";
-        let body = t(key).replace("{message}", message);
+        let body = fillTemplate(t(key), { message });
         if (DSH_REPAIRABLE_FAILURE_REASONS.has(notice.reason)) {
           body = `${body} ${t("dshNoticeOpenDoctor").replace("{fix}", t("doctorFix"))}`;
         }
@@ -1438,9 +1441,10 @@
     row.setAttribute("data-profile", notice.profile);
     const line = document.createElement("div");
     line.className = "agent-dsh-notice-line";
-    line.textContent = t("dshNoticeLine")
-      .replace("{profile}", dshNoticeProfileLabel(notice.profile))
-      .replace("{text}", dshNoticeBody(notice));
+    line.textContent = fillTemplate(t("dshNoticeLine"), {
+      profile: dshNoticeProfileLabel(notice.profile),
+      text: dshNoticeBody(notice),
+    });
     row.appendChild(line);
     if (notice.kind === "manual-command") {
       const commands = document.createElement("pre");
@@ -3071,6 +3075,7 @@
           return;
         }
         if (!result || result.status !== "ok") {
+          clearAgentInstallSkipped(agent.id);
           const msg = (result && result.message) || "unknown error";
           ops.showToast(t("toastSaveFailed") + msg, { error: true });
           syncAgentIntegrationAction(meta);
@@ -3081,6 +3086,7 @@
         ops.showToast(t(key));
         refreshInstallationHints();
       }).catch((err) => {
+        clearAgentInstallSkipped(agent.id);
         ops.showToast(t("toastSaveFailed") + (err && err.message), { error: true });
       }).finally(() => {
         syncAgentIntegrationAction(meta);
