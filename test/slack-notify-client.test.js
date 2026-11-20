@@ -204,6 +204,22 @@ test("onSnapshot primes on first call, then sends once per new event", async () 
   assert.equal(fetchImpl.calls.length, 1);
 });
 
+test("onSnapshot sends full completion output only for user-facing sessions", async () => {
+  const fetchImpl = makeFetch(okWebhook);
+  const client = baseClient({ config: { outputMode: "full" }, fetchImpl });
+  const completion = { badge: "done", lastEvent: { rawEvent: "event_msg:task_complete", at: 1 } };
+
+  client.onSnapshot({ sessions: [] });
+  client.onSnapshot({ sessions: [
+    { ...completion, id: "child", headless: true, displayTitle: "Child", assistantLastOutput: "Child output" },
+    { ...completion, id: "parent", headless: false, displayTitle: "Parent", assistantLastOutput: "Parent output" },
+  ] });
+  await client.drained();
+
+  assert.equal(fetchImpl.calls.length, 1);
+  assert.match(JSON.stringify(fetchImpl.calls[0].body), /Parent output/);
+});
+
 test("onSnapshot honors per-event gating", async () => {
   const fetchImpl = makeFetch(okWebhook);
   const client = baseClient({ config: { notifyOnError: false }, fetchImpl });
