@@ -316,6 +316,28 @@ function resultMessage(result, fallback) {
   return manualCommand && !base.includes(manualCommand) ? `${base}\n${manualCommand}` : base;
 }
 
+function summarizeIntegrationTargets(rawTargets) {
+  if (!rawTargets || typeof rawTargets !== "object" || Array.isArray(rawTargets)) return null;
+  const targets = {};
+  let count = 0;
+  for (const [profile, entry] of Object.entries(rawTargets)) {
+    if (typeof profile !== "string" || !profile || !entry || typeof entry !== "object") continue;
+    const summary = {};
+    if (typeof entry.role === "string" && entry.role) summary.role = entry.role;
+    if (typeof entry.reason === "string" && entry.reason) summary.reason = entry.reason;
+    if (entry.result && typeof entry.result === "object") {
+      if (typeof entry.result.status === "string" && entry.result.status) summary.resultStatus = entry.result.status;
+      if (typeof entry.result.reason === "string" && entry.result.reason) summary.resultReason = entry.result.reason;
+      if (typeof entry.result.message === "string" && entry.result.message) summary.resultMessage = entry.result.message;
+    }
+    if (Object.keys(summary).length === 0) continue;
+    targets[profile] = summary;
+    count += 1;
+    if (count >= 8) break;
+  }
+  return count > 0 ? targets : null;
+}
+
 function integrationResultMetadata(result) {
   if (!result || typeof result !== "object") return {};
   const metadata = {};
@@ -335,6 +357,8 @@ function integrationResultMetadata(result) {
     const residualPaths = result.residualPaths.filter((p) => typeof p === "string" && p);
     if (residualPaths.length) metadata.residualPaths = residualPaths;
   }
+  const targets = summarizeIntegrationTargets(result.targets);
+  if (targets) metadata.targets = targets;
   return metadata;
 }
 

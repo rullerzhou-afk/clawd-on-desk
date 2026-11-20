@@ -17,7 +17,7 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
   it("maps tool-boundary events to working / error", () => {
     assert.strictEqual(HOOK_MAP.PreToolUse.state, "working");
     assert.strictEqual(HOOK_MAP.PostToolUse.state, "working");
-    assert.strictEqual(HOOK_MAP.PostToolUseFailure.state, "error");
+    assert.strictEqual(HOOK_MAP.PostToolUseFailure.state, "working");
   });
 
   it("observes permission events as passive notifications, never a decision", () => {

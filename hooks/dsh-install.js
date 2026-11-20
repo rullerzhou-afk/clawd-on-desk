@@ -5373,10 +5373,40 @@ async function syncDeepSeekHarnessIntegration(options = {}) {
   try {
     return await enqueueMutation(async () => {
       const frozen = freezeDshOperationOptions(options);
+      let desktopDiscovery = null;
       if (!(await isDshInstalled(frozen))) {
-        return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
+        if (typeof frozen.dshInstalled === "boolean") {
+          return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
+        }
+        // Keep isDshInstalled() scoped to DSH home/CLI for its unit contract;
+        // a found desktop then lets resolveDshTargets classify an unlaunched profile.
+        if (operation === "startup-sync") {
+          // Startup already preheats the Windows registry cache.
+          desktopDiscovery = discoverDshDesktopSync(frozen);
+        }
+        if (!desktopDiscovery || desktopDiscovery.reason === "windows-discovery-pending") {
+          desktopDiscovery = await discoverDshDesktop(frozen);
+        }
+        if (!desktopDiscovery || desktopDiscovery.status !== "found") {
+          if (desktopDiscovery && desktopDiscovery.status === "ambiguous") {
+            return {
+              status: "skipped",
+              reason: "multiple-desktop-installs",
+              message: "Multiple DeepSeek Harness desktop installations were found",
+            };
+          }
+          if (desktopDiscovery && desktopDiscovery.status === "unknown") {
+            return {
+              status: "skipped",
+              reason: "desktop-unverifiable",
+              message: "DeepSeek Harness desktop installation could not be verified",
+            };
+          }
+          return { status: "skipped", reason: "dsh-not-found", message: "DeepSeek Harness is not installed" };
+        }
       }
-      const targets = await resolveDshTargets(frozen, { operation });
+      const targetOptions = desktopDiscovery ? Object.freeze({ ...frozen, desktopDiscovery }) : frozen;
+      const targets = await resolveDshTargets(targetOptions, { operation });
       const run = await runDshTargets(frozen, operation, targets, "sync");
       const entries = [run.web, run.desktop];
       const result = summarizeDshInstallResults(entries);

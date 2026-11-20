@@ -124,6 +124,7 @@
     agentInstallationHintsPending: false,
     agentInstallationHintsFetched: false,
     agentInstallationHintsPromise: null,
+    agentInstallSkipped: {},
     themeList: null,
     themeListPromise: null,
     officialThemeList: null,

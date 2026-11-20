@@ -1869,6 +1869,29 @@ html, body {
 .agent-text-input-control input {
   width: 100%;
 }
+.agent-install-skipped-notices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+.agent-install-skipped-notices:empty,
+.agent-install-skipped-notices[hidden] {
+  display: none;
+}
+.agent-dsh-notice[data-kind="skipped-install"] {
+  color: #9a6700;
+}
+@media (prefers-color-scheme: dark) {
+  .agent-dsh-notice[data-kind="skipped-install"] {
+    color: #f6c343;
+  }
+}
+.agent-install-skipped-detail {
+  color: var(--text-secondary);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
 @media (max-width: 720px) {
   .agent-text-input-row {
     flex-direction: column;
