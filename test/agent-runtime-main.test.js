@@ -1160,7 +1160,7 @@ describe("agent-runtime-main", () => {
     );
   });
 
-  it("does not apply the JSONL completion fallback to remote or headless Codex sessions", () => {
+  it("limits the JSONL completion fallback to idle for local headless Codex sessions", () => {
     const sessions = new Map();
     const runtime = createAgentRuntimeMain({
       codexSubagentClassifier: {},
@@ -1179,6 +1179,10 @@ describe("agent-runtime-main", () => {
     assert.equal(
       runtime.shouldSuppressCodexLogEvent("codex:headless", "attention", "event_msg:task_complete"),
       true
+    );
+    assert.equal(
+      runtime.shouldSuppressCodexLogEvent("codex:headless", "idle", "event_msg:task_complete"),
+      false
     );
   });
 

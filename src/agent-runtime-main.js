@@ -496,15 +496,11 @@ function createAgentRuntimeMain(options = {}) {
     return codexArchiveTracker.isArchived(raw) === true;
   }
 
-  // JSONL fallback rescue. Official Codex hooks normally emit a Stop that closes
-  // the turn, so the matching JSONL event_msg:task_complete is suppressed as a
-  // duplicate. But when the official Stop never arrives, the session stays stuck
-  // working-like while the rollout JSONL still records task_complete. Let that one
-  // JSONL completion through to close the turn — only for a local (non-remote,
-  // non-headless) Codex session the state runtime still shows as working-like.
-  // Once Stop (or this very fallback) idles the session it is no longer
-  // working-like, so a later duplicate task_complete is suppressed again and we
-  // avoid double done/celebration.
+  // Official Codex hooks normally close the turn with Stop. If it never arrives,
+  // JSONL task_complete can finish a local turn that is still working-like or
+  // has a matching compaction hold. Headless sessions only accept idle here:
+  // the monitor resolves tracked subagent completions to idle so their rows
+  // settle silently.
   function shouldAllowCodexJsonlCompletionFallback(sessionId, state, event, turnId, extra) {
     if (event !== "event_msg:task_complete") return false;
     // codex-log-monitor only resolves task_complete to a completion state.
@@ -512,7 +508,7 @@ function createAgentRuntimeMain(options = {}) {
     const stateRuntime = getStateRuntime();
     const sessions = stateRuntime && stateRuntime.sessions;
     const session = sessions && typeof sessions.get === "function" ? sessions.get(sessionId) : null;
-    if (!isLocalCodexSessionRecord(session) || session.headless) return false;
+    if (!isLocalCodexSessionRecord(session) || (session.headless && state !== "idle")) return false;
     return CODEX_WORKING_LIKE_STATES.has(session.state)
       || (typeof stateRuntime.hasCodexCompactionHold === "function"
         && stateRuntime.hasCodexCompactionHold(sessionId, {
