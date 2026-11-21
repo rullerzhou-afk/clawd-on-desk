@@ -716,6 +716,8 @@ function createRemoteSshRuntime(deps = {}) {
       readinessLineBuffer: "",
       readinessTimer: null,
       tunnelMode: profile.tunnelMode === "stdio" ? "stdio" : "reverse",
+      // Any mode can set this flag. Only the stdio bridge launch consumes it.
+      detectedNodePathChanged: false,
       stdioTransport: null,
       stdioReady: false,
       stdioReadyTimer: null,
@@ -834,6 +836,14 @@ function createRemoteSshRuntime(deps = {}) {
       })
     : () => {};
 
+  function updateProfileSnapshot(state, profile) {
+    if (state.profile.detectedRemoteNodeBin !== profile.detectedRemoteNodeBin) {
+      // Keep the current path available to any health probe in flight.
+      state.detectedNodePathChanged = true;
+    }
+    state.profile = profile;
+  }
+
   function refreshProfile(profile) {
     if (!profile || !profile.id) throw new Error("refreshProfile: profile.id required");
     const state = states.get(profile.id);
@@ -858,7 +868,7 @@ function createRemoteSshRuntime(deps = {}) {
       emitStatus(state);
       return false;
     }
-    state.profile = nextProfile;
+    updateProfileSnapshot(state, nextProfile);
     if (previousTunnelMode !== nextTunnelMode
       && state.status !== "connecting"
       && state.status !== "connected"
@@ -885,7 +895,7 @@ function createRemoteSshRuntime(deps = {}) {
         : null;
       const targetChanged = tunnelTargetKey(state.profile) !== tunnelTargetKey(profile);
       // Replace profile snapshot — caller may have just edited fields.
-      state.profile = profile;
+      updateProfileSnapshot(state, profile);
       if (targetChanged) {
         clearRemoteShellCache(state);
         resetRecoveryContext(state);
@@ -1514,6 +1524,14 @@ function createRemoteSshRuntime(deps = {}) {
       });
       return;
     }
+    // Only the stdio bridge launch consumes this flag.
+    // Reverse probes reload the path from cache. Serialized connects resolve it
+    // separately and can take an options.remoteNode override.
+    if (state.detectedNodePathChanged) {
+      state.remoteNodeBin = null;
+      state.remoteNodeSource = null;
+      state.detectedNodePathChanged = false;
+    }
     const remoteNode = state.remoteNodeBin || profile.detectedRemoteNodeBin;
     if (typeof remoteNode !== "string" || !remoteNode.startsWith("/")) {
       finishFailure(state, {
@@ -1968,6 +1986,17 @@ function createRemoteSshRuntime(deps = {}) {
           reason: "stdio_bridge_invalid_args",
           hint: "remoteSshErrStdioBridgeUnavailable",
           message: "The remote jump host bridge rejected its launch arguments. Redeploy the hooks.",
+        });
+        return;
+      }
+      if (code === 126 || code === 127) {
+        clearCachedRemoteNodeBin(state.profile);
+        state.remoteNodeBin = null;
+        state.remoteNodeSource = null;
+        finishFailure(state, {
+          reason: "stdio_node_stale",
+          hint: classifyProbeExit(code).hint,
+          message: "The remote Node path is no longer usable. Run Deploy / Repair Hooks again.",
         });
         return;
       }
