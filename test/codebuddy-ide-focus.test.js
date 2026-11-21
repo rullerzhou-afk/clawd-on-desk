@@ -20,7 +20,12 @@ const {
   getSessionFocusTarget,
   mergeSessionFocusEntry,
 } = require("../src/session-focus");
-const { findCodeBuddyMacApp, openCodeBuddyMacApp } = require("../src/process-app-focus");
+const {
+  createWindowsImagePathReader,
+  findCodeBuddyMacApp,
+  findCodeBuddyWindowsApp,
+  openCodeBuddyMacApp,
+} = require("../src/process-app-focus");
 const { focusCodeBuddyIdeTarget } = require("../src/session-focus-handoff");
 const { buildSessionSnapshotEntry } = require("../src/state-session-snapshot");
 
@@ -83,6 +88,31 @@ function codeBuddyStats(bundlePath, mtimeMs = 1) {
 
 function psLine(processId, image) {
   return `${processId} ${image}`;
+}
+
+function winCodeBuddyFiles(appDir, {
+  protocol = "codebuddycn",
+  nameShort = "CodeBuddy CN",
+  applicationName = "buddycn",
+  route = "x/conversation/open/y",
+} = {}) {
+  const appRoot = `${appDir}\\resources\\app`;
+  return {
+    [`${appRoot}\\product.json`]: JSON.stringify({ urlProtocol: protocol, nameShort, applicationName }),
+    [`${appRoot}\\out\\main.js`]: route,
+  };
+}
+
+function winCodeBuddyStats(appDir, mtimeMs = 1) {
+  const appRoot = `${appDir}\\resources\\app`;
+  return {
+    [`${appRoot}\\product.json`]: mtimeMs,
+    [`${appRoot}\\out\\main.js`]: mtimeMs,
+  };
+}
+
+function winProcessLine(processId, image) {
+  return `${processId}\t${image}`;
 }
 
 describe("PR #1386 follow-up: CodeBuddy hook titles", () => {
@@ -190,41 +220,52 @@ describe("PR #1386 follow-up: CodeBuddy focus target routing", () => {
     });
   });
 
-  it("keeps the terminal target on Windows and Linux", () => {
-    assert.equal(getSessionFocusTarget(base, { osPlatform: "win32" }).type, "terminal");
+  it("uses the app target for a local Windows IDE session", () => {
+    assert.deepEqual(getSessionFocusTarget(base, { osPlatform: "win32" }), {
+      canFocus: true,
+      type: "codebuddy-ide",
+      url: null,
+    });
+  });
+
+  it("keeps the terminal target on Linux", () => {
     assert.equal(getSessionFocusTarget(base, { osPlatform: "linux", env: {} }).type, "terminal");
   });
 
   it("does not use the app target for WSL, headless or PID-less sessions", () => {
-    assert.equal(getSessionFocusTarget(
-      { ...base, wslDistro: "Ubuntu", sourcePid: null },
-      { osPlatform: "darwin" }
-    ).canFocus, false);
-    assert.notEqual(getSessionFocusTarget(
-      { ...base, wslDistro: "Ubuntu" },
-      { osPlatform: "darwin" }
-    ).type, "codebuddy-ide");
-    assert.notEqual(getSessionFocusTarget(
-      { ...base, platform: "wsl" },
-      { osPlatform: "darwin" }
-    ).type, "codebuddy-ide");
-    assert.notEqual(getSessionFocusTarget(
-      { ...base, headless: true },
-      { osPlatform: "darwin" }
-    ).type, "codebuddy-ide");
-    assert.notEqual(getSessionFocusTarget(
-      { ...base, sourcePid: null },
-      { osPlatform: "darwin" }
-    ).type, "codebuddy-ide");
+    for (const osPlatform of ["darwin", "win32"]) {
+      assert.equal(getSessionFocusTarget(
+        { ...base, wslDistro: "Ubuntu", sourcePid: null },
+        { osPlatform }
+      ).canFocus, false);
+      assert.notEqual(getSessionFocusTarget(
+        { ...base, wslDistro: "Ubuntu" },
+        { osPlatform }
+      ).type, "codebuddy-ide");
+      assert.notEqual(getSessionFocusTarget(
+        { ...base, platform: "wsl" },
+        { osPlatform }
+      ).type, "codebuddy-ide");
+      assert.notEqual(getSessionFocusTarget(
+        { ...base, headless: true },
+        { osPlatform }
+      ).type, "codebuddy-ide");
+      assert.notEqual(getSessionFocusTarget(
+        { ...base, sourcePid: null },
+        { osPlatform }
+      ).type, "codebuddy-ide");
+    }
   });
 
   it("keeps CLI and client-less sessions on the terminal path", () => {
-    assert.equal(getSessionFocusTarget(
-      { ...base, codebuddyClient: "CLI" },
-      { osPlatform: "darwin" }
-    ).type, "terminal");
     const { codebuddyClient, ...withoutClient } = base;
-    assert.equal(getSessionFocusTarget(withoutClient, { osPlatform: "darwin" }).type, "terminal");
+    for (const osPlatform of ["darwin", "win32"]) {
+      assert.equal(getSessionFocusTarget(
+        { ...base, codebuddyClient: "CLI" },
+        { osPlatform }
+      ).type, "terminal");
+      assert.equal(getSessionFocusTarget(withoutClient, { osPlatform }).type, "terminal");
+    }
   });
 
   it("routes through the real snapshot entry with an explicit host platform", () => {
@@ -247,6 +288,11 @@ describe("PR #1386 follow-up: CodeBuddy focus target routing", () => {
     assert.equal(Object.hasOwn(darwinEntry, "codebuddyAppBundle"), false);
     assert.equal(
       buildSessionSnapshotEntry("codebuddy:cb", session, {}, { focusHostPlatform: "win32" })
+        .focusTarget.type,
+      "codebuddy-ide"
+    );
+    assert.equal(
+      buildSessionSnapshotEntry("codebuddy:cb", session, {}, { focusHostPlatform: "linux" })
         .focusTarget.type,
       "terminal"
     );
@@ -509,6 +555,177 @@ describe("PR #1386 follow-up: CodeBuddy app lookup", () => {
   });
 });
 
+describe("CodeBuddy Windows app lookup", () => {
+  const stableDir = "C:\\Users\\me\\AppData\\Local\\Programs\\CodeBuddy CN";
+  const insidersDir = "C:\\Users\\me\\AppData\\Local\\Programs\\CodeBuddy CN Insiders";
+  const stableExe = `${stableDir}\\CodeBuddy CN.exe`;
+  const insidersExe = `${insidersDir}\\CodeBuddy CN Insiders.exe`;
+
+  it("queries the recorded PIDs once through Get-Process without a visible window", async () => {
+    const execFile = makeExecFile({ stdout: `${winProcessLine(45684, insidersExe)}\r\n` });
+    const result = await findCodeBuddyWindowsApp([14172, 45684], {
+      execFile,
+      fs: makeFs(winCodeBuddyFiles(insidersDir, {
+        protocol: "codebuddycn-insiders",
+        nameShort: "CodeBuddy CN Insiders",
+        applicationName: "buddycn-insiders",
+      }), winCodeBuddyStats(insidersDir)),
+    });
+    assert.deepEqual(result, { bundlePath: insidersDir, urlScheme: "codebuddycn-insiders" });
+    assert.equal(execFile.calls.length, 1);
+    assert.equal(execFile.calls[0].bin, "powershell.exe");
+    assert.equal(execFile.calls[0].options.windowsHide, true);
+    assert.match(execFile.calls[0].args.at(-1), /Get-Process -Id 14172,45684 /);
+  });
+
+  it("selects the edition of the earliest recorded PID and skips helpers and shells", async () => {
+    const harness = `${insidersDir}\\resources\\app\\extensions\\genie\\harness\\agent-harness.exe`;
+    const result = await findCodeBuddyWindowsApp([10, 20, 30, 40], {
+      execFile: makeExecFile({
+        stdout: [
+          winProcessLine(40, stableExe),
+          winProcessLine(10, "C:\\Program Files\\Git\\usr\\bin\\bash.exe"),
+          winProcessLine(20, harness),
+          winProcessLine(30, insidersExe),
+          "",
+        ].join("\r\n"),
+      }),
+      fs: makeFs({
+        ...winCodeBuddyFiles(stableDir),
+        ...winCodeBuddyFiles(insidersDir, { protocol: "codebuddycn-insiders" }),
+      }, {
+        ...winCodeBuddyStats(stableDir, 10),
+        ...winCodeBuddyStats(insidersDir, 20),
+      }),
+    });
+    assert.deepEqual(result, { bundlePath: insidersDir, urlScheme: "codebuddycn-insiders" });
+  });
+
+  it("matches by product.json even though applicationName omits CodeBuddy", async () => {
+    const result = await findCodeBuddyWindowsApp([38060], {
+      execFile: makeExecFile({ stdout: `${winProcessLine(38060, stableExe)}\n` }),
+      fs: makeFs(winCodeBuddyFiles(stableDir, { applicationName: "buddycn" }), winCodeBuddyStats(stableDir)),
+    });
+    assert.deepEqual(result, { bundlePath: stableDir, urlScheme: "codebuddycn" });
+  });
+
+  it("reports no scheme for a build without the conversation route", async () => {
+    const legacyDir = "C:\\Program Files\\CodeBuddy CN";
+    const result = await findCodeBuddyWindowsApp([7], {
+      execFile: makeExecFile({ stdout: `${winProcessLine(7, `${legacyDir}\\CodeBuddy CN.exe`)}\n` }),
+      fs: makeFs(winCodeBuddyFiles(legacyDir, { route: "no route" }), winCodeBuddyStats(legacyDir)),
+    });
+    assert.deepEqual(result, { bundlePath: legacyDir, urlScheme: null });
+  });
+
+  it("rejects relative, UNC, non-normalized and non-exe images", async () => {
+    for (const image of [
+      "CodeBuddy CN\\CodeBuddy CN.exe",
+      "\\\\server\\share\\CodeBuddy CN\\CodeBuddy CN.exe",
+      "C:\\Apps\\..\\CodeBuddy CN\\CodeBuddy CN.exe",
+      "C:/Apps/CodeBuddy CN/CodeBuddy CN.exe",
+      `${stableDir}\\CodeBuddy CN.dll`,
+    ]) {
+      const result = await findCodeBuddyWindowsApp([5], {
+        execFile: makeExecFile({ stdout: `${winProcessLine(5, image)}\n` }),
+        fs: makeFs({}, {}),
+      });
+      assert.equal(result, null, image);
+    }
+  });
+
+  it("returns null without valid PIDs, output or a CodeBuddy product", async () => {
+    const execFile = makeExecFile({ stdout: "" });
+    assert.equal(await findCodeBuddyWindowsApp([], { execFile, fs: makeFs({}) }), null);
+    assert.equal(await findCodeBuddyWindowsApp([0, -1, "x"], { execFile, fs: makeFs({}) }), null);
+    assert.equal(execFile.calls.length, 0, "no process query without a valid PID");
+    assert.equal(await findCodeBuddyWindowsApp([5], { execFile, fs: makeFs({}) }), null);
+    const otherDir = "C:\\Apps\\Other";
+    assert.equal(await findCodeBuddyWindowsApp([6], {
+      execFile: makeExecFile({ stdout: `${winProcessLine(6, `${otherDir}\\Other.exe`)}\n` }),
+      fs: makeFs(winCodeBuddyFiles(otherDir, { protocol: "other", nameShort: "Other", applicationName: "other" }),
+        winCodeBuddyStats(otherDir)),
+    }), null);
+  });
+
+  it("survives a process query that throws or fails", async () => {
+    assert.equal(await findCodeBuddyWindowsApp([5], {
+      execFile: makeExecFile({ throwSync: new Error("spawn failed") }),
+      fs: makeFs({}),
+    }), null);
+    const result = await findCodeBuddyWindowsApp([38060], {
+      execFile: makeExecFile({ error: new Error("one pid gone"), stdout: `${winProcessLine(38060, stableExe)}\n` }),
+      fs: makeFs(winCodeBuddyFiles(stableDir), winCodeBuddyStats(stableDir)),
+    });
+    assert.equal(result.bundlePath, stableDir);
+  });
+
+  it("reads images in-process without spawning PowerShell when a reader is available", async () => {
+    const execFile = makeExecFile({ stdout: "" });
+    const asked = [];
+    const result = await findCodeBuddyWindowsApp([10, 45684, 38060], {
+      execFile,
+      readImagePath: (processId) => {
+        asked.push(processId);
+        if (processId === 10) throw new Error("access denied");
+        return processId === 45684 ? insidersExe : stableExe;
+      },
+      fs: makeFs({
+        ...winCodeBuddyFiles(stableDir),
+        ...winCodeBuddyFiles(insidersDir, { protocol: "codebuddycn-insiders" }),
+      }, {
+        ...winCodeBuddyStats(stableDir, 30),
+        ...winCodeBuddyStats(insidersDir, 40),
+      }),
+    });
+    assert.deepEqual(result, { bundlePath: insidersDir, urlScheme: "codebuddycn-insiders" });
+    assert.deepEqual(asked, [10, 45684, 38060]);
+    assert.equal(execFile.calls.length, 0, "the in-process reader replaces the Get-Process spawn");
+  });
+
+  it("builds a reader over OpenProcess/QueryFullProcessImageNameW and always closes the handle", () => {
+    const calls = [];
+    const image = "C:\\Apps\\CodeBuddy CN\\CodeBuddy CN.exe";
+    const fakeKoffi = {
+      load: (name) => {
+        assert.equal(name, "kernel32.dll");
+        return {
+          func: (signature) => {
+            if (signature.includes("OpenProcess")) {
+              return (access, inherit, processId) => {
+                calls.push(["open", access, inherit, processId]);
+                return processId === 404 ? null : { processId };
+              };
+            }
+            if (signature.includes("QueryFullProcessImageNameW")) {
+              return (handle, flags, buffer, length) => {
+                calls.push(["query", handle.processId]);
+                if (handle.processId === 500) throw new Error("ffi failure");
+                for (let i = 0; i < image.length; i++) buffer[i] = image.charCodeAt(i);
+                length[0] = image.length;
+                return true;
+              };
+            }
+            return (handle) => { calls.push(["close", handle.processId]); return true; };
+          },
+        };
+      },
+    };
+    const reader = createWindowsImagePathReader({ koffi: fakeKoffi });
+    assert.equal(reader(7), image);
+    assert.deepEqual(calls.slice(0, 3), [["open", 0x1000, false, 7], ["query", 7], ["close", 7]]);
+    assert.equal(reader(404), null, "an unopenable process yields null");
+    assert.equal(reader(500), null, "an FFI exception yields null");
+    assert.deepEqual(calls.at(-1), ["close", 500], "the handle is closed after an FFI exception");
+    assert.equal(reader(0), null);
+    assert.equal(reader("12; x"), null);
+  });
+
+  it("returns no reader when the FFI cannot be loaded", () => {
+    assert.equal(createWindowsImagePathReader({ koffi: { load: () => { throw new Error("no koffi"); } } }), null);
+  });
+});
+
 describe("PR #1386 follow-up: CodeBuddy app activation", () => {
   const bundlePath = "/Applications/CodeBuddy CN.app";
 
@@ -567,17 +784,19 @@ function runCodeBuddyTarget(overrides = {}) {
           : { bundlePath: "/Applications/CodeBuddy CN.app", urlScheme: "codebuddycn" }
       );
     },
-    openApp(bundlePath) {
-      calls.open.push(bundlePath);
-      if (overrides.openApp) return overrides.openApp(bundlePath);
-      return Promise.resolve(
-        overrides.openResult || {
-          confirmed: false,
-          submitted: true,
-          reason: "codebuddy-app-activation-submitted",
-        }
-      );
-    },
+    ...(overrides.withoutOpenApp ? {} : {
+      openApp(bundlePath) {
+        calls.open.push(bundlePath);
+        if (overrides.openApp) return overrides.openApp(bundlePath);
+        return Promise.resolve(
+          overrides.openResult || {
+            confirmed: false,
+            submitted: true,
+            reason: "codebuddy-app-activation-submitted",
+          }
+        );
+      },
+    }),
   });
   return { calls, result };
 }
@@ -662,6 +881,35 @@ describe("PR #1386 follow-up: CodeBuddy click dispatch", () => {
     assert.equal(calls.terminal.length, 1);
     assert.ok(calls.logs.some((line) =>
       line.includes("branch=codebuddy-terminal-fallback reason=codebuddy-app-not-found")));
+  });
+
+  it("uses window focus directly when no app activation is provided (Windows)", async () => {
+    const windowsApp = { bundlePath: "C:\\Programs\\CodeBuddy CN", urlScheme: null };
+    const noRoute = runCodeBuddyTarget({ withoutOpenApp: true, app: windowsApp });
+    await noRoute.result;
+    assert.equal(noRoute.calls.external.length, 0);
+    assert.equal(noRoute.calls.terminal.length, 1);
+    assert.ok(noRoute.calls.logs.some((line) =>
+      line.includes("branch=codebuddy-terminal-fallback reason=codebuddy-app-activation-unavailable")));
+
+    const failedLink = runCodeBuddyTarget({
+      withoutOpenApp: true,
+      app: { ...windowsApp, urlScheme: "codebuddycn" },
+      openExternal: () => Promise.reject(new Error("no handler")),
+    });
+    await failedLink.result;
+    assert.equal(failedLink.calls.external.length, 1);
+    assert.equal(failedLink.calls.terminal.length, 1);
+
+    const deepLink = runCodeBuddyTarget({
+      withoutOpenApp: true,
+      app: { ...windowsApp, urlScheme: "codebuddycn-insiders" },
+    });
+    await deepLink.result;
+    assert.deepEqual(deepLink.calls.external, [
+      "codebuddycn-insiders://codebuddy-ide/conversation/open?id=abc-123",
+    ]);
+    assert.equal(deepLink.calls.terminal.length, 0);
   });
 
   it("queries PIDs in pidChain, sourcePid, agentPid order and deduplicates", async () => {
@@ -752,7 +1000,7 @@ describe("PR #1386 follow-up: CodeBuddy click dispatch", () => {
 });
 
 describe("PR #1386 follow-up: main CodeBuddy dispatch wiring", () => {
-  it("calls the handoff helper and returns true synchronously", () => {
+  function runMainDispatch(platform) {
     const mainSource = fs.readFileSync(path.join(__dirname, "../src/main.js"), "utf8");
     const begin = mainSource.indexOf("function focusDashboardSession(");
     const end = mainSource.indexOf("function hideDashboardSession(", begin);
@@ -760,6 +1008,7 @@ describe("PR #1386 follow-up: main CodeBuddy dispatch wiring", () => {
 
     const dispatched = [];
     const findApp = () => Promise.resolve(null);
+    const findWindowsApp = () => Promise.resolve(null);
     const openApp = () => Promise.resolve({ submitted: true });
     const focusTerminalSession = () => true;
     const context = {
@@ -770,13 +1019,14 @@ describe("PR #1386 follow-up: main CodeBuddy dispatch wiring", () => {
         sourcePid: 12089,
         state: "working",
       }]]),
-      process: { platform: "darwin" },
+      process: { platform },
       mergeSessionFocusEntry,
       getSessionFocusTarget,
       focusLog: () => {},
       focusTerminalSession,
       focusCodeBuddyIdeTarget: (args) => { dispatched.push(args); return Promise.resolve(); },
       findCodeBuddyMacApp: findApp,
+      findCodeBuddyWindowsApp: findWindowsApp,
       openCodeBuddyMacApp: openApp,
       focusCodexThreadTarget: () => { throw new Error("unexpected codex dispatch"); },
       focusDshDesktopTarget: () => { throw new Error("unexpected dsh dispatch"); },
@@ -786,14 +1036,28 @@ describe("PR #1386 follow-up: main CodeBuddy dispatch wiring", () => {
     };
     vm.createContext(context);
     vm.runInContext(mainSource.slice(begin, end), context);
+    const returned = context.focusDashboardSession("codebuddy:cb");
+    return { returned, dispatched, findApp, findWindowsApp, openApp, focusTerminalSession };
+  }
 
-    assert.equal(context.focusDashboardSession("codebuddy:cb"), true);
+  it("calls the handoff helper and returns true synchronously", () => {
+    const { returned, dispatched, findApp, openApp, focusTerminalSession } = runMainDispatch("darwin");
+    assert.equal(returned, true);
     assert.equal(dispatched.length, 1);
     assert.equal(dispatched[0].sessionId, "codebuddy:cb");
     assert.equal(dispatched[0].findApp, findApp);
     assert.equal(dispatched[0].openApp, openApp);
     assert.equal(dispatched[0].focusTerminalSession, focusTerminalSession);
     assert.equal(dispatched[0].requestSource, "dashboard");
+  });
+
+  it("uses the Windows finder and no app activation on a Windows host", () => {
+    const { returned, dispatched, findWindowsApp, focusTerminalSession } = runMainDispatch("win32");
+    assert.equal(returned, true);
+    assert.equal(dispatched.length, 1);
+    assert.equal(dispatched[0].findApp, findWindowsApp);
+    assert.equal(Object.hasOwn(dispatched[0], "openApp"), false);
+    assert.equal(dispatched[0].focusTerminalSession, focusTerminalSession);
   });
 });
 

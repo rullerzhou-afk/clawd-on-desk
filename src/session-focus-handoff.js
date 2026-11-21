@@ -278,6 +278,8 @@ const CODEBUDDY_CONVERSATION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 // its route support are verified here, at click time, from the live process.
 // A verified build asks CodeBuddy to open that conversation; otherwise activate
 // that same app; if neither works, fall back to the pre-existing terminal path.
+// Windows passes no openApp: its existing window focus by recorded PID already
+// raises the right edition, so a build without the route goes straight there.
 function focusCodeBuddyIdeTarget({
   shell,
   focusEntry,
@@ -286,7 +288,7 @@ function focusCodeBuddyIdeTarget({
   focusLog = () => {},
   focusTerminalSession = () => false,
   findApp = () => Promise.resolve(null),
-  openApp = () => Promise.resolve({ submitted: false }),
+  openApp = null,
 } = {}) {
   const id = String(sessionId || (focusEntry && focusEntry.id) || "");
   const context = `source=${requestSource} sid=${id}`;
@@ -318,7 +320,9 @@ function focusCodeBuddyIdeTarget({
     return runTerminalFallback();
   };
 
-  const activateApp = (bundlePath) => Promise.resolve()
+  const activateApp = (bundlePath) => (typeof openApp !== "function"
+    ? fallBackToTerminal("codebuddy-app-activation-unavailable")
+    : Promise.resolve()
     .then(() => openApp(bundlePath))
     .then((result) => {
       if (result && result.submitted === true) {
@@ -327,7 +331,7 @@ function focusCodeBuddyIdeTarget({
       }
       return fallBackToTerminal("codebuddy-app-activation-failed");
     })
-    .catch((err) => fallBackToTerminal("codebuddy-app-activation-failed", err));
+    .catch((err) => fallBackToTerminal("codebuddy-app-activation-failed", err)));
 
   return Promise.resolve()
     .then(() => findApp(collectCodeBuddyPids(focusEntry)))
