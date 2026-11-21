@@ -111,9 +111,91 @@ describe("local Codex process handoff needs current thread progress", () => {
       mock.timers.tick(1000); record();
       assert.equal(state.sessions.get(sid).state, "thinking");
       assert.equal(state.sessions.get(sid).updatedAt, 2000);
+      assert.equal(state.sessions.get(sid).agentPid, 84);
+      assert.equal(state.sessions.get(sid).sourcePid, 84);
       assert.deepEqual(refreshedParents, [raw]);
     });
   }
+
+  it("live guardian activity extends an existing row without restoring a retired one", () => {
+    start();
+    const before = state.sessions.get(sid).updatedAt;
+    mock.timers.tick(1000);
+    record("guardian_assessment");
+    assert.ok(state.sessions.get(sid).updatedAt > before);
+    retire(); mock.timers.tick(1000);
+    record("guardian_assessment");
+    assert.equal(state.sessions.has(sid), false);
+  });
+
+  it("a held late initialization reattaches its process and focus metadata when real progress restores the row", () => {
+    start(); retire(); mock.timers.tick(1000);
+    official("idle", "SessionStart", { turnId: "T1", agentPid: 84, sourcePid: 84, wtHwnd: "777" });
+    assert.equal(state.sessions.has(sid), false);
+    mock.timers.tick(1000); record();
+    const recovered = state.sessions.get(sid);
+    assert.equal(recovered.state, "thinking");
+    assert.equal(recovered.agentPid, 84);
+    assert.equal(recovered.sourcePid, 84);
+    assert.equal(recovered.wtHwnd, "777");
+  });
+
+  it("a held late initialization whose new process already died is detached on restore", () => {
+    start(); retire(); mock.timers.tick(1000);
+    official("idle", "SessionStart", { turnId: "T1", agentPid: 84, sourcePid: 84, wtHwnd: "777" });
+    alive.delete(84);
+    mock.timers.tick(1000); record();
+    const recovered = state.sessions.get(sid);
+    assert.equal(recovered.state, "thinking");
+    assert.equal(recovered.agentPid, null);
+    assert.equal(recovered.sourcePid, null);
+    assert.equal(recovered.wtHwnd, null);
+  });
+
+  it("a prompt-derived title from a held late initialization never reaches the restored row", () => {
+    start(); retire(); mock.timers.tick(1000);
+    official("idle", "SessionStart", { turnId: "T1", agentPid: 84, sourcePid: 84,
+      sessionTitle: "Prompt title", sessionTitleFromPrompt: true });
+    mock.timers.tick(1000); record();
+    const recovered = state.sessions.get(sid);
+    assert.equal(recovered.state, "thinking");
+    assert.equal(recovered.agentPid, 84, "the held initializer metadata was applied");
+    assert.notEqual(recovered.sessionTitle, "Prompt title");
+    assert.notEqual(recovered.sessionTitleFromPrompt, true);
+  });
+
+  it("a later held initialization replaces the whole stashed process and focus metadata", () => {
+    start(); retire(); mock.timers.tick(1000);
+    official("idle", "SessionStart", { turnId: "T1", agentPid: 84, sourcePid: 84, wtHwnd: "777" });
+    assert.equal(state.sessions.has(sid), false);
+    mock.timers.tick(1000);
+    official("idle", "SessionStart", { turnId: "T1", agentPid: 126, sourcePid: 126 });
+    assert.equal(state.sessions.has(sid), false);
+    alive.add(126);
+    mock.timers.tick(1000); record();
+    const recovered = state.sessions.get(sid);
+    assert.equal(recovered.state, "thinking");
+    assert.equal(recovered.agentPid, 126);
+    assert.equal(recovered.sourcePid, 126);
+    assert.notEqual(recovered.wtHwnd, "777");
+  });
+
+  it("a held initialization cannot change the recovery path or platform", () => {
+    start();
+    state.sessions.get(sid).platform = "linux";
+    retire(); mock.timers.tick(1000);
+    assert.equal(state.retainCodexInitializationForRecovery(sid, {
+      agentId: "codex", profileId: "local", hookSource: "codex-official", turnId: "T1",
+      agentPid: 84, sourcePid: 84, transcriptPath: transcriptPath + ".other", platform: " WSL ",
+    }), true);
+    mock.timers.tick(1000); record();
+    const recovered = state.sessions.get(sid);
+    assert.equal(recovered.state, "thinking");
+    assert.equal(recovered.transcriptPath, transcriptPath);
+    assert.equal(recovered.platform, "linux");
+    assert.equal(recovered.agentPid, 84);
+    assert.equal(recovered.sourcePid, 84);
+  });
 
   it("the recovery query is exact, private, and never extends the retention TTL", () => {
     start(); retire();

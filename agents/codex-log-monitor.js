@@ -1883,17 +1883,23 @@ class CodexLogMonitor {
       if (providerHint) tracked.codexQuotaProviderHint = providerHint;
     }
 
-    // Guardian assessments describe automatic approval/review. They cannot
-    // establish that a user turn resumed in this boot, or replace its last
-    // accepted phase before the startup snapshot chooses a state to publish.
-    if (this._bootTimeMs !== null && key === "event_msg:guardian_assessment") return;
+    // Guardian assessments describe automatic approval/review. A replayed or
+    // preboot one cannot prove the turn continued in this boot or replace the
+    // phase the startup snapshot admitted. A live postboot one is ordinary
+    // auto-review work, matching monitors without a host boundary.
     const afterBoot = this._isAfterHostBoot(parsedOccurredAt);
+    if (this._bootTimeMs !== null && key === "event_msg:guardian_assessment"
+      && (this._isReplayActive(tracked) || !afterBoot)) return;
     if (!afterBoot && key !== "event_msg:token_count") {
       // An optional delegated-turn observer may keep private start/terminal
       // order for a real continuation after boot. It must not publish history.
       if (isTurnStart || isTurnTerminal) {
         this._observePreBootDelegatedTurn?.(tracked, key, effectiveTurnId, parsedOccurredAt);
       }
+      // A summary from the previous boot is still this thread's title; keep it
+      // even though the next turn may not repeat it. Only the record's own
+      // summary is read here — the thread index stays on the ordinary path.
+      this._refreshTrackedSessionTitle(tracked, obj, { readThreadName: false });
       // Keep file-order turn identity so a genuine write after this boot can
       // continue the rollout, while history cannot create cards or questions.
       const historicalState = this._config.logEventMap[key];
@@ -1902,7 +1908,7 @@ class CodexLogMonitor {
       finishTurnTerminal();
       return;
     }
-    if (afterBoot && Number.isFinite(parsedOccurredAt)
+    if (afterBoot && key !== "event_msg:guardian_assessment" && Number.isFinite(parsedOccurredAt)
       && (MODEL_PROGRESS_EVENTS.has(key) || (this._config.logEventMap[key] != null
         && key !== "event_msg:token_count" && type !== "session_meta"))) {
       tracked.bootActivityAt = parsedOccurredAt;
@@ -1994,14 +2000,7 @@ class CodexLogMonitor {
     // Updates tracked.sessionTitle in place; gets picked up by the next
     // _onStateChange call. Intentionally no metaOnly side-channel —
     // accepts brief staleness until the next state emit.
-    const extractedTitle = this._extractSessionTitle(obj);
-    if (extractedTitle && extractedTitle !== tracked.sessionTitle) {
-      tracked.sessionTitle = extractedTitle;
-    }
-    const threadName = readCodexThreadName(tracked.sessionId, { codexDir: this._codexDir });
-    if (threadName && threadName !== tracked.sessionTitle) {
-      tracked.sessionTitle = threadName;
-    }
+    this._refreshTrackedSessionTitle(tracked, obj);
 
     // Look up state mapping
     const map = this._config.logEventMap;
@@ -2146,6 +2145,21 @@ class CodexLogMonitor {
     const role = this._classifier.registerSession(tracked.sessionId, { sessionMeta: payload });
     if (role === "subagent") tracked.isSubagent = true;
     else if (role === "root") tracked.isSubagent = false;
+  }
+
+  // Refresh the tracked title in place: a Codex-authored summary wins on its
+  // own record, and a thread index name overwrites it when the index has one.
+  // Preboot history skips the index read and only takes the record's summary.
+  _refreshTrackedSessionTitle(tracked, obj, { readThreadName = true } = {}) {
+    const extractedTitle = this._extractSessionTitle(obj);
+    if (extractedTitle && extractedTitle !== tracked.sessionTitle) {
+      tracked.sessionTitle = extractedTitle;
+    }
+    if (!readThreadName) return;
+    const threadName = readCodexThreadName(tracked.sessionId, { codexDir: this._codexDir });
+    if (threadName && threadName !== tracked.sessionTitle) {
+      tracked.sessionTitle = threadName;
+    }
   }
 
   // Codex-authored session summary, extracted from turn_context.summary.

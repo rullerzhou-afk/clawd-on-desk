@@ -747,7 +747,13 @@ function createAgentRuntimeMain(options = {}) {
     if (isLocalOfficialCodexEvent && event === "SessionStart" && state === "idle"
       && shouldHoldRetiredCodexInitialization(sessionId, opts, stateRuntime)) {
       // agent-exit retired the row but not this open turn. Initialization is
-      // not new activity: retain its recovery tuple until real progress arrives.
+      // not new activity: stash its process/focus metadata on the recovery
+      // record until real progress restores the row and reattaches it.
+      const heldTurnId = normalizeCodexTurnId(opts.turnId)
+        || codexTurnFence.getSnapshot(sessionId)?.currentTurnId;
+      stateRuntime.retainCodexInitializationForRecovery?.(sessionId, {
+        ...opts, turnId: heldTurnId,
+      });
       debugLog(`codex-initialization defer-retired sid=${String(sessionId).replace(/[\r\n]/g, "_")}`);
       return true;
     }

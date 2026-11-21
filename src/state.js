@@ -257,6 +257,40 @@ function hasRecoverableCodexProcessExit(sessionId, opts = {}) {
     && (missingInitializerPath || (!!transcriptPath && retired.metadata.transcriptPath === transcriptPath));
 }
 
+// Only fields updateCodexInitializationMetadata actually replays: process and
+// focus identity plus the metadata it may safely enrich. A prompt-derived
+// title is never retained, so it cannot become a formal title after restore.
+// The path and platform are not retained: the restored row takes them from the
+// recovery record, so a stale initializer cannot fail the post-insert identity
+// check and leave a wrongly keyed row behind.
+const CODEX_INITIALIZATION_RECOVERY_KEYS = [
+  "agentId", "profileId", "hookSource", "sourcePid", "agentPid", "wtHwnd", "editor",
+  "pidChain", "cwd", "tmuxSocket", "tmuxClient", "orcaPaneKey", "ghosttyTerminalId",
+  "sessionAutomationIdentity", "provider", "codexOriginator", "codexSource",
+  "codexClientEphemeral", "sessionTitle", "sessionTitleFromPrompt",
+  "model", "contextUsage", "contextUsageOrigin",
+];
+
+// A late initializer is held back because it cannot replace the retired active
+// turn with idle. Its new writer metadata still belongs to the conversation, so
+// stash it on the same recovery record for the later real-progress restore.
+function retainCodexInitializationForRecovery(sessionId, opts = {}) {
+  pruneCodexProcessExitRecovery();
+  const retired = codexProcessExitRecovery.get(sessionId);
+  if (!retired || sessions.has(sessionId)) return false;
+  const turnId = normalizeCodexTurnId(opts.turnId);
+  if (!turnId || retired.turnId !== turnId) return false;
+  const retained = {};
+  for (const key of CODEX_INITIALIZATION_RECOVERY_KEYS) {
+    if (opts[key] !== undefined) retained[key] = opts[key];
+  }
+  if (retained.sessionTitleFromPrompt === true) retained.sessionTitle = null;
+  // Process and focus fields are one writer's set. Replacing the whole stash
+  // avoids pairing an earlier focus target with a later writer's PID.
+  retired.initialization = retained;
+  return true;
+}
+
 function rememberCodexProcessExit(sessionId, session) {
   const turnId = codexSessionTurnIds.get(sessionId);
   if (!isLocalInteractiveCodex(session) || !isWorkingLikeState(session.state)
@@ -1800,6 +1834,12 @@ function acceptCodexLiveProcessProgress(sessionId, opts = {}) {
     evictOldestSessionIfNeeded(sessionId);
     sessions.set(sessionId, session);
     codexSessionTurnIds.set(sessionId, turnId);
+    // Reattach the held initializer's process/focus identity through the same
+    // accepted-metadata path a live initializer uses. The dead-process check
+    // below then detaches it if the stashed PID already exited.
+    if (retired.initialization) {
+      updateCodexInitializationMetadata(sessionId, retired.initialization);
+    }
     recovering = true;
   }
   if (!isLocalInteractiveCodex(session) || session.requiresCompletionAck
@@ -4729,6 +4769,7 @@ return {
   touchSessionActivity,
   acceptCodexLiveProcessProgress,
   hasRecoverableCodexProcessExit,
+  retainCodexInitializationForRecovery,
   updateSessionMetadata,
   updateCodexInitializationMetadata,
   hasCodexCompactionHold,

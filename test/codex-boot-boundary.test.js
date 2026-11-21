@@ -110,6 +110,32 @@ describe("local Codex rollout recovery respects this host's boot", () => {
     assert.deepEqual(activity, []);
   });
 
+  it("admits a live postboot guardian assessment as ordinary working progress", () => {
+    monitor._processLine(line("event_msg", "task_started", base), tracked);
+    monitor._emitBackfillSnapshot(tracked);
+    tracked.backfilling = false; tracked.initializingUserInputs = false;
+    const emitted = events.length;
+    monitor._processLine(line("event_msg", "guardian_assessment", base + 1000), tracked);
+    assert.equal(tracked.bootActivityAt, base, "guardian never advances the boot activity clock");
+    assert.equal(events.length, emitted + 1);
+    assert.equal(events.at(-1)[1], "working");
+    assert.equal(events.at(-1)[2], "event_msg:guardian_assessment");
+    assert.equal(activity.length, 1);
+    assert.equal(activity[0][1], "working");
+    assert.equal(activity[0][2], "event_msg:guardian_assessment");
+  });
+
+  it("keeps a preboot Codex-authored summary for the next postboot turn", () => {
+    monitor._processLine(line("turn_context", null, preboot, { summary: "Named earlier" }), tracked);
+    assert.deepEqual(events, []);
+    assert.deepEqual(activity, []);
+    monitor._emitBackfillSnapshot(tracked);
+    tracked.backfilling = false; tracked.initializingUserInputs = false;
+    monitor._processLine(line("event_msg", "task_started", base, { turn_id: "T2" }), tracked);
+    assert.equal(events.at(-1)[1], "thinking");
+    assert.equal(events.at(-1)[3].sessionTitle, "Named earlier");
+  });
+
   it("guardian cannot replace an admitted postboot thinking phase in a backfill snapshot", () => {
     monitor._processLine(line("event_msg", "task_started", boot + 1000), tracked);
     monitor._processLine(line("event_msg", "guardian_assessment", base), tracked);
@@ -119,9 +145,33 @@ describe("local Codex rollout recovery respects this host's boot", () => {
     assert.equal(events[0][1], "thinking");
     assert.equal(events[0][2], "event_msg:task_started");
     assert.deepEqual(activity, []);
-    monitor._processLine(line("event_msg", "guardian_assessment", base), tracked);
-    assert.equal(tracked.lastState, "thinking", "live guardian also leaves the admitted phase alone");
+  });
+
+  it("a preboot guardian cannot own the phase a live postboot reasoning continues", () => {
+    monitor._processLine(line("event_msg", "task_started", preboot), tracked);
+    const phase = tracked.lastState;
+    monitor._emitBackfillSnapshot(tracked);
+    tracked.backfilling = false; tracked.initializingUserInputs = false;
+    monitor._processLine(line("event_msg", "guardian_assessment", preboot), tracked);
+    assert.equal(tracked.lastState, phase, "the preboot phase stays private");
+    assert.equal(tracked.bootActivityAt, undefined);
+    assert.deepEqual(events, []);
+    assert.deepEqual(questions, []);
+    assert.deepEqual(activity, []);
+    monitor._processLine(line("event_msg", "agent_reasoning", base), tracked);
+    assert.equal(activity.at(-1)[1], "thinking");
+  });
+
+  it("a monitor without a host boundary keeps replay guardian behavior unchanged", () => {
+    monitor = makeMonitor(null);
+    monitor._resolveTrackedAgentPid = () => null;
+    monitor._processLine(line("event_msg", "task_started", preboot), tracked);
+    monitor._processLine(line("event_msg", "guardian_assessment", preboot), tracked);
+    monitor._emitBackfillSnapshot(tracked);
     assert.equal(events.length, 1);
+    assert.equal(events[0][1], "working");
+    assert.equal(events[0][2], "event_msg:guardian_assessment");
+    assert.equal(events[0][3].syntheticBackfill, true);
   });
 
   it("a real postboot continuation or new turn can emit its own live progress", () => {
