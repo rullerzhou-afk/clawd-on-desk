@@ -2596,6 +2596,9 @@ return {
   focusProcessAppWindow: request => require("./process-app-focus").focusProcessAppWindow(request, {
     execFile, platform: process.platform, windowsActivationCode: PS_FOCUS_ADDTYPE,
   }),
+  focusCodeBuddyIdeApp: request => require("./process-app-focus").focusCodeBuddyIdeApp(request, {
+    execFile, platform: process.platform,
+  }),
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
   cleanup,

@@ -2955,6 +2955,7 @@ const {
   killFocusHelper,
   focusTerminalWindow,
   focusProcessAppWindow,
+  focusCodeBuddyIdeApp,
   captureGhosttyTerminalId,
   clearMacFocusCooldownTimer,
 } = _focus;
@@ -3017,6 +3018,34 @@ function focusDashboardSession(sessionId, options = {}) {
       focusTerminalSession,
     });
     return true;
+  }
+
+  if (focusTarget.type === "codebuddy-ide") {
+    Promise.resolve(focusCodeBuddyIdeApp(focusEntry, { requestSource }))
+      .then(result => focusLog(`focus result branch=codebuddy-ide reason=${result.reason || "unknown"} source=${requestSource} sid=${id}`))
+      .catch(() => focusLog(`focus result branch=codebuddy-ide reason=process-focus-failed source=${requestSource} sid=${id}`));
+    return true;
+  }
+
+  if (focusTarget.type === "codebuddy-conversation" && focusTarget.url) {
+    focusLog("focus request source=" + requestSource + " sid=" + id + " agent=" + (focusEntry.agentId || "-") + " target=codebuddy-conversation");
+    return Promise.resolve(shell.openExternal(focusTarget.url))
+      .then(function () {
+        focusLog("focus result branch=codebuddy-conversation reason=opened source=" + requestSource + " sid=" + id);
+        return true;
+      })
+      .catch(function (err) {
+        focusLog("focus result branch=codebuddy-conversation reason=open-failed source=" + requestSource + " sid=" + id + " error=" + String(err && err.message ? err.message : err));
+        return Promise.resolve(focusCodeBuddyIdeApp(focusEntry, { requestSource }))
+          .then(result => {
+            focusLog("focus result branch=codebuddy-conversation-fallback reason=" + (result.reason || "unknown") + " source=" + requestSource + " sid=" + id);
+            return true;
+          })
+          .catch(() => {
+            focusLog("focus result branch=codebuddy-conversation-fallback reason=process-focus-failed source=" + requestSource + " sid=" + id);
+            return false;
+          });
+      });
   }
 
   if (focusTarget.type === "dsh-desktop" && focusTarget.url) {

@@ -1,10 +1,13 @@
 "use strict";
 
 // A PID is only a hint: it may have been reused. Activate only a verified
-// Codex Desktop GUI ancestor of its live app-server, never an arbitrary GUI.
+// desktop GUI ancestor of its live app-server, never an arbitrary GUI.
 // This is app activation, not conversation selection or permission to paste.
 const pid = value => Number.isSafeInteger(Number(value)) && Number(value) > 1 ? Number(value) : null;
 const posix = require("node:path").posix;
+const os = require("node:os");
+const path = require("node:path");
+const fs = require("node:fs");
 
 function windowsProcessAppScript(sourcePid) {
   const source = pid(sourcePid);
@@ -188,4 +191,58 @@ function focusProcessAppWindow(request, { execFile, platform, windowsActivationC
   });
 }
 
-module.exports = { focusProcessAppWindow, windowsProcessAppScript, macCodexProcessTarget };
+const CODEBUDDY_MAC_BUNDLES = [
+  "/Applications/CodeBuddy CN Insiders.app",
+  "/Applications/CodeBuddy CN.app",
+  "/Applications/CodeBuddy.app",
+];
+
+function codeBuddyMacBundleCandidates() {
+  const home = typeof os.homedir === "function" ? os.homedir() : "";
+  const base = CODEBUDDY_MAC_BUNDLES.slice();
+  if (home) {
+    const root = path.posix.join(home.replace(/\\/g, "/"), "Applications");
+    for (const bundle of CODEBUDDY_MAC_BUNDLES) {
+      base.push(path.posix.join(root, path.posix.basename(bundle)));
+    }
+  }
+  return base;
+}
+
+// Activate the CodeBuddy IDE app window for an IDE-hosted session. The hook's
+// client field (CodeBuddyIDE) is the authoritative carrier; activation is
+// app-level and CodeBuddy restores its last active chat.
+function focusCodeBuddyIdeApp(request, { execFile, platform, fs: fsApi = fs } = {}) {
+  if (platform !== "darwin") {
+    return Promise.resolve({ confirmed: false, reason: "unsupported-platform" });
+  }
+  const preferred = request && typeof request.codebuddyAppBundle === "string"
+    ? request.codebuddyAppBundle : null;
+  const run = (bin, args, options = {}) => new Promise(resolve => {
+    try { execFile(bin, args, { timeout: 3000, maxBuffer: 64 * 1024, ...options },
+      (error) => resolve(!error)); }
+    catch { resolve(false); }
+  });
+  const candidates = codeBuddyMacBundleCandidates();
+  if (preferred) {
+    const exists = typeof fsApi.existsSync === "function" ? fsApi.existsSync : (() => true);
+    if (!exists(preferred)) {
+      return Promise.resolve({ confirmed: false, reason: "codebuddy-session-app-not-found" });
+    }
+    candidates.length = 0;
+    candidates.push(preferred);
+  }
+  const exists = typeof fsApi.existsSync === "function" ? fsApi.existsSync : (() => true);
+  const available = candidates.filter(candidate => exists(candidate));
+  const tryNext = (idx) => {
+    if (idx >= available.length) {
+      return Promise.resolve({ confirmed: false, reason: "codebuddy-app-not-found" });
+    }
+    return run("/usr/bin/open", [available[idx]]).then(ok =>
+      ok ? { confirmed: false, submitted: true, reason: "codebuddy-app-activation-submitted" }
+         : tryNext(idx + 1));
+  };
+  return tryNext(0);
+}
+
+module.exports = { focusProcessAppWindow, focusCodeBuddyIdeApp, codeBuddyMacBundleCandidates, windowsProcessAppScript, macCodexProcessTarget };

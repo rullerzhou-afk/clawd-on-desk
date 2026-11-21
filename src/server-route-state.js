@@ -582,6 +582,9 @@ function handleStatePost(req, res, options) {
       // bridge's own local, non-WSL requests may carry it (shared rule below);
       // metadata-only requests never reach the lifecycle update, so they can
       // never change where a session came from.
+      const codebuddyClient = agentId === "codebuddy" && typeof data.codebuddy_client === "string" && data.codebuddy_client.trim() ? data.codebuddy_client.trim().slice(0, 64) : null;
+      const codebuddyUrlScheme = agentId === "codebuddy" && typeof data.codebuddy_url_scheme === "string" && /^[a-z0-9-]{1,64}$/i.test(data.codebuddy_url_scheme.trim()) ? data.codebuddy_url_scheme.trim() : null;
+      const codebuddyAppBundle = agentId === "codebuddy" && typeof data.codebuddy_app_bundle === "string" && data.codebuddy_app_bundle.startsWith("/") && data.codebuddy_app_bundle.endsWith(".app") && data.codebuddy_app_bundle.length <= 512 ? data.codebuddy_app_bundle : null;
       const dshCarrier = resolveDshCarrier({
         agentId,
         hookSource,
@@ -1256,6 +1259,9 @@ function handleStatePost(req, res, options) {
             codexOriginator,
             codexSource,
             dshCarrier,
+            ...(codebuddyClient ? { codebuddyClient } : {}),
+            ...(codebuddyUrlScheme ? { codebuddyUrlScheme } : {}),
+            ...(codebuddyAppBundle ? { codebuddyAppBundle } : {}),
             ghosttyTerminalId,
             displayHint: display_svg,
             sessionTitle,
