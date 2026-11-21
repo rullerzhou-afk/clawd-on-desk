@@ -237,6 +237,14 @@ function isLocalInteractiveCodex(session) {
     && String(session.platform || "").trim().toLowerCase() !== "wsl" && !session.headless;
 }
 
+// Shared by an existing row and the row rebuilt from process-exit evidence. The
+// caller owns turn-ownership: a rebuilt row has no live turn map entry yet.
+function isCodexLiveProgressTarget(session, transcriptPath) {
+  return isLocalInteractiveCodex(session)
+    && !session.requiresCompletionAck
+    && normalizeTranscriptPath(session.transcriptPath) === transcriptPath;
+}
+
 function pruneCodexProcessExitRecovery() {
   const cutoff = Date.now() - CODEX_PROCESS_RECOVERY_TTL_MS;
   for (const [id, entry] of codexProcessExitRecovery) {
@@ -255,6 +263,28 @@ function hasRecoverableCodexProcessExit(sessionId, opts = {}) {
     && (opts.transcriptPath == null || opts.transcriptPath === "");
   return !sessions.has(sessionId) && !!turnId && !!retired && retired.turnId === turnId
     && (missingInitializerPath || (!!transcriptPath && retired.metadata.transcriptPath === transcriptPath));
+}
+
+// The raw ids whose only remaining trace is process-exit recovery evidence.
+// This prunes expired records first (without extending retention) and hands the
+// ids to archive scanning, so confirmed archive evidence revokes recovery;
+// otherwise unarchive could let the old turn restore its row.
+function listRecoverableCodexRawSessionIds() {
+  pruneCodexProcessExitRecovery();
+  const ids = [];
+  for (const entry of codexProcessExitRecovery.values()) {
+    const raw = entry && entry.metadata && entry.metadata.rawSessionId;
+    if (typeof raw === "string" && raw) ids.push(raw);
+  }
+  return ids;
+}
+
+// Archive evidence must revoke recovery even when an agent-exit sweep already
+// removed the row; otherwise a later unarchive could revive its old turn.
+function forgetCodexProcessExit(sessionId) {
+  const id = typeof sessionId === "string" ? sessionId : "";
+  if (!id) return false;
+  return codexProcessExitRecovery.delete(id);
 }
 
 // Only fields updateCodexInitializationMetadata actually replays: process and
@@ -1804,33 +1834,60 @@ function updateSessionFocusMetadata(sessionId, opts = {}) {
   return true;
 }
 
-// Runtime-only entry point after the local transcript's open-turn fence. Fresh
-// thread evidence can detach disproven process identity or restore only a row
-// that this runtime's agent-exit sweep retired.
-function acceptCodexLiveProcessProgress(sessionId, opts = {}) {
-  if (opts.activityState !== "thinking" && opts.activityState !== "working") return false;
+function normalizeCodexLiveProgressInput(opts = {}) {
+  if (opts.activityState !== "thinking" && opts.activityState !== "working") return null;
   const occurredAt = opts.now;
   const turnId = normalizeCodexTurnId(opts.turnId);
   const transcriptPath = normalizeTranscriptPath(opts.transcriptPath);
   if (!turnId || !transcriptPath || !Number.isSafeInteger(occurredAt)
     || occurredAt < Date.now() - CODEX_LIVE_PROCESS_FRESH_MS
-    || occurredAt > Date.now() + 1500) return false;
+    || occurredAt > Date.now() + 1500) return null;
+  return { turnId, transcriptPath, occurredAt, activityState: opts.activityState };
+}
+
+function buildRestoredCodexSession(retired, activityState, occurredAt) {
+  return { ...retired.metadata, state: activityState === "thinking" ? "thinking" : "working",
+    updatedAt: occurredAt, recentEvents: [], sourcePid: null, agentPid: null, pidReachable: false };
+}
+
+// Side-effect free: decides whether this progress may restore a retired row.
+// Callers use it before touching the turn fence; only acceptCodexLiveProcessProgress
+// commits the restored session.
+function canRestoreCodexProcessExit(sessionId, opts = {}) {
+  const input = normalizeCodexLiveProgressInput(opts);
+  if (!input) return false;
+  if (!hasRecoverableCodexProcessExit(sessionId, {
+    turnId: input.turnId, transcriptPath: input.transcriptPath,
+  })) return false;
+  const retired = codexProcessExitRecovery.get(sessionId);
+  if (!retired || input.occurredAt < retired.activityAt) return false;
+  const candidate = buildRestoredCodexSession(retired, input.activityState, input.occurredAt);
+  // A fresh record is evidence of this thread, but the configured inactivity
+  // window still decides whether that observation is recent enough to revive.
+  const decision = getStaleSessionDecision(candidate, {
+    now: Date.now(), isProcessAlive, deriveSessionBadge, shouldAutoClearDetachedSession,
+    staleConfig: typeof ctx.getStaleConfig === "function" ? ctx.getStaleConfig() : null,
+  });
+  if (decision.action) return false;
+  return isCodexLiveProgressTarget(candidate, input.transcriptPath);
+}
+
+// Runtime-only entry point after the local transcript's open-turn fence. Fresh
+// thread evidence can detach disproven process identity or restore only a row
+// that this runtime's agent-exit sweep retired.
+function acceptCodexLiveProcessProgress(sessionId, opts = {}) {
+  const input = normalizeCodexLiveProgressInput(opts);
+  if (!input) return false;
+  const { turnId, transcriptPath, occurredAt } = input;
   pruneCodexProcessExitRecovery();
   let session = sessions.get(sessionId);
   let recovering = false;
   if (!session) {
-    if (!hasRecoverableCodexProcessExit(sessionId, { turnId, transcriptPath })) return false;
+    if (!canRestoreCodexProcessExit(sessionId, {
+      turnId, transcriptPath, activityState: input.activityState, now: occurredAt,
+    })) return false;
     const retired = codexProcessExitRecovery.get(sessionId);
-    if (occurredAt < retired.activityAt) return false;
-    session = { ...retired.metadata, state: opts.activityState === "thinking" ? "thinking" : "working",
-      updatedAt: occurredAt, recentEvents: [], sourcePid: null, agentPid: null, pidReachable: false };
-    // A fresh record is evidence of this thread, but the configured inactivity
-    // window still decides whether that observation is recent enough to revive.
-    const decision = getStaleSessionDecision(session, {
-      now: Date.now(), isProcessAlive, deriveSessionBadge, shouldAutoClearDetachedSession,
-      staleConfig: typeof ctx.getStaleConfig === "function" ? ctx.getStaleConfig() : null,
-    });
-    if (decision.action) return false;
+    session = buildRestoredCodexSession(retired, input.activityState, occurredAt);
     evictOldestSessionIfNeeded(sessionId);
     sessions.set(sessionId, session);
     codexSessionTurnIds.set(sessionId, turnId);
@@ -1842,9 +1899,8 @@ function acceptCodexLiveProcessProgress(sessionId, opts = {}) {
     }
     recovering = true;
   }
-  if (!isLocalInteractiveCodex(session) || session.requiresCompletionAck
-    || codexSessionTurnIds.get(sessionId) !== turnId
-    || normalizeTranscriptPath(session.transcriptPath) !== transcriptPath) return false;
+  if (!isCodexLiveProgressTarget(session, transcriptPath)
+    || codexSessionTurnIds.get(sessionId) !== turnId) return false;
   // A post-restart writer can continue the same rollout while the old Desktop
   // app-server PID is dead. Drop only disproven identity; never bind all rows to
   // whichever codex.exe happens to be alive on the host.
@@ -1852,9 +1908,10 @@ function acceptCodexLiveProcessProgress(sessionId, opts = {}) {
   const sourceDead = !!session.sourcePid && !isProcessAlive(session.sourcePid);
   if (agentDead || sourceDead) {
     if (agentDead) session.agentPid = null;
-    // An old, still-live ancestor/terminal cannot establish which process now
-    // owns this rollout after its agent exited. A fresh hook may re-anchor it.
-    if (agentDead || sourceDead) session.sourcePid = null;
+    // These focus targets were captured together with this process group. Once
+    // any member is disproven, none of them can still prove ownership, so drop
+    // them all; a later hook with valid metadata can re-attach them.
+    session.sourcePid = null;
     session.pidChain = null;
     session.wtHwnd = null;
     session.orcaPaneKey = null;
@@ -1883,7 +1940,13 @@ function acceptCodexLiveProcessProgress(sessionId, opts = {}) {
 }
 
 // Refresh lifecycle liveness from a request-bound observer without inventing a
-// hook event. This never creates a row, appends history or completes a turn.
+// hook event. This deliberately sits between updateSessionFocusMetadata (which
+// owns focus-only fields) and updateSessionMetadata (which must never affect
+// staleness): a correlated request_user_input request/output is real turn
+// activity, but it must not create a ghost row, append recentEvents, fire a
+// sound, or manufacture a completion boundary.
+// The adjacent acceptCodexLiveProcessProgress is the only entry that may
+// insert a row for a Codex process handoff; this function never creates one.
 function touchSessionActivity(sessionId, opts = {}) {
   const id = typeof sessionId === "string" ? sessionId : "";
   if (!id) return false;
@@ -4768,7 +4831,10 @@ return {
   updateSessionFocusMetadata,
   touchSessionActivity,
   acceptCodexLiveProcessProgress,
+  canRestoreCodexProcessExit,
   hasRecoverableCodexProcessExit,
+  listRecoverableCodexRawSessionIds,
+  forgetCodexProcessExit,
   retainCodexInitializationForRecovery,
   updateSessionMetadata,
   updateCodexInitializationMetadata,
