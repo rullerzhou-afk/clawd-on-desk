@@ -3257,6 +3257,9 @@ getSessionHudWindow = _sessionHud.getWindow;
 getQuotaRingWindow = _sessionHud.getQuotaRingWindow;
 
 agentRuntime = createAgentRuntimeMain({
+  // Local rollout files survive a host reboot; their old unfinished turns do
+  // not prove a Codex client has started again in this boot.
+  localCodexBootTimeMs: Math.floor(Date.now() - require("os").uptime() * 1000),
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
