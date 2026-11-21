@@ -412,7 +412,7 @@ describe("Codex Desktop Windows PID cache", { skip: process.platform !== "win32"
     });
     const raw = resolve();
     assert.deepEqual(Object.keys(raw).sort(), ["agentCommandLine", "agentPid", "detectedEditor", "foregroundWtHwnd", "pidChain", "snapshotOk", "stablePid", "terminalPid", "tmuxClient", "tmuxSocket"].sort());
-    const context = { namespace: "claude-code", sessionId: "other-adapter", cacheCwd: "C:/test/other", cacheable: true, preferAgentPid: true };
+    const context = { namespace: "kimi", sessionId: "other-adapter", cacheCwd: "C:/test/other", cacheable: true, preferAgentPid: true };
     assert.equal(resolve({ ...context, lifecycle: "start" }).stablePid, 2003);
     assert.equal(resolve(), raw);
     for (const dead of [2003, 2002]) {

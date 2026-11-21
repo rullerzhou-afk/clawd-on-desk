@@ -45,6 +45,11 @@ const DEFAULT_EDITOR_PATH_CHECKS = [
 const WINDOWS_TERMINAL_WINDOW_CLASS = "CASCADIA_HOSTING_WINDOW_CLASS";
 const WINDOWS_TERMINAL_PROCESS_NAMES = new Set(["windowsterminal.exe", "windowsterminalpreview.exe"]);
 
+// Namespaces whose adapter may opt into the persistent agent process as the
+// stable/cache anchor. This set only says who may ever use `preferAgentPid`;
+// each adapter still decides per call whether its provenance is verified.
+const PREFER_AGENT_PID_NAMESPACES = new Set(["codex", "claude-code"]);
+
 function normalizeTmuxSocketPath(value) {
   if (typeof value !== "string") return null;
   const text = value.trim();
@@ -899,11 +904,12 @@ function createPidResolver(options) {
       // make the offline path indistinguishable from a real walk in logs.
       cacheSource: meta.snapshotOk ? "fresh" : "none",
     };
-    // A verified Codex Desktop client uses its persistent app-server as both
-    // source and cache anchor. A hook's terminal match can be its short-lived
-    // PowerShell wrapper; retaining that anchor would invalidate both cached
-    // PIDs as soon as the wrapper exits. Preserve the raw terminal observation
-    // and the no-arg result, and never promote a headless or failed walk.
+    // A verified Desktop client uses its persistent agent process (Codex's
+    // app-server, Claude Desktop's bundled CLI) as both source and cache anchor.
+    // A hook's terminal match can be its short-lived PowerShell wrapper;
+    // retaining that anchor would invalidate both cached PIDs as soon as the
+    // wrapper exits. Preserve the raw terminal observation and the no-arg
+    // result, and never promote a headless or failed walk.
     const useAgentAnchor = preferAgentPid && meta.snapshotOk && meta.agentPid && !result.headless;
     if (useAgentAnchor) result.stablePid = meta.agentPid;
     // Object spread deliberately skips the recovery-only non-enumerable
@@ -1083,10 +1089,12 @@ function createPidResolver(options) {
     // is the adapter's declaration; the path check guards a stray empty
     // ingredient. It never relaxes the prompt/end no-fallback contract below.
     const canDisk = cacheable && !!pidCache.cacheFilePathV2(namespace, sessionId, cacheCwd);
-    // Opt-in only: codex-hook verifies the known Desktop originator and local
-    // interactive provenance. Other namespaces retain terminal-first anchors
-    // and the existing double-liveness requirement, even with this flag set.
-    const preferAgentPid = namespace === "codex" && ctx.preferAgentPid === true;
+    // Opt-in only, and only for namespaces whose adapter verifies local
+    // interactive Desktop provenance (Codex's official originator, Claude's
+    // Windows `claude-desktop` entrypoint). Other namespaces retain
+    // terminal-first anchors and the existing double-liveness requirement,
+    // even with this flag set.
+    const preferAgentPid = PREFER_AGENT_PID_NAMESPACES.has(namespace) && ctx.preferAgentPid === true;
 
     switch (lifecycle) {
       case "start":  return startLifecycle(pidCache, namespace, sessionId, cacheCwd, canDisk, preferAgentPid);

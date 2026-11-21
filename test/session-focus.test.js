@@ -9,6 +9,7 @@ const {
   getDirectSendFocusTarget,
   getFocusableLocalHudSessionIds,
   getSessionFocusTarget,
+  getSessionFocusWtHwnd,
   isFocusableLocalHudSession,
 } = require("../src/session-focus");
 const { makeSessionKey } = require("../src/session-key");
@@ -365,5 +366,17 @@ describe("session focus helpers", () => {
     assert.strictEqual(isFocusableLocalHudSession({ sourcePid: 1 }), false);
     assert.deepStrictEqual(getFocusableLocalHudSessionIds({ sessions: "bad" }), []);
     assert.deepStrictEqual(getFocusableLocalHudSessionIds(null), []);
+  });
+
+  it("issue #1392: Claude Desktop ignores a stored WT handle, other sessions keep it", () => {
+    assert.strictEqual(
+      getSessionFocusWtHwnd({ claudeEntrypoint: "claude-desktop", wtHwnd: "0x51" }),
+      null,
+      "the stored WT handle is only whatever terminal was foreground at event time"
+    );
+    assert.strictEqual(getSessionFocusWtHwnd({ claudeEntrypoint: "cli", wtHwnd: "0x51" }), "0x51");
+    assert.strictEqual(getSessionFocusWtHwnd({ wtHwnd: "0x51" }), "0x51");
+    assert.strictEqual(getSessionFocusWtHwnd({ claudeEntrypoint: "claude-desktop" }), null);
+    assert.strictEqual(getSessionFocusWtHwnd(null), undefined);
   });
 });
