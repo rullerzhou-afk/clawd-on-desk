@@ -547,7 +547,7 @@ describe("Agent Registry", () => {
     const qoder = registry.getAgent("qoder");
     assert.strictEqual(qoder.eventMap.SessionStart, "idle");
     assert.strictEqual(qoder.eventMap.PreToolUse, "working");
-    assert.strictEqual(qoder.eventMap.PostToolUseFailure, "error");
+    assert.strictEqual(qoder.eventMap.PostToolUseFailure, "working");
     assert.strictEqual(qoder.eventMap.Stop, "attention");
     assert.strictEqual(qoder.eventMap.PermissionRequest, "notification");
     assert.strictEqual(qoder.eventMap.PermissionDenied, "notification");

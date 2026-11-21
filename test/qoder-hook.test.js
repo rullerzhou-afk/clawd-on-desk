@@ -14,10 +14,15 @@ describe("Qoder hook runtime (Phase 1 state-only)", () => {
     assert.strictEqual(HOOK_MAP.Stop.state, "attention");
   });
 
-  it("maps tool-boundary events to working / error", () => {
+  it("maps tool-boundary events to working", () => {
     assert.strictEqual(HOOK_MAP.PreToolUse.state, "working");
     assert.strictEqual(HOOK_MAP.PostToolUse.state, "working");
     assert.strictEqual(HOOK_MAP.PostToolUseFailure.state, "working");
+  });
+
+  it("agrees with the Qoder registry on PostToolUseFailure", () => {
+    const qoder = require("../agents/qoder");
+    assert.strictEqual(qoder.eventMap.PostToolUseFailure, HOOK_MAP.PostToolUseFailure.state);
   });
 
   it("observes permission events as passive notifications, never a decision", () => {

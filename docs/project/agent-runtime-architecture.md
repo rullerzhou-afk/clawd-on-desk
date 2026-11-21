@@ -428,14 +428,16 @@ Qoder / Qoder CN hooks（同一个 `qoder` agent、state-only）：
 Qoder 会话标题（本机、state-only）：
   Hook 转发显式标题与 transcript 路径，保持 stdout 为 `{}` 和原生权限流程不变。
   `agent-runtime-main` 先接受生命周期，再让 `qoder-session-title` 对 SessionStart /
-  UserPromptSubmit / Stop 异步增量读取；工具、权限、通知事件不触发扫描，显式标题也不触发 I/O。
+  UserPromptSubmit / Stop 异步增量读取 JSONL；工具、权限、通知事件不触发 JSONL 扫描，显式标题也不触发 JSONL I/O。
   仅处理 enabled、本机且非 WSL 的 Qoder 会话，远端 profile / host 的路径不在本机读取。
   标题读取保持完整的顺序解析与 custom-title 优先级，不采用会遗漏中段改名的头尾采样。
   结果通过既有 `updateSessionMetadata` 扇出到共享 snapshot，不改活动时间、状态、recentEvents 或 recap。
   显式生命周期标题和 metadata-only 标题均同步记入 tracker；未读取/轮转的基线或已排队的旧扫描
   不覆盖显式标题，之后观察到的新原生标题记录才可替代它（两个来源没有可比较的原生时间戳）。
-  同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
-  每个会话串行读取；完成时还需核对存活会话、
+  对 JSONL tracker，同 id 的 SessionStart 取消旧读取但保留显式标题；SessionEnd、禁用与退出完整清理缓存。
+  新版桌面端通过 `qoder-desktop-sessions` 只读查询两版 `main.sqlite` 中的标题、用量、委派与归档/删除状态。本机首个事件和 SessionStart 查库，未确认委派时在 Stop / Notification 前复查，轮询仅为到期条目开库。确认的委派子行会隐藏并把活动投到父行，父行的完成提示照常。
+  SQLite 在 hook 或轮询中确认委派、归档或删除并撤行时，会作废该会话未完成的 JSONL 标题扫描。
+  JSONL 按会话串行读取；完成时还需核对存活会话、
   本机身份、当前路径及标题，防止旧异步结果污染重开的会话。读取中断时逐 chunk 保持 offset 与 partial
   一致，重试可继续完整解析；FileHandle 始终在 finally 中关闭。
 
