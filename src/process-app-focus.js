@@ -336,14 +336,62 @@ function windowsCodeBuddyProcessScript(pids) {
   ].join("\n");
 }
 
-// Windows counterpart of findCodeBuddyMacApp: one Get-Process over the
-// session's recorded PIDs (priority order kept by the caller), then the first
-// live image whose install directory carries a CodeBuddy product.json wins.
-// The result's `bundlePath` is that install directory.
-function findCodeBuddyWindowsApp(pids, { execFile, fs: fsApi = fs } = {}) {
-  const candidates = (Array.isArray(pids) ? pids : []).map(pid).filter(Boolean);
-  if (!candidates.length) return Promise.resolve(null);
-  const output = new Promise((resolve) => {
+const PROCESS_QUERY_LIMITED_INFORMATION = 0x1000;
+const WINDOWS_IMAGE_PATH_CHARS = 32768;
+
+// Reads a live process's image path in-process through Win32, the same calls
+// src/win-foreground-terminal.js already makes. A cold PowerShell spawn costs
+// ~250ms per click on Windows; this costs well under a millisecond. Returns a
+// `pid => string | null` reader, or null when the FFI cannot be loaded.
+function createWindowsImagePathReader({ koffi } = {}) {
+  let OpenProcess;
+  let QueryFullProcessImageNameW;
+  let CloseHandle;
+  try {
+    const ffi = koffi || require("koffi");
+    const kernel32 = ffi.load("kernel32.dll");
+    OpenProcess = kernel32.func("void * __stdcall OpenProcess(uint32 dwDesiredAccess, bool bInheritHandle, uint32 dwProcessId)");
+    QueryFullProcessImageNameW = kernel32.func("bool __stdcall QueryFullProcessImageNameW(void *hProcess, uint32 dwFlags, _Out_ uint16_t *lpExeName, _Inout_ uint32 *lpdwSize)");
+    CloseHandle = kernel32.func("bool __stdcall CloseHandle(void *hObject)");
+  } catch {
+    return null;
+  }
+  return (rawPid) => {
+    const processId = pid(rawPid);
+    if (!processId) return null;
+    let handle = null;
+    try {
+      handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, processId);
+      if (!handle) return null;
+      const buffer = new Uint16Array(WINDOWS_IMAGE_PATH_CHARS);
+      const length = [WINDOWS_IMAGE_PATH_CHARS];
+      if (!QueryFullProcessImageNameW(handle, 0, buffer, length)) return null;
+      const count = Math.max(0, Math.min(Number(length[0]) || 0, buffer.length));
+      let text = "";
+      for (let i = 0; i < count; i++) text += String.fromCharCode(buffer[i]);
+      return text || null;
+    } catch {
+      return null;
+    } finally {
+      if (handle) {
+        try { CloseHandle(handle); } catch { /* best effort */ }
+      }
+    }
+  };
+}
+
+let defaultWindowsImagePathReader;
+// Built once on first use; null off Windows or when the FFI is unavailable,
+// in which case the lookup falls back to one Get-Process call.
+function getWindowsImagePathReader() {
+  if (defaultWindowsImagePathReader === undefined) {
+    defaultWindowsImagePathReader = process.platform === "win32" ? createWindowsImagePathReader() : null;
+  }
+  return defaultWindowsImagePathReader;
+}
+
+function queryWindowsImagesWithPowerShell(candidates, execFile) {
+  return new Promise((resolve) => {
     try {
       execFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", windowsCodeBuddyProcessScript(candidates)],
         { timeout: 3000, windowsHide: true, encoding: "utf8", maxBuffer: 64 * 1024 },
@@ -351,13 +399,36 @@ function findCodeBuddyWindowsApp(pids, { execFile, fs: fsApi = fs } = {}) {
     } catch {
       resolve(null);
     }
-  });
-  return output.then(async (stdout) => {
+  }).then((stdout) => {
     const imageByPid = new Map();
     for (const line of String(stdout || "").split(/\r?\n/)) {
       const match = line.match(/^\s*(\d+)\t(.+)$/);
       if (match) imageByPid.set(Number(match[1]), match[2]);
     }
+    return imageByPid;
+  });
+}
+
+// Windows counterpart of findCodeBuddyMacApp: read the image of each of the
+// session's recorded PIDs (priority order kept by the caller), then the first
+// live image whose install directory carries a CodeBuddy product.json wins.
+// The result's `bundlePath` is that install directory. `readImagePath` is
+// the in-process reader; without one, a single Get-Process call is the fallback.
+function findCodeBuddyWindowsApp(pids, { execFile, fs: fsApi = fs, readImagePath = null } = {}) {
+  const candidates = (Array.isArray(pids) ? pids : []).map(pid).filter(Boolean);
+  if (!candidates.length) return Promise.resolve(null);
+  const images = typeof readImagePath === "function"
+    ? Promise.resolve().then(() => {
+      const imageByPid = new Map();
+      for (const candidatePid of candidates) {
+        let image = null;
+        try { image = readImagePath(candidatePid); } catch { image = null; }
+        if (typeof image === "string" && image) imageByPid.set(candidatePid, image);
+      }
+      return imageByPid;
+    })
+    : queryWindowsImagesWithPowerShell(candidates, execFile);
+  return images.then(async (imageByPid) => {
     const seen = new Set();
     for (const candidatePid of candidates) {
       const appDir = codeBuddyWindowsAppDirFromImage(imageByPid.get(candidatePid));
@@ -389,9 +460,11 @@ function openCodeBuddyMacApp(bundlePath, { execFile } = {}) {
 
 module.exports = {
   CODEBUDDY_URL_SCHEME_RE,
+  createWindowsImagePathReader,
   focusProcessAppWindow,
   findCodeBuddyMacApp,
   findCodeBuddyWindowsApp,
+  getWindowsImagePathReader,
   openCodeBuddyMacApp,
   windowsProcessAppScript,
   macCodexProcessTarget,

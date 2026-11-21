@@ -21,6 +21,7 @@ const {
   mergeSessionFocusEntry,
 } = require("../src/session-focus");
 const {
+  createWindowsImagePathReader,
   findCodeBuddyMacApp,
   findCodeBuddyWindowsApp,
   openCodeBuddyMacApp,
@@ -657,6 +658,71 @@ describe("CodeBuddy Windows app lookup", () => {
       fs: makeFs(winCodeBuddyFiles(stableDir), winCodeBuddyStats(stableDir)),
     });
     assert.equal(result.bundlePath, stableDir);
+  });
+
+  it("reads images in-process without spawning PowerShell when a reader is available", async () => {
+    const execFile = makeExecFile({ stdout: "" });
+    const asked = [];
+    const result = await findCodeBuddyWindowsApp([10, 45684, 38060], {
+      execFile,
+      readImagePath: (processId) => {
+        asked.push(processId);
+        if (processId === 10) throw new Error("access denied");
+        return processId === 45684 ? insidersExe : stableExe;
+      },
+      fs: makeFs({
+        ...winCodeBuddyFiles(stableDir),
+        ...winCodeBuddyFiles(insidersDir, { protocol: "codebuddycn-insiders" }),
+      }, {
+        ...winCodeBuddyStats(stableDir, 30),
+        ...winCodeBuddyStats(insidersDir, 40),
+      }),
+    });
+    assert.deepEqual(result, { bundlePath: insidersDir, urlScheme: "codebuddycn-insiders" });
+    assert.deepEqual(asked, [10, 45684, 38060]);
+    assert.equal(execFile.calls.length, 0, "the in-process reader replaces the Get-Process spawn");
+  });
+
+  it("builds a reader over OpenProcess/QueryFullProcessImageNameW and always closes the handle", () => {
+    const calls = [];
+    const image = "C:\\Apps\\CodeBuddy CN\\CodeBuddy CN.exe";
+    const fakeKoffi = {
+      load: (name) => {
+        assert.equal(name, "kernel32.dll");
+        return {
+          func: (signature) => {
+            if (signature.includes("OpenProcess")) {
+              return (access, inherit, processId) => {
+                calls.push(["open", access, inherit, processId]);
+                return processId === 404 ? null : { processId };
+              };
+            }
+            if (signature.includes("QueryFullProcessImageNameW")) {
+              return (handle, flags, buffer, length) => {
+                calls.push(["query", handle.processId]);
+                if (handle.processId === 500) throw new Error("ffi failure");
+                for (let i = 0; i < image.length; i++) buffer[i] = image.charCodeAt(i);
+                length[0] = image.length;
+                return true;
+              };
+            }
+            return (handle) => { calls.push(["close", handle.processId]); return true; };
+          },
+        };
+      },
+    };
+    const reader = createWindowsImagePathReader({ koffi: fakeKoffi });
+    assert.equal(reader(7), image);
+    assert.deepEqual(calls.slice(0, 3), [["open", 0x1000, false, 7], ["query", 7], ["close", 7]]);
+    assert.equal(reader(404), null, "an unopenable process yields null");
+    assert.equal(reader(500), null, "an FFI exception yields null");
+    assert.deepEqual(calls.at(-1), ["close", 500], "the handle is closed after an FFI exception");
+    assert.equal(reader(0), null);
+    assert.equal(reader("12; x"), null);
+  });
+
+  it("returns no reader when the FFI cannot be loaded", () => {
+    assert.equal(createWindowsImagePathReader({ koffi: { load: () => { throw new Error("no koffi"); } } }), null);
   });
 });
 
