@@ -50,6 +50,7 @@
 | **OpenClaw on Windows：原生 codex relay 可能失败** | 如果 OpenClaw 使用原生 `agentRuntime: codex` 路径时卡住，或报 unsafe native hook relay bridge，建议切到 OpenAI-compatible model/provider，例如 `openai-codex/gpt-5.5`。这是 OpenClaw 自身行为；Clawd 只观察 plugin 状态事件，无法修复 relay。 |
 | **CodeWhale：全局 session id 缓存** | Phase 1 会把最近一次 CodeWhale session id 存在 `os.tmpdir()` 下的单个全局文件。多个 CodeWhale 实例并发运行时可能互相覆盖或误清这个缓存，导致状态串线或 HUD 出现重复标签。 |
 | **Qoder / Qoder CN：仅状态同步** | hooks 使用 `~/.qoder/settings.json` / `~/.qoder-cn/settings.json`（或各版本的配置目录覆盖）。`PermissionRequest` / `PermissionDenied` 仍只作为通知观察，hook 恒返回 `{}`，权限决定留给 Qoder。启动恢复只识别 CLI 名称（`qodercli` / `qoder-cli` / `qoderclicn`），不把闲置桌面应用当作任务。2026-10-18 已核对 Windows CN worker runtime 1.1.69 的真实 SessionStart / UserPromptSubmit / Stop hooks；用户确认开启 Clawd Qoder 接入后任务状态恢复。macOS/Linux CN 和独立 QoderWork IDE 尚未实测。 |
+| **Qoder 桌面版：SQLite 辅助文件** | Qoder 未运行时，Clawd 只读查询标题或上下文用量也可能在 Qoder 数据目录中留下 `-wal` 和 `-shm` 文件。Qoder 下次启动时会接管这些文件。 |
 | **Windows：与 Grok / Cursor 共用 Claude hook** | 装了 Grok Build 时，Claude Code hook 继续走 PowerShell，速度不变。若在 Clawd 运行期间才装 Grok Build，需重启 Clawd 才会改回 PowerShell；在那之前 Grok 每个事件都会留一条失败记录。在 Cursor 里导入的 Claude hook 不再上报；要跟踪 Cursor，请在 Clawd 里启用 Cursor 集成。 |
 | **Windows Terminal：tab 聚焦能力有限** | Windows Terminal 会用一个宿主窗口 / 进程承载多个 tab，Clawd 无法可靠激活其中某一个指定 tab。HUD / Dashboard 终端跳转最适合单独的传统 `cmd.exe` / PowerShell 窗口，或标题里包含项目目录名的独立 Windows Terminal 窗口。Windows 11 上，`cmd.exe` 和 PowerShell 也可能默认被 Windows Terminal 托管；如果要使用传统窗口，需要把默认终端应用程序改为 Windows 控制台主机。 |
 | **Windows：hook 的进程信息需要 Clawd 正在运行** | 终端聚焦和会话 PID 来自一次进程树查询，hook 只在 Clawd 真正运行时才做。从 **v0.13.0** 起，退出 Clawd 后残留的 CLI hook 不再查询进程树——它只上报已有信息就结束。可见影响是：在 Clawd 关闭期间开始的会话，要等到 Clawd 运行后的下一个事件才有可点击聚焦的目标；Clawd 已经认识的会话会保留此前学到的 PID。强杀 Clawd 后的几秒内、以及 `~/.clawd/runtime.json` 不可读时（Doctor → Local server 会给出警告）同理。升级到 v0.13.0 后首次重启 Clawd 之前，旧版 `runtime.json` 没有 owner 字段，hook 会按"Clawd 未运行"处理并省略这些信息——重启一次即可恢复。 |
@@ -61,7 +62,9 @@
 | **Electron 主进程无自动化测试** | 单元测试覆盖了 agent 配置和日志轮询，但状态机、窗口管理、托盘等 Electron 逻辑暂无自动化测试。 |
 | **Claude Code（历史）：桌宠未运行时工具被自动拒绝** | 该问题已在 Claude Code 2.1.100 上确认：桌宠 HTTP 服务未运行时，Clawd 注册的 `PermissionRequest` hook 因 `ECONNREFUSED` 失败，Claude Code 会把这种失败当作「用户拒绝」而不是回退到内置提示。上游确认修复已随 v2.1.113 落地（[anthropics/claude-code#46193](https://github.com/anthropics/claude-code/issues/46193)，以 Completed 关闭），报告者在 v2.1.274 再次验证。完整的受影响版本区间未逐版验证，因此在仍能复现该问题的旧版本上，请升级 Claude Code 或保持桌宠运行。Clawd 不因该已解决问题修改权限 hook 策略。 |
 | **Claude Code + CC Switch：受保护的自动修复暂停** | Clawd 通常会在其他工具重写 `~/.claude/settings.json` 后自动补回 Claude hooks。但如果文件突然缩水到看起来不安全，Clawd 会暂停自动修复，避免把外部工具的半成品配置固化；Doctor 会把 Claude Code 标为需要 Fix。可通过 **Settings -> Doctor -> Fix**、重启 Clawd，或重新打开「自动管理 Claude hooks」修复。CC Switch 的 Shared Config Snippet 可在同一台机器上携带 Clawd hooks，但这些 hooks 含本机路径和端口，不建议当作跨设备通用片段同步。 |
+| **Claude Code：配置目录别名** | Clawd 可能把指向已登记配置目录的符号链接列为另一个目录。移除该别名时，可能同时移除共用 `settings.json` 里的 Clawd hooks。每个实际目录只需添加一次。 |
 | **Claude 桌面版：Projects (beta) 对话不上报事件** | Claude 桌面版 Code 标签里 **Projects (beta)** 下的对话是远程 Claude Code 会话（默认在云端），Claude Code 不在你的电脑上运行，本机 `~/.claude/settings.json` 里的 hook 不会触发，所以这些对话不会让 Clawd 切换状态，也不会弹出权限气泡或提问卡片。Code 标签里的普通会话在本机运行，不受影响。Clawd 不会为此读取桌面版的私有存储，也不会使用你的账号会话（[#1394](https://github.com/rullerzhou-afk/clawd-on-desk/issues/1394)）。 |
+| **DeepSeek 预付余额绕过系统代理** | Clawd 查询余额时会直连 `api.deepseek.com`。在必须通过系统代理上网的网络中，余额查询可能失败。 |
 
 ## Codex 审批路由
 
