@@ -170,6 +170,7 @@ function translations() {
     dashboardKimiQuotaEmpty: "No quota data yet. Click refresh to fetch it.",
     dashboardKimiQuotaRefreshShort: "Refresh",
     dashboardModel: "Model",
+    dashboardContextUsage: "Context usage",
   };
 }
 
@@ -337,6 +338,17 @@ test("Dashboard renders local/remote/webui reasons and only local folder action"
   assert.deepStrictEqual(jumpButtons(cards[1]), []);
   assert.deepStrictEqual(jumpButtons(cards[2]).map((button) => button.disabled), [true]);
   assert.strictEqual(byClass(root, "open-folder-button").length, 1);
+});
+
+test("HUD and Dashboard render context usage with a percentage alone", async () => {
+  const rows = [session("qoder", { agentId: "qoder", contextUsage: { percent: 37 } })];
+  const hud = await loadHud(rows);
+  const [chip] = byClass(hud.root, "usage-chip");
+  assert.equal(chip?.textContent, "37%");
+  assert.equal(chip?.title, "37%");
+
+  const dashboard = await loadDashboard(rows);
+  assert.deepEqual(byClass(dashboard.root, "context-usage-row").map((row) => row.textContent), ["Context usage: 37%"]);
 });
 
 test("Dashboard labels a DSH desktop target as opening the app, not the terminal", async () => {

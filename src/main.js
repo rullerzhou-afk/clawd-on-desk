@@ -2867,7 +2867,7 @@ sessionAutomationCoordinator = createSessionAutomationCoordinator({
 // (kept as a pure helper so the semantics are unit-tested).
 let powerSaveBlockerId = null;
 function anySessionInProgress() {
-  if (_state.hasActiveCodexSubagents()) return true;
+  if (_state.hasActiveCodexSubagents() || _state.hasActiveQoderSubagents()) return true;
   for (const [, s] of sessions) {
     if (isSessionInProgress(s)) return true;
   }
@@ -3038,7 +3038,7 @@ function focusDashboardSession(sessionId, options = {}) {
   if (focusEntry.platform === "webui") {
     focusLog(`focus result branch=none reason=webui-unfocusable source=${requestSource} sid=${id}`);
   } else {
-    focusLog(`focus result branch=none reason=no-source-pid source=${requestSource} sid=${id}`);
+    focusLog(`focus result branch=none reason=${focusTarget.reason || "no-source-pid"} source=${requestSource} sid=${id}`);
   }
   return false;
 }

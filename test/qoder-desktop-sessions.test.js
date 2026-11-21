@@ -10,7 +10,9 @@ const {
   qoderDesktopDataDirs,
   readQoderDesktopSession,
   createQoderDesktopTitleTracker,
+  createQoderSubagentPresentation,
 } = require("../src/qoder-desktop-sessions");
+const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: CHILD_TTL_MS } = require("../src/state-stale-cleanup");
 
 let DatabaseSync;
 try { ({ DatabaseSync } = require("node:sqlite")); } catch {}
@@ -62,17 +64,20 @@ function createHarness(options = {}) {
     getSession: (sessionId) => live.get(sessionId) || null,
     updateTitle: (sessionId, title) => updates.push({ sessionId, title }),
     onRetired: (info) => retired.push(info),
-    readSession: (input, readerOptions) => {
-      reads.push(input.rawSessionId);
-      return options.readSession ? options.readSession(input, readerOptions) : null;
-    },
     jsonl: options.jsonl || null,
     pollMs: options.pollMs ?? 2000,
     now: () => clock,
-    readerOptions: options.readerOptions || {},
+    readerOptions: {
+      ...options.readerOptions,
+      readSession(input, readerOptions) {
+        reads.push(input.rawSessionId);
+        return options.readSession ? options.readSession(input, readerOptions) : null;
+      },
+    },
   });
   return {
     tracker, live, updates, retired, reads,
+    readMeta: (raw) => tracker.readEventMeta(raw, "PreToolUse", true).reading.meta,
     addLive(sessionId) { const session = { sessionId }; live.set(sessionId, session); return session; },
     advance(ms) { clock += ms; },
   };
@@ -353,7 +358,7 @@ describe("createQoderDesktopTitleTracker", () => {
     harness.tracker.clear();
   });
 
-  it("readMeta exposes suppression flags only for confirmed rows, never unknown or invalid ids", async () => {
+  it("event metadata exposes suppression flags only for confirmed rows", async () => {
     const metas = {
       "raw-normal": meta(),
       "raw-delegated": meta({ delegated: true }),
@@ -362,7 +367,7 @@ describe("createQoderDesktopTitleTracker", () => {
     };
     const harness = createHarness({ readSession: ({ rawSessionId }) => metas[rawSessionId] ?? null });
     const flags = (raw) => {
-      const m = harness.tracker.readMeta(raw);
+      const m = harness.readMeta(raw);
       return !!(m && (m.delegated || m.archived || m.deleted));
     };
     assert.equal(flags("raw-normal"), false);
@@ -370,11 +375,6 @@ describe("createQoderDesktopTitleTracker", () => {
     assert.equal(flags("raw-archived"), true);
     assert.equal(flags("raw-deleted"), true);
     assert.equal(flags("raw-missing"), false);
-    const readsBefore = harness.reads.length;
-    assert.equal(harness.tracker.readMeta(""), null);
-    assert.equal(harness.tracker.readMeta(null), null);
-    assert.equal(harness.tracker.readMeta(42), null);
-    assert.equal(harness.reads.length, readsBefore);
     harness.tracker.clear();
   });
 
@@ -392,17 +392,17 @@ describe("createQoderDesktopTitleTracker", () => {
     harness.tracker.clear();
   });
 
-  it("clear(sessionId) invalidates the meta cache for that raw id (L3)", async () => {
+  it("clear(sessionId) drops the tracker entry and preserves the event reading", async () => {
     const harness = createHarness({ readSession: () => meta() });
     harness.addLive("s1");
     harness.tracker.track({ sessionId: "s1", rawSessionId: "raw-1" });
     await nextTurn();
     const readsBefore = harness.reads.length;
-    harness.tracker.readMeta("raw-1");
+    harness.readMeta("raw-1");
     assert.equal(harness.reads.length, readsBefore);
     harness.tracker.clear("s1");
-    harness.tracker.readMeta("raw-1");
-    assert.equal(harness.reads.length, readsBefore + 1);
+    harness.readMeta("raw-1");
+    assert.equal(harness.reads.length, readsBefore);
     harness.tracker.clear();
   });
 
@@ -449,18 +449,49 @@ describe("createQoderDesktopTitleTracker", () => {
     });
   });
 
+  it("requires a numeric context percentage and preserves zero", { skip: !DatabaseSync }, async () => {
+    await fixture(async (home) => {
+      createDatabase(home, [{ session_id: "usage" }]);
+      const db = new DatabaseSync(path.join(home, "main.sqlite"));
+      try {
+        db.exec("CREATE TABLE chat_session_context_usage (session_id TEXT PRIMARY KEY, snapshot_json TEXT)");
+        const put = db.prepare("INSERT OR REPLACE INTO chat_session_context_usage VALUES (?, ?)");
+        for (const [percentage, expected] of [[null, null], ["", null], ["0.37", null], ["bad", null], [0, 0]]) {
+          put.run("usage", JSON.stringify({ percentage }));
+          const row = readQoderDesktopSession({ rawSessionId: "usage" }, { dataDirs: [home] });
+          assert.equal(row.contextUsage?.percent ?? null, expected, JSON.stringify(percentage));
+        }
+      } finally {
+        db.close();
+      }
+    });
+  });
+
   it("readMeta caches inside the poll window and re-reads once it expires", async () => {
     const harness = createHarness({ readSession: () => meta(), pollMs: 2000, startMs: 10000 });
-    const first = harness.tracker.readMeta("raw-1");
+    const first = harness.readMeta("raw-1");
     assert.equal(harness.reads.length, 1);
-    assert.strictEqual(harness.tracker.readMeta("raw-1"), first);
+    assert.strictEqual(harness.readMeta("raw-1"), first);
     harness.advance(1999);
-    assert.strictEqual(harness.tracker.readMeta("raw-1"), first);
+    assert.strictEqual(harness.readMeta("raw-1"), first);
     assert.equal(harness.reads.length, 1);
     harness.advance(1);
-    harness.tracker.readMeta("raw-1");
+    harness.readMeta("raw-1");
     assert.equal(harness.reads.length, 2);
     harness.tracker.clear();
+  });
+
+  it("preserves ordinary metadata and its read time when a forced read fails", () => {
+    let row = meta({ title: "Known title" });
+    const h = createHarness({ readSession: () => row });
+    const first = h.tracker.readEventMeta("raw-1", "SessionStart", false).reading;
+    h.advance(1000);
+    row = null;
+
+    const retry = h.tracker.readEventMeta("raw-1", "Notification", false).reading;
+    assert.deepEqual(h.reads, ["raw-1", "raw-1"]);
+    assert.equal(retry.meta, first.meta);
+    assert.equal(retry.readAt, first.readAt);
   });
 
   it("track reads immediately once, defers repeats to the poll, and resets on a new raw id", async () => {
@@ -483,6 +514,62 @@ describe("createQoderDesktopTitleTracker", () => {
     assert.deepEqual(harness.updates.map((entry) => entry.title), ["Desktop title", "Desktop title", "Desktop title"]);
     assert.equal(harness.tracker.size(), 1);
     harness.tracker.clear();
+  });
+
+  it("cached idle hooks do not move the query timestamp", async (t) => {
+    const h = createHarness({ readSession: () => meta(), pollMs: 2000 });
+    t.after(() => h.tracker.clear());
+    h.addLive("s1").state = "idle";
+    const { reading } = h.tracker.readEventMeta("raw-1", "SessionStart", false);
+    h.tracker.track({ sessionId: "s1", rawSessionId: "raw-1", reading });
+    for (const advance of [500, 500, 999]) {
+      h.advance(advance);
+      const next = h.tracker.readEventMeta("raw-1", "SessionEnd", false);
+      h.tracker.track({ sessionId: "s1", rawSessionId: "raw-1", reading: next.reading });
+    }
+    assert.equal(h.reads.length, 1);
+    h.advance(8001);
+    await h.tracker.poll();
+    assert.equal(h.reads.length, 2);
+  });
+
+  it("poll opens each needed edition once, remembers failed opens, and reaps missing sessions", { skip: !DatabaseSync }, async () => {
+    await fixture(async (home) => {
+      const dirs = ["global", "cn", "broken"].map((name) => path.join(home, name));
+      for (const dir of dirs) createDatabase(dir, []);
+      const opens = [];
+      const h = createHarness({
+        readSession: readQoderDesktopSession,
+        readerOptions: {
+          dataDirs: dirs,
+          openDatabase(filePath) {
+            const dir = path.dirname(filePath);
+            opens.push(dir);
+            if (dir === dirs[2]) throw new Error("cannot open");
+            return new DatabaseSync(filePath, { readOnly: true });
+          },
+        },
+      });
+      try {
+        for (const id of ["s1", "s2", "gone"]) {
+          h.addLive(id).state = "idle";
+          h.tracker.track({ sessionId: id, rawSessionId: id });
+        }
+        h.live.delete("gone");
+        opens.length = 0;
+        await h.tracker.poll();
+        assert.deepEqual(opens, []);
+        assert.equal(h.tracker.size(), 2);
+        h.advance(2000);
+        await h.tracker.poll();
+        assert.deepEqual(opens, []);
+        h.advance(8000);
+        await h.tracker.poll();
+        assert.deepEqual(opens, dirs);
+      } finally {
+        h.tracker.clear();
+      }
+    });
   });
 
   it("sweep reconciles restored rows against a real database", { skip: !DatabaseSync }, async () => {
@@ -535,7 +622,19 @@ describe("createQoderDesktopTitleTracker", () => {
     // A full clear also wipes the meta cache: the next read happens even
     // inside the original poll window.
     const readsBefore = harness.reads.length;
-    harness.tracker.readMeta("raw-1");
+    harness.readMeta("raw-1");
     assert.equal(harness.reads.length, readsBefore + 1);
   });
+});
+
+it("Qoder projection updates report pruning and leave its expiration signal for cleanup", () => {
+  const sessions = new Map([["parent", { agentId: "qoder", state: "idle" }]]);
+  let now = 1000;
+  const presentation = createQoderSubagentPresentation(sessions, () => now);
+  assert.equal(presentation.update("parent", { phase: "activity", childId: "child" }), true);
+  now += CHILD_TTL_MS + 1;
+  assert.equal(presentation.update("parent", { phase: "stop", childId: "unknown" }), true);
+  assert.equal(presentation.count("parent"), 0);
+  assert.equal(presentation.consumeExpirationChange(), true);
+  assert.equal(presentation.consumeExpirationChange(), false);
 });

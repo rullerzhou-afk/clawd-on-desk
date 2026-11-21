@@ -2208,6 +2208,7 @@ function deleteSessionWithCompletionCleanup(sessionId, reason) {
   else codexProcessExitRecovery.delete(sessionId);
   deferredCodexCompletionCues.delete(sessionId);
   codexSubagentPresentation.delete(sessionId);
+  qoderSubagentPresentation.delete(sessionId);
   releaseCodexCompaction(sessionId);
   codexCompactionCompletions.delete(sessionId);
   codexSessionTurnIds.delete(sessionId);
@@ -3839,6 +3840,8 @@ function cleanStaleSessions() {
   let snapshotRefreshNeeded = accountQuota.prune();
   codexSubagentPresentation.prune();
   if (codexSubagentPresentation.consumeExpirationChange()) changed = true;
+  qoderSubagentPresentation.prune();
+  const qoderActivityExpired = qoderSubagentPresentation.consumeExpirationChange();
   for (const id of deferredCodexCompletionCues) {
     if (!codexSubagentPresentation.has(id)) deferredCodexCompletionCues.delete(id);
   }
@@ -3870,6 +3873,10 @@ function cleanStaleSessions() {
     if (decision.snapshotRefreshNeeded) snapshotRefreshNeeded = true;
 
     if (decision.action === "delete") {
+      // Child activity can vouch for an aging card when no PID can establish
+      // that the parent exited. Keep the parent's own state and timestamp.
+      if (s.agentId === "qoder" && (decision.reason === "unreachable" || decision.reason === "no-source")
+        && qoderSubagentPresentation.has(id)) continue;
       const badgeSuffix = decision.reason === "detached-ended" ? ` badge=${decision.badge}` : "";
       debugSession(`stale-delete ${decision.reason} ${describeSession(id, s)}${badgeSuffix}`);
       if (s && s.agentId === "codex") cancelCodexExitProbe(id, `stale-delete-${decision.reason}`);
@@ -3907,7 +3914,8 @@ function cleanStaleSessions() {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
   }
-  if (changed || snapshotRefreshNeeded) emitSessionSnapshot();
+  if (!changed && qoderActivityExpired) refreshSubagentPresentation();
+  else if (changed || snapshotRefreshNeeded) emitSessionSnapshot();
 
   if (startupRecoveryActive && sessions.size === 0) {
     detectRunningAgentProcesses((found) => {
@@ -4065,6 +4073,7 @@ function clearSessionsByAgent(agentId) {
     // pairing to keep the ledger from re-arming a cue for a dead session.
     kimiPermissionGateLedgers.clear();
   }
+  if (agentId === "qoder") qoderSubagentPresentation.clear();
   if (removed > 0) {
     const resolved = resolveDisplayState();
     setState(resolved, getSvgOverride(resolved));
@@ -4430,7 +4439,7 @@ function refreshPendingAttention() {
   return emitSessionSnapshot();
 }
 
-function refreshCodexSubagentPresentation() {
+function refreshSubagentPresentation() {
   // Strong one-shot/permission presentation retains its ordinary return timer.
   // This channel only changes the visual projection and never emits lifecycle.
   if (!isSettingsPreviewVisual() && (!ONESHOT_STATES.has(currentState) || currentState === "attention")) {
@@ -4451,14 +4460,7 @@ function playDeferredCodexCompletionCue(session) {
 
 function updateQoderSubagentActivity(parentId, input) {
   const changed = qoderSubagentPresentation.update(parentId, input);
-  if (changed) refreshCodexSubagentPresentation();
-  return changed;
-}
-
-function clearQoderSubagentActivities() {
-  const changed = qoderSubagentPresentation.hasAny();
-  qoderSubagentPresentation.clear();
-  if (changed) emitSessionSnapshot();
+  if (changed) refreshSubagentPresentation();
   return changed;
 }
 
@@ -4471,7 +4473,7 @@ function updateCodexSubagentActivity(parentId, input) {
       return true;
     }
   }
-  refreshCodexSubagentPresentation();
+  refreshSubagentPresentation();
   return true;
 }
 
@@ -4479,7 +4481,7 @@ function clearCodexSubagentActivities() {
   deferredCodexCompletionCues.clear();
   const changed = codexSubagentPresentation.hasAny();
   codexSubagentPresentation.resetActivity();
-  if (changed) refreshCodexSubagentPresentation();
+  if (changed) refreshSubagentPresentation();
   return changed;
 }
 
@@ -4671,6 +4673,7 @@ function cleanup() {
   deferredCodexCompletionCues.clear();
   lastPendingAttentionIds.clear();
   codexSubagentPresentation.clear();
+  qoderSubagentPresentation.clear();
   for (const id of codexCompactionHolds.keys()) releaseCodexCompaction(id);
   codexCompactionCompletions.clear();
   codexSessionTurnIds.clear();
@@ -4708,7 +4711,7 @@ return {
   updateCodexSubagentActivity,
   clearCodexSubagentActivities,
   updateQoderSubagentActivity,
-  clearQoderSubagentActivities,
+  hasActiveQoderSubagents: qoderSubagentPresentation.hasAny,
   hasActiveCodexSubagents: codexSubagentPresentation.hasAny,
   setState, applyState, updateSession, observeClaudeToolPhase, recordRecapEventOnly, restoreSessionFromLease, resolveDisplayState, resolveVisualBinding, setUpdateVisualState,
   shouldDropForDnd,
