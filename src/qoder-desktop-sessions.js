@@ -3,14 +3,15 @@
 // Qoder Desktop (com.qoder.app.stable / com.qodercn.app.stable) keeps session
 // titles and delegation metadata in main.sqlite `chat_sessions`. Newer builds
 // no longer append ai-title/custom-title JSONL records, so the JSONL tracker
-// alone cannot name these sessions. Only the explicit delegation marker
-// (extra_json.delegationParent) suppresses a row: session_kind /
-// owner_session_id also describe user-visible side chats and must never infer
-// delegation. Unknown/unreadable databases never suppress.
+// alone cannot name these sessions. Delegation comes from the explicit
+// extra_json.delegationParent marker because session_kind and owner_session_id
+// also describe user-visible side chats. Suppression requires confirmed metadata.
 const fs = require("node:fs");
 const os = require("node:os");
 const path = require("node:path");
 const { normalizeSessionTitle } = require("./jsonl-session-title");
+const { normalizeQoderSessionId } = require("./qoder-session-title");
+const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: SUBAGENT_TTL_MS } = require("./state-stale-cleanup");
 
 const TITLE_POLL_MS = 2000;
 const IDLE_POLL_MS = 10000;
@@ -34,14 +35,14 @@ function qoderDesktopDataDirs(options = {}) {
 
 function openReadOnlyDatabase(filePath) {
   const { DatabaseSync } = require("node:sqlite");
-  return new DatabaseSync(filePath, { readOnly: true });
+  return new DatabaseSync(filePath, { readOnly: true, timeout: 0 });
 }
 
-function bareQoderRaw(value) {
-  if (typeof value !== "string") return null;
-  const trimmed = value.trim();
-  const bare = trimmed.startsWith("qoder:") ? trimmed.slice(6) : trimmed;
-  return bare || null;
+function isLocalQoderSession(session) {
+  return !!session && session.agentId === "qoder"
+    && (!session.profileId || session.profileId === "local")
+    && !session.host && !session.wslDistro
+    && String(session.platform || "").trim().toLowerCase() !== "wsl";
 }
 
 // Schema-tolerant row read: full columns, then minimal, then title-only.
@@ -79,7 +80,7 @@ function readContextUsage(db, raw) {
     ).get(MAX_SNAPSHOT_BYTES, raw);
     if (!usageRow || !usageRow.snapshot_json) return null;
     const snapshot = JSON.parse(usageRow.snapshot_json);
-    const fraction = Number(snapshot && snapshot.percentage);
+    const fraction = snapshot?.percentage;
     if (!Number.isFinite(fraction)) return null;
     const usage = {
       percent: Math.max(0, Math.min(100, Math.round(fraction * 100))),
@@ -99,11 +100,20 @@ function readContextUsage(db, raw) {
   }
 }
 
+function openSessionDatabase(dir, openDatabase) {
+  const filePath = path.join(dir, "main.sqlite");
+  try {
+    return fs.existsSync(filePath) ? openDatabase(filePath) : null;
+  } catch {
+    return null;
+  }
+}
+
 // Returns the best row across installed editions, or null when unreadable.
 // Active rows win over archived/deleted/delegated copies; ties prefer the
 // most recently updated row. null means "unknown", never a reason to suppress.
 function readQoderDesktopSession(input, options = {}) {
-  const raw = bareQoderRaw(input.rawSessionId);
+  const raw = normalizeQoderSessionId(input.rawSessionId);
   if (!raw) return null;
   const dirs = options.dataDirs || qoderDesktopDataDirs(options);
   const openDatabase = options.openDatabase || openReadOnlyDatabase;
@@ -111,15 +121,10 @@ function readQoderDesktopSession(input, options = {}) {
   let best = null;
   let bestSuppressed = false;
   for (const dir of dirs) {
-    const filePath = path.join(dir, "main.sqlite");
-    let db = handles ? handles.get(dir) : undefined;
-    let own = false;
+    if (handles && !handles.has(dir)) handles.set(dir, openSessionDatabase(dir, openDatabase));
+    const db = handles ? handles.get(dir) : openSessionDatabase(dir, openDatabase);
+    if (!db) continue;
     try {
-      if (!db) {
-        if (!fs.existsSync(filePath)) continue;
-        db = openDatabase(filePath);
-        own = true;
-      }
       const got = readRow(db, raw);
       if (!got) continue;
       const { row, degraded } = got;
@@ -157,7 +162,7 @@ function readQoderDesktopSession(input, options = {}) {
     } catch {
       continue;
     } finally {
-      if (own && db) { try { db.close(); } catch {} }
+      if (!handles) { try { db.close(); } catch {} }
     }
   }
   return best;
@@ -169,29 +174,68 @@ function createQoderDesktopTitleTracker(options = {}) {
   const updateContextUsage = options.updateContextUsage || (() => {});
   const onRetired = typeof options.onRetired === "function" ? options.onRetired : () => {};
   const jsonl = options.jsonl || null;
-  const readSession = options.readSession || readQoderDesktopSession;
+  const readerOptions = options.readerOptions || {};
+  const readSession = readerOptions.readSession || readQoderDesktopSession;
   const debugLog = typeof options.debugLog === "function" ? options.debugLog : null;
   const pollMs = options.pollMs || TITLE_POLL_MS;
   const idlePollMs = options.idlePollMs || IDLE_POLL_MS;
   const now = typeof options.now === "function" ? options.now : Date.now;
-  const readerOptions = options.readerOptions || {};
   const entries = new Map();
   const metaCache = new Map();
+  const delegationParents = new Map();
   let timer = null;
 
-  function readMeta(rawSessionId, force = false, handles = null) {
-    const raw = bareQoderRaw(rawSessionId);
-    if (!raw) return null;
-    const cached = metaCache.get(raw);
-    if (!force && cached && now() - cached.readAt < pollMs) return cached.meta;
+  function remember(map, key, value) {
+    map.delete(key);
+    map.set(key, value);
+    if (map.size > MAX_SESSIONS) map.delete(map.keys().next().value);
+  }
+
+  function queryMeta(raw, handles = null) {
     let meta = null;
     try {
       meta = readSession({ rawSessionId: raw }, { ...readerOptions, handles, debugLog });
     } catch { meta = null; }
-    metaCache.delete(raw);
-    metaCache.set(raw, { meta, readAt: now() });
-    while (metaCache.size > MAX_SESSIONS) metaCache.delete(metaCache.keys().next().value);
-    return meta;
+    const readAt = now();
+    const cached = metaCache.get(raw);
+    // Keep the original timestamp so failed rechecks cannot extend the window.
+    if (meta === null && cached?.meta && readAt - cached.readAt < pollMs) return cached;
+    const reading = { meta, readAt };
+    remember(metaCache, raw, reading);
+    if (meta?.parentSessionId && meta.delegated) {
+      remember(delegationParents, raw, meta.parentSessionId);
+    } else if (meta?.delegated === false) {
+      delegationParents.delete(raw);
+    }
+    return reading;
+  }
+
+  function finishEventMeta(raw, reading, terminal) {
+    const parentSessionId = reading?.meta?.parentSessionId || delegationParents.get(raw);
+    // Late work after a child's terminal event needs fresh lifecycle evidence.
+    if (parentSessionId && terminal) metaCache.delete(raw);
+    return { reading, parentSessionId };
+  }
+
+  function readEventMeta(raw, event, active) {
+    const parent = delegationParents.get(raw);
+    const terminal = event === "Stop" || event === "SessionEnd";
+    // The confirmed relationship is enough to settle a child's activity.
+    if (parent && terminal) return finishEventMeta(raw, null, terminal);
+    // A resumed session can already have a different title or lifecycle.
+    if (event === "SessionStart") return finishEventMeta(raw, queryMeta(raw), terminal);
+
+    const cached = metaCache.get(raw);
+    // Delegation can be written after the previous hook and before a cue.
+    if (!parent && !cached?.meta?.delegated && (event === "Stop" || event === "Notification")) {
+      return finishEventMeta(raw, queryMeta(raw), terminal);
+    }
+
+    const fresh = cached && now() - cached.readAt < pollMs;
+    // A passive event can hide a known child without refreshing its lifecycle.
+    if (parent && !active && !fresh) return { reading: null, parentSessionId: parent };
+    // Bound database reads while keeping lifecycle evidence fresh for work.
+    return finishEventMeta(raw, fresh ? cached : queryMeta(raw), terminal);
   }
 
   function ensureTimer() {
@@ -204,9 +248,8 @@ function createQoderDesktopTitleTracker(options = {}) {
     if (sessionId === null) {
       entries.clear();
       metaCache.clear();
+      delegationParents.clear();
     } else {
-      const entry = entries.get(sessionId);
-      if (entry) metaCache.delete(entry.rawSessionId);
       entries.delete(sessionId);
     }
     if (!entries.size && timer) {
@@ -221,77 +264,79 @@ function createQoderDesktopTitleTracker(options = {}) {
     while (entries.size > MAX_SESSIONS) clear(entries.keys().next().value);
   }
 
-  async function refresh(entry, handles = null) {
-    if (entry.pending) return entry.pending;
-    const live = getSession(entry.sessionId);
-    if (!live) { clear(entry.sessionId); return; }
-    // Idle conversations back off; active ones keep the short poll window.
-    const idle = live.state === "idle" || live.state === "sleeping";
-    if (idle && now() - entry.lastReadAt < idlePollMs) return;
-    entry.lastReadAt = now();
-    entry.pending = (async () => {
-      try {
-        const meta = readMeta(entry.rawSessionId, true, handles);
-        // SessionEnd, disable/uninstall and late async reads must not annotate
-        // another lifecycle or create a phantom HUD row.
-        if (entries.get(entry.sessionId) !== entry || getSession(entry.sessionId) !== live) return;
-        if (meta && (meta.delegated || meta.archived || meta.deleted)) {
-          clear(entry.sessionId);
-          try { onRetired({ sessionId: entry.sessionId, rawSessionId: entry.rawSessionId, meta }); } catch {}
-          return;
-        }
-        let title = meta ? meta.title : null;
-        if (!title && jsonl && entry.transcriptPath) {
-          title = await jsonl.resolve({
-            event: "Stop", sessionId: entry.rawSessionId, transcriptPath: entry.transcriptPath,
-          });
-        }
-        if (entries.get(entry.sessionId) !== entry || getSession(entry.sessionId) !== live) return;
-        if (title) updateTitle(entry.sessionId, title);
-        if (meta && meta.contextUsage) updateContextUsage(entry.sessionId, meta.contextUsage);
-      } catch {} // Metadata discovery never breaks state delivery.
-    })();
-    try { await entry.pending; }
-    finally { entry.pending = null; }
+  async function applyReading(entry, live, reading) {
+    const { meta } = reading;
+    entry.reading = reading;
+    entry.pending = true;
+    try {
+      if (meta && (meta.delegated || meta.archived || meta.deleted)) {
+        clear(entry.sessionId);
+        onRetired({ sessionId: entry.sessionId, rawSessionId: entry.rawSessionId, meta });
+        return;
+      }
+      let title = meta?.title;
+      if (!title && jsonl && entry.transcriptPath) {
+        title = await jsonl.resolve({
+          event: "Stop", sessionId: entry.rawSessionId, transcriptPath: entry.transcriptPath,
+        });
+      }
+      // An asynchronous fallback must still belong to the same lifecycle.
+      if (entries.get(entry.sessionId) !== entry || getSession(entry.sessionId) !== live) return;
+      if (title) updateTitle(entry.sessionId, title);
+      if (meta?.contextUsage) updateContextUsage(entry.sessionId, meta.contextUsage);
+    } catch {} // Metadata discovery never breaks state delivery.
+    finally { entry.pending = false; }
   }
 
   // One connection per edition per poll cycle instead of per session.
   async function poll() {
-    const handles = new Map();
-    const openDatabase = readerOptions.openDatabase || openReadOnlyDatabase;
-    try {
-      for (const dir of readerOptions.dataDirs || qoderDesktopDataDirs(readerOptions)) {
-        const filePath = path.join(dir, "main.sqlite");
-        try {
-          if (fs.existsSync(filePath)) handles.set(dir, openDatabase(filePath));
-        } catch {}
+    const due = [];
+    for (const entry of entries.values()) {
+      const live = getSession(entry.sessionId);
+      if (!live) {
+        clear(entry.sessionId);
+        continue;
       }
-      await Promise.all([...entries.values()].map((entry) => refresh(entry, handles)));
+      const idle = live.state === "idle" || live.state === "sleeping";
+      if (!entry.pending && now() - entry.reading.readAt >= (idle ? idlePollMs : pollMs)) {
+        due.push(entry);
+      }
+    }
+    if (!due.length) return;
+
+    const handles = new Map();
+    try {
+      const pending = [];
+      for (const entry of due) {
+        const live = getSession(entry.sessionId);
+        if (live && entries.get(entry.sessionId) === entry) {
+          pending.push(applyReading(entry, live, queryMeta(entry.rawSessionId, handles)));
+        }
+      }
+      await Promise.all(pending);
     } finally {
-      for (const db of handles.values()) { try { db.close(); } catch {} }
+      for (const db of handles.values()) {
+        if (db) { try { db.close(); } catch {} }
+      }
     }
   }
 
   function track(input) {
-    // Production rawSessionId carries the qoder: namespace; SQL keys are bare.
-    const rawSessionId = bareQoderRaw(input.rawSessionId) || input.rawSessionId;
+    const rawSessionId = normalizeQoderSessionId(input.rawSessionId);
+    const live = getSession(input.sessionId);
+    if (!rawSessionId || !live) return;
     const previous = entries.get(input.sessionId);
+    const sameSession = previous?.rawSessionId === rawSessionId;
+    const reading = input.reading || (!sameSession ? queryMeta(rawSessionId) : null);
+    if (!reading || (sameSession && previous.reading === reading)) return;
     const entry = {
       sessionId: input.sessionId,
       rawSessionId,
-      cwd: input.cwd,
       transcriptPath: input.transcriptPath,
-      pending: null,
-      lastReadAt: previous && previous.rawSessionId === rawSessionId ? previous.lastReadAt : 0,
     };
     insertEntry(input.sessionId, entry);
     ensureTimer();
-    // A brand-new session reads immediately so its title is not delayed by a
-    // full interval; repeat events within the window wait for the poll.
-    if (now() - entry.lastReadAt >= pollMs) {
-      entry.lastReadAt = now();
-      void refresh(entry);
-    }
+    void applyReading(entry, live, reading);
   }
 
   // Startup reconciliation for rows restored before this observer existed.
@@ -301,7 +346,6 @@ function createQoderDesktopTitleTracker(options = {}) {
       track({
         sessionId: session.sessionId,
         rawSessionId: session.rawSessionId,
-        cwd: session.cwd,
         transcriptPath: session.transcriptPath,
       });
     }
@@ -312,7 +356,7 @@ function createQoderDesktopTitleTracker(options = {}) {
     sweep,
     poll,
     clear,
-    readMeta,
+    readEventMeta,
     size: () => entries.size,
   };
 }
@@ -320,51 +364,54 @@ function createQoderDesktopTitleTracker(options = {}) {
 // Pet/HUD projection parity with Codex: while delegated children are active
 // the parent presents "juggling" without rewriting canonical state. Strong
 // states (notification/sweeping/error) keep their own presentation. Evidence
-// lives outside sessions, like codex-subagent-presentation.
+// lives outside sessions, like codex-subagent-presentation. The parent's own
+// Stop still gets its completion cue because delegated children run separate turns.
 function createQoderSubagentPresentation(sessions, now = Date.now) {
   const parents = new Map();
+  let expirationChanged = false;
   function isLocalQoderParent(session) {
-    return session && session.agentId === "qoder" && !session.headless
-      && session.state !== "sleeping" && !session.host && !session.wslDistro
-      && (!session.profileId || session.profileId === "local");
+    return isLocalQoderSession(session) && !session.headless && session.state !== "sleeping";
   }
   function prune() {
     let changed = false;
+    const cutoff = now() - SUBAGENT_TTL_MS;
     for (const [id, children] of parents) {
+      if (!isLocalQoderParent(sessions.get(id))) {
+        parents.delete(id);
+        changed = true;
+        continue;
+      }
       for (const [childId, at] of children) {
-        if (!isLocalQoderParent(sessions.get(id)) || now() - at > SUBAGENT_TTL_MS) {
-          children.delete(childId); changed = true;
+        if (at < cutoff) {
+          children.delete(childId);
+          changed = true;
         }
       }
       if (!children.size) parents.delete(id);
     }
+    expirationChanged ||= changed;
     return changed;
   }
   function update(parentId, input = {}) {
-    prune();
+    const expired = prune();
     const childId = typeof input.childId === "string" && input.childId ? input.childId : null;
-    if (!childId || parentId === childId || !isLocalQoderParent(sessions.get(parentId))) return false;
-    if (input.phase === "end") {
-      const changed = parents.has(parentId);
-      parents.delete(parentId);
-      return changed;
-    }
-    if (!["start", "activity", "stop"].includes(input.phase)) return false;
+    if (!childId || parentId === childId || !isLocalQoderParent(sessions.get(parentId))) return expired;
+    if (!["start", "activity", "stop"].includes(input.phase)) return expired;
     const children = parents.get(parentId);
     if (input.phase === "stop") {
-      if (!children || !children.delete(childId)) return false;
+      if (!children || !children.delete(childId)) return expired;
       if (!children.size) parents.delete(parentId);
       return true;
     }
     const occurredAt = Number.isSafeInteger(input.occurredAt) ? input.occurredAt : now();
-    if (occurredAt > now() + 1500 || now() - occurredAt > SUBAGENT_TTL_MS) return false;
+    if (occurredAt > now() + 1500 || now() - occurredAt > SUBAGENT_TTL_MS) return expired;
     const previous = children && children.get(childId);
-    if (previous && occurredAt < previous) return false;
+    if (previous != null && occurredAt < previous) return expired;
     const target = children || new Map();
-    if (!previous && target.size >= 200) return false;
+    if (previous == null && target.size >= 200) return expired;
     target.set(childId, occurredAt);
     parents.set(parentId, target);
-    return !previous || previous !== occurredAt;
+    return expired || previous !== occurredAt;
   }
   function project(source) {
     prune();
@@ -386,20 +433,30 @@ function createQoderSubagentPresentation(sessions, now = Date.now) {
   return {
     update,
     prune,
+    consumeExpirationChange() {
+      const changed = expirationChanged;
+      expirationChanged = false;
+      return changed;
+    },
     project,
     count: (id) => { prune(); return parents.get(id)?.size || 0; },
     has: (id) => { prune(); return !!parents.get(id)?.size; },
     hasAny: () => { prune(); return parents.size > 0; },
-    clear: () => parents.clear(),
+    delete: (id) => parents.delete(id),
+    clear() {
+      const changed = parents.size > 0 || expirationChanged;
+      parents.clear();
+      expirationChanged = false;
+      return changed;
+    },
   };
 }
-
-const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: SUBAGENT_TTL_MS } = require("./state-stale-cleanup");
 
 module.exports = {
   TITLE_POLL_MS,
   MAX_DB_TITLE_BYTES,
   qoderDesktopDataDirs,
+  isLocalQoderSession,
   readQoderDesktopSession,
   createQoderDesktopTitleTracker,
   createQoderSubagentPresentation,

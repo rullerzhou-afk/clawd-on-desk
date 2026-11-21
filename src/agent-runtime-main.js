@@ -18,8 +18,8 @@ const createCodexTurnFence = require("./codex-turn-fence");
 const createCodexOfficialActivity = require("./codex-official-activity");
 const { normalizeDelegatedThread } = require("../agents/codex-delegated-child");
 const { CODEX_LOCAL_WORKING_STALE_FLOOR_MS: CHILD_ACTIVITY_TTL_MS } = require("./state-stale-cleanup");
-const { createQoderSessionTitleTracker, QODER_TITLE_EVENTS } = require("./qoder-session-title");
-const { createQoderDesktopTitleTracker } = require("./qoder-desktop-sessions");
+const { createQoderSessionTitleTracker, normalizeQoderSessionId, QODER_TITLE_EVENTS } = require("./qoder-session-title");
+const { createQoderDesktopTitleTracker, isLocalQoderSession } = require("./qoder-desktop-sessions");
 const { createWorkBuddySessionTitleTracker } = require("./workbuddy-session-title");
 
 const CODEX_OFFICIAL_LOG_SUPPRESS_TTL_MS = 10 * 60 * 1000;
@@ -226,77 +226,75 @@ function createAgentRuntimeMain(options = {}) {
     return false;
   }
 
-  function handleQoderRetired({ sessionId } = {}) {
+  const QODER_CHILD_ACTIVE_STATES = new Set(["working", "thinking"]);
+
+  function updateQoderParent(state, parentSessionId, childId, phase, occurredAt) {
+    const raw = normalizeQoderSessionId(parentSessionId);
+    if (!raw) return;
+    const parentId = resolveSessionIdentity(`qoder:${raw}`, "local").sessionId;
+    state?.updateQoderSubagentActivity?.(parentId, { childId, phase, occurredAt });
+  }
+
+  function dismissQoderDesktopSession(state, sessionId, rawSessionId) {
+    qoderSessionTitleTracker.clear(rawSessionId);
+    state.dismissSession?.(sessionId);
+  }
+
+  function handleQoderRetired({ sessionId, rawSessionId, meta }) {
     const state = getStateRuntime();
-    if (state && typeof state.dismissSession === "function" && sessionId) {
-      state.dismissSession(sessionId);
+    const session = state?.sessions?.get(sessionId);
+    if (!session) return;
+    const { state: childState, updatedAt } = session;
+    dismissQoderDesktopSession(state, sessionId, rawSessionId);
+    if (meta.delegated && !meta.archived && !meta.deleted && QODER_CHILD_ACTIVE_STATES.has(childState)) {
+      updateQoderParent(state, meta.parentSessionId, rawSessionId, "activity", updatedAt);
     }
   }
 
-  function bareQoderSessionId(value) {
-    if (typeof value !== "string") return null;
-    const trimmed = value.trim();
-    const bare = trimmed.startsWith("qoder:") ? trimmed.slice(6) : trimmed;
-    return bare || null;
-  }
-
-  // Delegated Qoder child sessions and archived/deleted conversations must not
-  // hold HUD cards. Only a confirmed database row suppresses; an unreadable
-  // main.sqlite never does. Like Codex subagents, an active child projects its
-  // working state onto the parent card instead of opening a row of its own.
-  const QODER_CHILD_ACTIVE_STATES = new Set(["working", "thinking"]);
-  function shouldSuppressQoderDesktop(sessionId, state, event, opts = {}) {
-    if (disposed || !isAgentEnabled("qoder")) return false;
-    if (opts.agentId !== "qoder" || (opts.profileId || "local") !== "local"
-      || opts.host || opts.wslDistro) return false;
-    const stateRuntime = getStateRuntime();
-    const session = stateRuntime && stateRuntime.sessions && stateRuntime.sessions.get(sessionId);
-    const raw = bareQoderSessionId(opts.rawSessionId || (session && session.rawSessionId) || sessionId);
-    if (!raw) return false;
-    const meta = qoderDesktopTitleTracker.readMeta(raw);
-    const suppressed = !!(meta && (meta.delegated || meta.archived || meta.deleted));
-    // Terminal child events clear the parent's presentation even when the
-    // child row is already archived/deleted; activity only projects while the
-    // child is live. Projection never rewrites the parent's canonical state.
-    if (meta && meta.delegated && meta.parentSessionId && stateRuntime
-      && typeof stateRuntime.updateQoderSubagentActivity === "function") {
-      const parentSid = resolveSessionIdentity(`qoder:${meta.parentSessionId}`, "local").sessionId;
-      const terminal = event === "Stop" || event === "SessionEnd";
-      const phase = terminal ? "stop"
-        : (!meta.archived && !meta.deleted && QODER_CHILD_ACTIVE_STATES.has(state)) ? "activity" : null;
-      if (phase) {
-        stateRuntime.updateQoderSubagentActivity(parentSid, { childId: raw, phase, occurredAt: Date.now() });
+  function inspectQoderDesktopEvent(sessionId, hookState, event, opts) {
+    if (!isLocalQoderSession(opts) || disposed || !isAgentEnabled("qoder")) return null;
+    const state = getStateRuntime();
+    const session = state?.sessions?.get(sessionId);
+    if (session && !isLocalQoderSession(session)) return null;
+    const rawSessionId = normalizeQoderSessionId(opts.rawSessionId || session?.rawSessionId || sessionId);
+    if (!rawSessionId) return null;
+    const active = QODER_CHILD_ACTIVE_STATES.has(hookState);
+    const { reading, parentSessionId } = qoderDesktopTitleTracker.readEventMeta(rawSessionId, event, active);
+    const meta = reading?.meta;
+    const retired = meta?.archived || meta?.deleted;
+    const suppressed = !!(parentSessionId || meta?.delegated || retired);
+    if (suppressed && session) {
+      qoderDesktopTitleTracker.clear(sessionId);
+      dismissQoderDesktopSession(state, sessionId, rawSessionId);
+    }
+    if (parentSessionId) {
+      if (event === "Stop" || event === "SessionEnd" || retired) {
+        updateQoderParent(state, parentSessionId, rawSessionId, "stop");
+      } else if (meta && active) {
+        updateQoderParent(state, parentSessionId, rawSessionId, "activity", now());
       }
     }
-    if (!suppressed) return false;
-    // A row opened before the delegation/archive was recognized must not survive.
-    if (session && stateRuntime && typeof stateRuntime.dismissSession === "function") {
-      stateRuntime.dismissSession(sessionId);
-    }
-    return true;
+    return { suppressed, rawSessionId, reading };
   }
 
   const qoderSessionTitleTracker = options.qoderSessionTitleTracker
     || createQoderSessionTitleTracker();
-  const qoderDesktopTitleTracker = options.qoderDesktopTitleTracker
-    || createQoderDesktopTitleTracker({
-      getSession: localQoderSession,
-      onRetired: handleQoderRetired,
-      updateTitle(sessionId, title) {
-        const state = getStateRuntime();
-        if (state && typeof state.updateSessionMetadata === "function") {
-          state.updateSessionMetadata(sessionId, { sessionTitle: title, expectedAgentId: "qoder" });
-        }
-      },
-      updateContextUsage(sessionId, contextUsage) {
-        const state = getStateRuntime();
-        if (state && typeof state.updateSessionMetadata === "function") {
-          state.updateSessionMetadata(sessionId, {
-            contextUsage, contextUsageOrigin: "qoder-native", expectedAgentId: "qoder",
-          });
-        }
-      },
-    });
+  const { now: qoderDesktopNow, pollMs, readerOptions } = options.qoderDesktopTrackerOptions || {};
+  const qoderDesktopTitleTracker = createQoderDesktopTitleTracker({
+    now: qoderDesktopNow,
+    pollMs,
+    readerOptions,
+    getSession: localQoderSession,
+    onRetired: handleQoderRetired,
+    updateTitle(sessionId, title) {
+      getStateRuntime()?.updateSessionMetadata?.(sessionId, { sessionTitle: title, expectedAgentId: "qoder" });
+    },
+    updateContextUsage(sessionId, contextUsage) {
+      getStateRuntime()?.updateSessionMetadata?.(sessionId, {
+        contextUsage, contextUsageOrigin: "qoder-native", expectedAgentId: "qoder",
+      });
+    },
+  });
   const workBuddySessionTitleTracker = options.workBuddySessionTitleTracker
     || createWorkBuddySessionTitleTracker({
       ...options.workBuddySessionTitleOptions,
@@ -667,7 +665,8 @@ function createAgentRuntimeMain(options = {}) {
     )) {
       return false;
     }
-    if (shouldSuppressQoderDesktop(sessionId, state, event, opts)) {
+    const qoderDesktop = inspectQoderDesktopEvent(sessionId, state, event, opts);
+    if (qoderDesktop?.suppressed) {
       return false;
     }
     const isLocalOfficialCodexEvent = !!(opts
@@ -804,7 +803,7 @@ function createAgentRuntimeMain(options = {}) {
       rememberCodexSessionEndTombstone(sessionId);
     }
     maybeCaptureGhosttyTerminalId(sessionId, event, opts);
-    enrichQoderSessionTitle(sessionId, event, opts);
+    if (qoderDesktop) enrichQoderSessionTitle(sessionId, event, opts, qoderDesktop);
     enrichWorkBuddySessionTitle(sessionId, event, opts);
     return result;
   }
@@ -861,9 +860,7 @@ function createAgentRuntimeMain(options = {}) {
     if (disposed || !isAgentEnabled("qoder")) return null;
     const state = getStateRuntime();
     const session = state && state.sessions && state.sessions.get(sessionId);
-    return session && session.agentId === "qoder"
-      && (session.profileId || "local") === "local"
-      && !session.host && !session.wslDistro ? session : null;
+    return isLocalQoderSession(session) ? session : null;
   }
 
   function noteQoderExternalTitle(sessionId, title) {
@@ -880,24 +877,14 @@ function createAgentRuntimeMain(options = {}) {
     return accepted;
   }
 
-  function enrichQoderSessionTitle(sessionId, event, opts) {
-    if (opts.agentId !== "qoder" || (opts.profileId || "local") !== "local"
-      || opts.host || opts.wslDistro) return;
-    const session = localQoderSession(sessionId);
-    const rawSessionId = bareQoderSessionId((session && session.rawSessionId) || opts.rawSessionId || sessionId)
-      || sessionId;
+  function enrichQoderSessionTitle(sessionId, event, opts, { rawSessionId, reading }) {
     // A new lifecycle must invalidate work from an earlier --resume of this id.
     if (event === "SessionStart" || event === "SessionEnd") {
       qoderSessionTitleTracker.clear(rawSessionId, { preserveExternalTitle: event === "SessionStart" });
       qoderDesktopTitleTracker.clear(sessionId);
     }
-    if (event === "SessionEnd") {
-      const state = getStateRuntime();
-      if (state && typeof state.updateQoderSubagentActivity === "function") {
-        state.updateQoderSubagentActivity(sessionId, { phase: "end" });
-      }
-      return;
-    }
+    if (event === "SessionEnd") return;
+    const session = localQoderSession(sessionId);
     if (!session) return;
     // The DB observer may run on any hook event; its poll window bounds reads.
     // Track before the external-title shortcut so DB title/usage still start
@@ -905,8 +892,8 @@ function createAgentRuntimeMain(options = {}) {
     qoderDesktopTitleTracker.track({
       sessionId,
       rawSessionId,
-      cwd: session.cwd,
       transcriptPath: session.transcriptPath,
+      reading,
     });
     if (opts.sessionTitle) {
       noteQoderExternalTitle(sessionId, opts.sessionTitle);
@@ -930,9 +917,10 @@ function createAgentRuntimeMain(options = {}) {
     const state = getStateRuntime();
     if (!state || !state.sessions) return;
     const rows = [];
-    for (const session of state.sessions.values()) {
-      if (session && session.agentId === "qoder" && (session.profileId || "local") === "local"
-        && !session.host && !session.wslDistro) rows.push(session);
+    for (const [sessionId, session] of state.sessions) {
+      if (isLocalQoderSession(session)) {
+        rows.push({ sessionId, rawSessionId: session.rawSessionId, transcriptPath: session.transcriptPath });
+      }
     }
     qoderDesktopTitleTracker.sweep(rows);
   }
@@ -971,7 +959,6 @@ function createAgentRuntimeMain(options = {}) {
     if (codexMonitor) codexMonitor.stop();
     pendingCodexChildren.clear();
     getStateRuntime()?.clearCodexSubagentActivities?.();
-    getStateRuntime()?.clearQoderSubagentActivities?.();
     stopCodexArchiveTracker();
   }
 
@@ -1059,8 +1046,9 @@ function createAgentRuntimeMain(options = {}) {
       resetLocalCodexLifecycleTracking();
       stopCodexArchiveTracker();
     }
-    if (agentId === "qoder" && qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {
-      qoderSessionTitleTracker.clear();
+    if (agentId === "qoder") {
+      qoderSessionTitleTracker.clear?.();
+      qoderDesktopTitleTracker.clear();
     }
     const state = getStateRuntime();
     return state && typeof state.clearSessionsByAgent === "function"
@@ -1353,7 +1341,6 @@ function createAgentRuntimeMain(options = {}) {
     clearRetiredWorkBuddySessions();
     if (codexMonitor && typeof codexMonitor.stop === "function") codexMonitor.stop();
     getStateRuntime()?.clearCodexSubagentActivities?.();
-    getStateRuntime()?.clearQoderSubagentActivities?.();
     stopCodexArchiveTracker();
     resetLocalCodexLifecycleTracking();
     if (qoderSessionTitleTracker && typeof qoderSessionTitleTracker.clear === "function") {

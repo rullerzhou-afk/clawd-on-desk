@@ -2867,7 +2867,7 @@ sessionAutomationCoordinator = createSessionAutomationCoordinator({
 // (kept as a pure helper so the semantics are unit-tested).
 let powerSaveBlockerId = null;
 function anySessionInProgress() {
-  if (_state.hasActiveCodexSubagents()) return true;
+  if (_state.hasActiveCodexSubagents() || _state.hasActiveQoderSubagents()) return true;
   for (const [, s] of sessions) {
     if (isSessionInProgress(s)) return true;
   }
