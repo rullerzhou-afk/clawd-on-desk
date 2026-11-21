@@ -230,10 +230,44 @@ describe("local Codex process handoff needs current thread progress", () => {
     it(`does not recover after accepted ${terminal}`, () => {
       start(); retire(); official(terminal === "SessionEnd" ? "sleeping" : "idle", terminal,
         { agentPid: null, sourcePid: null });
+      const settled = state.sessions.get(sid);
+      const settledState = settled ? { state: settled.state, updatedAt: settled.updatedAt } : null;
       mock.timers.tick(1000); record();
-      assert.notEqual(state.sessions.get(sid)?.state, "thinking");
+      const current = state.sessions.get(sid);
+      assert.deepEqual(current ? { state: current.state, updatedAt: current.updatedAt } : null,
+        settledState, "late progress cannot rebuild, reopen or extend a settled row");
     });
   }
+
+  it("rejects missing-row progress older than the retired row's last activity without touching the fence", () => {
+    start();
+    mock.timers.tick(1000); record();
+    retire();
+    const trackerBefore = runtime.getCodexTurnFenceSnapshot(sid);
+    mock.timers.tick(1000);
+    record("agent_reasoning", {}, 500);
+    assert.equal(state.sessions.has(sid), false);
+    assert.deepEqual(runtime.getCodexTurnFenceSnapshot(sid), trackerBefore);
+  });
+
+  it("rejects missing-row progress outside the freshness window without touching the fence", () => {
+    start(); retire();
+    const trackerBefore = runtime.getCodexTurnFenceSnapshot(sid);
+    mock.timers.tick(50000);
+    record("agent_reasoning", {}, Date.now() - 40000);
+    assert.equal(state.sessions.has(sid), false);
+    assert.deepEqual(runtime.getCodexTurnFenceSnapshot(sid), trackerBefore);
+  });
+
+  it("a dismissed session's live progress neither rebuilds its row nor touches the turn fence", () => {
+    start(); retire();
+    state.dismissSession(sid);
+    const trackerBefore = runtime.getCodexTurnFenceSnapshot(sid);
+    assert.equal(state.sessions.has(sid), false);
+    mock.timers.tick(1000); record();
+    assert.equal(state.sessions.has(sid), false);
+    assert.deepEqual(runtime.getCodexTurnFenceSnapshot(sid), trackerBefore);
+  });
 
   for (const invalid of ["dismiss", "dismiss after delete", "disabled", "archived", "headless", "replay", "different turn", "old record", "wrong transcript", "expired cache", "configured timeout", "guardian", "metadata"]) {
     it(`rejects ${invalid} as recovery authority`, () => {

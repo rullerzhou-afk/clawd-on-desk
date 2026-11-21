@@ -71,6 +71,7 @@ if (_xwaylandRelaunch) {
 }
 
 const { clampTextScale, scaleWidth, scaleHeight, resolveTextScaleForKey } = require("./text-scale");
+const { estimateHostBootTimeMs } = require("./host-boot-time");
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
@@ -3258,8 +3259,9 @@ getQuotaRingWindow = _sessionHud.getQuotaRingWindow;
 
 agentRuntime = createAgentRuntimeMain({
   // Local rollout files survive a host reboot; their old unfinished turns do
-  // not prove a Codex client has started again in this boot.
-  localCodexBootTimeMs: Math.floor(Date.now() - require("os").uptime() * 1000),
+  // not prove a Codex client has started again in this boot. Null means no
+  // boundary (uptime unavailable) and must not block startup.
+  localCodexBootTimeMs: estimateHostBootTimeMs(),
   getServer: () => _server,
   getStateRuntime: () => _state,
   getPermissionRuntime: () => _perm,
