@@ -54,6 +54,9 @@ const IDENTITY_OVERRIDES = new Map(Object.entries({
   "yike001@e.ntu.edu.sg": "Yike-Ye",
   "sunfleeting@gmail.com": "sunfleeting-debug",
   "386476500@qq.com": "du-xinyi",
+  "inferzhang@tencent.com": "XYZliang",
+  "commiyou@gmail.com": "commiyou",
+  "mail@richardkramer.de": "richard-kramer",
 }));
 
 function parseVersion(value) {

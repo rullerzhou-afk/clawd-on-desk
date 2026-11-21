@@ -75,32 +75,95 @@ Download and smoke-test the draft release assets before publishing the draft.
 If the draft is wrong, fix the issue before publishing; do not publish a known
 bad draft release.
 
-### v1.6.0 Draft Smoke Checklist
+### v1.7.0 Draft Smoke Checklist
 
-Use the draft release installer or package artifact, not `npm start`, and record
-platform, architecture, host version, and result for each selected check.
-Windows applicable required items are the primary publish gate; unavailable
-macOS/Linux hardware must be recorded as **Not tested** in the release notes.
+Run checks from the draft release installer or package artifact. Record the
+platform, architecture, host version, and result for each check. The applicable
+Windows checks are the primary publish gate. Record unavailable macOS or Linux
+hardware as **Not tested** in the release notes.
 
 #### 本版必测（Required for this release）
 
-The following release gates and v1.6.0 behavior checks are required for this
-draft. A source run, unit test, or a previous release's evidence does not
-replace a packaged-app or real-host check.
+Run the recurring gates and the v1.7.0 behavior matrix on the draft packages.
+Use real hosts for checks that exercise host behavior.
 
 **Recurring release gates**
 
-- **All targets:** packaged app shows `1.6.0` metadata, and About shows `v1.6.0` from `app.getVersion()`.
-- **All targets:** packaged resources contain the expected hooks, agents, extensions, themes, NOTICE, and official catalog snapshot, with no retired Telegram sidecar or unshipped official-theme payload.
-- **All targets:** native-package/Koffi manifests show exactly one matching native addon, the packaged positive-call smoke passes, and no foreign native payload is present.
-- **All targets:** updater metadata versions and artifact names match `1.6.0` and the generated assets.
-- **Windows x64/arm64:** validate separate architecture-specific NSIS installers and the intended user/machine installation paths.
-- **macOS x64/arm64:** validate signing, quarantine, `codesign`, `spctl`, and notarization/stapler evidence when the signed assets are available; otherwise record **Not tested**.
-- **Windows/macOS/Linux:** fresh-install and launch the packaged app with a visible pet and no error dialog.
-- **Windows/macOS/Linux:** upgrade a real v1.5.0 installation to v1.6.0 and confirm the app launches and preserves the documented v1.5.0 settings; the prefs schema remains version 21, so this release performs no prefs migration.
-- **Windows; macOS on available architectures (after publishing, because drafts are not offered by the updater):** exercise a real v1.5.0 → v1.6.0 updater pair, including Restart Now and Later/quit/reopen, and record versions and asset hashes. On Windows, use the real desktop: in an SSH session the installer stalled before uninstalling the old version, while the same update finished in about 30 seconds on the desktop.
-- **Packaged native update flows:** after a download finishes, let the update bubble expire or choose Later. The tray must retain Update Ready; About/manual check must reopen the install choice without another release lookup or download. While downloading or ready, a scheduled discovery must not replace the current progress/ready stage. A pending ready bubble superseded by installation/error must not later hide the newer UI. Cover Windows NSIS, available macOS architectures and Linux AppImage separately; a simulated updater is not a real A→B installation check.
-- **All supported permission hosts:** verify manual native Allow/Deny fallback after Clawd DND, disabled bubbles, disconnect, shutdown, or no-decision paths; no timeout or remote failure may invent a decision.
+- **All targets** — the packaged app shows `1.7.0` metadata, and About shows `v1.7.0` from `app.getVersion()`.
+- **All targets** — packaged resources contain the expected hooks, agents, extensions, themes, `NOTICE.md`, and the official catalog snapshot, with no retired Telegram sidecar or unshipped official-theme payload.
+- **All targets** — native-package/Koffi manifests show exactly one matching native addon, the packaged positive-call smoke passes, and no foreign native payload is present.
+- **All targets** — updater metadata versions and artifact names match `1.7.0` and the generated assets.
+- **Windows x64/arm64** — validate separate architecture-specific NSIS installers and the intended user/machine installation paths.
+- **macOS x64/arm64** — validate signing, quarantine, `codesign`, `spctl`, and notarization/stapler evidence when the signed assets are available. Otherwise record **Not tested**.
+- **Windows/macOS/Linux** — fresh-install and launch the packaged app with a visible pet and no error dialog.
+- **Windows/macOS/Linux** — upgrade a real v1.6.0 installation to v1.7.0 and confirm the app launches and preserves the documented v1.6.0 settings. Both versions use prefs schema 21.
+- **Windows and available macOS architectures after publishing** — use the updater for a real v1.6.0 → v1.7.0 upgrade, including Restart Now and Later/quit/reopen, and record versions and asset hashes. On Windows, use a real desktop session (the v1.6.0 installer stalled in an earlier SSH test).
+- **Packaged native update flows** — after a download finishes, let the bubble expire or choose Later and verify the tray retains Update Ready. Reopen the install choice from About or a manual check without another release lookup or download. Verify a scheduled check preserves progress or ready status and that a superseded bubble leaves newer UI visible. Cover Windows NSIS, available macOS architectures, and Linux AppImage separately.
+- **Windows/macOS/Linux** — uninstall the draft and verify removal of Clawd-owned integrations while preserving third-party hooks and other agent settings.
+- **All supported permission hosts** — verify manual native Allow/Deny fallback after DND, disabled bubbles, disconnect, shutdown, or no-decision paths, and confirm timeouts and remote failures produce no automated decision.
+
+**v1.7.0 new behavior matrix**
+
+Record platform, architecture, host version and result for each item. Use the draft packages on the specified hosts and mark unavailable checks **Not tested**. Use isolated profiles and fixtures for cases that require invasive host or updater changes.
+
+*Remote SSH*
+
+1. **macOS/Linux/Windows client → POSIX remote (#1355, #1366)** — upgrade an existing v1.6.0 profile, connect using reverse forwarding, exercise state and approval, then repair, disconnect and uninstall while preserving third-party hooks and settings.
+2. **macOS/Linux/Windows client → real POSIX SSH gateway (#1366)** — select Jump host mode, deploy and verify state and approvals across concurrent sessions, then drop the tunnel and confirm reconnects carry only new traffic and the old bridge exits after heartbeat loss, disconnect, profile deletion, app quit or a switch back to reverse forwarding.
+3. **Windows client → POSIX gateway (#1366)** — complete an entire Jump host mode deployment, including verification, and confirm the Windows command-length limit is not hit.
+4. **macOS/Linux/Windows client → POSIX gateway (#1366, #1404)** — replace the remote Node executable and check that a missing or non-executable old binary stops retries before the bridge is ready and prompts for Deploy / Repair Hooks. Run the repair, then reconnect in the same Clawd process and confirm the bridge starts with the new Node path.
+5. **POSIX and Windows remotes (#1355, #1383)** — put a foreign loopback HTTP approval hook before Clawd's entry, confirm Deploy / Repair Hooks verifies Clawd's own hook and leaves the foreign entry intact, and check every progress step has a readable name.
+6. **macOS/Linux/Windows clients (#1366)** — verify Jump host mode rejects Windows remotes and single-session transports (including Codespaces) before changing remote hooks or monitors, fails safely with a forced PTY, and reports an occupied bridge port without mixing two profiles' traffic.
+7. **Windows local and remote DeepSeek Harness (#1363, #1374)** — check bare and versioned registry names, a custom install path and the Command registry fallback, then verify the exact install is registered over SSH and missing files or look-alike names do not qualify.
+
+*Agent integrations*
+
+8. **macOS/Windows Codex Desktop (#1272, #1401)** — restart the background process during a live turn, resume it with fresh activity, and verify the HUD row and focus target recover with the new process, including a herdr sample where available.
+9. **macOS/Windows Codex (#1272, #1370, #1373, #1401)** — restart the computer and check only current-boot work appears, sample Windows shutdown with Fast Startup separately, and compare an active cancellation with an unseen session's Interrupt, which should clear the startup wait without creating a row or waking the pet.
+10. **macOS/Windows/Linux Codex (#1397, #1398)** — mix official hooks and JSONL for a parent with delegated work and verify child rows settle, the parent completion cues once, and Slack and Telegram skip child and Guardian completions.
+11. **macOS/Windows/Linux Claude Code (#1329, #1358)** — install, relabel, repair and remove an extra config folder, check its badge in all three surfaces and verify other hooks, the primary quota source and shutdown cleanup of the watcher.
+12. **Windows/Linux Claude Code (#1329, #1358)** — on Windows deduplicate case variants of the same path and check the NSIS uninstall removes extra-folder hooks, and on Linux register two genuinely distinct case-sensitive folders while separately testing the documented symlink alias limitation in a fixture.
+13. **macOS/Windows Claude Desktop (#1372, #1403)** — verify finished local rows clear and return on the next message, each of the three pending card/reminder/reply cases holds the row, CLI and VS Code rows keep their own lifetime, and Projects (beta) does not emit local hooks.
+14. **macOS/Windows/Linux Copilot and Cursor (#1348, #1381)** — cover Copilot CLI and VS Code prewarm, first prompt, repeated start during approval and end (including an unseen end at a full table), and check the Cursor Dashboard model row with and without a supplied model.
+15. **macOS/Windows DeepSeek Harness (#1362, #1378)** — upgrade the old plugin, restart the desktop app once, click a desktop session with web tabs also open, and check only the desktop chat changes once, including the fallback on cold start or without the browser bridge.
+16. **macOS/Windows Qoder Desktop (#1393, #1399)** — verify live title and usage updates without blocking Qoder's writes, delegated children collapsing into the parent, early child events, tool failures, timeout and keep-awake after the parent finishes, and repeat with Codex disabled.
+17. **macOS CodeBuddy IDE (#1386, #1402)** — with stable and Insiders both running, select the proper edition from the Dashboard, test chat links and the window fallback, and verify Telegram copies IDE replies for manual paste.
+18. **Windows/Linux/WSL CodeBuddy (#1386, #1402)** — verify IDE sessions use the existing terminal/process fallback, CLI stays on terminal focus, and prompt-derived titles show up to 40 characters on IDE and CLI alike.
+19. **macOS/Windows/Linux Settings (#1391, #1396)** — exercise skipped installs from a card, in bulk and on retry, covering missing, uninitialized and multiple desktop installations, dismissal, stale notices and a return to the Settings page.
+
+*Pet, themes and Linux focus*
+
+20. **macOS/Windows/Linux Free roam (#1349, #1356)** — start, stop and turn with an accessory, during Mini Mode entry and during a one-shot animation, and verify the walk and accessory following settle smoothly.
+21. **macOS/Windows/Linux themes (#1361, #1404)** — switch system colors live, pick a color scheme by hand, and check a theme without dark resources. Block creation of the dark cache directory or make a dark SVG or raster unwritable in the cache, then verify Clawd starts with the same theme’s light assets and logs the cause. Verify v1.6.0 can still load the light assets.
+22. **macOS/Windows/Linux Meeting Mode (#1390)** — start with open local and remote approvals, share a real screen, check open and new requests go back to the agent without a Clawd decision, then allow the timer to expire and check restoration after a real suspend across the deadline.
+23. **macOS/Windows/Linux Meeting Mode (#1390)** — check the tray end item, show shortcut, Wake, app restart, full-screen auto-hide, and start with the pet already hidden or DND enabled, then exit Mini Mode while a meeting runs and check DND stays on.
+24. **macOS Meeting Mode (#1390)** — click the Dock icon during an active meeting and confirm it ends early and restores the previous settings, then separately exercise macOS app hide, opening Settings and activating Clawd again.
+25. **Linux Plasma 6 Wayland (#1246)** — raise a minimized Konsole and select the right tab, check KWin cleanup and XWayland fallback, then verify focus availability and the disabled-button explanation on another Wayland desktop and sample normal focus on X11.
+
+*Windows, updates and quota*
+
+26. **Windows x64/arm64 installer (#1367)** — use real desktop sessions for v1.6.0 upgrades in writable per-user and all-users installs, and test per-user access denied, retry after restoring access, cancel, and a silent old-uninstaller failure with the expected exit status and next-launch version.
+27. **Windows/macOS/Linux update checks (#1360, #1375)** — from v1.7.0 exercise structured and text-only 5xx, 429, a confirmed missing asset, offline, available and up-to-date responses, and check that any offered package matches platform and architecture.
+28. **Windows NTFS and macOS/Linux sample (#1376)** — verify high-ID file replacement in Codex rotation, archiving and approval routing, Kiro IDE log continuation, Qoder/WorkBuddy title updates and Hermes install checks, and sample an ordinary POSIX append.
+29. **macOS/Windows/Linux quota ring (#1385)** — upgrade from v1.6.0 with at least four quota sources and a saved exclusion, verify the automatic order and three-coin cap, then check the fourth selection is disabled and a new provider stays Dashboard-only after manual selection, including HUD spacing on Windows at 150% scaling.
+30. **macOS Keychain, Windows DPAPI and Linux with/without a keyring (#1388)** — connect a test DeepSeek key, check 401 handling, 429/5xx retries, sleep/wake, disconnect with the credential retained and forgetting it, and verify secure-storage failure leaves no key, app exit leaves no request and diagnostics/mirrors expose no private balance data.
+31. **macOS/Windows/Linux Kimi (#1389)** — upgrade with a connected key, then refresh manually, disconnect and reconnect without losing the quota ring selection.
+32. **macOS/Windows/Linux downgrade** — on a disposable profile, save once in v1.6.0 after using v1.7.0, upgrade again and verify the four new preferences reset while extra Claude hooks and the encrypted DeepSeek key remain.
+
+*Release package contents*
+
+33. **All targets** — extract each release package and verify it contains the standalone `hooks/remote-ssh-stdio-bridge.js`, the updated `NOTICE.md` and the catalog 13 snapshot, then start offline without a catalog cache and check Clawd Dev Life 1.2.0 and Clawd Alive 1.0.0 are listed.
+
+#### 老功能抽测（Regression sampling）
+
+Sample a few historical items on each release and record items not run as **Not tested**.
+The v1.6.0, v1.5.0, v1.4.0 and v1.3.0 matrices below preserve their release-time
+coverage. Keep the recurring release gates above required for v1.7.0.
+
+##### v1.6.0 historical required matrix
+
+These checks were required for v1.5.0 → v1.6.0 and now serve as regression
+sampling. The numbering and observations below are from the v1.6.0 checklist.
 
 **v1.6.0 new behavior matrix**
 
@@ -162,14 +225,6 @@ Record platform, architecture, host version and result for each item. Items that
 28. **CI (#1346, #1347):** on `main`, a Wayland smoke run shows an apt cache hit and still runs the real XWayland checks; the Windows test job passes the #882 installer cases with both PowerShell versions.
 29. **Clean checkout/docs:** in a clean checkout, `npm run verify:release` and `npm run audit:assets` pass, all six READMEs and the contributor artwork are current, `NOTICE.md` lists `qrcode-generator`, and the bundled official theme snapshot matches the published catalog before tagging.
 30. **Downgrade sample:** save settings in v1.5.0 over v1.6.0 once and upgrade again; the six new settings (Follow the mouse cursor, Keep the pet on top of other windows, When idle, How often, Remind me about unanswered Claude questions and Remind after) are back to defaults and the Codex approval choice is kept.
-
-#### 老功能抽测（Regression sampling）
-
-Sample a few historical items on each release; record every item not run on the
-release page as **Not tested** rather than carrying forward an earlier pass.
-The former v1.5.0, v1.4.0 and v1.3.0 required matrices are retained below as
-regression evidence, not as an automatic v1.6.0 gate. Keep the recurring release gates above
-required.
 
 ##### v1.5.0 historical required matrix
 

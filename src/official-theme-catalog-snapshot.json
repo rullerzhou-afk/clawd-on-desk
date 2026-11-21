@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "catalogVersion": 10,
+  "catalogVersion": 13,
   "themes": [
     {
       "id": "hash-sage",
@@ -108,7 +108,7 @@
     },
     {
       "id": "clawd-dev-life",
-      "version": "1.0.0",
+      "version": "1.2.0",
       "category": "community",
       "author": "alwinecor",
       "name": {
@@ -116,18 +116,18 @@
         "zh": "克码人生"
       },
       "description": {
-        "en": "Clawd acts out everyday developer life: thinking, coding, compacting context and errors each get their own little scene.",
-        "zh": "Clawd 演出开发者的日常：思考、写码、压缩上下文、报错都有对应的小剧场。"
+        "en": "Clawd acts out everyday developer life: thinking, coding, compacting context and errors each get their own little scene. In mini mode, Clawd works behind a cubicle wall at the edge of your screen. Includes light and dark color schemes, following the system appearance by default.",
+        "zh": "Clawd 演出开发者的日常：思考、写码、压缩上下文、报错都有对应的小剧场；迷你模式下躲在屏幕边缘的工位墙后干活。内含浅色、深色两套配色，默认跟随系统。"
       },
       "minAppVersion": "1.5.0",
       "archive": {
-        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-v1.0.0/clawd-dev-life-1.0.0.clawd-theme.zip",
-        "bytes": 1407214,
-        "unpackedBytes": 1399928,
-        "sha256": "bceebe3eb3eb762a87182e4661c2fe829bd33a9776f3f707378bf7f5a6484399"
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-v1.2.0/clawd-dev-life-1.2.0.clawd-theme.zip",
+        "bytes": 3038556,
+        "unpackedBytes": 3020528,
+        "sha256": "7f744b56548d6f1569b2b14ed677cb10fba1077de39b56bbc30cfa9f695d882b"
       },
       "preview": {
-        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-v1.0.0/clawd-dev-life-1.0.0.preview.webp",
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-v1.2.0/clawd-dev-life-1.2.0.preview.webp",
         "bytes": 326,
         "sha256": "cd812939cc8ff30fa6f7adab16f3ba5a7dae7ced0c52a2343d1f42299171ee50"
       },
@@ -141,36 +141,36 @@
       }
     },
     {
-      "id": "clawd-dev-life-dark",
+      "id": "clawd-alive",
       "version": "1.0.0",
       "category": "community",
-      "author": "alwinecor",
+      "author": "Allan Oliveira Miraballes",
       "name": {
-        "en": "Clawd Dev Life (Dark)",
-        "zh": "克码人生（深色）"
+        "en": "Clawd Alive",
+        "zh": "元气 Clawd"
       },
       "description": {
-        "en": "Clawd acts out everyday developer life, recoloured for dark desktops.",
-        "zh": "Clawd 演出开发者的日常，配色适合深色桌面。"
+        "en": "Clawd with more personality: little idle moments, a dreamy sleep and work animations that get more chaotic as more agents run.",
+        "zh": "更有个性的 Clawd：待机时有各种小片段，睡觉会做梦，同时运行的 agent 越多，工作动画越热闹。"
       },
-      "minAppVersion": "1.5.0",
+      "minAppVersion": "1.4.0",
       "archive": {
-        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-dark-v1.0.0/clawd-dev-life-dark-1.0.0.clawd-theme.zip",
-        "bytes": 1406245,
-        "unpackedBytes": 1398439,
-        "sha256": "c592dc0f229b65802f5996420adc8485236ee208292b0e2cf81f4f9b93867649"
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-alive-v1.0.0/clawd-alive-1.0.0.clawd-theme.zip",
+        "bytes": 854588,
+        "unpackedBytes": 844052,
+        "sha256": "62f73a03c47fbb2acea2b75668e67fc3c463017ce5a3da56f1fd10a30136735c"
       },
       "preview": {
-        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-dev-life-dark-v1.0.0/clawd-dev-life-dark-1.0.0.preview.webp",
-        "bytes": 330,
-        "sha256": "76d28cf707590fe748b6430351fbabf767260bb993477ef667dd2ab585e78d28"
+        "url": "https://github.com/rullerzhou-afk/clawd-themes/releases/download/clawd-alive-v1.0.0/clawd-alive-1.0.0.preview.webp",
+        "bytes": 18722,
+        "sha256": "76c048e0b84c44f9536b13132728b06f68cf94c46507c5b1ee268f224ff2bacd"
       },
       "license": {
         "spdx": "CC-BY-NC-SA-4.0",
-        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/8bb1f8a76fa9ef5d9903884d4a55689e553cd6b6/themes/clawd-dev-life-dark/LICENSE",
+        "noticeUrl": "https://github.com/rullerzhou-afk/clawd-themes/blob/a0ff0631a04b6c144e2c2826935b69823778e9ad/themes/clawd-alive/LICENSE",
         "notice": {
-          "en": "The Clawd character belongs to Anthropic; the drawing code is adapted from Qisi3344/clawd-moji. alwinecor's artwork is CC BY-NC-SA 4.0 where licensable, and this unofficial fan theme is unaffiliated with and not endorsed by Anthropic.",
-          "zh": "Clawd 角色归 Anthropic 所有，绘图代码改编自 Qisi3344/clawd-moji；alwinecor 的美术在有权授权范围内采用 CC BY-NC-SA 4.0。本主题是非官方粉丝作品，与 Anthropic 无关联，也未获其背书。"
+          "en": "The Clawd character belongs to Anthropic. New animations by Allan Oliveira Miraballes are CC BY-NC-SA 4.0 where licensable; the original Clawd art comes from Clawd on Desk and is not relicensed; the Fluent Emoji palette and brush are by Microsoft (MIT). This unofficial, non-commercial fan theme is unaffiliated with and not endorsed by Anthropic.",
+          "zh": "Clawd 角色归 Anthropic 所有。Allan Oliveira Miraballes 的新动画在有权授权范围内采用 CC BY-NC-SA 4.0；原版 Clawd 美术来自 Clawd on Desk，不随本主题重新授权；Fluent Emoji 调色板与画笔来自 Microsoft（MIT）。本主题是非官方、非商业粉丝作品，与 Anthropic 无关联，也未获其背书。"
         }
       }
     }

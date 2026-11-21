@@ -102,6 +102,9 @@ const VERIFIED_GITHUB_CONTRIBUTORS = [
   "AllanOliveiraM",
   "RyanChenJJH",
   "alwinecor",
+  "rexxless",
+  "commiyou",
+  "richard-kramer",
 ];
 
 const MAINTAINERS_SVG = path.join("assets", "readme", "maintainers.svg");
