@@ -80,10 +80,10 @@ Thanks to @200780381, @AllanOliveiraM, @CheeseAgent, @easyhak, @Free-LZJ, @Peter
 
 ### Validation Status
 
-**Pending.** The v1.7.0 draft packages still need installation, v1.6.0 upgrade, updater, signing and package-content checks, plus the [draft smoke checklist](https://github.com/rullerzhou-afk/clawd-on-desk/blob/main/docs/project/release-process.md#v170-draft-smoke-checklist).
+Validated with the v1.7.0 draft packages on 2026-11-21:
 
-- **Remote SSH** — run the final Jump host mode against a real gateway, including a complete deployment from Windows, and verify Windows remote DeepSeek Harness registry discovery and deployment.
-- **Desktop integrations** — exercise the final Windows packages with Qoder, CodeBuddy IDE and DeepSeek Harness, and exercise the final CodeBuddy IDE click behavior on macOS.
-- **Linux** — verify terminal focus on a real KDE Plasma 6 Wayland desktop.
-- **DeepSeek** — test encrypted key storage on macOS Keychain, Windows DPAPI, and Linux with and without a keyring.
-- **Meeting Mode** — test actual screen sharing, timer expiry, early exit and restoration of the previous visibility and Do Not Disturb settings.
+- **macOS (arm64, Apple silicon):** the DMG matches the draft digest and `latest-mac.yml`; the app is Developer ID signed, notarized and stapled (`spctl` accepted) and reports 1.7.0. The packaged NOTICE and the license header in the Remote SSH bridge file are present. Installed over v1.6.0, it starts in about 6 seconds, keeps settings byte-identical, points only Clawd's own Claude Code, Kiro IDE and Copilot hook commands at the installed app, leaves the Codex, OpenCode, Qoder and WorkBuddy configs byte-identical, and receives real Claude Code and Codex events.
+- **Windows (x64, Windows 11):** a silent upgrade from v1.6.0 finished in about 15 seconds and updated the same machine-wide installation to 1.7.0. Unlike the upgrade from v1.5.0, the AI tools' hook files stayed byte-identical through the upgrade. After Clawd was started on the desktop, all eleven checked agent configs and the settings file were still unchanged. With Clawd running, a Windows restart from the Start menu completed without any "preventing shutdown" prompt.
+- **CI:** the tag build ran the full test suite on Windows, macOS and Linux, the native package audits for all five packages and macOS notarization. A pre-tag rehearsal of the APT publisher re-signed the live source without changing its packages, and the live source verified on a Raspberry Pi 5 (Debian 13).
+
+**Not tested** with the draft packages: the macOS x64 DMG; Linux packages on a real desktop (CI covers the X11/XWayland/AppImage smoke), including KDE Plasma 6 Wayland terminal focus; Windows arm64; Jump host mode against a real gateway, including a complete deployment from a Windows client; Windows remote DeepSeek Harness registry discovery end to end; Qoder Desktop, CodeBuddy IDE and DeepSeek Harness desktop with the final Windows packages, and the final CodeBuddy IDE click behavior on macOS; DeepSeek key storage in each platform's credential store; Meeting Mode and dark theme appearance in the packaged app (covered by tests and pre-merge checks). The in-app update from v1.6.0 to v1.7.0 and the APT source update can only be checked after publishing.

@@ -29,6 +29,13 @@ media entered the PR's reachable history.
 
 4. Run the `Build & Release` workflow manually on `main`.
 
+Before this step, have the Apple Developer account holder sign in to
+developer.apple.com and accept any updated agreement shown there or in App
+Store Connect. Until an updated agreement is accepted, notarization fails with
+HTTP 403 "A required agreement is missing or has expired" even though signing
+succeeds (this happened on the v1.7.0 manual build). After accepting, rerun only
+the failed macOS job.
+
 For macOS Developer ID certificate creation, App Store Connect Team API key
 setup, local verification, and the exact GitHub Actions secret names, follow
 [`docs/guides/release-signing.md`](../guides/release-signing.md). Never commit a
